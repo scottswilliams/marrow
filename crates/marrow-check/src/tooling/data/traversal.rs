@@ -15,6 +15,12 @@ use super::render::{push_key, push_member};
 use super::shape::{stored_key_mismatch, tooling_catalog_id};
 use super::{DataRecord, DebugDataPayload, KeyMismatch};
 
+fn fold_records(running: usize, count: usize) -> Result<usize, StoreError> {
+    running.checked_add(count).ok_or(StoreError::LimitExceeded {
+        limit: "data record count",
+    })
+}
+
 pub fn data_roots_in_store(
     program: &CheckedProgram,
     store: &TreeStore,
@@ -65,18 +71,10 @@ pub(crate) fn visit_data_records_in_places_until(
     for place in places {
         match visit_place_records_until(place, store, &mut visit)? {
             ControlFlow::Continue(count) => {
-                records = records
-                    .checked_add(count)
-                    .ok_or(StoreError::LimitExceeded {
-                        limit: "data record count",
-                    })?;
+                records = fold_records(records, count)?;
             }
             ControlFlow::Break(count) => {
-                records = records
-                    .checked_add(count)
-                    .ok_or(StoreError::LimitExceeded {
-                        limit: "data record count",
-                    })?;
+                records = fold_records(records, count)?;
                 return Ok(ControlFlow::Break(records));
             }
         }
@@ -194,18 +192,10 @@ fn visit_identity_records_until(
             visit,
         )? {
             ControlFlow::Continue(count) => {
-                records = records
-                    .checked_add(count)
-                    .ok_or(StoreError::LimitExceeded {
-                        limit: "data record count",
-                    })?;
+                records = fold_records(records, count)?;
             }
             ControlFlow::Break(count) => {
-                records = records
-                    .checked_add(count)
-                    .ok_or(StoreError::LimitExceeded {
-                        limit: "data record count",
-                    })?;
+                records = fold_records(records, count)?;
                 identity.pop();
                 path.truncate(prior_len);
                 return Ok(ControlFlow::Break(records));
@@ -254,18 +244,10 @@ fn visit_identity_record_nodes_until(
         identity.push(key);
         match visit_identity_record_nodes_until(place, store_id, store, identity, visit)? {
             ControlFlow::Continue(count) => {
-                records = records
-                    .checked_add(count)
-                    .ok_or(StoreError::LimitExceeded {
-                        limit: "data record count",
-                    })?;
+                records = fold_records(records, count)?;
             }
             ControlFlow::Break(count) => {
-                records = records
-                    .checked_add(count)
-                    .ok_or(StoreError::LimitExceeded {
-                        limit: "data record count",
-                    })?;
+                records = fold_records(records, count)?;
                 identity.pop();
                 return Ok(ControlFlow::Break(records));
             }
@@ -282,6 +264,7 @@ fn visit_identity_record_nodes_until(
     Ok(ControlFlow::Continue(records))
 }
 
+#[derive(Clone, Copy)]
 struct MemberVisit<'a> {
     store_id: &'a CatalogId,
     store: &'a TreeStore,
@@ -300,18 +283,10 @@ fn visit_members_until(
     for member in members {
         match visit_member_until(context, member, data_path, path, mismatch.clone(), visit)? {
             ControlFlow::Continue(count) => {
-                records = records
-                    .checked_add(count)
-                    .ok_or(StoreError::LimitExceeded {
-                        limit: "data record count",
-                    })?;
+                records = fold_records(records, count)?;
             }
             ControlFlow::Break(count) => {
-                records = records
-                    .checked_add(count)
-                    .ok_or(StoreError::LimitExceeded {
-                        limit: "data record count",
-                    })?;
+                records = fold_records(records, count)?;
                 return Ok(ControlFlow::Break(records));
             }
         }
@@ -333,11 +308,7 @@ fn visit_member_until(
     let prior_len = push_member(path, &member.name);
     data_path.push(DataPathSegment::Member(catalog_id.clone()));
     let cursor = MemberCursor {
-        context: MemberVisit {
-            store_id: context.store_id,
-            store: context.store,
-            identity: context.identity,
-        },
+        context: *context,
         member,
         field_catalog_id: &catalog_id,
     };
@@ -386,18 +357,10 @@ fn visit_member_keys_until(
         match visit_member_keys_until(cursor, data_path, path, key_index + 1, next_mismatch, visit)?
         {
             ControlFlow::Continue(count) => {
-                records = records
-                    .checked_add(count)
-                    .ok_or(StoreError::LimitExceeded {
-                        limit: "data record count",
-                    })?;
+                records = fold_records(records, count)?;
             }
             ControlFlow::Break(count) => {
-                records = records
-                    .checked_add(count)
-                    .ok_or(StoreError::LimitExceeded {
-                        limit: "data record count",
-                    })?;
+                records = fold_records(records, count)?;
                 data_path.pop();
                 path.truncate(prior_len);
                 return Ok(ControlFlow::Break(records));

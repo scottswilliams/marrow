@@ -108,9 +108,12 @@ pub(crate) fn declared_members_below_path<'a>(
 pub(crate) enum DataPathShape {
     /// The path ends exactly on a declared scalar field value.
     Value,
-    /// The path is well formed against the schema but does not terminate on a
-    /// value: it stops on a group or before a keyed member's keys.
-    NotAValue,
+    /// The path ends on a keyed group, which is a valid path-node position even
+    /// though it is not a value.
+    KeyedGroupNode,
+    /// The path ends on a plain (keyless) group: well formed against the schema
+    /// but neither a value nor a keyed-group node.
+    PlainGroup,
     /// The path does not follow the declared member tree. The reason renders
     /// into the orphan diagnostic.
     Undeclared(&'static str),
@@ -142,7 +145,11 @@ pub(crate) fn classify_data_path(
         }
         CheckedSavedMemberKind::Group => {
             if rest.is_empty() {
-                DataPathShape::NotAValue
+                if member.key_params.is_empty() {
+                    DataPathShape::PlainGroup
+                } else {
+                    DataPathShape::KeyedGroupNode
+                }
             } else {
                 classify_data_path(&member.group_members, rest)
             }
@@ -163,7 +170,9 @@ pub(crate) fn validate_member_value_path(
 ) -> Result<(), &'static str> {
     match classify_data_path(members, path) {
         DataPathShape::Value => Ok(()),
-        DataPathShape::NotAValue => Err("a saved group path the schema does not declare"),
+        DataPathShape::KeyedGroupNode | DataPathShape::PlainGroup => {
+            Err("a saved group path the schema does not declare")
+        }
         DataPathShape::Undeclared(reason) => Err(reason),
     }
 }
@@ -172,27 +181,13 @@ pub(crate) fn validate_member_path_node(
     members: &[CheckedSavedMember],
     path: &[DataPathSegment],
 ) -> Result<(), &'static str> {
-    let Some(DataPathSegment::Member(catalog)) = path.first() else {
-        return Err("a saved path shape the schema does not declare");
-    };
-    let Some(member) = members
-        .iter()
-        .find(|member| member.catalog_id.as_deref() == Some(catalog.as_str()))
-    else {
-        return Err("a saved member the schema no longer declares");
-    };
-    let Some(rest) = rest_after_member_keys(member, &path[1..]) else {
-        return Err("a saved member key shape the schema does not declare");
-    };
-    match &member.kind {
-        CheckedSavedMemberKind::Field { .. } => {
-            Err("a saved field node path the schema does not declare")
-        }
-        CheckedSavedMemberKind::Group if rest.is_empty() && !member.key_params.is_empty() => Ok(()),
-        CheckedSavedMemberKind::Group if rest.is_empty() => {
+    match classify_data_path(members, path) {
+        DataPathShape::KeyedGroupNode => Ok(()),
+        DataPathShape::Value => Err("a saved field node path the schema does not declare"),
+        DataPathShape::PlainGroup => {
             Err("a saved plain group node path the schema does not declare")
         }
-        CheckedSavedMemberKind::Group => validate_member_path_node(&member.group_members, rest),
+        DataPathShape::Undeclared(reason) => Err(reason),
     }
 }
 

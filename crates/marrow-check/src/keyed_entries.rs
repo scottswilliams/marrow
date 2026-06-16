@@ -150,16 +150,41 @@ impl Normalizer<'_, '_> {
                 )));
                 node.members = members;
             }
-            KeyedFieldType::Other => {}
             KeyedFieldType::PrivateEnum(name) => {
                 self.push_private_enum(scope.file, field.span, name);
             }
             KeyedFieldType::Unknown(ty) => {
                 self.push_unknown_type(scope.file, field, ty);
             }
-            KeyedFieldType::NonEnumNamedLeaf(name) => {
-                self.push_non_enum_named_leaf(scope.file, field, name);
+            KeyedFieldType::SavedLeaf => {
+                self.check_keyed_leaf_named_type(scope, field);
             }
+        }
+    }
+
+    /// Apply the saved named-type rule to a keyed entry's value type. Schema
+    /// validation skips keyed fields because the keyed entry is checked here,
+    /// where the project-aware enum resolver is available, so this routes the
+    /// field's value through the schema owner as an unkeyed saved field to keep
+    /// one owner for the rule and its diagnostic.
+    fn check_keyed_leaf_named_type(&mut self, scope: MemberScope<'_>, field: &FieldDecl) {
+        let aliases = module_aliases(self.resolver, scope.module_name);
+        let leaf = marrow_syntax::ResourceMember::Field(FieldDecl {
+            keys: Vec::new(),
+            ..field.clone()
+        });
+        for error in marrow_schema::check_saved_named_member_fields_with(&[leaf], |name| {
+            matches!(
+                crate::enums::resolve_enum_type(
+                    &marrow_schema::Type::Named(name.to_string()),
+                    self.resolver,
+                    &aliases,
+                    scope.file,
+                ),
+                Some(MarrowType::Enum { .. })
+            )
+        }) {
+            self.push_schema_error(scope.file, error);
         }
     }
 
@@ -207,10 +232,7 @@ impl Normalizer<'_, '_> {
         if !annotation_type_known(&schema_type, &resolved) {
             return KeyedFieldType::Unknown(schema_type);
         }
-        if let Some(name) = non_enum_named_leaf_type(&schema_type, &resolved) {
-            return KeyedFieldType::NonEnumNamedLeaf(name);
-        }
-        KeyedFieldType::Other
+        KeyedFieldType::SavedLeaf
     }
 
     fn validate_entry_resource(&mut self, target: &ResourceTarget, decl: &ResourceDecl) {
@@ -286,25 +308,6 @@ impl Normalizer<'_, '_> {
         );
     }
 
-    fn push_non_enum_named_leaf(&mut self, file: &Path, field: &FieldDecl, ty: String) {
-        self.push_schema_error(
-            file,
-            marrow_schema::SchemaError {
-                kind: marrow_schema::SchemaErrorKind::NonEnumNamedField {
-                    field: field.name.clone(),
-                    ty: ty.clone(),
-                },
-                code: marrow_schema::SCHEMA_NON_ENUM_NAMED_FIELD,
-                message: format!(
-                    "saved member `{}` has type `{ty}`, which is not a declared enum; \
-                     a saved member stores a scalar, identity, or checked enum value",
-                    field.name
-                ),
-                span: field.span,
-            },
-        );
-    }
-
     fn push_diagnostic(&mut self, diagnostic: CheckDiagnostic) {
         if self.diagnostics.iter().any(|existing| {
             existing.code == diagnostic.code
@@ -322,8 +325,9 @@ enum KeyedFieldType {
     Resource(Box<ResourceTarget>),
     PrivateEnum(String),
     Unknown(marrow_schema::Type),
-    NonEnumNamedLeaf(String),
-    Other,
+    /// A value type that is not a resource layer: its saved named-type rule is
+    /// checked by the schema owner, which is a no-op for scalar and identity types.
+    SavedLeaf,
 }
 
 struct ResourceTarget {
@@ -371,19 +375,4 @@ fn module_aliases(
         .find(|module| module.name == module_name)
         .map(|module| build_alias_map(&module.imports))
         .unwrap_or_default()
-}
-
-fn non_enum_named_leaf_type(
-    schema_type: &marrow_schema::Type,
-    resolved_type: &MarrowType,
-) -> Option<String> {
-    match (schema_type, resolved_type) {
-        (marrow_schema::Type::Named(_), MarrowType::Enum { .. }) => None,
-        (marrow_schema::Type::Named(_), MarrowType::Unknown | MarrowType::Invalid) => None,
-        (marrow_schema::Type::Named(name), _) => Some(name.clone()),
-        (marrow_schema::Type::Sequence(schema_element), MarrowType::Sequence(resolved_element)) => {
-            non_enum_named_leaf_type(schema_element, resolved_element)
-        }
-        _ => None,
-    }
 }

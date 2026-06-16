@@ -4,7 +4,6 @@ use marrow_store::StoreError;
 
 pub mod data;
 pub mod integrity;
-pub mod metadata;
 
 pub use data::{
     DataChild, DataChildrenPage, DataEntry, DataPresence, DataQuery, DataQuerySegment, DataRecord,
@@ -18,7 +17,6 @@ pub use integrity::{
     IntegrityOutcome, IntegrityProblem, IntegritySample, count_activation_integrity_problems,
     count_integrity_problems, sample_integrity_problems, visit_integrity_problems,
 };
-pub use metadata::{ToolingCatalogMetadata, store_is_newer_than_program, tooling_metadata};
 
 #[derive(Debug)]
 pub enum ToolingError {

@@ -123,7 +123,7 @@ pub(crate) fn block_returns(block: &marrow_syntax::Block) -> bool {
     block.statements.last().is_some_and(statement_returns)
 }
 
-pub(crate) fn statement_returns(statement: &marrow_syntax::Statement) -> bool {
+fn statement_returns(statement: &marrow_syntax::Statement) -> bool {
     use marrow_syntax::{Expression, Statement};
     match statement {
         Statement::Return { .. } | Statement::ReturnAbsent { .. } | Statement::Throw { .. } => true,

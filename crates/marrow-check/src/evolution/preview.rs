@@ -21,7 +21,7 @@ use marrow_store::tree::{
 use super::discharge::{RepairDiagnostic, discharge};
 use super::witness::{CatalogFingerprint, EvolutionWitness};
 use crate::analysis::AnalysisSnapshot;
-use crate::program::CheckedProgram;
+use crate::program::{CheckedProgram, ProgramCatalog};
 
 const MAX_BACKUP_CATALOG_ID_SAMPLES: usize = 16;
 
@@ -84,6 +84,26 @@ impl From<TreeBackupArchiveReadError> for EvolutionPreviewError {
     }
 }
 
+/// The accepted and proposal catalog fingerprints a program's catalog carries. The
+/// accepted fingerprint folds an absent epoch or digest to the empty baseline; the
+/// proposal fingerprint is present only when the program emitted a proposal.
+fn catalog_fingerprints(
+    catalog: &ProgramCatalog,
+) -> (CatalogFingerprint, Option<CatalogFingerprint>) {
+    let accepted = CatalogFingerprint {
+        epoch: catalog.accepted_epoch.unwrap_or(0),
+        digest: catalog.accepted_digest.clone().unwrap_or_default(),
+    };
+    let proposal = catalog
+        .proposal
+        .as_ref()
+        .map(|proposal| CatalogFingerprint {
+            epoch: proposal.epoch,
+            digest: proposal.digest.clone(),
+        });
+    (accepted, proposal)
+}
+
 pub fn evolution_preview(
     snapshot: &AnalysisSnapshot,
     backup: Option<&Path>,
@@ -91,24 +111,12 @@ pub fn evolution_preview(
     let (source_digest, evolution_digest) =
         crate::catalog::source_and_evolution_digests(&snapshot.program);
     let backup = backup.map(read_backup_witness_facts).transpose()?;
+    let (accepted_catalog, proposal_catalog) = catalog_fingerprints(&snapshot.program.catalog);
     Ok(WitnessFactSet {
         source_digest,
         evolution_digest,
-        accepted_catalog: CatalogFingerprint {
-            epoch: snapshot.program.catalog.accepted_epoch.unwrap_or(0),
-            digest: snapshot
-                .program
-                .catalog
-                .accepted_digest
-                .clone()
-                .unwrap_or_default(),
-        },
-        proposal_catalog: snapshot.program.catalog.proposal.as_ref().map(|proposal| {
-            CatalogFingerprint {
-                epoch: proposal.epoch,
-                digest: proposal.digest.clone(),
-            }
-        }),
+        accepted_catalog,
+        proposal_catalog,
         backup,
         live_store: LiveStorePreviewStatus::Deferred,
     })
@@ -135,30 +143,22 @@ pub fn preview(
             digest: snapshot.digest,
         });
     let (source_digest, evolution_digest) = crate::catalog::source_and_evolution_digests(program);
-    let witness =
-        EvolutionWitness {
-            source_digest,
-            evolution_digest,
-            accepted_catalog: CatalogFingerprint {
-                epoch: program.catalog.accepted_epoch.unwrap_or(0),
-                digest: program.catalog.accepted_digest.clone().unwrap_or_default(),
-            },
-            proposal_catalog: program.catalog.proposal.as_ref().map(|proposal| {
-                CatalogFingerprint {
-                    epoch: proposal.epoch,
-                    digest: proposal.digest.clone(),
-                }
-            }),
-            store_catalog,
-            store_source_digest,
-            engine_profile_digest,
-            layout_epoch,
-            store_commit_id: commit.map(|commit| commit.commit_id),
-            changed_root_catalog_ids: discharge.changed_root_catalog_ids,
-            changed_index_catalog_ids: discharge.changed_index_catalog_ids,
-            verdicts: discharge.verdicts,
-            counts: discharge.counts,
-        };
+    let (accepted_catalog, proposal_catalog) = catalog_fingerprints(&program.catalog);
+    let witness = EvolutionWitness {
+        source_digest,
+        evolution_digest,
+        accepted_catalog,
+        proposal_catalog,
+        store_catalog,
+        store_source_digest,
+        engine_profile_digest,
+        layout_epoch,
+        store_commit_id: commit.map(|commit| commit.commit_id),
+        changed_root_catalog_ids: discharge.changed_root_catalog_ids,
+        changed_index_catalog_ids: discharge.changed_index_catalog_ids,
+        verdicts: discharge.verdicts,
+        counts: discharge.counts,
+    };
 
     Ok((witness, discharge.diagnostics))
 }
@@ -185,8 +185,8 @@ fn read_backup_witness_facts(path: &Path) -> Result<BackupWitnessFactSet, Evolut
     }
     Ok(BackupWitnessFactSet {
         cell_count,
-        samples_truncated,
         sample_catalog_ids,
+        samples_truncated,
     })
 }
 

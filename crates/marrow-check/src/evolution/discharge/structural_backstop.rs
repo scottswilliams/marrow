@@ -155,13 +155,8 @@ fn for_each_entry_key_at(
     let mut next = store.data_first_child(store_id, identity, entry_path)?;
     while let Some(entry_key) = next {
         validate_entry_key(key_scalars[key_index], &entry_key)?;
-        entry_path.push(DataPathSegment::Key(entry_key));
-        let Some(DataPathSegment::Key(entry_key)) = entry_path.last() else {
-            return Err(StoreError::Corruption {
-                message: "evolution keyed-layer traversal lost its cursor".to_string(),
-            });
-        };
         let next_after = entry_key.clone();
+        entry_path.push(DataPathSegment::Key(entry_key));
         if for_each_entry_key_at(
             store,
             store_id,

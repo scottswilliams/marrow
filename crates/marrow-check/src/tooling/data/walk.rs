@@ -60,7 +60,7 @@ pub fn walk_data(
         let start_path = cursor_pending.take();
         let mut waiting_for_cursor = start_path.is_some();
         walk_members(
-            WalkMembers {
+            &mut WalkMembers {
                 store,
                 store_id: &query.storage.store,
                 identity: &current,
@@ -127,7 +127,7 @@ struct WalkMembers<'a, 'b> {
 }
 
 fn walk_members(
-    mut walk: WalkMembers<'_, '_>,
+    walk: &mut WalkMembers<'_, '_>,
     members: &[CheckedSavedMember],
     data_path: &mut Vec<DataPathSegment>,
     path: &mut Vec<DataQuerySegment>,
@@ -136,7 +136,7 @@ fn walk_members(
         if walk.state.next_cursor_path.is_some() {
             break;
         }
-        walk_member(&mut walk, member, data_path, path)?;
+        walk_member(walk, member, data_path, path)?;
     }
     Ok(())
 }
@@ -187,9 +187,22 @@ fn walk_member_keys(
         }
         return Ok(());
     }
-    let mut child = walk
+    let first = walk
         .store
         .data_first_child(walk.store_id, walk.identity, data_path)?;
+    walk_member_key_run(walk, member, data_path, path, key_index, first)
+}
+
+/// Enumerates stored child keys for one key level starting from `child`, walking each and
+/// resuming via `data_next_child` until exhausted or the page limit fills `next_cursor_path`.
+fn walk_member_key_run(
+    walk: &mut WalkMembers<'_, '_>,
+    member: &CheckedSavedMember,
+    data_path: &mut Vec<DataPathSegment>,
+    path: &mut Vec<DataQuerySegment>,
+    key_index: usize,
+    mut child: Option<SavedKey>,
+) -> Result<(), ToolingError> {
     while let Some(key) = child {
         let anchor = key.clone();
         stored_key_mismatch(member.key_params[key_index].scalar, &key)?;
@@ -262,21 +275,10 @@ fn walk_member_keys_after(
     key_index: usize,
     anchor: &SavedKey,
 ) -> Result<(), ToolingError> {
-    let mut child = walk
+    let first = walk
         .store
         .data_next_child(walk.store_id, walk.identity, data_path, anchor)?;
-    while let Some(key) = child {
-        let anchor = key.clone();
-        stored_key_mismatch(member.key_params[key_index].scalar, &key)?;
-        walk_member_key(walk, member, data_path, path, key_index, key)?;
-        if walk.state.next_cursor_path.is_some() {
-            break;
-        }
-        child = walk
-            .store
-            .data_next_child(walk.store_id, walk.identity, data_path, &anchor)?;
-    }
-    Ok(())
+    walk_member_key_run(walk, member, data_path, path, key_index, first)
 }
 
 fn walk_member_terminal(
@@ -304,20 +306,9 @@ fn walk_member_terminal(
                 walk.state.push(path, value);
             }
         }
-        CheckedSavedMemberKind::Group => walk_members(
-            WalkMembers {
-                store: walk.store,
-                store_id: walk.store_id,
-                identity: walk.identity,
-                filter_prefix: walk.filter_prefix,
-                start_path: walk.start_path,
-                waiting_for_cursor: walk.waiting_for_cursor,
-                state: walk.state,
-            },
-            &member.group_members,
-            data_path,
-            path,
-        )?,
+        CheckedSavedMemberKind::Group => {
+            walk_members(walk, &member.group_members, data_path, path)?;
+        }
     }
     Ok(())
 }

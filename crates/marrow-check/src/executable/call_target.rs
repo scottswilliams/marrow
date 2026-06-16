@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 
-use marrow_schema::ScalarType;
-
+use crate::diagnostics::ConversionTarget;
 use crate::expand_alias;
 use crate::program::{CheckedProgram, MarrowType};
 use crate::resolve::{Def, DefItem, Resolution, ResolvableKind, resolve, resolve_store_by_root};
@@ -20,7 +19,7 @@ impl CheckedCallTarget {
         aliases: &HashMap<String, Vec<String>>,
         scope: &[HashMap<String, MarrowType>],
     ) -> Option<Self> {
-        if let Some(target) = Self::saved_path_call_target(callee, program) {
+        if let Some(target) = Self::saved_path_call_target(callee) {
             return Some(target);
         }
         if let Some(target) = Self::local_collection_call_target(callee, scope) {
@@ -57,7 +56,7 @@ impl CheckedCallTarget {
             .then(|| Self::LocalCollection { name: name.clone() })
     }
 
-    fn saved_path_call_target(callee: &CheckedExpr, _program: &CheckedProgram) -> Option<Self> {
+    fn saved_path_call_target(callee: &CheckedExpr) -> Option<Self> {
         let place = callee.saved_place()?;
         match &place.terminal {
             super::CheckedSavedTerminal::Index { .. } => Some(Self::SavedIndexLookup),
@@ -189,8 +188,6 @@ impl CheckedBuiltinCall {
             "exists" => Self::Exists,
             "nextId" => Self::NextId,
             "append" => Self::Append,
-            "bytes" => Self::Bytes,
-            "ErrorCode" => Self::ErrorCode,
             "keys" => Self::Keys,
             "count" => Self::Count,
             "values" => Self::Values,
@@ -198,7 +195,14 @@ impl CheckedBuiltinCall {
             "reversed" => Self::Reversed,
             "next" => Self::Next,
             "prev" => Self::Prev,
-            other => Self::Conversion(ScalarType::from_scalar_name(other)?),
+            other => match ConversionTarget::from_name(other)? {
+                ConversionTarget::ErrorCode => Self::ErrorCode,
+                ConversionTarget::Bytes => Self::Bytes,
+                t => match t.return_type() {
+                    MarrowType::Primitive(scalar) => Self::Conversion(scalar),
+                    _ => return None,
+                },
+            },
         })
     }
 

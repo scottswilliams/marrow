@@ -206,13 +206,14 @@ impl CheckedCatchClause {
     pub(super) fn lower(
         catch: &syntax::CatchClause,
         context: &CheckedExecutableContext<'_>,
-        scope: &mut [HashMap<String, MarrowType>],
+        scope: &mut Vec<HashMap<String, MarrowType>>,
     ) -> Option<Self> {
-        let mut catch_scope = scope.to_owned();
-        catch_scope.push(HashMap::from([(catch.name.clone(), MarrowType::Error)]));
+        scope.push(HashMap::from([(catch.name.clone(), MarrowType::Error)]));
+        let block = CheckedBody::lower_scoped(&catch.block, context, scope);
+        scope.pop();
         Some(Self {
             name: catch.name.clone(),
-            block: CheckedBody::lower_scoped(&catch.block, context, &mut catch_scope)?,
+            block: block?,
         })
     }
 }

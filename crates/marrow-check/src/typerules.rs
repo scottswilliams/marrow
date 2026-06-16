@@ -63,7 +63,7 @@ fn elide(text: &str) -> std::borrow::Cow<'_, str> {
 /// `marrow_store::decimal`, which normalizes first: leading integer zeros and
 /// trailing fraction zeros drop out, so they are stripped before counting and no
 /// literal the runtime would normalize back into range is rejected.
-pub(crate) fn decimal_out_of_envelope(text: &str) -> bool {
+fn decimal_out_of_envelope(text: &str) -> bool {
     let (integer, fraction) = text.split_once('.').unwrap_or((text, ""));
     let integer = integer.trim_start_matches('0');
     let fraction = fraction.trim_end_matches('0');
@@ -92,15 +92,18 @@ pub(crate) fn as_primitive(ty: &MarrowType) -> Option<ScalarType> {
 /// rather than by scalar shape. `Error` has its own operator handling and
 /// `Unknown` defers, so both are excluded.
 pub(crate) fn is_concrete_nonscalar(ty: &MarrowType) -> bool {
-    matches!(
-        ty,
+    match ty {
         MarrowType::Identity(_)
-            | MarrowType::Resource(_)
-            | MarrowType::GroupEntry { .. }
-            | MarrowType::Sequence(_)
-            | MarrowType::LocalTree { .. }
-            | MarrowType::Enum { .. }
-    )
+        | MarrowType::Resource(_)
+        | MarrowType::GroupEntry { .. }
+        | MarrowType::Sequence(_)
+        | MarrowType::LocalTree { .. }
+        | MarrowType::Enum { .. } => true,
+        MarrowType::Primitive(_)
+        | MarrowType::Error
+        | MarrowType::Unknown
+        | MarrowType::Invalid => false,
+    }
 }
 
 /// Whether a value of type `actual` may stand where `expected` is required.
@@ -170,15 +173,18 @@ pub(crate) fn type_compatible(expected: &MarrowType, actual: &MarrowType) -> Opt
 /// checked read first. An `unknown` flows freely only into another `unknown`, and a
 /// sequence has no conversion and is left to the runtime.
 pub(crate) fn expects_conversion(ty: &MarrowType) -> bool {
-    matches!(
-        ty,
+    match ty {
         MarrowType::Primitive(_)
-            | MarrowType::Error
-            | MarrowType::Enum { .. }
-            | MarrowType::Identity(_)
-            | MarrowType::Resource(_)
-            | MarrowType::GroupEntry { .. }
-    )
+        | MarrowType::Error
+        | MarrowType::Enum { .. }
+        | MarrowType::Identity(_)
+        | MarrowType::Resource(_)
+        | MarrowType::GroupEntry { .. } => true,
+        MarrowType::Sequence(_)
+        | MarrowType::LocalTree { .. }
+        | MarrowType::Unknown
+        | MarrowType::Invalid => false,
+    }
 }
 
 pub(crate) fn is_numeric(scalar: ScalarType) -> bool {

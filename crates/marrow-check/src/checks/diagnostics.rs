@@ -9,6 +9,7 @@ use crate::{
     CHECK_CALL_ARGUMENT, CHECK_KEY_TYPE, CHECK_OPERATOR_TYPE, CHECK_RANGE, CheckDiagnostic,
 };
 
+/// A `check.range` diagnostic located at a range expression's span.
 pub(super) fn range_diagnostic(file: &Path, span: SourceSpan, message: String) -> CheckDiagnostic {
     CheckDiagnostic::error(CHECK_RANGE, file, span, message)
 }
@@ -22,7 +23,8 @@ pub(crate) fn key_type_diagnostic(
     CheckDiagnostic::error(CHECK_KEY_TYPE, file, span, message)
 }
 
-pub(crate) fn operator_diagnostic(
+/// A `check.operator_type` diagnostic located at an operator expression's span.
+pub(super) fn operator_diagnostic(
     file: &Path,
     span: SourceSpan,
     message: String,
@@ -31,6 +33,6 @@ pub(crate) fn operator_diagnostic(
 }
 
 /// A `check.call_argument` diagnostic located at a call's span.
-pub(crate) fn call_diagnostic(file: &Path, span: SourceSpan, message: String) -> CheckDiagnostic {
+pub(super) fn call_diagnostic(file: &Path, span: SourceSpan, message: String) -> CheckDiagnostic {
     CheckDiagnostic::error(CHECK_CALL_ARGUMENT, file, span, message)
 }

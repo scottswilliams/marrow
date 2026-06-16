@@ -165,7 +165,9 @@ fn durable_kind(declaration: &marrow_syntax::Declaration) -> Option<DurableKind>
 }
 
 /// The within-module sort key for a declaration: its declared name, the store root, or the
-/// empty string for a nameless evolve block. The normalized text disambiguates equal names.
+/// empty string for a nameless evolve block. Equal `(module, kind, name)` keys (such as multiple
+/// nameless evolve blocks) retain their source declaration order through the stable sort; the
+/// rendered text is hashed but does not participate in ordering.
 fn declaration_name(declaration: &marrow_syntax::Declaration) -> String {
     match declaration {
         marrow_syntax::Declaration::Resource(decl) => decl.name.clone(),

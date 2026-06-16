@@ -34,6 +34,9 @@ pub fn parse_path(text: &str) -> Result<Vec<PathSegment>, PathParseError> {
     Ok(parser.segments)
 }
 
+/// Render segments for display and diagnostics only. String keys use Rust debug
+/// escaping, which is not the escape grammar [`parse_path`] accepts, so this
+/// output is not guaranteed to re-parse: never feed it back into [`parse_path`].
 pub fn display_path(segments: &[PathSegment]) -> String {
     let mut text = String::new();
     for segment in segments {
@@ -251,7 +254,7 @@ fn decode_hex(text: &str) -> Option<Vec<u8>> {
 mod tests {
     use marrow_store::key::SavedKey;
 
-    use super::{PathSegment, display_path};
+    use super::{PathSegment, display_path, parse_path};
 
     #[test]
     fn display_path_renders_byte_keys_as_lower_hex_pairs() {
@@ -261,5 +264,51 @@ mod tests {
         ];
 
         assert_eq!(display_path(&path), "^items(0x000aff)");
+    }
+
+    fn record_key(text: &str) -> SavedKey {
+        match parse_path(text).expect("parse").into_iter().nth(1) {
+            Some(PathSegment::RecordKey(key)) => key,
+            other => panic!("expected a record key, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_path_decodes_each_record_key_literal() {
+        assert_eq!(record_key("^r(7)"), SavedKey::Int(7));
+        assert_eq!(record_key("^r(-7)"), SavedKey::Int(-7));
+        assert_eq!(record_key("^r(true)"), SavedKey::Bool(true));
+        assert_eq!(record_key("^r(false)"), SavedKey::Bool(false));
+        assert_eq!(record_key("^r(0x00ff)"), SavedKey::Bytes(vec![0x00, 0xff]));
+        assert_eq!(
+            record_key(r#"^r("a\nb\t\"c")"#),
+            SavedKey::Str("a\nb\t\"c".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_path_decodes_temporal_record_keys() {
+        assert!(matches!(record_key("^r(2021-01-01)"), SavedKey::Date(_)));
+        assert!(matches!(
+            record_key("^r(2021-01-01T00:00:00Z)"),
+            SavedKey::Instant(_)
+        ));
+        assert!(matches!(record_key("^r(PT1S)"), SavedKey::Duration(_)));
+    }
+
+    #[test]
+    fn parse_path_distinguishes_record_key_from_index_key() {
+        let leading = parse_path("^r(1)").expect("parse");
+        assert!(matches!(leading[1], PathSegment::RecordKey(_)));
+
+        let after_member = parse_path("^r.field(1)").expect("parse");
+        assert!(matches!(after_member[2], PathSegment::IndexKey(_)));
+    }
+
+    #[test]
+    fn parse_path_rejects_malformed_key_literals() {
+        assert!(parse_path(r#"^r("unterminated)"#).is_err());
+        assert!(parse_path("^r(0xZZ)").is_err());
+        assert!(parse_path("^r(not-a-literal)").is_err());
     }
 }
