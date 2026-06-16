@@ -18,7 +18,7 @@ use support::marrow;
 use support_evolve::{
     RETIRE_BASELINE_SOURCE, commit_catalog, member_catalog_id, native_books_project,
     native_store_path, open_native_store, read_scalar, read_scalar_by_catalog_id, root_place,
-    seed_member, seed_title_only, store_epoch,
+    seed_member, seed_title_only, store_catalog_id, store_epoch,
 };
 
 /// The baseline `RETIRE_BASELINE_SOURCE` resource with its `subtitle` member dropped
@@ -150,7 +150,7 @@ fn data_integrity_reports_a_dropped_member_orphan() {
 fn evolve_preview_fences_a_populated_bare_drop() {
     // A bare member drop with no retire intent whose cells are populated would orphan that
     // data on a bare activation, so the source-attached preview fails closed and
-    // name `evolve retire`. The fence is the guard; the developer must state the destructive
+    // names `evolve retire`. The fence is the guard; the developer must state the destructive
     // intent before the data can be dropped.
     let (root, _place, _subtitle_id) = project_with_orphaned_subtitle("orphan-activation-surfaces");
 
@@ -261,8 +261,9 @@ fn a_populated_bare_drop_does_not_apply_without_a_retire_intent() {
 fn evolve_preview_fences_a_populated_whole_resource_drop() {
     // Dropping the whole `Book` resource takes its store with it. Its records would be
     // orphaned under the gone root, so the source-attached preview fails closed
-    // and name `evolve retire`, exactly as a populated member drop does.
-    let (root, _place) = project_with_orphaned_book_resource("orphan-resource-surfaces");
+    // and names `evolve retire`, exactly as a populated member drop does.
+    let (root, place) = project_with_orphaned_book_resource("orphan-resource-surfaces");
+    let store_id = store_catalog_id(&place).expect("dropped root store catalog id");
 
     let preview = marrow(&[
         "evolve",
@@ -281,20 +282,25 @@ fn evolve_preview_fences_a_populated_whole_resource_drop() {
     let blocking = preview_value["blocking"]
         .as_array()
         .expect("blocking array");
-    // One fence per dropped root, naming it and pointing at retire.
+    // One fence per dropped root, keyed on the store's stable catalog id, not its rendered
+    // source spelling.
     let drop_fences: Vec<_> = blocking
         .iter()
         .filter(|report| {
             report["code"] == serde_json::json!("evolve.repair_required")
-                && report["message"].as_str().is_some_and(|message| {
-                    message.contains("evolve retire") && message.contains("^bookstore")
-                })
+                && report["data"]["catalog_id"] == serde_json::json!(store_id.as_str())
         })
         .collect();
     assert_eq!(
         drop_fences.len(),
         1,
-        "exactly one fence names the dropped root: {preview_value:#?}"
+        "exactly one fence repairs the dropped root by catalog id: {preview_value:#?}"
+    );
+    assert!(
+        drop_fences[0]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("evolve retire")),
+        "the fence's remediation command names evolve retire: {preview_value:#?}"
     );
 }
 

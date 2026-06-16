@@ -15,27 +15,25 @@ use support_data::{
 
 #[test]
 fn data_roots_lists_stored_roots() {
-    // Render contract: the text format prints one `^root` per saved root. The typed
-    // root list is asserted by `data_roots_format_json_emits_a_structured_envelope`.
+    // Render contract: the text format prints one `^root` line per saved root; the
+    // typed root list is covered by the JSON-format test in this file.
     let (_project, dir) = seeded_project("data-roots");
     let output = marrow(&["data", "roots", &dir]);
 
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let stdout = String::from_utf8(output.stdout).expect("utf8");
-    // Render contract: the text format prints exactly one `^root` line per saved root.
     assert_eq!(stdout, "^counter\n", "{stdout}");
 }
 
 #[test]
 fn data_stats_counts_roots_and_cells() {
-    // Render contract: the text format prints `roots:`/`cells:` count lines. The
-    // typed counts are asserted by `data_stats_format_json_emits_counts`.
+    // Render contract: the text format prints `roots:`/`cells:` count lines; the
+    // typed counts are covered by the JSON-format test in this file.
     let (_project, dir) = seeded_project("data-stats");
     let output = marrow(&["data", "stats", &dir]);
 
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let stdout = String::from_utf8(output.stdout).expect("utf8");
-    // Render contract: the two count lines, pinned exactly.
     assert_eq!(stdout, "roots: 1\ncells: 1\n", "{stdout}");
 }
 
@@ -119,14 +117,13 @@ fn inspecting_an_unseeded_project_reports_no_data_and_writes_no_records() {
 
 #[test]
 fn data_dump_prints_each_record_as_path_and_value() {
-    // Render contract: the text format prints `<path>\t<value>` for the one record.
-    // The typed record is asserted by `data_dump_format_jsonl_emits_a_record_then_a_summary`.
+    // Render contract: the text format prints `<path>\t<value>` for the one record;
+    // the typed record is covered by the JSONL-format test in this file.
     let (_project, dir) = seeded_project("data-dump");
     let output = marrow(&["data", "dump", &dir]);
 
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let stdout = String::from_utf8(output.stdout).expect("utf8");
-    // Render contract: one `<path>\t<value>` line for the single record, pinned exactly.
     assert_eq!(stdout, "^counter(1).value\t42\n", "{stdout}");
 }
 

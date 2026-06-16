@@ -186,8 +186,7 @@ fn tooling_rejects_malformed_temporal_layer_keys() {
 #[test]
 fn data_integrity_passes_on_a_healthy_seeded_project() {
     // Render contract: the text format prints a human `integrity verified` line. The
-    // typed empty problem list is asserted by `data_commands_page_through_large_native_store`
-    // and `data_integrity_accepts_singleton_fields_and_keyed_tree_members`.
+    // typed empty problem list on a healthy project is asserted elsewhere.
     let (_project, dir) = seeded_project("data-integrity-ok");
     let output = marrow(&["data", "integrity", &dir]);
 
@@ -656,6 +655,7 @@ fn data_integrity_reports_an_undeclared_store_cell_as_data_orphan() {
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let value = json(output);
     let problem = integrity_problem(&value, "data.orphan");
+    assert_eq!(problem["kind"], serde_json::json!("tooling"), "{value}");
     assert_eq!(
         problem["source_span"]["path"],
         serde_json::json!("<undeclared saved root>")
@@ -785,40 +785,6 @@ fn data_integrity_reports_a_keyed_member_value_without_its_key_as_data_orphan() 
 }
 
 #[test]
-fn data_integrity_reports_an_orphan_problem_with_a_tooling_kind() {
-    let (project, dir) = seeded_project("data-integrity-orphan-json");
-    write_orphan_cell(
-        &project,
-        "cat_000000000000000000000000deadbeef",
-        "cat_00000000000000000000000000000001",
-    );
-
-    let output = marrow(&["data", "integrity", "--format", "json", &dir]);
-
-    assert_eq!(output.status.code(), Some(1), "{output:?}");
-    let value = json(output);
-    let problem = integrity_problem(&value, "data.orphan");
-    assert_eq!(problem["kind"], serde_json::json!("tooling"), "{value}");
-    assert_eq!(
-        problem["source_span"]["path"],
-        serde_json::json!("<undeclared saved root>"),
-        "{value}"
-    );
-    let text = value.to_string();
-    assert!(
-        !text.contains("deadbeef") && !text.contains("cat_"),
-        "{text}"
-    );
-    assert_eq!(
-        problem["help"],
-        serde_json::json!(
-            "run `marrow data integrity` after source-native evolution or maintenance repair"
-        ),
-        "{value}"
-    );
-}
-
-#[test]
 fn data_integrity_reports_a_non_canonical_value_as_data_decode() {
     let project = native_project("data-integrity-decode");
     let dir = project.to_str().unwrap().to_string();
@@ -836,6 +802,7 @@ fn data_integrity_reports_a_non_canonical_value_as_data_decode() {
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let value = json(output);
     let problem = integrity_problem(&value, "data.decode");
+    assert_eq!(problem["kind"], serde_json::json!("tooling"), "{value}");
     assert_eq!(
         problem["source_span"]["path"],
         serde_json::json!("^counter(1).value")
@@ -1077,28 +1044,5 @@ fn data_integrity_reports_a_wrong_typed_record_key_as_data_key_type() {
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let value = json(output);
-    let _problem = integrity_problem(&value, "data.key_type");
-}
-
-#[test]
-fn data_integrity_format_json_problems_carry_a_tooling_kind() {
-    let project = native_project("data-integrity-json");
-    let dir = project.to_str().unwrap().to_string();
-    let place = checked_place(&project, "counter");
-    write_tree_value(
-        &project,
-        "counter",
-        &[SavedKey::Int(1)],
-        &field_path(&place, "value"),
-        b"+1".to_vec(),
-    );
-
-    let output = marrow(&["data", "integrity", "--format", "json", &dir]);
-
-    assert_eq!(output.status.code(), Some(1), "{output:?}");
-    let value = json(output);
-    let problem = &value["problems"][0];
-    assert_eq!(problem["code"], serde_json::json!("data.decode"));
-    // `data.*` integrity problems carry the tooling kind.
-    assert_eq!(problem["kind"], serde_json::json!("tooling"));
+    integrity_problem(&value, "data.key_type");
 }

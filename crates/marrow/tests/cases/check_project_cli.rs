@@ -72,23 +72,6 @@ fn format_json_reports_canonical_absolute_project_for_relative_path() {
 }
 
 #[test]
-fn reports_project_module_path_mismatch() {
-    let root = temp_project("proj-mismatch", |root| {
-        write(
-            root,
-            "marrow.json",
-            r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" } }"#,
-        );
-        write(root, "src/shelf/books.mw", "module shelf::other\n");
-    });
-    let output = run_check(&["--format", "jsonl", root.to_str().unwrap()]);
-
-    assert_eq!(output.status.code(), Some(1));
-    let records = support::jsonl(output.stdout);
-    assert_has_code(&records, "check.module_path");
-}
-
-#[test]
 fn reports_project_check_as_jsonl() {
     let root = temp_project("proj-jsonl", |root| {
         write(

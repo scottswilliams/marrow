@@ -9,27 +9,12 @@ use std::path::Path;
 use crate::support;
 use crate::support_evolve;
 use marrow_store::tree::TreeStore;
-use support::{marrow, native_config, temp_project_uncommitted, write};
+use support::{counter_source, marrow, native_config, temp_project_uncommitted, write};
 use support_evolve::{
     OPTIONAL_PAGES_DEFAULT_INDEX_SOURCE, REQUIRED_BASELINE_SOURCE, accepted_catalog,
     commit_catalog, native_books_project, native_store_path, open_native_store, root_place,
     seed_title_only, store_epoch,
 };
-
-/// The canonical native-store seed source: a `Counter` resource whose `seed`
-/// transaction writes one record. Declared inline here rather than reused from the
-/// runtime corpus because this suite needs a `module`-bearing source file.
-const COUNTER_SOURCE: &str = "module app\n\
-     \n\
-     resource Counter\n\
-     \x20\x20\x20\x20required value: int\n\
-     store ^counter(id: int): Counter\n\
-     \n\
-     pub fn seed()\n\
-     \x20\x20\x20\x20var c: Counter\n\
-     \x20\x20\x20\x20c.value = 42\n\
-     \x20\x20\x20\x20transaction\n\
-     \x20\x20\x20\x20\x20\x20\x20\x20^counter(1) = c\n";
 
 fn catalog_path(root: &Path) -> std::path::PathBuf {
     root.join("marrow.catalog.json")
@@ -58,7 +43,7 @@ fn check_on_an_uncommitted_project_writes_no_catalog_and_no_store() {
     // state: it leaves the catalog file and the store absent.
     let project = temp_project_uncommitted("check-ro-uncommitted", |root| {
         write(root, "marrow.json", native_config());
-        write(root, "src/app.mw", COUNTER_SOURCE);
+        write(root, "src/app.mw", counter_source());
     });
     let dir = project.to_str().expect("project path utf-8");
 
@@ -82,7 +67,7 @@ fn check_on_an_uncommitted_project_writes_no_catalog_and_no_store() {
 fn check_does_not_open_a_hostile_native_store_file() {
     let project = temp_project_uncommitted("check-ro-hostile-store-file", |root| {
         write(root, "marrow.json", native_config());
-        write(root, "src/app.mw", COUNTER_SOURCE);
+        write(root, "src/app.mw", counter_source());
         write(root, ".data/marrow.redb", "not a redb store");
     });
     let dir = project.to_str().expect("project path utf-8");
@@ -109,7 +94,7 @@ fn run_freezes_the_catalog_into_the_store_and_renders_the_file() {
     // a created store, and a rendered catalog file the first time it runs.
     let project = temp_project_uncommitted("check-ro-run-commits", |root| {
         write(root, "marrow.json", native_config());
-        write(root, "src/app.mw", COUNTER_SOURCE);
+        write(root, "src/app.mw", counter_source());
     });
     let dir = project.to_str().expect("project path utf-8");
 
@@ -140,7 +125,7 @@ fn hostile_config_rejection_creates_no_native_store() {
             "marrow.json",
             "{ \"sourceRoots\": [\"src\\u0000evil\"], \"store\": { \"backend\": \"native\", \"dataDir\": \".data\" }, \"run\": { \"defaultEntry\": \"app::seed\" } }",
         );
-        write(root, "src/app.mw", COUNTER_SOURCE);
+        write(root, "src/app.mw", counter_source());
     });
     let dir = project.to_str().expect("project path utf-8");
 
@@ -161,7 +146,7 @@ fn hostile_config_rejection_creates_no_native_store() {
 fn check_rejects_catalog_file_conflict_markers_without_creating_a_store() {
     let project = temp_project_uncommitted("check-ro-conflicted-catalog", |root| {
         write(root, "marrow.json", native_config());
-        write(root, "src/app.mw", COUNTER_SOURCE);
+        write(root, "src/app.mw", counter_source());
         write(
             root,
             "marrow.catalog.json",
@@ -193,7 +178,7 @@ fn check_rejects_catalog_file_conflict_markers_without_creating_a_store() {
 fn check_rejects_a_torn_catalog_file_without_opening_the_store_snapshot() {
     let project = temp_project_uncommitted("check-ro-torn-catalog-repair", |root| {
         write(root, "marrow.json", native_config());
-        write(root, "src/app.mw", COUNTER_SOURCE);
+        write(root, "src/app.mw", counter_source());
     });
     let dir = project.to_str().expect("project path utf-8");
     assert_eq!(
@@ -226,7 +211,7 @@ fn check_rejects_a_torn_catalog_file_without_opening_the_store_snapshot() {
 fn check_rejects_catalog_file_conflict_markers_even_when_a_store_snapshot_exists() {
     let project = temp_project_uncommitted("check-ro-conflicted-catalog-with-store", |root| {
         write(root, "marrow.json", native_config());
-        write(root, "src/app.mw", COUNTER_SOURCE);
+        write(root, "src/app.mw", counter_source());
     });
     let dir = project.to_str().expect("project path utf-8");
     assert_eq!(
@@ -258,7 +243,7 @@ fn check_rejects_catalog_file_conflict_markers_even_when_a_store_snapshot_exists
 fn check_on_a_committed_project_does_not_repair_a_missing_catalog_file() {
     let project = temp_project_uncommitted("check-ro-committed", |root| {
         write(root, "marrow.json", native_config());
-        write(root, "src/app.mw", COUNTER_SOURCE);
+        write(root, "src/app.mw", counter_source());
     });
     let dir = project.to_str().expect("project path utf-8");
     assert_eq!(
@@ -290,11 +275,11 @@ fn check_on_a_committed_project_does_not_repair_a_missing_catalog_file() {
 fn check_preserves_a_valid_catalog_file_without_store_repair() {
     let project_a = temp_project_uncommitted("check-ro-same-epoch-drift-a", |root| {
         write(root, "marrow.json", native_config());
-        write(root, "src/app.mw", COUNTER_SOURCE);
+        write(root, "src/app.mw", counter_source());
     });
     let project_b = temp_project_uncommitted("check-ro-same-epoch-drift-b", |root| {
         write(root, "marrow.json", native_config());
-        write(root, "src/app.mw", COUNTER_SOURCE);
+        write(root, "src/app.mw", counter_source());
     });
 
     let dir_a = project_a.to_str().expect("project path utf-8");
@@ -346,7 +331,7 @@ fn check_preserves_a_valid_catalog_file_without_store_repair() {
 fn check_preserves_a_valid_catalog_file_ahead_of_the_local_store() {
     let project = temp_project_uncommitted("check-ro-file-ahead-store-behind", |root| {
         write(root, "marrow.json", native_config());
-        write(root, "src/app.mw", COUNTER_SOURCE);
+        write(root, "src/app.mw", counter_source());
     });
     let dir = project.to_str().expect("project path utf-8");
     assert_eq!(

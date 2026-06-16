@@ -42,8 +42,7 @@ fn temp_artifacts_for(path: &Path) -> Vec<PathBuf> {
 /// no `--format json`). Each is a render-contract golden: the behavior it accompanies is
 /// asserted by its typed exit status (a `not formatted` finding exits 1, a flag-usage
 /// error exits 2), and these fragments only pin the rendered explanation. Regenerate only
-/// on an intentional change to the rendered message. The structured-envelope idea is
-/// recorded as a backlog item in this lane's design notes.
+/// on an intentional change to the rendered message.
 const NOT_FORMATTED_GOLDEN: &str = "not formatted";
 const CHECK_FLAG_GOLDEN: &str = "--check";
 const WRITE_FLAG_GOLDEN: &str = "--write";
@@ -52,40 +51,17 @@ const STDIN_GOLDEN: &str = "stdin";
 /// The diagnostic/error codes `marrow fmt` reports, each read from its structured
 /// slot on the stderr line rather than matched anywhere in the rendered prose. `fmt`
 /// has no JSON surface, so the dotted code is the typed identifier embedded in the
-/// text. Two line shapes carry one: a simple error renders `code: message`, where the
-/// code is the leading `: `-delimited segment; a located parse diagnostic renders
-/// `file:line:col: severity: code: message`, where the code is the segment right after
-/// the `error`/`warning` severity. A `not formatted` finding carries no code. Asserting
-/// against these slots keeps the oracle on the code, reword-proof against changes to
-/// the human message that follows it.
+/// text, selected by the shared [`support::is_code`] oracle. A `not formatted` finding
+/// and a plain `file:line:col` location carry no code, so a line may contribute none.
 fn fmt_error_codes(stderr: &[u8]) -> Vec<String> {
     let text = String::from_utf8(stderr.to_vec()).expect("stderr utf8");
-    text.lines().filter_map(line_code).collect()
-}
-
-fn line_code(line: &str) -> Option<String> {
-    let segments: Vec<&str> = line.split(": ").collect();
-    // A located diagnostic places the code right after its `error`/`warning` severity.
-    if let Some(severity) = segments
-        .iter()
-        .position(|segment| *segment == "error" || *segment == "warning")
-        && let Some(code) = segments.get(severity + 1)
-    {
-        return is_code(code).then(|| (*code).to_string());
-    }
-    // Otherwise a simple error leads with `code: message`.
-    let first = segments.first()?;
-    is_code(first).then(|| (*first).to_string())
-}
-
-/// Whether `token` is a diagnostic code: a dotted lowercase identifier carrying no
-/// spaces, so a `not formatted` finding or a path fragment never reads as a code.
-fn is_code(token: &str) -> bool {
-    token.contains('.')
-        && !token.contains(' ')
-        && token
-            .chars()
-            .all(|character| character.is_ascii_lowercase() || character == '.' || character == '_')
+    text.lines()
+        .filter_map(|line| {
+            line.split(": ")
+                .find(|segment| support::is_code(segment))
+                .map(str::to_string)
+        })
+        .collect()
 }
 
 fn fmt_reports_code(stderr: &[u8], code: &str) -> bool {

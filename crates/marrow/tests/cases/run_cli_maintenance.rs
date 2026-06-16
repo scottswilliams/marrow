@@ -1,5 +1,5 @@
 use crate::support;
-use support::{marrow_sub, temp_project, write};
+use support::{marrow_sub, parse_result_line, temp_project, write};
 
 #[test]
 fn maintenance_flag_gates_a_whole_root_drop() {
@@ -40,10 +40,13 @@ fn maintenance_flag_gates_a_whole_root_drop() {
     let denied = marrow_sub("run", &["--entry", "app::drop_root", &dir]);
     assert_eq!(denied.status.code(), Some(1), "denied: {denied:?}");
     let denied_err = String::from_utf8(denied.stderr).expect("stderr utf8");
-    assert!(
-        denied_err.contains("write.requires_maintenance"),
-        "{denied_err}"
-    );
+    let fault_line = denied_err
+        .lines()
+        .rev()
+        .find(|line| !line.trim().is_empty())
+        .expect("a fault line");
+    let fault = parse_result_line(fault_line);
+    assert_eq!(fault.code, "write.requires_maintenance", "{denied_err}");
 
     // Explicit maintenance opt-in performs the drop.
     let allowed = marrow_sub("run", &["--maintenance", "--entry", "app::drop_root", &dir]);

@@ -1,41 +1,41 @@
 use crate::support;
-use support::{ParsedResult, marrow_sub, parse_result_line, temp_project, write};
+use support::{ParsedResult, TempProject, marrow_sub, parse_result_line, temp_project, write};
 
-/// Parse the single fault line a failed run prints on stderr into its typed slots. The
-/// fault is the last non-empty stderr line; a leading `std::log` stream, if any,
-/// precedes it. The line's grammar (`file:line:col: code: message` located, `code:
-/// message` bare) is parsed by the shared [`parse_result_line`].
-fn parse_fault(stderr: &[u8]) -> ParsedResult {
+/// The fault a failed run prints is its last non-empty stderr line; a leading
+/// `std::log` stream, if any, precedes it. This is the single owner of "which line is
+/// the fault" for both the typed-slot parse and the thrown-code payload read.
+fn last_fault_line(stderr: &[u8]) -> String {
     let text = String::from_utf8(stderr.to_vec()).expect("stderr utf8");
-    let line = text
-        .lines()
+    text.lines()
         .rev()
         .find(|line| !line.trim().is_empty())
-        .expect("a fault line");
-    parse_result_line(line)
+        .expect("a fault line")
+        .to_string()
+}
+
+/// Parse the fault line into its typed slots. The line's grammar (`file:line:col: code:
+/// message` located, `code: message` bare) is parsed by the shared [`parse_result_line`].
+fn parse_fault(stderr: &[u8]) -> ParsedResult {
+    parse_result_line(&last_fault_line(stderr))
 }
 
 /// The thrown user code an uncaught `throw Error(code: ...)` carries, read from the
-/// `[code]` payload bracket the `run.uncaught_error` message renders on the last
-/// non-empty stderr line. This payload shape is specific to `marrow run`, so it is read
-/// here rather than in the shared fault parser.
+/// `[code]` payload bracket the `run.uncaught_error` message renders on the fault line.
+/// This payload shape is specific to `marrow run`, so it is read here rather than in the
+/// shared fault parser.
 fn thrown_code(stderr: &[u8]) -> Option<String> {
-    let text = String::from_utf8(stderr.to_vec()).expect("stderr utf8");
-    let line = text
-        .lines()
-        .rev()
-        .find(|line| !line.trim().is_empty())
-        .expect("a fault line");
+    let line = last_fault_line(stderr);
     let open = line.find('[')?;
     let close = line[open..].find(']')? + open;
     Some(line[open + 1..close].to_string())
 }
 
 #[test]
-fn an_uncaught_throw_surfaces_the_thrown_code() {
+fn an_uncaught_throw_surfaces_the_located_thrown_code() {
     // The headline runtime failure surface: a throw that propagates out of the entry
-    // exits non-zero, wraps as `run.uncaught_error`, and carries the user's thrown
-    // dotted code in the message payload so an operator sees which error escaped.
+    // exits non-zero, wraps as `run.uncaught_error`, carries the user's thrown dotted
+    // code in the message payload so an operator sees which error escaped, and is located
+    // at the throwing source file and line.
     let root = temp_project("run-throw", |root| {
         write(
             root,
@@ -54,6 +54,15 @@ fn an_uncaught_throw_surfaces_the_thrown_code() {
     let fault = parse_fault(&output.stderr);
     assert_eq!(fault.code, "run.uncaught_error");
     assert_eq!(thrown_code(&output.stderr).as_deref(), Some("book.absent"));
+    assert!(
+        fault
+            .file
+            .as_deref()
+            .is_some_and(|f| f.ends_with("src/app.mw")),
+        "{:?}",
+        fault.file
+    );
+    assert_eq!(fault.line, Some(4));
 }
 
 #[test]
@@ -237,9 +246,11 @@ fn an_absent_element_fault_is_located() {
     assert_eq!(fault.line, Some(4));
 }
 
-#[test]
-fn an_uncaught_throw_is_located() {
-    let root = temp_project("run-located-throw", |root| {
+/// Build a recursion fixture whose `sumTo` self-call descends `depth_arg` frames before
+/// its base case. Shared by the over-limit and within-limit depth tests so the recursion
+/// source has one owner and cannot drift between them.
+fn recursion_project(name: &str, depth_arg: u32) -> TempProject {
+    temp_project(name, |root| {
         write(
             root,
             "marrow.json",
@@ -248,23 +259,17 @@ fn an_uncaught_throw_is_located() {
         write(
             root,
             "src/app.mw",
-            "module app\n\npub fn main()\n    throw Error(code: \"book.absent\", message: \"no book\")\n",
+            &format!(
+                "module app\n\n\
+                 fn sumTo(n: int): int\n\
+                 \x20\x20\x20\x20if n <= 0\n\
+                 \x20\x20\x20\x20\x20\x20\x20\x20return 0\n\
+                 \x20\x20\x20\x20return n + sumTo(n - 1)\n\n\
+                 pub fn main()\n\
+                 \x20\x20\x20\x20print(sumTo({depth_arg}))\n"
+            ),
         );
-    });
-    let output = marrow_sub("run", &[root.to_str().unwrap()]);
-
-    assert_eq!(output.status.code(), Some(1), "{output:?}");
-    let fault = parse_fault(&output.stderr);
-    assert_eq!(fault.code, "run.uncaught_error");
-    assert!(
-        fault
-            .file
-            .as_deref()
-            .is_some_and(|f| f.ends_with("src/app.mw")),
-        "{:?}",
-        fault.file
-    );
-    assert_eq!(fault.line, Some(4));
+    })
 }
 
 #[test]
@@ -272,24 +277,7 @@ fn unbounded_recursion_surfaces_a_located_call_depth_fault() {
     // A clean-checking recursion that attempts the 257th call frame fails closed
     // with a located `run.depth` fault at the recursive call site and
     // exit 1. The guard trips before Rust stack exhaustion can decide behavior.
-    let root = temp_project("run-recursion", |root| {
-        write(
-            root,
-            "marrow.json",
-            r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" }, "run": { "defaultEntry": "app::main" } }"#,
-        );
-        write(
-            root,
-            "src/app.mw",
-            "module app\n\n\
-             fn sumTo(n: int): int\n\
-             \x20\x20\x20\x20if n <= 0\n\
-             \x20\x20\x20\x20\x20\x20\x20\x20return 0\n\
-             \x20\x20\x20\x20return n + sumTo(n - 1)\n\n\
-             pub fn main()\n\
-             \x20\x20\x20\x20print(sumTo(255))\n",
-        );
-    });
+    let root = recursion_project("run-recursion", 255);
     let output = marrow_sub("run", &[root.to_str().unwrap()]);
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
@@ -307,24 +295,7 @@ fn unbounded_recursion_surfaces_a_located_call_depth_fault() {
 
 #[test]
 fn unbounded_recursion_surfaces_a_json_call_depth_payload() {
-    let root = temp_project("run-recursion-json", |root| {
-        write(
-            root,
-            "marrow.json",
-            r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" }, "run": { "defaultEntry": "app::main" } }"#,
-        );
-        write(
-            root,
-            "src/app.mw",
-            "module app\n\n\
-             fn sumTo(n: int): int\n\
-             \x20\x20\x20\x20if n <= 0\n\
-             \x20\x20\x20\x20\x20\x20\x20\x20return 0\n\
-             \x20\x20\x20\x20return n + sumTo(n - 1)\n\n\
-             pub fn main()\n\
-             \x20\x20\x20\x20print(sumTo(255))\n",
-        );
-    });
+    let root = recursion_project("run-recursion-json", 255);
     let output = marrow_sub("run", &["--format", "json", root.to_str().unwrap()]);
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
@@ -347,24 +318,7 @@ fn unbounded_recursion_surfaces_a_json_call_depth_payload() {
 fn recursion_within_the_limit_runs_normally() {
     // A recursion that stays inside the 256-frame limit runs to completion and
     // prints its result, so the bound rejects only runaway recursion.
-    let root = temp_project("run-recursion-ok", |root| {
-        write(
-            root,
-            "marrow.json",
-            r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" }, "run": { "defaultEntry": "app::main" } }"#,
-        );
-        write(
-            root,
-            "src/app.mw",
-            "module app\n\n\
-             fn sumTo(n: int): int\n\
-             \x20\x20\x20\x20if n <= 0\n\
-             \x20\x20\x20\x20\x20\x20\x20\x20return 0\n\
-             \x20\x20\x20\x20return n + sumTo(n - 1)\n\n\
-             pub fn main()\n\
-             \x20\x20\x20\x20print(sumTo(254))\n",
-        );
-    });
+    let root = recursion_project("run-recursion-ok", 254);
     let output = marrow_sub("run", &[root.to_str().unwrap()]);
 
     assert_eq!(output.status.code(), Some(0), "{output:?}");

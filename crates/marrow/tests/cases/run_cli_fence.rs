@@ -1,7 +1,6 @@
 use crate::{support, support_evolve};
 use std::fs;
 
-use marrow_store::cell::CatalogId;
 use marrow_store::key::SavedKey;
 use marrow_store::tree::TreeStore;
 use marrow_store::value::Scalar;
@@ -100,16 +99,10 @@ fn run_rejects_populated_unstamped_accepted_store() {
         marrow_check::check_project_with_catalog(root.path(), &config, Some(&proposal))
             .expect("check against proposal");
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
-    let place = marrow_check::checked_saved_root_place(
-        &program,
-        "counter",
-        marrow_syntax::SourceSpan::default(),
-    )
-    .expect("checked place");
+    let place = support_evolve::root_place(&program, "counter").expect("checked place");
     let store_path = root.join(".data").join("marrow.redb");
     fs::create_dir_all(store_path.parent().unwrap()).expect("create data dir");
-    let store_id = CatalogId::new(place.store_catalog_id.clone().expect("accepted store id"))
-        .expect("store catalog id");
+    let store_id = support_evolve::store_catalog_id(&place).expect("store catalog id");
     {
         let store = TreeStore::open(&store_path).expect("open native store");
         store
@@ -182,16 +175,10 @@ fn run_rejects_composite_root_in_populated_unstamped_accepted_store() {
         marrow_check::check_project_with_catalog(root.path(), &config, Some(&proposal))
             .expect("check against proposal");
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
-    let place = marrow_check::checked_saved_root_place(
-        &program,
-        "pairs",
-        marrow_syntax::SourceSpan::default(),
-    )
-    .expect("checked place");
+    let place = support_evolve::root_place(&program, "pairs").expect("checked place");
     let store_path = root.join(".data").join("marrow.redb");
     fs::create_dir_all(store_path.parent().unwrap()).expect("create data dir");
-    let store_id = CatalogId::new(place.store_catalog_id.clone().expect("accepted store id"))
-        .expect("store catalog id");
+    let store_id = support_evolve::store_catalog_id(&place).expect("store catalog id");
     let identity = [SavedKey::Int(1), SavedKey::Int(2)];
     {
         let store = TreeStore::open(&store_path).expect("open native store");

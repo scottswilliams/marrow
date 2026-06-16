@@ -153,6 +153,18 @@ fn leading_count(field: &str, label: &str) -> Option<u32> {
     (found == label).then(|| count.parse().ok())?
 }
 
+/// The last non-empty stdout line: for a text `marrow test` run this is the rendered
+/// summary line, whose exact human form the [`SUMMARY_GOLDEN_*`] constants pin.
+fn last_nonempty_line(stdout: &[u8]) -> String {
+    String::from_utf8(stdout.to_vec())
+        .expect("stdout utf8")
+        .lines()
+        .rev()
+        .find(|line| !line.trim().is_empty())
+        .expect("a summary line")
+        .to_string()
+}
+
 /// The dotted code of a project-level diagnostic `marrow test` prints on stderr, read
 /// from its structured position rather than matched as a substring. The test driver
 /// reports such a fault either bare (`code: message`, as `test.none` does) or located
@@ -203,13 +215,7 @@ fn runs_passing_tests_and_reports_a_summary() {
         }
     );
     // The summary line is human-rendered text; pin its exact form.
-    let summary_line = String::from_utf8(output.stdout.clone())
-        .expect("stdout utf8")
-        .lines()
-        .rev()
-        .find(|line| !line.trim().is_empty())
-        .expect("a summary line")
-        .to_string();
+    let summary_line = last_nonempty_line(&output.stdout);
     assert_eq!(summary_line, SUMMARY_GOLDEN_ONE_PASS);
 }
 
@@ -536,13 +542,7 @@ fn filter_runs_only_matching_qualified_test_names() {
     assert_eq!(report.results.len(), 1);
     assert_eq!(report.results[0].name, "tests::app_test::passes");
     assert_eq!(report.results[0].outcome, Outcome::Ok);
-    let summary_line = String::from_utf8(output.stdout.clone())
-        .expect("stdout utf8")
-        .lines()
-        .rev()
-        .find(|line| !line.trim().is_empty())
-        .expect("a summary line")
-        .to_string();
+    let summary_line = last_nonempty_line(&output.stdout);
     assert_eq!(summary_line, SUMMARY_GOLDEN_FILTERED_ONE_PASS);
 }
 
@@ -616,33 +616,6 @@ fn format_json_with_trace_is_a_usage_error() {
             root,
             "tests/app_test.mw",
             "pub fn traced()\n    std::assert::isTrue(true)\n",
-        );
-    });
-    let output = run_test_args(&[
-        "--trace",
-        "--format",
-        "json",
-        root.to_str().expect("project path utf8"),
-    ]);
-
-    assert_eq!(output.status.code(), Some(2), "{output:?}");
-    assert!(output.stdout.is_empty(), "{output:?}");
-    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
-    assert!(
-        stderr.contains("--trace") && stderr.contains("text"),
-        "{stderr}"
-    );
-}
-
-#[test]
-fn format_json_with_trace_rejects_before_running_tests() {
-    let root = temp_project("test-json-trace-envelope", |root| {
-        write(root, "marrow.json", CONFIG);
-        write(root, "src/app.mw", "module app\n");
-        write(
-            root,
-            "tests/app_test.mw",
-            "pub fn first()\n    std::assert::isTrue(true)\n\npub fn second()\n    std::assert::isTrue(true)\n",
         );
     });
     let output = run_test_args(&[

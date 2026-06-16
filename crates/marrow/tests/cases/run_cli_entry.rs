@@ -1,12 +1,8 @@
 use crate::support;
 use support::{marrow_sub, parse_result_line, temp_project, write};
 
-/// The diagnostic code of a run fault, read from the structured position of the
-/// rendered fault line rather than matched anywhere in the stderr blob. A run
-/// reports an entry-resolution fault as `code: message` on its last stderr line; the
-/// code is the dotted token before the first `: ` separator (codes carry no spaces,
-/// so the split is unambiguous). Asserting the code in this position keeps the oracle
-/// reword-proof against changes to the human message that follows it.
+/// The diagnostic code of a run fault, selected from the last non-empty stderr line
+/// and parsed by the shared [`parse_result_line`] grammar owner.
 fn fault_code(stderr: &[u8]) -> String {
     let text = String::from_utf8(stderr.to_vec()).expect("stderr utf8");
     let line = text

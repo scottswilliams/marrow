@@ -326,12 +326,15 @@ fn an_untraced_run_emits_no_trace_and_matches_plain_run() {
     });
     let dir = project.to_str().unwrap().to_string();
     let plain = marrow(&["run", &dir]);
-    let traced_off = marrow(&["run", &dir]);
+    let traced = marrow(&["run", "--trace", &dir]);
 
     assert_eq!(plain.status.code(), Some(0), "{plain:?}");
-    assert_eq!(plain.stdout, traced_off.stdout);
-    let stdout = String::from_utf8(plain.stdout).expect("utf8");
+    assert_eq!(traced.status.code(), Some(0), "{traced:?}");
+    let stdout = String::from_utf8(plain.stdout.clone()).expect("utf8");
     assert_eq!(stdout, "hello\n");
+    // Tracing is confined to stderr: enabling --trace must not perturb stdout, so a
+    // consumer reading program output sees the same bytes whether or not tracing is on.
+    assert_eq!(plain.stdout, traced.stdout);
     // Without --trace the trace stream is silent: a plain run emits nothing on stderr,
     // so no trace records leak into a consumer reading it.
     assert!(

@@ -6,7 +6,7 @@
 use crate::support;
 use std::fs;
 
-use marrow_catalog::CatalogMetadata;
+use marrow_catalog::{CatalogEntryKind, CatalogMetadata};
 use marrow_store::tree::TreeStore;
 use support::{TempProject, find_code_segment, marrow_sub, write};
 
@@ -76,7 +76,7 @@ fn run_commits_the_pending_catalog_into_the_store_and_renders_the_file() {
         snapshot
             .entries
             .iter()
-            .any(|entry| entry.path.contains("books")),
+            .any(|entry| entry.kind == CatalogEntryKind::Store && entry.path.ends_with("^books")),
         "the accepted catalog holds the ^books store entry: {:#?}",
         snapshot.entries
     );

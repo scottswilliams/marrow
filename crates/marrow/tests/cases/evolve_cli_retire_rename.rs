@@ -936,7 +936,19 @@ fn evolve_apply_advances_accepted_catalog_in_lockstep_for_retire()
     // With the accepted file left behind the store epoch, the open fence rejects every
     // later run as `run.store_evolved` with no recovery; the lockstep advance keeps the
     // file and store at one epoch, so the fence never reports the store as evolved.
-    let run = marrow(&["run", "--entry", "books::add", root.to_str().unwrap()]);
+    let run = marrow(&[
+        "run",
+        "--entry",
+        "books::add",
+        "--arg",
+        "title=Dune",
+        root.to_str().unwrap(),
+    ]);
+    assert_eq!(
+        run.status.code(),
+        Some(0),
+        "run succeeds after lockstep advance: {run:?}"
+    );
     let stderr = String::from_utf8(run.stderr).expect("stderr utf8");
     assert!(
         !stderr.contains("run.store_evolved"),
@@ -1004,7 +1016,19 @@ fn evolve_apply_advances_accepted_catalog_in_lockstep_for_rename()
         "old path survives as an alias"
     );
 
-    let run = marrow(&["run", "--entry", "books::add", root.to_str().unwrap()]);
+    let run = marrow(&[
+        "run",
+        "--entry",
+        "books::add",
+        "--arg",
+        "title=Dune",
+        root.to_str().unwrap(),
+    ]);
+    assert_eq!(
+        run.status.code(),
+        Some(0),
+        "run succeeds after lockstep advance: {run:?}"
+    );
     let stderr = String::from_utf8(run.stderr).expect("stderr utf8");
     assert!(
         !stderr.contains("run.store_evolved"),

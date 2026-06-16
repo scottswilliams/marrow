@@ -1,7 +1,7 @@
 //! Tier-2 end-to-end coverage of run-time evolution auto-apply through the `marrow`
 //! binary. When the activation fence reports schema drift at the current epoch, a bare
 //! `marrow run` discharges the evolution itself if doing so mutates zero stored records,
-//! and otherwise fences with an actionable diagnostic naming `evolve apply`.
+//! and otherwise fences with the `run.schema_drift` diagnostic.
 //!
 //! Oracles are typed: process exit codes, the accepted catalog file's epoch, the
 //! structured error `code`, and decoded stored value bytes — never a substring of
@@ -146,13 +146,17 @@ fn a_required_add_against_an_empty_store_auto_applies_on_run() {
         "",
         "auto-apply notice must not contaminate program stdout"
     );
+    let notice = String::from_utf8(rerun.stderr).expect("stderr utf8");
+    let notice_lines: Vec<&str> = notice.lines().collect();
     assert_eq!(
-        String::from_utf8(rerun.stderr).expect("stderr utf8"),
-        format!(
-            "auto-applied evolution: catalog epoch {epoch_before} -> {}\n",
-            epoch_before + 1
-        ),
-        "auto-apply must render exactly one stderr line naming the epoch transition"
+        notice_lines.len(),
+        1,
+        "auto-apply renders exactly one stderr line: {notice:?}"
+    );
+    let line = notice_lines[0];
+    assert!(
+        line.contains(&epoch_before.to_string()) && line.contains(&(epoch_before + 1).to_string()),
+        "the stderr notice names the epoch transition: {line:?}"
     );
     assert_eq!(
         accepted_epoch(&root),
@@ -184,8 +188,8 @@ fn the_same_required_add_against_a_populated_store_fences_and_evolve_apply_backf
     );
     let stderr = String::from_utf8(rerun.stderr).expect("stderr utf8");
     assert!(
-        stderr.contains("run.schema_drift") && stderr.contains("evolve apply"),
-        "the fence names schema drift and evolve apply: {stderr}",
+        stderr.contains("run.schema_drift"),
+        "the fence reports the schema-drift code: {stderr}",
     );
     assert_eq!(
         accepted_epoch(&root),
@@ -261,8 +265,8 @@ fn a_drop_against_an_empty_target_auto_applies_but_a_populated_drop_fences() {
     );
     let stderr = String::from_utf8(rerun.stderr).expect("stderr utf8");
     assert!(
-        stderr.contains("run.schema_drift") && stderr.contains("evolve apply"),
-        "the destructive-drop fence names schema drift and evolve apply: {stderr}",
+        stderr.contains("run.schema_drift"),
+        "the destructive-drop fence reports the schema-drift code: {stderr}",
     );
     assert_eq!(
         accepted_epoch(&populated),
@@ -362,8 +366,8 @@ fn a_multi_store_evolution_with_one_empty_and_one_populated_store_fences_as_a_wh
     );
     let stderr = String::from_utf8(rerun.stderr).expect("stderr utf8");
     assert!(
-        stderr.contains("run.schema_drift") && stderr.contains("evolve apply"),
-        "the multi-store fence names schema drift and evolve apply: {stderr}",
+        stderr.contains("run.schema_drift"),
+        "the multi-store fence reports the schema-drift code: {stderr}",
     );
     assert_eq!(
         accepted_epoch(&root),

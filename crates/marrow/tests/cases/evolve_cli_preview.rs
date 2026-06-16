@@ -8,7 +8,7 @@ use support::{marrow, write};
 use support_evolve::{
     REQUIRED_BASELINE_SOURCE, REQUIRED_DEFAULT_SOURCE, REQUIRED_NO_DEFAULT_SOURCE,
     accepted_catalog, commit_catalog, member_catalog_id, native_books_project, native_store_path,
-    open_native_store, root_place, seed_member, seed_title_only,
+    open_native_store, root_place, seed_member, seed_title_only, store_catalog_id,
 };
 
 #[test]
@@ -380,6 +380,83 @@ fn evolve_preview_reports_destructive_approval_requirement()
         "{report:#?}"
     );
     assert_eq!(report["data"]["populated"], serde_json::json!(1));
+
+    Ok(())
+}
+
+#[test]
+fn evolve_preview_scaffold_spells_a_retired_store_root_with_a_single_caret()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = native_books_project(
+        "evolve-preview-scaffold-store-root",
+        "module books\n\
+         resource Book\n\
+         \x20   required title: string\n\
+         resource Shelf\n\
+         \x20   required name: string\n\
+         store ^books(id: int): Book\n\
+         store ^shelves(id: int): Shelf\n\
+         pub fn add(title: string): Id(^books)\n\
+         \x20   return nextId(^books)\n",
+    );
+    let accepted = commit_catalog(&root);
+    let shelves_place = root_place(&accepted, "shelves")?;
+    let shelves_store_id = store_catalog_id(&shelves_place)?;
+    let shelves_store_id = shelves_store_id.as_str();
+    {
+        let store = open_native_store(&root);
+        seed_member(
+            &store,
+            &shelves_place,
+            1,
+            "name",
+            Scalar::Str("Fiction".into()),
+        );
+    }
+    write(
+        &root,
+        "src/books.mw",
+        "module books\n\
+         resource Book\n\
+         \x20   required title: string\n\
+         store ^books(id: int): Book\n\
+         evolve\n\
+         \x20   retire ^shelves\n\
+         pub fn add(title: string): Id(^books)\n\
+         \x20   return nextId(^books)\n",
+    );
+
+    let output = marrow(&["evolve", "preview", "--scaffold", root.to_str().unwrap()]);
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let scaffold = String::from_utf8(output.stdout).expect("scaffold utf8");
+    let parsed = marrow_syntax::parse_source(&scaffold);
+    assert!(
+        !parsed.has_errors(),
+        "store-root retire scaffold must parse through the production parser: {:#?}\n{scaffold}",
+        parsed.diagnostics
+    );
+    assert_eq!(
+        scaffold,
+        marrow_syntax::format_source(&scaffold),
+        "scaffold should already be in production formatter shape"
+    );
+    // The store root carries its caret inside the catalog path segment, so the scaffold
+    // target must read `^shelves` exactly once; a doubled caret would re-spell the root.
+    assert!(
+        scaffold.contains("evolve\n    retire ^shelves"),
+        "store-root retire must be spelled with a single caret: {scaffold}"
+    );
+    assert!(
+        !scaffold.contains("^^"),
+        "store-root retire must not double the caret: {scaffold}"
+    );
+    assert!(
+        scaffold.contains(&format!(
+            "; approve with marrow evolve apply --maintenance --approve-retire {shelves_store_id}:1 (--backup <backup-file> | --no-backup)"
+        )),
+        "store-root retire scaffold should name the exact approval count and recovery choice: {scaffold}"
+    );
 
     Ok(())
 }

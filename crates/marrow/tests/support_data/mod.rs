@@ -7,6 +7,7 @@ use marrow_store::key::{SavedKey, encode_identity_payload};
 use marrow_store::tree::{DataPathSegment, TreeStore};
 
 use crate::support::{self, TempProject, member_catalog_id, write};
+use crate::support_evolve::open_native_store;
 
 /// Run the binary, first committing the pending catalog of any directory argument
 /// so `data`'s read-only commands observe a frozen catalog the way a prior `run`
@@ -88,11 +89,11 @@ pub(crate) fn checked_place(project: impl AsRef<Path>, root: &str) -> CheckedSav
     .expect("checked saved root")
 }
 
-pub(crate) fn catalog_id(raw: &str) -> CatalogId {
+fn catalog_id(raw: &str) -> CatalogId {
     CatalogId::new(raw.to_string()).expect("catalog id")
 }
 
-pub(crate) fn checked_catalog_id(raw: &Option<String>) -> CatalogId {
+fn checked_catalog_id(raw: &Option<String>) -> CatalogId {
     CatalogId::new(raw.clone().expect("accepted catalog id")).expect("catalog id")
 }
 
@@ -136,9 +137,7 @@ pub(crate) fn write_tree_value(
     value: Vec<u8>,
 ) {
     let place = checked_place(project, root);
-    let store_dir = project.join(".data");
-    fs::create_dir_all(&store_dir).expect("create store dir");
-    let store = TreeStore::open(&store_dir.join("marrow.redb")).expect("open native store");
+    let store = open_native_store(project);
     let store_id = checked_catalog_id(&place.store_catalog_id);
     write_record_presence_for_store(&store, &store_id, identity);
     store
@@ -153,9 +152,7 @@ pub(crate) fn write_tree_values(
     path: &[DataPathSegment],
     value: &[u8],
 ) {
-    let store_dir = project.join(".data");
-    fs::create_dir_all(&store_dir).expect("create store dir");
-    let store = TreeStore::open(&store_dir.join("marrow.redb")).expect("open native store");
+    let store = open_native_store(project);
     let store_id = checked_catalog_id(&place.store_catalog_id);
     for identity in identities {
         write_record_presence_for_store(&store, &store_id, &identity);
@@ -172,9 +169,7 @@ pub(crate) fn write_tree_node(
     path: &[DataPathSegment],
 ) {
     let place = checked_place(project, root);
-    let store_dir = project.join(".data");
-    fs::create_dir_all(&store_dir).expect("create store dir");
-    let store = TreeStore::open(&store_dir.join("marrow.redb")).expect("open native store");
+    let store = open_native_store(project);
     let store_id = checked_catalog_id(&place.store_catalog_id);
     write_record_presence_for_store(&store, &store_id, identity);
     store
@@ -189,8 +184,7 @@ pub(crate) fn delete_tree_path(
     path: &[DataPathSegment],
 ) {
     let place = checked_place(project, root);
-    let store_dir = project.join(".data");
-    let store = TreeStore::open(&store_dir.join("marrow.redb")).expect("open native store");
+    let store = open_native_store(project);
     store
         .delete_data_subtree(&checked_catalog_id(&place.store_catalog_id), identity, path)
         .expect("delete tree-cell path");
@@ -198,9 +192,7 @@ pub(crate) fn delete_tree_path(
 
 pub(crate) fn write_record_presence(project: &Path, root: &str, identity: &[SavedKey]) {
     let place = checked_place(project, root);
-    let store_dir = project.join(".data");
-    fs::create_dir_all(&store_dir).expect("create store dir");
-    let store = TreeStore::open(&store_dir.join("marrow.redb")).expect("open native store");
+    let store = open_native_store(project);
     let store_id = checked_catalog_id(&place.store_catalog_id);
     write_record_presence_for_store(&store, &store_id, identity);
 }
@@ -219,9 +211,7 @@ pub(crate) fn write_tree_value_without_node(
     value: Vec<u8>,
 ) {
     let place = checked_place(project, root);
-    let store_dir = project.join(".data");
-    fs::create_dir_all(&store_dir).expect("create store dir");
-    let store = TreeStore::open(&store_dir.join("marrow.redb")).expect("open native store");
+    let store = open_native_store(project);
     store
         .write_data_value(
             &checked_catalog_id(&place.store_catalog_id),
@@ -240,9 +230,7 @@ pub(crate) fn encode_identity_keys(keys: &[SavedKey]) -> Vec<u8> {
 /// passing low-level catalog ids the schema never declares. This stands in for data
 /// a dropped root or field left behind in the store.
 pub(crate) fn write_orphan_cell(project: &Path, store_catalog: &str, member_catalog: &str) {
-    let store_dir = project.join(".data");
-    fs::create_dir_all(&store_dir).expect("create store dir");
-    let store = TreeStore::open(&store_dir.join("marrow.redb")).expect("open native store");
+    let store = open_native_store(project);
     let path = vec![DataPathSegment::Member(catalog_id(member_catalog))];
     store
         .write_data_value(

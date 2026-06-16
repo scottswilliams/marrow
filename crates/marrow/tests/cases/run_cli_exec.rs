@@ -1,14 +1,10 @@
 use crate::support;
-use support::{marrow_sub, temp_project, write};
+use support::{marrow_sub, native_config, temp_project, write};
 
 #[test]
 fn native_store_persists_writes_across_runs() {
     let root = temp_project("run-native", |root| {
-        write(
-            root,
-            "marrow.json",
-            r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".data" } }"#,
-        );
+        write(root, "marrow.json", native_config());
         write(
             root,
             "src/shelf.mw",

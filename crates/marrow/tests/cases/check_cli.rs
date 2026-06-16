@@ -35,11 +35,6 @@ fn diagnostic_records(output: std::process::Output) -> Vec<Value> {
         .collect()
 }
 
-/// Whether any diagnostic record carries `code`.
-fn has_code(records: &[Value], code: &str) -> bool {
-    support::codes(records).contains(&code)
-}
-
 #[test]
 fn check_rejects_file_targets_as_usage_failures() {
     let path = support::temp_source(
@@ -165,23 +160,6 @@ fn check_text_does_not_render_suggested_index_for_coalesce_value_context() {
 }
 
 #[test]
-fn check_reports_parse_diagnostics() {
-    let dir = project_with_source("invalid", "src/app.mw", "module app\n\tpub fn main()\n");
-
-    let output = check_jsonl(dir.path());
-
-    assert_eq!(output.status.code(), Some(1));
-    let records = diagnostic_records(output);
-    // The tab is rejected as a parse error at its own position (the leading tab on
-    // line 2, column 1), asserted by code and span rather than by its rendered prose.
-    let tab = records
-        .iter()
-        .find(|record| record["source_span"]["line"] == 2 && record["source_span"]["column"] == 1)
-        .expect("a diagnostic at the tab position");
-    assert_eq!(tab["code"], "parse.syntax", "{tab}");
-}
-
-#[test]
 fn check_allows_out_as_an_ordinary_binding_name() {
     let dir = temp_project_dir("out-binding");
     fs::write(
@@ -214,11 +192,10 @@ fn check_reports_obsolete_operators_in_function_bodies() {
 
     assert_eq!(output.status.code(), Some(1));
     let records = diagnostic_records(output);
-    let obsolete = records
+    records
         .iter()
         .find(|record| record["code"] == "parse.syntax" && record["source_span"]["line"] == 3)
         .expect("an obsolete-operator diagnostic on the body line");
-    assert_eq!(obsolete["code"], "parse.syntax", "{obsolete}");
 }
 
 #[test]
@@ -229,14 +206,10 @@ fn check_jsonl_reports_diagnostics_and_summary() {
         "module app\n\tpub fn main()\n",
     );
 
-    let output = support::marrow_sub("check", &["--format", "jsonl", dir.to_str().unwrap()]);
+    let output = check_jsonl(dir.path());
 
     assert_eq!(output.status.code(), Some(1));
-    let stdout = String::from_utf8(output.stdout).expect("stdout utf8");
-    let records = stdout
-        .lines()
-        .map(|line| serde_json::from_str::<Value>(line).expect("jsonl record"))
-        .collect::<Vec<_>>();
+    let records = support::jsonl(output.stdout);
     // The tab-indented declaration parses to two diagnostics: the tab is rejected,
     // and the function is then left without a parseable indented body. Each parse
     // record precedes the trailing summary.
@@ -320,7 +293,7 @@ fn check_reports_reserved_merge_and_lock_as_parse_errors() {
     // rejected exactly at its own line (the `lock` on line 7 and the `merge` on line
     // 9), asserted by code and span rather than by the rendered reserved-word prose.
     assert!(
-        !has_code(&records, "check.rejected_surface"),
+        !support::codes(&records).contains(&"check.rejected_surface"),
         "{records:#?}"
     );
     let reserved_lines: Vec<i64> = records
@@ -460,7 +433,7 @@ fn check_json_reports_type_errors_for_a_project() {
         "module m\nfn f(): int\n    return \"nope\"\n",
     );
 
-    let output = support::marrow_sub("check", &["--format", "json", dir.to_str().unwrap()]);
+    let output = check_json(dir.path());
 
     assert_eq!(output.status.code(), Some(1));
     let stdout = String::from_utf8(output.stdout).expect("stdout utf8");

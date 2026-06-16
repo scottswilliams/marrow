@@ -5,7 +5,7 @@
 
 use crate::support;
 use std::fs;
-use support::{is_code, temp_source};
+use support::{find_code_segment, temp_source};
 
 /// A source nesting `if` blocks `depth` levels deep — the deep-statement form that
 /// recurses through the block parser.
@@ -50,21 +50,9 @@ fn check_json_codes(source: &str) -> (Option<i32>, Vec<String>) {
     (output.status.code(), codes)
 }
 
-/// The located code on a `fmt` stderr line: `file:line:col: error: code: message`.
-fn fmt_located_code(stderr: &[u8]) -> Option<String> {
-    let text = String::from_utf8(stderr.to_vec()).expect("stderr utf8");
-    text.lines().find_map(|line| {
-        let segments: Vec<&str> = line.split(": ").collect();
-        let severity = segments.iter().position(|segment| *segment == "error")?;
-        let code = segments.get(severity + 1)?;
-        is_code(code).then(|| (*code).to_string())
-    })
-}
-
 #[test]
 fn deeply_nested_if_check_reports_the_nesting_limit() {
-    // ~1000 nested `if` blocks aborted the process (exit 134) before the guard; now
-    // it is a located `check.nesting_limit` diagnostic at exit 1.
+    // ~1000 levels: well past the parser depth guard.
     let (code, codes) = check_json_codes(&nested_ifs(1000));
     assert_eq!(code, Some(1), "deep `if` nesting exits 1, not 134");
     assert!(
@@ -75,8 +63,7 @@ fn deeply_nested_if_check_reports_the_nesting_limit() {
 
 #[test]
 fn deeply_nested_parens_check_reports_the_nesting_limit() {
-    // ~3000 nested parens aborted the process before the guard; now a located
-    // `check.nesting_limit` diagnostic at exit 1.
+    // ~3000 levels: well past the parser depth guard.
     let (code, codes) = check_json_codes(&nested_parens(3000));
     assert_eq!(code, Some(1), "deep parens exit 1, not 134");
     assert!(
@@ -98,10 +85,15 @@ fn fmt_on_deeply_nested_source_reports_the_nesting_limit() {
         Some(1),
         "fmt exits 1, not 134: {output:?}"
     );
-    assert_eq!(
-        fmt_located_code(&output.stderr).as_deref(),
-        Some("check.nesting_limit"),
-    );
+    let stderr = String::from_utf8(output.stderr.clone()).expect("stderr utf8");
+    let fault = stderr
+        .lines()
+        .rev()
+        .find(|line| !line.trim().is_empty())
+        .expect("a fault line on stderr");
+    let segments: Vec<&str> = fault.split(": ").collect();
+    let (_, code) = find_code_segment(&segments);
+    assert_eq!(code, "check.nesting_limit");
 }
 
 #[test]
