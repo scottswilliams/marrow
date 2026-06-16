@@ -11,13 +11,13 @@ use marrow_schema::stdlib::Capability;
 use marrow_store::tree::TreeStore;
 use marrow_syntax::SourceSpan;
 
+use crate::call::eval_call;
 use crate::env::{Context, Env, TransactionState};
 use crate::error::{RUN_TYPE, RUN_UNSUPPORTED, RuntimeError};
 use crate::host::{Host, RunContext};
 use crate::host_effects::{eval_clock_capability, eval_context, eval_env, eval_io, eval_log};
 use crate::std_json::eval_json;
 use crate::std_pure::eval_std;
-use crate::stdlib::eval_assert;
 use crate::value::RunOutputSink;
 
 struct NoProgramOutput;
@@ -123,26 +123,19 @@ fn every_table_row_reaches_a_live_handler() {
     let no_args: &[ExecArg] = &[];
 
     for entry in marrow_schema::stdlib::all() {
-        assert_ne!(
-            entry.requires_capability,
-            Some(Capability::Maintenance),
-            "std::{}::{} requires maintenance but has no test dispatch helper",
-            entry.module,
-            entry.op
-        );
-        let mut env = test_env(&program, &store, &host);
-        let result = match entry.requires_capability {
-            Some(Capability::Clock) => {
-                eval_clock_capability(entry.op, no_args, span, &mut env).map(Some)
-            }
-            Some(Capability::Context) => eval_context(entry.op, no_args, span, &mut env).map(Some),
-            Some(Capability::Environment) => eval_env(entry.op, no_args, span, &mut env).map(Some),
-            Some(Capability::Log) => eval_log(entry.op, no_args, span, &mut env),
-            Some(Capability::Filesystem) => eval_io(entry.op, no_args, span, &mut env),
-            Some(Capability::Maintenance) => continue,
-            None if entry.module == "assert" => eval_assert(entry.op, no_args, span, &mut env),
-            None => eval_std(entry.module, entry.op, no_args, span, &mut env).map(Some),
+        let target = CheckedCallTarget::Std(CheckedStdCall {
+            module: entry.module,
+            op: entry.op,
+            presence: entry.presence,
+            requires_capability: entry.requires_capability,
+        });
+        let callee = CheckedExpr::Name {
+            segments: vec!["std".into(), entry.module.into(), entry.op.into()],
+            enum_member: None,
+            span,
         };
+        let mut env = test_env(&program, &store, &host);
+        let result = eval_call(&callee, no_args, &target, span, &mut env);
         if let Err(error) = result {
             assert_ne!(
                 error.code(),

@@ -112,9 +112,6 @@ fn eval_program_function<'p>(
 ) -> Result<Option<Value>, RuntimeError> {
     let values = bind_arguments(&function.params, args, span, env)?;
     let completion = invoke_function(env, module, function, &values, span)?;
-    if matches!(completion, Completion::ReturnedAbsent) {
-        return Ok(None);
-    }
     complete_call(completion)
 }
 

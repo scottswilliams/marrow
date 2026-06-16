@@ -73,11 +73,10 @@ impl DataAddress {
         span: SourceSpan,
     ) -> Result<Self, RuntimeError> {
         let mut address = Self::layer_prefix(place, identity, layers, span)?;
-        address.path.extend(member_path_segments(
-            checked_members_for_layers(place, layers),
-            member_path,
-            span,
-        )?);
+        let members = checked_members_for_layers(place, layers, span)?;
+        address
+            .path
+            .extend(member_path_segments(members, member_path, span)?);
         Ok(address)
     }
 }
@@ -251,18 +250,26 @@ fn data_path(
 fn checked_members_for_layers<'a>(
     place: &'a CheckedSavedPlace,
     layers: &[LayerAddress],
-) -> &'a [CheckedSavedMember] {
+    span: SourceSpan,
+) -> Result<&'a [CheckedSavedMember], RuntimeError> {
     let mut members = place.root_members.as_slice();
     for layer in layers {
         let Some(member) = members
             .iter()
             .find(|member| member.catalog_id == layer.catalog_id)
         else {
-            return &[];
+            return Err(RuntimeError::fault(
+                RUN_STORE,
+                format!(
+                    "checked layer `{}` is missing from the executable facts",
+                    layer.name
+                ),
+                span,
+            ));
         };
         members = member.group_members.as_slice();
     }
-    members
+    Ok(members)
 }
 
 fn member_path_segments(

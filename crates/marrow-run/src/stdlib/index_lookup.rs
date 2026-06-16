@@ -6,7 +6,7 @@ use marrow_syntax::SourceSpan;
 
 use crate::collection::absent_read;
 use crate::env::Env;
-use crate::error::{Located, RUN_TYPE, RUN_UNSUPPORTED, RuntimeError, type_error, unsupported};
+use crate::error::{Located, RUN_TYPE, RuntimeError, type_error, unsupported};
 use crate::expr::eval_expr;
 use crate::store::IndexAddress;
 use crate::value::{Value, identity_value, validate_place_identity_keys, value_to_index_key};
@@ -54,6 +54,14 @@ pub(crate) fn unique_index_lookup(
     let Some(place) = expr.saved_place() else {
         return Ok(None);
     };
+    unique_index_lookup_from_place(place, place.span, env)
+}
+
+fn unique_index_lookup_from_place(
+    place: &CheckedSavedPlace,
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Option<UniqueIndexLookup>, RuntimeError> {
     let CheckedSavedTerminal::Index {
         name: index_name,
         catalog_id,
@@ -65,9 +73,9 @@ pub(crate) fn unique_index_lookup(
     else {
         return Ok(None);
     };
-    let keys = index_lookup_keys(args, place, place.span, env)?;
+    let keys = index_lookup_keys(args, place, span, env)?;
     Ok(Some(UniqueIndexLookup {
-        address: IndexAddress::from_checked(catalog_id, keys, place.span)?,
+        address: IndexAddress::from_checked(catalog_id, keys, span)?,
         identity_arity: place.identity_keys.len(),
         index_name: index_name.clone(),
         place: place.clone(),
@@ -80,53 +88,19 @@ pub(crate) fn read_exact_unique_index_lookup_value(
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<Value, RuntimeError> {
-    let CheckedSavedTerminal::Index {
-        name,
-        catalog_id,
-        args,
-        unique,
-        arg_count,
-        ..
-    } = &place.terminal
-    else {
+    let Some(lookup) = unique_index_lookup_from_place(place, span, env)? else {
         return Err(unsupported("a checked saved index lookup", span));
     };
-    if !unique {
-        return Err(RuntimeError::fault(
-            RUN_UNSUPPORTED,
-            format!(
-                "non-unique index `{name}` has no single identity in value position; \
-                 iterate it with `keys(...)`"
-            ),
+    if lookup.remaining_key_depth > 0 {
+        return Err(unsupported(
+            "using an incomplete unique index lookup as a collection",
             span,
         ));
     }
-    if args.len() != *arg_count {
-        return Err(RuntimeError::fault(
-            RUN_TYPE,
-            format!(
-                "unique index `{name}` expects {} key argument(s), but {} were given",
-                arg_count,
-                args.len()
-            ),
-            span,
-        ));
-    }
-
-    let lookup = UniqueIndexLookup {
-        address: IndexAddress::from_checked(
-            catalog_id,
-            index_lookup_keys(args, place, span, env)?,
-            span,
-        )?,
-        identity_arity: place.identity_keys.len(),
-        index_name: name.clone(),
-        place: place.clone(),
-        remaining_key_depth: 0,
-    };
+    let index_name = lookup.index_name.clone();
     read_unique_index_identity(&lookup, span, env)?
         .map(|identity| identity_value(&lookup.place.root, identity))
-        .ok_or_else(|| absent_read(format!("`{name}` has no entry for that key"), span))
+        .ok_or_else(|| absent_read(format!("`{index_name}` has no entry for that key"), span))
 }
 
 pub(crate) fn exact_unique_index_lookup_value(
@@ -236,9 +210,8 @@ pub(crate) fn read_unique_index_identity(
     Ok(Some(identity))
 }
 
-/// Decode a unique-index entry's stored value into the identity it points at, or the
-/// single canonical store-corruption fault both unique-index read paths raise when the
-/// bytes do not decode to an identity of the expected arity.
+/// Decode a unique-index entry value into the identity it points at, raising the canonical
+/// store-corruption fault when the bytes do not decode to an identity of the expected arity.
 pub(crate) fn decode_unique_index_identity(
     entry_value: &[u8],
     identity_arity: usize,

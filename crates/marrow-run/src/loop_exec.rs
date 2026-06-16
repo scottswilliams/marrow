@@ -86,11 +86,10 @@ fn eval_two_name_for(
     }
     if let Some(saved_loop) = SavedLoopSpec::from_iterable(iterable, true) {
         return saved_loop.run(env, &mut |row, env| {
+            // A two-name head always requests `Entries`, which only ever yields pair
+            // rows; the `else` guards that shape contract rather than reachable input.
             let SavedLoopRow::Pair(key, value) = row else {
-                return Err(unsupported(
-                    "a two-name binding over a non-pair iterable (use entries(...))",
-                    span,
-                ));
+                return Err(non_pair_iterable(span));
             };
             loop_step_flow(run_two_name_body(first, second, key, value, body, env)?)
         });
@@ -351,8 +350,16 @@ fn date_range_iter(
         end: i64::from(end),
         inclusive,
         step,
-        make: |days| Value::Date(days as i32),
+        make: date_from_days,
     })
+}
+
+/// Wrap a range cursor back into a date. The cursor advances in `i64` space but
+/// `in_range` clamps it within the two `i32` endpoints, so every yielded day fits
+/// `i32`; the checked conversion makes that bound explicit rather than truncating.
+fn date_from_days(days: i64) -> Value {
+    let day = i32::try_from(days).expect("date range cursor stays within its i32 endpoints");
+    Value::Date(day)
 }
 
 fn instant_range_iter(
@@ -434,65 +441,41 @@ pub(crate) fn eval_collection(
     }
 }
 
+/// A two-name head materializes pair rows from a local keyed collection. A
+/// `reversed(...)` wrapper flips the walk direction; everything else is classified
+/// by its innermost iterable.
 fn eval_collection_entry_rows(
     iterable: &ExecExpr,
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<Vec<(Value, Value)>, RuntimeError> {
-    if let Some(inner) = reversed_argument(iterable)
-        && let Some(entries) = values_or_entries(inner)
-        && matches!(&entries.kind, crate::collection::MaterializeKind::Entries)
-    {
-        if entries.layer.saved_place().is_none() {
-            return materialize_local_collection_dir(
-                eval_expr(entries.layer, env)?,
-                Direction::Descending,
-                iterable.span(),
-            );
+    let (inner, direction) = match reversed_argument(iterable) {
+        Some(inner) => (inner, Direction::Descending),
+        None => (iterable, Direction::Ascending),
+    };
+    let layer = match values_or_entries(inner) {
+        Some(call) if matches!(call.kind, crate::collection::MaterializeKind::Entries) => {
+            call.layer
         }
+        Some(_) => return Err(non_pair_iterable(span)),
+        None => inner,
+    };
+    if layer.saved_place().is_some() {
         return Err(durable_collection_value(iterable.span()));
     }
-    if let Some(inner) = reversed_argument(iterable)
-        && inner.saved_place().is_none()
-    {
-        return match eval_expr(inner, env)? {
-            value @ Value::LocalTree(_) => {
-                materialize_local_collection_dir(value, Direction::Descending, iterable.span())
-            }
-            _ => Err(unsupported(
-                "a two-name binding over a non-pair iterable (use entries(...))",
-                span,
-            )),
-        };
-    }
-    if let Some(inner) = reversed_argument(iterable)
-        && inner.saved_place().is_some()
-        && keys_argument(inner).is_none()
-    {
-        return Err(durable_collection_value(iterable.span()));
-    }
-    if let Some(inner) = values_or_entries(iterable)
-        && matches!(&inner.kind, crate::collection::MaterializeKind::Entries)
-    {
-        if inner.layer.saved_place().is_none() {
-            return materialize_local_collection_dir(
-                eval_expr(inner.layer, env)?,
-                Direction::Ascending,
-                iterable.span(),
-            );
-        }
-        return Err(durable_collection_value(iterable.span()));
-    }
-    if iterable.saved_place().is_some() {
-        return Err(durable_collection_value(iterable.span()));
-    }
-    match eval_expr(iterable, env)? {
+    match eval_expr(layer, env)? {
         value @ Value::LocalTree(_) => {
-            materialize_local_collection_dir(value, Direction::Ascending, span)
+            materialize_local_collection_dir(value, direction, iterable.span())
         }
-        _ => Err(unsupported(
-            "a two-name binding over a non-pair iterable (use entries(...))",
-            span,
-        )),
+        _ => Err(non_pair_iterable(span)),
     }
+}
+
+/// A two-name binding requires pair rows; a plain sequence or scalar iterable has no
+/// keys to bind, so the head must wrap it in `entries(...)`.
+fn non_pair_iterable(span: SourceSpan) -> RuntimeError {
+    unsupported(
+        "a two-name binding over a non-pair iterable (use entries(...))",
+        span,
+    )
 }

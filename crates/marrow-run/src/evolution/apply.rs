@@ -21,7 +21,7 @@ use super::backfill::{
 use super::lifecycle::retired_proposal_ids;
 use super::transform::{TransformVisit, visit_transform_writes};
 use super::validate::{assert_commit_pin, validate_witness};
-use super::window::{FenceError, StampFacts, current_engine_profile, fence, metadata_stamp};
+use super::window::{FenceError, StampFacts, fence, metadata_stamp};
 
 /// The scoped developer decision a destructive retire requires. Each entry names one
 /// retired catalog id and the exact populated count the developer approved dropping for
@@ -136,7 +136,6 @@ pub fn apply(
     fence(
         Some(pre_apply_catalog_epoch(witness).unwrap_or(accepted_epoch)),
         &expected_digest,
-        &current_engine_profile(),
         store,
     )?;
     gate_obligations(witness, maintenance, approval)?;

@@ -18,7 +18,7 @@ use evolution_apply_support::{
     root_place, store_id_of, witness,
 };
 
-use marrow_run::evolution::{FenceError, apply, current_engine_profile, fence};
+use marrow_run::evolution::{FenceError, apply, fence};
 use marrow_store::cell::CatalogId;
 use marrow_store::key::{SavedKey, encode_identity_payload};
 use marrow_store::tree::{DataPathSegment, TreeStore};
@@ -189,13 +189,8 @@ fn an_evolve_apply_advances_the_epoch_and_fences_the_pre_evolution_program_befor
 
     // The original program, still pinned to the pre-evolution epoch, is fenced before any
     // write: the store moved past it. This is the documented `run.store_evolved` lockout.
-    let error = fence(
-        Some(baseline_epoch),
-        &baseline.source_digest(),
-        &current_engine_profile(),
-        &store,
-    )
-    .expect_err("the pre-evolution program is fenced out of the evolved store");
+    let error = fence(Some(baseline_epoch), &baseline.source_digest(), &store)
+        .expect_err("the pre-evolution program is fenced out of the evolved store");
     assert_eq!(
         error,
         FenceError::StoreEvolved {
@@ -207,13 +202,8 @@ fn an_evolve_apply_advances_the_epoch_and_fences_the_pre_evolution_program_befor
 
     // The evolved program — pinned to the epoch apply stamped — passes the same fence, so
     // the lockout is precisely the stale binding and not a blanket post-apply refusal.
-    fence(
-        Some(baseline_epoch + 1),
-        &evolved.source_digest(),
-        &current_engine_profile(),
-        &store,
-    )
-    .expect("the evolved program is not fenced by the store it just advanced");
+    fence(Some(baseline_epoch + 1), &evolved.source_digest(), &store)
+        .expect("the evolved program is not fenced by the store it just advanced");
 
     Ok(())
 }

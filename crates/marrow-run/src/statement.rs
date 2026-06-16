@@ -267,15 +267,7 @@ fn eval_if(
     if eval_condition(condition, span, env)? {
         return eval_block(then_block, env);
     }
-    for else_if in else_ifs {
-        if eval_condition(else_if.condition.as_ref(), span, env)? {
-            return eval_block(&else_if.block, env);
-        }
-    }
-    match else_block {
-        Some(block) => eval_block(block, env),
-        None => Ok(Flow::Normal),
-    }
+    eval_else_chain(else_ifs, else_block, span, env)
 }
 
 fn eval_if_const(
@@ -290,7 +282,7 @@ fn eval_if_const(
     if let Some(value) = eval_if_const_value(value, env)? {
         return eval_bound_if_const(name, value, then_block, env);
     }
-    eval_if_const_fallback(else_ifs, else_block, span, env)
+    eval_else_chain(else_ifs, else_block, span, env)
 }
 
 fn eval_if_const_value(value: &ExecExpr, env: &mut Env<'_>) -> Result<Option<Value>, RuntimeError> {
@@ -317,7 +309,7 @@ fn eval_bound_if_const(
     result
 }
 
-fn eval_if_const_fallback(
+fn eval_else_chain(
     else_ifs: &[CheckedElseIf],
     else_block: Option<&ExecBody>,
     span: SourceSpan,

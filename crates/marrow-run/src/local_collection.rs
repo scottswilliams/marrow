@@ -147,18 +147,17 @@ fn enumerate_keys_over_reversed(
     value: Value,
     span: SourceSpan,
 ) -> Result<Vec<Value>, RuntimeError> {
-    match value {
-        Value::LocalTree(entries) => {
-            enumerate_local_collection_dir(Value::LocalTree(entries), Direction::Descending, span)
+    let dir = match &value {
+        Value::LocalTree(_) => Direction::Descending,
+        Value::Sequence(_) => Direction::Ascending,
+        _ => {
+            return Err(unsupported(
+                "reversing this value (expected an iterable)",
+                span,
+            ));
         }
-        Value::Sequence(items) => {
-            enumerate_local_collection_dir(Value::Sequence(items), Direction::Ascending, span)
-        }
-        _ => Err(unsupported(
-            "reversing this value (expected an iterable)",
-            span,
-        )),
-    }
+    };
+    enumerate_local_collection_dir(value, dir, span)
 }
 
 pub(crate) fn materialize_local_collection_dir(
@@ -174,14 +173,10 @@ pub(crate) fn materialize_local_collection_dir(
         Value::LocalTree(entries) => entries
             .into_iter()
             .map(|entry| {
-                let key = entry
-                    .keys
-                    .first()
-                    .cloned()
-                    .map(|key| saved_key_to_value(key, span))
-                    .transpose()?
-                    .ok_or_else(|| iterable_key_type_error(span))?;
-                Ok((key, entry.value))
+                let key = entry.keys.first().cloned().ok_or_else(|| {
+                    unsupported("entries over a local tree with no key column", span)
+                })?;
+                Ok((saved_key_to_value(key, span)?, entry.value))
             })
             .collect::<Result<Vec<_>, RuntimeError>>()?,
         _ => return Err(unsupported("values/entries over this value", span)),
@@ -207,12 +202,6 @@ fn apply_direction<T>(rows: &mut [T], dir: Direction) {
     if dir == Direction::Descending {
         rows.reverse();
     }
-}
-
-/// The fault a local tree raises when its first key column is not a value-representable
-/// key type, shared so the keys-only and keyed paths report it identically.
-fn iterable_key_type_error(span: SourceSpan) -> RuntimeError {
-    unsupported("iterating keys of this type", span)
 }
 
 fn read_local_sequence(

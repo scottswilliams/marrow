@@ -27,9 +27,6 @@ pub(crate) fn eval_std(
     let Some(entry) = stdlib::lookup(module, op) else {
         return Err(unsupported(&format!("std::{module}::{op}"), span));
     };
-    if entry.requires_capability.is_some() || entry.module == "assert" {
-        return Err(unsupported(&format!("std::{module}::{op}"), span));
-    }
     match entry.module {
         "text" => eval_text_std(op, args, span, env),
         "math" => eval_math_std(op, args, span, env),

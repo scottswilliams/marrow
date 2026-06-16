@@ -3,7 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use marrow_check::evolution::preview;
+use marrow_check::evolution::{EvolutionWitness, preview};
 use marrow_check::{
     CheckReport, CheckedProgram, CheckedRuntimeProgram, CheckedSavedPlace, ProjectConfig,
 };
@@ -16,8 +16,8 @@ use marrow_syntax::SourceSpan;
 
 use crate::entry::{CheckedEntryCall, run_entry_with_debugger, run_entry_with_host};
 use crate::evolution::{
-    AutoApplyOutcome, BaselineError, FenceError, RunObligation, commit_catalog_baseline,
-    current_engine_profile, fence, try_auto_apply,
+    AutoApplyOutcome, BaselineError, FenceError, RunObligation, commit_catalog_baseline, fence,
+    try_auto_apply,
 };
 use crate::host::{Host, Nondeterminism, StepHook, SystemNondeterminism};
 use crate::value::{RunOutput, RunOutputSink};
@@ -606,7 +606,7 @@ fn open_run_store(
             return Err(ProjectSessionError::UnstampedStore);
         }
         notices.push(ProjectSessionNotice::DryRunWouldFreeze);
-        let program = bind_run_preview_identity(root, config, program)?;
+        let program = bind_test_identity(root, config, program)?;
         return finish_open(program, store, true);
     }
     let program = if isolate_writes {
@@ -632,7 +632,7 @@ fn open_memory_preview_store(
     program: CheckedProgram,
 ) -> Result<OpenRunStore, ProjectSessionError> {
     Ok(OpenRunStore {
-        program: bind_run_preview_identity(root, config, program)?,
+        program: bind_test_identity(root, config, program)?,
         store: RunStore::Memory(TreeStore::memory()),
     })
 }
@@ -686,16 +686,7 @@ fn finish_open(
     })
 }
 
-fn auto_apply_then_reopen(
-    root: &Path,
-    program: CheckedProgram,
-    store: NativeRunStore,
-    isolate_writes: bool,
-    notices: &mut Vec<ProjectSessionNotice>,
-) -> Result<OpenRunStore, ProjectSessionError> {
-    let witness = preview(&program, &store.store)
-        .map_err(ProjectSessionError::Store)?
-        .0;
+fn witness_epoch_range(witness: &EvolutionWitness) -> (u64, u64) {
     let from_epoch = witness
         .store_catalog
         .as_ref()
@@ -706,6 +697,20 @@ fn auto_apply_then_reopen(
         .as_ref()
         .map(|catalog| catalog.epoch)
         .unwrap_or(witness.accepted_catalog.epoch);
+    (from_epoch, to_epoch)
+}
+
+fn auto_apply_then_reopen(
+    root: &Path,
+    program: CheckedProgram,
+    store: NativeRunStore,
+    isolate_writes: bool,
+    notices: &mut Vec<ProjectSessionNotice>,
+) -> Result<OpenRunStore, ProjectSessionError> {
+    let witness = preview(&program, &store.store)
+        .map_err(ProjectSessionError::Store)?
+        .0;
+    let (from_epoch, to_epoch) = witness_epoch_range(&witness);
     match try_auto_apply(&witness, &program, &store.store) {
         Ok(AutoApplyOutcome::Applied) => {
             notices.push(ProjectSessionNotice::AutoApplied {
@@ -744,16 +749,7 @@ fn classify_dry_run_drift(
     let witness = preview(program, &store.store)
         .map_err(ProjectSessionError::Store)?
         .0;
-    let from_epoch = witness
-        .store_catalog
-        .as_ref()
-        .map(|catalog| catalog.epoch)
-        .unwrap_or(witness.accepted_catalog.epoch);
-    let to_epoch = witness
-        .proposal_catalog
-        .as_ref()
-        .map(|catalog| catalog.epoch)
-        .unwrap_or(witness.accepted_catalog.epoch);
+    let (from_epoch, to_epoch) = witness_epoch_range(&witness);
     let obligation = RunObligation::classify(&witness);
     match obligation {
         RunObligation::ZeroMutation { .. } => {
@@ -865,14 +861,6 @@ fn bind_test_identity(
     Ok(bound)
 }
 
-fn bind_run_preview_identity(
-    root: &Path,
-    config: &ProjectConfig,
-    program: CheckedProgram,
-) -> Result<CheckedProgram, ProjectSessionError> {
-    bind_test_identity(root, config, program)
-}
-
 fn resolve_store_path(
     root: &Path,
     config: &ProjectConfig,
@@ -897,7 +885,6 @@ fn fence_run(program: &CheckedProgram, store: &TreeStore) -> Result<(), FenceErr
     fence(
         program.catalog.accepted_epoch,
         &program.source_digest(),
-        &current_engine_profile(),
         store,
     )
 }

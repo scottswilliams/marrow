@@ -101,7 +101,7 @@ impl RootScan {
             let component = identity
                 .last()
                 .cloned()
-                .ok_or_else(|| crate::error::unsupported("iterating this saved path", self.span))?;
+                .expect("walk_keyed_children yields a non-empty identity");
             saved_key_to_value(component, self.span)?
         } else {
             collected_identity_value(&identity, Some(&self.place.root), self.span)?

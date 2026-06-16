@@ -346,11 +346,9 @@ fn probe_fence(
     program: &marrow_check::CheckedProgram,
     findings: &mut Vec<Finding>,
 ) -> FenceReport {
-    let expected_profile = current_engine_profile();
     match fence(
         program.catalog.accepted_epoch,
         &program.source_digest(),
-        &expected_profile,
         store,
     ) {
         Ok(()) => FenceReport {

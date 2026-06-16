@@ -63,22 +63,11 @@ fn applied_store_passes_same_binary_fence_and_locks_out_older()
     assert_eq!(stamped_epoch, accepted);
 
     // The same binary reopening the store it just stamped is not fenced.
-    fence(
-        Some(accepted),
-        &program.source_digest(),
-        &current_engine_profile(),
-        &store,
-    )
-    .expect("same binary proceeds");
+    fence(Some(accepted), &program.source_digest(), &store).expect("same binary proceeds");
 
     // A binary one accepted epoch behind is fenced: the store was evolved past it.
-    let older = fence(
-        Some(accepted - 1),
-        &program.source_digest(),
-        &current_engine_profile(),
-        &store,
-    )
-    .expect_err("older binary fenced");
+    let older = fence(Some(accepted - 1), &program.source_digest(), &store)
+        .expect_err("older binary fenced");
     assert_eq!(
         older,
         FenceError::StoreEvolved {
@@ -168,7 +157,6 @@ fn engine_profile_drift_fences_a_matching_epoch_store() {
     let error = fence(
         Some(2),
         "sha256:0000000000000000000000000000000000000000000000000000000000000002",
-        &current_engine_profile(),
         &store,
     )
     .expect_err("drift fenced");
@@ -273,13 +261,8 @@ fn schema_drift_at_the_same_epoch_is_fenced_before_execution()
         "the two schemas carry distinct source digests"
     );
 
-    let error = fence(
-        Some(accepted),
-        &program_b.source_digest(),
-        &current_engine_profile(),
-        &store,
-    )
-    .expect_err("schema B fenced against schema A's store");
+    let error = fence(Some(accepted), &program_b.source_digest(), &store)
+        .expect_err("schema B fenced against schema A's store");
     assert_eq!(error, FenceError::SchemaDrift);
     assert_eq!(error.code(), "run.schema_drift");
 

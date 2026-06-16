@@ -118,7 +118,6 @@ impl FenceError {
 pub fn fence(
     accepted_epoch: Option<u64>,
     expected_source_digest: &str,
-    expected_profile: &EngineProfile,
     store: &TreeStore,
 ) -> Result<(), FenceError> {
     let Some(accepted) = accepted_epoch else {
@@ -128,6 +127,7 @@ pub fn fence(
     let Some(commit) = store.read_commit_metadata()? else {
         return Ok(());
     };
+    let expected_profile = current_engine_profile();
     if commit.layout_epoch != expected_profile.layout_epoch()
         || commit.engine_profile_digest != expected_profile.digest_bytes()
     {
@@ -178,7 +178,7 @@ mod tests {
     fn store_evolved_past_program_is_fenced() {
         let store = TreeStore::memory();
         stamp_with_digest(&store, 5, DIGEST);
-        let error = fence(Some(3), DIGEST, &current_engine_profile(), &store).expect_err("fenced");
+        let error = fence(Some(3), DIGEST, &store).expect_err("fenced");
         assert_eq!(
             error,
             FenceError::StoreEvolved {
@@ -193,7 +193,7 @@ mod tests {
     fn store_behind_program_is_fenced() {
         let store = TreeStore::memory();
         stamp_with_digest(&store, 2, DIGEST);
-        let error = fence(Some(4), DIGEST, &current_engine_profile(), &store).expect_err("fenced");
+        let error = fence(Some(4), DIGEST, &store).expect_err("fenced");
         assert_eq!(
             error,
             FenceError::StoreBehind {
@@ -208,7 +208,7 @@ mod tests {
     fn store_at_program_epoch_proceeds() {
         let store = TreeStore::memory();
         stamp_with_digest(&store, 7, DIGEST);
-        fence(Some(7), DIGEST, &current_engine_profile(), &store).expect("proceeds");
+        fence(Some(7), DIGEST, &store).expect("proceeds");
     }
 
     #[test]
@@ -218,7 +218,6 @@ mod tests {
         let error = fence(
             Some(7),
             "sha256:00000000000000000000000000000000000000000000000000000000deadbeef",
-            &current_engine_profile(),
             &store,
         )
         .expect_err("fenced");
@@ -236,7 +235,6 @@ mod tests {
         let error = fence(
             Some(7),
             "sha256:00000000000000000000000000000000000000000000000000000000deadbeef",
-            &current_engine_profile(),
             &store,
         )
         .expect_err("commit metadata is the stamp");
@@ -248,15 +246,14 @@ mod tests {
     #[test]
     fn epoch_match_without_commit_metadata_is_adopted() {
         let store = TreeStore::memory();
-        fence(Some(7), DIGEST, &current_engine_profile(), &store)
-            .expect("a store with no commit metadata is adopted");
+        fence(Some(7), DIGEST, &store).expect("a store with no commit metadata is adopted");
     }
 
     #[test]
     fn epoch_stamped_commit_metadata_with_empty_digest_is_schema_drift() {
         let store = TreeStore::memory();
         stamp_with_digest(&store, 7, "");
-        let error = fence(Some(7), DIGEST, &current_engine_profile(), &store)
+        let error = fence(Some(7), DIGEST, &store)
             .expect_err("empty stamped source digest is schema drift in commit metadata");
         assert_eq!(error, FenceError::SchemaDrift);
         assert_eq!(error.code(), "run.schema_drift");
@@ -272,7 +269,7 @@ mod tests {
         store
             .write_commit_metadata(&commit)
             .expect("write drifted commit metadata");
-        let error = fence(Some(3), DIGEST, &current_engine_profile(), &store).expect_err("fenced");
+        let error = fence(Some(3), DIGEST, &store).expect_err("fenced");
         assert_eq!(error, FenceError::EngineProfileDrift);
         assert_eq!(error.code(), "run.engine_profile");
     }
@@ -280,7 +277,7 @@ mod tests {
     #[test]
     fn unstamped_store_is_adopted() {
         let store = TreeStore::memory();
-        fence(Some(9), DIGEST, &current_engine_profile(), &store).expect("adopts a fresh store");
+        fence(Some(9), DIGEST, &store).expect("adopts a fresh store");
     }
 
     #[test]
@@ -291,6 +288,6 @@ mod tests {
             5,
             "sha256:00000000000000000000000000000000000000000000000000000000deadbeef",
         );
-        fence(None, DIGEST, &current_engine_profile(), &store).expect("no catalog, no fence");
+        fence(None, DIGEST, &store).expect("no catalog, no fence");
     }
 }

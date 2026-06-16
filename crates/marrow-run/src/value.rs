@@ -218,13 +218,8 @@ pub(crate) fn diagnostic_saved_key_tuple_preview(keys: &[SavedKey]) -> String {
 
 fn diagnostic_saved_key_preview(key: &SavedKey) -> String {
     match key {
-        SavedKey::Int(n) => n.to_string(),
-        SavedKey::Bool(b) => b.to_string(),
         SavedKey::Str(text) => diagnostic_text_preview(text),
-        SavedKey::Date(d) => format!("date({d})"),
-        SavedKey::Duration(n) => format!("duration({n})"),
-        SavedKey::Instant(n) => format!("instant({n})"),
-        SavedKey::Bytes(bytes) => format!("bytes[{}]", bytes.len()),
+        _ => saved_key_preview(key),
     }
 }
 
@@ -548,10 +543,9 @@ pub struct LocalTreeEntry {
     pub value: Value,
 }
 
-/// Decode a stored leaf's bytes to its runtime value by the leaf's kind: a scalar
-/// leaf through the canonical scalar codec, a typed-reference leaf through
-/// `decode_identity` against the referenced identity arity. `None` when the bytes
-/// are not a canonical form for the leaf.
+/// Lower a runtime value to the [`LeafValue`] a managed write stores for `leaf`: a
+/// scalar leaf through [`value_to_saved`], an enum leaf through `enum_value_to_leaf`,
+/// identity leaves rejected. Errors (not `None`) on a value the leaf cannot accept.
 pub(crate) fn value_to_leaf(
     value: Value,
     leaf: &StoreLeafKind,
