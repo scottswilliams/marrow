@@ -187,8 +187,7 @@ fn definition_from_an_aliased_call_site_resolves_to_the_function() {
 fn a_bare_call_goes_to_its_own_module_not_a_foreign_one() {
     // Both `aaa` and `zzz` declare `fn greet`. A bare `greet()` in `zzz::run`
     // resolves in its own module first, so go-to-def must land on `zzz::greet` —
-    // never first-matched to the foreign `aaa::greet`. The binding index now
-    // shares the unified resolver, so this matches what the checker and runtime do.
+    // never first-matched to the foreign `aaa::greet`.
     let aaa = "module aaa\npub fn greet(): int\n    return 1\n";
     let zzz = "module zzz\nfn greet(): int\n    return 2\nfn run(): int\n    return greet()\n";
     let (index, paths) = analyze(

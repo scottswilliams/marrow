@@ -1,6 +1,6 @@
 use crate::support;
 use crate::support_enum;
-use marrow_check::{EnumDiagnostic, check_project};
+use marrow_check::{DiagnosticPayload, EnumDiagnostic, MarrowType, check_project};
 
 use support::{
     assert_clean, check_module, check_module_report, config, temp_project, with_code, write,
@@ -217,6 +217,12 @@ fn a_duplicate_match_arm_is_a_check_error() {
         "check.duplicate_match_arm",
     );
     assert_eq!(found.len(), 1, "{found:#?}");
+    assert_enum_payload(
+        &found[0],
+        EnumDiagnostic::DuplicateMatchArm {
+            label: "active".into(),
+        },
+    );
 }
 
 #[test]
@@ -267,4 +273,18 @@ fn a_const_annotated_with_one_enum_and_a_different_enum_value_is_a_check_error()
         "check.assignment_type",
     );
     assert_eq!(found.len(), 1, "{found:#?}");
+    assert_eq!(
+        found[0].payload,
+        DiagnosticPayload::TypeMismatch {
+            expected: MarrowType::Enum {
+                module: "m".into(),
+                name: "Status".into(),
+            },
+            found: MarrowType::Enum {
+                module: "m".into(),
+                name: "Color".into(),
+            },
+        },
+        "{found:#?}"
+    );
 }

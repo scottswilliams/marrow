@@ -1,5 +1,6 @@
 use crate::support;
 use marrow_check::{check_project, resolve::resolve_store_by_root};
+use marrow_schema::Type;
 
 use support::{config, temp_project, write};
 
@@ -25,13 +26,13 @@ fn store_resolver_returns_store_module_and_resource_context() {
     assert_eq!(books.module.name, "catalog");
     assert_eq!(books.store.root, "books");
     assert_eq!(books.resource.name, "Book");
-    assert_eq!(books.store.identity_type().to_string(), "Id(^books)");
+    assert_eq!(books.store.identity_type(), Type::Identity("books".into()));
     assert_eq!(archived.module.name, "catalog");
     assert_eq!(archived.store.root, "archivedBooks");
     assert_eq!(archived.resource.name, "Book");
     assert_eq!(
-        archived.store.identity_type().to_string(),
-        "Id(^archivedBooks)"
+        archived.store.identity_type(),
+        Type::Identity("archivedBooks".into())
     );
 }
 

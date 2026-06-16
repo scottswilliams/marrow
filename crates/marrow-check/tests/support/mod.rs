@@ -175,7 +175,7 @@ pub mod catalog {
     /// missing file is a first-run project. Suites bind this caller-supplied analysis
     /// input through [`super::check_with_accepted`], matching the production CLI after it
     /// has loaded the committed `marrow.catalog.json` artifact.
-    pub fn read_catalog(root: &Path) -> Option<CatalogMetadata> {
+    pub(super) fn read_catalog(root: &Path) -> Option<CatalogMetadata> {
         let json = std::fs::read_to_string(catalog_path(root)).ok()?;
         Some(CatalogMetadata::from_json(&json).expect("fixture catalog parses"))
     }
@@ -201,8 +201,8 @@ pub mod catalog {
         }
     }
 
-    /// Wrap `entries` in a presence-suite catalog at a fixed schema digest, so a
-    /// fixture lists only the entries it cares about and the digest never varies.
+    /// Wrap `entries` in a presence-suite catalog at a fixed epoch (7), so a fixture
+    /// lists only the entries it cares about and the epoch is deterministic.
     pub fn catalog(entries: Vec<CatalogEntry>) -> CatalogMetadata {
         CatalogMetadata::new(7, entries).expect("catalog builds")
     }

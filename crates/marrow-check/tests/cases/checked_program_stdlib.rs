@@ -1,7 +1,7 @@
 use crate::support;
 use marrow_check::{DiagnosticPayload, check_project};
 
-use support::{config, temp_project, with_code, write};
+use support::{assert_clean, config, temp_project, with_code, write};
 
 /// `use std::clock` lets a short-form `clock::now()` resolve and type to its
 /// declared result (`instant`), just as the fully-qualified form does.
@@ -19,7 +19,7 @@ fn short_form_std_import_resolves() {
     });
     let (report, _) = check_project(&root, &config()).expect("check");
 
-    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    assert_clean(&report);
 }
 
 /// Without the import, the short-form `clock::now()` does not resolve and reports
@@ -70,7 +70,7 @@ fn short_form_project_import_resolves() {
     });
     let (report, _) = check_project(&root, &config()).expect("check");
 
-    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    assert_clean(&report);
 }
 
 /// A std helper's argument types are checked: passing an `int` where
@@ -168,13 +168,13 @@ fn std_text_index_of_is_maybe_present() {
 #[test]
 fn write_is_not_a_language_builtin() {
     let root = temp_project("program-write-removed", |root| {
-        let removed = "write";
-        let source = format!(
+        write(
+            root,
+            "src/shelf/t.mw",
             "module shelf::t\n\
              pub fn bad()\n\
-             \x20   {removed}(\"x\")\n"
+             \x20   write(\"x\")\n",
         );
-        write(root, "src/shelf/t.mw", &source);
     });
     let (report, _) = check_project(&root, &config()).expect("check");
 
@@ -191,13 +191,13 @@ fn write_is_not_a_language_builtin() {
 #[test]
 fn removed_clock_shift_helper_is_not_a_standard_library_operation() {
     let root = temp_project("program-clock-shift-removed", |root| {
-        let removed = "add";
-        let source = format!(
+        write(
+            root,
+            "src/shelf/t.mw",
             "module shelf::t\n\
              pub fn bad()\n\
-             \x20   std::clock::{removed}(std::clock::parseInstant(\"2026-05-28T12:00:00Z\"), 1.hour)\n"
+             \x20   std::clock::add(std::clock::parseInstant(\"2026-05-28T12:00:00Z\"), 1.hour)\n",
         );
-        write(root, "src/shelf/t.mw", &source);
     });
     let (report, _) = check_project(&root, &config()).expect("check");
 
@@ -212,14 +212,14 @@ fn removed_clock_shift_helper_is_not_a_standard_library_operation() {
 #[test]
 fn removed_imported_clock_shift_helper_is_not_a_standard_library_operation() {
     let root = temp_project("program-short-clock-shift-removed", |root| {
-        let removed = "add";
-        let source = format!(
+        write(
+            root,
+            "src/shelf/t.mw",
             "module shelf::t\n\
              use std::clock\n\
              pub fn bad()\n\
-             \x20   clock::{removed}(std::clock::parseInstant(\"2026-05-28T12:00:00Z\"), 1.hour)\n"
+             \x20   clock::add(std::clock::parseInstant(\"2026-05-28T12:00:00Z\"), 1.hour)\n",
         );
-        write(root, "src/shelf/t.mw", &source);
     });
     let (report, _) = check_project(&root, &config()).expect("check");
 
@@ -287,5 +287,5 @@ fn short_form_keyword_module_resolves() {
     });
     let (report, _) = check_project(&root, &config()).expect("check");
 
-    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    assert_clean(&report);
 }

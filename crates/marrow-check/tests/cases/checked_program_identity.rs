@@ -1,7 +1,7 @@
 use crate::support;
-use marrow_check::check_project;
+use marrow_check::{CHECK_ASSIGNMENT_TYPE, CHECK_CALL_ARGUMENT, CHECK_RETURN_TYPE, check_project};
 
-use support::{config, temp_project, with_code, write};
+use support::{assert_clean, config, temp_project, with_code, write};
 
 // --- Nominal identity typing ---
 
@@ -18,7 +18,7 @@ const TWO_BOOKISH_RESOURCES: &str = "module shelf::lib\n\
 
 /// Passing a `Id(^magazines)` where a function parameter expects `Id(^books)` is a
 /// nominal mismatch: the identities share a key shape but name different
-/// store roots, so the call is rejected as `check.call_argument`.
+/// store roots, so the call is rejected with the call-argument code.
 #[test]
 fn wrong_store_identity_argument_is_flagged() {
     let root = temp_project("program-id-arg", |root| {
@@ -37,17 +37,14 @@ fn wrong_store_identity_argument_is_flagged() {
     let (report, _) = check_project(&root, &config()).expect("check");
 
     assert!(
-        report
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == "check.call_argument"),
+        !with_code(&report, CHECK_CALL_ARGUMENT).is_empty(),
         "{:#?}",
         report.diagnostics
     );
 }
 
 /// Returning a `Id(^magazines)` from a function declared to return `Id(^books)` is a
-/// nominal mismatch reported as `check.return_type`.
+/// nominal mismatch reported with the return-type code.
 #[test]
 fn wrong_store_identity_return_is_flagged() {
     let root = temp_project("program-id-return", |root| {
@@ -64,17 +61,14 @@ fn wrong_store_identity_return_is_flagged() {
     let (report, _) = check_project(&root, &config()).expect("check");
 
     assert!(
-        report
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == "check.return_type"),
+        !with_code(&report, CHECK_RETURN_TYPE).is_empty(),
         "{:#?}",
         report.diagnostics
     );
 }
 
 /// Storing a `Id(^magazines)` into a `Id(^books)` place is a nominal mismatch
-/// reported as `check.assignment_type`.
+/// reported with the assignment-type code.
 #[test]
 fn wrong_store_identity_assignment_is_flagged() {
     let root = temp_project("program-id-assign", |root| {
@@ -91,17 +85,14 @@ fn wrong_store_identity_assignment_is_flagged() {
     let (report, _) = check_project(&root, &config()).expect("check");
 
     assert!(
-        report
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == "check.assignment_type"),
+        !with_code(&report, CHECK_ASSIGNMENT_TYPE).is_empty(),
         "{:#?}",
         report.diagnostics
     );
 }
 
 /// A raw scalar where an identity is expected, and an identity where a scalar is
-/// expected, are both flagged as `check.call_argument`: identity and scalar are
+/// expected, are both flagged with the call-argument code: identity and scalar are
 /// distinct nominal types, not freely interchangeable.
 #[test]
 fn scalar_and_identity_are_not_interchangeable_arguments() {
@@ -123,7 +114,7 @@ fn scalar_and_identity_are_not_interchangeable_arguments() {
     });
     let (report, _) = check_project(&root, &config()).expect("check");
 
-    let count = with_code(&report, "check.call_argument").len();
+    let count = with_code(&report, CHECK_CALL_ARGUMENT).len();
     assert!(count >= 2, "{:#?}", report.diagnostics);
 }
 
@@ -148,7 +139,7 @@ fn same_store_identity_checks_clean() {
     });
     let (report, _) = check_project(&root, &config()).expect("check");
 
-    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    assert_clean(&report);
 }
 
 #[test]
@@ -182,7 +173,7 @@ fn qualified_resource_identity_annotation_unifies_with_owner_identity() {
     });
     let (report, _) = check_project(&root, &config()).expect("check");
 
-    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    assert_clean(&report);
 }
 
 #[test]
@@ -209,5 +200,5 @@ fn aliased_resource_and_identity_annotations_resolve_to_the_owner() {
     });
     let (report, _) = check_project(&root, &config()).expect("check");
 
-    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    assert_clean(&report);
 }

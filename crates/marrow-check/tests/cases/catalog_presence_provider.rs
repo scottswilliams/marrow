@@ -1,9 +1,7 @@
-//! The checker consumes the accepted catalog as a caller-supplied provider input: the
-//! CLI loads the committed `marrow.catalog.json` artifact and threads it through the
-//! `analyze_project` parameter, repairing that file from the store crash bridge when the
-//! render was interrupted. These tests inject the snapshot directly and prove that
-//! identity binds against it: the accepted ids carry forward onto live facts, and a
-//! source-only check proposes a first epoch while writing nothing.
+//! The checker consumes the accepted catalog as a caller-supplied provider input, threaded
+//! through the `analyze_project` parameter. These tests inject the snapshot directly and
+//! prove that identity binds against it: the accepted ids carry forward onto live facts, and
+//! a source-only check proposes a first epoch while writing nothing.
 use crate::support;
 use marrow_catalog::{CatalogEntry, CatalogEntryKind, CatalogMetadata};
 use marrow_check::{ProjectSources, analyze_project};
@@ -11,6 +9,9 @@ use marrow_check::{ProjectSources, analyze_project};
 use support::catalog::{catalog, derived_id, entry as literal_entry};
 use support::{config, temp_root, write};
 
+/// An accepted catalog entry whose stable id is minted from a readable `label`, so a fixture
+/// names a member by label and the assertions that look the id back up agree without sharing
+/// a literal constant.
 fn entry(
     kind: CatalogEntryKind,
     canonical_path: &str,

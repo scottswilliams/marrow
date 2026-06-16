@@ -42,11 +42,9 @@ fn a_qualified_enum_saved_field_declaration_checks_clean() {
 
 #[test]
 fn reading_an_enum_saved_field_types_as_that_enum() {
-    // A resolved read of `^orders(1).state` (an enum-typed saved field) must
-    // type as `Status`: comparing it against the *same* enum is clean. Before
-    // the field read was typed it was `Unknown`, so a nominal `==` against any
-    // enum reported an operator error — this same-enum comparison was wrongly
-    // rejected.
+    // A resolved read of `^orders(1).state` (an enum-typed saved field) types
+    // as `Status`, so comparing it against the same enum is clean and against a
+    // different enum is rejected.
     let report = check_module_report(
         "enum-field-read-eq-same",
         "module m\n\
@@ -123,9 +121,5 @@ fn a_singleton_keyed_enum_leaf_read_types_as_that_enum() {
          var k: Kind = ^session.kinds(1) ?? Kind::number\n    \
          match k\n        number\n            return 0\n        plus\n            return 1\n",
     );
-    assert!(
-        !report.has_errors(),
-        "a keyed enum leaf under a singleton saved root must read as its enum: {:#?}",
-        report.diagnostics
-    );
+    assert_clean(&report);
 }

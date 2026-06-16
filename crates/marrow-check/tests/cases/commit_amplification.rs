@@ -1,14 +1,8 @@
 use crate::support;
-use marrow_check::{CHECK_COMMIT_AMPLIFICATION, CheckReport, check_project};
+use marrow_check::{CHECK_COMMIT_AMPLIFICATION, CheckReport};
 use marrow_syntax::Severity;
 
-use support::{assert_clean, config, temp_project, with_code, write};
-
-fn check_source(name: &str, source: &str) -> marrow_check::CheckReport {
-    let root = temp_project(name, |root| write(root, "src/m.mw", source));
-    let (report, _program) = check_project(&root, &config()).expect("check");
-    report
-}
+use support::{assert_clean, check_module_report, with_code};
 
 fn assert_commit_amplification_warnings(report: &CheckReport, expected: usize) {
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
@@ -21,7 +15,7 @@ fn assert_commit_amplification_warnings(report: &CheckReport, expected: usize) {
 
 #[test]
 fn bare_saved_write_in_loop_warns_without_making_report_error() {
-    let report = check_source(
+    let report = check_module_report(
         "commit-amplification-bare-write",
         "module m\n\
          resource Book\n    required title: string\n\
@@ -34,7 +28,7 @@ fn bare_saved_write_in_loop_warns_without_making_report_error() {
 
 #[test]
 fn transaction_inside_loop_suppresses_saved_write_warning() {
-    let report = check_source(
+    let report = check_module_report(
         "commit-amplification-inner-transaction",
         "module m\n\
          resource Book\n    required title: string\n\
@@ -47,7 +41,7 @@ fn transaction_inside_loop_suppresses_saved_write_warning() {
 
 #[test]
 fn transaction_around_loop_suppresses_saved_write_warning() {
-    let report = check_source(
+    let report = check_module_report(
         "commit-amplification-outer-transaction",
         "module m\n\
          resource Book\n    required title: string\n\
@@ -85,7 +79,7 @@ fn saved_write_shapes_in_loop_warn() {
     ];
 
     for (name, source) in cases {
-        let report = check_source(name, source);
+        let report = check_module_report(name, source);
         assert_commit_amplification_warnings(&report, 1);
     }
 }
@@ -117,14 +111,14 @@ fn append_in_value_position_inside_loop_warns() {
     ];
 
     for (name, source) in cases {
-        let report = check_source(name, source);
+        let report = check_module_report(name, source);
         assert_commit_amplification_warnings(&report, 1);
     }
 }
 
 #[test]
 fn append_in_top_level_while_condition_warns() {
-    let report = check_source(
+    let report = check_module_report(
         "commit-amplification-while-condition",
         "module m\n\
          resource Book\n    required title: string\n    tags(pos: int): string\n\
@@ -137,7 +131,7 @@ fn append_in_top_level_while_condition_warns() {
 
 #[test]
 fn transaction_around_while_condition_suppresses_append_warning() {
-    let report = check_source(
+    let report = check_module_report(
         "commit-amplification-while-condition-transaction",
         "module m\n\
          resource Book\n    required title: string\n    tags(pos: int): string\n\
@@ -150,7 +144,7 @@ fn transaction_around_while_condition_suppresses_append_warning() {
 
 #[test]
 fn nested_while_condition_warns_once_per_append() {
-    let report = check_source(
+    let report = check_module_report(
         "commit-amplification-nested-while-condition",
         "module m\n\
          resource Book\n    required title: string\n    tags(pos: int): string\n\
@@ -209,7 +203,7 @@ fn append_inside_nested_evaluated_expressions_in_loop_warns_once_per_call() {
     ];
 
     for (name, source) in cases {
-        let report = check_source(name, source);
+        let report = check_module_report(name, source);
         assert_commit_amplification_warnings(&report, 1);
     }
 }
@@ -236,14 +230,14 @@ fn append_inside_assignment_target_expressions_in_loop_warns() {
     ];
 
     for (name, source, expected) in cases {
-        let report = check_source(name, source);
+        let report = check_module_report(name, source);
         assert_commit_amplification_warnings(&report, expected);
     }
 }
 
 #[test]
 fn append_inside_delete_path_expression_in_loop_warns_for_append_and_delete() {
-    let report = check_source(
+    let report = check_module_report(
         "commit-amplification-delete-path-append",
         "module m\n\
          resource Book\n    required title: string\n    tags(pos: int): string\n\
@@ -256,7 +250,7 @@ fn append_inside_delete_path_expression_in_loop_warns_for_append_and_delete() {
 
 #[test]
 fn transaction_suppresses_append_in_value_position_inside_loop() {
-    let report = check_source(
+    let report = check_module_report(
         "commit-amplification-append-value-transaction",
         "module m\n\
          resource Book\n    required title: string\n    tags(pos: int): string\n\
@@ -269,7 +263,7 @@ fn transaction_suppresses_append_in_value_position_inside_loop() {
 
 #[test]
 fn nested_control_flow_in_loop_warns_on_saved_write() {
-    let report = check_source(
+    let report = check_module_report(
         "commit-amplification-nested-if",
         "module m\n\
          resource Book\n    required title: string\n\
@@ -304,7 +298,7 @@ fn local_assignment_host_call_and_cross_function_call_do_not_warn() {
     ];
 
     for (name, source) in cases {
-        let report = check_source(name, source);
+        let report = check_module_report(name, source);
         assert_clean(&report);
     }
 }

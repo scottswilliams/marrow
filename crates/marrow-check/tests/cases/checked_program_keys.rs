@@ -1,7 +1,7 @@
 use crate::support;
-use marrow_check::check_project;
+use marrow_check::{CHECK_KEY_TYPE, check_project};
 
-use support::{config, temp_project, write};
+use support::{config, temp_project, with_code, write};
 
 // --- Key/identity argument typing ---
 
@@ -38,7 +38,7 @@ fn string_key_into_int_keyspace_is_flagged() {
         report
             .diagnostics
             .iter()
-            .any(|diagnostic| diagnostic.code == "check.key_type"),
+            .any(|diagnostic| diagnostic.code == CHECK_KEY_TYPE),
         "{:#?}",
         report.diagnostics
     );
@@ -67,7 +67,7 @@ fn cross_resource_key_identity_is_flagged() {
         report
             .diagnostics
             .iter()
-            .any(|diagnostic| diagnostic.code == "check.key_type"),
+            .any(|diagnostic| diagnostic.code == CHECK_KEY_TYPE),
         "{:#?}",
         report.diagnostics
     );
@@ -117,7 +117,7 @@ fn unknown_key_reentry_is_rejected() {
         report
             .diagnostics
             .iter()
-            .any(|diagnostic| diagnostic.code == "check.key_type"),
+            .any(|diagnostic| diagnostic.code == CHECK_KEY_TYPE),
         "{:#?}",
         report.diagnostics
     );
@@ -167,7 +167,7 @@ fn explicit_identity_constructor_rejects_wrong_key_shape() {
         report
             .diagnostics
             .iter()
-            .any(|diagnostic| diagnostic.code == "check.key_type"),
+            .any(|diagnostic| diagnostic.code == CHECK_KEY_TYPE),
         "{:#?}",
         report.diagnostics
     );
@@ -193,7 +193,7 @@ fn explicit_identity_constructor_rejects_unknown_key_arguments() {
         report
             .diagnostics
             .iter()
-            .any(|diagnostic| diagnostic.code == "check.key_type"),
+            .any(|diagnostic| diagnostic.code == CHECK_KEY_TYPE),
         "{:#?}",
         report.diagnostics
     );
@@ -219,7 +219,7 @@ fn explicit_identity_constructor_rejects_singleton_roots() {
         report
             .diagnostics
             .iter()
-            .any(|diagnostic| diagnostic.code == "check.key_type"),
+            .any(|diagnostic| diagnostic.code == CHECK_KEY_TYPE),
         "{:#?}",
         report.diagnostics
     );
@@ -291,11 +291,7 @@ fn cross_module_imported_wrong_store_identity_splice_is_flagged() {
     });
     let (report, _) = check_project(&root, &config()).expect("check");
 
-    let key_type = report
-        .diagnostics
-        .iter()
-        .filter(|diagnostic| diagnostic.code == "check.key_type")
-        .count();
+    let key_type = with_code(&report, CHECK_KEY_TYPE).len();
     assert_eq!(
         key_type, 1,
         "expected one key-type diagnostic: {:#?}",

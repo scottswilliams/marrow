@@ -1,7 +1,7 @@
 use crate::support;
 use marrow_check::check_project;
 
-use support::{check_module, config, temp_project, with_code, write};
+use support::{check_module, check_module_report, config, temp_project, with_code, write};
 
 #[test]
 fn rejects_a_wrong_argument_count_in_a_qualified_cross_module_call() {
@@ -58,22 +58,23 @@ fn an_unresolved_argument_into_a_typed_parameter_is_flagged() {
     // Strict typing: `mystery` is unbound (unknown type), but `add`'s parameter is
     // `int`, so the argument is a `check.untyped_value` error — convert it first.
     // It is not a `check.call_argument` mismatch.
-    let found = check_module(
+    let report = check_module_report(
         "call-argtype-unknown",
         "module m\n\
          fn add(a: int, b: int): int\n    return a\n\n\
          fn caller()\n    var x = add(mystery, 2)\n",
-        "check.untyped_value",
     );
-    assert_eq!(found.len(), 1, "{found:#?}");
-    let mismatch = check_module(
-        "call-argtype-unknown",
-        "module m\n\
-         fn add(a: int, b: int): int\n    return a\n\n\
-         fn caller()\n    var x = add(mystery, 2)\n",
-        "check.call_argument",
+    assert_eq!(
+        with_code(&report, "check.untyped_value").len(),
+        1,
+        "{:#?}",
+        report.diagnostics
     );
-    assert!(mismatch.is_empty(), "{mismatch:#?}");
+    assert!(
+        with_code(&report, "check.call_argument").is_empty(),
+        "{:#?}",
+        report.diagnostics
+    );
 }
 
 #[test]

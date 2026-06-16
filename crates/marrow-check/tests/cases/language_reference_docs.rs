@@ -20,12 +20,7 @@ fn language_docs_dir() -> std::path::PathBuf {
 }
 
 fn mw_blocks(file_name: &str) -> Vec<MwBlock> {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("..")
-        .join("docs")
-        .join("language")
-        .join(file_name);
+    let path = language_docs_dir().join(file_name);
     let text = std::fs::read_to_string(path).expect("read language doc");
     let mut blocks = Vec::new();
     let mut in_block = false;
@@ -74,14 +69,6 @@ fn all_mw_blocks() -> Vec<MwBlock> {
         .collect()
 }
 
-fn block_containing(file_name: &str, needle: &str) -> String {
-    mw_blocks(file_name)
-        .into_iter()
-        .find(|block| block.source.contains(needle))
-        .map(|block| block.source)
-        .unwrap_or_else(|| panic!("{file_name} has no mw block containing {needle:?}"))
-}
-
 fn source_path_for_module(source: &str) -> String {
     let module_line = source
         .lines()
@@ -89,22 +76,6 @@ fn source_path_for_module(source: &str) -> String {
         .expect("documented example must be a complete module");
     let module = module_line.trim_start_matches("module ").trim();
     format!("src/{}.mw", module.replace("::", "/"))
-}
-
-#[test]
-fn resources_unique_index_lookup_example_checks_clean() {
-    let source = block_containing("resources-and-storage.md", "^books.byIsbn(isbn)");
-    assert!(
-        source.trim_start().starts_with("module "),
-        "the unique index lookup example must be documented as a complete module"
-    );
-    let relative_path = source_path_for_module(&source);
-    let root = temp_project("docs-unique-index-lookup", |root| {
-        write(root, &relative_path, &source);
-    });
-    let (report, _program) = check_project(&root, &config()).expect("check");
-
-    assert!(report.diagnostics.is_empty(), "{:#?}", report.diagnostics);
 }
 
 #[test]

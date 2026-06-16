@@ -18,10 +18,10 @@ fn saved_place_shape_has_single_executable_owner() {
         ("infer.rs", "fn saved_resource_type"),
         ("infer.rs", "fn saved_group_entry_type"),
         ("infer.rs", "fn saved_layer_chain"),
-        ("checks/collections.rs", "saved_layer_chain"),
-        ("checks/collections.rs", "saved_leaf_type"),
-        ("checks/collections.rs", "saved_group_entry_type"),
-        ("checks/saved_keys.rs", "saved_layer_chain"),
+        ("checks/collections.rs", "fn saved_layer_chain"),
+        ("checks/collections.rs", "fn saved_leaf_type"),
+        ("checks/collections.rs", "fn saved_group_entry_type"),
+        ("checks/saved_keys.rs", "fn saved_layer_chain"),
         ("checks/calls.rs", "fn is_exists_target_arg"),
         ("binding.rs", "fn saved_member_ref"),
         ("binding.rs", "fn saved_layer_base"),
@@ -31,10 +31,10 @@ fn saved_place_shape_has_single_executable_owner() {
         ("rejected_surface.rs", "fn member_chain_after_root"),
         ("checks/saved_keys.rs", "fn checked_index_key_type"),
         ("checks/saved_keys.rs", "fn checked_key_param_type"),
-        ("presence/target.rs", "saved_path_parts"),
-        ("presence/target.rs", "resolve_store_by_root"),
+        ("presence/target.rs", "fn saved_path_parts"),
+        ("presence/target.rs", "fn resolve_store_by_root"),
         ("presence/target.rs", "fn node_for_path"),
-        ("presence/walk.rs", "saved_path_parts"),
+        ("presence/walk.rs", "fn saved_path_parts"),
     ];
 
     let mut findings = Vec::new();

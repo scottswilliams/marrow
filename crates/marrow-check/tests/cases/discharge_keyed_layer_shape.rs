@@ -1,6 +1,6 @@
 use crate::support;
 use crate::support_discharge;
-use marrow_check::evolution::{RepairDiagnostic, RepairReason, Verdict, preview};
+use marrow_check::evolution::{RepairReason, preview};
 use marrow_store::key::SavedKey;
 use marrow_store::tree::TreeStore;
 use marrow_store::value::Scalar;
@@ -65,27 +65,11 @@ fn keyed_layer_key_type_change_over_populated_entries_fails_closed()
         "a re-keyed keyed layer keeps its accepted stable id"
     );
     let (result, diagnostics) = preview(&program, &store).expect("preview");
-
-    assert!(
-        !result.is_activatable(),
-        "a keyed-layer key-type change over populated entries must block activation: {:#?}",
-        result.verdicts
-    );
-    assert!(
-        matches!(
-            verdict_for(&result, &layer_id),
-            Verdict::RepairRequired {
-                reason: RepairReason::KeyedLayerKeyShapeChange
-            }
-        ),
-        "a keyed-layer key-shape change must fail closed, got {:#?}",
-        verdict_for(&result, &layer_id)
-    );
-    assert!(
-        diagnostics
-            .iter()
-            .any(|RepairDiagnostic { catalog_id, .. }| catalog_id.as_str() == layer_id),
-        "a fail-closed diagnostic must name the re-keyed layer, got {diagnostics:#?}"
+    assert_fails_closed(
+        &result,
+        &diagnostics,
+        &layer_id,
+        RepairReason::KeyedLayerKeyShapeChange,
     );
 
     Ok(())
@@ -205,12 +189,11 @@ fn keyed_layer_reshaped_to_plain_group_over_populated_data_fails_closed()
     Ok(())
 }
 
-/// The default-deny backstop catches a structural transition no targeted classifier addresses.
-/// Here a member moves from a keyed group keyed by `version: int` to a keyed group keyed by the
-/// SAME `version: int` but with an added key column `lang: string` — a keyed-layer arity change.
-/// Each existing entry is addressed by a one-column key the two-column shape cannot read. No
-/// leaf-token classifier fires (both shapes are non-leaf groups), so the structural signature
-/// backstop is what fails it closed.
+/// A keyed-layer ARITY change fails closed — a distinct shape transition from the type change and
+/// group<->keyed reshapes above. Here a member moves from a keyed group keyed by `version: int` to
+/// a keyed group keyed by the SAME `version: int` but with an added key column `lang: string`. Each
+/// existing entry is addressed by a one-column key the two-column shape cannot read, so the layer
+/// member fails closed rather than activating over entries the new key shape cannot reach.
 #[test]
 fn keyed_layer_arity_change_fails_closed_via_backstop() -> Result<(), Box<dyn std::error::Error>> {
     let versions_id = hex_id(3);
@@ -255,25 +238,11 @@ fn keyed_layer_arity_change_fails_closed_via_backstop() -> Result<(), Box<dyn st
 
     let layer_id = group_member_catalog_id(&place, "versions")?;
     let (result, diagnostics) = preview(&program, &store).expect("preview");
-
-    assert!(
-        !result.is_activatable(),
-        "a keyed-layer arity change over populated entries must block activation: {:#?}",
-        result.verdicts
-    );
-    assert!(
-        matches!(
-            verdict_for(&result, &layer_id),
-            Verdict::RepairRequired { .. }
-        ),
-        "a keyed-layer arity change must fail closed via the backstop, got {:#?}",
-        verdict_for(&result, &layer_id)
-    );
-    assert!(
-        diagnostics
-            .iter()
-            .any(|RepairDiagnostic { catalog_id, .. }| catalog_id.as_str() == layer_id),
-        "a fail-closed diagnostic must name the structurally-diverged member, got {diagnostics:#?}"
+    assert_fails_closed(
+        &result,
+        &diagnostics,
+        &layer_id,
+        RepairReason::KeyedLayerKeyShapeChange,
     );
 
     Ok(())

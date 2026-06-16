@@ -1,5 +1,8 @@
 use crate::support;
-use marrow_check::check_project;
+use marrow_check::{
+    CHECK_ASSIGNMENT_TYPE, CHECK_CALL_ARGUMENT, CHECK_CONDITION_TYPE, CHECK_OPERATOR_TYPE,
+    CHECK_RETURN_TYPE, CHECK_UNTYPED_VALUE, check_project,
+};
 
 use support::{config, temp_project, write};
 
@@ -49,11 +52,11 @@ fn error_condition_is_a_condition_type_error() {
     let codes =
         error_value_diagnostic_codes("condition", "fn f()", "        if e\n            x = 1");
     assert!(
-        codes.iter().any(|code| code == "check.condition_type"),
+        codes.iter().any(|code| code == CHECK_CONDITION_TYPE),
         "{codes:#?}"
     );
     assert!(
-        !codes.iter().any(|code| code == "check.untyped_value"),
+        !codes.iter().any(|code| code == CHECK_UNTYPED_VALUE),
         "{codes:#?}"
     );
 }
@@ -64,11 +67,11 @@ fn error_condition_is_a_condition_type_error() {
 fn error_return_is_a_return_type_error() {
     let codes = error_value_diagnostic_codes("return", "fn f(): string", "        return e");
     assert!(
-        codes.iter().any(|code| code == "check.return_type"),
+        codes.iter().any(|code| code == CHECK_RETURN_TYPE),
         "{codes:#?}"
     );
     assert!(
-        !codes.iter().any(|code| code == "check.untyped_value"),
+        !codes.iter().any(|code| code == CHECK_UNTYPED_VALUE),
         "{codes:#?}"
     );
 }
@@ -83,11 +86,11 @@ fn error_assignment_is_an_assignment_type_error() {
         "        var s: string = \"a\"\n        s = e",
     );
     assert!(
-        codes.iter().any(|code| code == "check.assignment_type"),
+        codes.iter().any(|code| code == CHECK_ASSIGNMENT_TYPE),
         "{codes:#?}"
     );
     assert!(
-        !codes.iter().any(|code| code == "check.untyped_value"),
+        !codes.iter().any(|code| code == CHECK_UNTYPED_VALUE),
         "{codes:#?}"
     );
 }
@@ -116,7 +119,7 @@ fn error_argument_to_user_function_is_a_call_argument_error() {
         report
             .diagnostics
             .iter()
-            .any(|diagnostic| diagnostic.code == "check.call_argument"),
+            .any(|diagnostic| diagnostic.code == CHECK_CALL_ARGUMENT),
         "{:#?}",
         report.diagnostics
     );
@@ -124,7 +127,7 @@ fn error_argument_to_user_function_is_a_call_argument_error() {
         !report
             .diagnostics
             .iter()
-            .any(|diagnostic| diagnostic.code == "check.untyped_value"),
+            .any(|diagnostic| diagnostic.code == CHECK_UNTYPED_VALUE),
         "{:#?}",
         report.diagnostics
     );
@@ -156,11 +159,11 @@ fn error_param_call_diagnostic_codes(slot: &str, arg: &str) -> Vec<String> {
 fn scalar_argument_to_error_param_is_a_call_argument_error() {
     let codes = error_param_call_diagnostic_codes("scalar", "\"oops\"");
     assert!(
-        codes.iter().any(|code| code == "check.call_argument"),
+        codes.iter().any(|code| code == CHECK_CALL_ARGUMENT),
         "{codes:#?}"
     );
     assert!(
-        !codes.iter().any(|code| code == "check.untyped_value"),
+        !codes.iter().any(|code| code == CHECK_UNTYPED_VALUE),
         "{codes:#?}"
     );
 }
@@ -172,11 +175,11 @@ fn scalar_argument_to_error_param_is_a_call_argument_error() {
 fn untyped_argument_to_error_param_is_an_untyped_value_error() {
     let codes = error_param_call_diagnostic_codes("untyped", "mystery");
     assert!(
-        codes.iter().any(|code| code == "check.untyped_value"),
+        codes.iter().any(|code| code == CHECK_UNTYPED_VALUE),
         "{codes:#?}"
     );
     assert!(
-        !codes.iter().any(|code| code == "check.call_argument"),
+        !codes.iter().any(|code| code == CHECK_CALL_ARGUMENT),
         "{codes:#?}"
     );
 }
@@ -195,11 +198,11 @@ fn error_argument_to_error_param_checks_clean() {
 fn error_argument_to_std_log_info_is_a_call_argument_error() {
     let codes = error_value_diagnostic_codes("log-info", "fn f()", "        std::log::info(e)");
     assert!(
-        codes.iter().any(|code| code == "check.call_argument"),
+        codes.iter().any(|code| code == CHECK_CALL_ARGUMENT),
         "{codes:#?}"
     );
     assert!(
-        !codes.iter().any(|code| code == "check.untyped_value"),
+        !codes.iter().any(|code| code == CHECK_UNTYPED_VALUE),
         "{codes:#?}"
     );
 }
@@ -210,11 +213,11 @@ fn error_argument_to_std_log_info_is_a_call_argument_error() {
 fn error_unary_negation_is_an_operator_type_error() {
     let codes = error_value_diagnostic_codes("unary", "fn f()", "        y = -e");
     assert!(
-        codes.iter().any(|code| code == "check.operator_type"),
+        codes.iter().any(|code| code == CHECK_OPERATOR_TYPE),
         "{codes:#?}"
     );
     assert!(
-        !codes.iter().any(|code| code == "check.untyped_value"),
+        !codes.iter().any(|code| code == CHECK_UNTYPED_VALUE),
         "{codes:#?}"
     );
 }
@@ -225,11 +228,11 @@ fn error_unary_negation_is_an_operator_type_error() {
 fn error_arithmetic_operand_is_an_operator_type_error() {
     let codes = error_value_diagnostic_codes("arithmetic", "fn f()", "        y = e + 1");
     assert!(
-        codes.iter().any(|code| code == "check.operator_type"),
+        codes.iter().any(|code| code == CHECK_OPERATOR_TYPE),
         "{codes:#?}"
     );
     assert!(
-        !codes.iter().any(|code| code == "check.untyped_value"),
+        !codes.iter().any(|code| code == CHECK_UNTYPED_VALUE),
         "{codes:#?}"
     );
 }
@@ -240,11 +243,11 @@ fn error_arithmetic_operand_is_an_operator_type_error() {
 fn error_comparison_operand_is_an_operator_type_error() {
     let codes = error_value_diagnostic_codes("comparison", "fn f()", "        y = e < 1");
     assert!(
-        codes.iter().any(|code| code == "check.operator_type"),
+        codes.iter().any(|code| code == CHECK_OPERATOR_TYPE),
         "{codes:#?}"
     );
     assert!(
-        !codes.iter().any(|code| code == "check.untyped_value"),
+        !codes.iter().any(|code| code == CHECK_UNTYPED_VALUE),
         "{codes:#?}"
     );
 }
@@ -278,7 +281,7 @@ fn scalar_argument_to_std_log_error_is_a_call_argument_error() {
         report
             .diagnostics
             .iter()
-            .any(|diagnostic| diagnostic.code == "check.call_argument"),
+            .any(|diagnostic| diagnostic.code == CHECK_CALL_ARGUMENT),
         "{:#?}",
         report.diagnostics
     );
@@ -304,7 +307,7 @@ fn untyped_argument_to_std_log_error_is_an_untyped_value_error() {
         report
             .diagnostics
             .iter()
-            .any(|diagnostic| diagnostic.code == "check.untyped_value"),
+            .any(|diagnostic| diagnostic.code == CHECK_UNTYPED_VALUE),
         "{:#?}",
         report.diagnostics
     );

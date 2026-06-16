@@ -52,22 +52,11 @@ fn store_identity_key_type_change_fails_closed() -> Result<(), Box<dyn std::erro
 
     let (result, diagnostics) = preview(&program, &store).expect("preview");
 
-    assert!(
-        matches!(
-            verdict_for(&result, &store_id),
-            Verdict::RepairRequired {
-                reason: RepairReason::StoreKeyShapeChange
-            }
-        ),
-        "{:#?}",
-        result.verdicts
-    );
-    assert!(!result.is_activatable(), "{result:#?}");
-    assert!(
-        diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.catalog_id.as_str() == store_id),
-        "{diagnostics:#?}"
+    assert_fails_closed(
+        &result,
+        &diagnostics,
+        &store_id,
+        RepairReason::StoreKeyShapeChange,
     );
 
     Ok(())
@@ -108,19 +97,14 @@ fn store_identity_key_arity_change_fails_closed() -> Result<(), Box<dyn std::err
     );
     let store = TreeStore::memory();
 
-    let (result, _) = preview(&program, &store).expect("preview");
+    let (result, diagnostics) = preview(&program, &store).expect("preview");
 
-    assert!(
-        matches!(
-            verdict_for(&result, &store_id),
-            Verdict::RepairRequired {
-                reason: RepairReason::StoreKeyShapeChange
-            }
-        ),
-        "{:#?}",
-        result.verdicts
+    assert_fails_closed(
+        &result,
+        &diagnostics,
+        &store_id,
+        RepairReason::StoreKeyShapeChange,
     );
-    assert!(!result.is_activatable(), "{result:#?}");
 
     Ok(())
 }
@@ -302,19 +286,14 @@ fn identity_leaf_with_malformed_temporal_payload_fails_closed()
         )
         .expect("write malformed identity payload");
 
-    let (result, _) = preview(&program, &store).expect("preview");
+    let (result, diagnostics) = preview(&program, &store).expect("preview");
 
-    assert!(
-        matches!(
-            verdict_for(&result, &parent_raw),
-            Verdict::RepairRequired {
-                reason: RepairReason::InvalidStoredValue
-            }
-        ),
-        "{:#?}",
-        result.verdicts
+    assert_fails_closed(
+        &result,
+        &diagnostics,
+        &parent_raw,
+        RepairReason::InvalidStoredValue,
     );
-    assert!(!result.is_activatable(), "{result:#?}");
 
     Ok(())
 }

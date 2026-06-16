@@ -143,6 +143,8 @@ fn positional_argument_is_a_call_argument_error() {
     );
 }
 
+/// A `code` literal carrying characters outside the `area.snake` grammar reports
+/// `check.call_argument`: the ErrorCode grammar rejects spaces and punctuation.
 #[test]
 fn an_invalid_literal_code_is_a_call_argument_error() {
     let codes = error_construct_codes(
@@ -155,6 +157,8 @@ fn an_invalid_literal_code_is_a_call_argument_error() {
     );
 }
 
+/// A `code` literal with no dot segment reports `check.call_argument`: the
+/// ErrorCode grammar requires an `area.snake` form, so a bare word is rejected.
 #[test]
 fn a_dotless_literal_code_is_a_call_argument_error() {
     let codes = error_construct_codes("dotless-code", "code: \"boom\", message: \"boom\"");
@@ -164,6 +168,8 @@ fn a_dotless_literal_code_is_a_call_argument_error() {
     );
 }
 
+/// A well-formed `area.snake` `code` literal checks clean: it satisfies the
+/// ErrorCode grammar.
 #[test]
 fn a_valid_literal_code_checks_clean() {
     let codes = error_construct_codes("valid-code", "code: \"app.bad_input\", message: \"boom\"");
