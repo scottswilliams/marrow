@@ -10,48 +10,34 @@ use marrow_store::tree::TreeStore;
 
 // --- Maintenance mode & managed-root protection ---
 
-/// A two-key books program with an index, reused by the maintenance tests below:
-/// it can seed records, drop the whole `^books` root, and count remaining records
-/// and index entries so a root drop's effect is observable.
-const MAINTENANCE_BOOKS: &str = "\
-resource Book
-    required title: string
+/// A two-key books program over the canonical shelf/index schema fixture: it can
+/// seed records, drop the whole `^books` root, and count remaining records and
+/// index entries so a root drop's effect is observable.
+fn maintenance_books() -> String {
+    format!(
+        "{BOOK_SHELF_INDEX_SCHEMA}pub fn seed()\n    ^books(1).title = \"Mort\"\n    ^books(1).shelf = \"fiction\"\n    ^books(2).title = \"Guards\"\n    ^books(2).shelf = \"fiction\"\n\npub fn drop_root()\n    delete ^books\n\npub fn drop_root_while_iterating_index()\n    for id in keys(^books.byShelf(\"fiction\"))\n        delete ^books\n\npub fn record_count(): int\n    var c = 0\n    for book in ^books\n        c = c + 1\n    return c\n\npub fn shelf_count(s: string): int\n    var c = 0\n    for id in keys(^books.byShelf(s))\n        c = c + 1\n    return c\n"
+    )
+}
+
+/// The required `name` / sparse `shelf` Item store shared by the partial-record
+/// maintenance tests, with the `has_item` presence reader they assert against.
+/// Each test appends only its distinctive `create` body.
+const ITEM_SCHEMA: &str = "\
+resource Item
+    required name: string
     shelf: string
-store ^books(id: int): Book
+store ^items(id: int): Item
 
-    index byShelf(shelf, id)
+pub fn has_item(id: int): bool
+    return exists(^items(id))
 
-pub fn seed()
-    ^books(1).title = \"Mort\"
-    ^books(1).shelf = \"fiction\"
-    ^books(2).title = \"Guards\"
-    ^books(2).shelf = \"fiction\"
-
-pub fn drop_root()
-    delete ^books
-
-pub fn drop_root_while_iterating_index()
-    for id in keys(^books.byShelf(\"fiction\"))
-        delete ^books
-
-pub fn record_count(): int
-    var c = 0
-    for book in ^books
-        c = c + 1
-    return c
-
-pub fn shelf_count(s: string): int
-    var c = 0
-    for id in keys(^books.byShelf(s))
-        c = c + 1
-    return c
 ";
 
 #[test]
 fn deleting_a_whole_root_without_maintenance_is_rejected() {
     // `delete ^books` on a keyed root is maintenance work; with no maintenance
     // capability the run is rejected with `write.requires_maintenance`.
-    let program = checked_program(MAINTENANCE_BOOKS);
+    let program = checked_program(&maintenance_books());
     let store = TreeStore::memory();
     run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed");
     let result = run_entry(&store, checked_entry!(&program, "test::drop_root"));
@@ -69,7 +55,7 @@ fn deleting_a_whole_root_without_maintenance_is_rejected() {
 fn deleting_a_whole_root_under_maintenance_drops_records_and_indexes() {
     // With the maintenance capability, `delete ^books` drops the entire managed
     // root subtree: no records and no index entries remain.
-    let program = checked_program(MAINTENANCE_BOOKS);
+    let program = checked_program(&maintenance_books());
     let store = TreeStore::memory();
     let host = Host::new().with_maintenance();
     run_entry_with_host(&store, &host, checked_entry!(&program, "test::seed")).expect("seed");
@@ -101,7 +87,7 @@ fn deleting_a_whole_root_under_maintenance_drops_records_and_indexes() {
 
 #[test]
 fn maintenance_root_delete_while_iterating_an_index_is_a_traversal_fault() {
-    let program = checked_program(MAINTENANCE_BOOKS);
+    let program = checked_program(&maintenance_books());
     let store = TreeStore::memory();
     let host = Host::new().with_maintenance();
     run_entry_with_host(&store, &host, checked_entry!(&program, "test::seed")).expect("seed");
@@ -212,9 +198,9 @@ fn maintenance_transaction_can_delete_required_field_after_a_field_write() {
 
 #[test]
 fn maintenance_transaction_still_rejects_new_partial_required_record() {
-    let program = checked_program(
-        "resource Item\n    required name: string\n    shelf: string\nstore ^items(id: int): Item\n\npub fn create(id: int)\n    transaction\n        ^items(id).shelf = \"legacy\"\n\npub fn has_item(id: int): bool\n    return exists(^items(id))\n",
-    );
+    let program = checked_program(&format!(
+        "{ITEM_SCHEMA}pub fn create(id: int)\n    transaction\n        ^items(id).shelf = \"legacy\"\n"
+    ));
     let store = TreeStore::memory();
     let host = Host::new().with_maintenance();
     let result = run_entry_with_host(
@@ -238,9 +224,9 @@ fn maintenance_transaction_still_rejects_new_partial_required_record() {
 
 #[test]
 fn maintenance_transaction_noop_required_delete_does_not_permit_partial_record() {
-    let program = checked_program(
-        "resource Item\n    required name: string\n    shelf: string\nstore ^items(id: int): Item\n\npub fn create(id: int)\n    transaction\n        ^items(id).shelf = \"legacy\"\n        delete ^items(id).name\n\npub fn has_item(id: int): bool\n    return exists(^items(id))\n",
-    );
+    let program = checked_program(&format!(
+        "{ITEM_SCHEMA}pub fn create(id: int)\n    transaction\n        ^items(id).shelf = \"legacy\"\n        delete ^items(id).name\n"
+    ));
     let store = TreeStore::memory();
     let host = Host::new().with_maintenance();
     let result = run_entry_with_host(
@@ -264,9 +250,9 @@ fn maintenance_transaction_noop_required_delete_does_not_permit_partial_record()
 
 #[test]
 fn maintenance_transaction_staged_required_delete_does_not_permit_partial_record() {
-    let program = checked_program(
-        "resource Item\n    required name: string\n    shelf: string\nstore ^items(id: int): Item\n\npub fn create(id: int)\n    transaction\n        ^items(id).name = \"temporary\"\n        ^items(id).shelf = \"legacy\"\n        delete ^items(id).name\n\npub fn has_item(id: int): bool\n    return exists(^items(id))\n",
-    );
+    let program = checked_program(&format!(
+        "{ITEM_SCHEMA}pub fn create(id: int)\n    transaction\n        ^items(id).name = \"temporary\"\n        ^items(id).shelf = \"legacy\"\n        delete ^items(id).name\n"
+    ));
     let store = TreeStore::memory();
     let host = Host::new().with_maintenance();
     let result = run_entry_with_host(
@@ -290,9 +276,9 @@ fn maintenance_transaction_staged_required_delete_does_not_permit_partial_record
 
 #[test]
 fn maintenance_transaction_whole_resource_required_delete_does_not_permit_partial_record() {
-    let program = checked_program(
-        "resource Item\n    required name: string\n    shelf: string\nstore ^items(id: int): Item\n\npub fn create(id: int)\n    var item: Item\n    item.name = \"temporary\"\n    item.shelf = \"legacy\"\n    transaction\n        ^items(id) = item\n        delete ^items(id).name\n\npub fn has_item(id: int): bool\n    return exists(^items(id))\n",
-    );
+    let program = checked_program(&format!(
+        "{ITEM_SCHEMA}pub fn create(id: int)\n    var item: Item\n    item.name = \"temporary\"\n    item.shelf = \"legacy\"\n    transaction\n        ^items(id) = item\n        delete ^items(id).name\n"
+    ));
     let store = TreeStore::memory();
     let host = Host::new().with_maintenance();
     let result = run_entry_with_host(
@@ -348,9 +334,9 @@ fn maintenance_transaction_whole_group_required_delete_does_not_permit_partial_e
 
 #[test]
 fn maintenance_outer_delete_of_inner_created_required_field_is_rejected() {
-    let program = checked_program(
-        "resource Item\n    required name: string\n    shelf: string\nstore ^items(id: int): Item\n\npub fn create(id: int)\n    transaction\n        transaction\n            ^items(id).name = \"temporary\"\n            ^items(id).shelf = \"legacy\"\n        delete ^items(id).name\n\npub fn has_item(id: int): bool\n    return exists(^items(id))\n",
-    );
+    let program = checked_program(&format!(
+        "{ITEM_SCHEMA}pub fn create(id: int)\n    transaction\n        transaction\n            ^items(id).name = \"temporary\"\n            ^items(id).shelf = \"legacy\"\n        delete ^items(id).name\n"
+    ));
     let store = TreeStore::memory();
     let host = Host::new().with_maintenance();
     let result = run_entry_with_host(

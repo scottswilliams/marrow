@@ -3,7 +3,7 @@
 use crate::support;
 use support::*;
 
-use marrow_run::{RUN_DIVIDE_BY_ZERO, RUN_TYPE, Value};
+use marrow_run::{RUN_DIVIDE_BY_ZERO, RUN_OVERFLOW, RUN_TYPE, Value};
 
 #[test]
 fn std_text_builtins_operate_on_strings() {
@@ -181,7 +181,7 @@ fn std_math_gate16_builtins_round_and_bound_values() {
     );
     assert_run_error(
         run(checked_entry!(&program, "test::pow_overflow")),
-        marrow_run::RUN_OVERFLOW,
+        RUN_OVERFLOW,
     );
 }
 
@@ -194,11 +194,11 @@ fn std_math_pow_int_large_exponents_do_not_truncate() {
 
     assert_run_error(
         run(checked_entry!(&program, "test::wrap_to_zero")),
-        marrow_run::RUN_OVERFLOW,
+        RUN_OVERFLOW,
     );
     assert_run_error(
         run(checked_entry!(&program, "test::wrap_to_one")),
-        marrow_run::RUN_OVERFLOW,
+        RUN_OVERFLOW,
     );
 }
 
@@ -535,13 +535,14 @@ pub fn random_bad_step(): int
         .unwrap(),
         Some(Value::Bool(true))
     );
-    assert!(matches!(
+    assert_eq!(
         run(checked_entry!(
             &program,
             "test::random_full_int_range_returns"
-        )),
-        Ok(Some(Value::Int(2_273_323_704_890_406_012)))
-    ));
+        ))
+        .unwrap(),
+        Some(Value::Int(2_273_323_704_890_406_012))
+    );
     assert_run_error(
         run(checked_entry!(&program, "test::random_bad_step")),
         RUN_TYPE,

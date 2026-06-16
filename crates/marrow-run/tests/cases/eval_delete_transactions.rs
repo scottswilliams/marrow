@@ -216,10 +216,11 @@ fn deleting_a_layer_entry_leaves_other_entries() {
 #[test]
 fn deleting_a_keyed_leaf_entry_leaves_other_entries() {
     // `delete ^books(id).tags(pos)` removes one keyed-leaf entry; siblings survive.
-    // `count(^books(id).tags)` counts the remaining entries; reading the deleted
-    // one is an absent-element error while the survivor reads back.
+    // `count(^books(id).tags)` counts the remaining entries. `exists` over the deleted
+    // position is false (proving the entry is truly gone, not merely set to an empty
+    // string), while the survivor reads back.
     let program = checked_program(&format!(
-        "{BOOK_TAGS_SCHEMA}pub fn seed(id: int)\n    ^books(id).title = \"Mort\"\n    ^books(id).tags(1) = \"fiction\"\n    ^books(id).tags(2) = \"funny\"\n\npub fn drop_tag(id: int, pos: int)\n    delete ^books(id).tags(pos)\n\npub fn tag_count(id: int): int\n    return count(^books(id).tags)\n\npub fn tag_at(id: int, pos: int): string\n    return ^books(id).tags(pos) ?? \"\"\n"
+        "{BOOK_TAGS_SCHEMA}pub fn seed(id: int)\n    ^books(id).title = \"Mort\"\n    ^books(id).tags(1) = \"fiction\"\n    ^books(id).tags(2) = \"funny\"\n\npub fn drop_tag(id: int, pos: int)\n    delete ^books(id).tags(pos)\n\npub fn tag_count(id: int): int\n    return count(^books(id).tags)\n\npub fn tag_exists(id: int, pos: int): bool\n    return exists(^books(id).tags(pos))\n\npub fn tag_at(id: int, pos: int): string\n    return ^books(id).tags(pos) ?? \"\"\n"
     ));
     let store = TreeStore::memory();
     run_entry(
@@ -245,11 +246,12 @@ fn deleting_a_keyed_leaf_entry_leaves_other_entries() {
     assert_eq!(
         run_entry(
             &store,
-            checked_entry!(&program, "test::tag_at", Value::Int(1), Value::Int(1))
+            checked_entry!(&program, "test::tag_exists", Value::Int(1), Value::Int(1))
         )
         .expect("read")
         .value,
-        Some(Value::Str(String::new()))
+        Some(Value::Bool(false)),
+        "the deleted position is truly absent, not an empty string"
     );
     assert_eq!(
         run_entry(
@@ -309,17 +311,10 @@ fn a_transaction_rolls_back_on_an_escaping_error() {
     );
 }
 
-/// A `Book` with a unique `isbn` index plus helpers that seed a record, attempt
-/// a conflicting write under `try`/`catch`, and read a field back. Used by the
-/// recoverable-write-fault tests.
-const UNIQUE_RECOVERY: &str = "\
-resource Book
-    required title: string
-    isbn: string
-store ^books(id: int): Book
-
-    index byIsbn(isbn) unique
-
+/// Helpers atop the shared `BOOK_ISBN_SCHEMA`: seed a record, attempt a
+/// conflicting write under `try`/`catch`, and read a field back. Used by the
+/// recoverable-write-fault tests, appended to the unique-index schema fixture.
+const UNIQUE_RECOVERY_FNS: &str = "\
 pub fn seed(id: int, t: string, isbn: string)
     ^books(id).title = t
     ^books(id).isbn = isbn
@@ -358,7 +353,7 @@ fn a_unique_conflict_is_catchable_and_binds_the_dotted_code() {
     // A unique-index conflict surfaces as a catchable Error, so a `try`/`catch`
     // inside the writing function binds it by its `write.unique_conflict` code
     // and the function continues normally.
-    let program = checked_program(UNIQUE_RECOVERY);
+    let program = checked_program(&format!("{BOOK_ISBN_SCHEMA}{UNIQUE_RECOVERY_FNS}"));
     let store = TreeStore::memory();
     run_entry(
         &store,
@@ -401,7 +396,7 @@ fn a_unique_conflict_is_catchable_and_binds_the_dotted_code() {
 fn a_caught_unique_conflict_lets_following_code_run_and_did_not_write() {
     // After catching the conflict, code keeps running (writes a fallback) and the
     // rejected write left no effect: book 2 still owns its original isbn.
-    let program = checked_program(UNIQUE_RECOVERY);
+    let program = checked_program(&format!("{BOOK_ISBN_SCHEMA}{UNIQUE_RECOVERY_FNS}"));
     let store = TreeStore::memory();
     run_entry(
         &store,
@@ -466,7 +461,7 @@ fn a_caught_unique_conflict_lets_following_code_run_and_did_not_write() {
 fn an_uncaught_unique_conflict_keeps_its_dotted_code() {
     // A unique conflict that escapes the entry surfaces with its own
     // `write.unique_conflict` code rather than a generic uncaught-error code.
-    let program = checked_program(UNIQUE_RECOVERY);
+    let program = checked_program(&format!("{BOOK_ISBN_SCHEMA}{UNIQUE_RECOVERY_FNS}"));
     let store = TreeStore::memory();
     run_entry(
         &store,

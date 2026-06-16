@@ -34,7 +34,10 @@ fn parse_instant_rejects_invalid_text() {
     let program = checked_program(
         "pub fn f(): instant\n    return std::clock::parseInstant(\"not a time\")\n",
     );
-    assert!(run(checked_entry!(&program, "test::f")).is_err());
+    assert_eq!(
+        run(checked_entry!(&program, "test::f")).unwrap_err().code(),
+        RUN_TYPE
+    );
 }
 
 #[test]
@@ -238,7 +241,7 @@ fn temporal_operator_overflow_is_catchable() {
     );
     assert_eq!(
         run(checked_entry!(&program, "test::instant_code")),
-        Ok(Some(Value::Str("run.temporal_overflow".into())))
+        Ok(Some(Value::Str(RUN_TEMPORAL_OVERFLOW.into())))
     );
     assert_eq!(
         run(checked_entry!(
@@ -247,7 +250,7 @@ fn temporal_operator_overflow_is_catchable() {
             Value::Duration(i128::MAX),
             Value::Duration(1)
         )),
-        Ok(Some(Value::Str("run.temporal_overflow".into())))
+        Ok(Some(Value::Str(RUN_TEMPORAL_OVERFLOW.into())))
     );
 }
 
@@ -1100,16 +1103,16 @@ fn parse_date_and_duration_errors_include_the_rejected_text() {
          pub fn span(): duration\n    return std::clock::parseDuration(\"nonsense\")\n",
     );
 
+    let date_error = run(checked_entry!(&program, "test::d")).unwrap_err();
+    assert_eq!(date_error.code(), RUN_TYPE);
     assert_eq!(
-        run(checked_entry!(&program, "test::d"))
-            .unwrap_err()
-            .message,
+        date_error.message,
         "parseDate: invalid date text \"2023-02-29\""
     );
+    let duration_error = run(checked_entry!(&program, "test::span")).unwrap_err();
+    assert_eq!(duration_error.code(), RUN_TYPE);
     assert_eq!(
-        run(checked_entry!(&program, "test::span"))
-            .unwrap_err()
-            .message,
+        duration_error.message,
         "parseDuration: invalid duration text \"nonsense\""
     );
 }

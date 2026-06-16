@@ -4,7 +4,7 @@
 use crate::support;
 use support::*;
 
-use marrow_run::{RUN_DECIMAL_OVERFLOW, RUN_DIVIDE_BY_ZERO, RUN_UNSUPPORTED, Value};
+use marrow_run::{RUN_DECIMAL_OVERFLOW, RUN_DIVIDE_BY_ZERO, RUN_TYPE, RUN_UNSUPPORTED, Value};
 use marrow_store::tree::TreeStore;
 
 #[test]
@@ -288,8 +288,8 @@ fn base64_decode_rejects_invalid_text() {
         "pub fn bad_chars(): bytes\n    return std::bytes::base64Decode(\"!!!!\")\n\n\
          pub fn early_pad(): bytes\n    return std::bytes::base64Decode(\"AAA=AAAA\")\n",
     );
-    assert!(run(checked_entry!(&program, "test::bad_chars")).is_err());
-    assert!(run(checked_entry!(&program, "test::early_pad")).is_err());
+    assert_run_error(run(checked_entry!(&program, "test::bad_chars")), RUN_TYPE);
+    assert_run_error(run(checked_entry!(&program, "test::early_pad")), RUN_TYPE);
 }
 
 #[test]

@@ -9,13 +9,11 @@ use marrow_store::tree::TreeStore;
 
 /// A primary keyed root with a keyed child layer, used to exercise reverse
 /// iteration and stored-neighbor seeks over both record identities and layer keys.
-const NAV_BOOKS: &str = "\
-resource Book
-    required title: string
-    tags(pos: int): string
-store ^books(id: int): Book
-
-pub fn add(id: int, t: string)
+/// The resource/store header lives in the shared fixture; only the navigation
+/// functions are spelled here.
+fn nav_books() -> String {
+    format!(
+        "{BOOK_TAGS_SCHEMA}pub fn add(id: int, t: string)
     ^books(id).title = t
 
 pub fn delId(id: int)
@@ -26,12 +24,12 @@ pub fn tag(id: int, t: string)
 
 pub fn idsDescending()
     for id in reversed(keys(^books))
-        print($\"{id}\")
+        print($\"{{id}}\")
 
 pub fn keysReversedValue()
     const r = reversed(keys(^books))
     for id in r
-        print($\"{id}\")
+        print($\"{{id}}\")
 
 pub fn titlesDescending()
     for id, book in reversed(^books)
@@ -69,23 +67,19 @@ pub fn lastIdKey(fallback: string): string
         return ^books(last).title ?? fallback
     return fallback
 
-pub fn nextOrDefaultKey(id: int, fallback: string): string
-    return nextOfKey(id, fallback)
-
-pub fn nextTitleKey(id: int): string
-    return nextOfKey(id, \"\")
-
 pub fn breakAfterFirst(): int
     var seen = 0
     for id in reversed(^books)
         seen = seen + 1
         break
     return seen
-";
+"
+    )
+}
 
 #[test]
 fn reversed_layer_iterates_descending_and_skips_a_hole() {
-    let program = checked_program(NAV_BOOKS);
+    let program = checked_program(&nav_books());
     let store = TreeStore::memory();
     let add = |id: i64, title: &str| {
         run_entry(
@@ -131,7 +125,7 @@ fn reversed_layer_iterates_descending_and_skips_a_hole() {
 
 #[test]
 fn next_and_prev_skip_a_deleted_hole() {
-    let program = checked_program(NAV_BOOKS);
+    let program = checked_program(&nav_books());
     let store = TreeStore::memory();
     let add = |id: i64| {
         run_entry(
@@ -189,7 +183,7 @@ fn next_and_prev_skip_a_deleted_hole() {
 
 #[test]
 fn next_of_bare_layer_is_first_and_prev_is_last() {
-    let program = checked_program(NAV_BOOKS);
+    let program = checked_program(&nav_books());
     let store = TreeStore::memory();
     let add = |id: i64| {
         run_entry(
@@ -262,7 +256,7 @@ fn maybe_return_propagates_empty_neighbor_absence() {
 
 #[test]
 fn prev_of_first_is_absent_and_composes_with_coalesce() {
-    let program = checked_program(NAV_BOOKS);
+    let program = checked_program(&nav_books());
     let store = TreeStore::memory();
     let add = |id: i64| {
         run_entry(
@@ -301,7 +295,7 @@ fn prev_of_first_is_absent_and_composes_with_coalesce() {
             &store,
             checked_entry!(
                 &program,
-                "test::nextOrDefaultKey",
+                "test::nextOfKey",
                 Value::Int(2),
                 Value::Str("-1".into())
             )
@@ -314,7 +308,7 @@ fn prev_of_first_is_absent_and_composes_with_coalesce() {
 
 #[test]
 fn next_neighbor_identity_reads_a_field() {
-    let program = checked_program(NAV_BOOKS);
+    let program = checked_program(&nav_books());
     let store = TreeStore::memory();
     run_entry(
         &store,
@@ -342,7 +336,12 @@ fn next_neighbor_identity_reads_a_field() {
     assert_eq!(
         run_entry(
             &store,
-            checked_entry!(&program, "test::nextTitleKey", Value::Int(1))
+            checked_entry!(
+                &program,
+                "test::nextOfKey",
+                Value::Int(1),
+                Value::Str("missing".into())
+            )
         )
         .expect("nextTitle")
         .value,
@@ -352,7 +351,7 @@ fn next_neighbor_identity_reads_a_field() {
 
 #[test]
 fn reversed_iteration_supports_early_break() {
-    let program = checked_program(NAV_BOOKS);
+    let program = checked_program(&nav_books());
     let store = TreeStore::memory();
     for id in 1..=3 {
         run_entry(
@@ -442,29 +441,26 @@ fn reversed_respects_the_traversed_layer_write_guard() {
 }
 
 /// A non-unique index branch, iterated forward and reversed: the entries enumerate
-/// in identity-key order, and `reversed(...)` walks the same branch backward.
-const BOOK_SHELF_NAV: &str = "\
-resource Book
-    required title: string
-    shelf: string
-store ^books(id: int): Book
-
-    index byShelf(shelf, id)
-
-pub fn add(id: int, t: string, s: string)
+/// in identity-key order, and `reversed(...)` walks the same branch backward. The
+/// resource/store/index header lives in the shared fixture.
+fn book_shelf_nav() -> String {
+    format!(
+        "{BOOK_SHELF_INDEX_SCHEMA}pub fn add(id: int, t: string, s: string)
     ^books(id).title = t
     ^books(id).shelf = s
 
 pub fn onShelfReversed(shelf: string)
     for id in reversed(^books.byShelf(shelf))
-        print($\"{id}\")
-";
+        print($\"{{id}}\")
+"
+    )
+}
 
 #[test]
 fn reversed_over_an_index_branch_descends() {
     // `reversed(^books.byShelf(\"x\"))` walks a declared index branch backward,
     // yielding the matching identities in descending id order.
-    let program = checked_program(BOOK_SHELF_NAV);
+    let program = checked_program(&book_shelf_nav());
     let store = TreeStore::memory();
     let add = |id: i64, s: &str| {
         run_entry(
@@ -498,15 +494,9 @@ fn reversed_over_an_index_branch_descends() {
 /// the edge seek must skip it: stepping off the last record raises the catchable
 /// `run.absent_element`, never an uncatchable `run.unsupported`, and `prev(^books)`
 /// returns the last *record*, not the index.
-const BOOK_SHELF_NEIGHBOR: &str = "\
-resource Book
-    required title: string
-    shelf: string
-store ^books(id: int): Book
-
-    index byShelf(shelf, id)
-
-pub fn add(id: int, t: string, s: string)
+fn book_shelf_neighbor() -> String {
+    format!(
+        "{BOOK_SHELF_INDEX_SCHEMA}pub fn add(id: int, t: string, s: string)
     ^books(id).title = t
     ^books(id).shelf = s
 
@@ -528,7 +518,9 @@ pub fn lastIdKey(fallback: string): string
         const last: Id(^books) = prev(^books) ?? current
         return ^books(last).title ?? fallback
     return fallback
-";
+"
+    )
+}
 
 #[test]
 fn neighbor_at_an_indexed_root_edge_skips_the_index_on_both_backends() {
@@ -536,7 +528,7 @@ fn neighbor_at_an_indexed_root_edge_skips_the_index_on_both_backends() {
     // record-key children. The edge seek must skip it: `next` past the last record
     // is a catchable absent-element (so `??` recovers), and `prev(^books)` lands on
     // the last record, not the index name. Both must hold in memory and redb.
-    let program = checked_program(BOOK_SHELF_NEIGHBOR);
+    let program = checked_program(&book_shelf_neighbor());
     let dir = TempDir::new("marrow-run-test").expect("temp dir");
     let mem = TreeStore::memory();
     let redb = TreeStore::open(&dir.path().join("nav.redb")).expect("open redb");

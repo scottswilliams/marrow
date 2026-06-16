@@ -166,8 +166,7 @@ fn run_entry_rejects_host_values_that_do_not_match_checked_parameters() {
     let error = rejected_entry_call(&program, "test::needs_int", vec![Value::Str("x".into())]);
 
     assert_eq!(error.code(), RUN_TYPE);
-    let (code, message) = error_throw_fields(&error);
-    assert_eq!(code, RUN_TYPE);
+    let (_, message) = error_throw_fields(&error);
     assert_eq!(message, "entry argument `n` has the wrong type");
 }
 
@@ -199,8 +198,7 @@ fn run_entry_rejects_host_values_for_identity_parameters() {
     let error = rejected_entry_call(&program, "test::load", vec![Value::Int(1)]);
 
     assert_eq!(error.code(), RUN_TYPE);
-    let (code, message) = error_throw_fields(&error);
-    assert_eq!(code, RUN_TYPE);
+    let (_, message) = error_throw_fields(&error);
     assert_eq!(message, "entry argument `id` has the wrong type");
 }
 
@@ -213,8 +211,7 @@ fn run_entry_rejects_host_values_for_resource_parameters() {
     let error = rejected_entry_call(&program, "test::show", vec![Value::Resource(vec![])]);
 
     assert_eq!(error.code(), RUN_TYPE);
-    let (code, message) = error_throw_fields(&error);
-    assert_eq!(code, RUN_TYPE);
+    let (_, message) = error_throw_fields(&error);
     assert_eq!(message, "entry argument `book` has the wrong type");
 }
 

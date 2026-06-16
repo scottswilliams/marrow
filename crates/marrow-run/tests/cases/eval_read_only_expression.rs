@@ -6,7 +6,7 @@ use marrow_check::{
     CHECK_READ_ONLY_EXPRESSION_UNINDEXED_LOOKUP, CHECK_READ_ONLY_EXPRESSION_WRITE, check_project,
     check_project_with_catalog,
 };
-use marrow_run::Value;
+use marrow_run::{RUN_UNSUPPORTED, Value};
 
 const BOOKS_SOURCE: &str = "\
 resource Book
@@ -441,7 +441,7 @@ fn checked_read_only_expression_is_bound_to_the_program_catalog_context() {
 
     assert_eq!(
         error.code(),
-        "run.unsupported",
+        RUN_UNSUPPORTED,
         "wrong program context should fail before evaluating: {error:?}"
     );
 }

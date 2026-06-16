@@ -201,8 +201,8 @@ fn an_else_if_chain_selects_the_matching_branch() {
 
 #[test]
 fn detects_min_over_negative_one_overflow() {
-    // `i64::MIN % -1` overflows. (`/` now yields a decimal, so `%` is the only
-    // integer-division-family operator that can overflow this way.)
+    // `i64::MIN % -1` overflows; `%` is the only integer-remainder operator
+    // subject to this, since `/` yields a decimal.
     let result = eval_source(
         "pub fn f(a: int, b: int): int\n    return a % b\n",
         "f",
@@ -253,9 +253,8 @@ fn an_int_range_steps_by_a_positive_by_value() {
 
 #[test]
 fn an_int_range_steps_down_with_a_negative_by_value() {
-    // `10..1 by -1` counts down 10..2 (exclusive end) — ten iterations from 10 to 2.
+    // `10..1 by -1` counts down 10..2 (exclusive end) — nine iterations from 10 to 2.
     let source = "pub fn f(): int\n    var last = 0\n    var count = 0\n    for i in 10..1 by -1\n        last = i\n        count = count + 1\n    return count * 100 + last\n";
-    // 9 iterations (10 down to 2), last value 2.
     assert_eq!(
         eval_source(source, "f", Vec::new()),
         Ok(Some(Value::Int(902)))

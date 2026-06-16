@@ -9,15 +9,11 @@ use marrow_store::key::SavedKey;
 use marrow_store::tree::TreeStore;
 
 /// A program that indexes books by shelf and traverses the index with `keys`.
-const BOOK_SHELF: &str = "\
-resource Book
-    required title: string
-    shelf: string
-store ^books(id: int): Book
-
-    index byShelf(shelf, id)
-
-pub fn add(id: int, t: string, s: string)
+/// The resource/store/index shape is owned by the shared `BOOK_SHELF_INDEX_SCHEMA`
+/// fixture; only the traversal functions are declared here.
+fn book_shelf() -> String {
+    format!(
+        "{BOOK_SHELF_INDEX_SCHEMA}pub fn add(id: int, t: string, s: string)
     ^books(id).title = t
     ^books(id).shelf = s
 
@@ -45,7 +41,9 @@ pub fn reshelve_while_iterating_direct()
 pub fn titles_on(shelf: string)
     for id, book in ^books.byShelf(shelf)
         print(book.title)
-";
+"
+    )
+}
 
 const POST_DATES: &str = "\
 resource Post
@@ -97,7 +95,7 @@ pub fn titlesBetweenInverted(start: int, end: int)
 
 #[test]
 fn iterates_index_keys() {
-    let program = checked_program(BOOK_SHELF);
+    let program = checked_program(&book_shelf());
     let store = TreeStore::memory();
     let add = |id: i64, title: &str, shelf: &str| {
         run_entry(
@@ -131,7 +129,7 @@ fn iterates_index_keys() {
 
 #[test]
 fn bare_index_iteration_yields_first_level_keys() {
-    let program = checked_program(BOOK_SHELF);
+    let program = checked_program(&book_shelf());
     let store = TreeStore::memory();
     let add = |id: i64, title: &str, shelf: &str| {
         run_entry(
@@ -160,7 +158,7 @@ fn bare_index_iteration_yields_first_level_keys() {
 
 #[test]
 fn updating_an_indexed_field_while_iterating_that_index_faults() {
-    let program = checked_program(BOOK_SHELF);
+    let program = checked_program(&book_shelf());
     let store = TreeStore::memory();
     for (id, title) in [(1, "Mort"), (2, "Sourcery")] {
         run_entry(
@@ -194,7 +192,7 @@ fn updating_an_indexed_field_while_iterating_that_index_faults() {
 
 #[test]
 fn updating_an_indexed_field_while_directly_iterating_that_index_faults() {
-    let program = checked_program(BOOK_SHELF);
+    let program = checked_program(&book_shelf());
     let store = TreeStore::memory();
     run_entry(
         &store,
@@ -219,7 +217,7 @@ fn updating_an_indexed_field_while_directly_iterating_that_index_faults() {
 
 #[test]
 fn prints_titles_in_index_key_order() {
-    let program = checked_program(BOOK_SHELF);
+    let program = checked_program(&book_shelf());
     let store = TreeStore::memory();
     let add = |id: i64, title: &str, shelf: &str| {
         run_entry(

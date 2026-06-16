@@ -767,7 +767,8 @@ fn same_name_index_uniqueness_change_fails_closed_on_collisions()
 /// catalog epoch, and drops the index entry from the published catalog. The schema with
 /// the index is committed and base records seed live index cells; current source drops the
 /// index, so discharge classifies `IndexDropped` and apply clears the whole index subtree.
-/// The base records and their members are untouched, and re-previewing finds nothing left.
+/// The base records and their members are untouched, and the committed catalog no longer
+/// carries the dropped index entry.
 #[test]
 fn dropped_index_apply_deletes_index_cells() -> Result<(), Box<dyn std::error::Error>> {
     let root = temp_project("apply-index-drop", |root| {
@@ -859,8 +860,7 @@ fn dropped_index_apply_deletes_index_cells() -> Result<(), Box<dyn std::error::E
         assert_eq!(bytes, encode_value(&Scalar::Str(isbn.into())).unwrap());
     }
 
-    // The published catalog dropped the index entry and advanced its epoch, so re-checking
-    // and re-previewing against the committed snapshot finds no further index drop.
+    // The published catalog dropped the index entry and advanced its epoch.
     let accepted = store
         .read_catalog_snapshot()
         .expect("read snapshot")

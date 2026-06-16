@@ -2,7 +2,7 @@
 //! decodable sibling at the proposed or accepted stable id, writes the computed value,
 //! and stamps once. The rebuild reads every store using the resource, composes with a
 //! default and a retire in one transaction, and re-previewing is idempotent over
-//! unchanged reads. Completion rejects a missing transform cell.
+//! unchanged reads.
 use crate::evolution_apply_support;
 use evolution_apply_support::*;
 
@@ -64,11 +64,11 @@ fn proposal_transform_writes_target_before_catalog_acceptance()
 
     let store_id = store_id_of(&accepted_place)?;
     assert_eq!(
-        read_scalar(&store, &store_id, 1, &cents_id, INT),
+        read_scalar(&store, &store_id, 1, &cents_id, ScalarType::Int),
         Some(Scalar::Int(300))
     );
     assert_eq!(
-        read_scalar(&store, &store_id, 2, &cents_id, INT),
+        read_scalar(&store, &store_id, 2, &cents_id, ScalarType::Int),
         Some(Scalar::Int(700))
     );
 
@@ -135,11 +135,11 @@ fn proposal_transform_updates_every_store_using_the_resource()
     let books_store_id = store_id_of(&books_place)?;
     let archives_store_id = store_id_of(&archives_place)?;
     assert_eq!(
-        read_scalar(&store, &books_store_id, 1, &cents_id, INT),
+        read_scalar(&store, &books_store_id, 1, &cents_id, ScalarType::Int),
         Some(Scalar::Int(300))
     );
     assert_eq!(
-        read_scalar(&store, &archives_store_id, 2, &cents_id, INT),
+        read_scalar(&store, &archives_store_id, 2, &cents_id, ScalarType::Int),
         Some(Scalar::Int(700))
     );
 
@@ -281,7 +281,9 @@ fn transform_exists_over_sparse_old_member_applies() -> Result<(), Box<dyn std::
 }
 
 /// A checked transform computes a new member from a sibling and apply writes the
-/// computed value per record, then stamps the epoch. Each record's `priceCents`
+/// computed value per record, then stamps the epoch. This is the activatable->applyable
+/// invariant: a witness whose read members all decode under their current type and whose
+/// body does not fault over the data applies successfully. Each record's `priceCents`
 /// becomes `price * 100`, derived from its own decodable `price`, and re-previewing
 /// after the apply yields the same value (idempotent over unchanged reads).
 #[test]
@@ -325,11 +327,11 @@ fn transform_computes_new_member_per_record_and_stamps() -> Result<(), Box<dyn s
     let store_id = store_id_of(&place)?;
     let cents_id = member_catalog_id(&place, "priceCents")?;
     assert_eq!(
-        read_scalar(&store, &store_id, 1, &cents_id, INT),
+        read_scalar(&store, &store_id, 1, &cents_id, ScalarType::Int),
         Some(Scalar::Int(300))
     );
     assert_eq!(
-        read_scalar(&store, &store_id, 2, &cents_id, INT),
+        read_scalar(&store, &store_id, 2, &cents_id, ScalarType::Int),
         Some(Scalar::Int(700))
     );
     assert!(
@@ -342,61 +344,13 @@ fn transform_computes_new_member_per_record_and_stamps() -> Result<(), Box<dyn s
     let resumed = witness(&program, &store);
     apply(&resumed, &program, &store, false, None).expect("re-apply succeeds");
     assert_eq!(
-        read_scalar(&store, &store_id, 1, &cents_id, INT),
+        read_scalar(&store, &store_id, 1, &cents_id, ScalarType::Int),
         Some(Scalar::Int(300))
     );
     assert_eq!(
-        read_scalar(&store, &store_id, 2, &cents_id, INT),
+        read_scalar(&store, &store_id, 2, &cents_id, ScalarType::Int),
         Some(Scalar::Int(700))
     );
-
-    Ok(())
-}
-
-/// The activatable->applyable invariant for a transform: a witness whose read members
-/// all decode under their current type and whose body does not fault over the data
-/// applies successfully, writing the recomputed value and stamping the store.
-#[test]
-fn activatable_transform_with_total_body_applies() -> Result<(), Box<dyn std::error::Error>> {
-    let root = temp_project("apply-transform-total", |root| {
-        write(
-            root,
-            "src/books.mw",
-            "module books\n\
-             resource Book\n\
-             \x20   required price: int\n\
-             \x20   required priceCents: int\n\
-             store ^books(id: int): Book\n\
-             evolve\n\
-             \x20   transform Book.priceCents\n\
-             \x20       return old.price * 100\n\
-             pub fn add(price: int): Id(^books)\n\
-             \x20   return nextId(^books)\n",
-        );
-    });
-    let program = commit_then_check(&root).expect("committed fixture");
-    let place = root_place(&program, "books")?;
-    let store = TreeStore::memory();
-    let seed = Seed {
-        store: &store,
-        place: &place,
-    };
-    seed.record(1);
-    seed.member(1, "price", Scalar::Int(5));
-    seed.member(1, "priceCents", Scalar::Int(0));
-
-    let w = witness(&program, &store);
-    assert!(w.is_activatable(), "{w:#?}");
-    let outcome = apply(&w, &program, &store, false, None).expect("apply succeeds");
-    assert_eq!(outcome.receipt.records_transformed, 1);
-
-    let store_id = store_id_of(&place)?;
-    let cents_id = member_catalog_id(&place, "priceCents")?;
-    assert_eq!(
-        read_scalar(&store, &store_id, 1, &cents_id, INT),
-        Some(Scalar::Int(500))
-    );
-    assert!(store.read_commit_metadata().expect("read").is_some());
 
     Ok(())
 }
@@ -477,14 +431,13 @@ fn transform_composes_with_default_and_retire() -> Result<(), Box<dyn std::error
     let store_id = store_id_of(&place)?;
     let cents_id = member_catalog_id(&place, "priceCents")?;
     let currency_id = member_catalog_id(&place, "currency")?;
-    let str_ty = marrow_store::value::ScalarType::Str;
     assert_eq!(
-        read_scalar(&store, &store_id, 1, &cents_id, INT),
+        read_scalar(&store, &store_id, 1, &cents_id, ScalarType::Int),
         Some(Scalar::Int(500)),
         "the transform target is recomputed"
     );
     assert_eq!(
-        read_scalar(&store, &store_id, 1, &currency_id, str_ty),
+        read_scalar(&store, &store_id, 1, &currency_id, ScalarType::Str),
         Some(Scalar::Str("USD".into())),
         "the defaulted member is backfilled"
     );

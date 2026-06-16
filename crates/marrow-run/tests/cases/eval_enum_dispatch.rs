@@ -7,11 +7,11 @@ use support::*;
 
 use marrow_run::Value;
 use marrow_store::key::SavedKey;
-use marrow_store::tree::TreeStore;
-use marrow_store::tree::decode_tree_enum_member;
+use marrow_store::tree::{TreeStore, decode_tree_enum_member};
 use marrow_store::value::{ScalarType, decode_value};
 
-/// member. The test observes the language behavior instead of the storage codec.
+/// An enum field round-trips through saved data using the tree enum-member
+/// codec (not the old scalar ordinal codec) and stays comparable after read-back.
 #[test]
 fn an_enum_field_round_trips_through_saved_data() {
     let program = checked_program(

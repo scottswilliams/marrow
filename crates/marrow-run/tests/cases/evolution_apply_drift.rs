@@ -11,6 +11,14 @@ use marrow_store::StoreError;
 use marrow_store::tree::{CommitMetadata, TreeStore};
 use marrow_store::value::Scalar;
 
+// The drift, overflow, rollback, and no-op cases all evolve the same canonical
+// `required title / required pages / default pages = 0` shape, so they load the one
+// corpus fixture rather than each re-declaring it as an inline string.
+const BOOKS_REQUIRED_DEFAULT: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/v01/evolution/books_required_default.mw"
+));
+
 /// An optional sparse add is a no-op: apply stamps the proposal epoch with no data
 /// step. The store is stamped but carries no new member cell.
 #[test]
@@ -84,19 +92,7 @@ fn optional_add_stamps_epoch_without_data_step() -> Result<(), Box<dyn std::erro
 #[test]
 fn source_digest_drift_aborts() -> Result<(), Box<dyn std::error::Error>> {
     let root = temp_project("apply-source-drift", |root| {
-        write(
-            root,
-            "src/books.mw",
-            "module books\n\
-             resource Book\n\
-             \x20   required title: string\n\
-             \x20   required pages: int\n\
-             store ^books(id: int): Book\n\
-             evolve\n\
-             \x20   default Book.pages = 0\n\
-             pub fn add(title: string): Id(^books)\n\
-             \x20   return nextId(^books)\n",
-        );
+        write(root, "src/books.mw", BOOKS_REQUIRED_DEFAULT);
     });
     let program = commit_then_check(&root).expect("committed fixture");
     let place = root_place(&program, "books")?;
@@ -127,19 +123,7 @@ fn source_digest_drift_aborts() -> Result<(), Box<dyn std::error::Error>> {
 #[test]
 fn count_drift_aborts() -> Result<(), Box<dyn std::error::Error>> {
     let root = temp_project("apply-count-drift", |root| {
-        write(
-            root,
-            "src/books.mw",
-            "module books\n\
-             resource Book\n\
-             \x20   required title: string\n\
-             \x20   required pages: int\n\
-             store ^books(id: int): Book\n\
-             evolve\n\
-             \x20   default Book.pages = 0\n\
-             pub fn add(title: string): Id(^books)\n\
-             \x20   return nextId(^books)\n",
-        );
+        write(root, "src/books.mw", BOOKS_REQUIRED_DEFAULT);
     });
     let program = commit_then_check(&root).expect("committed fixture");
     let place = root_place(&program, "books")?;
@@ -213,19 +197,7 @@ fn store_commit_drift_aborts() -> Result<(), Box<dyn std::error::Error>> {
 fn commit_id_overflow_aborts_without_staging_apply_writes() -> Result<(), Box<dyn std::error::Error>>
 {
     let root = temp_project("apply-commit-overflow", |root| {
-        write(
-            root,
-            "src/books.mw",
-            "module books\n\
-             resource Book\n\
-             \x20   required title: string\n\
-             \x20   required pages: int\n\
-             store ^books(id: int): Book\n\
-             evolve\n\
-             \x20   default Book.pages = 0\n\
-             pub fn add(title: string): Id(^books)\n\
-             \x20   return nextId(^books)\n",
-        );
+        write(root, "src/books.mw", BOOKS_REQUIRED_DEFAULT);
     });
     let program = commit_then_check(&root).expect("committed fixture");
     let place = root_place(&program, "books")?;
@@ -284,19 +256,7 @@ fn commit_id_overflow_aborts_without_staging_apply_writes() -> Result<(), Box<dy
 #[test]
 fn failed_apply_rolls_back_and_resumes_idempotently() -> Result<(), Box<dyn std::error::Error>> {
     let root = temp_project("apply-rollback", |root| {
-        write(
-            root,
-            "src/books.mw",
-            "module books\n\
-             resource Book\n\
-             \x20   required title: string\n\
-             \x20   required pages: int\n\
-             store ^books(id: int): Book\n\
-             evolve\n\
-             \x20   default Book.pages = 0\n\
-             pub fn add(title: string): Id(^books)\n\
-             \x20   return nextId(^books)\n",
-        );
+        write(root, "src/books.mw", BOOKS_REQUIRED_DEFAULT);
     });
     let program = commit_then_check(&root).expect("committed fixture");
     let place = root_place(&program, "books")?;
@@ -358,19 +318,7 @@ fn failed_apply_rolls_back_and_resumes_idempotently() -> Result<(), Box<dyn std:
 #[test]
 fn no_op_apply_does_not_churn_the_commit_id() -> Result<(), Box<dyn std::error::Error>> {
     let root = temp_project("apply-noop", |root| {
-        write(
-            root,
-            "src/books.mw",
-            "module books\n\
-             resource Book\n\
-             \x20   required title: string\n\
-             \x20   required pages: int\n\
-             store ^books(id: int): Book\n\
-             evolve\n\
-             \x20   default Book.pages = 0\n\
-             pub fn add(title: string): Id(^books)\n\
-             \x20   return nextId(^books)\n",
-        );
+        write(root, "src/books.mw", BOOKS_REQUIRED_DEFAULT);
     });
     let program = commit_then_check(&root).expect("committed fixture");
     let place = root_place(&program, "books")?;

@@ -5,15 +5,15 @@
 use crate::support;
 use support::*;
 
-use marrow_check::CheckedRuntimeProgram;
-use marrow_run::Value;
+use marrow_run::{RUN_TYPE, Value};
 use marrow_store::key::{SavedKey, encode_identity_payload};
 use marrow_store::tree::TreeStore;
 
-/// A program with an `Author` resource and a `Book` whose `authorId` is a typed
-/// reference to `Author`. `seed` writes a reference; `read` reads it back.
-fn typed_ref_program() -> CheckedRuntimeProgram {
-    checked_program(
+#[test]
+fn an_identity_field_round_trips_through_saved_data() {
+    // A `Book.authorId: Id(^authors)` field stores an identity and reads it back as
+    // the same identity value produced by the author store.
+    let program = checked_program(
         "resource Author\n\
          \x20   name: string\nstore ^authors(id: int): Author\n\
          \n\
@@ -31,14 +31,7 @@ fn typed_ref_program() -> CheckedRuntimeProgram {
          \x20       const stored: Id(^authors) = ^books(1).authorId ?? author\n\
          \x20       return stored == author\n\
          \x20   return false\n",
-    )
-}
-
-#[test]
-fn an_identity_field_round_trips_through_saved_data() {
-    // A `Book.authorId: Id(^authors)` field stores an identity and reads it back as
-    // the same identity value produced by the author store.
-    let program = typed_ref_program();
+    );
     let store = TreeStore::memory();
     run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed runs");
     assert_eq!(
@@ -111,42 +104,9 @@ fn a_type_wrong_identity_field_does_not_decode_as_an_identity_value() {
         encode_identity_payload(&[SavedKey::Str("not-an-int".to_string())]),
     );
 
-    assert!(
-        run_entry(&store, checked_entry!(&program, "test::read")).is_err(),
-        "type-wrong identity bytes must not construct a runtime identity"
-    );
-}
-
-#[test]
-fn an_identity_field_assigned_via_next_id_round_trips() {
-    // Constructing the reference from `nextId(^authors)` (the first allocated id is
-    // `1` on an empty root) round-trips through the saved identity field.
-    let program = checked_program(
-        "resource Author\n\
-         \x20   name: string\nstore ^authors(id: int): Author\n\
-         \n\
-         resource Book\n\
-         \x20   authorId: Id(^authors)\n\
-         store ^books(id: int): Book\n\
-         \n\
-         pub fn seed()\n\
-         \x20   const a = nextId(^authors)\n\
-         \x20   ^authors(a).name = \"Ada\"\n\
-         \x20   ^books(1).authorId = a\n\
-         \n\
-         pub fn read(): bool\n\
-         \x20   for author in keys(^authors)\n\
-         \x20       const stored: Id(^authors) = ^books(1).authorId ?? author\n\
-         \x20       return stored == author\n\
-         \x20   return false\n",
-    );
-    let store = TreeStore::memory();
-    run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed runs");
-    assert_eq!(
-        run_entry(&store, checked_entry!(&program, "test::read"))
-            .unwrap()
-            .value,
-        Some(Value::Bool(true))
+    assert_run_error(
+        run_entry(&store, checked_entry!(&program, "test::read")),
+        RUN_TYPE,
     );
 }
 

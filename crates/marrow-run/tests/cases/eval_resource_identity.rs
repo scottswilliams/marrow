@@ -358,11 +358,7 @@ fn singleton_whole_read_can_be_bound_by_if_const() {
     assert_eq!(value, Some(Value::Str("light".into())));
 }
 
-// --- Unkeyed-group field read/write through a saved path ---
-
-/// A resource with an unkeyed nested group (`name { first; last }`). Its fields
-/// are addressed `^patients(p).name.first` — a `.field` off a `.field` off the
-/// record, with no keyed layer in between.
+// A whole read of a keyed root with no identity is untyped and rejected.
 #[test]
 fn a_whole_read_of_a_keyed_root_without_an_identity_is_rejected() {
     checker_rejects(
@@ -389,6 +385,9 @@ fn a_field_read_off_a_keyed_root_without_an_identity_is_rejected() {
     );
 }
 
+/// A resource with an unkeyed nested group (`name { first; last }`). Its fields
+/// are addressed `^patients(p).name.first` — a `.field` off a `.field` off the
+/// record, with no keyed layer in between.
 const PATIENT_UNKEYED_GROUP: &str = "\
 resource Patient
     mrn: string

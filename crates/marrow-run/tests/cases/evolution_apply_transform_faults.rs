@@ -44,7 +44,7 @@ fn transform_undecodable_read_is_refused() -> Result<(), Box<dyn std::error::Err
 
     let w = witness(&program, &store);
     assert!(!w.is_activatable(), "{w:#?}");
-    let result = apply(&w, &program, &store, true, None);
+    let result = apply(&w, &program, &store, false, None);
     assert!(
         matches!(result, Err(ApplyError::NotActivatable)),
         "expected NotActivatable, got {result:#?}"
@@ -99,14 +99,17 @@ fn transform_body_fault_aborts_byte_identical() -> Result<(), Box<dyn std::error
     let w = witness(&program, &store);
     assert!(w.is_activatable(), "{w:#?}");
     let result = apply(&w, &program, &store, false, None);
-    let cents_path = cents_id.clone();
 
-    assert!(
-        matches!(result, Err(ApplyError::TransformBodyFaulted { .. })),
-        "expected TransformBodyFaulted, got {result:#?}"
+    let Err(ApplyError::TransformBodyFaulted { target, .. }) = &result else {
+        panic!("expected TransformBodyFaulted, got {result:#?}");
+    };
+    assert_eq!(
+        target.as_str(),
+        cents_id,
+        "the fault names the transform target"
     );
     assert_eq!(
-        read_scalar(&store, &store_id, 1, &cents_path, INT),
+        read_scalar(&store, &store_id, 1, &cents_id, INT),
         before,
         "the target cell is unchanged after a body fault"
     );
@@ -167,9 +170,13 @@ fn transform_body_fault_midscan_discards_earlier_staged_write()
     assert!(w.is_activatable(), "{w:#?}");
     let result = apply(&w, &program, &store, false, None);
 
-    assert!(
-        matches!(result, Err(ApplyError::TransformBodyFaulted { .. })),
-        "expected TransformBodyFaulted, got {result:#?}"
+    let Err(ApplyError::TransformBodyFaulted { target, .. }) = &result else {
+        panic!("expected TransformBodyFaulted, got {result:#?}");
+    };
+    assert_eq!(
+        target.as_str(),
+        cents_id,
+        "the fault names the transform target"
     );
     assert_eq!(
         read_scalar(&store, &store_id, 1, &cents_id, INT),

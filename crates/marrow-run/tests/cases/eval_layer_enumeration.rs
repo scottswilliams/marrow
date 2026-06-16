@@ -9,12 +9,9 @@ use marrow_store::key::SavedKey;
 use marrow_store::tree::TreeStore;
 use marrow_store::value::SavedValue;
 
-const BOOK_PRIMARY: &str = "\
-resource Book
-    required title: string
-store ^books(id: int): Book
-
-pub fn add(id: int, t: string)
+fn book_primary() -> String {
+    format!(
+        "{BOOK_PRIMARY_SCHEMA}pub fn add(id: int, t: string)
     ^books(id).title = t
 
 pub fn titles()
@@ -23,11 +20,11 @@ pub fn titles()
 
 pub fn directIds()
     for id in ^books
-        print($\"{id}\")
+        print($\"{{id}}\")
 
 pub fn idsAndElementTitles()
     for id, book in ^books
-        print($\"{id}: {book.title}\")
+        print($\"{{id}}: {{book.title}}\")
 
 pub fn reversedElementTitles()
     for id, book in reversed(^books)
@@ -36,17 +33,19 @@ pub fn reversedElementTitles()
 pub fn reversedIdsAsValue()
     const ids = reversed(^books)
     for id in ids
-        print($\"{id}\")
+        print($\"{{id}}\")
 
 pub fn ids()
     const all = keys(^books)
     for id in all
-        print($\"{id}\")
-";
+        print($\"{{id}}\")
+"
+    )
+}
 
 #[test]
 fn iterates_a_primary_keyed_root() {
-    let program = checked_program(BOOK_PRIMARY);
+    let program = checked_program(&book_primary());
     let store = TreeStore::memory();
     let add = |id: i64, title: &str| {
         run_entry(
@@ -70,7 +69,7 @@ fn iterates_a_primary_keyed_root() {
 
 #[test]
 fn primary_root_loop_yields_identities() {
-    let program = checked_program(BOOK_PRIMARY);
+    let program = checked_program(&book_primary());
     let store = TreeStore::memory();
     let add = |id: i64, title: &str| {
         run_entry(
@@ -93,7 +92,7 @@ fn primary_root_loop_yields_identities() {
 
 #[test]
 fn two_name_primary_root_loop_yields_id_and_resource() {
-    let program = checked_program(BOOK_PRIMARY);
+    let program = checked_program(&book_primary());
     let store = TreeStore::memory();
     let add = |id: i64, title: &str| {
         run_entry(
@@ -120,7 +119,7 @@ fn two_name_primary_root_loop_yields_id_and_resource() {
 
 #[test]
 fn reversed_two_name_primary_root_loop_yields_resources() {
-    let program = checked_program(BOOK_PRIMARY);
+    let program = checked_program(&book_primary());
     let store = TreeStore::memory();
     let add = |id: i64, title: &str| {
         run_entry(
@@ -147,7 +146,7 @@ fn reversed_two_name_primary_root_loop_yields_resources() {
 
 #[test]
 fn reversed_primary_root_as_a_value_is_rejected() {
-    let program = checked_program(BOOK_PRIMARY);
+    let program = checked_program(&book_primary());
     let store = TreeStore::memory();
     let add = |id: i64, title: &str| {
         run_entry(
@@ -172,7 +171,7 @@ fn reversed_primary_root_as_a_value_is_rejected() {
 
 #[test]
 fn keys_of_a_primary_root_as_a_value_is_rejected() {
-    let program = checked_program(BOOK_PRIMARY);
+    let program = checked_program(&book_primary());
     let store = TreeStore::memory();
     run_entry(
         &store,
@@ -288,20 +287,16 @@ fn reversed_over_a_composite_root_is_a_true_reverse() {
 
 /// Iterating a sequence/keyed child layer yields positions. Two-name loops pair
 /// each position with its value.
-const BOOK_TAGS: &str = "\
-resource Book
-    required title: string
-    tags: sequence[string]
-store ^books(id: int): Book
-
-pub fn seed()
+fn book_tags() -> String {
+    format!(
+        "{BOOK_TAGS_SCHEMA}pub fn seed()
     ^books(1).title = \"Mort\"
     const a: int = append(^books(1).tags, \"fiction\")
     const b: int = append(^books(1).tags, \"funny\")
 
 pub fn positions()
     for pos in ^books(1).tags
-        print($\"{pos}\")
+        print($\"{{pos}}\")
 
 pub fn tagValues()
     for pos, tag in ^books(1).tags
@@ -309,7 +304,7 @@ pub fn tagValues()
 
 pub fn tagEntries()
     for pos, tag in ^books(1).tags
-        print($\"{pos}={tag}\")
+        print($\"{{pos}}={{tag}}\")
 
 pub fn tagValuesDescending()
     for pos, tag in reversed(^books(1).tags)
@@ -317,32 +312,34 @@ pub fn tagValuesDescending()
 
 pub fn positionsDescending()
     for pos in reversed(keys(^books(1).tags))
-        print($\"{pos}\")
+        print($\"{{pos}}\")
 
 pub fn keysOf()
     for pos in keys(^books(1).tags)
-        print($\"{pos}\")
+        print($\"{{pos}}\")
 
 pub fn positionsBetween(lo: int, hi: int)
     for pos in ^books(1).tags(lo..hi)
-        print($\"{pos}\")
+        print($\"{{pos}}\")
 
 pub fn positionsBetweenKeys(lo: int, hi: int)
     for pos in keys(^books(1).tags(lo..hi))
-        print($\"{pos}\")
+        print($\"{{pos}}\")
 
 pub fn entriesBetween(lo: int, hi: int)
     for pos, tag in entries(^books(1).tags(lo..hi))
-        print($\"{pos}={tag}\")
+        print($\"{{pos}}={{tag}}\")
 
 pub fn positionsBetweenDescending(lo: int, hi: int)
     for pos in reversed(^books(1).tags(lo..hi))
-        print($\"{pos}\")
-";
+        print($\"{{pos}}\")
+"
+    )
+}
 
 #[test]
 fn iterates_a_sequence_child_layer() {
-    let program = checked_program(BOOK_TAGS);
+    let program = checked_program(&book_tags());
     let store = TreeStore::memory();
     run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed");
 
@@ -405,7 +402,7 @@ fn iterates_a_sequence_child_layer() {
 
 #[test]
 fn sequence_child_layer_two_name_loop_yields_element_values() {
-    let program = checked_program(BOOK_TAGS);
+    let program = checked_program(&book_tags());
     let store = TreeStore::memory();
     run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed");
 
@@ -415,7 +412,7 @@ fn sequence_child_layer_two_name_loop_yields_element_values() {
 
 #[test]
 fn two_name_sequence_child_layer_loop_yields_key_and_value() {
-    let program = checked_program(BOOK_TAGS);
+    let program = checked_program(&book_tags());
     let store = TreeStore::memory();
     run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed");
 
@@ -425,7 +422,7 @@ fn two_name_sequence_child_layer_loop_yields_key_and_value() {
 
 #[test]
 fn reversed_sequence_child_layer_loop_yields_values_descending() {
-    let program = checked_program(BOOK_TAGS);
+    let program = checked_program(&book_tags());
     let store = TreeStore::memory();
     run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed");
 
@@ -439,7 +436,7 @@ fn reversed_sequence_child_layer_loop_yields_values_descending() {
 
 #[test]
 fn reversed_sequence_child_layer_keys_loop_yields_positions_descending() {
-    let program = checked_program(BOOK_TAGS);
+    let program = checked_program(&book_tags());
     let store = TreeStore::memory();
     run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed");
 

@@ -168,9 +168,7 @@ fn count_over_an_index_branch_matches_branch_entry_count() {
         Some(Value::Int(0))
     );
 
-    // Count shapes stay byte-identical: a keyed/sequence layer counts its
-    // entries, a scalar counts as 1, and a whole record counts its populated
-    // immediate children. These all keep the read/child-keys path.
+    // A keyed/sequence layer counts its entries and a scalar counts as 1.
     assert_eq!(
         call(checked_entry!(&program, "test::countLayer", Value::Int(1))),
         Some(Value::Int(2))
@@ -183,10 +181,13 @@ fn count_over_an_index_branch_matches_branch_entry_count() {
         call(checked_entry!(&program, "test::countScalar", Value::Int(1))),
         Some(Value::Int(1))
     );
-    assert!(matches!(
+    // A whole record's members and layers sit under member segments, not direct
+    // keyed children, so a populated record counts as one via the existence
+    // fallback rather than enumerating its fields.
+    assert_eq!(
         call(checked_entry!(&program, "test::countRecord", Value::Int(1))),
-        Some(Value::Int(n)) if n >= 1
-    ));
+        Some(Value::Int(1))
+    );
     // A primary root counts the record identities that direct iteration yields,
     // not generated index branches stored beside the records.
     assert_eq!(
@@ -198,7 +199,32 @@ fn count_over_an_index_branch_matches_branch_entry_count() {
 #[test]
 fn count_over_an_indexed_root_ignores_populated_index_branches() {
     let program = checked_program(
-        "resource Book\n    required title: string\n    shelf: string\n    isbn: string\nstore ^books(id: int): Book\n\n    index byShelf(shelf, id)\n    index byIsbn(isbn) unique\n\npub fn add(id: int, t: string, s: string)\n    ^books(id).title = t\n    ^books(id).shelf = s\n\npub fn addIsbn(id: int, isbn: string)\n    ^books(id).isbn = isbn\n\npub fn countRoot(): int\n    return count(^books)\n\npub fn iterRoot(): int\n    var n = 0\n    for book in ^books\n        n = n + 1\n    return n\n",
+        "\
+resource Book
+    required title: string
+    shelf: string
+    isbn: string
+store ^books(id: int): Book
+
+    index byShelf(shelf, id)
+    index byIsbn(isbn) unique
+
+pub fn add(id: int, t: string, s: string)
+    ^books(id).title = t
+    ^books(id).shelf = s
+
+pub fn addIsbn(id: int, isbn: string)
+    ^books(id).isbn = isbn
+
+pub fn countRoot(): int
+    return count(^books)
+
+pub fn iterRoot(): int
+    var n = 0
+    for book in ^books
+        n = n + 1
+    return n
+",
     );
     let store = TreeStore::memory();
     let call = |entry: CheckedEntryCall| run_entry(&store, entry).expect("run").value;
@@ -264,7 +290,23 @@ fn count_over_a_saved_root_matches_direct_iteration() {
     );
 
     let composite = checked_program(
-        "resource Cell\n    required value: int\nstore ^cells(x: int, y: int): Cell\n\npub fn put(x: int, y: int, value: int)\n    ^cells(x, y).value = value\n\npub fn countRoot(): int\n    return count(^cells)\n\npub fn iterRoot(): int\n    var n = 0\n    for cell in ^cells\n        n = n + 1\n    return n\n",
+        "\
+resource Cell
+    required value: int
+store ^cells(x: int, y: int): Cell
+
+pub fn put(x: int, y: int, value: int)
+    ^cells(x, y).value = value
+
+pub fn countRoot(): int
+    return count(^cells)
+
+pub fn iterRoot(): int
+    var n = 0
+    for cell in ^cells
+        n = n + 1
+    return n
+",
     );
     let composite_store = TreeStore::memory();
     for (x, y, value) in [(1, 1, 11), (1, 2, 12), (2, 1, 21)] {
@@ -514,8 +556,7 @@ fn exists_count_and_assert_absent_agree_over_a_present_keyed_layer_entry() {
         None
     );
 
-    // The already-correct top-level-field shapes stay green: a present field
-    // exists and counts as one.
+    // A present top-level field exists and counts as one.
     assert_eq!(
         call(checked_entry!(
             &program,

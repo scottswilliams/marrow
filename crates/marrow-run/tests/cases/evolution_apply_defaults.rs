@@ -1,8 +1,8 @@
 //! Apply over a checked default backfill: the proposal-or-accepted member is located
 //! from the witness, every record lacking it is backfilled under the bound stable id,
-//! and the proposal epoch is stamped. Completion re-verification fails closed on a
-//! forged receipt, a missing backfilled cell, engine-profile drift, or an erased
-//! commit source digest, and a backfill never overwrites preexisting target data.
+//! and the proposal epoch is stamped. The cases assert backfill before catalog
+//! acceptance, receipt record counts, rejection of preexisting target data, multi-store
+//! backfill, exact-k backfill with the epoch stamp, and idempotent re-apply.
 use crate::evolution_apply_support;
 use evolution_apply_support::*;
 
@@ -123,7 +123,7 @@ fn proposal_required_default_backfills_before_catalog_acceptance()
 
 #[test]
 fn apply_receipt_counts_many_defaulted_records_without_persisting_evidence() {
-    let (root, _program, _place, _store, _pages_id, outcome) =
+    let (_root, _program, _place, _store, _pages_id, outcome) =
         applied_proposal_default_fixture("apply-default-receipt-counts", 128);
 
     assert_eq!(outcome.receipt.records_backfilled, 128);
@@ -131,7 +131,6 @@ fn apply_receipt_counts_many_defaulted_records_without_persisting_evidence() {
     let count = &outcome.receipt.default_records_by_id[0];
     assert_eq!(count.records_backfilled, 128);
     assert_eq!(count.target_records, 128);
-    drop(root);
 }
 
 #[test]
