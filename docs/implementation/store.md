@@ -43,7 +43,7 @@ Keys are order-preserving; values are not. `SavedKey` encodes scalars so byte-le
 
 ## Invariants worth knowing before you touch bytes
 
-- `0x00` is the only structural separator. Strings/bytes/ids escape it (`0x00` → `0x00 0x01`) and terminate with `0x00 0x00`; the typed-key tag band is held by compile-time asserts (`KEY_STR == 0x07`, `KEY_DATE == KEY_INT + 1`).
+- `0x00` is the only structural separator. Strings/bytes/ids escape it (`0x00` → `0x00 0x01`) and terminate with `0x00 0x00`; a compile-time assert keeps the date tag adjacent to int (`KEY_DATE == KEY_INT + 1`), and `KEY_STR` is fixed at `0x07`.
 - Transactions are atomic across the whole staged plan. A mid-plan fault rolls the entire bracket back with no surviving write and no metadata stamp. `MemStore` snapshots once per flat transaction; `RedbStore` runs one long-lived write transaction and aborts it on rollback.
 - Native redb commits pin immediate durability and keep redb's one-phase commit posture. Fresh store creation fsyncs the containing directory after the first format-stamp commit.
 - A pinned read snapshot is mutually exclusive with writes on the same handle (offenders get `store.transaction`) and is non-reentrant, so a multi-page backup sees one coherent version.
@@ -60,7 +60,7 @@ Keys are order-preserving; values are not. `SavedKey` encodes scalars so byte-le
 ## Read next
 
 - `crates/marrow-store/src/tree.rs` — `TreeStore::memory` / `open` / `open_read_only` to construct; `write_record_presence` / `write_data_node` / `write_data_value` / `read_data_value` / `delete_data_subtree` for the write/read primitives. Record presence is the root cell for a saved identity; a data path node is a hidden group-entry presence cell at the path prefix. Payload reads only use the value-suffixed key.
-- `crates/marrow-store/src/tree.rs` — `scan_children_until` / `next_child_after` / `for_each_page_entry`: the one paged-scan-plus-decode engine all navigation routes through.
+- `crates/marrow-store/src/tree.rs` — `scan_children_until` / `next_child_after_cursor` / `for_each_page_entry`: the one paged-scan-plus-decode engine all navigation routes through.
 - `crates/marrow-store/src/cell.rs` — `decode_data_cell_key` / `CellKey::data_path_prefix` / `CellKey::data_path_value` / `family`: the authoritative v0 key grammar.
 - `crates/marrow-store/src/key.rs` — `encode_key_into` / `encode_escaped_bytes`: why stored byte order equals typed key order.
 - `crates/marrow-store/src/redb.rs` — `RedbStore::mutate` / `commit` / `rollback`: the flat joined transaction model behind atomic rollback on the persistent engine.

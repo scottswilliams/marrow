@@ -35,7 +35,7 @@ Evolution discharge and the analysis/tooling surface sit beside this spine, cons
 | [catalog.md](catalog.md) | Stable opaque identity: the `marrow-catalog` accepted-snapshot model, catalog binding across renames/reshapes, the source-shape digest fence, and the rejected v0.1 source-surface pass. |
 | [lowering.md](lowering.md) | The one-way bridge from checker resolution into the `Checked*` executable IR: call targets, precomputed saved places, runtime value types. |
 | [evolution.md](evolution.md) | The check side of schema evolution: evolve intents, read-only discharge against the live store, and the `EvolutionWitness` that crosses into apply. |
-| [analysis.md](analysis.md) | The transport-free editor/CLI surface: the IDE `AnalysisSnapshot` and cursor queries, plus typed saved-data tooling facts (path queries, paged traversal, integrity, metadata). |
+| [analysis.md](analysis.md) | The transport-free editor/CLI surface: the IDE `AnalysisSnapshot` and cursor queries, plus typed saved-data tooling facts (path queries, paged traversal, integrity). |
 
 ## Read next
 

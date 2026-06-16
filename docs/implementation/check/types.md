@@ -24,7 +24,7 @@ The orchestration that sequences the passes lives in `analysis.rs`, outside this
 | `crates/marrow-check/src/diagnostics.rs` | The diagnostic vocabulary: `check.*` codes, the typed `DiagnosticPayload`, `CheckDiagnostic`/`CheckReport`, and the `ConversionTarget` table. |
 | `crates/marrow-check/src/program.rs` | The `CheckedProgram`/`CheckedRuntimeProgram` artifacts, the `MarrowType` lattice and `from_resolved` placement, `FileId`, runtime-body lowering. |
 | `crates/marrow-check/src/resolve.rs` | The one module/visibility-aware name resolver: `resolve` → `Resolution`/`Def`/`DefItem`; `resolve_store_by_root` for project-wide saved roots. |
-| `crates/marrow-check/src/checks/` | Type-check driver modules by concern; `checks/mod.rs` re-exports the cross-crate API. |
+| `crates/marrow-check/src/checks/` | Type-check driver modules by concern; `checks/mod.rs` gathers the per-concern checks into the crate-internal check API. |
 | `crates/marrow-check/src/infer.rs` | Expression type inference (`infer_type`/`infer_only`): literals, scope lookup, saved-path/leaf/group/index resolution (`saved_call_type`), enum member-path typing. |
 | `crates/marrow-check/src/typerules.rs` | Pure lattice rules: `type_compatible`, `expects_conversion`, `as_primitive`, numeric/ordered/steppable predicates, literal-range envelope, mismatch display. |
 | `crates/marrow-check/src/rules.rs` | Structural (syntax-only) rules: try-handler presence, loop control-flow, loop saved-write cost warnings, catch-type, assignment-target validity, read-only parameters, const-constant-expr. |

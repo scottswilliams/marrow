@@ -30,7 +30,7 @@ Identity is path-independent. A stable id is a random 128-bit `cat_<32hex>` mint
 - **Proposal advances only on real change.** Exact source-vs-accepted match returns `None`. Accepted and proposed catalogs are validated at check time, so an id collision or missing store-index declaration shape fails closed before binding. Backfilling a store-key or member signature for an entry that never had one recorded is not change; store-index entries must already carry their accepted declaration shape.
 - **Rename is identity-preserving and injective.** A rename relocates the accepted entry to its new path and keeps it Active; resolution is rejected if the source path is still declared, the target already names a live entity, or no active accepted entry backs the source path. A retire only reserves once the source declaration is gone.
 - **A pending entity is a Warning, not a failure.** Source absent from the accepted catalog and not renamed stays informational; identity is frozen only when run/apply commits.
-- **The formatter is a frozen anchor.** Reformatting an unchanged shape must not drift the digest. The digest renderer uses the canonical formatter output for durable declarations and a path-tagged `Unreadable` marker for unreadable or unparsable modules, so a bad file cannot collide with a clean rendering.
+- **The formatter is a frozen anchor.** Reformatting an unchanged shape must not drift the digest. The digest renders durable declarations through the canonical formatter, so reformatting that preserves the shape produces an identical digest.
 
 ## Read next
 

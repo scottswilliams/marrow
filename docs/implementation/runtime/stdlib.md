@@ -11,7 +11,7 @@ carrying `requires_capability: Option<Capability>`, or a `CheckedBuiltinCall` /
 strings to decide arity, types, or which capability is needed; it branches on
 the typed kind.
 
-Dispatch enters from `eval_std_call` and `eval_builtin_call` in `crates/marrow-run/src/call.rs`. `eval_std_call` matches `requires_capability`: `Some(Clock)`, `Some(Context)`, `Some(Environment)`, `Some(Log)`, and `Some(Filesystem)` route to host-effect handlers; `Some(Maintenance)` is rejected as unsupported at this boundary; `None` routes to `eval_assert` for module `assert` and otherwise to `eval_std`. Pure helpers compute in place and never touch `env.host`. Host-effect helpers read their capability off `Env`'s `Host` — `clock`/`context`/`environment`/`log` are `Option` fields, and filesystem access is the `bool` `Host.filesystem` flag — and raise `run.capability` when it is absent.
+Dispatch enters from `eval_std_call` and `eval_builtin_call` in `crates/marrow-run/src/call.rs`. `eval_std_call` matches `requires_capability`: `Some(Clock)`, `Some(Context)`, `Some(Environment)`, `Some(Log)`, and `Some(Filesystem)` route to host-effect handlers; `None` routes to `eval_assert` for module `assert` and otherwise to `eval_std`. Pure helpers compute in place and never touch `env.host`. Host-effect helpers read their capability off `Env`'s `Host` — `clock`/`context`/`environment`/`log` are `Option` fields, and filesystem access is the `bool` `Host.filesystem` flag — and raise `run.capability` when it is absent.
 
 ## The two halves
 
@@ -44,8 +44,6 @@ Dispatch enters from `eval_std_call` and `eval_builtin_call` in `crates/marrow-r
 - Conversion error taxonomy is owned downstream: `convert_to_decimal` defers overflow-vs-malformed to `marrow-store`'s `Decimal` parser.
 - Unique-index reads decode the stored payload into an identity of the expected arity and raise one canonical `run.type` corruption fault (`decode_unique_index_identity`); presence/count comes from `ExactUniqueIndexLookupValue` without materializing the record. `keys(...)` over a unique index is unsupported (`check_key_collection`).
 - `exists(maybe_call())` is intentionally call-expression-scoped: it evaluates the checked maybe-present call once and maps catchable `run.absent_element` to `false`, without creating a durable saved-path proof.
-
-Note: the `Host` struct also carries a `maintenance` capability, but this boundary never reads it — it gates managed-write maintenance ops elsewhere.
 
 ## Read next
 

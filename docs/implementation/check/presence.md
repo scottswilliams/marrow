@@ -47,7 +47,8 @@ Key types live mostly in `presence/target.rs` (`ReadTarget`, `ReadPlace`), `pres
 | `check_presence` | `analysis.rs` (after lowering) | Runs the flow-sensitive walk, mutating facts and pushing diagnostics. |
 | `direct_effects_for_block` | `facts.rs` `refresh_direct_effects`, `evolution/intents.rs` | Summarizes one block's effects into `DirectEffectFacts`. |
 | `effect_closure` | `program.rs`, presence narrowing | Expands direct callee refs into a unified transitive summary and the write-reachability bit. |
-| `read_resolves_in_type_scope` | `checks/operators.rs`, `checks/statements.rs` | Boolean test for type-checking `??` and `if const` resolution. It rebuilds enough scope for name shadowing but does not expose a comparable `ReadTarget`. |
+| `read_resolves_in_type_scope` | `checks/operators.rs` | Boolean test for type-checking `??` resolution. It rebuilds enough scope for name shadowing but does not expose a comparable `ReadTarget`. |
+| `bindable_saved_value_read_in_type_scope` | `checks/statements.rs` | Boolean test for type-checking `if const`; requires a bindable saved value read. |
 | `exists_target_in_type_scope` | `checks/calls.rs` | Boolean test for type-checking `exists(...)`; accepts direct saved read targets and typed maybe-present call targets, so neighbor values remain rejected. |
 
 ## Tests
@@ -65,6 +66,6 @@ required-field proofs.
 ## Read next
 
 - `presence/walk.rs` — `collect_expr` / `collect_call_expr` / `collect_guarded_block`: how `ReadContext` is chosen and how branches clone and rejoin the narrowed set.
-- `presence/effects.rs` — `condition_effects_after_mutations` / `written_target_invalidates`: what `if exists` narrows and how a write expires it (the soundness core).
+- `presence/effects.rs` — `condition_narrowings` / `written_target_invalidates`: what `if exists` narrows and how a write expires it (the soundness core).
 - `presence/keys.rs` — `expression_key`: the canonical-key format behind all narrowing identity and binding invalidation.
 - `presence/proofs.rs` — `read_proof` / `record_read`: context to proof source/status, and the sole bare-maybe-present diagnostic site.

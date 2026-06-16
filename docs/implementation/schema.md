@@ -6,7 +6,7 @@ Every `compile_*` entry returns the schema **and** a `Vec<SchemaError>` together
 
 ## The shapes
 
-- **Resource** — `compile_resource` / `compile_stored_resource` build a `ResourceSchema`: a source-ordered flat `Vec<Node>`. A `Node` is either a `Slot` (plain field or keyed leaf) or a `Group` (nested members). Keyed-ness is structural, not a flag — empty `key_params` means plain, non-empty means a keyed layer. Sequence sugar desugars to the canonical keyed leaf: `name: sequence[T]` becomes `name(pos: int): T`. The checker later resolves an explicit keyed field whose value type names a resource into a keyed `Group` carrying that resource as its entry type; the checker also owns project-aware keyed enum, resource, and unknown-name resolution.
+- **Resource** — `compile_resource` builds a `ResourceSchema`: a source-ordered flat `Vec<Node>`. A `Node` is either a `Slot` (plain field or keyed leaf) or a `Group` (nested members). Keyed-ness is structural, not a flag — empty `key_params` means plain, non-empty means a keyed layer. Sequence sugar desugars to the canonical keyed leaf: `name: sequence[T]` becomes `name(pos: int): T`. The checker later resolves an explicit keyed field whose value type names a resource into a keyed `Group` carrying that resource as its entry type; the checker also owns project-aware keyed enum, resource, and unknown-name resolution.
 - **Store** — `compile_store` builds a `StoreSchema` (durable root, identity keys, indexes) over a compiled `ResourceSchema`. `StoreSchema::single_int_root` is the single-int-root `nextId` policy gate the checker types `nextId(^root)` against; the runtime re-checks the same contract on the lowered place via its own `single_int_identity`. `next_id_shape` is the shared rejection-message wording — single-sourced in the checker and reused verbatim by the runtime, so both report the same shape.
 - **Enum** — `compile_enum` builds an `EnumSchema`: members flattened pre-order DFS with parent links. Traversal indices are source-order positions, **not** durable value identity — identity lives in the parent-link tree shape.
 
@@ -35,8 +35,8 @@ Two single-source tables live here so checker and runtime never grow parallel co
   marker (`Always` or `MaybePresent`) used by stdlib descriptors and checked
   user-function descriptors. It is not tied to stdlib; it is the one typed
   result-presence vocabulary exported by the schema crate.
-- **`stdlib.rs`** — one `StdOp` row per `std::<module>::<op>`: param types, return type, result presence, and an optional runtime `Capability` (`Clock`, `Context`, `Environment`, `Log`, `Filesystem`, or `Maintenance`). `lookup` types calls in the checker; the runtime dispatches off the same rows. Rows with no capability are pure except for `std::assert`, which routes to the assert handler by module name. Calls under a known std module that are absent from the table are checker errors, not runtime extension hooks.
-- **`error.rs`** — the one descriptor of the builtin `Error` shape (`code`/`message` required, `help`/`data` optional) plus the shared error-code grammar. `fields` / `field` serve checker field-typing and runtime construction validation; `is_error_code_text` serves `ErrorCode` conversion and `Error.code`.
+- **`stdlib.rs`** — one `StdOp` row per `std::<module>::<op>`: param types, return type, result presence, and an optional runtime `Capability` (`Clock`, `Context`, `Environment`, `Log`, or `Filesystem`). `lookup` types calls in the checker; the runtime dispatches off the same rows. Rows with no capability are pure except for `std::assert`, which routes to the assert handler by module name. Calls under a known std module that are absent from the table are checker errors, not runtime extension hooks.
+- **`error.rs`** — the one descriptor of the builtin `Error` shape (`code`/`message` required, `help`/`data` optional) plus the shared error-code grammar. `field` serves checker field-typing; `fields` serves checker field-typing and runtime construction (slot layout); `is_error_code_text` serves `ErrorCode` conversion and the runtime `Error.code` check.
 
 ## Module map
 
@@ -58,7 +58,7 @@ Two single-source tables live here so checker and runtime never grow parallel co
 
 ## Read next
 
-- `compile_resource` / `compile_stored_resource` (`compile.rs`) — the resource lowering split and why two entries exist (saved-`unknown` rejection).
+- `compile_resource` (`compile.rs`) — the one resource-lowering entry; saved-`unknown` rejection lives in `validate.rs`.
 - `member_node` / `sequence_leaf` (`compile.rs`) — the single owner of member→`Node` lowering and sequence desugaring.
 - `classify_key_type` / `index_arg_type_key_error` (`validate.rs`) — the orderable-scalar allowlist and the one index-arg divergence.
 - `compile_store` (`compile.rs`) / `check_store_index` (`validate.rs`) — keyed-root requirement and the trailing-identity-key rule for non-unique indexes.

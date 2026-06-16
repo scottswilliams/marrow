@@ -6,7 +6,7 @@ entry, or streams ordered iteration over record identities, index branches,
 unique lookups, and keyed child layers. This page maps implementation ownership;
 the user-facing iteration contract lives in `docs/language/builtins.md`.
 
-One invariant organizes the whole subsystem: **durable saved data is never materialized as a `Value`.** Streaming over saved data happens only inside a `for` loop, which runs a `SavedLoopPlan`; calling `keys`/`values`/`entries`/`reversed` directly on a saved place is instead rejected with `durable_collection_value`, a `run.unsupported` fault. So unbounded store data is always iterated, never collected. See `collection.rs` `eval_materialized` / `durable_collection_value` (the rejection) and `saved_iter.rs` `SavedLoopSpec` (the streaming path).
+One invariant organizes the whole subsystem: **durable saved data is never materialized as a `Value`.** Streaming over saved data happens only inside a `for` loop, which runs a `SavedLoopPlan`; calling `keys`/`values`/`entries`/`reversed` directly on a saved place is instead rejected with `durable_collection_value`, a `run.unsupported` fault. So unbounded store data is always iterated, never collected. See `collection.rs` `eval_values_materialized` / `durable_collection_value` (the rejection) and `saved_iter.rs` `SavedLoopSpec` (the streaming path).
 
 ## Parts
 
@@ -47,4 +47,4 @@ One invariant organizes the whole subsystem: **durable saved data is never mater
 - `saved_iter.rs` — `walk_keyed_children` and `SavedLoopPlan::new`: the recursive depth-bounded walk and four-way scan selection; understand these and the four scan modules become thin.
 - `read.rs` — `iterable_layer` / `iterable_index_branch`: how a checked path becomes a Root/Index/ChildLayer plan, with arg keys, `identity_start`, and walk depth.
 - `durable_read.rs` — `read_layer_entry_at` and `read_resource` / `materialize_resource_members`: the single place an address becomes a `Value`, branching leaf-decode vs nested member materialization.
-- `collection.rs` — `eval_materialized` / `durable_collection_value`: the saved-vs-local split and the no-materialize-durable invariant.
+- `collection.rs` — `eval_values_materialized` / `durable_collection_value`: the saved-vs-local split and the no-materialize-durable invariant.

@@ -6,7 +6,7 @@ Lowering runs after type checking and fills each function's `runtime_body`; `pro
 
 ## Parts
 
-- **Call resolution** — `CheckedCallTarget::for_call` decides what a call means, first-match-wins: saved-path read, local collection, constructor, pure builtin/std op, then user function. Builtins/std only match a pure call shape (no named or moded args).
+- **Call resolution** — `CheckedCallTarget::for_call` decides what a call means, first-match-wins: saved-path read, local collection, identity constructor (`Id` over a saved root), constructor, pure builtin/std op, then user function. Builtins/std only match a pure call shape (no named or moded args).
 - **Durable addressing** — `place.rs` precomputes a `CheckedSavedPlace` for each durable read/write: store id, resource, member/index/layer navigation, identity keys, and a `CheckedSavedTerminal` (Record/Field/Index). A place advances only while its terminal is still `Record`; once specialized it is a single unambiguous address.
 - **Expressions and statements** — `expr.rs` and `stmt.rs` recursively lower syntax into `CheckedExpr` and `CheckedStmt`/`CheckedBody`, threading a mutable lexical scope for local bindings and inference. `saved_place` precomputation rides on the expr nodes; pure value expressions carry `None`.
 - **Runtime value types** — `checked_runtime_value_type` converts the checker's `MarrowType` into `CheckedRuntimeValueType`, resolving enum members, identity key shapes, and sequence/tree nesting.
@@ -17,7 +17,7 @@ Identity refs (`CheckedFunctionRef`/`ResourceRef`/`EnumRef`) use positional `ptr
 
 | File | Responsibility |
 | --- | --- |
-| `crates/marrow-check/src/executable.rs` | Module root: re-exports the `Checked*` IR, defines `CheckedExecutableContext`, the ref enums, and the two public saved-place functions. |
+| `crates/marrow-check/src/executable.rs` | Module root: re-exports the `Checked*` IR, defines `CheckedExecutableContext`, the ref enums, and the public saved-place functions (root, activation-root, store-id, and per-record walk). |
 | `crates/marrow-check/src/executable/call_target.rs` | Resolves a call into a concrete `CheckedCallTarget`; maps builtin names and their attached-data/neighbor read traits. |
 | `crates/marrow-check/src/executable/expr.rs` | `CheckedExpr` and the saved-place IR; recursive expression lowering; function/enum/member ref construction. |
 | `crates/marrow-check/src/executable/place.rs` | Builds `CheckedSavedPlace` through the Record→Field/Index/Layer terminal state machine; overlays proposed catalog ids. |
