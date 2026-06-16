@@ -180,9 +180,6 @@ pub(crate) mod counting {
 
     #[derive(Default)]
     struct CountCells {
-        reads: Cell<usize>,
-        writes: Cell<usize>,
-        deletes: Cell<usize>,
         scans: Cell<usize>,
         scan_afters: Cell<usize>,
         scan_befores: Cell<usize>,
@@ -200,9 +197,6 @@ pub(crate) mod counting {
 
     impl BackendCounts {
         pub(crate) fn reset(&self) {
-            self.cells.reads.set(0);
-            self.cells.writes.set(0);
-            self.cells.deletes.set(0);
             self.cells.scans.set(0);
             self.cells.scan_afters.set(0);
             self.cells.scan_befores.set(0);
@@ -282,7 +276,6 @@ pub(crate) mod counting {
 
     impl<B: Backend> Backend for CountingBackend<B> {
         fn read(&self, key: &[u8]) -> Result<Option<Vec<u8>>, StoreError> {
-            self.cells().reads.set(self.cells().reads.get() + 1);
             let value = self.inner.read(key)?;
             self.counts
                 .add_bytes(key.len() + value.as_ref().map_or(0, Vec::len));
@@ -290,13 +283,11 @@ pub(crate) mod counting {
         }
 
         fn write(&mut self, key: &[u8], value: Vec<u8>) -> Result<(), StoreError> {
-            self.cells().writes.set(self.cells().writes.get() + 1);
             self.counts.add_bytes(key.len() + value.len());
             self.inner.write(key, value)
         }
 
         fn delete(&mut self, prefix: &[u8]) -> Result<(), StoreError> {
-            self.cells().deletes.set(self.cells().deletes.get() + 1);
             self.counts.add_bytes(prefix.len());
             self.inner.delete(prefix)
         }

@@ -102,6 +102,11 @@ pub(crate) const KEY_INT: u8 = 0x02;
 pub(crate) const KEY_DATE: u8 = 0x03;
 pub(crate) const KEY_INSTANT: u8 = 0x04;
 pub(crate) const KEY_DURATION: u8 = 0x05;
+// 0x06 is intentionally reserved for Decimal, which ScalarType permits as a value
+// but SavedKey does not permit as a key, so the tag is held to keep the typed order
+// stable if Decimal ever becomes key-eligible. These tags are a durable physical
+// encoding and must never be renumbered: doing so would silently reorder existing
+// on-disk keys and break stored-key compatibility.
 pub(crate) const KEY_STR: u8 = 0x07;
 pub(crate) const KEY_BYTES: u8 = 0x08;
 

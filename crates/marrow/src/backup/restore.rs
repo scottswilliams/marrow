@@ -385,17 +385,7 @@ fn replay(
         store.replace_catalog_snapshot(snapshot)?;
     }
 
-    let mut checksum = checksum_manifest(CHECKSUM_SEED, manifest)?;
-    checksum = checksum_catalog_section(checksum, &section.bytes);
-    let mut state_digest = Sha256Digest::new();
-    for _ in 0..manifest.record_count {
-        let cell = archive::read_cell(input)?;
-        checksum = checksum_cell(checksum, cell.as_ref())?;
-        cell.visit_framed_bytes(|bytes| state_digest.update(bytes))
-            .map_err(BackupError::cell_frame_too_large)?;
-        restore_cell(store, &cell)?;
-    }
-    validate_stream_integrity(manifest, state_digest.finish(), checksum, input)?;
+    fold_archive_stream(manifest, section, input, |cell| restore_cell(store, cell))?;
 
     // Indexes are derived, so rebuild them from the replayed records rather than
     // trusting bytes that could disagree. The rebuild runs inside this open
@@ -425,6 +415,22 @@ fn validate_archive_stream(
     section: &CatalogSection,
     input: &mut impl Read,
 ) -> Result<(), BackupError> {
+    fold_archive_stream(manifest, section, input, |_| Ok(()))
+}
+
+/// The single owner of the archive integrity contract: seed the checksum with the
+/// manifest, fold the catalog section, then read each declared cell once, folding it
+/// into both the rolling checksum and the state digest before handing it to
+/// `per_cell`, and finally enforce the state-digest, checksum, and trailing-byte
+/// invariants. Restore and validation must fold identical bytes in identical order, so
+/// they share this loop rather than reimplement it; restore passes a closure that
+/// writes each cell, validation passes a no-op.
+fn fold_archive_stream(
+    manifest: &BackupManifest,
+    section: &CatalogSection,
+    input: &mut impl Read,
+    mut per_cell: impl FnMut(&TreeBackupCellBuf) -> Result<(), BackupError>,
+) -> Result<(), BackupError> {
     let mut checksum = checksum_manifest(CHECKSUM_SEED, manifest)?;
     checksum = checksum_catalog_section(checksum, &section.bytes);
     let mut state_digest = Sha256Digest::new();
@@ -433,6 +439,7 @@ fn validate_archive_stream(
         checksum = checksum_cell(checksum, cell.as_ref())?;
         cell.visit_framed_bytes(|bytes| state_digest.update(bytes))
             .map_err(BackupError::cell_frame_too_large)?;
+        per_cell(&cell)?;
     }
     validate_stream_integrity(manifest, state_digest.finish(), checksum, input)
 }

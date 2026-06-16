@@ -36,6 +36,15 @@ pub(crate) fn create_backup_artifact(
                     format!("failed to replace {}: {error}", output_path.display()),
                 ));
             }
+            sync_parent_directory(output_path).map_err(|error| {
+                backup_io(
+                    error.kind(),
+                    format!(
+                        "failed to persist directory entry for {}: {error}",
+                        output_path.display()
+                    ),
+                )
+            })?;
             Ok(report)
         }
         Err(error) => {
@@ -127,6 +136,40 @@ fn create_owner_only_new_file(path: &Path) -> io::Result<File> {
 
 fn cleanup_temp_artifact(path: &Path) {
     let _ = fs::remove_file(path);
+}
+
+/// The renamed-into-place backup is only durable once its new directory entry is
+/// flushed: `sync_all` on the file persists the data blocks, but a crash can still
+/// lose the rename until the containing directory is itself synced.
+#[cfg(unix)]
+fn sync_parent_directory(path: &Path) -> io::Result<()> {
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    File::open(parent)?.sync_all()
+}
+
+#[cfg(windows)]
+fn sync_parent_directory(path: &Path) -> io::Result<()> {
+    use std::os::windows::fs::OpenOptionsExt;
+
+    const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    OpenOptions::new()
+        .read(true)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+        .open(parent)?
+        .sync_all()
+}
+
+#[cfg(not(any(unix, windows)))]
+fn sync_parent_directory(_path: &Path) -> io::Result<()> {
+    Ok(())
 }
 
 struct BackupWriter {

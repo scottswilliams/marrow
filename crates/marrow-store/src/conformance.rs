@@ -13,6 +13,7 @@ pub(crate) fn run_all<B: Backend>(
     scan_after_resumes_inside_the_prefix(&mut make()?)?;
     scan_before_resumes_inside_the_prefix_in_reverse(&mut make()?)?;
     bounded_scan_returns_only_entries_between_prefix_bounds(&mut make()?)?;
+    bounded_scan_after_resumes_between_prefix_bounds(&mut make()?)?;
     bounded_reverse_scan_returns_only_entries_between_prefix_bounds(&mut make()?)?;
     a_committed_transaction_keeps_its_writes(&mut make()?)?;
     a_rolled_back_transaction_discards_its_writes(&mut make()?)?;
@@ -140,6 +141,33 @@ fn bounded_scan_returns_only_entries_between_prefix_bounds(
             (b"\x58\x02".to_vec(), b"first".to_vec()),
             (b"\x58\x03".to_vec(), b"second".to_vec()),
         ]
+    );
+    Ok(())
+}
+
+fn bounded_scan_after_resumes_between_prefix_bounds(
+    store: &mut dyn Backend,
+) -> Result<(), StoreError> {
+    store.write(b"\x5b\x01", b"below".to_vec())?;
+    store.write(b"\x5b\x02", b"first".to_vec())?;
+    store.write(b"\x5b\x03", b"second".to_vec())?;
+    store.write(b"\x5b\x04", b"above".to_vec())?;
+    store.write(b"\x5c\x02", b"outside".to_vec())?;
+
+    let first = store.scan_between(b"\x5b", Some(b"\x5b\x02"), Some(b"\x5b\x04"), 1)?;
+    assert!(first.truncated);
+    assert_eq!(
+        first.entries,
+        vec![(b"\x5b\x02".to_vec(), b"first".to_vec())]
+    );
+
+    let cursor = first.entries[0].0.clone();
+    let second =
+        store.scan_between_after(b"\x5b", Some(b"\x5b\x02"), Some(b"\x5b\x04"), &cursor, 10)?;
+    assert!(!second.truncated);
+    assert_eq!(
+        second.entries,
+        vec![(b"\x5b\x03".to_vec(), b"second".to_vec())]
     );
     Ok(())
 }

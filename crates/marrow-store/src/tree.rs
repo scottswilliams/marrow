@@ -119,12 +119,53 @@ enum RecordChildScan {
     ExactNode,
 }
 
-fn record_child_scan_for_arity(identity_prefix: &[SavedKey], arity: usize) -> RecordChildScan {
-    if identity_prefix.len() + 1 == arity {
+#[derive(Clone, Copy)]
+enum ScanStep {
+    Next,
+    Prev,
+}
+
+/// The child scan to use when descending toward records of total `arity`, or `None`
+/// when the prefix already reaches the record level and has no further children.
+fn arity_child_scan(identity_prefix: &[SavedKey], arity: usize) -> Option<RecordChildScan> {
+    if identity_prefix.len() >= arity {
+        return None;
+    }
+    Some(if identity_prefix.len() + 1 == arity {
         RecordChildScan::ExactNode
     } else {
         RecordChildScan::DescendantNode
+    })
+}
+
+/// Decide whether a decoded cell is a record child under `identity_prefix` for the
+/// given scan, returning the child key one level below the prefix. A child is a node
+/// marker in `store` whose identity extends the prefix; `ExactNode` requires the
+/// immediate child level, `DescendantNode` accepts any deeper node.
+fn record_child_of(
+    decoded: &crate::cell::DataCellKey,
+    value: &[u8],
+    store: &CatalogId,
+    identity_prefix: &[SavedKey],
+    scan: RecordChildScan,
+) -> Option<SavedKey> {
+    if decoded.store != *store
+        || !matches!(decoded.kind, crate::cell::DataCellKind::Node)
+        || !decoded.identity.starts_with(identity_prefix)
+        || value != NODE_MARKER
+    {
+        return None;
     }
+    match scan {
+        RecordChildScan::DescendantNode if decoded.identity.len() <= identity_prefix.len() => {
+            return None;
+        }
+        RecordChildScan::ExactNode if decoded.identity.len() != identity_prefix.len() + 1 => {
+            return None;
+        }
+        _ => {}
+    }
+    Some(decoded.identity[identity_prefix.len()].clone())
 }
 
 impl TreeStore {
@@ -501,22 +542,6 @@ impl TreeStore {
         Ok(result)
     }
 
-    pub fn record_last_child(
-        &self,
-        store: &CatalogId,
-        identity_prefix: &[SavedKey],
-    ) -> Result<Option<SavedKey>, StoreError> {
-        self.record_last_child_with(store, identity_prefix, RecordChildScan::DescendantNode)
-    }
-
-    pub fn record_exact_last_child(
-        &self,
-        store: &CatalogId,
-        identity_prefix: &[SavedKey],
-    ) -> Result<Option<SavedKey>, StoreError> {
-        self.record_last_child_with(store, identity_prefix, RecordChildScan::ExactNode)
-    }
-
     fn record_last_child_with(
         &self,
         store: &CatalogId,
@@ -548,15 +573,6 @@ impl TreeStore {
             before,
             RecordChildScan::DescendantNode,
         )
-    }
-
-    pub fn record_exact_prev_child(
-        &self,
-        store: &CatalogId,
-        identity_prefix: &[SavedKey],
-        before: &SavedKey,
-    ) -> Result<Option<SavedKey>, StoreError> {
-        self.record_prev_child_with(store, identity_prefix, before, RecordChildScan::ExactNode)
     }
 
     fn record_prev_child_with(
@@ -628,20 +644,18 @@ impl TreeStore {
         identity_prefix: &[SavedKey],
         arity: usize,
     ) -> Result<Option<SavedKey>, StoreError> {
-        if identity_prefix.len() >= arity {
+        let Some(scan) = arity_child_scan(identity_prefix, arity) else {
             return Ok(None);
-        }
-        let scan = record_child_scan_for_arity(identity_prefix, arity);
-        let mut child = self.record_first_child_with(store, identity_prefix, scan)?;
-        while let Some(candidate) = child {
-            let mut next_prefix = identity_prefix.to_vec();
-            next_prefix.push(candidate.clone());
-            if self.record_identity_exists_under(store, &next_prefix, arity)? {
-                return Ok(Some(candidate));
-            }
-            child = self.record_next_child_with(store, identity_prefix, &candidate, scan)?;
-        }
-        Ok(None)
+        };
+        let seed = self.record_first_child_with(store, identity_prefix, scan)?;
+        self.first_existing_child_at_arity(
+            store,
+            identity_prefix,
+            arity,
+            scan,
+            seed,
+            ScanStep::Next,
+        )
     }
 
     pub fn record_next_child_at_arity(
@@ -651,20 +665,18 @@ impl TreeStore {
         arity: usize,
         after: &SavedKey,
     ) -> Result<Option<SavedKey>, StoreError> {
-        if identity_prefix.len() >= arity {
+        let Some(scan) = arity_child_scan(identity_prefix, arity) else {
             return Ok(None);
-        }
-        let scan = record_child_scan_for_arity(identity_prefix, arity);
-        let mut child = self.record_next_child_with(store, identity_prefix, after, scan)?;
-        while let Some(candidate) = child {
-            let mut next_prefix = identity_prefix.to_vec();
-            next_prefix.push(candidate.clone());
-            if self.record_identity_exists_under(store, &next_prefix, arity)? {
-                return Ok(Some(candidate));
-            }
-            child = self.record_next_child_with(store, identity_prefix, &candidate, scan)?;
-        }
-        Ok(None)
+        };
+        let seed = self.record_next_child_with(store, identity_prefix, after, scan)?;
+        self.first_existing_child_at_arity(
+            store,
+            identity_prefix,
+            arity,
+            scan,
+            seed,
+            ScanStep::Next,
+        )
     }
 
     pub fn record_last_child_at_arity(
@@ -673,20 +685,18 @@ impl TreeStore {
         identity_prefix: &[SavedKey],
         arity: usize,
     ) -> Result<Option<SavedKey>, StoreError> {
-        if identity_prefix.len() >= arity {
+        let Some(scan) = arity_child_scan(identity_prefix, arity) else {
             return Ok(None);
-        }
-        let scan = record_child_scan_for_arity(identity_prefix, arity);
-        let mut child = self.record_last_child_with(store, identity_prefix, scan)?;
-        while let Some(candidate) = child {
-            let mut next_prefix = identity_prefix.to_vec();
-            next_prefix.push(candidate.clone());
-            if self.record_identity_exists_under(store, &next_prefix, arity)? {
-                return Ok(Some(candidate));
-            }
-            child = self.record_prev_child_with(store, identity_prefix, &candidate, scan)?;
-        }
-        Ok(None)
+        };
+        let seed = self.record_last_child_with(store, identity_prefix, scan)?;
+        self.first_existing_child_at_arity(
+            store,
+            identity_prefix,
+            arity,
+            scan,
+            seed,
+            ScanStep::Prev,
+        )
     }
 
     pub fn record_prev_child_at_arity(
@@ -696,18 +706,47 @@ impl TreeStore {
         arity: usize,
         before: &SavedKey,
     ) -> Result<Option<SavedKey>, StoreError> {
-        if identity_prefix.len() >= arity {
+        let Some(scan) = arity_child_scan(identity_prefix, arity) else {
             return Ok(None);
-        }
-        let scan = record_child_scan_for_arity(identity_prefix, arity);
-        let mut child = self.record_prev_child_with(store, identity_prefix, before, scan)?;
+        };
+        let seed = self.record_prev_child_with(store, identity_prefix, before, scan)?;
+        self.first_existing_child_at_arity(
+            store,
+            identity_prefix,
+            arity,
+            scan,
+            seed,
+            ScanStep::Prev,
+        )
+    }
+
+    /// Walk children from `seed` in `step` order, returning the first whose subtree
+    /// actually carries a record at `arity`. Intermediate node markers can outlive their
+    /// records, so each candidate is confirmed before it is yielded.
+    fn first_existing_child_at_arity(
+        &self,
+        store: &CatalogId,
+        identity_prefix: &[SavedKey],
+        arity: usize,
+        scan: RecordChildScan,
+        seed: Option<SavedKey>,
+        step: ScanStep,
+    ) -> Result<Option<SavedKey>, StoreError> {
+        let mut child = seed;
         while let Some(candidate) = child {
             let mut next_prefix = identity_prefix.to_vec();
             next_prefix.push(candidate.clone());
             if self.record_identity_exists_under(store, &next_prefix, arity)? {
                 return Ok(Some(candidate));
             }
-            child = self.record_prev_child_with(store, identity_prefix, &candidate, scan)?;
+            child = match step {
+                ScanStep::Next => {
+                    self.record_next_child_with(store, identity_prefix, &candidate, scan)?
+                }
+                ScanStep::Prev => {
+                    self.record_prev_child_with(store, identity_prefix, &candidate, scan)?
+                }
+            };
         }
         Ok(None)
     }
@@ -733,21 +772,19 @@ impl TreeStore {
     }
 
     /// Count distinct record identities under `store_id` that carry any data-family cell.
-    /// The backup stream is ordered by store and identity, so this keeps only the previous
-    /// identity rather than materializing the record set.
+    /// The scan is bounded to this store's subtree, where cells are ordered by identity,
+    /// so it keeps only the previous identity rather than materializing the record set.
     pub fn data_record_count(&self, store_id: &CatalogId) -> Result<usize, StoreError> {
+        let prefix = CellKey::record_prefix(store_id, &[]);
         let mut count = 0usize;
         let mut previous_identity: Option<Vec<SavedKey>> = None;
-        self.visit_backup_cells(|cell| {
+        self.visit_family(prefix.as_bytes(), &mut |cell| {
             let data_key = cell.data_key();
-            if &data_key.store != store_id {
-                return Ok(());
-            }
             if previous_identity.as_deref() != Some(data_key.identity.as_slice()) {
                 count += 1;
                 previous_identity = Some(data_key.identity.clone());
             }
-            Ok(())
+            Ok(ControlFlow::Continue(()))
         })?;
         Ok(count)
     }
@@ -1421,27 +1458,9 @@ impl TreeStore {
         let mut last_child: Option<SavedKey> = None;
         self.for_each_page_entry(prefix.as_bytes(), |key, value| {
             let decoded = decode_data_cell_key(key).ok_or_else(|| corrupt_cell(key))?;
-            if decoded.store != *store
-                || !matches!(decoded.kind, crate::cell::DataCellKind::Node)
-                || !decoded.identity.starts_with(identity_prefix)
-                || value != NODE_MARKER
-            {
+            let Some(child) = record_child_of(&decoded, value, store, identity_prefix, scan) else {
                 return Ok(std::ops::ControlFlow::Continue(()));
-            }
-            match scan {
-                RecordChildScan::DescendantNode
-                    if decoded.identity.len() <= identity_prefix.len() =>
-                {
-                    return Ok(std::ops::ControlFlow::Continue(()));
-                }
-                RecordChildScan::ExactNode
-                    if decoded.identity.len() != identity_prefix.len() + 1 =>
-                {
-                    return Ok(std::ops::ControlFlow::Continue(()));
-                }
-                _ => {}
-            }
-            let child = decoded.identity[identity_prefix.len()].clone();
+            };
             if last_child.as_ref() == Some(&child) {
                 return Ok(std::ops::ControlFlow::Continue(()));
             }
@@ -1465,27 +1484,10 @@ impl TreeStore {
             let next_cursor = page.entries.last().map(|(key, _)| key.clone());
             for (key, value) in page.entries {
                 let decoded = decode_data_cell_key(&key).ok_or_else(|| corrupt_cell(&key))?;
-                if decoded.store != *store
-                    || !matches!(decoded.kind, crate::cell::DataCellKind::Node)
-                    || !decoded.identity.starts_with(identity_prefix)
-                    || value != NODE_MARKER
-                {
+                let Some(child) = record_child_of(&decoded, &value, store, identity_prefix, scan)
+                else {
                     continue;
-                }
-                match scan {
-                    RecordChildScan::DescendantNode
-                        if decoded.identity.len() <= identity_prefix.len() =>
-                    {
-                        continue;
-                    }
-                    RecordChildScan::ExactNode
-                        if decoded.identity.len() != identity_prefix.len() + 1 =>
-                    {
-                        continue;
-                    }
-                    _ => {}
-                }
-                let child = decoded.identity[identity_prefix.len()].clone();
+                };
                 if visit(child).is_break() {
                     return Ok(());
                 }
@@ -1516,27 +1518,10 @@ impl TreeStore {
             let next_cursor = page.entries.last().map(|(key, _)| key.clone());
             for (key, value) in page.entries {
                 let decoded = decode_data_cell_key(&key).ok_or_else(|| corrupt_cell(&key))?;
-                if decoded.store != *store
-                    || !matches!(decoded.kind, crate::cell::DataCellKind::Node)
-                    || !decoded.identity.starts_with(identity_prefix)
-                    || value != NODE_MARKER
-                {
+                let Some(child) = record_child_of(&decoded, &value, store, identity_prefix, scan)
+                else {
                     continue;
-                }
-                match scan {
-                    RecordChildScan::DescendantNode
-                        if decoded.identity.len() <= identity_prefix.len() =>
-                    {
-                        continue;
-                    }
-                    RecordChildScan::ExactNode
-                        if decoded.identity.len() != identity_prefix.len() + 1 =>
-                    {
-                        continue;
-                    }
-                    _ => {}
-                }
-                let child = decoded.identity[identity_prefix.len()].clone();
+                };
                 if last_child.as_ref() == Some(&child) {
                     continue;
                 }
@@ -2343,7 +2328,9 @@ mod tests {
         }
 
         counts.reset();
-        let last = store.record_last_child(&store_id, &[]).expect("last child");
+        let last = store
+            .record_last_child_at_arity(&store_id, &[], 1)
+            .expect("last child");
 
         assert_eq!(last, Some(SavedKey::Int(256)));
         assert_eq!(
@@ -2483,7 +2470,9 @@ mod tests {
 
         counts.reset();
         assert_eq!(
-            store.record_last_child(&store_id, &[]).expect("last child"),
+            store
+                .record_last_child_at_arity(&store_id, &[], 1)
+                .expect("last child"),
             Some(SavedKey::Int((record_count - 1) as i64))
         );
         assert_eq!(counts.total_scans(), 1);

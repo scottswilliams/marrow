@@ -42,68 +42,6 @@ impl MemStore {
             .retain(|key, _| key.as_slice() != prefix && !key.starts_with(prefix));
     }
 
-    fn scan(&self, prefix: &[u8], limit: usize) -> Result<ScanPage, StoreError> {
-        scan_memory(self.range_from(prefix), prefix, limit)
-    }
-
-    fn scan_after(
-        &self,
-        prefix: &[u8],
-        cursor: &[u8],
-        limit: usize,
-    ) -> Result<ScanPage, StoreError> {
-        scan_memory(self.range_after(cursor), prefix, limit)
-    }
-
-    fn scan_between(
-        &self,
-        prefix: &[u8],
-        lower: Option<&[u8]>,
-        upper: Option<&[u8]>,
-        limit: usize,
-    ) -> Result<ScanPage, StoreError> {
-        scan_memory(self.range_between(lower, upper, false), prefix, limit)
-    }
-
-    fn scan_between_after(
-        &self,
-        prefix: &[u8],
-        lower: Option<&[u8]>,
-        upper: Option<&[u8]>,
-        cursor: &[u8],
-        limit: usize,
-    ) -> Result<ScanPage, StoreError> {
-        let lower = Some(match lower {
-            Some(lower) if lower > cursor => lower,
-            _ => cursor,
-        });
-        scan_memory(self.range_between(lower, upper, true), prefix, limit)
-    }
-
-    fn scan_before(
-        &self,
-        prefix: &[u8],
-        cursor: &[u8],
-        limit: usize,
-    ) -> Result<ScanPage, StoreError> {
-        scan_memory(self.range_before(cursor), prefix, limit)
-    }
-
-    fn scan_between_before(
-        &self,
-        prefix: &[u8],
-        lower: Option<&[u8]>,
-        upper: Option<&[u8]>,
-        cursor: &[u8],
-        limit: usize,
-    ) -> Result<ScanPage, StoreError> {
-        let upper = Some(match upper {
-            Some(upper) if upper < cursor => upper,
-            _ => cursor,
-        });
-        scan_memory(self.range_between(lower, upper, false).rev(), prefix, limit)
-    }
-
     fn range_from<'a>(&'a self, prefix: &[u8]) -> impl Iterator<Item = (&'a [u8], &'a [u8])> {
         self.view()
             .range(prefix.to_vec()..)
@@ -182,7 +120,7 @@ impl Backend for MemStore {
     }
 
     fn scan(&self, prefix: &[u8], limit: usize) -> Result<ScanPage, StoreError> {
-        MemStore::scan(self, prefix, limit)
+        scan_memory(self.range_from(prefix), prefix, limit)
     }
 
     fn scan_after(
@@ -191,7 +129,7 @@ impl Backend for MemStore {
         cursor: &[u8],
         limit: usize,
     ) -> Result<ScanPage, StoreError> {
-        MemStore::scan_after(self, prefix, cursor, limit)
+        scan_memory(self.range_after(cursor), prefix, limit)
     }
 
     fn scan_before(
@@ -200,7 +138,7 @@ impl Backend for MemStore {
         cursor: &[u8],
         limit: usize,
     ) -> Result<ScanPage, StoreError> {
-        MemStore::scan_before(self, prefix, cursor, limit)
+        scan_memory(self.range_before(cursor), prefix, limit)
     }
 
     fn scan_between(
@@ -210,7 +148,7 @@ impl Backend for MemStore {
         upper: Option<&[u8]>,
         limit: usize,
     ) -> Result<ScanPage, StoreError> {
-        MemStore::scan_between(self, prefix, lower, upper, limit)
+        scan_memory(self.range_between(lower, upper, false), prefix, limit)
     }
 
     fn scan_between_after(
@@ -221,7 +159,11 @@ impl Backend for MemStore {
         cursor: &[u8],
         limit: usize,
     ) -> Result<ScanPage, StoreError> {
-        MemStore::scan_between_after(self, prefix, lower, upper, cursor, limit)
+        let lower = Some(match lower {
+            Some(lower) if lower > cursor => lower,
+            _ => cursor,
+        });
+        scan_memory(self.range_between(lower, upper, true), prefix, limit)
     }
 
     fn scan_between_before(
@@ -232,7 +174,11 @@ impl Backend for MemStore {
         cursor: &[u8],
         limit: usize,
     ) -> Result<ScanPage, StoreError> {
-        MemStore::scan_between_before(self, prefix, lower, upper, cursor, limit)
+        let upper = Some(match upper {
+            Some(upper) if upper < cursor => upper,
+            _ => cursor,
+        });
+        scan_memory(self.range_between(lower, upper, false).rev(), prefix, limit)
     }
 
     fn begin(&mut self) -> Result<(), StoreError> {

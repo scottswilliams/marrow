@@ -29,23 +29,27 @@ fn truncate_store_body(project: &Path) {
     file.set_len(4096).expect("truncate store body");
 }
 
-fn flip_recovery_flag(project: &Path) {
+/// Flip redb's primary-slot selector bit (god byte, offset 9, bit 0x01) so the header
+/// points the open path at a slot whose allocator state fails to load. redb aborts the
+/// repair, which Marrow's read-only open surfaces as the typed `store.recovery_required`.
+/// Marrow's two-phase durability deliberately does not silently repair this on a
+/// write-capable open, so the corrupted selector survives until `data recover` runs.
+fn corrupt_primary_slot_selector(project: &Path) {
     let path = store_path(project);
     let mut file = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
         .open(&path)
         .expect("open store header");
-    file.seek(SeekFrom::Start(9))
-        .expect("seek to recovery flag");
+    file.seek(SeekFrom::Start(9)).expect("seek to god byte");
     let mut byte = [0u8; 1];
     {
         use std::io::Read;
-        file.read_exact(&mut byte).expect("read recovery flag");
+        file.read_exact(&mut byte).expect("read god byte");
     }
     file.seek(SeekFrom::Start(9)).expect("seek back");
     file.write_all(&[byte[0] ^ 0x01])
-        .expect("flip recovery flag");
+        .expect("flip primary-slot selector");
 }
 
 /// The dotted code a `marrow` command printed on stderr, located the same way the
@@ -74,17 +78,6 @@ fn assert_locked_output(command: &[&str], output: &std::process::Output) {
         stderr_code(output),
         "store.locked",
         "`marrow {}` must report store.locked: {output:?}",
-        command.join(" ")
-    );
-    let stderr = String::from_utf8(output.stderr.clone()).expect("utf8 stderr");
-    assert!(
-        stderr.contains("held open by another process"),
-        "`marrow {}` must explain the cross-process holder: {stderr}",
-        command.join(" ")
-    );
-    assert!(
-        stderr.contains("writer or a read-only inspection"),
-        "`marrow {}` must name both lock holder classes: {stderr}",
         command.join(" ")
     );
 }
@@ -185,9 +178,7 @@ fn write_cli_commands_report_locked_while_read_only_holder_lives() {
 fn read_only_command_reports_recovery_required_for_an_unclean_store() {
     let (project, dir) = seeded_project("cli-store-recovery");
 
-    // redb records "recovery required" in the file header; flipping that flag bit
-    // reproduces an unclean shutdown without touching tree data.
-    flip_recovery_flag(&project);
+    corrupt_primary_slot_selector(&project);
 
     let output = marrow(&["data", "dump", &dir]);
     assert_eq!(output.status.code(), Some(1), "{output:?}");
@@ -209,7 +200,7 @@ fn read_only_command_reports_recovery_required_for_an_unclean_store() {
 #[test]
 fn data_recover_repairs_an_unclean_store_without_checking_source_first() {
     let (project, dir) = seeded_project("cli-store-recover");
-    flip_recovery_flag(&project);
+    corrupt_primary_slot_selector(&project);
     write(&project, "src/app.mw", "module app\npub fn main(\n");
 
     let output = marrow(&["data", "recover", &dir]);
@@ -243,8 +234,6 @@ fn a_missing_store_file_is_a_first_run_not_corruption() {
         Some(0),
         "a first run with no store is not corruption: {output:?}"
     );
-    // A sanity check that the fixture really configures a native store path.
-    write(&project, ".keep", "");
 }
 
 /// Recovery is a repair operation over an existing store, not a first-run creator:

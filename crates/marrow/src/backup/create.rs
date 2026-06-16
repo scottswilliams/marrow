@@ -2,6 +2,7 @@
 //! canonical cell stream behind a typed manifest.
 
 use std::io::Write;
+use std::ops::ControlFlow;
 
 use marrow_check::CheckedProgram;
 use marrow_project::Sha256Digest;
@@ -68,15 +69,13 @@ fn scan_state(store: &TreeStore) -> Result<(u64, String), BackupError> {
     let mut record_count = 0u64;
     let mut digest = Sha256Digest::new();
     let mut frame_error = None;
-    store.visit_backup_cells(|cell| {
-        if frame_error.is_some() {
-            return Ok(());
-        }
+    store.visit_backup_cells_until(|cell| {
         record_count += 1;
         if let Err(error) = cell.visit_framed_bytes(|bytes| digest.update(bytes)) {
             frame_error = Some(BackupError::cell_frame_too_large(error));
+            return Ok(ControlFlow::Break(()));
         }
-        Ok(())
+        Ok(ControlFlow::Continue(()))
     })?;
     if let Some(error) = frame_error {
         return Err(error);
@@ -95,15 +94,15 @@ fn checksum_archive(
     let mut checksum = checksum_manifest(CHECKSUM_SEED, manifest)?;
     checksum = checksum_catalog_section(checksum, catalog_section);
     let mut frame_error = None;
-    store.visit_backup_cells(|cell| {
-        if frame_error.is_some() {
-            return Ok(());
+    store.visit_backup_cells_until(|cell| match checksum_cell(checksum, cell) {
+        Ok(next) => {
+            checksum = next;
+            Ok(ControlFlow::Continue(()))
         }
-        match checksum_cell(checksum, cell) {
-            Ok(next) => checksum = next,
-            Err(error) => frame_error = Some(error),
+        Err(error) => {
+            frame_error = Some(error);
+            Ok(ControlFlow::Break(()))
         }
-        Ok(())
     })?;
     if let Some(error) = frame_error {
         return Err(error);

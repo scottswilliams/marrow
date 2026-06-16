@@ -73,6 +73,11 @@ pub(crate) fn read_catalog_snapshot_digest(
     Ok(read_catalog_snapshot(backend)?.map(|snapshot| snapshot.digest))
 }
 
+/// Rewrites the catalog family in place: delete every prior row, then write the
+/// header followed by one row per entry. Atomicity is the caller's
+/// responsibility — every production caller runs this inside an already-open
+/// store transaction so the catalog rows publish together with the data, index,
+/// and metadata writes of the same apply or restore.
 pub(crate) fn replace_catalog_snapshot(
     backend: &mut (impl Backend + ?Sized),
     snapshot: &CatalogMetadata,
@@ -80,25 +85,6 @@ pub(crate) fn replace_catalog_snapshot(
     snapshot
         .validate()
         .map_err(|error| corrupt_catalog(error.message))?;
-    // Replacing the family deletes every prior row and rewrites the header and
-    // entries, so it must be one transaction: a failure partway through would
-    // otherwise leave the catalog with no header or a partial entry set. Nested
-    // inside an apply transaction this defers durability to the outer commit, so
-    // catalog rows still publish atomically with data, indexes, and metadata.
-    backend.begin()?;
-    match write_catalog_rows(backend, snapshot) {
-        Ok(()) => backend.commit(),
-        Err(error) => {
-            let _ = backend.rollback();
-            Err(error)
-        }
-    }
-}
-
-fn write_catalog_rows(
-    backend: &mut (impl Backend + ?Sized),
-    snapshot: &CatalogMetadata,
-) -> Result<(), StoreError> {
     backend.delete(&catalog_family())?;
     backend.write(&catalog_header_key(), encode_header(snapshot)?)?;
     for (ordinal, entry) in snapshot.entries.iter().enumerate() {
