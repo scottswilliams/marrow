@@ -12,24 +12,15 @@ use marrow_store::cell::CatalogId;
 use marrow_store::tree::TreeStore;
 use marrow_store::value::Scalar;
 
-const BASELINE: &str = "module books\n\
-     \n\
-     resource Book\n\
-     \x20   required title: string\n\
-     store ^books(id: int): Book\n\
-     pub fn add(title: string): Id(^books)\n\
-     \x20   return nextId(^books)\n";
+const BASELINE: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/v01/evolution/books_required_baseline.mw"
+));
 
-const ADD_PAGES: &str = "module books\n\
-     \n\
-     resource Book\n\
-     \x20   required title: string\n\
-     \x20   required pages: int\n\
-     store ^books(id: int): Book\n\
-     evolve\n\
-     \x20   default Book.pages = 0\n\
-     pub fn add(title: string): Id(^books)\n\
-     \x20   return nextId(^books)\n";
+const ADD_PAGES: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/v01/evolution/books_required_default.mw"
+));
 
 const ADD_RATING: &str = "module books\n\
      \n\
@@ -43,27 +34,17 @@ const ADD_RATING: &str = "module books\n\
      pub fn add(title: string): Id(^books)\n\
      \x20   return nextId(^books)\n";
 
-const WITH_SUBTITLE: &str = "module books\n\
-     \n\
-     resource Book\n\
-     \x20   required title: string\n\
-     \x20   subtitle: string\n\
-     store ^books(id: int): Book\n";
+const WITH_SUBTITLE: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/v01/evolution/books_subtitle_baseline.mw"
+));
 
-const RETIRE_SUBTITLE: &str = "module books\n\
-     \n\
-     resource Book\n\
-     \x20   required title: string\n\
-     store ^books(id: int): Book\n\
-     evolve\n\
-     \x20   retire Book.subtitle\n";
+const RETIRE_SUBTITLE: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/v01/evolution/books_retire_subtitle.mw"
+));
 
-const REUSE_SUBTITLE: &str = "module books\n\
-     \n\
-     resource Book\n\
-     \x20   required title: string\n\
-     \x20   subtitle: string\n\
-     store ^books(id: int): Book\n";
+const REUSE_SUBTITLE: &str = WITH_SUBTITLE;
 
 const RENAME_TITLE_TO_NAME: &str = "module books\n\
      \n\

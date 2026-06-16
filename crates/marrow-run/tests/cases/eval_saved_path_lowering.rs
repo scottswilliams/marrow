@@ -10,7 +10,7 @@ use marrow_store::key::SavedKey;
 use marrow_store::tree::TreeStore;
 use marrow_store::value::{SavedValue, ScalarType};
 
-/// record a bare int key does.
+/// A bare int key argument splices in as the record key and writes through.
 #[test]
 fn an_identity_argument_splices_in_as_the_record_key() {
     let program = checked_program(
@@ -89,8 +89,8 @@ fn an_identity_mixed_with_a_raw_key_is_rejected() {
     );
 }
 
-/// Addressing a keyed root without an identity is a type error naming the
-/// expected key count, not a silent read of the keyless path.
+/// Addressing a keyed root without an identity yields an unkeyed, untyped value
+/// that `check.untyped_value` rejects, rather than silently reading a keyless path.
 #[test]
 fn a_keyed_root_without_an_identity_is_a_type_error() {
     checker_rejects(

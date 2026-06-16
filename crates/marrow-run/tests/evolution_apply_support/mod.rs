@@ -233,7 +233,7 @@ pub fn read_scalar(
     member_id: &str,
     scalar: marrow_store::value::ScalarType,
 ) -> Option<Scalar> {
-    let member = CatalogId::new(member_id.to_string()).expect("member id");
+    let member = CatalogId::new(member_id).expect("member id");
     let bytes = store
         .read_data_value(
             store_id,

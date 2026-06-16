@@ -270,6 +270,9 @@ pub fn has_book(id: int): bool
 pub fn has_title(id: int): bool
     return exists(^books(id).title)
 
+pub fn has_subtitle(id: int): bool
+    return exists(^books(id).subtitle)
+
 pub fn subtitle_or(id: int, fallback: string): string
     return ^books(id).subtitle ?? fallback
 ";
@@ -286,8 +289,9 @@ fn exists_reports_record_and_field_presence() {
     // Record 1 exists (it has the title child); record 2 does not.
     assert_eq!(value("test::has_book", 1), Some(Value::Bool(true)));
     assert_eq!(value("test::has_book", 2), Some(Value::Bool(false)));
-    // Its title field is present; its sparse subtitle is not.
+    // Its title field is present; its sparse subtitle is absent.
     assert_eq!(value("test::has_title", 1), Some(Value::Bool(true)));
+    assert_eq!(value("test::has_subtitle", 1), Some(Value::Bool(false)));
 }
 
 #[test]

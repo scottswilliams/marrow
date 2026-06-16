@@ -9,7 +9,10 @@
 use crate::support;
 use support::*;
 
-use marrow_run::{CallDepthFault, CheckedEntryCall, RuntimeError, Value};
+use marrow_run::{
+    CallDepthFault, CheckedEntryCall, RUN_AMBIGUOUS_FUNCTION, RUN_NO_VALUE, RUN_PRIVATE_FUNCTION,
+    RUN_UNKNOWN_FUNCTION, RuntimeError, Value,
+};
 use marrow_store::key::SavedKey;
 use marrow_store::tree::TreeStore;
 use marrow_store::value::SavedValue;
@@ -142,7 +145,7 @@ fn a_bare_entry_name_matching_two_public_functions_is_ambiguous() {
     ]);
     let error =
         CheckedEntryCall::new(&program, "run", vec![]).expect_err("bare `run` is ambiguous");
-    assert_eq!(error.code(), "run.ambiguous_function");
+    assert_eq!(error.code(), RUN_AMBIGUOUS_FUNCTION);
     assert!(
         CheckedEntryCall::new(&program, "a::run", vec![]).is_ok(),
         "the qualified entry resolves"
@@ -163,7 +166,7 @@ fn a_qualified_entry_naming_a_private_function_is_rejected() {
     ]);
     let error = CheckedEntryCall::new(&program, "a::secret", vec![])
         .expect_err("a private function is not an entry");
-    assert_eq!(error.code(), "run.private_function");
+    assert_eq!(error.code(), RUN_PRIVATE_FUNCTION);
     assert!(
         CheckedEntryCall::new(&program, "a::open", vec![]).is_ok(),
         "the public entry in the same module resolves"
@@ -172,7 +175,7 @@ fn a_qualified_entry_naming_a_private_function_is_rejected() {
         .expect_err("an undeclared entry is unknown");
     assert_eq!(
         missing.code(),
-        "run.unknown_function",
+        RUN_UNKNOWN_FUNCTION,
         "a missing name is a distinct fault from a private one"
     );
 }
@@ -248,6 +251,6 @@ fn binding_a_no_value_call_result_faults_at_run_time() {
     let store = TreeStore::memory();
     assert_run_error(
         run_entry(&store, checked_entry!(&program, "test::f")),
-        "run.no_value",
+        RUN_NO_VALUE,
     );
 }

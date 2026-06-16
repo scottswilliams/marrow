@@ -11,20 +11,16 @@ use support::*;
 use marrow_run::Value;
 use marrow_store::tree::TreeStore;
 
-/// Books on shelves, indexed by `(shelf, id)`. Whole-record `delete` must tear
-/// down the index entry the record fed, so a branch count and the root count both
-/// track only the survivors. `idsOnShelf` prints the surviving records under a
-/// branch so an exclusion (a deleted id still resolving) is observable, not just a
-/// count that could coincidentally match.
-const SHELVED_BOOKS: &str = "\
-resource Book
-    required title: string
-    required shelf: string
-store ^books(id: int): Book
-
-    index byShelf(shelf, id)
-
-pub fn add(id: int, t: string, s: string)
+/// Books on shelves, indexed by `(shelf, id)`. The resource/store/index shape is
+/// owned by the shared `BOOK_SHELF_INDEX_SCHEMA` fixture; only the entry functions
+/// are declared here. `add` writes a whole record so whole-record `delete` must
+/// tear down the index entry that record fed, leaving a branch count and the root
+/// count that track only the survivors. `titlesOnShelf` prints the surviving
+/// records under a branch so an exclusion (a deleted id still resolving) is
+/// observable, not just a count that could coincidentally match.
+fn shelved_books() -> String {
+    format!(
+        "{BOOK_SHELF_INDEX_SCHEMA}pub fn add(id: int, t: string, s: string)
     var b: Book
     b.title = t
     b.shelf = s
@@ -39,10 +35,12 @@ pub fn countShelf(shelf: string): int
 pub fn countRoot(): int
     return count(^books)
 
-pub fn idsOnShelf(shelf: string)
+pub fn titlesOnShelf(shelf: string)
     for id, book in ^books.byShelf(shelf)
-        print($\"{book.title}\")
-";
+        print($\"{{book.title}}\")
+"
+    )
+}
 
 fn populated_store(program: &marrow_check::CheckedRuntimeProgram) -> TreeStore {
     let store = TreeStore::memory();
@@ -107,7 +105,7 @@ fn remove(program: &marrow_check::CheckedRuntimeProgram, store: &TreeStore, id: 
 fn a_bulk_delete_of_several_records_drops_their_index_entries() {
     // Deleting two of the three `fiction` records leaves exactly one under the
     // branch and four under the root. The branch count is not the pre-delete count.
-    let program = checked_program(SHELVED_BOOKS);
+    let program = checked_program(&shelved_books());
     let store = populated_store(&program);
     assert_eq!(count_shelf(&program, &store, "fiction"), 3);
     assert_eq!(count_root(&program, &store), 5);
@@ -126,7 +124,11 @@ fn a_bulk_delete_of_several_records_drops_their_index_entries() {
     // titles no longer resolve through the branch.
     let survivors = run_entry(
         &store,
-        checked_entry!(&program, "test::idsOnShelf", Value::Str("fiction".into())),
+        checked_entry!(
+            &program,
+            "test::titlesOnShelf",
+            Value::Str("fiction".into())
+        ),
     )
     .expect("iterate survivors")
     .output;
@@ -138,7 +140,7 @@ fn deleting_every_record_in_a_prefix_empties_that_branch_only() {
     // Deleting every `history` record empties that branch entirely while the
     // untouched `fiction` branch keeps its full count: a prefix delete is scoped to
     // its branch and does not perturb a sibling branch's index entries.
-    let program = checked_program(SHELVED_BOOKS);
+    let program = checked_program(&shelved_books());
     let store = populated_store(&program);
 
     remove(&program, &store, 4);
@@ -160,7 +162,11 @@ fn deleting_every_record_in_a_prefix_empties_that_branch_only() {
     assert_eq!(
         run_entry(
             &store,
-            checked_entry!(&program, "test::idsOnShelf", Value::Str("history".into())),
+            checked_entry!(
+                &program,
+                "test::titlesOnShelf",
+                Value::Str("history".into())
+            ),
         )
         .expect("iterate empty branch")
         .output,
@@ -169,7 +175,11 @@ fn deleting_every_record_in_a_prefix_empties_that_branch_only() {
     assert_eq!(
         run_entry(
             &store,
-            checked_entry!(&program, "test::idsOnShelf", Value::Str("fiction".into())),
+            checked_entry!(
+                &program,
+                "test::titlesOnShelf",
+                Value::Str("fiction".into())
+            ),
         )
         .expect("iterate sibling branch")
         .output,
@@ -181,7 +191,7 @@ fn deleting_every_record_in_a_prefix_empties_that_branch_only() {
 fn the_root_and_every_branch_are_empty_after_deleting_all_records() {
     // Deleting all records leaves both index branches and the root at zero — no
     // orphaned index entry survives a record it pointed at.
-    let program = checked_program(SHELVED_BOOKS);
+    let program = checked_program(&shelved_books());
     let store = populated_store(&program);
 
     for id in 1..=5 {

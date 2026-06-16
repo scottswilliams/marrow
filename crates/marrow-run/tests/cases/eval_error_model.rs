@@ -6,7 +6,8 @@ use crate::support;
 use support::*;
 
 use marrow_run::{
-    RUN_DECIMAL_OVERFLOW, RUN_DIVIDE_BY_ZERO, RUN_OVERFLOW, RUN_TYPE, RUN_UNCAUGHT_THROW, Value,
+    RUN_DECIMAL_OVERFLOW, RUN_DIVIDE_BY_ZERO, RUN_OVERFLOW, RUN_TEMPORAL_OVERFLOW, RUN_TYPE,
+    RUN_UNCAUGHT_THROW, Value,
 };
 use marrow_store::tree::TreeStore;
 
@@ -205,7 +206,7 @@ fn numeric_parse_and_range_faults_are_catchable_with_specific_codes() {
     );
     assert_eq!(
         run(checked_entry!(&program, "test::instant_range_code")),
-        Ok(Some(Value::Str("run.temporal_overflow".into())))
+        Ok(Some(Value::Str(RUN_TEMPORAL_OVERFLOW.into())))
     );
     assert_eq!(
         run(checked_entry!(&program, "test::decimal_overflow_code")),

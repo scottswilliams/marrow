@@ -1,5 +1,6 @@
-//! Uninitialized typed vars starting at their zero, plus return-value updates
-//! after parameter modes were removed.
+//! Uninitialized typed vars start at their zero, and a function return value
+//! updates a local, resource, or resource field through assignment;
+//! parameter-mode syntax is rejected before runtime.
 
 use crate::support;
 use support::*;

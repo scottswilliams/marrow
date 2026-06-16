@@ -8,29 +8,37 @@
 use crate::evolution_apply_support;
 use evolution_apply_support::*;
 
+use marrow_check::CheckedProgram;
 use marrow_run::evolution::{AutoApplyOutcome, RunObligation, try_auto_apply};
 use marrow_store::tree::TreeStore;
 use marrow_store::value::Scalar;
 
-/// Add a sparse field over a populated store: discharging it writes no record, so the run
-/// auto-applies it. The store advances to the proposal epoch and stamps the new shape.
-#[test]
-fn a_sparse_add_over_a_populated_store_auto_applies_and_advances_the_epoch()
--> Result<(), Box<dyn std::error::Error>> {
-    let root = temp_project("autoapply-sparse-populated", |root| {
-        write(
-            root,
-            "src/books.mw",
-            "module books\n\
-             resource Book\n\
-             \x20   required title: string\n\
-             store ^books(id: int): Book\n\
-             pub fn add(title: string): Id(^books)\n\
-             \x20   return nextId(^books)\n",
-        );
+// The before/after `module books` shapes are the repo-root corpus fixtures the apply
+// suites already load, so these cases bind the same canonical source rather than
+// re-declaring it inline.
+const BOOKS_BASELINE: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/v01/evolution/books_required_baseline.mw"
+));
+const BOOKS_SUBTITLE_BASELINE: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/v01/evolution/books_subtitle_baseline.mw"
+));
+const BOOKS_REQUIRED_DEFAULT: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/v01/evolution/books_required_default.mw"
+));
+
+/// Commit the required-title baseline over a one-record store, then evolve to add the
+/// sparse `subtitle`. Returns the project root, the re-checked subtitle program, and the
+/// seeded store at the zero-mutation witness point the sparse-add and stale-pin cases
+/// both start from.
+fn seeded_subtitle_add(name: &str) -> (TempProject, CheckedProgram, TreeStore) {
+    let root = temp_project(name, |root| {
+        write(root, "src/books.mw", BOOKS_BASELINE);
     });
     let accepted = commit_then_check(&root).expect("committed fixture");
-    let accepted_place = root_place(&accepted, "books")?;
+    let accepted_place = root_place(&accepted, "books").expect("accepted books place");
     let store = TreeStore::memory();
     let seed = Seed {
         store: &store,
@@ -39,18 +47,17 @@ fn a_sparse_add_over_a_populated_store_auto_applies_and_advances_the_epoch()
     seed.record(1);
     seed.member(1, "title", Scalar::Str("Dune".into()));
 
-    write(
-        &root,
-        "src/books.mw",
-        "module books\n\
-         resource Book\n\
-         \x20   required title: string\n\
-         \x20   subtitle: string\n\
-         store ^books(id: int): Book\n\
-         pub fn add(title: string): Id(^books)\n\
-         \x20   return nextId(^books)\n",
-    );
+    write(&root, "src/books.mw", BOOKS_SUBTITLE_BASELINE);
     let program = checked(&root).expect("checked fixture");
+    (root, program, store)
+}
+
+/// Add a sparse field over a populated store: discharging it writes no record, so the run
+/// auto-applies it. The store advances to the proposal epoch and stamps the new shape.
+#[test]
+fn a_sparse_add_over_a_populated_store_auto_applies_and_advances_the_epoch()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (_root, program, store) = seeded_subtitle_add("autoapply-sparse-populated");
     let w = witness(&program, &store);
     let target_epoch = w
         .proposal_catalog
@@ -84,16 +91,7 @@ fn a_sparse_add_over_a_populated_store_auto_applies_and_advances_the_epoch()
 #[test]
 fn a_required_add_over_a_populated_store_must_fence() -> Result<(), Box<dyn std::error::Error>> {
     let root = temp_project("autoapply-required-populated", |root| {
-        write(
-            root,
-            "src/books.mw",
-            "module books\n\
-             resource Book\n\
-             \x20   required title: string\n\
-             store ^books(id: int): Book\n\
-             pub fn add(title: string): Id(^books)\n\
-             \x20   return nextId(^books)\n",
-        );
+        write(root, "src/books.mw", BOOKS_BASELINE);
     });
     let accepted = commit_then_check(&root).expect("committed fixture");
     let accepted_place = root_place(&accepted, "books")?;
@@ -105,19 +103,7 @@ fn a_required_add_over_a_populated_store_must_fence() -> Result<(), Box<dyn std:
     seed.record(1);
     seed.member(1, "title", Scalar::Str("Dune".into()));
 
-    write(
-        &root,
-        "src/books.mw",
-        "module books\n\
-         resource Book\n\
-         \x20   required title: string\n\
-         \x20   required pages: int\n\
-         store ^books(id: int): Book\n\
-         evolve\n\
-         \x20   default Book.pages = 0\n\
-         pub fn add(title: string): Id(^books)\n\
-         \x20   return nextId(^books)\n",
-    );
+    write(&root, "src/books.mw", BOOKS_REQUIRED_DEFAULT);
     let program = checked(&root).expect("checked fixture");
     let w = witness(&program, &store);
 
@@ -224,40 +210,7 @@ fn an_empty_drop_that_becomes_populated_before_the_stamp_fails_closed()
 /// state.
 #[test]
 fn a_stale_commit_pin_fails_the_auto_apply_closed() -> Result<(), Box<dyn std::error::Error>> {
-    let root = temp_project("autoapply-toctou-pin", |root| {
-        write(
-            root,
-            "src/books.mw",
-            "module books\n\
-             resource Book\n\
-             \x20   required title: string\n\
-             store ^books(id: int): Book\n\
-             pub fn add(title: string): Id(^books)\n\
-             \x20   return nextId(^books)\n",
-        );
-    });
-    let accepted = commit_then_check(&root).expect("committed fixture");
-    let accepted_place = root_place(&accepted, "books")?;
-    let store = TreeStore::memory();
-    let seed = Seed {
-        store: &store,
-        place: &accepted_place,
-    };
-    seed.record(1);
-    seed.member(1, "title", Scalar::Str("Dune".into()));
-
-    write(
-        &root,
-        "src/books.mw",
-        "module books\n\
-         resource Book\n\
-         \x20   required title: string\n\
-         \x20   subtitle: string\n\
-         store ^books(id: int): Book\n\
-         pub fn add(title: string): Id(^books)\n\
-         \x20   return nextId(^books)\n",
-    );
-    let program = checked(&root).expect("checked fixture");
+    let (_root, program, store) = seeded_subtitle_add("autoapply-toctou-pin");
     let mut w = witness(&program, &store);
     // The witness is additive, so it classifies as zero-mutation and would auto-apply.
     assert_eq!(

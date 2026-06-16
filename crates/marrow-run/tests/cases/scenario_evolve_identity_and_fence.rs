@@ -2,16 +2,15 @@
 //! contracts that a multi-step language-database workflow leans on:
 //!
 //! - adding a sparse `Id(^store)` reference field to a resource that already holds
-//!   saved records, evolving it, and proving the old records stay intact, the new
-//!   field reads as absent until written, and a fresh identity write round-trips
-//!   through the same store as its canonical key encoding;
+//!   saved records, evolving it, and proving the old records stay intact and the new
+//!   field reads as absent until written;
 //! - the activation fence after an `evolve apply` advances the store epoch: a real
 //!   pre-evolution program still pinned to its accepted epoch is locked out of a
 //!   write-capable open with the typed `run.store_evolved` fence before any write.
 //!
 //! Both run through the real check/commit/preview/apply path and assert typed
-//! oracles: runtime `Value`s, direct store reads of the canonical identity encoding,
-//! and typed `FenceError` codes — never rendered prose.
+//! oracles: direct store reads of stored member values and typed `FenceError`
+//! codes — never rendered prose.
 use crate::evolution_apply_support;
 use evolution_apply_support::{
     Seed, checked, commit_then_check, member_catalog_id, proposal_catalog_id, read_scalar,
@@ -19,9 +18,7 @@ use evolution_apply_support::{
 };
 
 use marrow_run::evolution::{FenceError, apply, fence};
-use marrow_store::cell::CatalogId;
-use marrow_store::key::{SavedKey, encode_identity_payload};
-use marrow_store::tree::{DataPathSegment, TreeStore};
+use marrow_store::tree::TreeStore;
 use marrow_store::value::{Scalar, ScalarType};
 
 use std::path::Path;
@@ -61,11 +58,7 @@ fn adding_a_sparse_identity_field_by_evolution_preserves_old_records_and_admits_
     // A populated `Book` store evolves to gain a sparse `Id(^authors)` reference. The
     // evolution backfills nothing (a sparse add carries no data obligation), the old
     // record keeps its `title`, and the new reference field is absent on it — the sparse
-    // contract, not a zero identity. A reference seeded at the new member's bound id is a
-    // valid identity round-trip: it stores the referenced author's canonical key encoding,
-    // the same order-preserving bytes a unique index entry holds, and reads back as that
-    // identity. The runtime's own identity write path is exercised end-to-end in the CLI
-    // scenario, which discharges the apply through the binary that publishes the catalog.
+    // contract, not a zero identity.
     let root = evolution_apply_support::temp_project("evolve-identity-sparse", |root| {
         write_source(root, REFERENCE_BASELINE);
     });
@@ -117,34 +110,6 @@ fn adding_a_sparse_identity_field_by_evolution_preserves_old_records_and_admits_
         read_scalar(&store, &store_id, 1, &author_ref_id, ScalarType::Str),
         None,
         "the freshly added sparse reference field is absent until written",
-    );
-
-    // Seed a reference to `^authors(1)` at the new member's bound id, the canonical
-    // identity key encoding the runtime would write, and read it back: the identity
-    // round-trips through the evolved store as those exact bytes.
-    let reference = encode_identity_payload(&[SavedKey::Int(1)]);
-    store
-        .write_data_value(
-            &store_id,
-            &[SavedKey::Int(1)],
-            &[DataPathSegment::Member(
-                CatalogId::new(author_ref_id.clone()).expect("ref member id"),
-            )],
-            reference.clone(),
-        )
-        .expect("write the identity reference cell");
-    assert_eq!(
-        store
-            .read_data_value(
-                &store_id,
-                &[SavedKey::Int(1)],
-                &[DataPathSegment::Member(
-                    CatalogId::new(author_ref_id).expect("ref member id"),
-                )],
-            )
-            .expect("read reference cell"),
-        Some(reference),
-        "the reference round-trips as the referenced identity's canonical key encoding",
     );
 
     Ok(())

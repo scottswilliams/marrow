@@ -1,6 +1,10 @@
 //! Cross-call-boundary write-fault recovery and dotted-code propagation, and
 //! unkeyed-group delete contracts: sparse no-op, required-field rejection, and
 //! maintenance override.
+//!
+//! Also covers typed keyed-resource entry-write contracts: required-field
+//! rejection on entry write, empty-entry presence preservation, and read
+//! materialization of values written through plain and nested entry writes.
 
 use crate::support;
 use support::*;

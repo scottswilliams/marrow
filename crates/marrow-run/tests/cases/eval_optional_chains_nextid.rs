@@ -104,12 +104,23 @@ fn optional_chain_defaults_when_an_intermediate_field_is_absent() {
     assert_eq!(value, Some(Value::Str("(unknown)".into())));
 }
 
+/// The same `Patient` schema, but a chain whose final hop may be absent is read
+/// without a `??` default. A maybe-present read that escapes its guard is a
+/// checker rejection, not a runtime fault.
+const UNGUARDED_PATIENT_CHAIN: &str = "\
+resource Patient
+    name
+        first: string
+        last: string
+store ^patients(id: int): Patient
+
+pub fn first_name(id: int): string
+    return ^patients(id)?.name?.first
+";
+
 #[test]
 fn an_unguarded_optional_chain_that_ends_absent_is_rejected() {
-    checker_rejects(
-        "resource Patient\n    name\n        first: string\n        last: string\nstore ^patients(id: int): Patient\n\npub fn first_name(id: int): string\n    return ^patients(id)?.name?.first\n",
-        "check.bare_maybe_present_read",
-    );
+    checker_rejects(UNGUARDED_PATIENT_CHAIN, "check.bare_maybe_present_read");
 }
 
 #[test]
@@ -171,42 +182,61 @@ fn next_id_skips_ahead_after_restore() {
     );
 }
 
-/// `nextId` over a composite-identity root faults with `write.next_id_unsupported`
-/// rather than inventing a bogus `Int(1)`: composite identities have no default
-/// allocation policy.
+/// `nextId` over a composite-identity root is rejected: composite identities
+/// have no default allocation policy, so no single int can be allocated.
+const COMPOSITE_ROOT_NEXT_ID: &str = "\
+resource Enrollment
+    required grade: string
+store ^enrollments(studentId: int, courseId: int): Enrollment
+
+pub fn fresh(): int
+    return nextId(^enrollments)
+";
+
 #[test]
 fn next_id_over_a_composite_root_faults() {
-    checker_rejects(
-        "resource Enrollment\n    required grade: string\nstore ^enrollments(studentId: int, courseId: int): Enrollment\n\npub fn fresh(): int\n    return nextId(^enrollments)\n",
-        "check.next_id_requires_single_int",
-    );
+    checker_rejects(COMPOSITE_ROOT_NEXT_ID, "check.next_id_requires_single_int");
 }
 
-/// `nextId` over a keyless singleton root faults: a singleton has no generated
-/// identity to allocate.
+/// `nextId` over a keyless singleton root is rejected: a singleton has no
+/// generated identity to allocate.
+const SINGLETON_ROOT_NEXT_ID: &str = "\
+resource Settings
+    required theme: string
+store ^settings: Settings
+
+pub fn fresh(): int
+    return nextId(^settings)
+";
+
 #[test]
 fn next_id_over_a_singleton_root_faults() {
-    checker_rejects(
-        "resource Settings\n    required theme: string\nstore ^settings: Settings\n\npub fn fresh(): int\n    return nextId(^settings)\n",
-        "check.next_id_requires_single_int",
-    );
+    checker_rejects(SINGLETON_ROOT_NEXT_ID, "check.next_id_requires_single_int");
 }
 
-/// `nextId` over a single non-integer (string) identity key faults: only an
-/// `int` identity has the default policy.
+/// `nextId` over a single non-integer (string) identity key is rejected: only
+/// an `int` identity has the default policy.
+const STRING_KEYED_ROOT_NEXT_ID: &str = "\
+resource Tag
+    required name: string
+store ^tags(slug: string): Tag
+
+pub fn fresh(): int
+    return nextId(^tags)
+";
+
 #[test]
 fn next_id_over_a_string_keyed_root_faults() {
     checker_rejects(
-        "resource Tag\n    required name: string\nstore ^tags(slug: string): Tag\n\npub fn fresh(): int\n    return nextId(^tags)\n",
+        STRING_KEYED_ROOT_NEXT_ID,
         "check.next_id_requires_single_int",
     );
 }
 
-/// `nextId` of a saved root no store declares is a `run.unsupported`: there is
-/// no schema to decide an allocation policy (mirrors `eval_append`'s unknown-root
-/// path).
+/// `nextId` of a `^root` no store declares is rejected by the checker: the root
+/// has no schema or type, so the reference is an untyped value before any run.
 #[test]
-fn next_id_over_an_undeclared_root_is_unsupported() {
+fn next_id_over_an_undeclared_root_is_rejected() {
     checker_rejects(
         &format!("{BOOK_PRIMARY_SCHEMA}pub fn fresh(): int\n    return nextId(^bogus)\n"),
         "check.untyped_value",

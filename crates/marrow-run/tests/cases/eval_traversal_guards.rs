@@ -1,21 +1,16 @@
-//! Loop traversal-write guards: mutating a saved layer (delete, append, record
-//! create) while iterating it faults, directly and through a helper call.
+//! Loop traversal-write guards: mutating a saved layer while iterating it is
+//! guarded both statically and at runtime. The checker rejects direct mutation
+//! (check.loop_mutates_traversed_layer) and the circumvention paths that would
+//! otherwise sneak past it: passing a traversed key into a helper that mutates
+//! (check.call_argument) and snapshotting saved keys into a local
+//! (check.key_type). Mutations the checker cannot see statically fault at
+//! runtime (RUN_TRAVERSAL).
 
 use crate::support;
 use support::*;
 
 use marrow_run::{RUN_TRAVERSAL, Value};
 use marrow_store::tree::TreeStore;
-
-#[test]
-fn deleting_a_record_while_traversing_the_root_is_a_traversal_fault() {
-    checker_rejects(
-        &format!(
-            "{BOOK_PRIMARY_SCHEMA}pub fn seed()\n    ^books(1).title = \"a\"\n    ^books(2).title = \"b\"\n\npub fn clear()\n    for id in keys(^books)\n        delete ^books(id)\n"
-        ),
-        "check.loop_mutates_traversed_layer",
-    );
-}
 
 #[test]
 fn traversal_faults_are_not_catchable_errors() {

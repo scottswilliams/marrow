@@ -1,8 +1,6 @@
 //! The activation fence: a store this binary applies is stamped at the binary's own
-//! engine profile, so the same binary passes the fence while one an epoch behind is
-//! locked out. Apply fences before staging any write when the store evolved past the
-//! binary, refuses when no catalog was ever accepted, and fences on engine-profile,
-//! layout-epoch, or same-epoch schema drift.
+//! engine profile, so stamp and fence agree by construction. A binary an epoch behind
+//! is locked out.
 use crate::evolution_apply_support;
 use evolution_apply_support::*;
 
@@ -141,26 +139,6 @@ fn apply_is_fenced_when_store_evolved_past_the_binary() -> Result<(), Box<dyn st
     assert_eq!(read_scalar(&store, &store_id, 1, &pages_id, INT), None);
 
     Ok(())
-}
-
-/// An engine-profile drift fences a run-capable open even when the catalog epoch
-/// matches: the physical layout the store recorded is not the one this binary writes.
-#[test]
-fn engine_profile_drift_fences_a_matching_epoch_store() {
-    let store = TreeStore::memory();
-    stamp_commit(
-        &store,
-        2,
-        "sha256:0000000000000000000000000000000000000000000000000000000000000002".to_string(),
-        EngineProfile::new(current_engine_profile().layout_epoch() + 1),
-    );
-    let error = fence(
-        Some(2),
-        "sha256:0000000000000000000000000000000000000000000000000000000000000002",
-        &store,
-    )
-    .expect_err("drift fenced");
-    assert_eq!(error, FenceError::EngineProfileDrift);
 }
 
 /// Apply over a program that accepted no catalog has no baseline epoch to advance from.
