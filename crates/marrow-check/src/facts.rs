@@ -225,7 +225,7 @@ impl CheckedFacts {
         let member = self.enum_member(id)?;
         let enum_fact = self.enum_(member.enum_id)?;
         let module = self.modules.get(enum_fact.module.0 as usize)?;
-        let path = enum_member_name_path(&self.enum_members, id)?;
+        let path = member_name_path(&self.enum_members, id.0 as usize)?;
         Some(format!(
             "{}::{}",
             enum_path(&module.name, &enum_fact.name),
@@ -237,7 +237,7 @@ impl CheckedFacts {
         let member = self.resource_members.get(id.0 as usize)?;
         let resource = self.resources.get(member.resource.0 as usize)?;
         let module = self.modules.get(resource.module.0 as usize)?;
-        let path = resource_member_name_path(&self.resource_members, id)?;
+        let path = member_name_path(&self.resource_members, id.0 as usize)?;
         Some(resource_member_path(&module.name, &resource.name, &path))
     }
 
@@ -507,14 +507,8 @@ impl CheckedFacts {
         resource: ResourceId,
         path: &[&str],
     ) -> Option<ResourceMemberId> {
-        let mut id = None;
-        for name in path {
-            let member = self.resource_members.iter().find(|member| {
-                member.resource == resource && member.parent == id && member.name == *name
-            })?;
-            id = Some(member.id);
-        }
-        id
+        self.member_path_ids(resource, path)
+            .and_then(|ids| ids.last().copied())
     }
 
     pub fn enum_id(&self, module: ModuleId, name: &str) -> Option<EnumId> {
@@ -1039,13 +1033,8 @@ impl CheckedFacts {
         segments: &[String],
         aliases: &HashMap<String, Vec<String>>,
     ) -> Option<ResourceId> {
-        let expanded = expand_alias(segments, aliases);
-        let (resource, module) = expanded.split_last()?;
-        if module.is_empty() {
-            return self.resource_id(module_id, resource);
-        }
-        self.module_id(&module.join("::"))
-            .and_then(|module_id| self.resource_id(module_id, resource))
+        let (module, name) = self.resolve_named_module(module_id, segments, aliases)?;
+        self.resource_id(module, &name)
     }
 
     fn resolve_enum_segments(
@@ -1054,13 +1043,27 @@ impl CheckedFacts {
         segments: &[String],
         aliases: &HashMap<String, Vec<String>>,
     ) -> Option<EnumId> {
+        let (module, name) = self.resolve_named_module(module_id, segments, aliases)?;
+        self.enum_id(module, &name)
+    }
+
+    /// Expand a namespace path through import aliases and resolve its module prefix,
+    /// returning the owning module and the terminal name. An empty prefix means the
+    /// name lives in `module_id`; a non-empty prefix must resolve to a known module.
+    fn resolve_named_module(
+        &self,
+        module_id: ModuleId,
+        segments: &[String],
+        aliases: &HashMap<String, Vec<String>>,
+    ) -> Option<(ModuleId, String)> {
         let expanded = expand_alias(segments, aliases);
-        let (enum_name, module) = expanded.split_last()?;
-        if module.is_empty() {
-            return self.enum_id(module_id, enum_name);
-        }
-        self.module_id(&module.join("::"))
-            .and_then(|module_id| self.enum_id(module_id, enum_name))
+        let (name, module) = expanded.split_last()?;
+        let module = if module.is_empty() {
+            module_id
+        } else {
+            self.module_id(&module.join("::"))?
+        };
+        Some((module, name.clone()))
     }
 
     fn stored_value_meaning(
@@ -1071,6 +1074,11 @@ impl CheckedFacts {
     ) -> Option<StoredValueMeaning> {
         match ty {
             Type::Scalar(scalar) => Some(StoredValueMeaning::Scalar(*scalar)),
+            // Schema validation rejects an `Identity`-typed store identity key as a
+            // non-scalar key, so a store can never name another store as one of its
+            // own identity keys. This branch therefore resolves only for stored
+            // members and index arguments, where the referent store already exists,
+            // and the forward-pass store collection order cannot strand the meaning.
             Type::Identity(identity) => {
                 let store = self.store_for_root(identity)?;
                 let key_scalars = self.store_identity_key_scalars(store)?;
@@ -1581,26 +1589,40 @@ fn catalog_id(
     ids.get(&CatalogKey::new(kind, path)).cloned()
 }
 
-fn resource_member_name_path(
-    members: &[ResourceMemberFact],
-    id: ResourceMemberId,
-) -> Option<Vec<String>> {
-    let member = members.get(id.0 as usize)?;
-    let mut path = match member.parent {
-        Some(parent) => resource_member_name_path(members, parent)?,
-        None => Vec::new(),
-    };
-    path.push(member.name.clone());
-    Some(path)
+/// A nested fact addressable by index whose ancestry forms a name path. Resource
+/// members and enum members share this parent-chain shape over distinct id types.
+trait MemberNode {
+    fn parent_index(&self) -> Option<usize>;
+    fn name(&self) -> &str;
 }
 
-fn enum_member_name_path(members: &[EnumMemberFact], id: EnumMemberId) -> Option<Vec<String>> {
-    let member = members.get(id.0 as usize)?;
-    let mut path = match member.parent {
-        Some(parent) => enum_member_name_path(members, parent)?,
+impl MemberNode for ResourceMemberFact {
+    fn parent_index(&self) -> Option<usize> {
+        self.parent.map(|parent| parent.0 as usize)
+    }
+
+    fn name(&self) -> &str {
+        &self.name
+    }
+}
+
+impl MemberNode for EnumMemberFact {
+    fn parent_index(&self) -> Option<usize> {
+        self.parent.map(|parent| parent.0 as usize)
+    }
+
+    fn name(&self) -> &str {
+        &self.name
+    }
+}
+
+fn member_name_path<M: MemberNode>(members: &[M], index: usize) -> Option<Vec<String>> {
+    let member = members.get(index)?;
+    let mut path = match member.parent_index() {
+        Some(parent) => member_name_path(members, parent)?,
         None => Vec::new(),
     };
-    path.push(member.name.clone());
+    path.push(member.name().to_string());
     Some(path)
 }
 

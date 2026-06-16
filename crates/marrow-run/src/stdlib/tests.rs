@@ -77,7 +77,6 @@ fn std_call_arg(
                 presence: ReturnPresence::Always,
                 requires_capability: Some(capability),
             }),
-            write_fallibility: None,
             place: None,
             span,
         },

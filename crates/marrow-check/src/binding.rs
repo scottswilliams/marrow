@@ -105,7 +105,7 @@ struct Binding {
 
 #[derive(Debug, Clone)]
 enum RenameTarget {
-    CatalogPath(String),
+    EvolvePath(String),
     EnumMember {
         enum_name: String,
         member_path: Vec<String>,
@@ -115,7 +115,7 @@ enum RenameTarget {
 impl RenameTarget {
     fn source(&self) -> String {
         match self {
-            Self::CatalogPath(path) => path.clone(),
+            Self::EvolvePath(path) => path.clone(),
             Self::EnumMember {
                 enum_name,
                 member_path,
@@ -125,7 +125,7 @@ impl RenameTarget {
 
     fn renamed_source(&self, new_name: &str) -> String {
         match self {
-            Self::CatalogPath(path) => renamed_durable_path(path, new_name),
+            Self::EvolvePath(path) => renamed_evolve_path(path, new_name),
             Self::EnumMember {
                 enum_name,
                 member_path,
@@ -345,13 +345,13 @@ impl<'p> IndexBuilder<'p> {
         self.define_with_parameter(def, safety, None, None)
     }
 
-    fn define_with_durable_path(
+    fn define_with_evolve_path(
         &mut self,
         def: SymbolRef,
         safety: RenameSafety,
-        durable_path: Option<String>,
+        evolve_path: Option<String>,
     ) -> DefId {
-        self.define_with_rename_target(def, safety, durable_path.map(RenameTarget::CatalogPath))
+        self.define_with_rename_target(def, safety, evolve_path.map(RenameTarget::EvolvePath))
     }
 
     fn define_with_rename_target(
@@ -483,7 +483,7 @@ impl<'p> IndexBuilder<'p> {
                 }
                 Declaration::Enum(enum_decl) => {
                     if let Some(span) = name_span(source, enum_decl.span, &enum_decl.name) {
-                        let id = self.define_with_durable_path(
+                        let id = self.define_with_evolve_path(
                             SymbolRef {
                                 file: file.to_path_buf(),
                                 span,
@@ -564,7 +564,7 @@ impl<'p> IndexBuilder<'p> {
         let Some(span) = name_span(source, resource.span, &resource.name) else {
             return;
         };
-        let resource_id = self.define_with_durable_path(
+        let resource_id = self.define_with_evolve_path(
             SymbolRef {
                 file: file.to_path_buf(),
                 span,
@@ -608,7 +608,7 @@ impl<'p> IndexBuilder<'p> {
         let Some(span) = name_span(source, index.span, &index.name) else {
             return;
         };
-        let id = self.define_with_durable_path(
+        let id = self.define_with_evolve_path(
             SymbolRef {
                 file: file.to_path_buf(),
                 span,
@@ -639,14 +639,14 @@ impl<'p> IndexBuilder<'p> {
                 ResourceMember::Field(field) => {
                     chain.push(field.name.clone());
                     if let Some(span) = name_span(source, field.span, &field.name) {
-                        let id = self.define_with_durable_path(
+                        let id = self.define_with_evolve_path(
                             SymbolRef {
                                 file: file.to_path_buf(),
                                 span,
                                 kind: SymbolKind::Field,
                             },
                             RenameSafety::SavedDataBacked,
-                            Some(resource_member_durable_path(resource, chain)),
+                            Some(format!("{resource}.{}", chain.join("."))),
                         );
                         self.module_scope
                             .saved_members
@@ -657,14 +657,14 @@ impl<'p> IndexBuilder<'p> {
                 ResourceMember::Group(group) => {
                     chain.push(group.name.clone());
                     if let Some(span) = name_span(source, group.span, &group.name) {
-                        let id = self.define_with_durable_path(
+                        let id = self.define_with_evolve_path(
                             SymbolRef {
                                 file: file.to_path_buf(),
                                 span,
                                 kind: SymbolKind::Layer,
                             },
                             RenameSafety::SavedDataBacked,
-                            Some(resource_member_durable_path(resource, chain)),
+                            Some(format!("{resource}.{}", chain.join("."))),
                         );
                         self.module_scope
                             .saved_members
@@ -683,6 +683,7 @@ impl<'p> IndexBuilder<'p> {
     fn collect_uses(&mut self, file: &Path, parsed: &ParsedSource, source: &str) {
         let module = Self::module_name(parsed);
         let prelude = file_prelude(self.program, file, parsed);
+        let tokens = marrow_syntax::lex_source(source).tokens;
 
         let mut function_source_index = 0u32;
         for declaration in &parsed.file.declarations {
@@ -694,7 +695,7 @@ impl<'p> IndexBuilder<'p> {
                 let mut type_scope: Vec<HashMap<String, MarrowType>> =
                     vec![prelude.module_constants.clone()];
                 for (param_index, param) in function.params.iter().enumerate() {
-                    let Some(span) = param_name_span(source, function.span, param) else {
+                    let Some(span) = param_name_span(source, &tokens, function.span, param) else {
                         continue;
                     };
                     let parameter = self.parameter_definition(function_id, param_index);
@@ -1167,7 +1168,7 @@ impl UseWalker<'_, '_> {
         let mut type_frame = HashMap::new();
         type_frame.insert(
             name.to_string(),
-            crate::infer::infer_only(
+            infer_only(
                 self.builder.program,
                 value,
                 type_scope,
@@ -1688,11 +1689,12 @@ fn qualified_segment_spans(
 
 fn param_name_span(
     source: &str,
+    tokens: &[marrow_syntax::Token],
     function_span: SourceSpan,
     param: &ParamDecl,
 ) -> Option<SourceSpan> {
     let mut found = None;
-    for token in marrow_syntax::lex_source(source).tokens {
+    for token in tokens {
         if token.span.start_byte < function_span.start_byte
             || token.span.end_byte > param.ty.span.start_byte
         {
@@ -1841,15 +1843,7 @@ fn span_width(span: SourceSpan) -> usize {
     span.end_byte.saturating_sub(span.start_byte)
 }
 
-fn resource_member_durable_path(resource: &str, chain: &[String]) -> String {
-    child_durable_path(resource, chain)
-}
-
-fn child_durable_path(parent: &str, chain: &[String]) -> String {
-    format!("{parent}.{}", chain.join("."))
-}
-
-fn renamed_durable_path(path: &str, new_name: &str) -> String {
+fn renamed_evolve_path(path: &str, new_name: &str) -> String {
     if let Some((prefix, _)) = path.rsplit_once('.') {
         return format!("{prefix}.{new_name}");
     }

@@ -110,7 +110,6 @@ pub(super) fn discharge_root(
 /// classified eagerly and excluded.
 struct LeafObligation {
     catalog_id: CatalogId,
-    raw_catalog_id: String,
     path: Vec<DataPathSegment>,
     label: String,
     /// The leaf kind whose bytes the scan validates, or `None` for a non-tokenizable position
@@ -165,7 +164,7 @@ fn collect_required_leaves(
             // with no old leaf value must still presence-scan the group's new required
             // sub-members, so the walk emits the probe AND descends.
             CheckedSavedMemberKind::Group if acc.leaf_disappeared(&raw_id) => {
-                emit_disappeared_leaf(place, member, &raw_id, member_id, path.clone(), obligations);
+                emit_disappeared_leaf(place, member, member_id, path.clone(), obligations);
                 collect_required_leaves(place, &member.group_members, &path, obligations, acc)?;
             }
             // An unkeyed group whose own signature diverged is owned whole by the backstop;
@@ -192,7 +191,6 @@ enum MemberLeafOutcome {
     Skip,
     /// A leaf the scan must visit.
     Obligation {
-        raw_catalog_id: String,
         label: String,
         leaf: Option<StoreLeafKind>,
         required: bool,
@@ -245,7 +243,6 @@ fn classify_member_leaf(
     // its populated count; an optional shrunk-enum leaf is scanned for stored validity only.
     // `classify_leaf` makes the call from the scan state.
     MemberLeafOutcome::Obligation {
-        raw_catalog_id: raw_id.to_string(),
         label: member_label(place, member),
         leaf,
         required,
@@ -274,7 +271,6 @@ fn emit_member_leaf(
         }
         MemberLeafOutcome::Skip => {}
         MemberLeafOutcome::Obligation {
-            raw_catalog_id,
             label,
             leaf,
             required,
@@ -282,7 +278,6 @@ fn emit_member_leaf(
             retyped,
         } => obligations.push(LeafObligation {
             catalog_id: member_id,
-            raw_catalog_id,
             path,
             label,
             leaf,
@@ -302,14 +297,12 @@ fn emit_member_leaf(
 fn emit_disappeared_leaf(
     place: &CheckedSavedPlace,
     member: &CheckedSavedMember,
-    raw_id: &str,
     member_id: CatalogId,
     path: Vec<DataPathSegment>,
     obligations: &mut Vec<LeafObligation>,
 ) {
     obligations.push(LeafObligation {
         catalog_id: member_id,
-        raw_catalog_id: raw_id.to_string(),
         path,
         label: member_label(place, member),
         leaf: None,
@@ -525,14 +518,7 @@ fn collect_keyed_leaves(
             // member path under no entry key. The subtree probe there fails a populated member
             // closed; its keyed sub-members are subsumed, so the scan does not descend.
             CheckedSavedMemberKind::Group if keyed_here && acc.leaf_disappeared(&raw_id) => {
-                emit_disappeared_leaf(
-                    place,
-                    member,
-                    &raw_id,
-                    member_id,
-                    obligation_path,
-                    obligations,
-                );
+                emit_disappeared_leaf(place, member, member_id, obligation_path, obligations);
             }
             // A keyed layer or group whose own signature diverged is owned whole by the
             // backstop; descending would emit a misleading per-entry proof on a deeper leaf.
@@ -685,7 +671,7 @@ fn classify_leaf(
             ),
         );
     }
-    let verdict = match acc.default_value_for(&leaf.raw_catalog_id, leaf.leaf.as_ref()) {
+    let verdict = match acc.default_value_for(id.as_str(), leaf.leaf.as_ref()) {
         Some(Ok(value)) => {
             acc.counts.records_to_backfill += state.missing_count;
             Verdict::Default { value }

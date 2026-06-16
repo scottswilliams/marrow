@@ -80,6 +80,12 @@ pub struct CheckedProgram {
 }
 
 impl CheckedProgram {
+    /// Assemble a program directly from modules, rebuilding its facts but capturing
+    /// no durable source renderings. Gated behind `test-support` so it never enters a
+    /// normal or release build: it exists only to construct the deliberately
+    /// uncaptured state the source-digest panic tests assert against, which the
+    /// production checker never produces.
+    #[cfg(feature = "test-support")]
     pub fn from_modules(modules: Vec<CheckedModule>) -> Self {
         let mut program = Self {
             modules,
@@ -162,6 +168,7 @@ impl CheckedProgram {
         })
     }
 
+    #[cfg(feature = "test-support")]
     fn rebuild_facts(&mut self) {
         self.facts = CheckedFacts::from_modules(&self.modules, &HashMap::new());
     }
@@ -449,19 +456,24 @@ impl CheckedProgram {
     }
 }
 
+/// The names a module's constants bind in scope, mapped to their checked types.
+/// The single owner of the constant-scope shape that body lowering and read-only
+/// expression checking both build their scope stack from.
+fn module_constant_map(module: &CheckedModule) -> HashMap<String, MarrowType> {
+    module
+        .constants
+        .iter()
+        .map(|constant| {
+            (
+                constant.name.clone(),
+                constant.ty.clone().unwrap_or(MarrowType::Unknown),
+            )
+        })
+        .collect()
+}
+
 fn module_constant_scope(module: &CheckedModule) -> Vec<HashMap<String, MarrowType>> {
-    vec![
-        module
-            .constants
-            .iter()
-            .map(|constant| {
-                (
-                    constant.name.clone(),
-                    constant.ty.clone().unwrap_or(MarrowType::Unknown),
-                )
-            })
-            .collect(),
-    ]
+    vec![module_constant_map(module)]
 }
 
 fn syntax_expression_diagnostic(file: &Path, diagnostic: Diagnostic) -> CheckDiagnostic {
@@ -527,16 +539,7 @@ fn lower_function_bodies(
 ) -> Vec<LoweredFunctionBody> {
     let mut bodies = Vec::new();
     for (module_index, module) in program.modules.iter().enumerate() {
-        let constants: HashMap<String, MarrowType> = module
-            .constants
-            .iter()
-            .map(|constant| {
-                (
-                    constant.name.clone(),
-                    constant.ty.clone().unwrap_or(MarrowType::Unknown),
-                )
-            })
-            .collect();
+        let constants = module_constant_map(module);
         let Some(parsed) = sources.get(&module.source_file).copied() else {
             continue;
         };
@@ -626,16 +629,7 @@ fn lower_transform_body(
     let parsed = sources.get(&transform.file).copied()?;
     let body =
         crate::evolution::transform_body_in_source(parsed, &module.name, &transform.target_path)?;
-    let constants: HashMap<String, MarrowType> = module
-        .constants
-        .iter()
-        .map(|constant| {
-            (
-                constant.name.clone(),
-                constant.ty.clone().unwrap_or(MarrowType::Unknown),
-            )
-        })
-        .collect();
+    let constants = module_constant_map(module);
     let context = CheckedExecutableContext::new(snapshot, module_index);
     let old_scope = HashMap::from([(
         "old".to_string(),

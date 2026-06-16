@@ -155,26 +155,6 @@ pub(crate) fn infer_type(
     infer_type_with_read_scope(program, expr, scope, aliases, file, diagnostics, None)
 }
 
-pub(crate) fn infer_type_with_read_scope(
-    program: &CheckedProgram,
-    expr: &marrow_syntax::Expression,
-    scope: &[HashMap<String, MarrowType>],
-    aliases: &HashMap<String, Vec<String>>,
-    file: &Path,
-    diagnostics: &mut Vec<CheckDiagnostic>,
-    transform_old: Option<crate::presence::TransformOldReadScope<'_>>,
-) -> MarrowType {
-    infer_type_with_read_scope_inner(
-        program,
-        expr,
-        scope,
-        aliases,
-        file,
-        diagnostics,
-        transform_old,
-    )
-}
-
 pub(crate) fn infer_assignment_target_type_with_read_scope(
     program: &CheckedProgram,
     expr: &marrow_syntax::Expression,
@@ -204,7 +184,7 @@ pub(crate) fn infer_assignment_target_type_with_read_scope(
             transform_old,
             context: FieldAccessContext::AssignmentTarget,
         }),
-        _ => infer_type_with_read_scope_inner(
+        _ => infer_type_with_read_scope(
             program,
             expr,
             scope,
@@ -216,7 +196,7 @@ pub(crate) fn infer_assignment_target_type_with_read_scope(
     }
 }
 
-fn infer_type_with_read_scope_inner(
+pub(crate) fn infer_type_with_read_scope(
     program: &CheckedProgram,
     expr: &marrow_syntax::Expression,
     scope: &[HashMap<String, MarrowType>],
@@ -536,7 +516,7 @@ fn infer_field_access(input: FieldAccessInfer<'_, '_>) -> MarrowType {
         return MarrowType::Unknown;
     }
     let base_type = match input.context {
-        FieldAccessContext::Read => infer_type_with_read_scope_inner(
+        FieldAccessContext::Read => infer_type_with_read_scope(
             input.program,
             input.base,
             input.scope,

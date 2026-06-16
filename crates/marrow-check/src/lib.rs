@@ -77,9 +77,8 @@ pub use executable::{
     CheckedResourceConstructorField, CheckedResourceRef, CheckedRuntimeValueType,
     CheckedSavedIndex, CheckedSavedIndexKey, CheckedSavedKeyParam, CheckedSavedLayer,
     CheckedSavedMember, CheckedSavedMemberKind, CheckedSavedPlace, CheckedSavedTerminal,
-    CheckedStdCall, CheckedStmt, CheckedUnaryOp, WriteFallibilityFact,
-    checked_activation_root_places, checked_place_store_id, checked_saved_root_place,
-    for_each_place_record,
+    CheckedStdCall, CheckedStmt, CheckedUnaryOp, checked_activation_root_places,
+    checked_place_store_id, checked_saved_root_place, for_each_place_record,
 };
 pub use facts::PresenceProofRead;
 pub use facts::{

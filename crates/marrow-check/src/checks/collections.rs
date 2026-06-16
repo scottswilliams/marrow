@@ -29,7 +29,6 @@ pub(crate) fn for_frame(
     aliases: &HashMap<String, Vec<String>>,
     file: &Path,
 ) -> HashMap<String, MarrowType> {
-    let iterable_type = infer_type(program, iterable, scope, aliases, file, &mut Vec::new());
     if let Some((first_type, second_type)) = local_collection_loop_binding_types(
         program,
         binding.second.is_some(),
@@ -55,12 +54,14 @@ pub(crate) fn for_frame(
         }
         return frame;
     }
-    let first_type = match (&binding.second, &iterable_type) {
-        (None, MarrowType::Sequence(element)) => (**element).clone(),
-        // A range binds its variable to its endpoint scalar; only a same-typed
-        // steppable-endpoint range types it, anything else stays unknown.
-        (None, _) => range_endpoint_type(program, iterable, scope, aliases, file)
-            .unwrap_or(MarrowType::Unknown),
+    let first_type = match &binding.second {
+        None => match infer_type(program, iterable, scope, aliases, file, &mut Vec::new()) {
+            MarrowType::Sequence(element) => *element,
+            // A range binds its variable to its endpoint scalar; only a same-typed
+            // steppable-endpoint range types it, anything else stays unknown.
+            _ => range_endpoint_type(program, iterable, scope, aliases, file)
+                .unwrap_or(MarrowType::Unknown),
+        },
         _ => MarrowType::Unknown,
     };
     let mut frame = HashMap::new();

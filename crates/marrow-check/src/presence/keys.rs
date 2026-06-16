@@ -77,10 +77,6 @@ fn append_args_to_key(path: &mut SavedPlaceKey, args: &[CheckedArg], scope: &Nam
 }
 
 pub(super) fn binding_key(name: &str, scope: &NameScope) -> Option<ExprKey> {
-    scoped_binding_key(name, scope)
-}
-
-fn scoped_binding_key(name: &str, scope: &NameScope) -> Option<ExprKey> {
     let binding = scope.lookup(name)?;
     Some(ExprKey {
         text: format!("binding:{binding}:{name}"),
@@ -117,7 +113,7 @@ pub(super) fn expression_key(expr: &CheckedExpr, scope: &NameScope) -> ExprKey {
         },
         CheckedExpr::Name { segments, .. } if segments.len() == 1 => {
             let name = &segments[0];
-            scoped_binding_key(name, scope).unwrap_or_else(|| ExprKey {
+            binding_key(name, scope).unwrap_or_else(|| ExprKey {
                 text: format!("name:{name}"),
                 ty: None,
                 bindings: Vec::new(),

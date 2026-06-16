@@ -64,24 +64,14 @@ pub(crate) fn check_saved_key_args(check: SavedKeyArgCheck<'_, '_>) {
             );
         }
         SavedKeyParamTarget::Layer(layer) => {
-            if range_arg_position(check.args).is_some() {
-                check_checked_key_range_args(
-                    &layer.key_params,
-                    check.args,
-                    check.arg_types,
-                    check.span,
-                    check.file,
-                    check.diagnostics,
-                );
-            } else {
-                check_checked_keys_against(
-                    &layer.key_params,
-                    check.arg_types,
-                    check.span,
-                    check.file,
-                    check.diagnostics,
-                );
-            }
+            check_checked_key_args(
+                &layer.key_params,
+                check.args,
+                check.arg_types,
+                check.span,
+                check.file,
+                check.diagnostics,
+            );
         }
     }
 }
@@ -95,7 +85,7 @@ fn check_root_args_against(
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
     if range_arg_position(args).is_some() {
-        check_checked_key_range_args(
+        check_checked_key_args(
             &place.identity_keys,
             args,
             arg_types,
@@ -121,7 +111,14 @@ fn check_root_args_against(
         }
         return;
     }
-    check_checked_keys_against(&place.identity_keys, arg_types, span, file, diagnostics);
+    check_checked_key_args(
+        &place.identity_keys,
+        args,
+        arg_types,
+        span,
+        file,
+        diagnostics,
+    );
 }
 
 pub(crate) fn saved_root_args_address_record(
@@ -284,7 +281,10 @@ fn checked_index_target(
     Some((name, *unique, *arg_count, &index.keys))
 }
 
-fn check_checked_key_range_args(
+/// Check key arguments against declared key parameters. A range argument, when
+/// present, is checked in range position and must be the final argument; every
+/// other argument is checked nominally.
+fn check_checked_key_args(
     keys: &[CheckedSavedKeyParam],
     args: &[Argument],
     arg_types: &[MarrowType],
@@ -292,23 +292,22 @@ fn check_checked_key_range_args(
     file: &Path,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
-    let expected_len = keys.len();
-    if arg_types.len() != expected_len {
+    if arg_types.len() != keys.len() {
         diagnostics.push(key_type_diagnostic(
             file,
             span,
             format!(
                 "this keyed access expects {} key argument(s), but {} were given",
-                expected_len,
+                keys.len(),
                 arg_types.len(),
             ),
         ));
         return;
     }
-    let Some(range_arg) = range_arg_position(args) else {
-        return;
-    };
-    if range_arg + 1 != args.len() {
+    let range_arg = range_arg_position(args);
+    if let Some(range_arg) = range_arg
+        && range_arg + 1 != args.len()
+    {
         diagnostics.push(key_type_diagnostic(
             file,
             span,
@@ -318,7 +317,7 @@ fn check_checked_key_range_args(
     }
     for (position, (key, arg_type)) in keys.iter().zip(arg_types).enumerate() {
         let expected = SavedPlaceResolver::saved_key_param_type(key);
-        if range_arg == position {
+        if range_arg == Some(position) {
             check_range_key_arg(
                 RangeKeyArg {
                     expected: &expected,
@@ -477,42 +476,6 @@ pub(crate) fn check_keys_against(
     }
     for (key, arg_type) in keys.iter().zip(arg_types) {
         let expected = MarrowType::from_resolved(key.ty.clone(), TypeNames::default());
-        if !saved_key_arg_matches(&expected, arg_type) {
-            diagnostics.push(key_type_diagnostic(
-                file,
-                span,
-                format!(
-                    "key `{}` expects `{}`, but this value is `{}`",
-                    key.name,
-                    marrow_type_name(&expected),
-                    marrow_type_name(arg_type),
-                ),
-            ));
-        }
-    }
-}
-
-fn check_checked_keys_against(
-    keys: &[CheckedSavedKeyParam],
-    arg_types: &[MarrowType],
-    span: SourceSpan,
-    file: &Path,
-    diagnostics: &mut Vec<CheckDiagnostic>,
-) {
-    if keys.len() != arg_types.len() {
-        diagnostics.push(key_type_diagnostic(
-            file,
-            span,
-            format!(
-                "this keyed access expects {} key argument(s), but {} were given",
-                keys.len(),
-                arg_types.len(),
-            ),
-        ));
-        return;
-    }
-    for (key, arg_type) in keys.iter().zip(arg_types) {
-        let expected = SavedPlaceResolver::saved_key_param_type(key);
         if !saved_key_arg_matches(&expected, arg_type) {
             diagnostics.push(key_type_diagnostic(
                 file,

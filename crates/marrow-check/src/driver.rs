@@ -179,8 +179,9 @@ pub(crate) fn enum_visibility(file: &marrow_syntax::SourceFile) -> HashMap<Strin
         .collect()
 }
 
-/// The qualified name of the program module whose source is `file`, if any. The
-/// referencing module for resolving a bare enum name in that file's expressions.
+/// The qualified name of the program module whose source is `file`; callers use it
+/// as the referencing module when resolving a bare enum name in that file's
+/// expressions.
 pub(crate) fn module_of_file<'p>(program: &'p CheckedProgram, file: &Path) -> Option<&'p str> {
     program
         .modules
@@ -604,14 +605,13 @@ pub(crate) fn check_tests_with_sources_analysis(
     // Passes 2-3 plus targeted unresolved-call suppression are shared with check_project.
     // A read failure drops a file from `parsed_files` so a call into it would look
     // unresolved; the shared suppression handles that qualified-call case.
-    let combined = project;
     checks::check_resolved_files(
         checks::ResolvedFileCheck {
             files: &files,
             parsed_files: &parsed_files,
             module_name_policy: checks::ModuleNamePolicy::PathOnly,
             resolvable: &resolvable,
-            program: combined,
+            program: project,
         },
         &mut report,
     );
@@ -624,17 +624,17 @@ pub(crate) fn check_tests_with_sources_analysis(
         .retain(|diagnostic| !resolution_suppression.should_suppress(diagnostic));
 
     if output == TestProgramOutput::FinalizeCombined {
-        combined.rebuild_facts_with_sources_preserving_current_prefix(
+        project.rebuild_facts_with_sources_preserving_current_prefix(
             parsed_files
                 .iter()
                 .map(|(file, parsed)| (file.path.as_path(), parsed)),
         );
-        combined.lower_runtime_bodies(
+        project.lower_runtime_bodies(
             parsed_files
                 .iter()
                 .map(|(file, parsed)| (file.path.as_path(), parsed)),
         );
-        combined.extend_durable_digest_renderings(parsed_files.iter().filter_map(
+        project.extend_durable_digest_renderings(parsed_files.iter().filter_map(
             |(file, parsed)| {
                 parsed_sources
                     .get(&file.path)

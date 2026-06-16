@@ -110,6 +110,8 @@ fn check_literal_ranges(file: &Path, expr: &Expression, out: &mut Vec<CheckDiagn
                 }
             }
         }
+        // A `Call` is a leaf here on purpose: a call is never constant, so its
+        // arguments are not part of a `const` value and carry no literal to range-check.
         Expression::Name { .. } | Expression::SavedRoot { .. } | Expression::Call { .. } => {}
     }
 }
@@ -653,7 +655,7 @@ fn traversal_argument(expr: &Expression) -> Option<&Expression> {
         return None;
     }
     match args.as_slice() {
-        [arg] if arg.name.is_none() => Some(traversal_argument(&arg.value).unwrap_or(&arg.value)),
+        [arg] if arg.name.is_none() => Some(&arg.value),
         _ => None,
     }
 }
@@ -766,8 +768,7 @@ fn is_key_lookup_target(callee: &Expression) -> bool {
 
 /// A constant expression: a literal or a name (another constant) combined with
 /// field access, operators, or interpolation. A saved-data read or a call is
-/// never constant, so neither is any expression containing one. Text the parser
-/// did not structure is treated as constant to avoid false positives.
+/// never constant, so neither is any expression containing one.
 fn is_constant_expr(expr: &Expression) -> bool {
     match expr {
         Expression::Literal { .. } | Expression::Name { .. } => true,

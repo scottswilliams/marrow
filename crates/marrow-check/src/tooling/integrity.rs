@@ -96,7 +96,7 @@ fn sample_record_problems(
     budget: &mut SampleBudget,
     sample: &mut IntegritySample,
 ) -> Result<(), StoreError> {
-    let flow = visit_data_records_in_places_until(places, store, |record| {
+    let _ = visit_data_records_in_places_until(places, store, |record| {
         let ControlFlow::Continue(()) = budget.claim() else {
             return Ok(ControlFlow::Break(()));
         };
@@ -105,9 +105,6 @@ fn sample_record_problems(
         }
         Ok(ControlFlow::Continue(()))
     })?;
-    if flow.is_break() {
-        budget.truncated = true;
-    }
     Ok(())
 }
 
@@ -119,21 +116,17 @@ fn sample_incomplete_problems(
     sample: &mut IntegritySample,
 ) -> Result<(), StoreError> {
     let mut visit_item = || Ok(budget.claim());
-    let mut report = |problem| {
-        sample_problem(problem, sample)?;
+    let mut report = |_problem| {
+        sample.increment_problems()?;
         Ok(ControlFlow::Continue(()))
     };
-    if visit_incomplete_records_in_places_until(
+    let _ = visit_incomplete_records_in_places_until(
         store,
         program,
         places,
         &mut visit_item,
         &mut report,
-    )?
-    .is_break()
-    {
-        budget.truncated = true;
-    }
+    )?;
     Ok(())
 }
 
@@ -148,8 +141,8 @@ fn sample_orphan_problems(
         let ControlFlow::Continue(()) = budget.claim() else {
             return Ok(ControlFlow::Break(()));
         };
-        if let Some(problem) = schema.classify(store, cell.data_key().clone())? {
-            sample_problem(problem, sample)?;
+        if schema.classify(store, cell.data_key().clone())?.is_some() {
+            sample.increment_problems()?;
         }
         Ok(ControlFlow::Continue(()))
     })?;
@@ -461,16 +454,13 @@ fn visit_incomplete_records_in_places(
         report(problem)?;
         Ok(ControlFlow::Continue(()))
     };
-    let flow = visit_incomplete_records_in_places_until(
+    let _ = visit_incomplete_records_in_places_until(
         store,
         program,
         places,
         &mut visit_item,
         &mut report_problem,
     )?;
-    if flow.is_break() {
-        return Ok(());
-    }
     Ok(())
 }
 
@@ -690,13 +680,6 @@ fn visit_keyed_group_entries_until(
     Ok(ControlFlow::Continue(()))
 }
 
-fn sample_problem(
-    _problem: IntegrityProblem,
-    sample: &mut IntegritySample,
-) -> Result<(), StoreError> {
-    sample.increment_problems()
-}
-
 fn incomplete_problem(
     context: &CompletenessContext<'_>,
     identity: &[SavedKey],
@@ -839,12 +822,7 @@ impl DeclaredRoot {
     }
 
     fn render_path(&self, identity: &[SavedKey], path: &[DataPathSegment]) -> String {
-        let mut text = format!("^{}", self.root);
-        for key in identity {
-            push_key(&mut text, key);
-        }
-        render_data_path(&mut text, path, &self.names);
-        text
+        render_problem_path(&self.root, identity, path, &self.names)
     }
 }
 

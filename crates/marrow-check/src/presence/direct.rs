@@ -165,7 +165,7 @@ fn collect_expr_reads(facts: &CheckedFacts, expr: &CheckedExpr, effects: &mut Di
     }
     if let Some(place) = accepted_saved_place(expr) {
         push_unique(&mut effects.store_reads, place.store_id);
-        if let Some(effect) = saved_effect(facts, place) {
+        if let Some(effect) = checked_saved_place_effect(facts, place) {
             push_unique(&mut effects.saved_reads, effect);
         }
         if let Some(index) = checked_saved_index_read(place) {
@@ -316,7 +316,7 @@ fn collect_saved_write(facts: &CheckedFacts, expr: &CheckedExpr, effects: &mut D
         if let Some(index) = checked_saved_index_read(place) {
             push_unique(&mut effects.saved_index_writes, index);
         }
-        if let Some(effect) = saved_effect(facts, place) {
+        if let Some(effect) = checked_saved_place_effect(facts, place) {
             for index in indexes_touched_by_write(facts, place.store_id, &effect) {
                 push_unique(&mut effects.saved_index_writes, index);
             }
@@ -381,13 +381,6 @@ fn member_path(facts: &CheckedFacts, member_id: ResourceMemberId) -> Vec<Resourc
 
 fn path_has_prefix(path: &[ResourceMemberId], prefix: &[ResourceMemberId]) -> bool {
     path.len() >= prefix.len() && path.iter().zip(prefix).all(|(left, right)| left == right)
-}
-
-fn saved_effect(
-    facts: &CheckedFacts,
-    place: &crate::CheckedSavedPlace,
-) -> Option<crate::SavedPlaceEffect> {
-    checked_saved_place_effect(facts, place)
 }
 
 fn host_effect(expr: &CheckedExpr) -> Option<HostEffect> {

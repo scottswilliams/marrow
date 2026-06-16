@@ -371,12 +371,11 @@ pub(crate) fn check_binary(
             is_steppable(left) && left == right,
             MarrowType::Primitive(left),
         ),
-        // `??` constrains its operands by the path's leaf type, not by scalar
-        // shape alone, so it is typed in `check_coalesce` before reaching here.
-        BinaryOp::Coalesce => (left == right, MarrowType::Primitive(left)),
-        // `is` is the nominal enum-subtree predicate, typed in `check_is` before
-        // reaching here; a scalar operand never satisfies it.
-        BinaryOp::Is => (false, MarrowType::Primitive(ScalarType::Bool)),
+        BinaryOp::Coalesce | BinaryOp::Is => {
+            unreachable!(
+                "`??` and `is` are typed in check_coalesce/check_is before reaching check_binary"
+            )
+        }
     };
     if !valid {
         diagnostics.push(operator_diagnostic(
@@ -397,7 +396,7 @@ pub(crate) fn check_binary(
 /// Decide `==`/`!=` over concrete non-scalar operands, returning `Some(result)`
 /// once a verdict is reached and `None` to defer to the scalar path. A rejected
 /// pairing still yields `bool`, the natural result type of a comparison.
-pub(crate) fn check_equality(
+fn check_equality(
     op: marrow_syntax::BinaryOp,
     left: &MarrowType,
     right: &MarrowType,
