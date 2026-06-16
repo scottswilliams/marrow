@@ -110,6 +110,37 @@ fn io<E: std::fmt::Display>(op: &'static str) -> impl Fn(E) -> StoreError {
     }
 }
 
+/// Open a redb database with write capability, retrying briefly past a transient
+/// advisory-lock release lag.
+///
+/// redb guards a store with an OS file lock (`flock` on Unix) acquired on open and
+/// released when the handle drops. The release can lag the close that the drop
+/// performs, so a write-capable open issued just after another handle on the same
+/// path was dropped — by this process or by one that has already exited, such as a
+/// preceding read-only inspection — can observe the not-yet-released lock and fail
+/// with `DatabaseAlreadyOpen` even though no holder remains. A genuine concurrent
+/// holder keeps the lock for the whole budget and still surfaces promptly as
+/// [`StoreError::Locked`]; only the brief release lag is absorbed.
+fn open_write_capable(
+    path: &Path,
+    open: impl Fn() -> Result<Database, DatabaseError>,
+) -> Result<Database, StoreError> {
+    const LOCK_RELEASE_BACKOFF: [u64; 4] = [1, 2, 4, 8];
+    let mut attempt = 0;
+    loop {
+        match open() {
+            Ok(db) => return Ok(db),
+            Err(DatabaseError::DatabaseAlreadyOpen) if attempt < LOCK_RELEASE_BACKOFF.len() => {
+                std::thread::sleep(std::time::Duration::from_millis(
+                    LOCK_RELEASE_BACKOFF[attempt],
+                ));
+                attempt += 1;
+            }
+            Err(error) => return Err(map_open_error(path, error)),
+        }
+    }
+}
+
 /// Map a redb open error to the store error that faithfully reflects the damage,
 /// so a torn body, a recoverable unclean shutdown, and a transient fault are not
 /// collapsed into one untyped bucket. redb internals never leak as the surfaced
@@ -587,7 +618,7 @@ impl RedbStore {
     pub(crate) fn open(path: &Path) -> Result<Self, StoreError> {
         let db = catch_open(|| {
             let sync_parent_after_commit = prepare_new_store_file(path)?;
-            let db = Database::create(path).map_err(|error| map_open_error(path, error))?;
+            let db = open_write_capable(path, || Database::create(path))?;
             stamp_or_verify_format_version(sync_parent_after_commit.as_deref(), &db)?;
             Ok(db)
         })?;
@@ -603,7 +634,7 @@ impl RedbStore {
     /// already carries Marrow metadata.
     pub(crate) fn open_existing(path: &Path) -> Result<Self, StoreError> {
         let db = catch_open(|| {
-            let db = Database::open(path).map_err(|error| map_open_error(path, error))?;
+            let db = open_write_capable(path, || Database::open(path))?;
             verify_existing_store_shape(&db)?;
             Ok(db)
         })?;
