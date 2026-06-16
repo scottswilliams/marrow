@@ -4,9 +4,9 @@
 
 use crate::token::is_trivia;
 use crate::{
-    Argument, BinaryOp, Diagnostic, DiagnosticReason, Expression, InterpolationPart, Keyword,
-    LiteralKind, NESTING_DEPTH_LIMIT, NESTING_LIMIT, PARSE_SYNTAX, ParseDiagnosticReason, Severity,
-    SourceSpan, Token, TokenKind, UnaryOp, UnsupportedSyntax,
+    Argument, BinaryOp, Diagnostic, DiagnosticReason, ExpectedSyntax, Expression,
+    InterpolationPart, Keyword, LiteralKind, NESTING_DEPTH_LIMIT, NESTING_LIMIT, PARSE_SYNTAX,
+    ParseDiagnosticReason, Severity, SourceSpan, Token, TokenKind, UnaryOp, UnsupportedSyntax,
 };
 
 /// A value the parser does not fully structure yields `None`, which the caller
@@ -274,6 +274,20 @@ impl<'a> ExprParser<'a> {
         }
         self.advance();
         let right = self.additive_expr()?;
+        // `??` is non-associative: a second `??` at the same level is a grammar
+        // error rather than a left- or right-folded chain, so reject it here
+        // instead of leaving the trailing operand for the statement parser.
+        if let Some(chained) = self.tokens.get(self.pos).copied()
+            && chained.kind == TokenKind::QuestionQuestion
+        {
+            self.error(
+                chained.span,
+                ParseDiagnosticReason::Expected(ExpectedSyntax::Expression),
+                "`??` does not chain; parenthesize one side of the coalesce".to_string(),
+                None,
+            );
+            return None;
+        }
         Some(binary_expr(BinaryOp::Coalesce, left, right))
     }
 

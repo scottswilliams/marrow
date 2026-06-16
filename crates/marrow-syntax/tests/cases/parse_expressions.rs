@@ -3,10 +3,10 @@
 //! spans an expression carries back into source.
 
 use crate::common;
-use common::parse_reason;
+use common::{has_reason, parse_reason};
 use marrow_syntax::{
-    BinaryOp, Declaration, Expression, LiteralKind, ParseDiagnosticReason, Statement, UnaryOp,
-    parse_source,
+    BinaryOp, Declaration, ExpectedSyntax, Expression, LiteralKind, ParseDiagnosticReason,
+    Statement, UnaryOp, parse_source,
 };
 
 #[derive(Debug)]
@@ -155,8 +155,11 @@ fn bare_type_keyword_is_not_a_value() {
     // value position rather than a silently accepted value.
     let parsed = parse_source("const Bad = int\n");
     assert!(
-        parsed.diagnostics.iter().any(|d| d.code == "parse.syntax"),
-        "expected a parse error: {:#?}",
+        has_reason(
+            &parsed.diagnostics,
+            parse_reason(ParseDiagnosticReason::KeywordExpression)
+        ),
+        "expected a keyword-in-value parse error: {:#?}",
         parsed.diagnostics
     );
     let Declaration::Const(decl) = &parsed.file.declarations[0] else {
@@ -176,8 +179,11 @@ fn const_chained_equality_is_not_associative() {
     // fully parse and so is a syntax error rather than silently nesting.
     let parsed = parse_source("const Bad: bool = a = b = c\n");
     assert!(
-        parsed.diagnostics.iter().any(|d| d.code == "parse.syntax"),
-        "expected a parse error: {:#?}",
+        has_reason(
+            &parsed.diagnostics,
+            parse_reason(ParseDiagnosticReason::Expected(ExpectedSyntax::Expression))
+        ),
+        "expected an expression parse error: {:#?}",
         parsed.diagnostics
     );
     let Declaration::Const(decl) = &parsed.file.declarations[0] else {
@@ -236,14 +242,7 @@ fn empty_const_value_reports_the_single_generic_diagnostic() {
 #[test]
 fn equality_and_inequality_parse_in_expression_position() {
     // `==` is equality and `!=` is inequality; both parse as binary operators.
-    let eq = parse_source("fn f(a: int, b: int): bool\n    return a == b\n");
-    assert!(eq.diagnostics.is_empty(), "{:#?}", eq.diagnostics);
-    let Statement::Return {
-        value: Some(value), ..
-    } = &eq.file.function("f").expect("f").body.statements[0]
-    else {
-        panic!("expected a return statement");
-    };
+    let value = parsed_return_expr("fn f(a: int, b: int): bool\n    return a == b\n");
     assert!(
         matches!(
             value,
@@ -255,14 +254,7 @@ fn equality_and_inequality_parse_in_expression_position() {
         "expected `==` to parse as equality: {value:?}"
     );
 
-    let ne = parse_source("fn f(x: int, y: int): bool\n    return x != y\n");
-    assert!(ne.diagnostics.is_empty(), "{:#?}", ne.diagnostics);
-    let Statement::Return {
-        value: Some(value), ..
-    } = &ne.file.function("f").expect("f").body.statements[0]
-    else {
-        panic!("expected a return statement");
-    };
+    let value = parsed_return_expr("fn f(x: int, y: int): bool\n    return x != y\n");
     assert!(
         matches!(
             value,
@@ -279,14 +271,7 @@ fn equality_and_inequality_parse_in_expression_position() {
 fn absence_operators_parse_in_expression_position() {
     // `??` parses as the coalesce binary operator; `?.` parses as an optional
     // field read whose base is the preceding path.
-    let parsed = parse_source("fn f(a: int): int\n    return ^books(a)?.pages ?? 0\n");
-    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
-    let Statement::Return {
-        value: Some(value), ..
-    } = &parsed.file.function("f").expect("f").body.statements[0]
-    else {
-        panic!("expected a return statement");
-    };
+    let value = parsed_return_expr("fn f(a: int): int\n    return ^books(a)?.pages ?? 0\n");
     // `??` binds looser than `?.`, so the whole `^books(a)?.pages` is the left
     // operand of one `??`.
     let Expression::Binary {
@@ -295,7 +280,7 @@ fn absence_operators_parse_in_expression_position() {
         ..
     } = value
     else {
-        panic!("expected `??` to parse as coalesce: {value:?}");
+        panic!("expected `??` to parse as coalesce");
     };
     assert!(
         matches!(left.as_ref(), Expression::OptionalField { name, .. } if name == "pages"),
@@ -307,22 +292,15 @@ fn absence_operators_parse_in_expression_position() {
 fn coalesce_binds_tighter_than_equality() {
     // `name ?? "anon" == "anon"` groups as `(name ?? "anon") == "anon"`: the `??`
     // sits one level tighter than `==`.
-    let parsed = parse_source(
+    let value = parsed_return_expr(
         "fn f(a: string): bool\n    return ^names(a)?.value ?? \"anon\" == \"anon\"\n",
     );
-    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
-    let Statement::Return {
-        value: Some(value), ..
-    } = &parsed.file.function("f").expect("f").body.statements[0]
-    else {
-        panic!("expected a return statement");
-    };
     assert!(
         matches!(
             value,
             Expression::Binary {
                 op: BinaryOp::Equal,
-                left,
+                ref left,
                 ..
             } if matches!(left.as_ref(), Expression::Binary { op: BinaryOp::Coalesce, .. })
         ),
@@ -377,8 +355,11 @@ fn chained_coalesce_is_not_associative() {
     // `??` is non-associative, so `a ?? b ?? c` does not parse.
     let parsed = parse_source("fn f(a: int): int\n    return ^books(a)?.pages ?? 0 ?? 1\n");
     assert!(
-        parsed.diagnostics.iter().any(|d| d.code == "parse.syntax"),
-        "expected a parse error for chained `??`: {:#?}",
+        has_reason(
+            &parsed.diagnostics,
+            parse_reason(ParseDiagnosticReason::Expected(ExpectedSyntax::Expression))
+        ),
+        "expected an expression parse error for chained `??`: {:#?}",
         parsed.diagnostics
     );
 }
@@ -387,8 +368,11 @@ fn chained_coalesce_is_not_associative() {
 fn underscore_no_longer_parses_as_string_concatenation() {
     let parsed = parse_source("const Bad = \"a\" _ \"b\"\n");
     assert!(
-        parsed.diagnostics.iter().any(|d| d.code == "parse.syntax"),
-        "expected a parse error for `_` concatenation: {:#?}",
+        has_reason(
+            &parsed.diagnostics,
+            parse_reason(ParseDiagnosticReason::Expected(ExpectedSyntax::Expression))
+        ),
+        "expected an expression parse error for `_` concatenation: {:#?}",
         parsed.diagnostics
     );
     let Declaration::Const(decl) = &parsed.file.declarations[0] else {
@@ -407,25 +391,23 @@ fn bare_equals_in_expression_position_is_a_parse_error() {
     // in a condition where it cannot be the statement assignment) does not parse.
     let parsed = parse_source("fn f(a: int, b: int)\n    if (a = b)\n        return\n");
     assert!(
-        parsed.diagnostics.iter().any(|d| d.code == "parse.syntax"),
-        "expected a parse error for a bare `=` in expression position: {:#?}",
+        has_reason(
+            &parsed.diagnostics,
+            parse_reason(ParseDiagnosticReason::Expected(ExpectedSyntax::Expression))
+        ),
+        "expected an expression parse error for a bare `=` in expression position: {:#?}",
         parsed.diagnostics
     );
 }
 
 #[test]
 fn parses_the_is_operator() {
-    let parsed = parse_source("module app\nfn f(pet: Cat): bool\n    return pet is Cat::tiger\n");
-    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
-    let f = parsed.file.function("f").expect("f");
-    let Statement::Return {
-        value: Some(Expression::Binary { op, right, .. }),
-        ..
-    } = &f.body.statements[0]
-    else {
-        panic!("expected a binary return, got {:?}", f.body.statements[0]);
+    let value =
+        parsed_return_expr("module app\nfn f(pet: Cat): bool\n    return pet is Cat::tiger\n");
+    let Expression::Binary { op, right, .. } = value else {
+        panic!("expected a binary return, got {value:?}");
     };
-    assert_eq!(*op, BinaryOp::Is);
+    assert_eq!(op, BinaryOp::Is);
     // The right operand is the member-path `Cat::tiger`.
     let Expression::Name { segments, .. } = right.as_ref() else {
         panic!("expected a name on the right, got {right:?}");
@@ -443,15 +425,9 @@ fn rejects_a_chained_is() {
 
 #[test]
 fn a_three_segment_member_path_parses_as_one_name() {
-    let parsed = parse_source("module app\nfn f(): Cat\n    return Cat::tiger::bengal\n");
-    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
-    let f = parsed.file.function("f").expect("f");
-    let Statement::Return {
-        value: Some(Expression::Name { segments, .. }),
-        ..
-    } = &f.body.statements[0]
-    else {
-        panic!("expected a name return, got {:?}", f.body.statements[0]);
+    let value = parsed_return_expr("module app\nfn f(): Cat\n    return Cat::tiger::bengal\n");
+    let Expression::Name { segments, .. } = value else {
+        panic!("expected a name return, got {value:?}");
     };
     assert_eq!(segments, &["Cat", "tiger", "bengal"]);
 }

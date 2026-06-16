@@ -25,37 +25,6 @@ fn parses_split_store_declaration() {
 }
 
 #[test]
-fn resource_header_with_extra_tokens_is_rejected() {
-    let parsed = parse_source(concat!(
-        "module app\n",
-        "resource Book ",
-        "extra\n",
-        "    required title: string\n",
-        "    shelf: string\n",
-        "    index byShelf(shelf, id)\n",
-    ));
-
-    assert!(
-        parsed.has_errors(),
-        "expected resource headers with extra tokens to be rejected"
-    );
-    let diagnostic = parsed
-        .diagnostics
-        .iter()
-        .find(|diagnostic| {
-            diagnostic.reason
-                == parse_reason(ParseDiagnosticReason::Expected(
-                    ExpectedSyntax::ResourceName,
-                ))
-        })
-        .expect("resource-head diagnostic");
-    assert!(
-        diagnostic.message.contains("resource header"),
-        "{diagnostic:?}"
-    );
-}
-
-#[test]
 fn malformed_resource_header_reports_the_resource_rule() {
     for source in [
         "module app\nresource Book extra\n    title: string\n",

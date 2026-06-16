@@ -97,7 +97,9 @@ fn evolve_default_without_value_is_reported() {
     let source = "module app\nevolve\n    default Book.title\n";
     let parsed = parse_source(source);
     assert!(
-        parsed.diagnostics.iter().any(|d| d.code == "parse.syntax"),
+        parsed.diagnostics.iter().any(|d| d.code == "parse.syntax"
+            && d.reason
+                == parse_reason(ParseDiagnosticReason::Expected(ExpectedSyntax::EvolveStep))),
         "{:#?}",
         parsed.diagnostics
     );
@@ -108,7 +110,9 @@ fn evolve_unknown_step_keyword_is_reported() {
     let source = "module app\nevolve\n    rebrand Book.title\n";
     let parsed = parse_source(source);
     assert!(
-        parsed.diagnostics.iter().any(|d| d.code == "parse.syntax"),
+        parsed.diagnostics.iter().any(|d| d.code == "parse.syntax"
+            && d.reason
+                == parse_reason(ParseDiagnosticReason::Expected(ExpectedSyntax::EvolveStep))),
         "{:#?}",
         parsed.diagnostics
     );

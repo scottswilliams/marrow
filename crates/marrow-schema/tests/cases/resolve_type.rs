@@ -1,11 +1,10 @@
 //! Type resolution tests.
 //!
-//! These pin the cases where the structured [`Type`] must classify a spelling
-//! exactly as the old string probes did: scalar names (including the
-//! `string`/`Str` bridge), the `sequence[T]` sugar (including trimming and
-//! nesting), canonical `Id(^store)` identity, explicit `unknown`, and the
-//! bare/qualified names that stay `Named` for the checker to resolve against the
-//! project.
+//! These pin how the structured [`Type`] classifies a spelling: scalar names
+//! (including the `string` keyword and the `ErrorCode` spelling that map to the
+//! `Str` scalar), the `sequence[T]` sugar (including trimming and nesting),
+//! canonical `Id(^store)` identity, explicit `unknown`, and the bare/qualified
+//! names that stay `Named` for the checker to resolve against the project.
 
 use marrow_schema::{ScalarType, Type};
 use marrow_syntax::{SourceSpan, TypeRef};
@@ -32,14 +31,11 @@ fn scalar_names_resolve_to_their_scalar() {
 
 #[test]
 fn string_keyword_bridges_to_the_str_scalar() {
-    // The source keyword is `string`; the scalar variant is historically `Str`.
     assert_eq!(resolve("string"), Type::Scalar(ScalarType::Str));
 }
 
 #[test]
 fn surrounding_whitespace_is_trimmed_before_classification() {
-    // The old probes trimmed the text; resolution does too, so `  int  ` is
-    // still the int scalar, not an unknown name.
     assert_eq!(resolve("  int  "), Type::Scalar(ScalarType::Int));
 }
 
@@ -49,7 +45,6 @@ fn sequence_sugar_resolves_to_a_boxed_element_type() {
         resolve("sequence[string]"),
         Type::Sequence(Box::new(Type::Scalar(ScalarType::Str)))
     );
-    // The element spelling is trimmed, matching the old `strip`-then-`trim`.
     assert_eq!(
         resolve("sequence[ int ]"),
         Type::Sequence(Box::new(Type::Scalar(ScalarType::Int)))

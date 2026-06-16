@@ -1,7 +1,7 @@
-//! Duplicate and colliding member/key names, and the unkeyed-group required-field
-//! rule: a member name may not repeat, an identity key may not collide with a
-//! member or layer name, key parameters must be distinct, and a required field is
-//! allowed inside both unkeyed and keyed groups.
+//! Duplicate and colliding member/key names: a member name may not repeat, an
+//! identity key may not collide with a member or layer name, and key parameters
+//! must be distinct. Required fields are permitted inside both unkeyed and keyed
+//! groups.
 
 use crate::common;
 use common::{assert_kind, codes};
@@ -205,9 +205,7 @@ store ^patients(id: string): Patient
 
 #[test]
 fn required_field_inside_a_keyed_group_is_allowed() {
-    // The rejection is specific to UNKEYED groups; a keyed group (a layer the
-    // planner does maintain) may hold required fields, as in the Book
-    // `versions(version) { required title }` shape.
+    // A keyed group (a layer the planner maintains) may hold required fields.
     let source = "\
 resource Book
     versions(version: int)

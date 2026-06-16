@@ -31,48 +31,20 @@ fn resource(source: &str) -> ResourceDecl {
         .expect("a resource declaration")
 }
 
-/// Compile `source`'s resource, asserting it produced no schema errors.
+/// Compile `source`'s saved resource, asserting it produced no schema errors.
 fn compile_ok(source: &str) -> ResourceSchema {
-    let (schema, errors) = compile_source(source);
+    let (schema, errors) = compile_saved_resource(source);
     assert!(errors.is_empty(), "unexpected schema errors: {errors:?}");
     schema
 }
 
-fn compile_source(source: &str) -> (ResourceSchema, Vec<SchemaError>) {
-    let parsed = parse_source(source);
-    assert!(
-        !parsed.has_errors(),
-        "source should parse cleanly: {:?}",
-        parsed.diagnostics
-    );
-    let mut resource = None;
-    let mut store = None;
-    for declaration in parsed.file.declarations {
-        match declaration {
-            Declaration::Resource(decl) => resource = Some(decl),
-            Declaration::Store(decl) => store = Some(decl),
-            _ => {}
-        }
-    }
-    let resource = resource.expect("resource declaration");
-    if let Some(store) = store {
-        let (schema, mut errors) = compile_resource(&resource);
-        let (_, store_errors) = compile_store(&store, &schema);
-        errors.extend(store_errors);
-        errors.extend(check_saved_member_rules(&resource.members));
-        (schema, errors)
-    } else {
-        compile_resource(&resource)
-    }
-}
-
-/// Compile every stored resource in `source` through the saved-resource schema rule
+/// Compile `source`'s single stored resource through the full saved-resource schema rule
 /// sequence the checker drives — the stored-resource shape, the store, the saved member
-/// rules, and the named-field enum rule resolved against the module's declared enums —
-/// and return the schema errors. The same-file enum set and stored-resource set are
-/// derived from the parsed declarations exactly as the checker derives them, so the
-/// named-field rule sees the enums a real module would.
-fn compile_saved_resource_errors(source: &str) -> Vec<SchemaError> {
+/// rules, and the named-field enum rule resolved against the module's declared enums — and
+/// return the schema and its errors. The same-file enum set is derived from the parsed
+/// declarations exactly as the checker derives it, so the named-field rule sees the enums a
+/// real module would.
+fn compile_saved_resource(source: &str) -> (ResourceSchema, Vec<SchemaError>) {
     let parsed = parse_source(source);
     assert!(
         !parsed.has_errors(),
@@ -88,35 +60,32 @@ fn compile_saved_resource_errors(source: &str) -> Vec<SchemaError> {
             _ => None,
         })
         .collect();
-    let stores: Vec<_> = parsed
-        .file
-        .declarations
-        .iter()
-        .filter_map(|declaration| match declaration {
-            Declaration::Store(store) => Some(store.clone()),
-            _ => None,
-        })
-        .collect();
-
-    let mut errors = Vec::new();
+    let mut resource = None;
+    let mut store = None;
     for declaration in &parsed.file.declarations {
-        let Declaration::Resource(resource) = declaration else {
-            continue;
-        };
-        let Some(store) = stores.iter().find(|store| store.resource == resource.name) else {
-            continue;
-        };
-        let (schema, resource_errors) = compile_resource(resource);
-        errors.extend(resource_errors);
-        let (_, store_errors) = compile_store(store, &schema);
-        errors.extend(store_errors);
-        errors.extend(check_saved_member_rules(&resource.members));
-        errors.extend(check_saved_named_member_fields(
-            &resource.members,
-            &module_enums,
-        ));
+        match declaration {
+            Declaration::Resource(decl) => resource = Some(decl.clone()),
+            Declaration::Store(decl) => store = Some(decl.clone()),
+            _ => {}
+        }
     }
-    errors
+    let resource = resource.expect("resource declaration");
+    let store = store.expect("store declaration");
+
+    let (schema, mut errors) = compile_resource(&resource);
+    let (_, store_errors) = compile_store(&store, &schema);
+    errors.extend(store_errors);
+    errors.extend(check_saved_member_rules(&resource.members));
+    errors.extend(check_saved_named_member_fields(
+        &resource.members,
+        &module_enums,
+    ));
+    (schema, errors)
+}
+
+/// Compile `source`'s stored resource and return only its schema errors.
+fn compile_saved_resource_errors(source: &str) -> Vec<SchemaError> {
+    compile_saved_resource(source).1
 }
 
 /// A resource nesting a keyed-leaf layer and a field inside a group, exercising

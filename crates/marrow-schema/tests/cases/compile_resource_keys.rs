@@ -6,55 +6,10 @@
 use crate::common;
 use common::{assert_kind, codes};
 use marrow_schema::{
-    ResourceSchema, SCHEMA_NONSCALAR_KEY, SCHEMA_UNORDERABLE_KEY, ScalarType, SchemaError,
-    SchemaErrorKind, SchemaKeyTarget, Type, check_saved_member_rules, compile_resource,
-    compile_store,
+    SCHEMA_NONSCALAR_KEY, SCHEMA_UNORDERABLE_KEY, ScalarType, SchemaError, SchemaErrorKind,
+    SchemaKeyTarget, Type, check_saved_member_rules, compile_resource, compile_store,
 };
 use marrow_syntax::{Declaration, ResourceDecl, StoreDecl, parse_source};
-
-fn compile_source(source: &str) -> (ResourceSchema, Vec<SchemaError>) {
-    let parsed = parse_source(source);
-    assert!(
-        !parsed.has_errors(),
-        "source should parse cleanly: {:?}",
-        parsed.diagnostics
-    );
-    let mut resource = None;
-    let mut store = None;
-    for declaration in parsed.file.declarations {
-        match declaration {
-            Declaration::Resource(decl) => resource = Some(decl),
-            Declaration::Store(decl) => store = Some(decl),
-            _ => {}
-        }
-    }
-    let resource = resource.expect("resource declaration");
-    if let Some(store) = store {
-        let (schema, mut errors) = compile_resource(&resource);
-        let (_, store_errors) = compile_store(&store, &schema);
-        errors.extend(store_errors);
-        errors.extend(check_saved_member_rules(&resource.members));
-        (schema, errors)
-    } else {
-        compile_resource(&resource)
-    }
-}
-
-fn compile_source_errors(source: &str) -> Vec<SchemaError> {
-    let (_, errors) = compile_source(source);
-    errors
-}
-
-fn compile_store_errors(source: &str) -> Vec<SchemaError> {
-    let (resource, store) = resource_and_store(source);
-    let (schema, resource_errors) = compile_resource(&resource);
-    assert!(
-        resource_errors.is_empty(),
-        "unexpected resource errors: {resource_errors:?}"
-    );
-    let (_, store_errors) = compile_store(&store, &schema);
-    store_errors
-}
 
 fn resource_and_store(source: &str) -> (ResourceDecl, StoreDecl) {
     let parsed = parse_source(source);
@@ -76,6 +31,26 @@ fn resource_and_store(source: &str) -> (ResourceDecl, StoreDecl) {
         resource.expect("resource declaration"),
         store.expect("store declaration"),
     )
+}
+
+fn compile_source_errors(source: &str) -> Vec<SchemaError> {
+    let (resource, store) = resource_and_store(source);
+    let (schema, mut errors) = compile_resource(&resource);
+    let (_, store_errors) = compile_store(&store, &schema);
+    errors.extend(store_errors);
+    errors.extend(check_saved_member_rules(&resource.members));
+    errors
+}
+
+fn compile_store_errors(source: &str) -> Vec<SchemaError> {
+    let (resource, store) = resource_and_store(source);
+    let (schema, resource_errors) = compile_resource(&resource);
+    assert!(
+        resource_errors.is_empty(),
+        "unexpected resource errors: {resource_errors:?}"
+    );
+    let (_, store_errors) = compile_store(&store, &schema);
+    store_errors
 }
 
 fn key_param(name: &str) -> SchemaKeyTarget {

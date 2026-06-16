@@ -10,29 +10,43 @@ use common::{parse_reason, reason_count};
 use marrow_syntax::{ParseDiagnosticReason, parse_source};
 
 /// Each case is a distinct callee shape in `primary_expr`, all reaching the same
-/// `arguments()` rule through the shared postfix-call path. The label names the
+/// `arguments()` rule through the shared postfix-call path. `reject` puts a
+/// positional argument after a named one; `accept` is the mirror image with the
+/// allowed ordering. Both tests drive from this one set so the rejected and
+/// accepted halves provably cover the same callee shapes. The label names the
 /// grammar position so a failure says which call shape diverged.
-const POSITIONAL_AFTER_NAMED: &[(&str, &str)] = &[
+const CALL_SHAPES: &[CallShape] = &[
     // Resource constructor: `Error(...)` is parsed as a resource literal.
-    (
-        "resource constructor (Error)",
-        "const Made = Error(code: \"parse.error\", \"oops\")\n",
-    ),
-    // Resource constructor with a user resource name.
-    (
-        "resource constructor (named resource)",
-        "const Made = Book(title: \"t\", \"extra\")\n",
-    ),
+    CallShape {
+        label: "resource constructor (Error)",
+        reject: "const Made = Error(code: \"parse.error\", \"oops\")\n",
+        accept: "const Made = Error(\"oops\", code: \"e\")\n",
+    },
     // Conversion call: a scalar type keyword in call position.
-    ("conversion call (int)", "const Made = int(value: 1, 2)\n"),
+    CallShape {
+        label: "conversion call (int)",
+        reject: "const Made = int(value: 1, 2)\n",
+        accept: "const Made = int(1, scale: 2)\n",
+    },
     // Std-qualified call: a `::` name path callee.
-    (
-        "std-qualified call",
-        "const Made = std::math::clamp(low: 0, 9)\n",
-    ),
+    CallShape {
+        label: "std-qualified call",
+        reject: "const Made = std::math::clamp(low: 0, 9)\n",
+        accept: "const Made = std::math::clamp(0, high: 9)\n",
+    },
     // Saved-path key lookup shaped as a call on a saved root.
-    ("saved-root key lookup", "const Made = ^books(id: 1, 2)\n"),
+    CallShape {
+        label: "saved-root key lookup",
+        reject: "const Made = ^books(id: 1, 2)\n",
+        accept: "const Made = ^books(1, hint: 2)\n",
+    },
 ];
+
+struct CallShape {
+    label: &'static str,
+    reject: &'static str,
+    accept: &'static str,
+}
 
 /// Every distinct parsed call shape rejects a positional argument after a named
 /// one with the same typed reason, raised exactly once. A rule that fired for the
@@ -40,15 +54,16 @@ const POSITIONAL_AFTER_NAMED: &[(&str, &str)] = &[
 /// silent positional back-fill through one syntactic door.
 #[test]
 fn positional_after_named_is_rejected_in_every_call_shape() {
-    for (label, source) in POSITIONAL_AFTER_NAMED {
-        let parsed = parse_source(source);
+    for shape in CALL_SHAPES {
+        let parsed = parse_source(shape.reject);
         assert_eq!(
             reason_count(
                 &parsed.diagnostics,
                 parse_reason(ParseDiagnosticReason::PositionalArgumentAfterNamed),
             ),
             1,
-            "{label}: expected exactly one positional-after-named diagnostic: {:#?}",
+            "{}: expected exactly one positional-after-named diagnostic: {:#?}",
+            shape.label,
             parsed.diagnostics,
         );
     }
@@ -59,27 +74,16 @@ fn positional_after_named_is_rejected_in_every_call_shape() {
 /// ordering rather than any mix of positional and named arguments.
 #[test]
 fn positional_before_named_is_accepted_in_every_call_shape() {
-    let cases = [
-        (
-            "resource constructor (Error)",
-            "const Made = Error(\"oops\", code: \"e\")\n",
-        ),
-        ("conversion call (int)", "const Made = int(1, scale: 2)\n"),
-        (
-            "std-qualified call",
-            "const Made = std::math::clamp(0, high: 9)\n",
-        ),
-        ("saved-root key lookup", "const Made = ^books(1, hint: 2)\n"),
-    ];
-    for (label, source) in cases {
-        let parsed = parse_source(source);
+    for shape in CALL_SHAPES {
+        let parsed = parse_source(shape.accept);
         assert_eq!(
             reason_count(
                 &parsed.diagnostics,
                 parse_reason(ParseDiagnosticReason::PositionalArgumentAfterNamed),
             ),
             0,
-            "{label}: positional-before-named must be accepted: {:#?}",
+            "{}: positional-before-named must be accepted: {:#?}",
+            shape.label,
             parsed.diagnostics,
         );
     }

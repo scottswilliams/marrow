@@ -4,8 +4,8 @@
 use crate::common;
 use common::{has_reason, lexer_reason, parse_reason};
 use marrow_syntax::{
-    BinaryOp, Declaration, Diagnose, Expression, InterpolationPart, LexerDiagnosticReason,
-    ParseDiagnosticReason, UnsupportedSyntax, parse_source,
+    BinaryOp, Declaration, Diagnose, ExpectedSyntax, Expression, InterpolationPart,
+    LexerDiagnosticReason, ParseDiagnosticReason, UnsupportedSyntax, parse_source,
 };
 
 #[test]
@@ -175,8 +175,10 @@ fn unterminated_quoted_field_segment_does_not_panic() {
     let parsed = parse_source("const Bad = a.\"\n");
     assert!(parsed.has_errors(), "{:#?}", parsed.diagnostics);
     assert!(
-        parsed.diagnostics.iter().any(|diagnostic| diagnostic.reason
-            == lexer_reason(LexerDiagnosticReason::UnterminatedString)),
+        has_reason(
+            &parsed.diagnostics,
+            lexer_reason(LexerDiagnosticReason::UnterminatedString)
+        ),
         "expected an unterminated-string diagnostic: {:#?}",
         parsed.diagnostics
     );
@@ -311,10 +313,12 @@ fn removed_call_argument_modes_are_rejected() {
         let parsed = parse_source(source);
         assert!(parsed.has_errors(), "expected removed mode rejection");
         assert!(
-            parsed.diagnostics.iter().any(|diagnostic| diagnostic.reason
-                == parse_reason(ParseDiagnosticReason::Unsupported(
-                    UnsupportedSyntax::ParameterModes,
-                ))),
+            has_reason(
+                &parsed.diagnostics,
+                parse_reason(ParseDiagnosticReason::Unsupported(
+                    UnsupportedSyntax::ParameterModes
+                ))
+            ),
             "{:#?}",
             parsed.diagnostics
         );
@@ -492,16 +496,28 @@ fn parses_conversion_and_constructor_calls() {
 }
 
 #[test]
-fn qualified_id_constructor_paths_are_rejected() {
-    for source in [
-        "const Bad = Author::Id(7)\n",
-        "const Bad = Id::fromKey(7)\n",
-    ] {
-        let parsed = parse_source(source);
-        assert!(
-            !parsed.diagnostics.is_empty(),
-            "expected qualified Id path to be rejected for {source}: {:#?}",
-            parsed.diagnostics
-        );
-    }
+fn keyword_head_and_keyword_path_segment_are_rejected() {
+    // The parser has no dedicated qualified-`Id` rule; these strings are rejected
+    // because `Id` is a reserved keyword. A keyword head (`Id::fromKey`) cannot
+    // begin an expression, and a keyword path segment (`Author::Id`) breaks the
+    // qualified-name continuation and falls back to the expected-expression error.
+    let parsed = parse_source("const Bad = Author::Id(7)\n");
+    assert!(
+        has_reason(
+            &parsed.diagnostics,
+            parse_reason(ParseDiagnosticReason::Expected(ExpectedSyntax::Expression))
+        ),
+        "{:#?}",
+        parsed.diagnostics
+    );
+
+    let parsed = parse_source("const Bad = Id::fromKey(7)\n");
+    assert!(
+        has_reason(
+            &parsed.diagnostics,
+            parse_reason(ParseDiagnosticReason::KeywordExpression)
+        ),
+        "{:#?}",
+        parsed.diagnostics
+    );
 }

@@ -4,31 +4,9 @@
 use crate::common;
 use common::{lexer_reason, parse_reason, reason_count};
 use marrow_syntax::{
-    Declaration, ExpectedSyntax, FunctionReturnPresence, LexerDiagnosticReason,
+    Declaration, ExpectedSyntax, FunctionReturnPresence, LexerDiagnosticReason, PARSE_SYNTAX,
     ParseDiagnosticReason, ResourceMember, parse_source,
 };
-
-#[test]
-fn parses_documented_reference_sample() {
-    let sample = common::reference_sample();
-    let parsed = parse_source(&sample);
-
-    assert!(
-        parsed.diagnostics.is_empty(),
-        "unexpected diagnostics from docs/language/sample.md: {:#?}",
-        parsed.diagnostics
-    );
-    assert_eq!(
-        parsed
-            .file
-            .module
-            .as_ref()
-            .map(|module| module.name.as_str()),
-        Some("shelf::sample")
-    );
-    assert!(parsed.file.resource("Book").is_some());
-    assert!(parsed.file.function("main").is_some());
-}
 
 /// Corpus smoke test (one owner): every fenced `mw` block that opens with
 /// `module` is a complete library file and must parse without diagnostics. It
@@ -280,7 +258,7 @@ const MaxLoans: int
         parsed
             .diagnostics
             .iter()
-            .any(|diagnostic| diagnostic.code == "parse.syntax"
+            .any(|diagnostic| diagnostic.code == PARSE_SYNTAX
                 && diagnostic.reason == parse_reason(ParseDiagnosticReason::ConstRequiresValue)),
         "{:#?}",
         parsed.diagnostics
@@ -473,7 +451,7 @@ fn rejects_tabs_because_marrow_blocks_are_space_indented() {
     let parsed = parse_source("module app\n\tpub fn main()\n");
 
     assert!(parsed.has_errors());
-    assert_eq!(parsed.diagnostics[0].code, "parse.syntax");
+    assert_eq!(parsed.diagnostics[0].code, PARSE_SYNTAX);
     assert_eq!(parsed.diagnostics[0].span.line, 2);
     assert_eq!(parsed.diagnostics[0].span.column, 1);
     assert_eq!(

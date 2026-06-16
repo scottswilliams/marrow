@@ -236,13 +236,10 @@ fn loop_labels_are_rejected_as_removed_syntax() {
     );
     assert!(parsed.has_errors(), "expected loop-label rejection");
     assert!(
-        parsed.diagnostics.iter().any(|diagnostic| diagnostic
-            .message
-            .contains("loop labels were removed")
-            && diagnostic
-                .help
-                .as_deref()
-                .is_some_and(|help| help.contains("extract a function"))),
+        parsed.diagnostics.iter().any(|diagnostic| diagnostic.reason
+            == parse_reason(ParseDiagnosticReason::Unsupported(
+                UnsupportedSyntax::LoopLabels,
+            ))),
         "{:#?}",
         parsed.diagnostics
     );
@@ -257,13 +254,10 @@ fn labeled_break_and_continue_are_rejected_as_removed_syntax() {
         let parsed = parse_source(source);
         assert!(parsed.has_errors(), "expected labeled jump rejection");
         assert!(
-            parsed.diagnostics.iter().any(|diagnostic| diagnostic
-                .message
-                .contains("loop labels were removed")
-                && diagnostic
-                    .help
-                    .as_deref()
-                    .is_some_and(|help| help.contains("extract a function"))),
+            parsed.diagnostics.iter().any(|diagnostic| diagnostic.reason
+                == parse_reason(ParseDiagnosticReason::Unsupported(
+                    UnsupportedSyntax::LoopLabels,
+                ))),
             "{:#?}",
             parsed.diagnostics
         );
@@ -478,8 +472,6 @@ fn catch_rejects_structural_equal_inside_type_annotation() {
 /// not a fresh contract for `for`/`if` nesting (the focused tests above own that).
 #[test]
 fn nested_compound_at_end_of_body_parses_without_panic() {
-    // The body ends with nested compound blocks, so every closing DEDENT lands
-    // outside the body token slice. The block parser must tolerate that.
     let parsed = parse_source(
         "module app\n\
          fn run()\n\

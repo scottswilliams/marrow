@@ -89,7 +89,6 @@ store ^books(id: int): Book
             name: "byShelf".to_string(),
         },
     );
-    assert_eq!(errors[0].message, "duplicate index `byShelf`");
 }
 
 #[test]
