@@ -1,7 +1,7 @@
 use crate::support;
 use crate::support_discharge;
 use marrow_catalog::CatalogEntryKind;
-use marrow_check::evolution::{RepairDiagnostic, RepairReason, Verdict, preview};
+use marrow_check::evolution::{RepairReason, Verdict, preview};
 use marrow_store::key::SavedKey;
 use marrow_store::tree::TreeStore;
 use marrow_store::value::{Scalar, encode_value};
@@ -111,28 +111,7 @@ fn keyed_leaf_value_retype_over_populated_entries_fails_closed()
 
     let leaf_id = keyed_leaf_catalog_id(&place, "tags")?;
     let (result, diagnostics) = preview(&program, &store).expect("preview");
-
-    assert!(
-        !result.is_activatable(),
-        "a populated keyed-leaf value-type change must block activation: {:#?}",
-        result.verdicts
-    );
-    assert!(
-        matches!(
-            verdict_for(&result, &leaf_id),
-            Verdict::RepairRequired {
-                reason: RepairReason::TypeChangeRequiresTransform
-            }
-        ),
-        "the keyed-leaf value retype must steer to a transform, got {:#?}",
-        verdict_for(&result, &leaf_id)
-    );
-    assert!(
-        diagnostics
-            .iter()
-            .any(|RepairDiagnostic { catalog_id, .. }| catalog_id.as_str() == leaf_id),
-        "a fail-closed diagnostic must name the keyed leaf, got {diagnostics:#?}"
-    );
+    assert_retype_steered(&leaf_id, &result, &diagnostics);
 
     Ok(())
 }
@@ -268,28 +247,7 @@ fn retype_of_leaf_nested_in_populated_keyed_group_fails_closed()
         "a retyped keyed-nested leaf keeps its accepted stable id"
     );
     let (result, diagnostics) = preview(&program, &store).expect("preview");
-
-    assert!(
-        !result.is_activatable(),
-        "a populated keyed-nested retype must block activation: {:#?}",
-        result.verdicts
-    );
-    assert!(
-        matches!(
-            verdict_for(&result, &body_id),
-            Verdict::RepairRequired {
-                reason: RepairReason::TypeChangeRequiresTransform
-            }
-        ),
-        "a keyed-nested retype over populated entries must steer to a transform, got {:#?}",
-        verdict_for(&result, &body_id)
-    );
-    assert!(
-        diagnostics
-            .iter()
-            .any(|RepairDiagnostic { catalog_id, .. }| catalog_id.as_str() == body_id),
-        "a fail-closed diagnostic must name the retyped keyed-nested leaf, got {diagnostics:#?}"
-    );
+    assert_retype_steered(&body_id, &result, &diagnostics);
 
     Ok(())
 }
@@ -341,28 +299,7 @@ fn retype_of_keyed_nested_leaf_with_overlapping_byte_fails_closed()
 
     let body_id = nested_member_catalog_id(&place, "versions", "body")?;
     let (result, diagnostics) = preview(&program, &store).expect("preview");
-
-    assert!(
-        !result.is_activatable(),
-        "an overlapping-byte keyed-nested retype must block activation: {:#?}",
-        result.verdicts
-    );
-    assert!(
-        matches!(
-            verdict_for(&result, &body_id),
-            Verdict::RepairRequired {
-                reason: RepairReason::TypeChangeRequiresTransform
-            }
-        ),
-        "an overlapping-byte keyed-nested retype must steer to a transform, got {:#?}",
-        verdict_for(&result, &body_id)
-    );
-    assert!(
-        diagnostics
-            .iter()
-            .any(|RepairDiagnostic { catalog_id, .. }| catalog_id.as_str() == body_id),
-        "a fail-closed diagnostic must name the retyped keyed-nested leaf, got {diagnostics:#?}"
-    );
+    assert_retype_steered(&body_id, &result, &diagnostics);
 
     Ok(())
 }

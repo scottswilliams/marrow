@@ -209,7 +209,10 @@ fn transform_return_type_mismatch_is_check_error() {
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
     assert!(
-        report.has_errors(),
+        report
+            .diagnostics
+            .iter()
+            .any(|d| d.code == marrow_check::CHECK_RETURN_TYPE),
         "expected a return-type error: {:#?}",
         report.diagnostics
     );

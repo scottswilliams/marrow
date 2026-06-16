@@ -1,7 +1,7 @@
 use crate::support;
 use crate::support_discharge;
 use marrow_catalog::CatalogEntryKind;
-use marrow_check::evolution::{RepairDiagnostic, RepairReason, Verdict, preview};
+use marrow_check::evolution::{Verdict, preview};
 use marrow_store::StoreError;
 use marrow_store::key::SavedKey;
 use marrow_store::tree::TreeStore;
@@ -262,26 +262,11 @@ fn brand_new_required_member_over_populated_store_fails_closed()
     let pages_id = new_member_proposal_id(&program, "books::Book::pages")?;
     let (result, diagnostics) = preview(&program, &store).expect("preview");
 
-    assert!(
-        !result.is_activatable(),
-        "a brand-new required member with no default over a populated store must block: {:#?}",
-        result.verdicts
-    );
-    assert!(
-        matches!(
-            verdict_for(&result, &pages_id),
-            Verdict::RepairRequired {
-                reason: RepairReason::MissingRequiredMember
-            }
-        ),
-        "the brand-new required member must fail closed, got {:#?}",
-        verdict_for(&result, &pages_id)
-    );
-    assert!(
-        diagnostics
-            .iter()
-            .any(|RepairDiagnostic { catalog_id, .. }| catalog_id.as_str() == pages_id),
-        "a fail-closed diagnostic must name the new required member, got {diagnostics:#?}"
+    assert_fails_closed(
+        &result,
+        &diagnostics,
+        &pages_id,
+        RepairReason::MissingRequiredMember,
     );
 
     Ok(())
@@ -438,26 +423,11 @@ fn brand_new_required_keyed_leaf_over_populated_layer_fails_closed()
     let body_id = new_member_proposal_id(&program, "policies::Policy::versions::body")?;
     let (result, diagnostics) = preview(&program, &store).expect("preview");
 
-    assert!(
-        !result.is_activatable(),
-        "a brand-new required keyed leaf over a populated layer must block: {:#?}",
-        result.verdicts
-    );
-    assert!(
-        matches!(
-            verdict_for(&result, &body_id),
-            Verdict::RepairRequired {
-                reason: RepairReason::MissingRequiredMember
-            }
-        ),
-        "the brand-new required keyed leaf must fail closed, got {:#?}",
-        verdict_for(&result, &body_id)
-    );
-    assert!(
-        diagnostics
-            .iter()
-            .any(|RepairDiagnostic { catalog_id, .. }| catalog_id.as_str() == body_id),
-        "a fail-closed diagnostic must name the new required keyed leaf, got {diagnostics:#?}"
+    assert_fails_closed(
+        &result,
+        &diagnostics,
+        &body_id,
+        RepairReason::MissingRequiredMember,
     );
 
     Ok(())

@@ -13,8 +13,6 @@ fn content_identity(snapshot: &AnalysisSnapshot) -> String {
 
 #[test]
 fn analyze_project_uses_overlay_source_instead_of_disk() {
-    use marrow_check::{ProjectSources, analyze_project};
-
     // The on-disk file is clean; an editor overlay supplies buffer text for the
     // same path that introduces a checker error (`1 + true`). The overlay must
     // win — proving analysis reads buffer text, not the disk file, for that path.
@@ -88,8 +86,6 @@ fn source_digest_binds_overlay_source_instead_of_disk() {
 
 #[test]
 fn analyze_project_includes_unsaved_source_root_files() {
-    use marrow_check::{ProjectSources, analyze_project};
-
     let root = temp_project("analyze-unsaved-source-file", |root| {
         fs::create_dir_all(root.join("src")).expect("create src");
     });
@@ -118,8 +114,6 @@ fn analyze_project_includes_unsaved_source_root_files() {
 
 #[test]
 fn analyze_project_reports_configured_test_file_parse_errors() {
-    use marrow_check::{ProjectSources, analyze_project};
-
     let root = temp_project("analyze-test-parse", |root| {
         write(root, "src/app.mw", "module app\n");
         // A tab is a lexical error.
@@ -143,8 +137,6 @@ fn analyze_project_reports_configured_test_file_parse_errors() {
 
 #[test]
 fn analyze_project_reports_unsaved_configured_test_file_parse_errors() {
-    use marrow_check::{ProjectSources, analyze_project};
-
     let root = temp_project("analyze-unsaved-test-parse", |root| {
         write(root, "src/app.mw", "module app\n");
     });
@@ -170,8 +162,6 @@ fn analyze_project_reports_unsaved_configured_test_file_parse_errors() {
 
 #[test]
 fn analyze_project_retains_configured_test_files_in_snapshot() {
-    use marrow_check::{ProjectSources, analyze_project};
-
     let root = temp_project("analyze-test-snapshot", |root| {
         write(root, "src/app.mw", "module app\n");
         write(root, "tests/smoke_test.mw", "fn smoke()\n    var x = 1\n");
@@ -263,8 +253,6 @@ fn analyze_project_keeps_configured_test_modules_out_of_program_facts() {
 
 #[test]
 fn analyze_project_retains_unsaved_configured_test_files_in_snapshot() {
-    use marrow_check::{ProjectSources, analyze_project};
-
     let root = temp_project("analyze-unsaved-test-snapshot", |root| {
         write(root, "src/app.mw", "module app\n");
     });

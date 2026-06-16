@@ -1,6 +1,6 @@
 use crate::support;
 use crate::support_discharge;
-use marrow_check::evolution::{RepairDiagnostic, RepairReason, Verdict, preview};
+use marrow_check::evolution::{RepairReason, Verdict, preview};
 use marrow_store::key::SavedKey;
 use marrow_store::tree::TreeStore;
 use marrow_store::value::{Scalar, encode_value};
@@ -287,20 +287,11 @@ fn nested_keyed_layer_rekey_below_keyed_ancestor_fails_closed()
     let body_member_id = deep_member_catalog_id(&place, &["versions", "revisions", "body"])?;
     let (result, diagnostics) = preview(&program, &store).expect("preview");
 
-    assert!(
-        !result.is_activatable(),
-        "a nested keyed-layer key-type change over populated entries must block activation: {:#?}",
-        result.verdicts
-    );
-    assert!(
-        matches!(
-            verdict_for(&result, &revisions_layer_id),
-            Verdict::RepairRequired {
-                reason: RepairReason::KeyedLayerKeyShapeChange
-            }
-        ),
-        "a re-keyed layer below a keyed ancestor must fail closed, got {:#?}",
-        verdict_for(&result, &revisions_layer_id)
+    assert_fails_closed(
+        &result,
+        &diagnostics,
+        &revisions_layer_id,
+        RepairReason::KeyedLayerKeyShapeChange,
     );
     // The enclosing re-keyed layer fails closed, so its interior required leaf must not also emit
     // a misleading data proof over entries the new key shape orphans.
@@ -311,12 +302,6 @@ fn nested_keyed_layer_rekey_below_keyed_ancestor_fails_closed()
             .any(|obligation| obligation.catalog_id.as_str() == body_member_id),
         "a deeper required leaf under a failed-closed layer must not be re-judged, got {:#?}",
         result.verdicts
-    );
-    assert!(
-        diagnostics
-            .iter()
-            .any(|RepairDiagnostic { catalog_id, .. }| catalog_id.as_str() == revisions_layer_id),
-        "a fail-closed diagnostic must name the re-keyed nested layer, got {diagnostics:#?}"
     );
 
     Ok(())
@@ -386,38 +371,25 @@ fn nested_keyed_layer_arity_change_two_levels_deep_fails_closed()
     let revisions_layer_id = deep_member_catalog_id(&place, &["versions", "revisions"])?;
     let (result, diagnostics) = preview(&program, &store).expect("preview");
 
-    assert!(
-        !result.is_activatable(),
-        "a nested keyed-layer arity change over populated entries must block activation: {:#?}",
-        result.verdicts
-    );
-    assert!(
-        matches!(
-            verdict_for(&result, &revisions_layer_id),
-            Verdict::RepairRequired { .. }
-        ),
-        "a nested keyed-layer arity change must fail closed via the backstop, got {:#?}",
-        verdict_for(&result, &revisions_layer_id)
-    );
-    assert!(
-        diagnostics
-            .iter()
-            .any(|RepairDiagnostic { catalog_id, .. }| catalog_id.as_str() == revisions_layer_id),
-        "a fail-closed diagnostic must name the structurally-diverged nested layer, got {diagnostics:#?}"
+    assert_fails_closed(
+        &result,
+        &diagnostics,
+        &revisions_layer_id,
+        RepairReason::KeyedLayerKeyShapeChange,
     );
 
     Ok(())
 }
 
-/// A structurally-diverged INTERIOR member arbitrarily deep fails closed. A
-/// plain unkeyed group `meta` nested under two keyed layers is reshaped into a keyed layer, so
-/// its signature moves from `group` to `keyed-group:[int]` with no leaf token on either side —
-/// a structural divergence no leaf-type, store-key, or per-entry leaf classifier claims, reached
-/// only by descending through the two unchanged keyed ancestors. Its old sub-member cells sit
-/// directly under the group node with no entry key, so the new keyed shape reads none of them;
-/// the member fails closed over the populated entry rather than activating.
+/// A reshaped INTERIOR member arbitrarily deep fails closed. A plain unkeyed group `meta` nested
+/// under two keyed layers is reshaped into a keyed layer, so its signature moves from `group` to
+/// `keyed-group:[int]`. Because the divergence involves a keyed group (and no leaf token on either
+/// side), it is the keyed-layer rule, not the general structural arm: it fires
+/// `KeyedLayerKeyShapeChange`, reached only by descending through the two unchanged keyed ancestors.
+/// Its old sub-member cells sit directly under the group node with no entry key, so the new keyed
+/// shape reads none of them; the member fails closed over the populated entry rather than activating.
 #[test]
-fn deep_interior_member_structural_divergence_fails_closed()
+fn deep_interior_member_reshaped_to_keyed_layer_fails_closed()
 -> Result<(), Box<dyn std::error::Error>> {
     let versions_id = hex_id(3);
     let revisions_id = hex_id(4);
@@ -484,24 +456,11 @@ fn deep_interior_member_structural_divergence_fails_closed()
     );
     let (result, diagnostics) = preview(&program, &store).expect("preview");
 
-    assert!(
-        !result.is_activatable(),
-        "a structurally-diverged interior member arbitrarily deep must block activation: {:#?}",
-        result.verdicts
-    );
-    assert!(
-        matches!(
-            verdict_for(&result, &meta_member_id),
-            Verdict::RepairRequired { .. }
-        ),
-        "a deep interior structural divergence must fail closed, got {:#?}",
-        verdict_for(&result, &meta_member_id)
-    );
-    assert!(
-        diagnostics
-            .iter()
-            .any(|RepairDiagnostic { catalog_id, .. }| catalog_id.as_str() == meta_member_id),
-        "a fail-closed diagnostic must name the deep diverged member, got {diagnostics:#?}"
+    assert_fails_closed(
+        &result,
+        &diagnostics,
+        &meta_member_id,
+        RepairReason::KeyedLayerKeyShapeChange,
     );
 
     Ok(())

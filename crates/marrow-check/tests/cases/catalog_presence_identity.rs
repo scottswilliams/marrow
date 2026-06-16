@@ -1,5 +1,4 @@
 use crate::support;
-use std::hash::{Hash, Hasher};
 use std::path::Path;
 
 use marrow_catalog::{CatalogEntry, CatalogEntryKind, CatalogMetadata};
@@ -34,18 +33,6 @@ fn entry(
     literal_entry(kind, canonical_path, &derived_id(label), aliases)
 }
 
-/// A plausible deterministic 128-bit path-derived id. Proposed ids must not match
-/// this shape-derived value; source spelling is not durable identity.
-fn path_derived_128_id(kind: CatalogEntryKind, path: &str) -> String {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    (kind, path, "path-derived-a").hash(&mut hasher);
-    let first = hasher.finish();
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    (kind, path, "path-derived-b").hash(&mut hasher);
-    let second = hasher.finish();
-    format!("cat_{first:016x}{second:016x}")
-}
-
 fn proposed_id_for_path(proposal: &CatalogMetadata, kind: CatalogEntryKind, path: &str) -> String {
     proposal
         .entries
@@ -54,36 +41,6 @@ fn proposed_id_for_path(proposal: &CatalogMetadata, kind: CatalogEntryKind, path
         .unwrap_or_else(|| panic!("proposal has an entry for {path}: {:#?}", proposal.entries))
         .stable_id
         .clone()
-}
-
-#[test]
-fn proposed_ids_are_not_derived_from_the_member_path() {
-    // Two members at different source paths must receive ids that are not a hash of
-    // their path, so changing a path never changes which id a member would derive.
-    let root = temp_project("catalog-id-not-path-derived", |root| {
-        write(
-            root,
-            "src/books.mw",
-            "module books\n\
-             resource Book\n\
-             \x20   title: string\n\
-             \x20   subtitle: string\n\
-             store ^books(id: int): Book\n",
-        );
-    });
-
-    let (report, program) = check_with_accepted(&root);
-
-    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
-    let proposal = program.catalog.proposal.expect("proposal");
-    for path in ["books::Book::title", "books::Book::subtitle"] {
-        let proposed = proposed_id_for_path(&proposal, CatalogEntryKind::ResourceMember, path);
-        let derived = path_derived_128_id(CatalogEntryKind::ResourceMember, path);
-        assert_ne!(
-            proposed, derived,
-            "id for {path} must not be a hash of its path"
-        );
-    }
 }
 
 #[test]

@@ -240,23 +240,13 @@ fn non_canonical_temporal_default_fails_closed() -> Result<(), Box<dyn std::erro
     // A declared default the checker cannot encode is not a missing member: the
     // developer named a fill, so the verdict names the rejected default by its typed
     // cause rather than collapsing into the no-default-at-all case.
-    assert!(
-        matches!(
-            verdict_for(&result, &day_id),
-            Verdict::RepairRequired {
-                reason: RepairReason::DefaultRejected {
-                    reason: RejectedDefault::NotEncodable
-                }
-            }
-        ),
-        "{:#?}",
-        result.verdicts
-    );
-    assert!(
-        diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.catalog_id.as_str() == day_id),
-        "{diagnostics:#?}"
+    assert_fails_closed(
+        &result,
+        &diagnostics,
+        &day_id,
+        RepairReason::DefaultRejected {
+            reason: RejectedDefault::NotEncodable,
+        },
     );
 
     Ok(())
@@ -295,23 +285,13 @@ fn non_constant_default_fails_closed_with_transform_hint() -> Result<(), Box<dyn
     let pages_id = member_catalog_id(&place, "pages")?;
     // A declared non-constant default is steered to a transform by a typed cause, not by
     // the missing-member verdict a member with no default carries.
-    assert!(
-        matches!(
-            verdict_for(&result, &pages_id),
-            Verdict::RepairRequired {
-                reason: RepairReason::DefaultRejected {
-                    reason: RejectedDefault::NotConstant
-                }
-            }
-        ),
-        "{:#?}",
-        result.verdicts
-    );
-    assert!(
-        diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.catalog_id.as_str() == pages_id),
-        "{diagnostics:#?}"
+    assert_fails_closed(
+        &result,
+        &diagnostics,
+        &pages_id,
+        RepairReason::DefaultRejected {
+            reason: RejectedDefault::NotConstant,
+        },
     );
 
     Ok(())
@@ -410,22 +390,11 @@ fn required_present_member_with_incompatible_bytes_repairs()
     let (witness, diagnostics) = preview(&program, &store).expect("preview");
 
     let title_id = member_catalog_id(&place, "title")?;
-    assert!(!witness.is_activatable(), "{witness:#?}");
-    assert!(
-        matches!(
-            verdict_for(&witness, &title_id),
-            Verdict::RepairRequired {
-                reason: RepairReason::InvalidStoredValue
-            }
-        ),
-        "{:#?}",
-        witness.verdicts
-    );
-    assert!(
-        diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.catalog_id.as_str() == title_id),
-        "{diagnostics:#?}"
+    assert_fails_closed(
+        &witness,
+        &diagnostics,
+        &title_id,
+        RepairReason::InvalidStoredValue,
     );
 
     Ok(())

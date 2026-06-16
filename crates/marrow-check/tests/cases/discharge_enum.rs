@@ -1,7 +1,7 @@
 use crate::support;
 use crate::support_discharge;
 use marrow_catalog::CatalogEntryKind;
-use marrow_check::evolution::{RepairDiagnostic, RepairReason, Verdict, preview};
+use marrow_check::evolution::{RepairReason, Verdict, preview};
 use marrow_store::tree::TreeStore;
 use marrow_store::value::Scalar;
 
@@ -154,22 +154,11 @@ fn enum_member_removed_fails_closed() -> Result<(), Box<dyn std::error::Error>> 
     let (result, diagnostics) = preview(&program, &store).expect("preview");
 
     let value_id = member_catalog_id(&place, "value")?;
-    assert!(
-        matches!(
-            verdict_for(&result, &value_id),
-            Verdict::RepairRequired {
-                reason: RepairReason::InvalidStoredValue
-            }
-        ),
-        "a stored enum value no longer a member of the current enum must fail closed: {:#?}",
-        result.verdicts
-    );
-    assert!(!result.is_activatable(), "{result:#?}");
-    assert!(
-        diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.catalog_id.as_str() == value_id),
-        "{diagnostics:#?}"
+    assert_fails_closed(
+        &result,
+        &diagnostics,
+        &value_id,
+        RepairReason::InvalidStoredValue,
     );
 
     Ok(())
@@ -208,18 +197,12 @@ fn required_enum_leaf_missing_fails_closed() -> Result<(), Box<dyn std::error::E
     let (result, diagnostics) = preview(&program, &store).expect("preview");
 
     let state_id = member_catalog_id(&place, "state")?;
-    assert!(
-        matches!(
-            verdict_for(&result, &state_id),
-            Verdict::RepairRequired {
-                reason: RepairReason::MissingRequiredMember
-            }
-        ),
-        "a missing required enum leaf must fail closed: {:#?}",
-        result.verdicts
+    assert_fails_closed(
+        &result,
+        &diagnostics,
+        &state_id,
+        RepairReason::MissingRequiredMember,
     );
-    assert!(!result.is_activatable(), "{result:#?}");
-    assert!(!diagnostics.is_empty(), "{diagnostics:#?}");
 
     Ok(())
 }
@@ -255,18 +238,12 @@ fn required_identity_leaf_missing_fails_closed() -> Result<(), Box<dyn std::erro
     let (result, diagnostics) = preview(&program, &store).expect("preview");
 
     let author_id = member_catalog_id(&place, "author")?;
-    assert!(
-        matches!(
-            verdict_for(&result, &author_id),
-            Verdict::RepairRequired {
-                reason: RepairReason::MissingRequiredMember
-            }
-        ),
-        "a missing required identity leaf must fail closed: {:#?}",
-        result.verdicts
+    assert_fails_closed(
+        &result,
+        &diagnostics,
+        &author_id,
+        RepairReason::MissingRequiredMember,
     );
-    assert!(!result.is_activatable(), "{result:#?}");
-    assert!(!diagnostics.is_empty(), "{diagnostics:#?}");
 
     Ok(())
 }
@@ -419,26 +396,11 @@ fn stored_enum_value_naming_now_category_member_fails_closed()
 
     let (result, diagnostics) = preview(&program, &store).expect("preview");
 
-    assert!(
-        !result.is_activatable(),
-        "a stored value naming a now-category member must block activation: {:#?}",
-        result.verdicts
-    );
-    assert!(
-        matches!(
-            verdict_for(&result, &kind_id),
-            Verdict::RepairRequired {
-                reason: RepairReason::InvalidStoredValue
-            }
-        ),
-        "the enum member must fail closed as an invalid stored value, got {:#?}",
-        verdict_for(&result, &kind_id)
-    );
-    assert!(
-        diagnostics
-            .iter()
-            .any(|RepairDiagnostic { catalog_id, .. }| catalog_id.as_str() == kind_id),
-        "a fail-closed diagnostic must name the enum member, got {diagnostics:#?}"
+    assert_fails_closed(
+        &result,
+        &diagnostics,
+        &kind_id,
+        RepairReason::InvalidStoredValue,
     );
 
     Ok(())
@@ -504,26 +466,11 @@ fn optional_enum_leaf_with_dropped_member_fails_closed() -> Result<(), Box<dyn s
     let value_id = member_catalog_id(&place, "state")?;
     let (result, diagnostics) = preview(&program, &store).expect("preview");
 
-    assert!(
-        !result.is_activatable(),
-        "an optional enum leaf storing a dropped member must block: {:#?}",
-        result.verdicts
-    );
-    assert!(
-        matches!(
-            verdict_for(&result, &value_id),
-            Verdict::RepairRequired {
-                reason: RepairReason::InvalidStoredValue
-            }
-        ),
-        "the optional enum leaf must fail closed as an invalid stored value, got {:#?}",
-        verdict_for(&result, &value_id)
-    );
-    assert!(
-        diagnostics
-            .iter()
-            .any(|RepairDiagnostic { catalog_id, .. }| catalog_id.as_str() == value_id),
-        "a fail-closed diagnostic must name the optional enum leaf, got {diagnostics:#?}"
+    assert_fails_closed(
+        &result,
+        &diagnostics,
+        &value_id,
+        RepairReason::InvalidStoredValue,
     );
 
     Ok(())

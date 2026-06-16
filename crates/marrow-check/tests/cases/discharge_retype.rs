@@ -20,14 +20,7 @@ fn retype_preview(
     accepted_leaf: &str,
     new_type: &str,
     old_value: Scalar,
-) -> Result<
-    (
-        String,
-        EvolutionWitness,
-        Vec<marrow_check::evolution::RepairDiagnostic>,
-    ),
-    Box<dyn std::error::Error>,
-> {
+) -> Result<(String, EvolutionWitness, Vec<RepairDiagnostic>), Box<dyn std::error::Error>> {
     let value_id = hex_id(3);
     let root = temp_project(name, |root| {
         write(
@@ -155,23 +148,7 @@ fn rename_and_retype_requires_transform() -> Result<(), Box<dyn std::error::Erro
 
     let count_id = member_catalog_id(&place, "count")?;
     assert_eq!(count_id, title_id, "rename preserves the stable id");
-    assert!(
-        matches!(
-            verdict_for(&result, &count_id),
-            Verdict::RepairRequired {
-                reason: RepairReason::TypeChangeRequiresTransform
-            }
-        ),
-        "{:#?}",
-        result.verdicts
-    );
-    assert!(!result.is_activatable(), "{result:#?}");
-    assert!(
-        diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.catalog_id.as_str() == count_id),
-        "{diagnostics:#?}"
-    );
+    assert_retype_steered(&count_id, &result, &diagnostics);
 
     Ok(())
 }

@@ -731,14 +731,9 @@ fn evolve_retire_of_a_still_declared_store_index_fails_closed() {
         let metadata = catalog(vec![
             entry(CatalogEntryKind::Resource, "books::Book", "res-book", &[]),
             entry(CatalogEntryKind::Store, "books::^books", "store-books", &[]),
-            store_index_entry(
-                "books::^books::byTitle",
-                "index-by-title",
-                &format!(
-                    "unique=true;keys=[member:{}:string]",
-                    derived_id("member-title")
-                ),
-            ),
+            // The retire fails closed on still-declared presence before any shape
+            // comparison, so the accepted index shape is irrelevant here.
+            store_index_entry("books::^books::byTitle", "index-by-title", ""),
             entry(
                 CatalogEntryKind::ResourceMember,
                 "books::Book::title",

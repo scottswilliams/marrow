@@ -96,118 +96,6 @@ fn durable_fixture(f: DurableFixture) -> String {
     )
 }
 
-/// The store-stamp shape digest binds the durable shape, not the transient evolve
-/// block: editing only the evolve decision surface (a default value, a transform body)
-/// leaves the shape digest unchanged, so a consumed block is deletable without reading
-/// as schema drift. A change that touches the shape — a module const a transform reads,
-/// an optional/required toggle — drifts it, because the store must satisfy that shape.
-#[test]
-fn shape_digest_binds_shape_and_not_the_evolve_block() {
-    let base = "module books\n\
-         resource Book\n\
-         \x20   required title: string\n\
-         \x20   pages: int\n\
-         store ^books(id: int): Book\n\
-         evolve\n\
-         \x20   default Book.pages = 0\n\
-         \x20   transform Book.title\n\
-         \x20       return \"x\"\n\
-         pub fn add(title: string): Id(^books)\n\
-         \x20   return nextId(^books)\n";
-    let changed_default = "module books\n\
-         resource Book\n\
-         \x20   required title: string\n\
-         \x20   pages: int\n\
-         store ^books(id: int): Book\n\
-         evolve\n\
-         \x20   default Book.pages = 1\n\
-         \x20   transform Book.title\n\
-         \x20       return \"x\"\n\
-         pub fn add(title: string): Id(^books)\n\
-         \x20   return nextId(^books)\n";
-    let changed_transform = "module books\n\
-         resource Book\n\
-         \x20   required title: string\n\
-         \x20   pages: int\n\
-         store ^books(id: int): Book\n\
-         evolve\n\
-         \x20   default Book.pages = 0\n\
-         \x20   transform Book.title\n\
-         \x20       return \"y\"\n\
-         pub fn add(title: string): Id(^books)\n\
-         \x20   return nextId(^books)\n";
-    let required_pages = "module books\n\
-         resource Book\n\
-         \x20   required title: string\n\
-         \x20   required pages: int\n\
-         store ^books(id: int): Book\n\
-         evolve\n\
-         \x20   default Book.pages = 0\n\
-         \x20   transform Book.title\n\
-         \x20       return \"x\"\n\
-         pub fn add(title: string): Id(^books)\n\
-         \x20   return nextId(^books)\n";
-
-    let base_digest = source_digest("shape-base", base);
-    assert_eq!(
-        base_digest,
-        source_digest("shape-default", changed_default),
-        "a changed evolve default value must not drift the shape digest"
-    );
-    assert_eq!(
-        base_digest,
-        source_digest("shape-transform", changed_transform),
-        "a changed transform body must not drift the shape digest"
-    );
-    let const_transform = "module books\n\
-         const Scale = 1\n\
-         resource Book\n\
-         \x20   required title: string\n\
-         \x20   required pages: int\n\
-         store ^books(id: int): Book\n\
-         evolve\n\
-         \x20   transform Book.pages\n\
-         \x20       return Scale\n\
-         pub fn add(title: string): Id(^books)\n\
-         \x20   return nextId(^books)\n";
-    let changed_const = "module books\n\
-         const Scale = 2\n\
-         resource Book\n\
-         \x20   required title: string\n\
-         \x20   required pages: int\n\
-         store ^books(id: int): Book\n\
-         evolve\n\
-         \x20   transform Book.pages\n\
-         \x20       return Scale\n\
-         pub fn add(title: string): Id(^books)\n\
-         \x20   return nextId(^books)\n";
-    assert_ne!(
-        source_digest("shape-const-base", const_transform),
-        source_digest("shape-const", changed_const),
-        "a changed module const is part of the shape and must drift the shape digest"
-    );
-    assert_ne!(
-        base_digest,
-        source_digest("shape-required", required_pages),
-        "an optional->required toggle must drift the shape digest"
-    );
-
-    // The witness evolution digest, in contrast, binds the evolve decision surface, so a
-    // changed default and a changed transform body each drift it. This is what keeps
-    // apply fencing a transform-body edit between preview and apply.
-    let base_evolution = evolution_digest("evolution-base", base);
-    assert_ne!(
-        base_evolution,
-        evolution_digest("evolution-default", changed_default),
-        "a changed default value must drift the evolution digest"
-    );
-    assert_ne!(
-        base_evolution,
-        evolution_digest("evolution-transform", changed_transform),
-        "a changed transform body must drift the evolution digest"
-    );
-}
-
 /// The shape digest binds the whole durable shape, with no enumeration gap. It is
 /// computed from the canonical normalized rendering of every shape declaration, so any
 /// change to a member type, a required flag, an identity key, an index, a keyed-layer
@@ -338,6 +226,28 @@ fn source_digest_binds_the_durable_shape() {
             "{change} must drift the evolution digest"
         );
     }
+
+    // A module const that a transform reads is durable shape, not evolve decision
+    // surface, so editing its value drifts the shape digest. The fixture cannot express
+    // a module const, so this dimension is asserted directly: two sources that differ
+    // only in the const value a transform returns.
+    let const_one = "module books\n\
+         const Scale = 1\n\
+         resource Book\n\
+         \x20   required title: string\n\
+         \x20   pages: int\n\
+         store ^books(id: int): Book\n\
+         evolve\n\
+         \x20   transform Book.pages\n\
+         \x20       return Scale\n\
+         pub fn add(title: string): Id(^books)\n\
+         \x20   return nextId(^books)\n";
+    let const_two = const_one.replace("const Scale = 1", "const Scale = 2");
+    assert_ne!(
+        source_digest("durable-const-one", const_one),
+        source_digest("durable-const-two", &const_two),
+        "a changed module const a transform reads must drift the shape digest"
+    );
 
     // A pure whitespace and indentation reformat of the same declarations parses to
     // the same syntax tree, so the normalized rendering — and the digest — is stable.

@@ -126,21 +126,28 @@ fn well_typed_assignments_and_initializers_are_not_flagged() {
 #[test]
 fn an_unknown_value_into_a_typed_place_is_flagged() {
     // Strict typing: `mystery()` does not resolve, so storing it into the concrete
-    // `int` place is a `check.untyped_value` error — convert or define it. (It is
-    // not a `check.assignment_type` mismatch.)
-    let found = check_script(
-        "assign-unknown",
-        "fn f()\n    var x: int = 1\n    x = mystery()\n",
-        "check.untyped_value",
+    // `int` place is a `check.untyped_value` error — convert or define it. It is
+    // not a `check.assignment_type` mismatch, so one analysis must surface the
+    // untyped-value code while leaving the primitive-mismatch code unraised.
+    let root = temp_project("assign-unknown", |root| {
+        write(
+            root,
+            "src/app.mw",
+            "fn f()\n    var x: int = 1\n    x = mystery()\n",
+        );
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+    assert_eq!(
+        with_code(&report, "check.untyped_value").len(),
+        1,
+        "{:#?}",
+        report.diagnostics
     );
-    assert_eq!(found.len(), 1, "{found:#?}");
-    // The same assignment is not reported as a primitive mismatch.
-    let mismatch = check_script(
-        "assign-unknown",
-        "fn f()\n    var x: int = 1\n    x = mystery()\n",
-        "check.assignment_type",
+    assert!(
+        with_code(&report, "check.assignment_type").is_empty(),
+        "{:#?}",
+        report.diagnostics
     );
-    assert!(mismatch.is_empty(), "{mismatch:#?}");
 }
 
 #[test]
@@ -543,19 +550,23 @@ fn correct_returns_are_not_flagged() {
 #[test]
 fn a_return_of_an_unresolved_value_into_a_typed_return_is_flagged() {
     // Strict typing: `mystery()` has no known type, but `f` returns `int`, so the
-    // return is a `check.untyped_value` error (not a `check.return_type` mismatch).
-    let found = check_script(
-        "ret-unknown",
-        "fn f(): int\n    return mystery()\n",
-        "check.untyped_value",
+    // return is a `check.untyped_value` error, not a `check.return_type` mismatch —
+    // one analysis must raise the untyped-value code and leave the mismatch unraised.
+    let root = temp_project("ret-unknown", |root| {
+        write(root, "src/app.mw", "fn f(): int\n    return mystery()\n");
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+    assert_eq!(
+        with_code(&report, "check.untyped_value").len(),
+        1,
+        "{:#?}",
+        report.diagnostics
     );
-    assert_eq!(found.len(), 1, "{found:#?}");
-    let mismatch = check_script(
-        "ret-unknown",
-        "fn f(): int\n    return mystery()\n",
-        "check.return_type",
+    assert!(
+        with_code(&report, "check.return_type").is_empty(),
+        "{:#?}",
+        report.diagnostics
     );
-    assert!(mismatch.is_empty(), "{mismatch:#?}");
 }
 
 #[test]

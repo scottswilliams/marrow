@@ -860,11 +860,17 @@ pub(crate) fn check_one_arg(
             // `mismatch_display` qualifies two same-named enums from different
             // modules so the message distinguishes them.
             let (expected, found) = mismatch_display(parameter, arg_type);
-            diagnostics.push(call_diagnostic(
-                file,
-                span,
-                format!("argument to `{label}` expects `{expected}`, but found `{found}`"),
-            ));
+            diagnostics.push(
+                call_diagnostic(
+                    file,
+                    span,
+                    format!("argument to `{label}` expects `{expected}`, but found `{found}`"),
+                )
+                .with_payload(DiagnosticPayload::TypeMismatch {
+                    expected: parameter.clone(),
+                    found: arg_type.clone(),
+                }),
+            );
         }
         // Strict typing: an untyped argument against a convertible parameter must be
         // converted first.

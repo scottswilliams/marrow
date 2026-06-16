@@ -307,7 +307,7 @@ fn source_rename_without_accepted_catalog_intent_fails_closed() {
         write_catalog(root, &metadata);
     });
 
-    let (report, _program) = check_with_accepted(&root);
+    let (report, program) = check_with_accepted(&root);
 
     assert!(
         report
@@ -317,6 +317,9 @@ fn source_rename_without_accepted_catalog_intent_fails_closed() {
         "{:#?}",
         report.diagnostics
     );
+    let module = program.facts.module_id("library").expect("module");
+    let resource = program.facts.resource_id(module, "Book").expect("resource");
+    assert_eq!(program.facts.resource(resource).catalog_id, None);
 }
 
 #[test]

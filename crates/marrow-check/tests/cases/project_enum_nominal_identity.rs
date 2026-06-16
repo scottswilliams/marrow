@@ -1,9 +1,36 @@
 use crate::support;
 use crate::support_enum;
-use marrow_check::{DiagnosticPayload, EnumDiagnostic, MarrowType, check_project};
+use marrow_check::{DiagnosticPayload, EnumDiagnostic, MarrowType, ScalarType, check_project};
 
 use support::{assert_clean, check_module, config, temp_project, with_code, write};
 use support_enum::assert_enum_payload;
+
+fn enum_type(module: &str, name: &str) -> MarrowType {
+    MarrowType::Enum {
+        module: module.into(),
+        name: name.into(),
+    }
+}
+
+/// Assert that the lone diagnostic carries a `TypeMismatch` naming the concrete
+/// `expected`/`found` operands, pinning *which* nominal identities mismatched
+/// rather than merely that some type error of this code fired.
+fn assert_only_mismatch<D: std::fmt::Debug>(
+    found: &[D],
+    payload_of: impl Fn(&D) -> &DiagnosticPayload,
+    expected: MarrowType,
+    actual: MarrowType,
+) {
+    assert_eq!(found.len(), 1, "{found:#?}");
+    assert_eq!(
+        *payload_of(&found[0]),
+        DiagnosticPayload::TypeMismatch {
+            expected,
+            found: actual,
+        },
+        "{found:#?}"
+    );
+}
 
 #[test]
 fn a_match_over_a_modules_own_same_named_enum_checks_clean() {
@@ -49,7 +76,12 @@ fn passing_one_enum_where_a_different_enum_is_expected_is_a_check_error() {
          fn caller(): int\n    return classify(Color::green)\n",
         "check.call_argument",
     );
-    assert_eq!(found.len(), 1, "{found:#?}");
+    assert_only_mismatch(
+        &found,
+        |d| &d.payload,
+        enum_type("m", "Status"),
+        enum_type("m", "Color"),
+    );
 }
 
 #[test]
@@ -65,7 +97,12 @@ fn passing_a_scalar_where_an_enum_is_expected_is_a_check_error() {
          fn caller(): int\n    return classify(3)\n",
         "check.call_argument",
     );
-    assert_eq!(found.len(), 1, "{found:#?}");
+    assert_only_mismatch(
+        &found,
+        |d| &d.payload,
+        enum_type("m", "Status"),
+        MarrowType::Primitive(ScalarType::Int),
+    );
 }
 
 #[test]
@@ -78,7 +115,12 @@ fn returning_a_different_enum_than_declared_is_a_check_error() {
          fn f(): Status\n    return Color::red\n",
         "check.return_type",
     );
-    assert_eq!(found.len(), 1, "{found:#?}");
+    assert_only_mismatch(
+        &found,
+        |d| &d.payload,
+        enum_type("m", "Status"),
+        enum_type("m", "Color"),
+    );
 }
 
 #[test]
@@ -91,7 +133,12 @@ fn assigning_a_different_enum_into_an_enum_local_is_a_check_error() {
          fn f()\n    var s: Status = Status::active\n    s = Color::red\n",
         "check.assignment_type",
     );
-    assert_eq!(found.len(), 1, "{found:#?}");
+    assert_only_mismatch(
+        &found,
+        |d| &d.payload,
+        enum_type("m", "Status"),
+        enum_type("m", "Color"),
+    );
 }
 
 #[test]
@@ -108,20 +155,11 @@ fn assignment_between_same_named_enums_reports_qualified_payload() {
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
     let found = with_code(&report, "check.assignment_type");
-    assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
-    assert_eq!(
-        found[0].payload,
-        DiagnosticPayload::TypeMismatch {
-            expected: MarrowType::Enum {
-                module: "a".into(),
-                name: "Color".into(),
-            },
-            found: MarrowType::Enum {
-                module: "b".into(),
-                name: "Color".into(),
-            },
-        },
-        "{found:#?}"
+    assert_only_mismatch(
+        &found,
+        |d| &d.payload,
+        enum_type("a", "Color"),
+        enum_type("b", "Color"),
     );
 }
 
@@ -183,7 +221,12 @@ fn passing_a_third_modules_enum_to_a_qualified_parameter_is_a_check_error() {
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
     let found = with_code(&report, "check.call_argument");
-    assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
+    assert_only_mismatch(
+        &found,
+        |d| &d.payload,
+        enum_type("b", "Status"),
+        enum_type("a", "Status"),
+    );
 }
 
 #[test]
@@ -191,7 +234,7 @@ fn a_bare_foreign_only_enum_annotation_resolves_to_the_real_owner_not_a_phantom(
     // Module `a` declares `Status`; module `b` does not. A bare `Status` annotation
     // in `b` must resolve to the real owner `a::Status` — the same enum a bare
     // `Status::member` literal resolves to there — not a phantom `b::Status` minted
-    // by stamping the referencing module onto a project-wide name (the F3 hole).
+    // by stamping the referencing module onto a project-wide name.
     //
     // Proof of correct identity: in `b`, `s == Status::active` (both the
     // annotation and the literal name the real `a::Status`) checks clean, and a
@@ -252,7 +295,12 @@ fn passing_a_foreign_enum_to_a_qualified_parameter_is_a_check_error() {
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
     let found = with_code(&report, "check.call_argument");
-    assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
+    assert_only_mismatch(
+        &found,
+        |d| &d.payload,
+        enum_type("b", "Status"),
+        enum_type("a", "Color"),
+    );
 }
 
 #[test]
@@ -277,7 +325,12 @@ fn passing_a_raw_scalar_to_a_qualified_enum_parameter_is_a_check_error() {
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
     let found = with_code(&report, "check.call_argument");
-    assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
+    assert_only_mismatch(
+        &found,
+        |d| &d.payload,
+        enum_type("b", "Status"),
+        MarrowType::Primitive(ScalarType::Int),
+    );
 }
 
 #[test]
@@ -319,7 +372,12 @@ fn a_wrong_enum_through_a_relay_chain_to_a_qualified_parameter_is_a_check_error(
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
     let found = with_code(&report, "check.call_argument");
-    assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
+    assert_only_mismatch(
+        &found,
+        |d| &d.payload,
+        enum_type("b", "Status"),
+        enum_type("a", "Color"),
+    );
 }
 
 #[test]
@@ -349,7 +407,12 @@ fn a_wrong_enum_to_a_qualified_parameter_in_an_equality_body_is_a_check_error() 
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
     let found = with_code(&report, "check.call_argument");
-    assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
+    assert_only_mismatch(
+        &found,
+        |d| &d.payload,
+        enum_type("b", "Status"),
+        enum_type("a", "Color"),
+    );
 }
 
 #[test]
@@ -378,7 +441,12 @@ fn a_wrong_enum_to_a_qualified_parameter_inside_a_loop_is_a_check_error() {
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
     let found = with_code(&report, "check.call_argument");
-    assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
+    assert_only_mismatch(
+        &found,
+        |d| &d.payload,
+        enum_type("b", "Status"),
+        enum_type("a", "Color"),
+    );
 }
 
 #[test]

@@ -1,5 +1,8 @@
 use crate::support;
-use marrow_check::check_project;
+use marrow_check::{
+    CHECK_CALL_ARGUMENT, CHECK_NEIGHBOR_UNSUPPORTED, CHECK_NEXT_ID_REQUIRES_SINGLE_INT,
+    CHECK_OPERATOR_TYPE, CHECK_UNRESOLVED_CALL, check_project,
+};
 
 use support::{config, temp_project, write};
 
@@ -50,7 +53,7 @@ fn next_id_over_a_composite_root_is_flagged() {
         report
             .diagnostics
             .iter()
-            .any(|diagnostic| diagnostic.code == "check.next_id_requires_single_int"),
+            .any(|diagnostic| diagnostic.code == CHECK_NEXT_ID_REQUIRES_SINGLE_INT),
         "{:#?}",
         report.diagnostics
     );
@@ -77,7 +80,7 @@ fn next_id_over_a_string_keyed_root_is_flagged() {
         report
             .diagnostics
             .iter()
-            .any(|diagnostic| diagnostic.code == "check.next_id_requires_single_int"),
+            .any(|diagnostic| diagnostic.code == CHECK_NEXT_ID_REQUIRES_SINGLE_INT),
         "{:#?}",
         report.diagnostics
     );
@@ -105,7 +108,7 @@ fn next_id_over_a_singleton_root_is_flagged() {
         report
             .diagnostics
             .iter()
-            .any(|diagnostic| diagnostic.code == "check.next_id_requires_single_int"),
+            .any(|diagnostic| diagnostic.code == CHECK_NEXT_ID_REQUIRES_SINGLE_INT),
         "{:#?}",
         report.diagnostics
     );
@@ -140,7 +143,7 @@ fn reversed_preserves_the_sequence_element_type() {
         report
             .diagnostics
             .iter()
-            .any(|d| d.code.starts_with("check.") && d.code != "check.unresolved_call"),
+            .any(|d| d.code == CHECK_OPERATOR_TYPE),
         "{:#?}",
         report.diagnostics
     );
@@ -148,7 +151,7 @@ fn reversed_preserves_the_sequence_element_type() {
         !report
             .diagnostics
             .iter()
-            .any(|d| d.code == "check.unresolved_call"),
+            .any(|d| d.code == CHECK_UNRESOLVED_CALL),
         "reversed must be a recognized builtin: {:#?}",
         report.diagnostics
     );
@@ -222,7 +225,7 @@ fn next_with_wrong_arity_is_flagged() {
         report
             .diagnostics
             .iter()
-            .any(|diagnostic| diagnostic.code == "check.call_argument"),
+            .any(|diagnostic| diagnostic.code == CHECK_CALL_ARGUMENT),
         "{:#?}",
         report.diagnostics
     );
@@ -274,7 +277,7 @@ fn next_over_a_composite_identity_record_is_flagged() {
         report
             .diagnostics
             .iter()
-            .any(|diagnostic| diagnostic.code == "check.neighbor_unsupported"),
+            .any(|diagnostic| diagnostic.code == CHECK_NEIGHBOR_UNSUPPORTED),
         "{:#?}",
         report.diagnostics
     );
@@ -300,7 +303,7 @@ fn next_over_a_bare_composite_identity_root_is_flagged() {
         report
             .diagnostics
             .iter()
-            .any(|diagnostic| diagnostic.code == "check.neighbor_unsupported"),
+            .any(|diagnostic| diagnostic.code == CHECK_NEIGHBOR_UNSUPPORTED),
         "{:#?}",
         report.diagnostics
     );
@@ -326,7 +329,7 @@ fn next_over_a_bare_identity_value_is_flagged() {
         report
             .diagnostics
             .iter()
-            .any(|diagnostic| diagnostic.code == "check.neighbor_unsupported"),
+            .any(|diagnostic| diagnostic.code == CHECK_NEIGHBOR_UNSUPPORTED),
         "{:#?}",
         report.diagnostics
     );
@@ -356,7 +359,7 @@ fn next_over_an_index_branch_is_flagged() {
         report
             .diagnostics
             .iter()
-            .any(|diagnostic| diagnostic.code == "check.neighbor_unsupported"),
+            .any(|diagnostic| diagnostic.code == CHECK_NEIGHBOR_UNSUPPORTED),
         "{:#?}",
         report.diagnostics
     );

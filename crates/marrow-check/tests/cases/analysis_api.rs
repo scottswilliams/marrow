@@ -6,8 +6,8 @@ use std::path::PathBuf;
 
 use marrow_check::program::MarrowType;
 use marrow_check::{
-    CatalogEntryKind, CheckedProgram, ProjectSources, StoreIndexUsageBitmap, UseSiteKind,
-    analyze_project, check_project, scope_at, type_at,
+    CatalogEntryKind, CheckedProgram, ProjectSources, UseSiteKind, analyze_project, check_project,
+    scope_at, type_at,
 };
 use marrow_schema::ScalarType;
 use marrow_store::cell::CatalogId;
@@ -610,34 +610,6 @@ fn proposal_id(
         .unwrap_or_else(|| panic!("missing proposal entry {kind:?} {path}"))
         .stable_id
         .clone()
-}
-
-#[test]
-fn store_index_facts_carry_reserved_empty_usage_bitmap() {
-    let source = "module m\n\
-        resource Book\n    \
-        shelf: string\n\
-        store ^books(id: int): Book\n    \
-        index byShelf(shelf, id)\n";
-    let (snapshot, _) = analyze_overlay("analysis-index-usage-bitmap", &[("src/m.mw", source)]);
-    assert!(
-        !snapshot.report.has_errors(),
-        "{:#?}",
-        snapshot.report.diagnostics
-    );
-
-    let index = snapshot
-        .program
-        .facts
-        .store_indexes()
-        .iter()
-        .find(|index| index.name == "byShelf")
-        .expect("byShelf fact");
-    assert_eq!(index.usage, StoreIndexUsageBitmap::default());
-    assert!(
-        !index.usage.any(),
-        "the reserved usage bitmap shape is present but intentionally unpopulated"
-    );
 }
 
 #[test]

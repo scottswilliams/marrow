@@ -1,7 +1,7 @@
 use crate::support;
-use marrow_check::check_project;
+use marrow_check::{CHECK_CONDITION_TYPE, CHECK_OPERATOR_TYPE, check_project};
 
-use support::{config, temp_project, write};
+use support::{config, temp_project, with_code, write};
 
 // --- Equality, coalesce, and unary over concrete non-scalar types ---
 
@@ -35,10 +35,7 @@ fn resource_equality_is_an_operator_type_error() {
     });
     let (report, _) = check_project(&root, &config()).expect("check");
     assert!(
-        report
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == "check.operator_type"),
+        !with_code(&report, CHECK_OPERATOR_TYPE).is_empty(),
         "{:#?}",
         report.diagnostics
     );
@@ -61,10 +58,7 @@ fn resource_against_scalar_equality_is_an_operator_type_error() {
     });
     let (report, _) = check_project(&root, &config()).expect("check");
     assert!(
-        report
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == "check.operator_type"),
+        !with_code(&report, CHECK_OPERATOR_TYPE).is_empty(),
         "{:#?}",
         report.diagnostics
     );
@@ -87,10 +81,7 @@ fn sequence_equality_is_an_operator_type_error() {
     });
     let (report, _) = check_project(&root, &config()).expect("check");
     assert!(
-        report
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == "check.operator_type"),
+        !with_code(&report, CHECK_OPERATOR_TYPE).is_empty(),
         "{:#?}",
         report.diagnostics
     );
@@ -113,10 +104,7 @@ fn cross_resource_identity_equality_is_an_operator_type_error() {
     });
     let (report, _) = check_project(&root, &config()).expect("check");
     assert!(
-        report
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == "check.operator_type"),
+        !with_code(&report, CHECK_OPERATOR_TYPE).is_empty(),
         "{:#?}",
         report.diagnostics
     );
@@ -184,10 +172,7 @@ fn cross_resource_identity_coalesce_is_flagged() {
     });
     let (report, _) = check_project(&root, &config()).expect("check");
     assert!(
-        report
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == "check.operator_type"),
+        !with_code(&report, CHECK_OPERATOR_TYPE).is_empty(),
         "{:#?}",
         report.diagnostics
     );
@@ -211,10 +196,7 @@ fn unary_on_identity_is_an_operator_type_error() {
     });
     let (report, _) = check_project(&root, &config()).expect("check");
     assert!(
-        report
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == "check.operator_type"),
+        !with_code(&report, CHECK_OPERATOR_TYPE).is_empty(),
         "{:#?}",
         report.diagnostics
     );
@@ -245,10 +227,7 @@ fn arithmetic_with_identity_operand_is_an_operator_type_error() {
     });
     let (report, _) = check_project(&root, &config()).expect("check");
     assert!(
-        report
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == "check.operator_type"),
+        !with_code(&report, CHECK_OPERATOR_TYPE).is_empty(),
         "{:#?}",
         report.diagnostics
     );
@@ -271,10 +250,7 @@ fn ordering_two_identities_is_an_operator_type_error() {
     });
     let (report, _) = check_project(&root, &config()).expect("check");
     assert!(
-        report
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == "check.operator_type"),
+        !with_code(&report, CHECK_OPERATOR_TYPE).is_empty(),
         "{:#?}",
         report.diagnostics
     );
@@ -297,10 +273,7 @@ fn logical_with_identity_operand_is_an_operator_type_error() {
     });
     let (report, _) = check_project(&root, &config()).expect("check");
     assert!(
-        report
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == "check.operator_type"),
+        !with_code(&report, CHECK_OPERATOR_TYPE).is_empty(),
         "{:#?}",
         report.diagnostics
     );
@@ -323,10 +296,7 @@ fn string_add_with_identity_operand_is_an_operator_type_error() {
     });
     let (report, _) = check_project(&root, &config()).expect("check");
     assert!(
-        report
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == "check.operator_type"),
+        !with_code(&report, CHECK_OPERATOR_TYPE).is_empty(),
         "{:#?}",
         report.diagnostics
     );
@@ -389,12 +359,12 @@ fn unsupported_temporal_arithmetic_shapes_are_operator_type_errors() {
         );
     });
     let (report, _) = check_project(&root, &config()).expect("check");
-    let errors = report
-        .diagnostics
-        .iter()
-        .filter(|diagnostic| diagnostic.code == "check.operator_type")
-        .count();
-    assert_eq!(errors, 3, "{:#?}", report.diagnostics);
+    assert_eq!(
+        with_code(&report, CHECK_OPERATOR_TYPE).len(),
+        3,
+        "{:#?}",
+        report.diagnostics
+    );
 }
 
 /// A scalar-only binary operation (`1 + 2`) checks clean.
@@ -439,10 +409,7 @@ fn if_identity_condition_is_a_condition_type_error() {
     });
     let (report, _) = check_project(&root, &config()).expect("check");
     assert!(
-        report
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == "check.condition_type"),
+        !with_code(&report, CHECK_CONDITION_TYPE).is_empty(),
         "{:#?}",
         report.diagnostics
     );
@@ -466,10 +433,7 @@ fn while_identity_condition_is_a_condition_type_error() {
     });
     let (report, _) = check_project(&root, &config()).expect("check");
     assert!(
-        report
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == "check.condition_type"),
+        !with_code(&report, CHECK_CONDITION_TYPE).is_empty(),
         "{:#?}",
         report.diagnostics
     );
@@ -493,10 +457,7 @@ fn if_whole_record_condition_is_a_condition_type_error() {
     });
     let (report, _) = check_project(&root, &config()).expect("check");
     assert!(
-        report
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == "check.condition_type"),
+        !with_code(&report, CHECK_CONDITION_TYPE).is_empty(),
         "{:#?}",
         report.diagnostics
     );
@@ -520,10 +481,7 @@ fn if_sequence_condition_is_a_condition_type_error() {
     });
     let (report, _) = check_project(&root, &config()).expect("check");
     assert!(
-        report
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == "check.condition_type"),
+        !with_code(&report, CHECK_CONDITION_TYPE).is_empty(),
         "{:#?}",
         report.diagnostics
     );
@@ -574,10 +532,7 @@ fn string_leaf_coalesced_with_identity_is_flagged() {
     });
     let (report, _) = check_project(&root, &config()).expect("check");
     assert!(
-        report
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == "check.operator_type"),
+        !with_code(&report, CHECK_OPERATOR_TYPE).is_empty(),
         "{:#?}",
         report.diagnostics
     );
@@ -601,10 +556,7 @@ fn whole_record_coalesced_with_scalar_is_flagged() {
     });
     let (report, _) = check_project(&root, &config()).expect("check");
     assert!(
-        report
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == "check.operator_type"),
+        !with_code(&report, CHECK_OPERATOR_TYPE).is_empty(),
         "{:#?}",
         report.diagnostics
     );
