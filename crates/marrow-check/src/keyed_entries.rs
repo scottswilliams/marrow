@@ -9,7 +9,7 @@ use crate::resolve::{Def, DefItem, Resolution, ResolvableKind, resolve};
 use crate::{
     CHECK_PRIVATE_ENUM, CHECK_RECURSIVE_KEYED_ENTRY, CHECK_UNKNOWN_TYPE, CheckDiagnostic,
     CheckedModule, CheckedProgram, DiagnosticPayload, MarrowType, build_alias_map, expand_alias,
-    resource_type_name, split_type_path,
+    has_duplicate_error, resource_type_name, split_type_path,
 };
 
 pub(crate) fn normalize_resource_layers(
@@ -309,12 +309,7 @@ impl Normalizer<'_, '_> {
     }
 
     fn push_diagnostic(&mut self, diagnostic: CheckDiagnostic) {
-        if self.diagnostics.iter().any(|existing| {
-            existing.code == diagnostic.code
-                && existing.file == diagnostic.file
-                && existing.payload == diagnostic.payload
-                && existing.span == diagnostic.span
-        }) {
+        if has_duplicate_error(self.diagnostics, &diagnostic) {
             return;
         }
         self.diagnostics.push(diagnostic);

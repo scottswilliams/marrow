@@ -63,7 +63,6 @@ pub use diagnostics::{
 };
 pub use driver::{
     ProjectSources, check_project, check_project_with_catalog, check_tests, check_tests_program,
-    check_tests_with_sources, check_tests_with_sources_program,
 };
 pub use durable_path::{
     PathParseError, PathSegment, StoreLeafKind, display_path, identity_leaf_key_mismatch,
@@ -87,7 +86,7 @@ pub use facts::{
     FunctionFact, FunctionId, HostEffect, LocalFact, LocalId, ModuleFact, ModuleId, ResourceFact,
     ResourceId, ResourceMemberFact, ResourceMemberId, ResourceMemberKind, SavedPlaceEffect,
     StoreFact, StoreId, StoreIdentityKeyFact, StoreIndexFact, StoreIndexId, StoreIndexKeyFact,
-    StoreIndexKeySource, StoreIndexUsageBitmap, StoredValueMeaning, WorkShapeClass,
+    StoreIndexKeySource, StoredValueMeaning, WorkShapeClass,
 };
 pub use facts::{
     PresenceProofFact, PresenceProofId, PresenceProofPlace, PresenceProofSource,
@@ -113,10 +112,10 @@ pub(crate) use driver::{
     CheckedFile, TestProgramOutput, TestResolutionSuppression, build_alias_map,
     builtin_return_type, check_file_source, check_tests_with_sources_analysis,
     conversion_return_type, enum_visibility, expand_alias, expand_module_alias,
-    identity_type_for_store, is_builtin_call, is_resolved_import, is_unknown_std_operation,
-    module_of_file, module_path_error, push_schema_error, read_source, resolve_function_in_module,
-    resolve_resource_schema_type, resolve_resource_type, resource_type_name, split_type_path,
-    std_call_params, std_call_return_type,
+    has_duplicate_error, identity_type_for_store, is_builtin_call, is_resolved_import,
+    is_unknown_std_operation, module_of_file, module_path_error, push_schema_error, read_source,
+    resolve_function_in_module, resolve_resource_schema_type, resolve_resource_type,
+    resource_type_name, split_type_path, std_call_params, std_call_return_type,
 };
 pub(crate) use program::TypeNames;
 pub(crate) use rejected_surface::check_rejected_surface;

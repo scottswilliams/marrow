@@ -15,7 +15,7 @@ use marrow_store::cell::DataCellKind;
 use marrow_store::tree::{TreeBackupCellBuf, TreeStore};
 
 use super::archive::{
-    self, CHECKSUM_SEED, CatalogSection, checksum_catalog_section, checksum_cell, checksum_manifest,
+    self, CHECKSUM_SEED, CatalogSection, checksum_catalog_section, checksum_manifest,
 };
 use super::create::validate_catalog_manifest_binding;
 use super::{
@@ -436,7 +436,9 @@ fn fold_archive_stream(
     let mut state_digest = Sha256Digest::new();
     for _ in 0..manifest.record_count {
         let cell = archive::read_cell(input)?;
-        checksum = checksum_cell(checksum, cell.as_ref())?;
+        checksum = cell
+            .fold_checksum(checksum)
+            .map_err(BackupError::cell_frame_too_large)?;
         cell.visit_framed_bytes(|bytes| state_digest.update(bytes))
             .map_err(BackupError::cell_frame_too_large)?;
         per_cell(&cell)?;

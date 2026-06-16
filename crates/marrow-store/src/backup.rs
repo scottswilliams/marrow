@@ -152,7 +152,7 @@ impl<'a> TreeBackupCell<'a> {
     pub fn fold_checksum(&self, hash: u64) -> Result<u64, TreeBackupCellFrameError> {
         let mut hash = hash;
         self.visit_framed_bytes(|bytes| {
-            hash = fold(hash, bytes);
+            hash = fold_checksum_bytes(hash, bytes);
         })?;
         Ok(hash)
     }
@@ -222,12 +222,13 @@ impl TreeBackupCellBuf {
         Ok(Some(Self { target, value }))
     }
 
-    /// Borrow this owned cell as an opaque backup-stream cell.
-    pub fn as_ref(&self) -> TreeBackupCell<'_> {
-        TreeBackupCell {
-            target: self.target.clone(),
-            value: &self.value,
-        }
+    /// Fold the exact framed cell bytes into the running checksum.
+    pub fn fold_checksum(&self, hash: u64) -> Result<u64, TreeBackupCellFrameError> {
+        let mut hash = hash;
+        self.visit_framed_bytes(|bytes| {
+            hash = fold_checksum_bytes(hash, bytes);
+        })?;
+        Ok(hash)
     }
 
     /// Visit the exact length-prefixed byte ranges that form this cell's archive
@@ -439,7 +440,10 @@ fn read_path(frame: &mut FrameReader<'_>) -> Result<Vec<DataPathSegment>, TreeBa
         .collect()
 }
 
-fn fold(mut hash: u64, bytes: &[u8]) -> u64 {
+/// Fold a byte run into the running FNV-1a checksum. This is the single owner of the
+/// backup checksum's hash step; writers, restore, and validation share it so a backup
+/// produces a byte-identical checksum on every path.
+pub fn fold_checksum_bytes(mut hash: u64, bytes: &[u8]) -> u64 {
     for &byte in bytes {
         hash ^= u64::from(byte);
         hash = hash.wrapping_mul(CHECKSUM_PRIME);

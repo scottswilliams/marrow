@@ -566,7 +566,10 @@ fn enum_member_selectability_matches_schema_owner() {
         if member.enum_id != enum_id {
             continue;
         }
-        let ordinal = schema.ordinal(&member.name).expect("schema member by name");
+        let ordinal = match schema.walk_member_path(&[member.name.as_str()]) {
+            marrow_schema::MemberPathResolution::Found(ordinal) => ordinal,
+            other => panic!("schema member `{}` should resolve: {other:?}", member.name),
+        };
         assert_eq!(
             facts.enum_member_is_selectable(member.id),
             schema.is_selectable_leaf(ordinal),

@@ -1,8 +1,8 @@
 //! Saved-path lowering near the managed-write layer.
 
 use marrow_check::{
-    CheckedArg as ExecArg, CheckedExpr as ExecExpr, CheckedSavedKeyParam, CheckedSavedMember,
-    CheckedSavedPlace, CheckedSavedTerminal, StoreLeafKind,
+    CheckedArg as ExecArg, CheckedExpr as ExecExpr, CheckedSavedKeyParam, CheckedSavedPlace,
+    CheckedSavedTerminal, StoreLeafKind,
 };
 use marrow_store::key::SavedKey;
 use marrow_syntax::SourceSpan;
@@ -29,7 +29,6 @@ use crate::write_dispatch::{write_nested_field, write_resource, write_saved_fiel
 /// non-record terminal it produces is an index branch.
 pub(crate) struct SavedPath {
     pub(crate) place: CheckedSavedPlace,
-    pub(crate) members: Vec<CheckedSavedMember>,
     /// The record identity keys (empty for a keyless singleton).
     pub(crate) identity: Vec<SavedKey>,
     /// The `(layer, key…)` levels, outermost first; keys are empty for an unkeyed
@@ -240,7 +239,6 @@ fn lower_checked(place: &CheckedSavedPlace, env: &mut Env<'_>) -> Result<SavedPa
     };
     Ok(SavedPath {
         place: place.clone(),
-        members: place.members.clone(),
         identity,
         layers,
         layer_addresses,

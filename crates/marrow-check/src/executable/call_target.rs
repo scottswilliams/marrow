@@ -182,7 +182,7 @@ fn expanded_name_call(
 }
 
 impl CheckedBuiltinCall {
-    fn from_name(name: &str) -> Option<Self> {
+    pub(crate) fn from_name(name: &str) -> Option<Self> {
         Some(match name {
             "print" => Self::Print,
             "exists" => Self::Exists,
@@ -198,10 +198,7 @@ impl CheckedBuiltinCall {
             other => match ConversionTarget::from_name(other)? {
                 ConversionTarget::ErrorCode => Self::ErrorCode,
                 ConversionTarget::Bytes => Self::Bytes,
-                t => match t.return_type() {
-                    MarrowType::Primitive(scalar) => Self::Conversion(scalar),
-                    _ => return None,
-                },
+                t => Self::Conversion(t.scalar()),
             },
         })
     }

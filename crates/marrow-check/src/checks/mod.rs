@@ -22,7 +22,7 @@ mod saved_keys;
 mod statements;
 
 pub(crate) use calls::{CallCheck, check_call};
-pub(crate) use collections::{check_entries_value_position, for_frame};
+pub(crate) use collections::{catch_frame, check_entries_value_position, for_frame};
 pub(crate) use diagnostics::key_type_diagnostic;
 pub(crate) use driver::{
     FilePrelude, ModuleNamePolicy, ResolvedFileCheck, check_resolved_files, file_prelude,

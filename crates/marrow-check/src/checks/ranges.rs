@@ -51,6 +51,22 @@ pub(crate) fn check_range_value(
     expr: &marrow_syntax::Expression,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
+    check_range_value_guarded(file, expr, &|_| false, diagnostics);
+}
+
+/// The single owner of the [`CHECK_RANGE_VALUE`] emit and message: reject ranges
+/// outside `for` iterables, skipping any subexpression `allowed` exempts (and its
+/// children) so a context that legitimately accepts a range — a saved key-range
+/// argument to `exists`/`count` — is not flagged.
+pub(crate) fn check_range_value_guarded(
+    file: &Path,
+    expr: &marrow_syntax::Expression,
+    allowed: &impl Fn(&marrow_syntax::Expression) -> bool,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    if allowed(expr) {
+        return;
+    }
     if let Some(range) = marrow_syntax::range_expr(expr) {
         diagnostics.push(CheckDiagnostic::error(
             CHECK_RANGE_VALUE,
@@ -59,7 +75,9 @@ pub(crate) fn check_range_value(
             "a range can only be used as a `for` iterable",
         ));
     }
-    for_each_child_expr(expr, |child| check_range_value(file, child, diagnostics));
+    for_each_child_expr(expr, |child| {
+        check_range_value_guarded(file, child, allowed, diagnostics)
+    });
 }
 
 pub(super) fn check_range_iterable_value_parts(

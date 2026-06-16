@@ -32,7 +32,6 @@ pub struct WitnessFactSet {
     pub accepted_catalog: CatalogFingerprint,
     pub proposal_catalog: Option<CatalogFingerprint>,
     pub backup: Option<BackupWitnessFactSet>,
-    pub live_store: LiveStorePreviewStatus,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -40,11 +39,6 @@ pub struct BackupWitnessFactSet {
     pub cell_count: u64,
     pub sample_catalog_ids: Vec<String>,
     pub samples_truncated: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LiveStorePreviewStatus {
-    Deferred,
 }
 
 #[derive(Debug)]
@@ -118,7 +112,6 @@ pub fn evolution_preview(
         accepted_catalog,
         proposal_catalog,
         backup,
-        live_store: LiveStorePreviewStatus::Deferred,
     })
 }
 

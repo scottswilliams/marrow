@@ -15,12 +15,12 @@ use super::{
 use marrow_store::tree::{
     EngineProfileDigest, TREE_BACKUP_MAX_CATALOG_SECTION_BYTES, TREE_BACKUP_MAX_CELL_BYTES,
     TREE_BACKUP_MAX_MANIFEST_BYTES, TreeBackupArchiveReadError, TreeBackupCell, TreeBackupCellBuf,
-    TreeBackupCellReadError, read_tree_backup_archive_chunk, read_tree_backup_archive_header,
-    write_tree_backup_archive_chunk, write_tree_backup_archive_header,
+    TreeBackupCellReadError, fold_checksum_bytes, read_tree_backup_archive_chunk,
+    read_tree_backup_archive_header, write_tree_backup_archive_chunk,
+    write_tree_backup_archive_header,
 };
 
 const CHECKSUM_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
-const CHECKSUM_PRIME: u64 = 0x0000_0100_0000_01b3;
 
 /// Fold one cell into the running checksum over its framed bytes; write and read
 /// sides must agree on exactly these bytes.
@@ -34,16 +34,8 @@ pub(super) const CHECKSUM_SEED: u64 = CHECKSUM_OFFSET;
 /// Fold a length-prefixed byte run into the running checksum, the same framing the
 /// header and catalog section are written with.
 fn fold_chunk(hash: u64, bytes: &[u8]) -> u64 {
-    let hash = fold(hash, &(bytes.len() as u32).to_be_bytes());
-    fold(hash, bytes)
-}
-
-fn fold(mut hash: u64, bytes: &[u8]) -> u64 {
-    for &byte in bytes {
-        hash ^= u64::from(byte);
-        hash = hash.wrapping_mul(CHECKSUM_PRIME);
-    }
-    hash
+    let hash = fold_checksum_bytes(hash, &(bytes.len() as u32).to_be_bytes());
+    fold_checksum_bytes(hash, bytes)
 }
 
 /// The integrity-checksum contribution of the manifest: its canonical bytes with

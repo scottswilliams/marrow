@@ -3,7 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use marrow_check::evolution::{EvolutionWitness, preview};
+use marrow_check::evolution::preview;
 use marrow_check::{
     CheckReport, CheckedProgram, CheckedRuntimeProgram, CheckedSavedPlace, ProjectConfig,
 };
@@ -686,20 +686,6 @@ fn finish_open(
     })
 }
 
-fn witness_epoch_range(witness: &EvolutionWitness) -> (u64, u64) {
-    let from_epoch = witness
-        .store_catalog
-        .as_ref()
-        .map(|catalog| catalog.epoch)
-        .unwrap_or(witness.accepted_catalog.epoch);
-    let to_epoch = witness
-        .proposal_catalog
-        .as_ref()
-        .map(|catalog| catalog.epoch)
-        .unwrap_or(witness.accepted_catalog.epoch);
-    (from_epoch, to_epoch)
-}
-
 fn auto_apply_then_reopen(
     root: &Path,
     program: CheckedProgram,
@@ -710,7 +696,7 @@ fn auto_apply_then_reopen(
     let witness = preview(&program, &store.store)
         .map_err(ProjectSessionError::Store)?
         .0;
-    let (from_epoch, to_epoch) = witness_epoch_range(&witness);
+    let (from_epoch, to_epoch) = witness.epoch_range();
     match try_auto_apply(&witness, &program, &store.store) {
         Ok(AutoApplyOutcome::Applied) => {
             notices.push(ProjectSessionNotice::AutoApplied {
@@ -749,7 +735,7 @@ fn classify_dry_run_drift(
     let witness = preview(program, &store.store)
         .map_err(ProjectSessionError::Store)?
         .0;
-    let (from_epoch, to_epoch) = witness_epoch_range(&witness);
+    let (from_epoch, to_epoch) = witness.epoch_range();
     let obligation = RunObligation::classify(&witness);
     match obligation {
         RunObligation::ZeroMutation { .. } => {

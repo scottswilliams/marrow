@@ -239,22 +239,11 @@ pub(crate) fn is_unknown_std_operation(segments: &[String]) -> bool {
         && stdlib::lookup(module, op).is_none()
 }
 
+/// Whether `name` is a builtin name: a pure builtin call (`exists`, `keys`,
+/// conversions, …) per the typed [`CheckedBuiltinCall`] owner, or the `Error`
+/// constructor, which is dispatched as a call target rather than a builtin call.
 fn is_builtin_name(name: &str) -> bool {
-    matches!(
-        name,
-        // presence and reads
-        "exists"
-        // tree traversal
-        | "keys" | "values" | "entries" | "count"
-        // ordered navigation
-        | "reversed" | "next" | "prev"
-        // sequence updates and id allocation
-        | "append" | "nextId"
-        // output
-        | "print"
-        // error constructor
-        | "Error"
-    ) || ConversionTarget::from_name(name).is_some()
+    crate::executable::CheckedBuiltinCall::from_name(name).is_some() || name == "Error"
 }
 
 /// The return type of a single-name data builtin: `exists(path): bool` and
@@ -339,25 +328,13 @@ pub(crate) fn std_call_params(segments: &[String]) -> Option<Vec<Option<MarrowTy
 pub fn check_tests(
     project_root: &Path,
     config: &ProjectConfig,
-    project: CheckedProgram,
-) -> Result<(CheckReport, Vec<CheckedModule>), DiscoverError> {
-    check_tests_with_sources(project_root, config, project, &ProjectSources::new())
-}
-
-/// Like [`check_tests`], but uses overlaid source text for selected test files and
-/// includes overlaid test files that match the configured `tests` paths even
-/// when they are not on disk yet.
-pub fn check_tests_with_sources(
-    project_root: &Path,
-    config: &ProjectConfig,
     mut project: CheckedProgram,
-    sources: &ProjectSources,
 ) -> Result<(CheckReport, Vec<CheckedModule>), DiscoverError> {
     let checked = check_tests_with_sources_analysis(
         project_root,
         config,
         &mut project,
-        sources,
+        &ProjectSources::new(),
         TestResolutionSuppression::default(),
         TestProgramOutput::FinalizeCombined,
     )?;
@@ -370,22 +347,13 @@ pub fn check_tests_with_sources(
 pub fn check_tests_program(
     project_root: &Path,
     config: &ProjectConfig,
-    project: CheckedProgram,
-) -> Result<(CheckReport, CheckedProgram), DiscoverError> {
-    check_tests_with_sources_program(project_root, config, project, &ProjectSources::new())
-}
-
-pub fn check_tests_with_sources_program(
-    project_root: &Path,
-    config: &ProjectConfig,
     mut project: CheckedProgram,
-    sources: &ProjectSources,
 ) -> Result<(CheckReport, CheckedProgram), DiscoverError> {
     let checked = check_tests_with_sources_analysis(
         project_root,
         config,
         &mut project,
-        sources,
+        &ProjectSources::new(),
         TestResolutionSuppression::default(),
         TestProgramOutput::FinalizeCombined,
     )?;
@@ -992,7 +960,10 @@ pub(crate) fn push_schema_error(
 /// Whether `diagnostic` repeats one already collected, by typed identity: same
 /// code, file, span, and payload. Two distinct errors at one span differ in
 /// payload, so this only collapses a genuine duplicate.
-fn has_duplicate_error(diagnostics: &[CheckDiagnostic], diagnostic: &CheckDiagnostic) -> bool {
+pub(crate) fn has_duplicate_error(
+    diagnostics: &[CheckDiagnostic],
+    diagnostic: &CheckDiagnostic,
+) -> bool {
     diagnostics.iter().any(|existing| {
         existing.code == diagnostic.code
             && existing.file == diagnostic.file

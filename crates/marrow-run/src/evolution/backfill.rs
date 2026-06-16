@@ -15,7 +15,7 @@ use marrow_store::key::SavedKey;
 use marrow_store::tree::{DataPathSegment, TreeStore};
 use marrow_store::value::{ScalarType, scalar_key_matches_type, validate_scalar_key};
 
-use crate::index_maintenance::{EmptyStagedData, index_rebuild_entry_with_staged};
+use crate::index_maintenance::index_rebuild_entry;
 use crate::write_plan::PlanStep;
 
 use super::apply::{ActivationDefaultRecordCount, ApplyError, StagedWork};
@@ -130,15 +130,8 @@ pub(super) fn stage_index_subtree_rebuild(
     let index_id = index_catalog_id(index)?;
     store.delete_index_subtree(&index_id, &[])?;
     for_each_place_record(store, place, &mut |identity| {
-        if let Some(step) = index_rebuild_entry_with_staged(
-            index,
-            place,
-            identity,
-            store,
-            &EmptyStagedData,
-            Default::default(),
-        )
-        .map_err(|error| StoreError::Corruption {
+        if let Some(step) = index_rebuild_entry(index, place, identity, store, Default::default())
+            .map_err(|error| StoreError::Corruption {
             message: error.message,
         })? {
             write_index_step(store, step)?;

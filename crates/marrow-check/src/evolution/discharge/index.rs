@@ -90,10 +90,7 @@ fn index_key_columns(
                 else {
                     return Ok(None);
                 };
-                let scalar = match &key.value_meaning {
-                    StoredValueMeaning::Scalar(scalar) => Some(*scalar),
-                    StoredValueMeaning::Identity { .. } | StoredValueMeaning::Enum { .. } => None,
-                };
+                let scalar = key.value_meaning.scalar();
                 columns.push(IndexKeyColumn::Identity { position, scalar });
             }
             StoreIndexKeySource::ResourceMember(_) => {

@@ -11,7 +11,7 @@ use crate::executable::{SavedPlaceResolver, lower_expr_for_file};
 use crate::infer::infer_type;
 use crate::{
     CHECK_COLLECTION_UNSUPPORTED, CheckDiagnostic, CheckedExpr, CheckedProgram, CheckedSavedPlace,
-    MarrowType, resource_type_name,
+    MarrowType,
 };
 
 use super::diagnostics::key_type_diagnostic;
@@ -69,6 +69,15 @@ pub(crate) fn for_frame(
     if let Some(second) = &binding.second {
         frame.insert(second.clone(), MarrowType::Unknown);
     }
+    frame
+}
+
+/// The scope frame a `catch` clause's block runs under: the caught error value
+/// bound to its name. Shared by the type pass and cursor scope reconstruction so
+/// the two cannot drift.
+pub(crate) fn catch_frame(clause: &marrow_syntax::CatchClause) -> HashMap<String, MarrowType> {
+    let mut frame = HashMap::new();
+    frame.insert(clause.name.clone(), MarrowType::Error);
     frame
 }
 
@@ -538,14 +547,7 @@ fn checked_saved_expr(
 }
 
 fn saved_place_resource_type(program: &CheckedProgram, place: &CheckedSavedPlace) -> MarrowType {
-    let store = program.facts.store(place.store_id);
-    let module = program
-        .facts
-        .modules()
-        .get(store.module.0 as usize)
-        .map(|module| module.name.as_str())
-        .unwrap_or_default();
-    MarrowType::Resource(resource_type_name(module, &place.resource_name))
+    SavedPlaceResolver::new(program).record_root_element_type(place)
 }
 
 pub(crate) fn is_saved_index_branch_path(

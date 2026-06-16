@@ -613,7 +613,7 @@ fn proposal_id(
 }
 
 #[test]
-fn evolution_preview_schema_only_defers_live_store_data() {
+fn evolution_preview_schema_only_records_source_digest_without_backup() {
     let source = "module m\n\
         resource Book\n    \
         title: string\n\
@@ -631,10 +631,6 @@ fn evolution_preview_schema_only_defers_live_store_data() {
 
     assert_eq!(facts.source_digest, snapshot.program.source_digest());
     assert_eq!(facts.backup, None);
-    assert_eq!(
-        facts.live_store,
-        marrow_check::evolution::LiveStorePreviewStatus::Deferred
-    );
 }
 
 #[test]

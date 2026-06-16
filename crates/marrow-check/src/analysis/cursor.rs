@@ -8,7 +8,7 @@ use std::path::Path;
 
 use marrow_syntax::SourceSpan;
 
-use crate::checks::{file_prelude, for_frame};
+use crate::checks::{catch_frame, file_prelude, for_frame};
 use crate::enums::resolve_type;
 use crate::infer::{bind, infer_type, local_binding};
 use crate::walk::for_each_child_expr;
@@ -242,9 +242,7 @@ fn descend_target<'b>(
             if let Some(clause) = catch
                 && span_covers(clause.block.span, offset)
             {
-                let mut frame = HashMap::new();
-                frame.insert(clause.name.clone(), MarrowType::Error);
-                scope.push(frame);
+                scope.push(catch_frame(clause));
                 return Some(&clause.block);
             }
             None

@@ -16,20 +16,20 @@ use crate::infer::{
     local_binding_with_read_scope,
 };
 use crate::resolve::resolve_store_by_root;
-use crate::walk::for_each_child_expr;
 use crate::{
     CHECK_CALL_ARGUMENT, CHECK_COLLECTION_UNSUPPORTED, CHECK_CONDITION_TYPE, CHECK_KEY_TYPE,
-    CHECK_LOSSY_ROUND_TRIP, CHECK_RANGE_VALUE, CHECK_UNRESOLVED_NAME, CheckDiagnostic,
-    CheckedProgram, MarrowType,
+    CHECK_LOSSY_ROUND_TRIP, CHECK_UNRESOLVED_NAME, CheckDiagnostic, CheckedProgram, MarrowType,
 };
 
 use super::collections::{
-    check_entries_value_position, check_for_collection_support, check_for_entries_support,
-    for_frame, is_saved_index_branch_path, is_saved_index_range_path, is_saved_key_range_path,
-    is_saved_path_with_key_range_arg,
+    catch_frame, check_entries_value_position, check_for_collection_support,
+    check_for_entries_support, for_frame, is_saved_index_branch_path, is_saved_index_range_path,
+    is_saved_key_range_path, is_saved_path_with_key_range_arg,
 };
 use super::operators::{check_assignment, check_condition, check_return_type, check_throw_type};
-use super::ranges::{check_range_header, check_range_iterable_value_parts};
+use super::ranges::{
+    check_range_header, check_range_iterable_value_parts, check_range_value_guarded,
+};
 use super::required_fields::RequiredFieldAssignments;
 use super::returns::check_return_values;
 use super::saved_keys::saved_root_args_address_record;
@@ -679,9 +679,7 @@ impl StatementCheck<'_> {
     ) {
         self.check_inconclusive_block(body);
         if let Some(clause) = catch {
-            let mut frame = HashMap::new();
-            frame.insert(clause.name.clone(), MarrowType::Error);
-            self.scope.push(frame);
+            self.scope.push(catch_frame(clause));
             self.check_inconclusive_block(&clause.block);
             self.scope.pop();
         }
@@ -713,18 +711,13 @@ impl StatementCheck<'_> {
     }
 
     fn check_range_value(&mut self, value: &marrow_syntax::Expression) {
-        if allowed_saved_key_range_value_context(self.program, value, self.scope, self.file) {
-            return;
-        }
-        if let Some(range) = marrow_syntax::range_expr(value) {
-            self.diagnostics.push(CheckDiagnostic::error(
-                CHECK_RANGE_VALUE,
-                self.file,
-                range.span,
-                "a range can only be used as a `for` iterable",
-            ));
-        }
-        for_each_child_expr(value, |child| self.check_range_value(child));
+        let (program, scope, file) = (self.program, &*self.scope, self.file);
+        check_range_value_guarded(
+            file,
+            value,
+            &|expr| allowed_saved_key_range_value_context(program, expr, scope, file),
+            self.diagnostics,
+        );
     }
 }
 

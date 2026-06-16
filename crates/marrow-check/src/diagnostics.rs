@@ -262,8 +262,11 @@ impl ConversionTarget {
         }
     }
 
-    pub(crate) fn return_type(self) -> MarrowType {
-        let scalar = match self {
+    /// The stored scalar this conversion yields. `string` and `ErrorCode` both
+    /// store as [`ScalarType::Str`]; their distinct conversion identity lives in
+    /// the variant, not the stored scalar.
+    pub(crate) fn scalar(self) -> ScalarType {
+        match self {
             Self::Bool => ScalarType::Bool,
             Self::Int => ScalarType::Int,
             Self::Str | Self::ErrorCode => ScalarType::Str,
@@ -272,8 +275,11 @@ impl ConversionTarget {
             Self::Instant => ScalarType::Instant,
             Self::Duration => ScalarType::Duration,
             Self::Decimal => ScalarType::Decimal,
-        };
-        MarrowType::Primitive(scalar)
+        }
+    }
+
+    pub(crate) fn return_type(self) -> MarrowType {
+        MarrowType::Primitive(self.scalar())
     }
 
     pub(crate) fn accepted_sources(self) -> &'static [ScalarType] {

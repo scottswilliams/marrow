@@ -112,6 +112,17 @@ impl<'a> SavedPlaceResolver<'a> {
         self.place_value_type(expr.saved_place()?)
     }
 
+    /// The element value type of a Record-root collection: the store's resource
+    /// type. Each element of a keyed root is a record, so this holds regardless of
+    /// whether the root itself is addressed — unlike [`Self::value_type`], which
+    /// reports a value only for an addressed place.
+    pub(crate) fn record_root_element_type(&self, place: &CheckedSavedPlace) -> MarrowType {
+        MarrowType::Resource(crate::resource_type_name(
+            &self.store_module_name(place),
+            &place.resource_name,
+        ))
+    }
+
     pub(crate) fn key_type(&self, expr: &CheckedExpr) -> Option<MarrowType> {
         self.place_key_type(expr.saved_place()?)
     }

@@ -26,8 +26,7 @@ pub(crate) use transform_reads::transform_old_member;
 
 pub use discharge::{RepairDiagnostic, RepairGuidance};
 pub use preview::{
-    BackupWitnessFactSet, EvolutionPreviewError, LiveStorePreviewStatus, WitnessFactSet,
-    evolution_preview, preview,
+    BackupWitnessFactSet, EvolutionPreviewError, WitnessFactSet, evolution_preview, preview,
 };
 pub use transform_reads::{TransformReadMember, transform_read_members};
 pub use witness::{

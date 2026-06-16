@@ -37,8 +37,15 @@ pub(crate) fn write_saved_field(
     env: &mut Env<'_>,
 ) -> Result<(), RuntimeError> {
     let identity = path.identity.as_slice();
-    let created_required_path =
-        created_required_field_path(&path.place, identity, &[], &path.members, field, span, env)?;
+    let created_required_path = created_required_field_path(
+        &path.place,
+        identity,
+        &[],
+        &path.place.members,
+        field,
+        span,
+        env,
+    )?;
     if let Terminal::Field {
         leaf: Some(StoreLeafKind::Identity { store_root, arity }),
         ..
@@ -138,7 +145,7 @@ pub(crate) fn write_nested_field(
         &path.place,
         identity,
         &path.layer_addresses,
-        &path.members,
+        &path.place.members,
         field,
         span,
         env,

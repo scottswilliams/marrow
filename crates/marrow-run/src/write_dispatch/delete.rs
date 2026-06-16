@@ -81,7 +81,7 @@ fn eval_field_delete(
         return delete_nested_field(base_path, field, span, env);
     }
     let base_path = top_level_delete_base(base, span, env)?;
-    match checked_unkeyed_group(&base_path.members, field) {
+    match checked_unkeyed_group(&base_path.place.members, field) {
         Some(group) => delete_unkeyed_group(&base_path, &[], field, group, span, env),
         None => delete_top_level_field(&base_path, field, span, env),
     }
@@ -163,11 +163,11 @@ fn delete_nested_field(
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<(), RuntimeError> {
-    if let Some(group) = checked_unkeyed_group(&path.members, field) {
+    if let Some(group) = checked_unkeyed_group(&path.place.members, field) {
         let layers = path.layer_addresses.clone();
         return delete_unkeyed_group(&path, &layers, field, group, span, env);
     }
-    if !checked_member_exists(&path.members, field) {
+    if !checked_member_exists(&path.place.members, field) {
         return Err(unsupported("deleting this group field", span));
     }
     let layers = path.layer_addresses.clone();
@@ -189,7 +189,7 @@ fn delete_field(
     env: &mut Env<'_>,
 ) -> Result<(), RuntimeError> {
     let identity = path.identity.as_slice();
-    let deletes_required = checked_field_required(&path.members, field).unwrap_or(false);
+    let deletes_required = checked_field_required(&path.place.members, field).unwrap_or(false);
     if !env.host.maintenance && deletes_required {
         return Err(raise_fault(
             WRITE_REQUIRED_FIELD,

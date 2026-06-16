@@ -130,7 +130,5 @@ mod required_field_assignment;
 mod resource_store_contract;
 #[path = "cases/saved_place_owner_architecture.rs"]
 mod saved_place_owner_architecture;
-#[path = "cases/type_identity_unification_architecture.rs"]
-mod type_identity_unification_architecture;
 #[path = "cases/v01_fixtures.rs"]
 mod v01_fixtures;

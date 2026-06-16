@@ -34,12 +34,13 @@ fn compile_ok(source: &str) -> EnumSchema {
 
 #[test]
 fn members_keep_source_traversal_indices() {
+    use marrow_schema::MemberPathResolution::{Found, NotFound};
     let schema = compile_ok("module app\nenum Status\n    active\n    archived\n    banned\n");
     assert_eq!(schema.name, "Status");
-    assert_eq!(schema.ordinal("active"), Some(0));
-    assert_eq!(schema.ordinal("archived"), Some(1));
-    assert_eq!(schema.ordinal("banned"), Some(2));
-    assert_eq!(schema.ordinal("missing"), None);
+    assert_eq!(schema.walk_member_path(&["active"]), Found(0));
+    assert_eq!(schema.walk_member_path(&["archived"]), Found(1));
+    assert_eq!(schema.walk_member_path(&["banned"]), Found(2));
+    assert_eq!(schema.walk_member_path(&["missing"]), NotFound);
 }
 
 #[test]
@@ -66,7 +67,10 @@ fn rejects_a_duplicate_member() {
     // The duplicate is reported and dropped, so traversal only sees the distinct
     // members.
     assert_eq!(schema.members.len(), 1, "{:?}", schema.members);
-    assert_eq!(schema.ordinal("active"), Some(0));
+    assert_eq!(
+        schema.walk_member_path(&["active"]),
+        marrow_schema::MemberPathResolution::Found(0)
+    );
 }
 
 /// A flat enum stays the degenerate one-level tree: every member at the top
@@ -78,7 +82,10 @@ fn a_flat_enum_compiles_as_one_traversal_level() {
     for (index, member) in schema.members.iter().enumerate() {
         assert_eq!(member.parent, None, "{member:?}");
         assert!(!member.category, "{member:?}");
-        assert_eq!(schema.ordinal(&member.name), Some(index));
+        assert_eq!(
+            schema.walk_member_path(&[member.name.as_str()]),
+            marrow_schema::MemberPathResolution::Found(index)
+        );
     }
 }
 
@@ -89,11 +96,12 @@ fn nested_members_keep_pre_order_indices_and_parent_links() {
     let schema = compile_ok(
         "module app\nenum Cat\n    category tiger\n        bengal\n        siberian\n    housecat\n",
     );
+    use marrow_schema::MemberPathResolution::Found;
     // Pre-order traversal: tiger(0), bengal(1), siberian(2), housecat(3).
-    assert_eq!(schema.ordinal("tiger"), Some(0));
-    assert_eq!(schema.ordinal("bengal"), Some(1));
-    assert_eq!(schema.ordinal("siberian"), Some(2));
-    assert_eq!(schema.ordinal("housecat"), Some(3));
+    assert_eq!(schema.walk_member_path(&["tiger"]), Found(0));
+    assert_eq!(schema.walk_member_path(&["bengal"]), Found(1));
+    assert_eq!(schema.walk_member_path(&["siberian"]), Found(2));
+    assert_eq!(schema.walk_member_path(&["housecat"]), Found(3));
     assert_eq!(schema.members[1].parent, Some(0));
     assert_eq!(schema.members[2].parent, Some(0));
     assert_eq!(schema.members[3].parent, None);
@@ -158,21 +166,22 @@ fn duplicate_member_uniqueness_is_per_sibling_level() {
     assert!(cross_errors.is_empty(), "{cross_errors:?}");
 }
 
-/// The subtree queries answer the hierarchy: `is_descendant` is inclusive,
-/// `subtree_ordinals` lists a node and its descendants, and `selectable_leaves`
-/// is the set of concrete childless members.
+/// The subtree queries answer the hierarchy: `subtree_ordinals` lists a node and
+/// its descendants inclusively, and `selectable_leaves` is the set of concrete
+/// childless members.
 #[test]
 fn subtree_queries_describe_the_hierarchy() {
     let schema = compile_ok(
         "module app\nenum Cat\n    category tiger\n        bengal\n        siberian\n    housecat\n",
     );
-    // tiger(0), bengal(1), siberian(2), housecat(3).
-    assert!(schema.is_descendant(1, 0), "bengal is under tiger");
-    assert!(schema.is_descendant(0, 0), "a node is its own descendant");
-    assert!(!schema.is_descendant(3, 0), "housecat is not under tiger");
-
+    // tiger(0), bengal(1), siberian(2), housecat(3). The subtree of tiger is
+    // inclusive of tiger itself and its descendants bengal and siberian, but not
+    // the sibling housecat.
     let subtree: Vec<usize> = schema.subtree_ordinals(0).collect();
     assert_eq!(subtree, vec![0, 1, 2]);
+    assert!(subtree.contains(&1), "bengal is under tiger");
+    assert!(subtree.contains(&0), "a node is its own descendant");
+    assert!(!subtree.contains(&3), "housecat is not under tiger");
 
     let leaves: Vec<usize> = schema.selectable_leaves().collect();
     assert_eq!(leaves, vec![1, 2, 3], "category tiger is not selectable");

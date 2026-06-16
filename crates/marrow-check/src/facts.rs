@@ -814,7 +814,6 @@ impl CheckedFacts {
                 name: index.name.clone(),
                 unique: index.unique,
                 keys,
-                usage: StoreIndexUsageBitmap::default(),
                 catalog_id: None,
                 span,
             });
@@ -1171,10 +1170,7 @@ impl CheckedFacts {
             .get(store.0 as usize)?
             .identity_keys
             .iter()
-            .map(|key| match key.value_meaning.as_ref()? {
-                StoredValueMeaning::Scalar(scalar) => Some(*scalar),
-                StoredValueMeaning::Identity { .. } | StoredValueMeaning::Enum { .. } => None,
-            })
+            .map(|key| key.value_meaning.as_ref()?.scalar())
             .collect()
     }
 
@@ -1252,21 +1248,8 @@ pub struct StoreIndexFact {
     pub name: String,
     pub unique: bool,
     pub keys: Vec<StoreIndexKeyFact>,
-    pub usage: StoreIndexUsageBitmap,
     pub catalog_id: Option<String>,
     pub span: SourceSpan,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct StoreIndexUsageBitmap {
-    pub read: bool,
-    pub write: bool,
-}
-
-impl StoreIndexUsageBitmap {
-    pub fn any(&self) -> bool {
-        self.read || self.write
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1385,6 +1368,16 @@ pub enum StoredValueMeaning {
 }
 
 impl StoredValueMeaning {
+    /// The scalar a value carries when its meaning is a plain scalar, and `None` for an
+    /// identity or enum meaning. Callers that read an index or identity key column by its
+    /// scalar type share this one extraction rather than re-matching the variant.
+    pub fn scalar(&self) -> Option<ScalarType> {
+        match self {
+            Self::Scalar(scalar) => Some(*scalar),
+            Self::Identity { .. } | Self::Enum { .. } => None,
+        }
+    }
+
     /// Decode a stored member value into the order-preserving key an index holds.
     /// This is the one place that turns a member's durable bytes into a [`SavedKey`],
     /// shared by the runtime that writes index entries and the evolution discharge

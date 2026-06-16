@@ -37,12 +37,12 @@ pub(crate) fn write_resource(
     };
     let identity = path.identity.as_slice();
     env.guard_traversed_layer(&TraversedLayer::record(&path.place, span)?, span)?;
-    let value = resource_value_of(&path.members, fields, span)?;
+    let value = resource_value_of(&path.place.members, fields, span)?;
     let created_required_paths = created_required_paths_for_value(
         &path.place,
         identity,
         &[],
-        &path.members,
+        &path.place.members,
         &value,
         span,
         env,

@@ -41,14 +41,6 @@ pub enum MemberPathResolution {
 }
 
 impl EnumSchema {
-    /// The source traversal index of `member`, or `None` if the enum has no such
-    /// member. When two members at different levels share a bare name, the first
-    /// in pre-order wins; the checker rejects an ambiguous reference before this
-    /// is reached for a value or arm.
-    pub fn ordinal(&self, member: &str) -> Option<usize> {
-        self.members.iter().position(|m| m.name == member)
-    }
-
     /// Walk a relative member path (`["tiger", "bengal"]`) to a single member. A
     /// qualified path starts at a top-level member and walks parent→child, one
     /// segment per level; since sibling names are unique the walk is always
@@ -126,7 +118,7 @@ impl EnumSchema {
     /// — the `is` primitive. Inclusive: a member is its own descendant, so a
     /// concrete leaf on both sides is exact equality and a category ancestor
     /// matches its whole subtree.
-    pub fn is_descendant(&self, ordinal: usize, ancestor: usize) -> bool {
+    pub(crate) fn is_descendant(&self, ordinal: usize, ancestor: usize) -> bool {
         let mut current = Some(ordinal);
         while let Some(index) = current {
             if index == ancestor {

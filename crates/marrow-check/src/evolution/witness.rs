@@ -292,4 +292,23 @@ impl EvolutionWitness {
             .iter()
             .all(|outcome| outcome.verdict.is_activatable())
     }
+
+    /// The catalog epochs this evolution moves between: the store's current
+    /// snapshot (or the accepted catalog when the store holds none) and the
+    /// proposal to activate (or the accepted catalog when source proposes no
+    /// change). Both ends fall back to the accepted epoch so a no-change witness
+    /// reports a stable range rather than a missing one.
+    pub fn epoch_range(&self) -> (u64, u64) {
+        let from_epoch = self
+            .store_catalog
+            .as_ref()
+            .map(|catalog| catalog.epoch)
+            .unwrap_or(self.accepted_catalog.epoch);
+        let to_epoch = self
+            .proposal_catalog
+            .as_ref()
+            .map(|catalog| catalog.epoch)
+            .unwrap_or(self.accepted_catalog.epoch);
+        (from_epoch, to_epoch)
+    }
 }
