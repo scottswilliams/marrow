@@ -246,14 +246,12 @@ impl<'a> Lexer<'a> {
 
         let end = index + consumed;
         let span = self.span(line, index, end);
-        self.diagnostics.push(Diagnostic {
-            code: PARSE_SYNTAX,
-            reason: DiagnosticReason::Lexer(LexerDiagnosticReason::ObsoleteOperator(reason)),
-            severity: Severity::Error,
-            message: message.to_string(),
-            help: Some(help.to_string()),
+        self.error_at_with_help(
             span,
-        });
+            LexerDiagnosticReason::ObsoleteOperator(reason),
+            message,
+            Some(help.to_string()),
+        );
         Some(end)
     }
 
@@ -646,12 +644,22 @@ impl<'a> Lexer<'a> {
         reason: LexerDiagnosticReason,
         message: impl Into<String>,
     ) {
+        self.error_at_with_help(span, reason, message, None);
+    }
+
+    fn error_at_with_help(
+        &mut self,
+        span: SourceSpan,
+        reason: LexerDiagnosticReason,
+        message: impl Into<String>,
+        help: Option<String>,
+    ) {
         self.diagnostics.push(Diagnostic {
             code: PARSE_SYNTAX,
             reason: DiagnosticReason::Lexer(reason),
             severity: Severity::Error,
             message: message.into(),
-            help: None,
+            help,
             span,
         });
     }

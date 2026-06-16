@@ -146,10 +146,12 @@ fn quoted_field_segments_are_parse_errors() {
     let parsed = parse_source("const Old = ^books(id).\"old-title\"\n");
     assert!(parsed.has_errors(), "{:#?}", parsed.diagnostics);
     assert!(
-        parsed.diagnostics.iter().any(|diagnostic| diagnostic
-            .message
-            .contains("quoted field segments are not part of ordinary expression grammar")
-            && diagnostic.message.contains("operator maintenance mode")),
+        has_reason(
+            &parsed.diagnostics,
+            parse_reason(ParseDiagnosticReason::Unsupported(
+                UnsupportedSyntax::QuotedFieldSegments
+            ))
+        ),
         "{:#?}",
         parsed.diagnostics
     );
@@ -232,10 +234,12 @@ fn keyword_field_name_reports_once_not_also_expected_a_statement() {
 fn quoted_keyword_field_name_reports_a_parse_error() {
     let parsed = parse_source("const Bad = ^events(id).\"if\"\n");
     assert!(
-        parsed.diagnostics.iter().any(|diagnostic| diagnostic
-            .message
-            .contains("quoted field segments are not part of ordinary expression grammar")
-            && diagnostic.message.contains("operator maintenance mode")),
+        has_reason(
+            &parsed.diagnostics,
+            parse_reason(ParseDiagnosticReason::Unsupported(
+                UnsupportedSyntax::QuotedFieldSegments
+            ))
+        ),
         "{:#?}",
         parsed.diagnostics
     );

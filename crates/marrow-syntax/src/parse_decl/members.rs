@@ -195,13 +195,7 @@ impl<'a> DeclParser<'a> {
                         );
                         (Vec::new(), Vec::new(), Vec::new())
                     };
-                for index in child_indexes {
-                    self.error_span(
-                        index.span,
-                        ParseDiagnosticReason::IndexOutsideStoreBody,
-                        "index declarations belong in a store body",
-                    );
-                }
+                debug_assert!(child_indexes.is_empty());
                 Some(ResourceMember::Group(GroupDecl {
                     docs,
                     name,

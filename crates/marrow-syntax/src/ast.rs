@@ -427,7 +427,7 @@ pub enum FunctionReturnPresence {
 
 /// An enum: a named, fixed set of member values, generalizing `bool`. Members may
 /// nest into a tree (`Cat::tiger::bengal`); a flat enum is the degenerate
-/// one-level tree. `public` is recorded for `pub enum` but not yet enforced.
+/// one-level tree. `public` records `pub enum` visibility.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EnumDecl {
     pub docs: Vec<String>,
@@ -579,7 +579,6 @@ pub enum Statement {
     /// subtree). The scrutinee supplies the enum, so an arm carries no enum prefix;
     /// a local enum's `match` has no wildcard arm. Exhaustiveness and member
     /// validity are checker rules.
-    ///
     Match {
         scrutinee: Option<Expression>,
         arms: Vec<MatchArm>,

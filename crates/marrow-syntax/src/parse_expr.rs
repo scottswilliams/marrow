@@ -157,7 +157,8 @@ impl<'a> ExprParser<'a> {
 
     /// `is` sits one level looser than equality and tighter than `and`, on its own
     /// non-associative level: a single `is`, never chained (`a is X is Y` is
-    /// rejected). The right operand is a member-path expression (`Cat::tiger`).
+    /// rejected). The right operand is parsed as an equality-level expression;
+    /// any narrower member-path restriction is enforced by the checker.
     fn is_expr(&mut self) -> Option<Expression> {
         let left = self.equality_expr()?;
         if !matches!(self.peek(), Some(TokenKind::Keyword(Keyword::Is))) {
@@ -373,8 +374,6 @@ impl<'a> ExprParser<'a> {
     }
 
     /// Parse the identifier segment after `.` or `?.`, consuming both tokens.
-    /// The returned boolean keeps the AST shape aligned with maintenance-only
-    /// paths that can still carry quoted field metadata.
     fn field_segment(&mut self) -> Option<(String, bool, SourceSpan)> {
         let op = self.advance();
         let segment = *self.tokens.get(self.pos)?;
@@ -385,7 +384,7 @@ impl<'a> ExprParser<'a> {
                 self.error(
                     join_spans(op.span, segment.span),
                     ParseDiagnosticReason::Unsupported(UnsupportedSyntax::QuotedFieldSegments),
-                    "quoted field segments are not part of ordinary expression grammar; operator maintenance mode is their decided home".to_string(),
+                    "quoted field segments are not valid expression grammar".to_string(),
                     None,
                 );
                 return None;
@@ -397,9 +396,7 @@ impl<'a> ExprParser<'a> {
                     join_spans(op.span, segment.span),
                     ParseDiagnosticReason::KeywordFieldName,
                     format!("`{text}` is a keyword and cannot be used as a field name"),
-                    Some(
-                        "operator maintenance mode owns non-ordinary saved field names".to_string(),
-                    ),
+                    None,
                 );
                 return None;
             }
@@ -670,37 +667,23 @@ fn is_path_segment_keyword(keyword: Keyword) -> bool {
 }
 
 fn starts_expression(kind: TokenKind) -> bool {
-    matches!(
-        kind,
+    match kind {
         TokenKind::Integer
-            | TokenKind::Decimal
-            | TokenKind::Duration
-            | TokenKind::String
-            | TokenKind::Bytes
-            | TokenKind::Identifier
-            | TokenKind::Caret
-            | TokenKind::LeftParen
-            | TokenKind::InterpolationStart
-            | TokenKind::Minus
-            | TokenKind::DotDot
-            | TokenKind::DotDotEqual
-            | TokenKind::Keyword(
-                Keyword::True
-                    | Keyword::False
-                    | Keyword::Not
-                    | Keyword::Int
-                    | Keyword::Decimal
-                    | Keyword::Bool
-                    | Keyword::String
-                    | Keyword::Bytes
-                    | Keyword::Date
-                    | Keyword::Instant
-                    | Keyword::Duration
-                    | Keyword::ErrorCode
-                    | Keyword::Error
-                    | Keyword::Id
-            )
-    )
+        | TokenKind::Decimal
+        | TokenKind::Duration
+        | TokenKind::String
+        | TokenKind::Bytes
+        | TokenKind::Identifier
+        | TokenKind::Caret
+        | TokenKind::LeftParen
+        | TokenKind::InterpolationStart
+        | TokenKind::Minus
+        | TokenKind::DotDot
+        | TokenKind::DotDotEqual => true,
+        TokenKind::Keyword(Keyword::True | Keyword::False | Keyword::Not) => true,
+        TokenKind::Keyword(keyword) => is_callable_keyword(keyword) || keyword == Keyword::Id,
+        _ => false,
+    }
 }
 
 fn starts_unambiguous_removed_mode_target(kind: TokenKind) -> bool {

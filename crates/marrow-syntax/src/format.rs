@@ -16,8 +16,8 @@ use crate::{
 
 /// Precedence used to decide where parentheses are required, tightest-binding
 /// last: atoms bind tightest, then unary, with binary operators below.
-const PREC_ATOM: u8 = 11;
-const PREC_UNARY: u8 = 10;
+const PREC_ATOM: u8 = 12;
+const PREC_UNARY: u8 = 11;
 
 const INDENT: &str = "    ";
 
@@ -916,37 +916,13 @@ fn format_if(
         "{header}\n{}",
         format_block(ctx.source, then_block, ctx.level + 1)
     );
-    let mut previous_end = then_block.span.end_byte;
-    for else_if in else_ifs {
-        let mut header = format!(
-            "{pad}else if {}",
-            format_opt_expression_at(else_if.condition.as_ref(), ctx.level)
-        );
-        append_trailing_comment_between(
-            &mut header,
-            ctx.comments,
-            previous_end,
-            else_if.block.span.start_byte,
-        );
-        out.push('\n');
-        out.push_str(&header);
-        out.push('\n');
-        out.push_str(&format_block(ctx.source, &else_if.block, ctx.level + 1));
-        previous_end = else_if.block.span.end_byte;
-    }
-    if let Some(else_block) = else_block {
-        let mut header = format!("{pad}else");
-        append_trailing_comment_between(
-            &mut header,
-            ctx.comments,
-            previous_end,
-            else_block.span.start_byte,
-        );
-        out.push('\n');
-        out.push_str(&header);
-        out.push('\n');
-        out.push_str(&format_block(ctx.source, else_block, ctx.level + 1));
-    }
+    format_else_chain(
+        ctx,
+        &mut out,
+        then_block.span.end_byte,
+        else_ifs,
+        else_block,
+    );
     out
 }
 
@@ -973,7 +949,27 @@ fn format_if_const(
         "{header}\n{}",
         format_block(ctx.source, then_block, ctx.level + 1)
     );
-    let mut previous_end = then_block.span.end_byte;
+    format_else_chain(
+        ctx,
+        &mut out,
+        then_block.span.end_byte,
+        else_ifs,
+        else_block,
+    );
+    out
+}
+
+/// Append the `else if` chain and optional trailing `else` block shared by both
+/// `if` forms. `previous_end` is the end byte of the preceding block, used to
+/// place any trailing comment that sits before the next header.
+fn format_else_chain(
+    ctx: StatementFormatContext<'_, '_>,
+    out: &mut String,
+    mut previous_end: usize,
+    else_ifs: &[ElseIf],
+    else_block: Option<&Block>,
+) {
+    let pad = INDENT.repeat(ctx.level);
     for else_if in else_ifs {
         let mut header = format!(
             "{pad}else if {}",
@@ -1004,7 +1000,6 @@ fn format_if_const(
         out.push('\n');
         out.push_str(&format_block(ctx.source, else_block, ctx.level + 1));
     }
-    out
 }
 
 fn format_for(
@@ -1379,5 +1374,47 @@ fn binary_symbol(op: BinaryOp) -> &'static str {
         // Ranges are emitted unspaced, so these symbols are only for exhaustiveness.
         BinaryOp::RangeExclusive => "..",
         BinaryOp::RangeInclusive => "..=",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{Expression, parse_expression};
+
+    fn parse(source: &str) -> Expression {
+        let (expression, diagnostics) = parse_expression(source);
+        assert!(
+            diagnostics.is_empty(),
+            "unexpected diagnostics: {diagnostics:?}"
+        );
+        expression.expect("expression")
+    }
+
+    /// A multiplicative operand under a unary must stay parenthesized: unary binds
+    /// tighter than `*`/`/`/`%`, so dropping the parentheses would re-associate the
+    /// negation onto the left factor and change the value.
+    #[test]
+    fn unary_over_multiplicative_keeps_parentheses() {
+        for source in ["-(a * b)", "-(a / b)", "-(a % b)"] {
+            let formatted = super::format_expression(&parse(source));
+            assert_eq!(formatted, source);
+        }
+    }
+
+    /// Parsing the formatted output yields a node of the same top-level shape:
+    /// the negation stays on the whole product, not just the left factor.
+    #[test]
+    fn unary_over_multiplicative_round_trips_to_unary_root() {
+        let reparsed = parse(&super::format_expression(&parse("-(a * b)")));
+        match reparsed {
+            Expression::Unary { operand, .. } => assert!(matches!(
+                *operand,
+                Expression::Binary {
+                    op: crate::BinaryOp::Multiply,
+                    ..
+                }
+            )),
+            other => panic!("expected Unary over Multiply, got {other:?}"),
+        }
     }
 }

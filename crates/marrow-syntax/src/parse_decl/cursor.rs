@@ -87,7 +87,13 @@ impl<'a> DeclParser<'a> {
     /// Declaration and member error diagnostics point here, at the first
     /// non-space column.
     pub(super) fn content_span(&self) -> SourceSpan {
-        let token = self.tokens[self.pos];
+        self.content_span_of(self.tokens[self.pos])
+    }
+
+    /// The span from `token`'s position to the end of its physical line. `token`
+    /// is the first content token of the line, so the span starts at the first
+    /// non-space column.
+    pub(super) fn content_span_of(&self, token: Token) -> SourceSpan {
         SourceSpan {
             start_byte: token.span.start_byte,
             end_byte: first_line_end(self.source, token.span.start_byte),
@@ -151,16 +157,8 @@ impl<'a> DeclParser<'a> {
                 TokenKind::Comment | TokenKind::DocComment => at_line_start = false,
                 _ => {
                     if at_line_start {
-                        let line_start = token.span.start_byte - (token.span.column as usize - 1);
-                        let content_start = token.span.start_byte;
-                        let span = SourceSpan {
-                            start_byte: content_start,
-                            end_byte: first_line_end(self.source, line_start),
-                            line: token.span.line,
-                            column: token.span.column,
-                        };
                         self.error_span(
-                            span,
+                            self.content_span_of(token),
                             ParseDiagnosticReason::Expected(ExpectedSyntax::Declaration),
                             "expected a top-level declaration",
                         );
@@ -231,8 +229,8 @@ impl<'a> DeclParser<'a> {
         }
     }
 
-    /// Whether the token after the current one is `keyword` followed by a space,
-    /// the trailing-space rule a `pub fn`/`pub enum` header applies to each word.
+    /// Whether the token after the current one is `keyword` immediately followed
+    /// by a space.
     fn followed_by_keyword_space(&self, keyword: Keyword) -> bool {
         self.tokens.get(self.pos + 1).is_some_and(|token| {
             token.kind == TokenKind::Keyword(keyword) && self.space_after(*token)

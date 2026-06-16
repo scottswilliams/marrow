@@ -331,7 +331,7 @@ fn field_path_text(source: &str, tokens: &[Token]) -> Option<String> {
 }
 
 /// Parse a `required? name (keys)? (: type)?` resource member head into a field
-/// or group, matching `parse_field_or_group_head`.
+/// or group.
 pub(super) fn parse_field_or_group_tokens(
     source: &str,
     tokens: &[Token],
