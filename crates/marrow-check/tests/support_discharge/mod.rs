@@ -78,6 +78,18 @@ pub fn group_entry(path: &str, stable_id: &str) -> CatalogEntry {
     }
 }
 
+/// A resource-member catalog entry recording an arbitrary accepted structural signature verbatim,
+/// for a baseline shape the current `marrow-catalog` decoder does not classify into leaf, group,
+/// or keyed group. Such a signature involves neither a leaf nor a keyed group on the accepted
+/// side, so a divergence from it routes the backstop to the general structural arm rather than a
+/// targeted shape rule.
+pub fn struct_signature_entry(path: &str, stable_id: &str, signature: &str) -> CatalogEntry {
+    CatalogEntry {
+        accepted_struct: Some(signature.to_string()),
+        ..entry(CatalogEntryKind::ResourceMember, path, stable_id)
+    }
+}
+
 /// A store catalog entry that records the identity-key shape its durable records are keyed
 /// under (`<scalar>,<scalar>,...`), so a discharge can detect a later key-shape change the
 /// new schema cannot address. The hand-built accepted catalogs use this for stores the test

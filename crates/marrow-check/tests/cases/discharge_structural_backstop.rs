@@ -466,6 +466,65 @@ fn deep_interior_member_reshaped_to_keyed_layer_fails_closed()
     Ok(())
 }
 
+/// A member whose accepted baseline shape the current decoder does not classify into a leaf,
+/// group, or keyed group fails closed through the general structural arm, not a targeted shape
+/// rule. The accepted catalog records `meta` under an unrecognized signature; source declares it
+/// as a plain unkeyed group. The divergence involves neither a leaf nor a keyed group on either
+/// side, so it carries the general `StructuralDivergence` reason rather than the keyed-layer one.
+/// Its old data is still present, so the unforeseen transition cannot silently activate.
+#[test]
+fn unrecognized_accepted_shape_fails_closed_as_general_divergence()
+-> Result<(), Box<dyn std::error::Error>> {
+    let meta_id = hex_id(3);
+    let body_id = hex_id(4);
+    let root = temp_project("discharge-unrecognized-shape", |root| {
+        write(
+            root,
+            "src/policies.mw",
+            "module policies\n\
+             resource Policy\n\
+             \x20   meta\n\
+             \x20       required body: string\n\
+             store ^policies(id: int): Policy\n\
+             pub fn add(): Id(^policies)\n\
+             \x20   return nextId(^policies)\n",
+        );
+        let accepted = accepted_catalog(
+            4,
+            "policies::Policy",
+            "policies::^policies",
+            Some("int"),
+            vec![
+                struct_signature_entry("policies::Policy::meta", &meta_id, "variant:[int]"),
+                member_entry("policies::Policy::meta::body", &body_id, "string"),
+            ],
+        );
+        write_catalog(root, &accepted);
+    });
+    let program = checked(&root).expect("checked fixture");
+    let place = root_place(&program, "policies")?;
+    let store = TreeStore::memory();
+    let seed = Seed::new(&store, &place);
+    seed.record(1);
+    seed.nested_member(1, "meta", "body", Scalar::Str("draft".into()));
+
+    let meta_member_id = group_member_catalog_id(&place, "meta")?;
+    assert_eq!(
+        meta_member_id, meta_id,
+        "the diverged member keeps its accepted stable id"
+    );
+    let (result, diagnostics) = preview(&program, &store).expect("preview");
+
+    assert_fails_closed(
+        &result,
+        &diagnostics,
+        &meta_member_id,
+        RepairReason::StructuralDivergence,
+    );
+
+    Ok(())
+}
+
 /// NEGATIVE GUARD: an UNCHANGED nested keyed layer must still activate. With depth-total descent
 /// the backstop now reaches interior members below keyed ancestors, so it must not over-fire on
 /// a nested layer whose signature is unchanged: every member keeps its identity and shape, so
