@@ -133,17 +133,13 @@ pub(crate) fn restore_backup_with_prologue(
             &verify,
         )
     })();
-    match replay_result {
-        Ok(mut report) => {
+    commit_or_rollback(
+        store,
+        replay_result.map(|mut report| {
             report.receipt = target.receipt();
-            store.commit()?;
-            Ok(report)
-        }
-        Err(error) => {
-            let _ = store.rollback();
-            Err(error)
-        }
-    }
+            report
+        }),
+    )
 }
 
 pub(crate) fn mount_backup_for_evolution_preview(
@@ -165,10 +161,22 @@ pub(crate) fn mount_backup_for_evolution_preview(
         nondeterminism,
         &verify_evolution_preview_mount,
     );
-    match replay_result {
-        Ok(_) => {
+    commit_or_rollback(&store, replay_result)?;
+    Ok(store)
+}
+
+/// Close an open restore transaction on the outcome of its staged replay: commit and
+/// surface the produced value when the replay succeeded, roll back and surface the
+/// error when it failed. Reads inside the open transaction see the staged writes, so
+/// the caller finishes computing the success value before this commits.
+fn commit_or_rollback<T>(
+    store: &TreeStore,
+    result: Result<T, BackupError>,
+) -> Result<T, BackupError> {
+    match result {
+        Ok(value) => {
             store.commit()?;
-            Ok(store)
+            Ok(value)
         }
         Err(error) => {
             let _ = store.rollback();

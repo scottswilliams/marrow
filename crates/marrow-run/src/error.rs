@@ -344,47 +344,29 @@ pub(crate) fn raise_with_transaction_escape(
 
 /// A `run.unknown_function` fault for a call/entry that resolves to no function.
 pub(crate) fn unknown_function(name: &str, span: SourceSpan) -> RuntimeError {
-    RuntimeError {
-        throw: None,
-        catchable: false,
-        transaction_escape: false,
-        origin: None,
-        call_depth: None,
-        entry_type_param: None,
-        code: RUN_UNKNOWN_FUNCTION,
-        message: format!("the program has no function `{name}`"),
+    RuntimeError::fault(
+        RUN_UNKNOWN_FUNCTION,
+        format!("the program has no function `{name}`"),
         span,
-    }
+    )
 }
 
 /// A `run.ambiguous_function` fault for a bare entry name that needs a module.
 pub(crate) fn ambiguous_function(name: &str, span: SourceSpan) -> RuntimeError {
-    RuntimeError {
-        throw: None,
-        catchable: false,
-        transaction_escape: false,
-        origin: None,
-        call_depth: None,
-        entry_type_param: None,
-        code: RUN_AMBIGUOUS_FUNCTION,
-        message: format!("entry `{name}` is ambiguous; qualify it as `module::{name}`"),
+    RuntimeError::fault(
+        RUN_AMBIGUOUS_FUNCTION,
+        format!("entry `{name}` is ambiguous; qualify it as `module::{name}`"),
         span,
-    }
+    )
 }
 
 /// A `run.private_function` fault for an entry that names a private function.
 pub(crate) fn private_function(name: &str, span: SourceSpan) -> RuntimeError {
-    RuntimeError {
-        throw: None,
-        catchable: false,
-        transaction_escape: false,
-        origin: None,
-        call_depth: None,
-        entry_type_param: None,
-        code: RUN_PRIVATE_FUNCTION,
-        message: format!("function `{name}` is private to its module"),
+    RuntimeError::fault(
+        RUN_PRIVATE_FUNCTION,
+        format!("function `{name}` is private to its module"),
         span,
-    }
+    )
 }
 
 /// Map an [`AssignError`] from a failed reassignment to a runtime fault.
@@ -519,21 +501,15 @@ pub(crate) fn key_type_fault(
     found: ScalarType,
     span: SourceSpan,
 ) -> RuntimeError {
-    RuntimeError {
-        throw: None,
-        catchable: false,
-        transaction_escape: false,
-        origin: None,
-        call_depth: None,
-        entry_type_param: None,
-        code: RUN_TYPE,
-        message: format!(
+    RuntimeError::fault(
+        RUN_TYPE,
+        format!(
             "a key of type `{}` was given where `{}` is declared",
             found.name(),
             expected.name()
         ),
         span,
-    }
+    )
 }
 
 /// A store or codec error met at a known source construct becomes a

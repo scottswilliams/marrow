@@ -62,10 +62,7 @@ impl ScopeStack {
     }
 
     fn current_mut(&mut self) -> &mut Scope {
-        match self.nested.last_mut() {
-            Some(scope) => scope,
-            None => &mut self.base,
-        }
+        self.nested.last_mut().unwrap_or(&mut self.base)
     }
 
     fn push(&mut self) {

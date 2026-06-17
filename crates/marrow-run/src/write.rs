@@ -40,6 +40,13 @@ impl ResourceValue {
     }
 }
 
+/// A materialized plain field whose encoded bytes must be written at the
+/// field's relative path.
+struct FieldWrite {
+    path: Vec<String>,
+    bytes: Vec<u8>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WriteError {
     pub code: &'static str,
@@ -86,20 +93,7 @@ pub(crate) fn plan_resource_write(
 ) -> Result<WritePlan, WriteError> {
     resolve_store_identity(place, identity)?;
     let index_context = IndexWriteContext::new(place, identity, store, span);
-    let mut to_write = Vec::new();
-    for field in materialized_plain_fields(&place.root_members) {
-        let name = materialized_field_name(&field.path);
-        match supplied_field(value, &name, field.leaf)? {
-            Some(bytes) => to_write.push((field.path, bytes)),
-            None if field.required => {
-                return Err(WriteError {
-                    code: WRITE_REQUIRED_ABSENT,
-                    message: format!("required field `{name}` is absent"),
-                });
-            }
-            None => {}
-        }
-    }
+    let to_write = collect_supplied_field_writes(&place.root_members, value)?;
 
     reject_resource_unique_conflicts(index_context, value)?;
 
@@ -107,7 +101,7 @@ pub(crate) fn plan_resource_write(
         address: data_address(place, identity, &[], &[], span)?,
     }];
     steps.push(record_presence_step(place, identity, span)?);
-    for (path, bytes) in to_write {
+    for FieldWrite { path, bytes } in to_write {
         steps.push(PlanStep::WriteData {
             address: data_address(place, identity, &[], &path, span)?,
             value: bytes,
@@ -479,27 +473,14 @@ pub(crate) fn plan_layer_group_write(
     span: SourceSpan,
 ) -> Result<WritePlan, WriteError> {
     let group = group_layer(place, layers)?;
-    let mut to_write = Vec::new();
-    for field in materialized_plain_fields(&group.group_members) {
-        let name = materialized_field_name(&field.path);
-        match supplied_field(value, &name, field.leaf)? {
-            Some(bytes) => to_write.push((field.path, bytes)),
-            None if field.required => {
-                return Err(WriteError {
-                    code: WRITE_REQUIRED_ABSENT,
-                    message: format!("required field `{name}` is absent"),
-                });
-            }
-            None => {}
-        }
-    }
+    let to_write = collect_supplied_field_writes(&group.group_members, value)?;
     let entry = DataAddress::layer_prefix(place, identity, layers, span).map_err(store_error)?;
     let mut steps = vec![PlanStep::DeleteData {
         address: entry.clone(),
     }];
     steps.push(record_presence_step(place, identity, span)?);
     steps.push(PlanStep::WriteDataNode { address: entry });
-    for (path, bytes) in to_write {
+    for FieldWrite { path, bytes } in to_write {
         steps.push(PlanStep::WriteData {
             address: data_address(place, identity, layers, &path, span)?,
             value: bytes,
@@ -578,6 +559,33 @@ fn record_presence_step(
     Ok(PlanStep::WriteRecordPresence {
         address: DataAddress::record(place, identity, span).map_err(store_error)?,
     })
+}
+
+/// Resolve every materialized plain field of `members` against the supplied
+/// value, returning the field paths whose bytes must be written and rejecting a
+/// required field that has no supplied value.
+fn collect_supplied_field_writes(
+    members: &[CheckedSavedMember],
+    value: &ResourceValue,
+) -> Result<Vec<FieldWrite>, WriteError> {
+    let mut to_write = Vec::new();
+    for field in materialized_plain_fields(members) {
+        let name = materialized_field_name(&field.path);
+        match supplied_field(value, &name, field.leaf)? {
+            Some(bytes) => to_write.push(FieldWrite {
+                path: field.path,
+                bytes,
+            }),
+            None if field.required => {
+                return Err(WriteError {
+                    code: WRITE_REQUIRED_ABSENT,
+                    message: format!("required field `{name}` is absent"),
+                });
+            }
+            None => {}
+        }
+    }
+    Ok(to_write)
 }
 
 fn supplied_value<'a>(value: &'a ResourceValue, field: &str) -> Option<&'a LeafValue> {

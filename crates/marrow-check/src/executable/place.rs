@@ -408,8 +408,7 @@ impl<'a> SavedPlaceResolver<'a> {
     ) -> Option<&'p CheckedSavedPlace> {
         let place = expr.saved_place()?;
         match &place.terminal {
-            CheckedSavedTerminal::Record if place.layers.is_empty() => Some(place),
-            CheckedSavedTerminal::Record if place.layers.last().is_some() => Some(place),
+            CheckedSavedTerminal::Record => Some(place),
             _ => None,
         }
     }

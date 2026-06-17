@@ -1018,23 +1018,18 @@ fn collect_plain_call(
             program, parts.args, &path_args, narrowed, scope, recorder, events,
         );
     } else {
-        collect_call_args(program, parts.args, narrowed, scope, recorder, events);
+        collect_args(
+            program,
+            parts.args,
+            ReadContext::Bare,
+            narrowed,
+            scope,
+            recorder,
+            events,
+        );
     }
     if writes_saved {
         invalidate_saved_targets(narrowed, events);
-    }
-}
-
-fn collect_call_args(
-    program: &CheckedProgram,
-    args: &[CheckedArg],
-    narrowed: &mut Vec<ReadTarget>,
-    scope: &mut NameScope,
-    recorder: &mut PresenceRecorder<'_>,
-    events: &mut InvalidationLog,
-) {
-    for arg in args {
-        collect_bare_expr(program, &arg.value, narrowed, scope, recorder, events);
     }
 }
 

@@ -1162,21 +1162,12 @@ impl TreeStore {
         limit: usize,
     ) -> Result<IndexPage, StoreError> {
         if limit == 0 {
-            return Ok(IndexPage {
-                entries: Vec::new(),
-                cursor: None,
-                truncated: false,
-            });
+            return Ok(empty_index_page());
         }
         let prefix = CellKey::index_tuple_prefix(index, index_keys);
         let page = match cursor {
             Some(cursor) => {
-                if cursor.prefix != prefix.as_bytes() {
-                    return Err(StoreError::InvalidCursor {
-                        message: "index cursor does not match exact index tuple".into(),
-                    });
-                }
-                if cursor.scope != IndexCursorScope::Exact {
+                if cursor.prefix != prefix.as_bytes() || cursor.scope != IndexCursorScope::Exact {
                     return Err(StoreError::InvalidCursor {
                         message: "index cursor does not match exact index tuple".into(),
                     });
@@ -1223,11 +1214,7 @@ impl TreeStore {
         limit: usize,
     ) -> Result<IndexPage, StoreError> {
         if limit == 0 {
-            return Ok(IndexPage {
-                entries: Vec::new(),
-                cursor: None,
-                truncated: false,
-            });
+            return Ok(empty_index_page());
         }
         let prefix = CellKey::index_key_prefix(index, exact_prefix);
         let Some(bounds) = normalized_index_range(prefix.as_bytes(), range) else {
@@ -1277,11 +1264,7 @@ impl TreeStore {
         limit: usize,
     ) -> Result<IndexPage, StoreError> {
         if limit == 0 {
-            return Ok(IndexPage {
-                entries: Vec::new(),
-                cursor: None,
-                truncated: false,
-            });
+            return Ok(empty_index_page());
         }
         let prefix = CellKey::index_key_prefix(index, exact_prefix);
         if cursor.prefix != prefix.as_bytes() {

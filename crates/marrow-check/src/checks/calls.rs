@@ -111,54 +111,46 @@ fn check_special_single_name_call(
     args: &[marrow_syntax::Argument],
     arg_types: &[MarrowType],
 ) -> Option<MarrowType> {
-    if let [name] = segments
-        && name == "nextId"
-    {
-        return Some(check_next_id(
+    let [name] = segments else {
+        return None;
+    };
+    match name.as_str() {
+        "nextId" => Some(check_next_id(
             env.program,
             args,
             env.span,
             env.file,
             env.diagnostics,
-        ));
-    }
-    if let [name] = segments
-        && name == "Id"
-    {
-        return Some(check_identity_constructor(
+        )),
+        "Id" => Some(check_identity_constructor(
             env.program,
             args,
             arg_types,
             env.span,
             env.file,
             env.diagnostics,
-        ));
-    }
-    if let [name] = segments {
-        match name.as_str() {
-            "reversed" => {
-                check_arity(name, 1, args, env.span, env.file, env.diagnostics);
-                return Some(reversed_type(env, args, arg_types));
-            }
-            "next" | "prev" => {
-                check_arity(name, 1, args, env.span, env.file, env.diagnostics);
-                return Some(check_neighbor(env, name, args, arg_types));
-            }
-            "values" | "entries" => {
-                check_arity(name, 1, args, env.span, env.file, env.diagnostics);
-                check_value_materialization_args(env, name, args);
-                return Some(MarrowType::Unknown);
-            }
-            "append" => {
-                check_arity(name, 2, args, env.span, env.file, env.diagnostics);
-                check_append_args(env, args);
-                check_append(env, args);
-                return Some(MarrowType::Primitive(ScalarType::Int));
-            }
-            _ => {}
+        )),
+        "reversed" => {
+            check_arity(name, 1, args, env.span, env.file, env.diagnostics);
+            Some(reversed_type(env, args, arg_types))
         }
+        "next" | "prev" => {
+            check_arity(name, 1, args, env.span, env.file, env.diagnostics);
+            Some(check_neighbor(env, name, args, arg_types))
+        }
+        "values" | "entries" => {
+            check_arity(name, 1, args, env.span, env.file, env.diagnostics);
+            check_value_materialization_args(env, name, args);
+            Some(MarrowType::Unknown)
+        }
+        "append" => {
+            check_arity(name, 2, args, env.span, env.file, env.diagnostics);
+            check_append_args(env, args);
+            check_append(env, args);
+            Some(MarrowType::Primitive(ScalarType::Int))
+        }
+        _ => None,
     }
-    None
 }
 
 fn check_builtin_call(

@@ -1143,13 +1143,7 @@ impl UseWalker<'_, '_> {
             self.aliases,
             self.file,
         );
-        scope.push(frame);
-        type_scope.push(type_frame);
-        for inner in &body.statements {
-            self.walk_statement(inner, scope, type_scope);
-        }
-        scope.pop();
-        type_scope.pop();
+        self.walk_body_in_frame(body, frame, type_frame, scope, type_scope);
     }
 
     fn walk_if_const_then(
@@ -1176,13 +1170,7 @@ impl UseWalker<'_, '_> {
                 self.file,
             ),
         );
-        scope.push(frame);
-        type_scope.push(type_frame);
-        for inner in &body.statements {
-            self.walk_statement(inner, scope, type_scope);
-        }
-        scope.pop();
-        type_scope.pop();
+        self.walk_body_in_frame(body, frame, type_frame, scope, type_scope);
     }
 
     /// Walk a `try`: the body, then the catch block under a frame binding the
@@ -1204,14 +1192,27 @@ impl UseWalker<'_, '_> {
             if let Some(span) = catch_binding_name_span(self.source, clause) {
                 frame.insert(clause.name.clone(), self.define_local(span));
             }
-            scope.push(frame);
-            type_scope.push(type_frame);
-            for inner in &clause.block.statements {
-                self.walk_statement(inner, scope, type_scope);
-            }
-            scope.pop();
-            type_scope.pop();
+            self.walk_body_in_frame(&clause.block, frame, type_frame, scope, type_scope);
         }
+    }
+
+    /// Walk a block's statements under a freshly pushed value/type frame pair,
+    /// popping both afterward so the push/pop can never mismatch.
+    fn walk_body_in_frame(
+        &mut self,
+        body: &Block,
+        frame: HashMap<String, DefId>,
+        type_frame: HashMap<String, MarrowType>,
+        scope: &mut Vec<HashMap<String, DefId>>,
+        type_scope: &mut Vec<HashMap<String, MarrowType>>,
+    ) {
+        scope.push(frame);
+        type_scope.push(type_frame);
+        for inner in &body.statements {
+            self.walk_statement(inner, scope, type_scope);
+        }
+        scope.pop();
+        type_scope.pop();
     }
 
     /// Walk a `match`: the scrutinee, then resolve each arm's member path against
