@@ -13,14 +13,15 @@ Marrow exposes applications through a source-declared `surface`: a public
 ABI over a durable store. A store models durable truth. A surface models the
 application contract clients can read and write.
 
-The goal is to remove CRUD boilerplate without exposing raw saved paths or
-turning every public API into hand-written functions. A surface declares the
-public projection and the generated operations the compiler can prove from
-checked store facts. Custom behavior remains ordinary exported Marrow functions.
+The goal is to remove CRUD boilerplate where the compiler has enough checked
+facts to do it safely, without exposing raw saved paths or turning every public
+API into hand-written functions. A surface declares the public projection and
+the generated operations the compiler can prove from checked store facts. Custom
+behavior remains ordinary `pub fn` Marrow functions.
 
 Routes, JSON, TypeScript clients, identity codecs, paging, errors, and cache
-facts are renderers over checked `SurfaceAbi` facts. They are not separate
-semantic owners.
+facts are renderers over checked surface facts. They are not separate semantic
+owners.
 
 ## Design Principle
 
@@ -37,11 +38,14 @@ generate the boring boundary work:
 - no generic client-authored filters, projections, includes, or writes.
 
 The source remains Marrow-shaped. It declares typed resources, durable stores,
-indexes, surfaces, and functions. Transports adapt checked facts.
+indexes, surfaces, and functions. Transports adapt checked facts. The first
+implementation slice is read-only; create and update are specified here as
+follow-on slices because JSON input decoding and managed writes need their own
+soundness review.
 
 ## Source Shape
 
-First-cut syntax:
+Proposed surface syntax:
 
 ```mw
 surface Books from ^books
@@ -55,14 +59,17 @@ This intentionally keeps the surface vocabulary small:
 
 - `surface Name from ^store` declares one public application surface backed by
   one durable store.
+- a store can have multiple surfaces, such as a public surface and an admin
+  surface. Surface aliases are module-qualified source names, not catalog
+  identities.
 - every surface record includes an implicit public identity, typed as
   `Id(^store)`;
 - `fields` names the non-identity store resource fields that are public on
   reads.
 - `collections` names the public paged traversals. `all` means the store root.
   Any other name must be a declared store index.
-- `create` names fields accepted by the generated create command.
-- `update` names fields accepted by the generated update command.
+- `create` names fields accepted by the generated create operation.
+- `update` names fields accepted by the generated update operation.
 
 The contextual words inside a `surface` block are not general language
 keywords. The only new top-level declaration keyword proposed here is
@@ -70,11 +77,11 @@ keywords. The only new top-level declaration keyword proposed here is
 
 ## Why Not Inline Actions
 
-The first cut does not include `action` blocks inside a surface. Custom behavior
+This design does not include `action` blocks inside a surface. Custom behavior
 uses normal Marrow functions:
 
 ```mw
-export fn loanBook(id: Id(^books), borrower: string)
+pub fn loanBook(id: Id(^books), borrower: string)
     if not exists(^books(id))
         throw Error(code: "book.absent", message: "Book does not exist.")
 
@@ -86,9 +93,25 @@ export fn loanBook(id: Id(^books), borrower: string)
 
 This preserves Marrow's one function model. It avoids method receivers, implicit
 `self`, and a second execution path inside surface declarations. A later client
-renderer can group exported functions near related surfaces when their checked
+renderer can group `pub fn` functions near related surfaces when their checked
 signatures and store footprints make that grouping unambiguous, but the function
-remains an ordinary exported function.
+remains an ordinary `pub fn`.
+
+## Capability Matrix
+
+`fields`, `create`, and `update` are independent allow-lists:
+
+- `fields` is the read projection. A field not named in `fields` is never
+  emitted by generated read operations.
+- `create` is the accepted create input shape. A field can be create-only and
+  omitted from `fields`, but it will not be returned by generated reads.
+- `update` is the accepted field-write input shape. A field can be update-only
+  and omitted from `fields`, but it will not be returned by generated reads.
+- A field absent from `create` and `update` is not writable through generated
+  operations. Ordinary `pub fn` code can still implement custom write behavior.
+
+Generated operations never infer write permission from read permission, and
+never infer read permission from write permission.
 
 ## Generated Operations
 
@@ -106,12 +129,24 @@ get(id: Id(^books)): Books.Record
 The generated operation:
 
 - decodes the identity through the same `Id(^store)` boundary used by Marrow;
-- proves the record node exists for this request;
+- proves the record node exists for this request. Ordinary absence is a
+  catchable surface absence and can render as HTTP 404 in an HTTP profile;
+- verifies required-field completeness for the backing resource, including
+  required fields inside unkeyed groups, before rendering the public projection;
 - includes the typed public identity in the result;
 - reads only the declared public fields;
-- applies normal required/sparse data rules;
-- fails with typed errors when the identity is malformed, absent, or backed by
-  invalid saved data.
+- applies normal required/sparse data rules.
+
+A malformed identity is a request-shape error. Invalid attached data is
+different: if backing-resource verification finds missing required data or a
+stored leaf needed by the surface cannot decode as the checked type, the
+operation raises a fatal data-attachment fault. That fault is not catchable
+Marrow control flow and is not mapped to a 4xx client error. A surface host
+isolates the fault to the current operation, returns a sanitized service fault
+at the transport boundary, keeps serving other requests, and relies on
+`marrow data integrity` or repair workflows to identify and fix the corrupt
+record. A collection page that reaches a corrupt record fails the page; it must
+not skip the record silently.
 
 ### Collections
 
@@ -119,112 +154,140 @@ Each collection is a paged traversal.
 
 `collections all` exposes a paged root traversal in store identity order.
 
-`collections byAuthor` exposes a paged traversal over the declared
-`index byAuthor(...)`. The checker derives the request parameters from the
-index's non-identity components. The operation is rejected if the index shape
-cannot produce a bounded page over store identities.
+`collections byAuthor` exposes a paged traversal over a declared non-unique
+index such as `index byAuthor(author, id)`. The first read slice supports only
+one non-identity index component followed by the complete store identity suffix.
+The client supplies that component as an exact parameter, and paging advances
+over the identity suffix in index order. The operation is rejected if the index
+is unique, omits the complete identity suffix, has more than one non-identity
+component, walks a keyed child layer, or would need an unbounded scan.
+
+The general rule for later multi-component index collections is exact prefix,
+then at most one trailing ordered range component, then the complete identity
+suffix. A surface must not expose a collection that leaves an intermediate
+non-identity component to enumerate.
 
 Collections never materialize an unbounded list. The ABI always includes a page
 limit and an opaque cursor contract.
 
 ### Create
 
-`create title, author, blurb` generates a create command only when the checker
+`create title, author, blurb` generates a create operation only when the checker
 can prove the store has a supported identity policy and the generated input can
 produce a valid resource.
 
-First-cut create supports single-`int` identity stores using `nextId(^store)`.
+Generated create supports single-`int` identity stores using `nextId(^store)`.
 Composite identity and non-integer identity creation are handled by explicit
-exported functions until a separate key-input design is accepted.
+`pub fn` functions until a separate key-input design is accepted.
 
-The generated create command:
+The generated create operation:
 
 - allocates the identity with `nextId(^store)`;
 - builds a resource value from the supplied fields;
-- requires every required field without a default to be supplied or otherwise
-  proven by the surface;
+- is rejected at check time unless every required non-identity field in the
+  resource appears in the `create` list;
+- is rejected at check time when required fields inside unkeyed groups would be
+  needed, because the first surface syntax names only top-level fields;
 - writes the new record through the checked managed-write path;
 - returns the new `Id(^store)`.
 
-Sparse create fields may be omitted. Omitted sparse fields are absent. JSON
-`null` is not a deletion or absence marker in this first cut.
+Sparse create fields can be omitted. Omitted sparse fields are absent. JSON
+`null` is not a deletion or absence marker for generated create.
 
 ### Update
 
-`update title, blurb` generates a field-wise update command. It is not a
+`update title, blurb` generates a field-wise update operation. It is not a
 whole-record replacement and it is not a generic raw setter.
 
-The generated update command:
+The generated update operation:
 
 - decodes an `Id(^store)`;
 - proves the record exists before writing;
 - accepts a non-empty update object whose keys are a subset of the declared
   update fields;
+- decodes each supplied JSON value through the surface input codec for that
+  field's checked type;
+- rejects unknown object keys and values that do not decode to the checked field
+  type;
 - writes only supplied fields;
 - preserves omitted fields, unkeyed groups, keyed children, and unrelated data;
-- updates generated indexes through the normal managed-write path;
-- rejects attempts to delete required fields or write `unknown` values.
+- updates generated indexes through the normal managed-write path.
 
 Explicit `null` is rejected. Deletion, clearing sparse fields, whole-record
-replacement, and keyed-child updates are outside the first cut.
+replacement, and keyed-child updates are outside generated update.
 
 ## Surface ABI Facts
 
-The checker produces a `SurfaceAbi` table. Renderers consume this table instead
-of reinterpreting source strings.
+The checker produces derived `SurfaceAbi` facts. Renderers consume these facts
+instead of reinterpreting source strings.
 
-Each surface fact records:
+`SurfaceAbi` is not a new catalog namespace and it is not persisted metadata.
+There are no stable surface or operation catalog IDs. A surface fact references
+the existing owners:
 
-- stable surface identity and ABI digest;
-- source alias and lifecycle state;
-- backing store catalog ID;
-- backing resource catalog ID;
-- public identity field shape;
-- public field member catalog IDs;
-- sparse, required, and defaulted presence behavior;
-- public collection operation IDs;
-- public command operation IDs;
-- result shapes and input shapes;
-- effect class: query or command in the first cut;
-- checked read footprints;
-- checked write-plan shapes;
-- generated index dependencies;
-- changed root and index facts for commands;
-- cursor token ABI;
-- typed error envelope shape;
-- protocol version, catalog epoch, source digest, and runtime generation fence
-  fields for renderers that need them.
+- the module-qualified surface alias from source;
+- the backing store and resource catalog IDs;
+- the public member catalog IDs for `fields`, `create`, and `update`;
+- the declared index catalog IDs used by collections;
+- checked read-effect summaries by reference;
+- checked managed-write summaries by reference once write slices are
+  implemented;
+- the surface JSON input and output codec descriptors;
+- the cursor token descriptor;
+- the public error envelope descriptor.
 
-Surface and operation identities are application ABI identities. They are
-distinct from store, resource, member, and index identities. Source spelling is a
-public alias, not the identity authority.
+The ABI digest is a computed renderer equality tag. It is derived from the
+surface declaration, the surface protocol version, and the referenced source and
+catalog facts that already have single owners. It is not stored in
+`marrow.catalog.json`, does not allocate a durable identity, and does not bypass
+the existing activation, catalog, source-digest, runtime-generation, or commit
+fences. A renderer can use the digest to reject a stale generated client, but
+that rejection is a presentation-layer guard over existing semantic facts.
 
-The first cut rejects stale clients by ABI digest rather than preserving old
-aliases. Alias deprecation, compatibility windows, and generated adapters are
-deferred until a compatibility design is accepted.
+Alias deprecation, compatibility windows, and generated adapters are deferred
+until a compatibility design is accepted.
 
-## JSON Boundary
+## Surface JSON Codecs
 
-The surface renderer owns a single resource JSON codec for surface values. It is
-not `std::json` and it is not a second storage model.
+Surface operations use a dedicated surface JSON codec. They do not route through
+the `marrow run --format json` entry boundary, and they do not use `std::json`.
+`std::json` remains a scalar JSON helper inside Marrow programs; it does not map
+JSON objects to resources.
 
-First-cut rules:
+The output codec is the single owner for surface-record projection to JSON:
 
-- required fields render as values;
+- public required fields render as values;
 - sparse fields render as omitted when absent;
 - JSON `null` is not emitted for Marrow absence;
-- missing required saved data is a typed invalid-data fault, not `null`;
+- missing required saved data is a fatal data-attachment fault, not `null`;
 - `Id(^store)` values render as branded store-aware identity values, never raw
   scalars without provenance;
 - enum values render by accepted member identity and current public spelling;
 - decimals, dates, instants, durations, bytes, and error codes use one
   normative surface JSON form;
-- dangling identity references either fail typed or render an explicit integrity
-  state chosen by the surface profile; they never silently become trusted links.
+- identity-typed fields render the identity value without dereferencing. A
+  renderer profile that attempts to expose a dereferenced link must fail missing
+  referents as a public integrity fault; it must not silently create a trusted
+  link.
 
 The renderer can additionally produce links for HTTP or hypermedia profiles, but
 the ABI value is the typed identity. Links are presentation, not semantic
 identity.
+
+The input codec is the single owner for JSON-to-Marrow decoding of generated
+create and update inputs:
+
+- object inputs reject unknown keys;
+- required create keys must be present according to the checked create contract;
+- omitted sparse create keys become absent;
+- omitted update keys are unchanged;
+- explicit JSON `null` is rejected in the initial generated-write slice;
+- scalar, enum, bytes, decimal, temporal, error-code, and `Id(^store)` values
+  decode through one normative surface form;
+- enum text resolves to an accepted enum-member identity;
+- identity text resolves through the store-aware identity guard;
+- malformed, out-of-range, wrong-type, or wrong-store values are request-shape
+  errors before Marrow code or managed writes run.
 
 ## Cursor Boundary
 
@@ -233,21 +296,23 @@ not expose raw physical keys.
 
 A cursor token is bound to:
 
-- surface operation ID;
-- ABI digest;
-- catalog epoch and source digest;
-- runtime generation when present;
-- store UID;
-- commit ID observed by the page;
+- operation equality tag;
 - normalized operation parameters;
 - traversal order and projection;
 - page size;
-- last returned typed identity or key boundary;
+- last returned typed key boundary;
 - cursor codec version.
 
-If a cursor is stale because the store commit, catalog, source digest, store UID,
-or ABI digest changed, the next page fails with a typed stale-cursor error. The
-first cut does not promise stable multi-page snapshots across writes.
+Continuation uses a strict greater-than seek from the last returned key boundary
+under the same operation parameters, ordering, projection, and page size.
+Surface cursors do not promise stable multi-page snapshots across writes. A
+create whose key sorts before the cursor boundary can be missed by later pages,
+and a delete of a previously returned record does not prevent the next strict
+seek from advancing. Store commit changes do not by themselves stale a cursor.
+
+If the operation equality tag no longer matches the active renderer facts, the
+next page fails with a typed stale-cursor error. Catalog/source/runtime fences
+remain owned by the existing activation path.
 
 ## Transport Rendering
 
@@ -259,32 +324,46 @@ A renderer might produce routes like:
 ```text
 GET  /books
 GET  /books/{bookId}
-GET  /books/by-author/{authorId}
+GET  /books/by-author?author={authorId}
 POST /books
 POST /books/{bookId}
 ```
 
-Those route spellings are aliases over operation IDs. Reusing a route for a
-different operation, index shape, parameter type, or result projection changes
-the ABI digest and stale clients fail rather than silently observing a different
-contract.
+Those route spellings are aliases over derived operation facts. Reusing a route
+for a different operation, index shape, parameter type, or result projection
+changes the ABI digest and stale clients fail rather than silently observing a
+different contract.
 
 The canonical identity segment format is a renderer decision, but it must be
 decoded through the typed identity boundary and must avoid collision with
 structural route names.
 
+## Public Error Envelope
+
+Surface renderers expose a public error envelope with:
+
+- `code`: stable dotted public error code;
+- `message`: public diagnostic text suitable for the client boundary;
+- `data`: optional structured public payload.
+
+The public envelope does not include source spans, file paths, line numbers,
+trace output, internal physical keys, raw catalog rows, or repair details.
+Operator logs and tooling diagnostics can retain richer internal facts, but
+surface clients branch only on public `code` and `data`.
+
 ## Operations Contract
 
 The first implementation target is local and single-writer.
 
-Safe first-cut serving rules:
+Safe initial serving rules:
 
 - serving is owned by one local host process;
-- non-loopback/public serving is outside the first cut;
+- non-loopback/public serving is outside the initial serving target;
 - first-run catalog baseline and pending catalog proposals must be resolved
   before serving production traffic;
-- writes are serialized through one writer queue;
-- every generated create/update command runs as one short operation transaction;
+- write slices serialize generated operations through one writer queue;
+- every generated create/update operation runs as one short operation transaction
+  once those slices are implemented;
 - reads are bounded pages and release snapshots before returning;
 - no maintenance, backup, restore, evolve, repair, or raw data tooling is
   exposed through surfaces;
@@ -297,35 +376,46 @@ Safe first-cut serving rules:
 Surface diagnostics must be checker-native and specific:
 
 - exposed field does not exist;
-- exposed field is not supported by the first-cut surface JSON shape;
+- exposed field is not supported by the initial surface JSON shape;
 - collection names no store root or declared index;
 - collection would require an unsupported or hidden traversal;
+- collection index has unsupported component or range shape;
 - create omits a required field;
+- create targets required fields inside an unkeyed group;
 - create targets an unsupported identity policy;
 - update names an identity key, generated index, keyed child layer, or
   unsupported field shape;
+- input codec cannot decode a JSON value to the checked field type;
 - operation would require maintenance capability;
 - surface alias collides with another public surface alias;
-- generated ABI changed in a way that requires client regeneration.
+- derived surface ABI changed in a way that requires client regeneration.
 
 Diagnostics must point to the surface declaration and, where useful, the store,
 field, or index declaration it references. Clients and tools branch on stable
 codes and structured payloads, never prose.
 
-## First Cut
+## Implementation Slices
 
-Implement only:
+Implement the read slice first:
 
 - `surface Name from ^store`;
 - `fields` over top-level scalar, enum, and `Id(^store)` fields;
 - generated `get`;
 - paged `collections all`;
-- paged `collections <non_unique_index>`;
-- `create` for single-`int` `nextId(^store)` identity stores;
-- `update` for top-level scalar, enum, and identity fields;
-- `SurfaceAbi` facts;
-- TypeScript and JSON renderers over `SurfaceAbi`;
-- optional HTTP renderer over `SurfaceAbi`.
+- paged `collections <non_unique_index>` where the index has one non-identity
+  component followed by the complete store identity suffix;
+- derived `SurfaceAbi` facts;
+- surface JSON output codec;
+- public error envelope;
+- cursor token codec.
+
+Then implement separately reviewed follow-on slices:
+
+- generated TypeScript client rendering over `SurfaceAbi`;
+- optional HTTP renderer over `SurfaceAbi`;
+- surface JSON input codec;
+- generated `create` for single-`int` `nextId(^store)` identity stores;
+- generated `update` for top-level scalar, enum, and identity fields.
 
 ## Deferred
 
@@ -339,6 +429,7 @@ Deferred deliberately:
 - public alias deprecation lifecycle;
 - generated adapters across schema evolution;
 - client-authored filters, orderings, projections, includes, and expansions;
+- multi-component index collection parameters and ranges;
 - generic field setters outside declared `update`;
 - delete, clear, merge, patch, PUT, PATCH, and DELETE semantics;
 - keyed-child CRUD;
@@ -360,7 +451,7 @@ route spelling to source spelling rather than public ABI facts.
 
 ### Exported Functions Only
 
-`export fn` is the most idiomatic execution model. It keeps behavior in ordinary
+`pub fn` is the most idiomatic execution model. It keeps behavior in ordinary
 Marrow and lets generators render typed clients. It is too verbose for common
 CRUD, because every simple read, create, and update becomes a hand-written
 function and view shape.
@@ -369,12 +460,14 @@ function and view shape.
 
 The selected design keeps stores private by default, avoids CRUD boilerplate for
 the operations the checker can prove, and routes all behavior through checked
-facts. Custom invariants and workflows remain ordinary exported functions.
+facts. Custom invariants and workflows remain ordinary `pub fn` functions.
 
 ## Adversarial Guardrails
 
 - A surface is not a query language.
 - A surface is not a route language.
+- A surface is not a catalog namespace.
+- A surface is not the `marrow run --format json` boundary.
 - A surface does not expose raw saved paths.
 - A surface does not make all store fields public.
 - A surface does not generate arbitrary setters.
@@ -393,10 +486,10 @@ facts. Custom invariants and workflows remain ordinary exported functions.
 - `docs/language/resources-and-storage.md`: define how surfaces reference
   stores, fields, and indexes without changing durable storage semantics.
 - `docs/language/modules-functions.md`: define the relationship between
-  surfaces and exported functions.
+  surfaces and `pub fn` functions.
 - `docs/tooling-surfaces.md`: add `SurfaceAbi` as a typed protocol fact surface.
 - `docs/error-codes.md`: add parse/check/surface/runtime codes for surface
   validation and stale clients.
-- `docs/operations.md`: define first-cut local serving constraints.
+- `docs/operations.md`: define initial local serving constraints.
 - implementation docs for checker facts, JSON renderer, TypeScript renderer, and
   optional HTTP renderer.
