@@ -11,7 +11,8 @@ use crate::{
     Argument, BinaryOp, Block, CatchClause, Comment, CommentMarker, CommentPlacement, ConstDecl,
     Declaration, ElseIf, EnumDecl, EnumMember, EvolveDecl, EvolveStep, Expression, ForBinding,
     FunctionDecl, FunctionReturnPresence, InterpolationPart, KeyParam, MatchArm, ParamDecl,
-    ResourceDecl, ResourceMember, Statement, StoreDecl, TokenKind, TypeRef, UnaryOp,
+    ResourceDecl, ResourceMember, Statement, StoreDecl, SurfaceDecl, SurfaceItem, SurfaceTarget,
+    TokenKind, TypeRef, UnaryOp,
 };
 
 /// Precedence used to decide where parentheses are required, tightest-binding
@@ -223,9 +224,7 @@ pub fn format_declaration(source: &str, declaration: &Declaration) -> String {
         Declaration::Store(decl) => format_store(decl),
         Declaration::Function(decl) => format_function(source, decl),
         Declaration::Enum(decl) => format_enum(decl),
-        Declaration::Surface(_) => {
-            panic!("surface declaration formatting is not implemented")
-        }
+        Declaration::Surface(decl) => format_surface(decl),
         Declaration::Evolve(decl) => format_evolve(source, decl),
     }
 }
@@ -329,6 +328,16 @@ fn format_store(decl: &StoreDecl) -> String {
     out
 }
 
+fn format_surface(decl: &SurfaceDecl) -> String {
+    let mut out = format!("surface {} from ^{}", decl.name, decl.store.root);
+    let body = format_surface_body(&decl.items, &decl.comments, 1);
+    if !body.is_empty() {
+        out.push('\n');
+        out.push_str(&body);
+    }
+    out
+}
+
 fn format_enum(decl: &EnumDecl) -> String {
     let mut out = format_docs(&decl.docs, 0);
     let visibility = if decl.public { "pub " } else { "" };
@@ -377,6 +386,17 @@ fn format_store_body(indexes: &[crate::IndexDecl], comments: &[Comment], level: 
             span: index.span,
             text: format_index_decl(index, level),
             trailing_comment_line: TrailingCommentLine::Line(index.docs.len()),
+        }),
+    )
+}
+
+fn format_surface_body(items: &[SurfaceItem], comments: &[Comment], level: usize) -> String {
+    format_body_lines(
+        comments,
+        items.iter().map(|item| FormattedBodyLine {
+            span: item.span(),
+            text: format_surface_item(item, level),
+            trailing_comment_line: TrailingCommentLine::Last,
         }),
     )
 }
@@ -482,6 +502,38 @@ fn format_resource_member(member: &ResourceMember, level: usize) -> String {
             }
             out
         }
+    }
+}
+
+fn format_surface_item(item: &SurfaceItem, level: usize) -> String {
+    let pad = INDENT.repeat(level);
+    match item {
+        SurfaceItem::Fields { names, .. } => {
+            format!("{pad}fields {}", format_surface_name_list(names))
+        }
+        SurfaceItem::Collection { target, alias, .. } => {
+            format!(
+                "{pad}collection {} as {alias}",
+                format_surface_target(target)
+            )
+        }
+        SurfaceItem::Create { names, .. } => {
+            format!("{pad}create {}", format_surface_name_list(names))
+        }
+        SurfaceItem::Update { names, .. } => {
+            format!("{pad}update {}", format_surface_name_list(names))
+        }
+    }
+}
+
+fn format_surface_name_list(names: &[String]) -> String {
+    names.join(", ")
+}
+
+fn format_surface_target(target: &SurfaceTarget) -> String {
+    match target {
+        SurfaceTarget::Root { root } => format!("^{root}"),
+        SurfaceTarget::Index { root, index } => format!("^{root}.{index}"),
     }
 }
 

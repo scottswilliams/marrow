@@ -68,6 +68,7 @@ top_level_decl  =
     | doc_comment* store_decl
     | doc_comment* enum_decl
     | doc_comment* function_decl
+    | surface_decl
     | evolve_decl
     ;
 
@@ -133,6 +134,37 @@ index_arg_list  = index_arg ("," index_arg)* ","? ;
 index_arg       = field_path ;
 field_path      = identifier ("." identifier)* ;
 ```
+
+## Application Surfaces
+
+```ebnf
+surface_decl    =
+    "surface" identifier "from" saved_root NEWLINE
+    INDENT surface_item+ DEDENT ;
+
+surface_item    =
+      "fields" surface_name_list NEWLINE
+    | "collection" surface_collection_target "as" identifier NEWLINE
+    | "create" surface_name_list NEWLINE
+    | "update" surface_name_list NEWLINE
+    ;
+
+surface_name_list =
+    identifier ("," identifier)* ","? ;
+
+surface_collection_target =
+      saved_root
+    | "^" identifier "." identifier
+    ;
+```
+
+A `surface` declaration names an application-facing source form over a saved
+root. The body accepts `fields`, `collection`, `create`, and `update` item
+lines. A collection target is either the root itself (`^books`) or one store
+index path (`^books.byAuthor`). The contextual words `from`, `fields`,
+`collection`, `as`, `create`, and `update` are recognized only in this
+declaration shape and remain valid identifiers elsewhere. Documentation comments
+do not attach to `surface` declarations in v0.1.
 
 ## Enums
 

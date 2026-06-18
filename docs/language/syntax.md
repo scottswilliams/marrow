@@ -11,8 +11,8 @@ markers.
 - Keywords are lowercase ASCII. Built-in names such as `Error` and
   `ErrorCode` are reserved separately.
 - Semicolon starts a comment to end of line.
-- `;;` starts a documentation comment for the next declaration, resource or
-  store member, enum member, or parameter.
+- `;;` starts a documentation comment for the next const, resource, store, enum,
+  or function declaration, resource or store member, enum member, or parameter.
 - Tabs are an error in Marrow source. Use spaces.
 
 ## Blocks
@@ -102,6 +102,32 @@ versions(version: int)
     title: string
     body: string
 ```
+
+## Application Surface Syntax
+
+Surface declarations name application-facing source forms over a saved root:
+
+```mw
+surface Books from ^books
+    fields title, author, blurb
+    collection ^books as list
+    collection ^books.byAuthor as byAuthor
+    create title, author, blurb
+    update title, blurb
+```
+
+`fields`, `create`, and `update` take comma-separated field names. `collection`
+targets either the root (`^books`) or one index path (`^books.byAuthor`) and then
+names the alias after `as`. If the index itself is named `as`, the target keeps
+that source shape:
+
+```mw
+collection ^books.as as byAs
+```
+
+The words `from`, `fields`, `collection`, `as`, `create`, and `update` are
+contextual to this syntax. Documentation comments do not attach to `surface`
+declarations in v0.1.
 
 ## Evolution
 
