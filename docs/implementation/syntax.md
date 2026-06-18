@@ -22,7 +22,7 @@ Diagnostics from each entry are sorted by `(line, start_byte)`. Output uses the 
 
 Layout-token discipline differs by layer and mixing them breaks block framing:
 
-- `DeclParser` — top-level dispatch and resource/store/enum/function/const/evolve framing; keeps layout tokens to frame blocks by balanced `INDENT`/`DEDENT`. A keyword introduces its kind only when a literal space follows it (`module x` is a declaration, `module::x` is a name path; `evolve` is exempt).
+- `DeclParser` — top-level dispatch and resource/store/surface/enum/function/const/evolve framing; keeps layout tokens to frame blocks by balanced `INDENT`/`DEDENT`. A keyword introduces its kind only when a literal space follows it (`module x` is a declaration, `module::x` is a name path; `evolve` is exempt).
 - `StmtParser` — function/transform body statements; keeps layout tokens. Bodies are fed a byte-bounded token slice via `tokens_in_range(span)` so a trailing EOF `DEDENT` is excluded.
 - `ExprParser` — a single expression over a trivia-filtered slice (no newlines/indents/comments); the full precedence ladder (or/and/is/equality/comparison/range/coalesce/additive/multiplicative/unary/postfix/primary).
 

@@ -324,8 +324,7 @@ pub(crate) fn check_file_types(
                     );
                 }
             }
-            // Store and enum member types are validated by schema compilation;
-            // evolve steps carry no type annotations and are checked separately.
+            // These declarations do not expose checker-owned type annotations here.
             marrow_syntax::Declaration::Store(_)
             | marrow_syntax::Declaration::Enum(_)
             | marrow_syntax::Declaration::Evolve(_)

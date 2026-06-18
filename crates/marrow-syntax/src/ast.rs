@@ -46,15 +46,6 @@ impl SourceFile {
             })
     }
 
-    pub fn surface(&self, name: &str) -> Option<&SurfaceDecl> {
-        self.declarations
-            .iter()
-            .find_map(|declaration| match declaration {
-                Declaration::Surface(surface) if surface.name == name => Some(surface),
-                _ => None,
-            })
-    }
-
     pub fn function(&self, name: &str) -> Option<&FunctionDecl> {
         self.declarations
             .iter()

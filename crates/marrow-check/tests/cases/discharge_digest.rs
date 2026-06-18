@@ -260,6 +260,26 @@ fn source_digest_binds_the_durable_shape() {
     );
 }
 
+#[test]
+fn source_digest_excludes_surface_declarations() {
+    let base = "module books\n\
+         resource Book\n\
+         \x20   required title: string\n\
+         store ^books(id: int): Book\n";
+    let with_surface = "module books\n\
+         resource Book\n\
+         \x20   required title: string\n\
+         store ^books(id: int): Book\n\
+         surface Books from ^books\n\
+         \x20   fields title\n\
+         \x20   collection ^books as list\n";
+
+    assert_eq!(
+        source_digest("surface-digest-base", base),
+        source_digest("surface-digest-with-surface", with_surface)
+    );
+}
+
 /// The shape digest is derived by re-formatting each declaration through the frozen
 /// normalized formatter, so it must depend on the declared shape alone, not on the
 /// author's source layout. A formatter-internal layout change — blank lines between and
