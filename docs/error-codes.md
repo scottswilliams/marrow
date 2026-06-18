@@ -131,6 +131,7 @@ over every configured source and test file.
 | `check.duplicate_module` | Two library files declare the same module name. |
 | `check.multiple_scripts` | A project holds more than one file without a `module` declaration. A project may have at most one single-file script (its entrypoint); every other file must declare a `module`. |
 | `check.duplicate_declaration` | A name is declared or imported more than once within a single file. |
+| `check.surface_collision` | A surface declaration name collides with a module-level name, or a surface-local public name collides with an alias, generated `id`, `get`, `create`, or `update`, or another public item name in the same surface. |
 | `check.unresolved_import` | A `use` names a module that is neither a project module nor a standard-library module. |
 | `check.unknown_type` | A type annotation names a type the checker does not recognize. |
 | `check.recursive_keyed_entry` | A typed keyed-entry layer names a resource whose typed keyed-entry layers recursively name the original resource. v0.1 expands typed entries to a finite saved member shape, so recursive entry shapes fail closed. |
@@ -462,13 +463,12 @@ These codes do not appear in v0.1 command output until that surface ships.
 | `surface.integrity` | A renderer profile that dereferences identity links found a missing referent. |
 | `surface.store` | The store reported a fault while serving a surface operation. |
 
-The `check.surface_*` names are reserved for future surface checker diagnostics.
-They do not appear in v0.1 command output until surface syntax ships.
+The remaining `check.surface_*` names are reserved for future surface checker
+diagnostics. They do not appear in v0.1 command output until those checks ship.
 
 | Code | Reserved meaning |
 |---|---|
 | `check.surface_decl` | A parsed surface declaration violates a checker-level declaration rule. Syntax failures remain `parse.syntax`. |
-| `check.surface_collision` | A surface declaration collides with another module-level declaration, or a surface-local alias collides with another alias, implicit `id`, or reserved generated operation name. |
 | `check.surface_target` | A surface target is not a store, index, field, or operation shape supported by the surface design. |
 | `check.surface_field` | A surface field reference is unknown, private to the store shape, or outside the supported projection/input shape. |
 | `check.surface_catalog_pending` | Accepted catalog IDs are not available for every durable fact needed to export a stable surface ABI. |

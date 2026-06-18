@@ -15,8 +15,9 @@ use marrow_syntax::{SourceSpan, parse_source};
 use crate::analysis;
 use crate::checks;
 use crate::diagnostics::{
-    CHECK_DUPLICATE_DECLARATION, CHECK_DUPLICATE_MODULE, CHECK_MODULE_PATH, CHECK_UNKNOWN_TYPE,
-    CheckDiagnostic, CheckReport, ConversionTarget, DiagnosticPayload, IO_READ,
+    CHECK_DUPLICATE_DECLARATION, CHECK_DUPLICATE_MODULE, CHECK_MODULE_PATH,
+    CHECK_SURFACE_COLLISION, CHECK_UNKNOWN_TYPE, CheckDiagnostic, CheckReport, ConversionTarget,
+    DiagnosticPayload, IO_READ, SurfaceCollisionNameKind,
 };
 use crate::enums;
 use crate::program::{
@@ -406,6 +407,7 @@ impl TestResolutionSuppression {
             DiagnosticPayload::UnknownType(ty) => self.references_hidden_type(ty),
             DiagnosticPayload::Schema(_)
             | DiagnosticPayload::DuplicateDeclaration { .. }
+            | DiagnosticPayload::SurfaceCollision { .. }
             | DiagnosticPayload::DuplicateModule { .. }
             | DiagnosticPayload::ModulePath { .. }
             | DiagnosticPayload::ReservedTestModulePathSegment { .. }
@@ -1116,20 +1118,55 @@ pub(crate) fn module_path_error(
 
 /// How a name enters a file's top-level namespace. Only declarations may
 /// collide with a builtin name; an imported short name binds the import
-/// regardless. The variant also names the kind in the duplicate diagnostic.
+/// regardless. Surface names need their exact kind so surface-involved collisions
+/// can carry the dedicated diagnostic code and payload.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum NameKind {
     Import,
-    Declaration,
+    Const,
+    Resource,
+    Function,
+    Enum,
+    Surface,
 }
 
 impl NameKind {
     fn label(self) -> &'static str {
         match self {
             Self::Import => "import",
-            Self::Declaration => "declaration",
+            Self::Const => "const",
+            Self::Resource => "resource",
+            Self::Function => "function",
+            Self::Enum => "enum",
+            Self::Surface => "surface",
         }
     }
+
+    fn is_declaration(self) -> bool {
+        self != Self::Import
+    }
+
+    fn is_surface(self) -> bool {
+        self == Self::Surface
+    }
+
+    fn surface_collision_kind(self) -> SurfaceCollisionNameKind {
+        match self {
+            Self::Import => SurfaceCollisionNameKind::Import,
+            Self::Const => SurfaceCollisionNameKind::Const,
+            Self::Resource => SurfaceCollisionNameKind::Resource,
+            Self::Function => SurfaceCollisionNameKind::Function,
+            Self::Enum => SurfaceCollisionNameKind::Enum,
+            Self::Surface => SurfaceCollisionNameKind::Surface,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct IntroducedName<'a> {
+    name: &'a str,
+    span: SourceSpan,
+    kind: NameKind,
 }
 
 /// Top-level declaration names (const, resource, function) and imported short
@@ -1143,60 +1180,242 @@ fn check_duplicate_declarations(
     use marrow_syntax::Declaration;
 
     // A `use shelf::books` introduces the short name `books`.
-    let mut introduced: Vec<(&str, SourceSpan, NameKind)> = Vec::new();
+    let mut introduced: Vec<IntroducedName<'_>> = Vec::new();
     for use_decl in &source.uses {
         let short = short_name(&use_decl.name);
-        introduced.push((short, use_decl.span, NameKind::Import));
+        introduced.push(IntroducedName {
+            name: short,
+            span: use_decl.span,
+            kind: NameKind::Import,
+        });
     }
     for declaration in &source.declarations {
-        let (name, span) = match declaration {
-            Declaration::Const(decl) => (decl.name.as_str(), decl.span),
-            Declaration::Resource(decl) => (decl.name.as_str(), decl.span),
-            Declaration::Store(_) | Declaration::Evolve(_) | Declaration::Surface(_) => continue,
-            Declaration::Function(decl) => (decl.name.as_str(), decl.span),
-            Declaration::Enum(decl) => (decl.name.as_str(), decl.span),
+        let introduced_name = match declaration {
+            Declaration::Const(decl) => IntroducedName {
+                name: decl.name.as_str(),
+                span: decl.span,
+                kind: NameKind::Const,
+            },
+            Declaration::Resource(decl) => IntroducedName {
+                name: decl.name.as_str(),
+                span: decl.span,
+                kind: NameKind::Resource,
+            },
+            Declaration::Store(_) => continue,
+            Declaration::Surface(decl) => IntroducedName {
+                name: decl.name.as_str(),
+                span: decl.span,
+                kind: NameKind::Surface,
+            },
+            Declaration::Function(decl) => IntroducedName {
+                name: decl.name.as_str(),
+                span: decl.span,
+                kind: NameKind::Function,
+            },
+            Declaration::Enum(decl) => IntroducedName {
+                name: decl.name.as_str(),
+                span: decl.span,
+                kind: NameKind::Enum,
+            },
+            Declaration::Evolve(_) => continue,
         };
-        introduced.push((name, span, NameKind::Declaration));
+        introduced.push(introduced_name);
     }
-    introduced.sort_by_key(|(_, span, _)| (span.line, span.start_byte));
+    introduced.sort_by_key(|intro| (intro.span.line, intro.span.start_byte));
 
-    let mut first_seen: HashMap<&str, SourceSpan> = HashMap::new();
-    for (name, span, kind) in &introduced {
+    let mut first_seen: HashMap<&str, (SourceSpan, NameKind)> = HashMap::new();
+    for intro in &introduced {
         // The parser leaves a failed declaration with an empty name; do not
         // treat those as colliding with each other.
-        if name.is_empty() {
+        if intro.name.is_empty() {
             continue;
         }
-        if *kind == NameKind::Declaration && is_builtin_name(name) {
+        if intro.kind.is_declaration() && is_builtin_name(intro.name) {
             diagnostics.push(CheckDiagnostic::error(
                 CHECK_DUPLICATE_DECLARATION,
                 file,
-                *span,
+                intro.span,
                 format!(
-                    "`{name}` is a builtin name and cannot be used as a module-level {}",
-                    kind.label()
+                    "`{}` is a builtin name and cannot be used as a module-level {}",
+                    intro.name,
+                    intro.kind.label()
                 ),
             ));
             continue;
         }
-        match first_seen.get(name) {
-            Some(first) => diagnostics.push(
-                CheckDiagnostic::error(
-                    CHECK_DUPLICATE_DECLARATION,
-                    file,
-                    *span,
-                    format!("`{name}` is already declared on line {}", first.line),
-                )
-                .with_payload(DiagnosticPayload::DuplicateDeclaration {
-                    name: (*name).to_string(),
-                    first_span: *first,
-                }),
-            ),
+        match first_seen.get(intro.name).copied() {
+            Some((first_span, first_kind)) => {
+                if first_kind.is_surface() || intro.kind.is_surface() {
+                    diagnostics.push(surface_collision_diagnostic(
+                        file,
+                        intro.name,
+                        intro.span,
+                        first_span,
+                        first_kind.surface_collision_kind(),
+                        intro.kind.surface_collision_kind(),
+                    ));
+                } else {
+                    diagnostics.push(
+                        CheckDiagnostic::error(
+                            CHECK_DUPLICATE_DECLARATION,
+                            file,
+                            intro.span,
+                            format!(
+                                "`{}` is already declared on line {}",
+                                intro.name, first_span.line
+                            ),
+                        )
+                        .with_payload(
+                            DiagnosticPayload::DuplicateDeclaration {
+                                name: intro.name.to_string(),
+                                first_span,
+                            },
+                        ),
+                    );
+                }
+            }
             None => {
-                first_seen.insert(name, *span);
+                first_seen.insert(intro.name, (intro.span, intro.kind));
             }
         }
     }
+
+    for declaration in &source.declarations {
+        match declaration {
+            Declaration::Surface(surface) => {
+                check_surface_local_namespace(file, surface, diagnostics);
+            }
+            Declaration::Const(_)
+            | Declaration::Resource(_)
+            | Declaration::Store(_)
+            | Declaration::Function(_)
+            | Declaration::Enum(_)
+            | Declaration::Evolve(_) => {}
+        }
+    }
+}
+
+const GENERATED_SURFACE_OPERATION_NAMES: &[&str] = &["id", "get", "create", "update"];
+
+fn check_surface_local_namespace(
+    file: &Path,
+    surface: &marrow_syntax::SurfaceDecl,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    use marrow_syntax::SurfaceItem;
+
+    let mut first_seen: HashMap<&str, (SourceSpan, SurfaceCollisionNameKind)> = HashMap::new();
+    for name in GENERATED_SURFACE_OPERATION_NAMES {
+        introduce_surface_local_name(
+            file,
+            diagnostics,
+            &mut first_seen,
+            name,
+            surface.span,
+            SurfaceCollisionNameKind::GeneratedOperation,
+        );
+    }
+
+    for item in &surface.items {
+        match item {
+            SurfaceItem::Fields { names, span } => {
+                for name in names {
+                    introduce_surface_local_name(
+                        file,
+                        diagnostics,
+                        &mut first_seen,
+                        name,
+                        *span,
+                        SurfaceCollisionNameKind::FieldItem,
+                    );
+                }
+            }
+            SurfaceItem::Collection { alias, span, .. } => {
+                introduce_surface_local_name(
+                    file,
+                    diagnostics,
+                    &mut first_seen,
+                    alias,
+                    *span,
+                    SurfaceCollisionNameKind::CollectionAlias,
+                );
+            }
+            SurfaceItem::Create { names, span } => {
+                for name in names {
+                    introduce_surface_local_name(
+                        file,
+                        diagnostics,
+                        &mut first_seen,
+                        name,
+                        *span,
+                        SurfaceCollisionNameKind::CreateItem,
+                    );
+                }
+            }
+            SurfaceItem::Update { names, span } => {
+                for name in names {
+                    introduce_surface_local_name(
+                        file,
+                        diagnostics,
+                        &mut first_seen,
+                        name,
+                        *span,
+                        SurfaceCollisionNameKind::UpdateItem,
+                    );
+                }
+            }
+        }
+    }
+}
+
+fn introduce_surface_local_name<'a>(
+    file: &Path,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+    first_seen: &mut HashMap<&'a str, (SourceSpan, SurfaceCollisionNameKind)>,
+    name: &'a str,
+    span: SourceSpan,
+    kind: SurfaceCollisionNameKind,
+) {
+    if name.is_empty() {
+        return;
+    }
+    match first_seen.get(name).copied() {
+        Some((first_span, first_kind)) => {
+            diagnostics.push(surface_collision_diagnostic(
+                file, name, span, first_span, first_kind, kind,
+            ));
+        }
+        None => {
+            first_seen.insert(name, (span, kind));
+        }
+    }
+}
+
+fn surface_collision_diagnostic(
+    file: &Path,
+    name: &str,
+    span: SourceSpan,
+    first_span: SourceSpan,
+    first_kind: SurfaceCollisionNameKind,
+    duplicate_kind: SurfaceCollisionNameKind,
+) -> CheckDiagnostic {
+    CheckDiagnostic::error(
+        CHECK_SURFACE_COLLISION,
+        file,
+        span,
+        format!(
+            "surface name `{name}` from {} collides with {} on line {}",
+            duplicate_kind.label(),
+            first_kind.label(),
+            first_span.line
+        ),
+    )
+    .with_payload(DiagnosticPayload::SurfaceCollision {
+        name: name.to_string(),
+        first_kind,
+        first_span,
+        duplicate_kind,
+    })
 }
 
 #[cfg(test)]

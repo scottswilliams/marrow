@@ -19,6 +19,9 @@ pub const CHECK_DUPLICATE_MODULE: &str = "check.duplicate_module";
 pub const CHECK_MULTIPLE_SCRIPTS: &str = "check.multiple_scripts";
 /// A name is declared or imported more than once within a single file.
 pub const CHECK_DUPLICATE_DECLARATION: &str = "check.duplicate_declaration";
+/// A surface declaration name collides with a module-level name, or a
+/// surface-local public name collides with another name in the same surface.
+pub const CHECK_SURFACE_COLLISION: &str = "check.surface_collision";
 /// A `use` names a module that is neither a project module nor a standard
 /// library module.
 pub const CHECK_UNRESOLVED_IMPORT: &str = "check.unresolved_import";
@@ -384,13 +387,49 @@ pub enum EnumDiagnostic {
     },
 }
 
+/// The source of a name that participates in a `check.surface_collision`
+/// diagnostic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SurfaceCollisionNameKind {
+    Import,
+    Const,
+    Resource,
+    Function,
+    Enum,
+    Surface,
+    GeneratedOperation,
+    FieldItem,
+    CollectionAlias,
+    CreateItem,
+    UpdateItem,
+}
+
+impl SurfaceCollisionNameKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Import => "import",
+            Self::Const => "const",
+            Self::Resource => "resource",
+            Self::Function => "function",
+            Self::Enum => "enum",
+            Self::Surface => "surface",
+            Self::GeneratedOperation => "generated operation",
+            Self::FieldItem => "surface field",
+            Self::CollectionAlias => "surface collection alias",
+            Self::CreateItem => "surface create item",
+            Self::UpdateItem => "surface update item",
+        }
+    }
+}
+
 /// Structured data attached to diagnostics whose consumers need more than the
 /// rendered message. Resolution-suppression branches on typed identities: an
 /// import names the module it failed to resolve, an unresolved call names the
 /// function, and an unknown type names the type spelling. Schema diagnostics carry
 /// the schema compiler's structured error kind. Duplicate declarations carry the
-/// duplicated name and first declaration span. Duplicate modules carry the
-/// duplicated name and first source file. Module-path diagnostics carry the
+/// duplicated name and first declaration span. Surface collisions carry the
+/// repeated surface-related name plus the first and later name kinds. Duplicate
+/// modules carry the duplicated name and first source file. Module-path diagnostics carry the
 /// declared module name and expected path-derived name when one exists.
 /// Reserved test-module path diagnostics carry the path-derived module name and
 /// reserved segment.
@@ -429,6 +468,14 @@ pub enum DiagnosticPayload {
     DuplicateDeclaration {
         name: String,
         first_span: SourceSpan,
+    },
+    /// `check.surface_collision`: repeated surface-related name, first occurrence,
+    /// and the two namespace sources.
+    SurfaceCollision {
+        name: String,
+        first_kind: SurfaceCollisionNameKind,
+        first_span: SourceSpan,
+        duplicate_kind: SurfaceCollisionNameKind,
     },
     /// `check.duplicate_module`: duplicated module name and first source file.
     DuplicateModule { name: String, first_file: PathBuf },
