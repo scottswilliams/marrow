@@ -448,25 +448,27 @@ current CLI surface; restore merge/repair and cross-engine restore remain
 deferred. No active command-output code family appears for a deferred surface
 until that surface ships.
 
-The `surface.*` family is reserved for the proposed application surface runtime.
-These codes do not appear in v0.1 command output until that surface ships.
+The `surface.*` family is reserved for the proposed application surface runtime
+and its [future Surface ABI](future/surface-abi.md). These codes do not appear
+in v0.1 command output until that surface ships.
 
 | Code | Reserved meaning |
 |---|---|
-| `surface.request` | A request parameter, identity, index argument, limit, or generated-write body cannot decode to the checked surface operation input shape; cursor tokens use `surface.cursor`. |
-| `surface.absent` | A requested record identity is well-formed but no record node exists. |
+| `surface.request` | A request parameter, identity, index argument, direction/order, or limit cannot decode to the checked surface operation input shape; cursor tokens use `surface.cursor`. Generated-write body decode is future work. |
+| `surface.absent` | A requested record identity is well-formed but no record node exists, or a requested singleton node is absent. |
 | `surface.cursor` | A cursor token is malformed, does not decode under the cursor codec, or is well-formed but bound to normalized parameters that do not match the current request. |
 | `surface.stale_cursor` | A cursor token is well-formed, but its operation equality tag, profile tag, or store lineage no longer matches the active surface operation facts. |
 | `surface.abi_mismatch` | A generated client or transport request targets a surface ABI or profile slice that is no longer active. |
-| `surface.invalid_data` | Backing saved data cannot be materialized under the checked resource shape. Public envelopes are sanitized service faults; repair details stay in operator tooling. |
+| `surface.invalid_data` | Backing saved data reached by a surface read cannot be decoded under the checked projection, including projected required absence, malformed projected values, corrupt traversed identity/key bytes, or an index row whose identity points at no record. Public envelopes are sanitized service faults; repair details stay in operator tooling. |
 | `surface.limit` | A well-formed surface operation would exceed its materialization, row, or decoded-byte budget. |
 | `surface.conflict` | A generated write conflicts with existing saved data, such as a unique-index conflict. |
 | `surface.write` | A generated write could not be applied after successful request decoding and before commit, excluding conflicts and store/backend faults. |
-| `surface.integrity` | A renderer profile that dereferences identity links found a missing referent. |
+| `surface.integrity` | A future renderer profile that actively dereferences identity links or relations found a missing referent. Projection-only reads use `surface.invalid_data` for dangling index rows. |
 | `surface.store` | The store reported a fault while serving a surface operation. |
 
 The remaining `check.surface_*` names are reserved for future surface checker
-diagnostics. They do not appear in v0.1 command output until those checks ship.
+diagnostics, including stable ABI export checks. They do not appear in v0.1
+command output until those checks ship.
 
 | Code | Reserved meaning |
 |---|---|

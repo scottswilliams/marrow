@@ -65,20 +65,15 @@ internal crates.
 
 ## Reserved Future Surfaces
 
-The application boundary is reserved for the proposed `surface` design: a
-checked application ABI over stores, followed by generated clients, optional
-transports, and grouping of ordinary `pub fn` workflows where checked facts make
-that grouping unambiguous. Linked-Rust embedding remains an implementation
-profile for hosting surface facts and run sessions, not a separate app-data
-contract. Until a surface profile ships, typed entry invocation (`marrow run`
-with `--arg` and `--format json`) is the supported integration surface.
-Checked surface facts may exist before that profile ships; they are compiler
-facts over stores, fields, and indexes, not a stable runtime, transport, or
-generated-client contract.
-Future surface cursors are bound to store lineage: restore, restore-replace,
-store swap, data-dir replacement, and native store reinitialization mint a fresh
-store UID before surface serving resumes. A separate cursor-lineage nonce is a
-future alternative lineage anchor.
+The application boundary is reserved for the proposed `surface` design. Checked
+surface facts may exist before a profile ships; they are compiler facts over
+stores, fields, and indexes, not a stable runtime, transport, or
+generated-client contract. The [future Surface ABI](future/surface-abi.md)
+defines the proposed reads-first boundary profile over those facts. Linked-Rust
+embedding remains an implementation profile for hosting surface facts and run
+sessions, not a separate app-data contract. Until a surface profile ships, typed
+entry invocation (`marrow run` with `--arg` and `--format json`) is the
+supported integration surface.
 
 The `signature_digest` field in the run JSON envelope is reserved for the future
 function ABI identity model and remains `null` in v0.1. The `raises` field is

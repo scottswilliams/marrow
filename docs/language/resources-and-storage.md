@@ -242,7 +242,8 @@ catalog IDs; until every referenced durable fact has an accepted catalog ID, the
 facts carry a source-only catalog status rather than a stable client contract. A
 pending catalog proposal for the checked source is reported as its own blocker,
 because accepted IDs alone do not prove the current store, member, or index shape
-is the committed shape.
+is the committed shape. The proposed reads-first boundary profile is described
+in [Surface ABI](../future/surface-abi.md).
 
 ## Indexes
 
