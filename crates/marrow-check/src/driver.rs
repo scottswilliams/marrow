@@ -848,6 +848,8 @@ pub(crate) fn check_file_source(
                 functions.push(checked_function(function, names));
             }
             marrow_syntax::Declaration::Resource(_) => {}
+            // A surface declaration is syntax-only for marrow-check.
+            marrow_syntax::Declaration::Surface(_) => {}
             marrow_syntax::Declaration::Store(store) => {
                 if let Some(resource) = resources
                     .iter()
@@ -898,7 +900,7 @@ pub(crate) fn check_file_source(
                 });
             }
             // An evolve block compiles to no declaration; its catalog intent is
-            // resolved later against the bound program.
+            // resolved against the bound program.
             marrow_syntax::Declaration::Evolve(_) => {}
         }
     }
@@ -1150,7 +1152,7 @@ fn check_duplicate_declarations(
         let (name, span) = match declaration {
             Declaration::Const(decl) => (decl.name.as_str(), decl.span),
             Declaration::Resource(decl) => (decl.name.as_str(), decl.span),
-            Declaration::Store(_) | Declaration::Evolve(_) => continue,
+            Declaration::Store(_) | Declaration::Evolve(_) | Declaration::Surface(_) => continue,
             Declaration::Function(decl) => (decl.name.as_str(), decl.span),
             Declaration::Enum(decl) => (decl.name.as_str(), decl.span),
         };

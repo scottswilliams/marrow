@@ -328,7 +328,8 @@ pub(crate) fn check_file_types(
             // evolve steps carry no type annotations and are checked separately.
             marrow_syntax::Declaration::Store(_)
             | marrow_syntax::Declaration::Enum(_)
-            | marrow_syntax::Declaration::Evolve(_) => {}
+            | marrow_syntax::Declaration::Evolve(_)
+            | marrow_syntax::Declaration::Surface(_) => {}
         }
     }
 }

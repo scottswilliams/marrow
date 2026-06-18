@@ -506,7 +506,8 @@ impl<'p> IndexBuilder<'p> {
                     );
                 }
                 // Evolve blocks declare catalog intent, not source symbols.
-                Declaration::Evolve(_) => {}
+                // Surfaces expose syntax-only declarations here, not bindable symbols.
+                Declaration::Evolve(_) | Declaration::Surface(_) => {}
             }
         }
     }
@@ -799,7 +800,7 @@ impl<'p> IndexBuilder<'p> {
                     self.collect_type_ref(file, source, aliases, module, ty);
                 }
             }
-            Declaration::Enum(_) | Declaration::Evolve(_) => {}
+            Declaration::Enum(_) | Declaration::Evolve(_) | Declaration::Surface(_) => {}
         }
     }
 

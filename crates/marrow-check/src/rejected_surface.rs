@@ -16,7 +16,7 @@ pub(crate) fn check_rejected_surface(
 ) {
     for declaration in &parsed.file.declarations {
         match declaration {
-            Declaration::Resource(_) | Declaration::Store(_) => {}
+            Declaration::Resource(_) | Declaration::Store(_) | Declaration::Surface(_) => {}
             Declaration::Function(function) => {
                 check_block(program, file, &function.body, diagnostics);
             }

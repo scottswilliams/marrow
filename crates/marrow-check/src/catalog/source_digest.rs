@@ -151,8 +151,8 @@ enum DurableKind {
     Evolve = 4,
 }
 
-/// The digest kind of a declaration, or `None` for a function: transform bodies cannot call
-/// user functions, though they can read module constants.
+/// The digest kind of a declaration, or `None` for source that does not change
+/// durable shape.
 fn durable_kind(declaration: &marrow_syntax::Declaration) -> Option<DurableKind> {
     match declaration {
         marrow_syntax::Declaration::Resource(_) => Some(DurableKind::Resource),
@@ -160,7 +160,7 @@ fn durable_kind(declaration: &marrow_syntax::Declaration) -> Option<DurableKind>
         marrow_syntax::Declaration::Enum(_) => Some(DurableKind::Enum),
         marrow_syntax::Declaration::Const(_) => Some(DurableKind::Const),
         marrow_syntax::Declaration::Evolve(_) => Some(DurableKind::Evolve),
-        marrow_syntax::Declaration::Function(_) => None,
+        marrow_syntax::Declaration::Function(_) | marrow_syntax::Declaration::Surface(_) => None,
     }
 }
 
@@ -174,8 +174,8 @@ fn declaration_name(declaration: &marrow_syntax::Declaration) -> String {
         marrow_syntax::Declaration::Store(decl) => decl.root.root.clone(),
         marrow_syntax::Declaration::Enum(decl) => decl.name.clone(),
         marrow_syntax::Declaration::Const(decl) => decl.name.clone(),
-        marrow_syntax::Declaration::Evolve(_) | marrow_syntax::Declaration::Function(_) => {
-            String::new()
-        }
+        marrow_syntax::Declaration::Evolve(_)
+        | marrow_syntax::Declaration::Function(_)
+        | marrow_syntax::Declaration::Surface(_) => String::new(),
     }
 }
