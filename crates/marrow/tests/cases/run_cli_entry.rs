@@ -649,11 +649,16 @@ fn json_run_envelope_renders_identity_return_and_rejects_resource_return() {
             root,
             "src/app.mw",
             "module app\n\n\
+             enum Status\n\
+             \x20\x20\x20\x20draft\n\
+             \x20\x20\x20\x20archived\n\n\
              resource Author\n\
              \x20\x20\x20\x20name: string\n\
              store ^authors(slug: string): Author\n\n\
              pub fn identity(): Id(^authors)\n\
              \x20\x20\x20\x20return Id(^authors, \"ada\")\n\n\
+             pub fn status(): Status\n\
+             \x20\x20\x20\x20return Status::archived\n\n\
              pub fn resourceReturn(): Author\n\
              \x20\x20\x20\x20var author: Author\n\
              \x20\x20\x20\x20author.name = \"Ada\"\n\
@@ -680,6 +685,29 @@ fn json_run_envelope_renders_identity_return_and_rejects_resource_return() {
             "kind": "identity",
             "root": "authors",
             "keys": [{ "type": "string", "value": "ada" }]
+        }),
+        "{envelope}"
+    );
+
+    let status = marrow_sub(
+        "run",
+        &[
+            "--format",
+            "json",
+            "--entry",
+            "app::status",
+            root.to_str().unwrap(),
+        ],
+    );
+    assert_eq!(status.status.code(), Some(0), "{status:?}");
+    let envelope: serde_json::Value =
+        serde_json::from_slice(&status.stdout).expect("status envelope");
+    assert_eq!(
+        envelope["return"],
+        serde_json::json!({
+            "kind": "enum",
+            "enum_id": 0,
+            "member_id": 1,
         }),
         "{envelope}"
     );

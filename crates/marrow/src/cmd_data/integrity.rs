@@ -170,7 +170,7 @@ fn integrity_record(problem: &IntegrityProblem) -> serde_json::Value {
                 incomplete
                     .record_identity
                     .iter()
-                    .map(super::saved_key_json)
+                    .map(marrow_json::saved_key_to_json)
                     .collect::<Vec<_>>()
             ),
         );
@@ -196,7 +196,7 @@ fn integrity_record(problem: &IntegrityProblem) -> serde_json::Value {
                 dangling_ref
                     .containing_identity
                     .iter()
-                    .map(super::saved_key_json)
+                    .map(marrow_json::saved_key_to_json)
                     .collect::<Vec<_>>()
             ),
         );
@@ -214,7 +214,7 @@ fn integrity_record(problem: &IntegrityProblem) -> serde_json::Value {
                 dangling_ref
                     .referenced_identity
                     .iter()
-                    .map(super::saved_key_json)
+                    .map(marrow_json::saved_key_to_json)
                     .collect::<Vec<_>>()
             ),
         );
@@ -227,6 +227,6 @@ fn data_path_segment_json(segment: &DataPathSegment) -> serde_json::Value {
         DataPathSegment::Member(catalog_id) => {
             json!({ "member_catalog_id": catalog_id.as_str() })
         }
-        DataPathSegment::Key(key) => json!({ "key": super::saved_key_json(key) }),
+        DataPathSegment::Key(key) => json!({ "key": marrow_json::saved_key_to_json(key) }),
     }
 }

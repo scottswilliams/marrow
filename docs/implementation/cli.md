@@ -1,11 +1,12 @@
 # CLI and project discovery
 
-The CLI is wiring and rendering, not semantics. Commands resolve a project directory to the config, checked program, and durable state they actually need, then print diagnostics, program output, or a tooling report in the formats that command owns. `check`, `evolve`, `test`, and `data` keep their structured `text`/`json`/`jsonl` reports; `run` keeps `text`/`json`; trace, backup, and restore are text-only. All meaning — parse, type-check, run/test admission, evolution verdicts, store keys, value decoding — is decided downstream in `marrow-project`, `marrow-check`, `marrow-run`, and `marrow-store` and only consumed here.
+The CLI is wiring and envelope rendering, not semantics. Commands resolve a project directory to the config, checked program, and durable state they actually need, then print diagnostics, program output, or a tooling report in the formats that command owns. `check`, `evolve`, `test`, and `data` keep their structured `text`/`json`/`jsonl` reports; `run` keeps `text`/`json`; trace, backup, and restore are text-only. All meaning — parse, type-check, run/test admission, evolution verdicts, store keys, value decoding — is decided downstream in `marrow-project`, `marrow-check`, `marrow-run`, `marrow-json`, and `marrow-store` and only consumed here. `marrow-json` owns only shared outbound CLI-compatible leaf rendering for entry returns and saved keys; the CLI still owns command envelopes.
 
-Three crates meet here: `marrow-project` owns the `marrow.json` schema,
+Four crates meet here: `marrow-project` owns the `marrow.json` schema,
 source/test discovery, and the digest helper; `marrow-check::project_io` owns
-project/catalog IO shared by CLI callers; `marrow` is the binary that dispatches
-argv to one `cmd_*` module and renders command results.
+project/catalog IO shared by CLI callers; `marrow-json` owns shared outbound
+entry-return and saved-key JSON leaves; `marrow` is the binary that dispatches
+argv to one `cmd_*` module and renders command envelopes.
 
 ## The shared spine
 
@@ -28,7 +29,7 @@ it overflows. Commands that read an existing project call CLI wrappers in
   surface typed `store.*` codes.
 - `establish_store_baseline` — freeze a project's first proposed identity into a write-capable store in one transaction (catalog rows, epoch, engine profile, commit metadata via `marrow_run::evolution::commit_catalog_baseline`), then rebind the program against the now-accepted snapshot. Runs only over an empty store with a pending non-empty proposal; a project past its baseline never churns.
 
-`marrow run` and `marrow test` use `marrow-run::ProjectSession` for project checking, catalog binding, store admission, and entry invocation. The command modules parse flags, choose hooks, and render the resulting reports. For `run --arg`, `cmd_run.rs` is only the argv adapter: it preserves repeated `name=value` pairs in argv order and passes them to `marrow-run::entry::CheckedEntryCall`, where the checked signature owns textual decoding.
+`marrow run` and `marrow test` use `marrow-run::ProjectSession` for project checking, catalog binding, store admission, and entry invocation. The command modules parse flags, choose hooks, and render the resulting reports. For `run --arg`, `cmd_run.rs` is only the argv adapter: it preserves repeated `name=value` pairs in argv order and passes them to `marrow-run::entry::CheckedEntryCall`, where the checked signature owns textual decoding. For `run --format json`, `cmd_run.rs` owns the result envelope while `marrow-json` renders the return value when it belongs to the existing entry-return JSON surface.
 
 Stream separation is load-bearing: in text mode a program's own `print` output owns stdout; run tooling reports such as trace and dry-run plans go to stderr, so a stdout consumer never sees interleaving. `run --format json` switches to the envelope egress regime: stdout is a single result envelope containing captured program output and any renderable return value, while runtime faults still render on stderr. Trace is text-only and streams directly. `marrow test --format json|jsonl` owns stdout for its structured test-result report, with text trace output kept on stderr. Exit codes are 0 success, 1 failure, 2 usage.
 Structured reports that include a `project` field render the canonical absolute project directory through `project_json_path`.
@@ -76,6 +77,12 @@ Structured reports that include a `project` field render the canonical absolute 
 | `crates/marrow/src/trace.rs` | `TraceHook` (a `StepHook`) and `WriteTargetNames` mapping catalog ids to store/member/index names. |
 | `crates/marrow/src/dry_run.rs` | `DryRunHook` recording managed writes during isolated dry-run execution and aggregating per-root/per-index create/write/delete counts from the managed write stream. |
 
+### Shared outbound JSON (`marrow-json`)
+
+| File | Responsibility |
+|---|---|
+| `crates/marrow-json/src/lib.rs` | CLI-compatible outbound rendering for `marrow run --format json` entry returns plus the saved-key JSON shape reused by trace and integrity tooling. It does not decode inbound JSON and does not define the future lossless web value profile. |
+
 ### Data and durability (`marrow`)
 
 | File | Responsibility |
@@ -119,8 +126,10 @@ Structured reports that include a `project` field render the canonical absolute 
   signature decodes scalars, enums, scalar/enum sequences, and single-key
   identities or rejects unsupported surfaces with `run.entry_argument`.
   `cmd_run.rs` captures program stdout only for `--format json`, renders the
-  result envelope with the session-owned store stamp, and emits `committed` only
-  when the invocation advanced the store commit.
+  result envelope with the session-owned store stamp, and asks `marrow-json` to
+  render the CLI-compatible return-value leaf. Resource and local-tree returns
+  remain outside that return surface and fault as `run.entry_surface`. The
+  envelope emits `committed` only when the invocation advanced the store commit.
 - **Restore is all-or-nothing.** The whole replay runs in one transaction; any checksum/framing/verify failure rolls the target back to its prior state. Restore targets are empty-only by default; counted replace mode first confirms the live record count from `--replace --count N`, then clears and replays inside the restore transaction. Restore carries data cells only (indexes are rebuilt), replays bytes verbatim only when `EngineDescriptor` matches exactly, and proves the data compiles against the schema via the `verify` closure before commit. Raw byte validity is never enough.
 - **Backup-backed reads are non-activating.** `data roots|stats|dump|integrity|get --backup` loads the current config and source, validates the backup prologue and carried catalog through the restore contract, replays the archive into `TreeStore::memory`, verifies the mounted data against the checked schema, and then inspects that memory store. It does not open the configured native store, take the store lock, read `marrow.catalog.json`, render a catalog file, or write durable state. `evolve preview --from-backup` uses the same in-memory data mount for its witness but still compares the current source-tree catalog artifact with the backup identity, so a project that has advanced past the backup reports the typed restore drift refusal instead of previewing across catalog histories.
 - **Evolve apply.** `evolve apply` reads accepted identity from `marrow.catalog.json`, with the durable-state loader using the store snapshot as the crash bridge for commands that inspect or write the store. It freezes a pending baseline into the store, then previews the witness. A Retire-bearing witness requires `--backup <path>` or `--no-backup`; the backup path must not resolve under managed project paths (`marrow.json`, `marrow.catalog.json`, source roots, test paths, or the native data directory/store file), then uses the shared typed backup artifact writer and validates the archive before apply establishes any missing store UID or stages evolution work. The apply publishes the activated catalog snapshot, advances the epoch, and commits the data in one transaction; after commit, the CLI renders the project-root file from the committed store snapshot.

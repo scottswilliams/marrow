@@ -8,7 +8,6 @@ use marrow_check::tooling::{
     count_data_records, data_roots_in_store, render_data_value, visit_data_records,
 };
 use marrow_store::StoreError;
-use marrow_store::key::SavedKey;
 use marrow_store::tree::TreeStore;
 use serde_json::json;
 
@@ -629,22 +628,6 @@ fn dump_record(path: &str, value: &[u8]) -> serde_json::Value {
         "path": path,
         "value_b64": marrow_run::base64::encode(value),
     })
-}
-
-pub(crate) fn saved_key_json(key: &SavedKey) -> serde_json::Value {
-    match key {
-        SavedKey::Int(value) => json!({ "type": "int", "value": value }),
-        SavedKey::Bool(value) => json!({ "type": "bool", "value": value }),
-        SavedKey::Str(value) => json!({ "type": "string", "value": value }),
-        SavedKey::Date(value) => json!({ "type": "date", "days_since_epoch": value }),
-        SavedKey::Duration(value) => json!({ "type": "duration", "nanos": value.to_string() }),
-        SavedKey::Instant(value) => {
-            json!({ "type": "instant", "nanos_since_epoch": value.to_string() })
-        }
-        SavedKey::Bytes(value) => {
-            json!({ "type": "bytes", "value_b64": marrow_run::base64::encode(value) })
-        }
-    }
 }
 
 #[cfg(test)]

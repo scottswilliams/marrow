@@ -608,42 +608,7 @@ fn report_runtime_fault_with_run_state(
 }
 
 fn render_return_value(value: &Value) -> Result<serde_json::Value, RuntimeError> {
-    Ok(match value {
-        Value::Int(value) => json!({ "kind": "int", "value": value }),
-        Value::Bool(value) => json!({ "kind": "bool", "value": value }),
-        Value::Str(value) => json!({ "kind": "string", "value": value }),
-        Value::Decimal(value) => json!({ "kind": "decimal", "value": value.to_text() }),
-        Value::Date(value) => json!({ "kind": "date", "value": value }),
-        Value::Duration(value) => json!({ "kind": "duration", "value": value.to_string() }),
-        Value::Instant(value) => json!({ "kind": "instant", "value": value.to_string() }),
-        Value::Bytes(value) => {
-            json!({ "kind": "bytes", "value_b64": marrow_run::base64::encode(value) })
-        }
-        Value::Enum(value) => json!({
-            "kind": "enum",
-            "enum_id": value.enum_id().0,
-            "member_id": value.member_id().0,
-        }),
-        Value::Identity(identity) => json!({
-            "kind": "identity",
-            "root": identity.root(),
-            "keys": identity
-                .keys()
-                .iter()
-                .map(crate::cmd_data::saved_key_json)
-                .collect::<Vec<_>>(),
-        }),
-        Value::Sequence(items) => {
-            let values = items
-                .iter()
-                .map(render_return_value)
-                .collect::<Result<Vec<_>, _>>()?;
-            json!({ "kind": "sequence", "values": values })
-        }
-        Value::Resource(_) | Value::LocalTree(_) => {
-            return Err(RuntimeError::entry_surface(
-                "entry return value is outside the run JSON result surface",
-            ));
-        }
+    marrow_json::entry_return_to_json(value).map_err(|_| {
+        RuntimeError::entry_surface("entry return value is outside the run JSON result surface")
     })
 }

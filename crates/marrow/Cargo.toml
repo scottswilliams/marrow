@@ -17,6 +17,7 @@ marrow-syntax = { path = "../marrow-syntax" }
 marrow-catalog = { path = "../marrow-catalog" }
 marrow-project = { path = "../marrow-project" }
 marrow-check = { path = "../marrow-check" }
+marrow-json = { path = "../marrow-json" }
 marrow-run = { path = "../marrow-run" }
 marrow-store = { path = "../marrow-store", features = ["native"] }
 serde_json = "1"

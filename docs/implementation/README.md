@@ -13,7 +13,7 @@ describes the code that implements them.
 
 ## The kernel
 
-Eight crates stacked in dependency order, lowest first:
+Nine crates stacked in dependency order, lowest first:
 
 - **catalog** — the accepted-catalog snapshot model: the committed record of
   durable identity (epoch, digest, entries), its validation invariants, and
@@ -30,6 +30,10 @@ Eight crates stacked in dependency order, lowest first:
   else consumes.
 - **run** — a tree-walking interpreter over the checked program: evaluates entries,
   drives managed saved writes inside transactions, and applies schema evolution.
+- **json** — outbound CLI-compatible JSON rendering for entry return values and
+  saved-key leaves in tooling reports. It preserves existing machine-readable
+  CLI shapes; inbound decoding and web-lossless value JSON require checked
+  context and are not owned here.
 - **project / cli** — `marrow.json`, discovery, and the operator binary that
   wires the above together and renders results.
 
@@ -75,6 +79,7 @@ over data the checker has not proven safe.
 | `marrow-check` | Resolution, types, facts, catalog identity, evolution, lowering | [check/](check/README.md) |
 | `marrow-store` | Tree-cell storage contract; key/value codecs; mem + redb engines | [store.md](store.md) |
 | `marrow-run` | Tree-walking interpreter; saved reads/writes; evolution apply | [runtime/](runtime/README.md) |
+| `marrow-json` | CLI-compatible outbound JSON for entry returns and tooling keys | [json.md](json.md) |
 | `marrow-catalog` | Accepted-catalog model: epoch/digest/entries, validation, structural-signature decode | [check/](check/README.md) |
 | `marrow-project` | `marrow.json` schema, discovery, the project digest | [cli.md](cli.md) |
 | `marrow` | CLI dispatch, run/test/fmt, data/backup/evolve | [cli.md](cli.md) |

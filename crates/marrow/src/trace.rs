@@ -340,7 +340,7 @@ pub(crate) fn write_target_json(
             "store": names.stores.get(store).map_or(store.as_str(), String::as_str),
             "identity": identity
                 .iter()
-                .map(crate::cmd_data::saved_key_json)
+                .map(marrow_json::saved_key_to_json)
                 .collect::<Vec<_>>(),
             "path": path.iter().map(|segment| write_data_segment_json(segment, names)).collect::<Vec<_>>(),
         }),
@@ -357,11 +357,11 @@ pub(crate) fn write_target_json(
                 .unwrap_or_else(|| index.clone()),
             "keys": keys
                 .iter()
-                .map(crate::cmd_data::saved_key_json)
+                .map(marrow_json::saved_key_to_json)
                 .collect::<Vec<_>>(),
             "identity": identity
                 .iter()
-                .map(crate::cmd_data::saved_key_json)
+                .map(marrow_json::saved_key_to_json)
                 .collect::<Vec<_>>(),
         }),
         WriteTarget::Meta { catalog_epoch } => json!({
@@ -379,7 +379,9 @@ fn write_data_segment_json(
         WriteDataSegment::Member(member) => {
             json!({ "member": names.members.get(member).map_or(member.as_str(), String::as_str) })
         }
-        WriteDataSegment::Key(key) => json!({ "key": crate::cmd_data::saved_key_json(key) }),
+        WriteDataSegment::Key(key) => {
+            json!({ "key": marrow_json::saved_key_to_json(key) })
+        }
     }
 }
 
