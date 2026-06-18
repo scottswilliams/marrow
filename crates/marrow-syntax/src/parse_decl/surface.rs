@@ -28,8 +28,8 @@ impl<'a> DeclParser<'a> {
             }
         };
         let (items, comments) = if matches!(self.peek(), Some(TokenKind::Indent)) {
-            let (items, comments) = self.parse_surface_items();
-            if items.is_empty() {
+            let (items, comments, attempted_item) = self.parse_surface_items();
+            if items.is_empty() && !attempted_item {
                 self.error_span(
                     span,
                     ParseDiagnosticReason::Expected(ExpectedSyntax::SurfaceBody),
@@ -54,9 +54,10 @@ impl<'a> DeclParser<'a> {
         }
     }
 
-    fn parse_surface_items(&mut self) -> (Vec<SurfaceItem>, Vec<Comment>) {
+    fn parse_surface_items(&mut self) -> (Vec<SurfaceItem>, Vec<Comment>, bool) {
         let mut items = Vec::new();
         let mut comments = Vec::new();
+        let mut attempted_item = false;
         self.advance(); // INDENT
         while let Some(kind) = self.peek() {
             match kind {
@@ -97,13 +98,14 @@ impl<'a> DeclParser<'a> {
                     self.skip_to_block_end();
                 }
                 _ => {
+                    attempted_item = true;
                     if let Some(item) = self.parse_surface_item(&mut comments) {
                         items.push(item);
                     }
                 }
             }
         }
-        (items, comments)
+        (items, comments, attempted_item)
     }
 
     fn parse_surface_item(&mut self, comments: &mut Vec<Comment>) -> Option<SurfaceItem> {

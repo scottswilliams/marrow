@@ -185,6 +185,46 @@ fn reports_malformed_surface_header_and_items() {
 }
 
 #[test]
+fn malformed_surface_items_do_not_also_report_missing_body() {
+    let cases = [
+        (
+            "module app\nsurface Books from ^books\n    fields\n",
+            ExpectedSyntax::SurfaceFieldList,
+        ),
+        (
+            "module app\nsurface Books from ^books\n    collection ^books\n",
+            ExpectedSyntax::SurfaceCollection,
+        ),
+        (
+            "module app\nsurface Books from ^books\n    collection ^books as\n",
+            ExpectedSyntax::SurfaceCollection,
+        ),
+        (
+            "module app\nsurface Books from ^books\n    bogus title\n",
+            ExpectedSyntax::SurfaceItem,
+        ),
+    ];
+    for (source, expected) in cases {
+        let parsed = parse_source(source);
+        assert!(
+            parsed.diagnostics.iter().any(|diagnostic| {
+                diagnostic.reason == parse_reason(ParseDiagnosticReason::Expected(expected))
+            }),
+            "expected {expected:?} for {source:?}: {:#?}",
+            parsed.diagnostics
+        );
+        assert!(
+            parsed.diagnostics.iter().all(|diagnostic| {
+                diagnostic.reason
+                    != parse_reason(ParseDiagnosticReason::Expected(ExpectedSyntax::SurfaceBody))
+            }),
+            "did not expect SurfaceBody for {source:?}: {:#?}",
+            parsed.diagnostics
+        );
+    }
+}
+
+#[test]
 fn rejects_surface_collection_targets_that_are_not_source_native_root_or_index_paths() {
     let parsed = parse_source(
         "module app\n\
