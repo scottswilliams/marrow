@@ -1131,17 +1131,6 @@ enum NameKind {
 }
 
 impl NameKind {
-    fn label(self) -> &'static str {
-        match self {
-            Self::Import => "import",
-            Self::Const => "const",
-            Self::Resource => "resource",
-            Self::Function => "function",
-            Self::Enum => "enum",
-            Self::Surface => "surface",
-        }
-    }
-
     fn is_declaration(self) -> bool {
         self != Self::Import
     }
@@ -1167,6 +1156,44 @@ struct IntroducedName<'a> {
     name: &'a str,
     span: SourceSpan,
     kind: NameKind,
+}
+
+#[derive(Clone, Copy)]
+struct NameOwner {
+    span: SourceSpan,
+    kind: NameKind,
+    is_builtin_declaration: bool,
+}
+
+struct TopLevelNameOwners {
+    first: NameOwner,
+    first_surface: Option<NameOwner>,
+    has_builtin_declaration: bool,
+}
+
+impl TopLevelNameOwners {
+    fn new(first: NameOwner) -> Self {
+        Self {
+            first,
+            first_surface: first.kind.is_surface().then_some(first),
+            has_builtin_declaration: first.is_builtin_declaration,
+        }
+    }
+
+    fn surface_collision_owner(&self, duplicate_kind: NameKind) -> Option<NameOwner> {
+        if duplicate_kind.is_surface() {
+            Some(self.first)
+        } else {
+            self.first_surface
+        }
+    }
+
+    fn record(&mut self, owner: NameOwner) {
+        if owner.kind.is_surface() && self.first_surface.is_none() {
+            self.first_surface = Some(owner);
+        }
+        self.has_builtin_declaration |= owner.is_builtin_declaration;
+    }
 }
 
 /// Top-level declaration names (const, resource, function) and imported short
@@ -1223,37 +1250,38 @@ fn check_duplicate_declarations(
     }
     introduced.sort_by_key(|intro| (intro.span.line, intro.span.start_byte));
 
-    let mut first_seen: HashMap<&str, (SourceSpan, NameKind)> = HashMap::new();
+    let mut first_seen: HashMap<&str, TopLevelNameOwners> = HashMap::new();
     for intro in &introduced {
         // The parser leaves a failed declaration with an empty name; do not
         // treat those as colliding with each other.
         if intro.name.is_empty() {
             continue;
         }
-        if intro.kind.is_declaration() && is_builtin_name(intro.name) {
-            diagnostics.push(CheckDiagnostic::error(
-                CHECK_DUPLICATE_DECLARATION,
-                file,
-                intro.span,
-                format!(
-                    "`{}` is a builtin name and cannot be used as a module-level {}",
-                    intro.name,
-                    intro.kind.label()
-                ),
-            ));
-            continue;
+
+        let is_builtin_declaration = intro.kind.is_declaration() && is_builtin_name(intro.name);
+        if is_builtin_declaration {
+            diagnostics.push(builtin_name_diagnostic(file, intro.name, intro.span));
         }
-        match first_seen.get(intro.name).copied() {
-            Some((first_span, first_kind)) => {
-                if first_kind.is_surface() || intro.kind.is_surface() {
+        let owner = NameOwner {
+            span: intro.span,
+            kind: intro.kind,
+            is_builtin_declaration,
+        };
+
+        match first_seen.get_mut(intro.name) {
+            Some(owners) => {
+                if let Some(first_surface) = owners.surface_collision_owner(intro.kind) {
                     diagnostics.push(surface_collision_diagnostic(
                         file,
                         intro.name,
                         intro.span,
-                        first_span,
-                        first_kind.surface_collision_kind(),
+                        first_surface.span,
+                        first_surface.kind.surface_collision_kind(),
                         intro.kind.surface_collision_kind(),
                     ));
+                } else if is_builtin_declaration || owners.has_builtin_declaration {
+                    owners.record(owner);
+                    continue;
                 } else {
                     diagnostics.push(
                         CheckDiagnostic::error(
@@ -1262,20 +1290,21 @@ fn check_duplicate_declarations(
                             intro.span,
                             format!(
                                 "`{}` is already declared on line {}",
-                                intro.name, first_span.line
+                                intro.name, owners.first.span.line
                             ),
                         )
                         .with_payload(
                             DiagnosticPayload::DuplicateDeclaration {
                                 name: intro.name.to_string(),
-                                first_span,
+                                first_span: owners.first.span,
                             },
                         ),
                     );
                 }
+                owners.record(owner);
             }
             None => {
-                first_seen.insert(intro.name, (intro.span, intro.kind));
+                first_seen.insert(intro.name, TopLevelNameOwners::new(owner));
             }
         }
     }
@@ -1293,6 +1322,15 @@ fn check_duplicate_declarations(
             | Declaration::Evolve(_) => {}
         }
     }
+}
+
+fn builtin_name_diagnostic(file: &Path, name: &str, span: SourceSpan) -> CheckDiagnostic {
+    CheckDiagnostic::error(
+        CHECK_DUPLICATE_DECLARATION,
+        file,
+        span,
+        format!("`{name}` is a builtin name and cannot be used as a module-level declaration"),
+    )
 }
 
 const GENERATED_SURFACE_OPERATION_NAMES: &[&str] = &["id", "get", "create", "update"];

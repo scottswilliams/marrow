@@ -85,6 +85,147 @@ surface Books from ^books
 }
 
 #[test]
+fn later_declarations_collide_with_prior_surface_owner() {
+    let source = "\
+module app
+resource Books
+    title: string
+surface Books from ^books
+    fields title
+fn Books()
+    return
+";
+    let root = temp_project("surface-prior-owner-collision", |root| {
+        write(root, "src/app.mw", source);
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+
+    let collisions = surface_collisions(&report);
+    assert_eq!(collisions.len(), 2, "{:#?}", report.diagnostics);
+    assert_surface_collision_payload(
+        collisions[0],
+        "Books",
+        SurfaceCollisionNameKind::Resource,
+        SurfaceCollisionNameKind::Surface,
+        source,
+        2,
+    );
+    assert_surface_collision_payload(
+        collisions[1],
+        "Books",
+        SurfaceCollisionNameKind::Surface,
+        SurfaceCollisionNameKind::Function,
+        source,
+        4,
+    );
+    assert!(
+        duplicate_declarations(&report).is_empty(),
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
+fn import_short_name_collision_with_surface_uses_surface_code() {
+    let source = "\
+module app
+use shelf::Books
+surface Books from ^books
+    fields title
+";
+    let root = temp_project("surface-import-collision", |root| {
+        write(root, "src/app.mw", source);
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+
+    let collisions = surface_collisions(&report);
+    assert_eq!(collisions.len(), 1, "{:#?}", report.diagnostics);
+    assert_surface_collision_payload(
+        collisions[0],
+        "Books",
+        SurfaceCollisionNameKind::Import,
+        SurfaceCollisionNameKind::Surface,
+        source,
+        2,
+    );
+    assert_eq!(collisions[0].span.line, 3, "{:#?}", collisions[0]);
+    assert!(
+        duplicate_declarations(&report).is_empty(),
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
+fn surface_collisions_on_builtin_names_report_surface_payloads() {
+    let cases = [
+        (
+            "\
+module app
+fn exists()
+    return
+surface exists from ^books
+    fields title
+",
+            SurfaceCollisionNameKind::Function,
+            SurfaceCollisionNameKind::Surface,
+            2,
+            4,
+        ),
+        (
+            "\
+module app
+surface exists from ^books
+    fields title
+fn exists()
+    return
+",
+            SurfaceCollisionNameKind::Surface,
+            SurfaceCollisionNameKind::Function,
+            2,
+            4,
+        ),
+        (
+            "\
+module app
+use shelf::exists
+surface exists from ^books
+    fields title
+",
+            SurfaceCollisionNameKind::Import,
+            SurfaceCollisionNameKind::Surface,
+            2,
+            3,
+        ),
+    ];
+
+    for (index, (source, first_kind, duplicate_kind, first_line, duplicate_line)) in
+        cases.into_iter().enumerate()
+    {
+        let root = temp_project(&format!("surface-builtin-collision-{index}"), |root| {
+            write(root, "src/app.mw", source);
+        });
+        let (report, _program) = check_project(&root, &config()).expect("check");
+
+        let collisions = surface_collisions(&report);
+        assert_eq!(collisions.len(), 1, "{:#?}", report.diagnostics);
+        assert_surface_collision_payload(
+            collisions[0],
+            "exists",
+            first_kind,
+            duplicate_kind,
+            source,
+            first_line,
+        );
+        assert_eq!(
+            collisions[0].span.line, duplicate_line,
+            "{:#?}",
+            collisions[0]
+        );
+    }
+}
+
+#[test]
 fn surface_local_names_collide_with_generated_operation_names() {
     let source = "\
 module app

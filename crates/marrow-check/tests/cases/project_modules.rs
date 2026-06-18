@@ -235,6 +235,25 @@ fn reports_import_short_name_collision_with_declaration() {
 }
 
 #[test]
+fn non_surface_builtin_name_collisions_keep_builtin_diagnostics_only() {
+    let source = "module m\nfn exists()\n    return\nconst exists = 1\n";
+    let root = temp_project("builtin-name-collision", |root| {
+        write(root, "src/m.mw", source);
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+
+    let duplicates = duplicate_declarations(&report);
+    assert_eq!(duplicates.len(), 2, "{:#?}", report.diagnostics);
+    for diagnostic in duplicates {
+        assert_eq!(
+            diagnostic.message,
+            "`exists` is a builtin name and cannot be used as a module-level declaration"
+        );
+        assert_eq!(diagnostic.payload, DiagnosticPayload::None);
+    }
+}
+
+#[test]
 fn distinct_declarations_are_not_flagged() {
     let root = temp_project("distinct-decls", |root| {
         write(
