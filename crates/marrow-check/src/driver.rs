@@ -1196,9 +1196,9 @@ impl TopLevelNameOwners {
     }
 }
 
-/// Top-level declaration names (const, resource, function) and imported short
-/// module names share one namespace within a file. Flag any name introduced
-/// more than once, reporting the later occurrence and referencing the first.
+/// Module-level source names and imported short module names share one
+/// namespace within a file. Surface-local names have their own checked
+/// namespaces, but use the same diagnostic payload shape.
 fn check_duplicate_declarations(
     file: &Path,
     source: &marrow_syntax::SourceFile,

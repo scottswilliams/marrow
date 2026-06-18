@@ -244,13 +244,21 @@ fn non_surface_builtin_name_collisions_keep_builtin_diagnostics_only() {
 
     let duplicates = duplicate_declarations(&report);
     assert_eq!(duplicates.len(), 2, "{:#?}", report.diagnostics);
+    assert_eq!(
+        duplicates
+            .iter()
+            .map(|diagnostic| diagnostic.span.line)
+            .collect::<Vec<_>>(),
+        vec![2, 4]
+    );
     for diagnostic in duplicates {
-        assert_eq!(
-            diagnostic.message,
-            "`exists` is a builtin name and cannot be used as a module-level declaration"
-        );
         assert_eq!(diagnostic.payload, DiagnosticPayload::None);
     }
+    assert!(
+        with_code(&report, "check.surface_collision").is_empty(),
+        "{:#?}",
+        report.diagnostics
+    );
 }
 
 #[test]
