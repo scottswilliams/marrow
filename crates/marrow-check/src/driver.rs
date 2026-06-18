@@ -1342,67 +1342,77 @@ fn check_surface_local_namespace(
 ) {
     use marrow_syntax::SurfaceItem;
 
-    let mut first_seen: HashMap<&str, (SourceSpan, SurfaceCollisionNameKind)> = HashMap::new();
+    let mut operations: HashMap<&str, (SourceSpan, SurfaceCollisionNameKind)> = HashMap::new();
     for name in GENERATED_SURFACE_OPERATION_NAMES {
         introduce_surface_local_name(
             file,
             diagnostics,
-            &mut first_seen,
+            &mut operations,
             name,
             surface.span,
             SurfaceCollisionNameKind::GeneratedOperation,
         );
     }
 
+    let mut fields: HashMap<&str, (SourceSpan, SurfaceCollisionNameKind)> = HashMap::new();
+    let mut create: HashMap<&str, (SourceSpan, SurfaceCollisionNameKind)> = HashMap::new();
+    let mut update: HashMap<&str, (SourceSpan, SurfaceCollisionNameKind)> = HashMap::new();
     for item in &surface.items {
         match item {
             SurfaceItem::Fields { names, span } => {
-                for name in names {
-                    introduce_surface_local_name(
-                        file,
-                        diagnostics,
-                        &mut first_seen,
-                        name,
-                        *span,
-                        SurfaceCollisionNameKind::FieldItem,
-                    );
-                }
+                introduce_surface_payload_names(
+                    file,
+                    diagnostics,
+                    &mut fields,
+                    names,
+                    *span,
+                    SurfaceCollisionNameKind::FieldItem,
+                );
             }
             SurfaceItem::Collection { alias, span, .. } => {
                 introduce_surface_local_name(
                     file,
                     diagnostics,
-                    &mut first_seen,
+                    &mut operations,
                     alias,
                     *span,
                     SurfaceCollisionNameKind::CollectionAlias,
                 );
             }
             SurfaceItem::Create { names, span } => {
-                for name in names {
-                    introduce_surface_local_name(
-                        file,
-                        diagnostics,
-                        &mut first_seen,
-                        name,
-                        *span,
-                        SurfaceCollisionNameKind::CreateItem,
-                    );
-                }
+                introduce_surface_payload_names(
+                    file,
+                    diagnostics,
+                    &mut create,
+                    names,
+                    *span,
+                    SurfaceCollisionNameKind::CreateItem,
+                );
             }
             SurfaceItem::Update { names, span } => {
-                for name in names {
-                    introduce_surface_local_name(
-                        file,
-                        diagnostics,
-                        &mut first_seen,
-                        name,
-                        *span,
-                        SurfaceCollisionNameKind::UpdateItem,
-                    );
-                }
+                introduce_surface_payload_names(
+                    file,
+                    diagnostics,
+                    &mut update,
+                    names,
+                    *span,
+                    SurfaceCollisionNameKind::UpdateItem,
+                );
             }
         }
+    }
+}
+
+fn introduce_surface_payload_names<'a>(
+    file: &Path,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+    first_seen: &mut HashMap<&'a str, (SourceSpan, SurfaceCollisionNameKind)>,
+    names: &'a [String],
+    span: SourceSpan,
+    kind: SurfaceCollisionNameKind,
+) {
+    for name in names {
+        introduce_surface_local_name(file, diagnostics, first_seen, name, span, kind);
     }
 }
 

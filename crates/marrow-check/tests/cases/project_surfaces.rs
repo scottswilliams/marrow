@@ -226,13 +226,32 @@ surface exists from ^books
 }
 
 #[test]
-fn surface_local_names_collide_with_generated_operation_names() {
+fn canonical_surface_example_allows_payload_overlap() {
     let source = "\
 module app
 surface Books from ^books
-    create create
+    fields title, author, blurb
+    collection ^books as list
+    collection ^books.byAuthor as byAuthor
+    create title, author, blurb
+    update title, blurb
 ";
-    let root = temp_project("surface-generated-collision", |root| {
+    let root = temp_project("surface-canonical-example", |root| {
+        write(root, "src/app.mw", source);
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+
+    assert_clean(&report);
+}
+
+#[test]
+fn collection_aliases_collide_with_generated_operation_names() {
+    let source = "\
+module app
+surface Books from ^books
+    collection ^books as create
+";
+    let root = temp_project("surface-generated-alias-collision", |root| {
         write(root, "src/app.mw", source);
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
@@ -243,7 +262,7 @@ surface Books from ^books
         collisions[0],
         "create",
         SurfaceCollisionNameKind::GeneratedOperation,
-        SurfaceCollisionNameKind::CreateItem,
+        SurfaceCollisionNameKind::CollectionAlias,
         source,
         2,
     );
@@ -251,29 +270,21 @@ surface Books from ^books
 }
 
 #[test]
-fn surface_local_names_collide_across_item_kinds() {
+fn payload_names_do_not_collide_with_generated_operations_or_aliases() {
     let source = "\
 module app
 surface Books from ^books
-    fields title
-    update title
+    fields id, get, create, update, list
+    collection ^books as list
+    create create
+    update get
 ";
-    let root = temp_project("surface-item-collision", |root| {
+    let root = temp_project("surface-payload-operation-overlap", |root| {
         write(root, "src/app.mw", source);
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
 
-    let collisions = surface_collisions(&report);
-    assert_eq!(collisions.len(), 1, "{:#?}", report.diagnostics);
-    assert_surface_collision_payload(
-        collisions[0],
-        "title",
-        SurfaceCollisionNameKind::FieldItem,
-        SurfaceCollisionNameKind::UpdateItem,
-        source,
-        3,
-    );
-    assert_eq!(collisions[0].span.line, 4, "{:#?}", collisions[0]);
+    assert_clean(&report);
 }
 
 #[test]
@@ -300,6 +311,51 @@ surface Books from ^books
         3,
     );
     assert_eq!(collisions[0].span.line, 4, "{:#?}", collisions[0]);
+}
+
+#[test]
+fn duplicate_payload_names_collide_within_the_same_payload_namespace() {
+    let cases = [
+        (
+            "\
+module app
+surface Books from ^books
+    fields title, title
+",
+            "title",
+            SurfaceCollisionNameKind::FieldItem,
+        ),
+        (
+            "\
+module app
+surface Books from ^books
+    create title, title
+",
+            "title",
+            SurfaceCollisionNameKind::CreateItem,
+        ),
+        (
+            "\
+module app
+surface Books from ^books
+    update title, title
+",
+            "title",
+            SurfaceCollisionNameKind::UpdateItem,
+        ),
+    ];
+
+    for (index, (source, name, kind)) in cases.into_iter().enumerate() {
+        let root = temp_project(&format!("surface-payload-duplicate-{index}"), |root| {
+            write(root, "src/app.mw", source);
+        });
+        let (report, _program) = check_project(&root, &config()).expect("check");
+
+        let collisions = surface_collisions(&report);
+        assert_eq!(collisions.len(), 1, "{:#?}", report.diagnostics);
+        assert_surface_collision_payload(collisions[0], name, kind, kind, source, 3);
+        assert_eq!(collisions[0].span.line, 3, "{:#?}", collisions[0]);
+    }
 }
 
 #[test]

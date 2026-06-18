@@ -19,8 +19,9 @@ pub const CHECK_DUPLICATE_MODULE: &str = "check.duplicate_module";
 pub const CHECK_MULTIPLE_SCRIPTS: &str = "check.multiple_scripts";
 /// A name is declared or imported more than once within a single file.
 pub const CHECK_DUPLICATE_DECLARATION: &str = "check.duplicate_declaration";
-/// A surface declaration name collides with a module-level name, or a
-/// surface-local public name collides with another name in the same surface.
+/// A surface declaration name collides with a module-level name, a collection
+/// alias collides with another alias or generated operation, or a payload list
+/// repeats a name.
 pub const CHECK_SURFACE_COLLISION: &str = "check.surface_collision";
 /// A `use` names a module that is neither a project module nor a standard
 /// library module.

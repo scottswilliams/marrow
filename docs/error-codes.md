@@ -131,7 +131,7 @@ over every configured source and test file.
 | `check.duplicate_module` | Two library files declare the same module name. |
 | `check.multiple_scripts` | A project holds more than one file without a `module` declaration. A project may have at most one single-file script (its entrypoint); every other file must declare a `module`. |
 | `check.duplicate_declaration` | A name is declared or imported more than once within a single file. |
-| `check.surface_collision` | A surface declaration name collides with a module-level name, or a surface-local public name collides with an alias, generated `id`, `get`, `create`, or `update`, or another public item name in the same surface. |
+| `check.surface_collision` | A surface declaration name collides with a module-level name; a collection alias collides with another alias or generated `id`, `get`, `create`, or `update`; or a `fields`, `create`, or `update` payload list repeats a name. |
 | `check.unresolved_import` | A `use` names a module that is neither a project module nor a standard-library module. |
 | `check.unknown_type` | A type annotation names a type the checker does not recognize. |
 | `check.recursive_keyed_entry` | A typed keyed-entry layer names a resource whose typed keyed-entry layers recursively name the original resource. v0.1 expands typed entries to a finite saved member shape, so recursive entry shapes fail closed. |
