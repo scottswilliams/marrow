@@ -122,6 +122,29 @@ fn surface_collection_index_can_be_named_as() {
 }
 
 #[test]
+fn reports_surface_body_when_indented_body_has_no_items() {
+    let cases = [
+        "module app\n\
+         surface Books from ^books\n\
+         \x20   ; comment-only body\n",
+        "module app\n\
+         surface Books from ^books\n\
+         \x20   \n",
+    ];
+    for source in cases {
+        let parsed = parse_source(source);
+        assert!(
+            parsed.diagnostics.iter().any(|diagnostic| {
+                diagnostic.reason
+                    == parse_reason(ParseDiagnosticReason::Expected(ExpectedSyntax::SurfaceBody))
+            }),
+            "expected SurfaceBody for {source:?}: {:#?}",
+            parsed.diagnostics
+        );
+    }
+}
+
+#[test]
 fn reports_malformed_surface_header_and_items() {
     let cases = [
         (

@@ -28,7 +28,15 @@ impl<'a> DeclParser<'a> {
             }
         };
         let (items, comments) = if matches!(self.peek(), Some(TokenKind::Indent)) {
-            self.parse_surface_items()
+            let (items, comments) = self.parse_surface_items();
+            if items.is_empty() {
+                self.error_span(
+                    span,
+                    ParseDiagnosticReason::Expected(ExpectedSyntax::SurfaceBody),
+                    "expected an indented surface body with at least one item",
+                );
+            }
+            (items, comments)
         } else {
             self.error_span(
                 span,
