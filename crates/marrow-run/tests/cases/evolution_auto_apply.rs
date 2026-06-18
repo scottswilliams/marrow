@@ -206,7 +206,7 @@ fn an_empty_drop_that_becomes_populated_before_the_stamp_fails_closed()
 /// produces — fails the apply closed inside the write transaction rather than stamping a
 /// stale zero-mutation decision. The change here is intrinsically additive, so its
 /// classification stays `ZeroMutation`; only the stale pin distinguishes the safe stamp
-/// from the unsafe one, proving the probe and the stamp serialize on the same committed
+/// from the stale one, proving the probe and the stamp serialize on the same committed
 /// state.
 #[test]
 fn a_stale_commit_pin_fails_the_auto_apply_closed() -> Result<(), Box<dyn std::error::Error>> {

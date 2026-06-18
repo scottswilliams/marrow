@@ -1,6 +1,6 @@
 [package]
 name = "marrow-json"
-description = "CLI-compatible Marrow JSON rendering for entry returns and tooling keys."
+description = "CLI-compatible Marrow JSON rendering for entry returns, tooling keys, and data stamps."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,8 +9,10 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
+marrow-check = { path = "../marrow-check" }
 marrow-run = { path = "../marrow-run" }
 marrow-store = { path = "../marrow-store" }
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 [lints]

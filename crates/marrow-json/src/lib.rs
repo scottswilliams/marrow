@@ -1,17 +1,38 @@
 //! Outbound JSON rendering for Marrow's current CLI-compatible surfaces.
 //!
 //! This crate preserves the existing `marrow run --format json` return-value
-//! shape and the saved-key shape used in tooling reports. It is not a general
-//! `Value` codec, and inbound or web-lossless JSON needs checked context that
-//! this outbound renderer deliberately does not carry.
+//! shape, saved-key shape, and data snapshot shape used in tooling reports. It
+//! is not a general `Value` codec, and inbound or web-lossless JSON needs
+//! checked context that this outbound renderer deliberately does not carry.
 
+use marrow_check::tooling::{DataCommitStamp, DataSnapshotStamp};
 use marrow_run::Value;
 use marrow_store::key::SavedKey;
+use serde::Serialize;
 use serde_json::json;
+
+const LOWER_HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EntryReturnJsonError {
     UnsupportedValue,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DataSnapshotJson {
+    pub store_uid: Option<String>,
+    pub catalog_digest: Option<String>,
+    pub commit: Option<DataCommitJson>,
+    pub checked_source_digest: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DataCommitJson {
+    pub commit_id: u64,
+    pub catalog_epoch: u64,
+    pub source_digest: String,
+    pub layout_epoch: u64,
+    pub engine_profile_digest: String,
 }
 
 pub fn entry_return_to_json(value: &Value) -> Result<serde_json::Value, EntryReturnJsonError> {
@@ -69,12 +90,53 @@ pub fn saved_key_to_json(key: &SavedKey) -> serde_json::Value {
     }
 }
 
+pub fn data_snapshot_stamp_to_json(stamp: &DataSnapshotStamp) -> serde_json::Value {
+    serde_json::to_value(DataSnapshotJson::from(stamp)).expect("data snapshot DTO serializes")
+}
+
+impl From<&DataSnapshotStamp> for DataSnapshotJson {
+    fn from(stamp: &DataSnapshotStamp) -> Self {
+        Self {
+            store_uid: stamp.store_uid.as_ref().map(|uid| uid.as_str().to_string()),
+            catalog_digest: stamp.store_catalog_digest.clone(),
+            commit: stamp.store_commit.as_ref().map(DataCommitJson::from),
+            checked_source_digest: stamp.checked_source_digest.clone(),
+        }
+    }
+}
+
+impl From<&DataCommitStamp> for DataCommitJson {
+    fn from(stamp: &DataCommitStamp) -> Self {
+        Self {
+            commit_id: stamp.commit_id,
+            catalog_epoch: stamp.catalog_epoch,
+            source_digest: stamp.source_digest.clone(),
+            layout_epoch: stamp.layout_epoch,
+            engine_profile_digest: lower_hex(&stamp.engine_profile_digest),
+        }
+    }
+}
+
+fn lower_hex(bytes: &[u8]) -> String {
+    let mut text = String::with_capacity(bytes.len() * 2);
+    for &byte in bytes {
+        text.push(char::from(LOWER_HEX_DIGITS[usize::from(byte >> 4)]));
+        text.push(char::from(LOWER_HEX_DIGITS[usize::from(byte & 0x0f)]));
+    }
+    text
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{EntryReturnJsonError, entry_return_to_json, saved_key_to_json};
+    use super::{
+        DataSnapshotJson, EntryReturnJsonError, data_snapshot_stamp_to_json, entry_return_to_json,
+        saved_key_to_json,
+    };
+    use marrow_check::tooling::{DataCommitStamp, DataSnapshotStamp};
     use marrow_run::Value;
     use marrow_store::Decimal;
     use marrow_store::key::SavedKey;
+    use marrow_store::tree::StoreUid;
     use serde_json::json;
 
     #[test]
@@ -113,6 +175,58 @@ mod tests {
         for (key, expected) in cases {
             assert_eq!(saved_key_to_json(&key), expected);
         }
+    }
+
+    #[test]
+    fn data_snapshot_stamp_json_matches_cli_shape() {
+        let stamp = DataSnapshotStamp {
+            store_uid: Some(StoreUid::from_entropy_bytes([1; 16])),
+            store_catalog_digest: Some("sha256:catalog".to_string()),
+            store_commit: Some(DataCommitStamp {
+                commit_id: 7,
+                catalog_epoch: 3,
+                source_digest: "sha256:source".to_string(),
+                layout_epoch: 2,
+                engine_profile_digest: [0x77, 0x94, 0x4e, 0xb8, 0x6c, 0x08, 0xb6, 0x65],
+            }),
+            checked_source_digest: "sha256:checked".to_string(),
+        };
+
+        assert_eq!(
+            serde_json::to_value(DataSnapshotJson::from(&stamp)).unwrap(),
+            json!({
+                "store_uid": "store_01010101010101010101010101010101",
+                "catalog_digest": "sha256:catalog",
+                "commit": {
+                    "commit_id": 7,
+                    "catalog_epoch": 3,
+                    "source_digest": "sha256:source",
+                    "layout_epoch": 2,
+                    "engine_profile_digest": "77944eb86c08b665",
+                },
+                "checked_source_digest": "sha256:checked",
+            })
+        );
+    }
+
+    #[test]
+    fn data_snapshot_stamp_json_preserves_null_metadata_fields() {
+        let stamp = DataSnapshotStamp {
+            store_uid: None,
+            store_catalog_digest: None,
+            store_commit: None,
+            checked_source_digest: "sha256:checked".to_string(),
+        };
+
+        assert_eq!(
+            data_snapshot_stamp_to_json(&stamp),
+            json!({
+                "store_uid": null,
+                "catalog_digest": null,
+                "commit": null,
+                "checked_source_digest": "sha256:checked",
+            })
+        );
     }
 
     #[test]

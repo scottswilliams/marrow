@@ -1,12 +1,12 @@
 # CLI and project discovery
 
-The CLI is wiring and envelope rendering, not semantics. Commands resolve a project directory to the config, checked program, and durable state they actually need, then print diagnostics, program output, or a tooling report in the formats that command owns. `check`, `evolve`, `test`, and `data` keep their structured `text`/`json`/`jsonl` reports; `run` keeps `text`/`json`; trace, backup, and restore are text-only. All meaning — parse, type-check, run/test admission, evolution verdicts, store keys, value decoding — is decided downstream in `marrow-project`, `marrow-check`, `marrow-run`, `marrow-json`, and `marrow-store` and only consumed here. `marrow-json` owns only shared outbound CLI-compatible leaf rendering for entry returns and saved keys; the CLI still owns command envelopes.
+The CLI is wiring and envelope rendering, not semantics. Commands resolve a project directory to the config, checked program, and durable state they actually need, then print diagnostics, program output, or a tooling report in the formats that command owns. `check`, `evolve`, `test`, and `data` keep their structured `text`/`json`/`jsonl` reports; `run` keeps `text`/`json`; trace, backup, and restore are text-only. All meaning — parse, type-check, run/test admission, evolution verdicts, store keys, value decoding — is decided downstream in `marrow-project`, `marrow-check`, `marrow-run`, `marrow-json`, and `marrow-store` and only consumed here. `marrow-json` owns shared outbound CLI-compatible rendering for entry returns, saved keys, and data snapshot stamps; the CLI still owns command envelopes.
 
 Four crates meet here: `marrow-project` owns the `marrow.json` schema,
 source/test discovery, and the digest helper; `marrow-check::project_io` owns
 project/catalog IO shared by CLI callers; `marrow-json` owns shared outbound
-entry-return and saved-key JSON leaves; `marrow` is the binary that dispatches
-argv to one `cmd_*` module and renders command envelopes.
+entry-return, saved-key, and data-snapshot JSON leaves; `marrow` is the binary
+that dispatches argv to one `cmd_*` module and renders command envelopes.
 
 ## The shared spine
 
@@ -81,7 +81,7 @@ Structured reports that include a `project` field render the canonical absolute 
 
 | File | Responsibility |
 |---|---|
-| `crates/marrow-json/src/lib.rs` | CLI-compatible outbound rendering for `marrow run --format json` entry returns plus the saved-key JSON shape reused by trace and integrity tooling. It does not decode inbound JSON and does not define the future lossless web value profile. |
+| `crates/marrow-json/src/lib.rs` | CLI-compatible outbound rendering for `marrow run --format json` entry returns, the saved-key JSON shape reused by trace and integrity tooling, and the `store_snapshot` data-stamp shape reused by data inspection. It does not decode inbound JSON and does not define the future lossless web value profile. |
 
 ### Data and durability (`marrow`)
 
