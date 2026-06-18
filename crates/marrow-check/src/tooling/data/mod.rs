@@ -13,6 +13,7 @@ use marrow_store::cell::CatalogId;
 use marrow_store::key::SavedKey;
 use marrow_store::tree::{CommitMetadata, EngineProfileDigest, StoreUid, TreeStore};
 
+use crate::tooling::ToolingError;
 use crate::{CheckedProgram, ScalarType, StoreLeafKind};
 
 pub use children::{data_children, data_children_supports_paging};
@@ -105,11 +106,26 @@ pub fn stamped_read_data_query(
     with_stamped_read(program, store, |store| read_data_query(store, query))
 }
 
-fn with_stamped_read<T>(
+pub fn stamped_data_children(
     program: &CheckedProgram,
     store: &TreeStore,
-    read: impl FnOnce(&TreeStore) -> Result<T, StoreError>,
-) -> Result<StampedData<T>, StoreError> {
+    segments: &[DataQuerySegment],
+    limit: usize,
+    resume: Option<&SavedKey>,
+) -> Result<StampedData<DataChildrenPage>, ToolingError> {
+    with_stamped_read(program, store, |store| {
+        data_children(program, store, segments, limit, resume)
+    })
+}
+
+fn with_stamped_read<T, E>(
+    program: &CheckedProgram,
+    store: &TreeStore,
+    read: impl FnOnce(&TreeStore) -> Result<T, E>,
+) -> Result<StampedData<T>, E>
+where
+    E: From<StoreError>,
+{
     // The guard makes value/presence probes and the returned stamp describe one store version.
     let _snapshot = store.read_snapshot()?;
     let data = read(store)?;
@@ -309,7 +325,7 @@ mod tests {
                 .write_commit_metadata(&commit_metadata(1))
                 .expect_err("writes are rejected while the read snapshot is pinned");
             assert_eq!(error.code(), "store.transaction");
-            Ok(17)
+            Ok::<_, marrow_store::StoreError>(17)
         })
         .expect("stamped read");
 

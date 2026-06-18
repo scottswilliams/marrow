@@ -6,8 +6,8 @@ use std::path::PathBuf;
 
 use marrow_check::program::MarrowType;
 use marrow_check::tooling::{
-    DataPresence, DataQuerySegment, resolve_data_query, stamped_data_roots_in_store,
-    stamped_read_data_query,
+    DataChild, DataPresence, DataQuerySegment, resolve_data_query, stamped_data_children,
+    stamped_data_roots_in_store, stamped_read_data_query,
 };
 use marrow_check::{
     CatalogEntryKind, CheckedProgram, ProjectSources, UseSiteKind, analyze_project, check_project,
@@ -668,7 +668,7 @@ fn evolution_preview_reads_counts_and_samples_from_backup() {
 }
 
 #[test]
-fn stamped_data_roots_carries_store_and_checked_snapshot_identity() {
+fn stamped_data_readers_carry_store_and_checked_snapshot_identity() {
     let source = "module m\n\
         resource Book\n    \
         required title: string\n\
@@ -723,6 +723,9 @@ fn stamped_data_roots_carries_store_and_checked_snapshot_identity() {
     store
         .write_record_presence(&store_id, &[SavedKey::Int(7)])
         .expect("seed record presence");
+    store
+        .write_record_presence(&store_id, &[SavedKey::Int(8)])
+        .expect("seed second record presence");
     store
         .write_data_value(
             &store_id,
@@ -791,6 +794,43 @@ fn stamped_data_roots_carries_store_and_checked_snapshot_identity() {
         Some(&b"Dune"[..])
     );
     assert_eq!(stamped_value.stamp, stamped.stamp);
+
+    let stamped_record_children = stamped_data_children(
+        &snapshot.program,
+        &store,
+        &[DataQuerySegment::Root("books".to_string())],
+        1,
+        None,
+    )
+    .expect("stamped record children read");
+
+    assert_eq!(
+        stamped_record_children.data.children,
+        vec![DataChild::Key(SavedKey::Int(7))]
+    );
+    assert!(stamped_record_children.data.truncated);
+    assert_eq!(stamped_record_children.data.cursor, Some(SavedKey::Int(7)));
+    assert_eq!(stamped_record_children.stamp, stamped.stamp);
+
+    let stamped_children = stamped_data_children(
+        &snapshot.program,
+        &store,
+        &[
+            DataQuerySegment::Root("books".to_string()),
+            DataQuerySegment::Key(SavedKey::Int(7)),
+        ],
+        10,
+        None,
+    )
+    .expect("stamped children read");
+
+    assert_eq!(
+        stamped_children.data.children,
+        vec![DataChild::Field("title".to_string())]
+    );
+    assert!(!stamped_children.data.truncated);
+    assert_eq!(stamped_children.data.cursor, None);
+    assert_eq!(stamped_children.stamp, stamped.stamp);
 }
 
 #[test]
