@@ -100,6 +100,28 @@ fn surface_contextual_words_remain_identifiers_outside_surface_blocks() {
 }
 
 #[test]
+fn surface_collection_index_can_be_named_as() {
+    let surface = surface_decl(
+        "module app\n\
+         surface Books from ^books\n\
+         \x20   collection ^books.as as byAs\n",
+    );
+
+    assert_eq!(surface.items.len(), 1);
+    assert_eq!(
+        surface.items[0],
+        SurfaceItem::Collection {
+            target: SurfaceTarget::Index {
+                root: "books".into(),
+                index: "as".into(),
+            },
+            alias: "byAs".into(),
+            span: surface.items[0].span(),
+        }
+    );
+}
+
+#[test]
 fn reports_malformed_surface_header_and_items() {
     let cases = [
         (

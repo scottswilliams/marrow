@@ -245,17 +245,20 @@ fn surface_name_list(source: &str, tokens: &[Token]) -> ParseResult<Vec<String>>
 }
 
 fn surface_collection(source: &str, tokens: &[Token]) -> ParseResult<(SurfaceTarget, String)> {
-    let Some(as_index) = tokens
-        .iter()
-        .position(|token| token.kind == TokenKind::Identifier && token.text(source) == "as")
-    else {
-        return Err(ParseError::new(
-            ParseDiagnosticReason::Expected(ExpectedSyntax::SurfaceCollection),
-            "expected `collection <target> as <alias>`",
-        ));
+    let (target, rest) = surface_collection_target(source, tokens)?;
+    let Some((as_token, alias_tokens)) = rest.split_first() else {
+        return Err(surface_collection_error());
     };
-    let target = surface_collection_target(source, &tokens[..as_index])?;
-    let alias = match &tokens[as_index + 1..] {
+    if as_token.kind == TokenKind::Dot {
+        return Err(ParseError::new(
+            ParseDiagnosticReason::Expected(ExpectedSyntax::SurfaceCollectionTarget),
+            "expected collection target `^root` or `^root.index`",
+        ));
+    }
+    if as_token.kind != TokenKind::Identifier || as_token.text(source) != "as" {
+        return Err(surface_collection_error());
+    }
+    let alias = match alias_tokens {
         [token] if token.kind == TokenKind::Identifier => token.text(source).to_string(),
         _ => {
             return Err(ParseError::new(
@@ -267,29 +270,55 @@ fn surface_collection(source: &str, tokens: &[Token]) -> ParseResult<(SurfaceTar
     Ok((target, alias))
 }
 
-fn surface_collection_target(source: &str, tokens: &[Token]) -> ParseResult<SurfaceTarget> {
+fn surface_collection_target<'a>(
+    source: &str,
+    tokens: &'a [Token],
+) -> ParseResult<(SurfaceTarget, &'a [Token])> {
     match tokens {
-        [caret, root] if caret.kind == TokenKind::Caret && root.kind == TokenKind::Identifier => {
-            Ok(SurfaceTarget::Root {
-                root: root.text(source).to_string(),
-            })
-        }
-        [caret, root, dot, index]
+        [caret, root, dot, index, rest @ ..]
             if caret.kind == TokenKind::Caret
                 && root.kind == TokenKind::Identifier
                 && dot.kind == TokenKind::Dot
                 && index.kind == TokenKind::Identifier =>
         {
-            Ok(SurfaceTarget::Index {
-                root: root.text(source).to_string(),
-                index: index.text(source).to_string(),
-            })
+            Ok((
+                SurfaceTarget::Index {
+                    root: root.text(source).to_string(),
+                    index: index.text(source).to_string(),
+                },
+                rest,
+            ))
+        }
+        [caret, root] if caret.kind == TokenKind::Caret && root.kind == TokenKind::Identifier => {
+            Ok((
+                SurfaceTarget::Root {
+                    root: root.text(source).to_string(),
+                },
+                &[],
+            ))
+        }
+        [caret, root, rest @ ..]
+            if caret.kind == TokenKind::Caret && root.kind == TokenKind::Identifier =>
+        {
+            Ok((
+                SurfaceTarget::Root {
+                    root: root.text(source).to_string(),
+                },
+                rest,
+            ))
         }
         _ => Err(ParseError::new(
             ParseDiagnosticReason::Expected(ExpectedSyntax::SurfaceCollectionTarget),
             "expected collection target `^root` or `^root.index`",
         )),
     }
+}
+
+fn surface_collection_error() -> ParseError {
+    ParseError::new(
+        ParseDiagnosticReason::Expected(ExpectedSyntax::SurfaceCollection),
+        "expected `collection <target> as <alias>`",
+    )
 }
 
 fn comment_marker(kind: TokenKind) -> CommentMarker {
