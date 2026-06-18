@@ -398,7 +398,7 @@ impl<'a> ExprParser<'a> {
                 self.error(
                     join_spans(op.span, segment.span),
                     ParseDiagnosticReason::Unsupported(UnsupportedSyntax::QuotedFieldSegments),
-                    "quoted field segments are not valid expression grammar".to_string(),
+                    "quoted field segments are not part of expression grammar".to_string(),
                     None,
                 );
                 return None;
