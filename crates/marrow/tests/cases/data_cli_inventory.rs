@@ -9,8 +9,8 @@ use crate::support_data;
 use marrow_store::key::SavedKey;
 use marrow_store::tree::TreeStore;
 use support_data::{
-    checked_place, field_path, json, marrow, native_project, seeded_project, write_record_presence,
-    write_tree_values,
+    assert_stable_store_snapshot_eq, assert_store_snapshot, checked_place, field_path, json,
+    marrow, native_project, seeded_project, write_record_presence, write_tree_values,
 };
 
 #[test]
@@ -97,22 +97,46 @@ fn data_inventory_ignores_overlong_nodes_under_composite_roots() {
 
 #[test]
 fn inspecting_an_unseeded_project_reports_no_data_and_writes_no_records() {
-    // The project's identity is committed to marrow.catalog.json, with the store snapshot
-    // present as the local crash bridge, but no run has seeded a record. `data roots`
-    // reports an empty store and writes none of its own.
+    // The data harness freezes the clean project before invoking the command, so
+    // `data roots` observes a committed empty store and writes none of its own.
     let project = native_project("data-empty");
     let dir = project.to_str().unwrap().to_string();
     let output = marrow(&["data", "roots", &dir]);
+    let roots_json = marrow(&["data", "roots", "--format", "json", &dir]);
     let stats = marrow(&["data", "stats", "--format", "json", &dir]);
 
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     // Render contract: an empty store prints a human placeholder, not a bare line.
     let stdout = String::from_utf8(output.stdout).expect("utf8");
     assert_eq!(stdout, "(no saved data)\n", "{stdout}");
+    assert_eq!(roots_json.status.code(), Some(0), "{roots_json:?}");
+    let roots_json = json(roots_json);
+    assert_eq!(roots_json["roots"], serde_json::json!([]));
+    assert_store_snapshot(&roots_json);
     // Inspection writes no cells: the store holds zero saved data cells.
     let stats_json = json(stats);
     assert_eq!(stats_json["cells"], serde_json::json!(0));
     assert!(stats_json.get("records").is_none(), "{stats_json}");
+}
+
+#[test]
+fn data_roots_without_native_store_reports_null_snapshot() {
+    let project = support::temp_project("data-roots-memory-store", |root| {
+        support::write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" } }"#,
+        );
+        support::write(root, "src/app.mw", support::counter_source());
+    });
+    let dir = project.to_str().unwrap().to_string();
+
+    let roots = marrow(&["data", "roots", "--format", "json", &dir]);
+
+    assert_eq!(roots.status.code(), Some(0), "{roots:?}");
+    let roots = json(roots);
+    assert_eq!(roots["roots"], serde_json::json!([]));
+    assert_eq!(roots["store_snapshot"], serde_json::Value::Null);
 }
 
 #[test]
@@ -182,7 +206,10 @@ fn data_inventory_reads_backup_while_live_store_is_locked() {
     assert_eq!(backup_roots.status.code(), Some(0), "{backup_roots:?}");
     assert_eq!(backup_stats.status.code(), Some(0), "{backup_stats:?}");
     assert_eq!(support::json(backup_dump.stdout), live_dump);
-    assert_eq!(support::json(backup_roots.stdout), live_roots);
+    let backup_roots = support::json(backup_roots.stdout);
+    assert_eq!(backup_roots["project"], live_roots["project"]);
+    assert_eq!(backup_roots["roots"], live_roots["roots"]);
+    assert_stable_store_snapshot_eq(&backup_roots, &live_roots);
     assert_eq!(support::json(backup_stats.stdout), live_stats);
 }
 
@@ -346,6 +373,7 @@ fn data_roots_format_json_emits_a_structured_envelope() {
         .to_string();
     assert_eq!(value["project"], serde_json::json!(project));
     assert_eq!(value["roots"], serde_json::json!(["counter"]));
+    assert_store_snapshot(&value);
 }
 
 #[test]

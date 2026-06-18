@@ -8,10 +8,12 @@ mod shape;
 mod traversal;
 mod walk;
 
+use marrow_store::StoreError;
 use marrow_store::cell::CatalogId;
 use marrow_store::key::SavedKey;
+use marrow_store::tree::{CommitMetadata, EngineProfileDigest, StoreUid, TreeStore};
 
-use crate::{ScalarType, StoreLeafKind};
+use crate::{CheckedProgram, ScalarType, StoreLeafKind};
 
 pub use children::{data_children, data_children_supports_paging};
 pub use query::{data_query_under_prefix, resolve_data_query, resolve_source_text_data_query};
@@ -32,6 +34,88 @@ pub(crate) use traversal::{
 };
 
 pub const MAX_PREVIEW_ITEMS: usize = 10_000;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DataSnapshotStamp {
+    pub store_uid: Option<StoreUid>,
+    pub store_catalog_digest: Option<String>,
+    pub store_commit: Option<DataCommitStamp>,
+    pub checked_source_digest: String,
+}
+
+impl DataSnapshotStamp {
+    fn read(program: &CheckedProgram, store: &TreeStore) -> Result<Self, StoreError> {
+        let store_uid = store.read_store_uid()?;
+        let commit = store.read_commit_metadata()?;
+        let store_catalog_digest = store.catalog_snapshot_digest()?;
+        Ok(Self {
+            store_uid,
+            store_catalog_digest,
+            store_commit: commit.map(DataCommitStamp::from),
+            checked_source_digest: program.source_digest(),
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DataCommitStamp {
+    pub commit_id: u64,
+    pub catalog_epoch: u64,
+    pub source_digest: String,
+    pub layout_epoch: u64,
+    pub engine_profile_digest: EngineProfileDigest,
+}
+
+impl From<CommitMetadata> for DataCommitStamp {
+    fn from(commit: CommitMetadata) -> Self {
+        Self {
+            commit_id: commit.commit_id,
+            catalog_epoch: commit.catalog_epoch,
+            source_digest: commit.source_digest,
+            layout_epoch: commit.layout_epoch,
+            engine_profile_digest: commit.engine_profile_digest,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StampedData<T> {
+    pub data: T,
+    pub stamp: DataSnapshotStamp,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DataReadResult {
+    pub payload: Option<DebugDataPayload>,
+    pub presence: DataPresence,
+}
+
+pub fn stamped_data_roots_in_store(
+    program: &CheckedProgram,
+    store: &TreeStore,
+) -> Result<StampedData<Vec<String>>, StoreError> {
+    with_stamped_read(program, store, |store| data_roots_in_store(program, store))
+}
+
+pub fn stamped_read_data_query(
+    program: &CheckedProgram,
+    store: &TreeStore,
+    query: &DataQuery,
+) -> Result<StampedData<DataReadResult>, StoreError> {
+    with_stamped_read(program, store, |store| read_data_query(store, query))
+}
+
+fn with_stamped_read<T>(
+    program: &CheckedProgram,
+    store: &TreeStore,
+    read: impl FnOnce(&TreeStore) -> Result<T, StoreError>,
+) -> Result<StampedData<T>, StoreError> {
+    // The guard makes value/presence probes and the returned stamp describe one store version.
+    let _snapshot = store.read_snapshot()?;
+    let data = read(store)?;
+    let stamp = DataSnapshotStamp::read(program, store)?;
+    Ok(StampedData { data, stamp })
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DataQuery {
@@ -192,4 +276,43 @@ impl DataRecord {
 pub(crate) struct KeyMismatch {
     pub(crate) expected: ScalarType,
     pub(crate) found: ScalarType,
+}
+
+#[cfg(test)]
+mod tests {
+    use marrow_store::tree::{CommitMetadata, EngineProfile, TreeStore};
+
+    use crate::CheckedProgram;
+
+    fn commit_metadata(commit_id: u64) -> CommitMetadata {
+        let profile = EngineProfile::new(0);
+        CommitMetadata {
+            commit_id,
+            catalog_epoch: 1,
+            layout_epoch: profile.layout_epoch(),
+            source_digest:
+                "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                    .to_string(),
+            engine_profile_digest: profile.digest_bytes(),
+            changed_root_catalog_ids: Vec::new(),
+            changed_index_catalog_ids: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn stamped_store_read_runs_the_read_under_one_snapshot() {
+        let program = CheckedProgram::default();
+        let store = TreeStore::memory();
+
+        let stamped = super::with_stamped_read(&program, &store, |store| {
+            let error = store
+                .write_commit_metadata(&commit_metadata(1))
+                .expect_err("writes are rejected while the read snapshot is pinned");
+            assert_eq!(error.code(), "store.transaction");
+            Ok(17)
+        })
+        .expect("stamped read");
+
+        assert_eq!(stamped.data, 17);
+    }
 }

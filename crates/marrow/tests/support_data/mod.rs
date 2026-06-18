@@ -36,6 +36,37 @@ pub(crate) fn integrity_problem(value: &serde_json::Value, code: &str) -> serde_
         .unwrap_or_else(|| panic!("{code} not found in {value:#?}"))
 }
 
+pub(crate) fn assert_store_snapshot(value: &serde_json::Value) {
+    let snapshot = &value["store_snapshot"];
+    assert!(snapshot["store_uid"].is_string(), "{snapshot}");
+    assert!(snapshot["catalog_digest"].is_string(), "{snapshot}");
+    assert!(snapshot["checked_source_digest"].is_string(), "{snapshot}");
+    let commit = &snapshot["commit"];
+    assert!(commit["commit_id"].is_number(), "{snapshot}");
+    assert!(commit["catalog_epoch"].is_number(), "{snapshot}");
+    assert!(commit["source_digest"].is_string(), "{snapshot}");
+    assert!(commit["layout_epoch"].is_number(), "{snapshot}");
+    assert!(commit["engine_profile_digest"].is_string(), "{snapshot}");
+}
+
+pub(crate) fn assert_stable_store_snapshot_eq(left: &serde_json::Value, right: &serde_json::Value) {
+    assert_store_snapshot(left);
+    assert_store_snapshot(right);
+    // Restored backups mint their own physical store UID, so stable equality starts at the catalog snapshot.
+    assert_eq!(
+        left["store_snapshot"]["catalog_digest"],
+        right["store_snapshot"]["catalog_digest"]
+    );
+    assert_eq!(
+        left["store_snapshot"]["checked_source_digest"],
+        right["store_snapshot"]["checked_source_digest"]
+    );
+    assert_eq!(
+        left["store_snapshot"]["commit"],
+        right["store_snapshot"]["commit"]
+    );
+}
+
 pub(crate) fn native_project(name: &str) -> TempProject {
     support::temp_project_uncommitted(name, |root| {
         write(root, "marrow.json", support::native_config());

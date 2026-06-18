@@ -2,8 +2,8 @@ use std::process::ExitCode;
 
 use marrow_check::parse_path;
 use marrow_check::tooling::{
-    DataPresence, ToolingError, read_data_query, render_data_query_value,
-    resolve_source_text_data_query,
+    DataPresence, DataReadResult, StampedData, ToolingError, render_data_query_value,
+    resolve_source_text_data_query, stamped_read_data_query,
 };
 use serde_json::json;
 
@@ -27,12 +27,6 @@ pub(super) fn data_get(args: &[String]) -> ExitCode {
             Ok(target) => target,
             Err(code) => return code,
         };
-    // read_data_query can follow an absent leaf with a children-existence scan, so pin a
-    // snapshot for the same coherent read the sibling data commands hold over their passes.
-    let _snapshot = match super::pin_snapshot(&store, format) {
-        Ok(snapshot) => snapshot,
-        Err(code) => return code,
-    };
     let query = match resolve_source_text_data_query(&program, &parsed_segments) {
         Ok(Some(query)) => query,
         // Durable identity that was never committed — a never-run project or a
@@ -44,6 +38,7 @@ pub(super) fn data_get(args: &[String]) -> ExitCode {
                     "path": path_text,
                     "presence": DataPresence::Absent.as_label(),
                     "value_b64": serde_json::Value::Null,
+                    "store_snapshot": serde_json::Value::Null,
                 })),
             }
             return ExitCode::SUCCESS;
@@ -56,20 +51,26 @@ pub(super) fn data_get(args: &[String]) -> ExitCode {
         }
         Err(ToolingError::Store(error)) => return super::report_store_error(error, format),
     };
-    let (value, presence) = match &store {
-        Some(store) => match read_data_query(store, &query) {
-            Ok(result) => result,
+    let (result, store_snapshot) = match &store {
+        Some(store) => match stamped_read_data_query(&program, store, &query) {
+            Ok(StampedData { data, stamp }) => (data, Some(stamp)),
             Err(error) => return super::report_store_error(error, format),
         },
-        None => (None, DataPresence::Absent),
+        None => (
+            DataReadResult {
+                payload: None,
+                presence: DataPresence::Absent,
+            },
+            None,
+        ),
     };
     match format {
-        CheckFormat::Text => match &value {
+        CheckFormat::Text => match &result.payload {
             Some(payload) => println!(
                 "{}",
                 render_data_query_value(&program, &query, payload.as_bytes())
             ),
-            None => match presence {
+            None => match result.presence {
                 DataPresence::ChildrenOnly => println!("(no value; has children)"),
                 _ => println!("(absent)"),
             },
@@ -77,10 +78,12 @@ pub(super) fn data_get(args: &[String]) -> ExitCode {
         CheckFormat::Json | CheckFormat::Jsonl => {
             write_json(json!({
                 "path": query.path(),
-                "presence": presence.as_label(),
-                "value_b64": value
+                "presence": result.presence.as_label(),
+                "value_b64": result
+                    .payload
                     .as_ref()
                     .map(|payload| marrow_run::base64::encode(payload.as_bytes())),
+                "store_snapshot": store_snapshot.as_ref().map(super::data_store_snapshot_json),
             }));
         }
     }

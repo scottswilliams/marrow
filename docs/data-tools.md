@@ -106,12 +106,30 @@ $ marrow data roots ./project
 the same single object):
 
 ```json
-{"project":"/absolute/path/to/project","roots":["counter"]}
+{
+  "project": "/absolute/path/to/project",
+  "roots": ["counter"],
+  "store_snapshot": {
+    "store_uid": "store_00000000000000000000000000000001",
+    "catalog_digest": "sha256:...",
+    "commit": {
+      "commit_id": 1,
+      "catalog_epoch": 1,
+      "source_digest": "sha256:...",
+      "layout_epoch": 0,
+      "engine_profile_digest": "77944eb86c08b665"
+    },
+    "checked_source_digest": "sha256:..."
+  }
+}
 ```
 
 `roots` is the bare root name without the `^`. An empty store prints `(no saved
 data)` in text and
-`"roots":[]` in JSON.
+`"roots":[]` in JSON. `store_snapshot` identifies the store version read by
+`roots`; it is `null` when no store-backed read occurs. Inside a present
+snapshot, store metadata fields such as `store_uid`, `catalog_digest`, and
+`commit` may be `null` when the store has not recorded that metadata.
 
 ## `marrow data stats`
 
@@ -202,17 +220,35 @@ Absence is a valid result, not an error: `get` exits `0` whether the path is
 present or absent. A path argument that does not parse fails before touching the
 store and exits `2`.
 
-`--format json` reports the path, a presence state, and the base64 value (or
-`null` when there is no direct value):
+`--format json` reports the path, a presence state, the base64 value (or
+`null` when there is no direct value), and the store version read:
 
 ```json
-{"path":"^counter(1).value","presence":"value_only","value_b64":"NDI="}
-{"path":"^counter(1)","presence":"children_only","value_b64":null}
-{"path":"^counter(2).value","presence":"absent","value_b64":null}
+{
+  "path": "^counter(1).value",
+  "presence": "value_only",
+  "value_b64": "NDI=",
+  "store_snapshot": {
+    "store_uid": "store_00000000000000000000000000000001",
+    "catalog_digest": "sha256:...",
+    "commit": {
+      "commit_id": 1,
+      "catalog_epoch": 1,
+      "source_digest": "sha256:...",
+      "layout_epoch": 0,
+      "engine_profile_digest": "77944eb86c08b665"
+    },
+    "checked_source_digest": "sha256:..."
+  }
+}
 ```
 
 The presence states are `absent`, `value_only`, and `children_only`. `jsonl`
-emits the same single object as `json`.
+emits the same single object as `json`. `store_snapshot` is `null` when the
+read has no store-backed version, such as a missing store or an uncommitted
+durable identity. Inside a present snapshot, store metadata fields such as
+`store_uid`, `catalog_digest`, and `commit` may be `null` when the store has not
+recorded that metadata.
 
 ## `marrow data integrity`
 

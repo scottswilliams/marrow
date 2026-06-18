@@ -5,6 +5,10 @@ use crate::support;
 use std::path::PathBuf;
 
 use marrow_check::program::MarrowType;
+use marrow_check::tooling::{
+    DataPresence, DataQuerySegment, resolve_data_query, stamped_data_roots_in_store,
+    stamped_read_data_query,
+};
 use marrow_check::{
     CatalogEntryKind, CheckedProgram, ProjectSources, UseSiteKind, analyze_project, check_project,
     scope_at, type_at,
@@ -13,7 +17,8 @@ use marrow_schema::ScalarType;
 use marrow_store::cell::CatalogId;
 use marrow_store::key::SavedKey;
 use marrow_store::tree::{
-    TreeStore, write_tree_backup_archive_chunk, write_tree_backup_archive_header,
+    CommitMetadata, DataPathSegment, EngineProfile, StoreUid, TreeStore,
+    write_tree_backup_archive_chunk, write_tree_backup_archive_header,
 };
 use marrow_syntax::ParsedSource;
 
@@ -660,6 +665,132 @@ fn evolution_preview_reads_counts_and_samples_from_backup() {
         ]
     );
     assert!(!backup.samples_truncated);
+}
+
+#[test]
+fn stamped_data_roots_carries_store_and_checked_snapshot_identity() {
+    let source = "module m\n\
+        resource Book\n    \
+        required title: string\n\
+        store ^books(id: int): Book\n";
+    let root = temp_root("analysis-stamped-data-roots");
+    write(&root, "src/m.mw", source);
+    let (checked, program) = check_project(&root, &config()).expect("check source");
+    assert!(!checked.has_errors(), "{:#?}", checked.diagnostics);
+    let accepted = program
+        .catalog
+        .proposal
+        .clone()
+        .expect("first check proposes a catalog");
+    let snapshot = analyze_project(&root, &config(), &ProjectSources::new(), Some(&accepted))
+        .expect("analyze accepted source");
+    assert!(
+        !snapshot.report.has_errors(),
+        "{:#?}",
+        snapshot.report.diagnostics
+    );
+
+    let store_fact = snapshot
+        .program
+        .facts
+        .stores()
+        .iter()
+        .find(|store| store.root == "books")
+        .expect("books store");
+    let store_id = CatalogId::new(
+        snapshot
+            .program
+            .store_catalog_id(store_fact.id)
+            .expect("books store catalog id"),
+    )
+    .expect("valid store catalog id");
+    let title_id = CatalogId::new(
+        accepted
+            .entries
+            .iter()
+            .find(|entry| {
+                entry.kind == CatalogEntryKind::ResourceMember && entry.path == "m::Book::title"
+            })
+            .expect("accepted title catalog id")
+            .stable_id
+            .clone(),
+    )
+    .expect("valid title catalog id");
+    let store = TreeStore::memory();
+    store
+        .replace_catalog_snapshot(&accepted)
+        .expect("write catalog snapshot");
+    store
+        .write_record_presence(&store_id, &[SavedKey::Int(7)])
+        .expect("seed record presence");
+    store
+        .write_data_value(
+            &store_id,
+            &[SavedKey::Int(7)],
+            &[DataPathSegment::Member(title_id)],
+            b"Dune".to_vec(),
+        )
+        .expect("seed title");
+    let uid = StoreUid::from_entropy_bytes([7; 16]);
+    store.write_store_uid(&uid).expect("write store uid");
+    let committed_source_digest =
+        "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    let profile = EngineProfile::new(0);
+    store
+        .write_commit_metadata(&CommitMetadata {
+            commit_id: 11,
+            catalog_epoch: 3,
+            layout_epoch: profile.layout_epoch(),
+            source_digest: committed_source_digest.to_string(),
+            engine_profile_digest: profile.digest_bytes(),
+            changed_root_catalog_ids: vec![store_id],
+            changed_index_catalog_ids: Vec::new(),
+        })
+        .expect("write commit metadata");
+
+    let stamped =
+        stamped_data_roots_in_store(&snapshot.program, &store).expect("stamped roots read");
+
+    assert_eq!(stamped.data, vec!["books".to_string()]);
+    assert_eq!(stamped.stamp.store_uid.as_ref(), Some(&uid));
+    assert_eq!(
+        stamped.stamp.store_catalog_digest.as_deref(),
+        Some(accepted.digest.as_str())
+    );
+    let store_commit = stamped.stamp.store_commit.as_ref().expect("commit stamp");
+    assert_eq!(store_commit.commit_id, 11);
+    assert_eq!(store_commit.catalog_epoch, 3);
+    assert_eq!(store_commit.source_digest, committed_source_digest);
+    assert_eq!(store_commit.layout_epoch, profile.layout_epoch());
+    assert_eq!(store_commit.engine_profile_digest, profile.digest_bytes());
+    assert_eq!(
+        stamped.stamp.checked_source_digest,
+        snapshot.program.source_digest()
+    );
+
+    let query = resolve_data_query(
+        &snapshot.program,
+        &[
+            DataQuerySegment::Root("books".to_string()),
+            DataQuerySegment::Key(SavedKey::Int(7)),
+            DataQuerySegment::Field("title".to_string()),
+        ],
+    )
+    .expect("valid data path")
+    .expect("accepted data path");
+    let stamped_value =
+        stamped_read_data_query(&snapshot.program, &store, &query).expect("stamped value read");
+
+    assert_eq!(stamped_value.data.presence, DataPresence::ValueOnly);
+    assert_eq!(
+        stamped_value
+            .data
+            .payload
+            .as_ref()
+            .map(|value| value.as_bytes()),
+        Some(&b"Dune"[..])
+    );
+    assert_eq!(stamped_value.stamp, stamped.stamp);
 }
 
 #[test]

@@ -82,6 +82,15 @@ Path resolution is the single chokepoint: `resolve_query_steps` validates source
 
 `shape.rs::classify_data_path` is the one member-tree shape owner, so the walk cursor's value-position test and integrity orphan detection share a single definition of "declared value path." Every walk and child listing pages with explicit limits, resume cursors, and truncated flags; counts use `checked_add` into `StoreError::LimitExceeded`. Integrity separates declared values (decode, key-type, enum-membership, and canonical identity referent checks against schema and catalog), declared-shape completeness (accepted required fields on existing records and keyed entries), and orphan cells (data under a root/shape/member the schema no longer declares, or under a record identity with no node cell), each a typed `IntegrityProblem` with a stable code.
 
+Stamped roots and value reads wrap their existing readers in one
+`TreeStore::read_snapshot()` guard and return `StampedData<T>`. The stamp keeps
+the physical store identity, catalog digest, optional `DataCommitStamp`, and
+checked program source digest separate, so callers can mark stale data without
+guessing whether a difference came from the store or the editor snapshot.
+`marrow data roots|get --format json|jsonl` render this as `store_snapshot`.
+Multi-pass commands and lower-level tooling tests still call the un-stamped
+reader primitives under their own broader snapshot.
+
 ## Modules
 
 | File | Responsibility |
@@ -91,7 +100,7 @@ Path resolution is the single chokepoint: `resolve_query_steps` validates source
 | `crates/marrow-check/src/analysis/cursor.rs` | Cursor `type_at`/`scope_at`: replay the checker's binding primitives to rebuild lexical scope, infer the tightest covering expression; records no diagnostics. |
 | `crates/marrow-check/src/evolution/preview.rs` | Schema-only and backup-backed `WitnessFactSet` preview facts for tooling. |
 | `crates/marrow-check/src/tooling/mod.rs` | Tooling facade: re-exports the data/integrity API; defines `ToolingError` (Query vs Store). |
-| `crates/marrow-check/src/tooling/data/mod.rs` | Data tooling root and shared value types (`DataQuery`, `DataChild`, `DataEntry`, `DataWalkPage`, `DataRecord`, `KeyMismatch`, `MAX_PREVIEW_ITEMS`). |
+| `crates/marrow-check/src/tooling/data/mod.rs` | Data tooling root and shared value types (`DataQuery`, `DataChild`, `DataEntry`, `DataWalkPage`, `DataReadResult`, `DataRecord`, `StampedData`, `DataSnapshotStamp`, `DataCommitStamp`, `KeyMismatch`, `MAX_PREVIEW_ITEMS`). |
 | `crates/marrow-check/src/tooling/data/query.rs` | Path resolution: walk wire/source segments into a `StorageDataQuery` with typed `QueryError`; `data_query_under_prefix` containment. |
 | `crates/marrow-check/src/tooling/data/query_error.rs` | The `QueryError` enum (client-facing request errors) and `MemberFlavor`, with render-only `Display`. |
 | `crates/marrow-check/src/tooling/data/shape.rs` | The single member-tree shape classifier `classify_data_path` and its consumers (walk-cursor value test, integrity orphan detection). |
@@ -117,6 +126,7 @@ Path resolution is the single chokepoint: `resolve_query_steps` validates source
 - `DataQuery` / `StorageDataQuery` (`tooling/data/mod.rs`, `query.rs`) — a resolved, schema-validated path; public display form vs crate-internal physical store form.
 - `QueryError` / `ToolingError` (`query_error.rs`, `tooling/mod.rs`) — typed request malformity vs store faults.
 - `DataRecord` / `DataPresence` / `DataWalkPage` / `DataChildrenPage` (`tooling/data/mod.rs`) — the paged data facts carrying truncation and resume cursors.
+- `StampedData` / `DataSnapshotStamp` / `DataCommitStamp` / `DataReadResult` (`tooling/data/mod.rs`) — a value read under one store snapshot plus typed store UID, catalog digest, optional commit stamp, and checked-program source digest.
 - `IntegrityProblem` / `IntegrityOutcome` (`integrity.rs`) — a typed finding implementing `Diagnose`, tagged stored-value vs structure/orphan findings, with catalog/key identity attached to incomplete data and dangling identity references.
 
 ## Entry points

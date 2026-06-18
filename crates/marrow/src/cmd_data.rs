@@ -5,7 +5,8 @@ use std::process::ExitCode;
 
 use marrow_check::CheckedProgram;
 use marrow_check::tooling::{
-    count_data_records, data_roots_in_store, render_data_value, visit_data_records,
+    DataCommitStamp, DataSnapshotStamp, StampedData, count_data_records, data_roots_in_store,
+    render_data_value, stamped_data_roots_in_store, visit_data_records,
 };
 use marrow_store::StoreError;
 use marrow_store::tree::TreeStore;
@@ -300,6 +301,26 @@ pub(super) fn pin_snapshot(
     }
 }
 
+pub(super) fn data_store_snapshot_json(stamp: &DataSnapshotStamp) -> serde_json::Value {
+    json!({
+        // Spell the physical store UID the same way as the run JSON envelope.
+        "store_uid": stamp.store_uid.as_ref().map(|uid| uid.as_str()),
+        "catalog_digest": stamp.store_catalog_digest.as_deref(),
+        "commit": stamp.store_commit.as_ref().map(data_commit_stamp_json),
+        "checked_source_digest": &stamp.checked_source_digest,
+    })
+}
+
+fn data_commit_stamp_json(stamp: &DataCommitStamp) -> serde_json::Value {
+    json!({
+        "commit_id": stamp.commit_id,
+        "catalog_epoch": stamp.catalog_epoch,
+        "source_digest": &stamp.source_digest,
+        "layout_epoch": stamp.layout_epoch,
+        "engine_profile_digest": crate::hex_string(&stamp.engine_profile_digest),
+    })
+}
+
 pub(crate) fn data(args: &[String]) -> ExitCode {
     let Some((subcommand, rest)) = args.split_first() else {
         eprintln!(
@@ -409,12 +430,12 @@ fn data_roots(args: &[String]) -> ExitCode {
         Ok(target) => target,
         Err(code) => return code,
     };
-    let roots = match &store {
-        Some(store) => match data_roots_in_store(&program, store) {
-            Ok(roots) => roots,
+    let (roots, store_snapshot) = match &store {
+        Some(store) => match stamped_data_roots_in_store(&program, store) {
+            Ok(StampedData { data, stamp }) => (data, Some(stamp)),
             Err(error) => return report_store_error(error, format),
         },
-        None => Vec::new(),
+        None => (Vec::new(), None),
     };
     match format {
         CheckFormat::Text => {
@@ -429,7 +450,11 @@ fn data_roots(args: &[String]) -> ExitCode {
         // jsonl carries no streaming meaning for roots, so it emits the same
         // single object as json, keeping one uniform `--format` flag.
         CheckFormat::Json | CheckFormat::Jsonl => {
-            write_json(json!({ "project": crate::project_json_path(&dir), "roots": roots }));
+            write_json(json!({
+                "project": crate::project_json_path(&dir),
+                "roots": roots,
+                "store_snapshot": store_snapshot.as_ref().map(data_store_snapshot_json),
+            }));
         }
     }
     ExitCode::SUCCESS

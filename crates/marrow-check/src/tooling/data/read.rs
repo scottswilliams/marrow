@@ -4,22 +4,20 @@ use marrow_store::tree::TreeStore;
 
 use super::record_nav;
 use super::shape::stored_key_mismatch;
-use super::{DataPresence, DataQuery, DebugDataPayload};
+use super::{DataPresence, DataQuery, DataReadResult, DebugDataPayload};
 
-pub fn read_data_query(
-    store: &TreeStore,
-    query: &DataQuery,
-) -> Result<(Option<DebugDataPayload>, DataPresence), StoreError> {
+pub fn read_data_query(store: &TreeStore, query: &DataQuery) -> Result<DataReadResult, StoreError> {
     if query.storage.identity.len() < query.storage.identity_arity {
         let has_children = record_children_present(store, query)?;
-        return Ok((
-            None,
-            if has_children {
-                DataPresence::ChildrenOnly
-            } else {
-                DataPresence::Absent
-            },
-        ));
+        let presence = if has_children {
+            DataPresence::ChildrenOnly
+        } else {
+            DataPresence::Absent
+        };
+        return Ok(DataReadResult {
+            payload: None,
+            presence,
+        });
     }
     if query.storage.data_path.is_empty() {
         let present = store.data_subtree_exists(
@@ -27,14 +25,15 @@ pub fn read_data_query(
             &query.storage.identity,
             &query.storage.data_path,
         )?;
-        return Ok((
-            None,
-            if present {
-                DataPresence::ChildrenOnly
-            } else {
-                DataPresence::Absent
-            },
-        ));
+        let presence = if present {
+            DataPresence::ChildrenOnly
+        } else {
+            DataPresence::Absent
+        };
+        return Ok(DataReadResult {
+            payload: None,
+            presence,
+        });
     }
     let value = store.read_data_value(
         &query.storage.store,
@@ -48,7 +47,10 @@ pub fn read_data_query(
     } else {
         DataPresence::Absent
     };
-    Ok((value.map(DebugDataPayload::new), presence))
+    Ok(DataReadResult {
+        payload: value.map(DebugDataPayload::new),
+        presence,
+    })
 }
 
 fn record_children_present(store: &TreeStore, query: &DataQuery) -> Result<bool, StoreError> {

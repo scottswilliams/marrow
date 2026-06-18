@@ -6,7 +6,10 @@ use crate::support;
 use crate::support_data;
 use marrow_store::tree::TreeStore;
 
-use support_data::{json, marrow, native_project, seeded_project};
+use support_data::{
+    assert_stable_store_snapshot_eq, assert_store_snapshot, json, marrow, native_project,
+    seeded_project,
+};
 
 /// The human-rendered placeholders `data get` prints in its default text format for a
 /// children-only identity node and a missing path. These are render-contract goldens:
@@ -27,6 +30,7 @@ fn data_get_reads_a_path_value_and_reports_absence() {
     assert_eq!(present.status.code(), Some(0), "{present:?}");
     let present_json = json(present);
     assert_eq!(present_json["presence"], serde_json::json!("value_only"));
+    assert_store_snapshot(&present_json);
     let value = marrow_run::base64::decode(present_json["value_b64"].as_str().expect("b64"))
         .expect("decode value");
     assert_eq!(value, b"42");
@@ -35,6 +39,7 @@ fn data_get_reads_a_path_value_and_reports_absence() {
     let absent_json = json(absent);
     assert_eq!(absent_json["presence"], serde_json::json!("absent"));
     assert_eq!(absent_json["value_b64"], serde_json::Value::Null);
+    assert_store_snapshot(&absent_json);
 
     // A path that does not parse fails before touching the store: a usage error.
     assert_eq!(malformed.status.code(), Some(2), "{malformed:?}");
@@ -64,7 +69,11 @@ fn data_get_reads_backup_while_live_store_is_locked() {
     ]);
 
     assert_eq!(backup.status.code(), Some(0), "{backup:?}");
-    assert_eq!(support::json(backup.stdout), live);
+    let backup = support::json(backup.stdout);
+    assert_eq!(backup["path"], live["path"]);
+    assert_eq!(backup["presence"], live["presence"]);
+    assert_eq!(backup["value_b64"], live["value_b64"]);
+    assert_stable_store_snapshot_eq(&backup, &live);
 }
 
 #[test]
@@ -114,9 +123,8 @@ fn data_get_distinguishes_a_children_only_path_from_absent() {
 
 #[test]
 fn data_get_and_integrity_on_an_unseeded_project_write_no_records() {
-    // The project's identity is committed to marrow.catalog.json, with the store snapshot
-    // present as the local crash bridge, but no run has seeded a record. The data
-    // inspection commands report a clean empty store and never write a record of their own.
+    // The data harness freezes the clean project before invoking the command, so the
+    // command observes a committed empty store and never writes a record of its own.
     let project = native_project("data-readonly");
     let dir = project.to_str().unwrap().to_string();
     let get = marrow(&["data", "get", "--format", "json", &dir, "^counter(1).value"]);
@@ -125,7 +133,9 @@ fn data_get_and_integrity_on_an_unseeded_project_write_no_records() {
 
     // An absent path on an empty store is a successful, queryable absence.
     assert_eq!(get.status.code(), Some(0), "{get:?}");
-    assert_eq!(json(get)["presence"], serde_json::json!("absent"));
+    let get = json(get);
+    assert_eq!(get["presence"], serde_json::json!("absent"));
+    assert_store_snapshot(&get);
     // Nothing to verify is healthy: no problems on the empty store.
     assert_eq!(integrity.status.code(), Some(0), "{integrity:?}");
     assert_eq!(json(integrity)["problems"], serde_json::json!([]));
@@ -134,4 +144,54 @@ fn data_get_and_integrity_on_an_unseeded_project_write_no_records() {
     let stats_json = json(stats);
     assert_eq!(stats_json["cells"], serde_json::json!(0));
     assert!(stats_json.get("records").is_none(), "{stats_json}");
+}
+
+#[test]
+fn data_get_without_native_store_reports_null_snapshot() {
+    let project = support::temp_project("data-get-memory-store", |root| {
+        support::write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" } }"#,
+        );
+        support::write(root, "src/app.mw", support::counter_source());
+    });
+    let dir = project.to_str().unwrap().to_string();
+
+    let get = marrow(&["data", "get", "--format", "json", &dir, "^counter(1).value"]);
+
+    assert_eq!(get.status.code(), Some(0), "{get:?}");
+    let get = json(get);
+    assert_eq!(get["presence"], serde_json::json!("absent"));
+    assert_eq!(get["value_b64"], serde_json::Value::Null);
+    assert_eq!(get["store_snapshot"], serde_json::Value::Null);
+}
+
+#[test]
+fn data_get_pending_member_reports_null_snapshot_with_native_store() {
+    let (project, dir) = seeded_project("data-get-pending-member");
+    support::write(
+        &project,
+        "src/app.mw",
+        "module app\n\
+         \n\
+         resource Counter\n\
+         \x20\x20\x20\x20required value: int\n\
+         \x20\x20\x20\x20bonus: int\n\
+         store ^counter(id: int): Counter\n\
+         \n\
+         pub fn seed()\n\
+         \x20\x20\x20\x20var c: Counter\n\
+         \x20\x20\x20\x20c.value = 42\n\
+         \x20\x20\x20\x20transaction\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20^counter(1) = c\n",
+    );
+
+    let get = support::marrow(&["data", "get", "--format", "json", &dir, "^counter(1).bonus"]);
+
+    assert_eq!(get.status.code(), Some(0), "{get:?}");
+    let get = support::json(get.stdout);
+    assert_eq!(get["presence"], serde_json::json!("absent"));
+    assert_eq!(get["value_b64"], serde_json::Value::Null);
+    assert_eq!(get["store_snapshot"], serde_json::Value::Null);
 }
