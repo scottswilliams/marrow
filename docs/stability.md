@@ -53,8 +53,8 @@ claims.
 Raw native-store bytes are not stable across recompiles or engine-profile
 changes. Move data through typed backup/restore when portability is required.
 
-Human-readable message prose is not stable. Clients should consume dotted codes,
-typed JSON fields, store stamps, catalog IDs, and other structured facts.
+Human-readable message prose is not stable. Clients consume dotted codes, typed
+JSON fields, store stamps, catalog IDs, and other structured facts.
 
 The eight Rust crate APIs in this workspace (`marrow`, `marrow-catalog`,
 `marrow-check`, `marrow-project`, `marrow-run`, `marrow-schema`,
@@ -65,7 +65,13 @@ internal crates.
 
 ## Reserved Future Surfaces
 
-The application boundary opens in ordered profiles: first linked-Rust embedding — an in-process library API over the run session and result envelope, resting on host containment and thread-confined sessions, with no codegen, no transport, and no principal model — then `export fn` with generated TypeScript over the same boundary; until a profile ships, typed entry invocation (`marrow run` with `--arg` and `--format json`) is the supported integration surface.
+The application boundary is reserved for the proposed `surface` design: a
+checked application ABI over stores, followed by generated clients, optional
+transports, and grouping of ordinary `pub fn` workflows where checked facts make
+that grouping unambiguous. Linked-Rust embedding remains an implementation
+profile for hosting surface facts and run sessions, not a separate app-data
+contract. Until a surface profile ships, typed entry invocation (`marrow run`
+with `--arg` and `--format json`) is the supported integration surface.
 
 The `signature_digest` field in the run JSON envelope is reserved for the future
 function ABI identity model and remains `null` in v0.1. The `raises` field is

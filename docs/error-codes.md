@@ -42,7 +42,7 @@ Common fields:
 
 - `code`: stable machine code;
 - `kind`: broad category such as `parse`, `check`, `runtime`, `storage`,
-  `io`, `usage`, or `tooling`;
+  `surface`, `io`, `usage`, or `tooling`;
 - `message`: short human summary;
 - `help`: optional repair guidance;
 - `source_span`: optional source location;
@@ -98,15 +98,17 @@ code is stable and predictable:
 | `check`, `schema` | `check` |
 | `run`, `value` | `runtime` |
 | `store` | `storage` |
+| `surface` | `surface` |
 | `io` | `io` |
 | everything else (`config`, `project`, `catalog`, `data`, `doctor`, `evolve`, `write`, `test`, `restore`) | `tooling` |
 
 ## Code Reference
 
-Every code below is emitted by the current build. Codes are grouped by family.
-The "Surface" column says where a developer first meets the code: a project
-`check`/`run`/`test`, a managed write inside a running program, the store, or a
-`data` maintenance command.
+The main family sections below list codes emitted by the current build. The
+Deferred Surfaces section reserves future codes that are not emitted yet. Codes
+are grouped by family, and each family description names where a developer first
+meets the code: a project `check`/`run`/`test`, a managed write inside a running
+program, the store, or a `data` maintenance command.
 
 ### `parse.*` — kind `parse`
 
@@ -451,11 +453,24 @@ These codes do not appear in v0.1 command output until that surface ships.
 | `surface.request` | A request parameter, identity, index argument, or generated-write body cannot decode to the checked surface operation input shape. |
 | `surface.absent` | A requested record identity is well-formed but no record node exists. |
 | `surface.cursor` | A cursor token is malformed or does not decode under the cursor codec. |
-| `surface.stale_cursor` | A cursor token is well-formed, but its operation equality tag no longer matches the active surface operation facts. |
+| `surface.stale_cursor` | A cursor token is well-formed, but its operation equality tag or store lineage no longer matches the active surface operation facts. |
 | `surface.abi_mismatch` | A generated client or transport request targets a surface ABI slice that is no longer active. |
 | `surface.invalid_data` | Backing saved data cannot be materialized under the checked resource shape. |
+| `surface.limit` | A well-formed surface operation would exceed its materialization, row, or decoded-byte budget. |
 | `surface.integrity` | A renderer profile that dereferences identity links found a missing referent. |
 | `surface.store` | The store reported a fault while serving a surface operation. |
+
+The `check.surface_*` names are reserved for future surface checker diagnostics.
+They do not appear in v0.1 command output until surface syntax ships.
+
+| Code | Reserved meaning |
+|---|---|
+| `check.surface_decl` | A parsed surface declaration violates a checker-level declaration rule. Syntax failures remain `parse.syntax`. |
+| `check.surface_collision` | A surface declaration collides with another module-level declaration or surface-local alias. |
+| `check.surface_target` | A surface target is not a store, index, field, or operation shape supported by the surface design. |
+| `check.surface_field` | A surface field reference is unknown, private to the store shape, or outside the supported projection/input shape. |
+| `check.surface_catalog_pending` | Accepted catalog IDs are not available for every durable fact needed to export a stable surface ABI. |
+| `check.surface_operation` | A generated surface operation cannot be constructed from the checked store facts. |
 
 The `decode.*` family is reserved for future checked decode and repair reports.
 These codes do not appear in v0.1 command output.
