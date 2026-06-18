@@ -71,6 +71,29 @@ fn shared_data_children_rejects_zero_limit() {
     );
 }
 
+#[test]
+fn shared_data_children_returns_typed_member_segments() {
+    let (project, _dir) = seeded_project("data-children-typed-members");
+    let program = checked_program(&project);
+    let store =
+        TreeStore::open(&project.join(".data").join("marrow.redb")).expect("open native store");
+    let record = [
+        DataQuerySegment::Root("counter".into()),
+        DataQuerySegment::Key(SavedKey::Int(1)),
+    ];
+
+    let page = data_children(&program, &store, &record, 10, None)
+        .expect("record children resolve through checked member facts");
+
+    assert!(
+        page.children
+            .iter()
+            .any(|child| child == &DataChild::Field("value".into())),
+        "plain saved field should return a field segment, got {:?}",
+        page.children
+    );
+}
+
 /// The shared saved-data walk must page across record identities and resume from its
 /// own cursor without dropping or repeating an entry. A small limit forces several
 /// pages over a multi-record root; the union of the pages must be every record's

@@ -104,8 +104,21 @@ impl DataPresence {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DataChild {
+    Root(String),
     Key(SavedKey),
-    Member(String),
+    Field(String),
+    Layer(String),
+}
+
+impl From<DataQuerySegment> for DataChild {
+    fn from(segment: DataQuerySegment) -> Self {
+        match segment {
+            DataQuerySegment::Root(root) => Self::Root(root),
+            DataQuerySegment::Field(field) => Self::Field(field),
+            DataQuerySegment::Layer(layer) => Self::Layer(layer),
+            DataQuerySegment::Key(key) => Self::Key(key),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

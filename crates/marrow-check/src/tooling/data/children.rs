@@ -8,7 +8,7 @@ use super::query::resolve_data_query;
 use super::query_error::QueryError;
 use super::record_nav;
 use super::shape::stored_key_mismatch;
-use super::shape::{declared_members_below_path, tooling_catalog_id};
+use super::shape::{declared_members_below_path, query_segment_for_member, tooling_catalog_id};
 use super::traversal::data_roots_in_store;
 use super::{DataChild, DataChildrenPage, DataQuery, DataQuerySegment};
 
@@ -78,7 +78,7 @@ pub fn data_children(
         ChildScanKind::Roots => {
             let children = data_roots_in_store(program, store)?
                 .into_iter()
-                .map(DataChild::Member)
+                .map(DataChild::Root)
                 .collect();
             Ok(DataChildrenPage {
                 children,
@@ -169,7 +169,7 @@ fn member_children(
             store.data_subtree_exists(&query.storage.store, &query.storage.identity, &path)?
         };
         if present {
-            children.push(DataChild::Member(member.name.clone()));
+            children.push(DataChild::from(query_segment_for_member(member)));
         }
     }
     Ok(DataChildrenPage {
