@@ -144,6 +144,7 @@ fn declaration_trailing_comment_line(declaration: &Declaration) -> TrailingComme
             TrailingCommentLine::Line(format_function_header_last_line(decl))
         }
         Declaration::Enum(decl) => TrailingCommentLine::Line(decl.docs.len()),
+        Declaration::Surface(_) => TrailingCommentLine::Line(0),
         Declaration::Evolve(_) => TrailingCommentLine::Line(0),
     }
 }
@@ -207,6 +208,7 @@ fn declaration_span(declaration: &Declaration) -> crate::SourceSpan {
         Declaration::Store(decl) => decl.span,
         Declaration::Function(decl) => decl.span,
         Declaration::Enum(decl) => decl.span,
+        Declaration::Surface(decl) => decl.span,
         Declaration::Evolve(decl) => decl.span,
     }
 }
@@ -221,6 +223,9 @@ pub fn format_declaration(source: &str, declaration: &Declaration) -> String {
         Declaration::Store(decl) => format_store(decl),
         Declaration::Function(decl) => format_function(source, decl),
         Declaration::Enum(decl) => format_enum(decl),
+        Declaration::Surface(_) => {
+            panic!("surface declaration formatting is not implemented")
+        }
         Declaration::Evolve(decl) => format_evolve(source, decl),
     }
 }

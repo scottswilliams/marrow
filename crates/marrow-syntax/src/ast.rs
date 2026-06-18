@@ -46,6 +46,15 @@ impl SourceFile {
             })
     }
 
+    pub fn surface(&self, name: &str) -> Option<&SurfaceDecl> {
+        self.declarations
+            .iter()
+            .find_map(|declaration| match declaration {
+                Declaration::Surface(surface) if surface.name == name => Some(surface),
+                _ => None,
+            })
+    }
+
     pub fn function(&self, name: &str) -> Option<&FunctionDecl> {
         self.declarations
             .iter()
@@ -82,6 +91,7 @@ pub enum Declaration {
     Const(ConstDecl),
     Resource(ResourceDecl),
     Store(StoreDecl),
+    Surface(SurfaceDecl),
     Function(FunctionDecl),
     Enum(EnumDecl),
     Evolve(EvolveDecl),
@@ -355,6 +365,53 @@ pub struct StoreDecl {
     pub indexes: Vec<IndexDecl>,
     pub comments: Vec<Comment>,
     pub span: SourceSpan,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SurfaceDecl {
+    pub name: String,
+    pub store: SavedRoot,
+    pub items: Vec<SurfaceItem>,
+    pub comments: Vec<Comment>,
+    pub span: SourceSpan,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SurfaceItem {
+    Fields {
+        names: Vec<String>,
+        span: SourceSpan,
+    },
+    Collection {
+        target: SurfaceTarget,
+        alias: String,
+        span: SourceSpan,
+    },
+    Create {
+        names: Vec<String>,
+        span: SourceSpan,
+    },
+    Update {
+        names: Vec<String>,
+        span: SourceSpan,
+    },
+}
+
+impl SurfaceItem {
+    pub fn span(&self) -> SourceSpan {
+        match self {
+            Self::Fields { span, .. }
+            | Self::Collection { span, .. }
+            | Self::Create { span, .. }
+            | Self::Update { span, .. } => *span,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SurfaceTarget {
+    Root { root: String },
+    Index { root: String, index: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

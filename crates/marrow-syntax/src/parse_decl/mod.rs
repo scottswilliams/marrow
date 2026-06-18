@@ -18,6 +18,7 @@ mod members;
 mod params;
 mod statement_lines;
 mod stmt;
+mod surface;
 mod tokens;
 
 pub(crate) use decl::DeclParser;

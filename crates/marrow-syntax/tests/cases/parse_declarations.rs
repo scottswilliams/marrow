@@ -440,6 +440,7 @@ fn normalize(title: string): string
             Declaration::Store(decl) => decl.root.root.as_str(),
             Declaration::Function(decl) => decl.name.as_str(),
             Declaration::Enum(decl) => decl.name.as_str(),
+            Declaration::Surface(decl) => decl.name.as_str(),
             Declaration::Evolve(_) => "evolve",
         })
         .collect::<Vec<_>>();

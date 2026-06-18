@@ -126,7 +126,26 @@ fn lexes_maybe_return_and_absent_return_keywords() {
 }
 
 #[test]
-fn lexes_future_surface_reservations_as_keywords() {
+fn lexes_surface_as_the_only_application_surface_keyword() {
+    let source = "surface from fields collection as create update";
+
+    assert_eq!(
+        kinds(source),
+        vec![
+            TokenKind::Keyword(Keyword::Surface),
+            TokenKind::Identifier,
+            TokenKind::Identifier,
+            TokenKind::Identifier,
+            TokenKind::Identifier,
+            TokenKind::Identifier,
+            TokenKind::Identifier,
+            TokenKind::Eof,
+        ]
+    );
+}
+
+#[test]
+fn lexes_future_data_keywords_as_keywords() {
     let source = "journal sensitive declassify Id";
 
     assert_eq!(

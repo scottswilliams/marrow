@@ -21,8 +21,8 @@ pub use ast::{
     Declaration, ElseIf, EnumDecl, EnumMember, EvolveDecl, EvolveStep, Expression, FieldDecl,
     ForBinding, FunctionDecl, FunctionReturnPresence, GroupDecl, IndexDecl, InterpolationPart,
     KeyParam, LiteralKind, MatchArm, ModuleDecl, ParamDecl, ParsedSource, RangeExpr, ResourceDecl,
-    ResourceMember, SavedRoot, SourceFile, Statement, StoreDecl, TypeRef, UnaryOp, UseDecl,
-    range_expr,
+    ResourceMember, SavedRoot, SourceFile, Statement, StoreDecl, SurfaceDecl, SurfaceItem,
+    SurfaceTarget, TypeRef, UnaryOp, UseDecl, range_expr,
 };
 pub use diagnostic::{
     Diagnose, Diagnostic, DiagnosticReason, ExpectedSyntax, LexerDiagnosticReason,
