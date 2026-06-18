@@ -227,6 +227,8 @@ pub(crate) fn analyze_source_project(
     // The first store (in file then source order) to declare each saved root owns
     // it; a later store on the same root is a duplicate owner.
     let mut root_owners: HashMap<String, PathBuf> = HashMap::new();
+    let mut rejected_surfaces = crate::surface::RejectedSurfaceDeclarations::default();
+    let mut backing_invalidations = crate::backing_validity::PendingBackingInvalidations::default();
     // Parsed sources kept from pass 1 so pass 2 can resolve imports against the
     // full project module set without re-reading files.
     let mut parsed_files: Vec<(&marrow_project::ModuleFile, marrow_syntax::ParsedSource)> =
@@ -256,7 +258,11 @@ pub(crate) fn analyze_source_project(
             enums,
             functions,
             constants,
+            rejected_surfaces: file_rejected_surfaces,
+            backing_invalidations: file_backing_invalidations,
         } = check_file_source(&file.path, &source, &mut report.diagnostics);
+        rejected_surfaces.extend(file_rejected_surfaces);
+        backing_invalidations.extend(file_backing_invalidations);
 
         // Saved roots are owned project-wide by stores.
         for declaration in &parsed.file.declarations {
@@ -264,22 +270,27 @@ pub(crate) fn analyze_source_project(
                 continue;
             };
             match root_owners.get(&store.root.root) {
-                Some(first) => report.diagnostics.push(
-                    CheckDiagnostic::error(
-                        SCHEMA_DUPLICATE_ROOT_OWNER,
-                        &file.path,
-                        store.span,
-                        format!(
-                            "saved root `^{}` is already owned by a store in `{}`",
-                            store.root.root,
-                            first.display()
+                Some(first) => {
+                    backing_invalidations.record_invalid_root(&store.root.root);
+                    report.diagnostics.push(
+                        CheckDiagnostic::error(
+                            SCHEMA_DUPLICATE_ROOT_OWNER,
+                            &file.path,
+                            store.span,
+                            format!(
+                                "saved root `^{}` is already owned by a store in `{}`",
+                                store.root.root,
+                                first.display()
+                            ),
+                        )
+                        .with_payload(
+                            DiagnosticPayload::DuplicateRootOwner {
+                                root: store.root.root.clone(),
+                                first_owner: first.clone(),
+                            },
                         ),
-                    )
-                    .with_payload(DiagnosticPayload::DuplicateRootOwner {
-                        root: store.root.root.clone(),
-                        first_owner: first.clone(),
-                    }),
-                ),
+                    );
+                }
                 None => {
                     root_owners.insert(store.root.root.clone(), file.path.clone());
                 }
@@ -418,6 +429,7 @@ pub(crate) fn analyze_source_project(
     crate::keyed_entries::normalize_resource_layers(
         &mut program,
         &parsed_files,
+        Some(&mut backing_invalidations),
         &mut report.diagnostics,
     );
     program.rebuild_facts_with_sources(
@@ -434,6 +446,7 @@ pub(crate) fn analyze_source_project(
             module_name_policy: ModuleNamePolicy::DeclaredOrPath,
             resolvable: &declared,
             program: &program,
+            backing_invalidations: Some(&mut backing_invalidations),
         },
         &mut report,
     );
@@ -454,6 +467,16 @@ pub(crate) fn analyze_source_project(
         accepted,
         &mut program,
         &evolve_intents,
+        &mut report.diagnostics,
+    );
+    let backing_validity = backing_invalidations.resolve(&program);
+    crate::surface::check_surfaces(
+        &mut program,
+        parsed_files
+            .iter()
+            .map(|(file, parsed)| (file.path.as_path(), parsed)),
+        &rejected_surfaces,
+        &backing_validity,
         &mut report.diagnostics,
     );
     crate::evolution::check_evolve_types(

@@ -129,6 +129,18 @@ The words `from`, `fields`, `collection`, `as`, `create`, and `update` are
 contextual to this syntax. Documentation comments do not attach to `surface`
 declarations in v0.1.
 
+The checked v0.1 surface shape is intentionally narrow. `from ^root` must name
+one declared store root. `fields` names top-level unkeyed fields on that store's
+resource. `create` and `update` name fields from the `fields` projection; write-
+only generated inputs are deferred. `collection` names either the same backing
+root or one index declared on that backing store. Nested projections, keyed-child
+CRUD, custom filters, routes, cursors, JSON profiles, and generated clients are
+later boundary-profile work over the checked surface facts.
+
+Surface declarations in configured test files use the same parser and
+source-level name-collision checks, but they do not resolve into application
+surface facts.
+
 ## Evolution
 
 An `evolve` block declares durable intent about catalog-addressable entities,

@@ -23,6 +23,12 @@ pub const CHECK_DUPLICATE_DECLARATION: &str = "check.duplicate_declaration";
 /// alias collides with another alias or generated operation, or a payload list
 /// repeats a name.
 pub const CHECK_SURFACE_COLLISION: &str = "check.surface_collision";
+/// A surface's backing store or collection target does not resolve to the
+/// declared store/index shape the surface contract admits.
+pub const CHECK_SURFACE_TARGET: &str = "check.surface_target";
+/// A surface payload name does not resolve to an admitted top-level field on the
+/// backing store resource.
+pub const CHECK_SURFACE_FIELD: &str = "check.surface_field";
 /// A `use` names a module that is neither a project module nor a standard
 /// library module.
 pub const CHECK_UNRESOLVED_IMPORT: &str = "check.unresolved_import";
@@ -425,6 +431,83 @@ impl SurfaceCollisionNameKind {
     }
 }
 
+/// Structured facts for a `check.surface_target` diagnostic.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SurfaceTargetDiagnostic {
+    UnknownStore {
+        root: String,
+    },
+    AmbiguousStore {
+        root: String,
+    },
+    InvalidStore {
+        root: String,
+    },
+    InvalidStoreResource {
+        root: String,
+        resource: String,
+    },
+    AmbiguousStoreResource {
+        root: String,
+        resource: String,
+    },
+    ForeignCollectionRoot {
+        surface_root: String,
+        target_root: String,
+    },
+    KeylessCollectionRoot {
+        root: String,
+    },
+    UnknownCollectionIndex {
+        root: String,
+        index: String,
+    },
+    AmbiguousCollectionIndex {
+        root: String,
+        index: String,
+    },
+    InvalidCollectionIndex {
+        root: String,
+        index: String,
+    },
+}
+
+/// The payload list that produced a `check.surface_field` diagnostic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SurfaceFieldList {
+    Fields,
+    Create,
+    Update,
+}
+
+impl SurfaceFieldList {
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Fields => "fields",
+            Self::Create => "create",
+            Self::Update => "update",
+        }
+    }
+}
+
+/// Why a surface payload field is not admitted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SurfaceFieldProblem {
+    Unknown,
+    Unsupported,
+    Invalid,
+    Ambiguous,
+    NotProjected,
+}
+
+/// Structured facts for a `check.surface_field` diagnostic.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SurfaceFieldDiagnostic {
+    pub list: SurfaceFieldList,
+    pub name: String,
+    pub problem: SurfaceFieldProblem,
+}
+
 /// Structured data attached to diagnostics whose consumers need more than the
 /// rendered message. Resolution-suppression branches on typed identities: an
 /// import names the module it failed to resolve, an unresolved call names the
@@ -480,6 +563,10 @@ pub enum DiagnosticPayload {
         first_span: SourceSpan,
         duplicate_kind: SurfaceCollisionNameKind,
     },
+    /// `check.surface_target`: rejected surface store or collection target.
+    SurfaceTarget(SurfaceTargetDiagnostic),
+    /// `check.surface_field`: rejected surface payload field.
+    SurfaceField(SurfaceFieldDiagnostic),
     /// `check.duplicate_module`: duplicated module name and first source file.
     DuplicateModule { name: String, first_file: PathBuf },
     /// `check.module_path`: declared name and expected path-derived name.

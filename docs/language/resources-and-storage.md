@@ -206,6 +206,44 @@ explicit data-evolution work that populates existing saved resources before code
 depends on the field. Adding an index requires a backfill or rebuild of the
 generated index tree when matching base data already exists.
 
+## Application Surfaces
+
+A `surface Name from ^root` declaration is a checked application contract over an
+existing store. It does not declare saved data, mint catalog identity, change the
+source digest for durable data, or alter backup, restore, or evolution
+obligations. The backing store, projected fields, generated write inputs, and
+collection aliases resolve to existing checked facts.
+
+The initial checker contract admits only direct store-backed shapes:
+
+- `from ^root` resolves to one declared store root.
+- `fields` resolves each name to a top-level unkeyed field on the backing
+  resource. Identity keys, store indexes, groups, keyed child layers, nested
+  paths, and fields from other stores are not field targets.
+- `create` and `update` resolve each name to a field already named by `fields`.
+  Generated write-only inputs are deferred.
+- `collection ^root as alias` names the backing store root.
+- `collection ^root.index as alias` names an index declared on the backing store.
+
+The checker records typed surface facts over store, member, and index identities.
+It records no surface fact when the backing store, the store's normalized
+resource shape, a referenced field, or a referenced index is already rejected by
+schema or checker validation; best-effort schema facts are not a public
+application contract.
+
+Configured test-file `surface` declarations are still parsed and checked for
+source-level name collisions, but only source-root declarations resolve into
+application surface facts.
+
+Those facts are transport-neutral: HTTP routes, JSON spelling, TypeScript names,
+cursor tokens, materialization limits, and runtime serving behavior are boundary
+profiles layered later. A stable exported surface ABI cannot use proposal-only
+catalog IDs; until every referenced durable fact has an accepted catalog ID, the
+facts carry a source-only catalog status rather than a stable client contract. A
+pending catalog proposal for the checked source is reported as its own blocker,
+because accepted IDs alone do not prove the current store, member, or index shape
+is the committed shape.
+
 ## Indexes
 
 Use an index when a value is only an alternate lookup path:

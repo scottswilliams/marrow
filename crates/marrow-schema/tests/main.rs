@@ -18,3 +18,5 @@ mod compile_resource_members;
 mod compile_resource_unknown;
 #[path = "cases/resolve_type.rs"]
 mod resolve_type;
+#[path = "cases/store_invalidation.rs"]
+mod store_invalidation;

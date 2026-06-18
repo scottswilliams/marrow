@@ -1,7 +1,12 @@
-use marrow_check::{DiagnosticPayload, SurfaceCollisionNameKind, check_project};
+use marrow_check::{
+    CHECK_SURFACE_FIELD, CHECK_SURFACE_TARGET, DiagnosticPayload, SurfaceCatalogBlocker,
+    SurfaceCatalogStatus, SurfaceCollectionTarget, SurfaceCollisionNameKind,
+    SurfaceFieldDiagnostic, SurfaceFieldList, SurfaceFieldProblem, SurfaceTargetDiagnostic,
+    check_project, check_tests_program,
+};
 use marrow_syntax::SourceSpan;
 
-use crate::support::{assert_clean, config, temp_project, with_code, write};
+use crate::support::{assert_clean, check_with_accepted, config, temp_project, with_code, write};
 
 fn source_line_span(source: &str, line: u32) -> SourceSpan {
     let start_byte = source
@@ -35,6 +40,14 @@ fn duplicate_declaration_lines(report: &marrow_check::CheckReport) -> Vec<u32> {
         .into_iter()
         .map(|diagnostic| diagnostic.span.line)
         .collect()
+}
+
+fn surface_targets(report: &marrow_check::CheckReport) -> Vec<&marrow_check::CheckDiagnostic> {
+    with_code(report, CHECK_SURFACE_TARGET)
+}
+
+fn surface_fields(report: &marrow_check::CheckReport) -> Vec<&marrow_check::CheckDiagnostic> {
+    with_code(report, CHECK_SURFACE_FIELD)
 }
 
 fn assert_surface_collision_payload(
@@ -264,6 +277,12 @@ surface exists from ^books
 fn canonical_surface_example_allows_payload_overlap() {
     let source = "\
 module app
+resource Book
+    required title: string
+    author: string
+    blurb: string
+store ^books(id: int): Book
+    index byAuthor(author, id)
 surface Books from ^books
     fields title, author, blurb
     collection ^books as list
@@ -277,6 +296,36 @@ surface Books from ^books
     let (report, _program) = check_project(&root, &config()).expect("check");
 
     assert_clean(&report);
+}
+
+#[test]
+fn root_collections_require_a_keyed_store() {
+    let source = "\
+module app
+resource Settings
+    theme: string
+store ^settings: Settings
+surface SettingsSurface from ^settings
+    fields theme
+    collection ^settings as all
+";
+    let root = temp_project("surface-root-collection-singleton", |root| {
+        write(root, "src/app.mw", source);
+    });
+    let (report, program) = check_project(&root, &config()).expect("check");
+
+    let diagnostics = surface_targets(&report);
+    assert_eq!(diagnostics.len(), 1, "{:#?}", report.diagnostics);
+    assert_eq!(
+        diagnostics[0].payload,
+        DiagnosticPayload::SurfaceTarget(SurfaceTargetDiagnostic::KeylessCollectionRoot {
+            root: "settings".into(),
+        })
+    );
+    assert!(
+        program.facts.surfaces().is_empty(),
+        "a surface with a non-iterable collection target must not become a checked fact"
+    );
 }
 
 #[test]
@@ -308,6 +357,13 @@ surface Books from ^books
 fn payload_names_do_not_collide_with_generated_operations_or_aliases() {
     let source = "\
 module app
+resource Book
+    id: string
+    get: string
+    create: string
+    update: string
+    list: string
+store ^books(bookId: int): Book
 surface Books from ^books
     fields id, get, create, update, list
     collection ^books as list
@@ -397,6 +453,12 @@ surface Books from ^books
 fn distinct_surfaces_have_independent_local_namespaces() {
     let source = "\
 module app
+resource Book
+    title: string
+resource Author
+    title: string
+store ^books(id: int): Book
+store ^authors(id: int): Author
 surface Books from ^books
     fields title
     collection ^books as list
@@ -410,4 +472,486 @@ surface Authors from ^authors
     let (report, _program) = check_project(&root, &config()).expect("check");
 
     assert_clean(&report);
+}
+
+#[test]
+fn rejected_surface_collisions_do_not_produce_surface_facts() {
+    let source = "\
+module app
+resource Book
+    title: string
+store ^books(id: int): Book
+surface Books from ^books
+    fields title, title
+    collection ^books as create
+";
+    let root = temp_project("surface-collisions-no-facts", |root| {
+        write(root, "src/app.mw", source);
+    });
+    let (report, program) = check_project(&root, &config()).expect("check");
+
+    assert_eq!(
+        surface_collisions(&report).len(),
+        2,
+        "{:#?}",
+        report.diagnostics
+    );
+    assert!(
+        program.facts.surfaces().is_empty(),
+        "a rejected surface must not become a checked fact"
+    );
+    assert!(
+        surface_targets(&report).is_empty(),
+        "collision-rejected surfaces should not also run target validation: {:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
+fn checking_tests_preserves_source_surface_facts() {
+    let source = "\
+module app
+resource Book
+    title: string
+store ^books(id: int): Book
+surface Books from ^books
+    fields title
+    collection ^books as list
+";
+    let root = temp_project("surface-facts-through-tests", |root| {
+        write(root, "src/app.mw", source);
+        write(root, "tests/smoke_test.mw", "pub fn smoke()\n    return\n");
+    });
+    let (source_report, source_program) = check_project(&root, &config()).expect("check");
+    assert_clean(&source_report);
+    assert_eq!(source_program.facts.surfaces().len(), 1);
+
+    let (test_report, combined) =
+        check_tests_program(&root, &config(), source_program).expect("check tests");
+
+    assert_clean(&test_report);
+    let [surface] = combined.facts.surfaces() else {
+        panic!(
+            "expected preserved source surface, got {:#?}",
+            combined.facts.surfaces()
+        );
+    };
+    assert_eq!(surface.name, "Books");
+    let facts = &combined.facts;
+    let module = facts.module_id("app").expect("app module");
+    let book = facts.resource_id(module, "Book").expect("Book");
+    let store = facts.store_id(module, "books").expect("^books");
+    let title = facts.resource_member_id(book, &["title"]).expect("title");
+    assert_eq!(surface.store, store);
+    assert_eq!(
+        surface
+            .fields
+            .iter()
+            .map(|field| (field.name.as_str(), field.member))
+            .collect::<Vec<_>>(),
+        vec![("title", title)]
+    );
+    assert_eq!(
+        surface
+            .collections
+            .iter()
+            .map(|collection| (collection.alias.as_str(), collection.target))
+            .collect::<Vec<_>>(),
+        vec![("list", SurfaceCollectionTarget::StoreRoot(store))]
+    );
+}
+
+#[test]
+fn checking_tests_does_not_mint_surface_facts_from_test_files() {
+    let source = "\
+module app
+resource Book
+    title: string
+store ^books(id: int): Book
+surface Books from ^books
+    fields title
+";
+    let test_source = "\
+use app
+surface TestBooks from ^books
+    fields title
+pub fn smoke()
+    return
+";
+    let root = temp_project("surface-test-files-source-only", |root| {
+        write(root, "src/app.mw", source);
+        write(root, "tests/smoke_test.mw", test_source);
+    });
+    let (source_report, source_program) = check_project(&root, &config()).expect("check");
+    assert_clean(&source_report);
+    assert_eq!(source_program.facts.surfaces().len(), 1);
+
+    let (test_report, combined) =
+        check_tests_program(&root, &config(), source_program).expect("check tests");
+
+    assert_clean(&test_report);
+    assert_eq!(
+        combined
+            .facts
+            .surfaces()
+            .iter()
+            .map(|surface| surface.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["Books"],
+        "configured test files must not mint application surface facts"
+    );
+}
+
+#[test]
+fn surface_catalog_status_names_pending_catalog_proposal() {
+    let root = temp_project("surface-catalog-pending-shape", |root| {
+        write(
+            root,
+            "src/app.mw",
+            "\
+module app
+resource Book
+    title: string
+store ^books(id: int): Book
+surface Books from ^books
+    fields title
+    collection ^books as list
+",
+        );
+    });
+    let (baseline_report, baseline_program) =
+        check_project(&root, &config()).expect("baseline check");
+    assert_clean(&baseline_report);
+    let baseline = baseline_program
+        .catalog
+        .proposal
+        .expect("first run proposes accepted baseline");
+    crate::support::catalog::write_catalog(&root, &baseline);
+
+    write(
+        &root,
+        "src/app.mw",
+        "\
+module app
+resource Book
+    title: string
+store ^books(id: string): Book
+surface Books from ^books
+    fields title
+    collection ^books as list
+",
+    );
+    let (report, program) = check_with_accepted(&root);
+
+    assert_clean(&report);
+    assert!(
+        program.catalog.proposal.is_some(),
+        "store key-shape drift must produce a pending catalog proposal"
+    );
+    let [surface] = program.facts.surfaces() else {
+        panic!("expected one surface, got {:#?}", program.facts.surfaces());
+    };
+    assert_eq!(
+        surface.catalog_status,
+        SurfaceCatalogStatus::SourceOnly(vec![SurfaceCatalogBlocker::PendingCatalogProposal]),
+        "stable surface export must name the pending proposal blocker"
+    );
+}
+
+#[test]
+fn surface_facts_resolve_store_fields_and_collections() {
+    let source = "\
+module app
+resource Book
+    required title: string
+    author: string
+    tags(pos: int): string
+store ^books(id: int): Book
+    index byAuthor(author, id)
+surface Books from ^books
+    fields title, author
+    collection ^books as list
+    collection ^books.byAuthor as byAuthor
+    create title, author
+    update title
+";
+    let root = temp_project("surface-facts", |root| {
+        write(root, "src/app.mw", source);
+    });
+    let (report, program) = check_project(&root, &config()).expect("check");
+
+    assert_clean(&report);
+    let facts = &program.facts;
+    let module = facts.module_id("app").expect("app module");
+    let book = facts.resource_id(module, "Book").expect("Book");
+    let store = facts.store_id(module, "books").expect("^books");
+    let title = facts.resource_member_id(book, &["title"]).expect("title");
+    let author = facts.resource_member_id(book, &["author"]).expect("author");
+    let by_author = facts
+        .store_indexes()
+        .iter()
+        .find(|index| index.store == store && index.name == "byAuthor")
+        .expect("byAuthor")
+        .id;
+
+    let [surface] = facts.surfaces() else {
+        panic!("expected one surface, got {:#?}", facts.surfaces());
+    };
+    assert_eq!(facts.surface(surface.id), surface);
+    assert_eq!(surface.module, module);
+    assert_eq!(surface.name, "Books");
+    assert_eq!(surface.store, store);
+    assert_eq!(
+        surface.catalog_status,
+        SurfaceCatalogStatus::SourceOnly(vec![
+            SurfaceCatalogBlocker::PendingCatalogProposal,
+            SurfaceCatalogBlocker::MissingAcceptedCatalogIds,
+        ])
+    );
+    assert_eq!(
+        surface
+            .fields
+            .iter()
+            .map(|field| (field.name.as_str(), field.member))
+            .collect::<Vec<_>>(),
+        vec![("title", title), ("author", author)]
+    );
+    assert_eq!(
+        surface
+            .create
+            .iter()
+            .map(|field| (field.name.as_str(), field.member))
+            .collect::<Vec<_>>(),
+        vec![("title", title), ("author", author)]
+    );
+    assert_eq!(
+        surface
+            .update
+            .iter()
+            .map(|field| (field.name.as_str(), field.member))
+            .collect::<Vec<_>>(),
+        vec![("title", title)]
+    );
+    assert_eq!(
+        surface
+            .collections
+            .iter()
+            .map(|collection| (collection.alias.as_str(), collection.target))
+            .collect::<Vec<_>>(),
+        vec![
+            ("list", SurfaceCollectionTarget::StoreRoot(store)),
+            ("byAuthor", SurfaceCollectionTarget::StoreIndex(by_author)),
+        ]
+    );
+}
+
+#[test]
+fn surface_catalog_status_is_stable_only_with_accepted_ids() {
+    let source = "\
+module app
+resource Book
+    required title: string
+    author: string
+store ^books(id: int): Book
+    index byAuthor(author, id)
+surface Books from ^books
+    fields title, author
+    collection ^books.byAuthor as byAuthor
+";
+    let root = temp_project("surface-catalog-ready", |root| {
+        write(root, "src/app.mw", source);
+    });
+    let (baseline_report, baseline_program) =
+        check_project(&root, &config()).expect("baseline check");
+    assert_clean(&baseline_report);
+    let baseline = baseline_program
+        .catalog
+        .proposal
+        .expect("first run proposes accepted baseline");
+    crate::support::catalog::write_catalog(&root, &baseline);
+    let (report, program) = check_with_accepted(&root);
+
+    assert_clean(&report);
+    assert!(
+        program.catalog.proposal.is_none(),
+        "accepted baseline should match current source"
+    );
+    let [surface] = program.facts.surfaces() else {
+        panic!("expected one surface, got {:#?}", program.facts.surfaces());
+    };
+    assert_eq!(surface.catalog_status, SurfaceCatalogStatus::Stable);
+}
+
+#[test]
+fn surface_catalog_status_checks_collection_index_key_members() {
+    let root = temp_project("surface-index-key-member-catalog-status", |root| {
+        write(
+            root,
+            "src/app.mw",
+            "\
+module app
+resource Book
+    title: string
+store ^books(id: int): Book
+    index byLookup(title, id)
+surface Books from ^books
+    fields title
+    collection ^books.byLookup as byLookup
+",
+        );
+    });
+    let (baseline_report, baseline_program) =
+        check_project(&root, &config()).expect("baseline check");
+    assert_clean(&baseline_report);
+    let baseline = baseline_program
+        .catalog
+        .proposal
+        .expect("first run proposes accepted baseline");
+    crate::support::catalog::write_catalog(&root, &baseline);
+
+    write(
+        &root,
+        "src/app.mw",
+        "\
+module app
+resource Book
+    title: string
+    author: string
+store ^books(id: int): Book
+    index byLookup(author, id)
+surface Books from ^books
+    fields title
+    collection ^books.byLookup as byLookup
+",
+    );
+    let (report, program) = check_with_accepted(&root);
+
+    assert_clean(&report);
+    assert!(
+        program.catalog.proposal.is_some(),
+        "index shape drift should produce a pending catalog proposal"
+    );
+    let [surface] = program.facts.surfaces() else {
+        panic!("expected one surface, got {:#?}", program.facts.surfaces());
+    };
+    assert_eq!(
+        surface.catalog_status,
+        SurfaceCatalogStatus::SourceOnly(vec![
+            SurfaceCatalogBlocker::PendingCatalogProposal,
+            SurfaceCatalogBlocker::MissingAcceptedCatalogIds,
+        ])
+    );
+}
+
+#[test]
+fn surface_target_diagnostics_reject_missing_and_foreign_roots_and_indexes() {
+    let source = "\
+module app
+resource Book
+    title: string
+resource Author
+    name: string
+store ^books(id: int): Book
+    index byTitle(title, id)
+store ^authors(id: int): Author
+surface Missing from ^missing
+    fields title
+surface Foreign from ^books
+    fields title
+    collection ^authors as authors
+surface MissingIndex from ^books
+    fields title
+    collection ^books.byMissing as byMissing
+";
+    let root = temp_project("surface-target-diagnostics", |root| {
+        write(root, "src/app.mw", source);
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+
+    let diagnostics = surface_targets(&report);
+    assert_eq!(diagnostics.len(), 3, "{:#?}", report.diagnostics);
+    assert_eq!(
+        diagnostics[0].payload,
+        DiagnosticPayload::SurfaceTarget(SurfaceTargetDiagnostic::UnknownStore {
+            root: "missing".into(),
+        })
+    );
+    assert_eq!(
+        diagnostics[1].payload,
+        DiagnosticPayload::SurfaceTarget(SurfaceTargetDiagnostic::ForeignCollectionRoot {
+            surface_root: "books".into(),
+            target_root: "authors".into(),
+        })
+    );
+    assert_eq!(
+        diagnostics[2].payload,
+        DiagnosticPayload::SurfaceTarget(SurfaceTargetDiagnostic::UnknownCollectionIndex {
+            root: "books".into(),
+            index: "byMissing".into(),
+        })
+    );
+}
+
+#[test]
+fn surface_field_diagnostics_reject_unsupported_and_unprojected_payloads() {
+    let source = "\
+module app
+resource Book
+    required title: string
+    meta
+        subtitle: string
+    tags(pos: int): string
+    author: string
+store ^books(id: int): Book
+    index byAuthor(author, id)
+surface Books from ^books
+    fields title, meta, tags, id, byAuthor
+    create title, author
+    update author
+";
+    let root = temp_project("surface-field-diagnostics", |root| {
+        write(root, "src/app.mw", source);
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+
+    let diagnostics = surface_fields(&report);
+    assert_eq!(diagnostics.len(), 6, "{:#?}", report.diagnostics);
+    assert_eq!(
+        diagnostics
+            .iter()
+            .map(|diagnostic| &diagnostic.payload)
+            .collect::<Vec<_>>(),
+        vec![
+            &DiagnosticPayload::SurfaceField(SurfaceFieldDiagnostic {
+                list: SurfaceFieldList::Fields,
+                name: "meta".into(),
+                problem: SurfaceFieldProblem::Unsupported,
+            }),
+            &DiagnosticPayload::SurfaceField(SurfaceFieldDiagnostic {
+                list: SurfaceFieldList::Fields,
+                name: "tags".into(),
+                problem: SurfaceFieldProblem::Unsupported,
+            }),
+            &DiagnosticPayload::SurfaceField(SurfaceFieldDiagnostic {
+                list: SurfaceFieldList::Fields,
+                name: "id".into(),
+                problem: SurfaceFieldProblem::Unknown,
+            }),
+            &DiagnosticPayload::SurfaceField(SurfaceFieldDiagnostic {
+                list: SurfaceFieldList::Fields,
+                name: "byAuthor".into(),
+                problem: SurfaceFieldProblem::Unknown,
+            }),
+            &DiagnosticPayload::SurfaceField(SurfaceFieldDiagnostic {
+                list: SurfaceFieldList::Create,
+                name: "author".into(),
+                problem: SurfaceFieldProblem::NotProjected,
+            }),
+            &DiagnosticPayload::SurfaceField(SurfaceFieldDiagnostic {
+                list: SurfaceFieldList::Update,
+                name: "author".into(),
+                problem: SurfaceFieldProblem::NotProjected,
+            }),
+        ]
+    );
 }

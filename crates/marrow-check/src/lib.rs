@@ -7,6 +7,7 @@
 pub use marrow_store::value::ScalarType;
 
 pub mod analysis;
+mod backing_validity;
 pub mod binding;
 mod catalog;
 mod checks;
@@ -26,6 +27,7 @@ mod project_io;
 mod rejected_surface;
 pub mod resolve;
 mod rules;
+mod surface;
 #[cfg(feature = "test-support")]
 pub mod test_support;
 pub mod tooling;
@@ -54,12 +56,14 @@ pub use diagnostics::{
     CHECK_RANGE_VALUE, CHECK_READ_ONLY_EXPRESSION_CONTEXT, CHECK_READ_ONLY_EXPRESSION_HOST_EFFECT,
     CHECK_READ_ONLY_EXPRESSION_UNINDEXED_LOOKUP, CHECK_READ_ONLY_EXPRESSION_WRITE,
     CHECK_RECURSIVE_KEYED_ENTRY, CHECK_REJECTED_SURFACE, CHECK_REQUIRED_ABSENT, CHECK_RETURN_TYPE,
-    CHECK_RETURN_VALUE, CHECK_STRING_ESCAPE, CHECK_SURFACE_COLLISION, CHECK_THROW_TYPE,
-    CHECK_TRY_HANDLER, CHECK_UNKNOWN_ENUM_MEMBER, CHECK_UNKNOWN_FIELD, CHECK_UNKNOWN_TYPE,
-    CHECK_UNRESOLVED_CALL, CHECK_UNRESOLVED_IMPORT, CHECK_UNRESOLVED_NAME, CHECK_UNTYPED_VALUE,
-    CatalogIntentDiagnostic, CatalogIntentKind, CatalogPathCandidate, CheckDiagnostic, CheckReport,
-    ConversionTarget, ConversionUnsupportedSourceDiagnostic, DiagnosticPayload, EnumDiagnostic,
-    IO_READ, RejectedSurface, SCHEMA_DUPLICATE_ROOT_OWNER, SurfaceCollisionNameKind,
+    CHECK_RETURN_VALUE, CHECK_STRING_ESCAPE, CHECK_SURFACE_COLLISION, CHECK_SURFACE_FIELD,
+    CHECK_SURFACE_TARGET, CHECK_THROW_TYPE, CHECK_TRY_HANDLER, CHECK_UNKNOWN_ENUM_MEMBER,
+    CHECK_UNKNOWN_FIELD, CHECK_UNKNOWN_TYPE, CHECK_UNRESOLVED_CALL, CHECK_UNRESOLVED_IMPORT,
+    CHECK_UNRESOLVED_NAME, CHECK_UNTYPED_VALUE, CatalogIntentDiagnostic, CatalogIntentKind,
+    CatalogPathCandidate, CheckDiagnostic, CheckReport, ConversionTarget,
+    ConversionUnsupportedSourceDiagnostic, DiagnosticPayload, EnumDiagnostic, IO_READ,
+    RejectedSurface, SCHEMA_DUPLICATE_ROOT_OWNER, SurfaceCollisionNameKind, SurfaceFieldDiagnostic,
+    SurfaceFieldList, SurfaceFieldProblem, SurfaceTargetDiagnostic,
 };
 pub use driver::{
     ProjectSources, check_project, check_project_with_catalog, check_tests, check_tests_program,
@@ -86,7 +90,9 @@ pub use facts::{
     FunctionFact, FunctionId, HostEffect, LocalFact, LocalId, ModuleFact, ModuleId, ResourceFact,
     ResourceId, ResourceMemberFact, ResourceMemberId, ResourceMemberKind, SavedPlaceEffect,
     StoreFact, StoreId, StoreIdentityKeyFact, StoreIndexFact, StoreIndexId, StoreIndexKeyFact,
-    StoreIndexKeySource, StoredValueMeaning, WorkShapeClass,
+    StoreIndexKeySource, StoredValueMeaning, SurfaceCatalogBlocker, SurfaceCatalogStatus,
+    SurfaceCollectionFact, SurfaceCollectionTarget, SurfaceFact, SurfaceFieldFact, SurfaceId,
+    WorkShapeClass,
 };
 pub use facts::{
     PresenceProofFact, PresenceProofId, PresenceProofPlace, PresenceProofSource,

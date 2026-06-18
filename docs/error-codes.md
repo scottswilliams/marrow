@@ -132,6 +132,8 @@ over every configured source and test file.
 | `check.multiple_scripts` | A project holds more than one file without a `module` declaration. A project may have at most one single-file script (its entrypoint); every other file must declare a `module`. |
 | `check.duplicate_declaration` | A name is declared or imported more than once within a single file. |
 | `check.surface_collision` | A surface declaration name collides with a module-level or builtin name; a collection alias collides with another alias or generated `id`, `get`, `create`, or `update`; or a `fields`, `create`, or `update` payload list repeats a name. |
+| `check.surface_target` | A surface declaration targets an unknown, ambiguous, or invalid store root; a store whose normalized resource shape is ambiguous or invalid; a foreign store root; a keyless singleton root as a collection; or an unknown, ambiguous, or schema-invalid index on the surface's backing store. |
+| `check.surface_field` | A surface `fields`, `create`, or `update` item names an unknown, ambiguous, or schema-invalid field, a non-top-level/non-plain member, or a generated write field that is not part of the declared read projection. |
 | `check.unresolved_import` | A `use` names a module that is neither a project module nor a standard-library module. |
 | `check.unknown_type` | A type annotation names a type the checker does not recognize. |
 | `check.recursive_keyed_entry` | A typed keyed-entry layer names a resource whose typed keyed-entry layers recursively name the original resource. v0.1 expands typed entries to a finite saved member shape, so recursive entry shapes fail closed. |
@@ -469,8 +471,6 @@ diagnostics. They do not appear in v0.1 command output until those checks ship.
 | Code | Reserved meaning |
 |---|---|
 | `check.surface_decl` | A parsed surface declaration violates a checker-level declaration rule. Syntax failures remain `parse.syntax`. |
-| `check.surface_target` | A surface target is not a store, index, field, or operation shape supported by the surface design. |
-| `check.surface_field` | A surface field reference is unknown, private to the store shape, or outside the supported projection/input shape. |
 | `check.surface_catalog_pending` | Accepted catalog IDs are not available for every durable fact needed to export a stable surface ABI. |
 | `check.surface_operation` | A generated surface operation cannot be constructed from the checked store facts. |
 

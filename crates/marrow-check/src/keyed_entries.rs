@@ -15,9 +15,10 @@ use crate::{
 pub(crate) fn normalize_resource_layers(
     program: &mut CheckedProgram,
     parsed_files: &[(&marrow_project::ModuleFile, marrow_syntax::ParsedSource)],
+    backing_invalidations: Option<&mut crate::backing_validity::PendingBackingInvalidations>,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
-    let plan = plan_resource_layers(program, parsed_files, diagnostics);
+    let plan = plan_resource_layers(program, parsed_files, backing_invalidations, diagnostics);
     for item in plan {
         let Some(resource) = program
             .modules
@@ -39,12 +40,14 @@ struct ResourceLayerNormalization {
 fn plan_resource_layers(
     program: &CheckedProgram,
     parsed_files: &[(&marrow_project::ModuleFile, marrow_syntax::ParsedSource)],
+    backing_invalidations: Option<&mut crate::backing_validity::PendingBackingInvalidations>,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) -> Vec<ResourceLayerNormalization> {
     let mut plan = Vec::new();
     let mut normalizer = Normalizer {
         resolver: program,
         parsed_files,
+        backing_invalidations,
         diagnostics,
     };
     for (module_index, module) in program.modules.iter().enumerate() {
@@ -64,6 +67,8 @@ fn plan_resource_layers(
                 MemberScope {
                     file: &module.source_file,
                     module_name: &module.name,
+                    owner_file: &module.source_file,
+                    owner_resource: &resource.name,
                 },
                 &decl.members,
                 &mut members,
@@ -82,6 +87,7 @@ fn plan_resource_layers(
 struct Normalizer<'a, 'd> {
     resolver: &'a CheckedProgram,
     parsed_files: &'a [(&'a marrow_project::ModuleFile, marrow_syntax::ParsedSource)],
+    backing_invalidations: Option<&'d mut crate::backing_validity::PendingBackingInvalidations>,
     diagnostics: &'d mut Vec<CheckDiagnostic>,
 }
 
@@ -89,6 +95,8 @@ struct Normalizer<'a, 'd> {
 struct MemberScope<'a> {
     file: &'a Path,
     module_name: &'a str,
+    owner_file: &'a Path,
+    owner_resource: &'a str,
 }
 
 impl Normalizer<'_, '_> {
@@ -122,10 +130,11 @@ impl Normalizer<'_, '_> {
         match self.resolve_keyed_field_type(scope, field) {
             KeyedFieldType::Resource(target) => {
                 if let Some(decl) = &target.decl {
-                    self.validate_entry_resource(&target, decl);
+                    self.validate_entry_resource(scope, &target, decl);
                 }
                 let stack_key = (target.module_name.clone(), target.resource_name.clone());
                 if stack.contains(&stack_key) {
+                    self.record_owner_resource_invalid(scope);
                     self.push_recursive_keyed_entry(scope.file, field, &target.resource_name);
                     return;
                 }
@@ -136,6 +145,8 @@ impl Normalizer<'_, '_> {
                         MemberScope {
                             file: &target.source_file,
                             module_name: &target.module_name,
+                            owner_file: scope.owner_file,
+                            owner_resource: scope.owner_resource,
                         },
                         &decl.members,
                         &mut members,
@@ -151,9 +162,11 @@ impl Normalizer<'_, '_> {
                 node.members = members;
             }
             KeyedFieldType::PrivateEnum(name) => {
+                self.record_owner_resource_invalid(scope);
                 self.push_private_enum(scope.file, field.span, name);
             }
             KeyedFieldType::Unknown(ty) => {
+                self.record_owner_resource_invalid(scope);
                 self.push_unknown_type(scope.file, field, ty);
             }
             KeyedFieldType::SavedLeaf => {
@@ -184,6 +197,7 @@ impl Normalizer<'_, '_> {
                 Some(MarrowType::Enum { .. })
             )
         }) {
+            self.record_owner_resource_invalid(scope);
             self.push_schema_error(scope.file, error);
         }
     }
@@ -235,8 +249,14 @@ impl Normalizer<'_, '_> {
         KeyedFieldType::SavedLeaf
     }
 
-    fn validate_entry_resource(&mut self, target: &ResourceTarget, decl: &ResourceDecl) {
+    fn validate_entry_resource(
+        &mut self,
+        scope: MemberScope<'_>,
+        target: &ResourceTarget,
+        decl: &ResourceDecl,
+    ) {
         for error in marrow_schema::check_saved_member_rules(&decl.members) {
+            self.record_owner_resource_invalid(scope);
             self.push_schema_error(&target.source_file, error);
         }
 
@@ -255,6 +275,7 @@ impl Normalizer<'_, '_> {
                 Some(MarrowType::Enum { .. })
             )
         }) {
+            self.record_owner_resource_invalid(scope);
             self.push_schema_error(&target.source_file, error);
         }
     }
@@ -270,6 +291,12 @@ impl Normalizer<'_, '_> {
             CheckDiagnostic::error(code, file, span, message)
                 .with_payload(DiagnosticPayload::Schema(kind)),
         );
+    }
+
+    fn record_owner_resource_invalid(&mut self, scope: MemberScope<'_>) {
+        if let Some(backing_invalidations) = self.backing_invalidations.as_deref_mut() {
+            backing_invalidations.record_invalid_resource(scope.owner_file, scope.owner_resource);
+        }
     }
 
     fn push_recursive_keyed_entry(&mut self, file: &Path, field: &FieldDecl, resource_name: &str) {

@@ -72,6 +72,9 @@ that grouping unambiguous. Linked-Rust embedding remains an implementation
 profile for hosting surface facts and run sessions, not a separate app-data
 contract. Until a surface profile ships, typed entry invocation (`marrow run`
 with `--arg` and `--format json`) is the supported integration surface.
+Checked surface facts may exist before that profile ships; they are compiler
+facts over stores, fields, and indexes, not a stable runtime, transport, or
+generated-client contract.
 Future surface cursors are bound to store lineage: restore, restore-replace,
 store swap, data-dir replacement, and native store reinitialization mint a fresh
 store UID before surface serving resumes. A separate cursor-lineage nonce is a

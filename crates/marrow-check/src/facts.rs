@@ -34,6 +34,9 @@ pub struct StoreId(pub u32);
 pub struct StoreIndexId(pub u32);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SurfaceId(pub u32);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ResourceMemberId(pub u32);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -62,6 +65,7 @@ pub struct CheckedFacts {
     resources: Vec<ResourceFact>,
     stores: Vec<StoreFact>,
     store_indexes: Vec<StoreIndexFact>,
+    surfaces: Vec<SurfaceFact>,
     resource_members: Vec<ResourceMemberFact>,
     enums: Vec<EnumFact>,
     enum_members: Vec<EnumMemberFact>,
@@ -199,6 +203,18 @@ impl CheckedFacts {
 
     pub fn store_index(&self, id: StoreIndexId) -> &StoreIndexFact {
         &self.store_indexes[id.0 as usize]
+    }
+
+    pub fn surfaces(&self) -> &[SurfaceFact] {
+        &self.surfaces
+    }
+
+    pub fn surface(&self, id: SurfaceId) -> &SurfaceFact {
+        &self.surfaces[id.0 as usize]
+    }
+
+    pub(crate) fn set_surfaces(&mut self, surfaces: Vec<SurfaceFact>) {
+        self.surfaces = surfaces;
     }
 
     pub fn resource_members(&self) -> &[ResourceMemberFact] {
@@ -474,6 +490,7 @@ impl CheckedFacts {
         overwrite_prefix(&mut self.resources, &prefix.resources);
         overwrite_prefix(&mut self.stores, &prefix.stores);
         overwrite_prefix(&mut self.store_indexes, &prefix.store_indexes);
+        self.surfaces = prefix.surfaces.clone();
         overwrite_prefix(&mut self.resource_members, &prefix.resource_members);
         overwrite_prefix(&mut self.enums, &prefix.enums);
         overwrite_prefix(&mut self.enum_members, &prefix.enum_members);
@@ -813,6 +830,7 @@ impl CheckedFacts {
                 store: binding.store_id,
                 name: index.name.clone(),
                 unique: index.unique,
+                declared_key_count: index.args.len(),
                 keys,
                 catalog_id: None,
                 span,
@@ -1247,6 +1265,7 @@ pub struct StoreIndexFact {
     pub store: StoreId,
     pub name: String,
     pub unique: bool,
+    pub declared_key_count: usize,
     pub keys: Vec<StoreIndexKeyFact>,
     pub catalog_id: Option<String>,
     pub span: SourceSpan,
@@ -1263,6 +1282,54 @@ pub struct StoreIndexKeyFact {
 pub enum StoreIndexKeySource {
     IdentityKey,
     ResourceMember(ResourceMemberId),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SurfaceFact {
+    pub id: SurfaceId,
+    pub module: ModuleId,
+    pub name: String,
+    pub store: StoreId,
+    pub fields: Vec<SurfaceFieldFact>,
+    pub create: Vec<SurfaceFieldFact>,
+    pub update: Vec<SurfaceFieldFact>,
+    pub collections: Vec<SurfaceCollectionFact>,
+    pub catalog_status: SurfaceCatalogStatus,
+    pub span: SourceSpan,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SurfaceCatalogStatus {
+    Stable,
+    /// A source-only surface always names at least one blocker, so consumers can
+    /// explain why generated operations are not part of the stable ABI yet.
+    SourceOnly(Vec<SurfaceCatalogBlocker>),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SurfaceCatalogBlocker {
+    PendingCatalogProposal,
+    MissingAcceptedCatalogIds,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SurfaceFieldFact {
+    pub name: String,
+    pub member: ResourceMemberId,
+    pub span: SourceSpan,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SurfaceCollectionFact {
+    pub alias: String,
+    pub target: SurfaceCollectionTarget,
+    pub span: SourceSpan,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SurfaceCollectionTarget {
+    StoreRoot(StoreId),
+    StoreIndex(StoreIndexId),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

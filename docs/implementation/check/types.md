@@ -29,6 +29,8 @@ The orchestration that sequences the passes lives in `analysis.rs`, outside this
 | `crates/marrow-check/src/typerules.rs` | Pure lattice rules: `type_compatible`, `expects_conversion`, `as_primitive`, numeric/ordered/steppable predicates, literal-range envelope, mismatch display. |
 | `crates/marrow-check/src/rules.rs` | Structural (syntax-only) rules: try-handler presence, loop control-flow, loop saved-write cost warnings, catch-type, assignment-target validity, read-only parameters, const-constant-expr. |
 | `crates/marrow-check/src/facts.rs` | Read-only typed fact tables (`CheckedFacts`) with newtyped ids, `CheckedType`, `StoredValueMeaning` (durable-key decoding), presence proofs, effect summaries, catalog binding. |
+| `crates/marrow-check/src/backing_validity.rs` | Source-time backing invalidations resolved once into typed fact-id sets before surface fact emission. |
+| `crates/marrow-check/src/surface.rs` | Application-surface checker pass: resolves `surface` declarations to checker-valid store, top-level field, and index facts after catalog binding; records transport-neutral `SurfaceFact`s and emits `check.surface_target` / `check.surface_field`. |
 | `crates/marrow-check/src/enums.rs` | Enum resolution and `match`/`is` checking: cross-module signature normalization, `resolve_enum_member_path`, exhaustiveness/duplicate-arm, `resolve_type`. |
 | `crates/marrow-check/src/keyed_entries.rs` | Project-aware keyed resource-layer normalization, plus named enum field validation and diagnostics that schema compilation cannot decide alone. |
 | `crates/marrow-check/src/binding.rs` | The editor binding index: definition→reference map with scope/shadowing/alias awareness, reusing resolve/infer; `RenameSafety` (SourceOnly vs SavedDataBacked). |

@@ -408,6 +408,8 @@ impl TestResolutionSuppression {
             DiagnosticPayload::Schema(_)
             | DiagnosticPayload::DuplicateDeclaration { .. }
             | DiagnosticPayload::SurfaceCollision { .. }
+            | DiagnosticPayload::SurfaceTarget(_)
+            | DiagnosticPayload::SurfaceField(_)
             | DiagnosticPayload::DuplicateModule { .. }
             | DiagnosticPayload::ModulePath { .. }
             | DiagnosticPayload::ReservedTestModulePathSegment { .. }
@@ -499,6 +501,8 @@ pub(crate) fn check_tests_with_sources_analysis(
             enums,
             functions,
             constants,
+            rejected_surfaces: _,
+            backing_invalidations: _,
         } = check_file_source(&file.path, &source, &mut report.diagnostics);
         let reserved_module = file
             .module_name
@@ -565,6 +569,7 @@ pub(crate) fn check_tests_with_sources_analysis(
     crate::keyed_entries::normalize_resource_layers(
         project,
         &parsed_files,
+        None,
         &mut report.diagnostics,
     );
     project.rebuild_facts_with_sources_preserving_current_prefix(
@@ -582,6 +587,7 @@ pub(crate) fn check_tests_with_sources_analysis(
             module_name_policy: checks::ModuleNamePolicy::PathOnly,
             resolvable: &resolvable,
             program: project,
+            backing_invalidations: None,
         },
         &mut report,
     );
@@ -753,6 +759,8 @@ pub(crate) struct CheckedFile {
     pub(crate) enums: Vec<marrow_schema::EnumSchema>,
     pub(crate) functions: Vec<CheckedFunction>,
     pub(crate) constants: Vec<CheckedConst>,
+    pub(crate) rejected_surfaces: crate::surface::RejectedSurfaceDeclarations,
+    pub(crate) backing_invalidations: crate::backing_validity::PendingBackingInvalidations,
 }
 
 /// Resolve a file's text: the overlay entry for `file_path` if `sources` carries
@@ -807,7 +815,13 @@ pub(crate) fn check_file_source(
         });
     }
 
-    check_duplicate_declarations(file_path, &parsed.file, diagnostics);
+    let mut backing_invalidations = crate::backing_validity::PendingBackingInvalidations::default();
+    let rejected_surfaces = check_duplicate_declarations(
+        file_path,
+        &parsed.file,
+        &mut backing_invalidations,
+        diagnostics,
+    );
 
     let mut module_enums: Vec<String> = Vec::new();
     let mut module_stored_resources: HashSet<String> = HashSet::new();
@@ -837,6 +851,7 @@ pub(crate) fn check_file_source(
         &parsed,
         &module_stored_resources,
         &module_enums,
+        &mut backing_invalidations,
         diagnostics,
     );
     let mut stores = Vec::new();
@@ -850,7 +865,6 @@ pub(crate) fn check_file_source(
                 functions.push(checked_function(function, names));
             }
             marrow_syntax::Declaration::Resource(_) => {}
-            // A surface declaration is syntax-only for marrow-check.
             marrow_syntax::Declaration::Surface(_) => {}
             marrow_syntax::Declaration::Store(store) => {
                 if let Some(resource) = resources
@@ -859,6 +873,7 @@ pub(crate) fn check_file_source(
                 {
                     let (schema, errors) = marrow_schema::compile_store(store, resource);
                     for error in errors {
+                        backing_invalidations.record_store_error(file_path, store, &error);
                         // A stored resource is compiled twice — once for its
                         // resource schema, once for the store — so the same schema
                         // error can surface from both passes.
@@ -883,6 +898,7 @@ pub(crate) fn check_file_source(
             marrow_syntax::Declaration::Enum(decl) => {
                 let (schema, errors) = marrow_schema::compile_enum(decl);
                 for error in errors {
+                    backing_invalidations.record_invalid_enum(file_path, &decl.name);
                     push_schema_error(file_path, diagnostics, error);
                 }
                 enums.push(schema);
@@ -914,6 +930,8 @@ pub(crate) fn check_file_source(
         enums,
         functions,
         constants,
+        rejected_surfaces,
+        backing_invalidations,
     }
 }
 
@@ -922,6 +940,7 @@ fn checked_resources(
     parsed: &marrow_syntax::ParsedSource,
     module_stored_resources: &HashSet<String>,
     module_enums: &[String],
+    backing_invalidations: &mut crate::backing_validity::PendingBackingInvalidations,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) -> Vec<marrow_schema::ResourceSchema> {
     parsed
@@ -936,15 +955,18 @@ fn checked_resources(
             let has_store = module_stored_resources.contains(&resource.name);
             let (schema, errors) = marrow_schema::compile_resource(resource);
             for error in errors {
+                backing_invalidations.record_resource_error(file_path, &resource.name);
                 push_schema_error(file_path, diagnostics, error);
             }
             if has_store {
                 for error in marrow_schema::check_saved_member_rules(&resource.members) {
+                    backing_invalidations.record_resource_error(file_path, &resource.name);
                     push_schema_error(file_path, diagnostics, error);
                 }
                 for error in
                     marrow_schema::check_saved_named_member_fields(&resource.members, module_enums)
                 {
+                    backing_invalidations.record_resource_error(file_path, &resource.name);
                     push_schema_error(file_path, diagnostics, error);
                 }
             }
@@ -1135,6 +1157,10 @@ impl NameKind {
         self != Self::Import
     }
 
+    fn is_backing_owner(self) -> bool {
+        matches!(self, Self::Resource | Self::Enum)
+    }
+
     fn is_surface(self) -> bool {
         self == Self::Surface
     }
@@ -1168,6 +1194,7 @@ struct NameOwner {
 struct TopLevelNameOwners {
     first: NameOwner,
     first_surface: Option<NameOwner>,
+    first_backing_owner: Option<NameOwner>,
     has_builtin_declaration: bool,
 }
 
@@ -1176,6 +1203,7 @@ impl TopLevelNameOwners {
         Self {
             first,
             first_surface: first.kind.is_surface().then_some(first),
+            first_backing_owner: first.kind.is_backing_owner().then_some(first),
             has_builtin_declaration: first.is_builtin_declaration,
         }
     }
@@ -1192,6 +1220,9 @@ impl TopLevelNameOwners {
         if owner.kind.is_surface() && self.first_surface.is_none() {
             self.first_surface = Some(owner);
         }
+        if owner.kind.is_backing_owner() && self.first_backing_owner.is_none() {
+            self.first_backing_owner = Some(owner);
+        }
         self.has_builtin_declaration |= owner.is_builtin_declaration;
     }
 }
@@ -1202,9 +1233,12 @@ impl TopLevelNameOwners {
 fn check_duplicate_declarations(
     file: &Path,
     source: &marrow_syntax::SourceFile,
+    backing_invalidations: &mut crate::backing_validity::PendingBackingInvalidations,
     diagnostics: &mut Vec<CheckDiagnostic>,
-) {
+) -> crate::surface::RejectedSurfaceDeclarations {
     use marrow_syntax::Declaration;
+
+    let mut rejected_surfaces = crate::surface::RejectedSurfaceDeclarations::default();
 
     // A `use shelf::books` introduces the short name `books`.
     let mut introduced: Vec<IntroducedName<'_>> = Vec::new();
@@ -1273,10 +1307,17 @@ fn check_duplicate_declarations(
                 SurfaceCollisionNameKind::Builtin,
                 SurfaceCollisionNameKind::Surface,
             ));
+            reject_surface_owner(file, intro.kind, intro.span, &mut rejected_surfaces);
             record_top_level_owner(&mut first_seen, intro.name, owner);
             continue;
         }
         if is_builtin_declaration {
+            record_invalid_duplicate_backing_owner(
+                file,
+                intro.name,
+                intro.kind,
+                backing_invalidations,
+            );
             diagnostics.push(builtin_name_diagnostic(file, intro.name, intro.span));
             record_top_level_owner(&mut first_seen, intro.name, owner);
             continue;
@@ -1285,6 +1326,28 @@ fn check_duplicate_declarations(
         match first_seen.get_mut(intro.name) {
             Some(owners) => {
                 if let Some(first_surface) = owners.surface_collision_owner(intro.kind) {
+                    if intro.kind.is_backing_owner()
+                        && let Some(first_backing_owner) = owners.first_backing_owner
+                    {
+                        diagnostics.push(duplicate_declaration_diagnostic(
+                            file,
+                            intro.name,
+                            intro.span,
+                            first_backing_owner.span,
+                        ));
+                        record_invalid_duplicate_backing_owner(
+                            file,
+                            intro.name,
+                            first_backing_owner.kind,
+                            backing_invalidations,
+                        );
+                        record_invalid_duplicate_backing_owner(
+                            file,
+                            intro.name,
+                            intro.kind,
+                            backing_invalidations,
+                        );
+                    }
                     diagnostics.push(surface_collision_diagnostic(
                         file,
                         intro.name,
@@ -1293,27 +1356,35 @@ fn check_duplicate_declarations(
                         first_surface.kind.surface_collision_kind(),
                         intro.kind.surface_collision_kind(),
                     ));
+                    reject_surface_owner(
+                        file,
+                        first_surface.kind,
+                        first_surface.span,
+                        &mut rejected_surfaces,
+                    );
+                    reject_surface_owner(file, intro.kind, intro.span, &mut rejected_surfaces);
                 } else if owners.has_builtin_declaration {
                     owners.record(owner);
                     continue;
                 } else {
-                    diagnostics.push(
-                        CheckDiagnostic::error(
-                            CHECK_DUPLICATE_DECLARATION,
-                            file,
-                            intro.span,
-                            format!(
-                                "`{}` is already declared on line {}",
-                                intro.name, owners.first.span.line
-                            ),
-                        )
-                        .with_payload(
-                            DiagnosticPayload::DuplicateDeclaration {
-                                name: intro.name.to_string(),
-                                first_span: owners.first.span,
-                            },
-                        ),
+                    record_invalid_duplicate_backing_owner(
+                        file,
+                        intro.name,
+                        owners.first.kind,
+                        backing_invalidations,
                     );
+                    record_invalid_duplicate_backing_owner(
+                        file,
+                        intro.name,
+                        intro.kind,
+                        backing_invalidations,
+                    );
+                    diagnostics.push(duplicate_declaration_diagnostic(
+                        file,
+                        intro.name,
+                        intro.span,
+                        owners.first.span,
+                    ));
                 }
                 owners.record(owner);
             }
@@ -1326,7 +1397,9 @@ fn check_duplicate_declarations(
     for declaration in &source.declarations {
         match declaration {
             Declaration::Surface(surface) => {
-                check_surface_local_namespace(file, surface, diagnostics);
+                if check_surface_local_namespace(file, surface, diagnostics) {
+                    rejected_surfaces.reject(file, surface.span);
+                }
             }
             Declaration::Const(_)
             | Declaration::Resource(_)
@@ -1335,6 +1408,50 @@ fn check_duplicate_declarations(
             | Declaration::Enum(_)
             | Declaration::Evolve(_) => {}
         }
+    }
+
+    rejected_surfaces
+}
+
+fn duplicate_declaration_diagnostic(
+    file: &Path,
+    name: &str,
+    span: SourceSpan,
+    first_span: SourceSpan,
+) -> CheckDiagnostic {
+    CheckDiagnostic::error(
+        CHECK_DUPLICATE_DECLARATION,
+        file,
+        span,
+        format!("`{name}` is already declared on line {}", first_span.line),
+    )
+    .with_payload(DiagnosticPayload::DuplicateDeclaration {
+        name: name.to_string(),
+        first_span,
+    })
+}
+
+fn record_invalid_duplicate_backing_owner(
+    file: &Path,
+    name: &str,
+    kind: NameKind,
+    backing_invalidations: &mut crate::backing_validity::PendingBackingInvalidations,
+) {
+    match kind {
+        NameKind::Resource => backing_invalidations.record_invalid_resource(file, name),
+        NameKind::Enum => backing_invalidations.record_invalid_enum(file, name),
+        NameKind::Import | NameKind::Const | NameKind::Function | NameKind::Surface => {}
+    }
+}
+
+fn reject_surface_owner(
+    file: &Path,
+    kind: NameKind,
+    span: SourceSpan,
+    rejected_surfaces: &mut crate::surface::RejectedSurfaceDeclarations,
+) {
+    if kind.is_surface() {
+        rejected_surfaces.reject(file, span);
     }
 }
 
@@ -1366,12 +1483,13 @@ fn check_surface_local_namespace(
     file: &Path,
     surface: &marrow_syntax::SurfaceDecl,
     diagnostics: &mut Vec<CheckDiagnostic>,
-) {
+) -> bool {
     use marrow_syntax::SurfaceItem;
 
+    let mut collided = false;
     let mut operations: HashMap<&str, (SourceSpan, SurfaceCollisionNameKind)> = HashMap::new();
     for name in GENERATED_SURFACE_OPERATION_NAMES {
-        introduce_surface_local_name(
+        collided |= introduce_surface_local_name(
             file,
             diagnostics,
             &mut operations,
@@ -1387,7 +1505,7 @@ fn check_surface_local_namespace(
     for item in &surface.items {
         match item {
             SurfaceItem::Fields { names, span } => {
-                introduce_surface_payload_names(
+                collided |= introduce_surface_payload_names(
                     file,
                     diagnostics,
                     &mut fields,
@@ -1397,7 +1515,7 @@ fn check_surface_local_namespace(
                 );
             }
             SurfaceItem::Collection { alias, span, .. } => {
-                introduce_surface_local_name(
+                collided |= introduce_surface_local_name(
                     file,
                     diagnostics,
                     &mut operations,
@@ -1407,7 +1525,7 @@ fn check_surface_local_namespace(
                 );
             }
             SurfaceItem::Create { names, span } => {
-                introduce_surface_payload_names(
+                collided |= introduce_surface_payload_names(
                     file,
                     diagnostics,
                     &mut create,
@@ -1417,7 +1535,7 @@ fn check_surface_local_namespace(
                 );
             }
             SurfaceItem::Update { names, span } => {
-                introduce_surface_payload_names(
+                collided |= introduce_surface_payload_names(
                     file,
                     diagnostics,
                     &mut update,
@@ -1428,6 +1546,8 @@ fn check_surface_local_namespace(
             }
         }
     }
+
+    collided
 }
 
 fn introduce_surface_payload_names<'a>(
@@ -1437,10 +1557,12 @@ fn introduce_surface_payload_names<'a>(
     names: &'a [String],
     span: SourceSpan,
     kind: SurfaceCollisionNameKind,
-) {
+) -> bool {
+    let mut collided = false;
     for name in names {
-        introduce_surface_local_name(file, diagnostics, first_seen, name, span, kind);
+        collided |= introduce_surface_local_name(file, diagnostics, first_seen, name, span, kind);
     }
+    collided
 }
 
 fn introduce_surface_local_name<'a>(
@@ -1450,18 +1572,20 @@ fn introduce_surface_local_name<'a>(
     name: &'a str,
     span: SourceSpan,
     kind: SurfaceCollisionNameKind,
-) {
+) -> bool {
     if name.is_empty() {
-        return;
+        return false;
     }
     match first_seen.get(name).copied() {
         Some((first_span, first_kind)) => {
             diagnostics.push(surface_collision_diagnostic(
                 file, name, span, first_span, first_kind, kind,
             ));
+            true
         }
         None => {
             first_seen.insert(name, (span, kind));
+            false
         }
     }
 }

@@ -114,6 +114,8 @@ mod project_nested_scripts;
 mod project_schema;
 #[path = "cases/project_statements.rs"]
 mod project_statements;
+#[path = "cases/project_surface_backings.rs"]
+mod project_surface_backings;
 #[path = "cases/project_surfaces.rs"]
 mod project_surfaces;
 #[path = "cases/project_type_flow_builtins_and_conversions.rs"]

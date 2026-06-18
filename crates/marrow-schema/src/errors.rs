@@ -69,6 +69,64 @@ pub enum SchemaErrorKind {
     },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SchemaStoreInvalidation {
+    Store,
+    Index { name: String },
+}
+
+impl SchemaErrorKind {
+    pub fn store_invalidation(&self) -> Option<SchemaStoreInvalidation> {
+        match self {
+            Self::DuplicateMember {
+                target: SchemaDuplicateTarget::ResourceMember | SchemaDuplicateTarget::EnumMember,
+                ..
+            } => None,
+            Self::DuplicateMember {
+                target: SchemaDuplicateTarget::KeyParam,
+                ..
+            } => Some(SchemaStoreInvalidation::Store),
+            Self::DuplicateMember {
+                target: SchemaDuplicateTarget::Index,
+                name,
+            } => Some(SchemaStoreInvalidation::Index { name: name.clone() }),
+            Self::CategoryLeaf { .. }
+            | Self::ParentNotCategory { .. }
+            | Self::NonEnumNamedField { .. } => None,
+            Self::UnknownInSaved { target, .. } => match target {
+                SchemaSavedUnknownTarget::Field
+                | SchemaSavedUnknownTarget::Key
+                | SchemaSavedUnknownTarget::KeyedLeaf => None,
+                SchemaSavedUnknownTarget::IdentityKey => Some(SchemaStoreInvalidation::Store),
+            },
+            Self::KeyMemberCollision { collision } => match collision {
+                SchemaNameCollision::IdentityKeyWithMember { .. } => {
+                    Some(SchemaStoreInvalidation::Store)
+                }
+                SchemaNameCollision::IdentityKeyWithIndex { index, .. } => {
+                    Some(SchemaStoreInvalidation::Index {
+                        name: index.clone(),
+                    })
+                }
+            },
+            Self::UnknownIndexArg { index, .. }
+            | Self::IndexMissingIdentityKeys { index }
+            | Self::IndexRequiresKeyedRoot { index }
+            | Self::NestedIndexArg { index, .. } => Some(SchemaStoreInvalidation::Index {
+                name: index.clone(),
+            }),
+            Self::UnorderableKey { target, .. } | Self::NonScalarKey { target, .. } => match target
+            {
+                SchemaKeyTarget::IdentityKey { .. } => Some(SchemaStoreInvalidation::Store),
+                SchemaKeyTarget::KeyParam { .. } => None,
+                SchemaKeyTarget::IndexArg { index, .. } => Some(SchemaStoreInvalidation::Index {
+                    name: index.clone(),
+                }),
+            },
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SchemaDuplicateTarget {
     ResourceMember,

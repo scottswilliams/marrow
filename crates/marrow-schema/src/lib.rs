@@ -28,7 +28,7 @@ pub use errors::{
     SCHEMA_NON_ENUM_NAMED_FIELD, SCHEMA_NONSCALAR_KEY, SCHEMA_PARENT_NOT_CATEGORY,
     SCHEMA_UNKNOWN_IN_SAVED, SCHEMA_UNKNOWN_INDEX_ARG, SCHEMA_UNORDERABLE_KEY,
     SchemaDuplicateTarget, SchemaError, SchemaErrorKind, SchemaKeyTarget, SchemaNameCollision,
-    SchemaSavedUnknownTarget,
+    SchemaSavedUnknownTarget, SchemaStoreInvalidation,
 };
 pub use presence::ReturnPresence;
 pub use types::{

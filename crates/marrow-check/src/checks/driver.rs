@@ -32,6 +32,8 @@ pub(crate) struct ResolvedFileCheck<'a> {
     pub(crate) module_name_policy: ModuleNamePolicy,
     pub(crate) resolvable: &'a HashMap<String, PathBuf>,
     pub(crate) program: &'a CheckedProgram,
+    pub(crate) backing_invalidations:
+        Option<&'a mut crate::backing_validity::PendingBackingInvalidations>,
 }
 
 pub(crate) fn check_resolved_files(input: ResolvedFileCheck<'_>, report: &mut CheckReport) {
@@ -41,6 +43,7 @@ pub(crate) fn check_resolved_files(input: ResolvedFileCheck<'_>, report: &mut Ch
         module_name_policy,
         resolvable,
         program,
+        mut backing_invalidations,
     } = input;
 
     // Every `use` must name a resolvable module now that the full set is known.
@@ -61,7 +64,13 @@ pub(crate) fn check_resolved_files(input: ResolvedFileCheck<'_>, report: &mut Ch
     }
 
     for (file, parsed) in parsed_files {
-        check_file_types(program, &file.path, parsed, &mut report.diagnostics);
+        check_file_types(
+            program,
+            &file.path,
+            parsed,
+            backing_invalidations.as_deref_mut(),
+            &mut report.diagnostics,
+        );
     }
 
     // A file that failed to parse or read is excluded from the program, so exact
@@ -82,6 +91,8 @@ pub(crate) fn check_resolved_files(input: ResolvedFileCheck<'_>, report: &mut Ch
                 | DiagnosticPayload::Schema(_)
                 | DiagnosticPayload::DuplicateDeclaration { .. }
                 | DiagnosticPayload::SurfaceCollision { .. }
+                | DiagnosticPayload::SurfaceTarget(_)
+                | DiagnosticPayload::SurfaceField(_)
                 | DiagnosticPayload::DuplicateModule { .. }
                 | DiagnosticPayload::ModulePath { .. }
                 | DiagnosticPayload::ReservedTestModulePathSegment { .. }
@@ -223,6 +234,7 @@ pub(crate) fn check_file_types(
     program: &CheckedProgram,
     file: &Path,
     parsed: &marrow_syntax::ParsedSource,
+    backing_invalidations: Option<&mut crate::backing_validity::PendingBackingInvalidations>,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
     let has_parse_errors = parsed.has_errors();
@@ -236,6 +248,7 @@ pub(crate) fn check_file_types(
         aliases: &aliases,
         file,
     };
+    let mut backing_invalidations = backing_invalidations;
     let stored_resources: HashSet<&str> = parsed
         .file
         .declarations
@@ -308,13 +321,17 @@ pub(crate) fn check_file_types(
             marrow_syntax::Declaration::Resource(resource) => {
                 if stored_resources.contains(resource.name.as_str()) {
                     check_resource_identity_annotations(
+                        resource.name.as_str(),
                         &resource.members,
                         &annotation_context,
+                        backing_invalidations.as_deref_mut(),
                         diagnostics,
                     );
                     check_qualified_saved_named_field_annotations(
+                        resource.name.as_str(),
                         &resource.members,
                         &annotation_context,
+                        backing_invalidations.as_deref_mut(),
                         diagnostics,
                     );
                 } else {
@@ -335,8 +352,10 @@ pub(crate) fn check_file_types(
 }
 
 fn check_qualified_saved_named_field_annotations(
+    resource_name: &str,
     members: &[marrow_syntax::ResourceMember],
     context: &TypeAnnotationContext<'_>,
+    mut backing_invalidations: Option<&mut crate::backing_validity::PendingBackingInvalidations>,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
     for error in marrow_schema::check_saved_named_member_fields_with(members, |name| {
@@ -353,6 +372,9 @@ fn check_qualified_saved_named_field_annotations(
             Some(MarrowType::Enum { .. })
         )
     }) {
+        if let Some(backing_invalidations) = backing_invalidations.as_deref_mut() {
+            backing_invalidations.record_resource_error(context.file, resource_name);
+        }
         push_schema_error(context.file, diagnostics, error);
     }
 }
@@ -438,36 +460,48 @@ fn check_resource_type_annotations(
 }
 
 fn check_resource_identity_annotations(
+    resource_name: &str,
     members: &[marrow_syntax::ResourceMember],
     context: &TypeAnnotationContext<'_>,
+    mut backing_invalidations: Option<&mut crate::backing_validity::PendingBackingInvalidations>,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
     for member in members {
         match member {
             marrow_syntax::ResourceMember::Field(field) => {
-                check_unknown_identity_type_annotation(
-                    &field.ty,
-                    field.ty.span,
-                    context,
-                    diagnostics,
-                );
+                if let Some(name) = unknown_identity_type_ref(&field.ty, context) {
+                    if let Some(backing_invalidations) = backing_invalidations.as_deref_mut() {
+                        backing_invalidations.record_invalid_resource(context.file, resource_name);
+                    }
+                    push_unknown_identity_type_diagnostic(
+                        name,
+                        Type::resolve(&field.ty),
+                        field.ty.span,
+                        context,
+                        diagnostics,
+                    );
+                }
             }
             marrow_syntax::ResourceMember::Group(group) => {
-                check_resource_identity_annotations(&group.members, context, diagnostics);
+                check_resource_identity_annotations(
+                    resource_name,
+                    &group.members,
+                    context,
+                    backing_invalidations.as_deref_mut(),
+                    diagnostics,
+                );
             }
         }
     }
 }
 
-fn check_unknown_identity_type_annotation(
-    ty: &marrow_syntax::TypeRef,
+fn push_unknown_identity_type_diagnostic(
+    name: String,
+    resolved: Type,
     span: SourceSpan,
     context: &TypeAnnotationContext<'_>,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
-    let Some(name) = unknown_identity_type_ref(ty, context) else {
-        return;
-    };
     diagnostics.push(
         CheckDiagnostic::error(
             CHECK_UNKNOWN_TYPE,
@@ -475,7 +509,7 @@ fn check_unknown_identity_type_annotation(
             span,
             format!("unknown type `{name}`"),
         )
-        .with_payload(DiagnosticPayload::UnknownType(Type::resolve(ty))),
+        .with_payload(DiagnosticPayload::UnknownType(resolved)),
     );
 }
 

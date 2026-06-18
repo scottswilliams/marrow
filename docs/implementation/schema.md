@@ -45,7 +45,7 @@ Two single-source tables live here so checker and runtime never grow parallel co
 | `crates/marrow-schema/src/lib.rs` | Thin crate root: module declarations and the `pub use` re-exports that fix the public API paths |
 | `crates/marrow-schema/src/types.rs` | `Type` resolution and the `ResourceSchema`/`StoreSchema`/`Node`/`NodeKind`/`KeyDef`/`IndexSchema` tree shapes with their query impls |
 | `crates/marrow-schema/src/enums.rs` | `EnumSchema`/`EnumMemberSchema`/`MemberPathResolution` and the value/`is`/`match` member-path queries |
-| `crates/marrow-schema/src/errors.rs` | The `SchemaError` vocabulary: `SchemaErrorKind`, the typed target enums, the `schema.*` codes, and the message constructors |
+| `crates/marrow-schema/src/errors.rs` | The `SchemaError` vocabulary: `SchemaErrorKind`, the typed target enums, the `schema.*` codes, message constructors, and the store/index invalidation classifier consumed by checker backing validation |
 | `crates/marrow-schema/src/compile.rs` | The `compile_*` entries, member→`Node` lowering with sequence desugaring, enum flattening, and `sequence` type-spelling parsing |
 | `crates/marrow-schema/src/validate.rs` | Single-declaration validation: duplicate-name tracking, the orderable-scalar key allowlist, store identity-key/index checks, and the saved-member rules |
 | `crates/marrow-schema/src/presence.rs` | The shared return-presence enum used by stdlib rows and checked user-function descriptors |
