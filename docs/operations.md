@@ -127,6 +127,7 @@ Every emitting surface belongs to one regime:
 | Surface | Regime | Boundary |
 |---|---|---|
 | `marrow run` program output, `print`, and granted `std::io` writes | Application egress | Output chosen by the program and host; not a store export or tooling protocol. |
+| Future surface serving responses and generated-client runtime output | Application egress | Checked application ABI output chosen by a declared `surface` and its boundary profile; not admin inspection, backup, repair, or raw saved-path export. |
 | `std::log`, run trace, dry-run, check, test, evolve, restore receipts, and data command reports | Tooling egress | Compiler/runtime/store facts for operators and tools; message prose is not a stable API. |
 | `marrow data dump`, `data get`, and `data integrity` findings | Admin inspection egress | May expose saved paths or value bytes; not a backup format, sync format, or production data API. |
 | `marrow backup` archives | Portable data egress | The canonical exit format for saved data: manifest, accepted catalog rows, and typed data cells. |

@@ -72,6 +72,10 @@ that grouping unambiguous. Linked-Rust embedding remains an implementation
 profile for hosting surface facts and run sessions, not a separate app-data
 contract. Until a surface profile ships, typed entry invocation (`marrow run`
 with `--arg` and `--format json`) is the supported integration surface.
+Future surface cursors are bound to store lineage: restore, restore-replace,
+store swap, data-dir replacement, and native store reinitialization mint a fresh
+store UID before surface serving resumes. A separate cursor-lineage nonce is a
+future alternative lineage anchor.
 
 The `signature_digest` field in the run JSON envelope is reserved for the future
 function ABI identity model and remains `null` in v0.1. The `raises` field is
