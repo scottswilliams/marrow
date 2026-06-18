@@ -392,6 +392,7 @@ pub enum EnumDiagnostic {
 /// diagnostic.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SurfaceCollisionNameKind {
+    Builtin,
     Import,
     Const,
     Resource,
@@ -408,6 +409,7 @@ pub enum SurfaceCollisionNameKind {
 impl SurfaceCollisionNameKind {
     pub fn label(self) -> &'static str {
         match self {
+            Self::Builtin => "builtin",
             Self::Import => "import",
             Self::Const => "const",
             Self::Resource => "resource",

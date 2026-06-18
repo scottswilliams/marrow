@@ -283,9 +283,9 @@ block is an error. Shadowing from inner blocks is allowed.
 
 ## Name Resolution
 
-Module-level functions, constants, enums, resources, and imported short module
-names share one namespace inside a module. A module cannot declare a function
-and a resource with the same name.
+Module-level functions, constants, enums, resources, surface declarations, and
+imported short module names share one source namespace inside a module. A module
+cannot declare a function and a resource with the same name.
 
 Names resolve in this order:
 
@@ -294,11 +294,12 @@ Names resolve in this order:
 3. declarations in the current module,
 4. builtins.
 
-Module-level declarations — functions, constants, enums, and resources — cannot
-redefine builtin names such as `exists`, `keys`, `Error`, `print`, or `int`. An
-imported short module name binds the import even when it matches a builtin name,
-shadowing the builtin within the file. Local variables may also shadow builtin
-names.
+Module-level declarations — functions, constants, enums, resources, and surfaces
+— cannot redefine builtin names such as `exists`, `keys`, `Error`, `print`, or
+`int`. An imported short module name binds the import even when it matches a
+builtin name, shadowing the builtin within the file. Local variables may also
+shadow builtin names. Surface declarations participate here as source names only;
+this namespace rule does not define generated runtime or ABI behavior.
 
 ## Host Boundaries
 

@@ -30,6 +30,13 @@ fn duplicate_declarations(
     with_code(report, "check.duplicate_declaration")
 }
 
+fn duplicate_declaration_lines(report: &marrow_check::CheckReport) -> Vec<u32> {
+    duplicate_declarations(report)
+        .into_iter()
+        .map(|diagnostic| diagnostic.span.line)
+        .collect()
+}
+
 fn assert_surface_collision_payload(
     diagnostic: &marrow_check::CheckDiagnostic,
     name: &str,
@@ -157,7 +164,37 @@ surface Books from ^books
 }
 
 #[test]
-fn surface_collisions_on_builtin_names_report_surface_payloads() {
+fn surface_builtin_name_uses_surface_collision_without_duplicate_declaration() {
+    let source = "\
+module app
+surface exists from ^books
+    fields title
+";
+    let root = temp_project("surface-builtin-name", |root| {
+        write(root, "src/app.mw", source);
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+
+    let collisions = surface_collisions(&report);
+    assert_eq!(collisions.len(), 1, "{:#?}", report.diagnostics);
+    assert_surface_collision_payload(
+        collisions[0],
+        "exists",
+        SurfaceCollisionNameKind::Builtin,
+        SurfaceCollisionNameKind::Surface,
+        source,
+        2,
+    );
+    assert_eq!(collisions[0].span.line, 2, "{:#?}", collisions[0]);
+    assert!(
+        duplicate_declarations(&report).is_empty(),
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
+fn surface_collisions_on_builtin_names_do_not_leak_duplicate_declarations() {
     let cases = [
         (
             "\
@@ -167,10 +204,8 @@ fn exists()
 surface exists from ^books
     fields title
 ",
-            SurfaceCollisionNameKind::Function,
-            SurfaceCollisionNameKind::Surface,
-            2,
             4,
+            vec![2],
         ),
         (
             "\
@@ -180,10 +215,8 @@ surface exists from ^books
 fn exists()
     return
 ",
-            SurfaceCollisionNameKind::Surface,
-            SurfaceCollisionNameKind::Function,
             2,
-            4,
+            vec![4],
         ),
         (
             "\
@@ -192,16 +225,12 @@ use shelf::exists
 surface exists from ^books
     fields title
 ",
-            SurfaceCollisionNameKind::Import,
-            SurfaceCollisionNameKind::Surface,
-            2,
             3,
+            vec![],
         ),
     ];
 
-    for (index, (source, first_kind, duplicate_kind, first_line, duplicate_line)) in
-        cases.into_iter().enumerate()
-    {
+    for (index, (source, surface_line, duplicate_lines)) in cases.into_iter().enumerate() {
         let root = temp_project(&format!("surface-builtin-collision-{index}"), |root| {
             write(root, "src/app.mw", source);
         });
@@ -212,15 +241,21 @@ surface exists from ^books
         assert_surface_collision_payload(
             collisions[0],
             "exists",
-            first_kind,
-            duplicate_kind,
+            SurfaceCollisionNameKind::Builtin,
+            SurfaceCollisionNameKind::Surface,
             source,
-            first_line,
+            surface_line,
         );
         assert_eq!(
-            collisions[0].span.line, duplicate_line,
+            collisions[0].span.line, surface_line,
             "{:#?}",
             collisions[0]
+        );
+        assert_eq!(
+            duplicate_declaration_lines(&report),
+            duplicate_lines,
+            "{:#?}",
+            report.diagnostics
         );
     }
 }

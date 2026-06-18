@@ -1259,14 +1259,28 @@ fn check_duplicate_declarations(
         }
 
         let is_builtin_declaration = intro.kind.is_declaration() && is_builtin_name(intro.name);
-        if is_builtin_declaration {
-            diagnostics.push(builtin_name_diagnostic(file, intro.name, intro.span));
-        }
         let owner = NameOwner {
             span: intro.span,
             kind: intro.kind,
             is_builtin_declaration,
         };
+        if is_builtin_declaration && intro.kind.is_surface() {
+            diagnostics.push(surface_collision_diagnostic(
+                file,
+                intro.name,
+                intro.span,
+                intro.span,
+                SurfaceCollisionNameKind::Builtin,
+                SurfaceCollisionNameKind::Surface,
+            ));
+            record_top_level_owner(&mut first_seen, intro.name, owner);
+            continue;
+        }
+        if is_builtin_declaration {
+            diagnostics.push(builtin_name_diagnostic(file, intro.name, intro.span));
+            record_top_level_owner(&mut first_seen, intro.name, owner);
+            continue;
+        }
 
         match first_seen.get_mut(intro.name) {
             Some(owners) => {
@@ -1320,6 +1334,19 @@ fn check_duplicate_declarations(
             | Declaration::Function(_)
             | Declaration::Enum(_)
             | Declaration::Evolve(_) => {}
+        }
+    }
+}
+
+fn record_top_level_owner<'a>(
+    first_seen: &mut HashMap<&'a str, TopLevelNameOwners>,
+    name: &'a str,
+    owner: NameOwner,
+) {
+    match first_seen.get_mut(name) {
+        Some(owners) => owners.record(owner),
+        None => {
+            first_seen.insert(name, TopLevelNameOwners::new(owner));
         }
     }
 }
