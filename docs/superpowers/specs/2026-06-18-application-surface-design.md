@@ -23,6 +23,9 @@ Routes, JSON, TypeScript clients, identity codecs, paging, errors, and cache
 facts are renderers over checked surface facts. They are not separate semantic
 owners.
 
+This design supersedes the earlier `serve` URI-tree proposal. Do not implement
+`serve` as a separate public language surface.
+
 ## Design Principle
 
 Marrow's advantage is that source, resource types, stores, identities, indexes,
@@ -40,7 +43,7 @@ generate the boring boundary work:
 The source remains Marrow-shaped. It declares typed resources, durable stores,
 indexes, surfaces, and functions. Transports adapt checked facts. The first
 implementation slice is read-only; create and update are specified here as
-follow-on slices because JSON input decoding and managed writes need their own
+follow-on slices because object-body decoding and managed writes need their own
 soundness review.
 
 ## Source Shape
@@ -107,6 +110,8 @@ remains an ordinary `pub fn`.
   omitted from `fields`, but it will not be returned by generated reads.
 - `update` is the accepted field-write input shape. A field can be update-only
   and omitted from `fields`, but it will not be returned by generated reads.
+  In the follow-on generated-update slice, any update-only field must be sparse;
+  a required private write path needs an explicit `pub fn`.
 - A field absent from `create` and `update` is not writable through generated
   operations. Ordinary `pub fn` code can still implement custom write behavior.
 
@@ -120,33 +125,41 @@ semantics.
 
 ### Get
 
-Every surface with `fields` has a generated identity read:
+Every surface with `fields` has a generated identity read. In the notation below,
+`Books.record` names the `SurfaceAbi` projection descriptor for the surface
+record; it is not a `.mw` type alias.
 
 ```text
-get(id: Id(^books)): Books.Record
+get(id: Id(^books)): Books.record
 ```
 
 The generated operation:
 
-- decodes the identity through the same `Id(^store)` boundary used by Marrow;
+- decodes the identity through the read request-parameter codec and the same
+  `Id(^store)` guard used by Marrow;
 - proves the record node exists for this request. Ordinary absence is a
   catchable surface absence and can render as HTTP 404 in an HTTP profile;
-- verifies required-field completeness for the backing resource, including
-  required fields inside unkeyed groups, before rendering the public projection;
+- materializes the full non-keyed backing resource body before projection:
+  top-level fields and unkeyed groups, including non-public required fields;
 - includes the typed public identity in the result;
-- reads only the declared public fields;
-- applies normal required/sparse data rules.
+- emits only the declared public projection;
+- applies normal required/sparse data rules while materializing.
+
+The read footprint and the output projection are different contracts. The read
+footprint is full non-keyed resource materialization so missing non-public
+required data cannot be served as a valid public record. The projection is the
+public shape emitted to the client. This costs one full non-keyed record
+materialization per `get`; keyed child layers remain outside the read slice.
 
 A malformed identity is a request-shape error. Invalid attached data is
 different: if backing-resource verification finds missing required data or a
-stored leaf needed by the surface cannot decode as the checked type, the
-operation raises a fatal data-attachment fault. That fault is not catchable
-Marrow control flow and is not mapped to a 4xx client error. A surface host
-isolates the fault to the current operation, returns a sanitized service fault
-at the transport boundary, keeps serving other requests, and relies on
-`marrow data integrity` or repair workflows to identify and fix the corrupt
-record. A collection page that reaches a corrupt record fails the page; it must
-not skip the record silently.
+stored leaf in the materialized non-keyed backing resource cannot decode as the
+checked type, the operation raises a fatal data-attachment fault. That fault is
+not catchable Marrow control flow and is not mapped to a 4xx client error. A
+surface host isolates the fault to the current operation, returns a sanitized
+service fault at the transport boundary, keeps serving other requests, and
+relies on `marrow data integrity` or repair workflows to identify and fix the
+corrupt record.
 
 ### Collections
 
@@ -169,6 +182,13 @@ non-identity component to enumerate.
 
 Collections never materialize an unbounded list. The ABI always includes a page
 limit and an opaque cursor contract.
+
+Each returned collection row performs the same full non-keyed backing-resource
+materialization as `get`, then emits the public projection. A page that reaches a
+corrupt record fails the whole page and returns no advancing cursor boundary.
+The rest of that collection remains unavailable through this surface until
+operator repair fixes the corrupt record. This is the accepted
+consistency-over-availability tradeoff for the read slice.
 
 ### Create
 
@@ -229,30 +249,85 @@ the existing owners:
 - the backing store and resource catalog IDs;
 - the public member catalog IDs for `fields`, `create`, and `update`;
 - the declared index catalog IDs used by collections;
-- checked read-effect summaries by reference;
+- generated read footprints and cost shapes computed by construction, reusing
+  existing footprint/cost-shape machinery where useful;
 - checked managed-write summaries by reference once write slices are
   implemented;
-- the surface JSON input and output codec descriptors;
+- the read request-parameter codec descriptor;
+- the generated-write object-body codec descriptor once write slices are
+  implemented;
+- the surface JSON output codec descriptor;
 - the cursor token descriptor;
 - the public error envelope descriptor.
 
-The ABI digest is a computed renderer equality tag. It is derived from the
-surface declaration, the surface protocol version, and the referenced source and
-catalog facts that already have single owners. It is not stored in
-`marrow.catalog.json`, does not allocate a durable identity, and does not bypass
-the existing activation, catalog, source-digest, runtime-generation, or commit
-fences. A renderer can use the digest to reject a stale generated client, but
-that rejection is a presentation-layer guard over existing semantic facts.
+The ABI digest is a computed renderer equality tag for the whole surface. It is
+derived from the surface declaration, the surface protocol version, every
+operation equality tag, and the referenced source and catalog facts that already
+have single owners. It is not stored in `marrow.catalog.json`, does not allocate
+a durable identity, and does not bypass the existing activation, catalog,
+source-digest, runtime-generation, or commit fences. A renderer can use the
+digest to reject a stale generated client, but that rejection is a
+presentation-layer guard over existing semantic facts.
+
+Each generated operation also has an operation equality tag. It is a
+deterministic hash of the surface protocol version plus that operation's ABI
+slice: operation kind, module-qualified surface alias, backing store/resource
+catalog IDs, projected member IDs, collection index ID when present, request
+parameter codec descriptor, output projection descriptor, cursor codec version,
+and public error envelope descriptor.
 
 Alias deprecation, compatibility windows, and generated adapters are deferred
 until a compatibility design is accepted.
 
-## Surface JSON Codecs
+## Surface Boundary Codecs
 
 Surface operations use a dedicated surface JSON codec. They do not route through
 the `marrow run --format json` entry boundary, and they do not use `std::json`.
 `std::json` remains a scalar JSON helper inside Marrow programs; it does not map
 JSON objects to resources.
+
+### Read Request Parameters
+
+The read slice includes request-parameter decoding for generated `get`,
+collection parameters, and cursor continuations. This is narrower than the
+follow-on object-body decoder for generated create/update.
+
+The request-parameter codec decodes:
+
+- `Id(^store)` arguments for `get`;
+- scalar, enum, and `Id(^store)` exact parameters for index collections;
+- cursor tokens and their last returned typed key boundary.
+
+The codec rejects malformed JSON, unknown enum text, wrong-store identities,
+wrong key arity, wrong scalar key types, malformed cursors, and cursor tokens
+whose operation equality tag no longer matches the active operation facts.
+
+### JSON Identity Form
+
+The normative surface JSON form for an identity is:
+
+```json
+{"$id":{"store":"library::^books","keys":[1]}}
+```
+
+Composite identities use the same object with multiple `keys` entries:
+
+```json
+{"$id":{"store":"school::^enrollments","keys":["student-1","course-9"]}}
+```
+
+The `store` value is the module-qualified public store alias carried by the
+surface facts. The `keys` array is always present, even for a single-key store,
+and each key uses the surface scalar JSON form for its checked key type. A
+single-key identity never collapses to a raw scalar. Decoders reject missing
+fields, extra fields, a non-array `keys`, wrong key arity, wrong key type, and a
+store alias that does not match the expected `Id(^store)` type.
+
+HTTP path or query renderers can choose a compact route spelling, but that
+spelling is presentation. It must round-trip through this identity form and the
+typed identity guard.
+
+### Output Codec
 
 The output codec is the single owner for surface-record projection to JSON:
 
@@ -260,8 +335,7 @@ The output codec is the single owner for surface-record projection to JSON:
 - sparse fields render as omitted when absent;
 - JSON `null` is not emitted for Marrow absence;
 - missing required saved data is a fatal data-attachment fault, not `null`;
-- `Id(^store)` values render as branded store-aware identity values, never raw
-  scalars without provenance;
+- `Id(^store)` values render with the normative JSON identity form above;
 - enum values render by accepted member identity and current public spelling;
 - decimals, dates, instants, durations, bytes, and error codes use one
   normative surface JSON form;
@@ -274,8 +348,10 @@ The renderer can additionally produce links for HTTP or hypermedia profiles, but
 the ABI value is the typed identity. Links are presentation, not semantic
 identity.
 
-The input codec is the single owner for JSON-to-Marrow decoding of generated
-create and update inputs:
+### Generated-Write Object Body Codec
+
+This follow-on codec is the single owner for JSON-to-Marrow decoding of
+generated create and update object bodies:
 
 - object inputs reject unknown keys;
 - required create keys must be present according to the checked create contract;
@@ -302,6 +378,11 @@ A cursor token is bound to:
 - page size;
 - last returned typed key boundary;
 - cursor codec version.
+
+The surface protocol version is the semantic ABI version. The cursor codec
+version is only the parser version for the cursor token format; it is included
+inside the operation equality tag so a cursor written by an old codec fails
+closed when the active operation cannot decode it under the same ABI slice.
 
 Continuation uses a strict greater-than seek from the last returned key boundary
 under the same operation parameters, ordering, projection, and page size.
@@ -345,6 +426,23 @@ Surface renderers expose a public error envelope with:
 - `code`: stable dotted public error code;
 - `message`: public diagnostic text suitable for the client boundary;
 - `data`: optional structured public payload.
+
+Initial public codes:
+
+- `surface.request`: malformed request parameter, identity, index argument, or
+  generated-write body;
+- `surface.absent`: requested record identity is well-formed but no record node
+  exists;
+- `surface.cursor`: malformed cursor token;
+- `surface.stale_cursor`: cursor token is well-formed but its operation equality
+  tag no longer matches the active operation facts;
+- `surface.abi_mismatch`: generated client or transport request targets an ABI
+  slice that is no longer active;
+- `surface.invalid_data`: backing saved data cannot be materialized under the
+  checked resource shape;
+- `surface.integrity`: a renderer profile that dereferences identity links finds
+  a missing referent;
+- `surface.store`: the store reports a fault while serving a surface operation.
 
 The public envelope does not include source spans, file paths, line numbers,
 trace output, internal physical keys, raw catalog rows, or repair details.
@@ -404,7 +502,9 @@ Implement the read slice first:
 - paged `collections all`;
 - paged `collections <non_unique_index>` where the index has one non-identity
   component followed by the complete store identity suffix;
+- full non-keyed backing-resource materialization before public projection;
 - derived `SurfaceAbi` facts;
+- read request-parameter codec;
 - surface JSON output codec;
 - public error envelope;
 - cursor token codec.
@@ -413,7 +513,7 @@ Then implement separately reviewed follow-on slices:
 
 - generated TypeScript client rendering over `SurfaceAbi`;
 - optional HTTP renderer over `SurfaceAbi`;
-- surface JSON input codec;
+- generated-write object-body codec;
 - generated `create` for single-`int` `nextId(^store)` identity stores;
 - generated `update` for top-level scalar, enum, and identity fields.
 
@@ -443,11 +543,12 @@ Deferred deliberately:
 
 ## Alternatives Reviewed
 
-### Raw Store Serving
+### Retired URI-Tree Serving
 
-`serve store ^books` gives the best demo and the worst foundation. It exposes
-storage shape as public ABI, makes field additions public by default, and ties
-route spelling to source spelling rather than public ABI facts.
+The earlier URI-tree serving proposal gives the best demo and the worst
+foundation. It exposes storage shape as public ABI, makes field additions public
+by default, and ties route spelling to source spelling rather than public ABI
+facts. It is superseded by `surface`.
 
 ### Exported Functions Only
 

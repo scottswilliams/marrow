@@ -443,6 +443,20 @@ current CLI surface; restore merge/repair and cross-engine restore remain
 deferred. No active command-output code family appears for a deferred surface
 until that surface ships.
 
+The `surface.*` family is reserved for the proposed application surface runtime.
+These codes do not appear in v0.1 command output until that surface ships.
+
+| Code | Reserved meaning |
+|---|---|
+| `surface.request` | A request parameter, identity, index argument, or generated-write body cannot decode to the checked surface operation input shape. |
+| `surface.absent` | A requested record identity is well-formed but no record node exists. |
+| `surface.cursor` | A cursor token is malformed or does not decode under the cursor codec. |
+| `surface.stale_cursor` | A cursor token is well-formed, but its operation equality tag no longer matches the active surface operation facts. |
+| `surface.abi_mismatch` | A generated client or transport request targets a surface ABI slice that is no longer active. |
+| `surface.invalid_data` | Backing saved data cannot be materialized under the checked resource shape. |
+| `surface.integrity` | A renderer profile that dereferences identity links found a missing referent. |
+| `surface.store` | The store reported a fault while serving a surface operation. |
+
 The `decode.*` family is reserved for future checked decode and repair reports.
 These codes do not appear in v0.1 command output.
 
