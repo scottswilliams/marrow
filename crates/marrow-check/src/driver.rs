@@ -1293,7 +1293,7 @@ fn check_duplicate_declarations(
                         first_surface.kind.surface_collision_kind(),
                         intro.kind.surface_collision_kind(),
                     ));
-                } else if is_builtin_declaration || owners.has_builtin_declaration {
+                } else if owners.has_builtin_declaration {
                     owners.record(owner);
                     continue;
                 } else {

@@ -20,7 +20,7 @@ The orchestration that sequences the passes lives in `analysis.rs`, outside this
 | File | Responsibility |
 | --- | --- |
 | `crates/marrow-check/src/lib.rs` | Crate root: module declarations and the public re-export surface, nothing else. |
-| `crates/marrow-check/src/driver.rs` | `check_project`/`check_tests*` entrypoints, the editor source overlay, the per-file structural check, and the name/path/builtin resolution helpers shared with the type passes. |
+| `crates/marrow-check/src/driver.rs` | `check_project`/`check_tests*` entrypoints, the editor source overlay, per-file structural checks for source and surface namespaces, and the name/path/builtin resolution helpers shared with the type passes. |
 | `crates/marrow-check/src/diagnostics.rs` | The diagnostic vocabulary: `check.*` codes, the typed `DiagnosticPayload`, `CheckDiagnostic`/`CheckReport`, and the `ConversionTarget` table. |
 | `crates/marrow-check/src/program.rs` | The `CheckedProgram`/`CheckedRuntimeProgram` artifacts, the `MarrowType` lattice and `from_resolved` placement, `FileId`, runtime-body lowering. |
 | `crates/marrow-check/src/resolve.rs` | The one module/visibility-aware name resolver: `resolve` → `Resolution`/`Def`/`DefItem`; `resolve_store_by_root` for project-wide saved roots. |

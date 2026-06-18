@@ -262,6 +262,25 @@ fn non_surface_builtin_name_collisions_keep_builtin_diagnostics_only() {
 }
 
 #[test]
+fn import_after_builtin_declaration_does_not_add_duplicate_declaration() {
+    let source = "module m\nfn exists()\n    return\nuse shelf::exists\n";
+    let root = temp_project("builtin-name-late-import", |root| {
+        write(root, "src/m.mw", source);
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+
+    let duplicates = duplicate_declarations(&report);
+    assert_eq!(duplicates.len(), 1, "{:#?}", report.diagnostics);
+    assert_eq!(duplicates[0].span.line, 2, "{:#?}", duplicates[0]);
+    assert_eq!(duplicates[0].payload, DiagnosticPayload::None);
+    assert!(
+        with_code(&report, "check.surface_collision").is_empty(),
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
 fn distinct_declarations_are_not_flagged() {
     let root = temp_project("distinct-decls", |root| {
         write(
