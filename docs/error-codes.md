@@ -459,7 +459,7 @@ in v0.1 command output until that surface ships.
 | `surface.cursor` | A cursor token is malformed, does not decode under the cursor codec, or is well-formed but bound to normalized parameters that do not match the current request. |
 | `surface.stale_cursor` | A cursor token is well-formed, but its operation equality tag, profile tag, or store lineage no longer matches the active surface operation facts. |
 | `surface.abi_mismatch` | A generated client or transport request targets a surface ABI or profile slice that is no longer active. |
-| `surface.invalid_data` | Backing saved data reached by a surface read cannot be decoded under the checked projection, including projected required absence, malformed projected values, corrupt traversed identity/key bytes, or an index row whose identity points at no record. Public envelopes are sanitized service faults; repair details stay in operator tooling. |
+| `surface.invalid_data` | Backing saved data reached by a surface read cannot be decoded under the checked footprint, including required backing-field absence, malformed materialized values, corrupt traversed identity/key bytes, or an index row whose identity points at no record. Public envelopes are sanitized service faults; repair details stay in operator tooling. |
 | `surface.limit` | A well-formed surface operation would exceed its materialization, row, or decoded-byte budget. |
 | `surface.conflict` | A generated write conflicts with existing saved data, such as a unique-index conflict. |
 | `surface.write` | A generated write could not be applied after successful request decoding and before commit, excluding conflicts and store/backend faults. |

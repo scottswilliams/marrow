@@ -92,7 +92,7 @@ pub use facts::{
     StoreFact, StoreId, StoreIdentityKeyFact, StoreIndexFact, StoreIndexId, StoreIndexKeyFact,
     StoreIndexKeySource, StoredValueMeaning, SurfaceCatalogBlocker, SurfaceCatalogStatus,
     SurfaceCollectionFact, SurfaceCollectionTarget, SurfaceFact, SurfaceFieldFact, SurfaceId,
-    WorkShapeClass,
+    SurfaceReadFootprint, SurfaceReadOperationFact, SurfaceReadOperationKind, WorkShapeClass,
 };
 pub use facts::{
     PresenceProofFact, PresenceProofId, PresenceProofPlace, PresenceProofSource,

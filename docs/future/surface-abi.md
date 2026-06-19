@@ -1,7 +1,9 @@
 # Surface ABI
 
 `SurfaceAbi` is the proposed application-read boundary over checked
-`surface` declarations. It is not implemented in v0.1, adds no `.mw` syntax,
+`surface` declarations. The checker derives transport-neutral
+`SurfaceReadOperationFact`s in v0.1; runtime serving, stable export, generated
+clients, and cursor codecs remain future profiles. This adds no `.mw` syntax
 and does not define HTTP routes, a local server, TypeScript names, JSON wire
 spelling, or a screen console. It consumes the checked facts produced by the
 language described in [Resources And Saved Data](../language/resources-and-storage.md#application-surfaces).
@@ -16,6 +18,11 @@ projection facts the compiler already checked.
 `SurfaceAbi` is computed from `SurfaceFact`, `CheckedFacts`, and the accepted
 catalog. It does not re-resolve source paths, reclassify schema validity, parse
 raw saved paths, or inspect human labels for semantic identity.
+
+The checked fact layer records each read operation with checker-local ids, a
+read kind, a `FullRecord` backing-resource footprint, and the ordered public
+projection. Those facts are construction handles for tooling and future
+profiles, not a serialized stable ABI by themselves.
 
 A checked surface may be `SourceOnly` or `Stable`:
 
@@ -126,25 +133,36 @@ lineage facts above, but it does not compare `commit_id` or the per-commit
 changed root/index id lists for cursor equality; a future commit-bound cursor
 profile may add that stronger fence.
 
-## Projection And Integrity
+## Read Footprint And Projection
 
-A read decodes only the identity boundary, branch or index key cells needed for
-the operation, and declared projected top-level fields. It does not materialize
-the full record body, descend child layers, or inspect unprojected groups or
-fields.
+A read has two distinct extents. Its projection is the public top-level field
+set the operation returns. Its read footprint is larger: every get, unique
+lookup, and page row materializes the backing record body under the checked
+resource shape before emitting the projection. That materialization decodes the
+identity boundary, any branch or index key cells traversed by the operation, all
+required top-level fields and unkeyed required groups of the backing record, and
+the projected sparse fields.
 
-Read success means the projected surface row is valid. It does not prove whole
-record validity. Unprojected corrupt or missing data remains a data-integrity
-tooling concern.
+That footprint has a cost. A surface projecting two fields of a record with ten
+required fields still decodes the required backing body. A corrupt or absent
+required non-public field fails the get or the whole page as
+`surface.invalid_data`; rows that cannot be decoded are not skipped. Output
+still carries only the public projection. The footprint does not descend keyed
+child layers, so read success does not prove those deeper layers valid.
+
+Read-parameter decode belongs to this read slice: scalar, enum, identity,
+index-argument, limit, and cursor-key request values decode against checked
+facts before execution. Generated create/update object-body decode remains
+deferred to a write profile.
 
 Absence and invalid data are separated:
 
 - an empty collection page is normal;
 - a missing requested identity or singleton node is `surface.absent`;
 - a sparse projected field that is absent is normal presence state;
-- an absent required projected field on an existing row is
-  `surface.invalid_data`;
-- malformed projected scalar, enum, or identity values are
+- an absent required backing field on an existing row is
+  `surface.invalid_data`, whether or not it is projected;
+- malformed materialized scalar, enum, or identity values are
   `surface.invalid_data`;
 - corrupt key or identity bytes reached by root or index traversal are
   `surface.invalid_data`;
@@ -222,7 +240,7 @@ update-only inputs, and transaction behavior in its own slice.
 
 ## Tooling And LSP
 
-This proposal changes no v0.1 LSP behavior. When `SurfaceAbi` operations become
-checked facts or public analysis API, Marrow must expose them through a
-query-native, snapshot/versioned analysis boundary first. `marrow-lsp` consumes
-those facts; it does not re-derive operations from syntax.
+This proposal changes no v0.1 LSP behavior. `SurfaceReadOperationFact`s are
+checked facts, but a query-native, snapshot/versioned analysis boundary for
+editor consumers remains follow-on work. `marrow-lsp` consumes that analysis
+API when it exists; it does not re-derive operations from syntax.

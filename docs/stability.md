@@ -67,8 +67,9 @@ internal crates.
 
 The application boundary is reserved for the proposed `surface` design. Checked
 surface facts may exist before a profile ships; they are compiler facts over
-stores, fields, and indexes, not a stable runtime, transport, or
-generated-client contract. The [future Surface ABI](future/surface-abi.md)
+stores, fields, indexes, read operations, footprints, and projections, not a
+stable runtime, transport, or generated-client contract. The
+[future Surface ABI](future/surface-abi.md)
 defines the proposed reads-first boundary profile over those facts. Linked-Rust
 embedding remains an implementation profile for hosting surface facts and run
 sessions, not a separate app-data contract. Until a surface profile ships, typed

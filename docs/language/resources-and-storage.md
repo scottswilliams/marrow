@@ -225,11 +225,12 @@ The initial checker contract admits only direct store-backed shapes:
 - `collection ^root as alias` names the backing store root.
 - `collection ^root.index as alias` names an index declared on the backing store.
 
-The checker records typed surface facts over store, member, and index identities.
-It records no surface fact when the backing store, the store's normalized
-resource shape, a referenced field, or a referenced index is already rejected by
-schema or checker validation; best-effort schema facts are not a public
-application contract.
+The checker records typed surface facts over store, member, and index identities
+and derives read-operation facts over the checked backing-record footprint and
+public projection. It records no surface fact when the backing store, the
+store's normalized resource shape, a referenced field, or a referenced index is
+already rejected by schema or checker validation; best-effort schema facts are
+not a public application contract.
 
 Configured test-file `surface` declarations are still parsed and checked for
 source-level name collisions, but only source-root declarations resolve into

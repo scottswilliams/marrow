@@ -14,7 +14,8 @@ use crate::facts::{
     ModuleId, ResourceMemberFact, ResourceMemberId, ResourceMemberKind, StoreFact, StoreIndexId,
     StoreIndexKeyFact, StoreIndexKeySource, StoredValueMeaning, SurfaceCatalogBlocker,
     SurfaceCatalogStatus, SurfaceCollectionFact, SurfaceCollectionTarget, SurfaceFact,
-    SurfaceFieldFact, SurfaceId,
+    SurfaceFieldFact, SurfaceId, SurfaceReadFootprint, SurfaceReadOperationFact,
+    SurfaceReadOperationKind,
 };
 use crate::{CheckDiagnostic, CheckedProgram, DiagnosticPayload};
 
@@ -137,6 +138,8 @@ impl<'a> SurfaceChecker<'a> {
         let id = SurfaceId(self.surface_facts.len() as u32);
         let catalog_status =
             catalog_status(self.program, store, &fields, &create, &update, &collections);
+        let read_operations =
+            read_operations(self.program, store, surface.span, &fields, &collections);
         self.surface_facts.push(SurfaceFact {
             id,
             module,
@@ -146,6 +149,7 @@ impl<'a> SurfaceChecker<'a> {
             create,
             update,
             collections,
+            read_operations,
             catalog_status,
             span: surface.span,
         });
@@ -214,6 +218,79 @@ impl<'a> SurfaceChecker<'a> {
             );
         }
     }
+}
+
+fn read_operations(
+    program: &CheckedProgram,
+    store: &StoreFact,
+    surface_span: SourceSpan,
+    fields: &[SurfaceFieldFact],
+    collections: &[SurfaceCollectionFact],
+) -> Vec<SurfaceReadOperationFact> {
+    let projection = fields.iter().map(|field| field.member).collect::<Vec<_>>();
+    let footprint = SurfaceReadFootprint::FullRecord {
+        resource: store.resource,
+    };
+    let mut operations = Vec::with_capacity(collections.len() + 1);
+    operations.push(SurfaceReadOperationFact {
+        kind: backing_read_operation_kind(store),
+        footprint,
+        projection: projection.clone(),
+        span: surface_span,
+    });
+    operations.extend(
+        collections
+            .iter()
+            .map(|collection| SurfaceReadOperationFact {
+                kind: collection_read_operation_kind(program, collection),
+                footprint,
+                projection: projection.clone(),
+                span: collection.span,
+            }),
+    );
+    operations
+}
+
+fn backing_read_operation_kind(store: &StoreFact) -> SurfaceReadOperationKind {
+    if store.identity_keys.is_empty() {
+        SurfaceReadOperationKind::SingletonRead { store: store.id }
+    } else {
+        SurfaceReadOperationKind::PointRead { store: store.id }
+    }
+}
+
+fn collection_read_operation_kind(
+    program: &CheckedProgram,
+    collection: &SurfaceCollectionFact,
+) -> SurfaceReadOperationKind {
+    match collection.target {
+        SurfaceCollectionTarget::StoreRoot(store) => {
+            SurfaceReadOperationKind::PagedRootCollection { store }
+        }
+        SurfaceCollectionTarget::StoreIndex(index) => {
+            let fact = program.facts.store_index(index);
+            if fact.unique {
+                SurfaceReadOperationKind::UniqueIndexLookup {
+                    index,
+                    key_count: fact.keys.len(),
+                }
+            } else {
+                let identity_key_count = trailing_identity_key_count(&fact.keys);
+                SurfaceReadOperationKind::PagedIndexCollection {
+                    index,
+                    exact_key_count: fact.keys.len().saturating_sub(identity_key_count),
+                    identity_key_count,
+                }
+            }
+        }
+    }
+}
+
+fn trailing_identity_key_count(keys: &[StoreIndexKeyFact]) -> usize {
+    keys.iter()
+        .rev()
+        .take_while(|key| key.source == StoreIndexKeySource::IdentityKey)
+        .count()
 }
 
 fn surface_declarations(parsed: &ParsedSource) -> impl Iterator<Item = &SurfaceDecl> {

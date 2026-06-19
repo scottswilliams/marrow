@@ -136,7 +136,7 @@ only generated inputs are deferred. `collection` names either the same backing
 root or one index declared on that backing store. Nested projections,
 keyed-child reads and writes, custom read selection, cursor profiles, JSON
 profiles, and generated clients are later boundary-profile work over the checked
-surface facts; the proposed reads-first profile lives in
+surface and read-operation facts; the proposed reads-first profile lives in
 [Surface ABI](../future/surface-abi.md).
 
 Surface declarations in configured test files use the same parser and

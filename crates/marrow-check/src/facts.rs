@@ -1294,6 +1294,7 @@ pub struct SurfaceFact {
     pub create: Vec<SurfaceFieldFact>,
     pub update: Vec<SurfaceFieldFact>,
     pub collections: Vec<SurfaceCollectionFact>,
+    pub read_operations: Vec<SurfaceReadOperationFact>,
     pub catalog_status: SurfaceCatalogStatus,
     pub span: SourceSpan,
 }
@@ -1330,6 +1331,41 @@ pub struct SurfaceCollectionFact {
 pub enum SurfaceCollectionTarget {
     StoreRoot(StoreId),
     StoreIndex(StoreIndexId),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SurfaceReadOperationFact {
+    pub kind: SurfaceReadOperationKind,
+    pub footprint: SurfaceReadFootprint,
+    pub projection: Vec<ResourceMemberId>,
+    pub span: SourceSpan,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SurfaceReadOperationKind {
+    SingletonRead {
+        store: StoreId,
+    },
+    PointRead {
+        store: StoreId,
+    },
+    PagedRootCollection {
+        store: StoreId,
+    },
+    PagedIndexCollection {
+        index: StoreIndexId,
+        exact_key_count: usize,
+        identity_key_count: usize,
+    },
+    UniqueIndexLookup {
+        index: StoreIndexId,
+        key_count: usize,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SurfaceReadFootprint {
+    FullRecord { resource: ResourceId },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

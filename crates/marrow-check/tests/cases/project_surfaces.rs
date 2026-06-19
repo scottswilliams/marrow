@@ -1,8 +1,8 @@
 use marrow_check::{
     CHECK_SURFACE_FIELD, CHECK_SURFACE_TARGET, DiagnosticPayload, SurfaceCatalogBlocker,
     SurfaceCatalogStatus, SurfaceCollectionTarget, SurfaceCollisionNameKind,
-    SurfaceFieldDiagnostic, SurfaceFieldList, SurfaceFieldProblem, SurfaceTargetDiagnostic,
-    check_project, check_tests_program,
+    SurfaceFieldDiagnostic, SurfaceFieldList, SurfaceFieldProblem, SurfaceReadFootprint,
+    SurfaceReadOperationKind, SurfaceTargetDiagnostic, check_project, check_tests_program,
 };
 use marrow_syntax::SourceSpan;
 
@@ -559,6 +559,17 @@ surface Books from ^books
             .collect::<Vec<_>>(),
         vec![("list", SurfaceCollectionTarget::StoreRoot(store))]
     );
+    assert_eq!(
+        surface
+            .read_operations
+            .iter()
+            .map(|operation| operation.kind)
+            .collect::<Vec<_>>(),
+        vec![
+            SurfaceReadOperationKind::PointRead { store },
+            SurfaceReadOperationKind::PagedRootCollection { store },
+        ]
+    );
 }
 
 #[test]
@@ -742,6 +753,140 @@ surface Books from ^books
             ("list", SurfaceCollectionTarget::StoreRoot(store)),
             ("byAuthor", SurfaceCollectionTarget::StoreIndex(by_author)),
         ]
+    );
+}
+
+#[test]
+fn surface_read_operations_cover_backing_and_collections() {
+    let source = "\
+module app
+resource Book
+    required title: string
+    author: string
+    isbn: string
+store ^books(shelf: string, id: int): Book
+    index byAuthor(author, shelf, id)
+    index byIsbn(isbn) unique
+surface Books from ^books
+    fields title, author
+    collection ^books as list
+    collection ^books.byAuthor as byAuthor
+    collection ^books.byIsbn as byIsbn
+";
+    let root = temp_project("surface-read-operations", |root| {
+        write(root, "src/app.mw", source);
+    });
+    let (report, program) = check_project(&root, &config()).expect("check");
+
+    assert_clean(&report);
+    let facts = &program.facts;
+    let module = facts.module_id("app").expect("app module");
+    let book = facts.resource_id(module, "Book").expect("Book");
+    let store = facts.store_id(module, "books").expect("^books");
+    let title = facts.resource_member_id(book, &["title"]).expect("title");
+    let author = facts.resource_member_id(book, &["author"]).expect("author");
+    let by_author = facts
+        .store_indexes()
+        .iter()
+        .find(|index| index.store == store && index.name == "byAuthor")
+        .expect("byAuthor")
+        .id;
+    let by_isbn = facts
+        .store_indexes()
+        .iter()
+        .find(|index| index.store == store && index.name == "byIsbn")
+        .expect("byIsbn")
+        .id;
+
+    let [surface] = facts.surfaces() else {
+        panic!("expected one surface, got {:#?}", facts.surfaces());
+    };
+    let projection = vec![title, author];
+    assert_eq!(
+        surface
+            .read_operations
+            .iter()
+            .map(|operation| (
+                operation.kind,
+                operation.footprint,
+                operation.projection.clone()
+            ))
+            .collect::<Vec<_>>(),
+        vec![
+            (
+                SurfaceReadOperationKind::PointRead { store },
+                SurfaceReadFootprint::FullRecord { resource: book },
+                projection.clone(),
+            ),
+            (
+                SurfaceReadOperationKind::PagedRootCollection { store },
+                SurfaceReadFootprint::FullRecord { resource: book },
+                projection.clone(),
+            ),
+            (
+                SurfaceReadOperationKind::PagedIndexCollection {
+                    index: by_author,
+                    exact_key_count: 1,
+                    identity_key_count: 2,
+                },
+                SurfaceReadFootprint::FullRecord { resource: book },
+                projection.clone(),
+            ),
+            (
+                SurfaceReadOperationKind::UniqueIndexLookup {
+                    index: by_isbn,
+                    key_count: 1,
+                },
+                SurfaceReadFootprint::FullRecord { resource: book },
+                projection,
+            ),
+        ]
+    );
+}
+
+#[test]
+fn keyless_surface_read_operation_is_singleton() {
+    let source = "\
+module app
+resource Settings
+    required maxLoans: int
+    theme: string
+store ^settings: Settings
+surface SettingsSurface from ^settings
+    fields theme
+";
+    let root = temp_project("surface-read-operation-singleton", |root| {
+        write(root, "src/app.mw", source);
+    });
+    let (report, program) = check_project(&root, &config()).expect("check");
+
+    assert_clean(&report);
+    let facts = &program.facts;
+    let module = facts.module_id("app").expect("app module");
+    let settings = facts.resource_id(module, "Settings").expect("Settings");
+    let store = facts.store_id(module, "settings").expect("^settings");
+    let theme = facts
+        .resource_member_id(settings, &["theme"])
+        .expect("theme");
+
+    let [surface] = facts.surfaces() else {
+        panic!("expected one surface, got {:#?}", facts.surfaces());
+    };
+    assert_eq!(
+        surface
+            .read_operations
+            .iter()
+            .map(|operation| (
+                operation.kind,
+                operation.footprint,
+                operation.projection.clone()
+            ))
+            .collect::<Vec<_>>(),
+        vec![(
+            SurfaceReadOperationKind::SingletonRead { store },
+            SurfaceReadFootprint::FullRecord { resource: settings },
+            vec![theme],
+        )]
     );
 }
 
