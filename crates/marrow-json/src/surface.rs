@@ -1,3 +1,5 @@
+use std::collections::{BTreeMap, BTreeSet};
+
 use marrow_run::{
     SurfaceEnumValue, SurfaceReadField, SurfaceReadIdentity, SurfaceReadRecord, SurfaceValue,
 };
@@ -184,6 +186,7 @@ impl SurfaceAbiJson {
                 SurfaceDescriptorJson::from_surface(program, &module.name, surface)
             })
             .collect::<Vec<_>>();
+        omit_uncallable_operation_tags(&mut surfaces);
         surfaces.sort_by(|left, right| {
             left.module
                 .cmp(&right.module)
@@ -229,6 +232,51 @@ impl SurfaceDescriptorJson {
             },
         }
     }
+}
+
+fn omit_uncallable_operation_tags(surfaces: &mut [SurfaceDescriptorJson]) {
+    let duplicate_read_tags = duplicate_operation_tags(
+        surfaces
+            .iter()
+            .flat_map(|surface| surface.read.iter().map(|read| read.operation_tag.as_str())),
+    );
+    if !duplicate_read_tags.is_empty() {
+        for surface in surfaces.iter_mut() {
+            surface
+                .read
+                .retain(|read| !duplicate_read_tags.contains(&read.operation_tag));
+        }
+    }
+
+    let duplicate_update_tags = duplicate_operation_tags(surfaces.iter().filter_map(|surface| {
+        surface
+            .update
+            .as_ref()
+            .map(|update| update.operation_tag.as_str())
+    }));
+    if !duplicate_update_tags.is_empty() {
+        for surface in surfaces.iter_mut() {
+            if surface
+                .update
+                .as_ref()
+                .is_some_and(|update| duplicate_update_tags.contains(&update.operation_tag))
+            {
+                surface.update = None;
+            }
+        }
+    }
+}
+
+fn duplicate_operation_tags<'a>(tags: impl Iterator<Item = &'a str>) -> BTreeSet<String> {
+    let mut counts = BTreeMap::new();
+    for tag in tags {
+        *counts.entry(tag).or_insert(0usize) += 1;
+    }
+    counts
+        .into_iter()
+        .filter(|(_, count)| *count > 1)
+        .map(|(tag, _)| tag.to_string())
+        .collect()
 }
 
 impl From<&marrow_check::SurfaceCatalogStatus> for SurfaceCatalogStatusJson {
@@ -649,7 +697,7 @@ mod tests {
 
     use marrow_check::{
         CheckedProgram, CheckedRuntimeProgram, ProjectConfig, StoreBackend, StoreConfig, SurfaceId,
-        SurfaceReadOperationKind, check_project,
+        SurfaceReadOperationKind, SurfaceUpdateOperationDescriptor, check_project,
     };
     use marrow_run::{
         SURFACE_ABI_MISMATCH, SURFACE_CURSOR, SURFACE_REQUEST, SURFACE_STALE_CURSOR,
@@ -669,11 +717,12 @@ mod tests {
     use serde_json::json;
 
     use crate::surface::{
-        SurfaceAbiJson, SurfaceArgumentJson, SurfaceCursorBoundaryJson, SurfaceCursorJson,
-        SurfaceIdentityJson, SurfaceKeyJson, SurfacePageJson, SurfacePageRequestJson,
-        SurfacePointRequestJson, SurfacePointUpdateRequestJson, SurfaceRecordJson,
-        SurfaceSingletonUpdateRequestJson, SurfaceUniqueLookupRequestJson, SurfaceUpdateFieldJson,
-        SurfaceUpdateValueJson, SurfaceValueJson,
+        SurfaceAbiJson, SurfaceArgumentJson, SurfaceCatalogStatusJson, SurfaceCursorBoundaryJson,
+        SurfaceCursorJson, SurfaceIdentityJson, SurfaceKeyJson, SurfacePageJson,
+        SurfacePageRequestJson, SurfacePointRequestJson, SurfacePointUpdateRequestJson,
+        SurfaceReadOperationKindJson, SurfaceRecordJson, SurfaceSingletonUpdateRequestJson,
+        SurfaceUniqueLookupRequestJson, SurfaceUpdateFieldJson, SurfaceUpdateValueJson,
+        SurfaceValueJson,
     };
 
     static TEMP_PROJECT_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -770,6 +819,57 @@ surface Books from ^books
     collection ^books.byIsbn as byIsbn
 ";
 
+    const DUPLICATE_READ_TAG_SURFACES: &str = "\
+resource Book
+    required title: string
+store ^books(id: int): Book
+
+surface Books from ^books
+    fields title
+
+surface Library from ^books
+    fields title
+
+resource Note
+    required text: string
+store ^notes(id: int): Note
+
+surface Notes from ^notes
+    fields text
+";
+
+    const DUPLICATE_UPDATE_TAG_SURFACES: &str = "\
+resource Book
+    required title: string
+store ^books(id: int): Book
+
+surface Books from ^books
+    fields title
+    update title
+
+surface Library from ^books
+    fields title
+    update title
+
+resource Note
+    required text: string
+store ^notes(id: int): Note
+
+surface Notes from ^notes
+    fields text
+    update text
+";
+
+    const SOURCE_ONLY_UPDATE_SURFACE: &str = "\
+resource Book
+    required title: string
+store ^books(id: int): Book
+
+surface Books from ^books
+    fields title
+    update title
+";
+
     struct TempProject {
         path: PathBuf,
     }
@@ -829,6 +929,33 @@ surface Books from ^books
         let program = commit_catalog(root.path(), &config, program);
         let runtime = program.runtime();
         (program, runtime)
+    }
+
+    fn checked_source_only_surface_program(source: &str) -> CheckedProgram {
+        let root = TempProject::new("marrow-json-source-only-surface-test");
+        let source_dir = root.path().join("src");
+        fs::create_dir(&source_dir).expect("create source dir");
+        fs::write(
+            source_dir.join("test.mw"),
+            format!("module test\n\n{source}"),
+        )
+        .expect("write source");
+        let config = ProjectConfig {
+            source_roots: vec!["src".into()],
+            default_entry: None,
+            store: StoreConfig {
+                backend: StoreBackend::Memory,
+                data_dir: None,
+            },
+            tests: Vec::new(),
+        };
+        let (report, program) = check_project(root.path(), &config).expect("check project");
+        assert!(
+            !report.has_errors(),
+            "source-only surface fixture must check cleanly: {:#?}",
+            report.diagnostics
+        );
+        program
     }
 
     fn commit_catalog(
@@ -932,6 +1059,12 @@ surface Books from ^books
             .find(|surface| surface.name == surface_name)
             .and_then(|surface| surface.update.map(|update| update.operation_tag))
             .unwrap_or_else(|| panic!("surface `{surface_name}` exposes an update tag"))
+    }
+
+    fn checker_update_operation_tag(program: &CheckedProgram, surface: SurfaceId) -> String {
+        SurfaceUpdateOperationDescriptor::from_surface(program, program.facts.surface(surface))
+            .map(|descriptor| descriptor.operation_tag)
+            .expect("stable update operation tag")
     }
 
     fn book_by_status_author_read<'a>(
@@ -1328,6 +1461,174 @@ surface Books from ^books
             Err(error) => assert_eq!(error.code(), code, "{error:?}"),
             Ok(value) => panic!("expected surface error {code}, got {value:?}"),
         }
+    }
+
+    #[test]
+    fn surface_abi_omits_duplicate_stable_read_operation_tags() {
+        let (program, _runtime) = checked_surface_program(DUPLICATE_READ_TAG_SURFACES);
+        let store = admitted_store(&program);
+        let books = surface_id(&program, "Books");
+        let library = surface_id(&program, "Library");
+        let notes = surface_id(&program, "Notes");
+        let duplicate_tag = read_operation_tag_matching(&program, books, |kind| {
+            matches!(kind, SurfaceReadOperationKind::PointRead { .. })
+        });
+        let distinct_tag = read_operation_tag_matching(&program, notes, |kind| {
+            matches!(kind, SurfaceReadOperationKind::PointRead { .. })
+        });
+        assert_eq!(
+            duplicate_tag,
+            read_operation_tag_matching(&program, library, |kind| {
+                matches!(kind, SurfaceReadOperationKind::PointRead { .. })
+            })
+        );
+
+        let abi = SurfaceAbiJson::from_program(&program);
+        assert!(
+            abi.surfaces
+                .iter()
+                .flat_map(|surface| &surface.read)
+                .all(|read| read.operation_tag != duplicate_tag),
+            "duplicate read tag must not be exported: {abi:#?}"
+        );
+        let books_json = abi
+            .surfaces
+            .iter()
+            .find(|surface| surface.name == "Books")
+            .expect("Books descriptor");
+        let library_json = abi
+            .surfaces
+            .iter()
+            .find(|surface| surface.name == "Library")
+            .expect("Library descriptor");
+        let notes_json = abi
+            .surfaces
+            .iter()
+            .find(|surface| surface.name == "Notes")
+            .expect("Notes descriptor");
+        assert!(books_json.read.is_empty());
+        assert!(library_json.read.is_empty());
+        let [note_read] = notes_json.read.as_slice() else {
+            panic!("distinct read descriptor remains exported: {abi:#?}");
+        };
+        assert_eq!(note_read.operation_tag, distinct_tag);
+        SurfaceNodeRead::admit_by_operation_tag(&program, &store, &note_read.operation_tag)
+            .expect("distinct exported read tag admits");
+    }
+
+    #[test]
+    fn surface_abi_omits_duplicate_stable_update_operation_tags() {
+        let (program, _runtime) = checked_surface_program(DUPLICATE_UPDATE_TAG_SURFACES);
+        let store = admitted_store(&program);
+        let books = surface_id(&program, "Books");
+        let library = surface_id(&program, "Library");
+        let notes = surface_id(&program, "Notes");
+        let duplicate_tag = checker_update_operation_tag(&program, books);
+        let distinct_tag = checker_update_operation_tag(&program, notes);
+        assert_eq!(
+            duplicate_tag,
+            checker_update_operation_tag(&program, library)
+        );
+
+        let abi = SurfaceAbiJson::from_program(&program);
+        assert!(
+            abi.surfaces.iter().all(|surface| {
+                surface
+                    .update
+                    .as_ref()
+                    .is_none_or(|update| update.operation_tag != duplicate_tag)
+            }),
+            "duplicate update tag must not be exported: {abi:#?}"
+        );
+        let books_json = abi
+            .surfaces
+            .iter()
+            .find(|surface| surface.name == "Books")
+            .expect("Books descriptor");
+        let library_json = abi
+            .surfaces
+            .iter()
+            .find(|surface| surface.name == "Library")
+            .expect("Library descriptor");
+        let notes_json = abi
+            .surfaces
+            .iter()
+            .find(|surface| surface.name == "Notes")
+            .expect("Notes descriptor");
+        assert!(books_json.update.is_none());
+        assert!(library_json.update.is_none());
+        let note_update = notes_json
+            .update
+            .as_ref()
+            .expect("distinct update descriptor remains exported");
+        assert_eq!(note_update.operation_tag, distinct_tag);
+        SurfaceUpdate::admit_by_operation_tag(&program, &store, &note_update.operation_tag)
+            .expect("distinct exported update tag admits");
+    }
+
+    #[test]
+    fn surface_abi_exports_only_runtime_admitted_operation_tags() {
+        let (program, _runtime) = checked_surface_program(SURFACE_UPDATE_WITH_ENUM_IDENTITY_INDEX);
+        let store = admitted_store(&program);
+        let abi = SurfaceAbiJson::from_program(&program);
+        let mut read_count = 0;
+        let mut update_count = 0;
+
+        for surface in &abi.surfaces {
+            for read in &surface.read {
+                read_count += 1;
+                match &read.kind {
+                    SurfaceReadOperationKindJson::SingletonRead
+                    | SurfaceReadOperationKindJson::PointRead => {
+                        SurfaceNodeRead::admit_by_operation_tag(
+                            &program,
+                            &store,
+                            &read.operation_tag,
+                        )
+                        .expect("exported node read tag admits");
+                    }
+                    SurfaceReadOperationKindJson::PagedRootCollection
+                    | SurfaceReadOperationKindJson::PagedIndexCollection { .. }
+                    | SurfaceReadOperationKindJson::UniqueIndexLookup { .. } => {
+                        SurfaceCollectionRead::admit_by_operation_tag(
+                            &program,
+                            &store,
+                            &read.operation_tag,
+                        )
+                        .expect("exported collection read tag admits");
+                    }
+                }
+            }
+            if let Some(update) = &surface.update {
+                update_count += 1;
+                SurfaceUpdate::admit_by_operation_tag(&program, &store, &update.operation_tag)
+                    .expect("exported update tag admits");
+            }
+        }
+
+        assert!(read_count > 0, "fixture exports read descriptors");
+        assert!(update_count > 0, "fixture exports update descriptors");
+    }
+
+    #[test]
+    fn source_only_surface_abi_serializes_blockers_and_no_descriptors() {
+        let program = checked_source_only_surface_program(SOURCE_ONLY_UPDATE_SURFACE);
+        let abi = SurfaceAbiJson::from_program(&program);
+        let [surface] = abi.surfaces.as_slice() else {
+            panic!("expected one surface, got {abi:#?}");
+        };
+
+        assert_eq!(
+            surface.catalog_status,
+            SurfaceCatalogStatusJson::SourceOnly {
+                blockers: vec![
+                    "pending_catalog_proposal".into(),
+                    "missing_accepted_catalog_ids".into(),
+                ],
+            }
+        );
+        assert!(surface.read.is_empty(), "source-only read descriptors");
+        assert!(surface.update.is_none(), "source-only update descriptor");
     }
 
     #[test]

@@ -459,7 +459,7 @@ active runtime cursor is a typed continuation value.
 
 | Code | Meaning |
 |---|---|
-| `surface.request` | A request parameter, identity, index argument, update field catalog ID, update value, empty update patch, direction/order, or limit cannot decode to the checked surface operation input shape; cursor tokens use `surface.cursor`. |
+| `surface.request` | A request parameter, identity, index argument, update field catalog ID, update value, empty update patch, or limit cannot decode to the checked surface operation input shape; cursor tokens use `surface.cursor`. |
 | `surface.absent` | A requested record identity is well-formed but no record node exists, or a requested singleton node is absent. |
 | `surface.cursor` | A typed cursor boundary or future cursor token is malformed, does not decode under its codec, or is well-formed but bound to normalized parameters that do not match the current request. |
 | `surface.stale_cursor` | A typed cursor boundary or future cursor token is well-formed, but its operation equality tag, profile tag, or store lineage no longer matches the active surface operation facts. |

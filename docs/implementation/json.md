@@ -27,12 +27,16 @@ member strings.
 
 `SurfaceAbiJson` renders the successful `marrow check --format json|jsonl`
 `surface_abi` object from checker-owned facts. It includes display-only module
-and surface labels, typed catalog status, stable read descriptors, and an
-optional sparse update descriptor for stable surfaces with a non-empty update
-set. Source-only surfaces serialize blocker strings and no operation
-descriptors. Update fields expose `backing_required` only as backing-field
-metadata; sparse update request bodies remain non-empty patches and no field is
-mandatory on every request.
+and surface labels, typed catalog status, stable read descriptors, and optional
+sparse update descriptors for stable surfaces with a non-empty update set, but
+only when their operation tags are callable through runtime tag admission.
+Duplicate stable read tags are omitted from all read descriptors that share the
+tag; duplicate stable update tags are omitted from all matching update
+descriptors. Source-only surfaces serialize blocker strings and no operation
+descriptors. Duplicate-tag checker diagnostics remain future work. Update
+fields expose `backing_required` only as backing-field metadata; sparse update
+request bodies remain non-empty patches and no field is mandatory on every
+request.
 
 Inbound surface request parameters and sparse update bodies are checked against
 the admitted runtime surface shape. `SurfacePointRequestJson`,

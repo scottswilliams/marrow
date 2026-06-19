@@ -44,7 +44,8 @@ The active surface foundation has these owners:
   operation-tag execution, and serialized surface ABI JSON DTOs. Execution
   accepts caller-supplied checked program and store references; serving, store
   open policy, route derivation, generated clients, and opaque cursor tokens
-  remain separate profiles.
+  remain separate profiles. Serialized ABI export includes only callable
+  read/update operation tags.
 
 Operation tags are live runtime/json contracts. A change to either
 `surface.read.v1` or `surface.update.v1` framing must either preserve byte
@@ -77,10 +78,17 @@ by default:
 
 The active serialized ABI profile lives in `marrow check --format json|jsonl`
 under `surface_abi` and is rendered by `marrow-json` DTOs from checker-owned
-facts. It serializes accepted catalog IDs, canonical read/update operation
-descriptors, value shapes, operation tags, and render labels as labels. It must
-not serialize checker-local IDs, source spans, raw saved paths, backend cursor
-bytes, physical store keys, or `create` metadata.
+facts. It serializes accepted catalog IDs, callable canonical read/update
+operation descriptors, value shapes, operation tags, and render labels as
+labels. It must not serialize checker-local IDs, source spans, raw saved paths,
+backend cursor bytes, physical store keys, or `create` metadata.
+
+`SurfaceAbiJson` curates duplicate stable operation tags out of the export. If a
+stable read operation tag is duplicated anywhere in the checked program, all
+read descriptors with that tag are omitted. Stable update operation tags use the
+same policy for update descriptors. Runtime tag admission still fails closed on
+duplicates in checked facts. Checker diagnostics for duplicate stable tags are a
+reserved future improvement, not current behavior.
 
 `surface.update.v1` tags include the profile domain, store catalog ID, backing
 resource footprint catalog ID, singleton-vs-point shape, identity-key value
