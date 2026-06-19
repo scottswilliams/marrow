@@ -137,7 +137,8 @@ fn before_statement_hook(statement: &ExecStmt, env: &mut Env<'_>) -> Result<(), 
     let Some(hook) = env.hook.take() else {
         return Ok(());
     };
-    let result = hook.before_statement(statement.span(), Frame { env });
+    let span = statement.span();
+    let result = hook.before_statement(span, Frame { env, span });
     env.hook = Some(hook);
     result
 }

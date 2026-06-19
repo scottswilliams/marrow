@@ -183,13 +183,21 @@ impl AnalysisSnapshot {
                 "source file is not present in the analysis snapshot",
             )]);
         };
+        let Some(debug_source_identity) = self.program.debug_source_identity().cloned() else {
+            return Err(vec![CheckDiagnostic::error(
+                CHECK_READ_ONLY_EXPRESSION_CONTEXT,
+                file,
+                span,
+                "source program debug identity is not present in the analysis snapshot",
+            )]);
+        };
         let scope = cursor::debug_expression_scope_before(&self.program, file, parsed, span);
         self.program.checked_debug_expression_in_scope(
             file,
             span,
             source,
             &scope,
-            DebugSourceIdentity::from_analysis_identity(self.content_identity.as_str()),
+            debug_source_identity,
         )
     }
 }
@@ -301,11 +309,6 @@ pub fn analyze_project(
     snapshot.program.modules = source_modules;
     snapshot.program.facts = source_facts;
     snapshot.content_identity = analysis_content_identity(project_root, config, &snapshot.files);
-    snapshot
-        .program
-        .set_debug_source_identity(DebugSourceIdentity::from_analysis_identity(
-            snapshot.content_identity.as_str(),
-        ));
     Ok(snapshot)
 }
 
@@ -690,8 +693,10 @@ pub(crate) fn analyze_source_project(
         .collect();
 
     let content_identity = analysis_content_identity(project_root, config, &analyzed);
-    program.set_debug_source_identity(DebugSourceIdentity::from_analysis_identity(
-        content_identity.as_str(),
+    program.set_debug_source_identity(source_program_debug_identity(
+        project_root,
+        config,
+        &analyzed,
     ));
     let use_sites = catalog_nav::collect_use_sites(&program, &analyzed);
     let catalog_declarations = catalog_nav::collect_catalog_declarations(&program);
@@ -737,20 +742,41 @@ fn analysis_content_identity(
     let mut digest = Sha256Digest::new();
     digest.update(b"marrow.analysis.content.v1\0");
     hash_config(&mut digest, config);
-    hash_str(&mut digest, "files.len", &files.len().to_string());
+    hash_analyzed_files(&mut digest, project_root, files);
+    AnalysisIdentity(digest.finish())
+}
+
+fn source_program_debug_identity(
+    project_root: &Path,
+    config: &ProjectConfig,
+    files: &[AnalyzedFile],
+) -> DebugSourceIdentity {
+    let mut digest = Sha256Digest::new();
+    digest.update(b"marrow.debug.source.v1\0");
+    hash_source_program_config(&mut digest, config);
+    hash_analyzed_files(&mut digest, project_root, files);
+    DebugSourceIdentity::from_digest(digest.finish())
+}
+
+fn hash_analyzed_files(digest: &mut Sha256Digest, project_root: &Path, files: &[AnalyzedFile]) {
+    hash_str(digest, "files.len", &files.len().to_string());
     for file in files {
         let path = file
             .path
             .strip_prefix(project_root)
             .unwrap_or(file.path.as_path());
-        hash_str(&mut digest, "file.path", &path_token(path));
-        hash_opt_str(&mut digest, "file.module_name", file.module_name.as_deref());
-        hash_str(&mut digest, "file.source", &file.source);
+        hash_str(digest, "file.path", &path_token(path));
+        hash_opt_str(digest, "file.module_name", file.module_name.as_deref());
+        hash_str(digest, "file.source", &file.source);
     }
-    AnalysisIdentity(digest.finish())
 }
 
 fn hash_config(digest: &mut Sha256Digest, config: &ProjectConfig) {
+    hash_source_program_config(digest, config);
+    hash_str_list(digest, "config.tests", &config.tests);
+}
+
+fn hash_source_program_config(digest: &mut Sha256Digest, config: &ProjectConfig) {
     hash_str_list(digest, "config.source_roots", &config.source_roots);
     hash_opt_str(
         digest,
@@ -770,7 +796,6 @@ fn hash_config(digest: &mut Sha256Digest, config: &ProjectConfig) {
         "config.store.data_dir",
         config.store.data_dir.as_deref(),
     );
-    hash_str_list(digest, "config.tests", &config.tests);
 }
 
 fn hash_str_list(digest: &mut Sha256Digest, label: &str, values: &[String]) {

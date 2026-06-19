@@ -49,8 +49,8 @@ impl DebugSourceIdentity {
         &self.0
     }
 
-    pub(crate) fn from_analysis_identity(identity: &str) -> Self {
-        Self(identity.to_string())
+    pub(crate) fn from_digest(digest: String) -> Self {
+        Self(digest)
     }
 }
 
@@ -197,6 +197,10 @@ impl CheckedProgram {
 
     pub(crate) fn set_debug_source_identity(&mut self, identity: DebugSourceIdentity) {
         self.debug_source_identity = Some(identity);
+    }
+
+    pub fn debug_source_identity(&self) -> Option<&DebugSourceIdentity> {
+        self.debug_source_identity.as_ref()
     }
 
     pub(crate) fn checked_debug_expression_in_scope(

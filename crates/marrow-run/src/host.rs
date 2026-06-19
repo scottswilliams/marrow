@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use marrow_check::CheckedDebugExpression;
+use marrow_check::{CheckedDebugExpression, FileId, RuntimeStopPoint};
 use marrow_store::tree::TreeStore;
 use marrow_syntax::SourceSpan;
 
@@ -195,6 +195,7 @@ pub trait StepHook {
 /// holds a `&'p mut` hook), so a single shared lifetime would not unify.
 pub struct Frame<'e, 'p> {
     pub(crate) env: &'e Env<'p>,
+    pub(crate) span: SourceSpan,
 }
 
 impl<'e, 'p> Frame<'e, 'p> {
@@ -202,6 +203,11 @@ impl<'e, 'p> Frame<'e, 'p> {
     /// order, so a consumer keeping the last occurrence per name sees shadowing.
     pub fn locals(&self) -> impl Iterator<Item = (&str, &Value)> {
         self.env.locals()
+    }
+
+    /// The statement this frame is stopped before.
+    pub fn span(&self) -> SourceSpan {
+        self.span
     }
 
     /// The live saved-data store handle — the same one the run reads and writes,
@@ -233,13 +239,12 @@ impl<'e, 'p> Frame<'e, 'p> {
     /// snapshot reports how many visible local names existed before paging.
     pub fn debug_snapshot(
         &self,
-        span: SourceSpan,
         page: DebugValuePage,
         filter: DebugValueFilter,
     ) -> DebugFrameSnapshot {
         let locals = crate::debugger::snapshot_locals(self.locals(), page, filter);
         DebugFrameSnapshot {
-            span,
+            span: self.span,
             file: self.file().map(PathBuf::from),
             depth: self.depth(),
             visible_local_count: locals.visible_local_count,
@@ -250,7 +255,6 @@ impl<'e, 'p> Frame<'e, 'p> {
 
     pub fn evaluate_debug_expression(
         &self,
-        span: SourceSpan,
         expression: &CheckedDebugExpression,
     ) -> Result<DebugValue, RuntimeError> {
         match self.env.program.debug_source_identity() {
@@ -291,15 +295,28 @@ impl<'e, 'p> Frame<'e, 'p> {
                 SourceSpan::default(),
             ));
         }
+        let Some(current_file_id) = self
+            .env
+            .program
+            .modules()
+            .iter()
+            .position(|module| module.name == self.env.module)
+            .map(|index| FileId(index as u32))
+        else {
+            return Err(unsupported(
+                "a checked debug expression outside a runtime module frame",
+                SourceSpan::default(),
+            ));
+        };
         if self.file() != Some(expression.source_file()) {
             return Err(unsupported(
                 "a checked debug expression outside the current frame source file",
                 SourceSpan::default(),
             ));
         }
-        let current_stop = marrow_check::RuntimeStopPoint {
-            file_id: expression.file_id(),
-            span,
+        let current_stop = RuntimeStopPoint {
+            file_id: current_file_id,
+            span: self.span,
         };
         if expression.stop_point() != current_stop {
             return Err(unsupported(
