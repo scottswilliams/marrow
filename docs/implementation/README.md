@@ -30,10 +30,11 @@ Nine crates stacked in dependency order, lowest first:
   else consumes.
 - **run** — a tree-walking interpreter over the checked program: evaluates entries,
   drives managed saved writes inside transactions, and applies schema evolution.
-- **json** — outbound JSON rendering for entry return values, saved-key leaves,
-  data snapshot stamps, and surface read DTOs. It preserves existing
-  machine-readable CLI shapes; inbound decoding and generated-client profiles
-  require checked context and are not owned here.
+- **json** — JSON DTOs for entry return values, saved-key leaves, data snapshot
+  stamps, and surface reads. It preserves existing machine-readable CLI shapes
+  and owns checked surface read request-parameter decode plus context-aware
+  cursor-boundary rendering; routes, opaque cursor tokens, generated clients,
+  and write-body decode are not owned here.
 - **project / cli** — `marrow.json`, discovery, and the operator binary that
   wires the above together and renders results.
 
@@ -79,7 +80,7 @@ over data the checker has not proven safe.
 | `marrow-check` | Resolution, types, facts, catalog identity, evolution, lowering | [check/](check/README.md) |
 | `marrow-store` | Tree-cell storage contract; key/value codecs; mem + redb engines | [store.md](store.md) |
 | `marrow-run` | Tree-walking interpreter; saved reads/writes; evolution apply | [runtime/](runtime/README.md) |
-| `marrow-json` | Outbound JSON for entry returns, tooling keys, data stamps, and surface read DTOs | [json.md](json.md) |
+| `marrow-json` | JSON for entry returns, tooling keys, data stamps, and checked surface read DTOs | [json.md](json.md) |
 | `marrow-catalog` | Accepted-catalog model: epoch/digest/entries, validation, structural-signature decode | [check/](check/README.md) |
 | `marrow-project` | `marrow.json` schema, discovery, the project digest | [cli.md](cli.md) |
 | `marrow` | CLI dispatch, run/test/fmt, data/backup/evolve | [cli.md](cli.md) |

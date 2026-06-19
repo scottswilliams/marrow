@@ -5,12 +5,12 @@
 `SurfaceReadOperationFact`s in v0.1, and `marrow-run` exposes an admitted
 transport-neutral executor for the backing `SingletonRead` and `PointRead`
 node-read shapes plus root/index collection reads. `marrow-json` owns a narrow
-read-result DTO profile for already-executed surface records, pages, values,
-identities, and typed cursors. Stable ABI export, request JSON decode,
-generated clients, opaque cursor token codecs, HTTP serving, and writes remain
-future profiles. This adds no `.mw` syntax and does not define HTTP routes, a
-local server, TypeScript names, request-body spelling, or a screen console. It
-consumes the checked facts produced by the language described in
+read DTO profile for checked read request parameters and already-executed
+surface records, pages, values, identities, and typed cursors. Stable ABI
+export, generated clients, opaque cursor token codecs, HTTP serving, and writes
+remain future profiles. This adds no `.mw` syntax and does not define HTTP
+routes, a local server, TypeScript names, write-body spelling, or a screen
+console. It consumes the checked facts produced by the language described in
 [Resources And Saved Data](../language/resources-and-storage.md#application-surfaces).
 
 The purpose of this profile is to make Marrow's database-language model usable
@@ -72,8 +72,9 @@ not routes or endpoints.
 | `PagedIndexCollection` | `collection ^store.index as alias` for a non-unique index. | Exact arguments for every non-identity index component plus page parameters. | Bounded rows under that exact index tuple, ordered by the trailing identity suffix. |
 | `UniqueIndexLookup` | `collection ^store.index as alias` for a unique index. | The complete unique-index tuple. | Zero or one projected row. |
 
-The transport-neutral `marrow-run` read API does not define routes or request
-spelling. A point-read or collection-row result carries `SurfaceReadIdentity`:
+The transport-neutral `marrow-run` read API does not define routes or transport
+request spelling. A point-read or collection-row result carries
+`SurfaceReadIdentity`:
 the accepted store catalog ID plus the typed key tuple. Projected fields are
 ordered by the checked projection and carry the accepted resource-member catalog
 ID plus a `SurfaceValue`. Scalars stay scalar; enum values carry the accepted
@@ -113,11 +114,15 @@ facts:
 - exact index arguments;
 - optional direction or order if a later profile exposes it;
 - limit;
-- cursor token.
+- typed cursor-boundary JSON.
 
-The decode boundary conceptually reuses Marrow's scalar, key, enum, and identity
-rules. It is not a raw saved-path parser and must not duplicate semantic
-classifiers outside the checker/runtime facts.
+The active JSON read request DTOs decode those parameters through shape APIs on
+admitted `marrow-run` reads. They reuse Marrow's scalar, key, enum, identity,
+and identity-index-key rules instead of parsing raw saved paths or duplicating
+checker classifiers. Cursor boundary JSON is decoded under the collection
+cursor boundary shape so malformed cursor lineage fields and boundary arguments
+report `surface.cursor`, while ordinary identity and argument request failures
+report `surface.request`.
 
 `surface.request` is the request-input failure code for non-cursor read
 parameters: malformed identity keys, index arguments, direction/order, or
@@ -125,7 +130,8 @@ limits. `surface.cursor` is for typed cursor-boundary failures, future cursor
 token codec failures, and well-formed cursors whose normalized parameters do
 not match the current request.
 
-Generated write object-body decode is outside this read profile.
+HTTP route mapping, opaque cursor-token codecs, generated clients, and generated
+write object-body decode are outside this read profile.
 
 ## Store Admission
 
@@ -173,10 +179,10 @@ required non-public field fails the get or the whole page as
 still carries only the public projection. The footprint does not descend keyed
 child layers, so read success does not prove those deeper layers valid.
 
-Read-parameter decode belongs to this read slice: scalar, enum, identity,
-index-argument, limit, and cursor-key request values decode against checked
-facts before execution. Generated create/update object-body decode remains
-deferred to a write profile.
+Read-parameter JSON decode belongs to this read slice: scalar, enum, identity,
+index-argument, limit, and cursor-boundary request values decode against
+checked facts before execution. Generated create/update object-body decode
+remains deferred to a write profile.
 
 Absence and invalid data are separated:
 
@@ -213,10 +219,14 @@ encoded token. Root pages carry the last returned `Id(^store)` key tuple.
 Non-unique index pages carry the exact index arguments plus the last returned
 identity suffix. Unique lookups are zero-or-one reads and have no cursor.
 
-Token or display encoding is profile-owned. The active read-result JSON DTO renders
-the typed cursor boundary directly so a host can carry it without inventing a
-saved-path format. A remote or generated-client profile may wrap the same
-continuation semantics in an opaque token.
+Token or display encoding is profile-owned. The active read-result JSON DTO
+renders the typed cursor boundary directly so a host can carry it without
+inventing a saved-path format. It renders root and row identities as branded
+surface identities, enum exact keys as enum catalog/member identities, and
+identity-typed exact keys as branded identity arguments rather than raw saved
+key bytes. The same DTO can be checked back into a typed runtime cursor under
+the collection cursor boundary shape. A remote or generated-client profile may
+wrap the same continuation semantics in an opaque token.
 
 Each request observes one store snapshot while that request is open. A cursor is
 a keyset continuation over the latest admitted snapshot on the next request; it

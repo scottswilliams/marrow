@@ -236,15 +236,15 @@ Configured test-file `surface` declarations are still parsed and checked for
 source-level name collisions, but only source-root declarations resolve into
 application surface facts.
 
-Those facts are transport-neutral: HTTP routes, request JSON spelling,
-TypeScript names, cursor-token codecs, generated clients, and write bodies are
-boundary profiles layered later. `marrow-run` exposes admitted
-transport-neutral node and collection read executors over stable surface facts,
-and `marrow-json` renders their already-executed read results as DTOs with
-accepted catalog IDs and typed values. Runtime output uses accepted store and
-resource-member catalog IDs as semantic identity; enum and identity field values
-use accepted catalog IDs as well. Source names remain render labels. A stable
-exported surface ABI
+Those facts are transport-neutral: HTTP routes, opaque cursor-token codecs,
+TypeScript names, generated clients, and write bodies are boundary profiles
+layered later. `marrow-run` exposes admitted transport-neutral node and
+collection read executors over stable surface facts, and `marrow-json` decodes
+checked read request-parameter DTOs and renders already-executed read results as
+DTOs with accepted catalog IDs and typed values. Runtime output uses accepted
+store and resource-member catalog IDs as semantic identity; enum and identity
+field values use accepted catalog IDs as well. Source names remain render
+labels. A stable exported surface ABI
 cannot use proposal-only catalog IDs; until every referenced durable fact has an
 accepted catalog ID, the facts carry a source-only catalog status rather than a
 stable client contract. A pending catalog proposal for the checked source is

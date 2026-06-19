@@ -1,11 +1,12 @@
 # CLI and project discovery
 
-The CLI is wiring and envelope rendering, not semantics. Commands resolve a project directory to the config, checked program, and durable state they actually need, then print diagnostics, program output, or a tooling report in the formats that command owns. `check`, `evolve`, `test`, and `data` keep their structured `text`/`json`/`jsonl` reports; `run` keeps `text`/`json`; trace, backup, and restore are text-only. All meaning — parse, type-check, run/test admission, evolution verdicts, store keys, value decoding — is decided downstream in `marrow-project`, `marrow-check`, `marrow-run`, `marrow-json`, and `marrow-store` and only consumed here. `marrow-json` owns shared outbound rendering for entry returns, saved keys, data snapshot stamps, and surface read-result DTOs; the CLI still owns command envelopes.
+The CLI is wiring and envelope rendering, not semantics. Commands resolve a project directory to the config, checked program, and durable state they actually need, then print diagnostics, program output, or a tooling report in the formats that command owns. `check`, `evolve`, `test`, and `data` keep their structured `text`/`json`/`jsonl` reports; `run` keeps `text`/`json`; trace, backup, and restore are text-only. All meaning — parse, type-check, run/test admission, evolution verdicts, store keys, value decoding — is decided downstream in `marrow-project`, `marrow-check`, `marrow-run`, `marrow-json`, and `marrow-store` and only consumed here. `marrow-json` owns shared outbound rendering for entry returns, saved keys, and data snapshot stamps, plus checked surface read request DTO decode and result rendering; the CLI still owns command envelopes.
 
 Four crates meet here: `marrow-project` owns the `marrow.json` schema,
 source/test discovery, and the digest helper; `marrow-check::project_io` owns
 project/catalog IO shared by CLI callers; `marrow-json` owns shared outbound
-entry-return, saved-key, data-snapshot, and surface read-result JSON leaves;
+entry-return, saved-key, data-snapshot, and surface read JSON DTO leaves plus
+checked surface read request-parameter decode;
 `marrow` is the binary that dispatches argv to one `cmd_*` module and renders
 command envelopes.
 
@@ -82,7 +83,7 @@ Structured reports that include a `project` field render the canonical absolute 
 
 | File | Responsibility |
 |---|---|
-| `crates/marrow-json/src/lib.rs`, `crates/marrow-json/src/surface.rs` | Outbound rendering for `marrow run --format json` entry returns, the saved-key JSON shape reused by trace and integrity tooling, the `store_snapshot` data-stamp shape reused by data inspection, and surface read-result DTOs. It does not decode inbound JSON, define routes, or generate clients. |
+| `crates/marrow-json/src/lib.rs`, `crates/marrow-json/src/surface.rs` | Outbound rendering for `marrow run --format json` entry returns, the saved-key JSON shape reused by trace and integrity tooling, the `store_snapshot` data-stamp shape reused by data inspection, plus checked surface read request DTO decode and context-aware surface read-result DTOs. It does not define routes, opaque cursor tokens, generated clients, or write-body decode. |
 
 ### Data and durability (`marrow`)
 

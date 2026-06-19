@@ -54,6 +54,14 @@ impl SurfaceReadError {
     pub fn into_runtime_error(self) -> RuntimeError {
         RuntimeError::fatal(self.code, self.message, self.span)
     }
+
+    pub fn request(message: impl Into<String>) -> Self {
+        request(message)
+    }
+
+    pub fn cursor(message: impl Into<String>) -> Self {
+        cursor_error(message, SourceSpan::default())
+    }
 }
 
 impl Diagnose for SurfaceReadError {
@@ -167,6 +175,33 @@ pub enum SurfaceValue {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SurfaceIdentityInputShape {
+    pub store_catalog_id: CatalogId,
+    pub keys: Vec<SurfaceInputKeyShape>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SurfaceInputKeyShape {
+    Scalar(ScalarType),
+    Enum {
+        enum_catalog_id: CatalogId,
+        member_catalog_ids: Vec<CatalogId>,
+    },
+    Identity(SurfaceIdentityInputShape),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SurfaceCursorBoundaryInputShape {
+    RootIdentity {
+        identity: SurfaceIdentityInputShape,
+    },
+    IndexIdentity {
+        exact_keys: Vec<SurfaceInputKeyShape>,
+        identity: SurfaceIdentityInputShape,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SurfaceReadField {
     /// The accepted catalog identity of the projected resource member.
     pub catalog_id: CatalogId,
@@ -211,6 +246,19 @@ impl<'a> SurfaceNodeRead<'a> {
 
     pub fn shape(&self) -> SurfaceNodeReadShape {
         self.plan.shape
+    }
+
+    pub fn point_identity_shape(&self) -> Result<SurfaceIdentityInputShape, SurfaceReadError> {
+        if self.plan.shape != SurfaceNodeReadShape::Point {
+            return Err(request_at(
+                format!(
+                    "surface `{}` is not backed by a keyed store",
+                    self.plan.surface_label
+                ),
+                self.plan.span,
+            ));
+        }
+        self.plan.record.identity_input_shape()
     }
 
     pub fn execute(
@@ -304,6 +352,20 @@ impl<'a> SurfaceCollectionRead<'a> {
 
     pub fn shape(&self) -> SurfaceCollectionReadShape {
         self.plan.shape()
+    }
+
+    pub fn page_exact_key_shapes(&self) -> Result<Vec<SurfaceInputKeyShape>, SurfaceReadError> {
+        self.plan.page_exact_key_shapes()
+    }
+
+    pub fn unique_lookup_key_shapes(&self) -> Result<Vec<SurfaceInputKeyShape>, SurfaceReadError> {
+        self.plan.unique_lookup_key_shapes()
+    }
+
+    pub fn cursor_boundary_shape(
+        &self,
+    ) -> Result<SurfaceCursorBoundaryInputShape, SurfaceReadError> {
+        self.plan.cursor_boundary_shape()
     }
 
     pub fn page(
@@ -630,6 +692,55 @@ impl<'a> SurfaceCollectionReadPlan<'a> {
         }
     }
 
+    fn page_exact_key_shapes(&self) -> Result<Vec<SurfaceInputKeyShape>, SurfaceReadError> {
+        match &self.kind {
+            SurfaceCollectionPlanKind::Root => Ok(Vec::new()),
+            SurfaceCollectionPlanKind::Index(index) => input_key_shapes(
+                self.record.facts,
+                &index.key_meanings[..index.exact_key_count],
+                self.span,
+            ),
+            SurfaceCollectionPlanKind::Unique(_) => Err(request_at(
+                "unique surface collection operations are lookups, not pages",
+                self.span,
+            )),
+        }
+    }
+
+    fn unique_lookup_key_shapes(&self) -> Result<Vec<SurfaceInputKeyShape>, SurfaceReadError> {
+        match &self.kind {
+            SurfaceCollectionPlanKind::Unique(unique) => {
+                input_key_shapes(self.record.facts, &unique.key_meanings, self.span)
+            }
+            _ => Err(request_at(
+                "surface collection operation is not a unique lookup",
+                self.span,
+            )),
+        }
+    }
+
+    fn cursor_boundary_shape(&self) -> Result<SurfaceCursorBoundaryInputShape, SurfaceReadError> {
+        match &self.kind {
+            SurfaceCollectionPlanKind::Root => Ok(SurfaceCursorBoundaryInputShape::RootIdentity {
+                identity: self.record.identity_input_shape()?,
+            }),
+            SurfaceCollectionPlanKind::Index(index) => {
+                Ok(SurfaceCursorBoundaryInputShape::IndexIdentity {
+                    exact_keys: input_key_shapes(
+                        self.record.facts,
+                        &index.key_meanings[..index.exact_key_count],
+                        self.span,
+                    )?,
+                    identity: self.record.identity_input_shape()?,
+                })
+            }
+            SurfaceCollectionPlanKind::Unique(_) => Err(request_at(
+                "unique lookup operations do not produce page cursors",
+                self.span,
+            )),
+        }
+    }
+
     fn validate_cursor(&self, cursor: Option<&SurfacePageCursor>) -> Result<(), SurfaceReadError> {
         let Some(cursor) = cursor else {
             return Ok(());
@@ -905,6 +1016,74 @@ impl SurfaceIndexPagePlan {
     }
 }
 
+fn input_key_shapes(
+    facts: &CheckedFacts,
+    meanings: &[StoredValueMeaning],
+    span: SourceSpan,
+) -> Result<Vec<SurfaceInputKeyShape>, SurfaceReadError> {
+    meanings
+        .iter()
+        .map(|meaning| input_key_shape(facts, meaning, span))
+        .collect()
+}
+
+fn input_key_shape(
+    facts: &CheckedFacts,
+    meaning: &StoredValueMeaning,
+    span: SourceSpan,
+) -> Result<SurfaceInputKeyShape, SurfaceReadError> {
+    match meaning {
+        StoredValueMeaning::Scalar(scalar) => Ok(SurfaceInputKeyShape::Scalar(*scalar)),
+        StoredValueMeaning::Enum { enum_id, members } => {
+            let enum_fact = facts
+                .enum_(*enum_id)
+                .ok_or_else(|| abi_mismatch("checked enum id is missing", span))?;
+            let enum_catalog_id = catalog_id(&enum_fact.catalog_id, "enum", span)?;
+            let mut member_catalog_ids = Vec::new();
+            for member_id in members {
+                let member = facts
+                    .enum_members()
+                    .get(member_id.0 as usize)
+                    .ok_or_else(|| abi_mismatch("checked enum member id is missing", span))?;
+                if member.enum_id != *enum_id {
+                    return Err(abi_mismatch(
+                        "checked enum member is outside the enum shape",
+                        span,
+                    ));
+                }
+                if facts.enum_member_is_selectable(member.id) {
+                    member_catalog_ids.push(catalog_id(&member.catalog_id, "enum member", span)?);
+                }
+            }
+            Ok(SurfaceInputKeyShape::Enum {
+                enum_catalog_id,
+                member_catalog_ids,
+            })
+        }
+        StoredValueMeaning::Identity {
+            store_catalog_id,
+            arity,
+            key_scalars,
+            ..
+        } => {
+            if *arity != key_scalars.len() {
+                return Err(abi_mismatch(
+                    "checked identity key shape arity does not match its scalar keys",
+                    span,
+                ));
+            }
+            Ok(SurfaceInputKeyShape::Identity(SurfaceIdentityInputShape {
+                store_catalog_id: catalog_id(store_catalog_id, "identity store", span)?,
+                keys: key_scalars
+                    .iter()
+                    .copied()
+                    .map(SurfaceInputKeyShape::Scalar)
+                    .collect(),
+            }))
+        }
+    }
+}
+
 impl SurfaceUniqueLookupPlan {
     fn validate_request_keys(
         &self,
@@ -1161,6 +1340,25 @@ impl<'a> SurfaceRecordReadPlan<'a> {
             }
         }
         Ok(())
+    }
+
+    fn identity_input_shape(&self) -> Result<SurfaceIdentityInputShape, SurfaceReadError> {
+        Ok(SurfaceIdentityInputShape {
+            store_catalog_id: self.store_catalog_id.clone(),
+            keys: self
+                .identity_keys
+                .iter()
+                .map(|meaning| {
+                    let StoredValueMeaning::Scalar(scalar) = meaning else {
+                        return Err(abi_mismatch(
+                            "checked store identity key is not scalar",
+                            self.span,
+                        ));
+                    };
+                    Ok(SurfaceInputKeyShape::Scalar(*scalar))
+                })
+                .collect::<Result<Vec<_>, SurfaceReadError>>()?,
+        })
     }
 
     fn surface_identity(&self, identity: &[SavedKey]) -> SurfaceReadIdentity {

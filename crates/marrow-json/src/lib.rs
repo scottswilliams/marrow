@@ -1,10 +1,10 @@
-//! Outbound JSON rendering for Marrow's current machine-readable surfaces.
+//! JSON DTOs for Marrow's current machine-readable surfaces.
 //!
 //! This crate preserves the existing `marrow run --format json` return-value
 //! shape, saved-key shape, and data snapshot shape used in tooling reports, plus
-//! the surface read-result DTO shape. It is not a general `Value` codec, and
-//! inbound request JSON needs checked context that this outbound renderer
-//! deliberately does not carry.
+//! checked surface read request DTOs and result DTOs. It is not a general
+//! `Value` codec, and it does not define routes, generated clients, opaque
+//! cursor tokens, or write-body decode.
 
 use marrow_check::tooling::{DataCommitStamp, DataSnapshotStamp};
 use marrow_run::Value;
