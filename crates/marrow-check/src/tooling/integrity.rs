@@ -15,11 +15,12 @@ use crate::{
     checked_activation_root_places, identity_leaf_key_mismatch,
 };
 
+use super::data::StampedData;
 use super::data::{
     DataRecord, checked_places, push_key, render_data_path, stored_key_mismatch,
     tooling_catalog_id, validate_member_path_node, validate_member_value_path,
     visit_data_records_in_places, visit_data_records_in_places_until,
-    visit_place_record_identities_until,
+    visit_place_record_identities_until, with_stamped_read,
 };
 
 const ORPHAN_INTEGRITY_HELP: &str =
@@ -60,33 +61,75 @@ pub struct IntegritySample {
     pub truncated: bool,
 }
 
+#[derive(Debug, Clone)]
+pub struct IntegrityProblemSample {
+    pub items_checked: usize,
+    pub problems: Vec<IntegrityProblem>,
+    pub truncated: bool,
+}
+
 pub fn sample_integrity_problems(
     store: &TreeStore,
     program: &CheckedProgram,
     limit: usize,
 ) -> Result<IntegritySample, StoreError> {
-    let mut sample = IntegritySample {
-        items_checked: 0,
-        problems: 0,
-        truncated: false,
-    };
-    if limit == 0 {
-        sample.truncated = true;
-        return Ok(sample);
-    }
+    let mut problems = 0usize;
+    let scan = sample_integrity_problem_items(store, program, limit, |_problem| {
+        increment_problem_count(&mut problems)
+    })?;
+    Ok(IntegritySample {
+        items_checked: scan.items_checked,
+        problems,
+        truncated: scan.truncated,
+    })
+}
 
+pub fn sample_integrity_problem_details(
+    store: &TreeStore,
+    program: &CheckedProgram,
+    limit: usize,
+) -> Result<IntegrityProblemSample, StoreError> {
+    let mut problems = Vec::new();
+    let scan = sample_integrity_problem_items(store, program, limit, |problem| {
+        problems.push(problem);
+        Ok(())
+    })?;
+    Ok(IntegrityProblemSample {
+        items_checked: scan.items_checked,
+        problems,
+        truncated: scan.truncated,
+    })
+}
+
+pub fn stamped_integrity_problem_details(
+    program: &CheckedProgram,
+    store: &TreeStore,
+    limit: usize,
+) -> Result<StampedData<IntegrityProblemSample>, StoreError> {
+    with_stamped_read(program, store, |store| {
+        sample_integrity_problem_details(store, program, limit)
+    })
+}
+
+fn sample_integrity_problem_items(
+    store: &TreeStore,
+    program: &CheckedProgram,
+    limit: usize,
+    mut on_problem: impl FnMut(IntegrityProblem) -> Result<(), StoreError>,
+) -> Result<IntegrityProblemScan, StoreError> {
     let places = checked_places(program);
     let mut budget = SampleBudget::new(limit);
-    sample_record_problems(store, program, &places, &mut budget, &mut sample)?;
+    sample_record_problems(store, program, &places, &mut budget, &mut on_problem)?;
     if !budget.truncated {
-        sample_incomplete_problems(store, program, &places, &mut budget, &mut sample)?;
+        sample_incomplete_problems(store, program, &places, &mut budget, &mut on_problem)?;
     }
     if !budget.truncated {
-        sample_orphan_problems(store, &places, &mut budget, &mut sample)?;
+        sample_orphan_problems(store, &places, &mut budget, &mut on_problem)?;
     }
-    sample.items_checked = budget.used();
-    sample.truncated = budget.truncated;
-    Ok(sample)
+    Ok(IntegrityProblemScan {
+        items_checked: budget.used(),
+        truncated: budget.truncated,
+    })
 }
 
 fn sample_record_problems(
@@ -94,14 +137,14 @@ fn sample_record_problems(
     program: &CheckedProgram,
     places: &[CheckedSavedPlace],
     budget: &mut SampleBudget,
-    sample: &mut IntegritySample,
+    on_problem: &mut impl FnMut(IntegrityProblem) -> Result<(), StoreError>,
 ) -> Result<(), StoreError> {
     let _ = visit_data_records_in_places_until(places, store, |record| {
         let ControlFlow::Continue(()) = budget.claim() else {
             return Ok(ControlFlow::Break(()));
         };
-        if check_record(store, program, &record, IntegrityProfile::Report)?.is_some() {
-            sample.increment_problems()?;
+        if let Some(problem) = check_record(store, program, &record, IntegrityProfile::Report)? {
+            on_problem(problem)?;
         }
         Ok(ControlFlow::Continue(()))
     })?;
@@ -113,11 +156,11 @@ fn sample_incomplete_problems(
     program: &CheckedProgram,
     places: &[CheckedSavedPlace],
     budget: &mut SampleBudget,
-    sample: &mut IntegritySample,
+    on_problem: &mut impl FnMut(IntegrityProblem) -> Result<(), StoreError>,
 ) -> Result<(), StoreError> {
     let mut visit_item = || Ok(budget.claim());
-    let mut report = |_problem| {
-        sample.increment_problems()?;
+    let mut report = |problem| {
+        on_problem(problem)?;
         Ok(ControlFlow::Continue(()))
     };
     let _ = visit_incomplete_records_in_places_until(
@@ -134,19 +177,24 @@ fn sample_orphan_problems(
     store: &TreeStore,
     places: &[CheckedSavedPlace],
     budget: &mut SampleBudget,
-    sample: &mut IntegritySample,
+    on_problem: &mut impl FnMut(IntegrityProblem) -> Result<(), StoreError>,
 ) -> Result<(), StoreError> {
     let schema = DeclaredSchema::from_places(places);
     store.visit_backup_cells_until(|cell| {
         let ControlFlow::Continue(()) = budget.claim() else {
             return Ok(ControlFlow::Break(()));
         };
-        if schema.classify(store, cell.data_key().clone())?.is_some() {
-            sample.increment_problems()?;
+        if let Some(problem) = schema.classify(store, cell.data_key().clone())? {
+            on_problem(problem)?;
         }
         Ok(ControlFlow::Continue(()))
     })?;
     Ok(())
+}
+
+struct IntegrityProblemScan {
+    items_checked: usize,
+    truncated: bool,
 }
 
 struct SampleBudget {
@@ -179,16 +227,11 @@ impl SampleBudget {
     }
 }
 
-impl IntegritySample {
-    fn increment_problems(&mut self) -> Result<(), StoreError> {
-        self.problems = self
-            .problems
-            .checked_add(1)
-            .ok_or(StoreError::LimitExceeded {
-                limit: "data integrity problem count",
-            })?;
-        Ok(())
-    }
+fn increment_problem_count(problems: &mut usize) -> Result<(), StoreError> {
+    *problems = problems.checked_add(1).ok_or(StoreError::LimitExceeded {
+        limit: "data integrity problem count",
+    })?;
+    Ok(())
 }
 
 fn count_integrity_problems_in_places(
@@ -204,9 +247,7 @@ fn count_integrity_problems_in_places(
             records += 1;
         }
         if outcome.problem.is_some() {
-            problems = problems.checked_add(1).ok_or(StoreError::LimitExceeded {
-                limit: "data integrity problem count",
-            })?;
+            increment_problem_count(&mut problems)?;
         }
         Ok(())
     })?;

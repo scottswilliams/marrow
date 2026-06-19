@@ -118,7 +118,7 @@ pub fn stamped_data_children(
     })
 }
 
-fn with_stamped_read<T, E>(
+pub(crate) fn with_stamped_read<T, E>(
     program: &CheckedProgram,
     store: &TreeStore,
     read: impl FnOnce(&TreeStore) -> Result<T, E>,

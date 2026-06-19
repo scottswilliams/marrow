@@ -82,14 +82,15 @@ Path resolution is the single chokepoint: `resolve_query_steps` validates source
 
 `shape.rs::classify_data_path` is the one member-tree shape owner, so the walk cursor's value-position test and integrity orphan detection share a single definition of "declared value path." Every walk and child listing pages with explicit limits, resume cursors, and truncated flags; counts use `checked_add` into `StoreError::LimitExceeded`. Integrity separates declared values (decode, key-type, enum-membership, and canonical identity referent checks against schema and catalog), declared-shape completeness (accepted required fields on existing records and keyed entries), and orphan cells (data under a root/shape/member the schema no longer declares, or under a record identity with no node cell), each a typed `IntegrityProblem` with a stable code.
 
-Stamped roots, value reads, and child listings wrap their existing readers in one
-`TreeStore::read_snapshot()` guard and return `StampedData<T>`. The stamp keeps
-the physical store identity, catalog digest, optional `DataCommitStamp`, and
-checked program source digest separate, so callers can mark stale data without
-guessing whether a difference came from the store or the editor snapshot.
-`marrow data roots|get --format json|jsonl` render this as `store_snapshot`.
-Multi-pass commands and lower-level tooling tests still call the un-stamped
-reader primitives under their own broader snapshot.
+Stamped roots, value reads, child listings, and bounded integrity problem
+samples wrap their existing readers in one `TreeStore::read_snapshot()` guard
+and return `StampedData<T>`. The stamp keeps the physical store identity,
+catalog digest, optional `DataCommitStamp`, and checked program source digest
+separate, so callers can mark stale data without guessing whether a difference
+came from the store or the editor snapshot. `marrow data roots|get --format
+json|jsonl` render this as `store_snapshot`. Multi-pass commands and lower-level
+tooling tests still call the un-stamped reader primitives under their own
+broader snapshot.
 
 ## Modules
 
@@ -127,7 +128,10 @@ reader primitives under their own broader snapshot.
 - `QueryError` / `ToolingError` (`query_error.rs`, `tooling/mod.rs`) — typed request malformity vs store faults.
 - `DataRecord` / `DataPresence` / `DataWalkPage` / `DataChildrenPage` (`tooling/data/mod.rs`) — the paged data facts carrying truncation and resume cursors.
 - `StampedData` / `DataSnapshotStamp` / `DataCommitStamp` / `DataReadResult` (`tooling/data/mod.rs`) — a value read under one store snapshot plus typed store UID, catalog digest, optional commit stamp, and checked-program source digest.
-- `IntegrityProblem` / `IntegrityOutcome` (`integrity.rs`) — a typed finding implementing `Diagnose`, tagged stored-value vs structure/orphan findings, with catalog/key identity attached to incomplete data and dangling identity references.
+- `IntegrityProblem` / `IntegrityOutcome` / `IntegrityProblemSample`
+  (`integrity.rs`) — typed findings implementing `Diagnose`, full-report
+  outcomes tagged stored-value vs structure/orphan findings, and bounded problem
+  samples carrying inspected-item counts plus truncation.
 
 ## Entry points
 

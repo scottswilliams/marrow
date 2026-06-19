@@ -6,8 +6,9 @@ use std::path::PathBuf;
 
 use marrow_check::program::MarrowType;
 use marrow_check::tooling::{
-    DataChild, DataPresence, DataQuerySegment, resolve_data_query, stamped_data_children,
-    stamped_data_roots_in_store, stamped_read_data_query,
+    DataChild, DataPresence, DataQuerySegment, resolve_data_query,
+    sample_integrity_problem_details, sample_integrity_problems, stamped_data_children,
+    stamped_data_roots_in_store, stamped_integrity_problem_details, stamped_read_data_query,
 };
 use marrow_check::{
     CatalogEntryKind, CheckedProgram, ProjectSources, UseSiteKind, analyze_project, check_project,
@@ -831,6 +832,138 @@ fn stamped_data_readers_carry_store_and_checked_snapshot_identity() {
     assert!(!stamped_children.data.truncated);
     assert_eq!(stamped_children.data.cursor, None);
     assert_eq!(stamped_children.stamp, stamped.stamp);
+}
+
+#[test]
+fn integrity_problem_samples_share_budget_and_carry_snapshot_identity() {
+    let source = "module m\n\
+        resource Book\n    \
+        required pages: int\n\
+        store ^books(id: int): Book\n";
+    let root = temp_root("analysis-integrity-problem-sample");
+    write(&root, "src/m.mw", source);
+    let (checked, program) = check_project(&root, &config()).expect("check source");
+    assert!(!checked.has_errors(), "{:#?}", checked.diagnostics);
+    let accepted = program
+        .catalog
+        .proposal
+        .clone()
+        .expect("first check proposes a catalog");
+    let snapshot = analyze_project(&root, &config(), &ProjectSources::new(), Some(&accepted))
+        .expect("analyze accepted source");
+    assert!(
+        !snapshot.report.has_errors(),
+        "{:#?}",
+        snapshot.report.diagnostics
+    );
+
+    let store_fact = snapshot
+        .program
+        .facts
+        .stores()
+        .iter()
+        .find(|store| store.root == "books")
+        .expect("books store");
+    let store_id = CatalogId::new(
+        snapshot
+            .program
+            .store_catalog_id(store_fact.id)
+            .expect("books store catalog id"),
+    )
+    .expect("valid store catalog id");
+    let pages_id = CatalogId::new(
+        accepted
+            .entries
+            .iter()
+            .find(|entry| {
+                entry.kind == CatalogEntryKind::ResourceMember && entry.path == "m::Book::pages"
+            })
+            .expect("accepted pages catalog id")
+            .stable_id
+            .clone(),
+    )
+    .expect("valid pages catalog id");
+
+    let empty_store = TreeStore::memory();
+    let empty_count =
+        sample_integrity_problems(&empty_store, &snapshot.program, 0).expect("empty count sample");
+    let empty_details = sample_integrity_problem_details(&empty_store, &snapshot.program, 0)
+        .expect("empty detail sample");
+    assert_eq!(empty_count.items_checked, 0);
+    assert_eq!(empty_count.problems, 0);
+    assert!(!empty_count.truncated);
+    assert_eq!(empty_details.items_checked, 0);
+    assert!(empty_details.problems.is_empty());
+    assert!(!empty_details.truncated);
+
+    let store = TreeStore::memory();
+    store
+        .replace_catalog_snapshot(&accepted)
+        .expect("write catalog snapshot");
+    store
+        .write_record_presence(&store_id, &[SavedKey::Int(1)])
+        .expect("seed record presence");
+    store
+        .write_data_value(
+            &store_id,
+            &[SavedKey::Int(1)],
+            &[DataPathSegment::Member(pages_id)],
+            b"not-an-int".to_vec(),
+        )
+        .expect("seed invalid int");
+    let uid = StoreUid::from_entropy_bytes([9; 16]);
+    store.write_store_uid(&uid).expect("write store uid");
+    let profile = EngineProfile::new(0);
+    store
+        .write_commit_metadata(&CommitMetadata {
+            commit_id: 21,
+            catalog_epoch: 4,
+            layout_epoch: profile.layout_epoch(),
+            source_digest:
+                "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+                    .to_string(),
+            engine_profile_digest: profile.digest_bytes(),
+            changed_root_catalog_ids: vec![store_id],
+            changed_index_catalog_ids: Vec::new(),
+        })
+        .expect("write commit metadata");
+
+    let zero_count =
+        sample_integrity_problems(&store, &snapshot.program, 0).expect("zero count sample");
+    let zero_details =
+        sample_integrity_problem_details(&store, &snapshot.program, 0).expect("zero detail sample");
+    assert_eq!(zero_count.items_checked, 0);
+    assert_eq!(zero_count.problems, 0);
+    assert!(zero_count.truncated);
+    assert_eq!(zero_details.items_checked, 0);
+    assert!(zero_details.problems.is_empty());
+    assert!(zero_details.truncated);
+
+    let details =
+        sample_integrity_problem_details(&store, &snapshot.program, 10).expect("detail sample");
+    assert_eq!(details.problems.len(), 1);
+    assert_eq!(details.problems[0].code, "data.decode");
+    assert!(details.items_checked >= details.problems.len());
+    assert!(details.items_checked <= 10);
+    assert!(!details.truncated);
+
+    let stamped = stamped_integrity_problem_details(&snapshot.program, &store, 10)
+        .expect("stamped detail sample");
+    assert_eq!(stamped.data.problems.len(), 1);
+    assert_eq!(stamped.data.problems[0].code, "data.decode");
+    assert_eq!(stamped.stamp.store_uid.as_ref(), Some(&uid));
+    assert_eq!(
+        stamped.stamp.store_catalog_digest.as_deref(),
+        Some(accepted.digest.as_str())
+    );
+    assert_eq!(
+        stamped.stamp.checked_source_digest,
+        snapshot.program.source_digest()
+    );
+    assert_eq!(
+        stamped.stamp.store_commit.expect("commit stamp").commit_id,
+        21
+    );
 }
 
 #[test]

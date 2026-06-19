@@ -16,8 +16,10 @@ pub use data::{
     visit_data_records, walk_data,
 };
 pub use integrity::{
-    IntegrityOutcome, IntegrityProblem, IntegritySample, count_activation_integrity_problems,
-    count_integrity_problems, sample_integrity_problems, visit_integrity_problems,
+    IntegrityOutcome, IntegrityProblem, IntegrityProblemSample, IntegritySample,
+    count_activation_integrity_problems, count_integrity_problems,
+    sample_integrity_problem_details, sample_integrity_problems, stamped_integrity_problem_details,
+    visit_integrity_problems,
 };
 
 #[derive(Debug)]
