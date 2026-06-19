@@ -39,6 +39,13 @@ The active surface foundation has these owners:
   against a stamped store, materializes the backing record body before
   projecting reads, and applies non-empty sparse update patches through managed
   writes.
+- `marrow-run::ProjectSurfaceReadSession` is the preparatory linked-Rust
+  read-serving boundary. It checks a project, opens the configured native store
+  read-only, requires an already accepted and stamped durable store, fences
+  source/catalog drift without auto-apply, and exposes admitted surface reads by
+  operation tag. It does not expose routes, generated-client names, update
+  methods, UID minting, baseline freeze, recovery, restore, maintenance, or any
+  hidden write path.
 - `crates/marrow-json/src/surface.rs` owns the current checked read parameter,
   result, identity, value, typed cursor-boundary, sparse update request,
   operation-tag execution, and serialized surface ABI JSON DTOs. Execution
@@ -115,9 +122,10 @@ process lifetime. A production serving profile needs:
   freeze, auto-apply, recovery, restore, maintenance, or hidden write path;
 - an explicit architecture decision before adding an HTTP dependency.
 
-A preparatory read-only serving session may be useful before HTTP, but it must
-open the store through a no-write profile and expose no route or generated-client
-contract.
+The active `ProjectSurfaceReadSession` satisfies only the preparatory
+linked-Rust read-serving slice. It is not the serving profile: it has no route
+mapping, request envelope, process lifetime, network binding, generated-client
+surface, opaque cursor token, or public compatibility guarantee.
 
 ## Generated Clients And LSP
 

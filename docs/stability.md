@@ -74,10 +74,13 @@ descriptor set for successful checks. The active JSON DTOs decode checked read
 request parameters through admitted runtime reads, decode sparse update request
 bodies through admitted runtime updates, and render already-executed surface
 reads with typed cursor-boundary JSON.
-Linked-Rust embedding remains an implementation profile for hosting surface
-facts and run sessions, not a separate app-data contract. HTTP serving, opaque
-cursor tokens, generated clients, and create/delete body decode remain future
-profiles.
+`marrow-run::ProjectSurfaceReadSession` is an unstable linked-Rust
+implementation profile for read serving over an already accepted native store:
+it opens the store read-only, fences drift, and exposes admitted surface reads
+by operation tag. Linked-Rust embedding remains an implementation profile for
+hosting surface facts, run sessions, and this read-serving slice, not a stable
+app-data contract. HTTP serving, opaque cursor tokens, generated clients, and
+create/delete body decode remain future profiles.
 Until serving profiles ship, typed entry invocation (`marrow run` with `--arg`
 and `--format json`) is the supported integration surface.
 The linked-Rust entry descriptor profile is an unstable implementation surface:

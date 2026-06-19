@@ -22,6 +22,7 @@ use crate::evolution::{
     try_auto_apply,
 };
 use crate::host::{Host, Nondeterminism, StepHook, SystemNondeterminism};
+use crate::surface::{SurfaceReadError, SurfaceReadOperation};
 use crate::value::{RunOutput, RunOutputSink};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -95,12 +96,29 @@ pub struct ProjectSession {
     notices: Vec<ProjectSessionNotice>,
 }
 
+pub struct ProjectSurfaceReadSession {
+    root: PathBuf,
+    program: CheckedProgram,
+    store_path: PathBuf,
+    store: TreeStore,
+}
+
 impl fmt::Debug for ProjectSession {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("ProjectSession")
             .field("root", &self.root)
             .field("kind", &self.kind)
+            .finish_non_exhaustive()
+    }
+}
+
+impl fmt::Debug for ProjectSurfaceReadSession {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ProjectSurfaceReadSession")
+            .field("root", &self.root)
+            .field("store_path", &self.store_path)
             .finish_non_exhaustive()
     }
 }
@@ -541,6 +559,41 @@ impl ProjectSession {
     }
 }
 
+impl ProjectSurfaceReadSession {
+    pub fn open(root: impl AsRef<Path>) -> Result<Self, ProjectSessionError> {
+        let root = root.as_ref().to_path_buf();
+        let (config, program) = load_checked_for_surface_read_session(&root)?;
+        open_surface_read_session(root, config, program)
+    }
+
+    pub fn program(&self) -> &CheckedProgram {
+        &self.program
+    }
+
+    pub fn store_stamp(&self) -> Result<StoreStamp, ProjectSessionError> {
+        let uid = self
+            .store
+            .read_store_uid()?
+            .ok_or(ProjectSessionError::DurableStoreRequired)?;
+        let commit = self
+            .store
+            .read_commit_metadata()?
+            .ok_or(ProjectSessionError::DurableStoreRequired)?;
+        Ok(StoreStamp {
+            store_uid: uid.as_str().to_string(),
+            catalog_epoch: commit.catalog_epoch,
+            commit_id: commit.commit_id,
+        })
+    }
+
+    pub fn admit_read_by_operation_tag(
+        &self,
+        operation_tag: &str,
+    ) -> Result<SurfaceReadOperation<'_>, SurfaceReadError> {
+        SurfaceReadOperation::admit_by_operation_tag(&self.program, &self.store, operation_tag)
+    }
+}
+
 fn invoke_store(
     store: &TreeStore,
     call: &CheckedEntryCall<'_>,
@@ -639,6 +692,47 @@ fn open_test_session(
     })
 }
 
+fn open_surface_read_session(
+    root: PathBuf,
+    config: ProjectConfig,
+    program: CheckedProgram,
+) -> Result<ProjectSurfaceReadSession, ProjectSessionError> {
+    let Some(store) = open_store_file(&root, &config, false)? else {
+        return Err(ProjectSessionError::DurableStoreRequired);
+    };
+    if populated_unstamped_store(&program, &store.store)? {
+        return Err(ProjectSessionError::UnstampedStore);
+    }
+    if program.catalog.accepted_epoch.is_none() {
+        return Err(ProjectSessionError::DurableStoreRequired);
+    }
+    let accepted_digest =
+        program
+            .catalog
+            .accepted_digest
+            .as_deref()
+            .ok_or_else(|| ProjectSessionError::Catalog {
+                code: marrow_catalog::CATALOG_INVALID,
+                message: "accepted catalog digest is missing from the checked program".to_string(),
+            })?;
+    if store.store.read_store_uid()?.is_none() || store.store.read_commit_metadata()?.is_none() {
+        return Err(ProjectSessionError::DurableStoreRequired);
+    }
+    fence_run(&program, &store.store).map_err(ProjectSessionError::Fence)?;
+    let found = store.store.catalog_snapshot_digest()?;
+    if found.as_deref() != Some(accepted_digest) {
+        return Err(ProjectSessionError::SchemaDrift {
+            message: "store catalog digest does not match the checked project catalog".to_string(),
+        });
+    }
+    Ok(ProjectSurfaceReadSession {
+        root,
+        program,
+        store_path: store.path,
+        store: store.store,
+    })
+}
+
 struct OpenRunStore {
     program: CheckedProgram,
     store: RunStore,
@@ -723,7 +817,12 @@ fn open_store_file(
     config: &ProjectConfig,
     write_uid: bool,
 ) -> Result<Option<NativeRunStore>, ProjectSessionError> {
-    let Some(path) = resolve_store_path(root, config)? else {
+    let path = if write_uid {
+        resolve_store_path(root, config)?
+    } else {
+        marrow_check::native_store_path(root, config)?
+    };
+    let Some(path) = path else {
         return Ok(None);
     };
     let store = if write_uid {
@@ -872,6 +971,18 @@ fn load_checked_for_session(
     let accepted = {
         let store = open_store_for_inspection(root, &config)?;
         marrow_check::read_accepted_catalog_with_store(root, store.as_ref())?
+    };
+    let program = marrow_check::check_project_against(root, &config, accepted.as_ref())?;
+    Ok((config, program))
+}
+
+fn load_checked_for_surface_read_session(
+    root: &Path,
+) -> Result<(ProjectConfig, CheckedProgram), ProjectSessionError> {
+    let config = marrow_check::load_config(root)?;
+    let accepted = {
+        let store = open_store_for_inspection(root, &config)?;
+        marrow_check::read_accepted_catalog_with_store_read_only(root, store.as_ref())?
     };
     let program = marrow_check::check_project_against(root, &config, accepted.as_ref())?;
     Ok((config, program))

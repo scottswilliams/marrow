@@ -244,12 +244,15 @@ TypeScript names, generated clients, and create/delete bodies are boundary
 profiles layered later. Stable surface reads and sparse updates have
 checker-owned accepted-catalog descriptors and operation tags. `marrow-run`
 exposes admitted transport-neutral node and collection read executors over
-stable surface facts. It also exposes an admitted sparse update executor over
-stable, explicitly declared `update` facts: callers supply a singleton target or
-checked store identity plus a non-empty set of field values addressed by
-accepted resource-member catalog ID; omitted fields are preserved, absent
-records are not created, and all supplied field writes commit atomically through
-managed write/index maintenance. `marrow-json` renders check-output surface ABI
+stable surface facts, plus an unstable read-only project session that opens an
+already accepted native store and admits those reads by operation tag without
+creating, freezing, migrating, or repairing data. It also exposes an admitted
+sparse update executor over stable, explicitly declared `update` facts: callers
+supply a singleton target or checked store identity plus a non-empty set of
+field values addressed by accepted resource-member catalog ID; omitted fields
+are preserved, absent records are not created, and all supplied field writes
+commit atomically through managed write/index maintenance. `marrow-json` renders
+check-output surface ABI
 descriptors, decodes checked read request-parameter DTOs and sparse update
 request-body DTOs, and renders already-executed read results as DTOs with
 accepted catalog IDs and typed values. Runtime output uses accepted store and

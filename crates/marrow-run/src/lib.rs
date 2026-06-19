@@ -88,7 +88,7 @@ pub use marrow_check::{
 };
 pub use project_session::{
     ProjectInvokeError, ProjectMode, ProjectOpen, ProjectSession, ProjectSessionError,
-    ProjectSessionNotice, ProjectTestCase, SessionEntry, StoreStamp,
+    ProjectSessionNotice, ProjectSurfaceReadSession, ProjectTestCase, SessionEntry, StoreStamp,
 };
 pub use surface::{
     SURFACE_ABI_MISMATCH, SURFACE_ABSENT, SURFACE_CONFLICT, SURFACE_CURSOR, SURFACE_INVALID_DATA,

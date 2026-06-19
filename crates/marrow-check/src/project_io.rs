@@ -153,6 +153,18 @@ pub fn read_accepted_catalog_with_store(
     accepted_catalog_file_result(file_accepted, accepted)
 }
 
+pub fn read_accepted_catalog_with_store_read_only(
+    root: &Path,
+    store: Option<&TreeStore>,
+) -> Result<Option<marrow_catalog::CatalogMetadata>, ProjectIoError> {
+    let file_accepted = read_accepted_catalog_file(root);
+    let fallback = match store {
+        Some(store) => store.read_catalog_snapshot()?,
+        None => None,
+    };
+    accepted_catalog_file_result(file_accepted, fallback)
+}
+
 pub fn check_project_against(
     root: &Path,
     config: &ProjectConfig,
