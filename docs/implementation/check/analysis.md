@@ -161,11 +161,12 @@ add only transport availability and request-envelope concerns around those DTOs.
 ## Key types
 
 - `AnalysisSnapshot` / `AnalyzedFile` (`analysis.rs`) — the IDE view: report + best-effort `CheckedProgram` + every parsed file, error files retained.
-- `UseSite` / `UseSiteKind` (`analysis.rs`) — catalog-id references in checked
-  bodies, built from lowered expressions and token-tight syntax spans rather
-  than source spelling.
-- `CatalogDeclaration` (`analysis.rs`) — catalog-id declarations for editor
-  navigation, keyed with `CatalogEntryKind` and exact declaration-name spans.
+- `UseSite` / `UseSiteKind` (`analysis/catalog_nav.rs`, re-exported from
+  `analysis.rs`) — catalog-id references in checked bodies, built from lowered
+  expressions and token-tight syntax spans rather than source spelling.
+- `CatalogDeclaration` (`analysis/catalog_nav.rs`, re-exported from
+  `analysis.rs`) — catalog-id declarations for editor navigation, keyed with
+  `CatalogEntryKind` and exact declaration-name spans.
 - `SurfaceReadOperationAnalysis` (`analysis.rs`) — a snapshot-bound view over a
   checked surface operation plus its source file.
 - `CheckedReadOnlyExpression` (`program.rs`) — a source-digest-bound checked
