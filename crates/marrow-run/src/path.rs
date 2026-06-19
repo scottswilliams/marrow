@@ -230,6 +230,7 @@ fn lower_checked(place: &CheckedSavedPlace, env: &mut Env<'_>) -> Result<SavedPa
             name,
             catalog_id,
             leaf,
+            ..
         } => Terminal::Field {
             name: name.clone(),
             catalog_id: catalog_id.clone(),

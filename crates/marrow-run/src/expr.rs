@@ -59,7 +59,7 @@ pub(crate) fn eval_expr(expr: &ExecExpr, env: &mut Env<'_>) -> Result<Value, Run
             segments,
             enum_member,
             span,
-        } => eval_name(segments, *enum_member, *span, env),
+        } => eval_name(segments, enum_member.as_ref(), *span, env),
         ExecExpr::Unary { op, operand, span } => eval_unary(*op, operand, *span, env),
         ExecExpr::Binary {
             op,
@@ -83,7 +83,7 @@ pub(crate) fn eval_expr(expr: &ExecExpr, env: &mut Env<'_>) -> Result<Value, Run
 
 fn eval_name(
     segments: &[String],
-    enum_member: Option<marrow_check::CheckedEnumMemberRef>,
+    enum_member: Option<&CheckedEnumMemberRef>,
     span: SourceSpan,
     env: &Env<'_>,
 ) -> Result<Value, RuntimeError> {
@@ -103,7 +103,7 @@ fn eval_name(
 }
 
 fn enum_member_value(
-    member: CheckedEnumMemberRef,
+    member: &CheckedEnumMemberRef,
     span: SourceSpan,
     env: &Env<'_>,
 ) -> Result<Value, RuntimeError> {
