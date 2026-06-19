@@ -18,8 +18,8 @@ use crate::{
     CHECK_DUPLICATE_MODULE, CHECK_MULTIPLE_SCRIPTS, CheckDiagnostic, CheckReport, CheckedBody,
     CheckedExpr, CheckedFile, CheckedMatchArm, CheckedModule, CheckedProgram, CheckedSavedMember,
     CheckedSavedPlace, CheckedSavedTerminal, DiagnosticPayload, IO_READ, ProjectSources,
-    SCHEMA_DUPLICATE_ROOT_OWNER, TestResolutionSuppression, check_file_source, enum_visibility,
-    module_path_error, read_source,
+    SCHEMA_DUPLICATE_ROOT_OWNER, SurfaceFact, SurfaceReadOperationFact, TestResolutionSuppression,
+    check_file_source, enum_visibility, module_path_error, read_source,
 };
 
 mod cursor;
@@ -61,6 +61,32 @@ impl AnalysisSnapshot {
         &self.content_identity
     }
 
+    pub fn surface_read_operations(
+        &self,
+    ) -> impl Iterator<Item = SurfaceReadOperationAnalysis<'_>> {
+        let modules = self.program.facts.modules();
+        self.program
+            .facts
+            .surfaces()
+            .iter()
+            .flat_map(move |surface| {
+                let file = modules
+                    .get(surface.module.0 as usize)
+                    .map(|module| module.source_file.as_path());
+                debug_assert!(
+                    file.is_some(),
+                    "checked surface module id belongs to the analyzed facts"
+                );
+                surface.read_operations.iter().filter_map(move |operation| {
+                    file.map(|file| SurfaceReadOperationAnalysis {
+                        file,
+                        surface,
+                        operation,
+                    })
+                })
+            })
+    }
+
     pub fn use_sites(&self) -> &[UseSite] {
         &self.use_sites
     }
@@ -72,6 +98,13 @@ impl AnalysisSnapshot {
             .cloned()
             .collect()
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct SurfaceReadOperationAnalysis<'a> {
+    pub file: &'a Path,
+    pub surface: &'a SurfaceFact,
+    pub operation: &'a SurfaceReadOperationFact,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

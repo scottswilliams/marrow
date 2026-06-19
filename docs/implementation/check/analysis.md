@@ -32,17 +32,24 @@ wins.
 ## Analysis API contract
 
 The analysis API contract consumed by `marrow-lsp` is read-only, query-native,
-snapshot-scoped, and version-aware. It exposes checker facts and
-checker-faithful derived views; it does not parse language structure a second
-time, infer facts from diagnostic prose, or open, repair, or create stores
-during ordinary check. These public surfaces recompute from the checked program
-or snapshot:
+and snapshot-scoped. `AnalysisIdentity` is the source/config content identity;
+catalog-bound views must not treat it as a catalog or stable-ABI cache key. The
+API exposes checker facts and checker-faithful derived views; it does not parse
+language structure a second time, infer facts from diagnostic prose, or open,
+repair, or create stores during ordinary check. These public surfaces recompute
+from the checked program or snapshot:
 
 - `AnalysisSnapshot::sites_for(catalog_id)` filters the snapshot's `UseSite`
   table, which is built by one post-lowering walk over runtime-lowered module
   constants, function bodies, and evolve transform bodies. Use sites are keyed
   by accepted or proposal catalog ids and typed as saved roots, resource
   members, store indexes, enums, or enum members.
+- `AnalysisSnapshot::surface_read_operations()` iterates snapshot-bound
+  `SurfaceReadOperationAnalysis` views. Each view carries the source file,
+  checked `SurfaceFact`, and checked `SurfaceReadOperationFact`, so editor
+  consumers can inspect declared surface operations without walking source
+  syntax, cloning a second ABI model, or mistaking source/config identity for a
+  catalog-bound surface version.
 - `CheckedFacts::store_indices` carries `StoreIndexFact::usage` as a
   `StoreIndexUsageBitmap`; every current index fact reports no observed
   read/write use.
@@ -96,7 +103,7 @@ broader snapshot.
 
 | File | Responsibility |
 | --- | --- |
-| `crates/marrow-check/src/analysis.rs` | Two-pass IDE analysis core: discover + overlay + parse + check into `AnalysisSnapshot`, enforce module/script/root-owner uniqueness, run the shared checker tail, compute test-resolution suppression, and build the use-site table. |
+| `crates/marrow-check/src/analysis.rs` | Two-pass IDE analysis core: discover + overlay + parse + check into `AnalysisSnapshot`, enforce module/script/root-owner uniqueness, run the shared checker tail, compute test-resolution suppression, and build snapshot-bound use-site and surface-operation query views. |
 | `crates/marrow-check/src/program.rs` | Checked-program artifact plus analysis queries for effect closure, per-entry durable footprints, entry cost shape, entry store-open mode, and checked read-only expressions. |
 | `crates/marrow-check/src/analysis/cursor.rs` | Cursor `type_at`/`scope_at`: replay the checker's binding primitives to rebuild lexical scope, infer the tightest covering expression; records no diagnostics. |
 | `crates/marrow-check/src/evolution/preview.rs` | Schema-only and backup-backed `WitnessFactSet` preview facts for tooling. |
@@ -119,6 +126,8 @@ broader snapshot.
 - `AnalysisSnapshot` / `AnalyzedFile` (`analysis.rs`) — the IDE view: report + best-effort `CheckedProgram` + every parsed file, error files retained.
 - `UseSite` / `UseSiteKind` (`analysis.rs`) — catalog-id references in checked
   bodies, built from lowered expressions rather than source spelling.
+- `SurfaceReadOperationAnalysis` (`analysis.rs`) — a snapshot-bound view over a
+  checked surface operation plus its source file.
 - `CheckedReadOnlyExpression` (`program.rs`) — a source-digest-bound checked
   expression handle for runtime point evaluation.
 - `WitnessFactSet` (`evolution/preview.rs`) — schema and optional backup cell

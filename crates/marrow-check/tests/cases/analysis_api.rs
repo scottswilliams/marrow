@@ -11,9 +11,11 @@ use marrow_check::tooling::{
     stamped_data_roots_in_store, stamped_integrity_problem_details, stamped_read_data_query,
 };
 use marrow_check::{
-    CatalogEntryKind, CheckedProgram, ProjectSources, UseSiteKind, analyze_project, check_project,
+    CatalogEntryKind, CheckedProgram, ProjectSources, SurfaceCatalogBlocker, SurfaceCatalogStatus,
+    SurfaceReadFootprint, SurfaceReadOperationKind, UseSiteKind, analyze_project, check_project,
     scope_at, type_at,
 };
+use marrow_project::parse_config;
 use marrow_schema::ScalarType;
 use marrow_store::cell::CatalogId;
 use marrow_store::key::SavedKey;
@@ -347,6 +349,167 @@ fn type_at_and_scope_at_emit_no_diagnostics() {
         snapshot.report.diagnostics, before,
         "queries left the report unchanged"
     );
+}
+
+#[test]
+fn analysis_snapshot_exposes_snapshot_bound_surface_read_operations() {
+    let source = "module m\n\
+        resource Book\n    \
+        required title: string\n    \
+        author: string\n\
+        store ^books(shelf: string, id: int): Book\n    \
+        index byAuthor(author, shelf, id)\n\
+        surface Books from ^books\n    \
+        fields title\n    \
+        collection ^books.byAuthor as byAuthor\n";
+    let (snapshot, paths) =
+        analyze_overlay("analysis-surface-read-operations", &[("src/m.mw", source)]);
+    assert!(
+        !snapshot.report.has_errors(),
+        "{:#?}",
+        snapshot.report.diagnostics
+    );
+    let path = paths.into_iter().next().expect("source path");
+
+    let operations: Vec<_> = snapshot.surface_read_operations().collect();
+    assert_eq!(operations.len(), 2, "{operations:#?}");
+    assert!(
+        operations.iter().all(|operation| operation.file == path),
+        "{operations:#?}"
+    );
+
+    let point = operations
+        .iter()
+        .find(|operation| {
+            matches!(
+                operation.operation.kind,
+                SurfaceReadOperationKind::PointRead { .. }
+            )
+        })
+        .expect("point read operation");
+    assert_eq!(point.surface.name, "Books");
+    let SurfaceReadFootprint::FullRecord { resource } = point.operation.footprint;
+    assert_eq!(snapshot.program.facts.resource(resource).name, "Book");
+    let projection: Vec<&str> = point
+        .operation
+        .projection
+        .iter()
+        .map(|member| {
+            snapshot
+                .program
+                .facts
+                .resource_members()
+                .iter()
+                .find(|fact| fact.id == *member)
+                .expect("projection member")
+                .name
+                .as_str()
+        })
+        .collect();
+    assert_eq!(projection, vec!["title"]);
+
+    let by_author = operations
+        .iter()
+        .find(|operation| {
+            matches!(
+                operation.operation.kind,
+                SurfaceReadOperationKind::PagedIndexCollection {
+                    exact_key_count: 1,
+                    identity_key_count: 2,
+                    ..
+                }
+            )
+        })
+        .expect("by-author page operation");
+    assert_eq!(by_author.surface.id, point.surface.id);
+}
+
+#[test]
+fn surface_read_operation_analysis_reflects_catalog_status_without_identity_claim() {
+    let source = "module m\n\
+        resource Book\n    \
+        required title: string\n\
+        store ^books(id: int): Book\n\
+        surface Books from ^books\n    \
+        fields title\n";
+    let root = temp_root("analysis-surface-catalog-status");
+    write(&root, "src/m.mw", source);
+    let (report, program) = check_project(&root, &config()).expect("baseline check");
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    let accepted = program
+        .catalog
+        .proposal
+        .clone()
+        .expect("first check proposes catalog ids");
+
+    let source_only = analyze_project(&root, &config(), &ProjectSources::new(), None)
+        .expect("source-only analysis");
+    let stable = analyze_project(&root, &config(), &ProjectSources::new(), Some(&accepted))
+        .expect("stable analysis");
+    assert_eq!(source_only.content_identity(), stable.content_identity());
+
+    let source_only_status = source_only
+        .surface_read_operations()
+        .next()
+        .expect("source-only operation")
+        .surface
+        .catalog_status
+        .clone();
+    let stable_status = stable
+        .surface_read_operations()
+        .next()
+        .expect("stable operation")
+        .surface
+        .catalog_status
+        .clone();
+    assert_eq!(
+        source_only_status,
+        SurfaceCatalogStatus::SourceOnly(vec![
+            SurfaceCatalogBlocker::PendingCatalogProposal,
+            SurfaceCatalogBlocker::MissingAcceptedCatalogIds,
+        ])
+    );
+    assert_eq!(stable_status, SurfaceCatalogStatus::Stable);
+}
+
+#[test]
+fn surface_read_operation_analysis_excludes_configured_test_file_surfaces() {
+    let root = temp_root("analysis-surface-test-file-isolation");
+    write(
+        &root,
+        "src/app.mw",
+        "module app\n\
+        resource Book\n    \
+        title: string\n\
+        store ^books(id: int): Book\n\
+        surface Books from ^books\n    \
+        fields title\n",
+    );
+    write(
+        &root,
+        "tests/smoke_test.mw",
+        "use app\n\
+        surface TestBooks from ^books\n    \
+        fields title\n\
+        pub fn smoke()\n    \
+        return\n",
+    );
+    let cfg = parse_config(
+        r#"{ "sourceRoots": ["src"], "tests": ["tests"], "store": { "backend": "memory" } }"#,
+    )
+    .expect("config");
+
+    let snapshot = analyze_project(&root, &cfg, &ProjectSources::new(), None).expect("analyze");
+    assert!(
+        !snapshot.report.has_errors(),
+        "{:#?}",
+        snapshot.report.diagnostics
+    );
+    let surfaces: Vec<_> = snapshot
+        .surface_read_operations()
+        .map(|operation| operation.surface.name.as_str())
+        .collect();
+    assert_eq!(surfaces, vec!["Books"]);
 }
 
 #[test]

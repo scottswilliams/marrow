@@ -241,6 +241,7 @@ update-only inputs, and transaction behavior in its own slice.
 ## Tooling And LSP
 
 This proposal changes no v0.1 LSP behavior. `SurfaceReadOperationFact`s are
-checked facts, but a query-native, snapshot/versioned analysis boundary for
-editor consumers remains follow-on work. `marrow-lsp` consumes that analysis
-API when it exists; it does not re-derive operations from syntax.
+checked facts, and `AnalysisSnapshot::surface_read_operations` exposes them as
+snapshot-bound views for editor and tooling consumers. `marrow-lsp` consumes
+that analysis API when it adds an application-surface feature; it does not
+re-derive operations from syntax.
