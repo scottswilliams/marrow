@@ -46,13 +46,26 @@ The active surface foundation has these owners:
   operation tag. It does not expose routes, generated-client names, update
   methods, UID minting, baseline freeze, recovery, restore, maintenance, or any
   hidden write path.
+- `marrow-run::ProjectSurfaceSession` is the linked-Rust read/write surface
+  boundary. It checks a project, opens an existing configured native store
+  writable, requires the same accepted catalog, store UID, commit metadata, and
+  drift fence as the read session, and exposes admitted surface reads and sparse
+  updates by operation tag without exposing the store handle. It is a
+  single-owner, sequential session; while it is open, the native writer lock
+  makes that session the owning process/session for reads and updates and
+  excludes another writer or read-only inspection handle. It does not mint UIDs,
+  freeze baselines, auto-create stores, auto-apply drift, repair catalogs,
+  restore, recover beyond the native backend's writer-open replay, enter
+  maintenance, derive routes, create records, delete records, or define a stable
+  public Rust API.
 - `crates/marrow-json/src/surface.rs` owns the current checked read parameter,
   result, identity, value, typed cursor-boundary, sparse update request,
   operation-tag execution, and serialized surface ABI JSON DTOs. Execution
-  accepts caller-supplied checked program and store references, and read DTOs
-  also execute against `ProjectSurfaceReadSession` without exposing its private
-  store handle. Serving, route derivation, generated clients, opaque cursor
-  tokens, and write-serving store-open policy remain separate profiles.
+  accepts caller-supplied checked program and store references, read DTOs also
+  execute against `ProjectSurfaceReadSession`, and point/singleton update DTOs
+  also execute against `ProjectSurfaceSession` without exposing private store
+  handles. Serving, route derivation, generated clients, and opaque cursor
+  tokens remain separate profiles.
   Serialized ABI export includes only callable read/update operation tags.
 
 Operation tags are live runtime/json contracts. A change to either
@@ -63,14 +76,16 @@ operation identity.
 ## Write Profiles
 
 `marrow-run` owns the first transport-neutral surface write profile: an admitted
-runtime update handle over stable, non-empty `SurfaceFact.update` declarations.
-It applies non-empty sparse field patches addressed by accepted resource-member
-catalog ID, preserves omitted fields, rejects absent records instead of
-upserting, re-checks store/catalog lineage inside the write bracket before
-mutation, validates the checked read footprint after the combined patch, and
-maps conflicts/write/store failures through `surface.conflict`, `surface.write`,
-and `surface.store`. `marrow-json` owns JSON request-body DTOs for those sparse
-update patches.
+runtime update handle over stable, non-empty `SurfaceFact.update` declarations,
+plus `ProjectSurfaceSession` for linked-Rust project writes against an already
+accepted and stamped native store. It applies non-empty sparse field patches
+addressed by accepted resource-member catalog ID, preserves omitted fields,
+rejects absent records instead of upserting, re-checks store/catalog lineage
+inside the write bracket before mutation, validates the checked read footprint
+after the combined patch, and maps conflicts/write/store failures through
+`surface.conflict`, `surface.write`, and `surface.store`. `marrow-json` owns
+JSON request-body DTOs and linked project execution wrappers for those point and
+singleton sparse update patches.
 
 Future write work is still boundary-profile work, not HTTP or generated clients
 by default:
@@ -123,10 +138,13 @@ process lifetime. A production serving profile needs:
   freeze, auto-apply, recovery, restore, maintenance, or hidden write path;
 - an explicit architecture decision before adding an HTTP dependency.
 
-The active `ProjectSurfaceReadSession` satisfies only the preparatory
-linked-Rust read-serving slice. It is not the serving profile: it has no route
-mapping, request envelope, process lifetime, network binding, generated-client
-surface, opaque cursor token, or public compatibility guarantee.
+The active `ProjectSurfaceReadSession` and `ProjectSurfaceSession` satisfy only
+the preparatory linked-Rust project slices. They are not the serving profile:
+they have no route mapping, request envelope, process lifetime, network
+binding, generated-client surface, opaque cursor token, or public compatibility
+guarantee. The write session's update helpers currently return
+`Result<(), SurfaceError>`; any serving envelope or update-result representation
+is a future profile.
 
 ## Generated Clients And LSP
 

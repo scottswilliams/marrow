@@ -74,14 +74,23 @@ descriptor set for successful checks. The active JSON DTOs decode checked read
 request parameters through admitted runtime reads, decode sparse update request
 bodies through admitted runtime updates, and render already-executed surface
 reads with typed cursor-boundary JSON. Read DTOs also execute over
-`ProjectSurfaceReadSession` without exposing the backing store handle.
+`ProjectSurfaceReadSession`, and point/singleton update DTOs also execute over
+`ProjectSurfaceSession`, without exposing backing store handles.
 `marrow-run::ProjectSurfaceReadSession` is an unstable linked-Rust
 implementation profile for read serving over an already accepted native store:
 it opens the store read-only, fences drift, and exposes admitted surface reads
-by operation tag. Linked-Rust embedding remains an implementation profile for
-hosting surface facts, run sessions, and this read-serving slice, not a stable
-app-data contract. HTTP serving, opaque cursor tokens, generated clients, and
-create/delete body decode remain future profiles.
+by operation tag. `marrow-run::ProjectSurfaceSession` is the matching unstable
+linked-Rust implementation profile for read/write surface execution over an
+existing accepted native store: it opens the store writable, requires store UID
+and commit metadata, fences drift without hidden repair, and exposes admitted
+surface reads and sparse updates by operation tag. It is a single-owner,
+sequential session; while it is open, the native writer lock makes it the owning
+process/session for these reads and updates and excludes another writer or
+read-only inspection. Linked-Rust embedding remains an implementation profile
+for hosting surface facts, run sessions, and these project surface slices, not a
+stable app-data contract. The update helpers return `Result<(), SurfaceError>`;
+HTTP serving, update-result envelopes, opaque cursor tokens, generated clients,
+and create/delete body decode remain future profiles.
 Until serving profiles ship, typed entry invocation (`marrow run` with `--arg`
 and `--format json`) is the supported integration surface.
 The linked-Rust entry descriptor profile is an unstable implementation surface:

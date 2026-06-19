@@ -10,7 +10,8 @@ mod execute;
 mod request;
 pub use execute::{
     execute_project_surface_page_by_tag, execute_project_surface_point_read_by_tag,
-    execute_project_surface_singleton_read_by_tag, execute_project_surface_unique_lookup_by_tag,
+    execute_project_surface_point_update_by_tag, execute_project_surface_singleton_read_by_tag,
+    execute_project_surface_singleton_update_by_tag, execute_project_surface_unique_lookup_by_tag,
     execute_surface_page_by_tag, execute_surface_point_read_by_tag,
     execute_surface_point_update_by_tag, execute_surface_singleton_read_by_tag,
     execute_surface_singleton_update_by_tag, execute_surface_unique_lookup_by_tag,
@@ -702,10 +703,11 @@ mod tests {
         SurfaceReadOperationKind, SurfaceUpdateOperationDescriptor, check_project,
     };
     use marrow_run::{
-        Host, ProjectOpen, ProjectSession, ProjectSurfaceReadSession, SURFACE_ABI_MISMATCH,
-        SURFACE_CURSOR, SURFACE_REQUEST, SURFACE_STALE_CURSOR, SessionEntry, SurfaceCollectionRead,
-        SurfaceEnumValue, SurfaceNodeRead, SurfaceReadError, SurfaceReadField, SurfaceReadIdentity,
-        SurfaceReadOperationRef, SurfaceReadRecord, SurfaceUpdate, SurfaceValue,
+        Host, ProjectOpen, ProjectSession, ProjectSurfaceReadSession, ProjectSurfaceSession,
+        SURFACE_ABI_MISMATCH, SURFACE_CURSOR, SURFACE_REQUEST, SURFACE_STALE_CURSOR, SessionEntry,
+        SurfaceCollectionRead, SurfaceEnumValue, SurfaceNodeRead, SurfaceReadError,
+        SurfaceReadField, SurfaceReadIdentity, SurfaceReadInput, SurfaceReadOperationRef,
+        SurfaceReadRecord, SurfaceUpdate, SurfaceValue,
     };
     use marrow_store::Decimal;
     use marrow_store::cell::CatalogId;
@@ -891,6 +893,25 @@ pub fn seed()
     transaction
         ^books(1) = first
         ^books(2) = second
+";
+
+    const PROJECT_UPDATE_SURFACE: &str = "\
+module shelf
+
+resource Book
+    required title: string
+store ^books(id: int): Book
+
+surface Books from ^books
+    fields title
+    update title
+    collection ^books as list
+
+pub fn seed()
+    var first: Book
+    first.title = \"Dune\"
+    transaction
+        ^books(1) = first
 ";
 
     struct TempProject {
@@ -1750,6 +1771,90 @@ pub fn seed()
         .expect("execute project page read");
         assert_eq!(page.rows.len(), 1);
         assert!(page.next.is_some(), "limited page returns a cursor");
+    }
+
+    #[test]
+    fn surface_execute_project_session_executes_update_json_and_persists() {
+        let root = TempProject::new("marrow-json-project-surface-update");
+        write_native_project(&root, PROJECT_UPDATE_SURFACE);
+        seed_project(&root, "shelf::seed");
+
+        let session =
+            ProjectSurfaceSession::open(root.path()).expect("open project surface session");
+        let before = session
+            .store_stamp()
+            .expect("project surface session exposes the store stamp");
+        let runtime = session.program().runtime();
+        let surface = surface_id(session.program(), "Books");
+        let update_tag = update_operation_tag(session.program(), "Books");
+        let read_tag = read_operation_tag_matching(session.program(), surface, |kind| {
+            matches!(kind, SurfaceReadOperationKind::PointRead { .. })
+        });
+
+        crate::surface::execute_project_surface_point_update_by_tag(
+            &session,
+            &update_tag,
+            &point_update_request(
+                &runtime,
+                1,
+                vec![update_field(
+                    field_catalog_id(&runtime, "books", "title"),
+                    SurfaceUpdateValueJson::String {
+                        value: "Dune Revised".into(),
+                    },
+                )],
+            ),
+        )
+        .expect("execute project point update");
+
+        let record = session
+            .admit_read_by_operation_tag(&read_tag)
+            .expect("admit point read through write session")
+            .point_read()
+            .expect("point read shape")
+            .execute(SurfaceReadInput::Point {
+                identity: &[SavedKey::Int(1)],
+            })
+            .expect("read updated record through write session");
+        let record = SurfaceRecordJson::from(&record);
+        assert_eq!(
+            field_value(&record, &field_catalog_id(&runtime, "books", "title")),
+            Some(&SurfaceValueJson::String {
+                value: "Dune Revised".into()
+            })
+        );
+
+        assert_surface_error(
+            crate::surface::execute_project_surface_point_update_by_tag(
+                &session,
+                &read_tag,
+                &point_update_request(&runtime, 1, Vec::new()),
+            ),
+            SURFACE_ABI_MISMATCH,
+        );
+        let after = session
+            .store_stamp()
+            .expect("project surface session exposes the updated store stamp");
+        assert_eq!(after.store_uid, before.store_uid);
+        assert_eq!(after.catalog_epoch, before.catalog_epoch);
+        assert!(after.commit_id > before.commit_id);
+        drop(session);
+
+        let read_session = ProjectSurfaceReadSession::open(root.path())
+            .expect("reopen project read session after update");
+        let runtime = read_session.program().runtime();
+        let record = crate::surface::execute_project_surface_point_read_by_tag(
+            &read_session,
+            &read_tag,
+            &point_read_request(&runtime, 1),
+        )
+        .expect("read persisted update after reopening read-only");
+        assert_eq!(
+            field_value(&record, &field_catalog_id(&runtime, "books", "title")),
+            Some(&SurfaceValueJson::String {
+                value: "Dune Revised".into()
+            })
+        );
     }
 
     #[test]

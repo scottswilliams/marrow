@@ -30,13 +30,13 @@ Nine crates stacked in dependency order, lowest first:
   else consumes.
 - **run** — a tree-walking interpreter over the checked program: evaluates entries,
   drives managed saved writes inside transactions, applies schema evolution, and
-  owns the read-only project surface session over accepted native stores.
+  owns linked-Rust project surface sessions over accepted native stores.
 - **json** — JSON DTOs for entry return values, saved-key leaves, data snapshot
   stamps, surface ABI descriptors, surface reads, and sparse update request
   bodies. It preserves existing machine-readable CLI shapes and owns checked
-  surface read request-parameter decode plus context-aware cursor-boundary
-  rendering; routes, opaque cursor tokens, generated clients, and create/delete
-  body decode are not owned here.
+  surface read request-parameter decode, project update execution wrappers, and
+  context-aware cursor-boundary rendering; routes, opaque cursor tokens,
+  generated clients, and create/delete body decode are not owned here.
 - **project / cli** — `marrow.json`, discovery, and the operator binary that
   wires the above together and renders results.
 

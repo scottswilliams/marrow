@@ -8,9 +8,9 @@ use marrow_check::{
 };
 use marrow_run::{
     EntryArgument, EntryArgumentValue, EntryDescriptor, EntryInvocation, EntryScalarArgument, Host,
-    ProjectMode, ProjectOpen, ProjectSession, ProjectSurfaceReadSession, RUN_ENTRY_ARGUMENT,
-    SURFACE_ABI_MISMATCH, SessionEntry, SurfaceCollectionPageRequest, SurfaceReadInput,
-    SurfaceValue,
+    ProjectMode, ProjectOpen, ProjectSession, ProjectSurfaceReadSession, ProjectSurfaceSession,
+    RUN_ENTRY_ARGUMENT, SURFACE_ABI_MISMATCH, SessionEntry, SurfaceCollectionPageRequest,
+    SurfaceReadInput, SurfaceUpdateField, SurfaceValue,
 };
 use marrow_store::cell::CatalogId;
 use marrow_store::key::SavedKey;
@@ -218,6 +218,157 @@ fn surface_read_session_serves_existing_native_store_without_advancing_it() {
         catalog_before,
         fs::read(&catalog_path).expect("read accepted catalog after surface read"),
         "surface reads must not rewrite accepted catalog artifacts"
+    );
+}
+
+#[test]
+fn surface_write_session_updates_existing_native_store() {
+    let root = TempDir::new("marrow-run-surface-write-session").expect("create project");
+    write_native_config(root.path());
+    write_temp_source(
+        root.path(),
+        Path::new("src/shelf.mw"),
+        surface_counter_source(),
+    );
+
+    let seed = ProjectSession::open(
+        root.path(),
+        ProjectOpen::run().with_entry_override("shelf::seed"),
+    )
+    .expect("open seed session");
+    assert_eq!(invoke(&seed, "shelf::seed"), "");
+    drop(seed);
+
+    let session = ProjectSurfaceSession::open(root.path()).expect("open surface write session");
+    let before = session
+        .store_stamp()
+        .expect("write surface session store stamp");
+    let update_tag = update_operation_tag(session.program(), "Counters");
+    session
+        .admit_update_by_operation_tag(&update_tag)
+        .expect("admit point update")
+        .update_point(
+            &[SavedKey::Int(1)],
+            &[SurfaceUpdateField {
+                catalog_id: update_field_catalog_id(session.program(), "Counters", "value"),
+                value: SurfaceValue::Int(7),
+            }],
+        )
+        .expect("execute point update");
+
+    let point_tag = point_read_operation_tag(session.program(), "Counters");
+    let record = session
+        .admit_read_by_operation_tag(&point_tag)
+        .expect("admit point read")
+        .point_read()
+        .expect("point read shape")
+        .execute(SurfaceReadInput::Point {
+            identity: &[SavedKey::Int(1)],
+        })
+        .expect("read updated surface record");
+    assert_eq!(record.fields[0].value, Some(SurfaceValue::Int(7)));
+
+    let error = match session.admit_update_by_operation_tag(&point_tag) {
+        Ok(_) => panic!("write session update admission must reject read operation tags"),
+        Err(error) => error,
+    };
+    assert_eq!(error.code(), SURFACE_ABI_MISMATCH);
+
+    let after = session
+        .store_stamp()
+        .expect("write surface session store stamp after update");
+    assert_eq!(after.store_uid, before.store_uid);
+    assert_eq!(after.catalog_epoch, before.catalog_epoch);
+    assert!(
+        after.commit_id > before.commit_id,
+        "surface update must advance the store commit"
+    );
+    drop(session);
+
+    let read_session =
+        ProjectSurfaceReadSession::open(root.path()).expect("reopen surface read session");
+    let record = read_session
+        .admit_read_by_operation_tag(&point_tag)
+        .expect("admit reopened point read")
+        .point_read()
+        .expect("point read shape")
+        .execute(SurfaceReadInput::Point {
+            identity: &[SavedKey::Int(1)],
+        })
+        .expect("read persisted surface record");
+    assert_eq!(record.fields[0].value, Some(SurfaceValue::Int(7)));
+}
+
+#[test]
+fn surface_write_session_requires_existing_accepted_native_store_without_creating_it() {
+    let root = TempDir::new("marrow-run-surface-write-session-empty").expect("create project");
+    write_native_config(root.path());
+    write_temp_source(
+        root.path(),
+        Path::new("src/shelf.mw"),
+        surface_counter_source(),
+    );
+
+    let error = ProjectSurfaceSession::open(root.path())
+        .expect_err("write surface session must not create the first store");
+
+    assert_eq!(error.code(), "run.durable_store_required");
+    assert!(
+        !root.path().join(".data").exists(),
+        "write surface session must not create the configured native data dir"
+    );
+    assert!(
+        !root.path().join("marrow.catalog.json").exists(),
+        "write surface session must not freeze accepted catalog identity"
+    );
+}
+
+#[test]
+fn surface_write_session_rejects_populated_unstamped_store_without_minting_uid() {
+    let root = TempDir::new("marrow-run-surface-write-session-unstamped").expect("create project");
+    write_native_config(root.path());
+    write_temp_source(
+        root.path(),
+        Path::new("src/shelf.mw"),
+        surface_counter_source(),
+    );
+    let store_path = root.path().join(".data").join("marrow.redb");
+    fs::create_dir_all(store_path.parent().expect("store parent")).expect("create store dir");
+    let store = TreeStore::open(&store_path).expect("open native store");
+    store
+        .write_data_value(
+            &CatalogId::new("cat_00000000000000000000000000000001").expect("store id"),
+            &[SavedKey::Int(1)],
+            &[DataPathSegment::Member(
+                CatalogId::new("cat_00000000000000000000000000000002").expect("member id"),
+            )],
+            b"v".to_vec(),
+        )
+        .expect("write unstamped data");
+    drop(store);
+
+    let error = ProjectSurfaceSession::open(root.path())
+        .expect_err("write surface session must not adopt unstamped data");
+
+    assert_eq!(error.code(), "run.store_unstamped");
+    let store = TreeStore::open_read_only(&store_path).expect("reopen native store");
+    assert!(
+        store
+            .read_store_uid()
+            .expect("read store UID after rejected write surface open")
+            .is_none(),
+        "write surface session must not mint a UID while rejecting an unstamped store"
+    );
+    assert!(
+        store
+            .read_commit_metadata()
+            .expect("read commit metadata after rejected write surface open")
+            .is_none(),
+        "write surface session must not stamp commit metadata while rejecting an unstamped store"
+    );
+    assert!(
+        !root.path().join("marrow.catalog.json").exists(),
+        "write surface session must not freeze accepted catalog identity"
     );
 }
 
@@ -675,6 +826,23 @@ fn update_operation_tag(program: &marrow_check::CheckedProgram, surface: &str) -
     SurfaceUpdateOperationDescriptor::from_surface(program, surface)
         .map(|descriptor| descriptor.operation_tag)
         .expect("stable surface update operation tag")
+}
+
+fn update_field_catalog_id(
+    program: &marrow_check::CheckedProgram,
+    surface: &str,
+    field: &str,
+) -> CatalogId {
+    let surface_fact = program.facts.surface(surface_id(program, surface));
+    SurfaceUpdateOperationDescriptor::from_surface(program, surface_fact)
+        .and_then(|descriptor| {
+            descriptor
+                .fields
+                .into_iter()
+                .find(|candidate| candidate.render_label == field)
+                .map(|candidate| candidate.member_catalog_id)
+        })
+        .unwrap_or_else(|| panic!("surface `{surface}` exposes update field `{field}`"))
 }
 
 fn operation_tag(

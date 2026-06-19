@@ -83,7 +83,7 @@ Structured reports that include a `project` field render the canonical absolute 
 
 | File | Responsibility |
 |---|---|
-| `crates/marrow-json/src/lib.rs`, `crates/marrow-json/src/surface.rs` | Outbound rendering for `marrow run --format json` entry returns, the saved-key JSON shape reused by trace and integrity tooling, the `store_snapshot` data-stamp shape reused by data inspection, serialized surface ABI DTOs for check output, checked surface read request DTO decode, sparse update request DTO decode, and context-aware surface read-result DTOs. It does not define routes, opaque cursor tokens, generated clients, or create/delete body decode. |
+| `crates/marrow-json/src/lib.rs`, `crates/marrow-json/src/surface.rs` | Outbound rendering for `marrow run --format json` entry returns, the saved-key JSON shape reused by trace and integrity tooling, the `store_snapshot` data-stamp shape reused by data inspection, serialized surface ABI DTOs for check output, checked surface read request DTO decode, sparse update request DTO decode and project execution wrappers, and context-aware surface read-result DTOs. It does not define routes, opaque cursor tokens, generated clients, or create/delete body decode. |
 
 ### Data and durability (`marrow`)
 

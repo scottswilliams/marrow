@@ -1,7 +1,7 @@
 use marrow_check::CheckedProgram;
 use marrow_run::{
-    ProjectSurfaceReadSession, SurfaceError, SurfaceReadError, SurfaceReadInput,
-    SurfaceReadOperation, SurfaceUpdate,
+    ProjectSurfaceReadSession, ProjectSurfaceSession, SurfaceError, SurfaceReadError,
+    SurfaceReadInput, SurfaceReadOperation, SurfaceUpdate,
 };
 use marrow_store::tree::TreeStore;
 
@@ -136,6 +136,22 @@ pub fn execute_surface_point_update_by_tag(
     request: &SurfacePointUpdateRequestJson,
 ) -> Result<(), SurfaceError> {
     let update = SurfaceUpdate::admit_by_operation_tag(program, store, operation_tag)?;
+    execute_point_update(update, request)
+}
+
+pub fn execute_project_surface_point_update_by_tag(
+    session: &ProjectSurfaceSession,
+    operation_tag: &str,
+    request: &SurfacePointUpdateRequestJson,
+) -> Result<(), SurfaceError> {
+    let update = session.admit_update_by_operation_tag(operation_tag)?;
+    execute_point_update(update, request)
+}
+
+fn execute_point_update(
+    update: SurfaceUpdate<'_>,
+    request: &SurfacePointUpdateRequestJson,
+) -> Result<(), SurfaceError> {
     let decoded = request.decode(&update)?;
     update.execute(decoded.as_update_input())
 }
@@ -147,6 +163,22 @@ pub fn execute_surface_singleton_update_by_tag(
     request: &SurfaceSingletonUpdateRequestJson,
 ) -> Result<(), SurfaceError> {
     let update = SurfaceUpdate::admit_by_operation_tag(program, store, operation_tag)?;
+    execute_singleton_update(update, request)
+}
+
+pub fn execute_project_surface_singleton_update_by_tag(
+    session: &ProjectSurfaceSession,
+    operation_tag: &str,
+    request: &SurfaceSingletonUpdateRequestJson,
+) -> Result<(), SurfaceError> {
+    let update = session.admit_update_by_operation_tag(operation_tag)?;
+    execute_singleton_update(update, request)
+}
+
+fn execute_singleton_update(
+    update: SurfaceUpdate<'_>,
+    request: &SurfaceSingletonUpdateRequestJson,
+) -> Result<(), SurfaceError> {
     let decoded = request.decode(&update)?;
     update.execute(decoded.as_update_input())
 }

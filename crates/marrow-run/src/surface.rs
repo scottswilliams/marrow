@@ -1362,8 +1362,12 @@ impl<'a> SurfaceUpdatePlan<'a> {
                 return Err(error);
             }
         };
-        crate::env::stamp_managed_write(&mut plan, self.accepted_epoch, &self.source_digest)
-            .map_err(|error| surface_store_error(error, self.span))?;
+        if let Err(error) =
+            crate::env::stamp_managed_write(&mut plan, self.accepted_epoch, &self.source_digest)
+        {
+            let _ = store.rollback();
+            return Err(surface_store_error(error, self.span));
+        }
         if let Err(error) = plan
             .commit(store, true)
             .map_err(|error| surface_store_error(error, self.span))

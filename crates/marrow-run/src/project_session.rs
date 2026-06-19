@@ -22,7 +22,7 @@ use crate::evolution::{
     try_auto_apply,
 };
 use crate::host::{Host, Nondeterminism, StepHook, SystemNondeterminism};
-use crate::surface::{SurfaceReadError, SurfaceReadOperation};
+use crate::surface::{SurfaceReadError, SurfaceReadOperation, SurfaceUpdate};
 use crate::value::{RunOutput, RunOutputSink};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -96,7 +96,26 @@ pub struct ProjectSession {
     notices: Vec<ProjectSessionNotice>,
 }
 
+/// Single-owner linked-Rust read session over a checked project surface.
+///
+/// The session owns one private store handle and is intended for sequential use
+/// by its owner. It is not an `Arc`-shared web-server handle or a stable public
+/// API surface.
 pub struct ProjectSurfaceReadSession {
+    root: PathBuf,
+    program: CheckedProgram,
+    store_path: PathBuf,
+    store: TreeStore,
+}
+
+/// Single-owner linked-Rust read/write session over a checked project surface.
+///
+/// The session owns one private writable native-store handle. While it is open,
+/// that handle is the process/session owner for admitted reads and sparse
+/// updates; the native backend's locking excludes another writer or read-only
+/// inspection handle. This type is not an `Arc`-shared multi-threaded web-server
+/// handle and must not grow hidden open-time repair behavior.
+pub struct ProjectSurfaceSession {
     root: PathBuf,
     program: CheckedProgram,
     store_path: PathBuf,
@@ -117,6 +136,16 @@ impl fmt::Debug for ProjectSurfaceReadSession {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("ProjectSurfaceReadSession")
+            .field("root", &self.root)
+            .field("store_path", &self.store_path)
+            .finish_non_exhaustive()
+    }
+}
+
+impl fmt::Debug for ProjectSurfaceSession {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ProjectSurfaceSession")
             .field("root", &self.root)
             .field("store_path", &self.store_path)
             .finish_non_exhaustive()
@@ -562,8 +591,14 @@ impl ProjectSession {
 impl ProjectSurfaceReadSession {
     pub fn open(root: impl AsRef<Path>) -> Result<Self, ProjectSessionError> {
         let root = root.as_ref().to_path_buf();
-        let (config, program) = load_checked_for_surface_read_session(&root)?;
-        open_surface_read_session(root, config, program)
+        let (config, program) = load_checked_for_surface_session(&root)?;
+        let opened = open_surface_session(root, config, program, SurfaceStoreAccess::ReadOnly)?;
+        Ok(Self {
+            root: opened.root,
+            program: opened.program,
+            store_path: opened.store_path,
+            store: opened.store,
+        })
     }
 
     pub fn program(&self) -> &CheckedProgram {
@@ -571,19 +606,7 @@ impl ProjectSurfaceReadSession {
     }
 
     pub fn store_stamp(&self) -> Result<StoreStamp, ProjectSessionError> {
-        let uid = self
-            .store
-            .read_store_uid()?
-            .ok_or(ProjectSessionError::DurableStoreRequired)?;
-        let commit = self
-            .store
-            .read_commit_metadata()?
-            .ok_or(ProjectSessionError::DurableStoreRequired)?;
-        Ok(StoreStamp {
-            store_uid: uid.as_str().to_string(),
-            catalog_epoch: commit.catalog_epoch,
-            commit_id: commit.commit_id,
-        })
+        store_stamp(&self.store)
     }
 
     pub fn admit_read_by_operation_tag(
@@ -591,6 +614,42 @@ impl ProjectSurfaceReadSession {
         operation_tag: &str,
     ) -> Result<SurfaceReadOperation<'_>, SurfaceReadError> {
         SurfaceReadOperation::admit_by_operation_tag(&self.program, &self.store, operation_tag)
+    }
+}
+
+impl ProjectSurfaceSession {
+    pub fn open(root: impl AsRef<Path>) -> Result<Self, ProjectSessionError> {
+        let root = root.as_ref().to_path_buf();
+        let (config, program) = load_checked_for_surface_session(&root)?;
+        let opened = open_surface_session(root, config, program, SurfaceStoreAccess::Write)?;
+        Ok(Self {
+            root: opened.root,
+            program: opened.program,
+            store_path: opened.store_path,
+            store: opened.store,
+        })
+    }
+
+    pub fn program(&self) -> &CheckedProgram {
+        &self.program
+    }
+
+    pub fn store_stamp(&self) -> Result<StoreStamp, ProjectSessionError> {
+        store_stamp(&self.store)
+    }
+
+    pub fn admit_read_by_operation_tag(
+        &self,
+        operation_tag: &str,
+    ) -> Result<SurfaceReadOperation<'_>, SurfaceReadError> {
+        SurfaceReadOperation::admit_by_operation_tag(&self.program, &self.store, operation_tag)
+    }
+
+    pub fn admit_update_by_operation_tag(
+        &self,
+        operation_tag: &str,
+    ) -> Result<SurfaceUpdate<'_>, SurfaceReadError> {
+        SurfaceUpdate::admit_by_operation_tag(&self.program, &self.store, operation_tag)
     }
 }
 
@@ -692,14 +751,26 @@ fn open_test_session(
     })
 }
 
-fn open_surface_read_session(
+struct OpenSurfaceSession {
+    root: PathBuf,
+    program: CheckedProgram,
+    store_path: PathBuf,
+    store: TreeStore,
+}
+
+#[derive(Clone, Copy)]
+enum SurfaceStoreAccess {
+    ReadOnly,
+    Write,
+}
+
+fn open_surface_session(
     root: PathBuf,
     config: ProjectConfig,
     program: CheckedProgram,
-) -> Result<ProjectSurfaceReadSession, ProjectSessionError> {
-    let Some(store) = open_store_file(&root, &config, false)? else {
-        return Err(ProjectSessionError::DurableStoreRequired);
-    };
+    access: SurfaceStoreAccess,
+) -> Result<OpenSurfaceSession, ProjectSessionError> {
+    let store = open_existing_surface_store(&root, &config, access)?;
     if populated_unstamped_store(&program, &store.store)? {
         return Err(ProjectSessionError::UnstampedStore);
     }
@@ -725,11 +796,51 @@ fn open_surface_read_session(
             message: "store catalog digest does not match the checked project catalog".to_string(),
         });
     }
-    Ok(ProjectSurfaceReadSession {
+    Ok(OpenSurfaceSession {
         root,
         program,
         store_path: store.path,
         store: store.store,
+    })
+}
+
+fn open_existing_surface_store(
+    root: &Path,
+    config: &ProjectConfig,
+    access: SurfaceStoreAccess,
+) -> Result<NativeRunStore, ProjectSessionError> {
+    let Some(path) = marrow_check::native_store_path(root, config)? else {
+        return Err(ProjectSessionError::DurableStoreRequired);
+    };
+    let store = match access {
+        SurfaceStoreAccess::ReadOnly => TreeStore::open_read_only(&path)
+            .map_err(|error| surface_store_open_error(&path, error))?,
+        SurfaceStoreAccess::Write => TreeStore::open_existing(&path)
+            .map_err(|error| surface_store_open_error(&path, error))?,
+    };
+    Ok(NativeRunStore { path, store })
+}
+
+fn surface_store_open_error(path: &Path, error: StoreError) -> ProjectSessionError {
+    if let StoreError::Io { op: "open", .. } = &error
+        && matches!(path.try_exists(), Ok(false))
+    {
+        return ProjectSessionError::DurableStoreRequired;
+    }
+    ProjectSessionError::Store(error)
+}
+
+fn store_stamp(store: &TreeStore) -> Result<StoreStamp, ProjectSessionError> {
+    let uid = store
+        .read_store_uid()?
+        .ok_or(ProjectSessionError::DurableStoreRequired)?;
+    let commit = store
+        .read_commit_metadata()?
+        .ok_or(ProjectSessionError::DurableStoreRequired)?;
+    Ok(StoreStamp {
+        store_uid: uid.as_str().to_string(),
+        catalog_epoch: commit.catalog_epoch,
+        commit_id: commit.commit_id,
     })
 }
 
@@ -976,7 +1087,7 @@ fn load_checked_for_session(
     Ok((config, program))
 }
 
-fn load_checked_for_surface_read_session(
+fn load_checked_for_surface_session(
     root: &Path,
 ) -> Result<(ProjectConfig, CheckedProgram), ProjectSessionError> {
     let config = marrow_check::load_config(root)?;

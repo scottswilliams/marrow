@@ -13,7 +13,7 @@ The runtime is the final pipeline stage. It takes a checked project session or a
 
 - `ProjectSession::open` (`project_session.rs`) checks a project for `run` or `test`, binds catalog identity for the selected mode, and selects the run store policy: configured-store admission through the activation fence, isolated dry-run admission, or a fresh in-memory store that admits no configured store.
 - `ProjectSession::invoke` builds a `CheckedEntryCall` and selects the admitted run store or a fresh test store, then calls `run_entry*` (`entry.rs`) to resolve the entry, canonicalize and type-check args, and start the top activation.
-- `ProjectSurfaceReadSession::open` (`project_session.rs`) is the alternate in-process read-serving admission path: it checks the project through a no-repair catalog load, requires an already accepted and stamped native store, opens that store read-only, fences drift, and exposes only admitted surface reads by operation tag.
+- `ProjectSurfaceReadSession::open` and `ProjectSurfaceSession::open` (`project_session.rs`) are the in-process project surface admission paths: they check the project through a no-repair catalog load, require an already accepted and stamped native store, fence drift, and expose admitted surface operations by operation tag. The read session opens the store read-only and exposes reads; the write session opens the existing store writable and exposes reads plus sparse updates without exposing the store handle. The write session is single-owner and sequential; while it is open, the native writer lock makes it the owning process/session and excludes another writer or read-only inspection handle.
 - Entry execution then enters `eval_call` (`call.rs`) and `eval_statement` / `eval_expr` (`statement.rs`, `expr.rs`), where saved reads stream through the read bridge, saved writes build and commit plans, and stdlib calls branch on the checker-stamped `Capability`.
 - Evolution admission for `run` lives in `project_session.rs`: the session freezes a pending baseline, fences on `(source_digest, accepted_epoch, engine_profile)`, auto-applies zero-record-mutation drift through the production apply path, and refuses unstamped populated stores before invocation.
 
@@ -21,7 +21,7 @@ The runtime is the final pipeline stage. It takes a checked project session or a
 
 | Area | Spine | One-line responsibility |
 | --- | --- | --- |
-| Project sessions | `project_session.rs` | Load and check run/test projects, bind catalog identity, admit configured stores through the activation fence or select fresh memory, invoke entries through one session path, and admit read-only project surface sessions over already stamped native stores. |
+| Project sessions | `project_session.rs` | Load and check run/test projects, bind catalog identity, admit configured stores through the activation fence or select fresh memory, invoke entries through one session path, and admit read-only or read/write project surface sessions over already stamped native stores. |
 | [Evaluator core](evaluator.md) | `entry.rs`, `activation.rs`, `call.rs`, `expr.rs`, `statement.rs`, `exec.rs`, `loop_exec.rs`, `env.rs`, `error.rs`, `host.rs`, `path.rs` | Walk the checked AST: values, control flow, calls, loops, the error channel, the host boundary, and saved-path lowering. |
 | [Reads and iteration](saved-data.md) | `read.rs`, `durable_read.rs`, `saved_iter.rs` (+ `saved_iter/`), `collection.rs`, `local_collection.rs` | Resolve a checked place to a store address; decode one entry or stream ordered iteration for `for`/`keys`/`values`/`entries`/`count`. Durable data is never materialized as a `Value`. |
 | Surface reads and updates | `surface.rs` | Admit a stable checked surface against a stamped store; execute backing singleton/point/collection reads with full-record validation and projection-only output; execute sparse updates over checked `SurfaceFact.update` fields through managed write plans. |
@@ -33,7 +33,7 @@ The runtime never re-resolves names or re-parses op strings: the checker stamps 
 
 ## Read next
 
-- `project_session.rs` — `ProjectSession::open` / `ProjectSession::invoke` / `ProjectSurfaceReadSession::open`: the project admission and invocation/read-serving boundary.
+- `project_session.rs` — `ProjectSession::open` / `ProjectSession::invoke` / `ProjectSurfaceReadSession::open` / `ProjectSurfaceSession::open`: the project admission and invocation/surface boundary.
 - `entry.rs` — `run_entry` / `CheckedEntryCall::new`: how one admitted entry starts.
 - `activation.rs` — `invoke`: the body-execution kernel and `Completion` classification.
 - `call.rs` — `eval_call`: the central dispatcher every call routes through.

@@ -7,8 +7,9 @@ use marrow_check::{
 };
 use marrow_run::{
     SURFACE_ABI_MISMATCH, SURFACE_ABSENT, SURFACE_CONFLICT, SURFACE_INVALID_DATA, SURFACE_REQUEST,
-    SurfaceCollectionPageRequest, SurfaceCollectionRead, SurfaceError, SurfaceReadRecord,
-    SurfaceUpdate, SurfaceUpdateField, SurfaceValue, read_surface_point, read_surface_singleton,
+    SURFACE_STORE, SurfaceCollectionPageRequest, SurfaceCollectionRead, SurfaceError,
+    SurfaceReadRecord, SurfaceUpdate, SurfaceUpdateField, SurfaceValue, read_surface_point,
+    read_surface_singleton,
 };
 use marrow_store::cell::CatalogId;
 use marrow_store::key::{SavedKey, encode_identity_payload};
@@ -328,6 +329,58 @@ fn successful_surface_update_stamps_commit_metadata() {
     assert_eq!(
         commit.changed_index_catalog_ids,
         vec![index_catalog_id(&runtime, "books", "byAuthor")]
+    );
+}
+
+#[test]
+fn failed_surface_update_rolls_back_transaction_and_leaves_handle_usable() {
+    let (program, runtime) = committed_program_and_runtime(UPDATE_SURFACE);
+    let store = admitted_store(&program);
+    write_book(&runtime, &store, "a", 1, "Dune", "Frank", "isbn-a1");
+
+    let mut maxed = store
+        .read_commit_metadata()
+        .expect("read baseline commit metadata")
+        .expect("catalog baseline is stamped");
+    maxed.commit_id = u64::MAX;
+    store
+        .write_commit_metadata(&maxed)
+        .expect("force next commit id overflow");
+
+    let update = SurfaceUpdate::admit(&program, &store, surface_id(&program, "Books"))
+        .expect("admit surface update");
+    assert_surface_error(
+        update.update_point(
+            &[SavedKey::Str("a".into()), SavedKey::Int(1)],
+            &[SurfaceUpdateField {
+                catalog_id: field_catalog_id(&runtime, "books", &["author"]),
+                value: SurfaceValue::Str("Ursula".into()),
+            }],
+        ),
+        SURFACE_STORE,
+    );
+
+    let snapshot = store
+        .read_snapshot()
+        .expect("failed update must not leave a write transaction open");
+    drop(snapshot);
+    assert_eq!(
+        store
+            .read_commit_metadata()
+            .expect("read commit metadata after failed update")
+            .expect("commit metadata remains"),
+        maxed
+    );
+    assert_eq!(
+        read_data_value(
+            &runtime,
+            &store,
+            "books",
+            &[SavedKey::Str("a".into()), SavedKey::Int(1)],
+            &data_path(&runtime, "books", &["author"]),
+            marrow_store::value::ScalarType::Str,
+        ),
+        Some(SavedValue::Str("Frank".into()))
     );
 }
 
