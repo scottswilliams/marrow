@@ -169,56 +169,62 @@ pub fn check_saved_named_member_fields_with(
     mut is_declared_enum_name: impl FnMut(&str) -> bool,
 ) -> Vec<SchemaError> {
     let mut errors = Vec::new();
-    for member in members {
-        check_named_field(member, &mut is_declared_enum_name, &mut errors);
-    }
+    walk_saved_named_member_fields(members, |field, name| {
+        if !is_declared_enum_name(name) {
+            errors.push(non_enum_named_field_error(field, name));
+        }
+    });
     errors
 }
 
-fn check_named_field(
-    member: &ResourceMember,
-    is_declared_enum_name: &mut impl FnMut(&str) -> bool,
-    errors: &mut Vec<SchemaError>,
+pub fn walk_saved_named_member_fields(
+    members: &[ResourceMember],
+    mut visit: impl FnMut(&FieldDecl, &str),
 ) {
+    for member in members {
+        walk_saved_named_member(member, &mut visit);
+    }
+}
+
+fn walk_saved_named_member(member: &ResourceMember, visit: &mut impl FnMut(&FieldDecl, &str)) {
     match member {
         ResourceMember::Field(field) => {
             let ty = Type::resolve(&field.ty);
             if field.keys.is_empty() {
-                check_named_field_type(&ty, field, is_declared_enum_name, errors);
+                walk_named_field_type(&ty, field, visit);
             }
         }
         ResourceMember::Group(group) => {
             for nested in &group.members {
-                check_named_field(nested, is_declared_enum_name, errors);
+                walk_saved_named_member(nested, visit);
             }
         }
     }
 }
 
-fn check_named_field_type(
-    ty: &Type,
-    field: &FieldDecl,
-    is_declared_enum_name: &mut impl FnMut(&str) -> bool,
-    errors: &mut Vec<SchemaError>,
-) {
+fn walk_named_field_type(ty: &Type, field: &FieldDecl, visit: &mut impl FnMut(&FieldDecl, &str)) {
     match ty {
-        Type::Named(name) if !is_declared_enum_name(name) => errors.push(SchemaError {
-            kind: SchemaErrorKind::NonEnumNamedField {
-                field: field.name.clone(),
-                ty: name.clone(),
-            },
-            code: SCHEMA_NON_ENUM_NAMED_FIELD,
-            message: format!(
-                "saved field `{}` has type `{name}`, which is not a declared enum; \
-                 a saved field stores a scalar or checked enum value",
-                field.name
-            ),
-            span: field.span,
-        }),
+        Type::Named(name) => visit(field, name),
         Type::Sequence(element) => {
-            check_named_field_type(element, field, is_declared_enum_name, errors);
+            walk_named_field_type(element, field, visit);
         }
         _ => {}
+    }
+}
+
+pub fn non_enum_named_field_error(field: &FieldDecl, name: &str) -> SchemaError {
+    SchemaError {
+        kind: SchemaErrorKind::NonEnumNamedField {
+            field: field.name.clone(),
+            ty: name.to_string(),
+        },
+        code: SCHEMA_NON_ENUM_NAMED_FIELD,
+        message: format!(
+            "saved field `{}` has type `{name}`, which is not a declared enum; \
+             a saved field stores a scalar or checked enum value",
+            field.name
+        ),
+        span: field.span,
     }
 }
 

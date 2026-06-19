@@ -460,12 +460,19 @@ fn checked_enum_member_ref(
     else {
         return None;
     };
-    let resolved = crate::enums::resolve_enum_member_path(
-        context.program,
-        expr,
-        &context.aliases,
-        context.source_file,
-    )?;
+    let crate::enums::EnumMemberPathResolution::Resolved(resolved) =
+        crate::enums::resolve_enum_member_path(
+            context.program,
+            expr,
+            &context.aliases,
+            context.source_file,
+        )
+    else {
+        return None;
+    };
+    if resolved.private.is_some() {
+        return None;
+    }
     let MemberPathResolution::Found(ordinal) = resolved.member else {
         return None;
     };

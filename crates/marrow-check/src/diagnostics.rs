@@ -160,10 +160,11 @@ pub const CHECK_THROW_TYPE: &str = "check.throw_type";
 pub const CHECK_TRY_HANDLER: &str = "check.try_handler";
 /// A qualified name `Enum::member` names a known enum but not one of its members.
 pub const CHECK_UNKNOWN_ENUM_MEMBER: &str = "check.unknown_enum_member";
-/// A bare `Enum::member` literal names a member that exists under more than one
-/// parent in the enum tree (a blessed duplicate, e.g. `Cat::tiger::paw` and
-/// `Cat::lion::paw`). The bare name cannot pick one, so it is rejected in value and
-/// `is` positions; the full path always disambiguates.
+/// A bare `Enum::member` literal cannot pick a single enum member. Either the enum
+/// owner is exposed by several visible foreign modules, or the member exists under
+/// more than one parent in the enum tree (a blessed duplicate, e.g.
+/// `Cat::tiger::paw` and `Cat::lion::paw`). Qualifying the enum owner or member path
+/// disambiguates it.
 pub const CHECK_AMBIGUOUS_MEMBER: &str = "check.ambiguous_member";
 /// A `match` scrutinee is not an enum value. `match` dispatches on an enum's
 /// members, so it requires an enum-typed scrutinee.
@@ -548,6 +549,13 @@ pub enum DiagnosticPayload {
     /// already classified) so resolution-suppression compares it against hidden
     /// type identities through the type model instead of re-parsing source text.
     UnknownType(marrow_schema::Type),
+    /// `unknown type`: the named enum annotation has more than one foreign owner.
+    /// The unresolved type and ambiguous leaf stay structured instead of being
+    /// recovered from rendered diagnostic prose.
+    AmbiguousType {
+        ty: marrow_schema::Type,
+        name: String,
+    },
     /// Schema compiler facts for schema diagnostics.
     Schema(marrow_schema::SchemaErrorKind),
     /// `check.duplicate_declaration`: duplicated name and first declaration span.

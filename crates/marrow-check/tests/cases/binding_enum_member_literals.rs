@@ -186,3 +186,94 @@ fn a_nested_enum_member_literal_anchors_intermediate_segments() {
         "category segment should resolve to the anchored top-level category: {category_def:?}",
     );
 }
+
+#[test]
+fn an_ambiguous_foreign_enum_owner_member_literal_has_no_binding_definition() {
+    let status_a = "module a\npub enum Status\n    active\n";
+    let status_b = "module b\npub enum Status\n    active\n";
+    let app = "module app\nfn f(): a::Status\n    return Status::active\n";
+    let (index, paths) = analyze(
+        "enum-member-literal-ambiguous-foreign-owner",
+        &[
+            ("src/a.mw", status_a),
+            ("src/b.mw", status_b),
+            ("src/app.mw", app),
+        ],
+    );
+    let app_file = &paths[2];
+    let literal = app.find("Status::active").expect("ambiguous literal");
+
+    assert!(
+        index.definition(app_file, literal + 1).is_none(),
+        "ambiguous enum owner must not bind the enum segment to an arbitrary definition"
+    );
+    assert!(
+        index
+            .definition(app_file, literal + "Status::".len() + 1)
+            .is_none(),
+        "ambiguous enum owner must not bind the member segment to an arbitrary definition"
+    );
+}
+
+#[test]
+fn a_qualified_enum_owner_member_literal_resolves_before_bare_owner_ambiguity() {
+    let status_a = "module a\npub enum Status\n    active\n";
+    let status_b = "module b\npub enum Status\n    active\n";
+    let choice = "module Status\npub enum Choice\n    active\n";
+    let app = "module app\nfn f(): Status::Choice\n    return Status::Choice::active\n";
+    let (index, paths) = analyze(
+        "enum-member-literal-qualified-owner-before-ambiguous-bare",
+        &[
+            ("src/a.mw", status_a),
+            ("src/b.mw", status_b),
+            ("src/Status.mw", choice),
+            ("src/app.mw", app),
+        ],
+    );
+    let app_file = &paths[3];
+    let literal = app
+        .find("Status::Choice::active")
+        .expect("qualified member literal");
+
+    assert!(
+        index.definition(app_file, literal + 1).is_none(),
+        "module qualifier must not bind to an arbitrary foreign enum"
+    );
+    let enum_def = index
+        .definition(app_file, literal + "Status::".len() + 1)
+        .expect("qualified enum owner resolves");
+    assert_eq!(enum_def.kind, SymbolKind::Enum, "{enum_def:?}");
+    let member_def = index
+        .definition(app_file, literal + "Status::Choice::".len() + 1)
+        .expect("qualified enum member resolves");
+    assert_eq!(member_def.kind, SymbolKind::EnumMember, "{member_def:?}");
+}
+
+#[test]
+fn a_qualified_enum_owner_member_literal_resolves_before_same_module_bare_owner() {
+    let choice = "module Status\npub enum Choice\n    active\n";
+    let app = "module app\n\
+        enum Status\n    local\n\
+        fn f(): Status::Choice\n    return Status::Choice::active\n";
+    let (index, paths) = analyze(
+        "enum-member-literal-qualified-owner-before-local-bare",
+        &[("src/Status.mw", choice), ("src/app.mw", app)],
+    );
+    let app_file = &paths[1];
+    let literal = app
+        .find("Status::Choice::active")
+        .expect("qualified member literal");
+
+    assert!(
+        index.definition(app_file, literal + 1).is_none(),
+        "module qualifier must not bind to the same-module enum"
+    );
+    let enum_def = index
+        .definition(app_file, literal + "Status::".len() + 1)
+        .expect("qualified enum owner resolves");
+    assert_eq!(enum_def.kind, SymbolKind::Enum, "{enum_def:?}");
+    let member_def = index
+        .definition(app_file, literal + "Status::Choice::".len() + 1)
+        .expect("qualified enum member resolves");
+    assert_eq!(member_def.kind, SymbolKind::EnumMember, "{member_def:?}");
+}

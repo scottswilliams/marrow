@@ -181,6 +181,115 @@ fn typed_keyed_resource_layer_resolves_import_alias() {
 }
 
 #[test]
+fn typed_keyed_resource_layer_accepts_bare_unique_foreign_enum_fields() {
+    let root = temp_project("keyed-resource-field-bare-foreign-enum", |root| {
+        write(
+            root,
+            "src/kinds.mw",
+            "module kinds\npub enum Color\n    red\n    green\n",
+        );
+        write(
+            root,
+            "src/comments.mw",
+            "module comments\n\
+             use kinds\n\
+             resource Comment\n\
+             \x20   color: Color\n",
+        );
+        write(
+            root,
+            "src/app.mw",
+            "module app\n\
+             use comments\n\
+             resource Post\n\
+             \x20   comments(seq: int): comments::Comment\n\
+             store ^posts(id: int): Post\n",
+        );
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+    assert_clean(&report);
+}
+
+#[test]
+fn typed_keyed_resource_layer_reports_private_foreign_enum_fields() {
+    let root = temp_project("keyed-resource-field-private-foreign-enum", |root| {
+        write(root, "src/a.mw", "module a\nenum Hidden\n    one\n");
+        write(
+            root,
+            "src/comments.mw",
+            "module comments\n\
+             use a\n\
+             resource Comment\n\
+             \x20   hidden: a::Hidden\n",
+        );
+        write(
+            root,
+            "src/app.mw",
+            "module app\n\
+             use comments\n\
+             resource Post\n\
+             \x20   comments(seq: int): comments::Comment\n\
+             store ^posts(id: int): Post\n",
+        );
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+    assert!(
+        with_code(&report, "schema.non_enum_named_field").is_empty(),
+        "{:#?}",
+        report.diagnostics
+    );
+    let found = with_code(&report, "check.private_enum");
+    assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
+    assert_eq!(
+        found[0].payload,
+        DiagnosticPayload::PrivateEnum("a::Hidden".into())
+    );
+}
+
+#[test]
+fn typed_keyed_resource_layer_reports_ambiguous_bare_foreign_enum_fields() {
+    let root = temp_project("keyed-resource-field-ambiguous-foreign-enum", |root| {
+        write(root, "src/a.mw", "module a\npub enum Status\n    active\n");
+        write(root, "src/b.mw", "module b\npub enum Status\n    active\n");
+        write(
+            root,
+            "src/comments.mw",
+            "module comments\n\
+             use a\n\
+             use b\n\
+             resource Comment\n\
+             \x20   status: Status\n",
+        );
+        write(
+            root,
+            "src/app.mw",
+            "module app\n\
+             use comments\n\
+             resource Post\n\
+             \x20   comments(seq: int): comments::Comment\n\
+             store ^posts(id: int): Post\n",
+        );
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+    assert!(
+        with_code(&report, "schema.non_enum_named_field").is_empty(),
+        "{:#?}",
+        report.diagnostics
+    );
+    let found = with_code(&report, "check.unknown_type");
+    assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
+    assert_eq!(
+        found[0].payload,
+        DiagnosticPayload::AmbiguousType {
+            ty: Type::Named("Status".into()),
+            name: "Status".into(),
+        },
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
 fn typed_keyed_resource_layer_validates_entry_resource_plain_fields() {
     let errors = check_module(
         "keyed-resource-field-validates-entry-resource",

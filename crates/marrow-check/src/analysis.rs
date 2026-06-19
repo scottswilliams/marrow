@@ -142,6 +142,7 @@ pub fn analyze_project(
     let mut snapshot = analyze_source_project(project_root, config, sources, accepted)?;
     let resolution_suppression = source_resolution_suppression(&snapshot, project_root, config);
     let test_sources = cached_project_sources(&snapshot, sources);
+    let source_modules = snapshot.program.modules.clone();
     let source_facts = snapshot.program.facts.clone();
     let tests = crate::check_tests_with_sources_analysis(
         project_root,
@@ -149,14 +150,18 @@ pub fn analyze_project(
         &mut snapshot.program,
         &test_sources,
         resolution_suppression,
-        crate::TestProgramOutput::DiagnosticsOnly,
     )?;
-    snapshot.program.modules.truncate(tests.test_module_start);
-    snapshot.program.facts = source_facts;
+    snapshot.use_sites.extend(catalog_nav::collect_use_sites(
+        &snapshot.program,
+        &tests.files,
+    ));
+    catalog_nav::normalize_use_sites(&mut snapshot.use_sites);
     snapshot.report.diagnostics.extend(tests.report.diagnostics);
     snapshot.files.extend(tests.files);
     snapshot.files.sort_by(|a, b| a.path.cmp(&b.path));
     snapshot.files.dedup_by(|a, b| a.path == b.path);
+    snapshot.program.modules = source_modules;
+    snapshot.program.facts = source_facts;
     snapshot.content_identity = analysis_content_identity(project_root, config, &snapshot.files);
     Ok(snapshot)
 }
@@ -541,7 +546,7 @@ pub(crate) fn analyze_source_project(
         .collect();
 
     let content_identity = analysis_content_identity(project_root, config, &analyzed);
-    let use_sites = catalog_nav::collect_use_sites(&program);
+    let use_sites = catalog_nav::collect_use_sites(&program, &analyzed);
     let catalog_declarations = catalog_nav::collect_catalog_declarations(&program);
 
     Ok(AnalysisSnapshot {

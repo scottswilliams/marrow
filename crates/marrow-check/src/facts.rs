@@ -14,6 +14,7 @@ use crate::catalog::{
     CatalogKey, DurableRendering, enum_path, resource_member_path, resource_path, store_index_path,
     store_path,
 };
+use crate::enums::{EnumAnnotationResolution, resolve_enum_annotation_type_for_module};
 use crate::executable::CheckedFunctionRef;
 use crate::program::{CheckedModule, MarrowType};
 use crate::{build_alias_map, expand_alias, split_type_path};
@@ -51,7 +52,6 @@ pub struct LocalId(pub u32);
 /// The resource a store's index-fact collection reads, resolved once per store and threaded
 /// in so the collector does not re-resolve it.
 struct StoreIndexBinding<'a> {
-    module_id: ModuleId,
     store_id: StoreId,
     resource: ResourceId,
     resource_schema: Option<&'a marrow_schema::ResourceSchema>,
@@ -109,13 +109,13 @@ impl CheckedFacts {
             facts.collect_resource_facts(module_id, module, parsed);
         }
         for &(module_id, module, parsed) in &bindings {
-            facts.collect_store_facts(module_id, module, parsed);
+            facts.collect_store_facts(modules, module_id, module, parsed);
         }
         for &(module_id, module, parsed) in &bindings {
-            facts.collect_resource_member_facts_for_module(module_id, module, parsed);
+            facts.collect_resource_member_facts_for_module(modules, module_id, module, parsed);
         }
         for &(module_id, module, parsed) in &bindings {
-            facts.collect_store_index_facts_for_module(module_id, module, parsed);
+            facts.collect_store_index_facts_for_module(modules, module_id, module, parsed);
         }
         for &(module_id, module, parsed) in &bindings {
             for (source_index, function) in module.functions.iter().enumerate() {
@@ -672,6 +672,7 @@ impl CheckedFacts {
 
     fn collect_store_facts(
         &mut self,
+        modules: &[CheckedModule],
         module_id: ModuleId,
         module: &CheckedModule,
         parsed: Option<&ParsedSource>,
@@ -695,13 +696,12 @@ impl CheckedFacts {
                 continue;
             };
             let store_id = StoreId(self.stores.len() as u32);
-            let aliases = build_alias_map(&module.imports);
             let identity_keys = store
                 .identity_keys
                 .iter()
                 .map(|key| StoreIdentityKeyFact {
                     name: key.name.clone(),
-                    value_meaning: self.stored_value_meaning(module_id, &key.ty, &aliases),
+                    value_meaning: self.stored_value_meaning(modules, module, &key.ty),
                 })
                 .collect();
             self.stores.push(StoreFact {
@@ -720,11 +720,11 @@ impl CheckedFacts {
 
     fn collect_resource_member_facts_for_module(
         &mut self,
+        modules: &[CheckedModule],
         module_id: ModuleId,
         module: &CheckedModule,
         parsed: Option<&ParsedSource>,
     ) {
-        let aliases = build_alias_map(&module.imports);
         for resource in &module.resources {
             let Some(resource_id) = self.resource_id(module_id, &resource.name) else {
                 continue;
@@ -744,23 +744,23 @@ impl CheckedFacts {
                     })
             });
             self.collect_resource_member_facts(
-                module_id,
+                modules,
+                module,
                 resource_id,
                 None,
                 &resource.members,
                 declaration.map(|resource| resource.members.as_slice()),
-                &aliases,
             );
         }
     }
 
     fn collect_store_index_facts_for_module(
         &mut self,
+        modules: &[CheckedModule],
         module_id: ModuleId,
         module: &CheckedModule,
         parsed: Option<&ParsedSource>,
     ) {
-        let aliases = build_alias_map(&module.imports);
         for store in &module.stores {
             let declaration = parsed.and_then(|parsed| {
                 parsed
@@ -787,21 +787,21 @@ impl CheckedFacts {
                 .iter()
                 .find(|candidate| candidate.name == store.resource);
             let index_binding = StoreIndexBinding {
-                module_id,
                 store_id,
                 resource,
                 resource_schema,
             };
-            self.collect_store_index_facts(index_binding, store, declaration, &aliases);
+            self.collect_store_index_facts(modules, module, index_binding, store, declaration);
         }
     }
 
     fn collect_store_index_facts(
         &mut self,
+        modules: &[CheckedModule],
+        module: &CheckedModule,
         binding: StoreIndexBinding<'_>,
         store: &marrow_schema::StoreSchema,
         declaration: Option<&marrow_syntax::StoreDecl>,
-        aliases: &HashMap<String, Vec<String>>,
     ) {
         for index in &store.indexes {
             let span = declaration
@@ -827,12 +827,12 @@ impl CheckedFacts {
                 .resource_schema
                 .map(|resource_schema| {
                     self.store_index_keys(
-                        binding.module_id,
+                        modules,
+                        module,
                         binding.resource,
                         store,
                         resource_schema,
                         index,
-                        aliases,
                     )
                 })
                 .unwrap_or_default();
@@ -852,12 +852,12 @@ impl CheckedFacts {
 
     fn collect_resource_member_facts(
         &mut self,
-        module_id: ModuleId,
+        modules: &[CheckedModule],
+        module: &CheckedModule,
         resource_id: ResourceId,
         parent: Option<ResourceMemberId>,
         nodes: &[marrow_schema::Node],
         declarations: Option<&[ResourceMember]>,
-        aliases: &HashMap<String, Vec<String>>,
     ) {
         for node in nodes {
             let declaration = declarations.and_then(|declarations| {
@@ -887,7 +887,7 @@ impl CheckedFacts {
                 _ => None,
             };
             let value_meaning = match &node.kind {
-                NodeKind::Slot { ty, .. } => self.stored_value_meaning(module_id, ty, aliases),
+                NodeKind::Slot { ty, .. } => self.stored_value_meaning(modules, module, ty),
                 NodeKind::Group => None,
             };
             let id = ResourceMemberId(self.resource_members.len() as u32);
@@ -909,12 +909,12 @@ impl CheckedFacts {
                 _ => None,
             });
             self.collect_resource_member_facts(
-                module_id,
+                modules,
+                module,
                 resource_id,
                 Some(id),
                 &node.members,
                 nested,
-                aliases,
             );
         }
     }
@@ -1079,16 +1079,6 @@ impl CheckedFacts {
         self.resource_id(module, &name)
     }
 
-    fn resolve_enum_segments(
-        &self,
-        module_id: ModuleId,
-        segments: &[String],
-        aliases: &HashMap<String, Vec<String>>,
-    ) -> Option<EnumId> {
-        let (module, name) = self.resolve_named_module(module_id, segments, aliases)?;
-        self.enum_id(module, &name)
-    }
-
     /// Expand a namespace path through import aliases and resolve its module prefix,
     /// returning the owning module and the terminal name. An empty prefix means the
     /// name lives in `module_id`; a non-empty prefix must resolve to a known module.
@@ -1110,9 +1100,9 @@ impl CheckedFacts {
 
     fn stored_value_meaning(
         &self,
-        module_id: ModuleId,
+        modules: &[CheckedModule],
+        module: &CheckedModule,
         ty: &Type,
-        aliases: &HashMap<String, Vec<String>>,
     ) -> Option<StoredValueMeaning> {
         match ty {
             Type::Scalar(scalar) => Some(StoredValueMeaning::Scalar(*scalar)),
@@ -1133,8 +1123,18 @@ impl CheckedFacts {
                 })
             }
             Type::Named(name) => {
-                let segments = split_type_path(name);
-                let enum_id = self.resolve_enum_segments(module_id, &segments, aliases)?;
+                let resolved = match resolve_enum_annotation_type_for_module(
+                    &Type::Named(name.clone()),
+                    modules,
+                    module,
+                ) {
+                    EnumAnnotationResolution::Visible(resolved) => resolved,
+                    EnumAnnotationResolution::Private(_)
+                    | EnumAnnotationResolution::AmbiguousBareForeign(_)
+                    | EnumAnnotationResolution::MissingOrNonEnum => return None,
+                };
+                let enum_module = self.module_id(&resolved.module)?;
+                let enum_id = self.enum_id(enum_module, &resolved.name)?;
                 Some(StoredValueMeaning::Enum {
                     enum_id,
                     members: self.selectable_enum_members(enum_id),
@@ -1154,18 +1154,18 @@ impl CheckedFacts {
 
     fn store_index_keys(
         &self,
-        module_id: ModuleId,
+        modules: &[CheckedModule],
+        module: &CheckedModule,
         resource: ResourceId,
         store: &marrow_schema::StoreSchema,
         resource_schema: &marrow_schema::ResourceSchema,
         index: &marrow_schema::IndexSchema,
-        aliases: &HashMap<String, Vec<String>>,
     ) -> Vec<StoreIndexKeyFact> {
         index
             .args
             .iter()
             .filter_map(|arg| {
-                self.identity_index_key(module_id, store, arg, aliases)
+                self.identity_index_key(modules, module, store, arg)
                     .or_else(|| self.resource_member_index_key(resource, resource_schema, arg))
             })
             .collect()
@@ -1173,16 +1173,16 @@ impl CheckedFacts {
 
     fn identity_index_key(
         &self,
-        module_id: ModuleId,
+        modules: &[CheckedModule],
+        module: &CheckedModule,
         store: &marrow_schema::StoreSchema,
         arg: &str,
-        aliases: &HashMap<String, Vec<String>>,
     ) -> Option<StoreIndexKeyFact> {
         let key = store.identity_keys.iter().find(|key| key.name == arg)?;
         Some(StoreIndexKeyFact {
             name: arg.to_string(),
             source: StoreIndexKeySource::IdentityKey,
-            value_meaning: self.stored_value_meaning(module_id, &key.ty, aliases)?,
+            value_meaning: self.stored_value_meaning(modules, module, &key.ty)?,
         })
     }
 

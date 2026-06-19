@@ -15,10 +15,10 @@ use crate::typerules::marrow_type_name;
 use crate::{
     CHECK_AMBIGUOUS_MATCH_ARM, CHECK_AMBIGUOUS_MEMBER, CHECK_DUPLICATE_MATCH_ARM,
     CHECK_IS_REQUIRES_ENUM, CHECK_IS_TYPE, CHECK_MATCH_REQUIRES_ENUM, CHECK_NONEXHAUSTIVE_MATCH,
-    CHECK_PRIVATE_ENUM, CHECK_UNKNOWN_ENUM_MEMBER, CheckDiagnostic, CheckedModule, CheckedProgram,
-    Def, DefItem, DiagnosticPayload, EnumDiagnostic, MarrowType, Resolution, ResolvableKind,
-    TypeNames, build_alias_map, expand_alias, expand_module_alias, module_of_file, resolve,
-    resource_type_name, split_type_path,
+    CHECK_PRIVATE_ENUM, CHECK_UNKNOWN_ENUM_MEMBER, CHECK_UNKNOWN_TYPE, CheckDiagnostic,
+    CheckedModule, CheckedProgram, Def, DefItem, DiagnosticPayload, EnumDiagnostic, MarrowType,
+    Resolution, ResolvableKind, TypeNames, build_alias_map, expand_alias, expand_module_alias,
+    module_of_file, resolve, resource_type_name, split_type_path,
 };
 
 /// Re-resolve every named signature slot in the assembled program against the
@@ -440,70 +440,131 @@ pub(crate) struct ResolvedMemberPath<'p> {
     pub member: MemberPathResolution,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AmbiguousEnumMemberPath {
+    enum_name: String,
+    member_label: String,
+    candidates: Vec<String>,
+}
+
+impl AmbiguousEnumMemberPath {
+    pub(crate) fn diagnostic(self, file: &Path, span: SourceSpan) -> CheckDiagnostic {
+        let path = format!("{}::{}", self.enum_name, self.member_label);
+        CheckDiagnostic::error(
+            CHECK_AMBIGUOUS_MEMBER,
+            file,
+            span,
+            format!(
+                "`{path}` is ambiguous; qualify as {}",
+                join_or(&self.candidates)
+            ),
+        )
+        .with_payload(DiagnosticPayload::Enum(EnumDiagnostic::AmbiguousMember {
+            enum_name: self.enum_name,
+            label: self.member_label,
+            candidates: self.candidates,
+        }))
+    }
+}
+
+pub(crate) enum EnumMemberPathResolution<'p> {
+    Resolved(ResolvedMemberPath<'p>),
+    AmbiguousBareForeignOwner(AmbiguousEnumMemberPath),
+    MissingOrNonEnum,
+}
+
 /// Resolve a `Cat::tiger::bengal` / `mod::Cat::tiger` member-path expression: split
 /// the longest enum prefix (the enum is the segment before the member path, the
 /// rest is the path), resolve that enum (same-module first, then aliased module,
 /// then project-wide), and walk the remaining segments down its member tree by the
-/// schema's shared walk. `None` when the expression is not a member-path of a known
-/// enum (too few segments or no such enum); the member walk itself may still be
-/// [`MemberPathResolution::NotFound`] or `Ambiguous`, left to the caller.
+/// schema's shared walk. A bare enum name exposed by several visible foreign
+/// modules fails closed before any member is picked; otherwise the member walk
+/// itself may still be [`MemberPathResolution::NotFound`] or `Ambiguous`, left to
+/// the caller.
 pub(crate) fn resolve_enum_member_path<'p>(
     program: &'p CheckedProgram,
     expr: &marrow_syntax::Expression,
     aliases: &HashMap<String, Vec<String>>,
     file: &Path,
-) -> Option<ResolvedMemberPath<'p>> {
+) -> EnumMemberPathResolution<'p> {
     let marrow_syntax::Expression::Name { segments, .. } = expr else {
-        return None;
+        return EnumMemberPathResolution::MissingOrNonEnum;
     };
     if segments.len() < 2 {
-        return None;
+        return EnumMemberPathResolution::MissingOrNonEnum;
     }
     // Find the enum by the longest prefix that names a visible enum, leaving at
-    // least one segment for the member path. A bare `Enum::a::b` takes `segments[0]`
-    // as a same-module enum; a qualified `mod::Enum::a::b` takes `mod`'s `Enum`.
-    let referencing = module_of_file(program, file);
-    if let Some((module, schema, private)) =
-        resolve_enum_with_visibility(program, referencing, &segments[0])
-            .map(|(m, s, p)| (m.to_string(), s, p))
-    {
-        let path: Vec<&str> = segments[1..].iter().map(String::as_str).collect();
-        return Some(ResolvedMemberPath {
-            member: schema.walk_member_path(&path),
-            module,
-            enum_name: segments[0].clone(),
-            member_label: segments[1..].join("::"),
-            schema,
-            private,
-            enum_index: 0,
-        });
+    // least one segment for the member path. A qualified `mod::Enum::a::b` takes
+    // `mod`'s `Enum`; if no qualified prefix resolves, a bare `Enum::a::b` takes
+    // `segments[0]` as the enum owner.
+    if let Some(resolved) = resolve_qualified_enum_member_path(program, aliases, file, segments) {
+        return resolved;
     }
+    let bare_owner = resolve_named_enum_owner(&segments[0], program, aliases, file);
+    resolve_bare_foreign_member_path(bare_owner, segments)
+}
+
+fn resolve_qualified_enum_member_path<'p>(
+    program: &'p CheckedProgram,
+    aliases: &HashMap<String, Vec<String>>,
+    file: &Path,
+    segments: &[String],
+) -> Option<EnumMemberPathResolution<'p>> {
     // The qualified case: the enum name sits at some index, its module is every
     // segment before it, and the member path is everything after. Prefer the
     // longest enum prefix (shortest member path), so scan the split points from the
     // end down — the first that resolves to a known enum wins.
     for enum_index in (1..segments.len() - 1).rev() {
-        let module = expand_module_alias(&segments[..enum_index].join("::"), aliases);
-        if let Some(schema) = enum_schema_in(program, &module, &segments[enum_index]) {
-            let private =
-                (!enum_visible_from(program, referencing, &module, &segments[enum_index]))
-                    .then(|| format!("{module}::{}", segments[enum_index]));
-            let path: Vec<&str> = segments[enum_index + 1..]
-                .iter()
-                .map(String::as_str)
-                .collect();
-            return Some(ResolvedMemberPath {
-                member: schema.walk_member_path(&path),
-                module,
-                enum_name: segments[enum_index].clone(),
-                member_label: segments[enum_index + 1..].join("::"),
-                schema,
-                private,
-                enum_index,
-            });
-        }
+        let owner_name = segments[..=enum_index].join("::");
+        let EnumOwnerResolution::Found(owner) =
+            resolve_named_enum_owner(&owner_name, program, aliases, file)
+        else {
+            continue;
+        };
+        return Some(resolved_member_path(owner, segments, enum_index));
     }
     None
+}
+
+fn resolve_bare_foreign_member_path<'p>(
+    owner: EnumOwnerResolution<'p>,
+    segments: &[String],
+) -> EnumMemberPathResolution<'p> {
+    match owner {
+        EnumOwnerResolution::Found(owner) => resolved_member_path(owner, segments, 0),
+        EnumOwnerResolution::AmbiguousBareForeign { name, candidates } => {
+            let member_label = segments[1..].join("::");
+            EnumMemberPathResolution::AmbiguousBareForeignOwner(AmbiguousEnumMemberPath {
+                enum_name: name,
+                candidates: candidates
+                    .into_iter()
+                    .map(|candidate| format!("{candidate}::{member_label}"))
+                    .collect(),
+                member_label,
+            })
+        }
+        EnumOwnerResolution::MissingOrNonEnum => EnumMemberPathResolution::MissingOrNonEnum,
+    }
+}
+
+fn resolved_member_path<'p>(
+    owner: ResolvedEnumOwner<'p>,
+    segments: &[String],
+    enum_index: usize,
+) -> EnumMemberPathResolution<'p> {
+    let path: Vec<&str> = segments[enum_index + 1..]
+        .iter()
+        .map(String::as_str)
+        .collect();
+    EnumMemberPathResolution::Resolved(ResolvedMemberPath {
+        member: owner.schema.walk_member_path(&path),
+        module: owner.module,
+        enum_name: owner.name,
+        member_label: segments[enum_index + 1..].join("::"),
+        schema: owner.schema,
+        private: owner.private,
+        enum_index,
+    })
 }
 
 /// Join member paths into an actionable "qualify as `a` or `b`" hint, each path
@@ -516,6 +577,21 @@ pub(crate) fn join_or(paths: &[String]) -> String {
         [head @ .., last] => format!("{} or {last}", head.join(", ")),
         [] => String::new(),
     }
+}
+
+pub(crate) fn ambiguous_enum_annotation_diagnostic(
+    file: &Path,
+    span: SourceSpan,
+    name: String,
+    ty: Type,
+) -> CheckDiagnostic {
+    CheckDiagnostic::error(
+        CHECK_UNKNOWN_TYPE,
+        file,
+        span,
+        format!("type annotation `{name}` is ambiguous; qualify the enum name"),
+    )
+    .with_payload(DiagnosticPayload::AmbiguousType { ty, name })
 }
 
 pub(crate) struct IsCheck<'a> {
@@ -560,14 +636,21 @@ pub(crate) fn check_is(input: IsCheck<'_>) -> MarrowType {
         }
         return bool_type;
     };
-    let Some(resolved) = resolve_enum_member_path(program, right, aliases, file) else {
-        diagnostics.push(CheckDiagnostic::error(
-            CHECK_IS_TYPE,
-            file,
-            span,
-            format!("operator `is` requires a member of `{left_name}` on the right"),
-        ));
-        return bool_type;
+    let resolved = match resolve_enum_member_path(program, right, aliases, file) {
+        EnumMemberPathResolution::Resolved(resolved) => resolved,
+        EnumMemberPathResolution::AmbiguousBareForeignOwner(ambiguous) => {
+            diagnostics.push(ambiguous.diagnostic(file, span));
+            return bool_type;
+        }
+        EnumMemberPathResolution::MissingOrNonEnum => {
+            diagnostics.push(CheckDiagnostic::error(
+                CHECK_IS_TYPE,
+                file,
+                span,
+                format!("operator `is` requires a member of `{left_name}` on the right"),
+            ));
+            return bool_type;
+        }
     };
     if let Some(private) = resolved.private {
         diagnostics.push(
@@ -639,53 +722,14 @@ fn member_path_label(expr: &marrow_syntax::Expression) -> String {
     }
 }
 
-fn resolve_enum_with_visibility<'p>(
-    program: &'p CheckedProgram,
-    referencing_module: Option<&'p str>,
-    name: &str,
-) -> Option<(&'p str, &'p marrow_schema::EnumSchema, Option<String>)> {
-    referencing_module
-        .and_then(|module| enum_schema_in(program, module, name).map(|schema| (module, schema)))
-        .map(|(module, schema)| (module, schema, None))
-        .or_else(|| find_project_enum(program, referencing_module, name, true))
-        .or_else(|| find_project_enum(program, referencing_module, name, false))
-}
-
-fn find_project_enum<'p>(
-    program: &'p CheckedProgram,
-    referencing_module: Option<&str>,
-    name: &str,
-    public: bool,
-) -> Option<(&'p str, &'p marrow_schema::EnumSchema, Option<String>)> {
-    program.modules.iter().find_map(|module| {
-        if Some(module.name.as_str()) == referencing_module || module.name.is_empty() {
-            return None;
-        }
-        let schema = module
-            .enums
-            .iter()
-            .find(|enum_schema| enum_schema.name == name)?;
-        let is_public = enum_is_public(module, name);
-        if is_public != public {
-            return None;
-        }
-        Some((
-            module.name.as_str(),
-            schema,
-            (!is_public).then(|| format!("{}::{name}", module.name)),
-        ))
-    })
-}
-
-fn enum_visible_from(
-    program: &CheckedProgram,
+fn enum_visible_from_modules(
+    modules: &[CheckedModule],
     referencing_module: Option<&str>,
     enum_module: &str,
     enum_name: &str,
 ) -> bool {
     referencing_module == Some(enum_module)
-        || program
-            .modules
+        || modules
             .iter()
             .find(|module| module.name == enum_module)
             .is_none_or(|module| enum_is_public(module, enum_name))
@@ -703,8 +747,15 @@ pub(crate) fn enum_schema_in<'p>(
     module: &str,
     name: &str,
 ) -> Option<&'p marrow_schema::EnumSchema> {
-    program
-        .modules
+    enum_schema_in_modules(&program.modules, module, name)
+}
+
+fn enum_schema_in_modules<'p>(
+    modules: &'p [CheckedModule],
+    module: &str,
+    name: &str,
+) -> Option<&'p marrow_schema::EnumSchema> {
+    modules
         .iter()
         .find(|m| m.name == module)?
         .enums
@@ -716,40 +767,66 @@ pub(crate) fn enum_schema_in<'p>(
 ///
 /// Resource annotations resolve first through the module-aware checked resolver.
 /// If no resource is named, enum annotations resolve by their true owner: a bare
-/// `Status` resolves same-module-first then to the project-wide owner (the
-/// symmetry a bare `Status::member` literal already uses), and a qualified
-/// `mod::Status` resolves to `mod`'s enum when `mod` declares it.
+/// `Status` resolves same-module-first, then to the sole visible foreign owner.
+/// If several visible foreign modules expose that name, the annotation fails
+/// closed instead of picking one. A qualified `mod::Status` resolves to `mod`'s
+/// enum when `mod` declares it.
 pub(crate) fn resolve_type(
     ty: &marrow_syntax::TypeRef,
     program: &CheckedProgram,
     aliases: &HashMap<String, Vec<String>>,
     file: &Path,
 ) -> MarrowType {
-    if let Some(resource_type) = resolve_resource_annotation(ty, program, aliases, file) {
+    let schema_type = Type::resolve(ty);
+    if let Some(resource_type) = resolve_resource_type_ref(&schema_type, program, aliases, file) {
         return resource_type;
     }
-    if let Some(enum_type) = resolve_enum_annotation(ty, program, aliases, file) {
-        return enum_type;
+    match resolve_enum_annotation_type(&schema_type, program, aliases, file) {
+        EnumAnnotationResolution::Visible(resolved) => resolved.ty,
+        EnumAnnotationResolution::Private(_) => MarrowType::Invalid,
+        EnumAnnotationResolution::AmbiguousBareForeign(_) => MarrowType::Unknown,
+        EnumAnnotationResolution::MissingOrNonEnum => MarrowType::resolve(
+            ty,
+            TypeNames {
+                module: module_of_file(program, file).unwrap_or_default(),
+                enums: &[],
+            },
+        ),
     }
-    MarrowType::resolve(
-        ty,
-        TypeNames {
-            module: module_of_file(program, file).unwrap_or_default(),
-            enums: &[],
-        },
-    )
 }
 
-/// Resolve a resource or store-identity type annotation to the checker type.
-/// Qualified resource spellings use the same import-alias expansion as calls, so
-/// an alias can name a module without minting a second nominal type.
-fn resolve_resource_annotation(
-    ty: &marrow_syntax::TypeRef,
+pub(crate) fn resolve_schema_type_for_module(
+    ty: &Type,
     program: &CheckedProgram,
-    aliases: &HashMap<String, Vec<String>>,
-    file: &Path,
-) -> Option<MarrowType> {
-    resolve_resource_type_ref(&Type::resolve(ty), program, aliases, file)
+    module: &CheckedModule,
+) -> MarrowType {
+    let aliases = build_alias_map(&module.imports);
+    if let Some(resource_type) =
+        resolve_resource_type_ref_in_module(ty, program, &aliases, &module.name)
+    {
+        return resource_type;
+    }
+    match resolve_enum_annotation_type_for_module(ty, &program.modules, module) {
+        EnumAnnotationResolution::Visible(resolved) => resolved.ty,
+        EnumAnnotationResolution::Private(_) => MarrowType::Invalid,
+        EnumAnnotationResolution::AmbiguousBareForeign(_) => MarrowType::Unknown,
+        EnumAnnotationResolution::MissingOrNonEnum => MarrowType::from_resolved(
+            ty.clone(),
+            TypeNames {
+                module: &module.name,
+                enums: &[],
+            },
+        ),
+    }
+}
+
+pub(crate) fn resolve_enum_annotation_type_for_module(
+    ty: &Type,
+    modules: &[CheckedModule],
+    module: &CheckedModule,
+) -> EnumAnnotationResolution {
+    let aliases = build_alias_map(&module.imports);
+    resolve_enum_annotation_type_in_modules(ty, modules, &aliases, Some(&module.name))
 }
 
 fn resolve_resource_type_ref(
@@ -758,36 +835,52 @@ fn resolve_resource_type_ref(
     aliases: &HashMap<String, Vec<String>>,
     file: &Path,
 ) -> Option<MarrowType> {
+    resolve_resource_type_ref_in_module(
+        ty,
+        program,
+        aliases,
+        module_of_file(program, file).unwrap_or_default(),
+    )
+}
+
+fn resolve_resource_type_ref_in_module(
+    ty: &Type,
+    program: &CheckedProgram,
+    aliases: &HashMap<String, Vec<String>>,
+    module_name: &str,
+) -> Option<MarrowType> {
     match ty {
-        Type::Sequence(element) => resolve_resource_type_ref(element, program, aliases, file)
-            .map(|element_type| MarrowType::Sequence(Box::new(element_type))),
+        Type::Sequence(element) => {
+            resolve_resource_type_ref_in_module(element, program, aliases, module_name)
+                .map(|element_type| MarrowType::Sequence(Box::new(element_type)))
+        }
         Type::Identity(store_root) => resolve_store_by_root(program, store_root)
             .map(|_| MarrowType::Identity(store_root.clone())),
         Type::Named(name) => {
             let segments = split_type_path(name);
-            resolve_resource_path(program, aliases, file, &segments, ResolvableKind::Resource).map(
-                |(resource, module)| {
-                    MarrowType::Resource(resource_type_name(module, &resource.name))
-                },
+            resolve_resource_path_in_module(
+                program,
+                aliases,
+                module_name,
+                &segments,
+                ResolvableKind::Resource,
             )
+            .map(|(resource, module)| {
+                MarrowType::Resource(resource_type_name(module, &resource.name))
+            })
         }
         _ => None,
     }
 }
 
-fn resolve_resource_path<'p>(
+fn resolve_resource_path_in_module<'p>(
     program: &'p CheckedProgram,
     aliases: &HashMap<String, Vec<String>>,
-    file: &Path,
+    module_name: &str,
     segments: &[String],
     kind: ResolvableKind,
 ) -> Option<(&'p ResourceSchema, &'p str)> {
-    match resolve(
-        program,
-        module_of_file(program, file).unwrap_or_default(),
-        &expand_alias(segments, aliases),
-        kind,
-    ) {
+    match resolve(program, module_name, &expand_alias(segments, aliases), kind) {
         Resolution::Found(Def {
             module,
             item: DefItem::Resource(resource),
@@ -797,94 +890,234 @@ fn resolve_resource_path<'p>(
     }
 }
 
-/// Resolve an enum type annotation to its `Enum { module, name }` identity by the
-/// enum's true owner, or `None` when the annotation is not (or does not contain) an
-/// enum. A qualified `mod::Name` names `mod`'s enum `Name`; a bare `Name` resolves
-/// the way a bare `Name::member` literal does — the referencing module's enum first,
-/// then the project-wide owner — so an annotation and a value spelled the same name
-/// the same enum. A `sequence[...]` recurses on its element: `sequence[Status]`
-/// resolves to `Sequence(Enum { … })` so an enum element keeps its owner, and an
-/// element that is not an enum leaves the whole sequence to the structural resolver.
-fn resolve_enum_annotation(
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ResolvedEnumAnnotation {
+    pub(crate) module: String,
+    pub(crate) name: String,
+    pub(crate) ty: MarrowType,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum EnumAnnotationResolution {
+    Visible(ResolvedEnumAnnotation),
+    Private(String),
+    AmbiguousBareForeign(String),
+    MissingOrNonEnum,
+}
+
+pub(crate) fn resolve_enum_annotation(
     ty: &marrow_syntax::TypeRef,
     program: &CheckedProgram,
     aliases: &HashMap<String, Vec<String>>,
     file: &Path,
-) -> Option<MarrowType> {
-    resolve_enum_type(&Type::resolve(ty), program, aliases, file)
+) -> EnumAnnotationResolution {
+    let schema_type = Type::resolve(ty);
+    if resolve_resource_type_ref(&schema_type, program, aliases, file).is_some() {
+        return EnumAnnotationResolution::MissingOrNonEnum;
+    }
+    resolve_enum_annotation_type(&schema_type, program, aliases, file)
 }
 
-/// Resolve an already-structured [`Type`] to its enum identity, recursing through
-/// `sequence[...]`. Returns `None` for any type with no enum inside, so a non-enum
-/// element keeps a sequence on the structural-resolver path.
-pub(crate) fn resolve_enum_type(
+fn visible_enum_annotation(
+    module: String,
+    name: String,
+    ty: MarrowType,
+) -> EnumAnnotationResolution {
+    EnumAnnotationResolution::Visible(ResolvedEnumAnnotation { module, name, ty })
+}
+
+struct ResolvedEnumOwner<'p> {
+    module: String,
+    name: String,
+    schema: &'p marrow_schema::EnumSchema,
+    private: Option<String>,
+}
+
+enum EnumOwnerResolution<'p> {
+    Found(ResolvedEnumOwner<'p>),
+    AmbiguousBareForeign {
+        name: String,
+        candidates: Vec<String>,
+    },
+    MissingOrNonEnum,
+}
+
+fn resolve_enum_annotation_type(
     ty: &Type,
     program: &CheckedProgram,
     aliases: &HashMap<String, Vec<String>>,
     file: &Path,
-) -> Option<MarrowType> {
+) -> EnumAnnotationResolution {
+    resolve_enum_annotation_type_in_module(ty, program, aliases, module_of_file(program, file))
+}
+
+fn resolve_enum_annotation_type_in_module(
+    ty: &Type,
+    program: &CheckedProgram,
+    aliases: &HashMap<String, Vec<String>>,
+    referencing: Option<&str>,
+) -> EnumAnnotationResolution {
+    resolve_enum_annotation_type_in_modules(ty, &program.modules, aliases, referencing)
+}
+
+fn resolve_enum_annotation_type_in_modules(
+    ty: &Type,
+    modules: &[CheckedModule],
+    aliases: &HashMap<String, Vec<String>>,
+    referencing: Option<&str>,
+) -> EnumAnnotationResolution {
     match ty {
-        Type::Sequence(element) => resolve_enum_type(element, program, aliases, file)
-            .map(|element_type| MarrowType::Sequence(Box::new(element_type))),
-        Type::Named(name) => {
-            let (module, enum_name, private) =
-                resolve_named_enum_with_visibility(name, program, aliases, file)?;
-            Some(if private.is_some() {
-                MarrowType::Invalid
-            } else {
-                MarrowType::Enum {
-                    module,
-                    name: enum_name,
+        Type::Sequence(element) => {
+            match resolve_enum_annotation_type_in_modules(element, modules, aliases, referencing) {
+                EnumAnnotationResolution::Visible(mut resolved) => {
+                    resolved.ty = MarrowType::Sequence(Box::new(resolved.ty));
+                    EnumAnnotationResolution::Visible(resolved)
                 }
-            })
+                other => other,
+            }
         }
-        _ => None,
+        Type::Named(name) => {
+            resolve_named_enum_annotation_in_modules(name, modules, aliases, referencing)
+        }
+        _ => EnumAnnotationResolution::MissingOrNonEnum,
     }
 }
 
-/// Resolve a named enum annotation to its owning `(module, enum_name, private)`, where
-/// `private` carries the qualified spelling when the enum is not visible from `file`.
-/// A qualified `a::b::Status` splits on the *last* `::` so a nested module keeps all
-/// but the final segment (`a::b`'s `Status`, not `a`'s `b::Status`), expanding a short
-/// module alias through the file's imports first the way call dispatch does. A bare
-/// `Status` resolves same-module-first then to the project-wide owner. Both callers
-/// project the visibility split from this single owner.
-fn resolve_named_enum_with_visibility(
+fn resolve_named_enum_annotation_in_modules(
     name: &str,
-    program: &CheckedProgram,
+    modules: &[CheckedModule],
+    aliases: &HashMap<String, Vec<String>>,
+    referencing: Option<&str>,
+) -> EnumAnnotationResolution {
+    match resolve_named_enum_owner_in_modules(name, modules, aliases, referencing) {
+        EnumOwnerResolution::Found(owner) => match owner.private {
+            Some(private) => EnumAnnotationResolution::Private(private),
+            None => visible_enum_annotation(
+                owner.module.clone(),
+                owner.name.clone(),
+                MarrowType::Enum {
+                    module: owner.module,
+                    name: owner.name,
+                },
+            ),
+        },
+        EnumOwnerResolution::AmbiguousBareForeign { name, .. } => {
+            EnumAnnotationResolution::AmbiguousBareForeign(name)
+        }
+        EnumOwnerResolution::MissingOrNonEnum => EnumAnnotationResolution::MissingOrNonEnum,
+    }
+}
+
+fn resolve_named_enum_owner<'p>(
+    name: &str,
+    program: &'p CheckedProgram,
     aliases: &HashMap<String, Vec<String>>,
     file: &Path,
-) -> Option<(String, String, Option<String>)> {
+) -> EnumOwnerResolution<'p> {
+    resolve_named_enum_owner_in_modules(
+        name,
+        &program.modules,
+        aliases,
+        module_of_file(program, file),
+    )
+}
+
+fn resolve_named_enum_owner_in_modules<'p>(
+    name: &str,
+    modules: &'p [CheckedModule],
+    aliases: &HashMap<String, Vec<String>>,
+    referencing: Option<&str>,
+) -> EnumOwnerResolution<'p> {
     if let Some((module, enum_name)) = name.rsplit_once("::") {
         let module = expand_module_alias(module, aliases);
-        enum_schema_in(program, &module, enum_name)?;
-        let private =
-            (!enum_visible_from(program, module_of_file(program, file), &module, enum_name))
-                .then(|| format!("{module}::{enum_name}"));
-        return Some((module, enum_name.to_string(), private));
+        let Some(schema) = enum_schema_in_modules(modules, &module, enum_name) else {
+            return EnumOwnerResolution::MissingOrNonEnum;
+        };
+        let private = (!enum_visible_from_modules(modules, referencing, &module, enum_name))
+            .then(|| format!("{module}::{enum_name}"));
+        return EnumOwnerResolution::Found(ResolvedEnumOwner {
+            module,
+            name: enum_name.to_string(),
+            schema,
+            private,
+        });
     }
-    resolve_enum_with_visibility(program, module_of_file(program, file), name)
-        .map(|(module, _, private)| (module.to_string(), name.to_string(), private))
+
+    if let Some(module) = referencing
+        && let Some(schema) = enum_schema_in_modules(modules, module, name)
+    {
+        return EnumOwnerResolution::Found(ResolvedEnumOwner {
+            module: module.to_string(),
+            name: name.to_string(),
+            schema,
+            private: None,
+        });
+    }
+
+    let public_candidates: Vec<_> = modules
+        .iter()
+        .filter_map(|module| {
+            if Some(module.name.as_str()) == referencing || module.name.is_empty() {
+                return None;
+            }
+            if !enum_is_public(module, name) {
+                return None;
+            }
+            let schema = enum_schema_in_modules(modules, &module.name, name)?;
+            Some((module.name.as_str(), schema))
+        })
+        .collect();
+    match public_candidates.as_slice() {
+        [(module, schema)] => EnumOwnerResolution::Found(ResolvedEnumOwner {
+            module: (*module).to_string(),
+            name: name.to_string(),
+            schema,
+            private: None,
+        }),
+        [_, _, ..] => EnumOwnerResolution::AmbiguousBareForeign {
+            name: name.to_string(),
+            candidates: public_candidates
+                .iter()
+                .map(|(module, _)| format!("{module}::{name}"))
+                .collect(),
+        },
+        [] => resolve_private_bare_enum_owner(modules, referencing, name),
+    }
 }
 
-pub(crate) fn private_enum_type_reference(
-    ty: &marrow_syntax::TypeRef,
-    program: &CheckedProgram,
-    aliases: &HashMap<String, Vec<String>>,
-    file: &Path,
-) -> Option<String> {
-    private_enum_type(&Type::resolve(ty), program, aliases, file)
-}
+fn resolve_private_bare_enum_owner<'p>(
+    modules: &'p [CheckedModule],
+    referencing: Option<&str>,
+    name: &str,
+) -> EnumOwnerResolution<'p> {
+    let private_candidates: Vec<_> = modules
+        .iter()
+        .filter_map(|module| {
+            if Some(module.name.as_str()) == referencing || module.name.is_empty() {
+                return None;
+            }
+            if enum_is_public(module, name) {
+                return None;
+            }
+            let schema = enum_schema_in_modules(modules, &module.name, name)?;
+            Some((module.name.as_str(), schema))
+        })
+        .collect();
 
-fn private_enum_type(
-    ty: &Type,
-    program: &CheckedProgram,
-    aliases: &HashMap<String, Vec<String>>,
-    file: &Path,
-) -> Option<String> {
-    match ty {
-        Type::Sequence(element) => private_enum_type(element, program, aliases, file),
-        Type::Named(name) => resolve_named_enum_with_visibility(name, program, aliases, file)?.2,
-        _ => None,
+    match private_candidates.as_slice() {
+        [(module, schema)] => EnumOwnerResolution::Found(ResolvedEnumOwner {
+            module: (*module).to_string(),
+            name: name.to_string(),
+            schema,
+            private: Some(format!("{module}::{name}")),
+        }),
+        [_, _, ..] => EnumOwnerResolution::AmbiguousBareForeign {
+            name: name.to_string(),
+            candidates: private_candidates
+                .iter()
+                .map(|(module, _)| format!("{module}::{name}"))
+                .collect(),
+        },
+        [] => EnumOwnerResolution::MissingOrNonEnum,
     }
 }

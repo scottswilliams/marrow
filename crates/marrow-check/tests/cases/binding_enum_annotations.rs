@@ -153,3 +153,47 @@ fn qualified_enum_type_annotation_references_the_leaf_enum() {
         "the qualifier should not be part of the enum reference: {refs:?}",
     );
 }
+
+#[test]
+fn ambiguous_bare_foreign_enum_annotation_has_no_binding_definition() {
+    let status_a = "module a\npub enum Status\n    active\n";
+    let status_b = "module b\npub enum Status\n    active\n";
+    let app = "module app\nfn set(s: Status)\n    return\n";
+    let (index, paths) = analyze(
+        "enum-annotation-ambiguous-bare-foreign",
+        &[
+            ("src/a.mw", status_a),
+            ("src/b.mw", status_b),
+            ("src/app.mw", app),
+        ],
+    );
+    let app_file = &paths[2];
+    let status = app.find("s: Status").expect("ambiguous annotation") + "s: ".len();
+
+    assert!(
+        index.definition(app_file, status + 1).is_none(),
+        "ambiguous bare enum annotation must not bind to an arbitrary enum"
+    );
+}
+
+#[test]
+fn resource_type_annotation_does_not_bind_to_foreign_enum() {
+    let foreign = "module a\npub enum Order\n    active\n";
+    let app = "module app\n\
+        resource Order\n    \
+        title: string\n\
+        fn set(o: Order)\n    \
+        return\n";
+    let (index, paths) = analyze(
+        "enum-annotation-resource-shadows-foreign-enum",
+        &[("src/a.mw", foreign), ("src/app.mw", app)],
+    );
+    let app_file = &paths[1];
+    let order = app.find("o: Order").expect("resource annotation") + "o: ".len();
+
+    let def = index
+        .definition(app_file, order + 1)
+        .expect("resource annotation should resolve");
+    assert_eq!(def.kind, SymbolKind::Resource, "{def:?}");
+    assert_eq!(def.file, *app_file, "{def:?}");
+}

@@ -35,5 +35,7 @@ pub use types::{
     IndexSchema, KeyDef, Node, NodeKind, ResourceSchema, StoreSchema, Type, scalar_type_from_name,
 };
 pub use validate::{
-    check_saved_member_rules, check_saved_named_member_fields, check_saved_named_member_fields_with,
+    check_saved_member_rules, check_saved_named_member_fields,
+    check_saved_named_member_fields_with, non_enum_named_field_error,
+    walk_saved_named_member_fields,
 };

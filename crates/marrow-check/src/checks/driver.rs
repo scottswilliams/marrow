@@ -5,21 +5,22 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use marrow_schema::ReturnPresence;
-use marrow_schema::Type;
+use marrow_schema::{ReturnPresence, Type};
 use marrow_syntax::SourceSpan;
 
 use crate::enums::{
-    annotation_type_known, annotation_unknown_identity_name, private_enum_type_reference,
-    resolve_diagnosed_annotation_type, resolve_type,
+    EnumAnnotationResolution, ambiguous_enum_annotation_diagnostic, annotation_type_known,
+    annotation_unknown_identity_name, resolve_diagnosed_annotation_type, resolve_enum_annotation,
+    resolve_type,
 };
 use crate::infer::infer_type;
 use crate::{
     CHECK_MISSING_RETURN, CHECK_PRIVATE_ENUM, CHECK_UNKNOWN_TYPE, CHECK_UNRESOLVED_IMPORT,
     CheckDiagnostic, CheckReport, CheckedProgram, DiagnosticPayload, MarrowType, build_alias_map,
-    check_rejected_surface, is_resolved_import, push_schema_error,
+    check_rejected_surface, has_duplicate_error, is_resolved_import, push_schema_error,
 };
 
+use super::operators::check_assignment;
 use super::returns::{block_returns, check_return_values};
 use super::statements::check_function_types;
 
@@ -88,6 +89,7 @@ pub(crate) fn check_resolved_files(input: ResolvedFileCheck<'_>, report: &mut Ch
                     !references_incomplete_module_member(name, &incomplete_modules)
                 }
                 DiagnosticPayload::UnknownType(_)
+                | DiagnosticPayload::AmbiguousType { .. }
                 | DiagnosticPayload::Schema(_)
                 | DiagnosticPayload::DuplicateDeclaration { .. }
                 | DiagnosticPayload::SurfaceCollision { .. }
@@ -191,6 +193,24 @@ pub(crate) fn file_prelude(
     file: &Path,
     parsed: &marrow_syntax::ParsedSource,
 ) -> FilePrelude {
+    build_file_prelude(program, file, parsed, None)
+}
+
+fn checked_file_prelude(
+    program: &CheckedProgram,
+    file: &Path,
+    parsed: &marrow_syntax::ParsedSource,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) -> FilePrelude {
+    build_file_prelude(program, file, parsed, Some(diagnostics))
+}
+
+fn build_file_prelude(
+    program: &CheckedProgram,
+    file: &Path,
+    parsed: &marrow_syntax::ParsedSource,
+    mut diagnostics: Option<&mut Vec<CheckDiagnostic>>,
+) -> FilePrelude {
     let import_paths: Vec<String> = parsed
         .file
         .uses
@@ -200,21 +220,32 @@ pub(crate) fn file_prelude(
     let aliases = build_alias_map(&import_paths);
     // Top-level constants are in scope (bare) for the file's functions, so a typed
     // use like `var x: int = M` resolves rather than false-positiving
-    // `check.untyped_value`. Initializer validity is owned by the const-value pass,
-    // so the inference diagnostics raised here are discarded.
+    // `check.untyped_value`.
     let mut module_constants: HashMap<String, MarrowType> = HashMap::new();
     for declaration in &parsed.file.declarations {
         if let marrow_syntax::Declaration::Const(constant) = declaration {
-            let ty = match (&constant.ty, &constant.value) {
-                (Some(ty), _) => resolve_diagnosed_annotation_type(ty, program, &aliases, file),
-                (None, Some(value)) => infer_type(
+            let annotation_type = constant
+                .ty
+                .as_ref()
+                .map(|ty| resolve_diagnosed_annotation_type(ty, program, &aliases, file));
+            let value_type = constant.value.as_ref().map(|value| {
+                infer_module_const_value(
                     program,
                     value,
-                    std::slice::from_ref(&module_constants),
+                    &module_constants,
                     &aliases,
                     file,
-                    &mut Vec::new(),
-                ),
+                    diagnostics.as_deref_mut(),
+                )
+            });
+            if let (Some(expected), Some(found), Some(diagnostics)) =
+                (&annotation_type, &value_type, diagnostics.as_deref_mut())
+            {
+                check_assignment(file, constant.span, expected, found, diagnostics);
+            }
+            let ty = match (annotation_type, value_type) {
+                (Some(ty), _) => ty,
+                (None, Some(value_type)) => value_type,
                 // The value did not parse; the parser already reported the error.
                 (None, None) => MarrowType::Unknown,
             };
@@ -225,6 +256,28 @@ pub(crate) fn file_prelude(
         aliases,
         module_constants,
     }
+}
+
+fn infer_module_const_value(
+    program: &CheckedProgram,
+    value: &marrow_syntax::Expression,
+    module_constants: &HashMap<String, MarrowType>,
+    aliases: &HashMap<String, Vec<String>>,
+    file: &Path,
+    diagnostics: Option<&mut Vec<CheckDiagnostic>>,
+) -> MarrowType {
+    let scope = std::slice::from_ref(module_constants);
+    let Some(diagnostics) = diagnostics else {
+        return infer_type(program, value, scope, aliases, file, &mut Vec::new());
+    };
+    let mut emitted = Vec::new();
+    let ty = infer_type(program, value, scope, aliases, file, &mut emitted);
+    for diagnostic in emitted {
+        if !has_duplicate_error(diagnostics, &diagnostic) {
+            diagnostics.push(diagnostic);
+        }
+    }
+    ty
 }
 
 /// Run the type pass over one parsed file: unknown-type annotations, return-value
@@ -241,7 +294,7 @@ pub(crate) fn check_file_types(
     let FilePrelude {
         aliases,
         module_constants,
-    } = file_prelude(program, file, parsed);
+    } = checked_file_prelude(program, file, parsed, diagnostics);
     check_rejected_surface(program, file, parsed, diagnostics);
     let annotation_context = TypeAnnotationContext {
         program,
@@ -327,7 +380,7 @@ pub(crate) fn check_file_types(
                         backing_invalidations.as_deref_mut(),
                         diagnostics,
                     );
-                    check_qualified_saved_named_field_annotations(
+                    check_saved_named_field_annotations(
                         resource.name.as_str(),
                         &resource.members,
                         &annotation_context,
@@ -351,31 +404,73 @@ pub(crate) fn check_file_types(
     }
 }
 
-fn check_qualified_saved_named_field_annotations(
+fn check_saved_named_field_annotations(
     resource_name: &str,
     members: &[marrow_syntax::ResourceMember],
     context: &TypeAnnotationContext<'_>,
     mut backing_invalidations: Option<&mut crate::backing_validity::PendingBackingInvalidations>,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
-    for error in marrow_schema::check_saved_named_member_fields_with(members, |name| {
-        if !name.contains("::") {
-            return true;
+    marrow_schema::walk_saved_named_member_fields(members, |field, name| {
+        check_saved_named_field_annotation(
+            resource_name,
+            field,
+            name,
+            context,
+            backing_invalidations.as_deref_mut(),
+            diagnostics,
+        );
+    });
+}
+
+fn check_saved_named_field_annotation(
+    resource_name: &str,
+    field: &marrow_syntax::FieldDecl,
+    name: &str,
+    context: &TypeAnnotationContext<'_>,
+    backing_invalidations: Option<&mut crate::backing_validity::PendingBackingInvalidations>,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    let schema_type = Type::resolve(&field.ty);
+    match resolve_enum_annotation(&field.ty, context.program, context.aliases, context.file) {
+        EnumAnnotationResolution::Visible(_) => {}
+        EnumAnnotationResolution::Private(private) => {
+            if let Some(backing_invalidations) = backing_invalidations {
+                backing_invalidations.record_resource_error(context.file, resource_name);
+            }
+            diagnostics.push(
+                CheckDiagnostic::error(
+                    CHECK_PRIVATE_ENUM,
+                    context.file,
+                    field.ty.span,
+                    format!(
+                        "enum `{private}` is private to its module; mark it `pub` to use it from another module"
+                    ),
+                )
+                .with_payload(DiagnosticPayload::PrivateEnum(private)),
+            );
         }
-        matches!(
-            crate::enums::resolve_enum_type(
-                &Type::Named(name.to_string()),
-                context.program,
-                context.aliases,
+        EnumAnnotationResolution::AmbiguousBareForeign(name) => {
+            if let Some(backing_invalidations) = backing_invalidations {
+                backing_invalidations.record_resource_error(context.file, resource_name);
+            }
+            diagnostics.push(ambiguous_enum_annotation_diagnostic(
                 context.file,
-            ),
-            Some(MarrowType::Enum { .. })
-        )
-    }) {
-        if let Some(backing_invalidations) = backing_invalidations.as_deref_mut() {
-            backing_invalidations.record_resource_error(context.file, resource_name);
+                field.ty.span,
+                name,
+                schema_type,
+            ));
         }
-        push_schema_error(context.file, diagnostics, error);
+        EnumAnnotationResolution::MissingOrNonEnum => {
+            if let Some(backing_invalidations) = backing_invalidations {
+                backing_invalidations.record_resource_error(context.file, resource_name);
+            }
+            push_schema_error(
+                context.file,
+                diagnostics,
+                marrow_schema::non_enum_named_field_error(field, name),
+            );
+        }
     }
 }
 
@@ -392,24 +487,32 @@ fn check_type_annotation(
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
     let schema_type = Type::resolve(ty);
-    let resolved_type = resolve_type(ty, context.program, context.aliases, context.file);
-    if !contains_resource_type(&resolved_type)
-        && let Some(private) =
-            private_enum_type_reference(ty, context.program, context.aliases, context.file)
-    {
-        diagnostics.push(
-            CheckDiagnostic::error(
-                CHECK_PRIVATE_ENUM,
-                context.file,
-                span,
-                format!(
-                    "enum `{private}` is private to its module; mark it `pub` to use it from another module"
-                ),
-            )
-            .with_payload(DiagnosticPayload::PrivateEnum(private)),
-        );
-        return;
+    match resolve_enum_annotation(ty, context.program, context.aliases, context.file) {
+        EnumAnnotationResolution::Private(private) => {
+            push_enum_annotation_diagnostic(
+                diagnostics,
+                CheckDiagnostic::error(
+                    CHECK_PRIVATE_ENUM,
+                    context.file,
+                    span,
+                    format!(
+                        "enum `{private}` is private to its module; mark it `pub` to use it from another module"
+                    ),
+                )
+                .with_payload(DiagnosticPayload::PrivateEnum(private)),
+            );
+            return;
+        }
+        EnumAnnotationResolution::AmbiguousBareForeign(name) => {
+            push_enum_annotation_diagnostic(
+                diagnostics,
+                ambiguous_enum_annotation_diagnostic(context.file, span, name, schema_type),
+            );
+            return;
+        }
+        EnumAnnotationResolution::Visible(_) | EnumAnnotationResolution::MissingOrNonEnum => {}
     }
+    let resolved_type = resolve_type(ty, context.program, context.aliases, context.file);
     let unknown_identity = annotation_unknown_identity_name(&schema_type, context.program);
     if unknown_identity.is_some() || !annotation_type_known(&schema_type, &resolved_type) {
         let name = unknown_identity.unwrap_or_else(|| ty.text.trim().to_string());
@@ -425,15 +528,14 @@ fn check_type_annotation(
     }
 }
 
-fn contains_resource_type(ty: &MarrowType) -> bool {
-    match ty {
-        MarrowType::Resource(_) => true,
-        MarrowType::Sequence(element) => contains_resource_type(element),
-        MarrowType::LocalTree { keys, value } => {
-            keys.iter().any(contains_resource_type) || contains_resource_type(value)
-        }
-        _ => false,
+fn push_enum_annotation_diagnostic(
+    diagnostics: &mut Vec<CheckDiagnostic>,
+    diagnostic: CheckDiagnostic,
+) {
+    if has_duplicate_error(diagnostics, &diagnostic) {
+        return;
     }
+    diagnostics.push(diagnostic);
 }
 
 fn check_resource_type_annotations(
@@ -525,78 +627,7 @@ fn check_block_type_annotations(
     context: &TypeAnnotationContext<'_>,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
-    for statement in &block.statements {
-        check_statement_type_annotations(statement, context, diagnostics);
-    }
-}
-
-fn check_statement_type_annotations(
-    statement: &marrow_syntax::Statement,
-    context: &TypeAnnotationContext<'_>,
-    diagnostics: &mut Vec<CheckDiagnostic>,
-) {
-    use marrow_syntax::Statement;
-    match statement {
-        Statement::Const {
-            ty: Some(ty), span, ..
-        } => {
-            check_type_annotation(ty, *span, context, diagnostics);
-        }
-        Statement::Var { keys, ty, span, .. } => {
-            for key in keys {
-                check_type_annotation(&key.ty, *span, context, diagnostics);
-            }
-            if let Some(ty) = ty {
-                check_type_annotation(ty, *span, context, diagnostics);
-            }
-        }
-        Statement::If {
-            then_block,
-            else_ifs,
-            else_block,
-            ..
-        }
-        | Statement::IfConst {
-            then_block,
-            else_ifs,
-            else_block,
-            ..
-        } => {
-            check_block_type_annotations(then_block, context, diagnostics);
-            for else_if in else_ifs {
-                check_block_type_annotations(&else_if.block, context, diagnostics);
-            }
-            if let Some(block) = else_block {
-                check_block_type_annotations(block, context, diagnostics);
-            }
-        }
-        Statement::While { body, .. }
-        | Statement::For { body, .. }
-        | Statement::Transaction { body, .. } => {
-            check_block_type_annotations(body, context, diagnostics);
-        }
-        Statement::Try { body, catch, .. } => {
-            check_block_type_annotations(body, context, diagnostics);
-            if let Some(catch) = catch {
-                if let Some(ty) = &catch.ty {
-                    check_type_annotation(ty, catch.block.span, context, diagnostics);
-                }
-                check_block_type_annotations(&catch.block, context, diagnostics);
-            }
-        }
-        Statement::Match { arms, .. } => {
-            for arm in arms {
-                check_block_type_annotations(&arm.block, context, diagnostics);
-            }
-        }
-        Statement::Const { ty: None, .. }
-        | Statement::Assign { .. }
-        | Statement::Delete { .. }
-        | Statement::Return { .. }
-        | Statement::ReturnAbsent { .. }
-        | Statement::Break { .. }
-        | Statement::Continue { .. }
-        | Statement::Throw { .. }
-        | Statement::Expr { .. } => {}
-    }
+    crate::annotation_refs::walk_block_type_refs(block, &mut |ty| {
+        check_type_annotation(ty, ty.span, context, diagnostics);
+    });
 }

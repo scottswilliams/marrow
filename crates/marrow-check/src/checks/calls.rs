@@ -19,10 +19,10 @@ use crate::{
     AppendTargetDiagnostic, CHECK_AMBIGUOUS_CALL, CHECK_CALL_ARGUMENT,
     CHECK_COLLECTION_UNSUPPORTED, CHECK_NEIGHBOR_UNSUPPORTED, CHECK_NEXT_ID_REQUIRES_SINGLE_INT,
     CHECK_PRIVATE_FUNCTION, CHECK_UNRESOLVED_CALL, CHECK_UNTYPED_VALUE, CheckDiagnostic,
-    CheckedProgram, ConversionTarget, ConversionUnsupportedSourceDiagnostic, Def, DefItem,
-    DiagnosticPayload, MarrowType, Resolution, ResolvableKind, TypeNames, builtin_return_type,
-    conversion_return_type, identity_type_for_store, is_builtin_call, is_unknown_std_operation,
-    module_of_file, resolve, resolve_resource_schema_type, resource_type_name, std_call_params,
+    CheckedModule, CheckedProgram, ConversionTarget, ConversionUnsupportedSourceDiagnostic, Def,
+    DefItem, DiagnosticPayload, MarrowType, Resolution, ResolvableKind, TypeNames,
+    builtin_return_type, conversion_return_type, identity_type_for_store, is_builtin_call,
+    is_unknown_std_operation, module_of_file, resolve, resource_type_name, std_call_params,
     std_call_return_type,
 };
 
@@ -258,17 +258,11 @@ fn check_resource_constructor_call(
     else {
         return None;
     };
-    let enum_names: Vec<String> = module
-        .enums
-        .iter()
-        .map(|enum_| enum_.name.clone())
-        .collect();
     check_resource_constructor_args(ResourceConstructorCheck {
         program: env.program,
         label: &resource.name,
-        module_name: &module.name,
+        module,
         resource,
-        enum_names: &enum_names,
         args,
         arg_types,
         span: env.span,
@@ -763,9 +757,8 @@ fn reversed_type(
 struct ResourceConstructorCheck<'a> {
     program: &'a CheckedProgram,
     label: &'a str,
-    module_name: &'a str,
+    module: &'a CheckedModule,
     resource: &'a ResourceSchema,
-    enum_names: &'a [String],
     args: &'a [marrow_syntax::Argument],
     arg_types: &'a [MarrowType],
     span: SourceSpan,
@@ -777,9 +770,8 @@ fn check_resource_constructor_args(input: ResourceConstructorCheck<'_>) {
     let ResourceConstructorCheck {
         program,
         label,
-        module_name,
+        module,
         resource,
-        enum_names,
         args,
         arg_types,
         span,
@@ -805,7 +797,7 @@ fn check_resource_constructor_args(input: ResourceConstructorCheck<'_>) {
         |index| {
             fields[index]
                 .plain_field_type()
-                .map(|ty| constructor_field_type(program, module_name, enum_names, ty))
+                .map(|ty| constructor_field_type(program, module, ty))
         },
         |field| {
             matches!(
@@ -818,20 +810,10 @@ fn check_resource_constructor_args(input: ResourceConstructorCheck<'_>) {
 
 fn constructor_field_type(
     program: &CheckedProgram,
-    module_name: &str,
-    enum_names: &[String],
+    module: &CheckedModule,
     ty: &Type,
 ) -> MarrowType {
-    if let Some(resource_type) = resolve_resource_schema_type(program, module_name, ty) {
-        return resource_type;
-    }
-    MarrowType::from_resolved(
-        ty.clone(),
-        TypeNames {
-            module: module_name,
-            enums: enum_names,
-        },
-    )
+    crate::enums::resolve_schema_type_for_module(ty, program, module)
 }
 
 /// Check one positional/named argument against the type its parameter expects: a

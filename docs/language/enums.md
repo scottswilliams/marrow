@@ -30,9 +30,11 @@ An enum's identity is its owning module together with its name. A bare `Status`
 resolves to the enclosing module's `Status` first, so two modules may each declare
 a `Status` without colliding; they are distinct enums and never compare equal. To
 name another module's enum, qualify it: `b::Status` as a type and `b::Status::open`
-as a value. A qualified name always names exactly that module's enum, so an
-annotation and a value spelled the same way denote the same enum. The qualifier
-may be a `use`-imported short alias: after `use a::b`, both `b::Status` and
+as a value. If a bare type annotation or member value could name more than one
+visible foreign enum owner, the checker rejects it; qualify the enum name. A
+qualified name always names exactly that module's enum, so an annotation and a
+value spelled the same way denote the same enum. The qualifier may be a
+`use`-imported short alias: after `use a::b`, both `b::Status` and
 `b::Status::open` name module `a::b`'s enum, the same way the alias resolves a
 call.
 

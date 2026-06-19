@@ -1,7 +1,7 @@
 use marrow_schema::{Node, NodeKind, ScalarType, Type};
 
 use crate::facts::ModuleId;
-use crate::program::{CheckedModule, CheckedProgram, MarrowType, TypeNames};
+use crate::program::{CheckedModule, CheckedProgram, MarrowType};
 use crate::resolve::resolve_store_by_root;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -74,28 +74,20 @@ pub(super) fn checked_resource_constructor(
     resource: &marrow_schema::ResourceSchema,
     resource_ref: CheckedResourceRef,
 ) -> CheckedResourceConstructor {
-    let enum_names: Vec<String> = module
-        .enums
-        .iter()
-        .map(|enum_| enum_.name.clone())
-        .collect();
     CheckedResourceConstructor {
         resource: resource_ref,
         name: resource.name.clone(),
         fields: resource
             .members
             .iter()
-            .filter_map(|node| {
-                checked_resource_constructor_field(program, &module.name, &enum_names, node)
-            })
+            .filter_map(|node| checked_resource_constructor_field(program, module, node))
             .collect(),
     }
 }
 
 fn checked_resource_constructor_field(
     program: &CheckedProgram,
-    module_name: &str,
-    enum_names: &[String],
+    module: &CheckedModule,
     node: &Node,
 ) -> Option<CheckedResourceConstructorField> {
     if !node.is_plain_field() {
@@ -109,26 +101,17 @@ fn checked_resource_constructor_field(
         required: *required,
         ty: checked_runtime_value_type(
             program,
-            checked_constructor_field_type(program, module_name, enum_names, ty),
+            checked_constructor_field_type(program, module, ty),
         ),
     })
 }
 
 fn checked_constructor_field_type(
     program: &CheckedProgram,
-    module_name: &str,
-    enum_names: &[String],
+    module: &CheckedModule,
     ty: &Type,
 ) -> MarrowType {
-    crate::resolve_resource_schema_type(program, module_name, ty).unwrap_or_else(|| {
-        MarrowType::from_resolved(
-            ty.clone(),
-            TypeNames {
-                module: module_name,
-                enums: enum_names,
-            },
-        )
-    })
+    crate::enums::resolve_schema_type_for_module(ty, program, module)
 }
 
 pub(crate) fn checked_runtime_value_type(

@@ -389,6 +389,127 @@ fn an_ambiguous_enum_member_does_not_emit_an_untyped_return_hint() {
 }
 
 #[test]
+fn a_bare_member_literal_with_ambiguous_foreign_enum_owner_is_rejected() {
+    let root = temp_project("ambiguous-foreign-enum-owner-member-literal", |root| {
+        write(root, "src/a.mw", "module a\npub enum Status\n    active\n");
+        write(root, "src/b.mw", "module b\npub enum Status\n    active\n");
+        write(
+            root,
+            "src/app.mw",
+            "module app\nfn f(): a::Status\n    return Status::active\n",
+        );
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+
+    let errors = with_code(&report, "check.ambiguous_member");
+    assert_eq!(errors.len(), 1, "{:#?}", report.diagnostics);
+    assert_enum_payload(
+        errors[0],
+        EnumDiagnostic::AmbiguousMember {
+            enum_name: "Status".into(),
+            label: "active".into(),
+            candidates: vec!["a::Status::active".into(), "b::Status::active".into()],
+        },
+    );
+}
+
+#[test]
+fn a_bare_member_literal_with_multiple_private_foreign_enum_owners_is_ambiguous() {
+    let root = temp_project(
+        "ambiguous-private-foreign-enum-owner-member-literal",
+        |root| {
+            write(root, "src/a.mw", "module a\nenum Status\n    active\n");
+            write(root, "src/b.mw", "module b\nenum Status\n    active\n");
+            write(root, "src/app.mw", "module app\nconst x = Status::active\n");
+        },
+    );
+    let (report, _program) = check_project(&root, &config()).expect("check");
+
+    let errors = with_code(&report, "check.ambiguous_member");
+    assert_eq!(errors.len(), 1, "{:#?}", report.diagnostics);
+    assert_enum_payload(
+        errors[0],
+        EnumDiagnostic::AmbiguousMember {
+            enum_name: "Status".into(),
+            label: "active".into(),
+            candidates: vec!["a::Status::active".into(), "b::Status::active".into()],
+        },
+    );
+    assert!(
+        with_code(&report, "check.private_enum").is_empty(),
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
+fn a_qualified_member_literal_wins_over_ambiguous_bare_foreign_enum_owner() {
+    let root = temp_project("qualified-enum-owner-before-bare-ambiguity", |root| {
+        write(root, "src/a.mw", "module a\npub enum Status\n    active\n");
+        write(root, "src/b.mw", "module b\npub enum Status\n    active\n");
+        write(
+            root,
+            "src/Status.mw",
+            "module Status\npub enum Choice\n    active\n",
+        );
+        write(
+            root,
+            "src/app.mw",
+            "module app\nfn f(): Status::Choice\n    return Status::Choice::active\n",
+        );
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+
+    assert_clean(&report);
+}
+
+#[test]
+fn a_qualified_member_literal_wins_over_same_module_bare_enum_owner() {
+    let root = temp_project("qualified-enum-owner-before-local-bare-owner", |root| {
+        write(
+            root,
+            "src/Status.mw",
+            "module Status\npub enum Choice\n    active\n",
+        );
+        write(
+            root,
+            "src/app.mw",
+            "module app\n\
+             enum Status\n    local\n\
+             fn f(): Status::Choice\n    return Status::Choice::active\n",
+        );
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+
+    assert_clean(&report);
+}
+
+#[test]
+fn is_operand_with_ambiguous_foreign_enum_owner_member_literal_is_rejected() {
+    let root = temp_project("ambiguous-foreign-enum-owner-is-operand", |root| {
+        write(root, "src/a.mw", "module a\npub enum Status\n    active\n");
+        write(root, "src/b.mw", "module b\npub enum Status\n    active\n");
+        write(
+            root,
+            "src/app.mw",
+            "module app\nfn f(s: a::Status): bool\n    return s is Status::active\n",
+        );
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+
+    let errors = with_code(&report, "check.ambiguous_member");
+    assert_eq!(errors.len(), 1, "{:#?}", report.diagnostics);
+    assert_enum_payload(
+        errors[0],
+        EnumDiagnostic::AmbiguousMember {
+            enum_name: "Status".into(),
+            label: "active".into(),
+            candidates: vec!["a::Status::active".into(), "b::Status::active".into()],
+        },
+    );
+}
+
+#[test]
 fn a_match_with_qualified_arms_over_duplicated_leaves_is_exhaustive() {
     // Arms `tiger::paw`, `lion::paw`, `tiger::bengal`, `lion::mane` cover every
     // selectable leaf exactly once.

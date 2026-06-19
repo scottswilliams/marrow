@@ -40,10 +40,12 @@ repair, or create stores during ordinary check. These public surfaces recompute
 from the checked program or snapshot:
 
 - `AnalysisSnapshot::sites_for(catalog_id)` filters the snapshot's `UseSite`
-  table, which is built by one post-lowering walk over runtime-lowered module
-  constants, function bodies, and evolve transform bodies. Use sites are keyed
-  by accepted or proposal catalog ids and typed as saved roots, resource
-  members, store indexes, enums, or enum members.
+  table, which is built from two checker-owned sources: lowered catalog-bearing
+  expressions in module constants, function bodies, and evolve transform
+  bodies, plus checker-resolved enum type annotations from analyzed source
+  and configured test files. Use sites are keyed by accepted or proposal catalog
+  ids and typed as saved roots, resource members, store indexes, enums, or enum
+  members.
 - `AnalysisSnapshot::catalog_declarations()` returns catalog-owned
   declarations keyed by catalog id. Each `CatalogDeclaration` carries the source
   file, exact declaration-name span, catalog id, `CatalogEntryKind`, and source
@@ -94,9 +96,11 @@ token-tight spans for declaration names, name-expression segments, field
 segments, saved roots, and match-arm member path segments. Lowering copies those
 spans into checked saved places, layers, terminals, and enum-member references;
 checked facts copy declaration name spans. The analysis use-site and declaration
-tables consume those exact spans only. They do not substring-scan source text or
-fall back to whole expressions, calls, match arms, layers, or broad declaration
-spans.
+tables consume those exact spans for lowered expressions, saved paths, match
+arms, and declarations. Type annotations currently carry a whole-annotation span,
+so enum annotation use-sites recover the resolved enum leaf inside that bounded
+annotation text. No use-site falls back to whole expressions, calls, match arms,
+layers, or broad declaration spans.
 
 ## Tooling facts
 
@@ -162,8 +166,9 @@ add only transport availability and request-envelope concerns around those DTOs.
 
 - `AnalysisSnapshot` / `AnalyzedFile` (`analysis.rs`) — the IDE view: report + best-effort `CheckedProgram` + every parsed file, error files retained.
 - `UseSite` / `UseSiteKind` (`analysis/catalog_nav.rs`, re-exported from
-  `analysis.rs`) — catalog-id references in checked bodies, built from lowered
-  expressions and token-tight syntax spans rather than source spelling.
+  `analysis.rs`) — catalog-id references in checked bodies and enum type
+  annotations, built from checker-owned facts and token-tight syntax spans
+  rather than source spelling.
 - `CatalogDeclaration` (`analysis/catalog_nav.rs`, re-exported from
   `analysis.rs`) — catalog-id declarations for editor navigation, keyed with
   `CatalogEntryKind` and exact declaration-name spans.

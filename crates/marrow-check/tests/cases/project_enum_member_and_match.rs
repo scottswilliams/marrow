@@ -288,3 +288,30 @@ fn a_const_annotated_with_one_enum_and_a_different_enum_value_is_a_check_error()
         "{found:#?}"
     );
 }
+
+#[test]
+fn a_module_const_annotated_with_one_enum_and_a_different_enum_value_is_a_check_error() {
+    let found = check_module(
+        "module-enum-const-cross",
+        "module m\n\
+         enum Status\n    active\n    archived\n\n\
+         enum Color\n    red\n    green\n\n\
+         const s: Status = Color::red\n",
+        "check.assignment_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+    assert_eq!(
+        found[0].payload,
+        DiagnosticPayload::TypeMismatch {
+            expected: MarrowType::Enum {
+                module: "m".into(),
+                name: "Status".into(),
+            },
+            found: MarrowType::Enum {
+                module: "m".into(),
+                name: "Color".into(),
+            },
+        },
+        "{found:#?}"
+    );
+}

@@ -337,7 +337,6 @@ pub fn check_tests(
         &mut project,
         &ProjectSources::new(),
         TestResolutionSuppression::default(),
-        TestProgramOutput::FinalizeCombined,
     )?;
     let test_modules = project.modules.split_off(checked.test_module_start);
     Ok((checked.report, test_modules))
@@ -356,7 +355,6 @@ pub fn check_tests_program(
         &mut project,
         &ProjectSources::new(),
         TestResolutionSuppression::default(),
-        TestProgramOutput::FinalizeCombined,
     )?;
     Ok((checked.report, project))
 }
@@ -404,7 +402,9 @@ impl TestResolutionSuppression {
                 self.references_hidden_module_exactly(name)
             }
             DiagnosticPayload::UnresolvedCall(name) => self.references_hidden_module_member(name),
-            DiagnosticPayload::UnknownType(ty) => self.references_hidden_type(ty),
+            DiagnosticPayload::UnknownType(ty) | DiagnosticPayload::AmbiguousType { ty, .. } => {
+                self.references_hidden_type(ty)
+            }
             DiagnosticPayload::Schema(_)
             | DiagnosticPayload::DuplicateDeclaration { .. }
             | DiagnosticPayload::SurfaceCollision { .. }
@@ -462,19 +462,12 @@ pub(crate) struct CheckedTests {
     pub(crate) files: Vec<analysis::AnalyzedFile>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum TestProgramOutput {
-    DiagnosticsOnly,
-    FinalizeCombined,
-}
-
 pub(crate) fn check_tests_with_sources_analysis(
     project_root: &Path,
     config: &ProjectConfig,
     project: &mut CheckedProgram,
     sources: &ProjectSources,
     mut resolution_suppression: TestResolutionSuppression,
-    output: TestProgramOutput,
 ) -> Result<CheckedTests, DiscoverError> {
     let mut files = discover_test_modules(project_root, config)?;
     for path in sources.paths() {
@@ -599,25 +592,23 @@ pub(crate) fn check_tests_with_sources_analysis(
         .diagnostics
         .retain(|diagnostic| !resolution_suppression.should_suppress(diagnostic));
 
-    if output == TestProgramOutput::FinalizeCombined {
-        project.rebuild_facts_with_sources_preserving_current_prefix(
-            parsed_files
-                .iter()
-                .map(|(file, parsed)| (file.path.as_path(), parsed)),
-        );
-        project.lower_runtime_bodies(
-            parsed_files
-                .iter()
-                .map(|(file, parsed)| (file.path.as_path(), parsed)),
-        );
-        project.extend_durable_digest_renderings(parsed_files.iter().filter_map(
-            |(file, parsed)| {
-                parsed_sources
-                    .get(&file.path)
-                    .map(|source| (file.path.as_path(), source.as_str(), parsed))
-            },
-        ));
-    }
+    project.rebuild_facts_with_sources_preserving_current_prefix(
+        parsed_files
+            .iter()
+            .map(|(file, parsed)| (file.path.as_path(), parsed)),
+    );
+    let source_evolve_transforms = project.catalog.evolve_transforms.clone();
+    project.lower_runtime_bodies(
+        parsed_files
+            .iter()
+            .map(|(file, parsed)| (file.path.as_path(), parsed)),
+    );
+    project.catalog.evolve_transforms = source_evolve_transforms;
+    project.extend_durable_digest_renderings(parsed_files.iter().filter_map(|(file, parsed)| {
+        parsed_sources
+            .get(&file.path)
+            .map(|source| (file.path.as_path(), source.as_str(), parsed))
+    }));
     let analyzed = parsed_files
         .into_iter()
         .map(|(file, parsed)| analysis::AnalyzedFile {
@@ -850,7 +841,6 @@ pub(crate) fn check_file_source(
         file_path,
         &parsed,
         &module_stored_resources,
-        &module_enums,
         &mut backing_invalidations,
         diagnostics,
     );
@@ -939,7 +929,6 @@ fn checked_resources(
     file_path: &Path,
     parsed: &marrow_syntax::ParsedSource,
     module_stored_resources: &HashSet<String>,
-    module_enums: &[String],
     backing_invalidations: &mut crate::backing_validity::PendingBackingInvalidations,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) -> Vec<marrow_schema::ResourceSchema> {
@@ -960,12 +949,6 @@ fn checked_resources(
             }
             if has_store {
                 for error in marrow_schema::check_saved_member_rules(&resource.members) {
-                    backing_invalidations.record_resource_error(file_path, &resource.name);
-                    push_schema_error(file_path, diagnostics, error);
-                }
-                for error in
-                    marrow_schema::check_saved_named_member_fields(&resource.members, module_enums)
-                {
                     backing_invalidations.record_resource_error(file_path, &resource.name);
                     push_schema_error(file_path, diagnostics, error);
                 }

@@ -1144,7 +1144,7 @@ fn checked_store_leaf_kind(
                 arity: store.store.identity_keys.len(),
             })
         }
-        Type::Named(name) => checked_enum_leaf_kind(program, module, name),
+        Type::Named(_) => checked_enum_leaf_kind(program, module, ty),
         // A non-named, non-identity leaf decodes to its scalar stored-value envelope.
         other => other.scalar().map(crate::StoreLeafKind::Scalar),
     }
@@ -1153,17 +1153,21 @@ fn checked_store_leaf_kind(
 fn checked_enum_leaf_kind(
     program: &CheckedProgram,
     module: &crate::CheckedModule,
-    name: &str,
+    ty: &Type,
 ) -> Option<crate::StoreLeafKind> {
-    let (module_name, enum_name) = name
-        .rsplit_once("::")
-        .unwrap_or((module.name.as_str(), name));
+    let MarrowType::Enum {
+        module: module_name,
+        name: enum_name,
+    } = crate::enums::resolve_schema_type_for_module(ty, program, module)
+    else {
+        return None;
+    };
     let module_index = program
         .modules
         .iter()
         .position(|candidate| candidate.name == module_name)?;
     let enum_id = program
         .facts
-        .enum_id(ModuleId(module_index as u32), enum_name)?;
+        .enum_id(ModuleId(module_index as u32), &enum_name)?;
     Some(crate::StoreLeafKind::Enum { enum_id })
 }

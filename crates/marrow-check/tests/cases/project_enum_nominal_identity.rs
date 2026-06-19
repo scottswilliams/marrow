@@ -1,6 +1,9 @@
 use crate::support;
 use crate::support_enum;
-use marrow_check::{DiagnosticPayload, EnumDiagnostic, MarrowType, ScalarType, check_project};
+use marrow_check::{
+    CheckedCallTarget, CheckedExpr, CheckedRuntimeValueType, CheckedStmt, DiagnosticPayload,
+    EnumDiagnostic, MarrowType, ScalarType, check_project,
+};
 
 use support::{assert_clean, check_module, config, temp_project, with_code, write};
 use support_enum::assert_enum_payload;
@@ -300,6 +303,224 @@ fn passing_a_foreign_enum_to_a_qualified_parameter_is_a_check_error() {
         |d| &d.payload,
         enum_type("b", "Status"),
         enum_type("a", "Color"),
+    );
+}
+
+#[test]
+fn resource_constructor_field_with_a_foreign_enum_enforces_nominal_identity() {
+    let root = temp_project("enum-resource-constructor-foreign-field", |root| {
+        write(
+            root,
+            "src/kinds.mw",
+            "module kinds\npub enum Color\n    red\n    green\n",
+        );
+        write(
+            root,
+            "src/other.mw",
+            "module other\npub enum Shade\n    dark\n    light\n",
+        );
+        write(
+            root,
+            "src/app.mw",
+            "module app\nuse kinds\nuse other\n\
+             resource Paint\n    required color: kinds::Color\n\n\
+             fn run()\n    var p = Paint(color: other::Shade::dark)\n",
+        );
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+    let found = with_code(&report, "check.call_argument");
+    assert_only_mismatch(
+        &found,
+        |d| &d.payload,
+        enum_type("kinds", "Color"),
+        enum_type("other", "Shade"),
+    );
+}
+
+#[test]
+fn resource_constructor_metadata_preserves_a_foreign_enum_field_identity() {
+    let root = temp_project("enum-resource-constructor-field-metadata", |root| {
+        write(
+            root,
+            "src/kinds.mw",
+            "module kinds\npub enum Color\n    red\n    green\n",
+        );
+        write(
+            root,
+            "src/app.mw",
+            "module app\nuse kinds\n\
+             resource Paint\n    required color: kinds::Color\n\n\
+             fn run()\n    var p = Paint(color: kinds::Color::red)\n",
+        );
+    });
+    let (report, program) = check_project(&root, &config()).expect("check");
+    assert_clean(&report);
+
+    let run = program
+        .modules
+        .iter()
+        .find(|module| module.name == "app")
+        .and_then(|module| {
+            module
+                .functions
+                .iter()
+                .find(|function| function.name == "run")
+        })
+        .expect("run function");
+    let body = run.runtime_body().expect("runtime body");
+    let constructor = body
+        .statements()
+        .iter()
+        .find_map(|statement| match statement {
+            CheckedStmt::Var {
+                value:
+                    Some(CheckedExpr::Call {
+                        target: CheckedCallTarget::ResourceConstructor(constructor),
+                        ..
+                    }),
+                ..
+            } => Some(constructor),
+            _ => None,
+        })
+        .expect("resource constructor");
+    let color = constructor
+        .fields
+        .iter()
+        .find(|field| field.name == "color")
+        .expect("color field");
+    assert!(matches!(
+        &color.ty,
+        CheckedRuntimeValueType::Enum { module, name, .. }
+            if module == "kinds" && name == "Color"
+    ));
+}
+
+#[test]
+fn saved_field_with_a_bare_unique_foreign_enum_preserves_nominal_identity() {
+    let root = temp_project("enum-saved-field-bare-foreign", |root| {
+        write(
+            root,
+            "src/kinds.mw",
+            "module kinds\npub enum Color\n    red\n    green\n",
+        );
+        write(
+            root,
+            "src/app.mw",
+            "module app\nuse kinds\n\
+             resource Paint\n    color: Color\n\
+             store ^paints(id: int): Paint\n\n\
+             fn read(id: Id(^paints))\n    \
+             const n: int = (^paints(id).color ?? kinds::Color::red)\n",
+        );
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+    let found = with_code(&report, "check.assignment_type");
+    assert_only_mismatch(
+        &found,
+        |d| &d.payload,
+        MarrowType::Primitive(ScalarType::Int),
+        enum_type("kinds", "Color"),
+    );
+}
+
+#[test]
+fn saved_field_with_a_bare_unique_foreign_enum_accepts_matching_write() {
+    let root = temp_project("enum-saved-field-bare-foreign-write", |root| {
+        write(
+            root,
+            "src/kinds.mw",
+            "module kinds\npub enum Status\n    active\n",
+        );
+        write(
+            root,
+            "src/app.mw",
+            "module app\nuse kinds\n\
+             resource Post\n    status: Status\n\
+             store ^posts(id: int): Post\n\n\
+             fn write()\n    ^posts(1).status = kinds::Status::active\n",
+        );
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+    assert_clean(&report);
+}
+
+#[test]
+fn saved_field_with_an_ambiguous_bare_foreign_enum_reports_ambiguous_type() {
+    let root = temp_project("enum-saved-field-ambiguous-foreign", |root| {
+        write(root, "src/a.mw", "module a\npub enum Status\n    active\n");
+        write(root, "src/b.mw", "module b\npub enum Status\n    active\n");
+        write(
+            root,
+            "src/app.mw",
+            "module app\nuse a\nuse b\n\
+             resource Post\n    status: Status\n\
+             store ^posts(id: int): Post\n",
+        );
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+    assert!(
+        with_code(&report, "schema.non_enum_named_field").is_empty(),
+        "{:#?}",
+        report.diagnostics
+    );
+    let found = with_code(&report, "check.unknown_type");
+    assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
+    assert_eq!(
+        found[0].payload,
+        DiagnosticPayload::AmbiguousType {
+            ty: marrow_schema::Type::Named("Status".into()),
+            name: "Status".into(),
+        },
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
+fn keyed_leaf_with_a_bare_unique_foreign_enum_accepts_matching_write() {
+    let root = temp_project("enum-keyed-leaf-bare-foreign-write", |root| {
+        write(
+            root,
+            "src/kinds.mw",
+            "module kinds\npub enum Status\n    active\n",
+        );
+        write(
+            root,
+            "src/app.mw",
+            "module app\nuse kinds\n\
+             resource Post\n    statuses(key: string): Status\n\
+             store ^posts(id: int): Post\n\n\
+             fn write()\n    ^posts(1).statuses(\"x\") = kinds::Status::active\n",
+        );
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+    assert_clean(&report);
+}
+
+#[test]
+fn keyed_leaf_with_a_bare_unique_foreign_enum_rejects_resource_value() {
+    let root = temp_project("enum-keyed-leaf-bare-foreign-resource-write", |root| {
+        write(
+            root,
+            "src/kinds.mw",
+            "module kinds\npub enum Status\n    active\n",
+        );
+        write(
+            root,
+            "src/app.mw",
+            "module app\nuse kinds\n\
+             resource Post\n    statuses(key: string): Status\n\
+             store ^posts(id: int): Post\n\n\
+             fn write()\n    ^posts(1).statuses(\"x\") = Post()\n",
+        );
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+    let found = with_code(&report, "check.assignment_type");
+    assert_only_mismatch(
+        &found,
+        |d| &d.payload,
+        enum_type("kinds", "Status"),
+        MarrowType::Resource("app::Post".into()),
     );
 }
 

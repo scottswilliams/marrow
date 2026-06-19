@@ -1,8 +1,15 @@
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use marrow_catalog::CatalogEntryKind;
-use marrow_syntax::SourceSpan;
+use marrow_syntax::{SourceSpan, TypeRef};
 
+use super::AnalyzedFile;
+use crate::annotation_refs::{
+    TypeAnnotationBodies, type_ref_enum_leaf_span, walk_declaration_type_refs,
+};
+use crate::build_alias_map;
+use crate::enums::{EnumAnnotationResolution, resolve_enum_annotation};
 use crate::executable::{
     CheckedBodyVisitor, walk_checked_body, walk_checked_expr, walk_checked_match_arm,
 };
@@ -37,10 +44,15 @@ pub struct CatalogDeclaration {
     pub name: String,
 }
 
-pub(super) fn collect_use_sites(program: &CheckedProgram) -> Vec<UseSite> {
+pub(super) fn collect_use_sites(program: &CheckedProgram, files: &[AnalyzedFile]) -> Vec<UseSite> {
     let mut sites = Vec::new();
+    let file_set: HashSet<&Path> = files.iter().map(|file| file.path.as_path()).collect();
+    collect_module_type_annotation_use_sites(program, files, &mut sites);
     let runtime = program.runtime();
     for module in runtime.modules() {
+        if !file_set.contains(module.source_file.as_path()) {
+            continue;
+        }
         for constant in &module.constants {
             if let Some(value) = &constant.value {
                 collect_expr_use_sites(program, &module.source_file, value, &mut sites);
@@ -53,13 +65,67 @@ pub(super) fn collect_use_sites(program: &CheckedProgram) -> Vec<UseSite> {
         }
     }
     for transform in &program.catalog.evolve_transforms {
+        if !file_set.contains(transform.file.as_path()) {
+            continue;
+        }
         if let Some(body) = transform.runtime_body() {
             collect_body_use_sites(program, &transform.file, body, &mut sites);
         }
     }
-    sort_use_sites(&mut sites);
-    sites.dedup();
+    normalize_use_sites(&mut sites);
     sites
+}
+
+pub(super) fn normalize_use_sites(sites: &mut Vec<UseSite>) {
+    sort_use_sites(sites);
+    sites.dedup();
+}
+
+fn collect_module_type_annotation_use_sites(
+    program: &CheckedProgram,
+    files: &[AnalyzedFile],
+    sites: &mut Vec<UseSite>,
+) {
+    for file in files {
+        let Some(module) = program
+            .modules
+            .iter()
+            .find(|module| module.source_file == file.path)
+        else {
+            continue;
+        };
+        let aliases = build_alias_map(&module.imports);
+        for declaration in &file.parsed.file.declarations {
+            walk_declaration_type_refs(declaration, TypeAnnotationBodies::Include, &mut |ty| {
+                collect_type_ref_use_site(program, &file.path, &file.source, &aliases, ty, sites);
+            });
+        }
+    }
+}
+
+fn collect_type_ref_use_site(
+    program: &CheckedProgram,
+    file: &Path,
+    source: &str,
+    aliases: &HashMap<String, Vec<String>>,
+    ty: &TypeRef,
+    sites: &mut Vec<UseSite>,
+) {
+    let EnumAnnotationResolution::Visible(resolved) =
+        resolve_enum_annotation(ty, program, aliases, file)
+    else {
+        return;
+    };
+    let Some(enum_id) = enum_id_by_name(program, &resolved.module, &resolved.name) else {
+        return;
+    };
+    let Some(catalog_id) = enum_catalog_id(program, enum_id) else {
+        return;
+    };
+    let Some(span) = type_ref_enum_leaf_span(source, ty, &resolved.name) else {
+        return;
+    };
+    push_use_site(file, span, &catalog_id, UseSiteKind::Enum, sites);
 }
 
 fn sort_use_sites(sites: &mut [UseSite]) {
@@ -360,6 +426,19 @@ fn collect_store_index_declarations(
             name: index.name.clone(),
         });
     }
+}
+
+fn enum_id_by_name(
+    program: &CheckedProgram,
+    module_name: &str,
+    enum_name: &str,
+) -> Option<crate::EnumId> {
+    let module = program
+        .facts
+        .modules()
+        .iter()
+        .find(|module| module.name == module_name)?;
+    program.facts.enum_id(module.id, enum_name)
 }
 
 fn collect_enum_declarations(program: &CheckedProgram, declarations: &mut Vec<CatalogDeclaration>) {

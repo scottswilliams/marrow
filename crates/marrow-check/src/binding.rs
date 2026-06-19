@@ -26,11 +26,18 @@ use marrow_syntax::{
 
 use crate::MarrowType;
 use crate::analysis::span_covers;
+use crate::annotation_refs::{
+    TypeAnnotationBodies, type_ref_enum_leaf_span, walk_declaration_type_refs,
+};
 use crate::checks::{catch_frame, file_prelude, for_frame};
-use crate::enums::{enum_schema_in, resolve_enum_member_path, resolve_type};
+use crate::enums::{
+    EnumAnnotationResolution, EnumMemberPathResolution, enum_schema_in, resolve_enum_annotation,
+    resolve_enum_member_path, resolve_type,
+};
 use crate::executable::{SavedMemberRefKind, SavedPlaceResolver, lower_expr_for_file};
 use crate::facts::{FunctionId, LocalId};
 use crate::infer::{infer_only, local_binding};
+use crate::source_spans::source_span_at;
 use crate::{
     AnalysisSnapshot, CheckedProgram, Def, DefItem, Resolution, ResolvableKind, expand_alias,
     resolve, resolve_function_in_module, split_type_path,
@@ -763,85 +770,21 @@ impl<'p> IndexBuilder<'p> {
         aliases: &HashMap<String, Vec<String>>,
         module: &str,
     ) {
-        match declaration {
-            Declaration::Const(constant) => {
-                if let Some(ty) = &constant.ty {
-                    self.collect_type_ref(file, source, aliases, module, ty);
-                }
-            }
-            Declaration::Resource(resource) => {
-                self.collect_resource_member_type_refs(
-                    file,
-                    source,
-                    aliases,
-                    module,
-                    &resource.members,
-                );
-            }
-            Declaration::Store(store) => {
-                self.collect_key_type_refs(file, source, aliases, module, &store.root.keys);
-                if let Some(def) = self
-                    .module_scope
-                    .resources
-                    .get(&(module.to_string(), store.resource.clone()))
-                    .copied()
-                {
-                    let Some(span) = name_span(source, store.span, &store.resource) else {
-                        return;
-                    };
-                    self.use_of(def, file, span, SymbolKind::Resource);
-                }
-            }
-            Declaration::Function(function) => {
-                for param in &function.params {
-                    self.collect_type_ref(file, source, aliases, module, &param.ty);
-                }
-                if let Some(ty) = &function.return_type {
-                    self.collect_type_ref(file, source, aliases, module, ty);
-                }
-            }
-            Declaration::Enum(_) | Declaration::Evolve(_) | Declaration::Surface(_) => {}
-        }
-    }
+        walk_declaration_type_refs(declaration, TypeAnnotationBodies::Omit, &mut |ty| {
+            self.collect_type_ref(file, source, aliases, module, ty);
+        });
 
-    fn collect_resource_member_type_refs(
-        &mut self,
-        file: &Path,
-        source: &str,
-        aliases: &HashMap<String, Vec<String>>,
-        module: &str,
-        members: &[ResourceMember],
-    ) {
-        for member in members {
-            match member {
-                ResourceMember::Field(field) => {
-                    self.collect_key_type_refs(file, source, aliases, module, &field.keys);
-                    self.collect_type_ref(file, source, aliases, module, &field.ty);
-                }
-                ResourceMember::Group(group) => {
-                    self.collect_key_type_refs(file, source, aliases, module, &group.keys);
-                    self.collect_resource_member_type_refs(
-                        file,
-                        source,
-                        aliases,
-                        module,
-                        &group.members,
-                    );
-                }
-            }
-        }
-    }
-
-    fn collect_key_type_refs(
-        &mut self,
-        file: &Path,
-        source: &str,
-        aliases: &HashMap<String, Vec<String>>,
-        module: &str,
-        keys: &[marrow_syntax::KeyParam],
-    ) {
-        for key in keys {
-            self.collect_type_ref(file, source, aliases, module, &key.ty);
+        if let Declaration::Store(store) = declaration
+            && let Some(def) = self
+                .module_scope
+                .resources
+                .get(&(module.to_string(), store.resource.clone()))
+                .copied()
+        {
+            let Some(span) = name_span(source, store.span, &store.resource) else {
+                return;
+            };
+            self.use_of(def, file, span, SymbolKind::Resource);
         }
     }
 
@@ -853,17 +796,18 @@ impl<'p> IndexBuilder<'p> {
         module: &str,
         ty: &TypeRef,
     ) {
-        let resolved = resolve_type(ty, self.program, aliases, file);
-        if let Some((enum_module, enum_name)) = enum_identity(&resolved) {
+        if let EnumAnnotationResolution::Visible(resolved) =
+            resolve_enum_annotation(ty, self.program, aliases, file)
+        {
             let Some(def) = self
                 .module_scope
                 .enums
-                .get(&(enum_module.to_string(), enum_name.to_string()))
+                .get(&(resolved.module.clone(), resolved.name.clone()))
                 .copied()
             else {
                 return;
             };
-            if let Some(span) = type_ref_enum_leaf_span(source, ty, enum_name) {
+            if let Some(span) = type_ref_enum_leaf_span(source, ty, &resolved.name) {
                 self.use_of(def, file, span, SymbolKind::Enum);
             }
             return;
@@ -1376,8 +1320,11 @@ impl UseWalker<'_, '_> {
             segment_spans: Vec::new(),
             span: SourceSpan::default(),
         };
-        let resolved =
-            resolve_enum_member_path(self.builder.program, &expr, self.aliases, self.file)?;
+        let EnumMemberPathResolution::Resolved(resolved) =
+            resolve_enum_member_path(self.builder.program, &expr, self.aliases, self.file)
+        else {
+            return None;
+        };
         if resolved.private.is_some() {
             return None;
         }
@@ -1626,26 +1573,6 @@ fn bind<V>(scope: &mut [HashMap<String, V>], name: &str, value: V) {
     }
 }
 
-fn enum_identity(ty: &MarrowType) -> Option<(&str, &str)> {
-    match ty {
-        MarrowType::Enum { module, name } => Some((module, name)),
-        MarrowType::Sequence(element) => enum_identity(element),
-        _ => None,
-    }
-}
-
-fn type_ref_enum_leaf_span(source: &str, ty: &TypeRef, enum_name: &str) -> Option<SourceSpan> {
-    let end_byte = ty.span.end_byte.min(source.len());
-    let text = source.get(ty.span.start_byte..end_byte)?;
-    let offset = text.rfind(enum_name)?;
-    let start_byte = ty.span.start_byte + offset;
-    Some(source_span_at(
-        source,
-        start_byte,
-        start_byte + enum_name.len(),
-    ))
-}
-
 fn type_ref_path_tail_span(
     source: &str,
     ty: &TypeRef,
@@ -1743,20 +1670,6 @@ fn first_line_span(source: &str, span: SourceSpan) -> Option<SourceSpan> {
     let text = source.get(start..end)?;
     let line_end = start + text.find('\n').unwrap_or(text.len());
     Some(source_span_at(source, start, line_end))
-}
-
-fn source_span_at(source: &str, start_byte: usize, end_byte: usize) -> SourceSpan {
-    let prefix = &source.as_bytes()[..start_byte.min(source.len())];
-    let line_start = prefix
-        .iter()
-        .rposition(|&byte| byte == b'\n')
-        .map_or(0, |index| index + 1);
-    SourceSpan {
-        start_byte,
-        end_byte,
-        line: prefix.iter().filter(|&&byte| byte == b'\n').count() as u32 + 1,
-        column: start_byte.saturating_sub(line_start) as u32 + 1,
-    }
 }
 
 fn name_span(source: &str, span: SourceSpan, name: &str) -> Option<SourceSpan> {

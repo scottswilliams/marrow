@@ -12,7 +12,7 @@ use crate::checks::{
     check_saved_key_args, check_unary, key_type_diagnostic,
 };
 use crate::enums::{
-    IsCheck, check_is, enum_schema_in, join_or, resolve_diagnosed_annotation_type,
+    EnumMemberPathResolution, IsCheck, check_is, join_or, resolve_diagnosed_annotation_type,
     resolve_enum_member_path,
 };
 use crate::executable::{SavedAccessRejection, SavedPlaceResolver, lower_expr_for_file};
@@ -24,8 +24,7 @@ use crate::{
     CHECK_AMBIGUOUS_MEMBER, CHECK_CATEGORY_NOT_SELECTABLE, CHECK_COLLECTION_UNSUPPORTED,
     CHECK_OPERATOR_TYPE, CHECK_PRIVATE_ENUM, CHECK_UNKNOWN_ENUM_MEMBER, CHECK_UNKNOWN_FIELD,
     CHECK_UNRESOLVED_NAME, CheckDiagnostic, CheckedProgram, DiagnosticPayload, EnumDiagnostic,
-    MarrowType, build_alias_map, expand_module_alias, resolve_resource_schema_type,
-    resolve_resource_type,
+    MarrowType, resolve_resource_type,
 };
 
 /// Infer a type during post-check resolution, discarding diagnostics the checking
@@ -839,8 +838,13 @@ fn enum_member_value_type(
     file: &Path,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) -> MarrowType {
-    let Some(resolved) = resolve_enum_member_path(program, expr, aliases, file) else {
-        return MarrowType::Unknown;
+    let resolved = match resolve_enum_member_path(program, expr, aliases, file) {
+        EnumMemberPathResolution::Resolved(resolved) => resolved,
+        EnumMemberPathResolution::AmbiguousBareForeignOwner(ambiguous) => {
+            diagnostics.push(ambiguous.diagnostic(file, span));
+            return MarrowType::Invalid;
+        }
+        EnumMemberPathResolution::MissingOrNonEnum => return MarrowType::Unknown,
     };
     if let Some(private) = resolved.private {
         diagnostics.push(
@@ -1097,56 +1101,21 @@ fn unknown_field_diagnostic(file: &Path, span: SourceSpan, field: &str) -> Check
     )
 }
 
-/// Lift a schema member [`Type`] through the same nominal resource placement used
-/// by annotations and constructors; enum members resolve only by the declaring
-/// module or an explicit qualified owner.
+/// Lift a schema member [`Type`] through the same nominal placement used by
+/// annotations and constructors.
 pub(crate) fn lift_member_type(
     program: &CheckedProgram,
     ty: Type,
     owning_module: &str,
 ) -> MarrowType {
-    if let Some(resource_type) = resolve_resource_schema_type(program, owning_module, &ty) {
-        return resource_type;
-    }
-    if let Some(enum_type) = resolve_member_enum_type(program, owning_module, &ty) {
-        return enum_type;
+    if let Some(module) = program
+        .modules
+        .iter()
+        .find(|module| module.name == owning_module)
+    {
+        return crate::enums::resolve_schema_type_for_module(&ty, program, module);
     }
     MarrowType::from_resolved(ty, TypeNames::default())
-}
-
-fn resolve_member_enum_type(
-    program: &CheckedProgram,
-    owning_module: &str,
-    ty: &Type,
-) -> Option<MarrowType> {
-    match ty {
-        Type::Sequence(element) => resolve_member_enum_type(program, owning_module, element)
-            .map(|element_type| MarrowType::Sequence(Box::new(element_type))),
-        Type::Named(name) => resolve_member_enum_name(program, owning_module, name),
-        _ => None,
-    }
-}
-
-fn resolve_member_enum_name(
-    program: &CheckedProgram,
-    owning_module: &str,
-    name: &str,
-) -> Option<MarrowType> {
-    let (module, enum_name) = if let Some((module, enum_name)) = name.rsplit_once("::") {
-        let aliases = program
-            .modules
-            .iter()
-            .find(|module| module.name == owning_module)
-            .map(|module| build_alias_map(&module.imports))
-            .unwrap_or_default();
-        (expand_module_alias(module, &aliases), enum_name.to_string())
-    } else {
-        (owning_module.to_string(), name.to_string())
-    };
-    enum_schema_in(program, &module, &enum_name).map(|_| MarrowType::Enum {
-        module,
-        name: enum_name,
-    })
 }
 
 /// Look up a name's binding, innermost frame first; `None` when unbound. A bound

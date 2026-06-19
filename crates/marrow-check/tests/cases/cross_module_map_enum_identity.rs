@@ -3,6 +3,33 @@ use marrow_check::{DiagnosticPayload, MarrowType, StoredValueMeaning, check_proj
 
 use support::{config, temp_project, with_code, write};
 
+#[test]
+fn ambiguous_bare_foreign_enum_keyed_leaf_annotation_reports_unknown_type() {
+    let root = temp_project("keyed-leaf-ambiguous-bare-foreign-enum", |root| {
+        write(root, "src/a.mw", "module a\npub enum Status\n    active\n");
+        write(root, "src/b.mw", "module b\npub enum Status\n    active\n");
+        write(
+            root,
+            "src/m.mw",
+            "module m\n\
+             resource Book\n\
+             \x20   statuses(key: string): Status\n\
+             store ^books(id: int): Book\n",
+        );
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+
+    let errors = with_code(&report, "check.unknown_type");
+    assert_eq!(errors.len(), 1, "{:#?}", report.diagnostics);
+    assert_eq!(
+        errors[0].payload,
+        DiagnosticPayload::AmbiguousType {
+            ty: marrow_schema::Type::Named("Status".into()),
+            name: "Status".into(),
+        }
+    );
+}
+
 /// A keyed leaf whose stored value is a foreign enum must record the *foreign* enum's
 /// nominal identity, not a local phantom: the `shades` leaf's stored-value meaning is
 /// `Enum { enum_id }` where `enum_id` is exactly module `kinds`'s `Color`, the enum the

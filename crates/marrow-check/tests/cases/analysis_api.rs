@@ -12,12 +12,12 @@ use marrow_check::tooling::{
     stamped_read_data_path,
 };
 use marrow_check::{
-    CatalogEntryKind, CheckedProgram, ProjectSources, SurfaceCatalogBlocker, SurfaceCatalogStatus,
-    SurfaceReadFootprint, SurfaceReadOperationKind, UseSiteKind, analyze_project, check_project,
-    scope_at, type_at,
+    CatalogEntryKind, CheckedProgram, DiagnosticPayload, ProjectSources, SurfaceCatalogBlocker,
+    SurfaceCatalogStatus, SurfaceReadFootprint, SurfaceReadOperationKind, UseSiteKind,
+    analyze_project, check_project, scope_at, type_at,
 };
 use marrow_project::parse_config;
-use marrow_schema::{SCHEMA_DUPLICATE_MEMBER, ScalarType};
+use marrow_schema::{SCHEMA_DUPLICATE_MEMBER, ScalarType, Type};
 use marrow_store::cell::CatalogId;
 use marrow_store::key::SavedKey;
 use marrow_store::tree::{
@@ -762,6 +762,517 @@ fn sites_for_reports_saved_catalog_uses_from_module_constants() {
 }
 
 #[test]
+fn sites_for_reports_enum_uses_from_function_signature_annotations() {
+    let source = "module m\n\
+        enum Status\n    \
+        active\n    \
+        archived\n\
+        fn f(s: Status): Status\n    \
+        return Status::active\n";
+    let (snapshot, paths) = analyze_overlay(
+        "analysis-use-sites-enum-signature-annotations",
+        &[("src/m.mw", source)],
+    );
+    assert!(
+        !snapshot.report.has_errors(),
+        "{:#?}",
+        snapshot.report.diagnostics
+    );
+    let file = &paths[0];
+    let status_catalog_id = proposal_id(&snapshot, CatalogEntryKind::Enum, "m::Status");
+    let param_start = source.find("s: Status").expect("param annotation") + "s: ".len();
+    let return_start = source.find("): Status").expect("return annotation") + "): ".len();
+    let literal_start =
+        source.find("return Status::active").expect("enum literal") + "return ".len();
+
+    assert_eq!(
+        site_texts_with_start(
+            &snapshot,
+            &status_catalog_id,
+            UseSiteKind::Enum,
+            file,
+            source
+        ),
+        vec![
+            ("Status", param_start),
+            ("Status", return_start),
+            ("Status", literal_start)
+        ]
+    );
+}
+
+#[test]
+fn sites_for_reports_enum_use_from_sequence_annotation_leaf_only() {
+    let source = "module m\n\
+        enum Status\n    \
+        active\n    \
+        archived\n\
+        fn f(items: sequence[Status])\n    \
+        print(count(items))\n";
+    let (snapshot, paths) = analyze_overlay(
+        "analysis-use-sites-enum-sequence-annotation",
+        &[("src/m.mw", source)],
+    );
+    assert!(
+        !snapshot.report.has_errors(),
+        "{:#?}",
+        snapshot.report.diagnostics
+    );
+    let file = &paths[0];
+    let status_catalog_id = proposal_id(&snapshot, CatalogEntryKind::Enum, "m::Status");
+    let sequence_start = source
+        .find("sequence[Status]")
+        .expect("sequence annotation")
+        + "sequence[".len();
+
+    assert_eq!(
+        site_texts_with_start(
+            &snapshot,
+            &status_catalog_id,
+            UseSiteKind::Enum,
+            file,
+            source
+        ),
+        vec![("Status", sequence_start)]
+    );
+}
+
+#[test]
+fn sites_for_reports_enum_use_from_aliased_qualified_annotation_leaf_only() {
+    let status_source = "module a::b\npub enum Status\n    active\n    archived\n";
+    let source = "module app\n\
+        use a::b\n\
+        fn f(): b::Status\n    \
+        return b::Status::active\n";
+    let (snapshot, paths) = analyze_overlay(
+        "analysis-use-sites-enum-aliased-annotation",
+        &[("src/a/b.mw", status_source), ("src/app.mw", source)],
+    );
+    assert!(
+        !snapshot.report.has_errors(),
+        "{:#?}",
+        snapshot.report.diagnostics
+    );
+    let file = &paths[1];
+    let status_catalog_id = proposal_id(&snapshot, CatalogEntryKind::Enum, "a::b::Status");
+    let annotation_start = source.find("b::Status").expect("return annotation") + "b::".len();
+    let literal_start = source
+        .find("return b::Status::active")
+        .expect("enum literal")
+        + "return b::".len();
+
+    assert_eq!(
+        site_texts_with_start(
+            &snapshot,
+            &status_catalog_id,
+            UseSiteKind::Enum,
+            file,
+            source
+        ),
+        vec![("Status", annotation_start), ("Status", literal_start)]
+    );
+}
+
+#[test]
+fn sites_for_reports_enum_uses_from_configured_tests() {
+    let root = temp_root("analysis-use-sites-enum-test-annotations");
+    write(
+        &root,
+        "src/status.mw",
+        "module status\n\
+        pub enum Status\n    \
+        active\n    \
+        archived\n",
+    );
+    let test_source = "use status\n\
+        const s: status::Status = status::Status::active\n";
+    write(&root, "tests/smoke.mw", test_source);
+    let cfg = parse_config(
+        r#"{ "sourceRoots": ["src"], "tests": ["tests"], "store": { "backend": "memory" } }"#,
+    )
+    .expect("config");
+
+    let snapshot = analyze_project(&root, &cfg, &ProjectSources::new(), None).expect("analyze");
+    assert!(
+        !snapshot.report.has_errors(),
+        "{:#?}",
+        snapshot.report.diagnostics
+    );
+    let test_file = root.join("tests/smoke.mw");
+    assert!(
+        snapshot.files.iter().any(|file| file.path == test_file),
+        "configured test file should be retained in analysis snapshot"
+    );
+    let status_catalog_id = proposal_id(&snapshot, CatalogEntryKind::Enum, "status::Status");
+    let active_catalog_id = proposal_id(
+        &snapshot,
+        CatalogEntryKind::EnumMember,
+        "status::Status::active",
+    );
+    let annotation_start = test_source
+        .find("status::Status =")
+        .expect("test annotation")
+        + "status::".len();
+    let literal_start = test_source
+        .find("status::Status::active")
+        .expect("test literal")
+        + "status::".len();
+
+    assert_eq!(
+        site_texts_with_start(
+            &snapshot,
+            &status_catalog_id,
+            UseSiteKind::Enum,
+            &test_file,
+            test_source
+        ),
+        vec![("Status", annotation_start), ("Status", literal_start)]
+    );
+    assert_eq!(
+        site_texts_with_start(
+            &snapshot,
+            &active_catalog_id,
+            UseSiteKind::EnumMember,
+            &test_file,
+            test_source
+        ),
+        vec![("active", literal_start + "Status::".len())]
+    );
+}
+
+#[test]
+fn sites_for_ignores_test_local_enum_catalog_uses() {
+    let root = temp_root("analysis-use-sites-test-local-enum");
+    write(&root, "src/app.mw", "module app\nfn ok()\n    return\n");
+    let test_source = "enum Scratch\n    one\nconst s: Scratch = Scratch::one\n";
+    write(&root, "tests/smoke.mw", test_source);
+    let cfg = parse_config(
+        r#"{ "sourceRoots": ["src"], "tests": ["tests"], "store": { "backend": "memory" } }"#,
+    )
+    .expect("config");
+
+    let snapshot = analyze_project(&root, &cfg, &ProjectSources::new(), None).expect("analyze");
+    assert!(
+        !snapshot.report.has_errors(),
+        "{:#?}",
+        snapshot.report.diagnostics
+    );
+    let test_file = root.join("tests/smoke.mw");
+    assert!(
+        snapshot
+            .use_sites()
+            .iter()
+            .filter(|site| site.file == test_file)
+            .all(|site| !matches!(site.kind, UseSiteKind::Enum | UseSiteKind::EnumMember)),
+        "test-local enums must not mint catalog use-sites: {:#?}",
+        snapshot.use_sites()
+    );
+}
+
+#[test]
+fn sites_for_fails_closed_for_ambiguous_bare_foreign_enum_annotation() {
+    let status_a = "module a\npub enum Status\n    active\n";
+    let status_b = "module b\npub enum Status\n    active\n";
+    let app = "module app\nfn f(s: Status)\n    return\n";
+    let (snapshot, paths) = analyze_overlay(
+        "analysis-use-sites-ambiguous-bare-enum-annotation",
+        &[
+            ("src/a.mw", status_a),
+            ("src/b.mw", status_b),
+            ("src/app.mw", app),
+        ],
+    );
+    let unknown_type = support::with_code(&snapshot.report, "check.unknown_type");
+    assert_eq!(unknown_type.len(), 1, "{:#?}", snapshot.report.diagnostics);
+    assert_eq!(
+        unknown_type[0].payload,
+        DiagnosticPayload::AmbiguousType {
+            ty: Type::Named("Status".into()),
+            name: "Status".into(),
+        }
+    );
+    let app_file = &paths[2];
+    for path in ["a::Status", "b::Status"] {
+        let catalog_id = proposal_id(&snapshot, CatalogEntryKind::Enum, path);
+        assert_eq!(
+            site_texts(&snapshot, &catalog_id, UseSiteKind::Enum, app_file, app),
+            Vec::<&str>::new(),
+            "ambiguous bare enum annotation must not pick {path}"
+        );
+    }
+}
+
+#[test]
+fn sites_for_fail_closed_for_ambiguous_bare_foreign_enum_member_literal() {
+    let status_a = "module a\npub enum Status\n    active\n";
+    let status_b = "module b\npub enum Status\n    active\n";
+    let app = "module app\nfn f(): a::Status\n    return Status::active\n";
+    let (snapshot, paths) = analyze_overlay(
+        "analysis-use-sites-ambiguous-bare-enum-member-literal",
+        &[
+            ("src/a.mw", status_a),
+            ("src/b.mw", status_b),
+            ("src/app.mw", app),
+        ],
+    );
+    let ambiguous = support::with_code(&snapshot.report, "check.ambiguous_member");
+    assert_eq!(ambiguous.len(), 1, "{:#?}", snapshot.report.diagnostics);
+    let app_file = &paths[2];
+    let status_a = proposal_id(&snapshot, CatalogEntryKind::Enum, "a::Status");
+    let annotation_start = app.find("a::Status").expect("return annotation") + "a::".len();
+    assert_eq!(
+        site_texts_with_start(&snapshot, &status_a, UseSiteKind::Enum, app_file, app),
+        vec![("Status", annotation_start)]
+    );
+    let status_b = proposal_id(&snapshot, CatalogEntryKind::Enum, "b::Status");
+    assert_eq!(
+        site_texts(&snapshot, &status_b, UseSiteKind::Enum, app_file, app),
+        Vec::<&str>::new(),
+        "ambiguous enum member literal must not pick b::Status"
+    );
+    for path in ["a::Status::active", "b::Status::active"] {
+        let catalog_id = proposal_id(&snapshot, CatalogEntryKind::EnumMember, path);
+        assert_eq!(
+            site_texts(
+                &snapshot,
+                &catalog_id,
+                UseSiteKind::EnumMember,
+                app_file,
+                app
+            ),
+            Vec::<&str>::new(),
+            "ambiguous enum member literal must not pick {path}"
+        );
+    }
+}
+
+#[test]
+fn sites_for_fail_closed_for_ambiguous_private_bare_foreign_enum_member_literal() {
+    let status_a = "module a\nenum Status\n    active\n";
+    let status_b = "module b\nenum Status\n    active\n";
+    let app = "module app\nconst x = Status::active\n";
+    let (snapshot, paths) = analyze_overlay(
+        "analysis-use-sites-ambiguous-private-bare-enum-member-literal",
+        &[
+            ("src/a.mw", status_a),
+            ("src/b.mw", status_b),
+            ("src/app.mw", app),
+        ],
+    );
+    let ambiguous = support::with_code(&snapshot.report, "check.ambiguous_member");
+    assert_eq!(ambiguous.len(), 1, "{:#?}", snapshot.report.diagnostics);
+    let app_file = &paths[2];
+    for path in ["a::Status", "b::Status"] {
+        let catalog_id = proposal_id(&snapshot, CatalogEntryKind::Enum, path);
+        assert_eq!(
+            site_texts(&snapshot, &catalog_id, UseSiteKind::Enum, app_file, app),
+            Vec::<&str>::new(),
+            "ambiguous private enum member literal must not pick {path}"
+        );
+    }
+    for path in ["a::Status::active", "b::Status::active"] {
+        let catalog_id = proposal_id(&snapshot, CatalogEntryKind::EnumMember, path);
+        assert_eq!(
+            site_texts(
+                &snapshot,
+                &catalog_id,
+                UseSiteKind::EnumMember,
+                app_file,
+                app
+            ),
+            Vec::<&str>::new(),
+            "ambiguous private enum member literal must not pick {path}"
+        );
+    }
+}
+
+#[test]
+fn sites_for_private_enum_member_literal_has_no_catalog_use_sites() {
+    let status = "module a\nenum Status\n    active\n";
+    let app = "module app\nconst x = a::Status::active\n";
+    let (snapshot, paths) = analyze_overlay(
+        "analysis-use-sites-private-enum-member-literal",
+        &[("src/a.mw", status), ("src/app.mw", app)],
+    );
+    let private = support::with_code(&snapshot.report, "check.private_enum");
+    assert_eq!(private.len(), 1, "{:#?}", snapshot.report.diagnostics);
+    let app_file = &paths[1];
+    let status_id = proposal_id(&snapshot, CatalogEntryKind::Enum, "a::Status");
+    assert_eq!(
+        site_texts(&snapshot, &status_id, UseSiteKind::Enum, app_file, app),
+        Vec::<&str>::new()
+    );
+    let active_id = proposal_id(&snapshot, CatalogEntryKind::EnumMember, "a::Status::active");
+    assert_eq!(
+        site_texts(
+            &snapshot,
+            &active_id,
+            UseSiteKind::EnumMember,
+            app_file,
+            app
+        ),
+        Vec::<&str>::new()
+    );
+}
+
+#[test]
+fn sites_for_qualified_enum_owner_before_ambiguous_bare_foreign_owner() {
+    let status_a = "module a\npub enum Status\n    active\n";
+    let status_b = "module b\npub enum Status\n    active\n";
+    let choice = "module Status\npub enum Choice\n    active\n";
+    let app = "module app\nfn f(): Status::Choice\n    return Status::Choice::active\n";
+    let (snapshot, paths) = analyze_overlay(
+        "analysis-use-sites-qualified-owner-before-ambiguous-bare",
+        &[
+            ("src/a.mw", status_a),
+            ("src/b.mw", status_b),
+            ("src/Status.mw", choice),
+            ("src/app.mw", app),
+        ],
+    );
+    assert!(
+        !snapshot.report.has_errors(),
+        "{:#?}",
+        snapshot.report.diagnostics
+    );
+    let app_file = &paths[3];
+    let choice_id = proposal_id(&snapshot, CatalogEntryKind::Enum, "Status::Choice");
+    let annotation_start =
+        app.find("Status::Choice").expect("qualified annotation") + "Status::".len();
+    let literal_start = app
+        .find("return Status::Choice::active")
+        .expect("qualified literal")
+        + "return Status::".len();
+    assert_eq!(
+        site_texts_with_start(&snapshot, &choice_id, UseSiteKind::Enum, app_file, app),
+        vec![("Choice", annotation_start), ("Choice", literal_start)]
+    );
+
+    let active_id = proposal_id(
+        &snapshot,
+        CatalogEntryKind::EnumMember,
+        "Status::Choice::active",
+    );
+    assert_eq!(
+        site_texts_with_start(
+            &snapshot,
+            &active_id,
+            UseSiteKind::EnumMember,
+            app_file,
+            app
+        ),
+        vec![("active", literal_start + "Choice::".len())]
+    );
+    for path in ["a::Status", "b::Status"] {
+        let status_id = proposal_id(&snapshot, CatalogEntryKind::Enum, path);
+        assert_eq!(
+            site_texts(&snapshot, &status_id, UseSiteKind::Enum, app_file, app),
+            Vec::<&str>::new(),
+            "qualified enum member literal must not pick bare owner {path}"
+        );
+    }
+}
+
+#[test]
+fn sites_for_does_not_treat_resource_type_annotation_as_foreign_enum_use() {
+    let foreign = "module a\npub enum Order\n    active\n";
+    let app = "module app\n\
+        resource Order\n    \
+        title: string\n\
+        fn set(o: Order)\n    \
+        return\n";
+    let (snapshot, paths) = analyze_overlay(
+        "analysis-use-sites-resource-shadows-foreign-enum",
+        &[("src/a.mw", foreign), ("src/app.mw", app)],
+    );
+    assert!(
+        !snapshot.report.has_errors(),
+        "{:#?}",
+        snapshot.report.diagnostics
+    );
+    let app_file = &paths[1];
+    let enum_catalog_id = proposal_id(&snapshot, CatalogEntryKind::Enum, "a::Order");
+
+    assert_eq!(
+        site_texts(
+            &snapshot,
+            &enum_catalog_id,
+            UseSiteKind::Enum,
+            app_file,
+            app
+        ),
+        Vec::<&str>::new(),
+        "resource annotation must not be reported as a foreign enum use"
+    );
+}
+
+#[test]
+fn sites_for_source_enum_annotations_ignore_test_local_public_enums() {
+    let root = temp_root("analysis-source-use-sites-ignore-test-enums");
+    let source = "module app\n\
+        use source_status\n\
+        fn f(s: source_status::Status): source_status::Status\n    \
+        return source_status::Status::active\n";
+    write(
+        &root,
+        "src/source_status.mw",
+        "module source_status\n\
+        pub enum Status\n    \
+        active\n",
+    );
+    write(&root, "src/app.mw", source);
+    write(
+        &root,
+        "tests/smoke.mw",
+        "pub enum Status\n    active\nfn smoke()\n    return\n",
+    );
+    let cfg = parse_config(
+        r#"{ "sourceRoots": ["src"], "tests": ["tests"], "store": { "backend": "memory" } }"#,
+    )
+    .expect("config");
+
+    let snapshot = analyze_project(&root, &cfg, &ProjectSources::new(), None).expect("analyze");
+    assert!(
+        !snapshot.report.has_errors(),
+        "{:#?}",
+        snapshot.report.diagnostics
+    );
+    assert!(
+        snapshot.program.facts.module_id("tests::smoke").is_none(),
+        "configured test facts must not remain in the source snapshot"
+    );
+    let app_file = root.join("src/app.mw");
+    let status_catalog_id = proposal_id(&snapshot, CatalogEntryKind::Enum, "source_status::Status");
+    let param_start = source
+        .find("source_status::Status")
+        .expect("param annotation")
+        + "source_status::".len();
+    let return_start = source
+        .find("): source_status::Status")
+        .expect("return annotation")
+        + "): source_status::".len();
+    let literal_start = source
+        .find("return source_status::Status::active")
+        .expect("literal")
+        + "return source_status::".len();
+
+    assert_eq!(
+        site_texts_with_start(
+            &snapshot,
+            &status_catalog_id,
+            UseSiteKind::Enum,
+            &app_file,
+            source
+        ),
+        vec![
+            ("Status", param_start),
+            ("Status", return_start),
+            ("Status", literal_start)
+        ]
+    );
+}
+
+#[test]
 fn sites_for_distinguishes_match_arm_header_from_body_enum_member_use() {
     let source = "module m\n\
         enum Status\n    \
@@ -834,10 +1345,14 @@ fn sites_for_reports_each_nested_enum_member_segment_in_expressions() {
     let literal = source
         .find("return Cat::tiger::bengal")
         .expect("nested enum literal");
+    let return_annotation = source.find("): Cat").expect("return annotation") + "): ".len();
 
     assert_eq!(
         site_texts_with_start(&snapshot, &cat_catalog_id, UseSiteKind::Enum, file, source),
-        vec![("Cat", literal + "return ".len())]
+        vec![
+            ("Cat", return_annotation),
+            ("Cat", literal + "return ".len())
+        ]
     );
     assert_eq!(
         site_texts_with_start(

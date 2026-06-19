@@ -1,14 +1,18 @@
 //! Project-aware normalization for explicit keyed fields whose entry type is a resource.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use marrow_syntax::{FieldDecl, ResourceDecl};
 
-use crate::enums::{annotation_type_known, private_enum_type_reference};
+use crate::enums::{
+    EnumAnnotationResolution, ambiguous_enum_annotation_diagnostic, annotation_type_known,
+    resolve_enum_annotation,
+};
 use crate::resolve::{Def, DefItem, Resolution, ResolvableKind, resolve};
 use crate::{
     CHECK_PRIVATE_ENUM, CHECK_RECURSIVE_KEYED_ENTRY, CHECK_UNKNOWN_TYPE, CheckDiagnostic,
-    CheckedModule, CheckedProgram, DiagnosticPayload, MarrowType, build_alias_map, expand_alias,
+    CheckedModule, CheckedProgram, DiagnosticPayload, build_alias_map, expand_alias,
     has_duplicate_error, resource_type_name, split_type_path,
 };
 
@@ -169,6 +173,10 @@ impl Normalizer<'_, '_> {
                 self.record_owner_resource_invalid(scope);
                 self.push_unknown_type(scope.file, field, ty);
             }
+            KeyedFieldType::AmbiguousBareForeignEnum { ty, name } => {
+                self.record_owner_resource_invalid(scope);
+                self.push_ambiguous_enum_annotation(scope.file, field, ty, name);
+            }
             KeyedFieldType::SavedLeaf => {
                 self.check_keyed_leaf_named_type(scope, field);
             }
@@ -186,20 +194,7 @@ impl Normalizer<'_, '_> {
             keys: Vec::new(),
             ..field.clone()
         });
-        for error in marrow_schema::check_saved_named_member_fields_with(&[leaf], |name| {
-            matches!(
-                crate::enums::resolve_enum_type(
-                    &marrow_schema::Type::Named(name.to_string()),
-                    self.resolver,
-                    &aliases,
-                    scope.file,
-                ),
-                Some(MarrowType::Enum { .. })
-            )
-        }) {
-            self.record_owner_resource_invalid(scope);
-            self.push_schema_error(scope.file, error);
-        }
+        self.check_saved_named_member_fields(scope, scope.file, &[leaf], &aliases);
     }
 
     fn resolve_keyed_field_type(
@@ -225,11 +220,6 @@ impl Normalizer<'_, '_> {
                     module_name: module.name.clone(),
                     source_file: module.source_file.clone(),
                     imports: module.imports.clone(),
-                    enum_names: module
-                        .enums
-                        .iter()
-                        .map(|enum_| enum_.name.clone())
-                        .collect(),
                     resource_name: resource.name.clone(),
                     members: resource.members.clone(),
                     decl: resource_decl(self.parsed_files, module, &resource.name).cloned(),
@@ -237,10 +227,17 @@ impl Normalizer<'_, '_> {
             }
         }
 
-        if let Some(private) =
-            private_enum_type_reference(&field.ty, self.resolver, &aliases, scope.file)
-        {
-            return KeyedFieldType::PrivateEnum(private);
+        match resolve_enum_annotation(&field.ty, self.resolver, &aliases, scope.file) {
+            EnumAnnotationResolution::Private(private) => {
+                return KeyedFieldType::PrivateEnum(private);
+            }
+            EnumAnnotationResolution::AmbiguousBareForeign(name) => {
+                return KeyedFieldType::AmbiguousBareForeignEnum {
+                    ty: schema_type,
+                    name,
+                };
+            }
+            EnumAnnotationResolution::Visible(_) | EnumAnnotationResolution::MissingOrNonEnum => {}
         }
         let resolved = crate::enums::resolve_type(&field.ty, self.resolver, &aliases, scope.file);
         if !annotation_type_known(&schema_type, &resolved) {
@@ -261,22 +258,47 @@ impl Normalizer<'_, '_> {
         }
 
         let aliases = build_alias_map(&target.imports);
-        for error in marrow_schema::check_saved_named_member_fields_with(&decl.members, |name| {
-            if !name.contains("::") {
-                return target.enum_names.iter().any(|enum_name| enum_name == name);
+        self.check_saved_named_member_fields(scope, &target.source_file, &decl.members, &aliases);
+    }
+
+    fn check_saved_named_member_fields(
+        &mut self,
+        scope: MemberScope<'_>,
+        file: &Path,
+        members: &[marrow_syntax::ResourceMember],
+        aliases: &HashMap<String, Vec<String>>,
+    ) {
+        marrow_schema::walk_saved_named_member_fields(members, |field, name| {
+            self.check_saved_named_field(scope, file, field, name, aliases);
+        });
+    }
+
+    fn check_saved_named_field(
+        &mut self,
+        scope: MemberScope<'_>,
+        file: &Path,
+        field: &FieldDecl,
+        name: &str,
+        aliases: &HashMap<String, Vec<String>>,
+    ) {
+        let schema_type = marrow_schema::Type::resolve(&field.ty);
+        match resolve_enum_annotation(&field.ty, self.resolver, aliases, file) {
+            EnumAnnotationResolution::Visible(_) => {}
+            EnumAnnotationResolution::Private(private) => {
+                self.record_owner_resource_invalid(scope);
+                self.push_private_enum(file, field.ty.span, private);
             }
-            matches!(
-                crate::enums::resolve_enum_type(
-                    &marrow_schema::Type::Named(name.to_string()),
-                    self.resolver,
-                    &aliases,
-                    &target.source_file,
-                ),
-                Some(MarrowType::Enum { .. })
-            )
-        }) {
-            self.record_owner_resource_invalid(scope);
-            self.push_schema_error(&target.source_file, error);
+            EnumAnnotationResolution::AmbiguousBareForeign(name) => {
+                self.record_owner_resource_invalid(scope);
+                self.push_ambiguous_enum_annotation(file, field, schema_type, name);
+            }
+            EnumAnnotationResolution::MissingOrNonEnum => {
+                self.record_owner_resource_invalid(scope);
+                self.push_schema_error(
+                    file,
+                    marrow_schema::non_enum_named_field_error(field, name),
+                );
+            }
         }
     }
 
@@ -335,6 +357,21 @@ impl Normalizer<'_, '_> {
         );
     }
 
+    fn push_ambiguous_enum_annotation(
+        &mut self,
+        file: &Path,
+        field: &FieldDecl,
+        ty: marrow_schema::Type,
+        name: String,
+    ) {
+        self.push_diagnostic(ambiguous_enum_annotation_diagnostic(
+            file,
+            field.ty.span,
+            name,
+            ty,
+        ));
+    }
+
     fn push_diagnostic(&mut self, diagnostic: CheckDiagnostic) {
         if has_duplicate_error(self.diagnostics, &diagnostic) {
             return;
@@ -347,6 +384,10 @@ enum KeyedFieldType {
     Resource(Box<ResourceTarget>),
     PrivateEnum(String),
     Unknown(marrow_schema::Type),
+    AmbiguousBareForeignEnum {
+        ty: marrow_schema::Type,
+        name: String,
+    },
     /// A value type that is not a resource layer: its saved named-type rule is
     /// checked by the schema owner, which is a no-op for scalar and identity types.
     SavedLeaf,
@@ -356,7 +397,6 @@ struct ResourceTarget {
     module_name: String,
     source_file: PathBuf,
     imports: Vec<String>,
-    enum_names: Vec<String>,
     resource_name: String,
     members: Vec<marrow_schema::Node>,
     decl: Option<ResourceDecl>,
