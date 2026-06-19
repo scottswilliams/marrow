@@ -5,6 +5,8 @@ use marrow_check::{
     CheckedEntryFunction, CheckedFunctionRef, CheckedLiteralKind, CheckedReadOnlyExpression,
     CheckedRuntimeFunction, CheckedRuntimeProgram, CheckedRuntimeValueType, StoredValueMeaning,
 };
+use marrow_store::Decimal;
+use marrow_store::cell::CatalogId;
 use marrow_store::key::SavedKey;
 use marrow_store::tree::TreeStore;
 use marrow_store::value::{SavedValue, ScalarType, decode_value};
@@ -14,6 +16,7 @@ use crate::activation::{
     Completion, Invocation, bind_module_constants, check_argument_count, executable_body, invoke,
 };
 use crate::call::function_by_ref;
+use crate::entry_digest::entry_digest;
 use crate::env::{Context, Env, TransactionState};
 use crate::error::{
     RuntimeError, ambiguous_function, entry_argument, entry_type_error, private_function,
@@ -41,6 +44,122 @@ pub struct CheckedEntryCall<'p> {
     program: &'p CheckedRuntimeProgram,
     target: CheckedFunctionRef,
     args: Vec<Value>,
+    identity: EntryIdentity,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EntryIdentity {
+    pub requested_name: String,
+    pub canonical_name: String,
+    pub entry_digest: String,
+    pub accepted_catalog_epoch: Option<u64>,
+    pub source_digest: String,
+    pub read_only_context_digest: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EntryDescriptor {
+    pub identity: EntryIdentity,
+    pub parameters: Vec<EntryParameter>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EntryInvocation {
+    pub identity: EntryIdentity,
+    pub arguments: Vec<EntryArgument>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EntryParameter {
+    pub name: String,
+    pub shape: EntryArgumentShape,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EntryArgumentShape {
+    Scalar(ScalarType),
+    Enum {
+        render_label: String,
+        catalog_id: CatalogId,
+        members: Vec<EntryEnumMember>,
+    },
+    Identity {
+        render_label: String,
+        store_catalog_id: CatalogId,
+        keys: Vec<EntryIdentityKey>,
+    },
+    Sequence(Box<EntryArgumentShape>),
+    Unsupported,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EntryEnumMember {
+    pub render_label: String,
+    pub catalog_id: CatalogId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EntryIdentityKey {
+    pub render_label: String,
+    pub scalar: ScalarType,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EntryArgument {
+    pub name: String,
+    pub value: EntryArgumentValue,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EntryArgumentValue {
+    Scalar(EntryScalarArgument),
+    EnumMember {
+        member_catalog_id: CatalogId,
+    },
+    Identity {
+        store_catalog_id: CatalogId,
+        keys: Vec<EntryScalarArgument>,
+    },
+    Sequence(Vec<EntryArgumentValue>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EntryScalarArgument {
+    Int(i64),
+    Bool(bool),
+    String(String),
+    Instant(i128),
+    Date(i32),
+    Duration(i128),
+    Decimal(Decimal),
+    Bytes(Vec<u8>),
+}
+
+impl EntryDescriptor {
+    pub fn resolve(program: &CheckedRuntimeProgram, entry: &str) -> Result<Self, RuntimeError> {
+        let target = entry_target(program, entry)?;
+        let (module, function) = function_by_ref(program, target, SourceSpan::default())?;
+        let identity = entry_identity(program, entry, module, function);
+        let parameters = function
+            .entry_params()
+            .iter()
+            .map(|param| EntryParameter {
+                name: param.name.clone(),
+                shape: argument_shape(program, &param.ty),
+            })
+            .collect();
+        Ok(Self {
+            identity,
+            parameters,
+        })
+    }
+
+    pub fn invocation(&self, arguments: Vec<EntryArgument>) -> EntryInvocation {
+        EntryInvocation {
+            identity: self.identity.clone(),
+            arguments,
+        }
+    }
 }
 
 impl<'p> CheckedEntryCall<'p> {
@@ -50,12 +169,14 @@ impl<'p> CheckedEntryCall<'p> {
         args: Vec<Value>,
     ) -> Result<Self, RuntimeError> {
         let target = entry_target(program, entry)?;
-        let (_, function) = function_by_ref(program, target, SourceSpan::default())?;
+        let (module, function) = function_by_ref(program, target, SourceSpan::default())?;
         let args = canonicalize_entry_args(program, function, args)?;
+        let identity = entry_identity(program, entry, module, function);
         Ok(Self {
             program,
             target,
             args,
+            identity,
         })
     }
 
@@ -65,13 +186,44 @@ impl<'p> CheckedEntryCall<'p> {
         args: &[(&str, &str)],
     ) -> Result<Self, RuntimeError> {
         let target = entry_target(program, entry)?;
-        let (_, function) = function_by_ref(program, target, SourceSpan::default())?;
+        let (module, function) = function_by_ref(program, target, SourceSpan::default())?;
         let args = decode_entry_text_args(program, function, args)?;
+        let identity = entry_identity(program, entry, module, function);
         Ok(Self {
             program,
             target,
             args,
+            identity,
         })
+    }
+
+    pub fn from_protocol_args(
+        program: &'p CheckedRuntimeProgram,
+        identity: &EntryIdentity,
+        args: &[EntryArgument],
+    ) -> Result<Self, RuntimeError> {
+        let target = canonical_entry_target(program, &identity.canonical_name)?;
+        let (module, function) = function_by_ref(program, target, SourceSpan::default())?;
+        let current_identity = entry_identity(program, &identity.requested_name, module, function);
+        admit_entry_identity(identity, &current_identity)?;
+        let args = decode_entry_protocol_args(program, function, args)?;
+        Ok(Self {
+            program,
+            target,
+            args,
+            identity: current_identity,
+        })
+    }
+
+    pub fn from_protocol_invocation(
+        program: &'p CheckedRuntimeProgram,
+        invocation: &EntryInvocation,
+    ) -> Result<Self, RuntimeError> {
+        Self::from_protocol_args(program, &invocation.identity, &invocation.arguments)
+    }
+
+    pub fn identity(&self) -> &EntryIdentity {
+        &self.identity
     }
 }
 
@@ -247,6 +399,73 @@ fn entry_target(
     }
 }
 
+fn canonical_entry_target(
+    program: &CheckedRuntimeProgram,
+    canonical_name: &str,
+) -> Result<marrow_check::CheckedFunctionRef, RuntimeError> {
+    let mut private = false;
+    for (module_index, module) in program.modules().iter().enumerate() {
+        for (function_index, function) in module.functions().iter().enumerate() {
+            if canonical_entry_name(module, function) != canonical_name {
+                continue;
+            }
+            if !function.public {
+                private = true;
+                continue;
+            }
+            return Ok(marrow_check::CheckedFunctionRef {
+                module: module_index as u32,
+                function: function_index as u32,
+                presence: function.return_presence,
+            });
+        }
+    }
+    if private {
+        Err(private_function(canonical_name, SourceSpan::default()))
+    } else {
+        Err(unknown_function(canonical_name, SourceSpan::default()))
+    }
+}
+
+fn entry_identity(
+    program: &CheckedRuntimeProgram,
+    requested: &str,
+    module: &marrow_check::CheckedRuntimeModule,
+    function: &CheckedRuntimeFunction,
+) -> EntryIdentity {
+    EntryIdentity {
+        requested_name: requested.to_string(),
+        canonical_name: canonical_entry_name(module, function),
+        entry_digest: entry_digest(program, module, function),
+        accepted_catalog_epoch: program.accepted_catalog_epoch(),
+        source_digest: program.source_digest().to_string(),
+        read_only_context_digest: program.read_only_context_digest().to_string(),
+    }
+}
+
+fn admit_entry_identity(
+    expected: &EntryIdentity,
+    current: &EntryIdentity,
+) -> Result<(), RuntimeError> {
+    if current == expected {
+        return Ok(());
+    }
+    Err(entry_argument(
+        "entry descriptor identity does not match the checked program",
+    ))
+}
+
+pub(super) fn canonical_entry_name(
+    module: &marrow_check::CheckedRuntimeModule,
+    function: &CheckedRuntimeFunction,
+) -> String {
+    if module.name.is_empty() {
+        function.name.clone()
+    } else {
+        format!("{}::{}", module.name, function.name)
+    }
+}
+
 fn canonicalize_entry_args(
     program: &CheckedRuntimeProgram,
     function: &CheckedRuntimeFunction,
@@ -350,6 +569,154 @@ fn decode_entry_text_args(
         .collect()
 }
 
+fn decode_entry_protocol_args(
+    program: &CheckedRuntimeProgram,
+    function: &CheckedRuntimeFunction,
+    supplied: &[EntryArgument],
+) -> Result<Vec<Value>, RuntimeError> {
+    let params = function.entry_params();
+    let mut slots: Vec<Option<&EntryArgumentValue>> = vec![None; params.len()];
+    for argument in supplied {
+        let Some(index) = params.iter().position(|param| param.name == argument.name) else {
+            return Err(entry_argument(format!(
+                "entry argument `{}` does not name a parameter",
+                argument.name
+            )));
+        };
+        if slots[index].replace(&argument.value).is_some() {
+            return Err(entry_argument(format!(
+                "entry argument `{}` was supplied more than once",
+                argument.name
+            )));
+        }
+    }
+    params
+        .iter()
+        .zip(slots)
+        .map(|(param, value)| {
+            let Some(value) = value else {
+                return Err(entry_argument(format!(
+                    "entry argument `{}` is required",
+                    param.name
+                )));
+            };
+            decode_entry_protocol_value(program, &param.ty, &param.name, value)
+        })
+        .collect()
+}
+
+fn decode_entry_protocol_value(
+    program: &CheckedRuntimeProgram,
+    ty: &CheckedRuntimeValueType,
+    name: &str,
+    value: &EntryArgumentValue,
+) -> Result<Value, RuntimeError> {
+    match ty {
+        CheckedRuntimeValueType::Primitive(scalar) => {
+            let EntryArgumentValue::Scalar(value) = value else {
+                return Err(entry_argument(format!(
+                    "entry argument `{name}` is not a {scalar:?}"
+                )));
+            };
+            protocol_scalar_value(*scalar, value).ok_or_else(|| {
+                entry_argument(format!("entry argument `{name}` is not a {scalar:?}"))
+            })
+        }
+        CheckedRuntimeValueType::Enum {
+            enum_id,
+            allowed_members,
+            ..
+        } => {
+            let EntryArgumentValue::EnumMember { member_catalog_id } = value else {
+                return Err(entry_argument(format!(
+                    "entry argument `{name}` is not an enum member"
+                )));
+            };
+            decode_protocol_enum_arg(program, *enum_id, allowed_members, name, member_catalog_id)
+        }
+        CheckedRuntimeValueType::Identity { root, .. } => {
+            let EntryArgumentValue::Identity {
+                store_catalog_id,
+                keys,
+            } = value
+            else {
+                return Err(entry_argument(format!(
+                    "entry argument `{name}` is not an identity"
+                )));
+            };
+            decode_protocol_identity_arg(program, root, name, store_catalog_id, keys)
+        }
+        CheckedRuntimeValueType::Sequence(element) => {
+            let EntryArgumentValue::Sequence(items) = value else {
+                return Err(entry_argument(format!(
+                    "entry argument `{name}` is not a sequence"
+                )));
+            };
+            decode_protocol_sequence(program, element, name, items)
+        }
+        CheckedRuntimeValueType::Resource
+        | CheckedRuntimeValueType::GroupEntry
+        | CheckedRuntimeValueType::LocalTree { .. }
+        | CheckedRuntimeValueType::Error
+        | CheckedRuntimeValueType::Invalid
+        | CheckedRuntimeValueType::Unknown => Err(entry_argument(format!(
+            "entry argument `{name}` has a type outside the run entry argument surface"
+        ))),
+    }
+}
+
+fn decode_protocol_sequence(
+    program: &CheckedRuntimeProgram,
+    element: &CheckedRuntimeValueType,
+    name: &str,
+    values: &[EntryArgumentValue],
+) -> Result<Value, RuntimeError> {
+    if !entry_sequence_element_supported(element) {
+        return Err(entry_argument(format!(
+            "entry argument `{name}` has an unsupported sequence element type"
+        )));
+    }
+    values
+        .iter()
+        .map(|value| decode_entry_protocol_value(program, element, name, value))
+        .collect::<Result<Vec<_>, _>>()
+        .map(Value::Sequence)
+}
+
+fn decode_protocol_identity_arg(
+    program: &CheckedRuntimeProgram,
+    expected_root: &str,
+    name: &str,
+    store_catalog_id: &CatalogId,
+    values: &[EntryScalarArgument],
+) -> Result<Value, RuntimeError> {
+    let keys: Option<Vec<_>> = values.iter().map(protocol_scalar_key).collect();
+    let Some(keys) = keys else {
+        return Err(entry_argument(format!(
+            "entry argument `{name}` has an unsupported identity key type"
+        )));
+    };
+    let Some(store) = program.facts().store_by_root(expected_root) else {
+        return Err(entry_argument(format!(
+            "entry argument `{name}` has an unresolved identity root"
+        )));
+    };
+    if store.catalog_id.as_deref() != Some(store_catalog_id.as_str()) {
+        return Err(entry_argument(format!(
+            "entry argument `{name}` belongs to a different identity store"
+        )));
+    }
+    if !store.identity_keys_match(&keys) {
+        return Err(entry_argument(format!(
+            "entry argument `{name}` does not match the identity key shape"
+        )));
+    }
+    Ok(Value::Identity(crate::value::IdentityValue::for_root(
+        expected_root.to_string(),
+        keys,
+    )))
+}
+
 fn decode_entry_param(
     program: &CheckedRuntimeProgram,
     ty: &CheckedRuntimeValueType,
@@ -374,6 +741,41 @@ fn decode_entry_param(
             decode_entry_value(program, ty, name, values[0])
         }
     }
+}
+
+fn decode_protocol_enum_arg(
+    program: &CheckedRuntimeProgram,
+    enum_id: Option<marrow_check::EnumId>,
+    allowed_members: &[marrow_check::EnumMemberId],
+    name: &str,
+    member_catalog_id: &CatalogId,
+) -> Result<Value, RuntimeError> {
+    let Some(enum_id) = enum_id else {
+        return Err(entry_argument(format!(
+            "entry argument `{name}` has an unresolved enum type"
+        )));
+    };
+    let matches: Vec<_> = allowed_members
+        .iter()
+        .copied()
+        .filter(|member_id| {
+            program
+                .facts()
+                .enum_member(*member_id)
+                .is_some_and(|member| {
+                    member.enum_id == enum_id
+                        && member.catalog_id.as_deref() == Some(member_catalog_id.as_str())
+                })
+        })
+        .collect();
+    let [member_id] = matches.as_slice() else {
+        return Err(entry_argument(format!(
+            "entry argument `{name}` is not an accepted enum member"
+        )));
+    };
+    enum_value_from_member(program.facts(), *member_id)
+        .map(Value::Enum)
+        .ok_or_else(|| entry_argument(format!("entry argument `{name}` is not selectable")))
 }
 
 fn decode_entry_sequence(
@@ -407,6 +809,137 @@ fn entry_sequence_element_supported(ty: &CheckedRuntimeValueType) -> bool {
         ty,
         CheckedRuntimeValueType::Primitive(_) | CheckedRuntimeValueType::Enum { .. }
     )
+}
+
+fn protocol_scalar_value(scalar: ScalarType, value: &EntryScalarArgument) -> Option<Value> {
+    match (scalar, value) {
+        (ScalarType::Int, EntryScalarArgument::Int(value)) => Some(Value::Int(*value)),
+        (ScalarType::Bool, EntryScalarArgument::Bool(value)) => Some(Value::Bool(*value)),
+        (ScalarType::Str, EntryScalarArgument::String(value)) => Some(Value::Str(value.clone())),
+        (ScalarType::Instant, EntryScalarArgument::Instant(value)) => Some(Value::Instant(*value)),
+        (ScalarType::Date, EntryScalarArgument::Date(value)) => Some(Value::Date(*value)),
+        (ScalarType::Duration, EntryScalarArgument::Duration(value)) => {
+            Some(Value::Duration(*value))
+        }
+        (ScalarType::Decimal, EntryScalarArgument::Decimal(value)) => Some(Value::Decimal(*value)),
+        (ScalarType::Bytes, EntryScalarArgument::Bytes(value)) => Some(Value::Bytes(value.clone())),
+        _ => None,
+    }
+}
+
+fn protocol_scalar_key(value: &EntryScalarArgument) -> Option<SavedKey> {
+    match value {
+        EntryScalarArgument::Int(value) => Some(SavedKey::Int(*value)),
+        EntryScalarArgument::Bool(value) => Some(SavedKey::Bool(*value)),
+        EntryScalarArgument::String(value) => Some(SavedKey::Str(value.clone())),
+        EntryScalarArgument::Instant(value) => Some(SavedKey::Instant(*value)),
+        EntryScalarArgument::Date(value) => Some(SavedKey::Date(*value)),
+        EntryScalarArgument::Duration(value) => Some(SavedKey::Duration(*value)),
+        EntryScalarArgument::Bytes(value) => Some(SavedKey::Bytes(value.clone())),
+        EntryScalarArgument::Decimal(_) => None,
+    }
+}
+
+fn argument_shape(
+    program: &CheckedRuntimeProgram,
+    ty: &CheckedRuntimeValueType,
+) -> EntryArgumentShape {
+    match ty {
+        CheckedRuntimeValueType::Primitive(scalar) => EntryArgumentShape::Scalar(*scalar),
+        CheckedRuntimeValueType::Enum {
+            enum_id,
+            allowed_members,
+            ..
+        } => enum_argument_shape(program, *enum_id, allowed_members),
+        CheckedRuntimeValueType::Identity { root, .. } => identity_argument_shape(program, root),
+        CheckedRuntimeValueType::Sequence(element) if entry_sequence_element_supported(element) => {
+            EntryArgumentShape::Sequence(Box::new(argument_shape(program, element)))
+        }
+        CheckedRuntimeValueType::Sequence(_)
+        | CheckedRuntimeValueType::Resource
+        | CheckedRuntimeValueType::GroupEntry
+        | CheckedRuntimeValueType::LocalTree { .. }
+        | CheckedRuntimeValueType::Error
+        | CheckedRuntimeValueType::Invalid
+        | CheckedRuntimeValueType::Unknown => EntryArgumentShape::Unsupported,
+    }
+}
+
+fn enum_argument_shape(
+    program: &CheckedRuntimeProgram,
+    enum_id: Option<marrow_check::EnumId>,
+    allowed_members: &[marrow_check::EnumMemberId],
+) -> EntryArgumentShape {
+    let Some(enum_id) = enum_id else {
+        return EntryArgumentShape::Unsupported;
+    };
+    let Some(enum_fact) = program.facts().enum_(enum_id) else {
+        return EntryArgumentShape::Unsupported;
+    };
+    let Some(catalog_id) = fact_catalog_id(&enum_fact.catalog_id) else {
+        return EntryArgumentShape::Unsupported;
+    };
+    let module_name = program
+        .facts()
+        .modules()
+        .get(enum_fact.module.0 as usize)
+        .map(|module| module.name.as_str())
+        .unwrap_or_default();
+    let name = if module_name.is_empty() {
+        enum_fact.name.clone()
+    } else {
+        format!("{}::{}", module_name, enum_fact.name)
+    };
+    let Some(members) = allowed_members
+        .iter()
+        .map(|member_id| {
+            let member = program.facts().enum_member(*member_id)?;
+            Some(EntryEnumMember {
+                render_label: member.name.clone(),
+                catalog_id: fact_catalog_id(&member.catalog_id)?,
+            })
+        })
+        .collect::<Option<Vec<_>>>()
+    else {
+        return EntryArgumentShape::Unsupported;
+    };
+    EntryArgumentShape::Enum {
+        render_label: name,
+        catalog_id,
+        members,
+    }
+}
+
+fn identity_argument_shape(program: &CheckedRuntimeProgram, root: &str) -> EntryArgumentShape {
+    let Some(store) = program.facts().store_by_root(root) else {
+        return EntryArgumentShape::Unsupported;
+    };
+    let Some(store_catalog_id) = fact_catalog_id(&store.catalog_id) else {
+        return EntryArgumentShape::Unsupported;
+    };
+    let Some(keys) = store
+        .identity_keys
+        .iter()
+        .map(|key| match key.value_meaning {
+            Some(StoredValueMeaning::Scalar(scalar)) => Some(EntryIdentityKey {
+                render_label: key.name.clone(),
+                scalar,
+            }),
+            _ => None,
+        })
+        .collect::<Option<Vec<_>>>()
+    else {
+        return EntryArgumentShape::Unsupported;
+    };
+    EntryArgumentShape::Identity {
+        render_label: root.to_string(),
+        store_catalog_id,
+        keys,
+    }
+}
+
+fn fact_catalog_id(raw: &Option<String>) -> Option<CatalogId> {
+    CatalogId::new(raw.as_ref()?.clone()).ok()
 }
 
 fn decode_entry_value(

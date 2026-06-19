@@ -2,9 +2,22 @@ use crate::support;
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use marrow_run::{CheckedEntryCall, Host, Value, run_entry, run_entry_with_host};
+use marrow_run::{
+    CheckedEntryCall, EntryArgument, EntryArgumentShape, EntryArgumentValue, EntryDescriptor,
+    EntryParameter, EntryScalarArgument, Host, RUN_ENTRY_ARGUMENT, Value, run_entry,
+    run_entry_with_host,
+};
 use marrow_store::tree::TreeStore;
-use support::checked_program;
+use marrow_store::value::ScalarType;
+use support::{checked_program, checked_program_modules};
+
+fn entry_parameter<'a>(descriptor: &'a EntryDescriptor, name: &str) -> &'a EntryParameter {
+    descriptor
+        .parameters
+        .iter()
+        .find(|param| param.name == name)
+        .expect("entry parameter")
+}
 
 #[test]
 fn text_args_decode_scalars_and_keep_string_remainder_raw() {
@@ -28,6 +41,279 @@ fn text_args_decode_scalars_and_keep_string_remainder_raw() {
 
     assert_eq!(output, "a=b\n");
     assert_eq!(result.value, Some(Value::Int(7)));
+}
+
+#[test]
+fn protocol_args_admit_canonical_entry_identity_and_typed_values() {
+    let program = checked_program(
+        "resource Author\n\
+         \x20   name: string\n\
+         store ^authors(id: int): Author\n\
+         \n\
+         enum Status\n\
+         \x20   active\n\
+         \x20   archived\n\
+         \n\
+         pub fn accept(author: Id(^authors), status: Status, flags: sequence[bool], label: string): string\n\
+         \x20   if status == Status::archived and label == \"done\"\n\
+         \x20       return \"ok\"\n\
+         \x20   return \"no\"\n",
+    );
+    let descriptor = EntryDescriptor::resolve(&program, "accept").expect("entry descriptor");
+    let EntryArgumentShape::Identity {
+        store_catalog_id, ..
+    } = &entry_parameter(&descriptor, "author").shape
+    else {
+        panic!("author should be an identity shape");
+    };
+    let author_store_catalog_id = store_catalog_id.clone();
+    let EntryArgumentShape::Enum { members, .. } = &entry_parameter(&descriptor, "status").shape
+    else {
+        panic!("status should be an enum shape");
+    };
+    let archived_member_catalog_id = members
+        .iter()
+        .find(|member| member.render_label == "archived")
+        .expect("archived member")
+        .catalog_id
+        .clone();
+    let call = CheckedEntryCall::from_protocol_args(
+        &program,
+        &descriptor.identity,
+        &[
+            EntryArgument {
+                name: "author".into(),
+                value: EntryArgumentValue::Identity {
+                    store_catalog_id: author_store_catalog_id,
+                    keys: vec![EntryScalarArgument::Int(7)],
+                },
+            },
+            EntryArgument {
+                name: "status".into(),
+                value: EntryArgumentValue::EnumMember {
+                    member_catalog_id: archived_member_catalog_id,
+                },
+            },
+            EntryArgument {
+                name: "flags".into(),
+                value: EntryArgumentValue::Sequence(vec![
+                    EntryArgumentValue::Scalar(EntryScalarArgument::Bool(true)),
+                    EntryArgumentValue::Scalar(EntryScalarArgument::Bool(false)),
+                ]),
+            },
+            EntryArgument {
+                name: "label".into(),
+                value: EntryArgumentValue::Scalar(EntryScalarArgument::String("done".into())),
+            },
+        ],
+    )
+    .expect("protocol args are admitted");
+
+    assert_eq!(call.identity().canonical_name, "test::accept");
+    assert_eq!(call.identity().requested_name, "accept");
+    assert_eq!(call.identity().source_digest, program.source_digest());
+    assert_eq!(
+        call.identity().read_only_context_digest,
+        program.read_only_context_digest()
+    );
+
+    let store = TreeStore::memory();
+    let mut output = String::new();
+    let result = run_entry(&store, &call, &mut output).expect("run entry");
+
+    assert_eq!(result.value, Some(Value::Str("ok".into())));
+}
+
+#[test]
+fn entry_descriptor_exposes_protocol_argument_shapes() {
+    let program = checked_program(
+        "resource Author\n\
+         \x20   name: string\n\
+         store ^authors(id: int): Author\n\
+         \n\
+         enum Status\n\
+         \x20   active\n\
+         \x20   archived\n\
+         \n\
+         pub fn accept(author: Id(^authors), status: Status, flags: sequence[bool], label: string): string\n\
+         \x20   return label\n",
+    );
+
+    let descriptor = EntryDescriptor::resolve(&program, "accept").expect("entry descriptor");
+
+    assert_eq!(descriptor.identity.canonical_name, "test::accept");
+    let EntryArgumentShape::Identity {
+        render_label,
+        store_catalog_id,
+        keys,
+    } = &entry_parameter(&descriptor, "author").shape
+    else {
+        panic!("author should be an identity shape");
+    };
+    assert_eq!(render_label, "authors");
+    assert!(store_catalog_id.as_str().starts_with("cat_"));
+    assert_eq!(
+        keys,
+        &vec![marrow_run::EntryIdentityKey {
+            render_label: "id".into(),
+            scalar: ScalarType::Int,
+        }]
+    );
+    let EntryArgumentShape::Enum {
+        render_label,
+        catalog_id,
+        members,
+    } = &entry_parameter(&descriptor, "status").shape
+    else {
+        panic!("status should be an enum shape");
+    };
+    assert_eq!(render_label, "test::Status");
+    assert!(catalog_id.as_str().starts_with("cat_"));
+    assert_eq!(
+        members
+            .iter()
+            .map(|member| member.render_label.as_str())
+            .collect::<Vec<_>>(),
+        vec!["active", "archived"]
+    );
+    assert!(
+        members
+            .iter()
+            .all(|member| member.catalog_id.as_str().starts_with("cat_"))
+    );
+    let flags = entry_parameter(&descriptor, "flags");
+    assert_eq!(
+        flags.shape,
+        EntryArgumentShape::Sequence(Box::new(EntryArgumentShape::Scalar(ScalarType::Bool)))
+    );
+}
+
+#[test]
+fn protocol_enum_arguments_round_trip_duplicate_leaf_catalog_ids() {
+    let program = checked_program(
+        "enum Cat\n\
+         \x20   category tiger\n\
+         \x20       paw\n\
+         \x20   category lion\n\
+         \x20       paw\n\
+         \n\
+         pub fn label(cat: Cat): int\n\
+         \x20   match cat\n\
+         \x20       tiger::paw\n\
+         \x20           return 2\n\
+         \x20       lion::paw\n\
+         \x20           return 3\n\
+         \x20   return 0\n",
+    );
+    let descriptor = EntryDescriptor::resolve(&program, "label").expect("entry descriptor");
+    let EntryArgumentShape::Enum { members, .. } = &entry_parameter(&descriptor, "cat").shape
+    else {
+        panic!("cat should be an enum shape");
+    };
+    let [tiger_paw, lion_paw] = members.as_slice() else {
+        panic!("expected two selectable paw members");
+    };
+    assert_eq!(tiger_paw.render_label, "paw");
+    assert_eq!(lion_paw.render_label, "paw");
+    assert_ne!(tiger_paw.catalog_id, lion_paw.catalog_id);
+    let tiger_paw = tiger_paw.catalog_id.clone();
+    let lion_paw = lion_paw.catalog_id.clone();
+
+    let store = TreeStore::memory();
+    let mut output = String::new();
+    let tiger = CheckedEntryCall::from_protocol_args(
+        &program,
+        &descriptor.identity,
+        &[EntryArgument {
+            name: "cat".into(),
+            value: EntryArgumentValue::EnumMember {
+                member_catalog_id: tiger_paw,
+            },
+        }],
+    )
+    .expect("tiger paw arg");
+    let tiger_result = run_entry(&store, &tiger, &mut output).expect("run tiger");
+    assert_eq!(tiger_result.value, Some(Value::Int(2)));
+
+    let lion = CheckedEntryCall::from_protocol_args(
+        &program,
+        &descriptor.identity,
+        &[EntryArgument {
+            name: "cat".into(),
+            value: EntryArgumentValue::EnumMember {
+                member_catalog_id: lion_paw,
+            },
+        }],
+    )
+    .expect("lion paw arg");
+    let lion_result = run_entry(&store, &lion, &mut output).expect("run lion");
+    assert_eq!(lion_result.value, Some(Value::Int(3)));
+}
+
+#[test]
+fn entry_identity_digest_changes_with_signature_and_body() {
+    let signature_a = checked_program("pub fn run(n: int): int\n    return n\n");
+    let signature_b = checked_program("pub fn run(label: string): string\n    return label\n");
+    let body_a = checked_program("pub fn run(n: int): int\n    return n\n");
+    let body_b = checked_program("pub fn run(n: int): int\n    return n + 1\n");
+
+    let signature_a = EntryDescriptor::resolve(&signature_a, "run").expect("signature a");
+    let signature_b = EntryDescriptor::resolve(&signature_b, "run").expect("signature b");
+    let body_a = EntryDescriptor::resolve(&body_a, "run").expect("body a");
+    let body_b = EntryDescriptor::resolve(&body_b, "run").expect("body b");
+
+    assert_ne!(
+        signature_a.identity.entry_digest,
+        signature_b.identity.entry_digest
+    );
+    assert_ne!(body_a.identity.entry_digest, body_b.identity.entry_digest);
+}
+
+#[test]
+fn stale_protocol_entry_identity_is_rejected_before_running() {
+    let stale = checked_program("pub fn run(n: int): int\n    return n\n");
+    let stale = EntryDescriptor::resolve(&stale, "run").expect("stale descriptor");
+    let current = checked_program("pub fn run(n: int): int\n    return n + 1\n");
+
+    let error = CheckedEntryCall::from_protocol_args(
+        &current,
+        &stale.identity,
+        &[EntryArgument {
+            name: "n".into(),
+            value: EntryArgumentValue::Scalar(EntryScalarArgument::Int(1)),
+        }],
+    )
+    .expect_err("stale descriptor should fail closed");
+
+    assert_eq!(error.code(), RUN_ENTRY_ARGUMENT);
+}
+
+#[test]
+fn protocol_entry_identity_resolves_by_canonical_descriptor_name() {
+    let program = checked_program_modules(&[
+        "module a\n\
+         pub fn run(n: int): int\n\
+         \x20   return n\n",
+        "module b\n\
+         pub fn run(n: int): int\n\
+         \x20   return n + 10\n",
+    ]);
+    let descriptor = EntryDescriptor::resolve(&program, "b::run").expect("entry descriptor");
+    let call = CheckedEntryCall::from_protocol_args(
+        &program,
+        &descriptor.identity,
+        &[EntryArgument {
+            name: "n".into(),
+            value: EntryArgumentValue::Scalar(EntryScalarArgument::Int(5)),
+        }],
+    )
+    .expect("canonical protocol descriptor");
+
+    let store = TreeStore::memory();
+    let mut output = String::new();
+    let result = run_entry(&store, &call, &mut output).expect("run entry");
+
+    assert_eq!(result.value, Some(Value::Int(15)));
 }
 
 #[test]

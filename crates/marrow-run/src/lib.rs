@@ -31,6 +31,7 @@ mod call_args;
 mod collection;
 mod durable_read;
 mod entry;
+mod entry_digest;
 mod env;
 mod error;
 pub mod evolution;
@@ -68,7 +69,9 @@ mod write_dispatch;
 mod write_plan;
 
 pub use entry::{
-    CheckedEntryCall, evaluate_checked_read_only_expression, run_entry, run_entry_with_debugger,
+    CheckedEntryCall, EntryArgument, EntryArgumentShape, EntryArgumentValue, EntryDescriptor,
+    EntryEnumMember, EntryIdentity, EntryIdentityKey, EntryInvocation, EntryParameter,
+    EntryScalarArgument, evaluate_checked_read_only_expression, run_entry, run_entry_with_debugger,
     run_entry_with_host,
 };
 pub use error::{

@@ -14,7 +14,9 @@ use marrow_store::tree::{StoreUid, TreeStore};
 use marrow_store::value::{ScalarType, scalar_key_matches_type, validate_scalar_key};
 use marrow_syntax::SourceSpan;
 
-use crate::entry::{CheckedEntryCall, run_entry_with_debugger, run_entry_with_host};
+use crate::entry::{
+    CheckedEntryCall, EntryInvocation, run_entry_with_debugger, run_entry_with_host,
+};
 use crate::evolution::{
     AutoApplyOutcome, BaselineError, FenceError, RunObligation, commit_catalog_baseline, fence,
     try_auto_apply,
@@ -363,18 +365,23 @@ enum SessionWrites {
 
 pub struct SessionEntry<'a> {
     name: &'a str,
-    args: Vec<(&'a str, &'a str)>,
+    args: SessionArgs<'a>,
     host: &'a Host,
     output: &'a mut dyn RunOutputSink,
     hook: Option<&'a mut dyn StepHook>,
     writes: SessionWrites,
 }
 
+enum SessionArgs<'a> {
+    Text(Vec<(&'a str, &'a str)>),
+    Protocol(EntryInvocation),
+}
+
 impl<'a> SessionEntry<'a> {
     pub fn new(name: &'a str, host: &'a Host, output: &'a mut dyn RunOutputSink) -> Self {
         Self {
             name,
-            args: Vec::new(),
+            args: SessionArgs::Text(Vec::new()),
             host,
             output,
             hook: None,
@@ -383,7 +390,12 @@ impl<'a> SessionEntry<'a> {
     }
 
     pub fn with_text_args(mut self, args: Vec<(&'a str, &'a str)>) -> Self {
-        self.args = args;
+        self.args = SessionArgs::Text(args);
+        self
+    }
+
+    pub fn with_protocol_invocation(mut self, invocation: EntryInvocation) -> Self {
+        self.args = SessionArgs::Protocol(invocation);
         self
     }
 
@@ -472,8 +484,14 @@ impl ProjectSession {
     }
 
     pub fn invoke(&self, invocation: SessionEntry<'_>) -> Result<RunOutput, ProjectInvokeError> {
-        let call =
-            CheckedEntryCall::from_text_args(&self.runtime, invocation.name, &invocation.args)?;
+        let call = match &invocation.args {
+            SessionArgs::Text(args) => {
+                CheckedEntryCall::from_text_args(&self.runtime, invocation.name, args)?
+            }
+            SessionArgs::Protocol(protocol) => {
+                CheckedEntryCall::from_protocol_invocation(&self.runtime, protocol)?
+            }
+        };
         match &self.kind {
             SessionKind::Run { store, .. } => match (store, invocation.writes) {
                 (RunStore::Memory(store), _) => invoke_store(store, &call, invocation),
