@@ -8,7 +8,7 @@ the accepted-catalog sparse-update descriptor for stable non-empty `update`
 surfaces, `marrow-run` executes admitted transport-neutral reads and sparse
 updates, and `marrow-json` owns the current check-output descriptor DTOs, read
 request/result DTOs, typed cursor-boundary DTOs, sparse update request DTOs, and
-an in-process operation-tag execution boundary over those DTOs.
+a transport-neutral JSON operation envelope over those DTOs.
 
 This page tracks the profiles that are still intentionally deferred. They must
 build on the active checker facts and descriptors. They must not introduce a
@@ -60,10 +60,12 @@ The active surface foundation has these owners:
   public Rust API.
 - `crates/marrow-json/src/surface.rs` owns the current checked read parameter,
   result, identity, value, typed cursor-boundary, sparse update request,
-  operation-tag execution, and serialized surface ABI JSON DTOs. Execution
-  accepts caller-supplied checked program and store references, read DTOs also
-  execute against `ProjectSurfaceReadSession`, and point/singleton update DTOs
-  also execute against `ProjectSurfaceSession` without exposing private store
+  operation-tag execution, transport-neutral operation envelope, and serialized
+  surface ABI JSON DTOs. Execution accepts caller-supplied checked program and
+  store references, read DTOs also execute against
+  `ProjectSurfaceReadSession`, point/singleton update DTOs also execute against
+  `ProjectSurfaceSession`, and `surface.operation.v1` dispatches read and
+  sparse-update request bodies by operation tag without exposing private store
   handles. Serving, route derivation, generated clients, and opaque cursor
   tokens remain separate profiles.
   Serialized ABI export includes only callable read/update operation tags.
@@ -72,6 +74,26 @@ Operation tags are live runtime/json contracts. A change to either
 `surface.read.v1` or `surface.update.v1` framing must either preserve byte
 output or deliberately bump the profile version and accept stale cached
 operation identity.
+
+## Operation Envelope Profile
+
+The active JSON operation envelope is `surface.operation.v1`. It is
+transport-neutral: callers supply a profile version, an operation tag, and one
+typed request body; `marrow-json` admits the tag through `marrow-run` and then
+lets the admitted read or update handle validate the requested body shape.
+
+The request body variants are singleton read, point read, page, unique lookup,
+singleton update, and point update. The response envelope echoes the active
+profile version and operation tag and returns a record, page, optional record,
+or updated result. Error envelopes expose only a stable `surface.*` code and a
+public message; they do not serialize spans, source paths, store paths, backend
+details, or runtime internals.
+
+`ProjectSurfaceReadSession` dispatches read request bodies only and fails
+closed on update request bodies. `ProjectSurfaceSession` dispatches both stable
+read operation tags and sparse-update operation tags. Wrong profile versions and
+unknown tags are ABI mismatches. A known tag with the wrong typed body shape is
+a request error.
 
 ## Write Profiles
 
@@ -127,11 +149,11 @@ stable equality values.
 ## Serving Profile
 
 HTTP serving and local server lifetime remain deferred until a serving profile
-maps the serialized descriptors to routes, envelopes, store-open policy, and
-process lifetime. A production serving profile needs:
+maps the serialized descriptors and active operation envelope to routes,
+store-open policy, and process lifetime. A production serving profile needs:
 
 - routes derived from serialized ABI descriptors, not source names or ordinals;
-- strict JSON-only request and response envelopes;
+- strict JSON-only transport around the active operation envelope;
 - sanitized `surface.*` error codes and no raw store details;
 - loopback binding by default, because Marrow has no users or roles yet;
 - read-only store admission for read serving, with no UID mint, baseline
@@ -140,11 +162,8 @@ process lifetime. A production serving profile needs:
 
 The active `ProjectSurfaceReadSession` and `ProjectSurfaceSession` satisfy only
 the preparatory linked-Rust project slices. They are not the serving profile:
-they have no route mapping, request envelope, process lifetime, network
-binding, generated-client surface, opaque cursor token, or public compatibility
-guarantee. The write session's update helpers currently return
-`Result<(), SurfaceError>`; any serving envelope or update-result representation
-is a future profile.
+they have no route mapping, process lifetime, network binding, generated-client
+surface, opaque cursor token, or public compatibility guarantee.
 
 ## Generated Clients And LSP
 

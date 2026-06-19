@@ -7,6 +7,7 @@ use marrow_store::key::SavedKey;
 use serde::{Deserialize, Serialize};
 
 mod execute;
+mod operation;
 mod request;
 pub use execute::{
     execute_project_surface_page_by_tag, execute_project_surface_point_read_by_tag,
@@ -15,6 +16,11 @@ pub use execute::{
     execute_surface_page_by_tag, execute_surface_point_read_by_tag,
     execute_surface_point_update_by_tag, execute_surface_singleton_read_by_tag,
     execute_surface_singleton_update_by_tag, execute_surface_unique_lookup_by_tag,
+};
+pub use operation::{
+    SURFACE_OPERATION_PROFILE_VERSION, SurfaceOperationErrorJson, SurfaceOperationRequestBodyJson,
+    SurfaceOperationRequestJson, SurfaceOperationResponseJson, SurfaceOperationResultJson,
+    execute_project_surface_operation, execute_project_surface_operation_read_only,
 };
 pub use request::{
     DecodedSurfacePageRequest, DecodedSurfacePointRequest, DecodedSurfacePointUpdateRequest,
@@ -704,8 +710,9 @@ mod tests {
     };
     use marrow_run::{
         Host, ProjectOpen, ProjectSession, ProjectSurfaceReadSession, ProjectSurfaceSession,
-        SURFACE_ABI_MISMATCH, SURFACE_CURSOR, SURFACE_REQUEST, SURFACE_STALE_CURSOR, SessionEntry,
-        SurfaceCollectionRead, SurfaceEnumValue, SurfaceNodeRead, SurfaceReadError,
+        SURFACE_ABI_MISMATCH, SURFACE_CONFLICT, SURFACE_CURSOR, SURFACE_INVALID_DATA,
+        SURFACE_LIMIT, SURFACE_MAX_VALUE_BYTES, SURFACE_REQUEST, SURFACE_STALE_CURSOR,
+        SessionEntry, SurfaceCollectionRead, SurfaceEnumValue, SurfaceNodeRead, SurfaceReadError,
         SurfaceReadField, SurfaceReadIdentity, SurfaceReadInput, SurfaceReadOperationRef,
         SurfaceReadRecord, SurfaceUpdate, SurfaceValue,
     };
@@ -721,12 +728,14 @@ mod tests {
     use serde_json::json;
 
     use crate::surface::{
-        SurfaceAbiJson, SurfaceArgumentJson, SurfaceCatalogStatusJson, SurfaceCursorBoundaryJson,
-        SurfaceCursorJson, SurfaceIdentityJson, SurfaceKeyJson, SurfacePageJson,
-        SurfacePageRequestJson, SurfacePointRequestJson, SurfacePointUpdateRequestJson,
-        SurfaceReadOperationKindJson, SurfaceRecordJson, SurfaceSingletonUpdateRequestJson,
-        SurfaceUniqueLookupRequestJson, SurfaceUpdateFieldJson, SurfaceUpdateValueJson,
-        SurfaceValueJson,
+        SURFACE_OPERATION_PROFILE_VERSION, SurfaceAbiJson, SurfaceArgumentJson,
+        SurfaceCatalogStatusJson, SurfaceCursorBoundaryJson, SurfaceCursorJson,
+        SurfaceIdentityJson, SurfaceKeyJson, SurfaceOperationErrorJson,
+        SurfaceOperationRequestBodyJson, SurfaceOperationRequestJson, SurfaceOperationResultJson,
+        SurfacePageJson, SurfacePageRequestJson, SurfacePointRequestJson,
+        SurfacePointUpdateRequestJson, SurfaceReadOperationKindJson, SurfaceRecordJson,
+        SurfaceSingletonUpdateRequestJson, SurfaceUniqueLookupRequestJson, SurfaceUpdateFieldJson,
+        SurfaceUpdateValueJson, SurfaceValueJson,
     };
 
     static TEMP_PROJECT_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -912,6 +921,51 @@ pub fn seed()
     first.title = \"Dune\"
     transaction
         ^books(1) = first
+";
+
+    const PROJECT_PRIVATE_BACKING_SURFACE: &str = "\
+module shelf
+
+resource Book
+    required title: string
+    required privateCode: string
+store ^books(id: int): Book
+
+surface Books from ^books
+    fields title
+    update title
+
+pub fn seed()
+    var first: Book
+    first.title = \"Dune\"
+    first.privateCode = \"internal\"
+    transaction
+        ^books(1) = first
+";
+
+    const PROJECT_UNIQUE_UPDATE_SURFACE: &str = "\
+module shelf
+
+resource Book
+    required title: string
+    required isbn: string
+store ^books(id: int): Book
+    index byIsbn(isbn) unique
+
+surface Books from ^books
+    fields title, isbn
+    update isbn
+
+pub fn seed()
+    var first: Book
+    first.title = \"Dune\"
+    first.isbn = \"isbn-a1\"
+    var second: Book
+    second.title = \"Dune Messiah\"
+    second.isbn = \"isbn-a2\"
+    transaction
+        ^books(1) = first
+        ^books(2) = second
 ";
 
     struct TempProject {
@@ -1532,6 +1586,19 @@ pub fn seed()
         }
     }
 
+    fn assert_operation_error<T: std::fmt::Debug>(
+        result: Result<T, SurfaceOperationErrorJson>,
+        code: &str,
+    ) -> SurfaceOperationErrorJson {
+        match result {
+            Err(error) => {
+                assert_eq!(error.code, code, "{error:?}");
+                error
+            }
+            Ok(value) => panic!("expected surface operation error {code}, got {value:?}"),
+        }
+    }
+
     #[test]
     fn surface_abi_omits_duplicate_stable_read_operation_tags() {
         let (program, _runtime) = checked_surface_program(DUPLICATE_READ_TAG_SURFACES);
@@ -1855,6 +1922,463 @@ pub fn seed()
                 value: "Dune Revised".into()
             })
         );
+    }
+
+    #[test]
+    fn surface_operation_envelope_dispatches_project_read_and_update() {
+        let root = TempProject::new("marrow-json-project-surface-operation");
+        write_native_project(&root, PROJECT_UPDATE_SURFACE);
+        seed_project(&root, "shelf::seed");
+
+        let session =
+            ProjectSurfaceSession::open(root.path()).expect("open project surface session");
+        let runtime = session.program().runtime();
+        let surface = surface_id(session.program(), "Books");
+        let read_tag = read_operation_tag_matching(session.program(), surface, |kind| {
+            matches!(kind, SurfaceReadOperationKind::PointRead { .. })
+        });
+        let update_tag = update_operation_tag(session.program(), "Books");
+
+        let read_response = crate::surface::execute_project_surface_operation(
+            &session,
+            &SurfaceOperationRequestJson {
+                profile_version: SURFACE_OPERATION_PROFILE_VERSION.into(),
+                operation_tag: read_tag.clone(),
+                request: SurfaceOperationRequestBodyJson::PointRead {
+                    request: point_read_request(&runtime, 1),
+                },
+            },
+        )
+        .expect("operation envelope executes point read");
+        assert_eq!(
+            read_response.profile_version,
+            SURFACE_OPERATION_PROFILE_VERSION
+        );
+        assert_eq!(read_response.operation_tag, read_tag);
+        let SurfaceOperationResultJson::Record { record } = read_response.result else {
+            panic!("expected record result: {read_response:?}");
+        };
+        assert_eq!(
+            field_value(&record, &field_catalog_id(&runtime, "books", "title")),
+            Some(&SurfaceValueJson::String {
+                value: "Dune".into()
+            })
+        );
+
+        let update_response = crate::surface::execute_project_surface_operation(
+            &session,
+            &SurfaceOperationRequestJson {
+                profile_version: SURFACE_OPERATION_PROFILE_VERSION.into(),
+                operation_tag: update_tag.clone(),
+                request: SurfaceOperationRequestBodyJson::PointUpdate {
+                    request: point_update_request(
+                        &runtime,
+                        1,
+                        vec![update_field(
+                            field_catalog_id(&runtime, "books", "title"),
+                            SurfaceUpdateValueJson::String {
+                                value: "Dune Revised".into(),
+                            },
+                        )],
+                    ),
+                },
+            },
+        )
+        .expect("operation envelope executes point update");
+        assert_eq!(
+            update_response.profile_version,
+            SURFACE_OPERATION_PROFILE_VERSION
+        );
+        assert_eq!(update_response.operation_tag, update_tag);
+        assert_eq!(update_response.result, SurfaceOperationResultJson::Updated);
+
+        let verify_response = crate::surface::execute_project_surface_operation(
+            &session,
+            &SurfaceOperationRequestJson {
+                profile_version: SURFACE_OPERATION_PROFILE_VERSION.into(),
+                operation_tag: read_tag,
+                request: SurfaceOperationRequestBodyJson::PointRead {
+                    request: point_read_request(&runtime, 1),
+                },
+            },
+        )
+        .expect("operation envelope reads updated record");
+        let SurfaceOperationResultJson::Record { record } = verify_response.result else {
+            panic!("expected record result: {verify_response:?}");
+        };
+        assert_eq!(
+            field_value(&record, &field_catalog_id(&runtime, "books", "title")),
+            Some(&SurfaceValueJson::String {
+                value: "Dune Revised".into()
+            })
+        );
+    }
+
+    #[test]
+    fn surface_operation_envelope_pins_json_wire_shape() {
+        let wire = json!({
+            "profile_version": SURFACE_OPERATION_PROFILE_VERSION,
+            "operation_tag": "tag-1",
+            "request": {
+                "kind": "point_read",
+                "request": {
+                    "identity": {
+                        "store_catalog_id": "cat_00000000000000000000000000000001",
+                        "keys": [{ "kind": "int", "value": "1" }]
+                    }
+                }
+            }
+        });
+        let request = serde_json::from_value::<SurfaceOperationRequestJson>(wire.clone())
+            .expect("operation request wire shape decodes");
+        assert_eq!(request.profile_version, SURFACE_OPERATION_PROFILE_VERSION);
+        assert_eq!(request.operation_tag, "tag-1");
+        assert_eq!(
+            serde_json::to_value(&request).expect("request encodes"),
+            wire
+        );
+
+        let response = crate::surface::SurfaceOperationResponseJson {
+            profile_version: SURFACE_OPERATION_PROFILE_VERSION.into(),
+            operation_tag: "tag-2".into(),
+            result: SurfaceOperationResultJson::Updated,
+        };
+        assert_eq!(
+            serde_json::to_value(response).expect("response encodes"),
+            json!({
+                "profile_version": SURFACE_OPERATION_PROFILE_VERSION,
+                "operation_tag": "tag-2",
+                "result": { "kind": "updated" }
+            })
+        );
+
+        let error = SurfaceOperationErrorJson {
+            code: SURFACE_REQUEST.into(),
+            message: "surface request is malformed".into(),
+        };
+        assert_eq!(
+            serde_json::to_value(error).expect("error encodes"),
+            json!({
+                "code": SURFACE_REQUEST,
+                "message": "surface request is malformed"
+            })
+        );
+    }
+
+    #[test]
+    fn surface_operation_envelope_rejects_wrong_profile_version() {
+        let root = TempProject::new("marrow-json-project-surface-operation-profile");
+        write_native_project(&root, PROJECT_UPDATE_SURFACE);
+        seed_project(&root, "shelf::seed");
+
+        let session =
+            ProjectSurfaceSession::open(root.path()).expect("open project surface session");
+        let runtime = session.program().runtime();
+        let surface = surface_id(session.program(), "Books");
+        let read_tag = read_operation_tag_matching(session.program(), surface, |kind| {
+            matches!(kind, SurfaceReadOperationKind::PointRead { .. })
+        });
+
+        let error = assert_operation_error(
+            crate::surface::execute_project_surface_operation(
+                &session,
+                &SurfaceOperationRequestJson {
+                    profile_version: "surface.operation.v0".into(),
+                    operation_tag: read_tag,
+                    request: SurfaceOperationRequestBodyJson::PointRead {
+                        request: point_read_request(&runtime, 1),
+                    },
+                },
+            ),
+            SURFACE_ABI_MISMATCH,
+        );
+        assert_eq!(
+            error.message,
+            "surface operation profile version is not active"
+        );
+    }
+
+    #[test]
+    fn surface_operation_envelope_read_only_session_rejects_update_body() {
+        let root = TempProject::new("marrow-json-project-surface-operation-read-only");
+        write_native_project(&root, PROJECT_UPDATE_SURFACE);
+        seed_project(&root, "shelf::seed");
+
+        let session =
+            ProjectSurfaceReadSession::open(root.path()).expect("open read-only surface session");
+        let runtime = session.program().runtime();
+        let update_tag = update_operation_tag(session.program(), "Books");
+
+        let error = assert_operation_error(
+            crate::surface::execute_project_surface_operation_read_only(
+                &session,
+                &SurfaceOperationRequestJson {
+                    profile_version: SURFACE_OPERATION_PROFILE_VERSION.into(),
+                    operation_tag: update_tag,
+                    request: SurfaceOperationRequestBodyJson::PointUpdate {
+                        request: point_update_request(
+                            &runtime,
+                            1,
+                            vec![update_field(
+                                field_catalog_id(&runtime, "books", "title"),
+                                SurfaceUpdateValueJson::String {
+                                    value: "Dune Revised".into(),
+                                },
+                            )],
+                        ),
+                    },
+                },
+            ),
+            SURFACE_ABI_MISMATCH,
+        );
+        assert_eq!(
+            error.message,
+            "surface operation request requires a writable project surface session"
+        );
+    }
+
+    #[test]
+    fn surface_operation_envelope_wrong_request_body_kind_returns_surface_request() {
+        let root = TempProject::new("marrow-json-project-surface-operation-body-kind");
+        write_native_project(&root, PROJECT_UPDATE_SURFACE);
+        seed_project(&root, "shelf::seed");
+
+        let session =
+            ProjectSurfaceSession::open(root.path()).expect("open project surface session");
+        let surface = surface_id(session.program(), "Books");
+        let point_tag = read_operation_tag_matching(session.program(), surface, |kind| {
+            matches!(kind, SurfaceReadOperationKind::PointRead { .. })
+        });
+
+        assert_operation_error(
+            crate::surface::execute_project_surface_operation(
+                &session,
+                &SurfaceOperationRequestJson {
+                    profile_version: SURFACE_OPERATION_PROFILE_VERSION.into(),
+                    operation_tag: point_tag,
+                    request: SurfaceOperationRequestBodyJson::Page {
+                        request: SurfacePageRequestJson {
+                            exact_keys: Vec::new(),
+                            limit: 1,
+                            cursor: None,
+                        },
+                    },
+                },
+            ),
+            SURFACE_REQUEST,
+        );
+    }
+
+    #[test]
+    fn surface_operation_envelope_unknown_tag_returns_surface_abi_mismatch() {
+        let root = TempProject::new("marrow-json-project-surface-operation-unknown-tag");
+        write_native_project(&root, PROJECT_UPDATE_SURFACE);
+        seed_project(&root, "shelf::seed");
+
+        let session =
+            ProjectSurfaceSession::open(root.path()).expect("open project surface session");
+        let runtime = session.program().runtime();
+
+        assert_operation_error(
+            crate::surface::execute_project_surface_operation(
+                &session,
+                &SurfaceOperationRequestJson {
+                    profile_version: SURFACE_OPERATION_PROFILE_VERSION.into(),
+                    operation_tag:
+                        "0000000000000000000000000000000000000000000000000000000000000000".into(),
+                    request: SurfaceOperationRequestBodyJson::PointRead {
+                        request: point_read_request(&runtime, 1),
+                    },
+                },
+            ),
+            SURFACE_ABI_MISMATCH,
+        );
+    }
+
+    #[test]
+    fn surface_operation_error_envelope_is_sanitized_code_and_message() {
+        let root = TempProject::new("marrow-json-project-surface-operation-error-envelope");
+        write_native_project(&root, PROJECT_UPDATE_SURFACE);
+        seed_project(&root, "shelf::seed");
+
+        let session =
+            ProjectSurfaceSession::open(root.path()).expect("open project surface session");
+        let surface = surface_id(session.program(), "Books");
+        let point_tag = read_operation_tag_matching(session.program(), surface, |kind| {
+            matches!(kind, SurfaceReadOperationKind::PointRead { .. })
+        });
+
+        let error = assert_operation_error(
+            crate::surface::execute_project_surface_operation(
+                &session,
+                &SurfaceOperationRequestJson {
+                    profile_version: SURFACE_OPERATION_PROFILE_VERSION.into(),
+                    operation_tag: point_tag,
+                    request: SurfaceOperationRequestBodyJson::Page {
+                        request: SurfacePageRequestJson {
+                            exact_keys: Vec::new(),
+                            limit: 1,
+                            cursor: None,
+                        },
+                    },
+                },
+            ),
+            SURFACE_REQUEST,
+        );
+        let value = serde_json::to_value(&error).expect("error envelope serializes");
+        let object = value.as_object().expect("error envelope object");
+        assert_eq!(object.len(), 2);
+        assert_eq!(object.get("code"), Some(&json!(SURFACE_REQUEST)));
+        assert!(object.contains_key("message"));
+        let rendered = value.to_string();
+        for forbidden in [
+            "span",
+            "SourceSpan",
+            "shelf.mw",
+            ".data",
+            "marrow.redb",
+            root.path().to_str().expect("temp path"),
+        ] {
+            assert!(
+                !rendered.contains(forbidden),
+                "surface operation error envelope leaked {forbidden}: {rendered}"
+            );
+        }
+    }
+
+    #[test]
+    fn surface_operation_error_envelope_sanitizes_conflicts() {
+        let root = TempProject::new("marrow-json-project-surface-operation-conflict");
+        write_native_project(&root, PROJECT_UNIQUE_UPDATE_SURFACE);
+        seed_project(&root, "shelf::seed");
+
+        let session =
+            ProjectSurfaceSession::open(root.path()).expect("open project surface session");
+        let runtime = session.program().runtime();
+        let update_tag = update_operation_tag(session.program(), "Books");
+
+        let error = assert_operation_error(
+            crate::surface::execute_project_surface_operation(
+                &session,
+                &SurfaceOperationRequestJson {
+                    profile_version: SURFACE_OPERATION_PROFILE_VERSION.into(),
+                    operation_tag: update_tag,
+                    request: SurfaceOperationRequestBodyJson::PointUpdate {
+                        request: point_update_request(
+                            &runtime,
+                            2,
+                            vec![update_field(
+                                field_catalog_id(&runtime, "books", "isbn"),
+                                SurfaceUpdateValueJson::String {
+                                    value: "isbn-a1".into(),
+                                },
+                            )],
+                        ),
+                    },
+                },
+            ),
+            SURFACE_CONFLICT,
+        );
+
+        assert_eq!(
+            error.message,
+            "surface operation conflicts with existing saved data"
+        );
+        let rendered = serde_json::to_value(&error)
+            .expect("error envelope serializes")
+            .to_string();
+        for forbidden in ["byIsbn", "isbn-a1", "isbn-a2", "key", "identity"] {
+            assert!(
+                !rendered.contains(forbidden),
+                "surface operation error envelope leaked {forbidden}: {rendered}"
+            );
+        }
+    }
+
+    #[test]
+    fn surface_operation_error_envelope_sanitizes_invalid_saved_data_faults() {
+        let (program, runtime) = checked_surface_program(SURFACE_UPDATE_WITH_ENUM_IDENTITY_INDEX);
+        let store = admitted_store(&program);
+        write_surface_book(&runtime, &store, 1, "Dune", "draft", 7);
+        let read = SurfaceNodeRead::admit(&program, &store, surface_id(&program, "Books"))
+            .expect("admit point read");
+
+        let error = read
+            .read_point(&[SavedKey::Int(1)])
+            .expect_err("missing required private field faults");
+        assert_eq!(error.code(), SURFACE_INVALID_DATA);
+        let envelope = SurfaceOperationErrorJson::from(error);
+
+        assert_eq!(envelope.code, SURFACE_INVALID_DATA);
+        assert_eq!(
+            envelope.message,
+            "surface operation reached invalid saved data"
+        );
+        let rendered = serde_json::to_value(&envelope)
+            .expect("error envelope serializes")
+            .to_string();
+        for forbidden in ["privateCode", "required", "backing", "field"] {
+            assert!(
+                !rendered.contains(forbidden),
+                "surface operation error envelope leaked {forbidden}: {rendered}"
+            );
+        }
+    }
+
+    #[test]
+    fn surface_operation_error_envelope_sanitizes_hidden_field_limit_faults() {
+        let root = TempProject::new("marrow-json-project-surface-operation-limit");
+        write_native_project(&root, PROJECT_PRIVATE_BACKING_SURFACE);
+        seed_project(&root, "shelf::seed");
+
+        let runtime = {
+            let session =
+                ProjectSurfaceSession::open(root.path()).expect("open project surface session");
+            session.program().runtime()
+        };
+        let store_path = root.path().join(".data").join("marrow.redb");
+        {
+            let store = TreeStore::open(&store_path).expect("open native store for corruption");
+            write_data_value(
+                &runtime,
+                &store,
+                "books",
+                &[SavedKey::Int(1)],
+                &data_path(&runtime, "books", &["privateCode"]),
+                SavedValue::Str("x".repeat(SURFACE_MAX_VALUE_BYTES + 1)),
+            );
+        }
+
+        let session =
+            ProjectSurfaceSession::open(root.path()).expect("reopen project surface session");
+        let surface = surface_id(session.program(), "Books");
+        let read_tag = read_operation_tag_matching(session.program(), surface, |kind| {
+            matches!(kind, SurfaceReadOperationKind::PointRead { .. })
+        });
+        let error = assert_operation_error(
+            crate::surface::execute_project_surface_operation(
+                &session,
+                &SurfaceOperationRequestJson {
+                    profile_version: SURFACE_OPERATION_PROFILE_VERSION.into(),
+                    operation_tag: read_tag,
+                    request: SurfaceOperationRequestBodyJson::PointRead {
+                        request: point_read_request(&runtime, 1),
+                    },
+                },
+            ),
+            SURFACE_LIMIT,
+        );
+
+        assert_eq!(error.message, "surface operation exceeded a public limit");
+        let rendered = serde_json::to_value(&error)
+            .expect("error envelope serializes")
+            .to_string();
+        for forbidden in ["privateCode", "stored value", "byte budget"] {
+            assert!(
+                !rendered.contains(forbidden),
+                "surface operation error envelope leaked {forbidden}: {rendered}"
+            );
+        }
     }
 
     #[test]
@@ -2221,6 +2745,19 @@ pub fn seed()
             assert!(
                 !source.contains(forbidden),
                 "surface JSON execute boundary must stay transport-neutral: {forbidden}"
+            );
+        }
+    }
+
+    #[test]
+    fn surface_operation_module_does_not_introduce_serving_or_lifecycle_concepts() {
+        let source = include_str!("surface/operation.rs").to_lowercase();
+        for forbidden in [
+            "route", "server", "http", "client", "create", "delete", "opaque",
+        ] {
+            assert!(
+                !source.contains(forbidden),
+                "surface operation envelope must stay transport-neutral: {forbidden}"
             );
         }
     }

@@ -30,7 +30,7 @@ pub fn execute_project_surface_point_read_by_tag(
     execute_point_read(operation, request)
 }
 
-fn execute_point_read(
+pub(super) fn execute_point_read(
     operation: SurfaceReadOperation<'_>,
     request: &SurfacePointRequestJson,
 ) -> Result<SurfaceRecordJson, SurfaceReadError> {
@@ -59,7 +59,7 @@ pub fn execute_project_surface_singleton_read_by_tag(
     execute_singleton_read(operation)
 }
 
-fn execute_singleton_read(
+pub(super) fn execute_singleton_read(
     operation: SurfaceReadOperation<'_>,
 ) -> Result<SurfaceRecordJson, SurfaceReadError> {
     let read = operation.singleton_read()?;
@@ -86,7 +86,7 @@ pub fn execute_project_surface_page_by_tag(
     execute_page(operation, operation_tag, request)
 }
 
-fn execute_page(
+pub(super) fn execute_page(
     operation: SurfaceReadOperation<'_>,
     operation_tag: &str,
     request: &SurfacePageRequestJson,
@@ -117,7 +117,7 @@ pub fn execute_project_surface_unique_lookup_by_tag(
     execute_unique_lookup(operation, request)
 }
 
-fn execute_unique_lookup(
+pub(super) fn execute_unique_lookup(
     operation: SurfaceReadOperation<'_>,
     request: &SurfaceUniqueLookupRequestJson,
 ) -> Result<Option<SurfaceRecordJson>, SurfaceReadError> {
@@ -148,7 +148,7 @@ pub fn execute_project_surface_point_update_by_tag(
     execute_point_update(update, request)
 }
 
-fn execute_point_update(
+pub(super) fn execute_point_update(
     update: SurfaceUpdate<'_>,
     request: &SurfacePointUpdateRequestJson,
 ) -> Result<(), SurfaceError> {
@@ -175,7 +175,7 @@ pub fn execute_project_surface_singleton_update_by_tag(
     execute_singleton_update(update, request)
 }
 
-fn execute_singleton_update(
+pub(super) fn execute_singleton_update(
     update: SurfaceUpdate<'_>,
     request: &SurfaceSingletonUpdateRequestJson,
 ) -> Result<(), SurfaceError> {

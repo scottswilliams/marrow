@@ -2,15 +2,16 @@
 
 `marrow-json` owns small JSON DTOs that more than one CLI, tool, or application
 boundary needs. It exists to keep `marrow run --format json`, trace, data
-integrity, store-backed data inspection, and surface reads, updates, and
-descriptor export from copying entry-return, saved-key, data-snapshot, surface
-descriptor/result rendering, and checked surface read request-parameter and
-sparse update request-body decode logic. For surfaces it also provides an
-in-process operation-tag execution boundary over caller-supplied
-`CheckedProgram` and `TreeStore` references, read-only execution helpers over
-`ProjectSurfaceReadSession`, and point/singleton update execution helpers over
-`ProjectSurfaceSession`; it does not own serving, routes, or process lifetime
-policy.
+integrity, store-backed data inspection, and surface reads, updates, operation
+envelopes, and descriptor export from copying entry-return, saved-key,
+data-snapshot, surface descriptor/result rendering, and checked surface read
+request-parameter and sparse update request-body decode logic. For surfaces it
+also provides an in-process operation-tag execution boundary over
+caller-supplied `CheckedProgram` and `TreeStore` references, read-only
+execution helpers over `ProjectSurfaceReadSession`, point/singleton update
+execution helpers over `ProjectSurfaceSession`, and `surface.operation.v1`
+request/response/error envelope DTOs over project surface sessions; it does not
+own serving, routes, or process lifetime policy.
 
 The crate deliberately does not define a general `Value` JSON ABI. Its entry
 return renderer preserves the current CLI-compatible result surface: scalars,
@@ -49,6 +50,9 @@ runtime `SavedKey` and cursor values. `SurfacePointUpdateRequestJson`,
 `SurfaceSingletonUpdateRequestJson`, `SurfaceUpdateFieldJson`, and
 `SurfaceUpdateValueJson` decode update identities, field catalog IDs, and
 canonical scalar/enum/identity values into runtime `SurfaceUpdateInput` values.
+`SurfaceOperationRequestJson`, `SurfaceOperationResponseJson`,
+`SurfaceOperationResultJson`, and `SurfaceOperationErrorJson` wrap those same
+typed request and result bodies in the active `surface.operation.v1` profile.
 JSON decode is structural and canonical only: runtime `SurfaceUpdate` owns
 declared update-set authorization, duplicate and non-empty patch validation,
 exact value shape checks, enum membership and selectability, identity store,
@@ -66,14 +70,20 @@ lookup reads, and return `SurfaceRecordJson`, `SurfacePageJson`, or
 `ProjectSurfaceReadSession` without exposing its private store handle. Updates
 admit stable update tags, decode point or singleton sparse update DTOs, and
 return the runtime `surface.*` error type directly over either caller-supplied
-checked program/store references or `ProjectSurfaceSession`. The project update
-helpers use the session's private writable store and do not add routes, request
-envelopes, generated clients, create/delete bodies, or opaque cursor token
-codecs. They keep the raw `Result<(), SurfaceError>` return shape; serving
-envelopes and update-result representations are future profiles. Wrong-profile
-or unknown tags fail through runtime admission; wrong read/update shape requests
-remain `surface.request`; cursor mismatches stay on the existing cursor error
-path.
+checked program/store references or `ProjectSurfaceSession`.
+
+The operation envelope functions compose those same typed bodies into a single
+project-session dispatch profile. `execute_project_surface_operation_read_only`
+accepts read bodies through `ProjectSurfaceReadSession` and rejects update
+bodies as an ABI mismatch. `execute_project_surface_operation` accepts read and
+sparse-update bodies through `ProjectSurfaceSession`, returning a standard
+response envelope with record, page, optional-record, or updated results. Error
+envelopes contain only a stable code and public message. The project helpers
+use the session's private store handle and do not add routes, generated
+clients, create/delete bodies, or opaque cursor token codecs. Wrong profile
+versions fail before tag admission; unknown tags fail through runtime
+admission; wrong read/update shape requests remain `surface.request`; cursor
+mismatches stay on the existing cursor error path.
 
 ## Read next
 
@@ -82,7 +92,8 @@ path.
   `DataSnapshotJson`, and `DataCommitJson`.
 - `crates/marrow-json/src/surface.rs` — surface ABI descriptor DTOs, surface
   read result DTOs, checked surface read request-parameter and sparse update
-  request DTOs, and in-process operation-tag execution helpers.
+  request DTOs, operation envelope DTOs, and in-process operation-tag execution
+  helpers.
 - `crates/marrow/src/cmd_run.rs` — the run JSON envelope and `run.entry_surface`
   mapping.
 - `crates/marrow/src/trace.rs` and `crates/marrow/src/cmd_data/integrity.rs` —
