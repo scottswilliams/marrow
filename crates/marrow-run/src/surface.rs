@@ -16,7 +16,8 @@ use marrow_store::tree::{
     decode_tree_enum_member, encode_tree_enum_member,
 };
 use marrow_store::value::{
-    SavedValue, ScalarType, decode_value, scalar_key_matches_type, validate_scalar_key,
+    SavedValue, ScalarType, ValueError, decode_value, scalar_key_matches_type, supported_date_days,
+    supported_instant_nanos, validate_scalar_key,
 };
 use marrow_syntax::{Diagnose, SourceSpan};
 
@@ -2423,7 +2424,25 @@ fn lower_surface_scalar_update(
             ));
         }
     };
+    validate_surface_scalar_update_range(&saved, span)?;
     Ok(leaf_scalar(saved))
+}
+
+fn validate_surface_scalar_update_range(
+    value: &SavedValue,
+    span: SourceSpan,
+) -> Result<(), SurfaceReadError> {
+    match value {
+        SavedValue::Date(days) if !supported_date_days(*days) => Err(request_at(
+            ValueError::DateOutOfRange { days: *days }.to_string(),
+            span,
+        )),
+        SavedValue::Instant(nanos) if !supported_instant_nanos(*nanos) => Err(request_at(
+            ValueError::InstantOutOfRange { nanos: *nanos }.to_string(),
+            span,
+        )),
+        _ => Ok(()),
+    }
 }
 
 fn leaf_scalar(value: SavedValue) -> PlannedSurfaceUpdateValue {

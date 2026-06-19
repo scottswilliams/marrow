@@ -656,7 +656,9 @@ mod tests {
     use marrow_store::tree::{
         DataPathSegment, StoreUid, TreeEnumMember, TreeStore, encode_tree_enum_member,
     };
-    use marrow_store::value::{SavedValue, encode_value};
+    use marrow_store::value::{
+        SUPPORTED_DATE_MIN_DAYS, SUPPORTED_INSTANT_MAX_NANOS, SavedValue, encode_value,
+    };
     use serde_json::json;
 
     use crate::surface::{
@@ -722,6 +724,18 @@ store ^settings: Settings
 surface SettingsSurface from ^settings
     fields theme, mode
     update mode
+";
+
+    const TEMPORAL_UPDATE_SURFACE: &str = "\
+resource Event
+    required title: string
+    required day: date
+    required seenAt: instant
+store ^events(id: int): Event
+
+surface Events from ^events
+    fields title, day, seenAt
+    update day, seenAt
 ";
 
     const BYTES_INDEX_SURFACE: &str = "\
@@ -1092,6 +1106,41 @@ surface Files from ^files
             &[SavedKey::Int(id)],
             &data_path(program, "books", &["privateCode"]),
             SavedValue::Str(private_code.into()),
+        );
+    }
+
+    fn write_surface_event(
+        program: &CheckedRuntimeProgram,
+        store: &TreeStore,
+        id: i64,
+        title: &str,
+        day: i32,
+        seen_at: i128,
+    ) {
+        let identity = [SavedKey::Int(id)];
+        write_data_value(
+            program,
+            store,
+            "events",
+            &identity,
+            &data_path(program, "events", &["title"]),
+            SavedValue::Str(title.into()),
+        );
+        write_data_value(
+            program,
+            store,
+            "events",
+            &identity,
+            &data_path(program, "events", &["day"]),
+            SavedValue::Date(day),
+        );
+        write_data_value(
+            program,
+            store,
+            "events",
+            &identity,
+            &data_path(program, "events", &["seenAt"]),
+            SavedValue::Instant(seen_at),
         );
     }
 
@@ -1478,6 +1527,70 @@ surface Files from ^files
                 .and_then(|field| field.value.clone()),
             Some(SurfaceValue::Str("compact".into()))
         );
+    }
+
+    #[test]
+    fn point_update_request_decodes_and_executes_temporal_range_faults_as_surface_request() {
+        for (member, value, expected) in [
+            (
+                "day",
+                SurfaceUpdateValueJson::Date {
+                    days_since_epoch: SUPPORTED_DATE_MIN_DAYS - 1,
+                },
+                SurfaceValue::Date(0),
+            ),
+            (
+                "seenAt",
+                SurfaceUpdateValueJson::Instant {
+                    nanos_since_epoch: (SUPPORTED_INSTANT_MAX_NANOS + 1).to_string(),
+                },
+                SurfaceValue::Instant(0),
+            ),
+        ] {
+            let (program, runtime) = checked_surface_program(TEMPORAL_UPDATE_SURFACE);
+            let store = admitted_store(&program);
+            write_surface_event(&runtime, &store, 1, "Launch", 0, 0);
+            let baseline = store
+                .read_commit_metadata()
+                .expect("read baseline commit metadata")
+                .expect("catalog baseline is stamped");
+
+            let surface = surface_id(&program, "Events");
+            let update = SurfaceUpdate::admit(&program, &store, surface).expect("admit update");
+            let request = SurfacePointUpdateRequestJson {
+                identity: SurfaceIdentityJson {
+                    store_catalog_id: store_catalog_id(&runtime, "events").as_str().into(),
+                    keys: vec![SurfaceKeyJson::Int { value: "1".into() }],
+                },
+                fields: vec![update_field(
+                    field_catalog_id(&runtime, "events", member),
+                    value,
+                )],
+            };
+
+            let decoded = request.decode(&update).expect("decode point update");
+            assert_surface_error(update.execute(decoded.as_update_input()), SURFACE_REQUEST);
+            assert_eq!(
+                store
+                    .read_commit_metadata()
+                    .expect("read commit metadata after rejected update")
+                    .expect("commit metadata remains"),
+                baseline
+            );
+
+            let record = SurfaceNodeRead::admit(&program, &store, surface)
+                .expect("admit read")
+                .read_point(&[SavedKey::Int(1)])
+                .expect("read unchanged point");
+            assert_eq!(
+                record
+                    .fields
+                    .iter()
+                    .find(|field| field.catalog_id == field_catalog_id(&runtime, "events", member))
+                    .and_then(|field| field.value.clone()),
+                Some(expected)
+            );
+        }
     }
 
     #[test]

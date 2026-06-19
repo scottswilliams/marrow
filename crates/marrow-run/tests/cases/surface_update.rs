@@ -13,7 +13,7 @@ use marrow_run::{
 use marrow_store::cell::CatalogId;
 use marrow_store::key::{SavedKey, encode_identity_payload};
 use marrow_store::tree::{DataPathSegment, StoreUid, TreeStore};
-use marrow_store::value::SavedValue;
+use marrow_store::value::{SUPPORTED_DATE_MIN_DAYS, SUPPORTED_INSTANT_MAX_NANOS, SavedValue};
 
 const SETTINGS_SURFACE: &str = "\
 resource Settings
@@ -78,6 +78,22 @@ surface Books from ^books
     fields title, author
     update author
     collection ^books.byAuthorCode as byAuthorCode
+";
+
+const TEMPORAL_UPDATE_SURFACE: &str = "\
+resource Event
+    required title: string
+    required day: date
+    required seenAt: instant
+store ^events(id: int): Event
+    index byDay(day, id)
+    index bySeenAt(seenAt, id)
+
+surface Events from ^events
+    fields title, day, seenAt
+    update day, seenAt
+    collection ^events.byDay as byDay
+    collection ^events.bySeenAt as bySeenAt
 ";
 
 const DUPLICATE_UPDATE_TAG_SURFACES: &str = "\
@@ -593,6 +609,114 @@ fn malformed_stored_indexed_value_is_invalid_data_not_store_failure() {
 }
 
 #[test]
+fn out_of_range_date_update_is_surface_request_without_mutation() {
+    let (program, runtime) = committed_program_and_runtime(TEMPORAL_UPDATE_SURFACE);
+    let store = admitted_store(&program);
+    let identity = [SavedKey::Int(1)];
+    write_temporal_event(&runtime, &store, 1, "Launch", 0, 0);
+    let baseline = store
+        .read_commit_metadata()
+        .expect("read baseline commit metadata")
+        .expect("catalog baseline is stamped");
+
+    let surface = surface_id(&program, "Events");
+    let update = SurfaceUpdate::admit(&program, &store, surface).expect("admit surface update");
+    assert_surface_error(
+        update.update_point(
+            &identity,
+            &[SurfaceUpdateField {
+                catalog_id: field_catalog_id(&runtime, "events", &["day"]),
+                value: SurfaceValue::Date(SUPPORTED_DATE_MIN_DAYS - 1),
+            }],
+        ),
+        SURFACE_REQUEST,
+    );
+
+    assert_eq!(
+        store
+            .read_commit_metadata()
+            .expect("read commit metadata after rejected date update")
+            .expect("commit metadata remains"),
+        baseline
+    );
+    assert_eq!(
+        read_data_value(
+            &runtime,
+            &store,
+            "events",
+            &identity,
+            &data_path(&runtime, "events", &["day"]),
+            marrow_store::value::ScalarType::Date,
+        ),
+        Some(SavedValue::Date(0))
+    );
+    let by_day = SurfaceCollectionRead::admit(
+        &program,
+        &store,
+        index_collection_ref(&program, surface, "byDay"),
+    )
+    .expect("admit date index collection");
+    assert_eq!(
+        collect_page_identities(&by_day, &[SavedKey::Date(0)], 10),
+        vec![vec![SavedKey::Int(1)]]
+    );
+}
+
+#[test]
+fn out_of_range_instant_update_is_surface_request_without_mutation() {
+    let (program, runtime) = committed_program_and_runtime(TEMPORAL_UPDATE_SURFACE);
+    let store = admitted_store(&program);
+    let identity = [SavedKey::Int(1)];
+    write_temporal_event(&runtime, &store, 1, "Launch", 0, 0);
+    let baseline = store
+        .read_commit_metadata()
+        .expect("read baseline commit metadata")
+        .expect("catalog baseline is stamped");
+
+    let surface = surface_id(&program, "Events");
+    let update = SurfaceUpdate::admit(&program, &store, surface).expect("admit surface update");
+    assert_surface_error(
+        update.update_point(
+            &identity,
+            &[SurfaceUpdateField {
+                catalog_id: field_catalog_id(&runtime, "events", &["seenAt"]),
+                value: SurfaceValue::Instant(SUPPORTED_INSTANT_MAX_NANOS + 1),
+            }],
+        ),
+        SURFACE_REQUEST,
+    );
+
+    assert_eq!(
+        store
+            .read_commit_metadata()
+            .expect("read commit metadata after rejected instant update")
+            .expect("commit metadata remains"),
+        baseline
+    );
+    assert_eq!(
+        read_data_value(
+            &runtime,
+            &store,
+            "events",
+            &identity,
+            &data_path(&runtime, "events", &["seenAt"]),
+            marrow_store::value::ScalarType::Instant,
+        ),
+        Some(SavedValue::Instant(0))
+    );
+    let by_seen_at = SurfaceCollectionRead::admit(
+        &program,
+        &store,
+        index_collection_ref(&program, surface, "bySeenAt"),
+    )
+    .expect("admit instant index collection");
+    assert_eq!(
+        collect_page_identities(&by_seen_at, &[SavedKey::Instant(0)], 10),
+        vec![vec![SavedKey::Int(1)]]
+    );
+}
+
+#[test]
 fn unique_conflict_leaves_every_field_and_index_unchanged() {
     let (program, runtime) = committed_program_and_runtime(UPDATE_SURFACE);
     let store = admitted_store(&program);
@@ -1041,6 +1165,57 @@ fn write_book(
         &[SavedKey::Str(isbn.into())],
         &identity,
     );
+}
+
+fn write_temporal_event(
+    program: &CheckedRuntimeProgram,
+    store: &TreeStore,
+    id: i64,
+    title: &str,
+    day: i32,
+    seen_at: i128,
+) {
+    let identity = [SavedKey::Int(id)];
+    write_data_value(
+        program,
+        store,
+        "events",
+        &identity,
+        &data_path(program, "events", &["title"]),
+        SavedValue::Str(title.into()),
+    );
+    write_data_value(
+        program,
+        store,
+        "events",
+        &identity,
+        &data_path(program, "events", &["day"]),
+        SavedValue::Date(day),
+    );
+    write_data_value(
+        program,
+        store,
+        "events",
+        &identity,
+        &data_path(program, "events", &["seenAt"]),
+        SavedValue::Instant(seen_at),
+    );
+    store
+        .write_index_entry(
+            &index_catalog_id(program, "events", "byDay"),
+            &[SavedKey::Date(day), SavedKey::Int(id)],
+            &identity,
+            Vec::new(),
+        )
+        .expect("date index entry write succeeds");
+    store
+        .write_index_entry(
+            &index_catalog_id(program, "events", "bySeenAt"),
+            &[SavedKey::Instant(seen_at), SavedKey::Int(id)],
+            &identity,
+            Vec::new(),
+        )
+        .expect("instant index entry write succeeds");
 }
 
 fn write_non_unique_index_entry(
