@@ -7,8 +7,9 @@ use marrow_check::{
 };
 use marrow_run::{
     SURFACE_ABI_MISMATCH, SURFACE_ABSENT, SURFACE_CURSOR, SURFACE_INVALID_DATA, SURFACE_LIMIT,
-    SURFACE_REQUEST, SURFACE_STALE_CURSOR, SurfaceCollectionPageRequest, SurfaceCollectionRead,
-    SurfaceEnumValue, SurfacePageBoundary, SurfaceReadError, SurfaceReadIdentity,
+    SURFACE_REQUEST, SURFACE_STALE_CURSOR, SURFACE_STORE, SurfaceCollectionPageRequest,
+    SurfaceCollectionRead, SurfaceCollectionReadShape, SurfaceEnumValue, SurfaceNodeRead,
+    SurfaceNodeReadShape, SurfacePageBoundary, SurfaceReadError, SurfaceReadIdentity,
     SurfaceReadOperationRef, SurfaceReadRecord, SurfaceValue, read_surface_point,
     read_surface_singleton,
 };
@@ -96,6 +97,18 @@ surface Books from ^books
     collection ^books.byIsbn as byIsbn
 ";
 
+const DUPLICATE_NODE_TAG_SURFACES: &str = "\
+resource Book
+    required title: string
+store ^books(id: int): Book
+
+surface Books from ^books
+    fields title
+
+surface Library from ^books
+    fields title
+";
+
 #[test]
 fn point_read_materializes_required_non_public_fields_before_projection() {
     let (program, runtime) = committed_program_and_runtime(BOOK_SURFACE);
@@ -137,6 +150,206 @@ fn point_read_materializes_required_non_public_fields_before_projection() {
             (field_catalog_id(&runtime, "books", &["subtitle"]), None),
         ]
     );
+}
+
+#[test]
+fn surface_node_read_admits_checked_point_operation_tag() {
+    let (program, runtime) = committed_program_and_runtime(BOOK_SURFACE);
+    let store = admitted_store(&program);
+    let identity = [SavedKey::Int(1)];
+    write_data_value(
+        &runtime,
+        &store,
+        "books",
+        &identity,
+        &data_path(&runtime, "books", &["title"]),
+        SavedValue::Str("Dune".into()),
+    );
+    write_data_value(
+        &runtime,
+        &store,
+        "books",
+        &identity,
+        &data_path(&runtime, "books", &["privateCode"]),
+        SavedValue::Str("internal".into()),
+    );
+
+    let surface = surface_id(&program, "Books");
+    let tag = operation_tag(&program, node_read_ref(&program, surface));
+    let read = SurfaceNodeRead::admit_by_operation_tag(&program, &store, &tag)
+        .expect("admit point read by operation tag");
+
+    assert_eq!(read.surface(), surface);
+    assert_eq!(read.shape(), SurfaceNodeReadShape::Point);
+    let record = read.read_point(&identity).expect("surface point read");
+    assert_identity(&record, &store_catalog_id(&runtime, "books"), &identity);
+}
+
+#[test]
+fn surface_node_read_admits_checked_singleton_operation_tag() {
+    let (program, runtime) = committed_program_and_runtime(SETTINGS_SURFACE);
+    let store = admitted_store(&program);
+    write_data_value(
+        &runtime,
+        &store,
+        "settings",
+        &[],
+        &data_path(&runtime, "settings", &["theme"]),
+        SavedValue::Str("dark".into()),
+    );
+
+    let surface = surface_id(&program, "SettingsSurface");
+    let tag = operation_tag(&program, node_read_ref(&program, surface));
+    let read = SurfaceNodeRead::admit_by_operation_tag(&program, &store, &tag)
+        .expect("admit singleton read by operation tag");
+
+    assert_eq!(read.surface(), surface);
+    assert_eq!(read.shape(), SurfaceNodeReadShape::Singleton);
+    let record = read.read_singleton().expect("surface singleton read");
+    assert_eq!(record.identity, None);
+}
+
+#[test]
+fn surface_node_read_tag_admission_fails_closed_for_collection_unknown_and_duplicate_tags() {
+    let (program, _runtime) = committed_program_and_runtime(COLLECTION_SURFACE);
+    let store = admitted_store(&program);
+    let surface = surface_id(&program, "Books");
+    let collection_tag = operation_tag(&program, root_collection_ref(&program, surface));
+
+    assert_surface_error(
+        SurfaceNodeRead::admit_by_operation_tag(&program, &store, &collection_tag),
+        SURFACE_ABI_MISMATCH,
+    );
+    assert_surface_error(
+        SurfaceNodeRead::admit_by_operation_tag(&program, &store, "sha256:not-a-surface-tag"),
+        SURFACE_ABI_MISMATCH,
+    );
+
+    let (duplicates, _runtime) = committed_program_and_runtime(DUPLICATE_NODE_TAG_SURFACES);
+    let store = admitted_store(&duplicates);
+    let tag = operation_tag(
+        &duplicates,
+        node_read_ref(&duplicates, surface_id(&duplicates, "Books")),
+    );
+    assert_surface_error(
+        SurfaceNodeRead::admit_by_operation_tag(&duplicates, &store, &tag),
+        SURFACE_ABI_MISMATCH,
+    );
+}
+
+#[test]
+fn surface_collection_read_admits_checked_operation_tags() {
+    let (program, runtime) = committed_program_and_runtime(COLLECTION_SURFACE);
+    let store = admitted_store(&program);
+    write_book(&runtime, &store, "a", 1, "Dune", "Frank", "isbn-a1");
+
+    let surface = surface_id(&program, "Books");
+    let root_ref = root_collection_ref(&program, surface);
+    let root_tag = operation_tag(&program, root_ref);
+    let root = SurfaceCollectionRead::admit_by_operation_tag(&program, &store, &root_tag)
+        .expect("admit root collection by operation tag");
+    assert_eq!(root.operation_ref(), root_ref);
+    assert_eq!(root.shape(), SurfaceCollectionReadShape::RootPage);
+
+    let by_author_ref = index_collection_ref(&program, surface, "byAuthor");
+    let by_author_tag = operation_tag(&program, by_author_ref);
+    let by_author = SurfaceCollectionRead::admit_by_operation_tag(&program, &store, &by_author_tag)
+        .expect("admit index collection by operation tag");
+    assert_eq!(by_author.operation_ref(), by_author_ref);
+    assert_eq!(by_author.shape(), SurfaceCollectionReadShape::IndexPage);
+    assert_eq!(
+        collect_page_identities(&by_author, &[SavedKey::Str("Frank".into())], 10),
+        vec![vec![SavedKey::Str("a".into()), SavedKey::Int(1)]]
+    );
+
+    let by_isbn_ref = index_collection_ref(&program, surface, "byIsbn");
+    let by_isbn_tag = operation_tag(&program, by_isbn_ref);
+    let by_isbn = SurfaceCollectionRead::admit_by_operation_tag(&program, &store, &by_isbn_tag)
+        .expect("admit unique lookup by operation tag");
+    assert_eq!(by_isbn.operation_ref(), by_isbn_ref);
+    assert_eq!(by_isbn.shape(), SurfaceCollectionReadShape::UniqueLookup);
+    assert_eq!(
+        by_isbn
+            .lookup_unique(&[SavedKey::Str("isbn-a1".into())])
+            .expect("unique lookup")
+            .expect("record found")
+            .identity
+            .expect("identity")
+            .keys,
+        vec![SavedKey::Str("a".into()), SavedKey::Int(1)]
+    );
+}
+
+#[test]
+fn surface_collection_read_tag_admission_fails_closed_for_node_and_unknown_tags() {
+    let (program, _runtime) = committed_program_and_runtime(COLLECTION_SURFACE);
+    let store = admitted_store(&program);
+    let surface = surface_id(&program, "Books");
+    let node_tag = operation_tag(&program, node_read_ref(&program, surface));
+
+    assert_surface_error(
+        SurfaceCollectionRead::admit_by_operation_tag(&program, &store, &node_tag),
+        SURFACE_ABI_MISMATCH,
+    );
+    assert_surface_error(
+        SurfaceCollectionRead::admit_by_operation_tag(&program, &store, "sha256:not-a-surface-tag"),
+        SURFACE_ABI_MISMATCH,
+    );
+}
+
+#[test]
+fn surface_point_read_opens_a_read_snapshot_for_materialization() {
+    let (program, runtime) = committed_program_and_runtime(BOOK_SURFACE);
+    let store = admitted_store(&program);
+    let identity = [SavedKey::Int(1)];
+    write_data_value(
+        &runtime,
+        &store,
+        "books",
+        &identity,
+        &data_path(&runtime, "books", &["title"]),
+        SavedValue::Str("Dune".into()),
+    );
+    write_data_value(
+        &runtime,
+        &store,
+        "books",
+        &identity,
+        &data_path(&runtime, "books", &["privateCode"]),
+        SavedValue::Str("internal".into()),
+    );
+    let read =
+        SurfaceNodeRead::admit(&program, &store, surface_id(&program, "Books")).expect("admit");
+
+    let snapshot = store.read_snapshot().expect("pin read snapshot");
+    assert_surface_error(read.read_point(&identity), SURFACE_STORE);
+    drop(snapshot);
+
+    read.read_point(&identity)
+        .expect("point read succeeds after snapshot drops");
+}
+
+#[test]
+fn surface_singleton_read_opens_a_read_snapshot_for_materialization() {
+    let (program, runtime) = committed_program_and_runtime(SETTINGS_SURFACE);
+    let store = admitted_store(&program);
+    write_data_value(
+        &runtime,
+        &store,
+        "settings",
+        &[],
+        &data_path(&runtime, "settings", &["theme"]),
+        SavedValue::Str("dark".into()),
+    );
+    let read = SurfaceNodeRead::admit(&program, &store, surface_id(&program, "SettingsSurface"))
+        .expect("admit");
+
+    let snapshot = store.read_snapshot().expect("pin read snapshot");
+    assert_surface_error(read.read_singleton(), SURFACE_STORE);
+    drop(snapshot);
+
+    read.read_singleton()
+        .expect("singleton read succeeds after snapshot drops");
 }
 
 #[test]
@@ -827,6 +1040,16 @@ fn root_collection_ref(program: &CheckedProgram, surface: SurfaceId) -> SurfaceR
     })
 }
 
+fn node_read_ref(program: &CheckedProgram, surface: SurfaceId) -> SurfaceReadOperationRef {
+    operation_ref(program, surface, |kind| {
+        matches!(
+            kind,
+            SurfaceReadOperationKind::SingletonRead { .. }
+                | SurfaceReadOperationKind::PointRead { .. }
+        )
+    })
+}
+
 fn index_collection_ref(
     program: &CheckedProgram,
     surface: SurfaceId,
@@ -853,6 +1076,13 @@ fn operation_ref(
         .position(|operation| matches_kind(&operation.kind))
         .expect("surface operation is present");
     SurfaceReadOperationRef { surface, ordinal }
+}
+
+fn operation_tag(program: &CheckedProgram, operation_ref: SurfaceReadOperationRef) -> String {
+    program.facts.surface(operation_ref.surface).read_operations[operation_ref.ordinal]
+        .operation_tag
+        .clone()
+        .expect("stable surface operation tag")
 }
 
 fn write_book(
@@ -999,10 +1229,10 @@ fn source_only_program(source: &str) -> CheckedProgram {
     program
 }
 
-fn assert_surface_error<T: std::fmt::Debug>(result: Result<T, SurfaceReadError>, code: &str) {
+fn assert_surface_error<T>(result: Result<T, SurfaceReadError>, code: &str) {
     match result {
         Err(error) => assert_eq!(error.code(), code, "{error:?}"),
-        Ok(value) => panic!("expected surface error {code}, got {value:?}"),
+        Ok(_) => panic!("expected surface error {code}"),
     }
 }
 

@@ -3,7 +3,7 @@ use support::*;
 
 use marrow_check::{
     CheckedProgram, CheckedRuntimeProgram, ProjectConfig, SurfaceId, SurfaceReadOperationKind,
-    check_project,
+    SurfaceUpdateOperationDescriptor, check_project,
 };
 use marrow_run::{
     SURFACE_ABI_MISMATCH, SURFACE_ABSENT, SURFACE_CONFLICT, SURFACE_INVALID_DATA, SURFACE_REQUEST,
@@ -80,6 +80,20 @@ surface Books from ^books
     collection ^books.byAuthorCode as byAuthorCode
 ";
 
+const DUPLICATE_UPDATE_TAG_SURFACES: &str = "\
+resource Book
+    required title: string
+store ^books(id: int): Book
+
+surface Books from ^books
+    fields title
+    update title
+
+surface Library from ^books
+    fields title
+    update title
+";
+
 #[test]
 fn sparse_update_preserves_omitted_fields_and_rewrites_indexes_atomically() {
     let (program, runtime) = committed_program_and_runtime(UPDATE_SURFACE);
@@ -136,6 +150,121 @@ fn sparse_update_preserves_omitted_fields_and_rewrites_indexes_atomically() {
     assert_eq!(
         collect_page_identities(&by_author, &[SavedKey::Str("Ursula".into())], 10),
         vec![vec![SavedKey::Str("a".into()), SavedKey::Int(1)]]
+    );
+}
+
+#[test]
+fn surface_update_admits_checked_point_operation_tag() {
+    let (program, runtime) = committed_program_and_runtime(UPDATE_SURFACE);
+    let store = admitted_store(&program);
+    write_book(&runtime, &store, "a", 1, "Dune", "Frank", "isbn-a1");
+
+    let surface = surface_id(&program, "Books");
+    let tag = update_operation_tag(&program, surface);
+    let update = SurfaceUpdate::admit_by_operation_tag(&program, &store, &tag)
+        .expect("admit point update by operation tag");
+
+    assert_eq!(update.surface(), surface);
+    update
+        .update_point(
+            &[SavedKey::Str("a".into()), SavedKey::Int(1)],
+            &[SurfaceUpdateField {
+                catalog_id: field_catalog_id(&runtime, "books", &["author"]),
+                value: SurfaceValue::Str("Ursula".into()),
+            }],
+        )
+        .expect("surface update succeeds");
+
+    let record = read_surface_point(
+        &program,
+        &store,
+        surface,
+        &[SavedKey::Str("a".into()), SavedKey::Int(1)],
+    )
+    .expect("surface read after update");
+    assert_eq!(
+        field_values(&record),
+        vec![
+            (
+                field_catalog_id(&runtime, "books", &["title"]),
+                Some(SurfaceValue::Str("Dune".into())),
+            ),
+            (
+                field_catalog_id(&runtime, "books", &["author"]),
+                Some(SurfaceValue::Str("Ursula".into())),
+            ),
+            (
+                field_catalog_id(&runtime, "books", &["isbn"]),
+                Some(SurfaceValue::Str("isbn-a1".into())),
+            ),
+        ]
+    );
+}
+
+#[test]
+fn surface_update_admits_checked_singleton_operation_tag() {
+    let (program, runtime) = committed_program_and_runtime(SETTINGS_SURFACE);
+    let store = admitted_store(&program);
+    write_data_value(
+        &runtime,
+        &store,
+        "settings",
+        &[],
+        &data_path(&runtime, "settings", &["theme"]),
+        SavedValue::Str("dark".into()),
+    );
+
+    let surface = surface_id(&program, "SettingsSurface");
+    let tag = update_operation_tag(&program, surface);
+    let update = SurfaceUpdate::admit_by_operation_tag(&program, &store, &tag)
+        .expect("admit singleton update by operation tag");
+
+    assert_eq!(update.surface(), surface);
+    update
+        .update_singleton(&[SurfaceUpdateField {
+            catalog_id: field_catalog_id(&runtime, "settings", &["mode"]),
+            value: SurfaceValue::Str("compact".into()),
+        }])
+        .expect("singleton update succeeds");
+
+    let record = read_surface_singleton(&program, &store, surface).expect("surface singleton read");
+    assert_eq!(
+        field_values(&record),
+        vec![
+            (
+                field_catalog_id(&runtime, "settings", &["theme"]),
+                Some(SurfaceValue::Str("dark".into())),
+            ),
+            (
+                field_catalog_id(&runtime, "settings", &["mode"]),
+                Some(SurfaceValue::Str("compact".into())),
+            ),
+        ]
+    );
+}
+
+#[test]
+fn surface_update_tag_admission_fails_closed_for_read_unknown_and_duplicate_tags() {
+    let (program, _runtime) = committed_program_and_runtime(UPDATE_SURFACE);
+    let store = admitted_store(&program);
+    let surface = surface_id(&program, "Books");
+    let read_tag = read_operation_tag(&program, surface);
+
+    assert_surface_error(
+        SurfaceUpdate::admit_by_operation_tag(&program, &store, &read_tag),
+        SURFACE_ABI_MISMATCH,
+    );
+    assert_surface_error(
+        SurfaceUpdate::admit_by_operation_tag(&program, &store, "sha256:not-a-surface-tag"),
+        SURFACE_ABI_MISMATCH,
+    );
+
+    let (duplicates, _runtime) = committed_program_and_runtime(DUPLICATE_UPDATE_TAG_SURFACES);
+    let store = admitted_store(&duplicates);
+    let tag = update_operation_tag(&duplicates, surface_id(&duplicates, "Books"));
+    assert_surface_error(
+        SurfaceUpdate::admit_by_operation_tag(&duplicates, &store, &tag),
+        SURFACE_ABI_MISMATCH,
     );
 }
 
@@ -829,6 +958,29 @@ fn index_collection_ref(
     marrow_run::SurfaceReadOperationRef { surface, ordinal }
 }
 
+fn read_operation_tag(program: &CheckedProgram, surface: SurfaceId) -> String {
+    program
+        .facts
+        .surface(surface)
+        .read_operations
+        .iter()
+        .find(|operation| {
+            matches!(
+                operation.kind,
+                SurfaceReadOperationKind::SingletonRead { .. }
+                    | SurfaceReadOperationKind::PointRead { .. }
+            )
+        })
+        .and_then(|operation| operation.operation_tag.clone())
+        .expect("stable surface read operation tag")
+}
+
+fn update_operation_tag(program: &CheckedProgram, surface: SurfaceId) -> String {
+    SurfaceUpdateOperationDescriptor::from_surface(program, program.facts.surface(surface))
+        .map(|descriptor| descriptor.operation_tag)
+        .expect("stable surface update operation tag")
+}
+
 fn write_book(
     program: &CheckedRuntimeProgram,
     store: &TreeStore,
@@ -973,10 +1125,10 @@ fn source_only_program(source: &str) -> CheckedProgram {
     program
 }
 
-fn assert_surface_error<T: std::fmt::Debug>(result: Result<T, SurfaceError>, code: &str) {
+fn assert_surface_error<T>(result: Result<T, SurfaceError>, code: &str) {
     match result {
         Err(error) => assert_eq!(error.code(), code, "{error:?}"),
-        Ok(value) => panic!("expected surface error {code}, got {value:?}"),
+        Ok(_) => panic!("expected surface error {code}"),
     }
 }
 

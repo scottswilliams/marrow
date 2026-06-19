@@ -5,7 +5,7 @@ use marrow_check::{
     CheckedFacts, CheckedProgram, EnumId, EnumMemberId, ResourceId, ResourceMemberFact,
     ResourceMemberId, ResourceMemberKind, StoreFact, StoreIndexFact, StoredValueMeaning,
     SurfaceCatalogStatus, SurfaceFact, SurfaceId, SurfaceReadFootprint, SurfaceReadOperationFact,
-    SurfaceReadOperationKind, checked_saved_root_place,
+    SurfaceReadOperationKind, SurfaceUpdateOperationDescriptor, checked_saved_root_place,
 };
 use marrow_store::Decimal;
 use marrow_store::StoreError;
@@ -274,6 +274,23 @@ impl<'a> SurfaceNodeRead<'a> {
         })
     }
 
+    pub fn admit_by_operation_tag(
+        program: &'a CheckedProgram,
+        store: &'a TreeStore,
+        operation_tag: &str,
+    ) -> Result<Self, SurfaceReadError> {
+        let matched = checked_read_operation_by_tag(program, operation_tag)?;
+        admit_surface_store(program, store)?;
+        Ok(Self {
+            store,
+            plan: SurfaceNodeReadPlan::prepare_operation(
+                program,
+                matched.surface,
+                matched.operation,
+            )?,
+        })
+    }
+
     pub fn surface(&self) -> SurfaceId {
         self.plan.surface
     }
@@ -355,6 +372,10 @@ impl<'a> SurfaceNodeRead<'a> {
         identity: &[SavedKey],
         output_identity: Option<SurfaceReadIdentity>,
     ) -> Result<SurfaceReadRecord, SurfaceReadError> {
+        let _snapshot = self
+            .store
+            .read_snapshot()
+            .map_err(|error| surface_store_error(error, self.plan.span))?;
         let mut budget = SurfaceMaterializationBudget::new();
         self.plan.record.materialize(
             self.store,
@@ -377,6 +398,25 @@ impl<'a> SurfaceCollectionRead<'a> {
             store,
             lineage,
             plan: SurfaceCollectionReadPlan::prepare(program, operation_ref)?,
+        })
+    }
+
+    pub fn admit_by_operation_tag(
+        program: &'a CheckedProgram,
+        store: &'a TreeStore,
+        operation_tag: &str,
+    ) -> Result<Self, SurfaceReadError> {
+        let matched = checked_read_operation_by_tag(program, operation_tag)?;
+        let lineage = admit_surface_store(program, store)?;
+        Ok(Self {
+            store,
+            lineage,
+            plan: SurfaceCollectionReadPlan::prepare_operation(
+                program,
+                matched.operation_ref,
+                matched.surface,
+                matched.operation,
+            )?,
         })
     }
 
@@ -533,6 +573,20 @@ impl<'a> SurfaceUpdate<'a> {
             program,
             store,
             plan: SurfaceUpdatePlan::prepare(program, surface)?,
+        })
+    }
+
+    pub fn admit_by_operation_tag(
+        program: &'a CheckedProgram,
+        store: &'a TreeStore,
+        operation_tag: &str,
+    ) -> Result<Self, SurfaceError> {
+        let surface = checked_update_surface_by_tag(program, operation_tag)?;
+        admit_surface_store(program, store)?;
+        Ok(Self {
+            program,
+            store,
+            plan: SurfaceUpdatePlan::prepare(program, surface.id)?,
         })
     }
 
@@ -715,6 +769,12 @@ struct SurfaceStoreLineage {
     engine_profile_digest: EngineProfileDigest,
 }
 
+struct SurfaceReadOperationMatch<'a> {
+    surface: &'a SurfaceFact,
+    operation: &'a SurfaceReadOperationFact,
+    operation_ref: SurfaceReadOperationRef,
+}
+
 #[derive(Clone, Copy)]
 enum MissingRecord {
     Absent,
@@ -759,9 +819,32 @@ impl SurfaceMaterializationBudget {
 impl<'a> SurfaceNodeReadPlan<'a> {
     fn prepare(program: &'a CheckedProgram, surface: SurfaceId) -> Result<Self, SurfaceReadError> {
         let surface = checked_surface(program, surface)?;
+        let (operation, shape) = backing_node_operation(surface)?;
+        Self::from_operation(program, surface, operation, shape)
+    }
+
+    fn prepare_operation(
+        program: &'a CheckedProgram,
+        surface: &'a SurfaceFact,
+        operation: &'a SurfaceReadOperationFact,
+    ) -> Result<Self, SurfaceReadError> {
+        let shape = node_read_shape(surface, operation).ok_or_else(|| {
+            abi_mismatch(
+                "surface operation tag is not a node read operation",
+                operation.span,
+            )
+        })?;
+        Self::from_operation(program, surface, operation, shape)
+    }
+
+    fn from_operation(
+        program: &'a CheckedProgram,
+        surface: &'a SurfaceFact,
+        operation: &'a SurfaceReadOperationFact,
+        shape: SurfaceNodeReadShape,
+    ) -> Result<Self, SurfaceReadError> {
         require_stable_surface(surface)?;
         let store = program.facts.store(surface.store);
-        let (operation, shape) = backing_node_operation(surface)?;
         let record =
             SurfaceRecordReadPlan::prepare(&program.facts, store, operation, surface.span)?;
         Ok(Self {
@@ -780,6 +863,15 @@ impl<'a> SurfaceCollectionReadPlan<'a> {
         operation_ref: SurfaceReadOperationRef,
     ) -> Result<Self, SurfaceReadError> {
         let (surface, operation) = checked_surface_operation(program, operation_ref)?;
+        Self::prepare_operation(program, operation_ref, surface, operation)
+    }
+
+    fn prepare_operation(
+        program: &'a CheckedProgram,
+        operation_ref: SurfaceReadOperationRef,
+        surface: &'a SurfaceFact,
+        operation: &'a SurfaceReadOperationFact,
+    ) -> Result<Self, SurfaceReadError> {
         require_stable_surface(surface)?;
         let store = program.facts.store(surface.store);
         let record =
@@ -1867,6 +1959,69 @@ fn checked_surface_operation(
     Ok((surface, operation))
 }
 
+fn checked_read_operation_by_tag<'a>(
+    program: &'a CheckedProgram,
+    operation_tag: &str,
+) -> Result<SurfaceReadOperationMatch<'a>, SurfaceReadError> {
+    let mut matched = None;
+    for surface in program.facts.surfaces() {
+        for (ordinal, operation) in surface.read_operations.iter().enumerate() {
+            if operation.operation_tag.as_deref() != Some(operation_tag) {
+                continue;
+            }
+            if matched.is_some() {
+                return Err(abi_mismatch(
+                    "surface operation tag matches multiple checked read operations",
+                    operation.span,
+                ));
+            }
+            matched = Some(SurfaceReadOperationMatch {
+                surface,
+                operation,
+                operation_ref: SurfaceReadOperationRef {
+                    surface: surface.id,
+                    ordinal,
+                },
+            });
+        }
+    }
+    matched.ok_or_else(|| {
+        abi_mismatch(
+            "surface operation tag is not exported by this checked program",
+            SourceSpan::default(),
+        )
+    })
+}
+
+fn checked_update_surface_by_tag<'a>(
+    program: &'a CheckedProgram,
+    operation_tag: &str,
+) -> Result<&'a SurfaceFact, SurfaceError> {
+    let mut matched = None;
+    for surface in program.facts.surfaces() {
+        let Some(descriptor) = SurfaceUpdateOperationDescriptor::from_surface(program, surface)
+        else {
+            continue;
+        };
+        if descriptor.operation_tag != operation_tag {
+            continue;
+        }
+        if matched.is_some() {
+            return Err(abi_mismatch(
+                "surface operation tag matches multiple checked update operations",
+                surface.span,
+            ));
+        }
+        matched = Some(surface);
+    }
+    matched.ok_or_else(|| {
+        abi_mismatch(
+            "surface operation tag is not exported by this checked program",
+            SourceSpan::default(),
+        )
+    })
+}
+
 fn require_stable_surface(surface: &SurfaceFact) -> Result<(), SurfaceReadError> {
     match surface.catalog_status {
         SurfaceCatalogStatus::Stable => Ok(()),
@@ -1886,15 +2041,7 @@ fn backing_node_operation(
     surface
         .read_operations
         .iter()
-        .find_map(|operation| match operation.kind {
-            SurfaceReadOperationKind::SingletonRead { store } if store == surface.store => {
-                Some((operation, SurfaceNodeReadShape::Singleton))
-            }
-            SurfaceReadOperationKind::PointRead { store } if store == surface.store => {
-                Some((operation, SurfaceNodeReadShape::Point))
-            }
-            _ => None,
-        })
+        .find_map(|operation| node_read_shape(surface, operation).map(|shape| (operation, shape)))
         .ok_or_else(|| {
             abi_mismatch(
                 format!(
@@ -1904,6 +2051,21 @@ fn backing_node_operation(
                 surface.span,
             )
         })
+}
+
+fn node_read_shape(
+    surface: &SurfaceFact,
+    operation: &SurfaceReadOperationFact,
+) -> Option<SurfaceNodeReadShape> {
+    match operation.kind {
+        SurfaceReadOperationKind::SingletonRead { store } if store == surface.store => {
+            Some(SurfaceNodeReadShape::Singleton)
+        }
+        SurfaceReadOperationKind::PointRead { store } if store == surface.store => {
+            Some(SurfaceNodeReadShape::Point)
+        }
+        _ => None,
+    }
 }
 
 fn collection_plan_kind(
@@ -1974,7 +2136,7 @@ fn collection_plan_kind(
                 key_count,
             }))
         }
-        _ => Err(request_at(
+        _ => Err(abi_mismatch(
             "checked surface operation is not a collection read",
             operation.span,
         )),
