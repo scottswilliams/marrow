@@ -114,7 +114,7 @@ pub use program::{
     CheckedConst, CheckedEntryFunction, CheckedFunction, CheckedModule, CheckedParam,
     CheckedProgram, CheckedReadOnlyExpression, CheckedRuntimeConst, CheckedRuntimeFunction,
     CheckedRuntimeModule, CheckedRuntimeProgram, EvolveTransform, FileId, MarrowType,
-    ProgramCatalog,
+    ProgramCatalog, RuntimeStopPoint,
 };
 pub use project_io::{
     ProjectIoError, check_project_against, check_source_project_analysis_against, load_config,

@@ -9,6 +9,43 @@ use marrow_store::value::ScalarType;
 use support::{config, temp_project, write};
 
 #[test]
+fn runtime_program_exposes_statement_stop_points_by_file_id() {
+    let root = temp_project("program-runtime-stop-points", |root| {
+        write(
+            root,
+            "src/app.mw",
+            "module app\n\
+             const BASE: int = 1\n\
+             pub fn run(flag: bool): int\n\
+             \x20   const first = BASE\n\
+             \x20   if flag\n\
+             \x20       print(first)\n\
+             \x20   else\n\
+             \x20       print(0)\n\
+             \x20   return first\n\
+             fn helper(): int\n\
+             \x20   while false\n\
+             \x20       print(2)\n\
+             \x20   return 3\n",
+        );
+    });
+    let (report, program) = check_project(&root, &config()).expect("check");
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+
+    let runtime = program.runtime();
+    let stop_points = runtime.stop_points();
+    let lines: Vec<u32> = stop_points.iter().map(|point| point.span.line).collect();
+
+    assert_eq!(lines, vec![4, 5, 6, 8, 9, 11, 12, 13]);
+    assert!(
+        stop_points.iter().all(|point| runtime
+            .file_path(point.file_id)
+            .is_some_and(|path| path.ends_with("src/app.mw"))),
+        "{stop_points:#?}"
+    );
+}
+
+#[test]
 fn builds_a_module_for_a_clean_library_file() {
     let root = temp_project("program-clean", |root| {
         write(

@@ -44,6 +44,7 @@ pub use syntax_parts::{
 };
 pub(crate) use walk::{
     CheckedBodyVisitor, walk_checked_body, walk_checked_expr, walk_checked_match_arm,
+    walk_checked_stmt,
 };
 
 pub fn checked_saved_root_place(

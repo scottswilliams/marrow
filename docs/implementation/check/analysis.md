@@ -89,6 +89,13 @@ from the checked program or snapshot:
   returns a `CheckedReadOnlyExpression` handle. Runtime evaluation uses
   `marrow_run::evaluate_checked_read_only_expression`, which reuses the checked
   lowered expression and the production evaluator.
+- `CheckedRuntimeProgram::stop_points()` returns snapshot-scoped
+  `RuntimeStopPoint` facts for the checked statement spans the evaluator can
+  report through `StepHook::before_statement`. Each point carries a `FileId` and
+  `SourceSpan`; callers map the file id back through the runtime program rather
+  than treating rendered paths as semantic identity. Nested statement bodies are
+  included. Source headers that are not separate checked statements are not
+  independent stop points.
 - `evolution::evolution_preview(snapshot, backup)` returns a `WitnessFactSet`.
   With no backup it is schema-only and marks the live-store path deferred; with
   a backup path it streams archive cells to add bounded count and sample facts.
@@ -151,7 +158,7 @@ add only transport availability and request-envelope concerns around those DTOs.
 | File | Responsibility |
 | --- | --- |
 | `crates/marrow-check/src/analysis.rs` | Two-pass IDE analysis core: discover + overlay + parse + check into `AnalysisSnapshot`, enforce module/script/root-owner uniqueness, run the shared checker tail, compute test-resolution suppression, and build snapshot-bound use-site and surface-operation views. |
-| `crates/marrow-check/src/program.rs` | Checked-program artifact plus analysis APIs for effect closure, per-entry durable footprints, entry cost shape, entry store-open mode, and checked read-only expressions. |
+| `crates/marrow-check/src/program.rs` | Checked-program artifact plus analysis APIs for effect closure, per-entry durable footprints, entry cost shape, entry store-open mode, checked read-only expressions, and runtime statement stop points. |
 | `crates/marrow-check/src/analysis/cursor.rs` | Cursor `type_at`/`scope_at`: replay the checker's binding primitives to rebuild lexical scope, infer the tightest covering expression; records no diagnostics. |
 | `crates/marrow-check/src/evolution/preview.rs` | Schema-only and backup-backed `WitnessFactSet` preview facts for tooling. |
 | `crates/marrow-check/src/tooling/mod.rs` | Tooling facade: re-exports the data/integrity API; defines `ToolingError` (Path vs Store). |

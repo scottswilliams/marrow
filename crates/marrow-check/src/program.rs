@@ -22,9 +22,11 @@ use crate::diagnostics::{
     CHECK_READ_ONLY_EXPRESSION_UNINDEXED_LOOKUP, CHECK_READ_ONLY_EXPRESSION_WRITE, CheckDiagnostic,
     DiagnosticPayload,
 };
+use crate::executable::CheckedBodyVisitor;
 use crate::executable::{
     CheckedBody, CheckedExecutableContext, CheckedExpr, CheckedFunctionRef,
-    CheckedRuntimeValueType, checked_runtime_value_type,
+    CheckedRuntimeValueType, CheckedStmt, checked_runtime_value_type, walk_checked_body,
+    walk_checked_stmt,
 };
 use crate::facts::{
     CheckedFacts, EffectClosureFacts, EntryCostShapeFact, EntryFootprintFact, EntryStoreOpenMode,
@@ -68,6 +70,13 @@ impl CheckedReadOnlyExpression {
     pub fn expression(&self) -> &CheckedExpr {
         &self.expression
     }
+}
+
+/// A runtime statement span the evaluator can report through `StepHook`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RuntimeStopPoint {
+    pub file_id: FileId,
+    pub span: SourceSpan,
 }
 
 /// The resolved shape of a checked project: every clean library module, in the
@@ -848,6 +857,38 @@ impl CheckedRuntimeProgram {
             .iter()
             .position(|candidate| std::ptr::eq(candidate, module))
             .map(|index| FileId(index as u32))
+    }
+
+    pub fn stop_points(&self) -> Vec<RuntimeStopPoint> {
+        let mut points = Vec::new();
+        for (module_index, module) in self.modules.iter().enumerate() {
+            let file_id = FileId(module_index as u32);
+            for function in module.functions() {
+                if let Some(body) = function.body() {
+                    let mut collector = RuntimeStopPointCollector {
+                        file_id,
+                        points: &mut points,
+                    };
+                    walk_checked_body(&mut collector, body);
+                }
+            }
+        }
+        points
+    }
+}
+
+struct RuntimeStopPointCollector<'a> {
+    file_id: FileId,
+    points: &'a mut Vec<RuntimeStopPoint>,
+}
+
+impl CheckedBodyVisitor for RuntimeStopPointCollector<'_> {
+    fn visit_stmt(&mut self, statement: &CheckedStmt) {
+        self.points.push(RuntimeStopPoint {
+            file_id: self.file_id,
+            span: statement.span(),
+        });
+        walk_checked_stmt(self, statement);
     }
 }
 
