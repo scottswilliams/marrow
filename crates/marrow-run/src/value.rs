@@ -165,15 +165,30 @@ impl Value {
 
 /// A compact preview of one identity key segment for [`Value::display_debug`].
 pub(crate) fn saved_key_preview(key: &SavedKey) -> String {
+    saved_key_preview_with_text_limit(key, usize::MAX)
+}
+
+pub(crate) fn saved_key_preview_with_text_limit(key: &SavedKey, text_limit: usize) -> String {
     match key {
         SavedKey::Int(n) => n.to_string(),
         SavedKey::Bool(b) => b.to_string(),
-        SavedKey::Str(s) => s.clone(),
+        SavedKey::Str(s) => truncate_preview_chars(s, text_limit),
         SavedKey::Date(d) => format!("date({d})"),
         SavedKey::Duration(n) => format!("duration({n})"),
         SavedKey::Instant(n) => format!("instant({n})"),
         SavedKey::Bytes(bytes) => format!("bytes[{}]", bytes.len()),
     }
+}
+
+pub(crate) fn truncate_preview_chars(text: &str, limit: usize) -> String {
+    for (count, (index, _)) in text.char_indices().enumerate() {
+        if count == limit {
+            let mut truncated = String::from(&text[..index]);
+            truncated.push_str("...");
+            return truncated;
+        }
+    }
+    text.to_string()
 }
 
 pub(crate) fn diagnostic_text_preview(text: &str) -> String {
@@ -690,7 +705,7 @@ fn render_identity(identity: &IdentityValue) -> String {
 mod tests {
     use super::{
         Value, canonical_scalar_text, diagnostic_saved_key_tuple_preview, diagnostic_text_preview,
-        diagnostic_value_preview, saved_key_to_value,
+        diagnostic_value_preview, saved_key_preview_with_text_limit, saved_key_to_value,
     };
     use crate::error::RUN_TYPE;
     use marrow_store::key::SavedKey;
@@ -737,6 +752,13 @@ mod tests {
 
         assert_eq!(preview, LONG_SAVED_KEY_TUPLE_PREVIEW);
         assert!(!preview.contains("tail-marker"), "{preview}");
+    }
+
+    #[test]
+    fn saved_key_preview_with_text_limit_truncates_unquoted_string_keys() {
+        let preview = saved_key_preview_with_text_limit(&SavedKey::Str("abcdef".into()), 3);
+
+        assert_eq!(preview, "abc...");
     }
 
     #[test]

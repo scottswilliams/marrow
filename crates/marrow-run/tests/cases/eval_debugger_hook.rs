@@ -7,7 +7,9 @@ use support::*;
 
 use marrow_check::CheckedRuntimeProgram;
 use marrow_run::{
-    CheckedEntryCall, Frame, Host, RunOutput, RuntimeError, StepHook, Value, WriteTarget,
+    CheckedEntryCall, DEBUG_VALUE_DEFAULT_PAGE_LIMIT, DEBUG_VALUE_MAX_PAGE_LIMIT,
+    DebugFrameSnapshot, DebugValue, DebugValueFilter, DebugValuePage, Frame, Host, RunOutput,
+    RuntimeError, StepHook, Value, WriteTarget,
 };
 use marrow_store::key::SavedKey;
 use marrow_store::tree::TreeStore;
@@ -120,6 +122,311 @@ fn hook_depth_tracks_nested_activations() {
     // outer's `const x = inner()` (depth 1), inner's `return 1` (depth 2 during
     // the nested call), then outer's `return x` (back at depth 1).
     assert_eq!(depths, vec![1, 2, 1]);
+}
+
+#[test]
+fn frame_debug_snapshot_owns_visible_locals_and_runtime_value_children() {
+    struct SnapshotRecorder {
+        snapshots: Vec<DebugFrameSnapshot>,
+    }
+
+    impl StepHook for SnapshotRecorder {
+        fn before_statement(
+            &mut self,
+            span: SourceSpan,
+            frame: Frame<'_, '_>,
+        ) -> Result<(), RuntimeError> {
+            self.snapshots.push(frame.debug_snapshot(
+                span,
+                DebugValuePage::default(),
+                DebugValueFilter::All,
+            ));
+            Ok(())
+        }
+    }
+
+    let program = checked_program(
+        "pub fn inspect(): int\n\
+         \x20   const title: string = \"Dune\"\n\
+         \x20   var tags: sequence[string]\n\
+         \x20   tags(1) = \"classic\"\n\
+         \x20   tags(2) = \"space\"\n\
+         \x20   var scores(playerId: string): int\n\
+         \x20   scores(\"p2\") = 20\n\
+         \x20   scores(\"p1\") = 10\n\
+         \x20   return 0\n",
+    );
+    let store = TreeStore::memory();
+    let mut hook = SnapshotRecorder {
+        snapshots: Vec::new(),
+    };
+    run_entry_with_debugger(
+        &store,
+        &Host::new(),
+        &mut hook,
+        checked_entry!(&program, "test::inspect"),
+    )
+    .expect("debugged run completes");
+
+    let snapshot = hook.snapshots.last().expect("return statement snapshot");
+    assert_eq!(snapshot.depth, 1);
+    assert_eq!(snapshot.span.line, 11);
+    assert!(
+        snapshot
+            .file
+            .as_ref()
+            .is_some_and(|path| path.ends_with("test.mw"))
+    );
+    let names: Vec<&str> = snapshot
+        .locals
+        .iter()
+        .map(|local| local.name.as_str())
+        .collect();
+    assert_eq!(snapshot.visible_local_count, 3);
+    assert!(!snapshot.locals_truncated);
+    assert_eq!(names, ["title", "tags", "scores"]);
+
+    let title = snapshot
+        .locals
+        .iter()
+        .find(|local| local.name == "title")
+        .expect("title local");
+    assert_eq!(title.value.preview(), "Dune");
+    assert_eq!(title.value.child_counts(), None);
+
+    let tags = snapshot
+        .locals
+        .iter()
+        .find(|local| local.name == "tags")
+        .expect("tags local");
+    assert_eq!(tags.value.preview(), "sequence[2]");
+    assert_eq!(tags.value.child_counts().unwrap().indexed, Some(2));
+    let children = tags
+        .value
+        .children(DebugValuePage::default(), DebugValueFilter::All);
+    assert_eq!(children[0].name, "[1]");
+    assert_eq!(children[0].value.preview(), "classic");
+    assert_eq!(children[1].name, "[2]");
+    assert_eq!(children[1].value.preview(), "space");
+
+    let scores = snapshot
+        .locals
+        .iter()
+        .find(|local| local.name == "scores")
+        .expect("scores local");
+    assert_eq!(scores.value.preview(), "tree[2]");
+    assert_eq!(scores.value.child_counts().unwrap().named, Some(2));
+    let score_children = scores
+        .value
+        .children(DebugValuePage::default(), DebugValueFilter::Named);
+    assert_eq!(score_children[0].name, "(p1)");
+    assert_eq!(score_children[0].value.preview(), "10");
+    assert_eq!(score_children[1].name, "(p2)");
+    assert_eq!(score_children[1].value.preview(), "20");
+    assert!(
+        scores
+            .value
+            .children(DebugValuePage::default(), DebugValueFilter::Indexed)
+            .is_empty()
+    );
+}
+
+#[test]
+fn frame_debug_snapshot_resolves_shadowed_locals_to_the_visible_value() {
+    struct SnapshotRecorder {
+        snapshots: Vec<DebugFrameSnapshot>,
+    }
+
+    impl StepHook for SnapshotRecorder {
+        fn before_statement(
+            &mut self,
+            span: SourceSpan,
+            frame: Frame<'_, '_>,
+        ) -> Result<(), RuntimeError> {
+            self.snapshots.push(frame.debug_snapshot(
+                span,
+                DebugValuePage::default(),
+                DebugValueFilter::All,
+            ));
+            Ok(())
+        }
+    }
+
+    let program = checked_program(
+        "pub fn shadow(): int\n\
+         \x20   const value: int = 1\n\
+         \x20   if true\n\
+         \x20       const value: int = 2\n\
+         \x20       return value\n\
+         \x20   return value\n",
+    );
+    let store = TreeStore::memory();
+    let mut hook = SnapshotRecorder {
+        snapshots: Vec::new(),
+    };
+    run_entry_with_debugger(
+        &store,
+        &Host::new(),
+        &mut hook,
+        checked_entry!(&program, "test::shadow"),
+    )
+    .expect("debugged run completes");
+
+    let snapshot = hook.snapshots.last().expect("inner return snapshot");
+    assert_eq!(snapshot.locals.len(), 1);
+    assert_eq!(snapshot.locals[0].name, "value");
+    assert_eq!(snapshot.locals[0].value.preview(), "2");
+}
+
+#[test]
+fn frame_debug_snapshot_reports_a_bounded_local_page() {
+    struct SnapshotRecorder {
+        snapshots: Vec<DebugFrameSnapshot>,
+    }
+
+    impl StepHook for SnapshotRecorder {
+        fn before_statement(
+            &mut self,
+            span: SourceSpan,
+            frame: Frame<'_, '_>,
+        ) -> Result<(), RuntimeError> {
+            self.snapshots.push(frame.debug_snapshot(
+                span,
+                DebugValuePage::new(1, 1),
+                DebugValueFilter::All,
+            ));
+            Ok(())
+        }
+    }
+
+    let program = checked_program(
+        "pub fn inspect(): int\n\
+         \x20   const a: int = 1\n\
+         \x20   const b: int = 2\n\
+         \x20   const c: int = 3\n\
+         \x20   return a + b + c\n",
+    );
+    let store = TreeStore::memory();
+    let mut hook = SnapshotRecorder {
+        snapshots: Vec::new(),
+    };
+    run_entry_with_debugger(
+        &store,
+        &Host::new(),
+        &mut hook,
+        checked_entry!(&program, "test::inspect"),
+    )
+    .expect("debugged run completes");
+
+    let snapshot = hook.snapshots.last().expect("return statement snapshot");
+    assert_eq!(snapshot.visible_local_count, 3);
+    assert!(snapshot.locals_truncated);
+    assert_eq!(snapshot.locals.len(), 1);
+    assert_eq!(snapshot.locals[0].name, "b");
+    assert_eq!(snapshot.locals[0].value.preview(), "2");
+}
+
+#[test]
+fn debug_value_pages_and_filters_use_marrow_labels() {
+    let sequence = DebugValue::from_value(Value::Sequence(vec![
+        Value::Int(10),
+        Value::Int(20),
+        Value::Int(30),
+    ]));
+    assert_eq!(sequence.preview(), "sequence[3]");
+    assert_eq!(sequence.child_counts().unwrap().indexed, Some(3));
+    let first_page = sequence.children(DebugValuePage::new(0, 1), DebugValueFilter::Indexed);
+    assert_eq!(first_page.len(), 1);
+    assert_eq!(first_page[0].name, "[1]");
+    assert_eq!(first_page[0].value.preview(), "10");
+    let second_page = sequence.children(DebugValuePage::new(1, 1), DebugValueFilter::Indexed);
+    assert_eq!(second_page.len(), 1);
+    assert_eq!(second_page[0].name, "[2]");
+    assert_eq!(second_page[0].value.preview(), "20");
+    assert!(
+        sequence
+            .children(DebugValuePage::new(0, 0), DebugValueFilter::Indexed)
+            .is_empty()
+    );
+    assert!(
+        sequence
+            .children(DebugValuePage::default(), DebugValueFilter::Named)
+            .is_empty()
+    );
+
+    let large_sequence = DebugValue::from_value(Value::Sequence(
+        (0..DEBUG_VALUE_DEFAULT_PAGE_LIMIT + 1)
+            .map(|value| Value::Int(value as i64))
+            .collect(),
+    ));
+    let debug_text = format!("{large_sequence:?}");
+    assert!(debug_text.contains("sequence[101]"), "{debug_text}");
+    assert!(!debug_text.contains("Runtime"), "{debug_text}");
+    assert!(!debug_text.contains("Sequence(["), "{debug_text}");
+    let default_page =
+        large_sequence.children(DebugValuePage::default(), DebugValueFilter::Indexed);
+    assert_eq!(default_page.len(), DEBUG_VALUE_DEFAULT_PAGE_LIMIT);
+    assert_eq!(
+        default_page.last().expect("last default child").name,
+        format!("[{DEBUG_VALUE_DEFAULT_PAGE_LIMIT}]")
+    );
+
+    let resource = DebugValue::from_value(Value::Resource(vec![
+        ("title".into(), Value::Str("Dune".into())),
+        ("pages".into(), Value::Int(412)),
+    ]));
+    assert_eq!(resource.preview(), "resource{title, pages}");
+    assert_eq!(resource.child_counts().unwrap().named, Some(2));
+    let children = resource.children(DebugValuePage::new(1, 1), DebugValueFilter::Named);
+    assert_eq!(children.len(), 1);
+    assert_eq!(children[0].name, "pages");
+    assert_eq!(children[0].value.preview(), "412");
+
+    let program = checked_program(
+        "resource Book\n\
+         \x20   title: string\nstore ^books(author: string, ordinal: int): Book\n\
+         \n\
+         pub fn bookId(): Id(^books)\n\
+         \x20   return Id(^books, \"Ann\", 2)\n",
+    );
+    let store = TreeStore::memory();
+    let output = run_entry(&store, checked_entry!(&program, "test::bookId"))
+        .expect("identity entry runs")
+        .value
+        .expect("identity value");
+    let identity = DebugValue::from_value(output);
+    assert_eq!(identity.preview(), "^books(Ann, 2)");
+    assert_eq!(identity.child_counts().unwrap().indexed, Some(2));
+    let first_key = identity.children(DebugValuePage::new(0, 1), DebugValueFilter::Indexed);
+    assert_eq!(first_key.len(), 1);
+    assert_eq!(first_key[0].name, "[1]");
+    assert_eq!(first_key[0].value.preview(), "Ann");
+    let second_key = identity.children(DebugValuePage::new(1, 1), DebugValueFilter::Indexed);
+    assert_eq!(second_key.len(), 1);
+    assert_eq!(second_key[0].name, "[2]");
+    assert_eq!(second_key[0].value.preview(), "2");
+}
+
+#[test]
+fn debug_value_snapshots_bound_nested_child_materialization() {
+    let nested = Value::Sequence(
+        (0..DEBUG_VALUE_MAX_PAGE_LIMIT + 1)
+            .map(|value| Value::Int(value as i64))
+            .collect(),
+    );
+    let root = DebugValue::from_value(Value::Sequence(vec![nested]));
+    let children = root.children(DebugValuePage::new(0, 1), DebugValueFilter::Indexed);
+
+    assert_eq!(children.len(), 1);
+    assert_eq!(
+        children[0].value.preview(),
+        format!("sequence[{}]", DEBUG_VALUE_MAX_PAGE_LIMIT + 1)
+    );
+    assert_eq!(
+        children[0].value.child_counts().unwrap().indexed,
+        Some(DEBUG_VALUE_MAX_PAGE_LIMIT)
+    );
+    assert!(children[0].value.children_truncated());
 }
 
 #[test]

@@ -29,6 +29,7 @@ mod activation;
 mod call;
 mod call_args;
 mod collection;
+mod debugger;
 mod durable_read;
 mod entry;
 mod env;
@@ -67,6 +68,10 @@ mod value;
 mod write_dispatch;
 mod write_plan;
 
+pub use debugger::{
+    DEBUG_VALUE_DEFAULT_PAGE_LIMIT, DEBUG_VALUE_MAX_PAGE_LIMIT, DebugFrameSnapshot, DebugLocal,
+    DebugValue, DebugValueChild, DebugValueChildCounts, DebugValueFilter, DebugValuePage,
+};
 pub use entry::{
     CheckedEntryCall, EntryArgument, EntryArgumentJsonError, EntryArgumentJsonErrorKind,
     EntryArgumentValue, EntryInvocation, EntryScalarArgument, entry_argument_json_schema,

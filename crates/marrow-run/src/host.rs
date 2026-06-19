@@ -4,12 +4,14 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt;
 use std::io::{self, Read};
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use marrow_store::tree::TreeStore;
 use marrow_syntax::SourceSpan;
 
+use crate::debugger::{DebugFrameSnapshot, DebugValueFilter, DebugValuePage};
 use crate::env::Env;
 use crate::error::RuntimeError;
 use crate::value::{RunOutputSink, Value};
@@ -222,6 +224,26 @@ impl<'e, 'p> Frame<'e, 'p> {
             .iter()
             .find(|module| module.name == self.env.module)
             .map(|module| module.source_file.as_path())
+    }
+
+    /// Captures the current source location, activation identity, and visible
+    /// locals as owned debugger facts. The locals are a bounded page; the
+    /// snapshot reports how many visible local names existed before paging.
+    pub fn debug_snapshot(
+        &self,
+        span: SourceSpan,
+        page: DebugValuePage,
+        filter: DebugValueFilter,
+    ) -> DebugFrameSnapshot {
+        let locals = crate::debugger::snapshot_locals(self.locals(), page, filter);
+        DebugFrameSnapshot {
+            span,
+            file: self.file().map(PathBuf::from),
+            depth: self.depth(),
+            visible_local_count: locals.visible_local_count,
+            locals_truncated: locals.locals_truncated,
+            locals: locals.locals,
+        }
     }
 }
 

@@ -17,12 +17,13 @@ The runtime is the final pipeline stage. It takes a checked project session or a
 - Entry execution then enters `eval_call` (`call.rs`) and `eval_statement` / `eval_expr` (`statement.rs`, `expr.rs`), where saved reads stream through the read bridge, saved writes build and commit plans, and stdlib calls branch on the checker-stamped `Capability`.
 - Evolution admission for `run` lives in `project_session.rs`: the session freezes a pending baseline, fences on `(source_digest, accepted_epoch, engine_profile)`, auto-applies zero-record-mutation drift through the production apply path, and refuses unstamped populated stores before invocation.
 
-## The six areas
+## The seven areas
 
 | Area | Spine | One-line responsibility |
 | --- | --- | --- |
 | Project sessions | `project_session.rs` | Load and check run/test projects, bind catalog identity, admit configured stores through the activation fence or select fresh memory, invoke entries through one session path, and admit read-only or read/write project surface sessions over already stamped native stores. |
 | [Evaluator core](evaluator.md) | `entry.rs`, `activation.rs`, `call.rs`, `expr.rs`, `statement.rs`, `exec.rs`, `loop_exec.rs`, `env.rs`, `error.rs`, `host.rs`, `path.rs` | Walk the checked AST: values, control flow, calls, loops, the error channel, the host boundary, and saved-path lowering. |
+| Debugger snapshots | `debugger.rs`, `host.rs` | Capture a stopped `Frame` into bounded Marrow-owned `DebugFrameSnapshot` and `DebugValue*` facts: source location, depth, paged visible locals, previews, child counts, and captured child pages. |
 | [Reads and iteration](saved-data.md) | `read.rs`, `durable_read.rs`, `saved_iter.rs` (+ `saved_iter/`), `collection.rs`, `local_collection.rs` | Resolve a checked place to a store address; decode one entry or stream ordered iteration for `for`/`keys`/`values`/`entries`/`count`. Durable data is never materialized as a `Value`. |
 | Surface reads and updates | `surface.rs` | Admit a stable checked surface against a stamped store; execute backing singleton/point/collection reads with full-record validation and projection-only output; execute sparse updates over checked `SurfaceFact.update` fields through managed write plans. |
 | [Managed writes](writes.md) | `write.rs`, `write_plan.rs`, `write_dispatch/`, `group_write.rs`, `transaction.rs`, `index_maintenance.rs`, `store.rs` | Lower a write target to a `SavedPath`, build a typed `WritePlan` (data + generated indexes + metadata stamp), and commit it atomically inside the active transaction. |
