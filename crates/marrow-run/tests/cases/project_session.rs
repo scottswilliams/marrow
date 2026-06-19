@@ -3,7 +3,8 @@ use std::fs;
 use std::path::Path;
 
 use marrow_check::{ProjectConfig, StoreBackend, StoreConfig};
-use marrow_run::{ProjectMode, ProjectSession};
+use marrow_run::{Host, ProjectMode, ProjectOpen, ProjectSession, SessionEntry};
+use marrow_store::tree::TreeStore;
 use support::{TempDir, write_temp_source};
 
 fn native_config() -> ProjectConfig {
@@ -43,6 +44,121 @@ fn advanced_source() -> &'static str {
      store ^counter(id: int): Counter\n\
      pub fn show()\n\
      \x20\x20\x20\x20print(\"advanced\")\n"
+}
+
+fn persistent_counter_source() -> &'static str {
+    "module shelf\n\
+     resource Counter\n\
+     \x20\x20\x20\x20required value: int\n\
+     store ^counter(id: int): Counter\n\
+     pub fn bump()\n\
+     \x20\x20\x20\x20var c: Counter\n\
+     \x20\x20\x20\x20c.value = 1\n\
+     \x20\x20\x20\x20transaction\n\
+     \x20\x20\x20\x20\x20\x20\x20\x20^counter(1) = c\n\
+     pub fn show()\n\
+     \x20\x20\x20\x20if not exists(^counter(1))\n\
+     \x20\x20\x20\x20\x20\x20\x20\x20print(\"absent\")\n\
+     \x20\x20\x20\x20\x20\x20\x20\x20return\n\
+     \x20\x20\x20\x20if const value = ^counter(1).value\n\
+     \x20\x20\x20\x20\x20\x20\x20\x20print($\"value={value}\")\n"
+}
+
+fn invoke(session: &ProjectSession, entry: &str) -> String {
+    let host = Host::new();
+    let mut output = String::new();
+    session
+        .invoke(SessionEntry::new(entry, &host, &mut output))
+        .expect("invoke session entry");
+    output
+}
+
+#[test]
+fn fresh_memory_run_does_not_create_native_store_or_catalog_artifact() {
+    let root = TempDir::new("marrow-run-session-fresh-memory").expect("create project");
+    write_native_config(root.path());
+    write_temp_source(root.path(), Path::new("src/shelf.mw"), baseline_source());
+
+    let session = ProjectSession::open(root.path(), ProjectOpen::run().with_fresh_memory_store())
+        .expect("open fresh-memory session");
+    assert_eq!(session.run_entry(), Some("shelf::show"));
+    assert!(
+        session.store_stamp().expect("read store stamp").is_none(),
+        "fresh-memory sessions do not expose durable store stamps"
+    );
+
+    let output = invoke(&session, "shelf::show");
+
+    assert_eq!(output, "baseline\n");
+    assert!(
+        !root.path().join(".data").exists(),
+        "fresh-memory session must not create the configured native data dir"
+    );
+    assert!(
+        !root.path().join("marrow.catalog.json").exists(),
+        "fresh-memory session must not freeze or render accepted catalog identity"
+    );
+}
+
+#[test]
+fn fresh_memory_run_does_not_read_or_advance_an_existing_native_store() {
+    let root =
+        TempDir::new("marrow-run-session-fresh-memory-existing-store").expect("create project");
+    write_native_config(root.path());
+    write_temp_source(
+        root.path(),
+        Path::new("src/shelf.mw"),
+        persistent_counter_source(),
+    );
+
+    let seed = ProjectSession::open(
+        root.path(),
+        ProjectOpen::run().with_entry_override("shelf::bump"),
+    )
+    .expect("open seed session");
+    assert_eq!(invoke(&seed, "shelf::bump"), "");
+    drop(seed);
+
+    let store_path = root.path().join(".data").join("marrow.redb");
+    let catalog_path = root.path().join("marrow.catalog.json");
+    let catalog_before = fs::read(&catalog_path).expect("seed run renders accepted catalog");
+    let before = {
+        let store = TreeStore::open_read_only(&store_path).expect("open real store");
+        store
+            .read_commit_metadata()
+            .expect("read commit metadata")
+            .expect("seed run stamps the real store")
+    };
+
+    let fresh = ProjectSession::open(root.path(), ProjectOpen::run().with_fresh_memory_store())
+        .expect("open fresh-memory session over existing native store");
+    assert_eq!(
+        invoke(&fresh, "shelf::show"),
+        "absent\n",
+        "fresh-memory run must not read the real native store"
+    );
+    assert_eq!(
+        invoke(&fresh, "shelf::bump"),
+        "",
+        "fresh-memory writes must stay inside the in-memory session store"
+    );
+
+    let after = {
+        let store = TreeStore::open_read_only(&store_path).expect("reopen real store");
+        store
+            .read_commit_metadata()
+            .expect("read commit metadata")
+            .expect("real store remains stamped")
+    };
+    assert_eq!(
+        before, after,
+        "fresh-memory run must not advance the real store commit"
+    );
+    assert_eq!(
+        catalog_before,
+        fs::read(&catalog_path).expect("fresh-memory run preserves accepted catalog"),
+        "fresh-memory run must not rewrite the accepted catalog artifact"
+    );
 }
 
 #[test]

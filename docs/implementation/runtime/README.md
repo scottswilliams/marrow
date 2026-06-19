@@ -11,7 +11,7 @@ The runtime is the final pipeline stage. It takes a checked project session or a
 
 ## Run order
 
-1. `ProjectSession::open` (`project_session.rs`) checks a project for `run` or `test`, binds accepted catalog identity, and admits the configured store before any write-capable run invocation.
+1. `ProjectSession::open` (`project_session.rs`) checks a project for `run` or `test`, binds catalog identity for the selected mode, and selects the run store policy: configured-store admission through the activation fence, isolated dry-run admission, or a fresh in-memory store that admits no configured store.
 2. `ProjectSession::invoke` builds a `CheckedEntryCall` and selects the admitted run store or a fresh test store, then calls `run_entry*` (`entry.rs`) to resolve the entry, canonicalize and type-check args, and start the top activation.
 3. `eval_call` (`call.rs`) dispatches every saved read, constructor, builtin, std capability, local-collection, and program-function call.
 4. `eval_statement` / `eval_expr` (`statement.rs`, `expr.rs`) walk the body; saved reads stream through the read bridge, saved writes build and commit plans, stdlib calls branch on the checker-stamped `Capability`.
@@ -21,7 +21,7 @@ The runtime is the final pipeline stage. It takes a checked project session or a
 
 | Area | Spine | One-line responsibility |
 | --- | --- | --- |
-| Project sessions | `project_session.rs` | Load and check run/test projects, bind catalog identity, admit stores through the activation fence, and invoke entries through one session path. |
+| Project sessions | `project_session.rs` | Load and check run/test projects, bind catalog identity, admit configured stores through the activation fence or select fresh memory, and invoke entries through one session path. |
 | [Evaluator core](evaluator.md) | `entry.rs`, `activation.rs`, `call.rs`, `expr.rs`, `statement.rs`, `exec.rs`, `loop_exec.rs`, `env.rs`, `error.rs`, `host.rs`, `path.rs` | Walk the checked AST: values, control flow, calls, loops, the error channel, the host boundary, and saved-path lowering. |
 | [Reads and iteration](saved-data.md) | `read.rs`, `durable_read.rs`, `saved_iter.rs` (+ `saved_iter/`), `collection.rs`, `local_collection.rs` | Resolve a checked place to a store address; decode one entry or stream ordered iteration for `for`/`keys`/`values`/`entries`/`count`. Durable data is never materialized as a `Value`. |
 | [Managed writes](writes.md) | `write.rs`, `write_plan.rs`, `write_dispatch/`, `group_write.rs`, `transaction.rs`, `index_maintenance.rs`, `store.rs` | Lower a write target to a `SavedPath`, build a typed `WritePlan` (data + generated indexes + metadata stamp), and commit it atomically inside the active transaction. |

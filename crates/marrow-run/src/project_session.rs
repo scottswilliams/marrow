@@ -32,7 +32,14 @@ pub enum ProjectMode {
 pub struct ProjectOpen {
     mode: ProjectMode,
     entry_override: Option<String>,
-    isolate_writes: bool,
+    run_store_policy: RunStorePolicy,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RunStorePolicy {
+    Commit,
+    Isolated,
+    FreshMemory,
 }
 
 impl ProjectOpen {
@@ -40,7 +47,7 @@ impl ProjectOpen {
         Self {
             mode: ProjectMode::Run,
             entry_override: None,
-            isolate_writes: false,
+            run_store_policy: RunStorePolicy::Commit,
         }
     }
 
@@ -48,7 +55,7 @@ impl ProjectOpen {
         Self {
             mode: ProjectMode::Test,
             entry_override: None,
-            isolate_writes: false,
+            run_store_policy: RunStorePolicy::Commit,
         }
     }
 
@@ -58,7 +65,12 @@ impl ProjectOpen {
     }
 
     pub fn with_isolated_writes(mut self) -> Self {
-        self.isolate_writes = true;
+        self.run_store_policy = RunStorePolicy::Isolated;
+        self
+    }
+
+    pub fn with_fresh_memory_store(mut self) -> Self {
+        self.run_store_policy = RunStorePolicy::FreshMemory;
         self
     }
 }
@@ -393,7 +405,12 @@ impl ProjectSession {
     ) -> Result<Self, ProjectSessionError> {
         let open = mode.into();
         let root = root.as_ref().to_path_buf();
-        let (config, program) = load_checked_for_session(&root)?;
+        let (config, program) = match open.mode {
+            ProjectMode::Run if open.run_store_policy == RunStorePolicy::FreshMemory => {
+                load_checked_for_fresh_memory_session(&root)?
+            }
+            ProjectMode::Run | ProjectMode::Test => load_checked_for_session(&root)?,
+        };
         match open.mode {
             ProjectMode::Run => open_run_session(root, config, program, open),
             ProjectMode::Test => open_test_session(root, config, program),
@@ -518,7 +535,11 @@ fn open_run_session(
         .or_else(|| config.default_entry.clone())
         .ok_or(ProjectSessionError::NoEntry)?;
     let mut notices = Vec::new();
-    let store = open_run_store(&root, &config, program, open.isolate_writes, &mut notices)?;
+    let store = match open.run_store_policy {
+        RunStorePolicy::Commit => open_run_store(&root, &config, program, false, &mut notices),
+        RunStorePolicy::Isolated => open_run_store(&root, &config, program, true, &mut notices),
+        RunStorePolicy::FreshMemory => open_fresh_memory_run_store(&root, &config, program),
+    }?;
     let program = store.program;
     let runtime = program.runtime();
     Ok(ProjectSession {
@@ -631,16 +652,25 @@ fn open_memory_preview_store(
     config: &ProjectConfig,
     program: CheckedProgram,
 ) -> Result<OpenRunStore, ProjectSessionError> {
-    Ok(OpenRunStore {
-        program: bind_test_identity(root, config, program)?,
-        store: RunStore::Memory(TreeStore::memory()),
-    })
+    open_bound_memory_store(bind_test_identity(root, config, program)?)
 }
 
 fn open_memory_store(program: CheckedProgram) -> Result<OpenRunStore, ProjectSessionError> {
     if pending_baseline(&program) {
         return Err(ProjectSessionError::DurableStoreRequired);
     }
+    open_bound_memory_store(program)
+}
+
+fn open_fresh_memory_run_store(
+    root: &Path,
+    config: &ProjectConfig,
+    program: CheckedProgram,
+) -> Result<OpenRunStore, ProjectSessionError> {
+    open_bound_memory_store(bind_test_identity(root, config, program)?)
+}
+
+fn open_bound_memory_store(program: CheckedProgram) -> Result<OpenRunStore, ProjectSessionError> {
     Ok(OpenRunStore {
         program,
         store: RunStore::Memory(TreeStore::memory()),
@@ -802,6 +832,15 @@ fn load_checked_for_session(
         let store = open_store_for_inspection(root, &config)?;
         marrow_check::read_accepted_catalog_with_store(root, store.as_ref())?
     };
+    let program = marrow_check::check_project_against(root, &config, accepted.as_ref())?;
+    Ok((config, program))
+}
+
+fn load_checked_for_fresh_memory_session(
+    root: &Path,
+) -> Result<(ProjectConfig, CheckedProgram), ProjectSessionError> {
+    let config = marrow_check::load_config(root)?;
+    let accepted = marrow_check::read_accepted_catalog_artifact(root)?;
     let program = marrow_check::check_project_against(root, &config, accepted.as_ref())?;
     Ok((config, program))
 }
