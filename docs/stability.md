@@ -73,7 +73,8 @@ tags; `marrow check --format json|jsonl` exports the current surface ABI
 descriptor set for successful checks. The active JSON DTOs decode checked read
 request parameters through admitted runtime reads, decode sparse update request
 bodies through admitted runtime updates, and render already-executed surface
-reads with typed cursor-boundary JSON.
+reads with typed cursor-boundary JSON. Read DTOs also execute over
+`ProjectSurfaceReadSession` without exposing the backing store handle.
 `marrow-run::ProjectSurfaceReadSession` is an unstable linked-Rust
 implementation profile for read serving over an already accepted native store:
 it opens the store read-only, fences drift, and exposes admitted surface reads

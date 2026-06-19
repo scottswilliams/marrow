@@ -49,10 +49,11 @@ The active surface foundation has these owners:
 - `crates/marrow-json/src/surface.rs` owns the current checked read parameter,
   result, identity, value, typed cursor-boundary, sparse update request,
   operation-tag execution, and serialized surface ABI JSON DTOs. Execution
-  accepts caller-supplied checked program and store references; serving, store
-  open policy, route derivation, generated clients, and opaque cursor tokens
-  remain separate profiles. Serialized ABI export includes only callable
-  read/update operation tags.
+  accepts caller-supplied checked program and store references, and read DTOs
+  also execute against `ProjectSurfaceReadSession` without exposing its private
+  store handle. Serving, route derivation, generated clients, opaque cursor
+  tokens, and write-serving store-open policy remain separate profiles.
+  Serialized ABI export includes only callable read/update operation tags.
 
 Operation tags are live runtime/json contracts. A change to either
 `surface.read.v1` or `surface.update.v1` framing must either preserve byte

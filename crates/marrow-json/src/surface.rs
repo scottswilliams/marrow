@@ -9,6 +9,8 @@ use serde::{Deserialize, Serialize};
 mod execute;
 mod request;
 pub use execute::{
+    execute_project_surface_page_by_tag, execute_project_surface_point_read_by_tag,
+    execute_project_surface_singleton_read_by_tag, execute_project_surface_unique_lookup_by_tag,
     execute_surface_page_by_tag, execute_surface_point_read_by_tag,
     execute_surface_point_update_by_tag, execute_surface_singleton_read_by_tag,
     execute_surface_singleton_update_by_tag, execute_surface_unique_lookup_by_tag,
@@ -700,10 +702,10 @@ mod tests {
         SurfaceReadOperationKind, SurfaceUpdateOperationDescriptor, check_project,
     };
     use marrow_run::{
-        SURFACE_ABI_MISMATCH, SURFACE_CURSOR, SURFACE_REQUEST, SURFACE_STALE_CURSOR,
-        SurfaceCollectionRead, SurfaceEnumValue, SurfaceNodeRead, SurfaceReadError,
-        SurfaceReadField, SurfaceReadIdentity, SurfaceReadOperationRef, SurfaceReadRecord,
-        SurfaceUpdate, SurfaceValue,
+        Host, ProjectOpen, ProjectSession, ProjectSurfaceReadSession, SURFACE_ABI_MISMATCH,
+        SURFACE_CURSOR, SURFACE_REQUEST, SURFACE_STALE_CURSOR, SessionEntry, SurfaceCollectionRead,
+        SurfaceEnumValue, SurfaceNodeRead, SurfaceReadError, SurfaceReadField, SurfaceReadIdentity,
+        SurfaceReadOperationRef, SurfaceReadRecord, SurfaceUpdate, SurfaceValue,
     };
     use marrow_store::Decimal;
     use marrow_store::cell::CatalogId;
@@ -870,6 +872,27 @@ surface Books from ^books
     update title
 ";
 
+    const PROJECT_READ_SURFACE: &str = "\
+module shelf
+
+resource Book
+    required title: string
+store ^books(id: int): Book
+
+surface Books from ^books
+    fields title
+    collection ^books as list
+
+pub fn seed()
+    var first: Book
+    first.title = \"Dune\"
+    var second: Book
+    second.title = \"Dune Messiah\"
+    transaction
+        ^books(1) = first
+        ^books(2) = second
+";
+
     struct TempProject {
         path: PathBuf,
     }
@@ -896,6 +919,31 @@ surface Books from ^books
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.path);
         }
+    }
+
+    fn write_native_project(root: &TempProject, source: &str) {
+        fs::write(
+            root.path().join("marrow.json"),
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".data" } }"#,
+        )
+        .expect("write marrow.json");
+        let source_dir = root.path().join("src");
+        fs::create_dir(&source_dir).expect("create source dir");
+        fs::write(source_dir.join("shelf.mw"), source).expect("write source");
+    }
+
+    fn seed_project(root: &TempProject, entry: &str) {
+        let session = ProjectSession::open(
+            root.path(),
+            ProjectOpen::run().with_entry_override(entry.to_string()),
+        )
+        .expect("open project session");
+        let host = Host::new();
+        let mut output = String::new();
+        session
+            .invoke(SessionEntry::new(entry, &host, &mut output))
+            .expect("invoke seed entry");
+        assert_eq!(output, "");
     }
 
     fn catalog_id(suffix: u8) -> CatalogId {
@@ -1659,6 +1707,49 @@ surface Books from ^books
                 value: "Dune".into()
             })
         );
+    }
+
+    #[test]
+    fn surface_execute_project_read_session_executes_read_json_without_exposing_the_store() {
+        let root = TempProject::new("marrow-json-project-surface-read");
+        write_native_project(&root, PROJECT_READ_SURFACE);
+        seed_project(&root, "shelf::seed");
+
+        let session =
+            ProjectSurfaceReadSession::open(root.path()).expect("open project surface session");
+        let runtime = session.program().runtime();
+        let surface = surface_id(session.program(), "Books");
+        let point_tag = read_operation_tag_matching(session.program(), surface, |kind| {
+            matches!(kind, SurfaceReadOperationKind::PointRead { .. })
+        });
+        let record = crate::surface::execute_project_surface_point_read_by_tag(
+            &session,
+            &point_tag,
+            &point_read_request(&runtime, 1),
+        )
+        .expect("execute project point read");
+        assert_eq!(
+            field_value(&record, &field_catalog_id(&runtime, "books", "title")),
+            Some(&SurfaceValueJson::String {
+                value: "Dune".into()
+            })
+        );
+
+        let root_page_tag = read_operation_tag_matching(session.program(), surface, |kind| {
+            matches!(kind, SurfaceReadOperationKind::PagedRootCollection { .. })
+        });
+        let page = crate::surface::execute_project_surface_page_by_tag(
+            &session,
+            &root_page_tag,
+            &SurfacePageRequestJson {
+                exact_keys: Vec::new(),
+                limit: 1,
+                cursor: None,
+            },
+        )
+        .expect("execute project page read");
+        assert_eq!(page.rows.len(), 1);
+        assert!(page.next.is_some(), "limited page returns a cursor");
     }
 
     #[test]

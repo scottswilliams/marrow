@@ -7,7 +7,8 @@ descriptor export from copying entry-return, saved-key, data-snapshot, surface
 descriptor/result rendering, and checked surface read request-parameter and
 sparse update request-body decode logic. For surfaces it also provides an
 in-process operation-tag execution boundary over caller-supplied
-`CheckedProgram` and `TreeStore` references; it does not own serving or store
+`CheckedProgram` and `TreeStore` references, plus read-only execution helpers
+over `ProjectSurfaceReadSession`; it does not own serving, routes, or process
 lifetime policy.
 
 The crate deliberately does not define a general `Value` JSON ABI. Its entry
@@ -60,11 +61,13 @@ The operation-tag execution functions compose those DTOs with `marrow-run`
 admission. Reads admit stable read tags, decode the point/page/unique request
 DTO against the admitted handle, execute singleton, point, page, or unique
 lookup reads, and return `SurfaceRecordJson`, `SurfacePageJson`, or
-`Option<SurfaceRecordJson>`. Updates admit stable update tags, decode point or
-singleton sparse update DTOs, and return the runtime `surface.*` error type
-directly. Wrong-profile or unknown tags fail through runtime admission; wrong
-read/update shape requests remain `surface.request`; cursor mismatches stay on
-the existing cursor error path.
+`Option<SurfaceRecordJson>`. The same read DTOs can execute against
+`ProjectSurfaceReadSession` without exposing its private store handle. Updates
+remain available only through caller-supplied checked program/store references:
+they admit stable update tags, decode point or singleton sparse update DTOs, and
+return the runtime `surface.*` error type directly. Wrong-profile or unknown
+tags fail through runtime admission; wrong read/update shape requests remain
+`surface.request`; cursor mismatches stay on the existing cursor error path.
 
 ## Read next
 

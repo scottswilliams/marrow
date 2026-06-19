@@ -1,6 +1,7 @@
 use marrow_check::CheckedProgram;
 use marrow_run::{
-    SurfaceError, SurfaceReadError, SurfaceReadInput, SurfaceReadOperation, SurfaceUpdate,
+    ProjectSurfaceReadSession, SurfaceError, SurfaceReadError, SurfaceReadInput,
+    SurfaceReadOperation, SurfaceUpdate,
 };
 use marrow_store::tree::TreeStore;
 
@@ -17,6 +18,22 @@ pub fn execute_surface_point_read_by_tag(
     request: &SurfacePointRequestJson,
 ) -> Result<SurfaceRecordJson, SurfaceReadError> {
     let operation = SurfaceReadOperation::admit_by_operation_tag(program, store, operation_tag)?;
+    execute_point_read(operation, request)
+}
+
+pub fn execute_project_surface_point_read_by_tag(
+    session: &ProjectSurfaceReadSession,
+    operation_tag: &str,
+    request: &SurfacePointRequestJson,
+) -> Result<SurfaceRecordJson, SurfaceReadError> {
+    let operation = session.admit_read_by_operation_tag(operation_tag)?;
+    execute_point_read(operation, request)
+}
+
+fn execute_point_read(
+    operation: SurfaceReadOperation<'_>,
+    request: &SurfacePointRequestJson,
+) -> Result<SurfaceRecordJson, SurfaceReadError> {
     let read = operation.point_read()?;
     let decoded = request.decode(read)?;
     let record = read.execute(SurfaceReadInput::Point {
@@ -31,6 +48,20 @@ pub fn execute_surface_singleton_read_by_tag(
     operation_tag: &str,
 ) -> Result<SurfaceRecordJson, SurfaceReadError> {
     let operation = SurfaceReadOperation::admit_by_operation_tag(program, store, operation_tag)?;
+    execute_singleton_read(operation)
+}
+
+pub fn execute_project_surface_singleton_read_by_tag(
+    session: &ProjectSurfaceReadSession,
+    operation_tag: &str,
+) -> Result<SurfaceRecordJson, SurfaceReadError> {
+    let operation = session.admit_read_by_operation_tag(operation_tag)?;
+    execute_singleton_read(operation)
+}
+
+fn execute_singleton_read(
+    operation: SurfaceReadOperation<'_>,
+) -> Result<SurfaceRecordJson, SurfaceReadError> {
     let read = operation.singleton_read()?;
     let record = read.execute(SurfaceReadInput::Singleton)?;
     Ok(SurfaceRecordJson::from(&record))
@@ -43,6 +74,23 @@ pub fn execute_surface_page_by_tag(
     request: &SurfacePageRequestJson,
 ) -> Result<SurfacePageJson, SurfaceReadError> {
     let operation = SurfaceReadOperation::admit_by_operation_tag(program, store, operation_tag)?;
+    execute_page(operation, operation_tag, request)
+}
+
+pub fn execute_project_surface_page_by_tag(
+    session: &ProjectSurfaceReadSession,
+    operation_tag: &str,
+    request: &SurfacePageRequestJson,
+) -> Result<SurfacePageJson, SurfaceReadError> {
+    let operation = session.admit_read_by_operation_tag(operation_tag)?;
+    execute_page(operation, operation_tag, request)
+}
+
+fn execute_page(
+    operation: SurfaceReadOperation<'_>,
+    operation_tag: &str,
+    request: &SurfacePageRequestJson,
+) -> Result<SurfacePageJson, SurfaceReadError> {
     let read = operation.page_read()?;
     request.validate_cursor_operation_tag(operation_tag)?;
     let decoded = request.decode(read)?;
@@ -57,6 +105,22 @@ pub fn execute_surface_unique_lookup_by_tag(
     request: &SurfaceUniqueLookupRequestJson,
 ) -> Result<Option<SurfaceRecordJson>, SurfaceReadError> {
     let operation = SurfaceReadOperation::admit_by_operation_tag(program, store, operation_tag)?;
+    execute_unique_lookup(operation, request)
+}
+
+pub fn execute_project_surface_unique_lookup_by_tag(
+    session: &ProjectSurfaceReadSession,
+    operation_tag: &str,
+    request: &SurfaceUniqueLookupRequestJson,
+) -> Result<Option<SurfaceRecordJson>, SurfaceReadError> {
+    let operation = session.admit_read_by_operation_tag(operation_tag)?;
+    execute_unique_lookup(operation, request)
+}
+
+fn execute_unique_lookup(
+    operation: SurfaceReadOperation<'_>,
+    request: &SurfaceUniqueLookupRequestJson,
+) -> Result<Option<SurfaceRecordJson>, SurfaceReadError> {
     let read = operation.unique_lookup()?;
     let decoded = request.decode(read)?;
     Ok(read
