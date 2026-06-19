@@ -10,7 +10,7 @@ use marrow_syntax::SourceSpan;
 
 use crate::checks::{catch_frame, file_prelude, for_frame};
 use crate::enums::resolve_type;
-use crate::infer::{bind, infer_type, local_binding};
+use crate::infer::{bind, infer_only, infer_type, local_binding};
 use crate::walk::for_each_child_expr;
 use crate::{CheckedProgram, MarrowType};
 
@@ -247,6 +247,32 @@ fn descend_target<'b>(
                 .as_ref()
                 .filter(|block| span_covers(block.span, offset))
         }
+        Statement::IfConst {
+            name,
+            value,
+            then_block,
+            else_ifs,
+            else_block,
+            ..
+        } => {
+            if span_covers(then_block.span, offset) {
+                let mut frame = HashMap::new();
+                frame.insert(
+                    name.clone(),
+                    infer_only(program, value, scope, aliases, file),
+                );
+                scope.push(frame);
+                return Some(then_block);
+            }
+            for else_if in else_ifs {
+                if span_covers(else_if.block.span, offset) {
+                    return Some(&else_if.block);
+                }
+            }
+            else_block
+                .as_ref()
+                .filter(|block| span_covers(block.span, offset))
+        }
         Statement::While { body, .. } | Statement::Transaction { body, .. } => {
             span_covers(body.span, offset).then_some(body)
         }
@@ -275,6 +301,10 @@ fn descend_target<'b>(
             }
             None
         }
+        Statement::Match { arms, .. } => arms
+            .iter()
+            .find(|arm| span_covers(arm.block.span, offset))
+            .map(|arm| &arm.block),
         _ => None,
     }
 }

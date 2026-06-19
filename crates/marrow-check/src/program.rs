@@ -41,6 +41,19 @@ use crate::facts::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct FileId(pub u32);
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct DebugSourceIdentity(String);
+
+impl DebugSourceIdentity {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub(crate) fn from_analysis_identity(identity: &str) -> Self {
+        Self(identity.to_string())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CheckedReadOnlyExpression {
     file_id: FileId,
@@ -74,8 +87,9 @@ impl CheckedReadOnlyExpression {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CheckedDebugExpression {
-    file_id: FileId,
+    stop: RuntimeStopPoint,
     source_file: PathBuf,
+    debug_source_identity: DebugSourceIdentity,
     source_digest: String,
     read_only_context_digest: String,
     expression: CheckedExpr,
@@ -84,11 +98,19 @@ pub struct CheckedDebugExpression {
 
 impl CheckedDebugExpression {
     pub fn file_id(&self) -> FileId {
-        self.file_id
+        self.stop.file_id
+    }
+
+    pub fn stop_point(&self) -> RuntimeStopPoint {
+        self.stop
     }
 
     pub fn source_file(&self) -> &Path {
         &self.source_file
+    }
+
+    pub fn debug_source_identity(&self) -> &DebugSourceIdentity {
+        &self.debug_source_identity
     }
 
     pub fn source_digest(&self) -> &str {
@@ -122,6 +144,7 @@ pub struct CheckedProgram {
     pub modules: Vec<CheckedModule>,
     pub facts: CheckedFacts,
     pub catalog: ProgramCatalog,
+    debug_source_identity: Option<DebugSourceIdentity>,
 }
 
 impl CheckedProgram {
@@ -136,6 +159,7 @@ impl CheckedProgram {
             modules,
             facts: CheckedFacts::default(),
             catalog: ProgramCatalog::default(),
+            debug_source_identity: None,
         };
         program.rebuild_facts();
         program
@@ -171,11 +195,17 @@ impl CheckedProgram {
         })
     }
 
+    pub(crate) fn set_debug_source_identity(&mut self, identity: DebugSourceIdentity) {
+        self.debug_source_identity = Some(identity);
+    }
+
     pub(crate) fn checked_debug_expression_in_scope(
         &self,
         file: &Path,
+        span: SourceSpan,
         source: &str,
         scope: &[HashMap<String, MarrowType>],
+        debug_source_identity: DebugSourceIdentity,
     ) -> Result<CheckedDebugExpression, Vec<CheckDiagnostic>> {
         let Some((module_index, module)) = self
             .modules
@@ -192,8 +222,12 @@ impl CheckedProgram {
         };
         let checked = self.checked_expression_in_scope(module, source, scope)?;
         Ok(CheckedDebugExpression {
-            file_id: FileId(module_index as u32),
+            stop: RuntimeStopPoint {
+                file_id: FileId(module_index as u32),
+                span,
+            },
             source_file: module.source_file.clone(),
+            debug_source_identity,
             source_digest: self.source_digest(),
             read_only_context_digest: self.read_only_context_digest(),
             expression: checked.expression,
@@ -862,6 +896,7 @@ pub struct CheckedRuntimeProgram {
     facts: CheckedFacts,
     accepted_catalog_ids: HashSet<String>,
     accepted_catalog_epoch: Option<u64>,
+    debug_source_identity: Option<DebugSourceIdentity>,
     source_digest: String,
     read_only_context_digest: String,
 }
@@ -889,6 +924,7 @@ impl CheckedRuntimeProgram {
                 .map(|entry| entry.stable_id.clone())
                 .collect(),
             accepted_catalog_epoch: program.catalog.accepted_epoch,
+            debug_source_identity: program.debug_source_identity.clone(),
             source_digest: program.source_digest(),
             read_only_context_digest: program.read_only_context_digest(),
         }
@@ -924,6 +960,10 @@ impl CheckedRuntimeProgram {
 
     pub fn source_digest(&self) -> &str {
         &self.source_digest
+    }
+
+    pub fn debug_source_identity(&self) -> Option<&DebugSourceIdentity> {
+        self.debug_source_identity.as_ref()
     }
 
     pub fn read_only_context_digest(&self) -> &str {

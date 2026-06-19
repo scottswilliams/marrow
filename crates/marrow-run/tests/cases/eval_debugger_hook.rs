@@ -3,7 +3,7 @@
 //! live store handle, terminate-by-Err, and debug value previews.
 
 use crate::support;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use support::*;
 
 use marrow_check::{
@@ -33,14 +33,21 @@ fn run_entry_with_debugger(
 fn analyzed_runtime_program(
     source: &str,
 ) -> (AnalysisSnapshot, CheckedRuntimeProgram, PathBuf, String) {
-    let (relative, text) = checked_source_file(source, &[]);
     let root = TempDir::new("marrow-run-debug-expression").expect("create project");
-    write_temp_source(root.path(), &relative, &text);
-    let path = root.path().join(&relative);
+    analyzed_runtime_program_at(root.path(), source)
+}
+
+fn analyzed_runtime_program_at(
+    root: &Path,
+    source: &str,
+) -> (AnalysisSnapshot, CheckedRuntimeProgram, PathBuf, String) {
+    let (relative, text) = checked_source_file(source, &[]);
+    write_temp_source(root, &relative, &text);
+    let path = root.join(&relative);
     let config = test_project_config();
     let mut sources = ProjectSources::new();
     sources.insert(&path, text.clone());
-    let snapshot = analyze_project(root.path(), &config, &sources, None).expect("analyze project");
+    let snapshot = analyze_project(root, &config, &sources, None).expect("analyze project");
     assert!(
         !snapshot.report.has_errors(),
         "{:#?}",
@@ -394,7 +401,7 @@ fn frame_evaluates_checked_debug_expression_from_live_shadowed_locals() {
         ) -> Result<(), RuntimeError> {
             if span.line == self.stop_line {
                 self.values
-                    .push(frame.evaluate_debug_expression(&self.expression)?);
+                    .push(frame.evaluate_debug_expression(span, &self.expression)?);
             }
             Ok(())
         }
@@ -451,7 +458,7 @@ fn frame_rejects_checked_debug_expression_from_a_different_source_context() {
         ) -> Result<(), RuntimeError> {
             if span.line == self.stop_line {
                 let error = frame
-                    .evaluate_debug_expression(&self.expression)
+                    .evaluate_debug_expression(span, &self.expression)
                     .expect_err("stale debug expression is rejected");
                 self.error_code = Some(error.code());
             }
@@ -470,6 +477,121 @@ fn frame_rejects_checked_debug_expression_from_a_different_source_context() {
         &Host::new(),
         &mut hook,
         checked_entry!(&second_program, "test::inspect"),
+    )
+    .expect("debugged run completes after rejecting the expression");
+
+    assert_eq!(hook.error_code, Some(marrow_run::RUN_UNSUPPORTED));
+}
+
+#[test]
+fn frame_rejects_debug_expression_when_only_the_function_body_changed() {
+    let root = TempDir::new("marrow-run-debug-expression-same-path").expect("create project");
+    let (first_snapshot, _first_program, first_path, first_source) = analyzed_runtime_program_at(
+        root.path(),
+        "pub fn inspect(): int\n\
+             \x20   const n = 1\n\
+             \x20   return n\n",
+    );
+    let stop = stop_span(&first_source, "return n");
+    let expression = first_snapshot
+        .checked_debug_expression(&first_path, stop, "n")
+        .expect("debug expression checks in the first body");
+
+    let (_second_snapshot, second_program, _second_path, second_source) =
+        analyzed_runtime_program_at(
+            root.path(),
+            "pub fn inspect(): int\n\
+             \x20   const n = 2\n\
+             \x20   return n\n",
+        );
+    let second_stop = stop_span(&second_source, "return n");
+
+    struct StaleBodyProbe {
+        stop_line: u32,
+        expression: CheckedDebugExpression,
+        error_code: Option<&'static str>,
+    }
+
+    impl StepHook for StaleBodyProbe {
+        fn before_statement(
+            &mut self,
+            span: SourceSpan,
+            frame: Frame<'_, '_>,
+        ) -> Result<(), RuntimeError> {
+            if span.line == self.stop_line {
+                let error = frame
+                    .evaluate_debug_expression(span, &self.expression)
+                    .expect_err("body-only stale debug expression is rejected");
+                self.error_code = Some(error.code());
+            }
+            Ok(())
+        }
+    }
+
+    let store = TreeStore::memory();
+    let mut hook = StaleBodyProbe {
+        stop_line: second_stop.line,
+        expression,
+        error_code: None,
+    };
+    run_entry_with_debugger(
+        &store,
+        &Host::new(),
+        &mut hook,
+        checked_entry!(&second_program, "test::inspect"),
+    )
+    .expect("debugged run completes after rejecting the expression");
+
+    assert_eq!(hook.error_code, Some(marrow_run::RUN_UNSUPPORTED));
+}
+
+#[test]
+fn frame_rejects_debug_expression_checked_for_another_stop_in_the_same_file() {
+    let (snapshot, program, path, source) = analyzed_runtime_program(
+        "pub fn inspect(): int\n\
+         \x20   const first = 1\n\
+         \x20   const second = 2\n\
+         \x20   return first + second\n",
+    );
+    let checked_stop = stop_span(&source, "const second = 2");
+    let evaluated_stop = stop_span(&source, "return first");
+    let expression = snapshot
+        .checked_debug_expression(&path, checked_stop, "first")
+        .expect("debug expression checks at the earlier stop");
+
+    struct WrongStopProbe {
+        stop_line: u32,
+        expression: CheckedDebugExpression,
+        error_code: Option<&'static str>,
+    }
+
+    impl StepHook for WrongStopProbe {
+        fn before_statement(
+            &mut self,
+            span: SourceSpan,
+            frame: Frame<'_, '_>,
+        ) -> Result<(), RuntimeError> {
+            if span.line == self.stop_line {
+                let error = frame
+                    .evaluate_debug_expression(span, &self.expression)
+                    .expect_err("debug expression is rejected at a different stop");
+                self.error_code = Some(error.code());
+            }
+            Ok(())
+        }
+    }
+
+    let store = TreeStore::memory();
+    let mut hook = WrongStopProbe {
+        stop_line: evaluated_stop.line,
+        expression,
+        error_code: None,
+    };
+    run_entry_with_debugger(
+        &store,
+        &Host::new(),
+        &mut hook,
+        checked_entry!(&program, "test::inspect"),
     )
     .expect("debugged run completes after rejecting the expression");
 

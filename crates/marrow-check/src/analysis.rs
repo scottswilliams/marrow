@@ -14,8 +14,8 @@ use crate::enums::normalize_program_named_types;
 use crate::{
     CHECK_DUPLICATE_MODULE, CHECK_MULTIPLE_SCRIPTS, CHECK_READ_ONLY_EXPRESSION_CONTEXT,
     CheckDiagnostic, CheckReport, CheckedDebugExpression, CheckedFile, CheckedModule,
-    CheckedProgram, DiagnosticPayload, IO_READ, ProjectSources, SCHEMA_DUPLICATE_ROOT_OWNER,
-    SurfaceActionFact, SurfaceActionOperationDescriptor,
+    CheckedProgram, DebugSourceIdentity, DiagnosticPayload, IO_READ, ProjectSources,
+    SCHEMA_DUPLICATE_ROOT_OWNER, SurfaceActionFact, SurfaceActionOperationDescriptor,
     SurfaceCatalogStatus, SurfaceFact, SurfaceReadOperationDescriptor, SurfaceReadOperationFact,
     SurfaceUpdateOperationDescriptor, TestResolutionSuppression, check_file_source,
     enum_visibility, module_path_error, read_source,
@@ -184,8 +184,13 @@ impl AnalysisSnapshot {
             )]);
         };
         let scope = cursor::debug_expression_scope_before(&self.program, file, parsed, span);
-        self.program
-            .checked_debug_expression_in_scope(file, source, &scope)
+        self.program.checked_debug_expression_in_scope(
+            file,
+            span,
+            source,
+            &scope,
+            DebugSourceIdentity::from_analysis_identity(self.content_identity.as_str()),
+        )
     }
 }
 
@@ -296,6 +301,11 @@ pub fn analyze_project(
     snapshot.program.modules = source_modules;
     snapshot.program.facts = source_facts;
     snapshot.content_identity = analysis_content_identity(project_root, config, &snapshot.files);
+    snapshot
+        .program
+        .set_debug_source_identity(DebugSourceIdentity::from_analysis_identity(
+            snapshot.content_identity.as_str(),
+        ));
     Ok(snapshot)
 }
 
@@ -680,6 +690,9 @@ pub(crate) fn analyze_source_project(
         .collect();
 
     let content_identity = analysis_content_identity(project_root, config, &analyzed);
+    program.set_debug_source_identity(DebugSourceIdentity::from_analysis_identity(
+        content_identity.as_str(),
+    ));
     let use_sites = catalog_nav::collect_use_sites(&program, &analyzed);
     let catalog_declarations = catalog_nav::collect_catalog_declarations(&program);
 

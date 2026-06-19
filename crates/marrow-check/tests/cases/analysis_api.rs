@@ -347,6 +347,61 @@ fn checked_debug_expression_replays_loop_shadowing_for_its_result_type() {
 }
 
 #[test]
+fn checked_debug_expression_replays_if_const_binding() {
+    let source = "module m\n\
+        resource Book\n    \
+        title: string\n\
+        store ^books(id: int): Book\n\
+        fn f(id: int)\n    \
+        if const title = ^books(id).title\n        \
+        print(title)\n";
+    let (snapshot, paths) = analyze_overlay("debug-expression-if-const", &[("src/m.mw", source)]);
+    assert!(
+        !snapshot.report.has_errors(),
+        "{:#?}",
+        snapshot.report.diagnostics
+    );
+    let path = paths.into_iter().next().expect("source path");
+
+    let checked = snapshot
+        .checked_debug_expression(
+            &path,
+            stop_span(source, "print(title)"),
+            "title == \"Dune\"",
+        )
+        .expect("if const binding is visible inside the then block");
+    assert_eq!(checked.ty(), &MarrowType::Primitive(ScalarType::Bool));
+}
+
+#[test]
+fn checked_debug_expression_replays_match_arm_shadowing() {
+    let source = "module m\n\
+        enum Status\n    \
+        active\n    \
+        retired\n\
+        fn f(state: Status)\n    \
+        const value: string = \"outer\"\n    \
+        match state\n        \
+        active\n            \
+        const value: int = 1\n            \
+        print(value)\n        \
+        retired\n            \
+        print(0)\n";
+    let (snapshot, paths) = analyze_overlay("debug-expression-match-arm", &[("src/m.mw", source)]);
+    assert!(
+        !snapshot.report.has_errors(),
+        "{:#?}",
+        snapshot.report.diagnostics
+    );
+    let path = paths.into_iter().next().expect("source path");
+
+    let checked = snapshot
+        .checked_debug_expression(&path, stop_span(source, "print(value)"), "value > 0")
+        .expect("match arm local shadows the outer binding");
+    assert_eq!(checked.ty(), &MarrowType::Primitive(ScalarType::Bool));
+}
+
+#[test]
 fn checked_debug_expression_reuses_read_only_effect_diagnostics() {
     let source = "module m\n\
         resource Book\n    \

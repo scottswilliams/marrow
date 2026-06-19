@@ -250,8 +250,18 @@ impl<'e, 'p> Frame<'e, 'p> {
 
     pub fn evaluate_debug_expression(
         &self,
+        span: SourceSpan,
         expression: &CheckedDebugExpression,
     ) -> Result<DebugValue, RuntimeError> {
+        match self.env.program.debug_source_identity() {
+            Some(identity) if identity == expression.debug_source_identity() => {}
+            _ => {
+                return Err(unsupported(
+                    "a checked debug expression from a different analyzed source context",
+                    SourceSpan::default(),
+                ));
+            }
+        }
         if expression.source_digest() != self.env.program.source_digest() {
             return Err(unsupported(
                 "a checked debug expression from a different checked program",
@@ -284,6 +294,16 @@ impl<'e, 'p> Frame<'e, 'p> {
         if self.file() != Some(expression.source_file()) {
             return Err(unsupported(
                 "a checked debug expression outside the current frame source file",
+                SourceSpan::default(),
+            ));
+        }
+        let current_stop = marrow_check::RuntimeStopPoint {
+            file_id: expression.file_id(),
+            span,
+        };
+        if expression.stop_point() != current_stop {
+            return Err(unsupported(
+                "a checked debug expression outside its checked runtime stop",
                 SourceSpan::default(),
             ));
         }
