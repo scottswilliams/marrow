@@ -29,6 +29,8 @@ pub const CHECK_SURFACE_TARGET: &str = "check.surface_target";
 /// A surface payload name does not resolve to an admitted top-level field on the
 /// backing store resource.
 pub const CHECK_SURFACE_FIELD: &str = "check.surface_field";
+/// A surface action does not resolve to a public declared function.
+pub const CHECK_SURFACE_ACTION: &str = "check.surface_action";
 /// A `use` names a module that is neither a project module nor a standard
 /// library module.
 pub const CHECK_UNRESOLVED_IMPORT: &str = "check.unresolved_import";
@@ -409,6 +411,7 @@ pub enum SurfaceCollisionNameKind {
     GeneratedOperation,
     FieldItem,
     CollectionAlias,
+    ActionAlias,
     CreateItem,
     UpdateItem,
 }
@@ -426,10 +429,21 @@ impl SurfaceCollisionNameKind {
             Self::GeneratedOperation => "generated operation",
             Self::FieldItem => "surface field",
             Self::CollectionAlias => "surface collection alias",
+            Self::ActionAlias => "surface action alias",
             Self::CreateItem => "surface create item",
             Self::UpdateItem => "surface update item",
         }
     }
+}
+
+/// Structured facts for a `check.surface_action` diagnostic.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SurfaceActionDiagnostic {
+    UnknownFunction { path: String },
+    PrivateFunction { path: String },
+    AmbiguousFunction { path: String },
+    UnsupportedParameter { path: String, parameter: String },
+    UnsupportedReturn { path: String },
 }
 
 /// Structured facts for a `check.surface_target` diagnostic.
@@ -575,6 +589,8 @@ pub enum DiagnosticPayload {
     SurfaceTarget(SurfaceTargetDiagnostic),
     /// `check.surface_field`: rejected surface payload field.
     SurfaceField(SurfaceFieldDiagnostic),
+    /// `check.surface_action`: rejected surface action target.
+    SurfaceAction(SurfaceActionDiagnostic),
     /// `check.duplicate_module`: duplicated module name and first source file.
     DuplicateModule { name: String, first_file: PathBuf },
     /// `check.module_path`: declared name and expected path-derived name.

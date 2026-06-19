@@ -410,6 +410,7 @@ impl TestResolutionSuppression {
             | DiagnosticPayload::SurfaceCollision { .. }
             | DiagnosticPayload::SurfaceTarget(_)
             | DiagnosticPayload::SurfaceField(_)
+            | DiagnosticPayload::SurfaceAction(_)
             | DiagnosticPayload::DuplicateModule { .. }
             | DiagnosticPayload::ModulePath { .. }
             | DiagnosticPayload::ReservedTestModulePathSegment { .. }
@@ -1505,6 +1506,16 @@ fn check_surface_local_namespace(
                     alias,
                     *span,
                     SurfaceCollisionNameKind::CollectionAlias,
+                );
+            }
+            SurfaceItem::Action { alias, span, .. } => {
+                collided |= introduce_surface_local_name(
+                    file,
+                    diagnostics,
+                    &mut operations,
+                    alias,
+                    *span,
+                    SurfaceCollisionNameKind::ActionAlias,
                 );
             }
             SurfaceItem::Create { names, span } => {

@@ -1,14 +1,29 @@
 use marrow_store::cell::CatalogId;
 
+use crate::entry_abi::{
+    ENTRY_PROTOCOL_TAG_VERSION, EntryArgumentShape, EntryDescriptor, EntryIdentity, EntryParameter,
+    entry_descriptor_has_supported_shapes,
+};
 use crate::facts::{
     ResourceMemberFact, ResourceMemberId, ResourceMemberKind, StoreFact, StoreIndexFact,
-    StoreIndexId, StoreIndexKeySource, StoredValueMeaning, SurfaceCatalogStatus, SurfaceFact,
-    SurfaceFieldFact, SurfaceReadFootprint, SurfaceReadOperationFact, SurfaceReadOperationKind,
+    StoreIndexId, StoreIndexKeySource, StoredValueMeaning, SurfaceActionFact, SurfaceCatalogStatus,
+    SurfaceFact, SurfaceFieldFact, SurfaceReadFootprint, SurfaceReadOperationFact,
+    SurfaceReadOperationKind,
 };
 use crate::program::CheckedProgram;
 
 pub const SURFACE_READ_OPERATION_TAG_VERSION: &str = "surface.read.v1";
 pub const SURFACE_UPDATE_OPERATION_TAG_VERSION: &str = "surface.update.v1";
+
+#[derive(Debug, Clone)]
+pub struct SurfaceActionOperationDescriptor {
+    pub profile_version: &'static str,
+    pub operation_tag: String,
+    pub alias: String,
+    pub identity: EntryIdentity,
+    pub parameters: Vec<EntryParameter>,
+    pub return_value: Option<EntryArgumentShape>,
+}
 
 #[derive(Debug, Clone)]
 pub struct SurfaceReadOperationDescriptor {
@@ -165,6 +180,41 @@ impl SurfaceUpdateOperationDescriptor {
             identity_keys: identity_key_descriptors(program, store)?,
             fields: update_field_descriptors(program, &surface.update)?,
         })
+    }
+}
+
+impl SurfaceActionOperationDescriptor {
+    pub fn from_action(
+        program: &CheckedProgram,
+        surface: &SurfaceFact,
+        action: &SurfaceActionFact,
+    ) -> Option<Self> {
+        require_stable_surface(surface)?;
+        let runtime = program.runtime();
+        let requested_name = canonical_action_name(program, action)?;
+        let descriptor =
+            EntryDescriptor::from_function_ref(&runtime, &requested_name, action.function)?;
+        if !entry_descriptor_has_supported_shapes(&descriptor) {
+            return None;
+        }
+        Some(Self {
+            profile_version: ENTRY_PROTOCOL_TAG_VERSION,
+            operation_tag: descriptor.identity.entry_tag.clone(),
+            alias: action.alias.clone(),
+            identity: descriptor.identity,
+            parameters: descriptor.parameters,
+            return_value: descriptor.return_value,
+        })
+    }
+}
+
+fn canonical_action_name(program: &CheckedProgram, action: &SurfaceActionFact) -> Option<String> {
+    let function = program.facts.function_for_ref(action.function)?;
+    let module = program.facts.modules().get(function.module.0 as usize)?;
+    if module.name.is_empty() {
+        Some(function.name.clone())
+    } else {
+        Some(format!("{}::{}", module.name, function.name))
     }
 }
 

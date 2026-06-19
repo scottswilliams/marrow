@@ -137,7 +137,9 @@ fn formats_surface_declaration_with_canonical_items() {
          \x20   collection ^books as list\n\
          \x20   collection ^books.byAuthor as byAuthor\n\
          \x20   create title,author\n\
-         \x20   update title,blurb\n";
+         \x20   update title,blurb\n\
+         \x20   action addBook\n\
+         \x20   action shelf::loanBook as loan\n";
     let expected = "module app\n\
          \n\
          surface Books from ^books\n\
@@ -145,7 +147,9 @@ fn formats_surface_declaration_with_canonical_items() {
          \x20   collection ^books as list\n\
          \x20   collection ^books.byAuthor as byAuthor\n\
          \x20   create title, author\n\
-         \x20   update title, blurb\n";
+         \x20   update title, blurb\n\
+         \x20   action addBook\n\
+         \x20   action shelf::loanBook as loan\n";
 
     assert_eq!(format_source(source), expected);
 }

@@ -64,6 +64,11 @@ from the checked program or snapshot:
   non-empty `update` list. The descriptor is checker-owned, uses
   `surface.update.v1`, carries `non_empty_patch` semantics, and is suppressed
   for source-only surfaces.
+- `AnalysisSnapshot::surface_action_operations()` iterates snapshot-bound
+  `SurfaceActionOperationAnalysis` views for declared surface actions. The
+  descriptor is checker-owned, reuses `entry.invoke.v1` identity, parameter
+  shapes, and return shape from the resolved public function, and is suppressed
+  for source-only surfaces.
 - `CheckedFacts::store_indices` carries `StoreIndexFact::usage` as a
   `StoreIndexUsageBitmap`; every current index fact reports no observed
   read/write use.

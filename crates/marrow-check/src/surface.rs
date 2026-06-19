@@ -7,18 +7,26 @@ use marrow_syntax::{
 
 use crate::backing_validity::BackingValidity;
 use crate::diagnostics::{
-    CHECK_SURFACE_FIELD, CHECK_SURFACE_TARGET, SurfaceFieldDiagnostic, SurfaceFieldList,
-    SurfaceFieldProblem, SurfaceTargetDiagnostic,
+    CHECK_SURFACE_ACTION, CHECK_SURFACE_FIELD, CHECK_SURFACE_TARGET, SurfaceActionDiagnostic,
+    SurfaceFieldDiagnostic, SurfaceFieldList, SurfaceFieldProblem, SurfaceTargetDiagnostic,
 };
+use crate::entry_abi::{
+    EntrySignatureUnsupported, function_ref_has_accepted_entry_catalog_ids,
+    function_ref_has_supported_entry_signature,
+};
+use crate::executable::CheckedFunctionRef;
 use crate::facts::{
     ModuleId, ResourceMemberFact, ResourceMemberId, ResourceMemberKind, StoreFact, StoreIndexFact,
-    StoreIndexId, StoreIndexKeyFact, StoreIndexKeySource, StoredValueMeaning,
+    StoreIndexId, StoreIndexKeyFact, StoreIndexKeySource, StoredValueMeaning, SurfaceActionFact,
     SurfaceCatalogBlocker, SurfaceCatalogStatus, SurfaceCollectionFact, SurfaceCollectionTarget,
     SurfaceFact, SurfaceFieldFact, SurfaceId, SurfaceReadFootprint, SurfaceReadOperationFact,
     SurfaceReadOperationKind,
 };
 use crate::surface_abi::surface_read_operation_tag;
-use crate::{CheckDiagnostic, CheckedProgram, DiagnosticPayload};
+use crate::{
+    CheckDiagnostic, CheckedProgram, Def, DefItem, DiagnosticPayload, Resolution, ResolvableKind,
+    build_alias_map, expand_alias, resolve,
+};
 
 /// Surface declarations suppressed before surface checking because an earlier
 /// declaration or item collision already made the generated API invalid.
@@ -61,6 +69,7 @@ pub(crate) fn check_surfaces<'a, I>(
     program: &mut CheckedProgram,
     sources: I,
     rejected_surfaces: &RejectedSurfaceDeclarations,
+    incomplete_modules: &HashSet<String>,
     backing_validity: &BackingValidity,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) where
@@ -70,6 +79,7 @@ pub(crate) fn check_surfaces<'a, I>(
         let mut checker = SurfaceChecker {
             program,
             rejected_surfaces,
+            incomplete_modules,
             backing_validity,
             diagnostics,
             surface_facts: Vec::new(),
@@ -83,6 +93,7 @@ pub(crate) fn check_surfaces<'a, I>(
 struct SurfaceChecker<'a> {
     program: &'a CheckedProgram,
     rejected_surfaces: &'a RejectedSurfaceDeclarations,
+    incomplete_modules: &'a HashSet<String>,
     backing_validity: &'a BackingValidity,
     diagnostics: &'a mut Vec<CheckDiagnostic>,
     surface_facts: Vec<SurfaceFact>,
@@ -131,13 +142,36 @@ impl<'a> SurfaceChecker<'a> {
             self.backing_validity,
             self.diagnostics,
         );
+        let mut suppressed_action_target = false;
+        let Some(action_module) = checked_module_for_id(self.program, module) else {
+            return;
+        };
+        let actions = resolve_actions(
+            SurfaceActionContext {
+                program: self.program,
+                file,
+                module_name: &action_module.name,
+                imports: &action_module.imports,
+                incomplete_modules: self.incomplete_modules,
+            },
+            surface,
+            &mut suppressed_action_target,
+            self.diagnostics,
+        );
         self.reject_invalid_backing_resource(file, surface, store, diagnostic_start);
-        if self.diagnostics.len() != diagnostic_start {
+        if suppressed_action_target || self.diagnostics.len() != diagnostic_start {
             return;
         }
 
         let id = SurfaceId(self.surface_facts.len() as u32);
-        let catalog_status = catalog_status(self.program, store, &fields, &update, &collections);
+        let catalog_status = catalog_status(
+            self.program,
+            store,
+            &fields,
+            &update,
+            &collections,
+            &actions,
+        );
         let read_operations = read_operations(
             self.program,
             store,
@@ -155,6 +189,7 @@ impl<'a> SurfaceChecker<'a> {
             create,
             update,
             collections,
+            actions,
             read_operations,
             catalog_status,
             span: surface.span,
@@ -224,6 +259,211 @@ impl<'a> SurfaceChecker<'a> {
             );
         }
     }
+}
+
+fn checked_module_for_id(
+    program: &CheckedProgram,
+    module: ModuleId,
+) -> Option<&crate::CheckedModule> {
+    let module_name = &program.facts.modules().get(module.0 as usize)?.name;
+    program
+        .modules
+        .iter()
+        .find(|candidate| candidate.name == *module_name)
+}
+
+fn resolve_actions(
+    context: SurfaceActionContext<'_>,
+    surface: &SurfaceDecl,
+    suppressed_target: &mut bool,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) -> Vec<SurfaceActionFact> {
+    surface
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            SurfaceItem::Action {
+                function,
+                alias,
+                span,
+            } => resolve_action(
+                context,
+                function,
+                alias,
+                *span,
+                suppressed_target,
+                diagnostics,
+            ),
+            _ => None,
+        })
+        .collect()
+}
+
+#[derive(Clone, Copy)]
+struct SurfaceActionContext<'a> {
+    program: &'a CheckedProgram,
+    file: &'a Path,
+    module_name: &'a str,
+    imports: &'a [String],
+    incomplete_modules: &'a HashSet<String>,
+}
+
+fn resolve_action(
+    context: SurfaceActionContext<'_>,
+    function_path: &[String],
+    alias: &str,
+    span: SourceSpan,
+    suppressed_target: &mut bool,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) -> Option<SurfaceActionFact> {
+    let expanded_path = expand_action_path(context, function_path);
+    let path = expanded_path.join("::");
+    let function = match resolve(
+        context.program,
+        context.module_name,
+        function_path,
+        ResolvableKind::Function,
+    ) {
+        Resolution::Found(Def {
+            module,
+            item: DefItem::Function(function),
+            ..
+        }) => {
+            if !function.public {
+                push_surface_action_diagnostic(
+                    context.file,
+                    span,
+                    SurfaceActionDiagnostic::PrivateFunction { path },
+                    format!(
+                        "surface action targets private function `{}`",
+                        expanded_path.join("::")
+                    ),
+                    diagnostics,
+                );
+                return None;
+            }
+            function_ref_from_resolved(context.program, module, function).or_else(|| {
+                *suppressed_target = true;
+                None
+            })?
+        }
+        Resolution::NotVisible(name) => {
+            push_surface_action_diagnostic(
+                context.file,
+                span,
+                SurfaceActionDiagnostic::PrivateFunction { path: name.clone() },
+                format!("surface action targets private function `{name}`"),
+                diagnostics,
+            );
+            return None;
+        }
+        Resolution::Ambiguous(_) => {
+            push_surface_action_diagnostic(
+                context.file,
+                span,
+                SurfaceActionDiagnostic::AmbiguousFunction { path: path.clone() },
+                format!("surface action targets ambiguous function `{path}`"),
+                diagnostics,
+            );
+            return None;
+        }
+        Resolution::Found(_) | Resolution::Unresolved => {
+            if references_incomplete_action_module(&expanded_path, context.incomplete_modules) {
+                *suppressed_target = true;
+                return None;
+            }
+            push_surface_action_diagnostic(
+                context.file,
+                span,
+                SurfaceActionDiagnostic::UnknownFunction { path: path.clone() },
+                format!("surface action targets unknown function `{path}`"),
+                diagnostics,
+            );
+            return None;
+        }
+    };
+
+    if let Err(issue) = function_ref_has_supported_entry_signature(context.program, function) {
+        let (payload, message) = match issue {
+            EntrySignatureUnsupported::Parameter { name } => (
+                SurfaceActionDiagnostic::UnsupportedParameter {
+                    path: path.clone(),
+                    parameter: name.clone(),
+                },
+                format!(
+                    "surface action `{path}` parameter `{name}` has a type outside the action JSON surface"
+                ),
+            ),
+            EntrySignatureUnsupported::ReturnValue => (
+                SurfaceActionDiagnostic::UnsupportedReturn { path: path.clone() },
+                format!("surface action `{path}` return type is outside the action JSON surface"),
+            ),
+        };
+        push_surface_action_diagnostic(context.file, span, payload, message, diagnostics);
+        return None;
+    }
+
+    Some(SurfaceActionFact {
+        alias: alias.to_string(),
+        function,
+        span,
+    })
+}
+
+fn expand_action_path(context: SurfaceActionContext<'_>, function_path: &[String]) -> Vec<String> {
+    let aliases = build_alias_map(context.imports);
+    expand_alias(function_path, &aliases)
+}
+
+fn function_ref_from_resolved(
+    program: &CheckedProgram,
+    module: &crate::CheckedModule,
+    function: &crate::CheckedFunction,
+) -> Option<CheckedFunctionRef> {
+    let module_id = program.facts.module_id(&module.name)?;
+    let source_index = u32::try_from(
+        module
+            .functions
+            .iter()
+            .position(|candidate| std::ptr::eq(candidate, function))?,
+    )
+    .ok()?;
+    let function =
+        program.facts.functions().iter().find(|function| {
+            function.module == module_id && function.source_index == source_index
+        })?;
+    Some(CheckedFunctionRef {
+        module: function.module.0,
+        function: function.source_index,
+        presence: function.return_presence,
+    })
+}
+
+fn references_incomplete_action_module(
+    function_path: &[String],
+    incomplete_modules: &HashSet<String>,
+) -> bool {
+    if function_path.len() < 2 {
+        return false;
+    }
+    let path = function_path.join("::");
+    incomplete_modules.iter().any(|module| {
+        path.strip_prefix(module)
+            .is_some_and(|rest| rest.starts_with("::"))
+    })
+}
+
+fn push_surface_action_diagnostic(
+    file: &Path,
+    span: SourceSpan,
+    payload: SurfaceActionDiagnostic,
+    message: String,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    diagnostics.push(
+        CheckDiagnostic::error(CHECK_SURFACE_ACTION, file, span, message)
+            .with_payload(DiagnosticPayload::SurfaceAction(payload)),
+    );
 }
 
 fn read_operations(
@@ -1109,12 +1349,13 @@ fn catalog_status(
     fields: &[SurfaceFieldFact],
     update: &[SurfaceFieldFact],
     collections: &[SurfaceCollectionFact],
+    actions: &[SurfaceActionFact],
 ) -> SurfaceCatalogStatus {
     let mut blockers = Vec::new();
     if program.catalog.proposal.is_some() {
         blockers.push(SurfaceCatalogBlocker::PendingCatalogProposal);
     }
-    if !surface_has_catalog_ids(program, store, fields, update, collections) {
+    if !surface_has_catalog_ids(program, store, fields, update, collections, actions) {
         blockers.push(SurfaceCatalogBlocker::MissingAcceptedCatalogIds);
     }
     if blockers.is_empty() {
@@ -1130,12 +1371,20 @@ fn surface_has_catalog_ids(
     fields: &[SurfaceFieldFact],
     update: &[SurfaceFieldFact],
     collections: &[SurfaceCollectionFact],
+    actions: &[SurfaceActionFact],
 ) -> bool {
     store.catalog_id.is_some()
         && program.facts.resource(store.resource).catalog_id.is_some()
         && fields_have_catalog_ids(program, fields)
         && fields_have_catalog_ids(program, update)
         && collections_have_catalog_ids(program, collections)
+        && actions_have_catalog_ids(program, actions)
+}
+
+fn actions_have_catalog_ids(program: &CheckedProgram, actions: &[SurfaceActionFact]) -> bool {
+    actions
+        .iter()
+        .all(|action| function_ref_has_accepted_entry_catalog_ids(program, action.function))
 }
 
 fn collections_have_catalog_ids(

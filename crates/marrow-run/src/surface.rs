@@ -2,10 +2,11 @@ use std::collections::{HashMap, HashSet};
 use std::ops::ControlFlow;
 
 use marrow_check::{
-    CheckedFacts, CheckedProgram, EnumId, EnumMemberId, ResourceId, ResourceMemberFact,
-    ResourceMemberId, ResourceMemberKind, StoreFact, StoreIndexFact, StoredValueMeaning,
-    SurfaceCatalogStatus, SurfaceFact, SurfaceId, SurfaceReadFootprint, SurfaceReadOperationFact,
-    SurfaceReadOperationKind, SurfaceUpdateOperationDescriptor, checked_saved_root_place,
+    CheckedFacts, CheckedProgram, EntryIdentity, EnumId, EnumMemberId, ResourceId,
+    ResourceMemberFact, ResourceMemberId, ResourceMemberKind, StoreFact, StoreIndexFact,
+    StoredValueMeaning, SurfaceActionOperationDescriptor, SurfaceCatalogStatus, SurfaceFact,
+    SurfaceId, SurfaceReadFootprint, SurfaceReadOperationFact, SurfaceReadOperationKind,
+    SurfaceUpdateOperationDescriptor, checked_saved_root_place,
 };
 use marrow_store::Decimal;
 use marrow_store::StoreError;
@@ -21,6 +22,7 @@ use marrow_store::value::{
 };
 use marrow_syntax::{Diagnose, SourceSpan};
 
+use crate::entry::{EntryArgument, EntryInvocation};
 use crate::error::RuntimeError;
 use crate::evolution::{FenceError, fence};
 use crate::saved_iter::{KeyedChildrenWalk, walk_keyed_children_after};
@@ -40,6 +42,7 @@ pub const SURFACE_CURSOR: &str = "surface.cursor";
 pub const SURFACE_STALE_CURSOR: &str = "surface.stale_cursor";
 pub const SURFACE_LIMIT: &str = "surface.limit";
 pub const SURFACE_ABI_MISMATCH: &str = "surface.abi_mismatch";
+pub const SURFACE_ACTION: &str = "surface.action";
 pub const SURFACE_STORE: &str = "surface.store";
 pub const SURFACE_MAX_PAGE_LIMIT: usize = 128;
 pub const SURFACE_MAX_VALUE_BYTES: usize = 1024 * 1024;
@@ -53,6 +56,51 @@ pub struct SurfaceError {
 }
 
 pub type SurfaceReadError = SurfaceError;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SurfaceActionInvocation {
+    identity: EntryIdentity,
+}
+
+impl SurfaceActionInvocation {
+    pub fn admit_by_operation_tag(
+        program: &CheckedProgram,
+        operation_tag: &str,
+    ) -> Result<Self, SurfaceReadError> {
+        let mut matches = program.facts.surfaces().iter().flat_map(|surface| {
+            surface.actions.iter().filter_map(move |action| {
+                let descriptor =
+                    SurfaceActionOperationDescriptor::from_action(program, surface, action)?;
+                (descriptor.operation_tag == operation_tag)
+                    .then_some((descriptor.identity, action.span))
+            })
+        });
+        let Some((identity, span)) = matches.next() else {
+            return Err(abi_mismatch(
+                "surface action operation tag is not active",
+                SourceSpan::default(),
+            ));
+        };
+        if matches.next().is_some() {
+            return Err(abi_mismatch(
+                "surface action operation tag is ambiguous",
+                span,
+            ));
+        }
+        Ok(Self { identity })
+    }
+
+    pub(crate) fn invocation(&self, arguments: Vec<EntryArgument>) -> EntryInvocation {
+        EntryInvocation {
+            identity: self.identity.clone(),
+            arguments,
+        }
+    }
+
+    pub(crate) fn operation_tag(&self) -> &str {
+        &self.identity.entry_tag
+    }
+}
 
 impl SurfaceError {
     pub fn code(&self) -> &'static str {

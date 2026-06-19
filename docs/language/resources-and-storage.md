@@ -211,8 +211,8 @@ generated index tree when matching base data already exists.
 A `surface Name from ^root` declaration is a checked application contract over an
 existing store. It does not declare saved data, mint catalog identity, change the
 source digest for durable data, or alter backup, restore, or evolution
-obligations. The backing store, projected fields, generated write inputs, and
-collection aliases resolve to existing checked facts.
+obligations. The backing store, projected fields, generated write inputs,
+collection aliases, and action aliases resolve to existing checked facts.
 
 The initial checker contract admits only direct store-backed shapes:
 
@@ -227,6 +227,24 @@ The initial checker contract admits only direct store-backed shapes:
   identity allocation, replacement, or request-body semantics.
 - `collection ^root as alias` names the backing store root.
 - `collection ^root.index as alias` names an index declared on the backing store.
+- `action functionName` or `action module::functionName as alias` exposes an
+  ordinary public Marrow function through the surface operation namespace. A
+  bare action target resolves only in the declaring module; cross-module actions
+  must be qualified, with the same import-alias expansion used by ordinary calls.
+  Omitting `as` uses the function leaf as the alias. The action descriptor
+  reuses the function's `entry.invoke.v1` identity, argument shapes, and return
+  shape, so workflows and CRUD-like operations are authored once as normal
+  checked functions rather than repeated in a separate surface language. The
+  active action JSON surface accepts scalar values, enums with accepted catalog
+  IDs, identities whose store and scalar keys have accepted catalog IDs, and
+  sequences of scalars or enums. Resource trees, local trees, errors, unknown
+  values, and unsupported sequence elements are ordinary function types but are
+  not exported as surface action parameters or returns yet.
+
+Generated operation names, collection aliases, and action aliases share one
+surface operation namespace. An alias such as `get`, `update`, or a duplicate
+collection/action alias rejects the surface before facts are minted. Field,
+create, and update payload names keep their existing payload namespaces.
 
 The checker records typed surface facts over store, member, and index identities
 and derives read-operation facts over the checked backing-record footprint and
@@ -241,30 +259,36 @@ application surface facts.
 
 Those facts are transport-neutral: HTTP routes, opaque cursor-token codecs,
 TypeScript names, generated clients, and create/delete bodies are boundary
-profiles layered later. Stable surface reads and sparse updates have
-checker-owned accepted-catalog descriptors and operation tags. `marrow-run`
-exposes admitted transport-neutral node and collection read executors over
-stable surface facts, plus an unstable read-only project session that opens an
-already accepted native store and admits those reads by operation tag without
-creating, freezing, migrating, or repairing data. It also exposes an admitted
-sparse update executor over stable, explicitly declared `update` facts: callers
-supply a singleton target or checked store identity plus a non-empty set of
-field values addressed by accepted resource-member catalog ID; omitted fields
-are preserved, absent records are not created, and all supplied field writes
-commit atomically through managed write/index maintenance. `marrow-json` renders
-check-output surface ABI
-descriptors, decodes checked read request-parameter DTOs and sparse update
-request-body DTOs, and renders already-executed read results as DTOs with
-accepted catalog IDs and typed values. Runtime output uses accepted store and
+profiles layered later. Stable surface reads, sparse updates, and actions have
+checker-owned descriptors and operation tags. A surface remains source-only
+until its backing store, projected fields, update fields, collection indexes,
+and every action parameter and return durable type have accepted catalog IDs.
+`marrow-run` exposes admitted transport-neutral node and collection read
+executors over stable surface facts, plus an unstable read-only project session
+that opens an already accepted native store and admits those reads by operation
+tag without creating, freezing, migrating, or repairing data. It also exposes a
+writable project surface session that admits reads, sparse updates, and actions
+by operation tag without exposing the store handle. Sparse updates preserve
+omitted fields, reject absent records instead of upserting, and commit
+atomically through managed write/index maintenance. Actions execute the resolved
+`pub fn` through the same checked entry invocation machinery as `marrow run`, so
+their writes, transactions, host-effect checks, and return values are language
+semantics, not a generated CRUD side channel. Surface action JSON results use
+the surface value DTO with accepted catalog IDs for enums and identities rather
+than checker-local runtime IDs or source root labels.
+
+`marrow-json` renders check-output surface ABI descriptors, decodes checked read
+request-parameter DTOs, sparse update request-body DTOs, and action argument
+DTOs, and renders already-executed read/action results as DTOs with accepted
+catalog IDs and typed values. Runtime output uses accepted store and
 resource-member catalog IDs as semantic identity; enum and identity field values
 use accepted catalog IDs as well. Source names remain render labels. A stable
 exported surface operation cannot use proposal-only catalog IDs; until every
 referenced durable fact has an accepted catalog ID, the facts carry a
-source-only catalog status
-rather than a stable client contract. A pending catalog proposal for the checked
-source is reported as its own blocker, because accepted IDs alone do not prove
-the current store, member, or index shape is the committed shape. Deferred
-surface profiles are tracked in [Surface ABI Future
+source-only catalog status rather than a stable client contract. A pending
+catalog proposal for the checked source is reported as its own blocker, because
+accepted IDs alone do not prove the current store, member, or index shape is the
+committed shape. Deferred surface profiles are tracked in [Surface ABI Future
 Profiles](../future/surface-abi.md).
 
 ## Indexes

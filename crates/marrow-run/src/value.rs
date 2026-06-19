@@ -110,6 +110,18 @@ impl EnumValue {
     pub fn member_id(&self) -> EnumMemberId {
         self.member_id
     }
+
+    pub fn enum_catalog_id(&self) -> &str {
+        &self.enum_catalog_id
+    }
+
+    pub fn member_catalog_id(&self) -> &str {
+        &self.member_catalog_id
+    }
+
+    pub fn render_label(&self) -> &str {
+        &self.display_name
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

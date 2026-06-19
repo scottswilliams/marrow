@@ -37,7 +37,10 @@ pub(crate) struct ResolvedFileCheck<'a> {
         Option<&'a mut crate::backing_validity::PendingBackingInvalidations>,
 }
 
-pub(crate) fn check_resolved_files(input: ResolvedFileCheck<'_>, report: &mut CheckReport) {
+pub(crate) fn check_resolved_files(
+    input: ResolvedFileCheck<'_>,
+    report: &mut CheckReport,
+) -> HashSet<String> {
     let ResolvedFileCheck {
         files,
         parsed_files,
@@ -95,6 +98,7 @@ pub(crate) fn check_resolved_files(input: ResolvedFileCheck<'_>, report: &mut Ch
                 | DiagnosticPayload::SurfaceCollision { .. }
                 | DiagnosticPayload::SurfaceTarget(_)
                 | DiagnosticPayload::SurfaceField(_)
+                | DiagnosticPayload::SurfaceAction(_)
                 | DiagnosticPayload::DuplicateModule { .. }
                 | DiagnosticPayload::ModulePath { .. }
                 | DiagnosticPayload::ReservedTestModulePathSegment { .. }
@@ -114,6 +118,7 @@ pub(crate) fn check_resolved_files(input: ResolvedFileCheck<'_>, report: &mut Ch
                 | DiagnosticPayload::None => true,
             });
     }
+    incomplete_modules
 }
 
 #[derive(Debug, Clone, Copy)]

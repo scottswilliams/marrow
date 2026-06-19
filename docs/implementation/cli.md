@@ -1,12 +1,12 @@
 # CLI and project discovery
 
-The CLI is wiring and envelope rendering, not semantics. Commands resolve a project directory to the config, checked program, and durable state they actually need, then print diagnostics, program output, or a tooling report in the formats that command owns. `check`, `evolve`, `test`, and `data` keep their structured `text`/`json`/`jsonl` reports; `run` keeps `text`/`json`; trace, backup, and restore are text-only. All meaning — parse, type-check, run/test admission, evolution verdicts, store keys, value decoding — is decided downstream in `marrow-project`, `marrow-check`, `marrow-run`, `marrow-json`, and `marrow-store` and only consumed here. `marrow-json` owns shared outbound rendering for entry returns, saved keys, data snapshot stamps, check surface ABI descriptors, checked surface read request DTO decode, sparse update request DTO decode, and result rendering; the CLI still owns command envelopes.
+The CLI is wiring and envelope rendering, not semantics. Commands resolve a project directory to the config, checked program, and durable state they actually need, then print diagnostics, program output, or a tooling report in the formats that command owns. `check`, `evolve`, `test`, and `data` keep their structured `text`/`json`/`jsonl` reports; `run` keeps `text`/`json`; trace, backup, and restore are text-only. All meaning — parse, type-check, run/test admission, evolution verdicts, store keys, value decoding — is decided downstream in `marrow-project`, `marrow-check`, `marrow-run`, `marrow-json`, and `marrow-store` and only consumed here. `marrow-json` owns shared outbound rendering for entry returns, saved keys, data snapshot stamps, check surface ABI descriptors, checked surface read request DTO decode, sparse update request DTO decode, accepted-catalog action argument/result DTOs, and result rendering; the CLI still owns command envelopes.
 
 Four crates meet here: `marrow-project` owns the `marrow.json` schema,
 source/test discovery, and the digest helper; `marrow-check::project_io` owns
 project/catalog IO shared by CLI callers; `marrow-json` owns shared outbound
 entry-return, saved-key, data-snapshot, surface ABI descriptor, and surface
-read/update JSON DTO leaves plus checked surface request decode;
+read/update/action JSON DTO leaves plus checked surface request decode;
 `marrow` is the binary that dispatches argv to one `cmd_*` module and renders
 command envelopes.
 
@@ -83,7 +83,7 @@ Structured reports that include a `project` field render the canonical absolute 
 
 | File | Responsibility |
 |---|---|
-| `crates/marrow-json/src/lib.rs`, `crates/marrow-json/src/surface.rs` | Outbound rendering for `marrow run --format json` entry returns, the saved-key JSON shape reused by trace and integrity tooling, the `store_snapshot` data-stamp shape reused by data inspection, serialized surface ABI DTOs for check output, checked surface read request DTO decode, sparse update request DTO decode and project execution wrappers, and context-aware surface read-result DTOs. It does not define routes, opaque cursor tokens, generated clients, or create/delete body decode. |
+| `crates/marrow-json/src/lib.rs`, `crates/marrow-json/src/surface.rs` | Outbound rendering for `marrow run --format json` entry returns, the saved-key JSON shape reused by trace and integrity tooling, the `store_snapshot` data-stamp shape reused by data inspection, serialized surface ABI DTOs for check output, checked surface read request DTO decode, sparse update request DTO decode, action argument/result DTOs and project execution wrappers, and context-aware surface read-result DTOs. It does not define routes, opaque cursor tokens, generated clients, or create/delete body decode. |
 
 ### Data and durability (`marrow`)
 
@@ -133,9 +133,9 @@ Structured reports that include a `project` field render the canonical absolute 
   by comparing the callable ABI tag and read-only checked-program context, then
   decodes only canonical scalar, enum-member, identity, and supported sequence
   values before execution. Descriptor tags bind entry name, parameter shapes,
-  accepted catalog identities, and return presence, not function bodies or
-  source-spelled return type names; body-only implementation changes under the
-  same signature do not stale a protocol invocation.
+  return shape, accepted catalog identities, and return presence, not function
+  bodies or source-spelled return type names; body-only implementation changes
+  under the same signature do not stale a protocol invocation.
   `cmd_run.rs` captures program stdout only for `--format json`, renders the
   result envelope with the session-owned store stamp, and asks `marrow-json` to
   render the CLI-compatible return-value leaf. Resource and local-tree returns

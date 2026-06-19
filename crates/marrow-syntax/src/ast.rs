@@ -382,6 +382,11 @@ pub enum SurfaceItem {
         alias: String,
         span: SourceSpan,
     },
+    Action {
+        function: Vec<String>,
+        alias: String,
+        span: SourceSpan,
+    },
     Create {
         names: Vec<String>,
         span: SourceSpan,
@@ -397,6 +402,7 @@ impl SurfaceItem {
         match self {
             Self::Fields { span, .. }
             | Self::Collection { span, .. }
+            | Self::Action { span, .. }
             | Self::Create { span, .. }
             | Self::Update { span, .. } => *span,
         }

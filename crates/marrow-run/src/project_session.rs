@@ -16,14 +16,16 @@ use marrow_store::value::{ScalarType, scalar_key_matches_type, validate_scalar_k
 use marrow_syntax::SourceSpan;
 
 use crate::entry::{
-    CheckedEntryCall, EntryInvocation, run_entry_with_debugger, run_entry_with_host,
+    CheckedEntryCall, EntryArgument, EntryInvocation, run_entry_with_debugger, run_entry_with_host,
 };
 use crate::evolution::{
     AutoApplyOutcome, BaselineError, FenceError, RunObligation, commit_catalog_baseline, fence,
     try_auto_apply,
 };
 use crate::host::{Host, Nondeterminism, StepHook, SystemNondeterminism};
-use crate::surface::{SurfaceReadError, SurfaceReadOperation, SurfaceUpdate};
+use crate::surface::{
+    SurfaceActionInvocation, SurfaceReadError, SurfaceReadOperation, SurfaceUpdate,
+};
 use crate::value::{RunOutput, RunOutputSink};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -671,6 +673,29 @@ impl ProjectSurfaceSession {
         operation_tag: &str,
     ) -> Result<SurfaceUpdate<'_>, SurfaceReadError> {
         SurfaceUpdate::admit_by_operation_tag(&self.program, &self.store, operation_tag)
+    }
+
+    pub fn admit_action_by_operation_tag(
+        &self,
+        operation_tag: &str,
+    ) -> Result<SurfaceActionInvocation, SurfaceReadError> {
+        SurfaceActionInvocation::admit_by_operation_tag(&self.program, operation_tag)
+    }
+
+    pub fn invoke_action(
+        &self,
+        action: &SurfaceActionInvocation,
+        arguments: Vec<EntryArgument>,
+        host: &Host,
+        output: &mut dyn RunOutputSink,
+    ) -> Result<RunOutput, ProjectInvokeError> {
+        let action =
+            SurfaceActionInvocation::admit_by_operation_tag(&self.program, action.operation_tag())
+                .map_err(|error| ProjectInvokeError::Runtime(error.into_runtime_error()))?;
+        let invocation = action.invocation(arguments);
+        let runtime = self.program.runtime();
+        let call = CheckedEntryCall::from_protocol_invocation(&runtime, &invocation)?;
+        Ok(run_entry_with_host(&self.store, host, &call, output)?)
     }
 }
 

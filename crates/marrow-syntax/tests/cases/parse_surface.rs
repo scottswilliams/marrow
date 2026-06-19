@@ -34,13 +34,15 @@ fn parses_surface_declaration_with_contextual_items() {
          \x20   collection ^books as list\n\
          \x20   collection ^books.byAuthor as byAuthor\n\
          \x20   create title, author, blurb\n\
-         \x20   update title, blurb\n",
+         \x20   update title, blurb\n\
+         \x20   action addBook\n\
+         \x20   action shelf::loanBook as loan\n",
     );
 
     assert_eq!(surface.name, "Books");
     assert_eq!(surface.store.root, "books");
     assert!(surface.store.keys.is_empty());
-    assert_eq!(surface.items.len(), 5);
+    assert_eq!(surface.items.len(), 7);
     assert_eq!(
         surface.items[0],
         SurfaceItem::Fields {
@@ -81,6 +83,22 @@ fn parses_surface_declaration_with_contextual_items() {
         SurfaceItem::Update {
             names: vec!["title".into(), "blurb".into()],
             span: surface.items[4].span(),
+        }
+    );
+    assert_eq!(
+        surface.items[5],
+        SurfaceItem::Action {
+            function: vec!["addBook".into()],
+            alias: "addBook".into(),
+            span: surface.items[5].span(),
+        }
+    );
+    assert_eq!(
+        surface.items[6],
+        SurfaceItem::Action {
+            function: vec!["shelf".into(), "loanBook".into()],
+            alias: "loan".into(),
+            span: surface.items[6].span(),
         }
     );
 }
@@ -168,6 +186,14 @@ fn reports_malformed_surface_header_and_items() {
             ExpectedSyntax::SurfaceCollection,
         ),
         (
+            "module app\nsurface Books from ^books\n    action\n",
+            ExpectedSyntax::SurfaceAction,
+        ),
+        (
+            "module app\nsurface Books from ^books\n    action shelf::loan as\n",
+            ExpectedSyntax::SurfaceAction,
+        ),
+        (
             "module app\nsurface Books from ^books\n    bogus title\n",
             ExpectedSyntax::SurfaceItem,
         ),
@@ -198,6 +224,10 @@ fn malformed_surface_items_do_not_also_report_missing_body() {
         (
             "module app\nsurface Books from ^books\n    collection ^books as\n",
             ExpectedSyntax::SurfaceCollection,
+        ),
+        (
+            "module app\nsurface Books from ^books\n    action\n",
+            ExpectedSyntax::SurfaceAction,
         ),
         (
             "module app\nsurface Books from ^books\n    bogus title\n",

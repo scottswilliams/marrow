@@ -119,13 +119,14 @@ impl<'a> DeclParser<'a> {
         match lead_word {
             Some("fields") => self.parse_surface_field_item(span, err, &header[1..]),
             Some("collection") => self.parse_surface_collection_item(span, err, &header[1..]),
+            Some("action") => self.parse_surface_action_item(span, err, &header[1..]),
             Some("create") => self.parse_surface_create_item(span, err, &header[1..]),
             Some("update") => self.parse_surface_update_item(span, err, &header[1..]),
             _ => {
                 self.error_span(
                     err,
                     ParseDiagnosticReason::Expected(ExpectedSyntax::SurfaceItem),
-                    "expected a surface item: `fields`, `collection`, `create`, or `update`",
+                    "expected a surface item: `fields`, `collection`, `action`, `create`, or `update`",
                 );
                 None
             }
@@ -185,6 +186,22 @@ impl<'a> DeclParser<'a> {
                 None
             }
         }
+    }
+
+    fn parse_surface_action_item(
+        &mut self,
+        span: SourceSpan,
+        err: SourceSpan,
+        tokens: &[Token],
+    ) -> Option<SurfaceItem> {
+        surface_action(self.source, tokens)
+            .map(|(function, alias)| SurfaceItem::Action {
+                function,
+                alias,
+                span,
+            })
+            .map_err(|error| self.error_span(err, error.reason, error.message))
+            .ok()
     }
 }
 
@@ -330,6 +347,61 @@ fn surface_collection_error() -> ParseError {
     ParseError::new(
         ParseDiagnosticReason::Expected(ExpectedSyntax::SurfaceCollection),
         "expected `collection <target> as <alias>`",
+    )
+}
+
+fn surface_action(source: &str, tokens: &[Token]) -> ParseResult<(Vec<String>, String)> {
+    let (function, rest) = surface_qualified_name(source, tokens)?;
+    let alias = match rest {
+        [] => function.last().cloned().unwrap_or_default(),
+        [as_token, alias]
+            if as_token.kind == TokenKind::Identifier
+                && as_token.text(source) == "as"
+                && alias.kind == TokenKind::Identifier =>
+        {
+            alias.text(source).to_string()
+        }
+        [as_token, ..]
+            if as_token.kind == TokenKind::Identifier && as_token.text(source) == "as" =>
+        {
+            return Err(ParseError::new(
+                ParseDiagnosticReason::Expected(ExpectedSyntax::SurfaceAction),
+                "expected action alias after `as`",
+            ));
+        }
+        _ => return Err(surface_action_error()),
+    };
+    Ok((function, alias))
+}
+
+fn surface_qualified_name<'a>(
+    source: &str,
+    tokens: &'a [Token],
+) -> ParseResult<(Vec<String>, &'a [Token])> {
+    let Some(first) = tokens.first() else {
+        return Err(surface_action_error());
+    };
+    if first.kind != TokenKind::Identifier {
+        return Err(surface_action_error());
+    }
+    let mut function = vec![first.text(source).to_string()];
+    let mut index = 1;
+    while matches!(tokens.get(index), Some(token) if token.kind == TokenKind::DoubleColon) {
+        match tokens.get(index + 1) {
+            Some(segment) if segment.kind == TokenKind::Identifier => {
+                function.push(segment.text(source).to_string());
+                index += 2;
+            }
+            _ => return Err(surface_action_error()),
+        }
+    }
+    Ok((function, &tokens[index..]))
+}
+
+fn surface_action_error() -> ParseError {
+    ParseError::new(
+        ParseDiagnosticReason::Expected(ExpectedSyntax::SurfaceAction),
+        "expected `action <function>` or `action <function> as <alias>`",
     )
 }
 

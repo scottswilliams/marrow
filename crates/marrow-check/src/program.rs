@@ -1075,6 +1075,7 @@ pub struct CheckedRuntimeFunction {
     pub public: bool,
     pub params: Vec<CheckedParam>,
     entry_params: Vec<CheckedRuntimeParam>,
+    entry_return_type: Option<CheckedRuntimeValueType>,
     pub return_presence: ReturnPresence,
     pub return_type: Option<MarrowType>,
     pub span: SourceSpan,
@@ -1092,6 +1093,10 @@ impl CheckedRuntimeFunction {
                 .iter()
                 .map(|param| CheckedRuntimeParam::from_checked(program, param))
                 .collect(),
+            entry_return_type: function
+                .return_type
+                .clone()
+                .map(|ty| checked_runtime_value_type(program, ty)),
             return_presence: function.return_presence,
             return_type: function.return_type.clone(),
             span: function.span,
@@ -1105,6 +1110,10 @@ impl CheckedRuntimeFunction {
 
     pub fn entry_params(&self) -> &[CheckedRuntimeParam] {
         &self.entry_params
+    }
+
+    pub fn entry_return_type(&self) -> Option<&CheckedRuntimeValueType> {
+        self.entry_return_type.as_ref()
     }
 }
 

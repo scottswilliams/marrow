@@ -1,8 +1,9 @@
 use marrow_check::{
-    CHECK_SURFACE_FIELD, CHECK_SURFACE_TARGET, DiagnosticPayload, SurfaceCatalogBlocker,
-    SurfaceCatalogStatus, SurfaceCollectionTarget, SurfaceCollisionNameKind,
-    SurfaceFieldDiagnostic, SurfaceFieldList, SurfaceFieldProblem, SurfaceReadFootprint,
-    SurfaceReadOperationKind, SurfaceTargetDiagnostic, check_project, check_tests_program,
+    CHECK_SURFACE_ACTION, CHECK_SURFACE_FIELD, CHECK_SURFACE_TARGET, DiagnosticPayload,
+    SurfaceActionDiagnostic, SurfaceCatalogBlocker, SurfaceCatalogStatus, SurfaceCollectionTarget,
+    SurfaceCollisionNameKind, SurfaceFieldDiagnostic, SurfaceFieldList, SurfaceFieldProblem,
+    SurfaceReadFootprint, SurfaceReadOperationKind, SurfaceTargetDiagnostic, check_project,
+    check_tests_program,
 };
 use marrow_syntax::SourceSpan;
 
@@ -48,6 +49,10 @@ fn surface_targets(report: &marrow_check::CheckReport) -> Vec<&marrow_check::Che
 
 fn surface_fields(report: &marrow_check::CheckReport) -> Vec<&marrow_check::CheckDiagnostic> {
     with_code(report, CHECK_SURFACE_FIELD)
+}
+
+fn surface_actions(report: &marrow_check::CheckReport) -> Vec<&marrow_check::CheckDiagnostic> {
+    with_code(report, CHECK_SURFACE_ACTION)
 }
 
 fn assert_surface_collision_payload(
@@ -203,6 +208,40 @@ surface exists from ^books
         duplicate_declarations(&report).is_empty(),
         "{:#?}",
         report.diagnostics
+    );
+}
+
+#[test]
+fn action_alias_collision_rejects_surface() {
+    let source = "\
+module app
+resource Book
+    title: string
+store ^books(id: int): Book
+pub fn addBook()
+    return
+surface Books from ^books
+    fields title
+    action addBook as get
+";
+    let root = temp_project("surface-action-generated-collision", |root| {
+        write(root, "src/app.mw", source);
+    });
+    let (report, program) = check_project(&root, &config()).expect("check");
+
+    let collisions = surface_collisions(&report);
+    assert_eq!(collisions.len(), 1, "{:#?}", report.diagnostics);
+    assert_surface_collision_payload(
+        collisions[0],
+        "get",
+        SurfaceCollisionNameKind::GeneratedOperation,
+        SurfaceCollisionNameKind::ActionAlias,
+        source,
+        7,
+    );
+    assert!(
+        program.facts.surfaces().is_empty(),
+        "a surface with a colliding action alias must not become a fact"
     );
 }
 
@@ -760,6 +799,227 @@ surface Books from ^books
             ("list", SurfaceCollectionTarget::StoreRoot(store)),
             ("byAuthor", SurfaceCollectionTarget::StoreIndex(by_author)),
         ]
+    );
+}
+
+#[test]
+fn surface_facts_resolve_public_action_targets() {
+    let app_source = "\
+module app
+resource Book
+    title: string
+store ^books(id: int): Book
+pub fn addBook()
+    return
+surface Books from ^books
+    fields title
+    action addBook
+    action shelf::loanBook as loan
+";
+    let shelf_source = "\
+module shelf
+pub fn loanBook()
+    return
+";
+    let root = temp_project("surface-action-facts", |root| {
+        write(root, "src/app.mw", app_source);
+        write(root, "src/shelf.mw", shelf_source);
+    });
+    let (report, program) = check_project(&root, &config()).expect("check");
+
+    assert_clean(&report);
+    let facts = &program.facts;
+    let app = facts.module_id("app").expect("app module");
+    let shelf = facts.module_id("shelf").expect("shelf module");
+    let add_book = facts.function_id(app, "addBook").expect("addBook");
+    let loan_book = facts.function_id(shelf, "loanBook").expect("loanBook");
+    let [surface] = facts.surfaces() else {
+        panic!("expected one surface, got {:#?}", facts.surfaces());
+    };
+    assert_eq!(
+        surface
+            .actions
+            .iter()
+            .map(|action| {
+                (
+                    action.alias.as_str(),
+                    facts
+                        .function_id_for_ref(action.function)
+                        .expect("action function"),
+                )
+            })
+            .collect::<Vec<_>>(),
+        vec![("addBook", add_book), ("loan", loan_book)]
+    );
+}
+
+#[test]
+fn surface_action_targets_expand_import_aliases() {
+    let app_source = "\
+module app
+use library::shelf
+resource Book
+    title: string
+store ^books(id: int): Book
+surface Books from ^books
+    fields title
+    action shelf::loanBook as loan
+";
+    let shelf_source = "\
+module library::shelf
+pub fn loanBook()
+    return
+";
+    let root = temp_project("surface-action-target-import-alias", |root| {
+        write(root, "src/app.mw", app_source);
+        write(root, "src/library/shelf.mw", shelf_source);
+    });
+    let (report, program) = check_project(&root, &config()).expect("check");
+
+    assert_clean(&report);
+    let facts = &program.facts;
+    let shelf = facts
+        .module_id("library::shelf")
+        .expect("library::shelf module");
+    let loan_book = facts.function_id(shelf, "loanBook").expect("loanBook");
+    let [surface] = facts.surfaces() else {
+        panic!("expected one surface, got {:#?}", facts.surfaces());
+    };
+    let [action] = surface.actions.as_slice() else {
+        panic!("expected one action, got {:#?}", surface.actions);
+    };
+    assert_eq!(action.alias, "loan");
+    assert_eq!(
+        facts
+            .function_id_for_ref(action.function)
+            .expect("action function"),
+        loan_book
+    );
+}
+
+#[test]
+fn surface_action_target_in_incomplete_module_suppresses_unknown_function_noise() {
+    let app_source = "\
+module app
+use library::shelf
+resource Book
+    title: string
+store ^books(id: int): Book
+surface Books from ^books
+    fields title
+    action shelf::loanBook as loan
+";
+    let shelf_source = "\
+module library::shelf
+\tpub fn loanBook()
+    return
+";
+    let root = temp_project("surface-action-incomplete-target-module", |root| {
+        write(root, "src/app.mw", app_source);
+        write(root, "src/library/shelf.mw", shelf_source);
+    });
+    let (report, program) = check_project(&root, &config()).expect("check");
+
+    assert!(
+        surface_actions(&report).is_empty(),
+        "incomplete target module should not produce surface action noise: {:#?}",
+        report.diagnostics
+    );
+    assert!(
+        program.facts.surfaces().is_empty(),
+        "suppressed unresolved action target must not mint a partial surface fact"
+    );
+}
+
+#[test]
+fn surface_action_diagnostics_reject_unknown_and_private_targets() {
+    let source = "\
+module app
+resource Book
+    title: string
+store ^books(id: int): Book
+fn hidden()
+    return
+surface Books from ^books
+    fields title
+    action missing
+    action hidden
+";
+    let root = temp_project("surface-action-target-diagnostics", |root| {
+        write(root, "src/app.mw", source);
+    });
+    let (report, program) = check_project(&root, &config()).expect("check");
+
+    let diagnostics = surface_actions(&report);
+    assert_eq!(diagnostics.len(), 2, "{:#?}", report.diagnostics);
+    assert_eq!(
+        diagnostics[0].payload,
+        DiagnosticPayload::SurfaceAction(SurfaceActionDiagnostic::UnknownFunction {
+            path: "missing".into(),
+        })
+    );
+    assert_eq!(
+        diagnostics[1].payload,
+        DiagnosticPayload::SurfaceAction(SurfaceActionDiagnostic::PrivateFunction {
+            path: "hidden".into(),
+        })
+    );
+    assert!(
+        program.facts.surfaces().is_empty(),
+        "a surface with invalid actions must not become a fact"
+    );
+}
+
+#[test]
+fn surface_action_diagnostics_reject_unsupported_signature_shapes() {
+    let source = "\
+module app
+resource Book
+    title: string
+store ^books(id: int): Book
+pub fn takesResource(book: Book)
+    return
+pub fn returnsResource(): Book
+    var book: Book
+    return book
+pub fn takesIdentitySequence(ids: sequence[Id(^books)])
+    return
+surface Books from ^books
+    fields title
+    action takesResource
+    action returnsResource
+    action takesIdentitySequence
+";
+    let root = temp_project("surface-action-signature-diagnostics", |root| {
+        write(root, "src/app.mw", source);
+    });
+    let (report, program) = check_project(&root, &config()).expect("check");
+
+    let diagnostics = surface_actions(&report);
+    assert_eq!(diagnostics.len(), 3, "{:#?}", report.diagnostics);
+    assert_eq!(
+        diagnostics[0].payload,
+        DiagnosticPayload::SurfaceAction(SurfaceActionDiagnostic::UnsupportedParameter {
+            path: "takesResource".into(),
+            parameter: "book".into(),
+        })
+    );
+    assert_eq!(
+        diagnostics[1].payload,
+        DiagnosticPayload::SurfaceAction(SurfaceActionDiagnostic::UnsupportedReturn {
+            path: "returnsResource".into(),
+        })
+    );
+    assert_eq!(
+        diagnostics[2].payload,
+        DiagnosticPayload::SurfaceAction(SurfaceActionDiagnostic::UnsupportedParameter {
+            path: "takesIdentitySequence".into(),
+            parameter: "ids".into(),
+        })
+    );
+    assert!(
+        program.facts.surfaces().is_empty(),
+        "a surface with unsupported action signatures must not become a fact"
     );
 }
 

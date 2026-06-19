@@ -67,15 +67,18 @@ stability for the internal crates.
 
 The `surface` foundation is active but not yet a stable transport or
 generated-client contract. Checked surface facts are compiler facts over stores,
-fields, indexes, read operations, footprints, and projections. Stable read
-operations and sparse updates have accepted-catalog descriptors and operation
-tags; `marrow check --format json|jsonl` exports the current surface ABI
-descriptor set for successful checks. The active JSON DTOs decode checked read
-request parameters through admitted runtime reads, decode sparse update request
-bodies through admitted runtime updates, and render already-executed surface
-reads with typed cursor-boundary JSON. Read DTOs also execute over
-`ProjectSurfaceReadSession`, and point/singleton update DTOs also execute over
-`ProjectSurfaceSession`, without exposing backing store handles.
+fields, indexes, read operations, footprints, projections, sparse update fields,
+and declared public actions. Stable reads, sparse updates, and actions have
+accepted-catalog descriptors and operation tags; action tags reuse
+`entry.invoke.v1` identity over parameters and return shape. `marrow check
+--format json|jsonl` exports the current surface ABI descriptor set for
+successful checks. The active JSON DTOs decode checked read request parameters
+through admitted runtime reads, decode sparse update request bodies through
+admitted runtime updates, decode action arguments through `entry.invoke.v1`, and
+render already-executed surface reads and action results with accepted-catalog
+typed JSON. Read DTOs also execute over `ProjectSurfaceReadSession`, and
+point/singleton update plus action DTOs execute over `ProjectSurfaceSession`,
+without exposing backing store handles.
 `marrow-run::ProjectSurfaceReadSession` is an unstable linked-Rust
 implementation profile for read serving over an already accepted native store:
 it opens the store read-only, fences drift, and exposes admitted surface reads
@@ -83,23 +86,25 @@ by operation tag. `marrow-run::ProjectSurfaceSession` is the matching unstable
 linked-Rust implementation profile for read/write surface execution over an
 existing accepted native store: it opens the store writable, requires store UID
 and commit metadata, fences drift without hidden repair, and exposes admitted
-surface reads and sparse updates by operation tag. It is a single-owner,
-sequential session; while it is open, the native writer lock makes it the owning
-process/session for these reads and updates and excludes another writer or
-read-only inspection. Linked-Rust embedding remains an implementation profile
-for hosting surface facts, run sessions, and these project surface slices, not a
-stable app-data contract. The update helpers return `Result<(), SurfaceError>`;
-HTTP serving, update-result envelopes, opaque cursor tokens, generated clients,
-and create/delete body decode remain future profiles.
-Until serving profiles ship, typed entry invocation (`marrow run` with `--arg`
-and `--format json`) is the supported integration surface.
+surface reads, sparse updates, and actions by operation tag. It is a
+single-owner, sequential session; while it is open, the native writer lock makes
+it the owning process/session for these reads, updates, and actions and excludes
+another writer or read-only inspection. Linked-Rust embedding remains an
+implementation profile for hosting surface facts, run sessions, and these
+project surface slices, not a stable app-data contract. The default project
+operation envelope helper runs actions with a zero-capability host; callers that
+need host capabilities use the explicit-host helper. HTTP serving, opaque cursor
+tokens, generated clients, and create/delete body decode remain future profiles.
+Until serving profiles ship, Marrow has no stable HTTP or generated-client
+application contract. Linked-Rust surface helpers and typed entry invocation
+remain implementation profiles.
 The linked-Rust entry descriptor profile is an unstable implementation surface:
 `marrow-check` owns `entry.invoke.v1` descriptor tags over public entry
-signatures, parameter shapes, accepted catalog identities, and return presence,
-while `marrow-run` admits `EntryInvocation` values by checking the callable ABI
-tag and read-only checked-program context before execution. It does not make the
-Rust crates stable, does not define JSON request bodies, and does not publish
-HTTP routes or generated-client names.
+signatures, parameter shapes, accepted catalog identities, return presence, and
+return shape, while `marrow-run` admits `EntryInvocation` values by checking the
+callable ABI tag and read-only checked-program context before execution. It does
+not make the Rust crates stable, does not define JSON request bodies, and does
+not publish HTTP routes or generated-client names.
 
 The `signature_digest` field in the run JSON envelope is reserved for the future
 public JSON exposure of entry ABI identity and remains `null` in v0.1. The

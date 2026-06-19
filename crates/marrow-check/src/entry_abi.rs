@@ -2,9 +2,10 @@ use marrow_schema::ReturnPresence;
 use marrow_store::cell::CatalogId;
 use marrow_store::value::ScalarType;
 
+use crate::executable::checked_runtime_value_type;
 use crate::{
-    CheckedEntryFunction, CheckedFunctionRef, CheckedRuntimeFunction, CheckedRuntimeModule,
-    CheckedRuntimeProgram, CheckedRuntimeValueType, StoredValueMeaning,
+    CheckedEntryFunction, CheckedFunctionRef, CheckedProgram, CheckedRuntimeFunction,
+    CheckedRuntimeModule, CheckedRuntimeProgram, CheckedRuntimeValueType, StoredValueMeaning,
 };
 
 pub const ENTRY_PROTOCOL_TAG_VERSION: &str = "entry.invoke.v1";
@@ -23,6 +24,7 @@ pub struct EntryIdentity {
 pub struct EntryDescriptor {
     pub identity: EntryIdentity,
     pub parameters: Vec<EntryParameter>,
+    pub return_value: Option<EntryArgumentShape>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -60,6 +62,12 @@ pub struct EntryIdentityKey {
     pub scalar: ScalarType,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum EntrySignatureUnsupported {
+    Parameter { name: String },
+    ReturnValue,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EntryDescriptorError {
     Ambiguous,
@@ -81,7 +89,7 @@ impl EntryDescriptor {
         Self::from_function_ref(program, entry, target).ok_or(EntryDescriptorError::Missing)
     }
 
-    fn from_function_ref(
+    pub(crate) fn from_function_ref(
         program: &CheckedRuntimeProgram,
         requested_name: &str,
         target: CheckedFunctionRef,
@@ -97,6 +105,9 @@ impl EntryDescriptor {
             })
             .collect();
         let canonical_name = canonical_entry_name(module, function);
+        let return_value = function
+            .entry_return_type()
+            .map(|ty| argument_shape(program, ty));
         Some(Self {
             identity: EntryIdentity {
                 requested_name: requested_name.to_string(),
@@ -107,6 +118,7 @@ impl EntryDescriptor {
                 read_only_context_digest: program.read_only_context_digest().to_string(),
             },
             parameters,
+            return_value,
         })
     }
 }
@@ -144,6 +156,10 @@ fn entry_tag(
             "none"
         },
     );
+    match function.entry_return_type() {
+        Some(ty) => push_runtime_type(program, &mut payload, "return.type", ty),
+        None => push_part(&mut payload, "return.type", "none"),
+    }
     push_part(
         &mut payload,
         "params.len",
@@ -154,6 +170,64 @@ fn entry_tag(
         push_runtime_type(program, &mut payload, "param", &param.ty);
     }
     marrow_project::sha256_digest(payload.as_bytes())
+}
+
+pub(crate) fn function_ref_has_accepted_entry_catalog_ids(
+    program: &CheckedProgram,
+    target: CheckedFunctionRef,
+) -> bool {
+    let Some(module) = program.modules.get(target.module as usize) else {
+        return false;
+    };
+    let Some(function) = module.functions.get(target.function as usize) else {
+        return false;
+    };
+    function.params.iter().all(|param| {
+        let ty = checked_runtime_value_type(program, param.ty.clone());
+        runtime_type_has_accepted_catalog_ids(program, &ty)
+    }) && function
+        .return_type
+        .as_ref()
+        .map(|ty| checked_runtime_value_type(program, ty.clone()))
+        .is_none_or(|ty| runtime_type_has_accepted_catalog_ids(program, &ty))
+}
+
+pub(crate) fn function_ref_has_supported_entry_signature(
+    program: &CheckedProgram,
+    target: CheckedFunctionRef,
+) -> Result<(), EntrySignatureUnsupported> {
+    let Some(module) = program.modules.get(target.module as usize) else {
+        return Err(EntrySignatureUnsupported::ReturnValue);
+    };
+    let Some(function) = module.functions.get(target.function as usize) else {
+        return Err(EntrySignatureUnsupported::ReturnValue);
+    };
+    for param in &function.params {
+        let ty = checked_runtime_value_type(program, param.ty.clone());
+        if !runtime_type_has_entry_shape(&ty) {
+            return Err(EntrySignatureUnsupported::Parameter {
+                name: param.name.clone(),
+            });
+        }
+    }
+    if let Some(ty) = function.return_type.as_ref() {
+        let ty = checked_runtime_value_type(program, ty.clone());
+        if !runtime_type_has_action_result_shape(&ty) {
+            return Err(EntrySignatureUnsupported::ReturnValue);
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn entry_descriptor_has_supported_shapes(descriptor: &EntryDescriptor) -> bool {
+    descriptor
+        .parameters
+        .iter()
+        .all(|parameter| argument_shape_supported(&parameter.shape))
+        && descriptor
+            .return_value
+            .as_ref()
+            .is_none_or(argument_shape_supported)
 }
 
 fn argument_shape(
@@ -259,6 +333,114 @@ fn entry_sequence_element_supported(ty: &CheckedRuntimeValueType) -> bool {
         ty,
         CheckedRuntimeValueType::Primitive(_) | CheckedRuntimeValueType::Enum { .. }
     )
+}
+
+fn runtime_type_has_entry_shape(ty: &CheckedRuntimeValueType) -> bool {
+    match ty {
+        CheckedRuntimeValueType::Primitive(_) => true,
+        CheckedRuntimeValueType::Enum { enum_id, .. } => enum_id.is_some(),
+        CheckedRuntimeValueType::Identity { keys, .. } => keys
+            .as_ref()
+            .is_some_and(|keys| keys.iter().all(|key| key.ty.scalar().is_some())),
+        CheckedRuntimeValueType::Sequence(element) => {
+            runtime_sequence_element_has_entry_shape(element)
+        }
+        CheckedRuntimeValueType::Resource
+        | CheckedRuntimeValueType::GroupEntry
+        | CheckedRuntimeValueType::LocalTree { .. }
+        | CheckedRuntimeValueType::Error
+        | CheckedRuntimeValueType::Invalid
+        | CheckedRuntimeValueType::Unknown => false,
+    }
+}
+
+fn runtime_type_has_action_result_shape(ty: &CheckedRuntimeValueType) -> bool {
+    runtime_type_has_entry_shape(ty)
+}
+
+fn runtime_sequence_element_has_entry_shape(ty: &CheckedRuntimeValueType) -> bool {
+    match ty {
+        CheckedRuntimeValueType::Primitive(_) => true,
+        CheckedRuntimeValueType::Enum { enum_id, .. } => enum_id.is_some(),
+        _ => false,
+    }
+}
+
+fn argument_shape_supported(shape: &EntryArgumentShape) -> bool {
+    match shape {
+        EntryArgumentShape::Scalar(_)
+        | EntryArgumentShape::Enum { .. }
+        | EntryArgumentShape::Identity { .. } => true,
+        EntryArgumentShape::Sequence(element) => sequence_argument_shape_supported(element),
+        EntryArgumentShape::Unsupported => false,
+    }
+}
+
+fn sequence_argument_shape_supported(shape: &EntryArgumentShape) -> bool {
+    matches!(
+        shape,
+        EntryArgumentShape::Scalar(_) | EntryArgumentShape::Enum { .. }
+    )
+}
+
+fn runtime_type_has_accepted_catalog_ids(
+    program: &CheckedProgram,
+    ty: &CheckedRuntimeValueType,
+) -> bool {
+    match ty {
+        CheckedRuntimeValueType::Primitive(_)
+        | CheckedRuntimeValueType::Resource
+        | CheckedRuntimeValueType::GroupEntry
+        | CheckedRuntimeValueType::LocalTree { .. }
+        | CheckedRuntimeValueType::Error
+        | CheckedRuntimeValueType::Invalid
+        | CheckedRuntimeValueType::Unknown => true,
+        CheckedRuntimeValueType::Enum {
+            enum_id,
+            allowed_members,
+            ..
+        } => {
+            let Some(enum_id) = enum_id else {
+                return false;
+            };
+            let Some(enum_fact) = program.facts.enum_(*enum_id) else {
+                return false;
+            };
+            checked_accepted_catalog_id(program, enum_fact.catalog_id.as_deref()).is_some()
+                && allowed_members.iter().all(|member_id| {
+                    program
+                        .facts
+                        .enum_member(*member_id)
+                        .and_then(|member| {
+                            checked_accepted_catalog_id(program, member.catalog_id.as_deref())
+                        })
+                        .is_some()
+                })
+        }
+        CheckedRuntimeValueType::Identity { root, .. } => {
+            let Some(store) = program.facts.store_by_root(root) else {
+                return false;
+            };
+            checked_accepted_catalog_id(program, store.catalog_id.as_deref()).is_some()
+                && store
+                    .identity_keys
+                    .iter()
+                    .all(|key| matches!(key.value_meaning, Some(StoredValueMeaning::Scalar(_))))
+        }
+        CheckedRuntimeValueType::Sequence(element) => {
+            runtime_type_has_accepted_catalog_ids(program, element)
+        }
+    }
+}
+
+fn checked_accepted_catalog_id(program: &CheckedProgram, catalog_id: Option<&str>) -> Option<()> {
+    let catalog_id = catalog_id?;
+    program
+        .catalog
+        .accepted_entries
+        .iter()
+        .any(|entry| entry.stable_id == catalog_id)
+        .then_some(())
 }
 
 fn accepted_catalog_id(

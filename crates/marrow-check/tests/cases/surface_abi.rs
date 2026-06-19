@@ -3,7 +3,8 @@ use crate::support::{assert_clean, check_with_accepted, config, temp_project, wr
 
 use marrow_catalog::{CatalogEntry, CatalogEntryKind};
 use marrow_check::{
-    AnalysisSnapshot, CheckedProgram, ProjectSources, SurfaceCatalogBlocker, SurfaceCatalogStatus,
+    AnalysisSnapshot, CheckedProgram, ENTRY_PROTOCOL_TAG_VERSION, EntryDescriptor, ProjectSources,
+    SurfaceActionOperationDescriptor, SurfaceCatalogBlocker, SurfaceCatalogStatus,
     SurfaceOperationValueShape, SurfaceReadOperationDescriptor, SurfaceReadOperationDescriptorKind,
     SurfaceUpdateOperationDescriptor, SurfaceUpdateOperationDescriptorKind, analyze_project,
     check_project,
@@ -410,6 +411,193 @@ surface Books from ^books
         updates.is_empty(),
         "source-only surface without update fields has no update operation"
     );
+
+    let actions = snapshot.surface_action_operations().collect::<Vec<_>>();
+    assert!(
+        actions.is_empty(),
+        "source-only surface without action items has no action operation"
+    );
+}
+
+#[test]
+fn stable_action_descriptor_reuses_entry_invoke_identity() {
+    let source = "\
+module app
+resource Book
+    title: string
+store ^books(id: int): Book
+pub fn addBook(title: string)
+    return
+surface Books from ^books
+    fields title
+    action addBook
+";
+    let (_root, snapshot) = stable_snapshot("surface-action-abi-entry-identity", source);
+    let descriptors = snapshot
+        .surface_action_operations()
+        .map(|operation| {
+            operation
+                .stable_descriptor()
+                .expect("stable action descriptor")
+        })
+        .collect::<Vec<_>>();
+
+    let [descriptor] = descriptors.as_slice() else {
+        panic!("expected one action descriptor, got {descriptors:#?}");
+    };
+    let entry = EntryDescriptor::resolve(&snapshot.program.runtime(), "app::addBook")
+        .expect("entry descriptor");
+    assert_eq!(descriptor.profile_version, ENTRY_PROTOCOL_TAG_VERSION);
+    assert_eq!(descriptor.alias, "addBook");
+    assert_eq!(descriptor.operation_tag, entry.identity.entry_tag);
+    assert_eq!(descriptor.identity, entry.identity);
+    assert_eq!(descriptor.parameters, entry.parameters);
+    assert_eq!(descriptor.return_value, entry.return_value);
+}
+
+#[test]
+fn stable_action_operation_tag_changes_when_return_type_changes() {
+    let int_source = "\
+module app
+resource Book
+    title: string
+store ^books(id: int): Book
+pub fn addBook(): int
+    return 1
+surface Books from ^books
+    fields title
+    action addBook
+";
+    let string_source = "\
+module app
+resource Book
+    title: string
+store ^books(id: int): Book
+pub fn addBook(): string
+    return \"one\"
+surface Books from ^books
+    fields title
+    action addBook
+";
+    let (_root, int_snapshot) = stable_snapshot("surface-action-abi-return-int", int_source);
+    let (_root, string_snapshot) =
+        stable_snapshot("surface-action-abi-return-string", string_source);
+    let int_tag = int_snapshot
+        .surface_action_operations()
+        .next()
+        .and_then(|operation| operation.stable_descriptor())
+        .map(|descriptor| descriptor.operation_tag)
+        .expect("int action tag");
+    let string_tag = string_snapshot
+        .surface_action_operations()
+        .next()
+        .and_then(|operation| operation.stable_descriptor())
+        .map(|descriptor| descriptor.operation_tag)
+        .expect("string action tag");
+
+    assert_ne!(
+        int_tag, string_tag,
+        "action operation identity must cover response shape"
+    );
+}
+
+#[test]
+fn source_only_surface_action_analysis_has_no_stable_descriptor() {
+    let root = temp_project("surface-action-abi-source-only", |root| {
+        write(
+            root,
+            "src/app.mw",
+            "\
+module app
+resource Book
+    title: string
+store ^books(id: int): Book
+pub fn addBook()
+    return
+surface Books from ^books
+    fields title
+    action addBook
+",
+        );
+    });
+    let snapshot =
+        analyze_project(&root, &config(), &ProjectSources::new(), None).expect("analyze");
+    assert_clean(&snapshot.report);
+
+    let actions = snapshot.surface_action_operations().collect::<Vec<_>>();
+    let [action] = actions.as_slice() else {
+        panic!("expected one action operation, got {actions:#?}");
+    };
+    assert!(action.stable_descriptor().is_none());
+    assert!(
+        SurfaceActionOperationDescriptor::from_action(
+            &snapshot.program,
+            action.surface,
+            action.action
+        )
+        .is_none(),
+        "the descriptor owner must enforce the source-only gate"
+    );
+}
+
+#[test]
+fn action_catalog_dependencies_can_make_a_surface_source_only() {
+    let root = temp_project("surface-action-abi-action-catalog-dependency", |root| {
+        write(
+            root,
+            "src/app.mw",
+            "\
+module app
+resource Book
+    title: string
+store ^books(id: int): Book
+surface Books from ^books
+    fields title
+",
+        );
+    });
+    let (baseline_report, baseline_program) =
+        check_project(&root, &config()).expect("baseline check");
+    assert_clean(&baseline_report);
+    let baseline = baseline_program
+        .catalog
+        .proposal
+        .expect("first run proposes catalog ids");
+    write_catalog(&root, &baseline);
+
+    write(
+        &root,
+        "src/app.mw",
+        "\
+module app
+enum Status
+    active
+resource Book
+    title: string
+store ^books(id: int): Book
+pub fn currentStatus(): Status
+    return Status::active
+surface Books from ^books
+    fields title
+    action currentStatus
+",
+    );
+    let snapshot = analyze_project(&root, &config(), &ProjectSources::new(), Some(&baseline))
+        .expect("analyze changed action");
+    assert_clean(&snapshot.report);
+
+    let actions = snapshot.surface_action_operations().collect::<Vec<_>>();
+    let [action] = actions.as_slice() else {
+        panic!("expected one action operation, got {actions:#?}");
+    };
+    assert_eq!(
+        action.surface.catalog_status,
+        SurfaceCatalogStatus::SourceOnly(vec![
+            SurfaceCatalogBlocker::PendingCatalogProposal,
+            SurfaceCatalogBlocker::MissingAcceptedCatalogIds,
+        ])
+    );
+    assert!(action.stable_descriptor().is_none());
 }
 
 #[test]

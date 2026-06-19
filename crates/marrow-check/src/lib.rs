@@ -40,8 +40,8 @@ mod walk;
 
 pub use analysis::{
     AnalysisIdentity, AnalysisSnapshot, AnalyzedFile, CatalogDeclaration,
-    SurfaceReadOperationAnalysis, SurfaceUpdateOperationAnalysis, UseSite, UseSiteKind,
-    analyze_project, scope_at, type_at,
+    SurfaceActionOperationAnalysis, SurfaceReadOperationAnalysis, SurfaceUpdateOperationAnalysis,
+    UseSite, UseSiteKind, analyze_project, scope_at, type_at,
 };
 pub use binding::{
     BindingIndex, ParameterDefinition, RenameAction, RenameSafety, SourceEdit, SymbolKind,
@@ -61,14 +61,15 @@ pub use diagnostics::{
     CHECK_RANGE_VALUE, CHECK_READ_ONLY_EXPRESSION_CONTEXT, CHECK_READ_ONLY_EXPRESSION_HOST_EFFECT,
     CHECK_READ_ONLY_EXPRESSION_UNINDEXED_LOOKUP, CHECK_READ_ONLY_EXPRESSION_WRITE,
     CHECK_RECURSIVE_KEYED_ENTRY, CHECK_REJECTED_SURFACE, CHECK_REQUIRED_ABSENT, CHECK_RETURN_TYPE,
-    CHECK_RETURN_VALUE, CHECK_STRING_ESCAPE, CHECK_SURFACE_COLLISION, CHECK_SURFACE_FIELD,
-    CHECK_SURFACE_TARGET, CHECK_THROW_TYPE, CHECK_TRY_HANDLER, CHECK_UNKNOWN_ENUM_MEMBER,
-    CHECK_UNKNOWN_FIELD, CHECK_UNKNOWN_TYPE, CHECK_UNRESOLVED_CALL, CHECK_UNRESOLVED_IMPORT,
-    CHECK_UNRESOLVED_NAME, CHECK_UNTYPED_VALUE, CatalogIntentDiagnostic, CatalogIntentKind,
-    CatalogPathCandidate, CheckDiagnostic, CheckReport, ConversionTarget,
+    CHECK_RETURN_VALUE, CHECK_STRING_ESCAPE, CHECK_SURFACE_ACTION, CHECK_SURFACE_COLLISION,
+    CHECK_SURFACE_FIELD, CHECK_SURFACE_TARGET, CHECK_THROW_TYPE, CHECK_TRY_HANDLER,
+    CHECK_UNKNOWN_ENUM_MEMBER, CHECK_UNKNOWN_FIELD, CHECK_UNKNOWN_TYPE, CHECK_UNRESOLVED_CALL,
+    CHECK_UNRESOLVED_IMPORT, CHECK_UNRESOLVED_NAME, CHECK_UNTYPED_VALUE, CatalogIntentDiagnostic,
+    CatalogIntentKind, CatalogPathCandidate, CheckDiagnostic, CheckReport, ConversionTarget,
     ConversionUnsupportedSourceDiagnostic, DiagnosticPayload, EnumDiagnostic, IO_READ,
-    RejectedSurface, SCHEMA_DUPLICATE_ROOT_OWNER, SurfaceCollisionNameKind, SurfaceFieldDiagnostic,
-    SurfaceFieldList, SurfaceFieldProblem, SurfaceTargetDiagnostic,
+    RejectedSurface, SCHEMA_DUPLICATE_ROOT_OWNER, SurfaceActionDiagnostic,
+    SurfaceCollisionNameKind, SurfaceFieldDiagnostic, SurfaceFieldList, SurfaceFieldProblem,
+    SurfaceTargetDiagnostic,
 };
 pub use driver::{
     ProjectSources, check_project, check_project_with_catalog, check_tests, check_tests_program,
@@ -99,9 +100,10 @@ pub use facts::{
     FunctionFact, FunctionId, HostEffect, LocalFact, LocalId, ModuleFact, ModuleId, ResourceFact,
     ResourceId, ResourceMemberFact, ResourceMemberId, ResourceMemberKind, SavedPlaceEffect,
     StoreFact, StoreId, StoreIdentityKeyFact, StoreIndexFact, StoreIndexId, StoreIndexKeyFact,
-    StoreIndexKeySource, StoredValueMeaning, SurfaceCatalogBlocker, SurfaceCatalogStatus,
-    SurfaceCollectionFact, SurfaceCollectionTarget, SurfaceFact, SurfaceFieldFact, SurfaceId,
-    SurfaceReadFootprint, SurfaceReadOperationFact, SurfaceReadOperationKind, WorkShapeClass,
+    StoreIndexKeySource, StoredValueMeaning, SurfaceActionFact, SurfaceCatalogBlocker,
+    SurfaceCatalogStatus, SurfaceCollectionFact, SurfaceCollectionTarget, SurfaceFact,
+    SurfaceFieldFact, SurfaceId, SurfaceReadFootprint, SurfaceReadOperationFact,
+    SurfaceReadOperationKind, WorkShapeClass,
 };
 pub use facts::{
     PresenceProofFact, PresenceProofId, PresenceProofPlace, PresenceProofSource,
@@ -126,11 +128,11 @@ pub use project_io::{
 pub use resolve::{Def, DefItem, Resolution, ResolvableKind, resolve};
 pub use surface_abi::{
     SURFACE_READ_OPERATION_TAG_VERSION, SURFACE_UPDATE_OPERATION_TAG_VERSION,
-    SurfaceOperationIdentityKey, SurfaceOperationValueShape, SurfaceReadOperationDescriptor,
-    SurfaceReadOperationDescriptorKind, SurfaceReadOperationIndexKey,
-    SurfaceReadOperationIndexKeySource, SurfaceReadOperationProjectionField,
-    SurfaceUpdateOperationDescriptor, SurfaceUpdateOperationDescriptorKind,
-    SurfaceUpdateOperationField, SurfaceUpdatePatchSemantics,
+    SurfaceActionOperationDescriptor, SurfaceOperationIdentityKey, SurfaceOperationValueShape,
+    SurfaceReadOperationDescriptor, SurfaceReadOperationDescriptorKind,
+    SurfaceReadOperationIndexKey, SurfaceReadOperationIndexKeySource,
+    SurfaceReadOperationProjectionField, SurfaceUpdateOperationDescriptor,
+    SurfaceUpdateOperationDescriptorKind, SurfaceUpdateOperationField, SurfaceUpdatePatchSemantics,
 };
 
 pub(crate) use driver::{

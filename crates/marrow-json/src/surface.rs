@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use marrow_run::{
-    SurfaceEnumValue, SurfaceReadField, SurfaceReadIdentity, SurfaceReadRecord, SurfaceValue,
+    SurfaceEnumValue, SurfaceReadField, SurfaceReadIdentity, SurfaceReadRecord, SurfaceValue, Value,
 };
 use marrow_store::key::SavedKey;
 use serde::{Deserialize, Serialize};
@@ -18,9 +18,10 @@ pub use execute::{
     execute_surface_singleton_update_by_tag, execute_surface_unique_lookup_by_tag,
 };
 pub use operation::{
-    SURFACE_OPERATION_PROFILE_VERSION, SurfaceOperationErrorJson, SurfaceOperationRequestBodyJson,
-    SurfaceOperationRequestJson, SurfaceOperationResponseJson, SurfaceOperationResultJson,
-    execute_project_surface_operation, execute_project_surface_operation_read_only,
+    SURFACE_OPERATION_PROFILE_VERSION, SurfaceActionRequestJson, SurfaceActionResultJson,
+    SurfaceOperationErrorJson, SurfaceOperationRequestBodyJson, SurfaceOperationRequestJson,
+    SurfaceOperationResponseJson, SurfaceOperationResultJson, execute_project_surface_operation,
+    execute_project_surface_operation_read_only, execute_project_surface_operation_with_host,
 };
 pub use request::{
     DecodedSurfacePageRequest, DecodedSurfacePointRequest, DecodedSurfacePointUpdateRequest,
@@ -43,6 +44,7 @@ pub struct SurfaceDescriptorJson {
     pub read: Vec<SurfaceReadOperationDescriptorJson>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub update: Option<SurfaceUpdateOperationDescriptorJson>,
+    pub actions: Vec<SurfaceActionOperationDescriptorJson>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -159,6 +161,67 @@ pub struct SurfaceUpdateFieldDescriptorJson {
     pub value: SurfaceOperationValueShapeJson,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SurfaceActionOperationDescriptorJson {
+    pub profile_version: String,
+    pub operation_tag: String,
+    pub alias: String,
+    pub identity: SurfaceActionIdentityJson,
+    pub parameters: Vec<SurfaceActionParameterJson>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub return_value: Option<SurfaceActionArgumentShapeJson>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SurfaceActionIdentityJson {
+    pub requested_name: String,
+    pub canonical_name: String,
+    pub entry_tag: String,
+    pub accepted_catalog_epoch: Option<u64>,
+    pub source_digest: String,
+    pub read_only_context_digest: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SurfaceActionParameterJson {
+    pub name: String,
+    pub shape: SurfaceActionArgumentShapeJson,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SurfaceActionArgumentShapeJson {
+    Scalar {
+        scalar: String,
+    },
+    Enum {
+        render_label: String,
+        enum_catalog_id: String,
+        members: Vec<SurfaceActionEnumMemberJson>,
+    },
+    Identity {
+        render_label: String,
+        store_catalog_id: String,
+        keys: Vec<SurfaceActionIdentityKeyJson>,
+    },
+    Sequence {
+        element: Box<SurfaceActionArgumentShapeJson>,
+    },
+    Unsupported,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SurfaceActionEnumMemberJson {
+    pub render_label: String,
+    pub catalog_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SurfaceActionIdentityKeyJson {
+    pub render_label: String,
+    pub scalar: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SurfaceIdentityJson {
     pub store_catalog_id: String,
@@ -239,41 +302,61 @@ impl SurfaceDescriptorJson {
             } else {
                 None
             },
+            actions: if stable {
+                surface
+                    .actions
+                    .iter()
+                    .filter_map(|action| {
+                        marrow_check::SurfaceActionOperationDescriptor::from_action(
+                            program, surface, action,
+                        )
+                        .map(SurfaceActionOperationDescriptorJson::from)
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            },
         }
     }
 }
 
 fn omit_uncallable_operation_tags(surfaces: &mut [SurfaceDescriptorJson]) {
-    let duplicate_read_tags = duplicate_operation_tags(
-        surfaces
-            .iter()
-            .flat_map(|surface| surface.read.iter().map(|read| read.operation_tag.as_str())),
-    );
-    if !duplicate_read_tags.is_empty() {
-        for surface in surfaces.iter_mut() {
-            surface
-                .read
-                .retain(|read| !duplicate_read_tags.contains(&read.operation_tag));
-        }
+    let duplicate_tags = duplicate_operation_tags(all_operation_tags(surfaces).into_iter());
+    if duplicate_tags.is_empty() {
+        return;
     }
-
-    let duplicate_update_tags = duplicate_operation_tags(surfaces.iter().filter_map(|surface| {
+    for surface in surfaces.iter_mut() {
         surface
+            .read
+            .retain(|read| !duplicate_tags.contains(&read.operation_tag));
+        if surface
             .update
             .as_ref()
-            .map(|update| update.operation_tag.as_str())
-    }));
-    if !duplicate_update_tags.is_empty() {
-        for surface in surfaces.iter_mut() {
-            if surface
-                .update
-                .as_ref()
-                .is_some_and(|update| duplicate_update_tags.contains(&update.operation_tag))
-            {
-                surface.update = None;
-            }
+            .is_some_and(|update| duplicate_tags.contains(&update.operation_tag))
+        {
+            surface.update = None;
         }
+        surface
+            .actions
+            .retain(|action| !duplicate_tags.contains(&action.operation_tag));
     }
+}
+
+fn all_operation_tags(surfaces: &[SurfaceDescriptorJson]) -> Vec<&str> {
+    let mut tags = Vec::new();
+    for surface in surfaces {
+        tags.extend(surface.read.iter().map(|read| read.operation_tag.as_str()));
+        if let Some(update) = &surface.update {
+            tags.push(update.operation_tag.as_str());
+        }
+        tags.extend(
+            surface
+                .actions
+                .iter()
+                .map(|action| action.operation_tag.as_str()),
+        );
+    }
+    tags
 }
 
 fn duplicate_operation_tags<'a>(tags: impl Iterator<Item = &'a str>) -> BTreeSet<String> {
@@ -493,6 +576,103 @@ impl From<marrow_check::SurfaceUpdateOperationField> for SurfaceUpdateFieldDescr
     }
 }
 
+impl From<marrow_check::SurfaceActionOperationDescriptor> for SurfaceActionOperationDescriptorJson {
+    fn from(descriptor: marrow_check::SurfaceActionOperationDescriptor) -> Self {
+        Self {
+            profile_version: descriptor.profile_version.to_string(),
+            operation_tag: descriptor.operation_tag,
+            alias: descriptor.alias,
+            identity: SurfaceActionIdentityJson::from(descriptor.identity),
+            parameters: descriptor
+                .parameters
+                .into_iter()
+                .map(SurfaceActionParameterJson::from)
+                .collect(),
+            return_value: descriptor
+                .return_value
+                .map(SurfaceActionArgumentShapeJson::from),
+        }
+    }
+}
+
+impl From<marrow_check::EntryIdentity> for SurfaceActionIdentityJson {
+    fn from(identity: marrow_check::EntryIdentity) -> Self {
+        Self {
+            requested_name: identity.requested_name,
+            canonical_name: identity.canonical_name,
+            entry_tag: identity.entry_tag,
+            accepted_catalog_epoch: identity.accepted_catalog_epoch,
+            source_digest: identity.source_digest,
+            read_only_context_digest: identity.read_only_context_digest,
+        }
+    }
+}
+
+impl From<marrow_check::EntryParameter> for SurfaceActionParameterJson {
+    fn from(parameter: marrow_check::EntryParameter) -> Self {
+        Self {
+            name: parameter.name,
+            shape: SurfaceActionArgumentShapeJson::from(parameter.shape),
+        }
+    }
+}
+
+impl From<marrow_check::EntryArgumentShape> for SurfaceActionArgumentShapeJson {
+    fn from(shape: marrow_check::EntryArgumentShape) -> Self {
+        match shape {
+            marrow_check::EntryArgumentShape::Scalar(scalar) => Self::Scalar {
+                scalar: scalar.name().to_string(),
+            },
+            marrow_check::EntryArgumentShape::Enum {
+                render_label,
+                catalog_id,
+                members,
+            } => Self::Enum {
+                render_label,
+                enum_catalog_id: catalog_id.as_str().to_string(),
+                members: members
+                    .into_iter()
+                    .map(SurfaceActionEnumMemberJson::from)
+                    .collect(),
+            },
+            marrow_check::EntryArgumentShape::Identity {
+                render_label,
+                store_catalog_id,
+                keys,
+            } => Self::Identity {
+                render_label,
+                store_catalog_id: store_catalog_id.as_str().to_string(),
+                keys: keys
+                    .into_iter()
+                    .map(SurfaceActionIdentityKeyJson::from)
+                    .collect(),
+            },
+            marrow_check::EntryArgumentShape::Sequence(element) => Self::Sequence {
+                element: Box::new(SurfaceActionArgumentShapeJson::from(*element)),
+            },
+            marrow_check::EntryArgumentShape::Unsupported => Self::Unsupported,
+        }
+    }
+}
+
+impl From<marrow_check::EntryEnumMember> for SurfaceActionEnumMemberJson {
+    fn from(member: marrow_check::EntryEnumMember) -> Self {
+        Self {
+            render_label: member.render_label,
+            catalog_id: member.catalog_id.as_str().to_string(),
+        }
+    }
+}
+
+impl From<marrow_check::EntryIdentityKey> for SurfaceActionIdentityKeyJson {
+    fn from(key: marrow_check::EntryIdentityKey) -> Self {
+        Self {
+            render_label: key.render_label,
+            scalar: key.scalar.name().to_string(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SurfaceCursorJson {
     pub operation_tag: String,
@@ -601,6 +781,122 @@ pub enum SurfaceValueJson {
     },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SurfaceActionValueJson {
+    Int {
+        value: String,
+    },
+    Bool {
+        value: bool,
+    },
+    String {
+        value: String,
+    },
+    Date {
+        days_since_epoch: i32,
+    },
+    Duration {
+        nanos: String,
+    },
+    Instant {
+        nanos_since_epoch: String,
+    },
+    Decimal {
+        value: String,
+    },
+    Bytes {
+        value_b64: String,
+    },
+    Enum {
+        enum_catalog_id: String,
+        member_catalog_id: String,
+        render_label: String,
+    },
+    Identity {
+        store_catalog_id: String,
+        keys: Vec<SurfaceKeyJson>,
+    },
+    Sequence {
+        values: Vec<SurfaceActionValueJson>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SurfaceActionValueJsonError {
+    UnsupportedValue,
+}
+
+pub(crate) fn surface_action_value_to_json(
+    program: &marrow_check::CheckedProgram,
+    value: &Value,
+) -> Result<SurfaceActionValueJson, SurfaceActionValueJsonError> {
+    Ok(match value {
+        Value::Int(value) => SurfaceActionValueJson::Int {
+            value: value.to_string(),
+        },
+        Value::Bool(value) => SurfaceActionValueJson::Bool { value: *value },
+        Value::Str(value) => SurfaceActionValueJson::String {
+            value: value.clone(),
+        },
+        Value::Date(value) => SurfaceActionValueJson::Date {
+            days_since_epoch: *value,
+        },
+        Value::Duration(value) => SurfaceActionValueJson::Duration {
+            nanos: value.to_string(),
+        },
+        Value::Instant(value) => SurfaceActionValueJson::Instant {
+            nanos_since_epoch: value.to_string(),
+        },
+        Value::Decimal(value) => SurfaceActionValueJson::Decimal {
+            value: value.to_text(),
+        },
+        Value::Bytes(value) => SurfaceActionValueJson::Bytes {
+            value_b64: marrow_run::base64::encode(value),
+        },
+        Value::Enum(value) => SurfaceActionValueJson::Enum {
+            enum_catalog_id: value.enum_catalog_id().to_string(),
+            member_catalog_id: value.member_catalog_id().to_string(),
+            render_label: value.render_label().to_string(),
+        },
+        Value::Identity(identity) => SurfaceActionValueJson::Identity {
+            store_catalog_id: accepted_store_catalog_id(program, identity.root())?,
+            keys: identity.keys().iter().map(SurfaceKeyJson::from).collect(),
+        },
+        Value::Sequence(items) => SurfaceActionValueJson::Sequence {
+            values: items
+                .iter()
+                .map(|item| surface_action_value_to_json(program, item))
+                .collect::<Result<Vec<_>, _>>()?,
+        },
+        Value::Resource(_) | Value::LocalTree(_) => {
+            return Err(SurfaceActionValueJsonError::UnsupportedValue);
+        }
+    })
+}
+
+fn accepted_store_catalog_id(
+    program: &marrow_check::CheckedProgram,
+    root: &str,
+) -> Result<String, SurfaceActionValueJsonError> {
+    let Some(store) = program.facts.store_by_root(root) else {
+        return Err(SurfaceActionValueJsonError::UnsupportedValue);
+    };
+    let Some(catalog_id) = store.catalog_id.as_deref() else {
+        return Err(SurfaceActionValueJsonError::UnsupportedValue);
+    };
+    let accepted = program
+        .catalog
+        .accepted_entries
+        .iter()
+        .any(|entry| entry.stable_id == catalog_id);
+    if accepted {
+        Ok(catalog_id.to_string())
+    } else {
+        Err(SurfaceActionValueJsonError::UnsupportedValue)
+    }
+}
+
 impl From<&SurfaceReadIdentity> for SurfaceIdentityJson {
     fn from(identity: &SurfaceReadIdentity) -> Self {
         Self {
@@ -707,16 +1003,18 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use marrow_check::{
-        CheckedProgram, CheckedRuntimeProgram, ProjectConfig, StoreBackend, StoreConfig, SurfaceId,
+        CheckedProgram, CheckedRuntimeProgram, ENTRY_PROTOCOL_TAG_VERSION, EntryDescriptor,
+        ProjectConfig, StoreBackend, StoreConfig, SurfaceActionOperationDescriptor, SurfaceId,
         SurfaceReadOperationKind, SurfaceUpdateOperationDescriptor, check_project,
     };
     use marrow_run::{
         Host, ProjectOpen, ProjectSession, ProjectSurfaceReadSession, ProjectSurfaceSession,
-        SURFACE_ABI_MISMATCH, SURFACE_CONFLICT, SURFACE_CURSOR, SURFACE_INVALID_DATA,
-        SURFACE_LIMIT, SURFACE_MAX_VALUE_BYTES, SURFACE_REQUEST, SURFACE_STALE_CURSOR,
-        SessionEntry, SurfaceCollectionRead, SurfaceEnumValue, SurfaceNodeRead, SurfaceReadError,
-        SurfaceReadField, SurfaceReadIdentity, SurfaceReadInput, SurfaceReadOperationRef,
-        SurfaceReadRecord, SurfaceUpdate, SurfaceValue,
+        SURFACE_ABI_MISMATCH, SURFACE_ACTION, SURFACE_CONFLICT, SURFACE_CURSOR,
+        SURFACE_INVALID_DATA, SURFACE_LIMIT, SURFACE_MAX_VALUE_BYTES, SURFACE_REQUEST,
+        SURFACE_STALE_CURSOR, SessionEntry, SurfaceActionInvocation, SurfaceCollectionRead,
+        SurfaceEnumValue, SurfaceNodeRead, SurfaceReadError, SurfaceReadField, SurfaceReadIdentity,
+        SurfaceReadInput, SurfaceReadOperationRef, SurfaceReadRecord, SurfaceUpdate, SurfaceValue,
+        entry_arguments_from_json,
     };
     use marrow_store::Decimal;
     use marrow_store::cell::CatalogId;
@@ -730,9 +1028,10 @@ mod tests {
     use serde_json::json;
 
     use crate::surface::{
-        SURFACE_OPERATION_PROFILE_VERSION, SurfaceAbiJson, SurfaceArgumentJson,
-        SurfaceCatalogStatusJson, SurfaceCursorBoundaryJson, SurfaceCursorJson,
-        SurfaceIdentityJson, SurfaceKeyJson, SurfaceOperationErrorJson,
+        SURFACE_OPERATION_PROFILE_VERSION, SurfaceAbiJson, SurfaceActionArgumentShapeJson,
+        SurfaceActionRequestJson, SurfaceActionResultJson, SurfaceActionValueJson,
+        SurfaceArgumentJson, SurfaceCatalogStatusJson, SurfaceCursorBoundaryJson,
+        SurfaceCursorJson, SurfaceIdentityJson, SurfaceKeyJson, SurfaceOperationErrorJson,
         SurfaceOperationRequestBodyJson, SurfaceOperationRequestJson, SurfaceOperationResultJson,
         SurfacePageJson, SurfacePageRequestJson, SurfacePointRequestJson,
         SurfacePointUpdateRequestJson, SurfaceReadOperationKindJson, SurfaceRecordJson,
@@ -875,6 +1174,47 @@ surface Notes from ^notes
     update text
 ";
 
+    const SURFACE_ACTIONS: &str = "\
+resource Book
+    required title: string
+store ^books(id: int): Book
+
+pub fn addBook(title: string): string
+    return title
+
+surface Books from ^books
+    fields title
+    action addBook
+";
+
+    const DUPLICATE_ACTION_TAG_SURFACES: &str = "\
+resource Book
+    required title: string
+store ^books(id: int): Book
+
+pub fn addBook()
+    return
+
+surface Books from ^books
+    fields title
+    action addBook
+
+surface Library from ^books
+    fields title
+    action addBook
+
+resource Note
+    required text: string
+store ^notes(id: int): Note
+
+pub fn addNote()
+    return
+
+surface Notes from ^notes
+    fields text
+    action addNote
+";
+
     const SOURCE_ONLY_UPDATE_SURFACE: &str = "\
 resource Book
     required title: string
@@ -945,6 +1285,98 @@ pub fn seed()
     transaction
         ^books(1) = first
         ^books(2) = second
+";
+
+    const PROJECT_ACTION_SURFACE: &str = "\
+module shelf
+
+resource Book
+    required title: string
+store ^books(id: int): Book
+
+surface Books from ^books
+    fields title
+    collection ^books as list
+    action renameBook as rename
+    action currentBook as current
+    action failRename as fail
+
+pub fn seed()
+    var first: Book
+    first.title = \"Dune\"
+    transaction
+        ^books(1) = first
+
+pub fn renameBook(id: int, title: string): string
+    transaction
+        ^books(id).title = title
+    return title
+
+pub fn stealthRename(id: int, title: string): string
+    transaction
+        ^books(id).title = title
+    return title
+
+pub fn currentBook(): Id(^books)
+    return Id(^books, 1)
+
+pub fn failRename()
+    throw Error(code: \"test.fail\", message: \"boom\")
+";
+
+    const PROJECT_HOST_ACTION_SURFACE: &str = "\
+module shelf
+
+resource Book
+    required title: string
+store ^books(id: int): Book
+
+surface Books from ^books
+    fields title
+    action currentInstant as now
+
+pub fn seed()
+    var first: Book
+    first.title = \"Dune\"
+    transaction
+        ^books(1) = first
+
+pub fn currentInstant(): instant
+    return std::clock::now()
+";
+
+    const PROJECT_STEALTH_ACTION_SURFACE: &str = "\
+module shelf
+
+resource Book
+    required title: string
+store ^books(id: int): Book
+
+surface Books from ^books
+    fields title
+    collection ^books as list
+    action renameBook as rename
+    action stealthRename as stealth
+    action failRename as fail
+
+pub fn seed()
+    var first: Book
+    first.title = \"Dune\"
+    transaction
+        ^books(1) = first
+
+pub fn renameBook(id: int, title: string): string
+    transaction
+        ^books(id).title = title
+    return title
+
+pub fn stealthRename(id: int, title: string): string
+    transaction
+        ^books(id).title = title
+    return title
+
+pub fn failRename()
+    throw Error(code: \"test.fail\", message: \"boom\")
 ";
 
     const PROJECT_PRIVATE_BACKING_SURFACE: &str = "\
@@ -1212,6 +1644,29 @@ pub fn seed()
         SurfaceUpdateOperationDescriptor::from_surface(program, program.facts.surface(surface))
             .map(|descriptor| descriptor.operation_tag)
             .expect("stable update operation tag")
+    }
+
+    fn checker_action_operation_tag(
+        program: &CheckedProgram,
+        surface_name: &str,
+        alias: &str,
+    ) -> String {
+        let surface = program
+            .facts
+            .surfaces()
+            .iter()
+            .find(|surface| surface.name == surface_name)
+            .unwrap_or_else(|| panic!("surface `{surface_name}` is present"));
+        let action = surface
+            .actions
+            .iter()
+            .find(|action| action.alias == alias)
+            .unwrap_or_else(|| panic!("surface `{surface_name}` has action `{alias}`"));
+        SurfaceActionOperationDescriptor::from_action(program, surface, action)
+            .map(|action| action.operation_tag)
+            .unwrap_or_else(|| {
+                panic!("surface `{surface_name}` exposes action `{alias}` operation tag")
+            })
     }
 
     fn book_by_status_author_read<'a>(
@@ -1727,6 +2182,90 @@ pub fn seed()
     }
 
     #[test]
+    fn surface_abi_exports_action_descriptors() {
+        let (program, _runtime) = checked_surface_program(SURFACE_ACTIONS);
+        let abi = SurfaceAbiJson::from_program(&program);
+        let books_json = abi
+            .surfaces
+            .iter()
+            .find(|surface| surface.name == "Books")
+            .expect("Books descriptor");
+        let [action] = books_json.actions.as_slice() else {
+            panic!("expected one action descriptor: {abi:#?}");
+        };
+
+        assert_eq!(action.profile_version, ENTRY_PROTOCOL_TAG_VERSION);
+        assert_eq!(action.alias, "addBook");
+        assert_eq!(action.identity.canonical_name, "test::addBook");
+        assert_eq!(action.operation_tag, action.identity.entry_tag);
+        let [parameter] = action.parameters.as_slice() else {
+            panic!("expected title parameter: {action:#?}");
+        };
+        assert_eq!(parameter.name, "title");
+        assert_eq!(
+            parameter.shape,
+            SurfaceActionArgumentShapeJson::Scalar {
+                scalar: "string".into()
+            }
+        );
+        assert_eq!(
+            action.return_value,
+            Some(SurfaceActionArgumentShapeJson::Scalar {
+                scalar: "string".into()
+            })
+        );
+    }
+
+    #[test]
+    fn surface_abi_omits_duplicate_stable_action_operation_tags() {
+        let (program, _runtime) = checked_surface_program(DUPLICATE_ACTION_TAG_SURFACES);
+        let duplicate_tag = checker_action_operation_tag(&program, "Books", "addBook");
+        let distinct_tag = checker_action_operation_tag(&program, "Notes", "addNote");
+        assert_eq!(
+            duplicate_tag,
+            checker_action_operation_tag(&program, "Library", "addBook")
+        );
+
+        let abi = SurfaceAbiJson::from_program(&program);
+        assert!(
+            abi.surfaces
+                .iter()
+                .flat_map(|surface| &surface.actions)
+                .all(|action| action.operation_tag != duplicate_tag),
+            "duplicate action tag must not be exported: {abi:#?}"
+        );
+        let books_json = abi
+            .surfaces
+            .iter()
+            .find(|surface| surface.name == "Books")
+            .expect("Books descriptor");
+        let library_json = abi
+            .surfaces
+            .iter()
+            .find(|surface| surface.name == "Library")
+            .expect("Library descriptor");
+        let notes_json = abi
+            .surfaces
+            .iter()
+            .find(|surface| surface.name == "Notes")
+            .expect("Notes descriptor");
+        assert!(books_json.actions.is_empty());
+        assert!(library_json.actions.is_empty());
+        let [note_action] = notes_json.actions.as_slice() else {
+            panic!("distinct action descriptor remains exported: {abi:#?}");
+        };
+        assert_eq!(note_action.operation_tag, distinct_tag);
+        assert_eq!(
+            SurfaceActionInvocation::admit_by_operation_tag(&program, &duplicate_tag)
+                .expect_err("duplicate action tag does not admit")
+                .code(),
+            SURFACE_ABI_MISMATCH
+        );
+        SurfaceActionInvocation::admit_by_operation_tag(&program, &note_action.operation_tag)
+            .expect("distinct exported action tag admits");
+    }
+
+    #[test]
     fn surface_abi_exports_only_runtime_admitted_operation_tags() {
         let (program, _runtime) = checked_surface_program(SURFACE_UPDATE_WITH_ENUM_IDENTITY_INDEX);
         let store = admitted_store(&program);
@@ -2039,6 +2578,357 @@ pub fn seed()
     }
 
     #[test]
+    fn surface_operation_envelope_dispatches_project_action() {
+        let root = TempProject::new("marrow-json-project-surface-action");
+        write_native_project(&root, PROJECT_ACTION_SURFACE);
+        seed_project(&root, "shelf::seed");
+
+        let session =
+            ProjectSurfaceSession::open(root.path()).expect("open project surface session");
+        let before = session
+            .store_stamp()
+            .expect("project surface session exposes the store stamp");
+        let runtime = session.program().runtime();
+        let surface = surface_id(session.program(), "Books");
+        let action_tag = checker_action_operation_tag(session.program(), "Books", "rename");
+        let read_tag = read_operation_tag_matching(session.program(), surface, |kind| {
+            matches!(kind, SurfaceReadOperationKind::PointRead { .. })
+        });
+
+        let response = crate::surface::execute_project_surface_operation(
+            &session,
+            &SurfaceOperationRequestJson {
+                profile_version: SURFACE_OPERATION_PROFILE_VERSION.into(),
+                operation_tag: action_tag.clone(),
+                request: SurfaceOperationRequestBodyJson::Action {
+                    request: SurfaceActionRequestJson {
+                        arguments: vec![
+                            json!({
+                                "name": "id",
+                                "value": { "kind": "int", "value": "1" }
+                            }),
+                            json!({
+                                "name": "title",
+                                "value": { "kind": "string", "value": "Dune Action" }
+                            }),
+                        ],
+                    },
+                },
+            },
+        )
+        .expect("operation envelope executes action");
+
+        assert_eq!(response.operation_tag, action_tag);
+        let SurfaceOperationResultJson::Action { result } = response.result else {
+            panic!("expected action result: {response:?}");
+        };
+        assert_eq!(result.output, "");
+        assert_eq!(
+            result.value,
+            Some(SurfaceActionValueJson::String {
+                value: "Dune Action".into()
+            })
+        );
+
+        let verify_response = crate::surface::execute_project_surface_operation(
+            &session,
+            &SurfaceOperationRequestJson {
+                profile_version: SURFACE_OPERATION_PROFILE_VERSION.into(),
+                operation_tag: read_tag,
+                request: SurfaceOperationRequestBodyJson::PointRead {
+                    request: point_read_request(&runtime, 1),
+                },
+            },
+        )
+        .expect("operation envelope reads action-updated record");
+        let SurfaceOperationResultJson::Record { record } = verify_response.result else {
+            panic!("expected record result: {verify_response:?}");
+        };
+        assert_eq!(
+            field_value(&record, &field_catalog_id(&runtime, "books", "title")),
+            Some(&SurfaceValueJson::String {
+                value: "Dune Action".into()
+            })
+        );
+        let after = session
+            .store_stamp()
+            .expect("project surface session exposes the updated store stamp");
+        assert_eq!(after.store_uid, before.store_uid);
+        assert_eq!(after.catalog_epoch, before.catalog_epoch);
+        assert!(after.commit_id > before.commit_id);
+    }
+
+    #[test]
+    fn surface_operation_envelope_renders_action_identity_result_with_catalog_ids() {
+        let root = TempProject::new("marrow-json-project-surface-action-identity");
+        write_native_project(&root, PROJECT_ACTION_SURFACE);
+        seed_project(&root, "shelf::seed");
+
+        let session =
+            ProjectSurfaceSession::open(root.path()).expect("open project surface session");
+        let runtime = session.program().runtime();
+        let action_tag = checker_action_operation_tag(session.program(), "Books", "current");
+
+        let response = crate::surface::execute_project_surface_operation(
+            &session,
+            &SurfaceOperationRequestJson {
+                profile_version: SURFACE_OPERATION_PROFILE_VERSION.into(),
+                operation_tag: action_tag,
+                request: SurfaceOperationRequestBodyJson::Action {
+                    request: SurfaceActionRequestJson {
+                        arguments: Vec::new(),
+                    },
+                },
+            },
+        )
+        .expect("operation envelope executes identity action");
+
+        let SurfaceOperationResultJson::Action { result } = response.result else {
+            panic!("expected action result: {response:?}");
+        };
+        assert_eq!(result.output, "");
+        assert_eq!(
+            result.value,
+            Some(SurfaceActionValueJson::Identity {
+                store_catalog_id: store_catalog_id(&runtime, "books").as_str().into(),
+                keys: vec![SurfaceKeyJson::Int { value: "1".into() }],
+            })
+        );
+    }
+
+    #[test]
+    fn surface_operation_envelope_can_execute_actions_with_explicit_host_capabilities() {
+        let root = TempProject::new("marrow-json-project-surface-action-host");
+        write_native_project(&root, PROJECT_HOST_ACTION_SURFACE);
+        seed_project(&root, "shelf::seed");
+
+        let session =
+            ProjectSurfaceSession::open(root.path()).expect("open project surface session");
+        let action_tag = checker_action_operation_tag(session.program(), "Books", "now");
+        let request = SurfaceOperationRequestJson {
+            profile_version: SURFACE_OPERATION_PROFILE_VERSION.into(),
+            operation_tag: action_tag,
+            request: SurfaceOperationRequestBodyJson::Action {
+                request: SurfaceActionRequestJson {
+                    arguments: Vec::new(),
+                },
+            },
+        };
+        assert_operation_error(
+            crate::surface::execute_project_surface_operation(&session, &request),
+            SURFACE_ACTION,
+        );
+
+        let host = Host::new().with_clock(1_700_000_000_000_000_000);
+        let response =
+            crate::surface::execute_project_surface_operation_with_host(&session, &request, &host)
+                .expect("operation envelope executes action with explicit host");
+
+        let SurfaceOperationResultJson::Action { result } = response.result else {
+            panic!("expected action result: {response:?}");
+        };
+        assert_eq!(
+            result.value,
+            Some(SurfaceActionValueJson::Instant {
+                nanos_since_epoch: "1700000000000000000".into()
+            })
+        );
+    }
+
+    #[test]
+    fn surface_operation_envelope_rejects_action_on_read_only_session() {
+        let root = TempProject::new("marrow-json-project-surface-action-read-only");
+        write_native_project(&root, PROJECT_ACTION_SURFACE);
+        seed_project(&root, "shelf::seed");
+
+        let session =
+            ProjectSurfaceReadSession::open(root.path()).expect("open project surface session");
+        let action_tag = checker_action_operation_tag(session.program(), "Books", "rename");
+
+        assert_operation_error(
+            crate::surface::execute_project_surface_operation_read_only(
+                &session,
+                &SurfaceOperationRequestJson {
+                    profile_version: SURFACE_OPERATION_PROFILE_VERSION.into(),
+                    operation_tag: action_tag,
+                    request: SurfaceOperationRequestBodyJson::Action {
+                        request: SurfaceActionRequestJson {
+                            arguments: Vec::new(),
+                        },
+                    },
+                },
+            ),
+            SURFACE_ABI_MISMATCH,
+        );
+    }
+
+    #[test]
+    fn surface_operation_envelope_rejects_public_function_not_declared_as_action() {
+        let root = TempProject::new("marrow-json-project-surface-unlisted-action");
+        write_native_project(&root, PROJECT_ACTION_SURFACE);
+        seed_project(&root, "shelf::seed");
+
+        let session =
+            ProjectSurfaceSession::open(root.path()).expect("open project surface session");
+        let runtime_program = session.program().runtime();
+        let stealth_tag = EntryDescriptor::resolve(&runtime_program, "shelf::stealthRename")
+            .expect("unlisted public entry descriptor")
+            .identity
+            .entry_tag;
+        assert_eq!(
+            session
+                .admit_action_by_operation_tag(&stealth_tag)
+                .expect_err("unlisted public entry tag is not a surface action")
+                .code(),
+            SURFACE_ABI_MISMATCH
+        );
+
+        assert_operation_error(
+            crate::surface::execute_project_surface_operation(
+                &session,
+                &SurfaceOperationRequestJson {
+                    profile_version: SURFACE_OPERATION_PROFILE_VERSION.into(),
+                    operation_tag: stealth_tag,
+                    request: SurfaceOperationRequestBodyJson::Action {
+                        request: SurfaceActionRequestJson {
+                            arguments: vec![
+                                json!({
+                                    "name": "id",
+                                    "value": { "kind": "int", "value": "1" }
+                                }),
+                                json!({
+                                    "name": "title",
+                                    "value": { "kind": "string", "value": "Bypass" }
+                                }),
+                            ],
+                        },
+                    },
+                },
+            ),
+            SURFACE_ABI_MISMATCH,
+        );
+
+        let runtime = session.program().runtime();
+        let surface = surface_id(session.program(), "Books");
+        let read_tag = read_operation_tag_matching(session.program(), surface, |kind| {
+            matches!(kind, SurfaceReadOperationKind::PointRead { .. })
+        });
+        let verify_response = crate::surface::execute_project_surface_operation(
+            &session,
+            &SurfaceOperationRequestJson {
+                profile_version: SURFACE_OPERATION_PROFILE_VERSION.into(),
+                operation_tag: read_tag,
+                request: SurfaceOperationRequestBodyJson::PointRead {
+                    request: point_read_request(&runtime, 1),
+                },
+            },
+        )
+        .expect("operation envelope reads unchanged record");
+        let SurfaceOperationResultJson::Record { record } = verify_response.result else {
+            panic!("expected record result: {verify_response:?}");
+        };
+        assert_eq!(
+            field_value(&record, &field_catalog_id(&runtime, "books", "title")),
+            Some(&SurfaceValueJson::String {
+                value: "Dune".into()
+            })
+        );
+    }
+
+    #[test]
+    fn project_surface_session_rechecks_stale_action_handles_against_current_surface() {
+        let old_root = TempProject::new("marrow-json-project-surface-old-action-handle");
+        write_native_project(&old_root, PROJECT_STEALTH_ACTION_SURFACE);
+        seed_project(&old_root, "shelf::seed");
+        let old_session =
+            ProjectSurfaceSession::open(old_root.path()).expect("open old project surface session");
+        let old_tag = checker_action_operation_tag(old_session.program(), "Books", "stealth");
+        let old_action = old_session
+            .admit_action_by_operation_tag(&old_tag)
+            .expect("old surface action admits");
+
+        let root = TempProject::new("marrow-json-project-surface-current-action-handle");
+        write_native_project(&root, PROJECT_ACTION_SURFACE);
+        seed_project(&root, "shelf::seed");
+        let session =
+            ProjectSurfaceSession::open(root.path()).expect("open current project surface session");
+        let arguments = entry_arguments_from_json(&[
+            json!({
+                "name": "id",
+                "value": { "kind": "int", "value": "1" }
+            }),
+            json!({
+                "name": "title",
+                "value": { "kind": "string", "value": "Stale Handle" }
+            }),
+        ])
+        .expect("decode action arguments");
+        let host = Host::new();
+        let mut output = String::new();
+        assert_eq!(
+            session
+                .invoke_action(&old_action, arguments, &host, &mut output)
+                .expect_err("stale surface action handle is re-admitted")
+                .code(),
+            SURFACE_ABI_MISMATCH
+        );
+        assert_eq!(output, "");
+
+        let runtime = session.program().runtime();
+        let surface = surface_id(session.program(), "Books");
+        let read_tag = read_operation_tag_matching(session.program(), surface, |kind| {
+            matches!(kind, SurfaceReadOperationKind::PointRead { .. })
+        });
+        let verify_response = crate::surface::execute_project_surface_operation(
+            &session,
+            &SurfaceOperationRequestJson {
+                profile_version: SURFACE_OPERATION_PROFILE_VERSION.into(),
+                operation_tag: read_tag,
+                request: SurfaceOperationRequestBodyJson::PointRead {
+                    request: point_read_request(&runtime, 1),
+                },
+            },
+        )
+        .expect("operation envelope reads unchanged record");
+        let SurfaceOperationResultJson::Record { record } = verify_response.result else {
+            panic!("expected record result: {verify_response:?}");
+        };
+        assert_eq!(
+            field_value(&record, &field_catalog_id(&runtime, "books", "title")),
+            Some(&SurfaceValueJson::String {
+                value: "Dune".into()
+            })
+        );
+    }
+
+    #[test]
+    fn surface_operation_envelope_sanitizes_action_runtime_failure() {
+        let root = TempProject::new("marrow-json-project-surface-action-failure");
+        write_native_project(&root, PROJECT_ACTION_SURFACE);
+        seed_project(&root, "shelf::seed");
+
+        let session =
+            ProjectSurfaceSession::open(root.path()).expect("open project surface session");
+        let action_tag = checker_action_operation_tag(session.program(), "Books", "fail");
+
+        assert_operation_error(
+            crate::surface::execute_project_surface_operation(
+                &session,
+                &SurfaceOperationRequestJson {
+                    profile_version: SURFACE_OPERATION_PROFILE_VERSION.into(),
+                    operation_tag: action_tag,
+                    request: SurfaceOperationRequestBodyJson::Action {
+                        request: SurfaceActionRequestJson {
+                            arguments: Vec::new(),
+                        },
+                    },
+                },
+            ),
+            SURFACE_ACTION,
+        );
+    }
+
+    #[test]
     fn surface_operation_envelope_page_cursor_stales_after_update() {
         let root = TempProject::new("marrow-json-project-surface-operation-stale-cursor");
         write_native_project(&root, PROJECT_COLLECTION_UPDATE_SURFACE);
@@ -2145,6 +3035,29 @@ pub fn seed()
             wire
         );
 
+        let action_wire = json!({
+            "profile_version": SURFACE_OPERATION_PROFILE_VERSION,
+            "operation_tag": "tag-action",
+            "request": {
+                "kind": "action",
+                "request": {
+                    "arguments": [
+                        {
+                            "name": "title",
+                            "value": { "kind": "string", "value": "Dune" }
+                        }
+                    ]
+                }
+            }
+        });
+        let action_request =
+            serde_json::from_value::<SurfaceOperationRequestJson>(action_wire.clone())
+                .expect("action operation request wire shape decodes");
+        assert_eq!(
+            serde_json::to_value(&action_request).expect("action request encodes"),
+            action_wire
+        );
+
         let response = crate::surface::SurfaceOperationResponseJson {
             profile_version: SURFACE_OPERATION_PROFILE_VERSION.into(),
             operation_tag: "tag-2".into(),
@@ -2156,6 +3069,33 @@ pub fn seed()
                 "profile_version": SURFACE_OPERATION_PROFILE_VERSION,
                 "operation_tag": "tag-2",
                 "result": { "kind": "updated" }
+            })
+        );
+
+        let action_response = crate::surface::SurfaceOperationResponseJson {
+            profile_version: SURFACE_OPERATION_PROFILE_VERSION.into(),
+            operation_tag: "tag-action".into(),
+            result: SurfaceOperationResultJson::Action {
+                result: SurfaceActionResultJson {
+                    output: String::new(),
+                    value: Some(SurfaceActionValueJson::String {
+                        value: "Dune".into(),
+                    }),
+                },
+            },
+        };
+        assert_eq!(
+            serde_json::to_value(action_response).expect("action response encodes"),
+            json!({
+                "profile_version": SURFACE_OPERATION_PROFILE_VERSION,
+                "operation_tag": "tag-action",
+                "result": {
+                    "kind": "action",
+                    "result": {
+                        "output": "",
+                        "value": { "kind": "string", "value": "Dune" }
+                    }
+                }
             })
         );
 

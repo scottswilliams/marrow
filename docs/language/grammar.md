@@ -145,12 +145,16 @@ surface_decl    =
 surface_item    =
       "fields" surface_name_list NEWLINE
     | "collection" surface_collection_target "as" identifier NEWLINE
+    | "action" surface_action_target ("as" identifier)? NEWLINE
     | "create" surface_name_list NEWLINE
     | "update" surface_name_list NEWLINE
     ;
 
 surface_name_list =
     identifier ("," identifier)* ","? ;
+
+surface_action_target =
+    identifier ("::" identifier)* ;
 
 surface_collection_target =
       saved_root
@@ -159,10 +163,13 @@ surface_collection_target =
 ```
 
 A `surface` declaration names an application-facing source form over a saved
-root. The body accepts `fields`, `collection`, `create`, and `update` item
-lines. A collection target is either the root itself (`^books`) or one store
-index path (`^books.byAuthor`). The contextual words `from`, `fields`,
-`collection`, `as`, `create`, and `update` are recognized only in this
+root. The body accepts `fields`, `collection`, `action`, `create`, and `update`
+item lines. A collection target is either the root itself (`^books`) or one
+store index path (`^books.byAuthor`). An action target is a same-module public
+function name or an explicitly qualified public function name such as
+`shelf::loanBook`; omitting `as` uses the function leaf as the alias. The
+contextual words `from`, `fields`, `collection`, `action`, `as`, `create`, and
+`update` are recognized only in this
 declaration shape and remain valid identifiers elsewhere. Documentation comments
 do not attach to `surface` declarations in v0.1.
 

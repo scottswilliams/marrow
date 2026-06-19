@@ -1322,6 +1322,7 @@ pub struct SurfaceFact {
     pub create: Vec<SurfaceFieldFact>,
     pub update: Vec<SurfaceFieldFact>,
     pub collections: Vec<SurfaceCollectionFact>,
+    pub actions: Vec<SurfaceActionFact>,
     pub read_operations: Vec<SurfaceReadOperationFact>,
     pub catalog_status: SurfaceCatalogStatus,
     pub span: SourceSpan,
@@ -1352,6 +1353,13 @@ pub struct SurfaceFieldFact {
 pub struct SurfaceCollectionFact {
     pub alias: String,
     pub target: SurfaceCollectionTarget,
+    pub span: SourceSpan,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SurfaceActionFact {
+    pub alias: String,
+    pub function: CheckedFunctionRef,
     pub span: SourceSpan,
 }
 

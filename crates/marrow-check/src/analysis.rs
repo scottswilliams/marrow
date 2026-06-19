@@ -14,9 +14,10 @@ use crate::enums::normalize_program_named_types;
 use crate::{
     CHECK_DUPLICATE_MODULE, CHECK_MULTIPLE_SCRIPTS, CheckDiagnostic, CheckReport, CheckedFile,
     CheckedModule, CheckedProgram, DiagnosticPayload, IO_READ, ProjectSources,
-    SCHEMA_DUPLICATE_ROOT_OWNER, SurfaceCatalogStatus, SurfaceFact, SurfaceReadOperationDescriptor,
-    SurfaceReadOperationFact, SurfaceUpdateOperationDescriptor, TestResolutionSuppression,
-    check_file_source, enum_visibility, module_path_error, read_source,
+    SCHEMA_DUPLICATE_ROOT_OWNER, SurfaceActionFact, SurfaceActionOperationDescriptor,
+    SurfaceCatalogStatus, SurfaceFact, SurfaceReadOperationDescriptor, SurfaceReadOperationFact,
+    SurfaceUpdateOperationDescriptor, TestResolutionSuppression, check_file_source,
+    enum_visibility, module_path_error, read_source,
 };
 
 mod catalog_nav;
@@ -113,6 +114,33 @@ impl AnalysisSnapshot {
             })
     }
 
+    pub fn surface_action_operations(
+        &self,
+    ) -> impl Iterator<Item = SurfaceActionOperationAnalysis<'_>> {
+        let modules = self.program.facts.modules();
+        self.program
+            .facts
+            .surfaces()
+            .iter()
+            .flat_map(move |surface| {
+                let file = modules
+                    .get(surface.module.0 as usize)
+                    .map(|module| module.source_file.as_path());
+                debug_assert!(
+                    file.is_some(),
+                    "checked surface module id belongs to the analyzed facts"
+                );
+                surface.actions.iter().filter_map(move |action| {
+                    file.map(|file| SurfaceActionOperationAnalysis {
+                        program: &self.program,
+                        file,
+                        surface,
+                        action,
+                    })
+                })
+            })
+    }
+
     pub fn use_sites(&self) -> &[UseSite] {
         &self.use_sites
     }
@@ -170,6 +198,27 @@ impl SurfaceUpdateOperationAnalysis<'_> {
             SurfaceCatalogStatus::Stable => {
                 SurfaceUpdateOperationDescriptor::from_surface(self.program, self.surface)
             }
+            SurfaceCatalogStatus::SourceOnly(_) => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct SurfaceActionOperationAnalysis<'a> {
+    program: &'a CheckedProgram,
+    pub file: &'a Path,
+    pub surface: &'a SurfaceFact,
+    pub action: &'a SurfaceActionFact,
+}
+
+impl SurfaceActionOperationAnalysis<'_> {
+    pub fn stable_descriptor(&self) -> Option<SurfaceActionOperationDescriptor> {
+        match self.surface.catalog_status {
+            SurfaceCatalogStatus::Stable => SurfaceActionOperationDescriptor::from_action(
+                self.program,
+                self.surface,
+                self.action,
+            ),
             SurfaceCatalogStatus::SourceOnly(_) => None,
         }
     }
@@ -528,7 +577,7 @@ pub(crate) fn analyze_source_project(
     );
 
     // Passes 2-3 plus unresolved-call suppression are shared with check_tests.
-    check_resolved_files(
+    let incomplete_modules = check_resolved_files(
         ResolvedFileCheck {
             files: &files,
             parsed_files: &parsed_files,
@@ -568,6 +617,7 @@ pub(crate) fn analyze_source_project(
             .iter()
             .map(|(file, parsed)| (file.path.as_path(), parsed)),
         &rejected_surfaces,
+        &incomplete_modules,
         &backing_validity,
         &mut report.diagnostics,
     );

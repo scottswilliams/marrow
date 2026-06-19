@@ -1,18 +1,20 @@
 use marrow_run::{
-    ProjectSurfaceReadSession, ProjectSurfaceSession, SURFACE_ABI_MISMATCH, SURFACE_CONFLICT,
-    SURFACE_INVALID_DATA, SURFACE_LIMIT, SURFACE_REQUEST, SURFACE_STORE, SURFACE_WRITE,
-    SurfaceError, SurfaceReadOperation, SurfaceUpdate,
+    Host, ProjectInvokeError, ProjectSurfaceReadSession, ProjectSurfaceSession, RUN_ENTRY_ARGUMENT,
+    SURFACE_ABI_MISMATCH, SURFACE_ACTION, SURFACE_CONFLICT, SURFACE_INVALID_DATA, SURFACE_LIMIT,
+    SURFACE_REQUEST, SURFACE_STORE, SURFACE_WRITE, SurfaceError, SurfaceReadOperation,
+    SurfaceUpdate, entry_arguments_from_json,
 };
 use serde::{Deserialize, Serialize};
+use serde_json::Value as Json;
 
 use super::execute::{
     execute_page, execute_point_read, execute_point_update, execute_singleton_read,
     execute_singleton_update, execute_unique_lookup,
 };
 use super::{
-    SurfacePageJson, SurfacePageRequestJson, SurfacePointRequestJson,
+    SurfaceActionValueJson, SurfacePageJson, SurfacePageRequestJson, SurfacePointRequestJson,
     SurfacePointUpdateRequestJson, SurfaceRecordJson, SurfaceSingletonUpdateRequestJson,
-    SurfaceUniqueLookupRequestJson,
+    SurfaceUniqueLookupRequestJson, surface_action_value_to_json,
 };
 
 pub const SURFACE_OPERATION_PROFILE_VERSION: &str = "surface.operation.v1";
@@ -43,6 +45,9 @@ pub enum SurfaceOperationRequestBodyJson {
     PointUpdate {
         request: SurfacePointUpdateRequestJson,
     },
+    Action {
+        request: SurfaceActionRequestJson,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -59,6 +64,18 @@ pub enum SurfaceOperationResultJson {
     Page { page: SurfacePageJson },
     OptionalRecord { record: Option<SurfaceRecordJson> },
     Updated,
+    Action { result: SurfaceActionResultJson },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SurfaceActionRequestJson {
+    pub arguments: Vec<Json>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SurfaceActionResultJson {
+    pub output: String,
+    pub value: Option<SurfaceActionValueJson>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -72,7 +89,7 @@ pub fn execute_project_surface_operation_read_only(
     request: &SurfaceOperationRequestJson,
 ) -> Result<SurfaceOperationResponseJson, SurfaceOperationErrorJson> {
     validate_profile(request)?;
-    if request.request.is_update() {
+    if request.request.requires_write_session() {
         return Err(abi_mismatch(
             "surface operation request requires a writable project surface session",
         ));
@@ -89,20 +106,39 @@ pub fn execute_project_surface_operation(
     session: &ProjectSurfaceSession,
     request: &SurfaceOperationRequestJson,
 ) -> Result<SurfaceOperationResponseJson, SurfaceOperationErrorJson> {
+    let host = Host::new();
+    execute_project_surface_operation_with_host(session, request, &host)
+}
+
+pub fn execute_project_surface_operation_with_host(
+    session: &ProjectSurfaceSession,
+    request: &SurfaceOperationRequestJson,
+    host: &Host,
+) -> Result<SurfaceOperationResponseJson, SurfaceOperationErrorJson> {
     validate_profile(request)?;
-    let result = if request.request.is_update() {
-        execute_update_for_session(session, request)?
-    } else {
-        execute_read_for_session(session, request)?
+    let result = match &request.request {
+        SurfaceOperationRequestBodyJson::SingletonUpdate { .. }
+        | SurfaceOperationRequestBodyJson::PointUpdate { .. } => {
+            execute_update_for_session(session, request)?
+        }
+        SurfaceOperationRequestBodyJson::Action { request: action } => {
+            execute_action_for_session(session, &request.operation_tag, action, host)?
+        }
+        SurfaceOperationRequestBodyJson::SingletonRead
+        | SurfaceOperationRequestBodyJson::PointRead { .. }
+        | SurfaceOperationRequestBodyJson::Page { .. }
+        | SurfaceOperationRequestBodyJson::UniqueLookup { .. } => {
+            execute_read_for_session(session, request)?
+        }
     };
     Ok(operation_response(request, result))
 }
 
 impl SurfaceOperationRequestBodyJson {
-    fn is_update(&self) -> bool {
+    fn requires_write_session(&self) -> bool {
         matches!(
             self,
-            Self::SingletonUpdate { .. } | Self::PointUpdate { .. }
+            Self::SingletonUpdate { .. } | Self::PointUpdate { .. } | Self::Action { .. }
         )
     }
 }
@@ -132,6 +168,7 @@ fn public_fault_message(code: &str) -> Option<&'static str> {
         SURFACE_CONFLICT => Some("surface operation conflicts with existing saved data"),
         SURFACE_INVALID_DATA => Some("surface operation reached invalid saved data"),
         SURFACE_LIMIT => Some("surface operation exceeded a public limit"),
+        SURFACE_ACTION => Some("surface action failed"),
         SURFACE_STORE => Some("surface store fault while executing operation"),
         SURFACE_WRITE => Some("surface write could not be applied"),
         _ => None,
@@ -176,7 +213,8 @@ fn admit_read_for_session<'a>(
         Err(error) => error,
     };
     if error.code() == SURFACE_ABI_MISMATCH
-        && session.admit_update_by_operation_tag(operation_tag).is_ok()
+        && (session.admit_update_by_operation_tag(operation_tag).is_ok()
+            || session.admit_action_by_operation_tag(operation_tag).is_ok())
     {
         return Err(request_error(
             "surface operation request body does not match the operation tag",
@@ -194,7 +232,27 @@ fn admit_update_for_session<'a>(
         Err(error) => error,
     };
     if error.code() == SURFACE_ABI_MISMATCH
-        && session.admit_read_by_operation_tag(operation_tag).is_ok()
+        && (session.admit_read_by_operation_tag(operation_tag).is_ok()
+            || session.admit_action_by_operation_tag(operation_tag).is_ok())
+    {
+        return Err(request_error(
+            "surface operation request body does not match the operation tag",
+        ));
+    }
+    Err(SurfaceOperationErrorJson::from(error))
+}
+
+fn admit_action_for_session(
+    session: &ProjectSurfaceSession,
+    operation_tag: &str,
+) -> Result<marrow_run::SurfaceActionInvocation, SurfaceOperationErrorJson> {
+    let error = match session.admit_action_by_operation_tag(operation_tag) {
+        Ok(action) => return Ok(action),
+        Err(error) => error,
+    };
+    if error.code() == SURFACE_ABI_MISMATCH
+        && (session.admit_read_by_operation_tag(operation_tag).is_ok()
+            || session.admit_update_by_operation_tag(operation_tag).is_ok())
     {
         return Err(request_error(
             "surface operation request body does not match the operation tag",
@@ -226,7 +284,8 @@ fn execute_read_operation(
             })
         }
         SurfaceOperationRequestBodyJson::SingletonUpdate { .. }
-        | SurfaceOperationRequestBodyJson::PointUpdate { .. } => Err(SurfaceError::request(
+        | SurfaceOperationRequestBodyJson::PointUpdate { .. }
+        | SurfaceOperationRequestBodyJson::Action { .. } => Err(SurfaceError::request(
             "surface operation request body does not match a read operation",
         )),
     }
@@ -248,10 +307,35 @@ fn execute_update_operation(
         SurfaceOperationRequestBodyJson::SingletonRead
         | SurfaceOperationRequestBodyJson::PointRead { .. }
         | SurfaceOperationRequestBodyJson::Page { .. }
-        | SurfaceOperationRequestBodyJson::UniqueLookup { .. } => Err(SurfaceError::request(
+        | SurfaceOperationRequestBodyJson::UniqueLookup { .. }
+        | SurfaceOperationRequestBodyJson::Action { .. } => Err(SurfaceError::request(
             "surface operation request body does not match an update operation",
         )),
     }
+}
+
+fn execute_action_for_session(
+    session: &ProjectSurfaceSession,
+    operation_tag: &str,
+    request: &SurfaceActionRequestJson,
+    host: &Host,
+) -> Result<SurfaceOperationResultJson, SurfaceOperationErrorJson> {
+    let action = admit_action_for_session(session, operation_tag)?;
+    let arguments = entry_arguments_from_json(&request.arguments)
+        .map_err(|error| request_error(error.message()))?;
+    let mut output = String::new();
+    let run_output = session
+        .invoke_action(&action, arguments, host, &mut output)
+        .map_err(surface_action_error)?;
+    let value = run_output
+        .value
+        .as_ref()
+        .map(|value| surface_action_value_to_json(session.program(), value))
+        .transpose()
+        .map_err(|_| operation_error(SURFACE_ACTION, "surface action failed"))?;
+    Ok(SurfaceOperationResultJson::Action {
+        result: SurfaceActionResultJson { output, value },
+    })
 }
 
 fn operation_response(
@@ -271,6 +355,14 @@ fn abi_mismatch(message: impl Into<String>) -> SurfaceOperationErrorJson {
 
 fn request_error(message: impl Into<String>) -> SurfaceOperationErrorJson {
     operation_error(SURFACE_REQUEST, message)
+}
+
+fn surface_action_error(error: ProjectInvokeError) -> SurfaceOperationErrorJson {
+    if error.code() == RUN_ENTRY_ARGUMENT {
+        request_error(error.message())
+    } else {
+        operation_error(SURFACE_ACTION, "surface action failed")
+    }
 }
 
 fn operation_error(code: &str, message: impl Into<String>) -> SurfaceOperationErrorJson {
