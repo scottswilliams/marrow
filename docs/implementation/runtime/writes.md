@@ -12,7 +12,7 @@ stamp fold into the same plan; the whole plan runs inside the active transaction
 
 ## The shape
 
-`plan → commit`, never write-as-you-go. `write.rs` is the planning core for all write kinds; `write_plan.rs` defines the committable unit and the begin/apply/commit-or-rollback contract. The five per-kind modules under `write_dispatch/` plus `group_write.rs` are thin: lower the target, hand checked facts and a value to the planner, apply, defer the required-entry check. `transaction.rs` wraps multi-statement atomicity around that. `index_maintenance.rs` stages index steps into each plan. `store.rs` is the only place checked names become physical store keys.
+`plan → commit`, never write-as-you-go. `write.rs` is the planning core for all write kinds; `write_plan.rs` defines the committable unit and the begin/apply/commit-or-rollback contract. The five per-kind modules under `write_dispatch/` plus `group_write.rs` are thin: lower the target, hand checked facts and a value to the planner, apply, defer the required-entry check. `surface.rs` also uses the planner directly for admitted sparse surface updates. `transaction.rs` wraps multi-statement atomicity around language statements. `index_maintenance.rs` stages index steps into each plan, including combined field patches whose affected indexes must be rewritten from the final tuple rather than from one field at a time. `store.rs` is the only place checked names become physical store keys.
 
 Step order is the correctness contract: within a plan, `DeleteData` (clear the old subtree) precedes `WriteRecordPresence` and per-field `WriteData`, and stale `DeleteIndex` precedes fresh `WriteIndex`, so a replace never leaves a stale field or index branch. Required-field enforcement is mode-split: outside a transaction the check rejects an incompletion before it lands; inside one it defers to the outermost commit, so an intermediate incomplete record is legal mid-transaction. The catalog-epoch stamp rides the same transaction as the data, and `WritePlan` resolves the stamp's commit ID against the predecessor metadata visible in that transaction.
 
@@ -20,7 +20,7 @@ Step order is the correctness contract: within a plan, `DeleteData` (clear the o
 
 | File | Responsibility |
 | --- | --- |
-| `crates/marrow-run/src/write.rs` | Planning core: checked facts + value → `WritePlan` for every kind (resource, field, identity field, layer leaf/group, nested field, delete, root-drop); `nextId`/`nextLayerPos` allocation, type/identity/arity/required checks, field flattening. |
+| `crates/marrow-run/src/write.rs` | Planning core: checked facts + value → `WritePlan` for every kind (resource, field, combined field patch, identity field, layer leaf/group, nested field, delete, root-drop); `nextId`/`nextLayerPos` allocation, type/identity/arity/required checks, field flattening. |
 | `crates/marrow-run/src/write_plan.rs` | `PlanStep`, commit-id allocation policies, `WritePlan::commit()` against `TreeStore`, and read-only `WriteOp`/`WriteTarget` projection for dry-run/debug. |
 | `crates/marrow-run/src/write_dispatch.rs` | Facade: declares the five per-kind submodules and re-exports their `eval_*`/`write_*` entry points. |
 | `crates/marrow-run/src/write_dispatch/resource.rs` | Whole-record assign: flatten a `Resource` value into a `ResourceValue`, plan, apply, defer the entry check. |
@@ -30,7 +30,7 @@ Step order is the correctness contract: within a plan, `DeleteData` (clear the o
 | `crates/marrow-run/src/write_dispatch/delete.rs` | Delete dispatch: field/nested/unkeyed-group/layer-entry/record/root; required-field and maintenance-capability guards; maintenance delete notes. |
 | `crates/marrow-run/src/group_write.rs` | Keyed-group-entry and keyed-leaf writes: lower record identity + parent layers + entry keys, branch leaf vs whole-entry, plan, apply. |
 | `crates/marrow-run/src/transaction.rs` | User transaction block: open or join the flat transaction, run the body, then abort-and-discard on escape, or validate deferred entry checks + stamp metadata + commit at the outer boundary. |
-| `crates/marrow-run/src/index_maintenance.rs` | Generated-index maintenance: stage delete-old + write-new index entries, stage delete-on-delete, reject unique conflicts via a 2-row scan, rebuild an entry for evolution backfill. |
+| `crates/marrow-run/src/index_maintenance.rs` | Generated-index maintenance: stage delete-old + write-new index entries, stage delete-on-delete, reject unique conflicts via a 2-row scan, rewrite indexes from combined field patches, rebuild an entry for evolution backfill. |
 | `crates/marrow-run/src/store.rs` | Address layer: `DataAddress`/`LayerAddress`/`IndexAddress` resolve checked ids + identity + keys + member paths into store segments; thin `TreeStore` read wrappers. |
 
 ## Key types
@@ -48,6 +48,7 @@ Step order is the correctness contract: within a plan, `DeleteData` (clear the o
 ## Read next
 
 - `write.rs` → `plan_resource_write` — the canonical plan shape: identity resolution, required-field collection, unique rejection, `DeleteData`-then-`WriteData` ordering, index-rewrite folding.
+- `write.rs` → `plan_field_patch_write` — sparse multi-field patch planning for callers that already have checked field/value facts and need one committable update plan.
 - `write_plan.rs` → `WritePlan::commit` / `apply_steps` — the exact begin/apply/commit-or-rollback contract and each `PlanStep` → `TreeStore` mapping.
 - `transaction.rs` → `eval_transaction` — deferred entry validation, commit-metadata stamping, store commit, discard-on-failure.
 - `index_maintenance.rs` → `stage_resource_index_rewrites` / `check_unique_conflict` — how teardown+rewrite is staged and how unique conflicts are detected ignoring self-identity.

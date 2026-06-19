@@ -1,16 +1,17 @@
 //! Managed writes over checked saved-store facts.
 
-use marrow_check::{CheckedSavedMember, CheckedSavedPlace, StoreLeafKind};
+use marrow_check::{CheckedSavedMember, CheckedSavedPlace, ResourceMemberId, StoreLeafKind};
 use marrow_store::key::{SavedKey, encode_identity_payload};
 use marrow_store::tree::TreeStore;
 use marrow_store::value::ValueError;
 use marrow_syntax::SourceSpan;
 
 use crate::index_maintenance::{
-    IndexWriteContext, reject_field_unique_conflicts, reject_identity_field_unique_conflicts,
+    IndexFieldPatch, IndexFieldPatchValue, IndexWriteContext, reject_field_patch_unique_conflicts,
+    reject_field_unique_conflicts, reject_identity_field_unique_conflicts,
     reject_resource_unique_conflicts, stage_field_index_deletes, stage_field_index_rewrites,
-    stage_identity_field_index_rewrites, stage_resource_index_deletes,
-    stage_resource_index_rewrites,
+    stage_field_patch_index_rewrites, stage_identity_field_index_rewrites,
+    stage_resource_index_deletes, stage_resource_index_rewrites,
 };
 use crate::store::{
     DataAddress, IndexAddress, LayerAddress, data_exists, max_int_data_child, max_int_record_child,
@@ -32,6 +33,18 @@ pub struct SuppliedIdentity {
     pub referenced_arity: usize,
 }
 
+pub(crate) enum FieldPatchValue {
+    Leaf {
+        member: ResourceMemberId,
+        value: LeafValue,
+    },
+    Identity {
+        member: ResourceMemberId,
+        keys: Vec<SavedKey>,
+        referenced_arity: usize,
+    },
+}
+
 impl ResourceValue {
     fn supplied_identity(&self, field: &str) -> Option<&SuppliedIdentity> {
         self.identities
@@ -47,6 +60,11 @@ struct FieldWrite {
     bytes: Vec<u8>,
 }
 
+struct PatchFieldWrite {
+    member_catalog_id: Option<String>,
+    bytes: Vec<u8>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WriteError {
     pub code: &'static str,
@@ -57,6 +75,7 @@ pub const WRITE_REQUIRED_ABSENT: &str = "write.required_absent";
 pub const WRITE_TYPE_MISMATCH: &str = "write.type_mismatch";
 pub const WRITE_IDENTITY_MISMATCH: &str = "write.identity_mismatch";
 pub const WRITE_STORE: &str = "write.store";
+pub const WRITE_INVALID_DATA: &str = "write.invalid_data";
 pub const WRITE_UNKNOWN_FIELD: &str = "write.unknown_field";
 pub const WRITE_UNIQUE_CONFLICT: &str = "write.unique_conflict";
 pub const WRITE_UNKNOWN_LAYER: &str = "write.unknown_layer";
@@ -221,6 +240,93 @@ pub(crate) fn plan_identity_field_write(
     ];
     stage_identity_field_index_rewrites(&mut steps, index_context, field, keys)?;
     Ok(WritePlan { steps })
+}
+
+pub(crate) fn plan_field_patch_write(
+    place: &CheckedSavedPlace,
+    identity: &[SavedKey],
+    patch: &[FieldPatchValue],
+    store: &TreeStore,
+    span: SourceSpan,
+) -> Result<WritePlan, WriteError> {
+    resolve_store_identity(place, identity)?;
+    let mut data_writes = Vec::with_capacity(patch.len());
+    let mut index_patch = Vec::with_capacity(patch.len());
+    for value in patch {
+        match value {
+            FieldPatchValue::Leaf { member, value } => {
+                let field = checked_root_field_member(place, *member)?;
+                let leaf = field_leaf(field)?;
+                check_type(&field.name, leaf, value)?;
+                data_writes.push(PatchFieldWrite {
+                    member_catalog_id: field.catalog_id.clone(),
+                    bytes: value.bytes()?,
+                });
+                index_patch.push(IndexFieldPatch {
+                    member: *member,
+                    value: IndexFieldPatchValue::Leaf(value.clone()),
+                });
+            }
+            FieldPatchValue::Identity {
+                member,
+                keys,
+                referenced_arity,
+            } => {
+                let field = checked_root_field_member(place, *member)?;
+                let leaf = field_leaf(field)?;
+                let bytes = staged_identity_value(&field.name, leaf, keys, *referenced_arity)?;
+                data_writes.push(PatchFieldWrite {
+                    member_catalog_id: field.catalog_id.clone(),
+                    bytes: bytes.clone(),
+                });
+                index_patch.push(IndexFieldPatch {
+                    member: *member,
+                    value: IndexFieldPatchValue::IdentityBytes(bytes),
+                });
+            }
+        }
+    }
+
+    let index_context = IndexWriteContext::new(place, identity, store, span);
+    reject_field_patch_unique_conflicts(index_context, &index_patch)?;
+    let mut steps = vec![record_presence_step(place, identity, span)?];
+    for PatchFieldWrite {
+        member_catalog_id,
+        bytes,
+    } in data_writes
+    {
+        steps.push(PlanStep::WriteData {
+            address: DataAddress::member(place, identity, &[], &member_catalog_id, span)
+                .map_err(store_error)?,
+            value: bytes,
+        });
+    }
+    stage_field_patch_index_rewrites(&mut steps, index_context, &index_patch)?;
+    Ok(WritePlan { steps })
+}
+
+fn checked_root_field_member(
+    place: &CheckedSavedPlace,
+    member: ResourceMemberId,
+) -> Result<&CheckedSavedMember, WriteError> {
+    place
+        .root_members
+        .iter()
+        .find(|checked| checked.id == Some(member))
+        .ok_or_else(|| WriteError {
+            code: WRITE_UNKNOWN_FIELD,
+            message: format!("resource `{}` has no requested field", place.resource_name),
+        })
+}
+
+fn field_leaf(member: &CheckedSavedMember) -> Result<&StoreLeafKind, WriteError> {
+    member
+        .plain_field()
+        .map(|(leaf, _)| leaf)
+        .ok_or_else(|| WriteError {
+            code: WRITE_UNKNOWN_FIELD,
+            message: format!("member `{}` is not a plain field", member.name),
+        })
 }
 
 pub(crate) fn validate_required_fields_after_field_write(

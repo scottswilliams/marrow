@@ -303,6 +303,7 @@ one is reported under its own `write.*` code.
 | `write.required_absent` | A required field was absent in a whole-resource or whole-entry write. |
 | `write.type_mismatch` | A field value's type does not match the resource schema. |
 | `write.identity_mismatch` | The supplied identity keys do not match the store root's identity shape. |
+| `write.invalid_data` | Existing stored data needed to plan or maintain a managed write cannot be decoded under the checked schema, such as a malformed value in a generated-index key source. |
 | `write.store` | The store reported an error during a write. |
 | `write.unknown_field` | A field write names a field the resource does not declare. |
 | `write.unique_conflict` | A unique index already maps the supplied key(s) to a different identity. |
@@ -451,19 +452,19 @@ until that surface ships.
 
 The `surface.*` family belongs to the application surface runtime and its
 [Surface ABI](future/surface-abi.md). The transport-neutral `marrow-run`
-node-read and collection-read API can emit the active read codes below. They do
-not appear in v0.1 command output until a command or transport profile owns
-that surface. Cursor strings remain future transport work; the active runtime
-cursor is a typed continuation value.
+node-read, collection-read, and sparse-update APIs can emit the active codes
+below. They do not appear in v0.1 command output until a command or transport
+profile owns that surface. Cursor strings remain future transport work; the
+active runtime cursor is a typed continuation value.
 
 | Code | Meaning |
 |---|---|
-| `surface.request` | A request parameter, identity, index argument, direction/order, or limit cannot decode to the checked surface operation input shape; cursor tokens use `surface.cursor`. Generated-write body decode is future work. |
+| `surface.request` | A request parameter, identity, index argument, update field catalog ID, update value, empty update patch, direction/order, or limit cannot decode to the checked surface operation input shape; cursor tokens use `surface.cursor`. |
 | `surface.absent` | A requested record identity is well-formed but no record node exists, or a requested singleton node is absent. |
 | `surface.cursor` | A typed cursor boundary or future cursor token is malformed, does not decode under its codec, or is well-formed but bound to normalized parameters that do not match the current request. |
 | `surface.stale_cursor` | A typed cursor boundary or future cursor token is well-formed, but its operation equality tag, profile tag, or store lineage no longer matches the active surface operation facts. |
 | `surface.abi_mismatch` | A generated client or transport request targets a surface ABI or profile slice that is no longer active. |
-| `surface.invalid_data` | Backing saved data reached by a surface read cannot be decoded under the checked footprint, including required backing-field absence, malformed materialized values, corrupt traversed identity/key bytes, or an index row whose identity points at no record. Public envelopes are sanitized service faults; repair details stay in operator tooling. |
+| `surface.invalid_data` | Backing saved data reached by a surface read or update cannot be decoded under the checked footprint, including required backing-field absence, malformed materialized values, malformed stored values needed to maintain generated indexes, corrupt traversed identity/key bytes, or an index row whose identity points at no record. Public envelopes are sanitized service faults; repair details stay in operator tooling. |
 | `surface.limit` | A well-formed surface operation would exceed its materialization, row, or decoded-byte budget. |
 | `surface.conflict` | A generated write conflicts with existing saved data, such as a unique-index conflict. |
 | `surface.write` | A generated write could not be applied after successful request decoding and before commit, excluding conflicts and store/backend faults. |

@@ -770,7 +770,7 @@ impl<'p> Env<'p> {
     }
 }
 
-fn stamp_managed_write(
+pub(crate) fn stamp_managed_write(
     plan: &mut WritePlan,
     accepted_epoch: Option<u64>,
     source_digest: &str,

@@ -1,8 +1,8 @@
 //! Generated-index maintenance for managed resource writes.
 
 use marrow_check::{
-    CheckedSavedIndex, CheckedSavedIndexKey, CheckedSavedPlace, StoreIndexKeySource,
-    StoredValueMeaning,
+    CheckedSavedIndex, CheckedSavedIndexKey, CheckedSavedMember, CheckedSavedPlace,
+    ResourceMemberId, StoreIndexKeySource, StoredValueMeaning,
 };
 use marrow_store::key::{SavedKey, encode_identity_payload};
 use marrow_store::tree::TreeStore;
@@ -10,7 +10,9 @@ use marrow_syntax::SourceSpan;
 
 use crate::store::{DataAddress, IndexAddress, read_data};
 use crate::value::{LeafValue, diagnostic_saved_key_tuple_preview};
-use crate::write::{ResourceValue, WRITE_STORE, WRITE_UNIQUE_CONFLICT, WriteError};
+use crate::write::{
+    ResourceValue, WRITE_INVALID_DATA, WRITE_STORE, WRITE_UNIQUE_CONFLICT, WriteError,
+};
 use crate::write_plan::PlanStep;
 
 const INDEX_MARKER: &[u8] = b"1";
@@ -167,6 +169,66 @@ pub(crate) fn stage_identity_field_index_rewrites(
     )
 }
 
+#[derive(Clone)]
+pub(crate) struct IndexFieldPatch {
+    pub(crate) member: ResourceMemberId,
+    pub(crate) value: IndexFieldPatchValue,
+}
+
+#[derive(Clone)]
+pub(crate) enum IndexFieldPatchValue {
+    Leaf(LeafValue),
+    IdentityBytes(Vec<u8>),
+}
+
+impl IndexFieldPatchValue {
+    fn key_for(&self, key: &CheckedSavedIndexKey) -> Result<Option<SavedKey>, WriteError> {
+        match self {
+            Self::Leaf(value) => value.as_key().map_err(WriteError::from),
+            Self::IdentityBytes(bytes) => stored_index_key(&key.value_meaning, bytes).map(Some),
+        }
+    }
+}
+
+pub(crate) fn reject_field_patch_unique_conflicts(
+    context: IndexWriteContext<'_>,
+    patch: &[IndexFieldPatch],
+) -> Result<(), WriteError> {
+    for index in &context.place.indexes {
+        if index.unique && index_touches_patch(index, patch) {
+            let new_keys = field_patch_index_keys(&index.keys, context, patch)?;
+            check_unique_conflict(index, context, new_keys.as_deref())?;
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn stage_field_patch_index_rewrites(
+    steps: &mut Vec<PlanStep>,
+    context: IndexWriteContext<'_>,
+    patch: &[IndexFieldPatch],
+) -> Result<(), WriteError> {
+    for index in &context.place.indexes {
+        if !index_touches_patch(index, patch) {
+            continue;
+        }
+        if let Some(old_keys) = stored_index_keys(&index.keys, context)? {
+            steps.push(PlanStep::DeleteIndex {
+                address: index_address(index, old_keys, context.span)?,
+                identity: context.identity.to_vec(),
+            });
+        }
+        if let Some(new_keys) = field_patch_index_keys(&index.keys, context, patch)? {
+            steps.push(PlanStep::WriteIndex {
+                address: index_address(index, new_keys, context.span)?,
+                identity: context.identity.to_vec(),
+                value: index_entry_value(index.unique, context.identity),
+            });
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn stage_field_index_deletes(
     steps: &mut Vec<PlanStep>,
     context: IndexWriteContext<'_>,
@@ -274,13 +336,15 @@ fn stored_arg_key(
             };
             Ok(Some(context.identity[position].clone()))
         }
-        StoreIndexKeySource::ResourceMember(_) => {
-            let field_path = vec![key.name.clone()];
-            let address = DataAddress::member_path(
+        StoreIndexKeySource::ResourceMember(member_id) => {
+            let Some(member) = checked_root_member(context.place, member_id) else {
+                return Ok(None);
+            };
+            let address = DataAddress::member(
                 context.place,
                 context.identity,
                 &[],
-                &field_path,
+                &member.catalog_id,
                 context.span,
             )
             .map_err(runtime_store_error)?;
@@ -335,9 +399,45 @@ fn field_write_index_keys(
         .collect()
 }
 
+fn index_touches_patch(index: &CheckedSavedIndex, patch: &[IndexFieldPatch]) -> bool {
+    index.keys.iter().any(|key| match key.source {
+        StoreIndexKeySource::ResourceMember(member) => {
+            patch.iter().any(|field| field.member == member)
+        }
+        StoreIndexKeySource::IdentityKey => false,
+    })
+}
+
+fn field_patch_index_keys(
+    keys: &[CheckedSavedIndexKey],
+    context: IndexWriteContext<'_>,
+    patch: &[IndexFieldPatch],
+) -> Result<Option<Vec<SavedKey>>, WriteError> {
+    keys.iter()
+        .map(|key| {
+            if let StoreIndexKeySource::ResourceMember(member) = key.source
+                && let Some(field) = patch.iter().find(|field| field.member == member)
+            {
+                return field.value.key_for(key);
+            }
+            stored_arg_key(key, context)
+        })
+        .collect()
+}
+
+fn checked_root_member(
+    place: &CheckedSavedPlace,
+    member: ResourceMemberId,
+) -> Option<&CheckedSavedMember> {
+    place
+        .root_members
+        .iter()
+        .find(|checked| checked.id == Some(member))
+}
+
 fn stored_index_key(meaning: &StoredValueMeaning, bytes: &[u8]) -> Result<SavedKey, WriteError> {
     meaning.stored_key(bytes).ok_or_else(|| WriteError {
-        code: WRITE_STORE,
+        code: WRITE_INVALID_DATA,
         message: "stored indexed value is not valid under its declared type".to_string(),
     })
 }

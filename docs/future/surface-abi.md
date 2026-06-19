@@ -35,27 +35,28 @@ The operation tag is a live runtime/json cursor contract. A change to the
 `surface.read.v1` framing must either preserve byte output or deliberately bump
 the profile version and accept stale-cursor behavior for old cursors.
 
-## Write Profile
+## Write Profiles
 
-The next semantic profile should be transport-neutral surface writes, not HTTP
-or generated clients. It should define update before create/delete:
+`marrow-run` owns the first transport-neutral surface write profile: an admitted
+runtime update handle over stable, non-empty `SurfaceFact.update` declarations.
+It applies non-empty sparse field patches addressed by accepted resource-member
+catalog ID, preserves omitted fields, rejects absent records instead of
+upserting, re-checks store/catalog lineage inside the write bracket before
+mutation, validates the checked read footprint after the combined patch, and
+maps conflicts/write/store failures through `surface.conflict`, `surface.write`,
+and `surface.store`.
 
-- admitted write handles over stable `SurfaceFact.update`;
-- sparse update bodies, where omitted fields preserve existing data;
-- no null-as-delete behavior until a delete profile exists;
-- record/singleton absence as `surface.absent`, not upsert;
-- atomic multi-field application through existing managed-write planning;
-- input scalar, enum, identity, and field-shape decode through checked facts;
-- conflict/write/store error mapping using `surface.conflict`,
-  `surface.write`, and `surface.store`;
-- a write-profile digest using the same checker-owned framing owner, with its
-  own profile domain/version.
+Future write work is still boundary-profile work, not HTTP or generated clients
+by default:
 
-Create remains deferred because it needs explicit identity allocation or
-client-supplied identity rules, required-field completeness, replacement
-semantics, and return-shape decisions. Delete remains deferred because no
-surface delete fact exists yet and idempotent vs absent semantics need a
-profile decision.
+- a serialized descriptor/digest for update operations using the same
+  checker-owned framing owner, with its own profile domain/version;
+- JSON or other transport body decoding for update patches;
+- create, because it needs explicit identity allocation or client-supplied
+  identity rules, required-field completeness, replacement semantics, and
+  return-shape decisions;
+- delete, because no surface delete fact exists yet and idempotent vs absent
+  semantics need a profile decision.
 
 ## Serialized Descriptor Profile
 

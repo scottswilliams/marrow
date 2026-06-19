@@ -120,3 +120,5 @@ mod scenario_evolve_identity_and_fence;
 mod scenario_lang_db_seams;
 #[path = "cases/surface_read.rs"]
 mod surface_read;
+#[path = "cases/surface_update.rs"]
+mod surface_update;

@@ -87,15 +87,15 @@ pub use project_session::{
     ProjectSessionNotice, ProjectTestCase, SessionEntry, StoreStamp,
 };
 pub use surface::{
-    SURFACE_ABI_MISMATCH, SURFACE_ABSENT, SURFACE_CURSOR, SURFACE_INVALID_DATA, SURFACE_LIMIT,
-    SURFACE_MAX_MATERIALIZED_BYTES, SURFACE_MAX_PAGE_LIMIT, SURFACE_MAX_VALUE_BYTES,
-    SURFACE_REQUEST, SURFACE_STALE_CURSOR, SURFACE_STORE, SurfaceCollectionPage,
+    SURFACE_ABI_MISMATCH, SURFACE_ABSENT, SURFACE_CONFLICT, SURFACE_CURSOR, SURFACE_INVALID_DATA,
+    SURFACE_LIMIT, SURFACE_MAX_MATERIALIZED_BYTES, SURFACE_MAX_PAGE_LIMIT, SURFACE_MAX_VALUE_BYTES,
+    SURFACE_REQUEST, SURFACE_STALE_CURSOR, SURFACE_STORE, SURFACE_WRITE, SurfaceCollectionPage,
     SurfaceCollectionPageRequest, SurfaceCollectionRead, SurfaceCollectionReadShape,
-    SurfaceCursorBoundaryInputShape, SurfaceEnumValue, SurfaceIdentityInputShape,
+    SurfaceCursorBoundaryInputShape, SurfaceEnumValue, SurfaceError, SurfaceIdentityInputShape,
     SurfaceInputKeyShape, SurfaceNodeRead, SurfaceNodeReadShape, SurfacePageBoundary,
     SurfacePageCursor, SurfaceReadError, SurfaceReadField, SurfaceReadIdentity, SurfaceReadInput,
-    SurfaceReadOperationRef, SurfaceReadRecord, SurfaceValue, read_surface_point,
-    read_surface_singleton,
+    SurfaceReadOperationRef, SurfaceReadRecord, SurfaceUpdate, SurfaceUpdateField,
+    SurfaceUpdateInput, SurfaceValue, read_surface_point, read_surface_singleton,
 };
 pub use value::{IdentityValue, RunOutput, RunOutputSink, Value};
 pub use write_plan::{WriteDataSegment, WriteOp, WriteTarget};

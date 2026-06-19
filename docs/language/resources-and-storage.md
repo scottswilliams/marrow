@@ -240,10 +240,15 @@ Those facts are transport-neutral: HTTP routes, opaque cursor-token codecs,
 TypeScript names, generated clients, and write bodies are boundary profiles
 layered later. Stable surface reads have checker-owned accepted-catalog
 descriptors and operation tags. `marrow-run` exposes admitted transport-neutral
-node and collection read executors over stable surface facts, and
-`marrow-json` decodes checked read request-parameter DTOs and renders
-already-executed read results as DTOs with accepted catalog IDs and typed
-values. Runtime output uses accepted store and resource-member catalog IDs as
+node and collection read executors over stable surface facts. It also exposes an
+admitted sparse update executor over stable, explicitly declared `update` facts:
+callers supply a singleton target or checked store identity plus a non-empty set
+of field values addressed by accepted resource-member catalog ID; omitted fields
+are preserved, absent records are not created, and all supplied field writes
+commit atomically through managed write/index maintenance. `marrow-json` decodes
+checked read request-parameter DTOs and renders already-executed read results as
+DTOs with accepted catalog IDs and typed values. Runtime output uses accepted
+store and resource-member catalog IDs as
 semantic identity; enum and identity field values use accepted catalog IDs as
 well. Source names remain render labels. A stable exported surface read
 operation cannot use proposal-only catalog IDs; until every referenced durable

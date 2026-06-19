@@ -5,14 +5,15 @@ use marrow_check::{
     CheckedFacts, CheckedProgram, EnumId, EnumMemberId, ResourceId, ResourceMemberFact,
     ResourceMemberId, ResourceMemberKind, StoreFact, StoreIndexFact, StoredValueMeaning,
     SurfaceCatalogStatus, SurfaceFact, SurfaceId, SurfaceReadFootprint, SurfaceReadOperationFact,
-    SurfaceReadOperationKind,
+    SurfaceReadOperationKind, checked_saved_root_place,
 };
 use marrow_store::Decimal;
 use marrow_store::StoreError;
 use marrow_store::cell::CatalogId;
 use marrow_store::key::{SavedKey, decode_identity_index_key, decode_identity_payload_arity};
 use marrow_store::tree::{
-    DataPathSegment, EngineProfileDigest, StoreUid, TreeStore, decode_tree_enum_member,
+    DataPathSegment, EngineProfileDigest, StoreUid, TreeEnumMember, TreeStore,
+    decode_tree_enum_member, encode_tree_enum_member,
 };
 use marrow_store::value::{
     SavedValue, ScalarType, decode_value, scalar_key_matches_type, validate_scalar_key,
@@ -22,9 +23,17 @@ use marrow_syntax::{Diagnose, SourceSpan};
 use crate::error::RuntimeError;
 use crate::evolution::{FenceError, fence};
 use crate::saved_iter::{KeyedChildrenWalk, walk_keyed_children_after};
+use crate::value::LeafValue;
+use crate::write::{
+    FieldPatchValue, WRITE_IDENTITY_MISMATCH, WRITE_INVALID_DATA, WRITE_STORE, WRITE_TYPE_MISMATCH,
+    WRITE_UNIQUE_CONFLICT, WRITE_UNKNOWN_FIELD, WriteError, plan_field_patch_write,
+};
+use crate::write_plan::WritePlan;
 
 pub const SURFACE_REQUEST: &str = "surface.request";
 pub const SURFACE_ABSENT: &str = "surface.absent";
+pub const SURFACE_CONFLICT: &str = "surface.conflict";
+pub const SURFACE_WRITE: &str = "surface.write";
 pub const SURFACE_INVALID_DATA: &str = "surface.invalid_data";
 pub const SURFACE_CURSOR: &str = "surface.cursor";
 pub const SURFACE_STALE_CURSOR: &str = "surface.stale_cursor";
@@ -36,13 +45,15 @@ pub const SURFACE_MAX_VALUE_BYTES: usize = 1024 * 1024;
 pub const SURFACE_MAX_MATERIALIZED_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SurfaceReadError {
+pub struct SurfaceError {
     code: &'static str,
     message: String,
     span: SourceSpan,
 }
 
-impl SurfaceReadError {
+pub type SurfaceReadError = SurfaceError;
+
+impl SurfaceError {
     pub fn code(&self) -> &'static str {
         self.code
     }
@@ -82,8 +93,8 @@ impl std::fmt::Display for SurfaceReadError {
 
 impl std::error::Error for SurfaceReadError {}
 
-impl From<SurfaceReadError> for RuntimeError {
-    fn from(error: SurfaceReadError) -> Self {
+impl From<SurfaceError> for RuntimeError {
+    fn from(error: SurfaceError) -> Self {
         error.into_runtime_error()
     }
 }
@@ -98,6 +109,17 @@ pub enum SurfaceNodeReadShape {
 pub enum SurfaceReadInput<'a> {
     Singleton,
     Point { identity: &'a [SavedKey] },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SurfaceUpdateInput<'a> {
+    Singleton {
+        fields: &'a [SurfaceUpdateField],
+    },
+    Point {
+        identity: &'a [SavedKey],
+        fields: &'a [SurfaceUpdateField],
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -216,6 +238,12 @@ pub struct SurfaceReadRecord {
     pub fields: Vec<SurfaceReadField>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SurfaceUpdateField {
+    pub catalog_id: CatalogId,
+    pub value: SurfaceValue,
+}
+
 pub struct SurfaceNodeRead<'a> {
     store: &'a TreeStore,
     plan: SurfaceNodeReadPlan<'a>,
@@ -225,6 +253,12 @@ pub struct SurfaceCollectionRead<'a> {
     store: &'a TreeStore,
     lineage: SurfaceStoreLineage,
     plan: SurfaceCollectionReadPlan<'a>,
+}
+
+pub struct SurfaceUpdate<'a> {
+    program: &'a CheckedProgram,
+    store: &'a TreeStore,
+    plan: SurfaceUpdatePlan<'a>,
 }
 
 impl<'a> SurfaceNodeRead<'a> {
@@ -488,6 +522,104 @@ impl<'a> SurfaceCollectionRead<'a> {
     }
 }
 
+impl<'a> SurfaceUpdate<'a> {
+    pub fn admit(
+        program: &'a CheckedProgram,
+        store: &'a TreeStore,
+        surface: SurfaceId,
+    ) -> Result<Self, SurfaceError> {
+        admit_surface_store(program, store)?;
+        Ok(Self {
+            program,
+            store,
+            plan: SurfaceUpdatePlan::prepare(program, surface)?,
+        })
+    }
+
+    pub fn surface(&self) -> SurfaceId {
+        self.plan.surface
+    }
+
+    pub fn shape(&self) -> SurfaceNodeReadShape {
+        self.plan.shape
+    }
+
+    pub fn point_identity_shape(&self) -> Result<SurfaceIdentityInputShape, SurfaceError> {
+        if self.plan.shape != SurfaceNodeReadShape::Point {
+            return Err(request_at(
+                format!(
+                    "surface `{}` is not backed by a keyed store",
+                    self.plan.surface_label
+                ),
+                self.plan.span,
+            ));
+        }
+        self.plan.record.identity_input_shape()
+    }
+
+    pub fn execute(&self, input: SurfaceUpdateInput<'_>) -> Result<(), SurfaceError> {
+        match (self.plan.shape, input) {
+            (SurfaceNodeReadShape::Singleton, SurfaceUpdateInput::Singleton { fields }) => {
+                self.update_identity(&[], fields)
+            }
+            (SurfaceNodeReadShape::Point, SurfaceUpdateInput::Point { identity, fields }) => {
+                self.update_point(identity, fields)
+            }
+            (SurfaceNodeReadShape::Singleton, SurfaceUpdateInput::Point { .. }) => Err(request_at(
+                format!(
+                    "surface `{}` is a singleton update",
+                    self.plan.surface_label
+                ),
+                self.plan.span,
+            )),
+            (SurfaceNodeReadShape::Point, SurfaceUpdateInput::Singleton { .. }) => Err(request_at(
+                format!("surface `{}` requires an identity", self.plan.surface_label),
+                self.plan.span,
+            )),
+        }
+    }
+
+    pub fn update_point(
+        &self,
+        identity: &[SavedKey],
+        fields: &[SurfaceUpdateField],
+    ) -> Result<(), SurfaceError> {
+        if self.plan.shape != SurfaceNodeReadShape::Point {
+            return Err(request_at(
+                format!(
+                    "surface `{}` is not backed by a keyed store",
+                    self.plan.surface_label
+                ),
+                self.plan.span,
+            ));
+        }
+        self.plan.record.validate_identity(identity)?;
+        self.update_identity(identity, fields)
+    }
+
+    pub fn update_singleton(&self, fields: &[SurfaceUpdateField]) -> Result<(), SurfaceError> {
+        if self.plan.shape != SurfaceNodeReadShape::Singleton {
+            return Err(request_at(
+                format!(
+                    "surface `{}` is not backed by a keyless singleton store",
+                    self.plan.surface_label
+                ),
+                self.plan.span,
+            ));
+        }
+        self.update_identity(&[], fields)
+    }
+
+    fn update_identity(
+        &self,
+        identity: &[SavedKey],
+        fields: &[SurfaceUpdateField],
+    ) -> Result<(), SurfaceError> {
+        self.plan
+            .commit_update(self.program, self.store, identity, fields)
+    }
+}
+
 pub fn read_surface_point(
     program: &CheckedProgram,
     store: &TreeStore,
@@ -521,6 +653,18 @@ struct SurfaceCollectionReadPlan<'a> {
     span: SourceSpan,
 }
 
+struct SurfaceUpdatePlan<'a> {
+    surface: SurfaceId,
+    surface_label: String,
+    shape: SurfaceNodeReadShape,
+    accepted_epoch: Option<u64>,
+    source_digest: String,
+    place: marrow_check::CheckedSavedPlace,
+    record: SurfaceRecordReadPlan<'a>,
+    fields: HashMap<CatalogId, SurfaceUpdateMember>,
+    span: SourceSpan,
+}
+
 struct SurfaceRecordReadPlan<'a> {
     facts: &'a CheckedFacts,
     store_catalog_id: CatalogId,
@@ -547,6 +691,20 @@ struct SurfaceUniqueLookupPlan {
     index_catalog_id: CatalogId,
     key_meanings: Vec<StoredValueMeaning>,
     key_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SurfaceUpdateMember {
+    member: ResourceMemberId,
+    value_meaning: StoredValueMeaning,
+}
+
+enum PlannedSurfaceUpdateValue {
+    Leaf(LeafValue),
+    Identity {
+        keys: Vec<SavedKey>,
+        referenced_arity: usize,
+    },
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -889,6 +1047,175 @@ impl<'a> SurfaceCollectionReadPlan<'a> {
             engine_profile_digest: lineage.engine_profile_digest,
             boundary,
         })
+    }
+}
+
+impl<'a> SurfaceUpdatePlan<'a> {
+    fn prepare(program: &'a CheckedProgram, surface: SurfaceId) -> Result<Self, SurfaceReadError> {
+        let surface = checked_surface(program, surface)?;
+        require_stable_surface(surface)?;
+        let store = program.facts.store(surface.store);
+        if surface.update.is_empty() {
+            return Err(request_at(
+                format!("surface `{}` declares no update fields", surface.name),
+                surface.span,
+            ));
+        }
+        let (operation, shape) = backing_node_operation(surface)?;
+        let record =
+            SurfaceRecordReadPlan::prepare(&program.facts, store, operation, surface.span)?;
+        let place =
+            checked_saved_root_place(program, &store.root, surface.span).ok_or_else(|| {
+                abi_mismatch(
+                    format!(
+                        "surface `{}` backing store cannot be used for managed writes",
+                        surface.name
+                    ),
+                    surface.span,
+                )
+            })?;
+        let fields = surface_update_members(&program.facts, surface, store)?;
+        Ok(Self {
+            surface: surface.id,
+            surface_label: surface.name.clone(),
+            shape,
+            accepted_epoch: program.catalog.accepted_epoch,
+            source_digest: program.source_digest(),
+            place,
+            record,
+            fields,
+            span: surface.span,
+        })
+    }
+
+    fn update_plan(
+        &self,
+        identity: &[SavedKey],
+        fields: &[SurfaceUpdateField],
+        store: &TreeStore,
+    ) -> Result<WritePlan, SurfaceReadError> {
+        if fields.is_empty() {
+            return Err(request_at("surface update patch is empty", self.span));
+        }
+        let mut seen = HashSet::new();
+        let mut patch = Vec::with_capacity(fields.len());
+        for field in fields {
+            if !seen.insert(field.catalog_id.clone()) {
+                return Err(request_at("surface update field is repeated", self.span));
+            }
+            let member = self.fields.get(&field.catalog_id).ok_or_else(|| {
+                request_at(
+                    "surface update field is not declared in the update set",
+                    self.span,
+                )
+            })?;
+            let value = lower_surface_update_value(
+                &field.value,
+                &member.value_meaning,
+                self.record.facts,
+                self.span,
+            )?;
+            patch.push(match value {
+                PlannedSurfaceUpdateValue::Leaf(value) => FieldPatchValue::Leaf {
+                    member: member.member,
+                    value,
+                },
+                PlannedSurfaceUpdateValue::Identity {
+                    keys,
+                    referenced_arity,
+                } => FieldPatchValue::Identity {
+                    member: member.member,
+                    keys,
+                    referenced_arity,
+                },
+            });
+        }
+        plan_field_patch_write(&self.place, identity, &patch, store, self.span)
+            .map_err(map_update_plan_error)
+    }
+
+    fn commit_update(
+        &self,
+        program: &CheckedProgram,
+        store: &TreeStore,
+        identity: &[SavedKey],
+        fields: &[SurfaceUpdateField],
+    ) -> Result<(), SurfaceReadError> {
+        store
+            .begin()
+            .map_err(|error| surface_store_error(error, self.span))?;
+        if let Err(error) = admit_surface_store(program, store) {
+            let _ = store.rollback();
+            return Err(error);
+        }
+        if let Err(error) = self.require_present(store, identity) {
+            let _ = store.rollback();
+            return Err(error);
+        }
+        let mut plan = match self.update_plan(identity, fields, store) {
+            Ok(plan) => plan,
+            Err(error) => {
+                let _ = store.rollback();
+                return Err(error);
+            }
+        };
+        crate::env::stamp_managed_write(&mut plan, self.accepted_epoch, &self.source_digest)
+            .map_err(|error| surface_store_error(error, self.span))?;
+        if let Err(error) = plan
+            .commit(store, true)
+            .map_err(|error| surface_store_error(error, self.span))
+        {
+            let _ = store.rollback();
+            return Err(error);
+        }
+        if let Err(error) = self.validate_after_patch(store, identity) {
+            let _ = store.rollback();
+            return Err(error);
+        }
+        if let Err(error) = store
+            .commit()
+            .map_err(|error| surface_store_error(error, self.span))
+        {
+            let _ = store.rollback();
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    fn require_present(
+        &self,
+        store: &TreeStore,
+        identity: &[SavedKey],
+    ) -> Result<(), SurfaceError> {
+        if store
+            .data_subtree_exists(&self.record.store_catalog_id, identity, &[])
+            .map_err(|error| surface_store_error(error, self.span))?
+        {
+            Ok(())
+        } else {
+            Err(surface_error_at(
+                SURFACE_ABSENT,
+                "surface record is absent",
+                self.span,
+            ))
+        }
+    }
+
+    fn validate_after_patch(
+        &self,
+        store: &TreeStore,
+        identity: &[SavedKey],
+    ) -> Result<(), SurfaceError> {
+        let mut budget = SurfaceMaterializationBudget::new();
+        self.record
+            .materialize(
+                store,
+                identity,
+                Some(self.record.surface_identity(identity)),
+                MissingRecord::InvalidData,
+                &mut budget,
+            )
+            .map(|_| ())
     }
 }
 
@@ -1745,6 +2072,41 @@ fn surface_member_reads(
     Ok(reads)
 }
 
+fn surface_update_members(
+    facts: &CheckedFacts,
+    surface: &SurfaceFact,
+    store: &StoreFact,
+) -> Result<HashMap<CatalogId, SurfaceUpdateMember>, SurfaceReadError> {
+    let mut fields = HashMap::new();
+    for field in &surface.update {
+        let member = resource_member(facts, field.member, field.span)?;
+        if member.resource != store.resource || member.parent.is_some() {
+            return Err(abi_mismatch(
+                "checked surface update member is outside the backing root fields",
+                field.span,
+            ));
+        }
+        let catalog_id = catalog_id(&member.catalog_id, "resource member", field.span)?;
+        let value_meaning = value_meaning_from_member(member, field.span)?;
+        if fields
+            .insert(
+                catalog_id,
+                SurfaceUpdateMember {
+                    member: member.id,
+                    value_meaning,
+                },
+            )
+            .is_some()
+        {
+            return Err(abi_mismatch(
+                "checked surface update set repeats a member catalog id",
+                field.span,
+            ));
+        }
+    }
+    Ok(fields)
+}
+
 fn path_is_inside_unkeyed_record(facts: &CheckedFacts, member_id: ResourceMemberId) -> bool {
     let mut current = Some(member_id);
     while let Some(id) = current {
@@ -1834,6 +2196,142 @@ fn decode_surface_value(
         } => decode_surface_identity(bytes, store_catalog_id, *arity, key_scalars)
             .map(SurfaceValue::Identity),
     }
+}
+
+fn lower_surface_update_value(
+    value: &SurfaceValue,
+    meaning: &StoredValueMeaning,
+    facts: &CheckedFacts,
+    span: SourceSpan,
+) -> Result<PlannedSurfaceUpdateValue, SurfaceReadError> {
+    match meaning {
+        StoredValueMeaning::Scalar(expected) => lower_surface_scalar_update(value, *expected, span),
+        StoredValueMeaning::Enum { enum_id, members } => match value {
+            SurfaceValue::Enum(value) => {
+                lower_surface_enum_update(value, facts, *enum_id, members, span)
+            }
+            _ => Err(request_at(
+                "surface update value does not match the checked field shape",
+                span,
+            )),
+        },
+        StoredValueMeaning::Identity {
+            store_catalog_id,
+            arity,
+            key_scalars,
+            ..
+        } => match value {
+            SurfaceValue::Identity(value) => {
+                lower_surface_identity_update(value, store_catalog_id, *arity, key_scalars)
+            }
+            _ => Err(request_at(
+                "surface update value does not match the checked field shape",
+                span,
+            )),
+        },
+    }
+}
+
+fn lower_surface_scalar_update(
+    value: &SurfaceValue,
+    expected: ScalarType,
+    span: SourceSpan,
+) -> Result<PlannedSurfaceUpdateValue, SurfaceReadError> {
+    let saved = match value {
+        SurfaceValue::Int(value) if expected == ScalarType::Int => SavedValue::Int(*value),
+        SurfaceValue::Bool(value) if expected == ScalarType::Bool => SavedValue::Bool(*value),
+        SurfaceValue::Str(value) if expected == ScalarType::Str => SavedValue::Str(value.clone()),
+        SurfaceValue::Instant(value) if expected == ScalarType::Instant => {
+            SavedValue::Instant(*value)
+        }
+        SurfaceValue::Date(value) if expected == ScalarType::Date => SavedValue::Date(*value),
+        SurfaceValue::Duration(value) if expected == ScalarType::Duration => {
+            SavedValue::Duration(*value)
+        }
+        SurfaceValue::Decimal(value) if expected == ScalarType::Decimal => {
+            SavedValue::Decimal(*value)
+        }
+        SurfaceValue::Bytes(value) if expected == ScalarType::Bytes => {
+            SavedValue::Bytes(value.clone())
+        }
+        _ => {
+            return Err(request_at(
+                "surface update scalar value does not match the checked field type",
+                span,
+            ));
+        }
+    };
+    Ok(leaf_scalar(saved))
+}
+
+fn leaf_scalar(value: SavedValue) -> PlannedSurfaceUpdateValue {
+    PlannedSurfaceUpdateValue::Leaf(LeafValue::Scalar(value))
+}
+
+fn lower_surface_enum_update(
+    value: &SurfaceEnumValue,
+    facts: &CheckedFacts,
+    enum_id: EnumId,
+    members: &[EnumMemberId],
+    span: SourceSpan,
+) -> Result<PlannedSurfaceUpdateValue, SurfaceReadError> {
+    let enum_fact = facts
+        .enum_(enum_id)
+        .ok_or_else(|| abi_mismatch("checked enum id is missing", span))?;
+    if enum_fact.catalog_id.as_deref() != Some(value.enum_catalog_id.as_str()) {
+        return Err(request_at(
+            "surface update enum value names a different enum",
+            span,
+        ));
+    }
+    let member = facts.enum_members().iter().find(|member| {
+        member.enum_id == enum_id
+            && members.contains(&member.id)
+            && member.catalog_id.as_deref() == Some(value.member_catalog_id.as_str())
+    });
+    let Some(member) = member else {
+        return Err(request_at(
+            "surface update enum value names no accepted enum member",
+            span,
+        ));
+    };
+    if !facts.enum_member_is_selectable(member.id) {
+        return Err(request_at(
+            "surface update enum value names an unselectable enum member",
+            span,
+        ));
+    }
+    let bytes = encode_tree_enum_member(&TreeEnumMember::new(
+        value.enum_catalog_id.clone(),
+        value.member_catalog_id.clone(),
+    ))
+    .map_err(|_| request_at("surface update enum value could not be encoded", span))?;
+    Ok(PlannedSurfaceUpdateValue::Leaf(LeafValue::Enum {
+        bytes,
+        index_key: SavedKey::Str(value.member_catalog_id.as_str().to_string()),
+    }))
+}
+
+fn lower_surface_identity_update(
+    value: &SurfaceReadIdentity,
+    raw_store_catalog_id: &Option<String>,
+    arity: usize,
+    key_scalars: &[ScalarType],
+) -> Result<PlannedSurfaceUpdateValue, SurfaceReadError> {
+    if raw_store_catalog_id.as_deref() != Some(value.store_catalog_id.as_str()) {
+        return Err(request(
+            "surface update identity value names a different store",
+        ));
+    }
+    if value.keys.len() != arity || !identity_keys_match_scalars(&value.keys, key_scalars) {
+        return Err(request(
+            "surface update identity value does not match the checked store key shape",
+        ));
+    }
+    Ok(PlannedSurfaceUpdateValue::Identity {
+        keys: value.keys.clone(),
+        referenced_arity: arity,
+    })
 }
 
 fn surface_scalar_value(value: SavedValue) -> SurfaceValue {
@@ -1945,6 +2443,26 @@ fn abi_mismatch(message: impl Into<String>, span: SourceSpan) -> SurfaceReadErro
 
 fn store_error(message: impl Into<String>, span: SourceSpan) -> SurfaceReadError {
     surface_error_at(SURFACE_STORE, message, span)
+}
+
+fn conflict_error(message: impl Into<String>, span: SourceSpan) -> SurfaceReadError {
+    surface_error_at(SURFACE_CONFLICT, message, span)
+}
+
+fn write_error(message: impl Into<String>, span: SourceSpan) -> SurfaceReadError {
+    surface_error_at(SURFACE_WRITE, message, span)
+}
+
+fn map_update_plan_error(error: WriteError) -> SurfaceReadError {
+    match error.code {
+        WRITE_UNIQUE_CONFLICT => conflict_error(error.message, SourceSpan::default()),
+        WRITE_INVALID_DATA => invalid_data(error.message, SourceSpan::default()),
+        WRITE_STORE => store_error(error.message, SourceSpan::default()),
+        WRITE_TYPE_MISMATCH | WRITE_IDENTITY_MISMATCH | WRITE_UNKNOWN_FIELD => {
+            request(error.message)
+        }
+        _ => write_error(error.message, SourceSpan::default()),
+    }
 }
 
 fn surface_error_at(
