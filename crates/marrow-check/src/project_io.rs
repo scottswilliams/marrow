@@ -184,16 +184,49 @@ pub fn check_project_against(
     Ok(program)
 }
 
+pub fn check_source_project_analysis_against(
+    root: &Path,
+    config: &ProjectConfig,
+    accepted: Option<&marrow_catalog::CatalogMetadata>,
+) -> Result<crate::AnalysisSnapshot, ProjectIoError> {
+    let snapshot = crate::analysis::analyze_source_project(
+        root,
+        config,
+        &crate::ProjectSources::new(),
+        accepted,
+    )
+    .map_err(|error| ProjectIoError::CheckLoad {
+        code: error.code,
+        path: error.path,
+        message: error.message,
+    })?;
+    if snapshot.report.has_errors() {
+        return Err(ProjectIoError::Check {
+            report: snapshot.report,
+        });
+    }
+    Ok(snapshot)
+}
+
 pub fn recheck_against_store_catalog(
     root: &Path,
     config: &ProjectConfig,
     store: &TreeStore,
 ) -> Result<CheckedProgram, ProjectIoError> {
+    recheck_source_project_analysis_against_store_catalog(root, config, store)
+        .map(|snapshot| snapshot.program)
+}
+
+pub fn recheck_source_project_analysis_against_store_catalog(
+    root: &Path,
+    config: &ProjectConfig,
+    store: &TreeStore,
+) -> Result<crate::AnalysisSnapshot, ProjectIoError> {
     let accepted = store.read_catalog_snapshot()?;
     if let Some(snapshot) = &accepted {
         render_accepted_catalog_file(root, snapshot)?;
     }
-    check_project_against(root, config, accepted.as_ref())
+    check_source_project_analysis_against(root, config, accepted.as_ref())
 }
 
 pub fn render_accepted_catalog_file(

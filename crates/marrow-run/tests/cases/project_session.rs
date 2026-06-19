@@ -124,6 +124,15 @@ fn invoke(session: &ProjectSession, entry: &str) -> String {
     output
 }
 
+fn checked_source_identity(root: &Path) -> marrow_check::AnalysisIdentity {
+    let config = marrow_check::load_config(root).expect("load config");
+    let accepted =
+        marrow_check::read_accepted_catalog_artifact(root).expect("read accepted catalog");
+    marrow_check::check_source_project_analysis_against(root, &config, accepted.as_ref())
+        .expect("check source analysis")
+        .content_identity
+}
+
 #[test]
 fn surface_read_session_serves_existing_native_store_without_advancing_it() {
     let root = TempDir::new("marrow-run-surface-read-session").expect("create project");
@@ -685,6 +694,82 @@ fn fresh_memory_run_does_not_create_native_store_or_catalog_artifact() {
         !root.path().join("marrow.catalog.json").exists(),
         "fresh-memory session must not freeze or render accepted catalog identity"
     );
+}
+
+#[test]
+fn run_session_source_analysis_identity_changes_for_body_edits() {
+    let root = TempDir::new("marrow-run-session-analysis-identity").expect("create project");
+    write_native_config(root.path());
+    write_temp_source(
+        root.path(),
+        Path::new("src/shelf.mw"),
+        "module shelf\n\npub fn show()\n    print(\"first\")\n",
+    );
+
+    let first = ProjectSession::open(root.path(), ProjectOpen::run().with_fresh_memory_store())
+        .expect("open first session");
+    let first_identity = first.source_analysis_identity().clone();
+    let first_entry =
+        EntryDescriptor::resolve(first.runtime_program(), "shelf::show").expect("first entry");
+
+    write_temp_source(
+        root.path(),
+        Path::new("src/shelf.mw"),
+        "module shelf\n\npub fn show()\n    print(\"second\")\n",
+    );
+
+    let second = ProjectSession::open(root.path(), ProjectOpen::run().with_fresh_memory_store())
+        .expect("open second session");
+    let second_entry =
+        EntryDescriptor::resolve(second.runtime_program(), "shelf::show").expect("second entry");
+
+    assert_ne!(first_identity, *second.source_analysis_identity());
+    assert_eq!(
+        first_entry.identity.entry_tag,
+        second_entry.identity.entry_tag
+    );
+}
+
+#[test]
+fn native_run_source_analysis_identity_matches_baseline_recheck() {
+    let root = TempDir::new("marrow-run-session-baseline-identity").expect("create project");
+    write_native_config(root.path());
+    write_temp_source(root.path(), Path::new("src/shelf.mw"), baseline_source());
+
+    let session = ProjectSession::open(root.path(), ProjectMode::Run).expect("open session");
+
+    assert_eq!(
+        *session.source_analysis_identity(),
+        checked_source_identity(root.path())
+    );
+    assert_eq!(invoke(&session, "shelf::show"), "baseline\n");
+}
+
+#[test]
+fn auto_apply_run_source_analysis_identity_matches_recheck() {
+    let root = TempDir::new("marrow-run-session-auto-identity").expect("create project");
+    write_native_config(root.path());
+    write_temp_source(root.path(), Path::new("src/shelf.mw"), baseline_source());
+    let baseline = ProjectSession::open(root.path(), ProjectMode::Run).expect("open baseline");
+    assert_eq!(invoke(&baseline, "shelf::show"), "baseline\n");
+    drop(baseline);
+
+    write_temp_source(root.path(), Path::new("src/shelf.mw"), advanced_source());
+
+    let advanced = ProjectSession::open(root.path(), ProjectMode::Run).expect("open advanced");
+
+    assert!(
+        advanced
+            .notices()
+            .iter()
+            .any(|notice| matches!(notice, marrow_run::ProjectSessionNotice::AutoApplied { .. })),
+        "advanced session should auto-apply zero-mutation schema drift"
+    );
+    assert_eq!(
+        *advanced.source_analysis_identity(),
+        checked_source_identity(root.path())
+    );
+    assert_eq!(invoke(&advanced, "shelf::show"), "advanced\n");
 }
 
 #[test]

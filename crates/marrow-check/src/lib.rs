@@ -117,10 +117,11 @@ pub use program::{
     ProgramCatalog,
 };
 pub use project_io::{
-    ProjectIoError, check_project_against, load_config, native_store_path,
-    read_accepted_catalog_artifact, read_accepted_catalog_with_store,
+    ProjectIoError, check_project_against, check_source_project_analysis_against, load_config,
+    native_store_path, read_accepted_catalog_artifact, read_accepted_catalog_with_store,
     read_accepted_catalog_with_store_read_only, recheck_against_store_catalog,
-    render_accepted_catalog_file, resolve_store_path,
+    recheck_source_project_analysis_against_store_catalog, render_accepted_catalog_file,
+    resolve_store_path,
 };
 pub use resolve::{Def, DefItem, Resolution, ResolvableKind, resolve};
 pub use surface_abi::{

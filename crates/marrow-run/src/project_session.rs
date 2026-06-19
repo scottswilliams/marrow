@@ -5,7 +5,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use marrow_check::evolution::preview;
 use marrow_check::{
-    CheckReport, CheckedProgram, CheckedRuntimeProgram, CheckedSavedPlace, ProjectConfig,
+    AnalysisIdentity, AnalysisSnapshot, CheckReport, CheckedProgram, CheckedRuntimeProgram,
+    CheckedSavedPlace, ProjectConfig,
 };
 use marrow_store::StoreError;
 use marrow_store::cell::CatalogId;
@@ -90,6 +91,7 @@ impl From<ProjectMode> for ProjectOpen {
 pub struct ProjectSession {
     root: PathBuf,
     config: ProjectConfig,
+    source_analysis_identity: AnalysisIdentity,
     program: CheckedProgram,
     runtime: CheckedRuntimeProgram,
     kind: SessionKind,
@@ -120,6 +122,21 @@ pub struct ProjectSurfaceSession {
     program: CheckedProgram,
     store_path: PathBuf,
     store: TreeStore,
+}
+
+#[derive(Clone)]
+struct CheckedSourceProgram {
+    source_analysis_identity: AnalysisIdentity,
+    program: CheckedProgram,
+}
+
+impl CheckedSourceProgram {
+    fn from_snapshot(snapshot: AnalysisSnapshot) -> Self {
+        Self {
+            source_analysis_identity: snapshot.content_identity,
+            program: snapshot.program,
+        }
+    }
 }
 
 impl fmt::Debug for ProjectSession {
@@ -487,20 +504,24 @@ impl ProjectSession {
     ) -> Result<Self, ProjectSessionError> {
         let open = mode.into();
         let root = root.as_ref().to_path_buf();
-        let (config, program) = match open.mode {
+        let (config, checked) = match open.mode {
             ProjectMode::Run if open.run_store_policy == RunStorePolicy::FreshMemory => {
                 load_checked_for_fresh_memory_session(&root)?
             }
             ProjectMode::Run | ProjectMode::Test => load_checked_for_session(&root)?,
         };
         match open.mode {
-            ProjectMode::Run => open_run_session(root, config, program, open),
-            ProjectMode::Test => open_test_session(root, config, program),
+            ProjectMode::Run => open_run_session(root, config, checked, open),
+            ProjectMode::Test => open_test_session(root, config, checked),
         }
     }
 
     pub fn config(&self) -> &ProjectConfig {
         &self.config
+    }
+
+    pub fn source_analysis_identity(&self) -> &AnalysisIdentity {
+        &self.source_analysis_identity
     }
 
     pub fn program(&self) -> &CheckedProgram {
@@ -679,7 +700,7 @@ fn invoke_store(
 fn open_run_session(
     root: PathBuf,
     config: ProjectConfig,
-    program: CheckedProgram,
+    checked: CheckedSourceProgram,
     open: ProjectOpen,
 ) -> Result<ProjectSession, ProjectSessionError> {
     let entry = open
@@ -689,15 +710,19 @@ fn open_run_session(
         .ok_or(ProjectSessionError::NoEntry)?;
     let mut notices = Vec::new();
     let store = match open.run_store_policy {
-        RunStorePolicy::Commit => open_run_store(&root, &config, program, false, &mut notices),
-        RunStorePolicy::Isolated => open_run_store(&root, &config, program, true, &mut notices),
-        RunStorePolicy::FreshMemory => open_fresh_memory_run_store(&root, &config, program),
+        RunStorePolicy::Commit => open_run_store(&root, &config, checked, false, &mut notices),
+        RunStorePolicy::Isolated => open_run_store(&root, &config, checked, true, &mut notices),
+        RunStorePolicy::FreshMemory => open_fresh_memory_run_store(&root, &config, checked),
     }?;
-    let program = store.program;
+    let CheckedSourceProgram {
+        source_analysis_identity,
+        program,
+    } = store.checked;
     let runtime = program.runtime();
     Ok(ProjectSession {
         root,
         config,
+        source_analysis_identity,
         program,
         runtime,
         kind: SessionKind::Run {
@@ -711,9 +736,11 @@ fn open_run_session(
 fn open_test_session(
     root: PathBuf,
     config: ProjectConfig,
-    program: CheckedProgram,
+    checked: CheckedSourceProgram,
 ) -> Result<ProjectSession, ProjectSessionError> {
-    let program = bind_test_identity(&root, &config, program)?;
+    let checked = bind_proposed_catalog_identity(&root, &config, checked)?;
+    let source_analysis_identity = checked.source_analysis_identity;
+    let program = checked.program;
     let source_module_count = program.modules.len();
     let (test_report, program) = marrow_check::check_tests_program(&root, &config, program)
         .map_err(|error| ProjectSessionError::CheckLoad {
@@ -744,6 +771,7 @@ fn open_test_session(
     Ok(ProjectSession {
         root,
         config,
+        source_analysis_identity,
         program,
         runtime,
         kind: SessionKind::Test { cases },
@@ -845,7 +873,7 @@ fn store_stamp(store: &TreeStore) -> Result<StoreStamp, ProjectSessionError> {
 }
 
 struct OpenRunStore {
-    program: CheckedProgram,
+    checked: CheckedSourceProgram,
     store: RunStore,
 }
 
@@ -857,37 +885,37 @@ struct NativeRunStore {
 fn open_run_store(
     root: &Path,
     config: &ProjectConfig,
-    program: CheckedProgram,
+    checked: CheckedSourceProgram,
     isolate_writes: bool,
     notices: &mut Vec<ProjectSessionNotice>,
 ) -> Result<OpenRunStore, ProjectSessionError> {
     let Some(store) = open_store_file(root, config, !isolate_writes)? else {
-        if isolate_writes && pending_baseline(&program) {
+        if isolate_writes && pending_baseline(&checked.program) {
             notices.push(ProjectSessionNotice::DryRunWouldFreeze);
-            return open_memory_preview_store(root, config, program);
+            return open_memory_preview_store(root, config, checked);
         }
-        return open_memory_store(program);
+        return open_memory_store(checked);
     };
-    if isolate_writes && pending_baseline(&program) {
-        if populated_unstamped_store(&program, &store.store)? {
+    if isolate_writes && pending_baseline(&checked.program) {
+        if populated_unstamped_store(&checked.program, &store.store)? {
             return Err(ProjectSessionError::UnstampedStore);
         }
         notices.push(ProjectSessionNotice::DryRunWouldFreeze);
-        let program = bind_test_identity(root, config, program)?;
-        return finish_open(program, store, true);
+        let checked = bind_proposed_catalog_identity(root, config, checked)?;
+        return finish_open(checked, store, true);
     }
-    let program = if isolate_writes {
-        program
+    let checked = if isolate_writes {
+        checked
     } else {
-        establish_store_baseline(root, config, &store.store, program)?
+        establish_store_baseline(root, config, &store.store, checked)?
     };
-    match fence_run(&program, &store.store) {
-        Ok(()) => finish_open(program, store, isolate_writes),
+    match fence_run(&checked.program, &store.store) {
+        Ok(()) => finish_open(checked, store, isolate_writes),
         Err(FenceError::SchemaDrift) => {
             if isolate_writes {
-                return classify_dry_run_drift(root, config, &program, store, notices);
+                return classify_dry_run_drift(root, config, &checked, store, notices);
             }
-            auto_apply_then_reopen(root, program, store, isolate_writes, notices)
+            auto_apply_then_reopen(root, config, checked, store, isolate_writes, notices)
         }
         Err(error) => Err(ProjectSessionError::Fence(error)),
     }
@@ -896,29 +924,31 @@ fn open_run_store(
 fn open_memory_preview_store(
     root: &Path,
     config: &ProjectConfig,
-    program: CheckedProgram,
+    checked: CheckedSourceProgram,
 ) -> Result<OpenRunStore, ProjectSessionError> {
-    open_bound_memory_store(bind_test_identity(root, config, program)?)
+    open_bound_memory_store(bind_proposed_catalog_identity(root, config, checked)?)
 }
 
-fn open_memory_store(program: CheckedProgram) -> Result<OpenRunStore, ProjectSessionError> {
-    if pending_baseline(&program) {
+fn open_memory_store(checked: CheckedSourceProgram) -> Result<OpenRunStore, ProjectSessionError> {
+    if pending_baseline(&checked.program) {
         return Err(ProjectSessionError::DurableStoreRequired);
     }
-    open_bound_memory_store(program)
+    open_bound_memory_store(checked)
 }
 
 fn open_fresh_memory_run_store(
     root: &Path,
     config: &ProjectConfig,
-    program: CheckedProgram,
+    checked: CheckedSourceProgram,
 ) -> Result<OpenRunStore, ProjectSessionError> {
-    open_bound_memory_store(bind_test_identity(root, config, program)?)
+    open_bound_memory_store(bind_proposed_catalog_identity(root, config, checked)?)
 }
 
-fn open_bound_memory_store(program: CheckedProgram) -> Result<OpenRunStore, ProjectSessionError> {
+fn open_bound_memory_store(
+    checked: CheckedSourceProgram,
+) -> Result<OpenRunStore, ProjectSessionError> {
     Ok(OpenRunStore {
-        program,
+        checked,
         store: RunStore::Memory(TreeStore::memory()),
     })
 }
@@ -950,16 +980,16 @@ fn open_store_file(
 }
 
 fn finish_open(
-    program: CheckedProgram,
+    checked: CheckedSourceProgram,
     store: NativeRunStore,
     isolate_writes: bool,
 ) -> Result<OpenRunStore, ProjectSessionError> {
-    if populated_unstamped_store(&program, &store.store)? {
+    if populated_unstamped_store(&checked.program, &store.store)? {
         return Err(ProjectSessionError::UnstampedStore);
     }
     let NativeRunStore { path, store } = store;
     Ok(OpenRunStore {
-        program,
+        checked,
         store: RunStore::Native {
             path,
             store: (!isolate_writes).then_some(store),
@@ -969,16 +999,17 @@ fn finish_open(
 
 fn auto_apply_then_reopen(
     root: &Path,
-    program: CheckedProgram,
+    config: &ProjectConfig,
+    checked: CheckedSourceProgram,
     store: NativeRunStore,
     isolate_writes: bool,
     notices: &mut Vec<ProjectSessionNotice>,
 ) -> Result<OpenRunStore, ProjectSessionError> {
-    let witness = preview(&program, &store.store)
+    let witness = preview(&checked.program, &store.store)
         .map_err(ProjectSessionError::Store)?
         .0;
     let (from_epoch, to_epoch) = witness.epoch_range();
-    match try_auto_apply(&witness, &program, &store.store) {
+    match try_auto_apply(&witness, &checked.program, &store.store) {
         Ok(AutoApplyOutcome::Applied) => {
             notices.push(ProjectSessionNotice::AutoApplied {
                 from_epoch,
@@ -998,22 +1029,22 @@ fn auto_apply_then_reopen(
     }
     drop(store);
 
-    let (config, program) = load_checked_for_session(root)?;
-    let Some(store) = open_store_file(root, &config, true)? else {
-        return open_memory_store(program);
+    let checked = load_checked_for_config(root, config)?;
+    let Some(store) = open_store_file(root, config, true)? else {
+        return open_memory_store(checked);
     };
-    fence_run(&program, &store.store).map_err(ProjectSessionError::Fence)?;
-    finish_open(program, store, isolate_writes)
+    fence_run(&checked.program, &store.store).map_err(ProjectSessionError::Fence)?;
+    finish_open(checked, store, isolate_writes)
 }
 
 fn classify_dry_run_drift(
     root: &Path,
     config: &ProjectConfig,
-    program: &CheckedProgram,
+    checked: &CheckedSourceProgram,
     store: NativeRunStore,
     notices: &mut Vec<ProjectSessionNotice>,
 ) -> Result<OpenRunStore, ProjectSessionError> {
-    let witness = preview(program, &store.store)
+    let witness = preview(&checked.program, &store.store)
         .map_err(ProjectSessionError::Store)?
         .0;
     let (from_epoch, to_epoch) = witness.epoch_range();
@@ -1025,13 +1056,13 @@ fn classify_dry_run_drift(
                 to_epoch,
             });
             let isolated = isolated_store(&store.path)?;
-            match try_auto_apply(&witness, program, &isolated.store) {
+            match try_auto_apply(&witness, &checked.program, &isolated.store) {
                 Ok(AutoApplyOutcome::Applied) => {}
                 Ok(AutoApplyOutcome::MustFence(obligation)) => {
                     notices.push(ProjectSessionNotice::DryRunWouldFence {
                         message: fence_message(&obligation),
                     });
-                    return finish_open(program.clone(), store, true);
+                    return finish_open(checked.clone(), store, true);
                 }
                 Err(_) => {
                     return Err(ProjectSessionError::SchemaDrift {
@@ -1039,12 +1070,17 @@ fn classify_dry_run_drift(
                     });
                 }
             }
-            let program =
-                marrow_check::recheck_against_store_catalog(root, config, &isolated.store)
-                    .map_err(ProjectSessionError::from)?;
-            fence_run(&program, &isolated.store).map_err(ProjectSessionError::Fence)?;
+            let checked = CheckedSourceProgram::from_snapshot(
+                marrow_check::recheck_source_project_analysis_against_store_catalog(
+                    root,
+                    config,
+                    &isolated.store,
+                )
+                .map_err(ProjectSessionError::from)?,
+            );
+            fence_run(&checked.program, &isolated.store).map_err(ProjectSessionError::Fence)?;
             return Ok(OpenRunStore {
-                program,
+                checked,
                 store: RunStore::Isolated(isolated),
             });
         }
@@ -1054,7 +1090,7 @@ fn classify_dry_run_drift(
             });
         }
     }
-    finish_open(program.clone(), store, true)
+    finish_open(checked.clone(), store, true)
 }
 
 fn fence_message(obligation: &RunObligation) -> String {
@@ -1077,14 +1113,23 @@ fn fence_message(obligation: &RunObligation) -> String {
 
 fn load_checked_for_session(
     root: &Path,
-) -> Result<(ProjectConfig, CheckedProgram), ProjectSessionError> {
+) -> Result<(ProjectConfig, CheckedSourceProgram), ProjectSessionError> {
     let config = marrow_check::load_config(root)?;
+    let checked = load_checked_for_config(root, &config)?;
+    Ok((config, checked))
+}
+
+fn load_checked_for_config(
+    root: &Path,
+    config: &ProjectConfig,
+) -> Result<CheckedSourceProgram, ProjectSessionError> {
     let accepted = {
-        let store = open_store_for_inspection(root, &config)?;
+        let store = open_store_for_inspection(root, config)?;
         marrow_check::read_accepted_catalog_with_store(root, store.as_ref())?
     };
-    let program = marrow_check::check_project_against(root, &config, accepted.as_ref())?;
-    Ok((config, program))
+    let snapshot =
+        marrow_check::check_source_project_analysis_against(root, config, accepted.as_ref())?;
+    Ok(CheckedSourceProgram::from_snapshot(snapshot))
 }
 
 fn load_checked_for_surface_session(
@@ -1101,11 +1146,12 @@ fn load_checked_for_surface_session(
 
 fn load_checked_for_fresh_memory_session(
     root: &Path,
-) -> Result<(ProjectConfig, CheckedProgram), ProjectSessionError> {
+) -> Result<(ProjectConfig, CheckedSourceProgram), ProjectSessionError> {
     let config = marrow_check::load_config(root)?;
     let accepted = marrow_check::read_accepted_catalog_artifact(root)?;
-    let program = marrow_check::check_project_against(root, &config, accepted.as_ref())?;
-    Ok((config, program))
+    let snapshot =
+        marrow_check::check_source_project_analysis_against(root, &config, accepted.as_ref())?;
+    Ok((config, CheckedSourceProgram::from_snapshot(snapshot)))
 }
 
 fn open_store_for_inspection(
@@ -1123,30 +1169,23 @@ fn open_store_for_inspection(
         .map_err(ProjectSessionError::Store)
 }
 
-fn bind_test_identity(
+fn bind_proposed_catalog_identity(
     root: &Path,
     config: &ProjectConfig,
-    program: CheckedProgram,
-) -> Result<CheckedProgram, ProjectSessionError> {
-    if program.catalog.accepted_epoch.is_some() {
-        return Ok(program);
+    checked: CheckedSourceProgram,
+) -> Result<CheckedSourceProgram, ProjectSessionError> {
+    if checked.program.catalog.accepted_epoch.is_some() {
+        return Ok(checked);
     }
-    let Some(proposal) = program.catalog.proposal.clone() else {
-        return Ok(program);
+    let Some(proposal) = checked.program.catalog.proposal.clone() else {
+        return Ok(checked);
     };
     if proposal.entries.is_empty() {
-        return Ok(program);
+        return Ok(checked);
     }
-    let (report, bound) = marrow_check::check_project_with_catalog(root, config, Some(&proposal))
-        .map_err(|error| ProjectSessionError::CheckLoad {
-        code: error.code,
-        path: error.path,
-        message: error.message,
-    })?;
-    if report.has_errors() {
-        return Err(ProjectSessionError::Check { report });
-    }
-    Ok(bound)
+    marrow_check::check_source_project_analysis_against(root, config, Some(&proposal))
+        .map(CheckedSourceProgram::from_snapshot)
+        .map_err(ProjectSessionError::from)
 }
 
 fn resolve_store_path(
@@ -1160,12 +1199,13 @@ fn establish_store_baseline(
     root: &Path,
     config: &ProjectConfig,
     store: &TreeStore,
-    program: CheckedProgram,
-) -> Result<CheckedProgram, ProjectSessionError> {
-    if !commit_catalog_baseline(store, &program)? {
-        return Ok(program);
+    checked: CheckedSourceProgram,
+) -> Result<CheckedSourceProgram, ProjectSessionError> {
+    if !commit_catalog_baseline(store, &checked.program)? {
+        return Ok(checked);
     }
-    marrow_check::recheck_against_store_catalog(root, config, store)
+    marrow_check::recheck_source_project_analysis_against_store_catalog(root, config, store)
+        .map(CheckedSourceProgram::from_snapshot)
         .map_err(ProjectSessionError::from)
 }
 
