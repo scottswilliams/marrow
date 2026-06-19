@@ -1,6 +1,6 @@
 [package]
 name = "marrow-json"
-description = "CLI-compatible Marrow JSON rendering for entry returns, tooling keys, and data stamps."
+description = "Marrow JSON rendering for CLI surfaces, tooling keys, data stamps, and surface read DTOs."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

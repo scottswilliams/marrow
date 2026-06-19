@@ -1,9 +1,10 @@
-//! Outbound JSON rendering for Marrow's current CLI-compatible surfaces.
+//! Outbound JSON rendering for Marrow's current machine-readable surfaces.
 //!
 //! This crate preserves the existing `marrow run --format json` return-value
-//! shape, saved-key shape, and data snapshot shape used in tooling reports. It
-//! is not a general `Value` codec, and inbound or web-lossless JSON needs
-//! checked context that this outbound renderer deliberately does not carry.
+//! shape, saved-key shape, and data snapshot shape used in tooling reports, plus
+//! the surface read-result DTO shape. It is not a general `Value` codec, and
+//! inbound request JSON needs checked context that this outbound renderer
+//! deliberately does not carry.
 
 use marrow_check::tooling::{DataCommitStamp, DataSnapshotStamp};
 use marrow_run::Value;
@@ -12,6 +13,7 @@ use serde::Serialize;
 use serde_json::json;
 
 pub mod saved_data;
+pub mod surface;
 
 const LOWER_HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
 
@@ -119,7 +121,7 @@ impl From<&DataCommitStamp> for DataCommitJson {
     }
 }
 
-fn lower_hex(bytes: &[u8]) -> String {
+pub(crate) fn lower_hex(bytes: &[u8]) -> String {
     let mut text = String::with_capacity(bytes.len() * 2);
     for &byte in bytes {
         text.push(char::from(LOWER_HEX_DIGITS[usize::from(byte >> 4)]));

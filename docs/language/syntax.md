@@ -134,11 +134,12 @@ one declared store root. `fields` names top-level unkeyed fields on that store's
 resource. `create` and `update` name fields from the `fields` projection; write-
 only generated inputs are deferred. `collection` names either the same backing
 root or one index declared on that backing store. Nested projections,
-keyed-child reads and writes, custom read selection, cursor-token codecs, JSON
-profiles, and generated clients are later boundary-profile work over the checked
-surface and read-operation facts. `marrow-run` owns the admitted
-transport-neutral node and collection read executors described in
-[Surface ABI](../future/surface-abi.md).
+keyed-child reads and writes, custom read selection, request JSON decode,
+cursor-token codecs, HTTP profiles, and generated clients are later
+boundary-profile work over the checked surface and read-operation facts.
+`marrow-run` owns the admitted transport-neutral node and collection read
+executors, and `marrow-json` owns read-result DTO rendering over those executor
+outputs, as described in [Surface ABI](../future/surface-abi.md).
 
 Surface declarations in configured test files use the same parser and
 source-level name-collision checks, but they do not resolve into application

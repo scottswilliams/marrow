@@ -21,6 +21,7 @@ validation. CLI commands and backup/restore are renderers over those facts.
 | `--maintenance` | Explicit operator capability. | For modeled repair/evolution code, not raw store mutation; cannot be injected by project config or a default entry. |
 | `marrow backup` / `restore` | Production typed backup/restore. | Carries source digest, accepted catalog epoch, engine descriptor, and typed cells; restore writes into an empty store unless `--replace --count N` matches the live record count, rebuilds generated indexes, rejects orphaned managed cells before commit, and rolls back on `restore.data_invalid`. |
 | Checked `SurfaceFact` / `SurfaceReadOperationFact` | Unstable checked application facts. | Resolves declared surfaces to checker-valid store, member, index, read-kind, footprint, projection identities, and accepted-catalog operation tags when available. These facts are transport-neutral inputs for the [future Surface ABI](future/surface-abi.md); they are not HTTP routes, JSON shapes, TypeScript names, raw saved paths, or an admin data-access API. Their typed catalog status reports whether stable client export is blocked by a pending catalog proposal or missing accepted catalog IDs. |
+| `marrow-json::surface` DTOs | Application-read result rendering. | Serializes already-executed surface records, pages, typed values, catalog identities, and runtime typed cursors. It is not request decode, HTTP routing, opaque cursor tokens, generated clients, or a raw saved-data access API. |
 
 ## Boundaries
 

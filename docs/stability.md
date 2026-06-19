@@ -56,25 +56,25 @@ changes. Move data through typed backup/restore when portability is required.
 Human-readable message prose is not stable. Clients consume dotted codes, typed
 JSON fields, store stamps, catalog IDs, and other structured facts.
 
-The eight Rust crate APIs in this workspace (`marrow`, `marrow-catalog`,
-`marrow-check`, `marrow-project`, `marrow-run`, `marrow-schema`,
-`marrow-store`, and `marrow-syntax`) are unstable in v0.1. `marrow-lsp` is a
-coordinated consumer of Marrow semantics, not proof of a public Rust API. A
-future embedding contract is one facade surface, never direct stability for the
-internal crates.
+The nine Rust crate APIs in this workspace (`marrow`, `marrow-catalog`,
+`marrow-check`, `marrow-json`, `marrow-project`, `marrow-run`,
+`marrow-schema`, `marrow-store`, and `marrow-syntax`) are unstable in v0.1.
+`marrow-lsp` is a coordinated consumer of Marrow semantics, not proof of a
+public Rust API. A future embedding contract is one facade surface, never direct
+stability for the internal crates.
 
 ## Reserved Future Surfaces
 
 The application boundary is reserved for the proposed `surface` design. Checked
-surface facts may exist before a profile ships; they are compiler facts over
-stores, fields, indexes, read operations, footprints, and projections, not a
-stable runtime, transport, or generated-client contract. The
-[future Surface ABI](future/surface-abi.md)
-defines the proposed reads-first boundary profile over those facts. Linked-Rust
+surface facts are compiler facts over stores, fields, indexes, read operations,
+footprints, and projections; the active read-result DTOs render already-executed
+surface reads, but they are not a stable runtime, transport, or
+generated-client contract. The [future Surface ABI](future/surface-abi.md)
+defines the reads-first boundary profile over those facts. Linked-Rust
 embedding remains an implementation profile for hosting surface facts and run
-sessions, not a separate app-data contract. Until a surface profile ships, typed
-entry invocation (`marrow run` with `--arg` and `--format json`) is the
-supported integration surface.
+sessions, not a separate app-data contract. Until request decoding and serving
+profiles ship, typed entry invocation (`marrow run` with `--arg` and
+`--format json`) is the supported integration surface.
 
 The `signature_digest` field in the run JSON envelope is reserved for the future
 function ABI identity model and remains `null` in v0.1. The `raises` field is

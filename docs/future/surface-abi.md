@@ -4,11 +4,13 @@
 `surface` declarations. The checker derives transport-neutral
 `SurfaceReadOperationFact`s in v0.1, and `marrow-run` exposes an admitted
 transport-neutral executor for the backing `SingletonRead` and `PointRead`
-node-read shapes plus root/index collection reads. Stable serialized export,
-generated clients, opaque cursor token codecs, and writes remain future
-profiles. This adds no `.mw` syntax and does not define HTTP routes, a local
-server, TypeScript names, JSON wire spelling, or a screen console. It consumes
-the checked facts produced by the language described in
+node-read shapes plus root/index collection reads. `marrow-json` owns a narrow
+read-result DTO profile for already-executed surface records, pages, values,
+identities, and typed cursors. Stable ABI export, request JSON decode,
+generated clients, opaque cursor token codecs, HTTP serving, and writes remain
+future profiles. This adds no `.mw` syntax and does not define HTTP routes, a
+local server, TypeScript names, request-body spelling, or a screen console. It
+consumes the checked facts produced by the language described in
 [Resources And Saved Data](../language/resources-and-storage.md#application-surfaces).
 
 The purpose of this profile is to make Marrow's database-language model usable
@@ -70,13 +72,16 @@ not routes or endpoints.
 | `PagedIndexCollection` | `collection ^store.index as alias` for a non-unique index. | Exact arguments for every non-identity index component plus page parameters. | Bounded rows under that exact index tuple, ordered by the trailing identity suffix. |
 | `UniqueIndexLookup` | `collection ^store.index as alias` for a unique index. | The complete unique-index tuple. | Zero or one projected row. |
 
-The transport-neutral `marrow-run` read API does not define JSON or route
+The transport-neutral `marrow-run` read API does not define routes or request
 spelling. A point-read or collection-row result carries `SurfaceReadIdentity`:
 the accepted store catalog ID plus the typed key tuple. Projected fields are
 ordered by the checked projection and carry the accepted resource-member catalog
 ID plus a `SurfaceValue`. Scalars stay scalar; enum values carry the accepted
 enum and member catalog IDs; identity values carry the accepted store catalog ID
-plus the typed key tuple. Field and enum-member render labels may be present for
+plus the typed key tuple. `marrow-json` renders those already-executed results
+as read-result DTOs with catalog IDs, typed keys, scalar value tags, base64 bytes,
+lossless decimal strings for `int`, temporal nanoseconds, and decimals, and
+render labels. Field and enum-member render labels may be present for
 displays, but they are not semantic identifiers and do not participate in
 compatibility.
 
@@ -208,9 +213,10 @@ encoded token. Root pages carry the last returned `Id(^store)` key tuple.
 Non-unique index pages carry the exact index arguments plus the last returned
 identity suffix. Unique lookups are zero-or-one reads and have no cursor.
 
-Token or display encoding is profile-owned. A remote or generated-client profile
-may render an opaque token. A future console profile may render the typed
-boundary directly. Those renderings share one continuation semantics.
+Token or display encoding is profile-owned. The active read-result JSON DTO renders
+the typed cursor boundary directly so a host can carry it without inventing a
+saved-path format. A remote or generated-client profile may wrap the same
+continuation semantics in an opaque token.
 
 Each request observes one store snapshot while that request is open. A cursor is
 a keyset continuation over the latest admitted snapshot on the next request; it
