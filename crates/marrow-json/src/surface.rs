@@ -58,6 +58,7 @@ pub enum SurfaceCatalogStatusJson {
 pub struct SurfaceReadOperationDescriptorJson {
     pub profile_version: String,
     pub operation_tag: String,
+    pub alias: String,
     pub kind: SurfaceReadOperationKindJson,
     pub store_catalog_id: String,
     pub resource_catalog_id: String,
@@ -398,6 +399,7 @@ impl From<marrow_check::SurfaceReadOperationDescriptor> for SurfaceReadOperation
         Self {
             profile_version: descriptor.profile_version.to_string(),
             operation_tag: descriptor.operation_tag,
+            alias: descriptor.alias,
             kind: SurfaceReadOperationKindJson::from(descriptor.kind),
             store_catalog_id: descriptor.store_catalog_id.as_str().to_string(),
             resource_catalog_id: descriptor.resource_catalog_id.as_str().to_string(),
@@ -2213,6 +2215,26 @@ pub fn seed()
             Some(SurfaceActionArgumentShapeJson::Scalar {
                 scalar: "string".into()
             })
+        );
+    }
+
+    #[test]
+    fn surface_abi_exports_read_operation_aliases() {
+        let (program, _runtime) = checked_surface_program(SURFACE_UPDATE_WITH_ENUM_IDENTITY_INDEX);
+        let abi = SurfaceAbiJson::from_program(&program);
+        let books_json = abi
+            .surfaces
+            .iter()
+            .find(|surface| surface.name == "Books")
+            .expect("Books descriptor");
+
+        assert_eq!(
+            books_json
+                .read
+                .iter()
+                .map(|read| read.alias.as_str())
+                .collect::<Vec<_>>(),
+            vec!["get", "byStatusAuthor"]
         );
     }
 

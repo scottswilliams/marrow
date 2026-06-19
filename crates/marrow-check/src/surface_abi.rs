@@ -29,6 +29,7 @@ pub struct SurfaceActionOperationDescriptor {
 pub struct SurfaceReadOperationDescriptor {
     pub profile_version: &'static str,
     pub operation_tag: String,
+    pub alias: String,
     pub kind: SurfaceReadOperationDescriptorKind,
     pub store_catalog_id: CatalogId,
     pub resource_catalog_id: CatalogId,
@@ -118,6 +119,7 @@ impl SurfaceReadOperationDescriptor {
         Some(Self {
             profile_version: SURFACE_READ_OPERATION_TAG_VERSION,
             operation_tag,
+            alias: operation.alias.clone(),
             kind: descriptor_kind(program, operation.kind)?,
             store_catalog_id: accepted_catalog_id(program, store.catalog_id.as_deref())?,
             resource_catalog_id,

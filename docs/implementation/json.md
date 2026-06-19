@@ -6,7 +6,9 @@ integrity, store-backed data inspection, and surface reads, updates, actions,
 operation envelopes, and descriptor export from copying entry-return, saved-key,
 data-snapshot, surface descriptor/result rendering, checked surface read
 request-parameter decode, sparse update request-body decode, and action
-argument/result rendering. For surfaces it
+argument/result rendering. Surface descriptors include checked read/action
+aliases as labels for later route or client renderers; those aliases are not
+operation identity. For surfaces it
 also provides an in-process operation-tag execution boundary over
 caller-supplied `CheckedProgram` and `TreeStore` references, read-only
 execution helpers over `ProjectSurfaceReadSession`, point/singleton update
@@ -115,7 +117,8 @@ runtime admission; wrong read/update/action shape requests remain
   `DataSnapshotJson`, and `DataCommitJson`.
 - `crates/marrow-json/src/surface.rs` — surface ABI descriptor DTOs, surface
   read result DTOs, checked surface read request-parameter and sparse update
-  request DTOs, action DTOs, operation envelope DTOs, and in-process
+  request DTOs, action DTOs, operation envelope DTOs, descriptor alias
+  rendering, and in-process
   operation-tag execution helpers.
 - `crates/marrow/src/cmd_run.rs` — the run JSON envelope and `run.entry_surface`
   mapping.

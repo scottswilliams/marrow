@@ -26,8 +26,10 @@ The active surface foundation has these owners:
   language surface syntax and checked field/collection/action rules.
 - `crates/marrow-check/src/surface.rs` resolves declarations to `SurfaceFact`
   and `SurfaceReadOperationFact` values, including resolved public action
-  function refs. The parsed/resolved `create` list is reserved metadata and is
-  excluded from the active serialized ABI profile.
+  function refs. Read operation facts carry the generated `get` alias or the
+  declared collection alias as render metadata. The parsed/resolved `create`
+  list is reserved metadata and is excluded from the active serialized ABI
+  profile.
 - `crates/marrow-check/src/surface_abi.rs` owns the shared length-prefixed
   digest framing and typed descriptors for `surface.read.v1` and
   `surface.update.v1`, plus action descriptors that reuse `entry.invoke.v1`
@@ -158,8 +160,8 @@ by default:
 The active serialized ABI profile lives in `marrow check --format json|jsonl`
 under `surface_abi` and is rendered by `marrow-json` DTOs from checker-owned
 facts. It serializes accepted catalog IDs, callable canonical read/update/action
-operation descriptors, value shapes, entry parameter shapes, operation tags, and
-render labels as labels. It must not serialize checker-local IDs, source spans, raw saved paths,
+operation descriptors, value shapes, entry parameter shapes, operation tags,
+read/action aliases, and render labels as labels. It must not serialize checker-local IDs, source spans, raw saved paths,
 backend cursor bytes, physical store keys, or `create` metadata.
 
 `SurfaceAbiJson` curates duplicate stable operation tags out of the export. If a
@@ -210,10 +212,11 @@ surface, opaque cursor token, or public compatibility guarantee.
 
 ## Generated Clients And LSP
 
-Generated clients consume the serialized descriptor profile. Their naming and
-route-rendering rules are a separate compatibility contract from operation
-equality. Labels can guide rendering, but accepted catalog IDs and canonical
-operation descriptors remain the semantic identity.
+Generated clients consume the serialized descriptor profile. Read and action
+aliases give renderers a checked operation label, but naming and route-rendering
+rules are a separate compatibility contract from operation equality. Labels can
+guide rendering, but accepted catalog IDs and canonical operation descriptors
+remain the semantic identity.
 
 LSP and MCP tooling should consume
 `AnalysisSnapshot::surface_read_operations()`,

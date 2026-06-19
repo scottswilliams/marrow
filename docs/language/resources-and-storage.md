@@ -260,7 +260,9 @@ application surface facts.
 Those facts are transport-neutral: HTTP routes, opaque cursor-token codecs,
 TypeScript names, generated clients, and create/delete bodies are boundary
 profiles layered later. Stable surface reads, sparse updates, and actions have
-checker-owned descriptors and operation tags. A surface remains source-only
+checker-owned descriptors and operation tags. Read descriptors carry the
+generated `get` alias or declared collection alias as render metadata; action
+descriptors carry their declared action alias. A surface remains source-only
 until its backing store, projected fields, update fields, collection indexes,
 and every action parameter and return durable type have accepted catalog IDs.
 `marrow-run` exposes admitted transport-neutral node and collection read

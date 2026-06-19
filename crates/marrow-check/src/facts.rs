@@ -1371,6 +1371,7 @@ pub enum SurfaceCollectionTarget {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SurfaceReadOperationFact {
+    pub alias: String,
     pub kind: SurfaceReadOperationKind,
     pub footprint: SurfaceReadFootprint,
     pub projection: Vec<ResourceMemberId>,

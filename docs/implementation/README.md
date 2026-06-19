@@ -36,9 +36,9 @@ Nine crates stacked in dependency order, lowest first:
   action request/results, and operation envelopes. It preserves existing
   machine-readable CLI shapes and owns checked surface read request-parameter
   decode, project update/action execution wrappers, accepted-catalog surface
-  action value rendering, and context-aware cursor-boundary rendering; routes,
-  opaque cursor tokens, generated clients, and create/delete body decode are not
-  owned here.
+  action value rendering, read/action alias descriptor rendering, and
+  context-aware cursor-boundary rendering; routes, opaque cursor tokens,
+  generated clients, and create/delete body decode are not owned here.
 - **project / cli** — `marrow.json`, discovery, and the operator binary that
   wires the above together and renders results.
 

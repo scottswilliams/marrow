@@ -226,6 +226,13 @@ surface Books from ^books
         descriptor.profile_version == "surface.read.v1"
             && descriptor.operation_tag.starts_with("sha256:")
     }));
+    assert_eq!(
+        descriptors
+            .iter()
+            .map(|descriptor| descriptor.alias.as_str())
+            .collect::<Vec<_>>(),
+        vec!["get", "list", "byStatus", "byParent"]
+    );
 
     let facts = &program.facts;
     let module = facts.module_id("app").expect("module");

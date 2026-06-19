@@ -480,47 +480,65 @@ fn read_operations(
     };
     let stable_tags = matches!(catalog_status, SurfaceCatalogStatus::Stable);
     let mut operations = Vec::with_capacity(collections.len() + 1);
+    let backing_kind = backing_read_operation_kind(store);
     operations.push(surface_read_operation_fact(
-        program,
-        store,
-        backing_read_operation_kind(store),
+        "get".to_string(),
+        backing_kind,
         footprint,
         projection.clone(),
-        surface_span,
-        stable_tags,
-    ));
-    operations.extend(collections.iter().map(|collection| {
-        surface_read_operation_fact(
+        stable_read_operation_tag(
             program,
             store,
-            collection_read_operation_kind(program, collection),
+            backing_kind,
+            footprint,
+            &projection,
+            stable_tags,
+        ),
+        surface_span,
+    ));
+    operations.extend(collections.iter().map(|collection| {
+        let kind = collection_read_operation_kind(program, collection);
+        surface_read_operation_fact(
+            collection.alias.clone(),
+            kind,
             footprint,
             projection.clone(),
+            stable_read_operation_tag(program, store, kind, footprint, &projection, stable_tags),
             collection.span,
-            stable_tags,
         )
     }));
     operations
 }
 
 fn surface_read_operation_fact(
+    alias: String,
+    kind: SurfaceReadOperationKind,
+    footprint: SurfaceReadFootprint,
+    projection: Vec<ResourceMemberId>,
+    operation_tag: Option<String>,
+    span: SourceSpan,
+) -> SurfaceReadOperationFact {
+    SurfaceReadOperationFact {
+        alias,
+        kind,
+        footprint,
+        operation_tag,
+        projection,
+        span,
+    }
+}
+
+fn stable_read_operation_tag(
     program: &CheckedProgram,
     store: &StoreFact,
     kind: SurfaceReadOperationKind,
     footprint: SurfaceReadFootprint,
-    projection: Vec<ResourceMemberId>,
-    span: SourceSpan,
+    projection: &[ResourceMemberId],
     stable_tags: bool,
-) -> SurfaceReadOperationFact {
-    SurfaceReadOperationFact {
-        kind,
-        footprint,
-        operation_tag: stable_tags
-            .then(|| surface_read_operation_tag(program, store, kind, footprint, &projection))
-            .flatten(),
-        projection,
-        span,
-    }
+) -> Option<String> {
+    stable_tags
+        .then(|| surface_read_operation_tag(program, store, kind, footprint, projection))
+        .flatten()
 }
 
 fn backing_read_operation_kind(store: &StoreFact) -> SurfaceReadOperationKind {
