@@ -12,9 +12,10 @@ use marrow_syntax::SourceSpan;
 use crate::checks::{ModuleNamePolicy, ResolvedFileCheck, check_resolved_files};
 use crate::enums::normalize_program_named_types;
 use crate::{
-    CHECK_DUPLICATE_MODULE, CHECK_MULTIPLE_SCRIPTS, CheckDiagnostic, CheckReport, CheckedFile,
-    CheckedModule, CheckedProgram, DiagnosticPayload, IO_READ, ProjectSources,
-    SCHEMA_DUPLICATE_ROOT_OWNER, SurfaceActionFact, SurfaceActionOperationDescriptor,
+    CHECK_DUPLICATE_MODULE, CHECK_MULTIPLE_SCRIPTS, CHECK_READ_ONLY_EXPRESSION_CONTEXT,
+    CheckDiagnostic, CheckReport, CheckedDebugExpression, CheckedFile, CheckedModule,
+    CheckedProgram, DiagnosticPayload, IO_READ, ProjectSources, SCHEMA_DUPLICATE_ROOT_OWNER,
+    SurfaceActionFact, SurfaceActionOperationDescriptor,
     SurfaceCatalogStatus, SurfaceFact, SurfaceReadOperationDescriptor, SurfaceReadOperationFact,
     SurfaceUpdateOperationDescriptor, TestResolutionSuppression, check_file_source,
     enum_visibility, module_path_error, read_source,
@@ -161,6 +162,30 @@ impl AnalysisSnapshot {
         self.catalog_declarations
             .iter()
             .find(|declaration| declaration.catalog_id == catalog_id)
+    }
+
+    pub fn checked_debug_expression(
+        &self,
+        file: &Path,
+        span: SourceSpan,
+        source: &str,
+    ) -> Result<CheckedDebugExpression, Vec<CheckDiagnostic>> {
+        let Some(parsed) = self
+            .files
+            .iter()
+            .find(|candidate| candidate.path == file)
+            .map(|file| &file.parsed)
+        else {
+            return Err(vec![CheckDiagnostic::error(
+                CHECK_READ_ONLY_EXPRESSION_CONTEXT,
+                file,
+                span,
+                "source file is not present in the analysis snapshot",
+            )]);
+        };
+        let scope = cursor::debug_expression_scope_before(&self.program, file, parsed, span);
+        self.program
+            .checked_debug_expression_in_scope(file, source, &scope)
     }
 }
 

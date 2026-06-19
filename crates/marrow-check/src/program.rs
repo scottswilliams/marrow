@@ -72,6 +72,42 @@ impl CheckedReadOnlyExpression {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CheckedDebugExpression {
+    file_id: FileId,
+    source_file: PathBuf,
+    source_digest: String,
+    read_only_context_digest: String,
+    expression: CheckedExpr,
+    ty: MarrowType,
+}
+
+impl CheckedDebugExpression {
+    pub fn file_id(&self) -> FileId {
+        self.file_id
+    }
+
+    pub fn source_file(&self) -> &Path {
+        &self.source_file
+    }
+
+    pub fn source_digest(&self) -> &str {
+        &self.source_digest
+    }
+
+    pub fn read_only_context_digest(&self) -> &str {
+        &self.read_only_context_digest
+    }
+
+    pub fn expression(&self) -> &CheckedExpr {
+        &self.expression
+    }
+
+    pub fn ty(&self) -> &MarrowType {
+        &self.ty
+    }
+}
+
 /// A runtime statement span the evaluator can report through `StepHook`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RuntimeStopPoint {
@@ -123,57 +159,45 @@ impl CheckedProgram {
                 format!("module `{module}` is not present in the checked program"),
             )]);
         };
-        let (parsed, syntax_diagnostics) = marrow_syntax::parse_expression(source);
-        let mut diagnostics: Vec<CheckDiagnostic> = syntax_diagnostics
-            .into_iter()
-            .map(|diagnostic| syntax_expression_diagnostic(&module.source_file, diagnostic))
-            .collect();
-        let Some(parsed) = parsed else {
-            return Err(diagnostics);
-        };
-
         let scope = module_constant_scope(module);
-        let aliases = crate::build_alias_map(&module.imports);
-        crate::infer::infer_type(
-            self,
-            &parsed,
-            &scope,
-            &aliases,
-            &module.source_file,
-            &mut diagnostics,
-        );
-        crate::checks::check_entries_value_position(&module.source_file, &parsed, &mut diagnostics);
-        let Some(expression) =
-            crate::executable::lower_expr_for_file(self, &module.source_file, &parsed, &scope)
-        else {
-            diagnostics.push(CheckDiagnostic::error(
-                CHECK_READ_ONLY_EXPRESSION_CONTEXT,
-                &module.source_file,
-                parsed.span(),
-                "expression cannot be lowered in the checked program context",
-            ));
-            return Err(diagnostics);
-        };
-
-        let read_only_effects = crate::presence::read_only_expression_effects(self, &expression);
-        diagnostics.extend(read_only_expression_diagnostics(
-            &module.source_file,
-            &expression,
-            &read_only_effects,
-        ));
-        if diagnostics
-            .iter()
-            .any(|diagnostic| matches!(diagnostic.severity, marrow_syntax::Severity::Error))
-        {
-            return Err(diagnostics);
-        }
+        let checked = self.checked_expression_in_scope(module, source, &scope)?;
 
         Ok(CheckedReadOnlyExpression {
             file_id: FileId(module_index as u32),
             source_file: module.source_file.clone(),
             source_digest: self.source_digest(),
             read_only_context_digest: self.read_only_context_digest(),
-            expression,
+            expression: checked.expression,
+        })
+    }
+
+    pub(crate) fn checked_debug_expression_in_scope(
+        &self,
+        file: &Path,
+        source: &str,
+        scope: &[HashMap<String, MarrowType>],
+    ) -> Result<CheckedDebugExpression, Vec<CheckDiagnostic>> {
+        let Some((module_index, module)) = self
+            .modules
+            .iter()
+            .enumerate()
+            .find(|(_, module)| module.source_file == file)
+        else {
+            return Err(vec![CheckDiagnostic::error(
+                CHECK_READ_ONLY_EXPRESSION_CONTEXT,
+                file,
+                SourceSpan::default(),
+                "source file is not present in the checked program",
+            )]);
+        };
+        let checked = self.checked_expression_in_scope(module, source, scope)?;
+        Ok(CheckedDebugExpression {
+            file_id: FileId(module_index as u32),
+            source_file: module.source_file.clone(),
+            source_digest: self.source_digest(),
+            read_only_context_digest: self.read_only_context_digest(),
+            expression: checked.expression,
+            ty: checked.ty,
         })
     }
 
@@ -477,6 +501,66 @@ fn module_constant_map(module: &CheckedModule) -> HashMap<String, MarrowType> {
 
 fn module_constant_scope(module: &CheckedModule) -> Vec<HashMap<String, MarrowType>> {
     vec![module_constant_map(module)]
+}
+
+struct CheckedExpressionInScope {
+    expression: CheckedExpr,
+    ty: MarrowType,
+}
+
+impl CheckedProgram {
+    fn checked_expression_in_scope(
+        &self,
+        module: &CheckedModule,
+        source: &str,
+        scope: &[HashMap<String, MarrowType>],
+    ) -> Result<CheckedExpressionInScope, Vec<CheckDiagnostic>> {
+        let (parsed, syntax_diagnostics) = marrow_syntax::parse_expression(source);
+        let mut diagnostics: Vec<CheckDiagnostic> = syntax_diagnostics
+            .into_iter()
+            .map(|diagnostic| syntax_expression_diagnostic(&module.source_file, diagnostic))
+            .collect();
+        let Some(parsed) = parsed else {
+            return Err(diagnostics);
+        };
+
+        let aliases = crate::build_alias_map(&module.imports);
+        let ty = crate::infer::infer_type(
+            self,
+            &parsed,
+            scope,
+            &aliases,
+            &module.source_file,
+            &mut diagnostics,
+        );
+        crate::checks::check_entries_value_position(&module.source_file, &parsed, &mut diagnostics);
+        let Some(expression) =
+            crate::executable::lower_expr_for_file(self, &module.source_file, &parsed, scope)
+        else {
+            diagnostics.push(CheckDiagnostic::error(
+                CHECK_READ_ONLY_EXPRESSION_CONTEXT,
+                &module.source_file,
+                parsed.span(),
+                "expression cannot be lowered in the checked program context",
+            ));
+            return Err(diagnostics);
+        };
+
+        let read_only_effects = crate::presence::read_only_expression_effects(self, &expression);
+        diagnostics.extend(read_only_expression_diagnostics(
+            &module.source_file,
+            &expression,
+            &read_only_effects,
+        ));
+        if diagnostics
+            .iter()
+            .any(|diagnostic| matches!(diagnostic.severity, marrow_syntax::Severity::Error))
+        {
+            return Err(diagnostics);
+        }
+
+        Ok(CheckedExpressionInScope { expression, ty })
+    }
 }
 
 fn syntax_expression_diagnostic(file: &Path, diagnostic: Diagnostic) -> CheckDiagnostic {

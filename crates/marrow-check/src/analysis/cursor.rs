@@ -107,6 +107,34 @@ pub fn scope_at(
     bindings
 }
 
+pub(crate) fn debug_expression_scope_before(
+    program: &CheckedProgram,
+    file: &Path,
+    parsed: &marrow_syntax::ParsedSource,
+    span: SourceSpan,
+) -> Vec<HashMap<String, MarrowType>> {
+    let prelude = file_prelude(program, file, parsed);
+    let Some(function) = enclosing_function(parsed, span.start_byte) else {
+        return vec![prelude.module_constants];
+    };
+    let mut scope = function_base_scope(
+        program,
+        function,
+        &prelude.module_constants,
+        &prelude.aliases,
+        file,
+    );
+    walk_block_to_offset(
+        program,
+        &function.body,
+        span.start_byte,
+        &prelude.aliases,
+        file,
+        &mut scope,
+    );
+    scope
+}
+
 /// The function declaration whose body span covers `offset`, if any. A cursor in a
 /// function signature or at module level has no enclosing body and yields `None`.
 fn enclosing_function(

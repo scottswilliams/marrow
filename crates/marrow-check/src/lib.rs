@@ -113,10 +113,10 @@ pub use marrow_catalog::{CatalogEntryKind, CatalogLifecycle};
 pub use marrow_project::{ProjectConfig, StoreBackend, StoreConfig};
 pub use marrow_schema::{IndexSchema, ResourceSchema, StoreSchema, Type};
 pub use program::{
-    CheckedConst, CheckedEntryFunction, CheckedFunction, CheckedModule, CheckedParam,
-    CheckedProgram, CheckedReadOnlyExpression, CheckedRuntimeConst, CheckedRuntimeFunction,
-    CheckedRuntimeModule, CheckedRuntimeProgram, EvolveTransform, FileId, MarrowType,
-    ProgramCatalog, RuntimeStopPoint,
+    CheckedConst, CheckedDebugExpression, CheckedEntryFunction, CheckedFunction, CheckedModule,
+    CheckedParam, CheckedProgram, CheckedReadOnlyExpression, CheckedRuntimeConst,
+    CheckedRuntimeFunction, CheckedRuntimeModule, CheckedRuntimeProgram, EvolveTransform, FileId,
+    MarrowType, ProgramCatalog, RuntimeStopPoint,
 };
 pub use project_io::{
     ProjectIoError, check_project_against, check_source_project_analysis_against, load_config,

@@ -8,12 +8,14 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use marrow_check::CheckedDebugExpression;
 use marrow_store::tree::TreeStore;
 use marrow_syntax::SourceSpan;
 
-use crate::debugger::{DebugFrameSnapshot, DebugValueFilter, DebugValuePage};
-use crate::env::Env;
-use crate::error::RuntimeError;
+use crate::debugger::{DebugFrameSnapshot, DebugValue, DebugValueFilter, DebugValuePage};
+use crate::env::{Context, Env};
+use crate::error::{RuntimeError, unsupported};
+use crate::expr::eval_expr;
 use crate::value::{RunOutputSink, Value};
 use crate::write_plan::{WriteOp, WriteTarget};
 
@@ -244,6 +246,71 @@ impl<'e, 'p> Frame<'e, 'p> {
             locals_truncated: locals.locals_truncated,
             locals: locals.locals,
         }
+    }
+
+    pub fn evaluate_debug_expression(
+        &self,
+        expression: &CheckedDebugExpression,
+    ) -> Result<DebugValue, RuntimeError> {
+        if expression.source_digest() != self.env.program.source_digest() {
+            return Err(unsupported(
+                "a checked debug expression from a different checked program",
+                SourceSpan::default(),
+            ));
+        }
+        if expression.read_only_context_digest() != self.env.program.read_only_context_digest() {
+            return Err(unsupported(
+                "a checked debug expression from a different checked program",
+                SourceSpan::default(),
+            ));
+        }
+        let module = self
+            .env
+            .program
+            .modules()
+            .get(expression.file_id().0 as usize)
+            .ok_or_else(|| {
+                unsupported(
+                    "a checked debug expression whose source module is missing",
+                    SourceSpan::default(),
+                )
+            })?;
+        if module.source_file != expression.source_file() {
+            return Err(unsupported(
+                "a checked debug expression whose source file no longer matches",
+                SourceSpan::default(),
+            ));
+        }
+        if self.file() != Some(expression.source_file()) {
+            return Err(unsupported(
+                "a checked debug expression outside the current frame source file",
+                SourceSpan::default(),
+            ));
+        }
+
+        let ctx = Context {
+            program: self.env.program,
+            store: self.env.store,
+            host: self.env.host,
+            transaction: Rc::clone(&self.env.transaction),
+        };
+        let mut env = Env::new(
+            ctx,
+            Rc::clone(&self.env.output),
+            Some(module),
+            None,
+            self.depth(),
+        );
+        env.traversed_layers = self.env.traversed_layers.clone();
+        env.push_scope();
+        for (name, value) in self.locals() {
+            env.bind(name.to_string(), value.clone(), false);
+        }
+        let value = eval_expr(expression.expression(), &mut env)
+            .map(DebugValue::from_value)
+            .map_err(|error| error.with_origin_from(self.env.program, Some(module)));
+        env.pop_scope();
+        value
     }
 }
 

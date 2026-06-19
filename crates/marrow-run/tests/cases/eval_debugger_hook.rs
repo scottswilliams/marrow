@@ -3,9 +3,13 @@
 //! live store handle, terminate-by-Err, and debug value previews.
 
 use crate::support;
+use std::path::PathBuf;
 use support::*;
 
-use marrow_check::CheckedRuntimeProgram;
+use marrow_check::{
+    AnalysisSnapshot, CheckedDebugExpression, CheckedRuntimeProgram, ProjectSources,
+    analyze_project,
+};
 use marrow_run::{
     CheckedEntryCall, DEBUG_VALUE_DEFAULT_PAGE_LIMIT, DEBUG_VALUE_MAX_PAGE_LIMIT,
     DebugFrameSnapshot, DebugValue, DebugValueFilter, DebugValuePage, Frame, Host, RunOutput,
@@ -24,6 +28,40 @@ fn run_entry_with_debugger(
 ) -> Result<RunOutput, marrow_run::RuntimeError> {
     let mut output = |_text: &str| {};
     marrow_run::run_entry_with_debugger(store, host, hook, &call, &mut output)
+}
+
+fn analyzed_runtime_program(
+    source: &str,
+) -> (AnalysisSnapshot, CheckedRuntimeProgram, PathBuf, String) {
+    let (relative, text) = checked_source_file(source, &[]);
+    let root = TempDir::new("marrow-run-debug-expression").expect("create project");
+    write_temp_source(root.path(), &relative, &text);
+    let path = root.path().join(&relative);
+    let config = test_project_config();
+    let mut sources = ProjectSources::new();
+    sources.insert(&path, text.clone());
+    let snapshot = analyze_project(root.path(), &config, &sources, None).expect("analyze project");
+    assert!(
+        !snapshot.report.has_errors(),
+        "{:#?}",
+        snapshot.report.diagnostics
+    );
+    let runtime = snapshot.program.runtime();
+    (snapshot, runtime, path, text)
+}
+
+fn stop_span(source: &str, needle: &str) -> SourceSpan {
+    let start_byte = source.find(needle).expect("stop marker is present");
+    let before = &source[..start_byte];
+    SourceSpan {
+        start_byte,
+        end_byte: start_byte + needle.len(),
+        line: before.bytes().filter(|byte| *byte == b'\n').count() as u32 + 1,
+        column: before
+            .rsplit_once('\n')
+            .map_or(before.len(), |(_, line)| line.len()) as u32
+            + 1,
+    }
 }
 
 /// A test hook that records, for each statement it is offered, the statement's
@@ -324,6 +362,118 @@ fn frame_debug_snapshot_reports_a_bounded_local_page() {
     assert_eq!(snapshot.locals.len(), 1);
     assert_eq!(snapshot.locals[0].name, "b");
     assert_eq!(snapshot.locals[0].value.preview(), "2");
+}
+
+#[test]
+fn frame_evaluates_checked_debug_expression_from_live_shadowed_locals() {
+    let (snapshot, program, path, source) = analyzed_runtime_program(
+        "pub fn inspect(a: int): int\n\
+         \x20   const shadow = a + 1\n\
+         \x20   if true\n\
+         \x20       const shadow = a + 2\n\
+         \x20       const marker = shadow * 2\n\
+         \x20       return marker\n\
+         \x20   return shadow\n",
+    );
+    let stop = stop_span(&source, "return marker");
+    let expression = snapshot
+        .checked_debug_expression(&path, stop, "shadow + marker")
+        .expect("debug expression checks against the stop scope");
+
+    struct Evaluator {
+        stop_line: u32,
+        expression: CheckedDebugExpression,
+        values: Vec<DebugValue>,
+    }
+
+    impl StepHook for Evaluator {
+        fn before_statement(
+            &mut self,
+            span: SourceSpan,
+            frame: Frame<'_, '_>,
+        ) -> Result<(), RuntimeError> {
+            if span.line == self.stop_line {
+                self.values
+                    .push(frame.evaluate_debug_expression(&self.expression)?);
+            }
+            Ok(())
+        }
+    }
+
+    let store = TreeStore::memory();
+    let mut hook = Evaluator {
+        stop_line: stop.line,
+        expression,
+        values: Vec::new(),
+    };
+    run_entry_with_debugger(
+        &store,
+        &Host::new(),
+        &mut hook,
+        checked_entry!(&program, "test::inspect", Value::Int(10)),
+    )
+    .expect("debugged run completes");
+
+    assert_eq!(hook.values.len(), 1);
+    assert_eq!(hook.values[0].preview(), "36");
+}
+
+#[test]
+fn frame_rejects_checked_debug_expression_from_a_different_source_context() {
+    let (first_snapshot, _first_program, first_path, first_source) = analyzed_runtime_program(
+        "pub fn inspect(): int\n\
+         \x20   const n = 1\n\
+         \x20   return n\n",
+    );
+    let first_stop = stop_span(&first_source, "return n");
+    let expression = first_snapshot
+        .checked_debug_expression(&first_path, first_stop, "n")
+        .expect("debug expression checks in the first source context");
+
+    let (_second_snapshot, second_program, _second_path, second_source) = analyzed_runtime_program(
+        "pub fn inspect(): int\n\
+         \x20   const n = 2\n\
+         \x20   return n\n",
+    );
+    let second_stop = stop_span(&second_source, "return n");
+
+    struct RejectionProbe {
+        stop_line: u32,
+        expression: CheckedDebugExpression,
+        error_code: Option<&'static str>,
+    }
+
+    impl StepHook for RejectionProbe {
+        fn before_statement(
+            &mut self,
+            span: SourceSpan,
+            frame: Frame<'_, '_>,
+        ) -> Result<(), RuntimeError> {
+            if span.line == self.stop_line {
+                let error = frame
+                    .evaluate_debug_expression(&self.expression)
+                    .expect_err("stale debug expression is rejected");
+                self.error_code = Some(error.code());
+            }
+            Ok(())
+        }
+    }
+
+    let store = TreeStore::memory();
+    let mut hook = RejectionProbe {
+        stop_line: second_stop.line,
+        expression,
+        error_code: None,
+    };
+    run_entry_with_debugger(
+        &store,
+        &Host::new(),
+        &mut hook,
+        checked_entry!(&second_program, "test::inspect"),
+    )
+    .expect("debugged run completes after rejecting the expression");
+
+    assert_eq!(hook.error_code, Some(marrow_run::RUN_UNSUPPORTED));
 }
 
 #[test]

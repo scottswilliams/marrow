@@ -12,9 +12,10 @@ use marrow_check::tooling::{
     stamped_read_data_path,
 };
 use marrow_check::{
-    CatalogEntryKind, CheckedProgram, DiagnosticPayload, ProjectSources, SurfaceCatalogBlocker,
-    SurfaceCatalogStatus, SurfaceReadFootprint, SurfaceReadOperationKind, UseSiteKind,
-    analyze_project, check_project, scope_at, type_at,
+    CHECK_READ_ONLY_EXPRESSION_HOST_EFFECT, CHECK_READ_ONLY_EXPRESSION_UNINDEXED_LOOKUP,
+    CHECK_READ_ONLY_EXPRESSION_WRITE, CatalogEntryKind, CheckedProgram, DiagnosticPayload,
+    ProjectSources, SurfaceCatalogBlocker, SurfaceCatalogStatus, SurfaceReadFootprint,
+    SurfaceReadOperationKind, UseSiteKind, analyze_project, check_project, scope_at, type_at,
 };
 use marrow_project::parse_config;
 use marrow_schema::{SCHEMA_DUPLICATE_MEMBER, ScalarType, Type};
@@ -25,7 +26,7 @@ use marrow_store::tree::{
     write_tree_backup_archive_chunk, write_tree_backup_archive_header,
 };
 use marrow_store::value::{SavedValue, encode_value};
-use marrow_syntax::ParsedSource;
+use marrow_syntax::{ParsedSource, SourceSpan};
 
 use support::{analyze_overlay, config, temp_root, write};
 
@@ -45,6 +46,20 @@ fn analyze(name: &str, source: &str) -> (CheckedProgram, ParsedSource, PathBuf) 
         .expect("the overlaid file is analyzed")
         .parsed;
     (snapshot.program, parsed, path)
+}
+
+fn stop_span(source: &str, needle: &str) -> SourceSpan {
+    let start_byte = source.find(needle).expect("stop marker is present");
+    let before = &source[..start_byte];
+    SourceSpan {
+        start_byte,
+        end_byte: start_byte + needle.len(),
+        line: before.bytes().filter(|byte| *byte == b'\n').count() as u32 + 1,
+        column: before
+            .rsplit_once('\n')
+            .map_or(before.len(), |(_, line)| line.len()) as u32
+            + 1,
+    }
 }
 
 #[test]
@@ -269,6 +284,121 @@ fn scope_at_includes_use_import_aliases() {
     assert!(
         names.iter().any(|n| n == "clock"),
         "import alias: {names:?}"
+    );
+}
+
+#[test]
+fn checked_debug_expression_sees_prior_locals_and_excludes_the_current_statement_binding() {
+    let source = "module m\n\
+        fn f(input: int)\n    \
+        const before = input + 1\n    \
+        const current = before + input\n    \
+        print(current)\n";
+    let (snapshot, paths) =
+        analyze_overlay("debug-expression-before-statement", &[("src/m.mw", source)]);
+    assert!(
+        !snapshot.report.has_errors(),
+        "{:#?}",
+        snapshot.report.diagnostics
+    );
+    let path = paths.into_iter().next().expect("source path");
+    let span = stop_span(source, "const current");
+
+    let checked = snapshot
+        .checked_debug_expression(&path, span, "before + input > 0")
+        .expect("params and prior locals are visible before the current statement");
+    assert_eq!(
+        checked.ty(),
+        &MarrowType::Primitive(ScalarType::Bool),
+        "conditional debuggers can require bool without reinferring"
+    );
+
+    let diagnostics = snapshot
+        .checked_debug_expression(&path, span, "current")
+        .expect_err("the current statement binding is not visible before it runs");
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.severity == marrow_syntax::Severity::Error),
+        "{diagnostics:#?}"
+    );
+}
+
+#[test]
+fn checked_debug_expression_replays_loop_shadowing_for_its_result_type() {
+    let source = "module m\n\
+        fn f(items: sequence[int])\n    \
+        const item: string = \"outer\"\n    \
+        for item in items\n        \
+        print(item)\n";
+    let (snapshot, paths) =
+        analyze_overlay("debug-expression-loop-shadow", &[("src/m.mw", source)]);
+    assert!(
+        !snapshot.report.has_errors(),
+        "{:#?}",
+        snapshot.report.diagnostics
+    );
+    let path = paths.into_iter().next().expect("source path");
+
+    let checked = snapshot
+        .checked_debug_expression(&path, stop_span(source, "print(item)"), "item > 1")
+        .expect("loop binding shadows the outer local in the shared scope replay");
+    assert_eq!(checked.ty(), &MarrowType::Primitive(ScalarType::Bool));
+}
+
+#[test]
+fn checked_debug_expression_reuses_read_only_effect_diagnostics() {
+    let source = "module m\n\
+        resource Book\n    \
+        required title: string\n    \
+        required shelf: string\n\
+        store ^books(id: int): Book\n\
+        fn f(id: int)\n    \
+        const before = id\n    \
+        print(before)\n";
+    let (snapshot, paths) = analyze_overlay(
+        "debug-expression-read-only-effects",
+        &[("src/m.mw", source)],
+    );
+    assert!(
+        !snapshot.report.has_errors(),
+        "{:#?}",
+        snapshot.report.diagnostics
+    );
+    let path = paths.into_iter().next().expect("source path");
+    let span = stop_span(source, "print(before)");
+
+    let write = snapshot
+        .checked_debug_expression(
+            &path,
+            span,
+            "append(^books, Book(title: \"Dune\", shelf: \"sf\"))",
+        )
+        .expect_err("debug expressions cannot write saved data");
+    assert!(
+        write
+            .iter()
+            .any(|diagnostic| diagnostic.code == CHECK_READ_ONLY_EXPRESSION_WRITE),
+        "{write:#?}"
+    );
+
+    let host = snapshot
+        .checked_debug_expression(&path, span, "print(\"hello\")")
+        .expect_err("debug expressions cannot call host-effecting operations");
+    assert!(
+        host.iter()
+            .any(|diagnostic| diagnostic.code == CHECK_READ_ONLY_EXPRESSION_HOST_EFFECT),
+        "{host:#?}"
+    );
+
+    let unindexed = snapshot
+        .checked_debug_expression(&path, span, "count(^books)")
+        .expect_err("debug expressions cannot perform unindexed saved scans");
+    assert!(
+        unindexed
+            .iter()
+            .any(|diagnostic| diagnostic.code == CHECK_READ_ONLY_EXPRESSION_UNINDEXED_LOOKUP),
+        "{unindexed:#?}"
     );
 }
 
