@@ -3,12 +3,15 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use marrow_run::{
-    CheckedEntryCall, EntryArgument, EntryArgumentShape, EntryArgumentValue, EntryDescriptor,
-    EntryInvocation, EntryParameter, EntryScalarArgument, Host, RUN_ENTRY_ARGUMENT, Value,
+    CheckedEntryCall, EntryArgument, EntryArgumentJsonErrorKind, EntryArgumentShape,
+    EntryArgumentValue, EntryDescriptor, EntryInvocation, EntryParameter, EntryScalarArgument,
+    Host, RUN_ENTRY_ARGUMENT, Value, entry_argument_json_schema, entry_arguments_from_json,
     run_entry, run_entry_with_host,
 };
+use marrow_store::Decimal;
 use marrow_store::tree::TreeStore;
 use marrow_store::value::ScalarType;
+use serde_json::json;
 use support::{checked_program, checked_program_modules};
 
 fn entry_parameter<'a>(descriptor: &'a EntryDescriptor, name: &str) -> &'a EntryParameter {
@@ -134,6 +137,348 @@ fn protocol_args_admit_canonical_entry_identity_and_typed_values() {
     let result = run_entry(&store, &call, &mut output).expect("run entry");
 
     assert_eq!(result.value, Some(Value::Str("ok".into())));
+}
+
+#[test]
+fn json_protocol_args_decode_to_typed_entry_arguments() {
+    let program = checked_program(
+        "resource Author\n\
+         \x20   name: string\n\
+         store ^authors(id: int): Author\n\
+         \n\
+         enum Status\n\
+         \x20   active\n\
+         \x20   archived\n\
+         \n\
+         pub fn accept(author: Id(^authors), status: Status, flags: sequence[bool], label: string): string\n\
+         \x20   if status == Status::archived and label == \"done\"\n\
+         \x20       return \"ok\"\n\
+         \x20   return \"no\"\n",
+    );
+    let descriptor = EntryDescriptor::resolve(&program, "accept").expect("entry descriptor");
+    let EntryArgumentShape::Identity {
+        store_catalog_id, ..
+    } = &entry_parameter(&descriptor, "author").shape
+    else {
+        panic!("author should be an identity shape");
+    };
+    let EntryArgumentShape::Enum { members, .. } = &entry_parameter(&descriptor, "status").shape
+    else {
+        panic!("status should be an enum shape");
+    };
+    let archived = members
+        .iter()
+        .find(|member| member.render_label == "archived")
+        .expect("archived member");
+    let args = entry_arguments_from_json(&[
+        json!({
+            "name": "author",
+            "value": {
+                "kind": "identity",
+                "store_catalog_id": store_catalog_id.as_str(),
+                "keys": [{ "kind": "int", "value": "7" }]
+            }
+        }),
+        json!({
+            "name": "status",
+            "value": {
+                "kind": "enum_member",
+                "member_catalog_id": archived.catalog_id.as_str()
+            }
+        }),
+        json!({
+            "name": "flags",
+            "value": {
+                "kind": "sequence",
+                "value": [
+                    { "kind": "bool", "value": true },
+                    { "kind": "bool", "value": false }
+                ]
+            }
+        }),
+        json!({ "name": "label", "value": { "kind": "string", "value": "done" } }),
+    ])
+    .expect("json protocol args decode");
+    let call = CheckedEntryCall::from_protocol_invocation(
+        &program,
+        &protocol_invocation(&descriptor, args),
+    )
+    .expect("json protocol args admitted");
+
+    let store = TreeStore::memory();
+    let mut output = String::new();
+    let result = run_entry(&store, &call, &mut output).expect("run entry");
+
+    assert_eq!(result.value, Some(Value::Str("ok".into())));
+}
+
+#[test]
+fn json_protocol_args_use_marrow_scalar_parsers() {
+    let args = entry_arguments_from_json(&[json!({
+        "name": "amount",
+        "value": { "kind": "decimal", "value": "-0.1" }
+    })])
+    .expect("negative canonical decimal decodes");
+
+    assert_eq!(
+        args,
+        vec![EntryArgument {
+            name: "amount".into(),
+            value: EntryArgumentValue::Scalar(EntryScalarArgument::Decimal(
+                Decimal::parse_canonical("-0.1").expect("canonical decimal")
+            )),
+        }]
+    );
+
+    let error = entry_arguments_from_json(&[json!({
+        "name": "amount",
+        "value": {
+            "kind": "decimal",
+            "value": "99999999999999999999999999999999999"
+        }
+    })])
+    .expect_err("decimal overflow is parser-owned");
+    assert_eq!(error.kind(), EntryArgumentJsonErrorKind::InvalidDecimal);
+    assert_eq!(error.path(), "run argument 0 value");
+    assert_eq!(error.field(), Some("value"));
+
+    let error = entry_arguments_from_json(&[json!({
+        "name": "moment",
+        "value": {
+            "kind": "instant",
+            "value": "170141183460469231731687303715884105728"
+        }
+    })])
+    .expect_err("i128 overflow is parser-owned");
+    assert_eq!(
+        error.kind(),
+        EntryArgumentJsonErrorKind::ExpectedIntegerString
+    );
+    assert_eq!(error.path(), "run argument 0 value");
+    assert_eq!(error.field(), Some("value"));
+}
+
+#[test]
+fn json_protocol_args_use_exact_scalar_strings() {
+    let args = entry_arguments_from_json(&[
+        json!({ "name": "n", "value": { "kind": "int", "value": "7" } }),
+        json!({ "name": "max", "value": { "kind": "int", "value": i64::MAX.to_string() } }),
+        json!({ "name": "day", "value": { "kind": "date", "value": "1969-12-30" } }),
+        json!({ "name": "payload", "value": { "kind": "bytes", "value": "01ff" } }),
+    ])
+    .expect("exact scalar strings decode");
+
+    assert_eq!(
+        args,
+        vec![
+            EntryArgument {
+                name: "n".into(),
+                value: EntryArgumentValue::Scalar(EntryScalarArgument::Int(7)),
+            },
+            EntryArgument {
+                name: "max".into(),
+                value: EntryArgumentValue::Scalar(EntryScalarArgument::Int(i64::MAX)),
+            },
+            EntryArgument {
+                name: "day".into(),
+                value: EntryArgumentValue::Scalar(EntryScalarArgument::Date(-2)),
+            },
+            EntryArgument {
+                name: "payload".into(),
+                value: EntryArgumentValue::Scalar(EntryScalarArgument::Bytes(vec![1, 255])),
+            },
+        ]
+    );
+
+    let error = entry_arguments_from_json(&[json!({
+        "name": "n",
+        "value": { "kind": "int", "value": 7 }
+    })])
+    .expect_err("int values use exact string form");
+    assert_eq!(error.kind(), EntryArgumentJsonErrorKind::ExpectedString);
+    assert_eq!(error.field(), Some("value"));
+
+    let error = entry_arguments_from_json(&[json!({
+        "name": "n",
+        "value": { "kind": "int", "value": "-0" }
+    })])
+    .expect_err("integer strings are canonical");
+    assert_eq!(
+        error.kind(),
+        EntryArgumentJsonErrorKind::ExpectedIntegerString
+    );
+    assert_eq!(error.field(), Some("value"));
+
+    let error = entry_arguments_from_json(&[json!({
+        "name": "payload",
+        "value": { "kind": "bytes", "value": [1, 255] }
+    })])
+    .expect_err("bytes use lowercase hex string form");
+    assert_eq!(error.kind(), EntryArgumentJsonErrorKind::ExpectedString);
+    assert_eq!(error.field(), Some("value"));
+
+    let error = entry_arguments_from_json(&[json!({
+        "name": "payload",
+        "value": { "kind": "bytes", "value": "01FF" }
+    })])
+    .expect_err("bytes use canonical lowercase hex");
+    assert_eq!(error.kind(), EntryArgumentJsonErrorKind::InvalidBytes);
+    assert_eq!(error.field(), Some("value"));
+
+    let error = entry_arguments_from_json(&[json!({
+        "name": "n",
+        "value": { "kind": "int", "value": "01" }
+    })])
+    .expect_err("integer strings are canonical");
+    assert_eq!(
+        error.kind(),
+        EntryArgumentJsonErrorKind::ExpectedIntegerString
+    );
+    assert_eq!(error.field(), Some("value"));
+
+    let error = entry_arguments_from_json(&[json!({
+        "name": "day",
+        "value": { "kind": "date", "value": -2 }
+    })])
+    .expect_err("date values use canonical date string form");
+    assert_eq!(error.kind(), EntryArgumentJsonErrorKind::ExpectedString);
+    assert_eq!(error.field(), Some("value"));
+}
+
+#[test]
+fn malformed_json_protocol_args_return_transport_errors() {
+    let error = entry_arguments_from_json(&[json!(1)]).expect_err("argument must be object");
+    assert_eq!(error.kind(), EntryArgumentJsonErrorKind::ExpectedObject);
+    assert_eq!(error.path(), "run argument 0");
+    assert_eq!(error.field(), None);
+
+    let error = entry_arguments_from_json(&[json!({
+        "name": "n",
+        "value": { "kind": "decimal", "value": "01.0" }
+    })])
+    .expect_err("decimal must be canonical");
+    assert_eq!(error.kind(), EntryArgumentJsonErrorKind::InvalidDecimal);
+    assert_eq!(error.path(), "run argument 0 value");
+    assert_eq!(error.field(), Some("value"));
+}
+
+#[test]
+fn json_protocol_args_reject_schema_invalid_payloads() {
+    let error = entry_arguments_from_json(&[json!({
+        "name": "n",
+        "extra_arg_field": true,
+        "value": { "kind": "int", "value": "7" }
+    })])
+    .expect_err("argument object is closed");
+    assert_eq!(error.kind(), EntryArgumentJsonErrorKind::UnknownField);
+    assert_eq!(error.path(), "run argument 0");
+    assert_eq!(error.field(), Some("extra_arg_field"));
+
+    let error = entry_arguments_from_json(&[json!({
+        "name": "n",
+        "value": { "kind": "int", "value": "7", "extra_value_field": true }
+    })])
+    .expect_err("value object is closed");
+    assert_eq!(error.kind(), EntryArgumentJsonErrorKind::UnknownField);
+    assert_eq!(error.path(), "run argument 0 value");
+    assert_eq!(error.field(), Some("extra_value_field"));
+
+    let error = entry_arguments_from_json(&[json!({
+        "name": "   ",
+        "value": { "kind": "int", "value": "7" }
+    })])
+    .expect_err("name needs non-whitespace");
+    assert_eq!(error.kind(), EntryArgumentJsonErrorKind::EmptyName);
+
+    let error = entry_arguments_from_json(&[json!({
+        "name": "day",
+        "value": { "kind": "date", "value": "10000-01-01" }
+    })])
+    .expect_err("date is canonical and supported");
+    assert_eq!(error.kind(), EntryArgumentJsonErrorKind::InvalidDate);
+    assert_eq!(error.field(), Some("value"));
+}
+
+#[test]
+fn json_protocol_args_reject_deep_sequences_before_stack_growth() {
+    let mut value = json!({ "kind": "int", "value": "1" });
+    for _ in 0..200 {
+        value = json!({ "kind": "sequence", "value": [value] });
+    }
+    let error = entry_arguments_from_json(&[json!({
+        "name": "xs",
+        "value": value
+    })])
+    .expect_err("sequence nesting is bounded");
+
+    assert_eq!(error.kind(), EntryArgumentJsonErrorKind::DepthLimit);
+}
+
+#[test]
+fn entry_argument_json_schema_names_supported_value_kinds() {
+    let schema = entry_argument_json_schema();
+
+    assert_eq!(schema["required"], json!(["name", "value"]));
+    let value_variants = schema["properties"]["value"]["oneOf"]
+        .as_array()
+        .expect("value variants");
+    let kinds = value_variants
+        .iter()
+        .filter_map(|variant| variant["properties"]["kind"]["const"].as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        kinds,
+        vec![
+            "int",
+            "bool",
+            "string",
+            "decimal",
+            "date",
+            "instant",
+            "duration",
+            "bytes",
+            "enum_member",
+            "identity",
+            "sequence",
+        ]
+    );
+}
+
+#[test]
+fn entry_argument_json_schema_leaves_parser_owned_scalar_strings_structural() {
+    let schema = entry_argument_json_schema();
+    let value_variants = schema["properties"]["value"]["oneOf"]
+        .as_array()
+        .expect("value variants");
+    for kind in ["int", "decimal", "date", "instant", "duration"] {
+        let value_schema = value_variants
+            .iter()
+            .find(|variant| variant["properties"]["kind"]["const"] == json!(kind))
+            .expect("scalar variant")["properties"]["value"]
+            .clone();
+        assert_eq!(value_schema, json!({ "type": "string" }));
+    }
+}
+
+#[test]
+fn entry_argument_json_schema_uses_hex_string_for_bytes() {
+    let schema = entry_argument_json_schema();
+    let value_variants = schema["properties"]["value"]["oneOf"]
+        .as_array()
+        .expect("value variants");
+    let bytes_value_schema = value_variants
+        .iter()
+        .find(|variant| variant["properties"]["kind"]["const"] == json!("bytes"))
+        .expect("bytes variant")["properties"]["value"]
+        .clone();
+
+    assert_eq!(
+        bytes_value_schema,
+        json!({
+            "type": "string",
+            "pattern": "^([0-9a-f]{2})*$"
+        })
+    );
 }
 
 #[test]

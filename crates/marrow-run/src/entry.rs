@@ -14,6 +14,7 @@ use marrow_store::value::{
     SavedValue, ScalarType, decode_value, supported_date_days, supported_instant_nanos,
 };
 use marrow_syntax::{Expression, SourceSpan, parse_expression};
+use serde_json::{Map, Value as Json, json};
 
 use crate::activation::{
     Completion, Invocation, bind_module_constants, check_argument_count, executable_body, invoke,
@@ -84,6 +85,599 @@ pub enum EntryScalarArgument {
     Duration(i128),
     Decimal(Decimal),
     Bytes(Vec<u8>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EntryArgumentJsonError {
+    kind: EntryArgumentJsonErrorKind,
+    path: String,
+    field: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EntryArgumentJsonErrorKind {
+    ExpectedObject,
+    UnknownField,
+    ExpectedString,
+    EmptyName,
+    ExpectedBool,
+    ExpectedIntegerString,
+    InvalidDecimal,
+    InvalidDate,
+    InvalidBytes,
+    ExpectedArray,
+    InvalidCatalogId,
+    UnsupportedKind,
+    ExpectedScalar,
+    DepthLimit,
+}
+
+const ENTRY_ARGUMENT_JSON_MAX_DEPTH: usize = 128;
+
+impl EntryArgumentJsonError {
+    pub fn kind(&self) -> EntryArgumentJsonErrorKind {
+        self.kind
+    }
+
+    pub fn path(&self) -> &str {
+        &self.path
+    }
+
+    pub fn field(&self) -> Option<&str> {
+        self.field.as_deref()
+    }
+
+    pub fn message(&self) -> String {
+        match self.kind {
+            EntryArgumentJsonErrorKind::ExpectedObject => {
+                format!("{} must be an object", self.path)
+            }
+            EntryArgumentJsonErrorKind::UnknownField => format!(
+                "{} has unknown field `{}`",
+                self.path,
+                self.field.as_deref().unwrap_or("")
+            ),
+            EntryArgumentJsonErrorKind::ExpectedString => format!(
+                "{} needs string field `{}`",
+                self.path,
+                self.field.as_deref().unwrap_or("")
+            ),
+            EntryArgumentJsonErrorKind::EmptyName => {
+                format!("{} needs non-empty string name", self.path)
+            }
+            EntryArgumentJsonErrorKind::ExpectedBool => format!(
+                "{} needs boolean field `{}`",
+                self.path,
+                self.field.as_deref().unwrap_or("")
+            ),
+            EntryArgumentJsonErrorKind::ExpectedIntegerString => format!(
+                "{} needs integer-string field `{}`",
+                self.path,
+                self.field.as_deref().unwrap_or("")
+            ),
+            EntryArgumentJsonErrorKind::InvalidDecimal => format!(
+                "{} needs canonical decimal field `{}`",
+                self.path,
+                self.field.as_deref().unwrap_or("")
+            ),
+            EntryArgumentJsonErrorKind::InvalidDate => format!(
+                "{} needs canonical date field `{}`",
+                self.path,
+                self.field.as_deref().unwrap_or("")
+            ),
+            EntryArgumentJsonErrorKind::InvalidBytes => format!(
+                "{} needs lowercase hex bytes field `{}`",
+                self.path,
+                self.field.as_deref().unwrap_or("")
+            ),
+            EntryArgumentJsonErrorKind::ExpectedArray => format!(
+                "{} needs array field `{}`",
+                self.path,
+                self.field.as_deref().unwrap_or("")
+            ),
+            EntryArgumentJsonErrorKind::InvalidCatalogId => format!(
+                "{} field `{}` is not a catalog id",
+                self.path,
+                self.field.as_deref().unwrap_or("")
+            ),
+            EntryArgumentJsonErrorKind::UnsupportedKind => {
+                format!("{} has unsupported value kind", self.path)
+            }
+            EntryArgumentJsonErrorKind::ExpectedScalar => {
+                format!("{} must be a scalar value", self.path)
+            }
+            EntryArgumentJsonErrorKind::DepthLimit => {
+                format!("{} exceeds JSON nesting limit", self.path)
+            }
+        }
+    }
+}
+
+impl std::fmt::Display for EntryArgumentJsonError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message())
+    }
+}
+
+impl std::error::Error for EntryArgumentJsonError {}
+
+pub fn entry_arguments_from_json(
+    args: &[Json],
+) -> Result<Vec<EntryArgument>, EntryArgumentJsonError> {
+    args.iter()
+        .enumerate()
+        .map(|(index, arg)| entry_argument_from_json(index, arg))
+        .collect()
+}
+
+pub fn entry_argument_json_schema() -> Json {
+    json!({
+        "type": "object",
+        "properties": {
+            "name": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "\\S",
+                "description": "Entry parameter name."
+            },
+            "value": entry_argument_value_schema(),
+        },
+        "required": ["name", "value"],
+        "additionalProperties": false,
+        "$defs": {
+            "scalar": entry_scalar_argument_schema(),
+            "value": entry_argument_value_schema(),
+        },
+    })
+}
+
+fn entry_argument_value_schema() -> Json {
+    let mut variants = entry_scalar_argument_variants();
+    variants.extend([
+        json!({
+            "type": "object",
+            "properties": {
+                "kind": { "const": "enum_member" },
+                "member_catalog_id": { "type": "string", "pattern": "^cat_[0-9a-f]{32}$" }
+            },
+            "required": ["kind", "member_catalog_id"],
+            "additionalProperties": false
+        }),
+        json!({
+            "type": "object",
+            "properties": {
+                "kind": { "const": "identity" },
+                "store_catalog_id": { "type": "string", "pattern": "^cat_[0-9a-f]{32}$" },
+                "keys": {
+                    "type": "array",
+                    "items": { "$ref": "#/$defs/scalar" }
+                }
+            },
+            "required": ["kind", "store_catalog_id", "keys"],
+            "additionalProperties": false
+        }),
+        json!({
+            "type": "object",
+            "properties": {
+                "kind": { "const": "sequence" },
+                "value": {
+                    "type": "array",
+                    "items": { "$ref": "#/$defs/value" }
+                }
+            },
+            "required": ["kind", "value"],
+            "additionalProperties": false
+        }),
+    ]);
+    json!({
+        "oneOf": variants,
+    })
+}
+
+fn entry_scalar_argument_schema() -> Json {
+    json!({
+        "oneOf": entry_scalar_argument_variants(),
+    })
+}
+
+fn entry_scalar_argument_variants() -> Vec<Json> {
+    vec![
+        json!({
+            "type": "object",
+            "properties": {
+                "kind": { "const": "int" },
+                "value": { "type": "string" }
+            },
+            "required": ["kind", "value"],
+            "additionalProperties": false
+        }),
+        json!({
+            "type": "object",
+            "properties": {
+                "kind": { "const": "bool" },
+                "value": { "type": "boolean" }
+            },
+            "required": ["kind", "value"],
+            "additionalProperties": false
+        }),
+        json!({
+            "type": "object",
+            "properties": {
+                "kind": { "const": "string" },
+                "value": { "type": "string" }
+            },
+            "required": ["kind", "value"],
+            "additionalProperties": false
+        }),
+        json!({
+            "type": "object",
+            "properties": {
+                "kind": { "const": "decimal" },
+                "value": { "type": "string" }
+            },
+            "required": ["kind", "value"],
+            "additionalProperties": false
+        }),
+        json!({
+            "type": "object",
+            "properties": {
+                "kind": { "const": "date" },
+                "value": { "type": "string" }
+            },
+            "required": ["kind", "value"],
+            "additionalProperties": false
+        }),
+        json!({
+            "type": "object",
+            "properties": {
+                "kind": { "const": "instant" },
+                "value": { "type": "string" }
+            },
+            "required": ["kind", "value"],
+            "additionalProperties": false
+        }),
+        json!({
+            "type": "object",
+            "properties": {
+                "kind": { "const": "duration" },
+                "value": { "type": "string" }
+            },
+            "required": ["kind", "value"],
+            "additionalProperties": false
+        }),
+        json!({
+            "type": "object",
+            "properties": {
+                "kind": { "const": "bytes" },
+                "value": {
+                    "type": "string",
+                    "pattern": "^([0-9a-f]{2})*$"
+                }
+            },
+            "required": ["kind", "value"],
+            "additionalProperties": false
+        }),
+    ]
+}
+
+fn entry_argument_from_json(
+    index: usize,
+    arg: &Json,
+) -> Result<EntryArgument, EntryArgumentJsonError> {
+    let path = format!("run argument {index}");
+    let object = json_object(&path, arg)?;
+    reject_unknown_fields(&path, object, &["name", "value"])?;
+    let name = json_string_field(&path, object, "name")?;
+    if name.trim().is_empty() {
+        return Err(json_error(EntryArgumentJsonErrorKind::EmptyName, &path));
+    }
+    let value = object
+        .get("value")
+        .ok_or_else(|| json_field_error(EntryArgumentJsonErrorKind::ExpectedObject, &path, "value"))
+        .and_then(|value| entry_argument_value_from_json(&format!("{path} value"), value, 0))?;
+    Ok(EntryArgument {
+        name: name.to_string(),
+        value,
+    })
+}
+
+fn entry_argument_value_from_json(
+    path: &str,
+    value: &Json,
+    depth: usize,
+) -> Result<EntryArgumentValue, EntryArgumentJsonError> {
+    if depth > ENTRY_ARGUMENT_JSON_MAX_DEPTH {
+        return Err(json_error(EntryArgumentJsonErrorKind::DepthLimit, path));
+    }
+    let object = json_object(path, value)?;
+    match json_string_field(path, object, "kind")? {
+        "int" => {
+            reject_unknown_fields(path, object, &["kind", "value"])?;
+            Ok(EntryArgumentValue::Scalar(EntryScalarArgument::Int(
+                json_i64_string_field(path, object, "value")?,
+            )))
+        }
+        "bool" => {
+            reject_unknown_fields(path, object, &["kind", "value"])?;
+            Ok(EntryArgumentValue::Scalar(EntryScalarArgument::Bool(
+                json_bool_field(path, object, "value")?,
+            )))
+        }
+        "string" => {
+            reject_unknown_fields(path, object, &["kind", "value"])?;
+            Ok(EntryArgumentValue::Scalar(EntryScalarArgument::String(
+                json_string_field(path, object, "value")?.to_string(),
+            )))
+        }
+        "decimal" => {
+            reject_unknown_fields(path, object, &["kind", "value"])?;
+            Ok(EntryArgumentValue::Scalar(EntryScalarArgument::Decimal(
+                json_decimal_field(path, object, "value")?,
+            )))
+        }
+        "date" => {
+            reject_unknown_fields(path, object, &["kind", "value"])?;
+            Ok(EntryArgumentValue::Scalar(EntryScalarArgument::Date(
+                json_date_string_field(path, object, "value")?,
+            )))
+        }
+        "instant" => {
+            reject_unknown_fields(path, object, &["kind", "value"])?;
+            Ok(EntryArgumentValue::Scalar(EntryScalarArgument::Instant(
+                json_i128_string_field(path, object, "value")?,
+            )))
+        }
+        "duration" => {
+            reject_unknown_fields(path, object, &["kind", "value"])?;
+            Ok(EntryArgumentValue::Scalar(EntryScalarArgument::Duration(
+                json_i128_string_field(path, object, "value")?,
+            )))
+        }
+        "bytes" => {
+            reject_unknown_fields(path, object, &["kind", "value"])?;
+            Ok(EntryArgumentValue::Scalar(EntryScalarArgument::Bytes(
+                json_bytes_hex_field(path, object, "value")?,
+            )))
+        }
+        "enum_member" => {
+            reject_unknown_fields(path, object, &["kind", "member_catalog_id"])?;
+            Ok(EntryArgumentValue::EnumMember {
+                member_catalog_id: json_catalog_id_field(path, object, "member_catalog_id")?,
+            })
+        }
+        "identity" => {
+            reject_unknown_fields(path, object, &["kind", "store_catalog_id", "keys"])?;
+            Ok(EntryArgumentValue::Identity {
+                store_catalog_id: json_catalog_id_field(path, object, "store_catalog_id")?,
+                keys: json_scalar_array_field(path, object, "keys", depth + 1)?,
+            })
+        }
+        "sequence" => {
+            reject_unknown_fields(path, object, &["kind", "value"])?;
+            Ok(EntryArgumentValue::Sequence(json_value_array_field(
+                path,
+                object,
+                "value",
+                depth + 1,
+            )?))
+        }
+        _ => Err(json_error(
+            EntryArgumentJsonErrorKind::UnsupportedKind,
+            path,
+        )),
+    }
+}
+
+fn entry_scalar_argument_from_json(
+    path: &str,
+    value: &Json,
+    depth: usize,
+) -> Result<EntryScalarArgument, EntryArgumentJsonError> {
+    match entry_argument_value_from_json(path, value, depth)? {
+        EntryArgumentValue::Scalar(value) => Ok(value),
+        _ => Err(json_error(EntryArgumentJsonErrorKind::ExpectedScalar, path)),
+    }
+}
+
+fn json_object<'a>(
+    path: &str,
+    value: &'a Json,
+) -> Result<&'a Map<String, Json>, EntryArgumentJsonError> {
+    value
+        .as_object()
+        .ok_or_else(|| json_error(EntryArgumentJsonErrorKind::ExpectedObject, path))
+}
+
+fn reject_unknown_fields(
+    path: &str,
+    object: &Map<String, Json>,
+    allowed: &[&str],
+) -> Result<(), EntryArgumentJsonError> {
+    for key in object.keys() {
+        if !allowed.contains(&key.as_str()) {
+            return Err(json_field_error(
+                EntryArgumentJsonErrorKind::UnknownField,
+                path,
+                key,
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn json_string_field<'a>(
+    path: &str,
+    object: &'a Map<String, Json>,
+    key: &str,
+) -> Result<&'a str, EntryArgumentJsonError> {
+    object
+        .get(key)
+        .and_then(Json::as_str)
+        .ok_or_else(|| json_field_error(EntryArgumentJsonErrorKind::ExpectedString, path, key))
+}
+
+fn json_bool_field(
+    path: &str,
+    object: &Map<String, Json>,
+    key: &str,
+) -> Result<bool, EntryArgumentJsonError> {
+    object
+        .get(key)
+        .and_then(Json::as_bool)
+        .ok_or_else(|| json_field_error(EntryArgumentJsonErrorKind::ExpectedBool, path, key))
+}
+
+fn json_i64_string_field(
+    path: &str,
+    object: &Map<String, Json>,
+    key: &str,
+) -> Result<i64, EntryArgumentJsonError> {
+    match decode_value(
+        json_string_field(path, object, key)?.as_bytes(),
+        ScalarType::Int,
+    ) {
+        Some(SavedValue::Int(value)) => Ok(value),
+        _ => Err(json_field_error(
+            EntryArgumentJsonErrorKind::ExpectedIntegerString,
+            path,
+            key,
+        )),
+    }
+}
+
+fn json_i128_string_field(
+    path: &str,
+    object: &Map<String, Json>,
+    key: &str,
+) -> Result<i128, EntryArgumentJsonError> {
+    json_string_field(path, object, key)?
+        .parse::<i128>()
+        .map_err(|_| json_field_error(EntryArgumentJsonErrorKind::ExpectedIntegerString, path, key))
+}
+
+fn json_decimal_field(
+    path: &str,
+    object: &Map<String, Json>,
+    key: &str,
+) -> Result<Decimal, EntryArgumentJsonError> {
+    Decimal::parse_canonical(json_string_field(path, object, key)?)
+        .map_err(|_| json_field_error(EntryArgumentJsonErrorKind::InvalidDecimal, path, key))
+}
+
+fn json_date_string_field(
+    path: &str,
+    object: &Map<String, Json>,
+    key: &str,
+) -> Result<i32, EntryArgumentJsonError> {
+    match decode_value(
+        json_string_field(path, object, key)?.as_bytes(),
+        ScalarType::Date,
+    ) {
+        Some(SavedValue::Date(value)) => Ok(value),
+        _ => Err(json_field_error(
+            EntryArgumentJsonErrorKind::InvalidDate,
+            path,
+            key,
+        )),
+    }
+}
+
+fn json_bytes_hex_field(
+    path: &str,
+    object: &Map<String, Json>,
+    key: &str,
+) -> Result<Vec<u8>, EntryArgumentJsonError> {
+    let text = json_string_field(path, object, key)?;
+    let Some(bytes) = crate::hex::decode(text) else {
+        return Err(json_field_error(
+            EntryArgumentJsonErrorKind::InvalidBytes,
+            path,
+            key,
+        ));
+    };
+    if crate::hex::encode(&bytes) != text {
+        return Err(json_field_error(
+            EntryArgumentJsonErrorKind::InvalidBytes,
+            path,
+            key,
+        ));
+    }
+    Ok(bytes)
+}
+
+fn json_catalog_id_field(
+    path: &str,
+    object: &Map<String, Json>,
+    key: &str,
+) -> Result<CatalogId, EntryArgumentJsonError> {
+    CatalogId::new(json_string_field(path, object, key)?.to_string())
+        .map_err(|_| json_field_error(EntryArgumentJsonErrorKind::InvalidCatalogId, path, key))
+}
+
+fn json_scalar_array_field(
+    path: &str,
+    object: &Map<String, Json>,
+    key: &str,
+    depth: usize,
+) -> Result<Vec<EntryScalarArgument>, EntryArgumentJsonError> {
+    let values = object
+        .get(key)
+        .and_then(Json::as_array)
+        .ok_or_else(|| json_field_error(EntryArgumentJsonErrorKind::ExpectedArray, path, key))?;
+    values
+        .iter()
+        .enumerate()
+        .map(|(index, value)| {
+            entry_scalar_argument_from_json(
+                &format!("{path} field `{key}` item {index}"),
+                value,
+                depth,
+            )
+        })
+        .collect()
+}
+
+fn json_value_array_field(
+    path: &str,
+    object: &Map<String, Json>,
+    key: &str,
+    depth: usize,
+) -> Result<Vec<EntryArgumentValue>, EntryArgumentJsonError> {
+    let values = object
+        .get(key)
+        .and_then(Json::as_array)
+        .ok_or_else(|| json_field_error(EntryArgumentJsonErrorKind::ExpectedArray, path, key))?;
+    values
+        .iter()
+        .enumerate()
+        .map(|(index, value)| {
+            entry_argument_value_from_json(
+                &format!("{path} field `{key}` item {index}"),
+                value,
+                depth,
+            )
+        })
+        .collect()
+}
+
+fn json_error(kind: EntryArgumentJsonErrorKind, path: &str) -> EntryArgumentJsonError {
+    EntryArgumentJsonError {
+        kind,
+        path: path.to_string(),
+        field: None,
+    }
+}
+
+fn json_field_error(
+    kind: EntryArgumentJsonErrorKind,
+    path: &str,
+    field: &str,
+) -> EntryArgumentJsonError {
+    EntryArgumentJsonError {
+        kind,
+        path: path.to_string(),
+        field: Some(field.to_string()),
+    }
 }
 
 impl<'p> CheckedEntryCall<'p> {

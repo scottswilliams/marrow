@@ -68,8 +68,10 @@ mod write_dispatch;
 mod write_plan;
 
 pub use entry::{
-    CheckedEntryCall, EntryArgument, EntryArgumentValue, EntryInvocation, EntryScalarArgument,
-    evaluate_checked_read_only_expression, run_entry, run_entry_with_debugger, run_entry_with_host,
+    CheckedEntryCall, EntryArgument, EntryArgumentJsonError, EntryArgumentJsonErrorKind,
+    EntryArgumentValue, EntryInvocation, EntryScalarArgument, entry_argument_json_schema,
+    entry_arguments_from_json, evaluate_checked_read_only_expression, run_entry,
+    run_entry_with_debugger, run_entry_with_host,
 };
 pub use error::{
     CALL_DEPTH_BUDGET, CallDepthFault, RUN_ABSENT, RUN_AMBIGUOUS_FUNCTION, RUN_ASSERT,
