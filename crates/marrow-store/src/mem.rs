@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::convert::Infallible;
 use std::ops::Bound;
 
-use crate::backend::{Backend, ScanPage, StoreError};
+use crate::backend::{Backend, ScanPage, StoreError, ValuePrefix};
 use crate::traversal;
 
 #[derive(Debug, Default, Clone)]
@@ -101,6 +101,16 @@ where
 impl Backend for MemStore {
     fn read(&self, key: &[u8]) -> Result<Option<Vec<u8>>, StoreError> {
         Ok(MemStore::read(self, key).map(<[u8]>::to_vec))
+    }
+
+    fn read_prefix(&self, key: &[u8], limit: usize) -> Result<Option<ValuePrefix>, StoreError> {
+        Ok(MemStore::read(self, key).map(|value| {
+            let copied = value.len().min(limit);
+            ValuePrefix {
+                bytes: value[..copied].to_vec(),
+                truncated: value.len() > limit,
+            }
+        }))
     }
 
     fn write(&mut self, key: &[u8], value: Vec<u8>) -> Result<(), StoreError> {

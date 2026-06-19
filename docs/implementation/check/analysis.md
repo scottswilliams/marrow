@@ -89,15 +89,37 @@ Path resolution is the single chokepoint: `resolve_query_steps` validates source
 
 `shape.rs::classify_data_path` is the one member-tree shape owner, so the walk cursor's value-position test and integrity orphan detection share a single definition of "declared value path." Every walk and child listing pages with explicit limits, resume cursors, and truncated flags; counts use `checked_add` into `StoreError::LimitExceeded`. Integrity separates declared values (decode, key-type, enum-membership, and canonical identity referent checks against schema and catalog), declared-shape completeness (accepted required fields on existing records and keyed entries), and orphan cells (data under a root/shape/member the schema no longer declares, or under a record identity with no node cell), each a typed `IntegrityProblem` with a stable code.
 
-Stamped roots, value reads, child listings, and bounded integrity problem
-samples wrap their existing readers in one `TreeStore::read_snapshot()` guard
-and return `StampedData<T>`. The stamp keeps the physical store identity,
-catalog digest, optional `DataCommitStamp`, and checked program source digest
-separate, so callers can mark stale data without guessing whether a difference
-came from the store or the editor snapshot. `marrow data roots|get --format
-json|jsonl` render this as `store_snapshot`. Multi-pass commands and lower-level
-tooling tests still call the un-stamped reader primitives under their own
-broader snapshot.
+Stamped roots, raw value reads, bounded value previews, child listings, and
+bounded integrity problem samples wrap their existing readers in one
+`TreeStore::read_snapshot()` guard and return `StampedData<T>`. The stamp keeps
+the physical store identity, catalog digest, optional `DataCommitStamp`, and
+checked program source digest separate, so callers can mark stale data without
+guessing whether a difference came from the store or the editor snapshot.
+`marrow data roots|get --format json|jsonl` render the stamp as
+`store_snapshot`. Multi-pass commands and lower-level tooling tests still call
+the un-stamped reader primitives under their own broader snapshot.
+
+Raw/admin reads and preview reads are intentionally separate. `read_data_query`
+uses `TreeStore::read_data_value` and returns a full `DebugDataPayload` for
+debug/admin byte inspection. `preview_data_query` uses
+`TreeStore::read_data_value_prefix` after clamping the requested budget, so
+preview callers do not materialize a whole saved cell before applying their
+budget. Both reads share the same `DataPresence` decision.
+
+`DataValuePreview` is the Marrow-owned bounded display value for saved-data
+tooling. Its limit is a pre-marker byte budget for the rendered text, clamped to
+`MAX_VALUE_PREVIEW_LIMIT` before any store prefix read. Whenever rendering stops
+because the text budget or stored-byte prefix was truncated, the preview appends
+the literal marker `...`, sets `truncated: true`, and the text may therefore be
+up to three bytes longer than the effective limit. When `truncated` is false the
+marker is absent. DTO field `value_truncated` carries the same contract.
+
+`marrow-json::saved_data` owns the serde DTOs for current saved-data transport
+shapes: path segments, keys, child pages, preview read requests/results,
+presence, preview budget, and typed path/store errors. `DataReadRequestJson`
+accepts an optional `preview_limit` and clamps it to Marrow's maximum when
+callers ask for the effective budget. Downstream editor or tool wrappers should
+add only transport availability and request-envelope concerns around those DTOs.
 
 ## Modules
 
@@ -108,12 +130,12 @@ broader snapshot.
 | `crates/marrow-check/src/analysis/cursor.rs` | Cursor `type_at`/`scope_at`: replay the checker's binding primitives to rebuild lexical scope, infer the tightest covering expression; records no diagnostics. |
 | `crates/marrow-check/src/evolution/preview.rs` | Schema-only and backup-backed `WitnessFactSet` preview facts for tooling. |
 | `crates/marrow-check/src/tooling/mod.rs` | Tooling facade: re-exports the data/integrity API; defines `ToolingError` (Query vs Store). |
-| `crates/marrow-check/src/tooling/data/mod.rs` | Data tooling root and shared value types (`DataQuery`, `DataChild`, `DataEntry`, `DataWalkPage`, `DataReadResult`, `DataRecord`, `StampedData`, `DataSnapshotStamp`, `DataCommitStamp`, `KeyMismatch`, `MAX_PREVIEW_ITEMS`). |
+| `crates/marrow-check/src/tooling/data/mod.rs` | Data tooling root and shared value types (`DataQuery`, `DataChild`, `DataEntry`, `DataWalkPage`, `DataReadResult`, `DataRecord`, `StampedData`, `DataSnapshotStamp`, `DataCommitStamp`, `KeyMismatch`, `MAX_PREVIEW_ITEMS`, `DEFAULT_VALUE_PREVIEW_LIMIT`, `MAX_VALUE_PREVIEW_LIMIT`). |
 | `crates/marrow-check/src/tooling/data/query.rs` | Path resolution: walk wire/source segments into a `StorageDataQuery` with typed `QueryError`; `data_query_under_prefix` containment. |
 | `crates/marrow-check/src/tooling/data/query_error.rs` | The `QueryError` enum (client-facing request errors) and `MemberFlavor`, with render-only `Display`. |
 | `crates/marrow-check/src/tooling/data/shape.rs` | The single member-tree shape classifier `classify_data_path` and its consumers (walk-cursor value test, integrity orphan detection). |
 | `crates/marrow-check/src/tooling/data/record_nav.rs` | Arity-aware record-child navigation for tooling scans, so partial identity prefixes only surface when an exact declared-arity record exists below them. |
-| `crates/marrow-check/src/tooling/data/read.rs` | `read_data_query`: resolve one query to its payload and `DataPresence` (Absent/ValueOnly/ChildrenOnly). |
+| `crates/marrow-check/src/tooling/data/read.rs` | `read_data_query`: resolve one query to its full raw payload and `DataPresence` (Absent/ValueOnly/ChildrenOnly); `preview_data_query`: resolve the same query to a bounded `DataValuePreview` through a store prefix read. |
 | `crates/marrow-check/src/tooling/data/children.rs` | Child listing: classify a path into roots/record-children/members/key-children/leaf; return typed next segments and page keyed scans with a resume cursor. |
 | `crates/marrow-check/src/tooling/data/walk.rs` | `walk_data`: paged, filter-prefixed, cursor-resumable depth-first walk of leaf values; emits `DataWalkPage` with a next cursor. |
 | `crates/marrow-check/src/tooling/data/traversal.rs` | Full saved-record traversal: recurse exact-arity identity nodes and member trees, emit a `DataRecord` per stored leaf or a record identity for declared-shape checks; backs counts, roots, and integrity. |
@@ -135,8 +157,8 @@ broader snapshot.
   deferred.
 - `DataQuery` / `StorageDataQuery` (`tooling/data/mod.rs`, `query.rs`) — a resolved, schema-validated path; public display form vs crate-internal physical store form.
 - `QueryError` / `ToolingError` (`query_error.rs`, `tooling/mod.rs`) — typed request malformity vs store faults.
-- `DataRecord` / `DataPresence` / `DataWalkPage` / `DataChildrenPage` (`tooling/data/mod.rs`) — the paged data facts carrying truncation and resume cursors.
-- `StampedData` / `DataSnapshotStamp` / `DataCommitStamp` / `DataReadResult` (`tooling/data/mod.rs`) — a value read under one store snapshot plus typed store UID, catalog digest, optional commit stamp, and checked-program source digest.
+- `DataRecord` / `DataPresence` / `DataWalkPage` / `DataChildrenPage` / `DataValuePreview` (`tooling/data/mod.rs`) — the paged data facts carrying truncation and resume cursors, plus bounded saved-value display text for tooling.
+- `StampedData` / `DataSnapshotStamp` / `DataCommitStamp` / `DataReadResult` / `DataPreviewReadResult` (`tooling/data/mod.rs`) — raw and preview value reads under one store snapshot plus typed store UID, catalog digest, optional commit stamp, and checked-program source digest.
 - `IntegrityProblem` / `IntegrityOutcome` / `IntegrityProblemSample`
   (`integrity.rs`) — typed findings implementing `Diagnose`, full-report
   outcomes tagged stored-value vs structure/orphan findings, and bounded problem

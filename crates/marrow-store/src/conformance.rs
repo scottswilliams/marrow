@@ -1,11 +1,12 @@
 //! Private conformance checks for ordered-byte backend implementors.
 
-use crate::backend::{Backend, StoreError};
+use crate::backend::{Backend, StoreError, ValuePrefix};
 
 pub(crate) fn run_all<B: Backend>(
     mut make: impl FnMut() -> Result<B, StoreError>,
 ) -> Result<(), StoreError> {
     values_round_trip(&mut make()?)?;
+    read_prefix_obeys_limits_and_truncation_flags(&mut make()?)?;
     delete_removes_the_prefix_subtree(&mut make()?)?;
     delete_of_an_absent_prefix_is_a_no_op(&mut make()?)?;
     scan_returns_only_the_prefix_in_order(&mut make()?)?;
@@ -22,6 +23,7 @@ pub(crate) fn run_all<B: Backend>(
     rollback_of_a_joined_transaction_aborts_the_whole_transaction(&mut make()?)?;
     a_transaction_sees_its_writes_in_scans(&mut make()?)?;
     a_snapshot_pins_one_consistent_view(&mut make()?)?;
+    read_prefix_observes_snapshot_visibility(&mut make()?)?;
     a_snapshot_and_write_transaction_cannot_overlap(&mut make()?)?;
     read_snapshots_are_not_reentrant(&mut make()?)?;
     writes_are_rejected_while_a_read_snapshot_is_pinned(&mut make()?)?;
@@ -34,6 +36,43 @@ fn values_round_trip(store: &mut dyn Backend) -> Result<(), StoreError> {
     assert_eq!(store.read(b"\x10key")?, Some(b"draft".to_vec()));
     store.write(b"\x10key", b"final".to_vec())?;
     assert_eq!(store.read(b"\x10key")?, Some(b"final".to_vec()));
+    Ok(())
+}
+
+fn read_prefix_obeys_limits_and_truncation_flags(
+    store: &mut dyn Backend,
+) -> Result<(), StoreError> {
+    assert_eq!(store.read_prefix(b"\x11missing", 3)?, None);
+
+    store.write(b"\x11key", b"abcdef".to_vec())?;
+    assert_eq!(
+        store.read_prefix(b"\x11key", 0)?,
+        Some(ValuePrefix {
+            bytes: Vec::new(),
+            truncated: true,
+        })
+    );
+    assert_eq!(
+        store.read_prefix(b"\x11key", 3)?,
+        Some(ValuePrefix {
+            bytes: b"abc".to_vec(),
+            truncated: true,
+        })
+    );
+    assert_eq!(
+        store.read_prefix(b"\x11key", 6)?,
+        Some(ValuePrefix {
+            bytes: b"abcdef".to_vec(),
+            truncated: false,
+        })
+    );
+    assert_eq!(
+        store.read_prefix(b"\x11key", 8)?,
+        Some(ValuePrefix {
+            bytes: b"abcdef".to_vec(),
+            truncated: false,
+        })
+    );
     Ok(())
 }
 
@@ -298,6 +337,29 @@ fn a_snapshot_pins_one_consistent_view(store: &mut dyn Backend) -> Result<(), St
             (b"\x70\x01".to_vec(), b"after".to_vec()),
             (b"\x70\x02".to_vec(), b"added".to_vec()),
         ]
+    );
+    Ok(())
+}
+
+fn read_prefix_observes_snapshot_visibility(store: &mut dyn Backend) -> Result<(), StoreError> {
+    store.write(b"\x71\x01", b"before".to_vec())?;
+    store.begin_snapshot()?;
+    assert_eq!(
+        store.read_prefix(b"\x71\x01", 3)?,
+        Some(ValuePrefix {
+            bytes: b"bef".to_vec(),
+            truncated: true,
+        })
+    );
+    store.end_snapshot();
+
+    store.write(b"\x71\x01", b"after".to_vec())?;
+    assert_eq!(
+        store.read_prefix(b"\x71\x01", 8)?,
+        Some(ValuePrefix {
+            bytes: b"after".to_vec(),
+            truncated: false,
+        })
     );
     Ok(())
 }

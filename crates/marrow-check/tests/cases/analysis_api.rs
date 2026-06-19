@@ -6,9 +6,10 @@ use std::path::PathBuf;
 
 use marrow_check::program::MarrowType;
 use marrow_check::tooling::{
-    DataChild, DataPresence, DataQuerySegment, resolve_data_query,
+    DataChild, DataPresence, DataQuerySegment, MAX_VALUE_PREVIEW_LIMIT, resolve_data_query,
     sample_integrity_problem_details, sample_integrity_problems, stamped_data_children,
-    stamped_data_roots_in_store, stamped_integrity_problem_details, stamped_read_data_query,
+    stamped_data_roots_in_store, stamped_integrity_problem_details, stamped_preview_data_query,
+    stamped_read_data_query,
 };
 use marrow_check::{
     CatalogEntryKind, CheckedProgram, ProjectSources, SurfaceCatalogBlocker, SurfaceCatalogStatus,
@@ -23,6 +24,7 @@ use marrow_store::tree::{
     CommitMetadata, DataPathSegment, EngineProfile, StoreUid, TreeStore,
     write_tree_backup_archive_chunk, write_tree_backup_archive_header,
 };
+use marrow_store::value::{SavedValue, encode_value};
 use marrow_syntax::ParsedSource;
 
 use support::{analyze_overlay, config, temp_root, write};
@@ -995,6 +997,110 @@ fn stamped_data_readers_carry_store_and_checked_snapshot_identity() {
     assert!(!stamped_children.data.truncated);
     assert_eq!(stamped_children.data.cursor, None);
     assert_eq!(stamped_children.stamp, stamped.stamp);
+}
+
+#[test]
+fn stamped_data_preview_is_bounded_and_marks_truncation() {
+    let source = "module m\n\
+        resource Book\n    \
+        required title: string\n\
+        store ^books(id: int): Book\n";
+    let root = temp_root("analysis-stamped-data-preview");
+    write(&root, "src/m.mw", source);
+    let (checked, program) = check_project(&root, &config()).expect("check source");
+    assert!(!checked.has_errors(), "{:#?}", checked.diagnostics);
+    let accepted = program
+        .catalog
+        .proposal
+        .clone()
+        .expect("first check proposes a catalog");
+    let snapshot = analyze_project(&root, &config(), &ProjectSources::new(), Some(&accepted))
+        .expect("analyze accepted source");
+    assert!(
+        !snapshot.report.has_errors(),
+        "{:#?}",
+        snapshot.report.diagnostics
+    );
+
+    let store_fact = snapshot
+        .program
+        .facts
+        .stores()
+        .iter()
+        .find(|store| store.root == "books")
+        .expect("books store");
+    let store_id = CatalogId::new(
+        snapshot
+            .program
+            .store_catalog_id(store_fact.id)
+            .expect("books store catalog id"),
+    )
+    .expect("valid store catalog id");
+    let title_id = CatalogId::new(
+        accepted
+            .entries
+            .iter()
+            .find(|entry| {
+                entry.kind == CatalogEntryKind::ResourceMember && entry.path == "m::Book::title"
+            })
+            .expect("accepted title catalog id")
+            .stable_id
+            .clone(),
+    )
+    .expect("valid title catalog id");
+
+    let store = TreeStore::memory();
+    store
+        .replace_catalog_snapshot(&accepted)
+        .expect("write catalog snapshot");
+    store
+        .write_record_presence(&store_id, &[SavedKey::Int(7)])
+        .expect("seed record presence");
+    let long_title = "a".repeat(MAX_VALUE_PREVIEW_LIMIT + 128);
+    store
+        .write_data_value(
+            &store_id,
+            &[SavedKey::Int(7)],
+            &[DataPathSegment::Member(title_id)],
+            encode_value(&SavedValue::Str(long_title)).expect("encode title"),
+        )
+        .expect("seed title");
+
+    let stamped_roots =
+        stamped_data_roots_in_store(&snapshot.program, &store).expect("stamped roots read");
+    let query = resolve_data_query(
+        &snapshot.program,
+        &[
+            DataQuerySegment::Root("books".to_string()),
+            DataQuerySegment::Key(SavedKey::Int(7)),
+            DataQuerySegment::Field("title".to_string()),
+        ],
+    )
+    .expect("valid data path")
+    .expect("accepted data path");
+    let stamped = stamped_preview_data_query(&snapshot.program, &store, &query, 24)
+        .expect("stamped preview read");
+    let preview = stamped.data.preview.expect("value preview");
+
+    assert_eq!(stamped.data.presence, DataPresence::ValueOnly);
+    assert!(preview.truncated, "{preview:?}");
+    assert!(preview.text.len() <= 24 + "...".len(), "{preview:?}");
+    assert!(preview.text.starts_with('"'), "{preview:?}");
+    assert!(preview.text.ends_with("..."), "{preview:?}");
+    assert_eq!(stamped.stamp, stamped_roots.stamp);
+
+    let clamped = stamped_preview_data_query(&snapshot.program, &store, &query, usize::MAX)
+        .expect("clamped preview read");
+    let clamped_preview = clamped.data.preview.expect("clamped value preview");
+
+    assert_eq!(clamped.data.presence, DataPresence::ValueOnly);
+    assert!(clamped_preview.truncated, "{clamped_preview:?}");
+    assert!(
+        clamped_preview.text.len() <= MAX_VALUE_PREVIEW_LIMIT + "...".len(),
+        "{clamped_preview:?}"
+    );
+    assert!(clamped_preview.text.ends_with("..."), "{clamped_preview:?}");
+    assert_eq!(clamped.stamp, stamped_roots.stamp);
 }
 
 #[test]

@@ -20,9 +20,12 @@ The public store crate surface is:
 - `marrow_store::StoreError` and `marrow_store::Decimal`.
 
 The private engine substrate stores byte keys and byte values in one
-byte-lexicographic order. It provides exact read, exact write, prefix delete,
-bounded prefix scans, bounded lower/upper prefix scans, cursor-resumed forward
-and reverse prefix scans, and flat joined transactions.
+byte-lexicographic order. It provides exact read, exact value-prefix read,
+exact write, prefix delete, bounded prefix scans, bounded lower/upper prefix
+scans, cursor-resumed forward and reverse prefix scans, and flat joined
+transactions. The exact value-prefix read copies at most the requested bytes
+from one exact key and reports whether the stored value had more bytes; it has
+the same transaction and pinned-snapshot visibility as exact read.
 The in-memory engine uses `BTreeMap`; the native engine uses redb. The supported
 production saved-data backend is the native redb engine. The in-memory engine is
 for tests, development, REPLs, short runs, and conformance. It can exercise the
@@ -87,7 +90,8 @@ uses the in-memory development/test engine; `TreeStore::open(path)` and
 - write node markers and test node existence;
 - write/read/delete leaves;
 - write/read/delete sequence positions;
-- write/read/delete typed nested-data values;
+- write/read/delete typed nested-data values, including bounded exact value
+  prefixes through `TreeStore::read_data_value_prefix`;
 - typed record, nested-data, and index child/neighbor helpers using counts,
   first/next/last/previous navigation, or bounded pages rather than unbounded
   child-key lists;
@@ -123,6 +127,12 @@ nested-data prefix, the first child seek starts at the lower or upper bound for
 the requested direction, and each resumed first/next/previous step stops at the
 opposite bound. These scans return stored child keys only; they do not expose raw
 engine cursors or materialize unbounded child lists.
+
+`TreeStore::read_data_value_prefix` takes the same typed store id, identity, and
+nested-data path as `read_data_value`. It returns no physical key bytes. When a
+value exists it copies at most the effective limit bytes and reports whether the
+stored value bytes were truncated by that limit. It observes the same
+transaction and pinned-snapshot version as exact tree-cell reads.
 
 Backup traversal returns `TreeBackupCell`, an opaque borrowed data-family cell.
 Callers can read its typed data-cell identity, fold its framed checksum, and
@@ -340,6 +350,7 @@ I/O fault is `store.io`.
 The private substrate conformance suite keeps memory and redb aligned on:
 
 - value round trips and replacement writes;
+- value-prefix read limits, truncation flags, and snapshot visibility;
 - prefix delete and absent delete;
 - prefix scan order, bounded scans, and cursor-resumed scans;
 - transaction commit, rollback, flat joined nesting, read-your-writes scans,

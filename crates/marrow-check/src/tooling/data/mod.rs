@@ -19,7 +19,7 @@ use crate::{CheckedProgram, ScalarType, StoreLeafKind};
 pub use children::{data_children, data_children_supports_paging};
 pub use query::{data_query_under_prefix, resolve_data_query, resolve_source_text_data_query};
 pub use query_error::{MemberFlavor, QueryError};
-pub use read::read_data_query;
+pub use read::{preview_data_query, read_data_query};
 pub use render::{render_data_query_value, render_data_value, render_query_segments};
 pub use traversal::{count_data_records, data_roots_in_store, visit_data_records};
 pub use walk::walk_data;
@@ -35,6 +35,13 @@ pub(crate) use traversal::{
 };
 
 pub const MAX_PREVIEW_ITEMS: usize = 10_000;
+pub const DEFAULT_VALUE_PREVIEW_LIMIT: usize = 2048;
+/// Public value previews clamp requested budgets before reading store bytes.
+pub const MAX_VALUE_PREVIEW_LIMIT: usize = 64 * 1024;
+
+pub(crate) fn clamp_value_preview_limit(limit: usize) -> usize {
+    limit.min(MAX_VALUE_PREVIEW_LIMIT)
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DataSnapshotStamp {
@@ -91,6 +98,18 @@ pub struct DataReadResult {
     pub presence: DataPresence,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DataValuePreview {
+    pub text: String,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DataPreviewReadResult {
+    pub preview: Option<DataValuePreview>,
+    pub presence: DataPresence,
+}
+
 pub fn stamped_data_roots_in_store(
     program: &CheckedProgram,
     store: &TreeStore,
@@ -104,6 +123,17 @@ pub fn stamped_read_data_query(
     query: &DataQuery,
 ) -> Result<StampedData<DataReadResult>, StoreError> {
     with_stamped_read(program, store, |store| read_data_query(store, query))
+}
+
+pub fn stamped_preview_data_query(
+    program: &CheckedProgram,
+    store: &TreeStore,
+    query: &DataQuery,
+    limit: usize,
+) -> Result<StampedData<DataPreviewReadResult>, StoreError> {
+    with_stamped_read(program, store, |store| {
+        preview_data_query(program, store, query, limit)
+    })
 }
 
 pub fn stamped_data_children(

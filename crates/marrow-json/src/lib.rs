@@ -11,6 +11,8 @@ use marrow_store::key::SavedKey;
 use serde::Serialize;
 use serde_json::json;
 
+pub mod saved_data;
+
 const LOWER_HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

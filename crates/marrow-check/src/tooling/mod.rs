@@ -6,14 +6,15 @@ pub mod data;
 pub mod integrity;
 
 pub use data::{
-    DataChild, DataChildrenPage, DataCommitStamp, DataEntry, DataPresence, DataQuery,
-    DataQuerySegment, DataReadResult, DataRecord, DataSnapshotStamp, DataWalkPage,
-    DebugDataCursorPath, DebugDataPayload, MAX_PREVIEW_ITEMS, MemberFlavor, QueryError,
-    StampedData, count_data_records, data_children, data_children_supports_paging,
-    data_query_under_prefix, data_roots_in_store, read_data_query, render_data_query_value,
+    DEFAULT_VALUE_PREVIEW_LIMIT, DataChild, DataChildrenPage, DataCommitStamp, DataEntry,
+    DataPresence, DataPreviewReadResult, DataQuery, DataQuerySegment, DataReadResult, DataRecord,
+    DataSnapshotStamp, DataValuePreview, DataWalkPage, DebugDataCursorPath, DebugDataPayload,
+    MAX_PREVIEW_ITEMS, MAX_VALUE_PREVIEW_LIMIT, MemberFlavor, QueryError, StampedData,
+    count_data_records, data_children, data_children_supports_paging, data_query_under_prefix,
+    data_roots_in_store, preview_data_query, read_data_query, render_data_query_value,
     render_data_value, render_query_segments, resolve_data_query, resolve_source_text_data_query,
-    stamped_data_children, stamped_data_roots_in_store, stamped_read_data_query,
-    visit_data_records, walk_data,
+    stamped_data_children, stamped_data_roots_in_store, stamped_preview_data_query,
+    stamped_read_data_query, visit_data_records, walk_data,
 };
 pub use integrity::{
     IntegrityOutcome, IntegrityProblem, IntegrityProblemSample, IntegritySample,

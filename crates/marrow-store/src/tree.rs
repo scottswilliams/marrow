@@ -3,7 +3,7 @@
 use std::cell::RefCell;
 use std::ops::ControlFlow;
 
-use crate::backend::{Backend, ScanPage, StoreError};
+use crate::backend::{Backend, ScanPage, StoreError, ValuePrefix};
 use crate::cell::{
     CatalogId, CellKey, MetaCell, NODE_MARKER, SequencePosition, decode_data_cell_key,
     decode_data_child_key, decode_index_child_key, decode_index_entry_key, decode_index_identity,
@@ -39,6 +39,12 @@ pub struct IndexEntry {
     pub index_keys: Vec<SavedKey>,
     pub identity: Vec<SavedKey>,
     pub value: Vec<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DataValuePrefix {
+    pub bytes: Vec<u8>,
+    pub truncated: bool,
 }
 
 /// Opaque cursor for resuming an index scan.
@@ -335,6 +341,19 @@ impl TreeStore {
         path: &[DataPathSegment],
     ) -> Result<Option<Vec<u8>>, StoreError> {
         self.read_cell(CellKey::data_path_value(store, identity, path).as_bytes())
+    }
+
+    pub fn read_data_value_prefix(
+        &self,
+        store: &CatalogId,
+        identity: &[SavedKey],
+        path: &[DataPathSegment],
+        limit: usize,
+    ) -> Result<Option<DataValuePrefix>, StoreError> {
+        self.read_cell_prefix(
+            CellKey::data_path_value(store, identity, path).as_bytes(),
+            limit,
+        )
     }
 
     pub fn delete_data_subtree(
@@ -1070,6 +1089,17 @@ impl TreeStore {
         self.backend.borrow().read(key)
     }
 
+    fn read_cell_prefix(
+        &self,
+        key: &[u8],
+        limit: usize,
+    ) -> Result<Option<DataValuePrefix>, StoreError> {
+        self.backend
+            .borrow()
+            .read_prefix(key, limit)
+            .map(|prefix| prefix.map(DataValuePrefix::from))
+    }
+
     fn write_cell(&self, key: &[u8], value: Vec<u8>) -> Result<(), StoreError> {
         self.backend.borrow_mut().write(key, value)
     }
@@ -1136,6 +1166,15 @@ impl TreeStore {
         self.backend
             .borrow()
             .scan_between_before(prefix, lower, upper, cursor, limit)
+    }
+}
+
+impl From<ValuePrefix> for DataValuePrefix {
+    fn from(prefix: ValuePrefix) -> Self {
+        Self {
+            bytes: prefix.bytes,
+            truncated: prefix.truncated,
+        }
     }
 }
 
@@ -1794,7 +1833,7 @@ mod tests {
     };
     use crate::StoreError;
     use crate::backend::counting::{BackendCounts, CountingBackend};
-    use crate::backend::{Backend, ScanPage};
+    use crate::backend::{Backend, ScanPage, ValuePrefix};
     use crate::cell::{CatalogId, DataCellKind};
     use crate::key::SavedKey;
     use crate::mem::MemStore;
@@ -1889,6 +1928,10 @@ mod tests {
     impl Backend for FaultingBackend {
         fn read(&self, key: &[u8]) -> Result<Option<Vec<u8>>, StoreError> {
             self.inner.read(key)
+        }
+
+        fn read_prefix(&self, key: &[u8], limit: usize) -> Result<Option<ValuePrefix>, StoreError> {
+            self.inner.read_prefix(key, limit)
         }
 
         fn write(&mut self, key: &[u8], value: Vec<u8>) -> Result<(), StoreError> {
@@ -2573,6 +2616,37 @@ mod tests {
                 .read_data_value(&store_id, &identity, &entry_path)
                 .expect("read restored value"),
             None
+        );
+    }
+
+    #[test]
+    fn read_data_value_prefix_moves_only_requested_value_bytes() {
+        let store_id = catalog("cat_00000000000000000000000000000001");
+        let member = catalog("cat_00000000000000000000000000000002");
+        let identity = [SavedKey::Int(1)];
+        let path = [DataPathSegment::Member(member)];
+        let counts = BackendCounts::default();
+        let store = TreeStore::from_backend(Box::new(CountingBackend::new(
+            MemStore::default(),
+            counts.clone(),
+        )));
+        let value = vec![b'x'; 4096];
+        store
+            .write_data_value(&store_id, &identity, &path, value)
+            .expect("write value");
+
+        counts.reset();
+        let prefix = store
+            .read_data_value_prefix(&store_id, &identity, &path, 16)
+            .expect("prefix read")
+            .expect("stored value");
+
+        assert_eq!(prefix.bytes, vec![b'x'; 16]);
+        assert!(prefix.truncated);
+        assert!(
+            counts.bytes_moved() < 512,
+            "prefix read should account key plus copied prefix bytes, not the full value: {}",
+            counts.bytes_moved()
         );
     }
 

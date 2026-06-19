@@ -20,7 +20,7 @@ use redb::{
     ReadableTable, StorageError, Table, TableDefinition, WriteTransaction,
 };
 
-use crate::backend::{Backend, ScanPage, StoreError};
+use crate::backend::{Backend, ScanPage, StoreError, ValuePrefix};
 use crate::traversal;
 
 const TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("marrow");
@@ -708,6 +708,20 @@ impl Backend for RedbStore {
             .get(key)
             .map_err(io("read"))?
             .map(|guard| guard.value().to_vec())))
+    }
+
+    fn read_prefix(&self, key: &[u8], limit: usize) -> Result<Option<ValuePrefix>, StoreError> {
+        read_view!(self, "read_prefix", |table| Ok(table
+            .get(key)
+            .map_err(io("read_prefix"))?
+            .map(|guard| {
+                let value = guard.value();
+                let copied = value.len().min(limit);
+                ValuePrefix {
+                    bytes: value[..copied].to_vec(),
+                    truncated: value.len() > limit,
+                }
+            })))
     }
 
     fn write(&mut self, key: &[u8], value: Vec<u8>) -> Result<(), StoreError> {

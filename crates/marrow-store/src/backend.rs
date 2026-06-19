@@ -115,8 +115,15 @@ pub(crate) struct ScanPage {
     pub truncated: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ValuePrefix {
+    pub bytes: Vec<u8>,
+    pub truncated: bool,
+}
+
 pub(crate) trait Backend {
     fn read(&self, key: &[u8]) -> Result<Option<Vec<u8>>, StoreError>;
+    fn read_prefix(&self, key: &[u8], limit: usize) -> Result<Option<ValuePrefix>, StoreError>;
     fn write(&mut self, key: &[u8], value: Vec<u8>) -> Result<(), StoreError>;
     fn delete(&mut self, prefix: &[u8]) -> Result<(), StoreError>;
     fn scan(&self, prefix: &[u8], limit: usize) -> Result<ScanPage, StoreError>;
@@ -176,7 +183,7 @@ pub(crate) mod counting {
     use std::cell::Cell;
     use std::rc::Rc;
 
-    use super::{Backend, ScanPage, StoreError};
+    use super::{Backend, ScanPage, StoreError, ValuePrefix};
 
     #[derive(Default)]
     struct CountCells {
@@ -279,6 +286,13 @@ pub(crate) mod counting {
             let value = self.inner.read(key)?;
             self.counts
                 .add_bytes(key.len() + value.as_ref().map_or(0, Vec::len));
+            Ok(value)
+        }
+
+        fn read_prefix(&self, key: &[u8], limit: usize) -> Result<Option<ValuePrefix>, StoreError> {
+            let value = self.inner.read_prefix(key, limit)?;
+            self.counts
+                .add_bytes(key.len() + value.as_ref().map_or(0, |value| value.bytes.len()));
             Ok(value)
         }
 
