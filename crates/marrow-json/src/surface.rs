@@ -4,7 +4,13 @@ use marrow_run::{
 use marrow_store::key::SavedKey;
 use serde::{Deserialize, Serialize};
 
+mod execute;
 mod request;
+pub use execute::{
+    execute_surface_page_by_tag, execute_surface_point_read_by_tag,
+    execute_surface_point_update_by_tag, execute_surface_singleton_read_by_tag,
+    execute_surface_singleton_update_by_tag, execute_surface_unique_lookup_by_tag,
+};
 pub use request::{
     DecodedSurfacePageRequest, DecodedSurfacePointRequest, DecodedSurfacePointUpdateRequest,
     DecodedSurfaceSingletonUpdateRequest, DecodedSurfaceUniqueLookupRequest,
@@ -646,9 +652,10 @@ mod tests {
         SurfaceReadOperationKind, check_project,
     };
     use marrow_run::{
-        SURFACE_CURSOR, SURFACE_REQUEST, SurfaceCollectionRead, SurfaceEnumValue, SurfaceNodeRead,
-        SurfaceReadError, SurfaceReadField, SurfaceReadIdentity, SurfaceReadOperationRef,
-        SurfaceReadRecord, SurfaceUpdate, SurfaceValue,
+        SURFACE_ABI_MISMATCH, SURFACE_CURSOR, SURFACE_REQUEST, SURFACE_STALE_CURSOR,
+        SurfaceCollectionRead, SurfaceEnumValue, SurfaceNodeRead, SurfaceReadError,
+        SurfaceReadField, SurfaceReadIdentity, SurfaceReadOperationRef, SurfaceReadRecord,
+        SurfaceUpdate, SurfaceValue,
     };
     use marrow_store::Decimal;
     use marrow_store::cell::CatalogId;
@@ -662,10 +669,11 @@ mod tests {
     use serde_json::json;
 
     use crate::surface::{
-        SurfaceArgumentJson, SurfaceCursorBoundaryJson, SurfaceCursorJson, SurfaceIdentityJson,
-        SurfaceKeyJson, SurfacePageJson, SurfacePageRequestJson, SurfacePointRequestJson,
-        SurfacePointUpdateRequestJson, SurfaceRecordJson, SurfaceSingletonUpdateRequestJson,
-        SurfaceUpdateFieldJson, SurfaceUpdateValueJson, SurfaceValueJson,
+        SurfaceAbiJson, SurfaceArgumentJson, SurfaceCursorBoundaryJson, SurfaceCursorJson,
+        SurfaceIdentityJson, SurfaceKeyJson, SurfacePageJson, SurfacePageRequestJson,
+        SurfacePointRequestJson, SurfacePointUpdateRequestJson, SurfaceRecordJson,
+        SurfaceSingletonUpdateRequestJson, SurfaceUniqueLookupRequestJson, SurfaceUpdateFieldJson,
+        SurfaceUpdateValueJson, SurfaceValueJson,
     };
 
     static TEMP_PROJECT_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -748,6 +756,18 @@ store ^files(id: int): File
 surface Files from ^files
     fields name
     collection ^files.byFingerprint as byFingerprint
+";
+
+    const SURFACE_WITH_UNIQUE_INDEX: &str = "\
+resource Book
+    required title: string
+    required isbn: string
+store ^books(id: int): Book
+    index byIsbn(isbn) unique
+
+surface Books from ^books
+    fields title, isbn
+    collection ^books.byIsbn as byIsbn
 ";
 
     struct TempProject {
@@ -885,6 +905,33 @@ surface Files from ^files
             }
             _ => false,
         })
+    }
+
+    fn read_operation_tag(
+        program: &CheckedProgram,
+        operation_ref: SurfaceReadOperationRef,
+    ) -> String {
+        program.facts.surface(operation_ref.surface).read_operations[operation_ref.ordinal]
+            .operation_tag
+            .clone()
+            .expect("stable read operation tag")
+    }
+
+    fn read_operation_tag_matching(
+        program: &CheckedProgram,
+        surface: SurfaceId,
+        matches_kind: impl Fn(&SurfaceReadOperationKind) -> bool,
+    ) -> String {
+        read_operation_tag(program, operation_ref(program, surface, matches_kind))
+    }
+
+    fn update_operation_tag(program: &CheckedProgram, surface_name: &str) -> String {
+        SurfaceAbiJson::from_program(program)
+            .surfaces
+            .into_iter()
+            .find(|surface| surface.name == surface_name)
+            .and_then(|surface| surface.update.map(|update| update.operation_tag))
+            .unwrap_or_else(|| panic!("surface `{surface_name}` exposes an update tag"))
     }
 
     fn book_by_status_author_read<'a>(
@@ -1109,6 +1156,40 @@ surface Files from ^files
         );
     }
 
+    fn write_surface_book_with_isbn(
+        program: &CheckedRuntimeProgram,
+        store: &TreeStore,
+        id: i64,
+        title: &str,
+        isbn: &str,
+    ) {
+        let identity = [SavedKey::Int(id)];
+        write_data_value(
+            program,
+            store,
+            "books",
+            &identity,
+            &data_path(program, "books", &["title"]),
+            SavedValue::Str(title.into()),
+        );
+        write_data_value(
+            program,
+            store,
+            "books",
+            &identity,
+            &data_path(program, "books", &["isbn"]),
+            SavedValue::Str(isbn.into()),
+        );
+        store
+            .write_index_entry(
+                &index_catalog_id(program, "books", "byIsbn"),
+                &[SavedKey::Str(isbn.into())],
+                &identity,
+                encode_identity_payload(&identity),
+            )
+            .expect("unique index entry write succeeds");
+    }
+
     fn write_surface_event(
         program: &CheckedRuntimeProgram,
         store: &TreeStore,
@@ -1220,10 +1301,430 @@ surface Files from ^files
         }
     }
 
+    fn point_read_request(runtime: &CheckedRuntimeProgram, id: i64) -> SurfacePointRequestJson {
+        SurfacePointRequestJson {
+            identity: SurfaceIdentityJson {
+                store_catalog_id: store_catalog_id(runtime, "books").as_str().into(),
+                keys: vec![SurfaceKeyJson::Int {
+                    value: id.to_string(),
+                }],
+            },
+        }
+    }
+
+    fn field_value<'a>(
+        record: &'a SurfaceRecordJson,
+        catalog_id: &CatalogId,
+    ) -> Option<&'a SurfaceValueJson> {
+        record
+            .fields
+            .iter()
+            .find(|field| field.catalog_id == catalog_id.as_str())
+            .and_then(|field| field.value.as_ref())
+    }
+
     fn assert_surface_error<T: std::fmt::Debug>(result: Result<T, SurfaceReadError>, code: &str) {
         match result {
             Err(error) => assert_eq!(error.code(), code, "{error:?}"),
             Ok(value) => panic!("expected surface error {code}, got {value:?}"),
+        }
+    }
+
+    #[test]
+    fn surface_execute_point_read_by_operation_tag_returns_record_json() {
+        let (program, runtime) = checked_surface_program(SURFACE_WITH_ENUM_IDENTITY_INDEX);
+        let store = admitted_store(&program);
+        write_surface_book(&runtime, &store, 1, "Dune", "published", 7);
+
+        let surface = surface_id(&program, "Books");
+        let operation_tag = read_operation_tag_matching(&program, surface, |kind| {
+            matches!(kind, SurfaceReadOperationKind::PointRead { .. })
+        });
+        let record = crate::surface::execute_surface_point_read_by_tag(
+            &program,
+            &store,
+            &operation_tag,
+            &point_read_request(&runtime, 1),
+        )
+        .expect("execute point read");
+
+        assert_eq!(
+            record.identity.as_ref().expect("record identity").keys,
+            vec![SurfaceKeyJson::Int { value: "1".into() }]
+        );
+        assert_eq!(
+            field_value(&record, &field_catalog_id(&runtime, "books", "title")),
+            Some(&SurfaceValueJson::String {
+                value: "Dune".into()
+            })
+        );
+    }
+
+    #[test]
+    fn surface_execute_singleton_read_by_operation_tag_returns_record_json() {
+        let (program, runtime) = checked_surface_program(SINGLETON_UPDATE_SURFACE);
+        let store = admitted_store(&program);
+        write_data_value(
+            &runtime,
+            &store,
+            "settings",
+            &[],
+            &data_path(&runtime, "settings", &["theme"]),
+            SavedValue::Str("dark".into()),
+        );
+        write_data_value(
+            &runtime,
+            &store,
+            "settings",
+            &[],
+            &data_path(&runtime, "settings", &["mode"]),
+            SavedValue::Str("compact".into()),
+        );
+
+        let surface = surface_id(&program, "SettingsSurface");
+        let operation_tag = read_operation_tag_matching(&program, surface, |kind| {
+            matches!(kind, SurfaceReadOperationKind::SingletonRead { .. })
+        });
+        let record =
+            crate::surface::execute_surface_singleton_read_by_tag(&program, &store, &operation_tag)
+                .expect("execute singleton read");
+
+        assert_eq!(record.identity, None);
+        assert_eq!(
+            field_value(&record, &field_catalog_id(&runtime, "settings", "mode")),
+            Some(&SurfaceValueJson::String {
+                value: "compact".into()
+            })
+        );
+    }
+
+    #[test]
+    fn surface_execute_paged_collection_by_operation_tag_returns_page_json() {
+        let (program, runtime) = checked_surface_program(SURFACE_WITH_ENUM_IDENTITY_INDEX);
+        let store = admitted_store(&program);
+        write_surface_book(&runtime, &store, 1, "Dune", "published", 7);
+        write_surface_book(&runtime, &store, 2, "Dune Messiah", "published", 7);
+
+        let surface = surface_id(&program, "Books");
+        let operation_tag = read_operation_tag(
+            &program,
+            index_collection_ref(&program, surface, "byStatusAuthor"),
+        );
+        let page = crate::surface::execute_surface_page_by_tag(
+            &program,
+            &store,
+            &operation_tag,
+            &book_page_request(&runtime, 7, 1),
+        )
+        .expect("execute page read");
+
+        assert_eq!(page.rows.len(), 1);
+        assert_eq!(
+            page.rows[0].identity.as_ref().expect("row identity").keys,
+            vec![SurfaceKeyJson::Int { value: "1".into() }]
+        );
+        assert!(page.next.is_some(), "first limited page returns a cursor");
+    }
+
+    #[test]
+    fn surface_execute_unique_lookup_by_operation_tag_returns_optional_record_json() {
+        let (program, runtime) = checked_surface_program(SURFACE_WITH_UNIQUE_INDEX);
+        let store = admitted_store(&program);
+        write_surface_book_with_isbn(&runtime, &store, 1, "Dune", "isbn-a1");
+
+        let surface = surface_id(&program, "Books");
+        let operation_tag =
+            read_operation_tag(&program, index_collection_ref(&program, surface, "byIsbn"));
+        let found = crate::surface::execute_surface_unique_lookup_by_tag(
+            &program,
+            &store,
+            &operation_tag,
+            &SurfaceUniqueLookupRequestJson {
+                keys: vec![SurfaceArgumentJson::String {
+                    value: "isbn-a1".into(),
+                }],
+            },
+        )
+        .expect("execute unique lookup")
+        .expect("record found");
+
+        assert_eq!(
+            found.identity.expect("record identity").keys,
+            vec![SurfaceKeyJson::Int { value: "1".into() }]
+        );
+
+        assert_eq!(
+            crate::surface::execute_surface_unique_lookup_by_tag(
+                &program,
+                &store,
+                &operation_tag,
+                &SurfaceUniqueLookupRequestJson {
+                    keys: vec![SurfaceArgumentJson::String {
+                        value: "missing".into(),
+                    }],
+                },
+            )
+            .expect("execute absent unique lookup"),
+            None
+        );
+    }
+
+    #[test]
+    fn surface_execute_updates_by_operation_tag_apply_existing_update_dtos() {
+        let (program, runtime) = checked_surface_program(SURFACE_UPDATE_WITH_ENUM_IDENTITY_INDEX);
+        let store = admitted_store(&program);
+        write_surface_book(&runtime, &store, 1, "Dune", "draft", 7);
+        write_surface_book_private_code(&runtime, &store, 1, "internal");
+        let operation_tag = update_operation_tag(&program, "Books");
+
+        crate::surface::execute_surface_point_update_by_tag(
+            &program,
+            &store,
+            &operation_tag,
+            &point_update_request(
+                &runtime,
+                1,
+                vec![update_field(
+                    field_catalog_id(&runtime, "books", "status"),
+                    SurfaceUpdateValueJson::Enum {
+                        enum_catalog_id: enum_catalog_id(&runtime, "Status").as_str().into(),
+                        member_catalog_id: enum_member_catalog_id(&runtime, "Status", "published")
+                            .as_str()
+                            .into(),
+                    },
+                )],
+            ),
+        )
+        .expect("execute point update");
+
+        let read_tag =
+            read_operation_tag_matching(&program, surface_id(&program, "Books"), |kind| {
+                matches!(kind, SurfaceReadOperationKind::PointRead { .. })
+            });
+        let record = crate::surface::execute_surface_point_read_by_tag(
+            &program,
+            &store,
+            &read_tag,
+            &point_read_request(&runtime, 1),
+        )
+        .expect("read updated record");
+        assert_eq!(
+            field_value(&record, &field_catalog_id(&runtime, "books", "status")),
+            Some(&SurfaceValueJson::Enum {
+                enum_catalog_id: enum_catalog_id(&runtime, "Status").as_str().into(),
+                member_catalog_id: enum_member_catalog_id(&runtime, "Status", "published")
+                    .as_str()
+                    .into(),
+                render_label: "published".into(),
+            })
+        );
+
+        let (program, runtime) = checked_surface_program(SINGLETON_UPDATE_SURFACE);
+        let store = admitted_store(&program);
+        write_data_value(
+            &runtime,
+            &store,
+            "settings",
+            &[],
+            &data_path(&runtime, "settings", &["theme"]),
+            SavedValue::Str("dark".into()),
+        );
+        let operation_tag = update_operation_tag(&program, "SettingsSurface");
+
+        crate::surface::execute_surface_singleton_update_by_tag(
+            &program,
+            &store,
+            &operation_tag,
+            &SurfaceSingletonUpdateRequestJson {
+                fields: vec![update_field(
+                    field_catalog_id(&runtime, "settings", "mode"),
+                    SurfaceUpdateValueJson::String {
+                        value: "compact".into(),
+                    },
+                )],
+            },
+        )
+        .expect("execute singleton update");
+
+        let read_tag = read_operation_tag_matching(
+            &program,
+            surface_id(&program, "SettingsSurface"),
+            |kind| matches!(kind, SurfaceReadOperationKind::SingletonRead { .. }),
+        );
+        let record =
+            crate::surface::execute_surface_singleton_read_by_tag(&program, &store, &read_tag)
+                .expect("read updated singleton");
+        assert_eq!(
+            field_value(&record, &field_catalog_id(&runtime, "settings", "mode")),
+            Some(&SurfaceValueJson::String {
+                value: "compact".into()
+            })
+        );
+    }
+
+    #[test]
+    fn surface_execute_rejects_wrong_profile_wrong_kind_and_unknown_tags() {
+        let (program, runtime) = checked_surface_program(SURFACE_UPDATE_WITH_ENUM_IDENTITY_INDEX);
+        let store = admitted_store(&program);
+        write_surface_book(&runtime, &store, 1, "Dune", "draft", 7);
+        write_surface_book_private_code(&runtime, &store, 1, "internal");
+
+        let surface = surface_id(&program, "Books");
+        let point_tag = read_operation_tag_matching(&program, surface, |kind| {
+            matches!(kind, SurfaceReadOperationKind::PointRead { .. })
+        });
+        let collection_tag = read_operation_tag(
+            &program,
+            index_collection_ref(&program, surface, "byStatusAuthor"),
+        );
+        let update_tag = update_operation_tag(&program, "Books");
+
+        assert_surface_error(
+            crate::surface::execute_surface_point_update_by_tag(
+                &program,
+                &store,
+                &point_tag,
+                &point_update_request(&runtime, 1, Vec::new()),
+            ),
+            SURFACE_ABI_MISMATCH,
+        );
+        assert_surface_error(
+            crate::surface::execute_surface_point_read_by_tag(
+                &program,
+                &store,
+                &update_tag,
+                &point_read_request(&runtime, 1),
+            ),
+            SURFACE_ABI_MISMATCH,
+        );
+        assert_surface_error(
+            crate::surface::execute_surface_point_read_by_tag(
+                &program,
+                &store,
+                &collection_tag,
+                &point_read_request(&runtime, 1),
+            ),
+            SURFACE_REQUEST,
+        );
+        assert_surface_error(
+            crate::surface::execute_surface_page_by_tag(
+                &program,
+                &store,
+                &point_tag,
+                &book_page_request(&runtime, 7, 1),
+            ),
+            SURFACE_REQUEST,
+        );
+        assert_surface_error(
+            crate::surface::execute_surface_point_read_by_tag(
+                &program,
+                &store,
+                "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+                &point_read_request(&runtime, 1),
+            ),
+            SURFACE_ABI_MISMATCH,
+        );
+    }
+
+    #[test]
+    fn surface_execute_page_cursor_round_trips_and_mismatched_tag_stays_stale_cursor() {
+        let (program, runtime) = checked_surface_program(SURFACE_WITH_ENUM_IDENTITY_INDEX);
+        let store = admitted_store(&program);
+        write_surface_book(&runtime, &store, 1, "Dune", "published", 7);
+        write_surface_book(&runtime, &store, 2, "Dune Messiah", "published", 7);
+
+        let surface = surface_id(&program, "Books");
+        let point_tag = read_operation_tag_matching(&program, surface, |kind| {
+            matches!(kind, SurfaceReadOperationKind::PointRead { .. })
+        });
+        let root_tag = read_operation_tag_matching(&program, surface, |kind| {
+            matches!(kind, SurfaceReadOperationKind::PagedRootCollection { .. })
+        });
+        let collection_tag = read_operation_tag(
+            &program,
+            index_collection_ref(&program, surface, "byStatusAuthor"),
+        );
+
+        let first_page = crate::surface::execute_surface_page_by_tag(
+            &program,
+            &store,
+            &collection_tag,
+            &book_page_request(&runtime, 7, 1),
+        )
+        .expect("first page");
+        let cursor = first_page.next.expect("first page has cursor");
+        let second_page = crate::surface::execute_surface_page_by_tag(
+            &program,
+            &store,
+            &collection_tag,
+            &SurfacePageRequestJson {
+                cursor: Some(cursor.clone()),
+                ..book_page_request(&runtime, 7, 10)
+            },
+        )
+        .expect("second page");
+        assert_eq!(
+            second_page.rows[0]
+                .identity
+                .as_ref()
+                .expect("row identity")
+                .keys,
+            vec![SurfaceKeyJson::Int { value: "2".into() }]
+        );
+
+        let wrong_cursor = SurfaceCursorJson {
+            operation_tag: point_tag,
+            ..cursor
+        };
+        assert_surface_error(
+            crate::surface::execute_surface_page_by_tag(
+                &program,
+                &store,
+                &collection_tag,
+                &SurfacePageRequestJson {
+                    cursor: Some(wrong_cursor),
+                    ..book_page_request(&runtime, 7, 10)
+                },
+            ),
+            SURFACE_STALE_CURSOR,
+        );
+
+        let root_page = crate::surface::execute_surface_page_by_tag(
+            &program,
+            &store,
+            &root_tag,
+            &SurfacePageRequestJson {
+                exact_keys: Vec::new(),
+                limit: 1,
+                cursor: None,
+            },
+        )
+        .expect("root page");
+        let root_cursor = root_page.next.expect("root page has cursor");
+        assert_surface_error(
+            crate::surface::execute_surface_page_by_tag(
+                &program,
+                &store,
+                &collection_tag,
+                &SurfacePageRequestJson {
+                    cursor: Some(root_cursor),
+                    ..book_page_request(&runtime, 7, 10)
+                },
+            ),
+            SURFACE_STALE_CURSOR,
+        );
+    }
+
+    #[test]
+    fn surface_execute_module_does_not_introduce_serving_or_lifecycle_concepts() {
+        let source = include_str!("surface/execute.rs").to_lowercase();
+        for forbidden in [
+            "route", "server", "http", "client", "create", "delete", "opaque",
+        ] {
+            assert!(
+                !source.contains(forbidden),
+                "surface JSON execute boundary must stay transport-neutral: {forbidden}"
+            );
         }
     }
 

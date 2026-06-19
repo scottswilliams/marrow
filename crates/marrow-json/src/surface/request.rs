@@ -178,6 +178,16 @@ impl SurfacePageRequestJson {
                 .transpose()?,
         })
     }
+
+    pub(super) fn validate_cursor_operation_tag(
+        &self,
+        operation_tag: &str,
+    ) -> Result<(), SurfaceReadError> {
+        if let Some(cursor) = &self.cursor {
+            cursor.validate_operation_tag(operation_tag)?;
+        }
+        Ok(())
+    }
 }
 
 impl DecodedSurfacePageRequest {
@@ -345,6 +355,20 @@ impl SurfaceCursorJson {
                 SurfaceJsonErrorContext::Cursor,
             )?,
         })
+    }
+
+    fn validate_operation_tag(&self, operation_tag: &str) -> Result<(), SurfaceReadError> {
+        let cursor_operation_tag = decode_sha256_digest(
+            &self.operation_tag,
+            "operation tag",
+            SurfaceJsonErrorContext::Cursor,
+        )?;
+        if cursor_operation_tag != operation_tag {
+            return Err(SurfaceReadError::stale_cursor(
+                "surface cursor targets a different operation",
+            ));
+        }
+        Ok(())
     }
 }
 

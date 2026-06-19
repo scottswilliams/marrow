@@ -7,7 +7,8 @@ read descriptor for stable surfaces, `SurfaceUpdateOperationAnalysis` exposes
 the accepted-catalog sparse-update descriptor for stable non-empty `update`
 surfaces, `marrow-run` executes admitted transport-neutral reads and sparse
 updates, and `marrow-json` owns the current check-output descriptor DTOs, read
-request/result DTOs, typed cursor-boundary DTOs, and sparse update request DTOs.
+request/result DTOs, typed cursor-boundary DTOs, sparse update request DTOs, and
+an in-process operation-tag execution boundary over those DTOs.
 
 This page tracks the profiles that are still intentionally deferred. They must
 build on the active checker facts and descriptors. They must not introduce a
@@ -39,8 +40,11 @@ The active surface foundation has these owners:
   projecting reads, and applies non-empty sparse update patches through managed
   writes.
 - `crates/marrow-json/src/surface.rs` owns the current checked read parameter,
-  result, identity, value, typed cursor-boundary, sparse update request, and
-  serialized surface ABI JSON DTOs.
+  result, identity, value, typed cursor-boundary, sparse update request,
+  operation-tag execution, and serialized surface ABI JSON DTOs. Execution
+  accepts caller-supplied checked program and store references; serving, store
+  open policy, route derivation, generated clients, and opaque cursor tokens
+  remain separate profiles.
 
 Operation tags are live runtime/json contracts. A change to either
 `surface.read.v1` or `surface.update.v1` framing must either preserve byte

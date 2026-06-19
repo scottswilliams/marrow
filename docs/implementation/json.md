@@ -5,7 +5,10 @@ boundary needs. It exists to keep `marrow run --format json`, trace, data
 integrity, store-backed data inspection, and surface reads, updates, and
 descriptor export from copying entry-return, saved-key, data-snapshot, surface
 descriptor/result rendering, and checked surface read request-parameter and
-sparse update request-body decode logic.
+sparse update request-body decode logic. For surfaces it also provides an
+in-process operation-tag execution boundary over caller-supplied
+`CheckedProgram` and `TreeStore` references; it does not own serving or store
+lifetime policy.
 
 The crate deliberately does not define a general `Value` JSON ABI. Its entry
 return renderer preserves the current CLI-compatible result surface: scalars,
@@ -15,12 +18,12 @@ CLI numeric `enum_id` / `member_id` profile, and `int` values remain JSON
 numbers for compatibility with current CLI consumers. Its data-snapshot DTO
 renders the shared `store_snapshot` object for `marrow data roots|get`, including
 the store UID, catalog digest, optional commit stamp, and checked source digest.
-Its surface DTOs render already-executed `marrow-run` surface records, pages,
-values, identities, and typed cursors with accepted catalog IDs, typed keys,
-base64 bytes, and lossless strings for integers, temporal nanoseconds, and
-decimals. Cursor/page rendering is context-aware: enum and identity-typed index
-arguments render as branded surface arguments instead of raw saved key bytes or
-plain member strings.
+Its surface DTOs render `marrow-run` surface records, pages, values,
+identities, and typed cursors with accepted catalog IDs, typed keys, base64
+bytes, and lossless strings for integers, temporal nanoseconds, and decimals.
+Cursor/page rendering is context-aware: enum and identity-typed index arguments
+render as branded surface arguments instead of raw saved key bytes or plain
+member strings.
 
 `SurfaceAbiJson` renders the successful `marrow check --format json|jsonl`
 `surface_abi` object from checker-owned facts. It includes display-only module
@@ -48,14 +51,24 @@ validation. HTTP routes, opaque cursor tokens, generated clients,
 entry-argument JSON decode, and create/delete body decode remain outside this
 crate's current profile.
 
+The operation-tag execution functions compose those DTOs with `marrow-run`
+admission. Reads admit stable read tags, decode the point/page/unique request
+DTO against the admitted handle, execute singleton, point, page, or unique
+lookup reads, and return `SurfaceRecordJson`, `SurfacePageJson`, or
+`Option<SurfaceRecordJson>`. Updates admit stable update tags, decode point or
+singleton sparse update DTOs, and return the runtime `surface.*` error type
+directly. Wrong-profile or unknown tags fail through runtime admission; wrong
+read/update shape requests remain `surface.request`; cursor mismatches stay on
+the existing cursor error path.
+
 ## Read next
 
 - `crates/marrow-json/src/lib.rs` — `entry_return_to_json`,
   `saved_key_to_json`, `data_snapshot_stamp_to_json`,
   `DataSnapshotJson`, and `DataCommitJson`.
 - `crates/marrow-json/src/surface.rs` — surface ABI descriptor DTOs, surface
-  read result DTOs, and checked surface read request-parameter and sparse
-  update request DTOs.
+  read result DTOs, checked surface read request-parameter and sparse update
+  request DTOs, and in-process operation-tag execution helpers.
 - `crates/marrow/src/cmd_run.rs` — the run JSON envelope and `run.entry_surface`
   mapping.
 - `crates/marrow/src/trace.rs` and `crates/marrow/src/cmd_data/integrity.rs` —

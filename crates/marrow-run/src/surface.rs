@@ -74,6 +74,10 @@ impl SurfaceError {
     pub fn cursor(message: impl Into<String>) -> Self {
         cursor_error(message, SourceSpan::default())
     }
+
+    pub fn stale_cursor(message: impl Into<String>) -> Self {
+        stale_cursor(message, SourceSpan::default())
+    }
 }
 
 impl Diagnose for SurfaceReadError {
@@ -260,6 +264,17 @@ pub struct SurfaceUpdate<'a> {
     program: &'a CheckedProgram,
     store: &'a TreeStore,
     plan: SurfaceUpdatePlan<'a>,
+}
+
+pub struct SurfaceReadOperation<'a> {
+    kind: AdmittedSurfaceReadOperationKind<'a>,
+}
+
+enum AdmittedSurfaceReadOperationKind<'a> {
+    Singleton(SurfaceNodeRead<'a>),
+    Point(SurfaceNodeRead<'a>),
+    Page(SurfaceCollectionRead<'a>),
+    Unique(SurfaceCollectionRead<'a>),
 }
 
 impl<'a> SurfaceNodeRead<'a> {
@@ -560,6 +575,101 @@ impl<'a> SurfaceCollectionRead<'a> {
             ));
         }
         Ok(())
+    }
+}
+
+impl<'a> SurfaceReadOperation<'a> {
+    pub fn admit_by_operation_tag(
+        program: &'a CheckedProgram,
+        store: &'a TreeStore,
+        operation_tag: &str,
+    ) -> Result<Self, SurfaceReadError> {
+        let matched = checked_read_operation_by_tag(program, operation_tag)?;
+        if let Some(shape) = node_read_shape(matched.surface, matched.operation) {
+            admit_surface_store(program, store)?;
+            let read = SurfaceNodeRead {
+                store,
+                plan: SurfaceNodeReadPlan::prepare_operation(
+                    program,
+                    matched.surface,
+                    matched.operation,
+                )?,
+            };
+            let kind = match shape {
+                SurfaceNodeReadShape::Singleton => {
+                    AdmittedSurfaceReadOperationKind::Singleton(read)
+                }
+                SurfaceNodeReadShape::Point => AdmittedSurfaceReadOperationKind::Point(read),
+            };
+            return Ok(Self { kind });
+        }
+
+        let lineage = admit_surface_store(program, store)?;
+        let plan = SurfaceCollectionReadPlan::prepare_operation(
+            program,
+            matched.operation_ref,
+            matched.surface,
+            matched.operation,
+        )?;
+        let shape = plan.shape();
+        let read = SurfaceCollectionRead {
+            store,
+            lineage,
+            plan,
+        };
+        let kind = match shape {
+            SurfaceCollectionReadShape::RootPage | SurfaceCollectionReadShape::IndexPage => {
+                AdmittedSurfaceReadOperationKind::Page(read)
+            }
+            SurfaceCollectionReadShape::UniqueLookup => {
+                AdmittedSurfaceReadOperationKind::Unique(read)
+            }
+        };
+        Ok(Self { kind })
+    }
+
+    pub fn singleton_read(&self) -> Result<&SurfaceNodeRead<'a>, SurfaceReadError> {
+        match &self.kind {
+            AdmittedSurfaceReadOperationKind::Singleton(read) => Ok(read),
+            AdmittedSurfaceReadOperationKind::Point(_)
+            | AdmittedSurfaceReadOperationKind::Page(_)
+            | AdmittedSurfaceReadOperationKind::Unique(_) => Err(SurfaceError::request(
+                "surface operation tag does not admit singleton read requests",
+            )),
+        }
+    }
+
+    pub fn point_read(&self) -> Result<&SurfaceNodeRead<'a>, SurfaceReadError> {
+        match &self.kind {
+            AdmittedSurfaceReadOperationKind::Point(read) => Ok(read),
+            AdmittedSurfaceReadOperationKind::Singleton(_)
+            | AdmittedSurfaceReadOperationKind::Page(_)
+            | AdmittedSurfaceReadOperationKind::Unique(_) => Err(SurfaceError::request(
+                "surface operation tag does not admit point read requests",
+            )),
+        }
+    }
+
+    pub fn page_read(&self) -> Result<&SurfaceCollectionRead<'a>, SurfaceReadError> {
+        match &self.kind {
+            AdmittedSurfaceReadOperationKind::Page(read) => Ok(read),
+            AdmittedSurfaceReadOperationKind::Singleton(_)
+            | AdmittedSurfaceReadOperationKind::Point(_)
+            | AdmittedSurfaceReadOperationKind::Unique(_) => Err(SurfaceError::request(
+                "surface operation tag does not admit page requests",
+            )),
+        }
+    }
+
+    pub fn unique_lookup(&self) -> Result<&SurfaceCollectionRead<'a>, SurfaceReadError> {
+        match &self.kind {
+            AdmittedSurfaceReadOperationKind::Unique(read) => Ok(read),
+            AdmittedSurfaceReadOperationKind::Singleton(_)
+            | AdmittedSurfaceReadOperationKind::Point(_)
+            | AdmittedSurfaceReadOperationKind::Page(_) => Err(SurfaceError::request(
+                "surface operation tag does not admit unique lookup requests",
+            )),
+        }
     }
 }
 

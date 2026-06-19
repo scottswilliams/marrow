@@ -94,8 +94,9 @@ pub use surface::{
     SurfaceCursorBoundaryInputShape, SurfaceEnumValue, SurfaceError, SurfaceIdentityInputShape,
     SurfaceInputKeyShape, SurfaceNodeRead, SurfaceNodeReadShape, SurfacePageBoundary,
     SurfacePageCursor, SurfaceReadError, SurfaceReadField, SurfaceReadIdentity, SurfaceReadInput,
-    SurfaceReadOperationRef, SurfaceReadRecord, SurfaceUpdate, SurfaceUpdateField,
-    SurfaceUpdateInput, SurfaceValue, read_surface_point, read_surface_singleton,
+    SurfaceReadOperation, SurfaceReadOperationRef, SurfaceReadRecord, SurfaceUpdate,
+    SurfaceUpdateField, SurfaceUpdateInput, SurfaceValue, read_surface_point,
+    read_surface_singleton,
 };
 pub use value::{IdentityValue, RunOutput, RunOutputSink, Value};
 pub use write_plan::{WriteDataSegment, WriteOp, WriteTarget};
