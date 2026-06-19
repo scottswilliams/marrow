@@ -3,7 +3,7 @@ use std::ops::ControlFlow;
 use marrow_store::StoreError;
 use marrow_store::cell::CatalogId;
 use marrow_store::key::SavedKey;
-use marrow_store::tree::{DataPathSegment, TreeStore};
+use marrow_store::tree::{DataPathSegment as StoreDataPathSegment, TreeStore};
 
 use crate::{
     CheckedProgram, CheckedSavedMember, CheckedSavedMemberKind, CheckedSavedPlace,
@@ -274,7 +274,7 @@ struct MemberVisit<'a> {
 fn visit_members_until(
     context: &MemberVisit<'_>,
     members: &[CheckedSavedMember],
-    data_path: &mut Vec<DataPathSegment>,
+    data_path: &mut Vec<StoreDataPathSegment>,
     path: &mut String,
     mismatch: Option<KeyMismatch>,
     visit: &mut impl FnMut(DataRecord) -> Result<ControlFlow<()>, StoreError>,
@@ -297,7 +297,7 @@ fn visit_members_until(
 fn visit_member_until(
     context: &MemberVisit<'_>,
     member: &CheckedSavedMember,
-    data_path: &mut Vec<DataPathSegment>,
+    data_path: &mut Vec<StoreDataPathSegment>,
     path: &mut String,
     mismatch: Option<KeyMismatch>,
     visit: &mut impl FnMut(DataRecord) -> Result<ControlFlow<()>, StoreError>,
@@ -306,7 +306,7 @@ fn visit_member_until(
         return Ok(ControlFlow::Continue(0));
     };
     let prior_len = push_member(path, &member.name);
-    data_path.push(DataPathSegment::Member(catalog_id.clone()));
+    data_path.push(StoreDataPathSegment::Member(catalog_id.clone()));
     let cursor = MemberCursor {
         context: *context,
         member,
@@ -330,7 +330,7 @@ struct MemberCursor<'a> {
 
 fn visit_member_keys_until(
     cursor: &MemberCursor<'_>,
-    data_path: &mut Vec<DataPathSegment>,
+    data_path: &mut Vec<StoreDataPathSegment>,
     path: &mut String,
     key_index: usize,
     mismatch: Option<KeyMismatch>,
@@ -353,7 +353,7 @@ fn visit_member_keys_until(
             Some(mismatch) => Some(mismatch),
             None => stored_key_mismatch(cursor.member.key_params[key_index].scalar, &key)?,
         };
-        data_path.push(DataPathSegment::Key(key));
+        data_path.push(StoreDataPathSegment::Key(key));
         match visit_member_keys_until(cursor, data_path, path, key_index + 1, next_mismatch, visit)?
         {
             ControlFlow::Continue(count) => {
@@ -380,7 +380,7 @@ fn visit_member_keys_until(
 
 fn visit_member_terminal_until(
     cursor: &MemberCursor<'_>,
-    data_path: &mut Vec<DataPathSegment>,
+    data_path: &mut Vec<StoreDataPathSegment>,
     path: &mut String,
     mismatch: Option<KeyMismatch>,
     visit: &mut impl FnMut(DataRecord) -> Result<ControlFlow<()>, StoreError>,

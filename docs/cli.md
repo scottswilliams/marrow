@@ -497,8 +497,8 @@ streams as production CLI behavior.
 There is no `marrow explain` command in v0.1. Checked access, path, and name
 facts are internal compiler/tooling facts surfaced through diagnostics,
 `marrow data integrity`, dry-run reports, editor features, or future
-accepted tooling surfaces. They are not exposed as query-plan, optimizer, or
-standalone explanation output.
+accepted tooling surfaces. They are not exposed as optimizer or standalone
+explanation output.
 
 Diagnostic/admin/operator access to a project's saved data. The v0.1 decision is
 to keep `get` and `dump` as `marrow data` subcommands, not production app APIs.

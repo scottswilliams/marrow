@@ -3,20 +3,23 @@ use marrow_store::key::SavedKey;
 use marrow_store::tree::{DataValuePrefix, TreeStore};
 
 use super::record_nav;
-use super::render::render_data_query_value_prefix_preview;
+use super::render::render_data_path_value_prefix_preview;
 use super::shape::stored_key_mismatch;
 use super::{
-    DataPresence, DataPreviewReadResult, DataQuery, DataReadResult, DebugDataPayload,
+    DataPresence, DataPreviewReadResult, DataReadResult, DebugDataPayload, ResolvedDataPath,
     clamp_value_preview_limit,
 };
 use crate::CheckedProgram;
 
-pub fn read_data_query(store: &TreeStore, query: &DataQuery) -> Result<DataReadResult, StoreError> {
-    let result = read_data_query_with(store, query, |store, query| {
+pub fn read_data_path(
+    store: &TreeStore,
+    path: &ResolvedDataPath,
+) -> Result<DataReadResult, StoreError> {
+    let result = read_data_path_with(store, path, |store, path| {
         store.read_data_value(
-            &query.storage.store,
-            &query.storage.identity,
-            &query.storage.data_path,
+            &path.storage.store,
+            &path.storage.identity,
+            &path.storage.data_path,
         )
     })?;
     Ok(DataReadResult {
@@ -25,45 +28,37 @@ pub fn read_data_query(store: &TreeStore, query: &DataQuery) -> Result<DataReadR
     })
 }
 
-pub fn preview_data_query(
+pub fn preview_data_path(
     program: &CheckedProgram,
     store: &TreeStore,
-    query: &DataQuery,
+    path: &ResolvedDataPath,
     limit: usize,
 ) -> Result<DataPreviewReadResult, StoreError> {
-    preview_data_query_with_prefix_reader(program, store, query, limit, |store, query, limit| {
+    preview_data_path_with_prefix_reader(program, store, path, limit, |store, path, limit| {
         store.read_data_value_prefix(
-            &query.storage.store,
-            &query.storage.identity,
-            &query.storage.data_path,
+            &path.storage.store,
+            &path.storage.identity,
+            &path.storage.data_path,
             limit,
         )
     })
 }
 
-fn preview_data_query_with_prefix_reader(
+fn preview_data_path_with_prefix_reader(
     program: &CheckedProgram,
     store: &TreeStore,
-    query: &DataQuery,
+    path: &ResolvedDataPath,
     limit: usize,
     read_prefix: impl FnOnce(
         &TreeStore,
-        &DataQuery,
+        &ResolvedDataPath,
         usize,
     ) -> Result<Option<DataValuePrefix>, StoreError>,
 ) -> Result<DataPreviewReadResult, StoreError> {
     let limit = clamp_value_preview_limit(limit);
-    let result = read_data_query_with(store, query, |store, query| {
-        read_prefix(store, query, limit)
-    })?;
+    let result = read_data_path_with(store, path, |store, path| read_prefix(store, path, limit))?;
     let preview = result.value.as_ref().map(|prefix| {
-        render_data_query_value_prefix_preview(
-            program,
-            query,
-            &prefix.bytes,
-            prefix.truncated,
-            limit,
-        )
+        render_data_path_value_prefix_preview(program, path, &prefix.bytes, prefix.truncated, limit)
     });
     Ok(DataPreviewReadResult {
         preview,
@@ -71,113 +66,116 @@ fn preview_data_query_with_prefix_reader(
     })
 }
 
-struct DataQueryRead<T> {
+struct ResolvedDataPathRead<T> {
     value: Option<T>,
     presence: DataPresence,
 }
 
-fn read_data_query_with<T>(
+fn read_data_path_with<T>(
     store: &TreeStore,
-    query: &DataQuery,
-    read_value: impl FnOnce(&TreeStore, &DataQuery) -> Result<Option<T>, StoreError>,
-) -> Result<DataQueryRead<T>, StoreError> {
-    if query.storage.identity.len() < query.storage.identity_arity {
-        return children_presence(record_children_present(store, query)?);
+    path: &ResolvedDataPath,
+    read_value: impl FnOnce(&TreeStore, &ResolvedDataPath) -> Result<Option<T>, StoreError>,
+) -> Result<ResolvedDataPathRead<T>, StoreError> {
+    if path.storage.identity.len() < path.storage.identity_arity {
+        return children_presence(record_children_present(store, path)?);
     }
-    if query.storage.data_path.is_empty() {
+    if path.storage.data_path.is_empty() {
         return children_presence(store.data_subtree_exists(
-            &query.storage.store,
-            &query.storage.identity,
-            &query.storage.data_path,
+            &path.storage.store,
+            &path.storage.identity,
+            &path.storage.data_path,
         )?);
     }
-    let value = read_value(store, query)?;
+    let value = read_value(store, path)?;
     let presence = if value.is_some() {
         DataPresence::ValueOnly
-    } else if data_children_present(store, query)? {
+    } else if data_children_present(store, path)? {
         DataPresence::ChildrenOnly
     } else {
         DataPresence::Absent
     };
-    Ok(DataQueryRead { value, presence })
+    Ok(ResolvedDataPathRead { value, presence })
 }
 
-fn children_presence<T>(has_children: bool) -> Result<DataQueryRead<T>, StoreError> {
+fn children_presence<T>(has_children: bool) -> Result<ResolvedDataPathRead<T>, StoreError> {
     let presence = if has_children {
         DataPresence::ChildrenOnly
     } else {
         DataPresence::Absent
     };
-    Ok(DataQueryRead {
+    Ok(ResolvedDataPathRead {
         value: None,
         presence,
     })
 }
 
-fn record_children_present(store: &TreeStore, query: &DataQuery) -> Result<bool, StoreError> {
+fn record_children_present(store: &TreeStore, path: &ResolvedDataPath) -> Result<bool, StoreError> {
     let mut child = record_nav::first_record_child(
         store,
-        &query.storage.store,
-        &query.storage.identity,
-        query.storage.identity_arity,
+        &path.storage.store,
+        &path.storage.identity,
+        path.storage.identity_arity,
     )?;
     let mut present = false;
     while let Some(key) = child {
-        let expected = query
+        let expected = path
             .storage
             .identity_key_scalars
-            .get(query.storage.identity.len())
+            .get(path.storage.identity.len())
             .copied()
             .flatten();
         stored_key_mismatch(expected, &key)?;
         present = true;
         child = record_nav::next_record_child(
             store,
-            &query.storage.store,
-            &query.storage.identity,
-            query.storage.identity_arity,
+            &path.storage.store,
+            &path.storage.identity,
+            path.storage.identity_arity,
             &key,
         )?;
     }
     Ok(present)
 }
 
-fn data_children_present(store: &TreeStore, query: &DataQuery) -> Result<bool, StoreError> {
-    if query.storage.data_key_prefix_len < query.storage.data_key_scalars.len() {
-        return keyed_data_children_present(store, query);
+fn data_children_present(store: &TreeStore, path: &ResolvedDataPath) -> Result<bool, StoreError> {
+    if path.storage.data_key_prefix_len < path.storage.data_key_scalars.len() {
+        return keyed_data_children_present(store, path);
     }
     store.data_subtree_exists(
-        &query.storage.store,
-        &query.storage.identity,
-        &query.storage.data_path,
+        &path.storage.store,
+        &path.storage.identity,
+        &path.storage.data_path,
     )
 }
 
-fn keyed_data_children_present(store: &TreeStore, query: &DataQuery) -> Result<bool, StoreError> {
+fn keyed_data_children_present(
+    store: &TreeStore,
+    path: &ResolvedDataPath,
+) -> Result<bool, StoreError> {
     let mut child = store.data_first_child(
-        &query.storage.store,
-        &query.storage.identity,
-        &query.storage.data_path,
+        &path.storage.store,
+        &path.storage.identity,
+        &path.storage.data_path,
     )?;
     let mut present = false;
     while let Some(key) = child {
-        validate_data_child_key(query, &key)?;
+        validate_data_child_key(path, &key)?;
         present = true;
         child = store.data_next_child(
-            &query.storage.store,
-            &query.storage.identity,
-            &query.storage.data_path,
+            &path.storage.store,
+            &path.storage.identity,
+            &path.storage.data_path,
             &key,
         )?;
     }
     Ok(present)
 }
 
-fn validate_data_child_key(query: &DataQuery, key: &SavedKey) -> Result<(), StoreError> {
-    let expected = query
+fn validate_data_child_key(path: &ResolvedDataPath, key: &SavedKey) -> Result<(), StoreError> {
+    let expected = path
         .storage
         .data_key_scalars
-        .get(query.storage.data_key_prefix_len)
+        .get(path.storage.data_key_prefix_len)
         .copied()
         .flatten();
     stored_key_mismatch(expected, key)?;
@@ -187,34 +185,34 @@ fn validate_data_child_key(query: &DataQuery, key: &SavedKey) -> Result<(), Stor
 #[cfg(test)]
 mod tests {
     use marrow_store::cell::CatalogId;
-    use marrow_store::tree::{DataPathSegment, DataValuePrefix};
+    use marrow_store::tree::{DataPathSegment as StoreDataPathSegment, DataValuePrefix};
 
-    use super::super::query::StorageDataQuery;
-    use super::super::{DataQuery, DataQuerySegment, MAX_VALUE_PREVIEW_LIMIT};
+    use super::super::path::StorageDataPath;
+    use super::super::{DataPathSegment, MAX_VALUE_PREVIEW_LIMIT, ResolvedDataPath};
     use super::*;
     use crate::StoreLeafKind;
 
     #[test]
-    fn preview_data_query_clamps_oversized_limit_before_prefix_read() {
+    fn preview_data_path_clamps_oversized_limit_before_prefix_read() {
         let store_id =
             CatalogId::new("cat_00000000000000000000000000000001".to_string()).expect("store id");
         let member_id =
             CatalogId::new("cat_00000000000000000000000000000002".to_string()).expect("member id");
-        let query = DataQuery::new(
+        let path = ResolvedDataPath::new(
             "^books(1).title".to_string(),
             "books".to_string(),
             vec![
-                DataQuerySegment::Root("books".to_string()),
-                DataQuerySegment::Key(SavedKey::Int(1)),
-                DataQuerySegment::Field("title".to_string()),
+                DataPathSegment::Root("books".to_string()),
+                DataPathSegment::Key(SavedKey::Int(1)),
+                DataPathSegment::Field("title".to_string()),
             ],
             Some(StoreLeafKind::Scalar(marrow_store::value::ScalarType::Str)),
-            StorageDataQuery {
+            StorageDataPath {
                 store: store_id,
                 identity: vec![SavedKey::Int(1)],
                 identity_arity: 1,
                 identity_key_scalars: vec![Some(crate::ScalarType::Int)],
-                data_path: vec![DataPathSegment::Member(member_id)],
+                data_path: vec![StoreDataPathSegment::Member(member_id)],
                 data_key_scalars: Vec::new(),
                 data_key_prefix_len: 0,
             },
@@ -222,10 +220,10 @@ mod tests {
         let store = TreeStore::memory();
         let mut observed_limit = None;
 
-        let result = preview_data_query_with_prefix_reader(
+        let result = preview_data_path_with_prefix_reader(
             &CheckedProgram::default(),
             &store,
-            &query,
+            &path,
             usize::MAX,
             |_, _, limit| {
                 observed_limit = Some(limit);

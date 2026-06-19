@@ -141,7 +141,7 @@ fn check_module_report_at(name: &str, relative: &str, src: &str) -> CheckReport 
 /// Write each `(relative-path, source)` under a fresh project root, overlay the same
 /// text, and run the editor-facing `analyze_project` path. Returns the snapshot and the
 /// absolute paths in the given order, so a test can position into the buffer it wrote.
-/// This is the single owner of the write-then-overlay setup the tooling queries use.
+/// This is the single owner of the write-then-overlay setup the tooling lookups use.
 pub fn analyze_overlay(name: &str, files: &[(&str, &str)]) -> (AnalysisSnapshot, Vec<PathBuf>) {
     let root = temp_root(name);
     let mut sources = ProjectSources::new();

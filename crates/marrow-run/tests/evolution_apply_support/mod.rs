@@ -21,7 +21,7 @@ use marrow_store::tree::{CommitMetadata, DataPathSegment, EngineProfile, TreeSto
 use marrow_store::value::{Scalar, decode_value, encode_value};
 
 // The fact-lookup family and the check/commit factories are owned by marrow-check
-// behind its `test-support` feature, so the apply suites query the same helpers the
+// behind its `test-support` feature, so the apply suites use the same helpers the
 // discharge suites do rather than carrying a copy. The `config`/`checked`/
 // `commit_then_check`/`root_place` names the apply tests call resolve through this glob.
 pub use marrow_check::test_support::{

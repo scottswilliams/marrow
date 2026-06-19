@@ -189,8 +189,8 @@ fn aliased_resource_and_identity_annotations_resolve_to_the_owner() {
         );
         write(
             root,
-            "src/audit/query.mw",
-            "module audit::query\n\
+            "src/audit/path.mw",
+            "module audit::path\n\
              use audit::log\n\
              pub fn actor(ev: log::Event): string\n\
              \x20   const id: Id(^events) = nextId(^events)\n\

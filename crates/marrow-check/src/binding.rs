@@ -93,7 +93,7 @@ pub enum RenameSafety {
 }
 
 /// A definition together with every reference to it (the definition included), as
-/// the index records them internally before answering queries.
+/// the index records them internally before answering lookups.
 #[derive(Debug, Clone)]
 struct Binding {
     definition: SymbolRef,

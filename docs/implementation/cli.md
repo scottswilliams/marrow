@@ -88,7 +88,7 @@ Structured reports that include a `project` field render the canonical absolute 
 | File | Responsibility |
 |---|---|
 | `crates/marrow/src/cmd_data.rs` | `data` dispatch, `roots`/`stats`/`dump`, live-or-backup read-target parsing, snapshot pinning, the streaming JSON-array envelope. |
-| `crates/marrow/src/cmd_data/get.rs` | `data get`: one path query, present/absent/children-only rendering. |
+| `crates/marrow/src/cmd_data/get.rs` | `data get`: one saved-data path, present/absent/children-only rendering. |
 | `crates/marrow/src/cmd_data/integrity.rs` | `data integrity`: render typed saved-data findings, including incomplete-record and dangling-reference catalog/key identity fields, and exit FAILURE when any exist. |
 | `crates/marrow-check/src/tooling/integrity.rs` | Shared integrity facts, including `sample_integrity_problems`, the bounded sample used by `doctor` so triage checks record values, completeness, and stored cells under one shared cap instead of running the full integrity scan silently. |
 | `crates/marrow/src/cmd_evolve/mod.rs` | `evolve` dispatch, `preview_cmd`, and `apply_cmd` (the apply rejects managed-artifact backup paths, creates any required recovery backup before the store mutation, publishes the catalog atomically, then renders the project-root catalog file from the committed snapshot). |

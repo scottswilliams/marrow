@@ -12,8 +12,8 @@ the checked facts produced by the language described in
 [Resources And Saved Data](../language/resources-and-storage.md#application-surfaces).
 
 The purpose of this profile is to make Marrow's database-language model usable
-as an application boundary without adding a second query language or a raw saved
-path API. A read operation is derived from the store, index, identity, type, and
+as an application boundary without adding a second saved-data access language or
+a raw saved-path API. A read operation is derived from the store, index, identity, type, and
 projection facts the compiler already checked.
 
 ## Inputs And Stability

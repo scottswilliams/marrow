@@ -184,7 +184,7 @@ pub(crate) struct FilePrelude {
 }
 
 /// Build a file's [`FilePrelude`], in source order so an earlier constant is in
-/// scope for a later one. Both the type pass and editor queries start here, so
+/// scope for a later one. Both the type pass and editor lookups start here, so
 /// the bindings a function body sees are derived in exactly one place.
 pub(crate) fn file_prelude(
     program: &CheckedProgram,

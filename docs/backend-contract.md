@@ -368,7 +368,7 @@ The native redb engine is the only production saved-data backend in v0.1. Any
 other storage engine is an adapter that must implement this same tree-cell
 contract over its own ordered-byte storage; it may map the ordered tree onto
 tables, documents, or engine records internally, but it adds no language
-features and exposes no engine query surface. Adapters and other extensions such
+features and exposes no engine data-access surface. Adapters and other extensions such
 as import/export or host bridges ship as separate packages, never in the default
 install.
 

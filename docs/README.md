@@ -64,7 +64,7 @@ design.
 
 ## Scope And Security
 
-Marrow v0.1 is deliberately bounded. It does not add a second storage query
+Marrow v0.1 is deliberately bounded. It does not add a second saved-data access
 language, a hidden object store, an ORM layer, a SQL-style migration subsystem,
 implicit async syntax, a required background service, a web framework, a remote
 database product, a built-in users-and-roles system, or backend-specific

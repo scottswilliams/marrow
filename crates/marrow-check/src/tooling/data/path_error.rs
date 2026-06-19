@@ -2,11 +2,11 @@ use std::fmt;
 
 use crate::ScalarType;
 
-/// A typed reason a data query, walk, or child page is malformed.
+/// A typed reason a data path, walk, or child page is malformed.
 ///
 /// Every variant is a client-facing request error: the path or page arguments
-/// did not describe a valid query. Server-side faults such as a missing or
-/// malformed checked catalog id are not query malformity; they stay
+/// did not describe a valid path. Server-side faults such as a missing or
+/// malformed checked catalog id are not path malformity; they stay
 /// [`crate::tooling::ToolingError::Store`] so they keep the store code at the
 /// boundary. Each variant carries the structured facts a caller needs (which
 /// root, which member, the expected and found key types) rather than a
@@ -14,7 +14,7 @@ use crate::ScalarType;
 /// through [`fmt::Display`]; callers match on the variant, never on the
 /// rendered text.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum QueryError {
+pub enum DataPathError {
     /// The path did not begin with a saved root segment.
     MissingRoot,
     /// No saved root named `^{root}` is declared.
@@ -57,7 +57,7 @@ pub enum QueryError {
     NoChildScan,
 }
 
-/// Which member-naming flavor a query segment used, so an unknown-member error
+/// Which member-naming flavor a path segment used, so an unknown-member error
 /// can name the same flavor the caller wrote.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MemberFlavor {
@@ -76,7 +76,7 @@ impl MemberFlavor {
     }
 }
 
-impl fmt::Display for QueryError {
+impl fmt::Display for DataPathError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::MissingRoot => {

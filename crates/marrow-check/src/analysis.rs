@@ -1,6 +1,6 @@
 //! The IDE-grade analysis pipeline: discover, read, parse, and check a project's
 //! source into the snapshot editor tooling consumes. The cursor type and scope
-//! queries that read that snapshot live in [`cursor`].
+//! lookups that read that snapshot live in [`cursor`].
 
 use std::collections::HashMap;
 use std::fmt;

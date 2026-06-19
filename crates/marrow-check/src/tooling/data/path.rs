@@ -1,75 +1,77 @@
 use marrow_store::cell::CatalogId;
 use marrow_store::key::SavedKey;
-use marrow_store::tree::DataPathSegment;
+use marrow_store::tree::DataPathSegment as StoreDataPathSegment;
 
 use crate::tooling::ToolingError;
 use crate::{CheckedProgram, CheckedSavedMemberKind, StoreLeafKind, checked_saved_root_place};
 
-use super::query_error::QueryError;
-use super::render::render_query_segments;
-use super::shape::{QueryMemberKind, key_mismatch, query_segment_for_member, tooling_catalog_id};
-use super::{DataQuery, DataQuerySegment};
+use super::path_error::DataPathError;
+use super::render::render_data_path_segments;
+use super::shape::{
+    PathMemberKind, data_path_segment_for_member, key_mismatch, tooling_catalog_id,
+};
+use super::{DataPathSegment, ResolvedDataPath};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct StorageDataQuery {
+pub(crate) struct StorageDataPath {
     pub(crate) store: CatalogId,
     pub(crate) identity: Vec<SavedKey>,
     pub(crate) identity_arity: usize,
     pub(crate) identity_key_scalars: Vec<Option<crate::ScalarType>>,
-    pub(crate) data_path: Vec<DataPathSegment>,
+    pub(crate) data_path: Vec<StoreDataPathSegment>,
     pub(crate) data_key_scalars: Vec<Option<crate::ScalarType>>,
     pub(crate) data_key_prefix_len: usize,
 }
 
-pub fn resolve_data_query(
+pub fn resolve_data_path(
     program: &CheckedProgram,
-    segments: &[DataQuerySegment],
-) -> Result<Option<DataQuery>, ToolingError> {
-    let steps: Vec<QuerySegment<'_>> = segments.iter().map(QuerySegment::from_data).collect();
-    resolve_query_steps(program, render_query_segments(segments), &steps)
+    segments: &[DataPathSegment],
+) -> Result<Option<ResolvedDataPath>, ToolingError> {
+    let steps: Vec<DataPathStep<'_>> = segments.iter().map(DataPathStep::from_data).collect();
+    resolve_data_path_steps(program, render_data_path_segments(segments), &steps)
 }
 
-pub fn resolve_source_text_data_query(
+pub fn resolve_source_text_data_path(
     program: &CheckedProgram,
     segments: &[crate::PathSegment],
-) -> Result<Option<DataQuery>, ToolingError> {
-    let steps: Vec<QuerySegment<'_>> = segments
+) -> Result<Option<ResolvedDataPath>, ToolingError> {
+    let steps: Vec<DataPathStep<'_>> = segments
         .iter()
-        .map(QuerySegment::from_source_text)
+        .map(DataPathStep::from_source_text)
         .collect();
-    resolve_query_steps(program, crate::display_path(segments), &steps)
+    resolve_data_path_steps(program, crate::display_path(segments), &steps)
 }
 
-fn resolve_query_steps(
+fn resolve_data_path_steps(
     program: &CheckedProgram,
     path: String,
-    segments: &[QuerySegment<'_>],
-) -> Result<Option<DataQuery>, ToolingError> {
-    let Some((QuerySegment::Root(root), rest)) = segments.split_first() else {
-        return Err(QueryError::MissingRoot.into());
+    segments: &[DataPathStep<'_>],
+) -> Result<Option<ResolvedDataPath>, ToolingError> {
+    let Some((DataPathStep::Root(root), rest)) = segments.split_first() else {
+        return Err(DataPathError::MissingRoot.into());
     };
     let place = checked_saved_root_place(program, root, marrow_syntax::SourceSpan::default())
-        .ok_or_else(|| QueryError::UnknownRoot {
+        .ok_or_else(|| DataPathError::UnknownRoot {
             root: (*root).to_string(),
         })?;
     let Some(store) = tooling_catalog_id(&place.store_catalog_id, "store")? else {
         return Ok(None);
     };
     let mut identity = Vec::new();
-    let mut rendered_segments = vec![DataQuerySegment::Root((*root).to_string())];
+    let mut rendered_segments = vec![DataPathSegment::Root((*root).to_string())];
     let mut index = 0usize;
     while let Some(segment) = rest.get(index) {
-        let Some(key) = query_key(segment) else {
+        let Some(key) = data_path_key(segment) else {
             break;
         };
         if identity.len() == place.identity_keys.len() {
-            return Err(QueryError::TooManyIdentityKeys {
+            return Err(DataPathError::TooManyIdentityKeys {
                 root: (*root).to_string(),
             }
             .into());
         }
         if let Some(mismatch) = key_mismatch(place.identity_keys[identity.len()].scalar, key) {
-            return Err(QueryError::IdentityKeyType {
+            return Err(DataPathError::IdentityKeyType {
                 root: (*root).to_string(),
                 expected: mismatch.expected,
                 found: mismatch.found,
@@ -77,11 +79,11 @@ fn resolve_query_steps(
             .into());
         }
         identity.push(key.clone());
-        rendered_segments.push(DataQuerySegment::Key(key.clone()));
+        rendered_segments.push(DataPathSegment::Key(key.clone()));
         index += 1;
     }
     if index < rest.len() && identity.len() != place.identity_keys.len() {
-        return Err(QueryError::MissingIdentityKeys {
+        return Err(DataPathError::MissingIdentityKeys {
             root: (*root).to_string(),
             expected: place.identity_keys.len(),
         }
@@ -95,44 +97,44 @@ fn resolve_query_steps(
     let mut members = place.root_members.as_slice();
     let mut leaf: Option<StoreLeafKind> = None;
     while let Some(segment) = rest.get(index) {
-        let Some((name, kind)) = query_member(segment) else {
-            return Err(QueryError::UnexpectedKey.into());
+        let Some((name, kind)) = data_path_member(segment) else {
+            return Err(DataPathError::UnexpectedKey.into());
         };
         let member = members
             .iter()
             .find(|member| member.name == *name && kind.matches(member))
-            .ok_or_else(|| QueryError::UnknownMember {
+            .ok_or_else(|| DataPathError::UnknownMember {
                 flavor: kind.flavor(),
                 name: name.to_string(),
             })?;
-        rendered_segments.push(query_segment_for_member(member));
+        rendered_segments.push(data_path_segment_for_member(member));
         let Some(member_id) = tooling_catalog_id(&member.catalog_id, "resource member")? else {
             return Ok(None);
         };
-        data_path.push(DataPathSegment::Member(member_id));
+        data_path.push(StoreDataPathSegment::Member(member_id));
         data_key_scalars = member.key_params.iter().map(|param| param.scalar).collect();
         data_key_prefix_len = 0;
         leaf = None;
         index += 1;
 
         let mut key_count = 0usize;
-        while let Some(key) = rest.get(index).and_then(query_key) {
+        while let Some(key) = rest.get(index).and_then(data_path_key) {
             if key_count == member.key_params.len() {
-                return Err(QueryError::TooManyMemberKeys {
+                return Err(DataPathError::TooManyMemberKeys {
                     member: name.to_string(),
                 }
                 .into());
             }
             if let Some(mismatch) = key_mismatch(member.key_params[key_count].scalar, key) {
-                return Err(QueryError::MemberKeyType {
+                return Err(DataPathError::MemberKeyType {
                     member: name.to_string(),
                     expected: mismatch.expected,
                     found: mismatch.found,
                 }
                 .into());
             }
-            data_path.push(DataPathSegment::Key(key.clone()));
-            rendered_segments.push(DataQuerySegment::Key(key.clone()));
+            data_path.push(StoreDataPathSegment::Key(key.clone()));
+            rendered_segments.push(DataPathSegment::Key(key.clone()));
             key_count += 1;
             data_key_prefix_len = key_count;
             index += 1;
@@ -140,7 +142,7 @@ fn resolve_query_steps(
 
         if key_count < member.key_params.len() {
             if index < rest.len() {
-                return Err(QueryError::IncompleteMemberKeys {
+                return Err(DataPathError::IncompleteMemberKeys {
                     member: name.to_string(),
                 }
                 .into());
@@ -161,12 +163,12 @@ fn resolve_query_steps(
         };
     }
 
-    Ok(Some(DataQuery::new(
+    Ok(Some(ResolvedDataPath::new(
         path,
         (*root).to_string(),
         rendered_segments,
         leaf,
-        StorageDataQuery {
+        StorageDataPath {
             store,
             identity,
             identity_arity: place.identity_keys.len(),
@@ -179,26 +181,26 @@ fn resolve_query_steps(
 }
 
 #[derive(Clone, Copy)]
-enum QuerySegment<'a> {
+enum DataPathStep<'a> {
     Root(&'a str),
-    Member(&'a str, QueryMemberKind),
+    Member(&'a str, PathMemberKind),
     Key(&'a SavedKey),
 }
 
-impl<'a> QuerySegment<'a> {
-    fn from_data(segment: &'a DataQuerySegment) -> Self {
+impl<'a> DataPathStep<'a> {
+    fn from_data(segment: &'a DataPathSegment) -> Self {
         match segment {
-            DataQuerySegment::Root(name) => Self::Root(name),
-            DataQuerySegment::Field(name) => Self::Member(name, QueryMemberKind::Field),
-            DataQuerySegment::Layer(name) => Self::Member(name, QueryMemberKind::Layer),
-            DataQuerySegment::Key(key) => Self::Key(key),
+            DataPathSegment::Root(name) => Self::Root(name),
+            DataPathSegment::Field(name) => Self::Member(name, PathMemberKind::Field),
+            DataPathSegment::Layer(name) => Self::Member(name, PathMemberKind::Layer),
+            DataPathSegment::Key(key) => Self::Key(key),
         }
     }
 
     fn from_source_text(segment: &'a crate::PathSegment) -> Self {
         match segment {
             crate::PathSegment::Root(name) => Self::Root(name),
-            crate::PathSegment::Field(name) => Self::Member(name, QueryMemberKind::SourceText),
+            crate::PathSegment::Field(name) => Self::Member(name, PathMemberKind::SourceText),
             crate::PathSegment::RecordKey(key) | crate::PathSegment::IndexKey(key) => {
                 Self::Key(key)
             }
@@ -206,21 +208,21 @@ impl<'a> QuerySegment<'a> {
     }
 }
 
-fn query_key<'a>(segment: &QuerySegment<'a>) -> Option<&'a SavedKey> {
+fn data_path_key<'a>(segment: &DataPathStep<'a>) -> Option<&'a SavedKey> {
     match segment {
-        QuerySegment::Key(key) => Some(key),
-        QuerySegment::Root(_) | QuerySegment::Member(_, _) => None,
+        DataPathStep::Key(key) => Some(key),
+        DataPathStep::Root(_) | DataPathStep::Member(_, _) => None,
     }
 }
 
-fn query_member<'a>(segment: &QuerySegment<'a>) -> Option<(&'a str, QueryMemberKind)> {
+fn data_path_member<'a>(segment: &DataPathStep<'a>) -> Option<(&'a str, PathMemberKind)> {
     match segment {
-        QuerySegment::Member(name, kind) => Some((name, *kind)),
-        QuerySegment::Root(_) | QuerySegment::Key(_) => None,
+        DataPathStep::Member(name, kind) => Some((name, *kind)),
+        DataPathStep::Root(_) | DataPathStep::Key(_) => None,
     }
 }
 
-pub fn data_query_under_prefix(candidate: &DataQuery, prefix: &DataQuery) -> bool {
+pub fn data_path_under_prefix(candidate: &ResolvedDataPath, prefix: &ResolvedDataPath) -> bool {
     candidate.root == prefix.root
         && candidate.storage.store == prefix.storage.store
         && candidate.storage.identity_arity == prefix.storage.identity_arity

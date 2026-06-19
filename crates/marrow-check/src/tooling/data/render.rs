@@ -1,10 +1,10 @@
 use std::collections::HashMap;
 
 use marrow_store::key::{SavedKey, decode_identity_payload_arity};
-use marrow_store::tree::{DataPathSegment, decode_tree_enum_member};
+use marrow_store::tree::{DataPathSegment as StoreDataPathSegment, decode_tree_enum_member};
 use marrow_store::value::{SavedValue, decode_value, encode_value};
 
-use super::{DataQuery, DataQuerySegment, DataValuePreview};
+use super::{DataPathSegment, DataValuePreview, ResolvedDataPath};
 use crate::hex::push_lower_hex;
 use crate::{CheckedProgram, EnumId, StoreLeafKind, identity_leaf_key_mismatch};
 
@@ -12,19 +12,19 @@ const UNDECLARED_MEMBER: &str = "<undeclared member>";
 const LOWER_HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
 const TRUNCATION_MARKER: &str = "...";
 
-pub fn render_query_segments(segments: &[DataQuerySegment]) -> String {
+pub fn render_data_path_segments(segments: &[DataPathSegment]) -> String {
     let mut text = String::new();
     for segment in segments {
         match segment {
-            DataQuerySegment::Root(name) => {
+            DataPathSegment::Root(name) => {
                 text.push('^');
                 text.push_str(name);
             }
-            DataQuerySegment::Field(name) | DataQuerySegment::Layer(name) => {
+            DataPathSegment::Field(name) | DataPathSegment::Layer(name) => {
                 text.push('.');
                 text.push_str(name);
             }
-            DataQuerySegment::Key(key) => {
+            DataPathSegment::Key(key) => {
                 push_key(&mut text, key);
             }
         }
@@ -43,19 +43,19 @@ pub(crate) fn push_member(path: &mut String, name: &str) -> usize {
 /// resolving each member's catalog id to its declared source name.
 pub(crate) fn render_data_path(
     text: &mut String,
-    path: &[DataPathSegment],
+    path: &[StoreDataPathSegment],
     names: &HashMap<String, String>,
 ) {
     for segment in path {
         match segment {
-            DataPathSegment::Member(member) => {
+            StoreDataPathSegment::Member(member) => {
                 let name = names
                     .get(member.as_str())
                     .map(String::as_str)
                     .unwrap_or(UNDECLARED_MEMBER);
                 push_member(text, name);
             }
-            DataPathSegment::Key(key) => {
+            StoreDataPathSegment::Key(key) => {
                 push_key(text, key);
             }
         }
@@ -85,25 +85,25 @@ pub fn render_data_value(program: &CheckedProgram, leaf: &StoreLeafKind, bytes: 
     }
 }
 
-pub fn render_data_query_value(
+pub fn render_data_path_value(
     program: &CheckedProgram,
-    query: &DataQuery,
+    path: &ResolvedDataPath,
     bytes: &[u8],
 ) -> String {
-    match query.leaf() {
+    match path.leaf() {
         Some(leaf) => render_data_value(program, leaf, bytes),
         None => render_hex_value(bytes),
     }
 }
 
-pub(super) fn render_data_query_value_prefix_preview(
+pub(super) fn render_data_path_value_prefix_preview(
     program: &CheckedProgram,
-    query: &DataQuery,
+    path: &ResolvedDataPath,
     bytes: &[u8],
     bytes_truncated: bool,
     limit: usize,
 ) -> DataValuePreview {
-    match query.leaf() {
+    match path.leaf() {
         Some(leaf) => {
             render_data_value_prefix_preview(program, leaf, bytes, bytes_truncated, limit)
         }
@@ -200,9 +200,9 @@ fn render_identity_value(
         return None;
     }
     let mut segments = Vec::with_capacity(1 + keys.len());
-    segments.push(DataQuerySegment::Root(store_root.to_string()));
-    segments.extend(keys.into_iter().map(DataQuerySegment::Key));
-    Some(render_query_segments(&segments))
+    segments.push(DataPathSegment::Root(store_root.to_string()));
+    segments.extend(keys.into_iter().map(DataPathSegment::Key));
+    Some(render_data_path_segments(&segments))
 }
 
 fn render_identity_value_preview(
@@ -443,8 +443,8 @@ mod tests {
     use marrow_store::key::{SavedKey, encode_identity_payload};
 
     use super::{
-        DataQuerySegment, render_data_value, render_data_value_prefix_preview,
-        render_data_value_preview, render_hex_value_preview, render_query_segments,
+        DataPathSegment, render_data_path_segments, render_data_value,
+        render_data_value_prefix_preview, render_data_value_preview, render_hex_value_preview,
         render_string_value_preview,
     };
     use crate::{CheckedProgram, StoreLeafKind};
@@ -452,11 +452,11 @@ mod tests {
     #[test]
     fn out_of_range_temporal_keys_render_without_panicking() {
         assert_eq!(
-            render_query_segments(&[DataQuerySegment::Key(SavedKey::Date(i32::MIN))]),
+            render_data_path_segments(&[DataPathSegment::Key(SavedKey::Date(i32::MIN))]),
             "(Date(-2147483648))"
         );
         assert_eq!(
-            render_query_segments(&[DataQuerySegment::Key(SavedKey::Instant(i128::MAX))]),
+            render_data_path_segments(&[DataPathSegment::Key(SavedKey::Instant(i128::MAX))]),
             "(Instant(170141183460469231731687303715884105727))"
         );
     }
@@ -556,9 +556,9 @@ mod tests {
         let key = SavedKey::Str("cafe\u{0301}".into());
         let payload = encode_identity_payload(std::slice::from_ref(&key));
         let full = render_data_value(&program, &leaf, &payload);
-        let rendered_segments = render_query_segments(&[
-            DataQuerySegment::Root("books".into()),
-            DataQuerySegment::Key(key),
+        let rendered_segments = render_data_path_segments(&[
+            DataPathSegment::Root("books".into()),
+            DataPathSegment::Key(key),
         ]);
         let preview = render_data_value_preview(&program, &leaf, &payload, 128);
 

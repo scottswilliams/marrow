@@ -1,5 +1,5 @@
 //! Output builtins, saved scalar field reads through the runtime, the
-//! whole-resource required-field rule, and exists/coalesce presence queries.
+//! whole-resource required-field rule, and exists/coalesce presence checks.
 
 use crate::support;
 use support::*;
@@ -256,9 +256,9 @@ fn whole_resource_coalesce_rejects_a_present_malformed_record() {
     );
 }
 
-/// A program that queries saved `Book` data with `exists` and the `??`
+/// A program that reads saved `Book` data with `exists` and the `??`
 /// absence-default.
-const BOOK_QUERY: &str = "\
+const BOOK_READ: &str = "\
 resource Book
     required title: string
     subtitle: string
@@ -279,7 +279,7 @@ pub fn subtitle_or(id: int, fallback: string): string
 
 #[test]
 fn exists_reports_record_and_field_presence() {
-    let program = checked_program(BOOK_QUERY);
+    let program = checked_program(BOOK_READ);
     let store = store_with_title(&program, 1, "Mort");
     let value = |entry, id| {
         run_entry(&store, checked_entry!(&program, entry, Value::Int(id)))
@@ -296,7 +296,7 @@ fn exists_reports_record_and_field_presence() {
 
 #[test]
 fn coalesce_returns_the_default_for_an_absent_field() {
-    let program = checked_program(BOOK_QUERY);
+    let program = checked_program(BOOK_READ);
     let store = store_with_title(&program, 1, "Mort"); // subtitle is absent
     let value = run_entry(
         &store,
@@ -314,7 +314,7 @@ fn coalesce_returns_the_default_for_an_absent_field() {
 
 #[test]
 fn coalesce_returns_the_value_when_present() {
-    let program = checked_program(BOOK_QUERY);
+    let program = checked_program(BOOK_READ);
     let store = store_with_title(&program, 1, "Mort");
     // Populate the sparse subtitle directly.
     write_data_value(

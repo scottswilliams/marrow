@@ -139,7 +139,7 @@ retire path.
 The accepted catalog is the fixed `marrow.catalog.json` artifact in the project
 root, with a private copy in the store as the crash bridge for state-establishing
 commands. It has no `marrow.json` input and is not Marrow language data — there
-is no `^catalog` root, resource, query, standard-library, or data-CLI surface
+is no `^catalog` root, resource, standard-library, or data-CLI surface
 that can read, scan, or mutate it.
 
 The snapshot records its catalog epoch and digest. Each entry records:

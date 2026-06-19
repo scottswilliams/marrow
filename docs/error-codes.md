@@ -182,7 +182,7 @@ over every configured source and test file.
 | `check.range` | A range-for header is ill-formed: the endpoints are not the same steppable type, or the `by` step does not match them (an `int` for `int`, a positive duration for `date`/`instant`). `instant` requires an explicit step; a zero step, a literal step pointing away from literal endpoints (a dead loop), a negated duration on a temporal range, or a `by` on a non-range iterable is rejected. |
 | `check.range_value` | A range expression appears outside a `for` iterable. Ranges are loop shapes, not values. |
 | `check.collection_unsupported` | A collection operation uses a shape v0.1 does not support: `values` or `entries` on an address-only index branch, a generated index branch as a resource member/call chain, or a hidden lookup with no matching declared index. Missing-index diagnostics may render an `add: index ...` remedy. |
-| `check.read_only_expression_context` | A checked read-only expression query names a module or program context that does not exist. |
+| `check.read_only_expression_context` | A checked read-only expression request names a module or program context that does not exist. |
 | `check.read_only_expression_write` | A checked read-only expression would write or allocate saved data, or open a transaction. |
 | `check.read_only_expression_host_effect` | A checked read-only expression would call a host-effecting operation. |
 | `check.read_only_expression_unindexed_lookup` | A checked read-only expression would traverse a saved collection without a declared index. |

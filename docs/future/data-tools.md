@@ -6,7 +6,7 @@ A future app-server or local tooling host may own the write-capable store handle
 and issue multiple read-only inspection handles inside that host. Each reader
 pins a stable snapshot and exposes only typed, bounded or pageable facts from
 checked source and catalog metadata. Readers do not expose raw saved paths,
-physical keys, or an engine query surface, and writes still enter the single
+physical keys, or an engine data-access surface, and writes still enter the single
 writer queue.
 
 This is not the v0.1 native file-open contract. v0.1 ships no `Sync`

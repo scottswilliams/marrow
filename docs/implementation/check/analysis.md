@@ -7,12 +7,12 @@ and CLI views cannot drift from the checked program.
 
 Two halves live in `crates/marrow-check/src`:
 
-- **`analysis`** runs the IDE-grade pipeline (discover, overlay-or-disk read, parse, check source roots plus configured tests) into an `AnalysisSnapshot` that retains every parse, error files included, and answers cursor queries (`type_at`/`scope_at`) by reconstructing the checker's lexical scope without emitting diagnostics.
-- **`tooling`** turns a `CheckedProgram` plus a `TreeStore` into typed saved-data facts: schema-validated path queries, paged child/walk traversal, and integrity verdicts.
+- **`analysis`** runs the IDE-grade pipeline (discover, overlay-or-disk read, parse, check source roots plus configured tests) into an `AnalysisSnapshot` that retains every parse, error files included, and answers cursor lookups (`type_at`/`scope_at`) by reconstructing the checker's lexical scope without emitting diagnostics.
+- **`tooling`** turns a `CheckedProgram` plus a `TreeStore` into typed saved-data facts: schema-validated path resolution, paged child/walk traversal, and integrity verdicts.
 
 `CheckedProgram` also exposes the static entry footprint surface built from
 checked facts: `effect_closure`, `entry_footprints`, `entry_cost_shapes`, and
-`entry_store_open_mode`. These queries expand lowered direct callee refs, not
+`entry_store_open_mode`. These APIs expand lowered direct callee refs, not
 source names, and report typed store/index ids plus the
 `write_effects_reachable` bit. Store-open classification also stays
 write-capable for first-run catalogs, pending catalog proposals, and reachable
@@ -31,8 +31,8 @@ wins.
 
 ## Analysis API contract
 
-The analysis API contract consumed by `marrow-lsp` is read-only, query-native,
-and snapshot-scoped. `AnalysisIdentity` is the source/config content identity;
+The analysis API contract consumed by `marrow-lsp` is read-only and
+snapshot-scoped. `AnalysisIdentity` is the source/config content identity;
 catalog-bound views must not treat it as a catalog or stable-ABI cache key. The
 API exposes checker facts and checker-faithful derived views; it does not parse
 language structure a second time, infer facts from diagnostic prose, or open,
@@ -100,7 +100,7 @@ spans.
 
 ## Tooling facts
 
-Path resolution is the single chokepoint: `resolve_query_steps` validates source-text or wire segments against a checked place's identity keys and member tree into a `StorageDataQuery` (physical store `CatalogId`, identity keys, data path), emitting typed `QueryError` on malformity. `ToolingError` keeps request-malformity (`Query`) distinct from store faults (`Store`); a missing or malformed checked catalog id stays `StoreError::Corruption` on purpose. Callers match variants, never prose.
+Path resolution is the single chokepoint: `resolve_data_path_steps` validates source-text or wire segments against a checked place's identity keys and member tree into a `StorageDataPath` (physical store `CatalogId`, identity keys, data path), emitting typed `DataPathError` on malformity. `ToolingError` keeps request malformity (`Path`) distinct from store faults (`Store`); a missing or malformed checked catalog id stays `StoreError::Corruption` on purpose. Callers match variants, never prose.
 
 `shape.rs::classify_data_path` is the one member-tree shape owner, so the walk cursor's value-position test and integrity orphan detection share a single definition of "declared value path." Every walk and child listing pages with explicit limits, resume cursors, and truncated flags; counts use `checked_add` into `StoreError::LimitExceeded`. Integrity separates declared values (decode, key-type, enum-membership, and canonical identity referent checks against schema and catalog), declared-shape completeness (accepted required fields on existing records and keyed entries), and orphan cells (data under a root/shape/member the schema no longer declares, or under a record identity with no node cell), each a typed `IntegrityProblem` with a stable code.
 
@@ -114,9 +114,9 @@ guessing whether a difference came from the store or the editor snapshot.
 `store_snapshot`. Multi-pass commands and lower-level tooling tests still call
 the un-stamped reader primitives under their own broader snapshot.
 
-Raw/admin reads and preview reads are intentionally separate. `read_data_query`
+Raw/admin reads and preview reads are intentionally separate. `read_data_path`
 uses `TreeStore::read_data_value` and returns a full `DebugDataPayload` for
-debug/admin byte inspection. `preview_data_query` uses
+debug/admin byte inspection. `preview_data_path` uses
 `TreeStore::read_data_value_prefix` after clamping the requested budget, so
 preview callers do not materialize a whole saved cell before applying their
 budget. Both reads share the same `DataPresence` decision.
@@ -140,17 +140,17 @@ add only transport availability and request-envelope concerns around those DTOs.
 
 | File | Responsibility |
 | --- | --- |
-| `crates/marrow-check/src/analysis.rs` | Two-pass IDE analysis core: discover + overlay + parse + check into `AnalysisSnapshot`, enforce module/script/root-owner uniqueness, run the shared checker tail, compute test-resolution suppression, and build snapshot-bound use-site and surface-operation query views. |
-| `crates/marrow-check/src/program.rs` | Checked-program artifact plus analysis queries for effect closure, per-entry durable footprints, entry cost shape, entry store-open mode, and checked read-only expressions. |
+| `crates/marrow-check/src/analysis.rs` | Two-pass IDE analysis core: discover + overlay + parse + check into `AnalysisSnapshot`, enforce module/script/root-owner uniqueness, run the shared checker tail, compute test-resolution suppression, and build snapshot-bound use-site and surface-operation views. |
+| `crates/marrow-check/src/program.rs` | Checked-program artifact plus analysis APIs for effect closure, per-entry durable footprints, entry cost shape, entry store-open mode, and checked read-only expressions. |
 | `crates/marrow-check/src/analysis/cursor.rs` | Cursor `type_at`/`scope_at`: replay the checker's binding primitives to rebuild lexical scope, infer the tightest covering expression; records no diagnostics. |
 | `crates/marrow-check/src/evolution/preview.rs` | Schema-only and backup-backed `WitnessFactSet` preview facts for tooling. |
-| `crates/marrow-check/src/tooling/mod.rs` | Tooling facade: re-exports the data/integrity API; defines `ToolingError` (Query vs Store). |
-| `crates/marrow-check/src/tooling/data/mod.rs` | Data tooling root and shared value types (`DataQuery`, `DataChild`, `DataEntry`, `DataWalkPage`, `DataReadResult`, `DataRecord`, `StampedData`, `DataSnapshotStamp`, `DataCommitStamp`, `KeyMismatch`, `MAX_PREVIEW_ITEMS`, `DEFAULT_VALUE_PREVIEW_LIMIT`, `MAX_VALUE_PREVIEW_LIMIT`). |
-| `crates/marrow-check/src/tooling/data/query.rs` | Path resolution: walk wire/source segments into a `StorageDataQuery` with typed `QueryError`; `data_query_under_prefix` containment. |
-| `crates/marrow-check/src/tooling/data/query_error.rs` | The `QueryError` enum (client-facing request errors) and `MemberFlavor`, with render-only `Display`. |
+| `crates/marrow-check/src/tooling/mod.rs` | Tooling facade: re-exports the data/integrity API; defines `ToolingError` (Path vs Store). |
+| `crates/marrow-check/src/tooling/data/mod.rs` | Data tooling root and shared value types (`ResolvedDataPath`, `DataChild`, `DataEntry`, `DataWalkPage`, `DataReadResult`, `DataRecord`, `StampedData`, `DataSnapshotStamp`, `DataCommitStamp`, `KeyMismatch`, `MAX_PREVIEW_ITEMS`, `DEFAULT_VALUE_PREVIEW_LIMIT`, `MAX_VALUE_PREVIEW_LIMIT`). |
+| `crates/marrow-check/src/tooling/data/path.rs` | Path resolution: walk wire/source segments into a `StorageDataPath` with typed `DataPathError`; `data_path_under_prefix` containment. |
+| `crates/marrow-check/src/tooling/data/path_error.rs` | The `DataPathError` enum (client-facing request errors) and `MemberFlavor`, with render-only `Display`. |
 | `crates/marrow-check/src/tooling/data/shape.rs` | The single member-tree shape classifier `classify_data_path` and its consumers (walk-cursor value test, integrity orphan detection). |
 | `crates/marrow-check/src/tooling/data/record_nav.rs` | Arity-aware record-child navigation for tooling scans, so partial identity prefixes only surface when an exact declared-arity record exists below them. |
-| `crates/marrow-check/src/tooling/data/read.rs` | `read_data_query`: resolve one query to its full raw payload and `DataPresence` (Absent/ValueOnly/ChildrenOnly); `preview_data_query`: resolve the same query to a bounded `DataValuePreview` through a store prefix read. |
+| `crates/marrow-check/src/tooling/data/read.rs` | `read_data_path`: resolve one path to its full raw payload and `DataPresence` (Absent/ValueOnly/ChildrenOnly); `preview_data_path`: resolve the same path to a bounded `DataValuePreview` through a store prefix read. |
 | `crates/marrow-check/src/tooling/data/children.rs` | Child listing: classify a path into roots/record-children/members/key-children/leaf; return typed next segments and page keyed scans with a resume cursor. |
 | `crates/marrow-check/src/tooling/data/walk.rs` | `walk_data`: paged, filter-prefixed, cursor-resumable depth-first walk of leaf values; emits `DataWalkPage` with a next cursor. |
 | `crates/marrow-check/src/tooling/data/traversal.rs` | Full saved-record traversal: recurse exact-arity identity nodes and member trees, emit a `DataRecord` per stored leaf or a record identity for declared-shape checks; backs counts, roots, and integrity. |
@@ -174,8 +174,8 @@ add only transport availability and request-envelope concerns around those DTOs.
 - `WitnessFactSet` (`evolution/preview.rs`) — schema and optional backup cell
   facts for evolution preview tooling, with live-store preview explicitly
   deferred.
-- `DataQuery` / `StorageDataQuery` (`tooling/data/mod.rs`, `query.rs`) — a resolved, schema-validated path; public display form vs crate-internal physical store form.
-- `QueryError` / `ToolingError` (`query_error.rs`, `tooling/mod.rs`) — typed request malformity vs store faults.
+- `ResolvedDataPath` / `StorageDataPath` (`tooling/data/mod.rs`, `path.rs`) — a resolved, schema-validated path; public display form vs crate-internal physical store form.
+- `DataPathError` / `ToolingError` (`path_error.rs`, `tooling/mod.rs`) — typed request malformity vs store faults.
 - `DataRecord` / `DataPresence` / `DataWalkPage` / `DataChildrenPage` / `DataValuePreview` (`tooling/data/mod.rs`) — the paged data facts carrying truncation and resume cursors, plus bounded saved-value display text for tooling.
 - `StampedData` / `DataSnapshotStamp` / `DataCommitStamp` / `DataReadResult` / `DataPreviewReadResult` (`tooling/data/mod.rs`) — raw and preview value reads under one store snapshot plus typed store UID, catalog digest, optional commit stamp, and checked-program source digest.
 - `IntegrityProblem` / `IntegrityOutcome` / `IntegrityProblemSample`
@@ -195,8 +195,8 @@ add only transport availability and request-envelope concerns around those DTOs.
 ## Read next
 
 - `analysis.rs` → `analyze_source_project` — two-pass assembly, ownership rules, and the shared checker tail that defines a `CheckedProgram`.
-- `tooling/data/query.rs` → `resolve_query_steps` — the single path-resolution authority and origin of every `QueryError`.
+- `tooling/data/path.rs` → `resolve_data_path_steps` — the single path-resolution authority and origin of every `DataPathError`.
 - `tooling/data/walk.rs` → `walk_data` — the most intricate fact:
   cursor-resumable leaf walk across identity and member-key levels.
 - `tooling/data/shape.rs` → `classify_data_path` — the shared shape owner keeping walk and integrity from diverging.
-- `analysis/cursor.rs` → `type_at` / `scope_at` — checker-faithful cursor queries.
+- `analysis/cursor.rs` → `type_at` / `scope_at` — checker-faithful cursor lookups.

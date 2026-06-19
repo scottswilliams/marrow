@@ -1,7 +1,7 @@
 //! `marrow data integrity`: the saved-data integrity verdicts. Problems are asserted
 //! by typed diagnostic code, tooling kind, and structured payloads. Display paths
 //! are checked only where the rendered operator path is the contract. The shared
-//! child-page limit guard is asserted on its typed query error.
+//! child-page limit guard is asserted on its typed path error.
 
 use std::fs;
 use std::path::Path;
@@ -10,11 +10,11 @@ use crate::support;
 use crate::support_data;
 use crate::support_evolve;
 use marrow_check::tooling::{
-    DataChild, DataQuerySegment, QueryError, ToolingError, count_activation_integrity_problems,
-    count_integrity_problems, data_children, read_data_query, resolve_data_query, walk_data,
+    DataChild, DataPathError, DataPathSegment, ToolingError, count_activation_integrity_problems,
+    count_integrity_problems, data_children, read_data_path, resolve_data_path, walk_data,
 };
 use marrow_store::key::SavedKey;
-use marrow_store::tree::{DataPathSegment, TreeStore};
+use marrow_store::tree::{DataPathSegment as StoreDataPathSegment, TreeStore};
 use marrow_store::value::SUPPORTED_DATE_MAX_DAYS;
 use support::write;
 use support_data::{
@@ -59,15 +59,15 @@ fn shared_data_children_rejects_zero_limit() {
     let error = data_children(
         &program,
         &store,
-        &[DataQuerySegment::Root("counter".into())],
+        &[DataPathSegment::Root("counter".into())],
         0,
         None,
     )
     .expect_err("shared child pages reject a zero limit");
 
     assert!(
-        matches!(error, ToolingError::Query(QueryError::ZeroLimit)),
-        "expected a typed zero-limit query error, got {error:?}"
+        matches!(error, ToolingError::Path(DataPathError::ZeroLimit)),
+        "expected a typed zero-limit path error, got {error:?}"
     );
 }
 
@@ -78,8 +78,8 @@ fn shared_data_children_returns_typed_member_segments() {
     let store =
         TreeStore::open(&project.join(".data").join("marrow.redb")).expect("open native store");
     let record = [
-        DataQuerySegment::Root("counter".into()),
-        DataQuerySegment::Key(SavedKey::Int(1)),
+        DataPathSegment::Root("counter".into()),
+        DataPathSegment::Key(SavedKey::Int(1)),
     ];
 
     let page = data_children(&program, &store, &record, 10, None)
@@ -113,23 +113,23 @@ fn shared_data_walk_resumes_across_record_pages_exactly_once() {
     let program = checked_program(&project);
     let store =
         TreeStore::open(&project.join(".data").join("marrow.redb")).expect("open native store");
-    let root = [DataQuerySegment::Root("counter".into())];
-    let query = resolve_data_query(&program, &root)
-        .expect("resolve root query")
-        .expect("root query");
+    let root = [DataPathSegment::Root("counter".into())];
+    let path = resolve_data_path(&program, &root)
+        .expect("resolve root path")
+        .expect("root path");
 
     let expected: Vec<String> = (1..=5).map(|id| format!("^counter({id}).value")).collect();
     let mut collected = Vec::new();
     let mut cursor = None;
     let mut pages = 0;
     loop {
-        let resume = cursor.as_ref().map(|segments: &Vec<DataQuerySegment>| {
-            resolve_data_query(&program, segments)
-                .expect("resolve cursor query")
-                .expect("cursor query")
+        let resume = cursor.as_ref().map(|segments: &Vec<DataPathSegment>| {
+            resolve_data_path(&program, segments)
+                .expect("resolve cursor path")
+                .expect("cursor path")
         });
-        let page = walk_data(&program, &store, &query, resume.as_ref(), 2)
-            .expect("walk a saved-data page");
+        let page =
+            walk_data(&program, &store, &path, resume.as_ref(), 2).expect("walk a saved-data page");
         pages += 1;
         collected.extend(page.entries.iter().map(|entry| entry.path.clone()));
         match page.next_cursor_path {
@@ -175,7 +175,7 @@ fn shared_data_children_resumes_across_key_pages_exactly_once() {
     let program = checked_program(&project);
     let store =
         TreeStore::open(&project.join(".data").join("marrow.redb")).expect("open native store");
-    let root = [DataQuerySegment::Root("counter".into())];
+    let root = [DataPathSegment::Root("counter".into())];
 
     let mut collected = Vec::new();
     let mut resume: Option<SavedKey> = None;
@@ -255,20 +255,20 @@ fn tooling_rejects_malformed_temporal_root_keys() {
     let program = checked_program(&project);
     let store =
         TreeStore::open(&project.join(".data").join("marrow.redb")).expect("open native store");
-    let root = [DataQuerySegment::Root("events".into())];
+    let root = [DataPathSegment::Root("events".into())];
 
     assert_store_corruption(
         data_children(&program, &store, &root, 10, None)
             .expect_err("children rejects malformed root key"),
     );
-    let query = resolve_data_query(&program, &root)
-        .expect("resolve root query")
-        .expect("root query");
+    let path = resolve_data_path(&program, &root)
+        .expect("resolve root path")
+        .expect("root path");
     assert_store_error_corruption(
-        read_data_query(&store, &query).expect_err("read rejects malformed root key"),
+        read_data_path(&store, &path).expect_err("read rejects malformed root key"),
     );
     assert_store_corruption(
-        walk_data(&program, &store, &query, None, 10).expect_err("walk rejects malformed root key"),
+        walk_data(&program, &store, &path, None, 10).expect_err("walk rejects malformed root key"),
     );
     assert_eq!(
         count_integrity_problems(&store, &program)
@@ -301,24 +301,23 @@ fn tooling_rejects_malformed_temporal_layer_keys() {
     let store =
         TreeStore::open(&project.join(".data").join("marrow.redb")).expect("open native store");
     let layer = [
-        DataQuerySegment::Root("events".into()),
-        DataQuerySegment::Key(SavedKey::Date(0)),
-        DataQuerySegment::Layer("notes".into()),
+        DataPathSegment::Root("events".into()),
+        DataPathSegment::Key(SavedKey::Date(0)),
+        DataPathSegment::Layer("notes".into()),
     ];
 
     assert_store_corruption(
         data_children(&program, &store, &layer, 10, None)
             .expect_err("children rejects malformed layer key"),
     );
-    let query = resolve_data_query(&program, &layer)
-        .expect("resolve layer query")
-        .expect("layer query");
+    let path = resolve_data_path(&program, &layer)
+        .expect("resolve layer path")
+        .expect("layer path");
     assert_store_error_corruption(
-        read_data_query(&store, &query).expect_err("read rejects malformed layer key"),
+        read_data_path(&store, &path).expect_err("read rejects malformed layer key"),
     );
     assert_store_corruption(
-        walk_data(&program, &store, &query, None, 10)
-            .expect_err("walk rejects malformed layer key"),
+        walk_data(&program, &store, &path, None, 10).expect_err("walk rejects malformed layer key"),
     );
     assert_eq!(
         count_integrity_problems(&store, &program)
@@ -438,9 +437,9 @@ fn data_integrity_reports_missing_required_child_per_keyed_entry() {
     let note_id = member_path_catalog_id(&place, &["sessions", "note"]);
     let mood_id = member_path_catalog_id(&place, &["sessions", "mood"]);
     let mood_path = vec![
-        DataPathSegment::Member(sessions_id.clone()),
-        DataPathSegment::Key(SavedKey::Int(7)),
-        DataPathSegment::Member(mood_id),
+        StoreDataPathSegment::Member(sessions_id.clone()),
+        StoreDataPathSegment::Key(SavedKey::Int(7)),
+        StoreDataPathSegment::Member(mood_id),
     ];
     write_record_presence(&project, "logs", &[SavedKey::Int(1)]);
     write_tree_value(
@@ -503,8 +502,8 @@ fn data_integrity_accepts_a_keyed_group_entry_node() {
     let place = checked_place(&project, "posts");
     let marker_id = member_path_catalog_id(&place, &["markers"]);
     let marker_path = vec![
-        DataPathSegment::Member(marker_id),
-        DataPathSegment::Key(SavedKey::Int(1)),
+        StoreDataPathSegment::Member(marker_id),
+        StoreDataPathSegment::Key(SavedKey::Int(1)),
     ];
 
     write_tree_node(&project, "posts", &[SavedKey::Int(1)], &marker_path);
@@ -531,15 +530,15 @@ fn data_integrity_reports_path_nodes_outside_keyed_group_entries() {
     );
     let dir = project.to_str().unwrap().to_string();
     let place = checked_place(&project, "items");
-    let label_path = vec![DataPathSegment::Member(member_path_catalog_id(
+    let label_path = vec![StoreDataPathSegment::Member(member_path_catalog_id(
         &place,
         &["label"],
     ))];
     let tag_path = vec![
-        DataPathSegment::Member(member_path_catalog_id(&place, &["tags"])),
-        DataPathSegment::Key(SavedKey::Int(1)),
+        StoreDataPathSegment::Member(member_path_catalog_id(&place, &["tags"])),
+        StoreDataPathSegment::Key(SavedKey::Int(1)),
     ];
-    let meta_path = vec![DataPathSegment::Member(member_path_catalog_id(
+    let meta_path = vec![StoreDataPathSegment::Member(member_path_catalog_id(
         &place,
         &["meta"],
     ))];
@@ -876,7 +875,7 @@ fn data_integrity_reports_an_extra_key_below_a_scalar_field_as_data_orphan() {
     let (project, dir) = seeded_project("data-integrity-orphan-extra-key");
     let place = checked_place(&project, "counter");
     let mut path = field_path(&place, "value");
-    path.push(DataPathSegment::Key(SavedKey::Int(99)));
+    path.push(StoreDataPathSegment::Key(SavedKey::Int(99)));
     write_tree_value(
         &project,
         "counter",

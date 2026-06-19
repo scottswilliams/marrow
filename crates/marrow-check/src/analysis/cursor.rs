@@ -1,4 +1,4 @@
-//! Cursor type and scope queries over a checked program: the read-only surface
+//! Cursor type and scope lookups over a checked program: the read-only surface
 //! editor tooling consumes for hover and completion. These walk the parse the
 //! pipeline already built, reconstructing the cursor's lexical scope exactly as
 //! the checker does, and record no diagnostics.

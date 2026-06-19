@@ -1,85 +1,89 @@
 use marrow_store::cell::CatalogId;
 use marrow_store::key::SavedKey;
-use marrow_store::tree::{DataPathSegment, TreeStore};
+use marrow_store::tree::{DataPathSegment as StoreDataPathSegment, TreeStore};
 
 use crate::tooling::ToolingError;
 use crate::{CheckedProgram, CheckedSavedMember, CheckedSavedMemberKind, checked_saved_root_place};
 
-use super::query::data_query_under_prefix;
-use super::query_error::QueryError;
+use super::path::data_path_under_prefix;
+use super::path_error::DataPathError;
 use super::record_nav;
-use super::render::render_query_segments;
+use super::render::render_data_path_segments;
 use super::shape::{
-    cursor_names_value_path, path_can_match, query_segment_for_member, stored_key_mismatch,
+    cursor_names_value_path, data_path_segment_for_member, path_can_match, stored_key_mismatch,
     tooling_catalog_id,
 };
 use super::{
-    DataEntry, DataQuery, DataQuerySegment, DataWalkPage, DebugDataCursorPath, DebugDataPayload,
+    DataEntry, DataPathSegment, DataWalkPage, DebugDataCursorPath, DebugDataPayload,
+    ResolvedDataPath,
 };
 
 pub fn walk_data(
     program: &CheckedProgram,
     store: &TreeStore,
-    query: &DataQuery,
-    cursor: Option<&DataQuery>,
+    resolved: &ResolvedDataPath,
+    cursor: Option<&ResolvedDataPath>,
     limit: usize,
 ) -> Result<DataWalkPage, ToolingError> {
     if limit == 0 {
-        return Err(QueryError::ZeroLimit.into());
+        return Err(DataPathError::ZeroLimit.into());
     }
-    let place =
-        checked_saved_root_place(program, query.root(), marrow_syntax::SourceSpan::default())
-            .ok_or_else(|| QueryError::UnknownRoot {
-                root: query.root().to_string(),
-            })?;
+    let place = checked_saved_root_place(
+        program,
+        resolved.root(),
+        marrow_syntax::SourceSpan::default(),
+    )
+    .ok_or_else(|| DataPathError::UnknownRoot {
+        root: resolved.root().to_string(),
+    })?;
     let mut state = WalkState::new(limit);
-    let start = cursor.unwrap_or(query);
-    if !data_query_under_prefix(start, query) {
-        return Err(QueryError::CursorOutsidePath.into());
+    let start = cursor.unwrap_or(resolved);
+    if !data_path_under_prefix(start, resolved) {
+        return Err(DataPathError::CursorOutsidePath.into());
     }
-    if cursor.is_some() && start.storage.identity.len() != query.storage.identity_arity {
-        return Err(QueryError::CursorNotAPosition.into());
+    if cursor.is_some() && start.storage.identity.len() != resolved.storage.identity_arity {
+        return Err(DataPathError::CursorNotAPosition.into());
     }
     if cursor.is_some() && !cursor_names_value_path(&place.root_members, &start.storage.data_path) {
-        return Err(QueryError::CursorNotAPosition.into());
+        return Err(DataPathError::CursorNotAPosition.into());
     }
 
     let mut identity = if cursor.is_some() {
         Some(start.storage.identity.clone())
     } else {
-        first_identity_under(store, query, &query.storage.identity)?
+        first_identity_under(store, resolved, &resolved.storage.identity)?
     };
     let mut cursor_pending = cursor.map(|cursor| cursor.storage.data_path.clone());
     while let Some(current) = identity {
-        if !current.starts_with(&query.storage.identity) {
+        if !current.starts_with(&resolved.storage.identity) {
             break;
         }
-        let mut path = Vec::with_capacity(1 + current.len());
-        path.push(DataQuerySegment::Root(query.root().to_string()));
-        path.extend(current.iter().cloned().map(DataQuerySegment::Key));
+        let mut rendered_path = Vec::with_capacity(1 + current.len());
+        rendered_path.push(DataPathSegment::Root(resolved.root().to_string()));
+        rendered_path.extend(current.iter().cloned().map(DataPathSegment::Key));
         let start_path = cursor_pending.take();
         let mut waiting_for_cursor = start_path.is_some();
         walk_members(
             &mut WalkMembers {
                 store,
-                store_id: &query.storage.store,
+                store_id: &resolved.storage.store,
                 identity: &current,
-                filter_prefix: &query.storage.data_path,
+                filter_prefix: &resolved.storage.data_path,
                 start_path: start_path.as_deref(),
                 waiting_for_cursor: &mut waiting_for_cursor,
                 state: &mut state,
             },
             &place.root_members,
             &mut Vec::new(),
-            &mut path,
+            &mut rendered_path,
         )?;
         if waiting_for_cursor {
-            return Err(QueryError::CursorNotAnEntry.into());
+            return Err(DataPathError::CursorNotAnEntry.into());
         }
         if state.next_cursor_path.is_some() {
             break;
         }
-        identity = next_identity_after(store, query, &current)?;
+        identity = next_identity_after(store, resolved, &current)?;
     }
     Ok(DataWalkPage {
         entries: state.entries,
@@ -103,13 +107,13 @@ impl WalkState {
         }
     }
 
-    fn push(&mut self, path: &[DataQuerySegment], value: Vec<u8>) {
+    fn push(&mut self, path: &[DataPathSegment], value: Vec<u8>) {
         if self.entries.len() == self.limit {
             self.next_cursor_path = Some(DebugDataCursorPath::new(path.to_vec()));
             return;
         }
         self.entries.push(DataEntry {
-            path: render_query_segments(path),
+            path: render_data_path_segments(path),
             segments: path.to_vec(),
             payload: DebugDataPayload::new(value),
         });
@@ -120,8 +124,8 @@ struct WalkMembers<'a, 'b> {
     store: &'a TreeStore,
     store_id: &'a CatalogId,
     identity: &'a [SavedKey],
-    filter_prefix: &'a [DataPathSegment],
-    start_path: Option<&'a [DataPathSegment]>,
+    filter_prefix: &'a [StoreDataPathSegment],
+    start_path: Option<&'a [StoreDataPathSegment]>,
     waiting_for_cursor: &'b mut bool,
     state: &'b mut WalkState,
 }
@@ -129,8 +133,8 @@ struct WalkMembers<'a, 'b> {
 fn walk_members(
     walk: &mut WalkMembers<'_, '_>,
     members: &[CheckedSavedMember],
-    data_path: &mut Vec<DataPathSegment>,
-    path: &mut Vec<DataQuerySegment>,
+    data_path: &mut Vec<StoreDataPathSegment>,
+    path: &mut Vec<DataPathSegment>,
 ) -> Result<(), ToolingError> {
     for member in members {
         if walk.state.next_cursor_path.is_some() {
@@ -144,14 +148,14 @@ fn walk_members(
 fn walk_member(
     walk: &mut WalkMembers<'_, '_>,
     member: &CheckedSavedMember,
-    data_path: &mut Vec<DataPathSegment>,
-    path: &mut Vec<DataQuerySegment>,
+    data_path: &mut Vec<StoreDataPathSegment>,
+    path: &mut Vec<DataPathSegment>,
 ) -> Result<(), ToolingError> {
     let Some(catalog) = tooling_catalog_id(&member.catalog_id, "resource member")? else {
         return Ok(());
     };
-    data_path.push(DataPathSegment::Member(catalog));
-    path.push(query_segment_for_member(member));
+    data_path.push(StoreDataPathSegment::Member(catalog));
+    path.push(data_path_segment_for_member(member));
     if path_can_match(data_path, walk.filter_prefix) {
         if member.key_params.is_empty() {
             walk_member_terminal(walk, member, data_path, path)?;
@@ -167,8 +171,8 @@ fn walk_member(
 fn walk_member_keys(
     walk: &mut WalkMembers<'_, '_>,
     member: &CheckedSavedMember,
-    data_path: &mut Vec<DataPathSegment>,
-    path: &mut Vec<DataQuerySegment>,
+    data_path: &mut Vec<StoreDataPathSegment>,
+    path: &mut Vec<DataPathSegment>,
     key_index: usize,
 ) -> Result<(), ToolingError> {
     if key_index == member.key_params.len() {
@@ -198,8 +202,8 @@ fn walk_member_keys(
 fn walk_member_key_run(
     walk: &mut WalkMembers<'_, '_>,
     member: &CheckedSavedMember,
-    data_path: &mut Vec<DataPathSegment>,
-    path: &mut Vec<DataQuerySegment>,
+    data_path: &mut Vec<StoreDataPathSegment>,
+    path: &mut Vec<DataPathSegment>,
     key_index: usize,
     mut child: Option<SavedKey>,
 ) -> Result<(), ToolingError> {
@@ -234,9 +238,12 @@ impl SelectedKey {
     }
 }
 
-fn selected_key(walk: &WalkMembers<'_, '_>, data_path: &[DataPathSegment]) -> Option<SelectedKey> {
+fn selected_key(
+    walk: &WalkMembers<'_, '_>,
+    data_path: &[StoreDataPathSegment],
+) -> Option<SelectedKey> {
     let next_segment = data_path.len();
-    if let Some(DataPathSegment::Key(key)) = walk.filter_prefix.get(next_segment) {
+    if let Some(StoreDataPathSegment::Key(key)) = walk.filter_prefix.get(next_segment) {
         return Some(SelectedKey::Filter(key.clone()));
     }
     if !*walk.waiting_for_cursor {
@@ -244,7 +251,7 @@ fn selected_key(walk: &WalkMembers<'_, '_>, data_path: &[DataPathSegment]) -> Op
     }
     let start_path = walk.start_path?;
     match start_path.get(next_segment) {
-        Some(DataPathSegment::Key(key)) => Some(SelectedKey::Cursor(key.clone())),
+        Some(StoreDataPathSegment::Key(key)) => Some(SelectedKey::Cursor(key.clone())),
         _ => None,
     }
 }
@@ -252,13 +259,13 @@ fn selected_key(walk: &WalkMembers<'_, '_>, data_path: &[DataPathSegment]) -> Op
 fn walk_member_key(
     walk: &mut WalkMembers<'_, '_>,
     member: &CheckedSavedMember,
-    data_path: &mut Vec<DataPathSegment>,
-    path: &mut Vec<DataQuerySegment>,
+    data_path: &mut Vec<StoreDataPathSegment>,
+    path: &mut Vec<DataPathSegment>,
     key_index: usize,
     key: SavedKey,
 ) -> Result<(), ToolingError> {
-    data_path.push(DataPathSegment::Key(key.clone()));
-    path.push(DataQuerySegment::Key(key));
+    data_path.push(StoreDataPathSegment::Key(key.clone()));
+    path.push(DataPathSegment::Key(key));
     if path_can_match(data_path, walk.filter_prefix) {
         walk_member_keys(walk, member, data_path, path, key_index + 1)?;
     }
@@ -270,8 +277,8 @@ fn walk_member_key(
 fn walk_member_keys_after(
     walk: &mut WalkMembers<'_, '_>,
     member: &CheckedSavedMember,
-    data_path: &mut Vec<DataPathSegment>,
-    path: &mut Vec<DataQuerySegment>,
+    data_path: &mut Vec<StoreDataPathSegment>,
+    path: &mut Vec<DataPathSegment>,
     key_index: usize,
     anchor: &SavedKey,
 ) -> Result<(), ToolingError> {
@@ -284,8 +291,8 @@ fn walk_member_keys_after(
 fn walk_member_terminal(
     walk: &mut WalkMembers<'_, '_>,
     member: &CheckedSavedMember,
-    data_path: &mut Vec<DataPathSegment>,
-    path: &mut Vec<DataQuerySegment>,
+    data_path: &mut Vec<StoreDataPathSegment>,
+    path: &mut Vec<DataPathSegment>,
 ) -> Result<(), ToolingError> {
     match &member.kind {
         CheckedSavedMemberKind::Field { .. } => {
@@ -315,35 +322,35 @@ fn walk_member_terminal(
 
 fn first_identity_under(
     store: &TreeStore,
-    query: &DataQuery,
+    path: &ResolvedDataPath,
     prefix: &[SavedKey],
 ) -> Result<Option<Vec<SavedKey>>, ToolingError> {
-    if prefix.len() == query.storage.identity_arity {
+    if prefix.len() == path.storage.identity_arity {
         return Ok(Some(prefix.to_vec()));
     }
     let Some(child) = record_nav::first_record_child(
         store,
-        &query.storage.store,
+        &path.storage.store,
         prefix,
-        query.storage.identity_arity,
+        path.storage.identity_arity,
     )?
     else {
         return Ok(None);
     };
-    stored_key_mismatch(query.storage.identity_key_scalars[prefix.len()], &child)?;
+    stored_key_mismatch(path.storage.identity_key_scalars[prefix.len()], &child)?;
     let mut identity = prefix.to_vec();
     identity.push(child);
-    while identity.len() < query.storage.identity_arity {
+    while identity.len() < path.storage.identity_arity {
         let Some(child) = record_nav::first_record_child(
             store,
-            &query.storage.store,
+            &path.storage.store,
             &identity,
-            query.storage.identity_arity,
+            path.storage.identity_arity,
         )?
         else {
             return Ok(None);
         };
-        stored_key_mismatch(query.storage.identity_key_scalars[identity.len()], &child)?;
+        stored_key_mismatch(path.storage.identity_key_scalars[identity.len()], &child)?;
         identity.push(child);
     }
     Ok(Some(identity))
@@ -351,23 +358,23 @@ fn first_identity_under(
 
 fn next_identity_after(
     store: &TreeStore,
-    query: &DataQuery,
+    path: &ResolvedDataPath,
     identity: &[SavedKey],
 ) -> Result<Option<Vec<SavedKey>>, ToolingError> {
-    for level in (query.storage.identity.len()..identity.len()).rev() {
+    for level in (path.storage.identity.len()..identity.len()).rev() {
         let prefix = &identity[..level];
         let anchor = &identity[level];
         if let Some(next) = record_nav::next_record_child(
             store,
-            &query.storage.store,
+            &path.storage.store,
             prefix,
-            query.storage.identity_arity,
+            path.storage.identity_arity,
             anchor,
         )? {
-            stored_key_mismatch(query.storage.identity_key_scalars[level], &next)?;
+            stored_key_mismatch(path.storage.identity_key_scalars[level], &next)?;
             let mut candidate = prefix.to_vec();
             candidate.push(next);
-            return first_identity_under(store, query, &candidate);
+            return first_identity_under(store, path, &candidate);
         }
     }
     Ok(None)

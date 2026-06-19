@@ -6,10 +6,10 @@ use std::path::PathBuf;
 
 use marrow_check::program::MarrowType;
 use marrow_check::tooling::{
-    DataChild, DataPresence, DataQuerySegment, MAX_VALUE_PREVIEW_LIMIT, resolve_data_query,
+    DataChild, DataPathSegment, DataPresence, MAX_VALUE_PREVIEW_LIMIT, resolve_data_path,
     sample_integrity_problem_details, sample_integrity_problems, stamped_data_children,
-    stamped_data_roots_in_store, stamped_integrity_problem_details, stamped_preview_data_query,
-    stamped_read_data_query,
+    stamped_data_roots_in_store, stamped_integrity_problem_details, stamped_preview_data_path,
+    stamped_read_data_path,
 };
 use marrow_check::{
     CatalogEntryKind, CheckedProgram, ProjectSources, SurfaceCatalogBlocker, SurfaceCatalogStatus,
@@ -21,7 +21,7 @@ use marrow_schema::{SCHEMA_DUPLICATE_MEMBER, ScalarType};
 use marrow_store::cell::CatalogId;
 use marrow_store::key::SavedKey;
 use marrow_store::tree::{
-    CommitMetadata, DataPathSegment, EngineProfile, StoreUid, TreeStore,
+    CommitMetadata, DataPathSegment as StoreDataPathSegment, EngineProfile, StoreUid, TreeStore,
     write_tree_backup_archive_chunk, write_tree_backup_archive_header,
 };
 use marrow_store::value::{SavedValue, encode_value};
@@ -312,10 +312,10 @@ fn type_at_a_cross_module_resource_field_read_uses_the_one_resolver() {
 
 #[test]
 fn type_at_and_scope_at_emit_no_diagnostics() {
-    // The whole point: tooling queries reuse the checker's inference without a
-    // diagnostics sink. The queries take an immutable program and parse and return
+    // The whole point: tooling lookups reuse the checker's inference without a
+    // diagnostics sink. The lookups take an immutable program and parse and return
     // only a type or bindings, so they cannot add to a project's diagnostics; this
-    // test pins that the queries return real answers (so "no diagnostics" is not
+    // test pins that the lookups return real answers (so "no diagnostics" is not
     // vacuous) and that sweeping the buffer never panics.
     let source = "module m\n\
         fn f(title: string)\n    \
@@ -342,14 +342,14 @@ fn type_at_and_scope_at_emit_no_diagnostics() {
     assert!(!scope_at(program, &path, parsed, title).is_empty());
 
     // Sweeping every offset is total and never panics, and leaves the analysis
-    // report it was derived from untouched — the queries have no diagnostics sink.
+    // report it was derived from untouched — the lookups have no diagnostics sink.
     for offset in 0..=source.len() {
         let _ = type_at(program, &path, parsed, offset);
         let _ = scope_at(program, &path, parsed, offset);
     }
     assert_eq!(
         snapshot.report.diagnostics, before,
-        "queries left the report unchanged"
+        "lookups left the report unchanged"
     );
 }
 
@@ -1620,7 +1620,7 @@ fn stamped_data_readers_carry_store_and_checked_snapshot_identity() {
         .write_data_value(
             &store_id,
             &[SavedKey::Int(7)],
-            &[DataPathSegment::Member(title_id)],
+            &[StoreDataPathSegment::Member(title_id)],
             b"Dune".to_vec(),
         )
         .expect("seed title");
@@ -1661,18 +1661,18 @@ fn stamped_data_readers_carry_store_and_checked_snapshot_identity() {
         snapshot.program.source_digest()
     );
 
-    let query = resolve_data_query(
+    let path = resolve_data_path(
         &snapshot.program,
         &[
-            DataQuerySegment::Root("books".to_string()),
-            DataQuerySegment::Key(SavedKey::Int(7)),
-            DataQuerySegment::Field("title".to_string()),
+            DataPathSegment::Root("books".to_string()),
+            DataPathSegment::Key(SavedKey::Int(7)),
+            DataPathSegment::Field("title".to_string()),
         ],
     )
     .expect("valid data path")
     .expect("accepted data path");
     let stamped_value =
-        stamped_read_data_query(&snapshot.program, &store, &query).expect("stamped value read");
+        stamped_read_data_path(&snapshot.program, &store, &path).expect("stamped value read");
 
     assert_eq!(stamped_value.data.presence, DataPresence::ValueOnly);
     assert_eq!(
@@ -1688,7 +1688,7 @@ fn stamped_data_readers_carry_store_and_checked_snapshot_identity() {
     let stamped_record_children = stamped_data_children(
         &snapshot.program,
         &store,
-        &[DataQuerySegment::Root("books".to_string())],
+        &[DataPathSegment::Root("books".to_string())],
         1,
         None,
     )
@@ -1706,8 +1706,8 @@ fn stamped_data_readers_carry_store_and_checked_snapshot_identity() {
         &snapshot.program,
         &store,
         &[
-            DataQuerySegment::Root("books".to_string()),
-            DataQuerySegment::Key(SavedKey::Int(7)),
+            DataPathSegment::Root("books".to_string()),
+            DataPathSegment::Key(SavedKey::Int(7)),
         ],
         10,
         None,
@@ -1785,24 +1785,24 @@ fn stamped_data_preview_is_bounded_and_marks_truncation() {
         .write_data_value(
             &store_id,
             &[SavedKey::Int(7)],
-            &[DataPathSegment::Member(title_id)],
+            &[StoreDataPathSegment::Member(title_id)],
             encode_value(&SavedValue::Str(long_title)).expect("encode title"),
         )
         .expect("seed title");
 
     let stamped_roots =
         stamped_data_roots_in_store(&snapshot.program, &store).expect("stamped roots read");
-    let query = resolve_data_query(
+    let path = resolve_data_path(
         &snapshot.program,
         &[
-            DataQuerySegment::Root("books".to_string()),
-            DataQuerySegment::Key(SavedKey::Int(7)),
-            DataQuerySegment::Field("title".to_string()),
+            DataPathSegment::Root("books".to_string()),
+            DataPathSegment::Key(SavedKey::Int(7)),
+            DataPathSegment::Field("title".to_string()),
         ],
     )
     .expect("valid data path")
     .expect("accepted data path");
-    let stamped = stamped_preview_data_query(&snapshot.program, &store, &query, 24)
+    let stamped = stamped_preview_data_path(&snapshot.program, &store, &path, 24)
         .expect("stamped preview read");
     let preview = stamped.data.preview.expect("value preview");
 
@@ -1813,7 +1813,7 @@ fn stamped_data_preview_is_bounded_and_marks_truncation() {
     assert!(preview.text.ends_with("..."), "{preview:?}");
     assert_eq!(stamped.stamp, stamped_roots.stamp);
 
-    let clamped = stamped_preview_data_query(&snapshot.program, &store, &query, usize::MAX)
+    let clamped = stamped_preview_data_path(&snapshot.program, &store, &path, usize::MAX)
         .expect("clamped preview read");
     let clamped_preview = clamped.data.preview.expect("clamped value preview");
 
@@ -1900,7 +1900,7 @@ fn integrity_problem_samples_share_budget_and_carry_snapshot_identity() {
         .write_data_value(
             &store_id,
             &[SavedKey::Int(1)],
-            &[DataPathSegment::Member(pages_id)],
+            &[StoreDataPathSegment::Member(pages_id)],
             b"not-an-int".to_vec(),
         )
         .expect("seed invalid int");

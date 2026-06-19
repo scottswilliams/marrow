@@ -1,7 +1,7 @@
 use marrow_check::ScalarType;
 use marrow_check::tooling::{
-    DataChild, DataChildrenPage, DataPresence, DataPreviewReadResult, DataQuerySegment,
-    MemberFlavor, QueryError, StampedData, render_query_segments,
+    DataChild, DataChildrenPage, DataPathError, DataPathSegment, DataPresence,
+    DataPreviewReadResult, MemberFlavor, StampedData, render_data_path_segments,
 };
 use marrow_store::StoreError;
 use marrow_store::key::SavedKey;
@@ -177,11 +177,11 @@ pub enum MemberFlavorJson {
 }
 
 impl DataChildrenRequestJson {
-    pub fn into_query_parts(self) -> (Vec<DataQuerySegment>, usize, Option<SavedKey>) {
+    pub fn into_path_parts(self) -> (Vec<DataPathSegment>, usize, Option<SavedKey>) {
         let segments = self
             .segments
             .into_iter()
-            .map(DataQuerySegment::from)
+            .map(DataPathSegment::from)
             .collect();
         let cursor = self.cursor.map(SavedKey::from);
         (segments, self.limit, cursor)
@@ -195,15 +195,15 @@ impl DataReadRequestJson {
             .min(marrow_check::tooling::MAX_VALUE_PREVIEW_LIMIT)
     }
 
-    pub fn into_query_segments(self) -> Vec<DataQuerySegment> {
+    pub fn into_path_segments(self) -> Vec<DataPathSegment> {
         self.segments
             .into_iter()
-            .map(DataQuerySegment::from)
+            .map(DataPathSegment::from)
             .collect()
     }
 }
 
-impl From<DataPathSegmentJson> for DataQuerySegment {
+impl From<DataPathSegmentJson> for DataPathSegment {
     fn from(segment: DataPathSegmentJson) -> Self {
         match segment {
             DataPathSegmentJson::Root(root) => Self::Root(root),
@@ -214,13 +214,13 @@ impl From<DataPathSegmentJson> for DataQuerySegment {
     }
 }
 
-impl From<DataQuerySegment> for DataPathSegmentJson {
-    fn from(segment: DataQuerySegment) -> Self {
+impl From<DataPathSegment> for DataPathSegmentJson {
+    fn from(segment: DataPathSegment) -> Self {
         match segment {
-            DataQuerySegment::Root(root) => Self::Root(root),
-            DataQuerySegment::Field(field) => Self::Field(field),
-            DataQuerySegment::Layer(layer) => Self::Layer(layer),
-            DataQuerySegment::Key(key) => Self::Key(DataKeyJson::from(key)),
+            DataPathSegment::Root(root) => Self::Root(root),
+            DataPathSegment::Field(field) => Self::Field(field),
+            DataPathSegment::Layer(layer) => Self::Layer(layer),
+            DataPathSegment::Key(key) => Self::Key(DataKeyJson::from(key)),
         }
     }
 }
@@ -272,7 +272,7 @@ impl From<DataChild> for DataChildViewJson {
                 label: root,
             },
             DataChild::Key(key) => {
-                let label = render_query_segments(&[DataQuerySegment::Key(key.clone())]);
+                let label = render_data_path_segments(&[DataPathSegment::Key(key.clone())]);
                 Self {
                     segment: DataPathSegmentJson::Key(DataKeyJson::from(key)),
                     label,
@@ -364,13 +364,13 @@ impl From<StoreError> for DataStoreErrorJson {
     }
 }
 
-impl From<QueryError> for DataPathErrorJson {
-    fn from(error: QueryError) -> Self {
+impl From<DataPathError> for DataPathErrorJson {
+    fn from(error: DataPathError) -> Self {
         match error {
-            QueryError::MissingRoot => Self::MissingRoot,
-            QueryError::UnknownRoot { root } => Self::UnknownRoot { root },
-            QueryError::TooManyIdentityKeys { root } => Self::TooManyIdentityKeys { root },
-            QueryError::IdentityKeyType {
+            DataPathError::MissingRoot => Self::MissingRoot,
+            DataPathError::UnknownRoot { root } => Self::UnknownRoot { root },
+            DataPathError::TooManyIdentityKeys { root } => Self::TooManyIdentityKeys { root },
+            DataPathError::IdentityKeyType {
                 root,
                 expected,
                 found,
@@ -379,16 +379,16 @@ impl From<QueryError> for DataPathErrorJson {
                 expected: ScalarTypeJson::from(expected),
                 found: ScalarTypeJson::from(found),
             },
-            QueryError::MissingIdentityKeys { root, expected } => {
+            DataPathError::MissingIdentityKeys { root, expected } => {
                 Self::MissingIdentityKeys { root, expected }
             }
-            QueryError::UnexpectedKey => Self::UnexpectedKey,
-            QueryError::UnknownMember { flavor, name } => Self::UnknownMember {
+            DataPathError::UnexpectedKey => Self::UnexpectedKey,
+            DataPathError::UnknownMember { flavor, name } => Self::UnknownMember {
                 flavor: MemberFlavorJson::from(flavor),
                 name,
             },
-            QueryError::TooManyMemberKeys { member } => Self::TooManyMemberKeys { member },
-            QueryError::MemberKeyType {
+            DataPathError::TooManyMemberKeys { member } => Self::TooManyMemberKeys { member },
+            DataPathError::MemberKeyType {
                 member,
                 expected,
                 found,
@@ -397,13 +397,13 @@ impl From<QueryError> for DataPathErrorJson {
                 expected: ScalarTypeJson::from(expected),
                 found: ScalarTypeJson::from(found),
             },
-            QueryError::IncompleteMemberKeys { member } => Self::IncompleteMemberKeys { member },
-            QueryError::ZeroLimit => Self::ZeroLimit,
-            QueryError::CursorOutsidePath => Self::CursorOutsidePath,
-            QueryError::CursorNotAPosition => Self::CursorNotAPosition,
-            QueryError::CursorNotAnEntry => Self::CursorNotAnEntry,
-            QueryError::MembersTakeNoCursor => Self::MembersTakeNoCursor,
-            QueryError::NoChildScan => Self::NoChildScan,
+            DataPathError::IncompleteMemberKeys { member } => Self::IncompleteMemberKeys { member },
+            DataPathError::ZeroLimit => Self::ZeroLimit,
+            DataPathError::CursorOutsidePath => Self::CursorOutsidePath,
+            DataPathError::CursorNotAPosition => Self::CursorNotAPosition,
+            DataPathError::CursorNotAnEntry => Self::CursorNotAnEntry,
+            DataPathError::MembersTakeNoCursor => Self::MembersTakeNoCursor,
+            DataPathError::NoChildScan => Self::NoChildScan,
         }
     }
 }
@@ -453,7 +453,7 @@ mod i128_string {
 #[cfg(test)]
 mod tests {
     use marrow_check::tooling::{
-        DataChild, DataChildrenPage, DataPresence, DataPreviewReadResult, DataQuerySegment,
+        DataChild, DataChildrenPage, DataPathSegment, DataPresence, DataPreviewReadResult,
         DataSnapshotStamp, DataValuePreview, MAX_VALUE_PREVIEW_LIMIT, StampedData,
     };
     use marrow_store::key::SavedKey;
@@ -485,10 +485,10 @@ mod tests {
             })
         );
         assert_eq!(
-            DataQuerySegment::from(DataPathSegmentJson::Key(DataKeyJson::String(
+            DataPathSegment::from(DataPathSegmentJson::Key(DataKeyJson::String(
                 "alpha".into()
             ))),
-            DataQuerySegment::Key(SavedKey::Str("alpha".into()))
+            DataPathSegment::Key(SavedKey::Str("alpha".into()))
         );
 
         let omitted_limit = DataReadRequestJson {

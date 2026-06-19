@@ -189,7 +189,7 @@ Durable identity is owned by the accepted catalog, not by source spelling. The
 committed artifact is `marrow.catalog.json`; the store keeps a private copy
 beside the data it identifies so state-establishing commands can commit catalog
 rows and data together and repair interrupted file renders. There is no JSON ABI,
-no `^catalog` root, no catalog resource, query, standard-library, or data-CLI
+no `^catalog` root, no catalog resource, standard-library, or data-CLI
 surface, and no stable-id annotations in source. Each resource, store, field,
 keyed layer, index, enum, and enum member gets an opaque stable id, recorded when
 the project first runs against a durable store. The accepted catalog advances on
@@ -386,7 +386,7 @@ accept them.
 Ordinary code may read declared index trees. Ordinary code does not write them;
 repair and derived rebuild are explicit data-evolution tooling work.
 
-## Lookup And Query
+## Lookup And Traversal
 
 Marrow reads saved data with paths, traversal, and declared indexes.
 
@@ -435,7 +435,7 @@ in-memory-versus-saved distinction; `^` is the only difference between a local
 tree and a saved one. Every traversal is written in source; see
 [Cost Model](cost-model.md) for the hidden-traversal rule.
 
-Marrow does not add a separate storage query language. If code needs a new lookup
+Marrow does not add a separate saved-data access language. If code needs a new lookup
 path, add an index to the store and rebuild the generated tree when existing
 data should appear through it.
 

@@ -7,14 +7,14 @@ pub mod integrity;
 
 pub use data::{
     DEFAULT_VALUE_PREVIEW_LIMIT, DataChild, DataChildrenPage, DataCommitStamp, DataEntry,
-    DataPresence, DataPreviewReadResult, DataQuery, DataQuerySegment, DataReadResult, DataRecord,
-    DataSnapshotStamp, DataValuePreview, DataWalkPage, DebugDataCursorPath, DebugDataPayload,
-    MAX_PREVIEW_ITEMS, MAX_VALUE_PREVIEW_LIMIT, MemberFlavor, QueryError, StampedData,
-    count_data_records, data_children, data_children_supports_paging, data_query_under_prefix,
-    data_roots_in_store, preview_data_query, read_data_query, render_data_query_value,
-    render_data_value, render_query_segments, resolve_data_query, resolve_source_text_data_query,
-    stamped_data_children, stamped_data_roots_in_store, stamped_preview_data_query,
-    stamped_read_data_query, visit_data_records, walk_data,
+    DataPathError, DataPathSegment, DataPresence, DataPreviewReadResult, DataReadResult,
+    DataRecord, DataSnapshotStamp, DataValuePreview, DataWalkPage, DebugDataCursorPath,
+    DebugDataPayload, MAX_PREVIEW_ITEMS, MAX_VALUE_PREVIEW_LIMIT, MemberFlavor, ResolvedDataPath,
+    StampedData, count_data_records, data_children, data_children_supports_paging,
+    data_path_under_prefix, data_roots_in_store, preview_data_path, read_data_path,
+    render_data_path_segments, render_data_path_value, render_data_value, resolve_data_path,
+    resolve_source_text_data_path, stamped_data_children, stamped_data_roots_in_store,
+    stamped_preview_data_path, stamped_read_data_path, visit_data_records, walk_data,
 };
 pub use integrity::{
     IntegrityOutcome, IntegrityProblem, IntegrityProblemSample, IntegritySample,
@@ -25,7 +25,7 @@ pub use integrity::{
 
 #[derive(Debug)]
 pub enum ToolingError {
-    Query(QueryError),
+    Path(DataPathError),
     Store(StoreError),
 }
 
@@ -35,8 +35,8 @@ impl From<StoreError> for ToolingError {
     }
 }
 
-impl From<QueryError> for ToolingError {
-    fn from(error: QueryError) -> Self {
-        Self::Query(error)
+impl From<DataPathError> for ToolingError {
+    fn from(error: DataPathError) -> Self {
+        Self::Path(error)
     }
 }

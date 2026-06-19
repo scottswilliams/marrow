@@ -190,7 +190,7 @@ pub const CHECK_IS_REQUIRES_ENUM: &str = "check.is_requires_enum";
 pub const CHECK_IS_TYPE: &str = "check.is_type";
 /// A discovered source file could not be read.
 pub const IO_READ: &str = "io.read";
-/// The checked read-only expression query was asked to evaluate in a module or
+/// The checked read-only expression request was asked to evaluate in a module or
 /// program context that does not exist.
 pub const CHECK_READ_ONLY_EXPRESSION_CONTEXT: &str = "check.read_only_expression_context";
 /// A checked read-only expression attempts to write or allocate saved data.

@@ -41,7 +41,7 @@ fn count_reports_scalar_presence_and_child_counts() {
 
 /// `count` over a declared index branch returns the number of entries under that
 /// branch, exactly as `keys(...)` over the same branch would yield. The branch is
-/// a non-unique index so several entries share one query key.
+/// a non-unique index so several entries share one branch key.
 const BOOK_COUNT_INDEX: &str = "\
 resource Book
     required title: string

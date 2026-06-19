@@ -1,4 +1,4 @@
-//! Test-only helpers that query a checked program's facts, gated behind the
+//! Test-only helpers that inspect a checked program's facts, gated behind the
 //! `test-support` feature so they never enter a normal or release build.
 //!
 //! These are the single owner of the fact-lookup family the discharge, apply, and

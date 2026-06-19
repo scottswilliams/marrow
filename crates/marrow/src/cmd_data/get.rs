@@ -2,8 +2,8 @@ use std::process::ExitCode;
 
 use marrow_check::parse_path;
 use marrow_check::tooling::{
-    DataPresence, DataReadResult, StampedData, ToolingError, render_data_query_value,
-    resolve_source_text_data_query, stamped_read_data_query,
+    DataPresence, DataReadResult, StampedData, ToolingError, render_data_path_value,
+    resolve_source_text_data_path, stamped_read_data_path,
 };
 use serde_json::json;
 
@@ -27,8 +27,8 @@ pub(super) fn data_get(args: &[String]) -> ExitCode {
             Ok(target) => target,
             Err(code) => return code,
         };
-    let query = match resolve_source_text_data_query(&program, &parsed_segments) {
-        Ok(Some(query)) => query,
+    let path = match resolve_source_text_data_path(&program, &parsed_segments) {
+        Ok(Some(path)) => path,
         // Durable identity that was never committed — a never-run project or a
         // pending member — has no stored value, so the read is absent, not a fault.
         Ok(None) => {
@@ -45,14 +45,14 @@ pub(super) fn data_get(args: &[String]) -> ExitCode {
         }
         // A malformed path is a usage error; a corrupt checked catalog id is a
         // store fault and must report under the store code, not as usage.
-        Err(ToolingError::Query(error)) => {
+        Err(ToolingError::Path(error)) => {
             eprintln!("marrow data get: {error}");
             return ExitCode::from(2);
         }
         Err(ToolingError::Store(error)) => return super::report_store_error(error, format),
     };
     let (result, store_snapshot) = match &store {
-        Some(store) => match stamped_read_data_query(&program, store, &query) {
+        Some(store) => match stamped_read_data_path(&program, store, &path) {
             Ok(StampedData { data, stamp }) => (data, Some(stamp)),
             Err(error) => return super::report_store_error(error, format),
         },
@@ -68,7 +68,7 @@ pub(super) fn data_get(args: &[String]) -> ExitCode {
         CheckFormat::Text => match &result.payload {
             Some(payload) => println!(
                 "{}",
-                render_data_query_value(&program, &query, payload.as_bytes())
+                render_data_path_value(&program, &path, payload.as_bytes())
             ),
             None => match result.presence {
                 DataPresence::ChildrenOnly => println!("(no value; has children)"),
@@ -77,7 +77,7 @@ pub(super) fn data_get(args: &[String]) -> ExitCode {
         },
         CheckFormat::Json | CheckFormat::Jsonl => {
             write_json(json!({
-                "path": query.path(),
+                "path": path.path(),
                 "presence": result.presence.as_label(),
                 "value_b64": result
                     .payload

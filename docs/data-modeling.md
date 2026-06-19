@@ -364,8 +364,8 @@ populated roots.
 ## Lookup Patterns
 
 Marrow reads saved data with paths, traversal, and declared indexes. There is no
-separate query language — if you need a new access pattern, add an index and
-rebuild the generated tree when existing data should appear through it.
+separate saved-data access language — if you need a new access pattern, add an
+index and rebuild the generated tree when existing data should appear through it.
 
 By identity, when the identity is known:
 

@@ -1,13 +1,13 @@
 use marrow_store::StoreError;
 use marrow_store::cell::CatalogId;
 use marrow_store::key::SavedKey;
-use marrow_store::tree::DataPathSegment;
+use marrow_store::tree::DataPathSegment as StoreDataPathSegment;
 use marrow_store::value::{scalar_key_matches_type, validate_scalar_key};
 
 use crate::{CheckedSavedMember, CheckedSavedMemberKind, ScalarType};
 
-use super::query_error::MemberFlavor;
-use super::{DataQuerySegment, KeyMismatch};
+use super::path_error::MemberFlavor;
+use super::{DataPathSegment, KeyMismatch};
 
 /// Resolve a checked store or member catalog id for a store read.
 ///
@@ -47,13 +47,13 @@ pub(crate) fn stored_key_mismatch(
 }
 
 #[derive(Clone, Copy)]
-pub(crate) enum QueryMemberKind {
+pub(crate) enum PathMemberKind {
     Field,
     Layer,
     SourceText,
 }
 
-impl QueryMemberKind {
+impl PathMemberKind {
     pub(crate) fn matches(self, member: &CheckedSavedMember) -> bool {
         match self {
             Self::Field => member.is_plain_field(),
@@ -71,22 +71,22 @@ impl QueryMemberKind {
     }
 }
 
-pub(crate) fn query_segment_for_member(member: &CheckedSavedMember) -> DataQuerySegment {
+pub(crate) fn data_path_segment_for_member(member: &CheckedSavedMember) -> DataPathSegment {
     if member.is_plain_field() {
-        DataQuerySegment::Field(member.name.clone())
+        DataPathSegment::Field(member.name.clone())
     } else {
-        DataQuerySegment::Layer(member.name.clone())
+        DataPathSegment::Layer(member.name.clone())
     }
 }
 
 pub(crate) fn declared_members_below_path<'a>(
     members: &'a [CheckedSavedMember],
-    path: &[DataPathSegment],
+    path: &[StoreDataPathSegment],
 ) -> Option<&'a [CheckedSavedMember]> {
     if path.is_empty() {
         return Some(members);
     }
-    let DataPathSegment::Member(catalog) = &path[0] else {
+    let StoreDataPathSegment::Member(catalog) = &path[0] else {
         return None;
     };
     let member = members
@@ -121,9 +121,9 @@ pub(crate) enum DataPathShape {
 
 pub(crate) fn classify_data_path(
     members: &[CheckedSavedMember],
-    path: &[DataPathSegment],
+    path: &[StoreDataPathSegment],
 ) -> DataPathShape {
-    let Some(DataPathSegment::Member(catalog)) = path.first() else {
+    let Some(StoreDataPathSegment::Member(catalog)) = path.first() else {
         return DataPathShape::Undeclared("a saved path shape the schema does not declare");
     };
     let Some(member) = members
@@ -159,14 +159,14 @@ pub(crate) fn classify_data_path(
 
 pub(crate) fn cursor_names_value_path(
     members: &[CheckedSavedMember],
-    data_path: &[DataPathSegment],
+    data_path: &[StoreDataPathSegment],
 ) -> bool {
     matches!(classify_data_path(members, data_path), DataPathShape::Value)
 }
 
 pub(crate) fn validate_member_value_path(
     members: &[CheckedSavedMember],
-    path: &[DataPathSegment],
+    path: &[StoreDataPathSegment],
 ) -> Result<(), &'static str> {
     match classify_data_path(members, path) {
         DataPathShape::Value => Ok(()),
@@ -179,7 +179,7 @@ pub(crate) fn validate_member_value_path(
 
 pub(crate) fn validate_member_path_node(
     members: &[CheckedSavedMember],
-    path: &[DataPathSegment],
+    path: &[StoreDataPathSegment],
 ) -> Result<(), &'static str> {
     match classify_data_path(members, path) {
         DataPathShape::KeyedGroupNode => Ok(()),
@@ -191,16 +191,19 @@ pub(crate) fn validate_member_path_node(
     }
 }
 
-pub(crate) fn path_can_match(path: &[DataPathSegment], filter: &[DataPathSegment]) -> bool {
+pub(crate) fn path_can_match(
+    path: &[StoreDataPathSegment],
+    filter: &[StoreDataPathSegment],
+) -> bool {
     path.starts_with(filter) || filter.starts_with(path)
 }
 
 fn rest_after_member_keys<'a>(
     member: &CheckedSavedMember,
-    mut rest: &'a [DataPathSegment],
-) -> Option<&'a [DataPathSegment]> {
+    mut rest: &'a [StoreDataPathSegment],
+) -> Option<&'a [StoreDataPathSegment]> {
     for _ in &member.key_params {
-        let Some(DataPathSegment::Key(_)) = rest.first() else {
+        let Some(StoreDataPathSegment::Key(_)) = rest.first() else {
             return None;
         };
         rest = &rest[1..];

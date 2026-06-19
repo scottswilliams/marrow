@@ -166,7 +166,7 @@ fn duplicate_member_uniqueness_is_per_sibling_level() {
     assert!(cross_errors.is_empty(), "{cross_errors:?}");
 }
 
-/// The subtree queries answer the hierarchy: `subtree_ordinals` lists a node and
+/// The subtree helpers answer the hierarchy: `subtree_ordinals` lists a node and
 /// its descendants inclusively, and `selectable_leaves` is the set of concrete
 /// childless members.
 #[test]

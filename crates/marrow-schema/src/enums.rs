@@ -1,9 +1,9 @@
-//! The compiled enum shape and the member-path queries over it: value, `is`,
+//! The compiled enum shape and the member-path lookups over it: value, `is`,
 //! and `match` arm resolution all walk the one [`EnumSchema`] tree.
 
 /// The compiled form of an enum: a named, fixed set of members held flat in
 /// pre-order DFS, with the tree shape carried by each member's `parent` link. A
-/// member's index is a source traversal handle for tree queries, not durable
+/// member's index is a source traversal handle for tree paths, not durable
 /// value identity.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EnumSchema {

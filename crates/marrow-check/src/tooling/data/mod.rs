@@ -1,6 +1,6 @@
 mod children;
-mod query;
-mod query_error;
+mod path;
+mod path_error;
 mod read;
 mod record_nav;
 mod render;
@@ -17,14 +17,14 @@ use crate::tooling::ToolingError;
 use crate::{CheckedProgram, ScalarType, StoreLeafKind};
 
 pub use children::{data_children, data_children_supports_paging};
-pub use query::{data_query_under_prefix, resolve_data_query, resolve_source_text_data_query};
-pub use query_error::{MemberFlavor, QueryError};
-pub use read::{preview_data_query, read_data_query};
-pub use render::{render_data_query_value, render_data_value, render_query_segments};
+pub use path::{data_path_under_prefix, resolve_data_path, resolve_source_text_data_path};
+pub use path_error::{DataPathError, MemberFlavor};
+pub use read::{preview_data_path, read_data_path};
+pub use render::{render_data_path_segments, render_data_path_value, render_data_value};
 pub use traversal::{count_data_records, data_roots_in_store, visit_data_records};
 pub use walk::walk_data;
 
-pub(crate) use query::StorageDataQuery;
+pub(crate) use path::StorageDataPath;
 pub(crate) use render::{push_key, render_data_path};
 pub(crate) use shape::{
     stored_key_mismatch, tooling_catalog_id, validate_member_path_node, validate_member_value_path,
@@ -117,29 +117,29 @@ pub fn stamped_data_roots_in_store(
     with_stamped_read(program, store, |store| data_roots_in_store(program, store))
 }
 
-pub fn stamped_read_data_query(
+pub fn stamped_read_data_path(
     program: &CheckedProgram,
     store: &TreeStore,
-    query: &DataQuery,
+    path: &ResolvedDataPath,
 ) -> Result<StampedData<DataReadResult>, StoreError> {
-    with_stamped_read(program, store, |store| read_data_query(store, query))
+    with_stamped_read(program, store, |store| read_data_path(store, path))
 }
 
-pub fn stamped_preview_data_query(
+pub fn stamped_preview_data_path(
     program: &CheckedProgram,
     store: &TreeStore,
-    query: &DataQuery,
+    path: &ResolvedDataPath,
     limit: usize,
 ) -> Result<StampedData<DataPreviewReadResult>, StoreError> {
     with_stamped_read(program, store, |store| {
-        preview_data_query(program, store, query, limit)
+        preview_data_path(program, store, path, limit)
     })
 }
 
 pub fn stamped_data_children(
     program: &CheckedProgram,
     store: &TreeStore,
-    segments: &[DataQuerySegment],
+    segments: &[DataPathSegment],
     limit: usize,
     resume: Option<&SavedKey>,
 ) -> Result<StampedData<DataChildrenPage>, ToolingError> {
@@ -164,20 +164,20 @@ where
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DataQuery {
+pub struct ResolvedDataPath {
     path: String,
     root: String,
-    segments: Vec<DataQuerySegment>,
+    segments: Vec<DataPathSegment>,
     leaf: Option<StoreLeafKind>,
-    pub(crate) storage: StorageDataQuery,
+    pub(crate) storage: StorageDataPath,
 }
 
-impl DataQuery {
+impl ResolvedDataPath {
     pub fn path(&self) -> &str {
         &self.path
     }
 
-    pub fn segments(&self) -> &[DataQuerySegment] {
+    pub fn segments(&self) -> &[DataPathSegment] {
         &self.segments
     }
 
@@ -188,9 +188,9 @@ impl DataQuery {
     pub(crate) fn new(
         path: String,
         root: String,
-        segments: Vec<DataQuerySegment>,
+        segments: Vec<DataPathSegment>,
         leaf: Option<StoreLeafKind>,
-        storage: StorageDataQuery,
+        storage: StorageDataPath,
     ) -> Self {
         Self {
             path,
@@ -207,7 +207,7 @@ impl DataQuery {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DataQuerySegment {
+pub enum DataPathSegment {
     Root(String),
     Field(String),
     Layer(String),
@@ -240,13 +240,13 @@ pub enum DataChild {
     Layer(String),
 }
 
-impl From<DataQuerySegment> for DataChild {
-    fn from(segment: DataQuerySegment) -> Self {
+impl From<DataPathSegment> for DataChild {
+    fn from(segment: DataPathSegment) -> Self {
         match segment {
-            DataQuerySegment::Root(root) => Self::Root(root),
-            DataQuerySegment::Field(field) => Self::Field(field),
-            DataQuerySegment::Layer(layer) => Self::Layer(layer),
-            DataQuerySegment::Key(key) => Self::Key(key),
+            DataPathSegment::Root(root) => Self::Root(root),
+            DataPathSegment::Field(field) => Self::Field(field),
+            DataPathSegment::Layer(layer) => Self::Layer(layer),
+            DataPathSegment::Key(key) => Self::Key(key),
         }
     }
 }
@@ -276,21 +276,21 @@ impl DebugDataPayload {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DataEntry {
     pub path: String,
-    pub segments: Vec<DataQuerySegment>,
+    pub segments: Vec<DataPathSegment>,
     pub payload: DebugDataPayload,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DebugDataCursorPath {
-    segments: Vec<DataQuerySegment>,
+    segments: Vec<DataPathSegment>,
 }
 
 impl DebugDataCursorPath {
-    pub fn segments(&self) -> &[DataQuerySegment] {
+    pub fn segments(&self) -> &[DataPathSegment] {
         &self.segments
     }
 
-    pub(crate) fn new(segments: Vec<DataQuerySegment>) -> Self {
+    pub(crate) fn new(segments: Vec<DataPathSegment>) -> Self {
         Self { segments }
     }
 }
