@@ -460,6 +460,7 @@ mod tests {
                 }],
                 next_id_shape: "int".to_string(),
                 catalog_id: Some("store-authors".to_string()),
+                name_span: SourceSpan::default(),
                 span: SourceSpan::default(),
             },
         );
