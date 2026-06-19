@@ -497,6 +497,8 @@ impl From<marrow_check::SurfaceUpdateOperationField> for SurfaceUpdateFieldDescr
 pub struct SurfaceCursorJson {
     pub operation_tag: String,
     pub store_uid: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit_id: Option<u64>,
     pub catalog_digest: String,
     pub source_digest: String,
     pub engine_profile_digest: String,
@@ -921,6 +923,28 @@ pub fn seed()
     first.title = \"Dune\"
     transaction
         ^books(1) = first
+";
+
+    const PROJECT_COLLECTION_UPDATE_SURFACE: &str = "\
+module shelf
+
+resource Book
+    required title: string
+store ^books(id: int): Book
+
+surface Books from ^books
+    fields title
+    update title
+    collection ^books as list
+
+pub fn seed()
+    var first: Book
+    first.title = \"Dune\"
+    var second: Book
+    second.title = \"Dune Messiah\"
+    transaction
+        ^books(1) = first
+        ^books(2) = second
 ";
 
     const PROJECT_PRIVATE_BACKING_SURFACE: &str = "\
@@ -2011,6 +2035,89 @@ pub fn seed()
             Some(&SurfaceValueJson::String {
                 value: "Dune Revised".into()
             })
+        );
+    }
+
+    #[test]
+    fn surface_operation_envelope_page_cursor_stales_after_update() {
+        let root = TempProject::new("marrow-json-project-surface-operation-stale-cursor");
+        write_native_project(&root, PROJECT_COLLECTION_UPDATE_SURFACE);
+        seed_project(&root, "shelf::seed");
+
+        let session =
+            ProjectSurfaceSession::open(root.path()).expect("open project surface session");
+        let before = session
+            .store_stamp()
+            .expect("project surface session exposes the store stamp");
+        let runtime = session.program().runtime();
+        let surface = surface_id(session.program(), "Books");
+        let page_tag = read_operation_tag_matching(session.program(), surface, |kind| {
+            matches!(kind, SurfaceReadOperationKind::PagedRootCollection { .. })
+        });
+        let update_tag = update_operation_tag(session.program(), "Books");
+
+        let page_response = crate::surface::execute_project_surface_operation(
+            &session,
+            &SurfaceOperationRequestJson {
+                profile_version: SURFACE_OPERATION_PROFILE_VERSION.into(),
+                operation_tag: page_tag.clone(),
+                request: SurfaceOperationRequestBodyJson::Page {
+                    request: SurfacePageRequestJson {
+                        exact_keys: Vec::new(),
+                        limit: 1,
+                        cursor: None,
+                    },
+                },
+            },
+        )
+        .expect("first operation-envelope page");
+        let SurfaceOperationResultJson::Page { page } = page_response.result else {
+            panic!("expected page result: {page_response:?}");
+        };
+        let cursor = page.next.expect("first page has cursor");
+        assert_eq!(cursor.commit_id, Some(before.commit_id));
+
+        crate::surface::execute_project_surface_operation(
+            &session,
+            &SurfaceOperationRequestJson {
+                profile_version: SURFACE_OPERATION_PROFILE_VERSION.into(),
+                operation_tag: update_tag,
+                request: SurfaceOperationRequestBodyJson::PointUpdate {
+                    request: point_update_request(
+                        &runtime,
+                        2,
+                        vec![update_field(
+                            field_catalog_id(&runtime, "books", "title"),
+                            SurfaceUpdateValueJson::String {
+                                value: "Dune Messiah Revised".into(),
+                            },
+                        )],
+                    ),
+                },
+            },
+        )
+        .expect("operation-envelope update");
+        let after = session
+            .store_stamp()
+            .expect("project surface session exposes updated stamp");
+        assert_eq!(after.commit_id, before.commit_id + 1);
+
+        assert_operation_error(
+            crate::surface::execute_project_surface_operation(
+                &session,
+                &SurfaceOperationRequestJson {
+                    profile_version: SURFACE_OPERATION_PROFILE_VERSION.into(),
+                    operation_tag: page_tag,
+                    request: SurfaceOperationRequestBodyJson::Page {
+                        request: SurfacePageRequestJson {
+                            exact_keys: Vec::new(),
+                            limit: 10,
+                            cursor: Some(cursor),
+                        },
+                    },
+                },
+            ),
+            SURFACE_STALE_CURSOR,
         );
     }
 
@@ -3382,6 +3489,23 @@ pub fn seed()
             rendered_cursor.decode(&read).expect("decode cursor"),
             cursor
         );
+        assert_eq!(
+            serde_json::to_value(rendered_cursor).expect("cursor serializes")["commit_id"],
+            json!(0)
+        );
+
+        let mut old_cursor_json = serde_json::to_value(rendered_cursor).expect("cursor serializes");
+        old_cursor_json
+            .as_object_mut()
+            .expect("cursor json object")
+            .remove("commit_id");
+        let old_request = serde_json::from_value::<SurfacePageRequestJson>(json!({
+            "exact_keys": book_page_request(&runtime, 7, 10).exact_keys,
+            "limit": 10,
+            "cursor": old_cursor_json
+        }))
+        .expect("old cursor request still decodes structurally");
+        assert_surface_error(old_request.decode(&read), SURFACE_CURSOR);
     }
 
     #[test]

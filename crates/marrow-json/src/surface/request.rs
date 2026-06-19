@@ -306,6 +306,7 @@ impl SurfaceCursorJson {
         Ok(Self {
             operation_tag: cursor.operation_tag.clone(),
             store_uid: cursor.store_uid.as_str().to_string(),
+            commit_id: Some(cursor.commit_id),
             catalog_digest: cursor.catalog_digest.clone(),
             source_digest: cursor.source_digest.clone(),
             engine_profile_digest: lower_hex(&cursor.engine_profile_digest),
@@ -334,6 +335,9 @@ impl SurfaceCursorJson {
             store_uid: StoreUid::new(self.store_uid.clone()).map_err(|error| {
                 SurfaceJsonErrorContext::Cursor
                     .error(format!("malformed surface cursor store uid: {error}"))
+            })?,
+            commit_id: self.commit_id.ok_or_else(|| {
+                SurfaceJsonErrorContext::Cursor.error("surface cursor commit id is missing")
             })?,
             catalog_digest: decode_sha256_digest(
                 &self.catalog_digest,

@@ -10,8 +10,8 @@ use marrow_run::{
     SURFACE_REQUEST, SURFACE_STALE_CURSOR, SURFACE_STORE, SurfaceCollectionPageRequest,
     SurfaceCollectionRead, SurfaceCollectionReadShape, SurfaceEnumValue, SurfaceNodeRead,
     SurfaceNodeReadShape, SurfacePageBoundary, SurfaceReadError, SurfaceReadIdentity,
-    SurfaceReadOperationRef, SurfaceReadRecord, SurfaceValue, read_surface_point,
-    read_surface_singleton,
+    SurfaceReadOperationRef, SurfaceReadRecord, SurfaceUpdate, SurfaceUpdateField, SurfaceValue,
+    read_surface_point, read_surface_singleton,
 };
 use marrow_store::cell::CatalogId;
 use marrow_store::key::{SavedKey, encode_identity_payload};
@@ -95,6 +95,22 @@ surface Books from ^books
     collection ^books as list
     collection ^books.byAuthor as byAuthor
     collection ^books.byIsbn as byIsbn
+";
+
+const COLLECTION_UPDATE_SURFACE: &str = "\
+resource Book
+    required title: string
+    required privateCode: string
+    author: string
+    isbn: string
+store ^books(shelf: string, id: int): Book
+    index byAuthor(author, shelf, id)
+    index byIsbn(isbn) unique
+
+surface Books from ^books
+    fields title, author, isbn
+    update author
+    collection ^books as list
 ";
 
 const DUPLICATE_NODE_TAG_SURFACES: &str = "\
@@ -679,8 +695,8 @@ fn root_collection_pages_records_in_identity_order_with_typed_cursor() {
 }
 
 #[test]
-fn root_collection_cursor_resumes_after_deleted_boundary_identity() {
-    let (program, runtime) = committed_program_and_runtime(COLLECTION_SURFACE);
+fn collection_cursor_stales_after_committed_surface_update() {
+    let (program, runtime) = committed_program_and_runtime(COLLECTION_UPDATE_SURFACE);
     let store = admitted_store(&program);
     write_book(&runtime, &store, "a", 1, "Dune", "Frank", "isbn-a1");
     write_book(&runtime, &store, "a", 2, "Dune Messiah", "Frank", "isbn-a2");
@@ -698,27 +714,35 @@ fn root_collection_cursor_resumes_after_deleted_boundary_identity() {
         })
         .expect("first page");
     let cursor = first.next.as_ref().expect("first page has cursor");
+    let baseline = store
+        .read_commit_metadata()
+        .expect("read baseline commit metadata")
+        .expect("baseline commit metadata");
+    assert_eq!(cursor.commit_id, baseline.commit_id);
 
-    store
-        .delete_record_subtree(
-            &store_catalog_id(&runtime, "books"),
-            &[SavedKey::Str("a".into()), SavedKey::Int(1)],
+    let update = SurfaceUpdate::admit(&program, &store, surface).expect("admit surface update");
+    update
+        .update_point(
+            &[SavedKey::Str("a".into()), SavedKey::Int(2)],
+            &[SurfaceUpdateField {
+                catalog_id: field_catalog_id(&runtime, "books", &["author"]),
+                value: SurfaceValue::Str("Ursula".into()),
+            }],
         )
-        .expect("delete boundary record");
+        .expect("surface update succeeds");
+    let changed = store
+        .read_commit_metadata()
+        .expect("read changed commit metadata")
+        .expect("changed commit metadata");
+    assert_eq!(changed.commit_id, baseline.commit_id + 1);
 
-    let second = read
-        .page(SurfaceCollectionPageRequest {
+    assert_surface_error(
+        read.page(SurfaceCollectionPageRequest {
             exact_keys: &[],
             limit: 10,
             cursor: Some(cursor),
-        })
-        .expect("second page after deleted boundary");
-    assert_eq!(
-        record_identities(&second.rows),
-        vec![
-            vec![SavedKey::Str("a".into()), SavedKey::Int(2)],
-            vec![SavedKey::Str("b".into()), SavedKey::Int(1)],
-        ]
+        }),
+        SURFACE_STALE_CURSOR,
     );
 }
 

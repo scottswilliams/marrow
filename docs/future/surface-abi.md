@@ -37,8 +37,8 @@ The active surface foundation has these owners:
   surfaces cannot.
 - `crates/marrow-run/src/surface.rs` admits stable read/update operations
   against a stamped store, materializes the backing record body before
-  projecting reads, and applies non-empty sparse update patches through managed
-  writes.
+  projecting reads, returns page cursors bound to the visible store commit, and
+  applies non-empty sparse update patches through managed writes.
 - `marrow-run::ProjectSurfaceReadSession` is the preparatory linked-Rust
   read-serving boundary. It checks a project, opens the configured native store
   read-only, requires an already accepted and stamped durable store, fences
@@ -59,10 +59,10 @@ The active surface foundation has these owners:
   maintenance, derive routes, create records, delete records, or define a stable
   public Rust API.
 - `crates/marrow-json/src/surface.rs` owns the current checked read parameter,
-  result, identity, value, typed cursor-boundary, sparse update request,
-  operation-tag execution, transport-neutral operation envelope, and serialized
-  surface ABI JSON DTOs. Execution accepts caller-supplied checked program and
-  store references, read DTOs also execute against
+  result, identity, value, commit-bound typed cursor-boundary, sparse update
+  request, operation-tag execution, transport-neutral operation envelope, and
+  serialized surface ABI JSON DTOs. Execution accepts caller-supplied checked
+  program and store references, read DTOs also execute against
   `ProjectSurfaceReadSession`, point/singleton update DTOs also execute against
   `ProjectSurfaceSession`, and `surface.operation.v1` dispatches read and
   sparse-update request bodies by operation tag without exposing private store
@@ -85,9 +85,17 @@ lets the admitted read or update handle validate the requested body shape.
 The request body variants are singleton read, point read, page, unique lookup,
 singleton update, and point update. The response envelope echoes the active
 profile version and operation tag and returns a record, page, optional record,
-or updated result. Error envelopes expose only a stable `surface.*` code and a
-public message; they do not serialize spans, source paths, store paths, backend
-details, or runtime internals.
+or updated result. Page cursors carry the producing operation tag, store UID,
+store commit ID, accepted-catalog digest, source digest, engine-profile digest,
+and typed boundary. A cursor is valid only while the current store commit still
+matches that lineage; a committed write between page requests makes the cursor
+stale instead of silently continuing against a different saved-data snapshot.
+This is a managed surface contract over store commits. Raw `TreeStore`
+mutation without a commit metadata stamp is not a production surface write path
+and does not preserve cursor semantics.
+Error envelopes expose only a stable `surface.*` code and a public message; they
+do not serialize spans, source paths, store paths, backend details, or runtime
+internals.
 
 `ProjectSurfaceReadSession` dispatches read request bodies only and fails
 closed on update request bodies. `ProjectSurfaceSession` dispatches both stable
@@ -155,6 +163,8 @@ store-open policy, and process lifetime. A production serving profile needs:
 - routes derived from serialized ABI descriptors, not source names or ordinals;
 - strict JSON-only transport around the active operation envelope;
 - sanitized `surface.*` error codes and no raw store details;
+- an explicit choice between the active commit-bound cursor DTOs and a separate
+  opaque cursor-token profile;
 - loopback binding by default, because Marrow has no users or roles yet;
 - read-only store admission for read serving, with no UID mint, baseline
   freeze, auto-apply, recovery, restore, maintenance, or hidden write path;
@@ -193,4 +203,4 @@ lockstep with docs, checker facts, runtime behavior, and JSON/tooling surfaces:
 - reachable throw-set descriptors;
 - dry-run operation previews;
 - opaque cursor token codecs;
-- commit-bound snapshot pagination.
+- historical snapshot pagination across old commits.

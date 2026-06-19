@@ -22,11 +22,13 @@ numbers for compatibility with current CLI consumers. Its data-snapshot DTO
 renders the shared `store_snapshot` object for `marrow data roots|get`, including
 the store UID, catalog digest, optional commit stamp, and checked source digest.
 Its surface DTOs render `marrow-run` surface records, pages, values,
-identities, and typed cursors with accepted catalog IDs, typed keys, base64
-bytes, and lossless strings for integers, temporal nanoseconds, and decimals.
-Cursor/page rendering is context-aware: enum and identity-typed index arguments
-render as branded surface arguments instead of raw saved key bytes or plain
-member strings.
+identities, and commit-bound typed cursors with accepted catalog IDs, store
+commit IDs, typed keys, base64 bytes, and lossless strings for integers,
+temporal nanoseconds, and decimals. Cursor/page rendering is context-aware:
+enum and identity-typed index arguments render as branded surface arguments
+instead of raw saved key bytes or plain member strings. Cursor decode preserves
+the producing commit boundary so runtime page execution can reject stale
+continuations after intervening writes.
 
 `SurfaceAbiJson` renders the successful `marrow check --format json|jsonl`
 `surface_abi` object from checker-owned facts. It includes display-only module
@@ -45,8 +47,9 @@ Inbound surface request parameters and sparse update bodies are checked against
 the admitted runtime surface shape. `SurfacePointRequestJson`,
 `SurfacePageRequestJson`, `SurfaceUniqueLookupRequestJson`,
 `SurfaceArgumentJson`, and `SurfaceCursorJson` decode read identities, exact
-index arguments, unique lookup keys, limits, and typed cursor boundaries into
-runtime `SavedKey` and cursor values. `SurfacePointUpdateRequestJson`,
+index arguments, unique lookup keys, limits, and commit-bound typed cursor
+boundaries into runtime `SavedKey` and cursor values.
+`SurfacePointUpdateRequestJson`,
 `SurfaceSingletonUpdateRequestJson`, `SurfaceUpdateFieldJson`, and
 `SurfaceUpdateValueJson` decode update identities, field catalog IDs, and
 canonical scalar/enum/identity values into runtime `SurfaceUpdateInput` values.

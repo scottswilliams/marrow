@@ -157,6 +157,7 @@ pub struct SurfaceCollectionPage {
 pub struct SurfacePageCursor {
     pub operation_tag: String,
     pub store_uid: StoreUid,
+    pub commit_id: u64,
     pub catalog_digest: String,
     pub source_digest: String,
     pub engine_profile_digest: EngineProfileDigest,
@@ -462,7 +463,6 @@ impl<'a> SurfaceCollectionRead<'a> {
         &self,
         request: SurfaceCollectionPageRequest<'_>,
     ) -> Result<SurfaceCollectionPage, SurfaceReadError> {
-        self.validate_cursor_lineage(request.cursor)?;
         self.plan.validate_page_request(request)?;
         // Holding the snapshot guard pins all cursor and materialization reads
         // below to one coherent store view.
@@ -470,6 +470,8 @@ impl<'a> SurfaceCollectionRead<'a> {
             .store
             .read_snapshot()
             .map_err(|error| surface_store_error(error, self.plan.span))?;
+        let lineage = read_current_cursor_lineage(self.store, &self.lineage, self.plan.span)?;
+        self.validate_cursor_lineage(request.cursor, &lineage)?;
         let identities = match &self.plan.kind {
             SurfaceCollectionPlanKind::Root => {
                 let cursor = self.plan.root_cursor_boundary(request.cursor)?;
@@ -516,7 +518,7 @@ impl<'a> SurfaceCollectionRead<'a> {
                 .last()
                 .map(|identity| {
                     self.plan
-                        .page_cursor(&self.lineage, request.exact_keys, identity)
+                        .page_cursor(&lineage, request.exact_keys, identity)
                 })
                 .transpose()?
         } else {
@@ -560,14 +562,16 @@ impl<'a> SurfaceCollectionRead<'a> {
     fn validate_cursor_lineage(
         &self,
         cursor: Option<&SurfacePageCursor>,
+        lineage: &SurfaceStoreLineage,
     ) -> Result<(), SurfaceReadError> {
         let Some(cursor) = cursor else {
             return Ok(());
         };
-        if cursor.store_uid != self.lineage.store_uid
-            || cursor.catalog_digest != self.lineage.catalog_digest
-            || cursor.source_digest != self.lineage.source_digest
-            || cursor.engine_profile_digest != self.lineage.engine_profile_digest
+        if cursor.store_uid != lineage.store_uid
+            || cursor.commit_id != lineage.commit_id
+            || cursor.catalog_digest != lineage.catalog_digest
+            || cursor.source_digest != lineage.source_digest
+            || cursor.engine_profile_digest != lineage.engine_profile_digest
         {
             return Err(stale_cursor(
                 "surface cursor store lineage no longer matches",
@@ -875,6 +879,7 @@ enum PlannedSurfaceUpdateValue {
 #[derive(Clone, PartialEq, Eq)]
 struct SurfaceStoreLineage {
     store_uid: StoreUid,
+    commit_id: u64,
     catalog_digest: String,
     source_digest: String,
     engine_profile_digest: EngineProfileDigest,
@@ -1245,6 +1250,7 @@ impl<'a> SurfaceCollectionReadPlan<'a> {
         Ok(SurfacePageCursor {
             operation_tag: self.operation_tag.clone(),
             store_uid: lineage.store_uid.clone(),
+            commit_id: lineage.commit_id,
             catalog_digest: lineage.catalog_digest.clone(),
             source_digest: lineage.source_digest.clone(),
             engine_profile_digest: lineage.engine_profile_digest,
@@ -2045,7 +2051,40 @@ fn admit_surface_store(
     }
     Ok(SurfaceStoreLineage {
         store_uid,
+        commit_id: commit.commit_id,
         catalog_digest: accepted_digest.to_string(),
+        source_digest: commit.source_digest,
+        engine_profile_digest: commit.engine_profile_digest,
+    })
+}
+
+fn read_current_cursor_lineage(
+    store: &TreeStore,
+    admitted: &SurfaceStoreLineage,
+    span: SourceSpan,
+) -> Result<SurfaceStoreLineage, SurfaceReadError> {
+    let Some(store_uid) = store
+        .read_store_uid()
+        .map_err(|error| surface_store_error(error, span))?
+    else {
+        return Err(abi_mismatch(
+            "surface operation requires a stamped store uid",
+            span,
+        ));
+    };
+    let Some(commit) = store
+        .read_commit_metadata()
+        .map_err(|error| surface_store_error(error, span))?
+    else {
+        return Err(abi_mismatch(
+            "surface operation requires commit metadata",
+            span,
+        ));
+    };
+    Ok(SurfaceStoreLineage {
+        store_uid,
+        commit_id: commit.commit_id,
+        catalog_digest: admitted.catalog_digest.clone(),
         source_digest: commit.source_digest,
         engine_profile_digest: commit.engine_profile_digest,
     })
