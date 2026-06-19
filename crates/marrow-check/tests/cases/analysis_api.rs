@@ -17,7 +17,7 @@ use marrow_check::{
     scope_at, type_at,
 };
 use marrow_project::parse_config;
-use marrow_schema::ScalarType;
+use marrow_schema::{SCHEMA_DUPLICATE_MEMBER, ScalarType};
 use marrow_store::cell::CatalogId;
 use marrow_store::key::SavedKey;
 use marrow_store::tree::{
@@ -520,12 +520,13 @@ fn sites_for_reports_saved_catalog_uses_from_lowered_bodies() {
         resource Book\n    \
         required title: string\n    \
         shelf: string\n\
-        store ^books(id: int): Book\n    \
+        store ^books(id: string): Book\n\
+        store ^byShelf(id: int): Book\n    \
         index byShelf(shelf, id)\n\
-        fn title(id: int): string\n    \
-        return ^books(id).title ?? \"\"\n\
+        fn title(title: string): string\n    \
+        return ^books(title).title ?? \"\"\n\
         fn on_shelf(shelf: string): int\n    \
-        return count(^books.byShelf(shelf))\n";
+        return count(^byShelf.byShelf(shelf))\n";
     let (snapshot, paths) = analyze_overlay("analysis-use-sites", &[("src/m.mw", source)]);
     assert!(
         !snapshot.report.has_errors(),
@@ -561,34 +562,37 @@ fn sites_for_reports_saved_catalog_uses_from_lowered_bodies() {
         .expect("byShelf has a catalog id")
         .to_string();
 
-    let store_sites = snapshot.sites_for(&store_catalog_id);
-    assert!(
-        store_sites.iter().any(|site| {
-            site.file == *file
-                && site.kind == UseSiteKind::SavedRoot
-                && source[site.span.start_byte..site.span.end_byte].contains("^books")
-        }),
-        "store use sites: {store_sites:#?}"
+    assert_eq!(
+        site_texts(
+            &snapshot,
+            &store_catalog_id,
+            UseSiteKind::SavedRoot,
+            file,
+            source
+        ),
+        vec!["^books"]
     );
 
-    let title_sites = snapshot.sites_for(&title_catalog_id);
-    assert!(
-        title_sites.iter().any(|site| {
-            site.file == *file
-                && site.kind == UseSiteKind::ResourceMember
-                && source[site.span.start_byte..site.span.end_byte].contains(".title")
-        }),
-        "title use sites: {title_sites:#?}"
+    assert_eq!(
+        site_texts(
+            &snapshot,
+            &title_catalog_id,
+            UseSiteKind::ResourceMember,
+            file,
+            source
+        ),
+        vec!["title"]
     );
 
-    let index_sites = snapshot.sites_for(&shelf_index_catalog_id);
-    assert!(
-        index_sites.iter().any(|site| {
-            site.file == *file
-                && site.kind == UseSiteKind::StoreIndex
-                && source[site.span.start_byte..site.span.end_byte].contains("byShelf")
-        }),
-        "index use sites: {index_sites:#?}"
+    assert_eq!(
+        site_texts(
+            &snapshot,
+            &shelf_index_catalog_id,
+            UseSiteKind::StoreIndex,
+            file,
+            source
+        ),
+        vec!["byShelf"]
     );
 }
 
@@ -616,14 +620,57 @@ fn sites_for_reports_proposal_saved_layer_uses_from_lowered_bodies() {
         "m::Book::versions",
     );
 
-    let version_sites = snapshot.sites_for(&versions_catalog_id);
+    assert_eq!(
+        site_texts(
+            &snapshot,
+            &versions_catalog_id,
+            UseSiteKind::ResourceMember,
+            file,
+            source
+        ),
+        vec!["versions"]
+    );
+}
+
+#[test]
+fn sites_for_reports_keyed_saved_layer_segment_not_same_named_argument() {
+    let source = "module m\n\
+        resource Book\n    \
+        versions(version: int)\n        \
+        required title: string\n\
+        store ^books(id: int): Book\n\
+        fn f(id: Id(^books), versions: int)\n    \
+        for n, version in ^books(id).versions(versions)\n        \
+        print(version.title)\n";
+    let (snapshot, paths) = analyze_overlay(
+        "analysis-use-sites-keyed-layer-segment",
+        &[("src/m.mw", source)],
+    );
     assert!(
-        version_sites.iter().any(|site| {
-            site.file == *file
-                && site.kind == UseSiteKind::ResourceMember
-                && source[site.span.start_byte..site.span.end_byte].contains(".versions")
-        }),
-        "versions use sites: {version_sites:#?}"
+        !snapshot.report.has_errors(),
+        "{:#?}",
+        snapshot.report.diagnostics
+    );
+    let file = &paths[0];
+    let versions_catalog_id = proposal_id(
+        &snapshot,
+        CatalogEntryKind::ResourceMember,
+        "m::Book::versions",
+    );
+    let versions_start = source
+        .find(".versions(versions)")
+        .expect("saved layer method call")
+        + 1;
+
+    assert_eq!(
+        site_texts_with_start(
+            &snapshot,
+            &versions_catalog_id,
+            UseSiteKind::ResourceMember,
+            file,
+            source
+        ),
+        vec![("versions", versions_start)]
     );
 }
 
@@ -661,14 +708,15 @@ fn sites_for_reports_accepted_saved_layer_uses_from_lowered_bodies() {
     );
     let file = root.join("src/m.mw");
 
-    let version_sites = snapshot.sites_for(&versions_catalog_id);
-    assert!(
-        version_sites.iter().any(|site| {
-            site.file == file
-                && site.kind == UseSiteKind::ResourceMember
-                && source[site.span.start_byte..site.span.end_byte].contains(".versions")
-        }),
-        "versions use sites: {version_sites:#?}"
+    assert_eq!(
+        site_texts(
+            &snapshot,
+            &versions_catalog_id,
+            UseSiteKind::ResourceMember,
+            &file,
+            source
+        ),
+        vec!["versions"]
     );
 }
 
@@ -689,14 +737,183 @@ fn sites_for_reports_saved_catalog_uses_from_module_constants() {
     let active_catalog_id =
         proposal_id(&snapshot, CatalogEntryKind::EnumMember, "m::Status::active");
 
-    let active_sites = snapshot.sites_for(&active_catalog_id);
+    assert_eq!(
+        site_texts(
+            &snapshot,
+            &active_catalog_id,
+            UseSiteKind::EnumMember,
+            file,
+            source
+        ),
+        vec!["active"]
+    );
+
+    let status_catalog_id = proposal_id(&snapshot, CatalogEntryKind::Enum, "m::Status");
+    assert_eq!(
+        site_texts(
+            &snapshot,
+            &status_catalog_id,
+            UseSiteKind::Enum,
+            file,
+            source
+        ),
+        vec!["Status"]
+    );
+}
+
+#[test]
+fn sites_for_distinguishes_match_arm_header_from_body_enum_member_use() {
+    let source = "module m\n\
+        enum Status\n    \
+        active\n    \
+        archived\n\
+        fn f(s: Status): Status\n    \
+        match s\n        \
+        active\n            \
+        return Status::active\n        \
+        archived\n            \
+        return Status::archived\n";
+    let (snapshot, paths) = analyze_overlay(
+        "analysis-use-sites-match-arm-header",
+        &[("src/m.mw", source)],
+    );
     assert!(
-        active_sites.iter().any(|site| {
-            site.file == *file
-                && site.kind == UseSiteKind::EnumMember
-                && source[site.span.start_byte..site.span.end_byte].contains("Status::active")
-        }),
-        "active use sites: {active_sites:#?}"
+        !snapshot.report.has_errors(),
+        "{:#?}",
+        snapshot.report.diagnostics
+    );
+    let file = &paths[0];
+    let active_catalog_id =
+        proposal_id(&snapshot, CatalogEntryKind::EnumMember, "m::Status::active");
+    let header_start = source
+        .find("\n        active\n")
+        .expect("active arm header")
+        + 9;
+    let body_start = source
+        .find("return Status::active")
+        .expect("active body return")
+        + "return Status::".len();
+
+    assert_eq!(
+        site_texts_with_start(
+            &snapshot,
+            &active_catalog_id,
+            UseSiteKind::EnumMember,
+            file,
+            source
+        ),
+        vec![("active", header_start), ("active", body_start)]
+    );
+}
+
+#[test]
+fn sites_for_reports_each_nested_enum_member_segment_in_expressions() {
+    let source = "module m\n\
+        enum Cat\n    \
+        category tiger\n        \
+        bengal\n\
+        fn favorite(): Cat\n    \
+        return Cat::tiger::bengal\n";
+    let (snapshot, paths) = analyze_overlay(
+        "analysis-use-sites-nested-enum-expression",
+        &[("src/m.mw", source)],
+    );
+    assert!(
+        !snapshot.report.has_errors(),
+        "{:#?}",
+        snapshot.report.diagnostics
+    );
+    let file = &paths[0];
+    let cat_catalog_id = proposal_id(&snapshot, CatalogEntryKind::Enum, "m::Cat");
+    let tiger_catalog_id = proposal_id(&snapshot, CatalogEntryKind::EnumMember, "m::Cat::tiger");
+    let bengal_catalog_id = proposal_id(
+        &snapshot,
+        CatalogEntryKind::EnumMember,
+        "m::Cat::tiger::bengal",
+    );
+    let literal = source
+        .find("return Cat::tiger::bengal")
+        .expect("nested enum literal");
+
+    assert_eq!(
+        site_texts_with_start(&snapshot, &cat_catalog_id, UseSiteKind::Enum, file, source),
+        vec![("Cat", literal + "return ".len())]
+    );
+    assert_eq!(
+        site_texts_with_start(
+            &snapshot,
+            &tiger_catalog_id,
+            UseSiteKind::EnumMember,
+            file,
+            source
+        ),
+        vec![("tiger", literal + "return Cat::".len())]
+    );
+    assert_eq!(
+        site_texts_with_start(
+            &snapshot,
+            &bengal_catalog_id,
+            UseSiteKind::EnumMember,
+            file,
+            source
+        ),
+        vec![("bengal", literal + "return Cat::tiger::".len())]
+    );
+}
+
+#[test]
+fn sites_for_reports_each_nested_enum_member_segment_in_match_arms() {
+    let source = "module m\n\
+        enum Cat\n    \
+        category tiger\n        \
+        bengal\n    \
+        housecat\n\
+        fn rank(c: Cat): int\n    \
+        match c\n        \
+        tiger::bengal\n            \
+        return 1\n        \
+        housecat\n            \
+        return 2\n";
+    let (snapshot, paths) = analyze_overlay(
+        "analysis-use-sites-nested-enum-match-arm",
+        &[("src/m.mw", source)],
+    );
+    assert!(
+        !snapshot.report.has_errors(),
+        "{:#?}",
+        snapshot.report.diagnostics
+    );
+    let file = &paths[0];
+    let tiger_catalog_id = proposal_id(&snapshot, CatalogEntryKind::EnumMember, "m::Cat::tiger");
+    let bengal_catalog_id = proposal_id(
+        &snapshot,
+        CatalogEntryKind::EnumMember,
+        "m::Cat::tiger::bengal",
+    );
+    let arm = source
+        .find("\n        tiger::bengal\n")
+        .expect("nested match arm")
+        + 9;
+
+    assert_eq!(
+        site_texts_with_start(
+            &snapshot,
+            &tiger_catalog_id,
+            UseSiteKind::EnumMember,
+            file,
+            source
+        ),
+        vec![("tiger", arm)]
+    );
+    assert_eq!(
+        site_texts_with_start(
+            &snapshot,
+            &bengal_catalog_id,
+            UseSiteKind::EnumMember,
+            file,
+            source
+        ),
+        vec![("bengal", arm + "tiger::".len())]
     );
 }
 
@@ -753,14 +970,469 @@ fn sites_for_reports_catalog_uses_from_evolve_transform_bodies() {
         .stable_id
         .clone();
     let file = root.join("src/m.mw");
-    let active_sites = snapshot.sites_for(&active_catalog_id);
+    assert_eq!(
+        site_texts(
+            &snapshot,
+            &active_catalog_id,
+            UseSiteKind::EnumMember,
+            &file,
+            evolved
+        ),
+        vec!["active"]
+    );
+}
+
+#[test]
+fn analysis_snapshot_exposes_catalog_declarations_by_catalog_id() {
+    let source = "module m\n\
+        enum Status\n    \
+        active\n\
+        resource Book\n    \
+        required title: string\n\
+        store ^books(id: int): Book\n    \
+        index byShelf(title, id)\n";
+    let (snapshot, paths) =
+        analyze_overlay("analysis-catalog-declarations", &[("src/m.mw", source)]);
     assert!(
-        active_sites.iter().any(|site| {
-            site.file == file
-                && site.kind == UseSiteKind::EnumMember
-                && evolved[site.span.start_byte..site.span.end_byte].contains("Status::active")
-        }),
-        "active use sites: {active_sites:#?}"
+        !snapshot.report.has_errors(),
+        "{:#?}",
+        snapshot.report.diagnostics
+    );
+    let file = &paths[0];
+
+    let cases = [
+        (
+            proposal_id(&snapshot, CatalogEntryKind::Store, "m::^books"),
+            CatalogEntryKind::Store,
+            "books",
+            "^books",
+        ),
+        (
+            proposal_id(&snapshot, CatalogEntryKind::Resource, "m::Book"),
+            CatalogEntryKind::Resource,
+            "Book",
+            "Book",
+        ),
+        (
+            proposal_id(
+                &snapshot,
+                CatalogEntryKind::ResourceMember,
+                "m::Book::title",
+            ),
+            CatalogEntryKind::ResourceMember,
+            "title",
+            "title",
+        ),
+        (
+            proposal_id(
+                &snapshot,
+                CatalogEntryKind::StoreIndex,
+                "m::^books::byShelf",
+            ),
+            CatalogEntryKind::StoreIndex,
+            "byShelf",
+            "byShelf",
+        ),
+        (
+            proposal_id(&snapshot, CatalogEntryKind::Enum, "m::Status"),
+            CatalogEntryKind::Enum,
+            "Status",
+            "Status",
+        ),
+        (
+            proposal_id(&snapshot, CatalogEntryKind::EnumMember, "m::Status::active"),
+            CatalogEntryKind::EnumMember,
+            "active",
+            "active",
+        ),
+    ];
+
+    for (catalog_id, kind, name, text) in &cases {
+        let declaration = snapshot
+            .catalog_declaration(catalog_id)
+            .unwrap_or_else(|| panic!("missing declaration for {catalog_id}"));
+        assert_eq!(&declaration.catalog_id, catalog_id);
+        assert_eq!(declaration.file, *file);
+        assert_eq!(declaration.kind, *kind);
+        assert_eq!(declaration.name, *name);
+        assert_eq!(span_text(source, declaration.span), *text);
+    }
+
+    let all: Vec<_> = snapshot
+        .catalog_declarations()
+        .iter()
+        .map(|declaration| {
+            (
+                declaration.kind,
+                declaration.catalog_id.as_str(),
+                declaration.name.as_str(),
+                span_text(source, declaration.span),
+            )
+        })
+        .collect();
+    for (catalog_id, _, _, _) in &cases {
+        assert!(
+            all.iter().any(|(_, id, _, _)| id == catalog_id),
+            "catalog declarations: {all:#?}"
+        );
+    }
+    assert_eq!(
+        all.len(),
+        snapshot
+            .program
+            .catalog
+            .proposal
+            .as_ref()
+            .expect("proposal")
+            .entries
+            .len(),
+        "catalog declarations must cover every proposal entry: {all:#?}"
+    );
+}
+
+#[test]
+fn catalog_declarations_fail_closed_for_duplicate_resource_paths() {
+    let source = "module m\n\
+        resource Book\n    \
+        title: string\n\
+        resource Book\n    \
+        title: string\n";
+    let (snapshot, _) = analyze_overlay(
+        "analysis-duplicate-resource-catalog-paths",
+        &[("src/m.mw", source)],
+    );
+    assert!(
+        snapshot.report.has_errors(),
+        "duplicate resources should still be diagnosed"
+    );
+    let duplicate_ids = proposal_ids(&snapshot, CatalogEntryKind::Resource, "m::Book");
+    assert_eq!(
+        duplicate_ids.len(),
+        2,
+        "test fixture must produce duplicate proposal entries: {duplicate_ids:?}"
+    );
+
+    for catalog_id in duplicate_ids {
+        assert!(
+            snapshot.catalog_declaration(&catalog_id).is_none(),
+            "ambiguous resource path must not expose collapsed declaration for {catalog_id}"
+        );
+    }
+}
+
+#[test]
+fn catalog_use_sites_fail_closed_for_duplicate_resource_member_paths() {
+    let source = "module m\n\
+        resource Book\n    \
+        title: string\n    \
+        title: string\n\
+        store ^books(id: int): Book\n\
+        fn title(id: int): string\n    \
+        return ^books(id).title ?? \"\"\n";
+    let (snapshot, paths) = analyze_overlay(
+        "analysis-duplicate-member-catalog-paths",
+        &[("src/m.mw", source)],
+    );
+    assert!(
+        snapshot.report.has_errors(),
+        "duplicate resource members should still be diagnosed"
+    );
+    let file = &paths[0];
+    let duplicate_ids = proposal_ids(
+        &snapshot,
+        CatalogEntryKind::ResourceMember,
+        "m::Book::title",
+    );
+    assert_eq!(
+        duplicate_ids.len(),
+        2,
+        "test fixture must produce duplicate proposal entries: {duplicate_ids:?}"
+    );
+
+    for catalog_id in duplicate_ids {
+        assert!(
+            snapshot.catalog_declaration(&catalog_id).is_none(),
+            "ambiguous member path must not expose collapsed declaration for {catalog_id}"
+        );
+        assert_eq!(
+            site_texts(
+                &snapshot,
+                &catalog_id,
+                UseSiteKind::ResourceMember,
+                file,
+                source
+            ),
+            Vec::<&str>::new(),
+            "ambiguous member path must not expose collapsed use sites for {catalog_id}"
+        );
+    }
+}
+
+#[test]
+fn catalog_use_sites_fail_closed_for_duplicate_enum_member_paths() {
+    let source = "module m\n\
+        enum Status\n    \
+        active\n    \
+        active\n\
+        const s: Status = Status::active\n\
+        enum Cat\n    \
+        category tiger\n        \
+        bengal\n        \
+        bengal\n\
+        const c: Cat = Cat::tiger::bengal\n";
+    let (snapshot, paths) = analyze_overlay(
+        "analysis-duplicate-enum-member-catalog-paths",
+        &[("src/m.mw", source)],
+    );
+    assert!(
+        snapshot.report.has_errors(),
+        "duplicate enum members should still be diagnosed"
+    );
+    assert_eq!(
+        snapshot
+            .report
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.code == SCHEMA_DUPLICATE_MEMBER)
+            .count(),
+        2,
+        "{:#?}",
+        snapshot.report.diagnostics
+    );
+    let file = &paths[0];
+    let duplicate_paths = ["m::Status::active", "m::Cat::tiger::bengal"];
+
+    for path in duplicate_paths {
+        let duplicate_ids = proposal_ids(&snapshot, CatalogEntryKind::EnumMember, path);
+        assert!(
+            !duplicate_ids.is_empty(),
+            "fixture should retain at least one proposal entry for {path}"
+        );
+        for catalog_id in duplicate_ids {
+            assert!(
+                snapshot.catalog_declaration(&catalog_id).is_none(),
+                "ambiguous enum member path must not expose declaration for {catalog_id}"
+            );
+            assert_eq!(
+                site_texts(
+                    &snapshot,
+                    &catalog_id,
+                    UseSiteKind::EnumMember,
+                    file,
+                    source
+                ),
+                Vec::<&str>::new(),
+                "ambiguous enum member path must not expose use sites for {catalog_id}"
+            );
+        }
+    }
+}
+
+#[test]
+fn accepted_catalog_use_sites_fail_closed_for_duplicate_current_source_enum_member_paths() {
+    let baseline = "module m\n\
+        enum Status\n    \
+        active\n    \
+        archived\n\
+        const s: Status = Status::active\n";
+    let evolved = "module m\n\
+        enum Status\n    \
+        active\n    \
+        active\n    \
+        archived\n\
+        const s: Status = Status::active\n";
+    let root = temp_root("analysis-accepted-duplicate-enum-member-catalog-paths");
+    write(&root, "src/m.mw", baseline);
+    let (baseline_report, baseline_program) =
+        check_project(&root, &config()).expect("baseline check");
+    assert!(
+        !baseline_report.has_errors(),
+        "{:#?}",
+        baseline_report.diagnostics
+    );
+    let accepted = baseline_program
+        .catalog
+        .proposal
+        .clone()
+        .expect("baseline proposal");
+    let active_catalog_id = accepted
+        .entries
+        .iter()
+        .find(|entry| {
+            entry.kind == CatalogEntryKind::EnumMember && entry.path == "m::Status::active"
+        })
+        .expect("accepted active member")
+        .stable_id
+        .clone();
+
+    write(&root, "src/m.mw", evolved);
+    let snapshot = analyze_project(&root, &config(), &ProjectSources::new(), Some(&accepted))
+        .expect("analyze evolved source");
+    assert!(
+        snapshot.report.has_errors(),
+        "duplicate current-source enum members should still be diagnosed"
+    );
+    assert_eq!(
+        snapshot
+            .report
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.code == SCHEMA_DUPLICATE_MEMBER)
+            .count(),
+        1,
+        "{:#?}",
+        snapshot.report.diagnostics
+    );
+    let file = root.join("src/m.mw");
+
+    assert!(
+        snapshot.catalog_declaration(&active_catalog_id).is_none(),
+        "ambiguous current-source enum member path must not expose accepted declaration"
+    );
+    assert_eq!(
+        site_texts(
+            &snapshot,
+            &active_catalog_id,
+            UseSiteKind::EnumMember,
+            &file,
+            evolved
+        ),
+        Vec::<&str>::new(),
+        "ambiguous current-source enum member path must not expose accepted use sites"
+    );
+}
+
+#[test]
+fn accepted_catalog_use_sites_fail_closed_for_duplicate_current_source_member_paths() {
+    let baseline = "module m\n\
+        resource Book\n    \
+        title: string\n\
+        store ^books(id: int): Book\n\
+        fn title(id: int): string\n    \
+        return ^books(id).title ?? \"\"\n";
+    let evolved = "module m\n\
+        resource Book\n    \
+        title: string\n    \
+        title: string\n\
+        store ^books(id: int): Book\n\
+        fn title(id: int): string\n    \
+        return ^books(id).title ?? \"\"\n";
+    let root = temp_root("analysis-accepted-duplicate-member-catalog-paths");
+    write(&root, "src/m.mw", baseline);
+    let (baseline_report, baseline_program) =
+        check_project(&root, &config()).expect("baseline check");
+    assert!(
+        !baseline_report.has_errors(),
+        "{:#?}",
+        baseline_report.diagnostics
+    );
+    let accepted = baseline_program
+        .catalog
+        .proposal
+        .clone()
+        .expect("baseline proposal");
+    let title_catalog_id = accepted
+        .entries
+        .iter()
+        .find(|entry| {
+            entry.kind == CatalogEntryKind::ResourceMember && entry.path == "m::Book::title"
+        })
+        .expect("accepted title member")
+        .stable_id
+        .clone();
+
+    write(&root, "src/m.mw", evolved);
+    let snapshot = analyze_project(&root, &config(), &ProjectSources::new(), Some(&accepted))
+        .expect("analyze evolved source");
+    assert!(
+        snapshot.report.has_errors(),
+        "duplicate current-source members should still be diagnosed"
+    );
+    let file = root.join("src/m.mw");
+
+    assert!(
+        snapshot.catalog_declaration(&title_catalog_id).is_none(),
+        "ambiguous current-source member path must not expose accepted declaration"
+    );
+    assert_eq!(
+        site_texts(
+            &snapshot,
+            &title_catalog_id,
+            UseSiteKind::ResourceMember,
+            &file,
+            evolved
+        ),
+        Vec::<&str>::new(),
+        "ambiguous current-source member path must not expose accepted use sites"
+    );
+}
+
+#[test]
+fn accepted_catalog_fallbacks_fail_closed_for_duplicate_changed_current_source_member_paths() {
+    let baseline = "module m\n\
+        resource Book\n    \
+        title: string\n\
+        store ^books(id: int): Book\n\
+        fn title(id: int): string\n    \
+        return ^books(id).title ?? \"\"\n";
+    let evolved = "module m\n\
+        resource Book\n    \
+        title: int\n    \
+        title: bool\n\
+        store ^books(id: int): Book\n\
+        fn title(id: int): int\n    \
+        return ^books(id).title ?? 0\n";
+    let root = temp_root("analysis-accepted-duplicate-changed-member-catalog-paths");
+    write(&root, "src/m.mw", baseline);
+    let (baseline_report, baseline_program) =
+        check_project(&root, &config()).expect("baseline check");
+    assert!(
+        !baseline_report.has_errors(),
+        "{:#?}",
+        baseline_report.diagnostics
+    );
+    let accepted = baseline_program
+        .catalog
+        .proposal
+        .clone()
+        .expect("baseline proposal");
+    let title_catalog_id = accepted
+        .entries
+        .iter()
+        .find(|entry| {
+            entry.kind == CatalogEntryKind::ResourceMember && entry.path == "m::Book::title"
+        })
+        .expect("accepted title member")
+        .stable_id
+        .clone();
+
+    write(&root, "src/m.mw", evolved);
+    let snapshot = analyze_project(&root, &config(), &ProjectSources::new(), Some(&accepted))
+        .expect("analyze evolved source");
+    assert!(
+        snapshot.report.has_errors(),
+        "duplicate current-source members should still be diagnosed"
+    );
+    assert!(
+        snapshot.program.catalog.proposal.is_some(),
+        "changed duplicate member structures must force a proposal"
+    );
+    let file = root.join("src/m.mw");
+
+    assert!(
+        snapshot.catalog_declaration(&title_catalog_id).is_none(),
+        "ambiguous changed current-source member path must not expose accepted declaration"
+    );
+    assert_eq!(
+        site_texts(
+            &snapshot,
+            &title_catalog_id,
+            UseSiteKind::ResourceMember,
+            &file,
+            evolved
+        ),
+        Vec::<&str>::new(),
+        "ambiguous changed current-source member path must not expose accepted use sites"
     );
 }
 
@@ -781,6 +1453,58 @@ fn proposal_id(
         .unwrap_or_else(|| panic!("missing proposal entry {kind:?} {path}"))
         .stable_id
         .clone()
+}
+
+fn proposal_ids(
+    snapshot: &marrow_check::AnalysisSnapshot,
+    kind: CatalogEntryKind,
+    path: &str,
+) -> Vec<String> {
+    snapshot
+        .program
+        .catalog
+        .proposal
+        .as_ref()
+        .expect("first-run analysis proposes catalog ids")
+        .entries
+        .iter()
+        .filter(|entry| entry.kind == kind && entry.path == path)
+        .map(|entry| entry.stable_id.clone())
+        .collect()
+}
+
+fn span_text(source: &str, span: marrow_syntax::SourceSpan) -> &str {
+    &source[span.start_byte..span.end_byte]
+}
+
+fn site_texts<'a>(
+    snapshot: &marrow_check::AnalysisSnapshot,
+    catalog_id: &str,
+    kind: UseSiteKind,
+    file: &std::path::Path,
+    source: &'a str,
+) -> Vec<&'a str> {
+    site_texts_with_start(snapshot, catalog_id, kind, file, source)
+        .into_iter()
+        .map(|(text, _)| text)
+        .collect()
+}
+
+fn site_texts_with_start<'a>(
+    snapshot: &marrow_check::AnalysisSnapshot,
+    catalog_id: &str,
+    kind: UseSiteKind,
+    file: &std::path::Path,
+    source: &'a str,
+) -> Vec<(&'a str, usize)> {
+    let mut sites: Vec<_> = snapshot
+        .sites_for(catalog_id)
+        .into_iter()
+        .filter(|site| site.file == file && site.kind == kind)
+        .map(|site| (span_text(source, site.span), site.span.start_byte))
+        .collect();
+    sites.sort_by_key(|(_, start)| *start);
+    sites
 }
 
 #[test]

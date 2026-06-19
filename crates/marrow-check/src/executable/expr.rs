@@ -4,7 +4,8 @@ use marrow_schema::{MemberPathResolution, ScalarType};
 use marrow_syntax::{self as syntax, SourceSpan};
 
 use crate::facts::{
-    ModuleId, ResourceMemberId, StoreId, StoreIndexId, StoreIndexKeySource, StoredValueMeaning,
+    EnumMemberId, ModuleId, ResourceMemberId, StoreId, StoreIndexId, StoreIndexKeySource,
+    StoredValueMeaning,
 };
 use crate::program::{CheckedFunction, CheckedModule, CheckedProgram, MarrowType};
 
@@ -20,6 +21,7 @@ pub struct CheckedSavedPlace {
     pub root: String,
     pub store_id: StoreId,
     pub store_catalog_id: Option<String>,
+    pub root_span: SourceSpan,
     pub resource_name: String,
     pub root_members: Vec<CheckedSavedMember>,
     pub members: Vec<CheckedSavedMember>,
@@ -58,6 +60,7 @@ pub struct CheckedSavedKeyParam {
 pub struct CheckedSavedLayer {
     pub id: Option<ResourceMemberId>,
     pub name: String,
+    pub name_span: SourceSpan,
     pub catalog_id: Option<String>,
     pub args: Vec<CheckedArg>,
     pub key_params: Vec<CheckedSavedKeyParam>,
@@ -130,11 +133,13 @@ pub enum CheckedSavedTerminal {
     Record,
     Field {
         name: String,
+        span: SourceSpan,
         catalog_id: Option<String>,
         leaf: Option<crate::StoreLeafKind>,
     },
     Index {
         name: String,
+        span: SourceSpan,
         catalog_id: Option<String>,
         args: Vec<CheckedArg>,
         unique: bool,
@@ -169,6 +174,7 @@ pub enum CheckedExpr {
     Field {
         base: Box<CheckedExpr>,
         name: String,
+        name_span: SourceSpan,
         quoted: bool,
         place: Option<CheckedSavedPlace>,
         span: SourceSpan,
@@ -176,6 +182,7 @@ pub enum CheckedExpr {
     OptionalField {
         base: Box<CheckedExpr>,
         name: String,
+        name_span: SourceSpan,
         quoted: bool,
         place: Option<CheckedSavedPlace>,
         span: SourceSpan,
@@ -216,7 +223,7 @@ impl CheckedExpr {
                 text: text.clone(),
                 span: *span,
             },
-            syntax::Expression::Name { segments, span } => Self::Name {
+            syntax::Expression::Name { segments, span, .. } => Self::Name {
                 segments: segments.clone(),
                 enum_member: checked_enum_member_ref(expr, context),
                 span: *span,
@@ -255,15 +262,17 @@ impl CheckedExpr {
             syntax::Expression::Field {
                 base,
                 name,
+                name_span,
                 quoted,
                 span,
             } => {
                 let base = Box::new(Self::lower(base, context, scope)?);
-                let place =
-                    SavedPlaceResolver::new(context.program).field_place(&base, name, *span);
+                let place = SavedPlaceResolver::new(context.program)
+                    .field_place(&base, name, *name_span, *span);
                 Self::Field {
                     base,
                     name: name.clone(),
+                    name_span: *name_span,
                     quoted: *quoted,
                     place,
                     span: *span,
@@ -272,15 +281,17 @@ impl CheckedExpr {
             syntax::Expression::OptionalField {
                 base,
                 name,
+                name_span,
                 quoted,
                 span,
             } => {
                 let base = Box::new(Self::lower(base, context, scope)?);
-                let place =
-                    SavedPlaceResolver::new(context.program).field_place(&base, name, *span);
+                let place = SavedPlaceResolver::new(context.program)
+                    .field_place(&base, name, *name_span, *span);
                 Self::OptionalField {
                     base,
                     name: name.clone(),
+                    name_span: *name_span,
                     quoted: *quoted,
                     place,
                     span: *span,
@@ -411,6 +422,7 @@ pub(super) fn checked_enum_member_ref_in(
     module: &str,
     enum_name: &str,
     path: &[String],
+    path_spans: &[SourceSpan],
 ) -> Option<CheckedEnumMemberRef> {
     let enum_ref = checked_enum_ref(program, module, enum_name)?;
     let module_index = module_index(program, module)?;
@@ -426,9 +438,13 @@ pub(super) fn checked_enum_member_ref_in(
         .facts
         .enum_member_by_source_order(enum_ref.enum_id, ordinal as u32)?
         .id;
+    let member_uses =
+        checked_enum_member_uses(program, enum_ref, schema, path, path_spans, ordinal);
     Some(CheckedEnumMemberRef {
         enum_ref,
         member_id,
+        enum_span: None,
+        member_uses,
     })
 }
 
@@ -436,6 +452,14 @@ fn checked_enum_member_ref(
     expr: &syntax::Expression,
     context: &CheckedExecutableContext<'_>,
 ) -> Option<CheckedEnumMemberRef> {
+    let syntax::Expression::Name {
+        segments,
+        segment_spans,
+        ..
+    } = expr
+    else {
+        return None;
+    };
     let resolved = crate::enums::resolve_enum_member_path(
         context.program,
         expr,
@@ -451,10 +475,73 @@ fn checked_enum_member_ref(
         .facts
         .enum_member_by_source_order(enum_ref.enum_id, ordinal as u32)?
         .id;
+    let member_start = resolved.enum_index + 1;
+    let member_uses = checked_enum_member_uses(
+        context.program,
+        enum_ref,
+        resolved.schema,
+        &segments[member_start..],
+        &segment_spans[member_start..],
+        ordinal,
+    );
     Some(CheckedEnumMemberRef {
         enum_ref,
         member_id,
+        enum_span: segment_spans.get(resolved.enum_index).copied(),
+        member_uses,
     })
+}
+
+fn checked_enum_member_uses(
+    program: &CheckedProgram,
+    enum_ref: CheckedEnumRef,
+    schema: &marrow_schema::EnumSchema,
+    written_path: &[String],
+    written_spans: &[SourceSpan],
+    terminal_ordinal: usize,
+) -> Vec<(EnumMemberId, SourceSpan)> {
+    let canonical_path: Vec<String> = schema
+        .member_path(terminal_ordinal)
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+    if written_path.len() == canonical_path.len()
+        && written_path
+            .iter()
+            .map(String::as_str)
+            .eq(canonical_path.iter().map(String::as_str))
+    {
+        return (1..=canonical_path.len())
+            .filter_map(|prefix_len| {
+                enum_member_id_for_path(program, enum_ref, schema, &canonical_path[..prefix_len])
+                    .zip(written_spans.get(prefix_len - 1).copied())
+            })
+            .collect();
+    }
+
+    program
+        .facts
+        .enum_member_by_source_order(enum_ref.enum_id, terminal_ordinal as u32)
+        .map(|member| member.id)
+        .zip(written_spans.last().copied())
+        .into_iter()
+        .collect()
+}
+
+fn enum_member_id_for_path(
+    program: &CheckedProgram,
+    enum_ref: CheckedEnumRef,
+    schema: &marrow_schema::EnumSchema,
+    path: &[String],
+) -> Option<EnumMemberId> {
+    let segments: Vec<&str> = path.iter().map(String::as_str).collect();
+    let MemberPathResolution::Found(ordinal) = schema.walk_member_path(&segments) else {
+        return None;
+    };
+    program
+        .facts
+        .enum_member_by_source_order(enum_ref.enum_id, ordinal as u32)
+        .map(|member| member.id)
 }
 
 fn module_index(program: &CheckedProgram, module: &str) -> Option<usize> {

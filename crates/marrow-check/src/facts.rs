@@ -664,6 +664,7 @@ impl CheckedFacts {
                 module: module_id,
                 name: resource.name.clone(),
                 catalog_id: None,
+                name_span: declaration.map_or(SourceSpan::default(), |resource| resource.name_span),
                 span: declaration.map_or(SourceSpan::default(), |resource| resource.span),
             });
         }
@@ -711,6 +712,7 @@ impl CheckedFacts {
                 identity_keys,
                 next_id_shape: store.next_id_shape(),
                 catalog_id: None,
+                name_span: declaration.map_or(SourceSpan::default(), |store| store.root.span),
                 span: declaration.map_or(SourceSpan::default(), |store| store.span),
             });
         }
@@ -811,6 +813,15 @@ impl CheckedFacts {
                         .map(|candidate| candidate.span)
                 })
                 .unwrap_or_default();
+            let name_span = declaration
+                .and_then(|store| {
+                    store
+                        .indexes
+                        .iter()
+                        .find(|candidate| candidate.name == index.name)
+                        .map(|candidate| candidate.name_span)
+                })
+                .unwrap_or_default();
             let id = StoreIndexId(self.store_indexes.len() as u32);
             let keys = binding
                 .resource_schema
@@ -833,6 +844,7 @@ impl CheckedFacts {
                 declared_key_count: index.args.len(),
                 keys,
                 catalog_id: None,
+                name_span,
                 span,
             });
         }
@@ -860,6 +872,12 @@ impl CheckedFacts {
                     ResourceMember::Group(group) => group.span,
                 })
                 .unwrap_or_default();
+            let name_span = declaration
+                .map(|member| match member {
+                    ResourceMember::Field(field) => field.name_span,
+                    ResourceMember::Group(group) => group.name_span,
+                })
+                .unwrap_or_default();
             let kind = match node.kind {
                 NodeKind::Slot { .. } => ResourceMemberKind::Field,
                 NodeKind::Group => ResourceMemberKind::Group,
@@ -883,6 +901,7 @@ impl CheckedFacts {
                 plain_field_required,
                 value_meaning,
                 catalog_id: None,
+                name_span,
                 span,
             });
             let nested = declaration.and_then(|member| match member {
@@ -927,6 +946,7 @@ impl CheckedFacts {
                 module: module_id,
                 name: enum_schema.name.clone(),
                 catalog_id: None,
+                name_span: declaration.map_or(SourceSpan::default(), |decl| decl.name_span),
                 span: declaration.map_or(SourceSpan::default(), |decl| decl.span),
             });
             self.collect_enum_member_facts(enum_id, enum_schema, declaration);
@@ -954,9 +974,13 @@ impl CheckedFacts {
                 name: member.name.clone(),
                 selectable: enum_schema.is_selectable_leaf(index),
                 catalog_id: None,
+                name_span: member_spans
+                    .get(index)
+                    .map(|spans| spans.0)
+                    .unwrap_or_else(SourceSpan::default),
                 span: member_spans
                     .get(index)
-                    .copied()
+                    .map(|spans| spans.1)
                     .unwrap_or_else(SourceSpan::default),
             });
         }
@@ -1225,6 +1249,7 @@ pub struct ResourceFact {
     pub module: ModuleId,
     pub name: String,
     pub catalog_id: Option<String>,
+    pub name_span: SourceSpan,
     pub span: SourceSpan,
 }
 
@@ -1237,6 +1262,7 @@ pub struct StoreFact {
     pub identity_keys: Vec<StoreIdentityKeyFact>,
     pub next_id_shape: String,
     pub catalog_id: Option<String>,
+    pub name_span: SourceSpan,
     pub span: SourceSpan,
 }
 
@@ -1269,6 +1295,7 @@ pub struct StoreIndexFact {
     pub declared_key_count: usize,
     pub keys: Vec<StoreIndexKeyFact>,
     pub catalog_id: Option<String>,
+    pub name_span: SourceSpan,
     pub span: SourceSpan,
 }
 
@@ -1381,6 +1408,7 @@ pub struct ResourceMemberFact {
     pub plain_field_required: Option<bool>,
     pub value_meaning: Option<StoredValueMeaning>,
     pub catalog_id: Option<String>,
+    pub name_span: SourceSpan,
     pub span: SourceSpan,
 }
 
@@ -1396,6 +1424,7 @@ pub struct EnumFact {
     pub module: ModuleId,
     pub name: String,
     pub catalog_id: Option<String>,
+    pub name_span: SourceSpan,
     pub span: SourceSpan,
 }
 
@@ -1410,6 +1439,7 @@ pub struct EnumMemberFact {
     /// records the schema's verdict so the selectability rule has one owner.
     pub selectable: bool,
     pub catalog_id: Option<String>,
+    pub name_span: SourceSpan,
     pub span: SourceSpan,
 }
 
@@ -1673,9 +1703,12 @@ pub enum HostEffect {
     Capability(Capability),
 }
 
-fn flatten_enum_member_spans(members: &[marrow_syntax::EnumMember], spans: &mut Vec<SourceSpan>) {
+fn flatten_enum_member_spans(
+    members: &[marrow_syntax::EnumMember],
+    spans: &mut Vec<(SourceSpan, SourceSpan)>,
+) {
     for member in members {
-        spans.push(member.span);
+        spans.push((member.name_span, member.span));
         flatten_enum_member_spans(&member.members, spans);
     }
 }

@@ -359,11 +359,12 @@ impl<'a> ExprParser<'a> {
                     };
                 }
                 Some(TokenKind::Dot) => {
-                    let (name, quoted, end) = self.field_segment()?;
-                    let span = join_spans(expr.span(), end);
+                    let (name, quoted, name_span) = self.field_segment()?;
+                    let span = join_spans(expr.span(), name_span);
                     expr = Expression::Field {
                         base: Box::new(expr),
                         name,
+                        name_span,
                         quoted,
                         span,
                     };
@@ -372,11 +373,12 @@ impl<'a> ExprParser<'a> {
                 // short-circuits to absent rather than failing if the base or
                 // field is missing.
                 Some(TokenKind::QuestionDot) => {
-                    let (name, quoted, end) = self.field_segment()?;
-                    let span = join_spans(expr.span(), end);
+                    let (name, quoted, name_span) = self.field_segment()?;
+                    let span = join_spans(expr.span(), name_span);
                     expr = Expression::OptionalField {
                         base: Box::new(expr),
                         name,
+                        name_span,
                         quoted,
                         span,
                     };
@@ -551,6 +553,7 @@ impl<'a> ExprParser<'a> {
                 self.advance();
                 Some(Expression::Name {
                     segments: vec![token.text(self.source).to_string()],
+                    segment_spans: vec![token.span],
                     span: token.span,
                 })
             }
@@ -628,6 +631,7 @@ impl<'a> ExprParser<'a> {
     fn name_expr(&mut self) -> Option<Expression> {
         let first = self.advance();
         let mut segments = vec![first.text(self.source).to_string()];
+        let mut segment_spans = vec![first.span];
         let mut end = first.span;
         while matches!(self.peek(), Some(TokenKind::DoubleColon)) {
             self.advance();
@@ -644,10 +648,12 @@ impl<'a> ExprParser<'a> {
             }
             self.advance();
             segments.push(segment.text(self.source).to_string());
+            segment_spans.push(segment.span);
             end = segment.span;
         }
         Some(Expression::Name {
             segments,
+            segment_spans,
             span: join_spans(first.span, end),
         })
     }

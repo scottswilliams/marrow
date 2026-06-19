@@ -807,6 +807,7 @@ mod tests {
     fn name(segments: &[&str]) -> Expression {
         Expression::Name {
             segments: segments.iter().map(|s| s.to_string()).collect(),
+            segment_spans: Vec::new(),
             span: SourceSpan::default(),
         }
     }
@@ -815,6 +816,7 @@ mod tests {
         Expression::Field {
             base: Box::new(base),
             name: name.to_string(),
+            name_span: SourceSpan::default(),
             quoted: false,
             span: SourceSpan::default(),
         }

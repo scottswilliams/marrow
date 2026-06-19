@@ -35,8 +35,8 @@ mod typerules;
 mod walk;
 
 pub use analysis::{
-    AnalysisIdentity, AnalysisSnapshot, AnalyzedFile, SurfaceReadOperationAnalysis, UseSite,
-    UseSiteKind, analyze_project, scope_at, type_at,
+    AnalysisIdentity, AnalysisSnapshot, AnalyzedFile, CatalogDeclaration,
+    SurfaceReadOperationAnalysis, UseSite, UseSiteKind, analyze_project, scope_at, type_at,
 };
 pub use binding::{
     BindingIndex, ParameterDefinition, RenameAction, RenameSafety, SourceEdit, SymbolKind,

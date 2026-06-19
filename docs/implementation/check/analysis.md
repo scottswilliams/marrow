@@ -44,6 +44,12 @@ from the checked program or snapshot:
   constants, function bodies, and evolve transform bodies. Use sites are keyed
   by accepted or proposal catalog ids and typed as saved roots, resource
   members, store indexes, enums, or enum members.
+- `AnalysisSnapshot::catalog_declarations()` returns catalog-owned
+  declarations keyed by catalog id. Each `CatalogDeclaration` carries the source
+  file, exact declaration-name span, catalog id, `CatalogEntryKind`, and source
+  name for resources, stores, resource members, store indexes, enums, and enum
+  members. `catalog_declaration(catalog_id)` is the direct lookup for editor
+  navigation, so LSP callers do not reconstruct catalog paths or proposal ids.
 - `AnalysisSnapshot::surface_read_operations()` iterates snapshot-bound
   `SurfaceReadOperationAnalysis` views. Each view carries the source file,
   checked `SurfaceFact`, and checked `SurfaceReadOperationFact`, so editor
@@ -82,6 +88,15 @@ from the checked program or snapshot:
 - Ordinary `marrow check` reads each source file through the analysis pipeline
   and reads the fixed `marrow.catalog.json` artifact when present. It does not
   open, repair, or create the native store.
+
+Catalog navigation spans are owned upstream of `analysis.rs`. Syntax carries
+token-tight spans for declaration names, name-expression segments, field
+segments, saved roots, and match-arm member path segments. Lowering copies those
+spans into checked saved places, layers, terminals, and enum-member references;
+checked facts copy declaration name spans. The analysis use-site and declaration
+tables consume those exact spans only. They do not substring-scan source text or
+fall back to whole expressions, calls, match arms, layers, or broad declaration
+spans.
 
 ## Tooling facts
 
@@ -147,7 +162,10 @@ add only transport availability and request-envelope concerns around those DTOs.
 
 - `AnalysisSnapshot` / `AnalyzedFile` (`analysis.rs`) — the IDE view: report + best-effort `CheckedProgram` + every parsed file, error files retained.
 - `UseSite` / `UseSiteKind` (`analysis.rs`) — catalog-id references in checked
-  bodies, built from lowered expressions rather than source spelling.
+  bodies, built from lowered expressions and token-tight syntax spans rather
+  than source spelling.
+- `CatalogDeclaration` (`analysis.rs`) — catalog-id declarations for editor
+  navigation, keyed with `CatalogEntryKind` and exact declaration-name spans.
 - `SurfaceReadOperationAnalysis` (`analysis.rs`) — a snapshot-bound view over a
   checked surface operation plus its source file.
 - `CheckedReadOnlyExpression` (`program.rs`) — a source-digest-bound checked

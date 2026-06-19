@@ -68,9 +68,10 @@ impl<'a> SavedPlaceResolver<'a> {
         &self,
         base: &CheckedExpr,
         name: &str,
+        name_span: SourceSpan,
         span: SourceSpan,
     ) -> Option<CheckedSavedPlace> {
-        checked_field_place(base, name, self.program, span)
+        checked_field_place(base, name, self.program, name_span, span)
     }
 
     pub(crate) fn access_rejection(&self, expr: &CheckedExpr) -> Option<SavedAccessRejection> {
@@ -799,6 +800,7 @@ pub(super) fn checked_root_place(
         root: root.to_string(),
         store_id,
         store_catalog_id: store_fact.catalog_id.clone(),
+        root_span: span,
         resource_name: resource_fact.name.clone(),
         root_members: members.clone(),
         members,
@@ -890,7 +892,12 @@ pub(super) fn checked_call_place(
     program: &CheckedProgram,
     span: SourceSpan,
 ) -> Option<CheckedSavedPlace> {
-    if let CheckedExpr::Field { base, name, .. } = callee
+    if let CheckedExpr::Field {
+        base,
+        name,
+        name_span,
+        ..
+    } = callee
         && let CheckedExpr::SavedRoot { .. } = base.as_ref()
         && let Some(place) = base.saved_place()
         && let Some(index_fact) = checked_index_fact(program, place.store_id, name)
@@ -898,6 +905,7 @@ pub(super) fn checked_call_place(
         let mut indexed = place.clone();
         indexed.terminal = CheckedSavedTerminal::Index {
             name: name.clone(),
+            span: *name_span,
             catalog_id: index_fact.catalog_id,
             args: args.to_vec(),
             unique: index_fact.unique,
@@ -927,6 +935,7 @@ pub(super) fn checked_field_place(
     base: &CheckedExpr,
     name: &str,
     program: &CheckedProgram,
+    name_span: SourceSpan,
     span: SourceSpan,
 ) -> Option<CheckedSavedPlace> {
     let mut place = base.saved_place()?.clone();
@@ -938,6 +947,7 @@ pub(super) fn checked_field_place(
     {
         place.terminal = CheckedSavedTerminal::Index {
             name: name.to_string(),
+            span: name_span,
             catalog_id: index.catalog_id,
             args: Vec::new(),
             unique: index.unique,
@@ -949,6 +959,7 @@ pub(super) fn checked_field_place(
     if let Some(member) = checked_plain_field_member(&place.members, name) {
         place.terminal = CheckedSavedTerminal::Field {
             name: name.to_string(),
+            span: name_span,
             catalog_id: member.catalog_id.clone(),
             leaf: member.leaf.clone(),
         };
@@ -958,6 +969,7 @@ pub(super) fn checked_field_place(
     let Some(member) = checked_layer_member(&place.members, name) else {
         place.terminal = CheckedSavedTerminal::Field {
             name: name.to_string(),
+            span: name_span,
             catalog_id: None,
             leaf: None,
         };
@@ -967,6 +979,7 @@ pub(super) fn checked_field_place(
     place.layers.push(CheckedSavedLayer {
         id: member.id,
         name: name.to_string(),
+        name_span,
         catalog_id: member.catalog_id.clone(),
         args: Vec::new(),
         key_params: member.key_params.clone(),

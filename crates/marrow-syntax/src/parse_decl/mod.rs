@@ -24,7 +24,7 @@ mod tokens;
 pub(crate) use decl::DeclParser;
 
 use crate::ast::{FunctionReturnPresence, KeyParam, ParamDecl, TypeRef};
-use crate::diagnostic::ParseDiagnosticReason;
+use crate::diagnostic::{ParseDiagnosticReason, SourceSpan};
 
 pub(super) struct FunctionHead {
     public: bool,
@@ -38,11 +38,13 @@ pub(super) enum MemberHead {
     Field {
         required: bool,
         name: String,
+        name_span: SourceSpan,
         keys: Vec<KeyParam>,
         ty: TypeRef,
     },
     Group {
         name: String,
+        name_span: SourceSpan,
         keys: Vec<KeyParam>,
     },
 }

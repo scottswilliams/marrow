@@ -173,17 +173,23 @@ impl<'a> DeclParser<'a> {
             Ok(MemberHead::Field {
                 required,
                 name,
+                name_span,
                 keys,
                 ty,
             }) => Some(ResourceMember::Field(FieldDecl {
                 docs,
                 required,
                 name,
+                name_span,
                 keys,
                 ty,
                 span,
             })),
-            Ok(MemberHead::Group { name, keys }) => {
+            Ok(MemberHead::Group {
+                name,
+                name_span,
+                keys,
+            }) => {
                 let (children, child_indexes, child_comments) =
                     if matches!(self.peek(), Some(TokenKind::Indent)) {
                         self.parse_resource_members(false)
@@ -199,6 +205,7 @@ impl<'a> DeclParser<'a> {
                 Some(ResourceMember::Group(GroupDecl {
                     docs,
                     name,
+                    name_span,
                     keys,
                     members: children,
                     comments: child_comments,
@@ -238,7 +245,7 @@ impl<'a> DeclParser<'a> {
                     let (header, trailing_comment) = self.take_header_line_with_trailing_comment();
                     comments.extend(trailing_comment);
                     match enum_member_name(self.source, header) {
-                        Ok((name, category)) => {
+                        Ok((name, category, name_span)) => {
                             // A member's children are the indented block that
                             // immediately follows its header, parsed by the same
                             // routine and attached, so members nest to any depth.
@@ -251,6 +258,7 @@ impl<'a> DeclParser<'a> {
                             members.push(EnumMember {
                                 docs: member_docs,
                                 name,
+                                name_span,
                                 category,
                                 members: nested,
                                 comments: nested_comments,

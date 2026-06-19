@@ -1265,7 +1265,7 @@ impl UseWalker<'_, '_> {
         type_scope: &[HashMap<String, MarrowType>],
     ) {
         match expr {
-            Expression::Name { segments, span } => {
+            Expression::Name { segments, span, .. } => {
                 self.resolve_name(segments, *span, scope);
             }
             // A bare saved root resolves only as part of a larger saved-path
@@ -1373,6 +1373,7 @@ impl UseWalker<'_, '_> {
     fn resolve_enum_member(&self, segments: &[String]) -> Option<ResolvedEnumMemberUse> {
         let expr = Expression::Name {
             segments: segments.to_vec(),
+            segment_spans: Vec::new(),
             span: SourceSpan::default(),
         };
         let resolved =
@@ -1496,6 +1497,7 @@ impl UseWalker<'_, '_> {
         let Expression::Name {
             segments,
             span: callee_span,
+            ..
         } = callee
         else {
             return false;

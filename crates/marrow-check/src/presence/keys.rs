@@ -261,6 +261,7 @@ mod tests {
         CheckedExpr::Field {
             base: Box::new(root_expr()),
             name: "title".to_string(),
+            name_span: SourceSpan::default(),
             quoted,
             place: None,
             span: SourceSpan::default(),
@@ -271,6 +272,7 @@ mod tests {
         CheckedExpr::OptionalField {
             base: Box::new(root_expr()),
             name: "title".to_string(),
+            name_span: SourceSpan::default(),
             quoted,
             place: None,
             span: SourceSpan::default(),

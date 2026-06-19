@@ -313,6 +313,7 @@ mod tests {
             root: "books".to_string(),
             store_id: StoreId(0),
             store_catalog_id: Some("cat_000000000000000000000000000000aa".to_string()),
+            root_span: marrow_syntax::SourceSpan::default(),
             resource_name: "Book".to_string(),
             root_members: vec![CheckedSavedMember {
                 id: Some(ResourceMemberId(0)),

@@ -148,10 +148,12 @@ pub struct CheckedEnumRef {
     pub enum_id: EnumId,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CheckedEnumMemberRef {
     pub enum_ref: CheckedEnumRef,
     pub member_id: EnumMemberId,
+    pub enum_span: Option<SourceSpan>,
+    pub member_uses: Vec<(EnumMemberId, SourceSpan)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

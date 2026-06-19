@@ -11,19 +11,17 @@ use marrow_syntax::SourceSpan;
 
 use crate::checks::{ModuleNamePolicy, ResolvedFileCheck, check_resolved_files};
 use crate::enums::normalize_program_named_types;
-use crate::executable::{
-    CheckedBodyVisitor, walk_checked_body, walk_checked_expr, walk_checked_match_arm,
-};
 use crate::{
-    CHECK_DUPLICATE_MODULE, CHECK_MULTIPLE_SCRIPTS, CheckDiagnostic, CheckReport, CheckedBody,
-    CheckedExpr, CheckedFile, CheckedMatchArm, CheckedModule, CheckedProgram, CheckedSavedMember,
-    CheckedSavedPlace, CheckedSavedTerminal, DiagnosticPayload, IO_READ, ProjectSources,
+    CHECK_DUPLICATE_MODULE, CHECK_MULTIPLE_SCRIPTS, CheckDiagnostic, CheckReport, CheckedFile,
+    CheckedModule, CheckedProgram, DiagnosticPayload, IO_READ, ProjectSources,
     SCHEMA_DUPLICATE_ROOT_OWNER, SurfaceFact, SurfaceReadOperationFact, TestResolutionSuppression,
     check_file_source, enum_visibility, module_path_error, read_source,
 };
 
+mod catalog_nav;
 mod cursor;
 
+pub use catalog_nav::{CatalogDeclaration, UseSite, UseSiteKind};
 pub(crate) use cursor::span_covers;
 pub use cursor::{scope_at, type_at};
 
@@ -54,6 +52,7 @@ pub struct AnalysisSnapshot {
     pub program: CheckedProgram,
     pub files: Vec<AnalyzedFile>,
     use_sites: Vec<UseSite>,
+    catalog_declarations: Vec<CatalogDeclaration>,
 }
 
 impl AnalysisSnapshot {
@@ -98,6 +97,16 @@ impl AnalysisSnapshot {
             .cloned()
             .collect()
     }
+
+    pub fn catalog_declarations(&self) -> &[CatalogDeclaration] {
+        &self.catalog_declarations
+    }
+
+    pub fn catalog_declaration(&self, catalog_id: &str) -> Option<&CatalogDeclaration> {
+        self.catalog_declarations
+            .iter()
+            .find(|declaration| declaration.catalog_id == catalog_id)
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -105,23 +114,6 @@ pub struct SurfaceReadOperationAnalysis<'a> {
     pub file: &'a Path,
     pub surface: &'a SurfaceFact,
     pub operation: &'a SurfaceReadOperationFact,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct UseSite {
-    pub file: PathBuf,
-    pub span: SourceSpan,
-    pub catalog_id: String,
-    pub kind: UseSiteKind,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum UseSiteKind {
-    SavedRoot,
-    ResourceMember,
-    StoreIndex,
-    Enum,
-    EnumMember,
 }
 
 /// One parsed file in an [`AnalysisSnapshot`]: its path, the module name its
@@ -500,6 +492,9 @@ pub(crate) fn analyze_source_project(
         accepted,
         &mut program,
         &evolve_intents,
+        parsed_files
+            .iter()
+            .map(|(file, parsed)| (file.path.as_path(), parsed)),
         &mut report.diagnostics,
     );
     let backing_validity = backing_invalidations.resolve(&program);
@@ -546,7 +541,8 @@ pub(crate) fn analyze_source_project(
         .collect();
 
     let content_identity = analysis_content_identity(project_root, config, &analyzed);
-    let use_sites = collect_use_sites(&program);
+    let use_sites = catalog_nav::collect_use_sites(&program);
+    let catalog_declarations = catalog_nav::collect_catalog_declarations(&program);
 
     Ok(AnalysisSnapshot {
         content_identity,
@@ -554,276 +550,8 @@ pub(crate) fn analyze_source_project(
         program,
         files: analyzed,
         use_sites,
+        catalog_declarations,
     })
-}
-
-fn collect_use_sites(program: &CheckedProgram) -> Vec<UseSite> {
-    let mut sites = Vec::new();
-    let runtime = program.runtime();
-    for module in runtime.modules() {
-        for constant in &module.constants {
-            if let Some(value) = &constant.value {
-                collect_expr_use_sites(program, &module.source_file, value, &mut sites);
-            }
-        }
-        for function in module.functions() {
-            if let Some(body) = function.body() {
-                collect_body_use_sites(program, &module.source_file, body, &mut sites);
-            }
-        }
-    }
-    for transform in &program.catalog.evolve_transforms {
-        if let Some(body) = transform.runtime_body() {
-            collect_body_use_sites(program, &transform.file, body, &mut sites);
-        }
-    }
-    sites
-}
-
-fn collect_body_use_sites(
-    program: &CheckedProgram,
-    file: &Path,
-    body: &CheckedBody,
-    sites: &mut Vec<UseSite>,
-) {
-    let mut collector = UseSiteCollector {
-        program,
-        file,
-        sites,
-    };
-    walk_checked_body(&mut collector, body);
-}
-
-fn collect_expr_use_sites(
-    program: &CheckedProgram,
-    file: &Path,
-    expr: &CheckedExpr,
-    sites: &mut Vec<UseSite>,
-) {
-    let mut collector = UseSiteCollector {
-        program,
-        file,
-        sites,
-    };
-    collector.visit_expr(expr);
-}
-
-struct UseSiteCollector<'a, 's> {
-    program: &'a CheckedProgram,
-    file: &'a Path,
-    sites: &'s mut Vec<UseSite>,
-}
-
-impl UseSiteCollector<'_, '_> {
-    fn record_expr(&mut self, expr: &CheckedExpr) {
-        if let Some(place) = expr.saved_place() {
-            collect_place_use_sites(self.program, self.file, expr.span(), place, self.sites);
-        }
-
-        if let CheckedExpr::Name {
-            enum_member, span, ..
-        } = expr
-            && let Some(enum_member) = enum_member
-        {
-            if let Some(catalog_id) = enum_catalog_id(self.program, enum_member.enum_ref.enum_id) {
-                push_use_site(self.file, *span, &catalog_id, UseSiteKind::Enum, self.sites);
-            }
-            if let Some(catalog_id) = enum_member_catalog_id(self.program, enum_member.member_id) {
-                push_use_site(
-                    self.file,
-                    *span,
-                    &catalog_id,
-                    UseSiteKind::EnumMember,
-                    self.sites,
-                );
-            }
-        }
-    }
-
-    fn record_match_arm(&mut self, arm: &CheckedMatchArm) {
-        if let Some(member_id) = arm.member_id
-            && let Some(catalog_id) = enum_member_catalog_id(self.program, member_id)
-        {
-            push_use_site(
-                self.file,
-                arm.span,
-                &catalog_id,
-                UseSiteKind::EnumMember,
-                self.sites,
-            );
-        }
-    }
-}
-
-impl CheckedBodyVisitor for UseSiteCollector<'_, '_> {
-    fn visit_expr(&mut self, expression: &CheckedExpr) {
-        self.record_expr(expression);
-        walk_checked_expr(self, expression);
-    }
-
-    fn visit_match_arm(&mut self, arm: &CheckedMatchArm) {
-        self.record_match_arm(arm);
-        walk_checked_match_arm(self, arm);
-    }
-}
-
-fn collect_place_use_sites(
-    program: &CheckedProgram,
-    file: &Path,
-    expr_span: SourceSpan,
-    place: &CheckedSavedPlace,
-    sites: &mut Vec<UseSite>,
-) {
-    if let Some(catalog_id) = place
-        .store_catalog_id
-        .as_deref()
-        .or_else(|| program.store_catalog_id(place.store_id))
-    {
-        push_use_site(file, place.span, catalog_id, UseSiteKind::SavedRoot, sites);
-    }
-    for layer in &place.layers {
-        if let Some(catalog_id) = layer.catalog_id.as_deref().or_else(|| {
-            layer
-                .id
-                .and_then(|id| resource_member_catalog_id(program, id))
-        }) {
-            push_use_site(
-                file,
-                layer.span,
-                catalog_id,
-                UseSiteKind::ResourceMember,
-                sites,
-            );
-        }
-    }
-    match &place.terminal {
-        CheckedSavedTerminal::Record => {}
-        CheckedSavedTerminal::Field {
-            name, catalog_id, ..
-        } => {
-            if let Some(catalog_id) = catalog_id.as_deref().or_else(|| {
-                checked_member_by_name(&place.members, name)
-                    .and_then(|member| member.id)
-                    .and_then(|id| resource_member_catalog_id(program, id))
-            }) {
-                push_use_site(
-                    file,
-                    expr_span,
-                    catalog_id,
-                    UseSiteKind::ResourceMember,
-                    sites,
-                );
-            }
-        }
-        CheckedSavedTerminal::Index {
-            name, catalog_id, ..
-        } => {
-            if let Some(catalog_id) = catalog_id.as_deref().or_else(|| {
-                place
-                    .indexes
-                    .iter()
-                    .find(|index| index.name == *name)
-                    .and_then(|index| program.store_index_catalog_id(index.id))
-            }) {
-                push_use_site(file, expr_span, catalog_id, UseSiteKind::StoreIndex, sites);
-            }
-        }
-    }
-}
-
-fn checked_member_by_name<'a>(
-    members: &'a [CheckedSavedMember],
-    name: &str,
-) -> Option<&'a CheckedSavedMember> {
-    members.iter().find(|member| member.name == name)
-}
-
-fn resource_member_catalog_id(
-    program: &CheckedProgram,
-    id: crate::ResourceMemberId,
-) -> Option<&str> {
-    let member = program.facts.resource_members().get(id.0 as usize)?;
-    if let Some(catalog_id) = member.catalog_id.as_deref() {
-        return Some(catalog_id);
-    }
-    let resource = program.facts.resource(member.resource);
-    let module = program.facts.modules().get(resource.module.0 as usize)?;
-    let path = crate::catalog::resource_member_path(
-        &module.name,
-        &resource.name,
-        &resource_member_path_names(program, id)?,
-    );
-    proposal_catalog_id(
-        program,
-        marrow_catalog::CatalogEntryKind::ResourceMember,
-        &path,
-    )
-}
-
-fn enum_catalog_id(program: &CheckedProgram, id: crate::EnumId) -> Option<String> {
-    let enum_fact = program.facts.enum_(id)?;
-    if let Some(catalog_id) = enum_fact.catalog_id.as_deref() {
-        return Some(catalog_id.to_string());
-    }
-    let module = program.facts.modules().get(enum_fact.module.0 as usize)?;
-    let path = crate::catalog::enum_path(&module.name, &enum_fact.name);
-    proposal_catalog_id(program, marrow_catalog::CatalogEntryKind::Enum, &path)
-        .map(ToString::to_string)
-}
-
-fn enum_member_catalog_id(program: &CheckedProgram, id: crate::EnumMemberId) -> Option<String> {
-    let member = program.facts.enum_member(id)?;
-    if let Some(catalog_id) = member.catalog_id.as_deref() {
-        return Some(catalog_id.to_string());
-    }
-    let path = program.facts.enum_member_catalog_path(id)?;
-    proposal_catalog_id(program, marrow_catalog::CatalogEntryKind::EnumMember, &path)
-        .map(ToString::to_string)
-}
-
-fn resource_member_path_names(
-    program: &CheckedProgram,
-    id: crate::ResourceMemberId,
-) -> Option<Vec<String>> {
-    let mut names = Vec::new();
-    let mut current = Some(id);
-    while let Some(id) = current {
-        let member = program.facts.resource_members().get(id.0 as usize)?;
-        names.push(member.name.clone());
-        current = member.parent;
-    }
-    names.reverse();
-    Some(names)
-}
-
-fn proposal_catalog_id<'a>(
-    program: &'a CheckedProgram,
-    kind: marrow_catalog::CatalogEntryKind,
-    path: &str,
-) -> Option<&'a str> {
-    program
-        .catalog
-        .proposal
-        .as_ref()?
-        .entries
-        .iter()
-        .find(|entry| entry.kind == kind && entry.path == path)
-        .map(|entry| entry.stable_id.as_str())
-}
-
-fn push_use_site(
-    file: &Path,
-    span: SourceSpan,
-    catalog_id: &str,
-    kind: UseSiteKind,
-    sites: &mut Vec<UseSite>,
-) {
-    sites.push(UseSite {
-        file: file.to_path_buf(),
-        span,
-        catalog_id: catalog_id.to_string(),
-        kind,
-    });
 }
 
 fn overlay_module_file(

@@ -357,11 +357,11 @@ impl<'a> DeclParser<'a> {
     fn parse_resource(&mut self, docs: Vec<String>) -> ResourceDecl {
         let span = self.header_span();
         let header = self.take_header_line();
-        let name = match parse_resource_head(self.source, &header[1..]) {
+        let (name, name_span) = match parse_resource_head(self.source, &header[1..]) {
             Ok(parsed) => parsed,
             Err(error) => {
                 self.error_span(span, error.reason, error.message);
-                String::new()
+                (String::new(), SourceSpan::default())
             }
         };
         let (members, indexes, comments) = if matches!(self.peek(), Some(TokenKind::Indent)) {
@@ -378,6 +378,7 @@ impl<'a> DeclParser<'a> {
         ResourceDecl {
             docs,
             name,
+            name_span,
             members,
             comments,
             span,
@@ -395,6 +396,7 @@ impl<'a> DeclParser<'a> {
                     SavedRoot {
                         root: String::new(),
                         keys: Vec::new(),
+                        span: SourceSpan::default(),
                     },
                     String::new(),
                 )
@@ -418,11 +420,11 @@ impl<'a> DeclParser<'a> {
     fn parse_enum(&mut self, docs: Vec<String>) -> EnumDecl {
         let span = self.header_span();
         let header = self.take_header_line();
-        let (public, name) = match parse_enum_head(self.source, header) {
+        let (public, name, name_span) = match parse_enum_head(self.source, header) {
             Ok(parsed) => parsed,
             Err(error) => {
                 self.error_span(span, error.reason, error.message);
-                (false, String::new())
+                (false, String::new(), SourceSpan::default())
             }
         };
         let (members, comments) = if matches!(self.peek(), Some(TokenKind::Indent)) {
@@ -446,6 +448,7 @@ impl<'a> DeclParser<'a> {
             docs,
             public,
             name,
+            name_span,
             members,
             comments,
             span,

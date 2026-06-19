@@ -464,7 +464,7 @@ impl<'a> StmtParser<'a> {
         let content_end = self.split_trailing_comment(newline);
         let header = &self.tokens[self.pos..content_end];
         let span = line_span(header);
-        let Some(path) = arm_member_path(self.source, header) else {
+        let Some((path, path_spans)) = arm_member_path(self.source, header) else {
             self.error_span_reason(
                 span,
                 ParseDiagnosticReason::MatchArmMemberPath,
@@ -478,6 +478,7 @@ impl<'a> StmtParser<'a> {
         let block = self.block_body();
         Some(MatchArm {
             path,
+            path_spans,
             span: join_spans(span, block.span),
             block,
         })

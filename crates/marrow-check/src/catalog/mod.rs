@@ -4,7 +4,7 @@ use std::path::Path;
 
 use marrow_catalog::{CatalogEntry, CatalogEntryKind, CatalogLifecycle, CatalogMetadata};
 use marrow_store::cell::CatalogId;
-use marrow_syntax::SourceSpan;
+use marrow_syntax::{Declaration, EnumMember, ParsedSource, SourceSpan};
 
 use crate::evolution::leaf_type;
 use crate::evolution::{DefaultIntent, EvolveIntents, RenameIntent, RetireIntent, TransformIntent};
@@ -63,16 +63,21 @@ pub(crate) struct CatalogBinding {
     /// Resolves a member's referent enum or store to its identity-aware leaf token. Covers
     /// proposal-only ids the accepted-only `ids` omits, and is never bound onto live facts.
     pub(crate) leaf_token_ids: HashMap<CatalogKey, String>,
+    pub(crate) ambiguous_source_keys: HashSet<CatalogKey>,
     pub(crate) proposal: Option<CatalogMetadata>,
 }
 
-pub(crate) fn bind_catalog(
+pub(crate) fn bind_catalog<'a, I>(
     accepted: Option<&CatalogMetadata>,
     program: &mut CheckedProgram,
     evolve: &EvolveIntents,
+    parsed_files: I,
     diagnostics: &mut Vec<CheckDiagnostic>,
-) {
-    let binding = catalog_binding(program, accepted, evolve, diagnostics);
+) where
+    I: IntoIterator<Item = (&'a Path, &'a ParsedSource)>,
+{
+    let source = catalog_source(program, parsed_files);
+    let binding = catalog_binding(program, accepted, evolve, source, diagnostics);
     let declared_store_key_shapes = declared_store_key_shapes(program, &binding.leaf_token_ids);
     let declared_member_structs = declared_member_structs(program, &binding.leaf_token_ids);
     program
@@ -92,6 +97,7 @@ pub(crate) fn bind_catalog(
         bound_transforms(&evolve.transforms, &binding.leaf_token_ids);
     program.catalog.declared_store_key_shapes = declared_store_key_shapes;
     program.catalog.declared_member_structs = declared_member_structs;
+    program.catalog.ambiguous_source_keys = binding.ambiguous_source_keys;
     program.catalog.proposal = binding.proposal;
 }
 
@@ -277,18 +283,36 @@ fn catalog_error(file: std::path::PathBuf, span: SourceSpan, message: String) ->
     CheckDiagnostic::error(CHECK_CATALOG_INTENT, &file, span, message)
 }
 
+struct CatalogSource {
+    entries: Vec<SourceCatalogEntry>,
+    duplicate_keys: HashSet<CatalogKey>,
+}
+
+fn catalog_source<'a, I>(program: &CheckedProgram, parsed_files: I) -> CatalogSource
+where
+    I: IntoIterator<Item = (&'a Path, &'a ParsedSource)>,
+{
+    let entries = source_catalog_entries(program);
+    let mut duplicate_keys = duplicate_source_keys(&entries);
+    duplicate_keys.extend(parsed_enum_member_duplicate_keys(program, parsed_files));
+    CatalogSource {
+        entries,
+        duplicate_keys,
+    }
+}
+
 fn catalog_binding(
     program: &CheckedProgram,
     accepted: Option<&CatalogMetadata>,
     evolve: &EvolveIntents,
+    source: CatalogSource,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) -> CatalogBinding {
-    let source_entries = source_catalog_entries(program);
     if let Some(catalog) = accepted
         && let Err(error) = catalog.validate()
     {
         diagnostics.push(catalog_diagnostic(
-            first_source_file(&source_entries),
+            first_source_file(&source.entries),
             format!("accepted catalog metadata is not valid: {}", error.message),
         ));
         return CatalogBinding {
@@ -296,33 +320,33 @@ fn catalog_binding(
             accepted_digest: None,
             ids: HashMap::new(),
             leaf_token_ids: HashMap::new(),
+            ambiguous_source_keys: source.duplicate_keys,
             proposal: None,
         };
     }
     let mut ids = HashMap::new();
     let proposal = match accepted {
-        Some(catalog) => bind_against_accepted(
-            program,
-            catalog,
-            evolve,
-            &source_entries,
-            &mut ids,
-            diagnostics,
-        ),
-        None => bind_first_run(program, evolve, &source_entries, diagnostics).map(Some),
+        Some(catalog) => {
+            bind_against_accepted(program, catalog, evolve, &source, &mut ids, diagnostics)
+        }
+        None => bind_first_run(program, evolve, &source.entries, diagnostics).map(Some),
     };
     let proposal = match proposal {
         Ok(proposal) => proposal,
         Err(CatalogProposalError::Allocation(error)) => {
             diagnostics.push(catalog_diagnostic(
-                first_source_file(&source_entries),
+                first_source_file(&source.entries),
                 format!("failed to allocate catalog identity: {error}"),
             ));
-            return allocation_failure_binding(accepted, &source_entries);
+            let CatalogSource {
+                entries,
+                duplicate_keys,
+            } = source;
+            return allocation_failure_binding(accepted, &entries, duplicate_keys);
         }
         Err(CatalogProposalError::Catalog(error)) => {
             diagnostics.push(catalog_diagnostic(
-                first_source_file(&source_entries),
+                first_source_file(&source.entries),
                 format!("proposed catalog metadata is not valid: {}", error.message),
             ));
             None
@@ -337,7 +361,7 @@ fn catalog_binding(
         && let Err(error) = proposal.validate()
     {
         diagnostics.push(catalog_diagnostic(
-            first_source_file(&source_entries),
+            first_source_file(&source.entries),
             format!("proposed catalog metadata is not valid: {}", error.message),
         ));
     }
@@ -348,7 +372,7 @@ fn catalog_binding(
     // and `ids` already has them. This map is for token resolution only and is never bound
     // onto live facts, so a proposal-only identity does not leak into the program's facts.
     let leaf_token_ids = match &proposal {
-        Some(proposal) => proposal_id_map(&proposal.entries),
+        Some(proposal) => proposal_id_map_without(&proposal.entries, &source.duplicate_keys),
         None => ids.clone(),
     };
 
@@ -357,6 +381,7 @@ fn catalog_binding(
         accepted_digest: accepted.map(|catalog| catalog.digest.clone()),
         ids,
         leaf_token_ids,
+        ambiguous_source_keys: source.duplicate_keys,
         proposal,
     }
 }
@@ -364,23 +389,17 @@ fn catalog_binding(
 fn allocation_failure_binding(
     accepted: Option<&CatalogMetadata>,
     source_entries: &[SourceCatalogEntry],
+    duplicate_source_keys: HashSet<CatalogKey>,
 ) -> CatalogBinding {
-    let ids: HashMap<_, _> = accepted
+    let ids = accepted
         .map(|catalog| {
             let accepted_index = AcceptedCatalog::new(catalog);
-            source_entries
-                .iter()
-                .filter_map(|source| {
-                    accepted_index
-                        .active_entry(source.kind, &source.path)
-                        .map(|binding| {
-                            (
-                                CatalogKey::new(source.kind, source.path.clone()),
-                                binding.entry.stable_id.clone(),
-                            )
-                        })
-                })
-                .collect()
+            unique_catalog_id_map(source_entries.iter().filter_map(|source| {
+                let source_key = unique_source_key(&duplicate_source_keys, source)?;
+                accepted_index
+                    .active_entry(source.kind, &source.path)
+                    .map(|binding| (source_key, binding.entry.stable_id.clone()))
+            }))
         })
         .unwrap_or_default();
     CatalogBinding {
@@ -388,7 +407,124 @@ fn allocation_failure_binding(
         accepted_digest: accepted.map(|catalog| catalog.digest.clone()),
         leaf_token_ids: ids.clone(),
         ids,
+        ambiguous_source_keys: duplicate_source_keys,
         proposal: None,
+    }
+}
+
+fn duplicate_source_keys(source_entries: &[SourceCatalogEntry]) -> HashSet<CatalogKey> {
+    let mut seen = HashSet::new();
+    let mut duplicate = HashSet::new();
+    for source in source_entries {
+        let key = CatalogKey::new(source.kind, source.path.clone());
+        if !seen.insert(key.clone()) {
+            duplicate.insert(key);
+        }
+    }
+    duplicate
+}
+
+fn parsed_enum_member_duplicate_keys<'a, I>(
+    program: &CheckedProgram,
+    parsed_files: I,
+) -> HashSet<CatalogKey>
+where
+    I: IntoIterator<Item = (&'a Path, &'a ParsedSource)>,
+{
+    let module_by_file: HashMap<&Path, &str> = program
+        .modules
+        .iter()
+        .map(|module| (module.source_file.as_path(), module.name.as_str()))
+        .collect();
+    let mut seen = HashSet::new();
+    let mut duplicate = HashSet::new();
+    for (file, parsed) in parsed_files {
+        let Some(module) = module_by_file.get(file) else {
+            continue;
+        };
+        for declaration in &parsed.file.declarations {
+            let Declaration::Enum(enum_decl) = declaration else {
+                continue;
+            };
+            let mut member_path = Vec::new();
+            collect_parsed_enum_member_keys(
+                module,
+                &enum_decl.name,
+                &enum_decl.members,
+                &mut member_path,
+                &mut seen,
+                &mut duplicate,
+            );
+        }
+    }
+    duplicate
+}
+
+fn collect_parsed_enum_member_keys(
+    module: &str,
+    enum_name: &str,
+    members: &[EnumMember],
+    member_path: &mut Vec<String>,
+    seen: &mut HashSet<CatalogKey>,
+    duplicate: &mut HashSet<CatalogKey>,
+) {
+    for member in members {
+        member_path.push(member.name.clone());
+        let key = CatalogKey::new(
+            CatalogEntryKind::EnumMember,
+            enum_member_source_path(module, enum_name, member_path),
+        );
+        if !seen.insert(key.clone()) {
+            duplicate.insert(key);
+        }
+        collect_parsed_enum_member_keys(
+            module,
+            enum_name,
+            &member.members,
+            member_path,
+            seen,
+            duplicate,
+        );
+        member_path.pop();
+    }
+}
+
+fn enum_member_source_path(module: &str, enum_name: &str, members: &[String]) -> String {
+    format!("{}::{}", enum_path(module, enum_name), members.join("::"))
+}
+
+fn unique_catalog_id_map<I>(entries: I) -> HashMap<CatalogKey, String>
+where
+    I: IntoIterator<Item = (CatalogKey, String)>,
+{
+    let mut by_key: HashMap<CatalogKey, Option<String>> = HashMap::new();
+    for (key, stable_id) in entries {
+        by_key
+            .entry(key)
+            .and_modify(|current| *current = None)
+            .or_insert(Some(stable_id));
+    }
+    by_key
+        .into_iter()
+        .filter_map(|(key, stable_id)| stable_id.map(|stable_id| (key, stable_id)))
+        .collect()
+}
+
+fn unique_source_key(
+    duplicate_source_keys: &HashSet<CatalogKey>,
+    source: &SourceCatalogEntry,
+) -> Option<CatalogKey> {
+    let key = CatalogKey::new(source.kind, source.path.clone());
+    (!duplicate_source_keys.contains(&key)).then_some(key)
+}
+
+fn bind_source_id(
+    ids: &mut HashMap<CatalogKey, String>,
+    source_key: Option<CatalogKey>,
+    stable_id: String,
+) {
+    if let Some(source_key) = source_key {
+        ids.insert(source_key, stable_id);
     }
 }
 
@@ -400,12 +536,12 @@ fn bind_against_accepted(
     program: &CheckedProgram,
     catalog: &CatalogMetadata,
     evolve: &EvolveIntents,
-    source_entries: &[SourceCatalogEntry],
+    source: &CatalogSource,
     ids: &mut HashMap<CatalogKey, String>,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) -> Result<Option<CatalogMetadata>, CatalogProposalError> {
     let accepted_index = AcceptedCatalog::new(catalog);
-    let source_catalog = SourceCatalog::new(source_entries);
+    let source_catalog = SourceCatalog::new(&source.entries);
     let mut renames = resolve_renames(
         &accepted_index,
         &source_catalog,
@@ -416,7 +552,7 @@ fn bind_against_accepted(
     let mut allocator = StableIdAllocator::over(&proposal_entries);
     let mut changed = bind_source_entries(
         &accepted_index,
-        source_entries,
+        source,
         &mut renames,
         ids,
         &mut proposal_entries,
@@ -457,7 +593,7 @@ fn bind_against_accepted(
 /// than a binding error.
 fn bind_source_entries<E: CatalogIdEntropy>(
     accepted_index: &AcceptedCatalog<'_>,
-    source_entries: &[SourceCatalogEntry],
+    source: &CatalogSource,
     renames: &mut HashMap<String, ResolvedRename>,
     ids: &mut HashMap<CatalogKey, String>,
     proposal_entries: &mut Vec<CatalogEntry>,
@@ -465,26 +601,35 @@ fn bind_source_entries<E: CatalogIdEntropy>(
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) -> io::Result<bool> {
     let mut changed = false;
-    for source in source_entries {
-        let rename = renames.remove(&source.path);
-        if let Some(binding) = accepted_index.active_entry(source.kind, &source.path) {
+    for source_entry in &source.entries {
+        let source_key = unique_source_key(&source.duplicate_keys, source_entry);
+        let rename = renames.remove(&source_entry.path);
+        if let Some(binding) = accepted_index.active_entry(source_entry.kind, &source_entry.path) {
             // A rename onto a path that already names a live accepted entity cannot move
             // identity there; report the no-op intent instead of dropping it.
             if rename.is_some() {
-                push_rename_target_live(source, diagnostics);
+                push_rename_target_live(source_entry, diagnostics);
             }
             let stable_id = binding.entry.stable_id.clone();
-            ids.insert(CatalogKey::new(source.kind, source.path.clone()), stable_id);
-        } else if let Some(reserved) = accepted_index.reserved_entry(source.kind, &source.path) {
-            push_reserved_reuse(source, reserved.entry, diagnostics);
+            bind_source_id(ids, source_key, stable_id);
+        } else if let Some(reserved) =
+            accepted_index.reserved_entry(source_entry.kind, &source_entry.path)
+        {
+            push_reserved_reuse(source_entry, reserved.entry, diagnostics);
             changed = true;
         } else if let Some(rename) = rename {
-            apply_rename(proposal_entries, source, &rename.from_path, ids);
+            apply_rename(
+                proposal_entries,
+                source_entry,
+                &rename.from_path,
+                ids,
+                source_key,
+            );
             changed = true;
         } else {
-            let entry = proposed_catalog_entry(source, allocator)?;
-            push_pending_identity(source, diagnostics);
-            prepare_proposal_path(proposal_entries, source.kind, &source.path);
+            let entry = proposed_catalog_entry(source_entry, allocator)?;
+            push_pending_identity(source_entry, diagnostics);
+            prepare_proposal_path(proposal_entries, source_entry.kind, &source_entry.path);
             proposal_entries.push(entry);
             changed = true;
         }
@@ -551,16 +696,53 @@ fn bind_first_run(
 /// binding map, this covers freshly-minted and renamed referents, so the leaf token can resolve
 /// an enum or store the accepted catalog does not yet record.
 fn proposal_id_map(entries: &[CatalogEntry]) -> HashMap<CatalogKey, String> {
-    entries
+    proposal_id_map_without(entries, &HashSet::new())
+}
+
+fn proposal_id_map_without(
+    entries: &[CatalogEntry],
+    excluded: &HashSet<CatalogKey>,
+) -> HashMap<CatalogKey, String> {
+    unique_catalog_id_map(
+        entries
+            .iter()
+            .filter(|entry| entry.lifecycle == CatalogLifecycle::Active)
+            .filter_map(|entry| {
+                let key = CatalogKey::new(entry.kind, entry.path.clone());
+                (!excluded.contains(&key)).then(|| (key, entry.stable_id.clone()))
+            }),
+    )
+}
+
+fn active_proposal_id<'a>(
+    entries: &'a [CatalogEntry],
+    kind: CatalogEntryKind,
+    path: &str,
+) -> Option<&'a str> {
+    let mut matches = entries
         .iter()
-        .filter(|entry| entry.lifecycle == CatalogLifecycle::Active)
-        .map(|entry| {
-            (
-                CatalogKey::new(entry.kind, entry.path.clone()),
-                entry.stable_id.clone(),
-            )
+        .filter(|entry| {
+            entry.lifecycle == CatalogLifecycle::Active && entry.kind == kind && entry.path == path
         })
-        .collect()
+        .map(|entry| entry.stable_id.as_str());
+    let stable_id = matches.next()?;
+    matches.next().is_none().then_some(stable_id)
+}
+
+pub(crate) fn active_program_proposal_id<'a>(
+    program: &'a CheckedProgram,
+    kind: CatalogEntryKind,
+    path: &str,
+) -> Option<&'a str> {
+    if program
+        .catalog
+        .ambiguous_source_keys
+        .contains(&CatalogKey::new(kind, path.to_string()))
+    {
+        return None;
+    }
+    let proposal = program.catalog.proposal.as_ref()?;
+    active_proposal_id(&proposal.entries, kind, path)
 }
 
 /// The proposal identity map for activation-only readers, exposed so executable places reuse
@@ -570,7 +752,9 @@ pub(crate) fn active_proposal_id_map(program: &CheckedProgram) -> HashMap<Catalo
         .catalog
         .proposal
         .as_ref()
-        .map(|proposal| proposal_id_map(&proposal.entries))
+        .map(|proposal| {
+            proposal_id_map_without(&proposal.entries, &program.catalog.ambiguous_source_keys)
+        })
         .unwrap_or_default()
 }
 
@@ -856,6 +1040,7 @@ fn apply_rename(
     source: &SourceCatalogEntry,
     from_path: &str,
     ids: &mut HashMap<CatalogKey, String>,
+    source_key: Option<CatalogKey>,
 ) {
     let Some(entry) = entries.iter_mut().find(|entry| {
         entry.lifecycle == CatalogLifecycle::Active
@@ -868,10 +1053,7 @@ fn apply_rename(
         entry.aliases.push(from_path.to_string());
     }
     entry.path = source.path.clone();
-    ids.insert(
-        CatalogKey::new(source.kind, source.path.clone()),
-        entry.stable_id.clone(),
-    );
+    bind_source_id(ids, source_key, entry.stable_id.clone());
 }
 
 /// Record each store's identity-key shape into its proposal entry, once its id is bound.
@@ -1794,10 +1976,14 @@ mod tests {
             )],
         )
         .expect("catalog builds");
-        let source = vec![
+        let source_entries = vec![
             source_entry(CatalogEntryKind::ResourceMember, reserved_path),
             source_entry(CatalogEntryKind::ResourceMember, "books::Book::pages"),
         ];
+        let source = CatalogSource {
+            duplicate_keys: duplicate_source_keys(&source_entries),
+            entries: source_entries,
+        };
         let accepted_index = AcceptedCatalog::new(&accepted);
         let mut proposal_entries = accepted.entries.clone();
         let mut allocator = StableIdAllocator::with_entropy(

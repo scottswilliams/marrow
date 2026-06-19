@@ -23,6 +23,7 @@ impl<'a> DeclParser<'a> {
                     SavedRoot {
                         root: String::new(),
                         keys: Vec::new(),
+                        span: SourceSpan::default(),
                     },
                 )
             }
@@ -212,6 +213,7 @@ fn parse_surface_head(source: &str, tokens: &[Token]) -> ParseResult<(String, Sa
             SavedRoot {
                 root: root.text(source).to_string(),
                 keys: Vec::new(),
+                span: crate::parse_expr::join_spans(caret.span, root.span),
             }
         }
         _ => {

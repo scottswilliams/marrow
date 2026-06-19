@@ -163,6 +163,7 @@ pub enum Expression {
     /// `std::math::PI`.
     Name {
         segments: Vec<String>,
+        segment_spans: Vec<SourceSpan>,
         span: SourceSpan,
     },
     /// A saved-data root such as `^books`. Postfix key lookups and field access
@@ -181,6 +182,7 @@ pub enum Expression {
     Field {
         base: Box<Expression>,
         name: String,
+        name_span: SourceSpan,
         quoted: bool,
         span: SourceSpan,
     },
@@ -189,6 +191,7 @@ pub enum Expression {
     OptionalField {
         base: Box<Expression>,
         name: String,
+        name_span: SourceSpan,
         quoted: bool,
         span: SourceSpan,
     },
@@ -343,6 +346,7 @@ pub enum BinaryOp {
 pub struct ResourceDecl {
     pub docs: Vec<String>,
     pub name: String,
+    pub name_span: SourceSpan,
     pub members: Vec<ResourceMember>,
     pub comments: Vec<Comment>,
     pub span: SourceSpan,
@@ -409,6 +413,7 @@ pub enum SurfaceTarget {
 pub struct SavedRoot {
     pub root: String,
     pub keys: Vec<KeyParam>,
+    pub span: SourceSpan,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -431,6 +436,7 @@ pub struct FieldDecl {
     pub docs: Vec<String>,
     pub required: bool,
     pub name: String,
+    pub name_span: SourceSpan,
     pub keys: Vec<KeyParam>,
     pub ty: TypeRef,
     pub span: SourceSpan,
@@ -440,6 +446,7 @@ pub struct FieldDecl {
 pub struct GroupDecl {
     pub docs: Vec<String>,
     pub name: String,
+    pub name_span: SourceSpan,
     pub keys: Vec<KeyParam>,
     pub members: Vec<ResourceMember>,
     pub comments: Vec<Comment>,
@@ -450,6 +457,7 @@ pub struct GroupDecl {
 pub struct IndexDecl {
     pub docs: Vec<String>,
     pub name: String,
+    pub name_span: SourceSpan,
     pub args: Vec<String>,
     pub unique: bool,
     pub span: SourceSpan,
@@ -481,6 +489,7 @@ pub struct EnumDecl {
     pub docs: Vec<String>,
     pub public: bool,
     pub name: String,
+    pub name_span: SourceSpan,
     pub members: Vec<EnumMember>,
     pub comments: Vec<Comment>,
     pub span: SourceSpan,
@@ -492,6 +501,7 @@ pub struct EnumDecl {
 pub struct EnumMember {
     pub docs: Vec<String>,
     pub name: String,
+    pub name_span: SourceSpan,
     pub category: bool,
     pub members: Vec<EnumMember>,
     pub comments: Vec<Comment>,
@@ -639,6 +649,7 @@ pub enum Statement {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MatchArm {
     pub path: Vec<String>,
+    pub path_spans: Vec<SourceSpan>,
     pub block: Block,
     pub span: SourceSpan,
 }

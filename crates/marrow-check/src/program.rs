@@ -416,13 +416,7 @@ impl CheckedProgram {
         kind: marrow_catalog::CatalogEntryKind,
         path: &str,
     ) -> Option<&str> {
-        self.catalog
-            .proposal
-            .as_ref()?
-            .entries
-            .iter()
-            .find(|entry| entry.kind == kind && entry.path == path)
-            .map(|entry| entry.stable_id.as_str())
+        crate::catalog::active_program_proposal_id(self, kind, path)
     }
 
     pub(crate) fn lower_runtime_bodies<'a, I>(&mut self, sources: I)
@@ -671,6 +665,7 @@ pub struct ProgramCatalog {
     /// single decoder, and it comes from source, so the divergence is detected even for an
     /// otherwise-unchanged program that emits no proposal.
     pub declared_member_structs: HashMap<String, String>,
+    pub(crate) ambiguous_source_keys: HashSet<crate::catalog::CatalogKey>,
     pub proposal: Option<marrow_catalog::CatalogMetadata>,
 }
 

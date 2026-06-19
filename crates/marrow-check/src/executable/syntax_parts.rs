@@ -154,6 +154,7 @@ impl CheckedForBinding {
 pub struct CheckedMatchArm {
     pub path: Vec<String>,
     pub member_id: Option<EnumMemberId>,
+    pub member_uses: Vec<(EnumMemberId, SourceSpan)>,
     pub block: CheckedBody,
     pub span: SourceSpan,
 }
@@ -165,13 +166,15 @@ impl CheckedMatchArm {
         context: &CheckedExecutableContext<'_>,
         scope: &mut Vec<HashMap<String, MarrowType>>,
     ) -> Option<Self> {
+        let member_ref = match_enum.and_then(|(module, name)| {
+            checked_enum_member_ref_in(context.program, module, name, &arm.path, &arm.path_spans)
+        });
         Some(Self {
             path: arm.path.clone(),
-            member_id: match_enum
-                .and_then(|(module, name)| {
-                    checked_enum_member_ref_in(context.program, module, name, &arm.path)
-                })
-                .map(|member| member.member_id),
+            member_id: member_ref.as_ref().map(|member| member.member_id),
+            member_uses: member_ref
+                .map(|member| member.member_uses)
+                .unwrap_or_default(),
             block: CheckedBody::lower_scoped(&arm.block, context, scope)?,
             span: arm.span,
         })

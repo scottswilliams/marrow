@@ -251,7 +251,7 @@ pub(crate) fn infer_type_with_read_scope(
             }
             MarrowType::Primitive(ScalarType::Str)
         }
-        Expression::Name { segments, span } if segments.len() == 1 => {
+        Expression::Name { segments, span, .. } if segments.len() == 1 => {
             let name = &segments[0];
             lookup_opt(scope, name).unwrap_or_else(|| {
                 diagnostics.push(CheckDiagnostic::error(
@@ -481,7 +481,7 @@ pub(crate) fn infer_type_with_read_scope(
             transform_old,
             context: FieldAccessContext::Read,
         }),
-        Expression::Name { segments, span } if segments.len() >= 2 => {
+        Expression::Name { segments, span, .. } if segments.len() >= 2 => {
             enum_member_value_type(program, expr, segments, *span, aliases, file, diagnostics)
         }
         Expression::SavedRoot { .. } => {

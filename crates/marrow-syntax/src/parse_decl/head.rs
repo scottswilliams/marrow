@@ -7,12 +7,16 @@ use super::tokens::{reject_structural_type_tokens, split_top_level_commas, type_
 use super::{MemberHead, ParseError, ParseResult};
 use crate::ast::{IndexDecl, KeyParam, SavedRoot};
 use crate::diagnostic::{ExpectedSyntax, ParseDiagnosticReason, SourceSpan};
+use crate::parse_expr::join_spans;
 use crate::token::{Keyword, Token, TokenKind};
 
 /// Parse an enum header line: `[pub] enum Name`. Returns the visibility flag and
 /// the enum name. `pub` is recorded for consistency with `pub fn`; the body of
 /// the enum is parsed separately from its indented block.
-pub(super) fn parse_enum_head(source: &str, tokens: &[Token]) -> ParseResult<(bool, String)> {
+pub(super) fn parse_enum_head(
+    source: &str,
+    tokens: &[Token],
+) -> ParseResult<(bool, String, SourceSpan)> {
     let (public, rest) = if matches!(
         tokens.first().map(|token| token.kind),
         Some(TokenKind::Keyword(Keyword::Pub))
@@ -31,8 +35,10 @@ pub(super) fn parse_enum_head(source: &str, tokens: &[Token]) -> ParseResult<(bo
         ));
     }
     let rest = &rest[1..];
-    let name = match rest.first() {
-        Some(token) if token.kind == TokenKind::Identifier => token.text(source).to_string(),
+    let (name, name_span) = match rest.first() {
+        Some(token) if token.kind == TokenKind::Identifier => {
+            (token.text(source).to_string(), token.span)
+        }
         _ => {
             return Err(ParseError::new(
                 ParseDiagnosticReason::Expected(ExpectedSyntax::EnumName),
@@ -46,7 +52,7 @@ pub(super) fn parse_enum_head(source: &str, tokens: &[Token]) -> ParseResult<(bo
             "an enum header is just `enum Name`",
         ));
     }
-    Ok((public, name))
+    Ok((public, name, name_span))
 }
 
 /// The name and category flag of an enum member from its header tokens: a bare
@@ -55,7 +61,10 @@ pub(super) fn parse_enum_head(source: &str, tokens: &[Token]) -> ParseResult<(bo
 /// never collides with `category` used as an ordinary identifier elsewhere.
 /// Anything else — a type annotation, key parameters, or extra tokens — is the
 /// resource-member surface, which an enum member does not have.
-pub(super) fn enum_member_name(source: &str, tokens: &[Token]) -> ParseResult<(String, bool)> {
+pub(super) fn enum_member_name(
+    source: &str,
+    tokens: &[Token],
+) -> ParseResult<(String, bool, SourceSpan)> {
     let (category, rest) = match tokens.first() {
         Some(token)
             if token.kind == TokenKind::Identifier
@@ -68,7 +77,7 @@ pub(super) fn enum_member_name(source: &str, tokens: &[Token]) -> ParseResult<(S
     };
     match rest {
         [token] if token.kind == TokenKind::Identifier => {
-            Ok((token.text(source).to_string(), category))
+            Ok((token.text(source).to_string(), category, token.span))
         }
         [_] => Err(ParseError::new(
             ParseDiagnosticReason::EnumMemberMustBeBareName,
@@ -85,11 +94,15 @@ pub(super) fn enum_member_name(source: &str, tokens: &[Token]) -> ParseResult<(S
 /// the header is not a member path (`identifier ("::" identifier)*`). The
 /// scrutinee supplies the enum, so an arm header carries no enum prefix — it is a
 /// relative path the checker walks against the scrutinee enum's member tree.
-pub(super) fn arm_member_path(source: &str, tokens: &[Token]) -> Option<Vec<String>> {
+pub(super) fn arm_member_path(
+    source: &str,
+    tokens: &[Token],
+) -> Option<(Vec<String>, Vec<SourceSpan>)> {
     if tokens.is_empty() {
         return None;
     }
     let mut segments = Vec::new();
+    let mut spans = Vec::new();
     for (index, token) in tokens.iter().enumerate() {
         // Even positions are identifiers, odd positions the `::` separators.
         if index % 2 == 0 {
@@ -97,6 +110,7 @@ pub(super) fn arm_member_path(source: &str, tokens: &[Token]) -> Option<Vec<Stri
                 return None;
             }
             segments.push(token.text(source).to_string());
+            spans.push(token.span);
         } else if token.kind != TokenKind::DoubleColon {
             return None;
         }
@@ -105,13 +119,18 @@ pub(super) fn arm_member_path(source: &str, tokens: &[Token]) -> Option<Vec<Stri
     if tokens.len().is_multiple_of(2) {
         return None;
     }
-    Some(segments)
+    Some((segments, spans))
 }
 
 /// Parse a resource header's tokens after the `resource` keyword: `Name`.
-pub(super) fn parse_resource_head(source: &str, tokens: &[Token]) -> ParseResult<String> {
-    let name = match tokens.first() {
-        Some(token) if token.kind == TokenKind::Identifier => token.text(source).to_string(),
+pub(super) fn parse_resource_head(
+    source: &str,
+    tokens: &[Token],
+) -> ParseResult<(String, SourceSpan)> {
+    let (name, name_span) = match tokens.first() {
+        Some(token) if token.kind == TokenKind::Identifier => {
+            (token.text(source).to_string(), token.span)
+        }
         _ => {
             return Err(ParseError::new(
                 ParseDiagnosticReason::Expected(ExpectedSyntax::ResourceName),
@@ -121,7 +140,7 @@ pub(super) fn parse_resource_head(source: &str, tokens: &[Token]) -> ParseResult
     };
     let rest = &tokens[1..];
     if rest.is_empty() {
-        return Ok(name);
+        return Ok((name, name_span));
     }
     Err(ParseError::new(
         ParseDiagnosticReason::Expected(ExpectedSyntax::ResourceHeader),
@@ -141,8 +160,12 @@ pub(super) fn parse_store_head(source: &str, tokens: &[Token]) -> ParseResult<(S
             "expected saved root beginning with `^`",
         ));
     }
-    let root = match tokens.get(1) {
-        Some(token) if token.kind == TokenKind::Identifier => token.text(source).to_string(),
+    let caret_span = tokens[0].span;
+    let (root, root_span) = match tokens.get(1) {
+        Some(token) if token.kind == TokenKind::Identifier => (
+            token.text(source).to_string(),
+            join_spans(caret_span, token.span),
+        ),
         _ => {
             return Err(ParseError::new(
                 ParseDiagnosticReason::Expected(ExpectedSyntax::SavedRootName),
@@ -182,7 +205,14 @@ pub(super) fn parse_store_head(source: &str, tokens: &[Token]) -> ParseResult<(S
             ));
         }
     };
-    Ok((SavedRoot { root, keys }, resource))
+    Ok((
+        SavedRoot {
+            root,
+            keys,
+            span: root_span,
+        },
+        resource,
+    ))
 }
 
 /// Parse a parenthesized `(name: type, ...)` key parameter list spanning the
@@ -249,8 +279,10 @@ pub(super) fn parse_key_params_tokens(source: &str, inner: &[Token]) -> ParseRes
 /// Parse an `index name(field, ...) [unique]` declaration from the tokens after
 /// the `index` keyword. The span is filled in by the caller.
 pub(super) fn parse_index_tokens(source: &str, tokens: &[Token]) -> ParseResult<IndexDecl> {
-    let name = match tokens.first() {
-        Some(token) if token.kind == TokenKind::Identifier => token.text(source).to_string(),
+    let (name, name_span) = match tokens.first() {
+        Some(token) if token.kind == TokenKind::Identifier => {
+            (token.text(source).to_string(), token.span)
+        }
         _ => {
             return Err(ParseError::new(
                 ParseDiagnosticReason::Expected(ExpectedSyntax::IndexName),
@@ -300,6 +332,7 @@ pub(super) fn parse_index_tokens(source: &str, tokens: &[Token]) -> ParseResult<
     Ok(IndexDecl {
         docs: Vec::new(),
         name,
+        name_span,
         args,
         unique,
         span: SourceSpan::default(),
@@ -344,8 +377,10 @@ pub(super) fn parse_field_or_group_tokens(
     } else {
         (false, tokens)
     };
-    let name = match rest.first() {
-        Some(token) if token.kind == TokenKind::Identifier => token.text(source).to_string(),
+    let (name, name_span) = match rest.first() {
+        Some(token) if token.kind == TokenKind::Identifier => {
+            (token.text(source).to_string(), token.span)
+        }
         _ => {
             return Err(ParseError::new(
                 ParseDiagnosticReason::Expected(ExpectedSyntax::ResourceMemberName),
@@ -386,6 +421,7 @@ pub(super) fn parse_field_or_group_tokens(
         return Ok(MemberHead::Field {
             required,
             name,
+            name_span,
             keys,
             ty,
         });
@@ -397,7 +433,11 @@ pub(super) fn parse_field_or_group_tokens(
         ));
     }
     if rest.is_empty() {
-        return Ok(MemberHead::Group { name, keys });
+        return Ok(MemberHead::Group {
+            name,
+            name_span,
+            keys,
+        });
     }
     Err(ParseError::new(
         ParseDiagnosticReason::Expected(ExpectedSyntax::ResourceMemberSyntax),
