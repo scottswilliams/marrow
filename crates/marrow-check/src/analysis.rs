@@ -15,8 +15,8 @@ use crate::{
     CHECK_DUPLICATE_MODULE, CHECK_MULTIPLE_SCRIPTS, CheckDiagnostic, CheckReport, CheckedFile,
     CheckedModule, CheckedProgram, DiagnosticPayload, IO_READ, ProjectSources,
     SCHEMA_DUPLICATE_ROOT_OWNER, SurfaceCatalogStatus, SurfaceFact, SurfaceReadOperationDescriptor,
-    SurfaceReadOperationFact, TestResolutionSuppression, check_file_source, enum_visibility,
-    module_path_error, read_source,
+    SurfaceReadOperationFact, SurfaceUpdateOperationDescriptor, TestResolutionSuppression,
+    check_file_source, enum_visibility, module_path_error, read_source,
 };
 
 mod catalog_nav;
@@ -88,6 +88,31 @@ impl AnalysisSnapshot {
             })
     }
 
+    pub fn surface_update_operations(
+        &self,
+    ) -> impl Iterator<Item = SurfaceUpdateOperationAnalysis<'_>> {
+        let modules = self.program.facts.modules();
+        self.program
+            .facts
+            .surfaces()
+            .iter()
+            .filter(|surface| !surface.update.is_empty())
+            .filter_map(move |surface| {
+                let file = modules
+                    .get(surface.module.0 as usize)
+                    .map(|module| module.source_file.as_path());
+                debug_assert!(
+                    file.is_some(),
+                    "checked surface module id belongs to the analyzed facts"
+                );
+                file.map(|file| SurfaceUpdateOperationAnalysis {
+                    program: &self.program,
+                    file,
+                    surface,
+                })
+            })
+    }
+
     pub fn use_sites(&self) -> &[UseSite] {
         &self.use_sites
     }
@@ -127,6 +152,24 @@ impl SurfaceReadOperationAnalysis<'_> {
                 self.surface,
                 self.operation,
             ),
+            SurfaceCatalogStatus::SourceOnly(_) => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct SurfaceUpdateOperationAnalysis<'a> {
+    program: &'a CheckedProgram,
+    pub file: &'a Path,
+    pub surface: &'a SurfaceFact,
+}
+
+impl SurfaceUpdateOperationAnalysis<'_> {
+    pub fn stable_descriptor(&self) -> Option<SurfaceUpdateOperationDescriptor> {
+        match self.surface.catalog_status {
+            SurfaceCatalogStatus::Stable => {
+                SurfaceUpdateOperationDescriptor::from_surface(self.program, self.surface)
+            }
             SurfaceCatalogStatus::SourceOnly(_) => None,
         }
     }

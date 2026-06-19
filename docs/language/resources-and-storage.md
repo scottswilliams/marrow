@@ -221,7 +221,10 @@ The initial checker contract admits only direct store-backed shapes:
   resource. Identity keys, store indexes, groups, keyed child layers, nested
   paths, and fields from other stores are not field targets.
 - `create` and `update` resolve each name to a field already named by `fields`.
-  Generated write-only inputs are deferred.
+  `update` participates in the active sparse-update ABI when the surface is
+  stable and the list is non-empty. `create` is parsed/resolved reserved
+  metadata only: it is excluded from serialized descriptors and does not imply
+  identity allocation, replacement, or request-body semantics.
 - `collection ^root as alias` names the backing store root.
 - `collection ^root.index as alias` names an index declared on the backing store.
 
@@ -238,21 +241,23 @@ application surface facts.
 
 Those facts are transport-neutral: HTTP routes, opaque cursor-token codecs,
 TypeScript names, generated clients, and create/delete bodies are boundary
-profiles layered later. Stable surface reads have checker-owned accepted-catalog
-descriptors and operation tags. `marrow-run` exposes admitted transport-neutral
-node and collection read executors over stable surface facts. It also exposes an
-admitted sparse update executor over stable, explicitly declared `update` facts:
-callers supply a singleton target or checked store identity plus a non-empty set
-of field values addressed by accepted resource-member catalog ID; omitted fields
-are preserved, absent records are not created, and all supplied field writes
-commit atomically through managed write/index maintenance. `marrow-json` decodes
-checked read request-parameter DTOs and sparse update request-body DTOs, and
-renders already-executed read results as DTOs with accepted catalog IDs and typed
-values. Runtime output uses accepted store and resource-member catalog IDs as
-semantic identity; enum and identity field values use accepted catalog IDs as
-well. Source names remain render labels. A stable exported surface read
-operation cannot use proposal-only catalog IDs; until every referenced durable
-fact has an accepted catalog ID, the facts carry a source-only catalog status
+profiles layered later. Stable surface reads and sparse updates have
+checker-owned accepted-catalog descriptors and operation tags. `marrow-run`
+exposes admitted transport-neutral node and collection read executors over
+stable surface facts. It also exposes an admitted sparse update executor over
+stable, explicitly declared `update` facts: callers supply a singleton target or
+checked store identity plus a non-empty set of field values addressed by
+accepted resource-member catalog ID; omitted fields are preserved, absent
+records are not created, and all supplied field writes commit atomically through
+managed write/index maintenance. `marrow-json` renders check-output surface ABI
+descriptors, decodes checked read request-parameter DTOs and sparse update
+request-body DTOs, and renders already-executed read results as DTOs with
+accepted catalog IDs and typed values. Runtime output uses accepted store and
+resource-member catalog IDs as semantic identity; enum and identity field values
+use accepted catalog IDs as well. Source names remain render labels. A stable
+exported surface operation cannot use proposal-only catalog IDs; until every
+referenced durable fact has an accepted catalog ID, the facts carry a
+source-only catalog status
 rather than a stable client contract. A pending catalog proposal for the checked
 source is reported as its own blocker, because accepted IDs alone do not prove
 the current store, member, or index shape is the committed shape. Deferred

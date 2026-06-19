@@ -59,6 +59,11 @@ from the checked program or snapshot:
   syntax or mistaking source/config identity for a catalog-bound surface
   version. Stable surfaces can also render a checker-owned
   `SurfaceReadOperationDescriptor`; source-only surfaces cannot.
+- `AnalysisSnapshot::surface_update_operations()` iterates snapshot-bound
+  `SurfaceUpdateOperationAnalysis` views for stable-surface candidates with a
+  non-empty `update` list. The descriptor is checker-owned, uses
+  `surface.update.v1`, carries `non_empty_patch` semantics, and is suppressed
+  for source-only surfaces.
 - `CheckedFacts::store_indices` carries `StoreIndexFact::usage` as a
   `StoreIndexUsageBitmap`; every current index fact reports no observed
   read/write use.
@@ -173,10 +178,10 @@ add only transport availability and request-envelope concerns around those DTOs.
 - `CatalogDeclaration` (`analysis/catalog_nav.rs`, re-exported from
   `analysis.rs`) — catalog-id declarations for editor navigation, keyed with
   `CatalogEntryKind` and exact declaration-name spans.
-- `SurfaceReadOperationAnalysis` (`analysis.rs`) — a snapshot-bound view over a
-  checked surface operation plus its source file, with
-  `stable_descriptor()` for the accepted-catalog read descriptor when the
-  surface is stable.
+- `SurfaceReadOperationAnalysis` / `SurfaceUpdateOperationAnalysis`
+  (`analysis.rs`) — snapshot-bound views over checked surface operations plus
+  their source files, with `stable_descriptor()` for accepted-catalog read and
+  sparse-update descriptors when the surface is stable.
 - `CheckedReadOnlyExpression` (`program.rs`) — a source-digest-bound checked
   expression handle for runtime point evaluation.
 - `WitnessFactSet` (`evolution/preview.rs`) — schema and optional backup cell

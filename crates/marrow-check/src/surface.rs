@@ -137,8 +137,7 @@ impl<'a> SurfaceChecker<'a> {
         }
 
         let id = SurfaceId(self.surface_facts.len() as u32);
-        let catalog_status =
-            catalog_status(self.program, store, &fields, &create, &update, &collections);
+        let catalog_status = catalog_status(self.program, store, &fields, &update, &collections);
         let read_operations = read_operations(
             self.program,
             store,
@@ -1108,7 +1107,6 @@ fn catalog_status(
     program: &CheckedProgram,
     store: &StoreFact,
     fields: &[SurfaceFieldFact],
-    create: &[SurfaceFieldFact],
     update: &[SurfaceFieldFact],
     collections: &[SurfaceCollectionFact],
 ) -> SurfaceCatalogStatus {
@@ -1116,7 +1114,7 @@ fn catalog_status(
     if program.catalog.proposal.is_some() {
         blockers.push(SurfaceCatalogBlocker::PendingCatalogProposal);
     }
-    if !surface_has_catalog_ids(program, store, fields, create, update, collections) {
+    if !surface_has_catalog_ids(program, store, fields, update, collections) {
         blockers.push(SurfaceCatalogBlocker::MissingAcceptedCatalogIds);
     }
     if blockers.is_empty() {
@@ -1130,14 +1128,12 @@ fn surface_has_catalog_ids(
     program: &CheckedProgram,
     store: &StoreFact,
     fields: &[SurfaceFieldFact],
-    create: &[SurfaceFieldFact],
     update: &[SurfaceFieldFact],
     collections: &[SurfaceCollectionFact],
 ) -> bool {
     store.catalog_id.is_some()
         && program.facts.resource(store.resource).catalog_id.is_some()
         && fields_have_catalog_ids(program, fields)
-        && fields_have_catalog_ids(program, create)
         && fields_have_catalog_ids(program, update)
         && collections_have_catalog_ids(program, collections)
 }

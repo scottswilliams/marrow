@@ -3,9 +3,11 @@
 The active surface foundation is no longer a future proposal. The checker
 derives `SurfaceReadOperationFact`s from checked `surface` declarations,
 `SurfaceReadOperationAnalysis::stable_descriptor()` exposes the accepted-catalog
-read descriptor for stable surfaces, `marrow-run` executes admitted
-transport-neutral reads, and `marrow-json` owns the current read request,
-result, typed cursor-boundary, and sparse update request DTOs.
+read descriptor for stable surfaces, `SurfaceUpdateOperationAnalysis` exposes
+the accepted-catalog sparse-update descriptor for stable non-empty `update`
+surfaces, `marrow-run` executes admitted transport-neutral reads and sparse
+updates, and `marrow-json` owns the current check-output descriptor DTOs, read
+request/result DTOs, typed cursor-boundary DTOs, and sparse update request DTOs.
 
 This page tracks the profiles that are still intentionally deferred. They must
 build on the active checker facts and descriptors. They must not introduce a
@@ -20,21 +22,30 @@ The active surface foundation has these owners:
 - `surface` declarations in `docs/language/resources-and-storage.md` define the
   language surface syntax and checked field/collection rules.
 - `crates/marrow-check/src/surface.rs` resolves declarations to `SurfaceFact`
-  and `SurfaceReadOperationFact` values.
-- `crates/marrow-check/src/surface_abi.rs` owns the `surface.read.v1`
-  length-prefixed digest framing and typed read-operation descriptor.
+  and `SurfaceReadOperationFact` values. The parsed/resolved `create` list is
+  reserved metadata and is excluded from the active serialized ABI profile.
+- `crates/marrow-check/src/surface_abi.rs` owns the shared length-prefixed
+  digest framing and typed descriptors for `surface.read.v1` and
+  `surface.update.v1`.
 - `AnalysisSnapshot::surface_read_operations()` returns snapshot-bound
   `SurfaceReadOperationAnalysis` values. A stable surface can produce a
   `SurfaceReadOperationDescriptor`; a source-only surface cannot.
-- `crates/marrow-run/src/surface.rs` admits stable read operations against a
-  stamped store and materializes the backing record body before projecting.
+- `AnalysisSnapshot::surface_update_operations()` returns snapshot-bound
+  `SurfaceUpdateOperationAnalysis` values for surfaces with non-empty update
+  sets. Stable surfaces can produce a sparse update descriptor; source-only
+  surfaces cannot.
+- `crates/marrow-run/src/surface.rs` admits stable read/update operations
+  against a stamped store, materializes the backing record body before
+  projecting reads, and applies non-empty sparse update patches through managed
+  writes.
 - `crates/marrow-json/src/surface.rs` owns the current checked read parameter,
-  result, identity, value, typed cursor-boundary, and sparse update request JSON
-  DTOs.
+  result, identity, value, typed cursor-boundary, sparse update request, and
+  serialized surface ABI JSON DTOs.
 
-The operation tag is a live runtime/json cursor contract. A change to the
-`surface.read.v1` framing must either preserve byte output or deliberately bump
-the profile version and accept stale-cursor behavior for old cursors.
+Operation tags are live runtime/json contracts. A change to either
+`surface.read.v1` or `surface.update.v1` framing must either preserve byte
+output or deliberately bump the profile version and accept stale cached
+operation identity.
 
 ## Write Profiles
 
@@ -51,8 +62,6 @@ update patches.
 Future write work is still boundary-profile work, not HTTP or generated clients
 by default:
 
-- a serialized descriptor/digest for update operations using the same
-  checker-owned framing owner, with its own profile domain/version;
 - non-JSON transport body decoding for update patches, if a consumer needs it;
 - create, because it needs explicit identity allocation or client-supplied
   identity rules, required-field completeness, replacement semantics, and
@@ -62,12 +71,19 @@ by default:
 
 ## Serialized Descriptor Profile
 
-A serialized ABI descriptor is a boundary profile, not a checker fact. It should
-live in `marrow-json` after read and write descriptors share one checker-owned
-digest framing model. The wire descriptor should serialize accepted catalog
-IDs, canonical operation descriptors, input/output value shapes, operation
-tags, and render labels as labels. It must not serialize checker-local IDs,
-source spans, raw saved paths, backend cursor bytes, or physical store keys.
+The active serialized ABI profile lives in `marrow check --format json|jsonl`
+under `surface_abi` and is rendered by `marrow-json` DTOs from checker-owned
+facts. It serializes accepted catalog IDs, canonical read/update operation
+descriptors, value shapes, operation tags, and render labels as labels. It must
+not serialize checker-local IDs, source spans, raw saved paths, backend cursor
+bytes, physical store keys, or `create` metadata.
+
+`surface.update.v1` tags include the profile domain, store catalog ID, backing
+resource footprint catalog ID, singleton-vs-point shape, identity-key value
+shapes, `non_empty_patch` semantics, and the update field set sorted by accepted
+resource-member catalog ID. Render labels and update declaration order do not
+affect the tag. Read projection order remains ABI-semantic for
+`surface.read.v1` because it is the output field order.
 
 The descriptor profile may introduce a surface-level or package-level digest
 when a real consumer needs one. Until then, per-operation tags are the only
@@ -75,8 +91,9 @@ stable equality values.
 
 ## Serving Profile
 
-HTTP serving and local server lifetime are deferred until the serialized
-descriptor profile exists. A production serving profile needs:
+HTTP serving and local server lifetime remain deferred until a serving profile
+maps the serialized descriptors to routes, envelopes, store-open policy, and
+process lifetime. A production serving profile needs:
 
 - routes derived from serialized ABI descriptors, not source names or ordinals;
 - strict JSON-only request and response envelopes;
@@ -97,8 +114,10 @@ route-rendering rules are a separate compatibility contract from operation
 equality. Labels can guide rendering, but accepted catalog IDs and canonical
 operation descriptors remain the semantic identity.
 
-LSP and MCP tooling should consume `AnalysisSnapshot::surface_read_operations()`
-and `stable_descriptor()`. They should present operation summaries without
+LSP and MCP tooling should consume
+`AnalysisSnapshot::surface_read_operations()`,
+`AnalysisSnapshot::surface_update_operations()`, and their
+`stable_descriptor()` methods. They should present operation summaries without
 inventing routes, cursor encodings, generated client names, or a raw saved-path
 protocol. Source-only surfaces are displayable as source-only facts, not stable
 application ABI.

@@ -2,9 +2,10 @@
 
 `marrow-json` owns small JSON DTOs that more than one CLI, tool, or application
 boundary needs. It exists to keep `marrow run --format json`, trace, data
-integrity, store-backed data inspection, and surface reads and updates from copying
-entry-return, saved-key, data-snapshot, surface result rendering, and checked
-surface read request-parameter and sparse update request-body decode logic.
+integrity, store-backed data inspection, and surface reads, updates, and
+descriptor export from copying entry-return, saved-key, data-snapshot, surface
+descriptor/result rendering, and checked surface read request-parameter and
+sparse update request-body decode logic.
 
 The crate deliberately does not define a general `Value` JSON ABI. Its entry
 return renderer preserves the current CLI-compatible result surface: scalars,
@@ -21,6 +22,15 @@ decimals. Cursor/page rendering is context-aware: enum and identity-typed index
 arguments render as branded surface arguments instead of raw saved key bytes or
 plain member strings.
 
+`SurfaceAbiJson` renders the successful `marrow check --format json|jsonl`
+`surface_abi` object from checker-owned facts. It includes display-only module
+and surface labels, typed catalog status, stable read descriptors, and an
+optional sparse update descriptor for stable surfaces with a non-empty update
+set. Source-only surfaces serialize blocker strings and no operation
+descriptors. Update fields expose `backing_required` only as backing-field
+metadata; sparse update request bodies remain non-empty patches and no field is
+mandatory on every request.
+
 Inbound surface request parameters and sparse update bodies are checked against
 the admitted runtime surface shape. `SurfacePointRequestJson`,
 `SurfacePageRequestJson`, `SurfaceUniqueLookupRequestJson`,
@@ -34,17 +44,18 @@ JSON decode is structural and canonical only: runtime `SurfaceUpdate` owns
 declared update-set authorization, duplicate and non-empty patch validation,
 exact value shape checks, enum membership and selectability, identity store,
 arity, and key-scalar validation, record presence, and post-patch footprint
-validation. HTTP routes, opaque cursor tokens, serialized surface descriptors,
-generated clients, entry-argument JSON decode, and create/delete body decode
-remain outside this crate's current profile.
+validation. HTTP routes, opaque cursor tokens, generated clients,
+entry-argument JSON decode, and create/delete body decode remain outside this
+crate's current profile.
 
 ## Read next
 
 - `crates/marrow-json/src/lib.rs` — `entry_return_to_json`,
   `saved_key_to_json`, `data_snapshot_stamp_to_json`,
   `DataSnapshotJson`, and `DataCommitJson`.
-- `crates/marrow-json/src/surface.rs` — surface read result DTOs plus checked
-  surface read request-parameter and sparse update request DTOs.
+- `crates/marrow-json/src/surface.rs` — surface ABI descriptor DTOs, surface
+  read result DTOs, and checked surface read request-parameter and sparse
+  update request DTOs.
 - `crates/marrow/src/cmd_run.rs` — the run JSON envelope and `run.entry_surface`
   mapping.
 - `crates/marrow/src/trace.rs` and `crates/marrow/src/cmd_data/integrity.rs` —

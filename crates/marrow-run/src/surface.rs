@@ -1798,13 +1798,13 @@ fn admit_surface_store(
 ) -> Result<SurfaceStoreLineage, SurfaceReadError> {
     let accepted_epoch = program.catalog.accepted_epoch.ok_or_else(|| {
         abi_mismatch(
-            "surface serving requires a checked program bound to an accepted catalog",
+            "surface operation requires a checked program bound to an accepted catalog",
             SourceSpan::default(),
         )
     })?;
     let accepted_digest = program.catalog.accepted_digest.as_deref().ok_or_else(|| {
         abi_mismatch(
-            "surface serving requires an accepted catalog digest",
+            "surface operation requires an accepted catalog digest",
             SourceSpan::default(),
         )
     })?;
@@ -1813,7 +1813,7 @@ fn admit_surface_store(
         .map_err(|error| surface_store_error(error, SourceSpan::default()))?
     else {
         return Err(abi_mismatch(
-            "surface serving requires a stamped store uid",
+            "surface operation requires a stamped store uid",
             SourceSpan::default(),
         ));
     };
@@ -1822,7 +1822,7 @@ fn admit_surface_store(
         .map_err(|error| surface_store_error(error, SourceSpan::default()))?
     else {
         return Err(abi_mismatch(
-            "surface serving requires commit metadata",
+            "surface operation requires commit metadata",
             SourceSpan::default(),
         ));
     };
@@ -1872,7 +1872,7 @@ fn require_stable_surface(surface: &SurfaceFact) -> Result<(), SurfaceReadError>
         SurfaceCatalogStatus::Stable => Ok(()),
         SurfaceCatalogStatus::SourceOnly(_) => Err(abi_mismatch(
             format!(
-                "surface `{}` is source-only; run against accepted catalog identities before serving it",
+                "surface `{}` is source-only; run against accepted catalog identities before exporting it",
                 surface.name
             ),
             surface.span,
@@ -2478,7 +2478,7 @@ fn surface_error_at(
 }
 
 fn surface_store_error(error: StoreError, span: SourceSpan) -> SurfaceReadError {
-    store_error(format!("a surface read failed: {error}"), span)
+    store_error(format!("a surface operation failed: {error}"), span)
 }
 
 fn surface_scan_error(error: StoreError, span: SourceSpan) -> SurfaceReadError {

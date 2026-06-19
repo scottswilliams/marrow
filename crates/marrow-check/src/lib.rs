@@ -39,7 +39,8 @@ mod walk;
 
 pub use analysis::{
     AnalysisIdentity, AnalysisSnapshot, AnalyzedFile, CatalogDeclaration,
-    SurfaceReadOperationAnalysis, UseSite, UseSiteKind, analyze_project, scope_at, type_at,
+    SurfaceReadOperationAnalysis, SurfaceUpdateOperationAnalysis, UseSite, UseSiteKind,
+    analyze_project, scope_at, type_at,
 };
 pub use binding::{
     BindingIndex, ParameterDefinition, RenameAction, RenameSafety, SourceEdit, SymbolKind,
@@ -117,10 +118,12 @@ pub use project_io::{
 };
 pub use resolve::{Def, DefItem, Resolution, ResolvableKind, resolve};
 pub use surface_abi::{
-    SURFACE_READ_OPERATION_TAG_VERSION, SurfaceReadOperationDescriptor,
-    SurfaceReadOperationDescriptorKind, SurfaceReadOperationIdentityKey,
-    SurfaceReadOperationIndexKey, SurfaceReadOperationIndexKeySource,
-    SurfaceReadOperationProjectionField, SurfaceReadOperationValueShape,
+    SURFACE_READ_OPERATION_TAG_VERSION, SURFACE_UPDATE_OPERATION_TAG_VERSION,
+    SurfaceOperationIdentityKey, SurfaceOperationValueShape, SurfaceReadOperationDescriptor,
+    SurfaceReadOperationDescriptorKind, SurfaceReadOperationIndexKey,
+    SurfaceReadOperationIndexKeySource, SurfaceReadOperationProjectionField,
+    SurfaceUpdateOperationDescriptor, SurfaceUpdateOperationDescriptorKind,
+    SurfaceUpdateOperationField, SurfaceUpdatePatchSemantics,
 };
 
 pub(crate) use driver::{

@@ -2,12 +2,13 @@ use marrow_store::cell::CatalogId;
 
 use crate::facts::{
     ResourceMemberFact, ResourceMemberId, ResourceMemberKind, StoreFact, StoreIndexFact,
-    StoreIndexId, StoreIndexKeySource, StoredValueMeaning, SurfaceFact, SurfaceReadFootprint,
-    SurfaceReadOperationFact, SurfaceReadOperationKind,
+    StoreIndexId, StoreIndexKeySource, StoredValueMeaning, SurfaceCatalogStatus, SurfaceFact,
+    SurfaceFieldFact, SurfaceReadFootprint, SurfaceReadOperationFact, SurfaceReadOperationKind,
 };
 use crate::program::CheckedProgram;
 
 pub const SURFACE_READ_OPERATION_TAG_VERSION: &str = "surface.read.v1";
+pub const SURFACE_UPDATE_OPERATION_TAG_VERSION: &str = "surface.update.v1";
 
 #[derive(Debug, Clone)]
 pub struct SurfaceReadOperationDescriptor {
@@ -16,7 +17,7 @@ pub struct SurfaceReadOperationDescriptor {
     pub kind: SurfaceReadOperationDescriptorKind,
     pub store_catalog_id: CatalogId,
     pub resource_catalog_id: CatalogId,
-    pub identity_keys: Vec<SurfaceReadOperationIdentityKey>,
+    pub identity_keys: Vec<SurfaceOperationIdentityKey>,
     pub projection: Vec<SurfaceReadOperationProjectionField>,
     pub index_keys: Vec<SurfaceReadOperationIndexKey>,
 }
@@ -38,9 +39,9 @@ pub enum SurfaceReadOperationDescriptorKind {
 }
 
 #[derive(Debug, Clone)]
-pub struct SurfaceReadOperationIdentityKey {
+pub struct SurfaceOperationIdentityKey {
     pub render_label: String,
-    pub value: SurfaceReadOperationValueShape,
+    pub value: SurfaceOperationValueShape,
 }
 
 #[derive(Debug, Clone)]
@@ -48,14 +49,14 @@ pub struct SurfaceReadOperationProjectionField {
     pub render_label: String,
     pub member_catalog_id: CatalogId,
     pub required: bool,
-    pub value: SurfaceReadOperationValueShape,
+    pub value: SurfaceOperationValueShape,
 }
 
 #[derive(Debug, Clone)]
 pub struct SurfaceReadOperationIndexKey {
     pub render_label: String,
     pub source: SurfaceReadOperationIndexKeySource,
-    pub value: SurfaceReadOperationValueShape,
+    pub value: SurfaceOperationValueShape,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -65,7 +66,7 @@ pub enum SurfaceReadOperationIndexKeySource {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SurfaceReadOperationValueShape {
+pub enum SurfaceOperationValueShape {
     Scalar(marrow_schema::ScalarType),
     Enum {
         enum_catalog_id: CatalogId,
@@ -79,11 +80,12 @@ pub enum SurfaceReadOperationValueShape {
 }
 
 impl SurfaceReadOperationDescriptor {
-    pub(crate) fn from_operation(
+    pub fn from_operation(
         program: &CheckedProgram,
         surface: &SurfaceFact,
         operation: &SurfaceReadOperationFact,
     ) -> Option<Self> {
+        require_stable_surface(surface)?;
         let store = program.facts.store(surface.store);
         let resource_catalog_id = match operation.footprint {
             SurfaceReadFootprint::FullRecord { resource } => accepted_catalog_id(
@@ -111,6 +113,61 @@ impl SurfaceReadOperationDescriptor {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct SurfaceUpdateOperationDescriptor {
+    pub profile_version: &'static str,
+    pub operation_tag: String,
+    pub kind: SurfaceUpdateOperationDescriptorKind,
+    pub patch_semantics: SurfaceUpdatePatchSemantics,
+    pub store_catalog_id: CatalogId,
+    pub resource_catalog_id: CatalogId,
+    pub identity_keys: Vec<SurfaceOperationIdentityKey>,
+    pub fields: Vec<SurfaceUpdateOperationField>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SurfaceUpdateOperationDescriptorKind {
+    SingletonUpdate,
+    PointUpdate,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SurfaceUpdatePatchSemantics {
+    NonEmptyPatch,
+}
+
+#[derive(Debug, Clone)]
+pub struct SurfaceUpdateOperationField {
+    pub render_label: String,
+    pub member_catalog_id: CatalogId,
+    pub backing_required: bool,
+    pub value: SurfaceOperationValueShape,
+}
+
+impl SurfaceUpdateOperationDescriptor {
+    pub fn from_surface(program: &CheckedProgram, surface: &SurfaceFact) -> Option<Self> {
+        require_stable_surface(surface)?;
+        if surface.update.is_empty() {
+            return None;
+        }
+        let store = program.facts.store(surface.store);
+        let resource_catalog_id = accepted_catalog_id(
+            program,
+            program.facts.resource(store.resource).catalog_id.as_deref(),
+        )?;
+        Some(Self {
+            profile_version: SURFACE_UPDATE_OPERATION_TAG_VERSION,
+            operation_tag: surface_update_operation_tag(program, store, &surface.update)?,
+            kind: update_descriptor_kind(store),
+            patch_semantics: SurfaceUpdatePatchSemantics::NonEmptyPatch,
+            store_catalog_id: accepted_catalog_id(program, store.catalog_id.as_deref())?,
+            resource_catalog_id,
+            identity_keys: identity_key_descriptors(program, store)?,
+            fields: update_field_descriptors(program, &surface.update)?,
+        })
+    }
+}
+
 pub(crate) fn surface_read_operation_tag(
     program: &CheckedProgram,
     store: &StoreFact,
@@ -120,6 +177,16 @@ pub(crate) fn surface_read_operation_tag(
 ) -> Option<String> {
     let mut payload = String::new();
     push_read_operation_payload(program, &mut payload, store, kind, footprint, projection)?;
+    Some(marrow_project::sha256_digest(payload.as_bytes()))
+}
+
+pub(crate) fn surface_update_operation_tag(
+    program: &CheckedProgram,
+    store: &StoreFact,
+    update: &[SurfaceFieldFact],
+) -> Option<String> {
+    let mut payload = String::new();
+    push_update_operation_payload(program, &mut payload, store, update)?;
     Some(marrow_project::sha256_digest(payload.as_bytes()))
 }
 
@@ -155,15 +222,23 @@ fn descriptor_kind(
     }
 }
 
+fn update_descriptor_kind(store: &StoreFact) -> SurfaceUpdateOperationDescriptorKind {
+    if store.identity_keys.is_empty() {
+        SurfaceUpdateOperationDescriptorKind::SingletonUpdate
+    } else {
+        SurfaceUpdateOperationDescriptorKind::PointUpdate
+    }
+}
+
 fn identity_key_descriptors(
     program: &CheckedProgram,
     store: &StoreFact,
-) -> Option<Vec<SurfaceReadOperationIdentityKey>> {
+) -> Option<Vec<SurfaceOperationIdentityKey>> {
     store
         .identity_keys
         .iter()
         .map(|key| {
-            Some(SurfaceReadOperationIdentityKey {
+            Some(SurfaceOperationIdentityKey {
                 render_label: key.name.clone(),
                 value: value_shape(program, key.value_meaning.as_ref()?)?,
             })
@@ -187,6 +262,26 @@ fn projection_descriptors(
             })
         })
         .collect()
+}
+
+fn update_field_descriptors(
+    program: &CheckedProgram,
+    update: &[SurfaceFieldFact],
+) -> Option<Vec<SurfaceUpdateOperationField>> {
+    let mut fields = update
+        .iter()
+        .map(|field| {
+            let member = resource_member(program, field.member)?;
+            Some(SurfaceUpdateOperationField {
+                render_label: field.name.clone(),
+                member_catalog_id: accepted_catalog_id(program, member.catalog_id.as_deref())?,
+                backing_required: member.plain_field_required?,
+                value: value_shape(program, member.value_meaning.as_ref()?)?,
+            })
+        })
+        .collect::<Option<Vec<_>>>()?;
+    fields.sort_by(|left, right| left.member_catalog_id.cmp(&right.member_catalog_id));
+    Some(fields)
 }
 
 fn index_key_descriptors_for_operation(
@@ -248,15 +343,22 @@ fn resource_member(
         .find(|member| member.id == member_id)
 }
 
+fn require_stable_surface(surface: &SurfaceFact) -> Option<()> {
+    match surface.catalog_status {
+        SurfaceCatalogStatus::Stable => Some(()),
+        SurfaceCatalogStatus::SourceOnly(_) => None,
+    }
+}
+
 fn value_shape(
     program: &CheckedProgram,
     meaning: &StoredValueMeaning,
-) -> Option<SurfaceReadOperationValueShape> {
+) -> Option<SurfaceOperationValueShape> {
     match meaning {
-        StoredValueMeaning::Scalar(scalar) => Some(SurfaceReadOperationValueShape::Scalar(*scalar)),
+        StoredValueMeaning::Scalar(scalar) => Some(SurfaceOperationValueShape::Scalar(*scalar)),
         StoredValueMeaning::Enum { enum_id, members } => {
             let enum_fact = program.facts.enum_(*enum_id)?;
-            Some(SurfaceReadOperationValueShape::Enum {
+            Some(SurfaceOperationValueShape::Enum {
                 enum_catalog_id: accepted_catalog_id(program, enum_fact.catalog_id.as_deref())?,
                 member_catalog_ids: members
                     .iter()
@@ -276,7 +378,7 @@ fn value_shape(
             arity,
             key_scalars,
             ..
-        } => Some(SurfaceReadOperationValueShape::Identity {
+        } => Some(SurfaceOperationValueShape::Identity {
             store_catalog_id: accepted_catalog_id(program, store_catalog_id.as_deref())?,
             arity: *arity,
             key_scalars: key_scalars.clone(),
@@ -317,7 +419,7 @@ fn push_read_operation_payload(
             "projection.member",
             accepted_catalog_id_text(program, member.catalog_id.as_deref())?,
         );
-        push_projection_member_tag_parts(program, payload, member)?;
+        push_member_tag_parts(program, payload, "projection.member", member)?;
     }
     match kind {
         SurfaceReadOperationKind::SingletonRead { .. } => {
@@ -344,6 +446,53 @@ fn push_read_operation_payload(
             push_index_tag_parts(program, payload, program.facts.store_index(index))?;
             push_tag_part(payload, "keys", &key_count.to_string());
         }
+    }
+    Some(())
+}
+
+fn push_update_operation_payload(
+    program: &CheckedProgram,
+    payload: &mut String,
+    store: &StoreFact,
+    update: &[SurfaceFieldFact],
+) -> Option<()> {
+    push_tag_part(payload, "version", SURFACE_UPDATE_OPERATION_TAG_VERSION);
+    push_tag_part(
+        payload,
+        "store",
+        accepted_catalog_id_text(program, store.catalog_id.as_deref())?,
+    );
+    push_tag_part(
+        payload,
+        "footprint.resource",
+        accepted_catalog_id_text(
+            program,
+            program.facts.resource(store.resource).catalog_id.as_deref(),
+        )?,
+    );
+    push_identity_key_tag_parts(program, payload, store)?;
+    push_tag_part(payload, "patch", "non_empty_patch");
+    push_tag_part(
+        payload,
+        "kind",
+        match update_descriptor_kind(store) {
+            SurfaceUpdateOperationDescriptorKind::SingletonUpdate => "singleton",
+            SurfaceUpdateOperationDescriptorKind::PointUpdate => "point",
+        },
+    );
+    let mut fields = update
+        .iter()
+        .map(|field| {
+            let member = resource_member(program, field.member)?;
+            let catalog_id = accepted_catalog_id_text(program, member.catalog_id.as_deref())?;
+            Some((catalog_id, member))
+        })
+        .collect::<Option<Vec<_>>>()?;
+    fields.sort_by_key(|(catalog_id, _)| *catalog_id);
+    push_tag_part(payload, "fields.len", &fields.len().to_string());
+    for (catalog_id, member) in fields {
+        push_tag_part(payload, "field.member", catalog_id);
+        push_member_tag_parts(program, payload, "field.member", member)?;
     }
     Some(())
 }
@@ -391,27 +540,26 @@ fn push_identity_key_tag_parts(
     Some(())
 }
 
-fn push_projection_member_tag_parts(
+fn push_member_tag_parts(
     program: &CheckedProgram,
     payload: &mut String,
+    prefix: &str,
     member: &ResourceMemberFact,
 ) -> Option<()> {
-    push_tag_part(
+    push_prefixed_tag_part(
         payload,
-        "projection.member.kind",
+        prefix,
+        "kind",
         match member.kind {
             ResourceMemberKind::Field => "field",
             ResourceMemberKind::Group => "group",
         },
     );
-    push_tag_part(
+    push_prefixed_tag_part(payload, prefix, "key_count", &member.key_count.to_string());
+    push_prefixed_tag_part(
         payload,
-        "projection.member.key_count",
-        &member.key_count.to_string(),
-    );
-    push_tag_part(
-        payload,
-        "projection.member.required",
+        prefix,
+        "required",
         match member.plain_field_required? {
             true => "true",
             false => "false",
@@ -420,7 +568,7 @@ fn push_projection_member_tag_parts(
     push_meaning_tag_parts(
         program,
         payload,
-        "projection.member.value",
+        &format!("{prefix}.value"),
         member.value_meaning.as_ref()?,
     )
 }

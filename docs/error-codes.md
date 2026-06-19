@@ -469,7 +469,7 @@ active runtime cursor is a typed continuation value.
 | `surface.conflict` | A generated write conflicts with existing saved data, such as a unique-index conflict. |
 | `surface.write` | A generated write could not be applied after successful request decoding and before commit, excluding conflicts and store/backend faults. |
 | `surface.integrity` | A future renderer profile that actively dereferences identity links or relations found a missing referent. Projection-only reads use `surface.invalid_data` for dangling index rows. |
-| `surface.store` | The store reported a fault while serving a surface operation. |
+| `surface.store` | The store reported a fault while executing a surface operation. |
 
 The remaining `check.surface_*` names are reserved for future surface checker
 diagnostics, including stable ABI export checks. They do not appear in v0.1

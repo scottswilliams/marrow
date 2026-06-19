@@ -2,9 +2,10 @@
 //!
 //! This crate preserves the existing `marrow run --format json` return-value
 //! shape, saved-key shape, and data snapshot shape used in tooling reports, plus
-//! checked surface read request/result DTOs and sparse update request DTOs. It
-//! is not a general `Value` codec, and it does not define routes, generated
-//! clients, opaque cursor tokens, or create/delete body decode.
+//! checked surface ABI descriptor DTOs, read request/result DTOs, and sparse
+//! update request DTOs. It is not a general `Value` codec, and it does not
+//! define routes, generated clients, opaque cursor tokens, or create/delete
+//! body decode.
 
 use marrow_check::tooling::{DataCommitStamp, DataSnapshotStamp};
 use marrow_run::Value;

@@ -256,6 +256,10 @@ fn project_envelope(
             "entry_footprints".into(),
             json!(entry_footprint_records(program)),
         );
+        envelope.insert(
+            "surface_abi".into(),
+            json!(marrow_json::surface::SurfaceAbiJson::from_program(program)),
+        );
     }
     envelope
 }

@@ -13,6 +13,135 @@ pub use request::{
     SurfaceUpdateValueJson,
 };
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SurfaceAbiJson {
+    pub surfaces: Vec<SurfaceDescriptorJson>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SurfaceDescriptorJson {
+    pub module: String,
+    pub name: String,
+    pub catalog_status: SurfaceCatalogStatusJson,
+    pub read: Vec<SurfaceReadOperationDescriptorJson>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub update: Option<SurfaceUpdateOperationDescriptorJson>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SurfaceCatalogStatusJson {
+    Stable,
+    SourceOnly { blockers: Vec<String> },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SurfaceReadOperationDescriptorJson {
+    pub profile_version: String,
+    pub operation_tag: String,
+    pub kind: SurfaceReadOperationKindJson,
+    pub store_catalog_id: String,
+    pub resource_catalog_id: String,
+    pub identity_keys: Vec<SurfaceOperationIdentityKeyJson>,
+    pub projection: Vec<SurfaceReadProjectionFieldJson>,
+    pub index_keys: Vec<SurfaceReadIndexKeyJson>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SurfaceReadOperationKindJson {
+    SingletonRead,
+    PointRead,
+    PagedRootCollection,
+    PagedIndexCollection {
+        index_catalog_id: String,
+        exact_key_count: usize,
+        identity_key_count: usize,
+    },
+    UniqueIndexLookup {
+        index_catalog_id: String,
+        key_count: usize,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SurfaceOperationIdentityKeyJson {
+    pub render_label: String,
+    pub value: SurfaceOperationValueShapeJson,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SurfaceReadProjectionFieldJson {
+    pub render_label: String,
+    pub member_catalog_id: String,
+    pub required: bool,
+    pub value: SurfaceOperationValueShapeJson,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SurfaceReadIndexKeyJson {
+    pub render_label: String,
+    pub source: SurfaceReadIndexKeySourceJson,
+    pub value: SurfaceOperationValueShapeJson,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SurfaceReadIndexKeySourceJson {
+    IdentityKey,
+    ResourceMember { member_catalog_id: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SurfaceOperationValueShapeJson {
+    Scalar {
+        scalar: String,
+    },
+    Enum {
+        enum_catalog_id: String,
+        member_catalog_ids: Vec<String>,
+    },
+    Identity {
+        store_catalog_id: String,
+        arity: usize,
+        key_scalars: Vec<String>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SurfaceUpdateOperationDescriptorJson {
+    pub profile_version: String,
+    pub operation_tag: String,
+    pub kind: SurfaceUpdateOperationKindJson,
+    pub patch_semantics: SurfaceUpdatePatchSemanticsJson,
+    pub store_catalog_id: String,
+    pub resource_catalog_id: String,
+    pub identity_keys: Vec<SurfaceOperationIdentityKeyJson>,
+    pub fields: Vec<SurfaceUpdateFieldDescriptorJson>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SurfaceUpdateOperationKindJson {
+    SingletonUpdate,
+    PointUpdate,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SurfaceUpdatePatchSemanticsJson {
+    NonEmptyPatch,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SurfaceUpdateFieldDescriptorJson {
+    pub render_label: String,
+    pub member_catalog_id: String,
+    pub backing_required: bool,
+    pub value: SurfaceOperationValueShapeJson,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SurfaceIdentityJson {
     pub store_catalog_id: String,
@@ -36,6 +165,269 @@ pub struct SurfaceRecordJson {
 pub struct SurfacePageJson {
     pub rows: Vec<SurfaceRecordJson>,
     pub next: Option<SurfaceCursorJson>,
+}
+
+impl SurfaceAbiJson {
+    pub fn from_program(program: &marrow_check::CheckedProgram) -> Self {
+        let mut surfaces = program
+            .facts
+            .surfaces()
+            .iter()
+            .map(|surface| {
+                let module = &program.facts.modules()[surface.module.0 as usize];
+                SurfaceDescriptorJson::from_surface(program, &module.name, surface)
+            })
+            .collect::<Vec<_>>();
+        surfaces.sort_by(|left, right| {
+            left.module
+                .cmp(&right.module)
+                .then_with(|| left.name.cmp(&right.name))
+        });
+        Self { surfaces }
+    }
+}
+
+impl SurfaceDescriptorJson {
+    fn from_surface(
+        program: &marrow_check::CheckedProgram,
+        module: &str,
+        surface: &marrow_check::SurfaceFact,
+    ) -> Self {
+        let stable = matches!(
+            surface.catalog_status,
+            marrow_check::SurfaceCatalogStatus::Stable
+        );
+        Self {
+            module: module.to_string(),
+            name: surface.name.clone(),
+            catalog_status: SurfaceCatalogStatusJson::from(&surface.catalog_status),
+            read: if stable {
+                surface
+                    .read_operations
+                    .iter()
+                    .filter_map(|operation| {
+                        marrow_check::SurfaceReadOperationDescriptor::from_operation(
+                            program, surface, operation,
+                        )
+                        .map(SurfaceReadOperationDescriptorJson::from)
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            },
+            update: if stable {
+                marrow_check::SurfaceUpdateOperationDescriptor::from_surface(program, surface)
+                    .map(SurfaceUpdateOperationDescriptorJson::from)
+            } else {
+                None
+            },
+        }
+    }
+}
+
+impl From<&marrow_check::SurfaceCatalogStatus> for SurfaceCatalogStatusJson {
+    fn from(status: &marrow_check::SurfaceCatalogStatus) -> Self {
+        match status {
+            marrow_check::SurfaceCatalogStatus::Stable => Self::Stable,
+            marrow_check::SurfaceCatalogStatus::SourceOnly(blockers) => Self::SourceOnly {
+                blockers: blockers
+                    .iter()
+                    .map(|blocker| match blocker {
+                        marrow_check::SurfaceCatalogBlocker::PendingCatalogProposal => {
+                            "pending_catalog_proposal"
+                        }
+                        marrow_check::SurfaceCatalogBlocker::MissingAcceptedCatalogIds => {
+                            "missing_accepted_catalog_ids"
+                        }
+                    })
+                    .map(str::to_string)
+                    .collect(),
+            },
+        }
+    }
+}
+
+impl From<marrow_check::SurfaceReadOperationDescriptor> for SurfaceReadOperationDescriptorJson {
+    fn from(descriptor: marrow_check::SurfaceReadOperationDescriptor) -> Self {
+        Self {
+            profile_version: descriptor.profile_version.to_string(),
+            operation_tag: descriptor.operation_tag,
+            kind: SurfaceReadOperationKindJson::from(descriptor.kind),
+            store_catalog_id: descriptor.store_catalog_id.as_str().to_string(),
+            resource_catalog_id: descriptor.resource_catalog_id.as_str().to_string(),
+            identity_keys: descriptor
+                .identity_keys
+                .into_iter()
+                .map(SurfaceOperationIdentityKeyJson::from)
+                .collect(),
+            projection: descriptor
+                .projection
+                .into_iter()
+                .map(SurfaceReadProjectionFieldJson::from)
+                .collect(),
+            index_keys: descriptor
+                .index_keys
+                .into_iter()
+                .map(SurfaceReadIndexKeyJson::from)
+                .collect(),
+        }
+    }
+}
+
+impl From<marrow_check::SurfaceReadOperationDescriptorKind> for SurfaceReadOperationKindJson {
+    fn from(kind: marrow_check::SurfaceReadOperationDescriptorKind) -> Self {
+        match kind {
+            marrow_check::SurfaceReadOperationDescriptorKind::SingletonRead => Self::SingletonRead,
+            marrow_check::SurfaceReadOperationDescriptorKind::PointRead => Self::PointRead,
+            marrow_check::SurfaceReadOperationDescriptorKind::PagedRootCollection => {
+                Self::PagedRootCollection
+            }
+            marrow_check::SurfaceReadOperationDescriptorKind::PagedIndexCollection {
+                index_catalog_id,
+                exact_key_count,
+                identity_key_count,
+            } => Self::PagedIndexCollection {
+                index_catalog_id: index_catalog_id.as_str().to_string(),
+                exact_key_count,
+                identity_key_count,
+            },
+            marrow_check::SurfaceReadOperationDescriptorKind::UniqueIndexLookup {
+                index_catalog_id,
+                key_count,
+            } => Self::UniqueIndexLookup {
+                index_catalog_id: index_catalog_id.as_str().to_string(),
+                key_count,
+            },
+        }
+    }
+}
+
+impl From<marrow_check::SurfaceOperationIdentityKey> for SurfaceOperationIdentityKeyJson {
+    fn from(key: marrow_check::SurfaceOperationIdentityKey) -> Self {
+        Self {
+            render_label: key.render_label,
+            value: SurfaceOperationValueShapeJson::from(key.value),
+        }
+    }
+}
+
+impl From<marrow_check::SurfaceReadOperationProjectionField> for SurfaceReadProjectionFieldJson {
+    fn from(field: marrow_check::SurfaceReadOperationProjectionField) -> Self {
+        Self {
+            render_label: field.render_label,
+            member_catalog_id: field.member_catalog_id.as_str().to_string(),
+            required: field.required,
+            value: SurfaceOperationValueShapeJson::from(field.value),
+        }
+    }
+}
+
+impl From<marrow_check::SurfaceReadOperationIndexKey> for SurfaceReadIndexKeyJson {
+    fn from(key: marrow_check::SurfaceReadOperationIndexKey) -> Self {
+        Self {
+            render_label: key.render_label,
+            source: SurfaceReadIndexKeySourceJson::from(key.source),
+            value: SurfaceOperationValueShapeJson::from(key.value),
+        }
+    }
+}
+
+impl From<marrow_check::SurfaceReadOperationIndexKeySource> for SurfaceReadIndexKeySourceJson {
+    fn from(source: marrow_check::SurfaceReadOperationIndexKeySource) -> Self {
+        match source {
+            marrow_check::SurfaceReadOperationIndexKeySource::IdentityKey => Self::IdentityKey,
+            marrow_check::SurfaceReadOperationIndexKeySource::ResourceMember {
+                member_catalog_id,
+            } => Self::ResourceMember {
+                member_catalog_id: member_catalog_id.as_str().to_string(),
+            },
+        }
+    }
+}
+
+impl From<marrow_check::SurfaceOperationValueShape> for SurfaceOperationValueShapeJson {
+    fn from(value: marrow_check::SurfaceOperationValueShape) -> Self {
+        match value {
+            marrow_check::SurfaceOperationValueShape::Scalar(scalar) => Self::Scalar {
+                scalar: scalar.name().to_string(),
+            },
+            marrow_check::SurfaceOperationValueShape::Enum {
+                enum_catalog_id,
+                member_catalog_ids,
+            } => Self::Enum {
+                enum_catalog_id: enum_catalog_id.as_str().to_string(),
+                member_catalog_ids: member_catalog_ids
+                    .into_iter()
+                    .map(|id| id.as_str().to_string())
+                    .collect(),
+            },
+            marrow_check::SurfaceOperationValueShape::Identity {
+                store_catalog_id,
+                arity,
+                key_scalars,
+            } => Self::Identity {
+                store_catalog_id: store_catalog_id.as_str().to_string(),
+                arity,
+                key_scalars: key_scalars
+                    .into_iter()
+                    .map(|scalar| scalar.name().to_string())
+                    .collect(),
+            },
+        }
+    }
+}
+
+impl From<marrow_check::SurfaceUpdateOperationDescriptor> for SurfaceUpdateOperationDescriptorJson {
+    fn from(descriptor: marrow_check::SurfaceUpdateOperationDescriptor) -> Self {
+        Self {
+            profile_version: descriptor.profile_version.to_string(),
+            operation_tag: descriptor.operation_tag,
+            kind: SurfaceUpdateOperationKindJson::from(descriptor.kind),
+            patch_semantics: SurfaceUpdatePatchSemanticsJson::from(descriptor.patch_semantics),
+            store_catalog_id: descriptor.store_catalog_id.as_str().to_string(),
+            resource_catalog_id: descriptor.resource_catalog_id.as_str().to_string(),
+            identity_keys: descriptor
+                .identity_keys
+                .into_iter()
+                .map(SurfaceOperationIdentityKeyJson::from)
+                .collect(),
+            fields: descriptor
+                .fields
+                .into_iter()
+                .map(SurfaceUpdateFieldDescriptorJson::from)
+                .collect(),
+        }
+    }
+}
+
+impl From<marrow_check::SurfaceUpdateOperationDescriptorKind> for SurfaceUpdateOperationKindJson {
+    fn from(kind: marrow_check::SurfaceUpdateOperationDescriptorKind) -> Self {
+        match kind {
+            marrow_check::SurfaceUpdateOperationDescriptorKind::SingletonUpdate => {
+                Self::SingletonUpdate
+            }
+            marrow_check::SurfaceUpdateOperationDescriptorKind::PointUpdate => Self::PointUpdate,
+        }
+    }
+}
+
+impl From<marrow_check::SurfaceUpdatePatchSemantics> for SurfaceUpdatePatchSemanticsJson {
+    fn from(semantics: marrow_check::SurfaceUpdatePatchSemantics) -> Self {
+        match semantics {
+            marrow_check::SurfaceUpdatePatchSemantics::NonEmptyPatch => Self::NonEmptyPatch,
+        }
+    }
+}
+
+impl From<marrow_check::SurfaceUpdateOperationField> for SurfaceUpdateFieldDescriptorJson {
+    fn from(field: marrow_check::SurfaceUpdateOperationField) -> Self {
+        Self {
+            render_label: field.render_label,
+            member_catalog_id: field.member_catalog_id.as_str().to_string(),
+            backing_required: field.backing_required,
+            value: SurfaceOperationValueShapeJson::from(field.value),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
