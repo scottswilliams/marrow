@@ -748,6 +748,244 @@ fn std_math_modulo_by_zero_is_a_runtime_error() {
 }
 
 #[test]
+fn std_hash_helpers_match_known_digests() {
+    let program = checked_program(
+        r#"pub fn sha256_abc(): string
+    return std::bytes::hexEncode(std::hash::sha256(std::bytes::fromText("abc")))
+
+pub fn sha256_empty(): string
+    return std::bytes::hexEncode(std::hash::sha256(b""))
+
+pub fn sha512_abc(): string
+    return std::bytes::hexEncode(std::hash::sha512(std::bytes::fromText("abc")))
+
+pub fn hmac_rfc4231(): string
+    return std::bytes::hexEncode(std::hash::hmacSha256(b"\x0b\x0b\x0b\x0b\x0b\x0b\x0b\x0b\x0b\x0b\x0b\x0b\x0b\x0b\x0b\x0b\x0b\x0b\x0b\x0b", std::bytes::fromText("Hi There")))
+
+pub fn hmac_long_key(): string
+    return std::bytes::hexEncode(std::hash::hmacSha256(b"\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa\xaa", std::bytes::fromText("Test Using Larger Than Block-Size Key - Hash Key First")))
+"#,
+    );
+
+    assert_eq!(
+        run(checked_entry!(&program, "test::sha256_abc")).unwrap(),
+        Some(Value::Str(
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad".into()
+        ))
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::sha256_empty")).unwrap(),
+        Some(Value::Str(
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855".into()
+        ))
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::sha512_abc")).unwrap(),
+        Some(Value::Str(
+            "ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f".into()
+        ))
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::hmac_rfc4231")).unwrap(),
+        Some(Value::Str(
+            "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7".into()
+        ))
+    );
+    // RFC 4231 case 6 pins the long-key shortening branch: a key over 64 bytes is hashed first.
+    assert_eq!(
+        run(checked_entry!(&program, "test::hmac_long_key")).unwrap(),
+        Some(Value::Str(
+            "60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54".into()
+        ))
+    );
+}
+
+#[test]
+fn std_bytes_text_and_hex_codecs_round_trip() {
+    let program = checked_program(
+        r#"pub fn text_round_trip(): string
+    return std::bytes::toText(std::bytes::fromText("café — 文字"))
+
+pub fn invalid_utf8(): string
+    return std::bytes::toText(b"\xff\xfe")
+
+pub fn hex_round_trip(): string
+    return std::bytes::hexEncode(std::bytes::hexDecode(std::bytes::hexEncode(std::bytes::fromText("café"))))
+
+pub fn upper_hex_equals_lower(): bool
+    return std::bytes::toText(std::bytes::hexDecode("48454C4C4F")) == std::bytes::toText(std::bytes::hexDecode("48454c4c4f"))
+
+pub fn hex_odd_length(): bytes
+    return std::bytes::hexDecode("abc")
+
+pub fn hex_non_hex(): bytes
+    return std::bytes::hexDecode("zz")
+"#,
+    );
+
+    assert_eq!(
+        run(checked_entry!(&program, "test::text_round_trip")).unwrap(),
+        Some(Value::Str("café — 文字".into()))
+    );
+    assert_run_error(
+        run(checked_entry!(&program, "test::invalid_utf8")),
+        RUN_TYPE,
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::hex_round_trip")).unwrap(),
+        Some(Value::Str("636166c3a9".into()))
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::upper_hex_equals_lower")).unwrap(),
+        Some(Value::Bool(true))
+    );
+    assert_run_error(
+        run(checked_entry!(&program, "test::hex_odd_length")),
+        RUN_TYPE,
+    );
+    assert_run_error(run(checked_entry!(&program, "test::hex_non_hex")), RUN_TYPE);
+}
+
+#[test]
+fn std_text_url_codec_round_trips_and_rejects_malformed() {
+    let program = checked_program(
+        r#"pub fn round_trip(): string
+    return std::text::urlDecode(std::text::urlEncode("a b/é"))
+
+pub fn encoded_form(): string
+    return std::text::urlEncode("a b/é")
+
+pub fn plus_is_literal(): string
+    return std::text::urlDecode("a+b")
+
+pub fn short_escape(): string
+    return std::text::urlDecode("%4")
+
+pub fn non_hex_escape(): string
+    return std::text::urlDecode("%zz")
+
+pub fn invalid_utf8(): string
+    return std::text::urlDecode("%ff")
+"#,
+    );
+
+    assert_eq!(
+        run(checked_entry!(&program, "test::round_trip")).unwrap(),
+        Some(Value::Str("a b/é".into()))
+    );
+    // Space becomes %20, slash and the non-ASCII scalar are percent-escaped with
+    // uppercase hex; the unreserved letters stay literal.
+    assert_eq!(
+        run(checked_entry!(&program, "test::encoded_form")).unwrap(),
+        Some(Value::Str("a%20b%2F%C3%A9".into()))
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::plus_is_literal")).unwrap(),
+        Some(Value::Str("a+b".into()))
+    );
+    assert_run_error(
+        run(checked_entry!(&program, "test::short_escape")),
+        RUN_TYPE,
+    );
+    assert_run_error(
+        run(checked_entry!(&program, "test::non_hex_escape")),
+        RUN_TYPE,
+    );
+    assert_run_error(
+        run(checked_entry!(&program, "test::invalid_utf8")),
+        RUN_TYPE,
+    );
+}
+
+#[test]
+fn std_json_writers_round_trip_through_the_reader() {
+    let program = checked_program(
+        r#"pub fn object_value(): string
+    const obj: string = "{" + std::json::stringLit("msg") + ":" + std::json::stringLit("a\"b\nc") + "}"
+    return std::json::string(obj, "/msg") ?? ""
+
+pub fn array_value(): string
+    const arr: string = std::json::stringArray(std::text::split("x\"y,plain", ","))
+    return std::json::string(arr, "/0") ?? ""
+
+pub fn array_count(): int
+    const arr: string = std::json::stringArray(std::text::split("x\"y,plain", ","))
+    return std::json::count(arr, "") ?? -1
+
+pub fn empty_array(items: sequence[string]): string
+    return std::json::stringArray(items)
+"#,
+    );
+
+    assert_eq!(
+        run(checked_entry!(&program, "test::object_value")).unwrap(),
+        Some(Value::Str("a\"b\nc".into()))
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::array_value")).unwrap(),
+        Some(Value::Str("x\"y".into()))
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::array_count")).unwrap(),
+        Some(Value::Int(2))
+    );
+    assert_eq!(
+        run(checked_entry!(
+            &program,
+            "test::empty_array",
+            Value::Sequence(Vec::new())
+        ))
+        .unwrap(),
+        Some(Value::Str("[]".into()))
+    );
+}
+
+#[test]
+fn std_csv_writer_is_the_readers_inverse() {
+    let program = checked_program(
+        r#"pub fn document(): string
+    const header: string = std::csv::row(std::text::split("name,note,pad", ","))
+    const data: string = std::csv::row(std::text::split("a,b|c\"q\"| x", "|"))
+    return header + "\n" + data
+
+pub fn cell_with_comma(): string
+    return std::csv::string(test::document(), 0, "name") ?? ""
+
+pub fn cell_with_quote(): string
+    return std::csv::string(test::document(), 0, "note") ?? ""
+
+pub fn cell_with_space(): string
+    return std::csv::string(test::document(), 0, "pad") ?? ""
+
+pub fn empty_row(cells: sequence[string]): string
+    return std::csv::row(cells)
+"#,
+    );
+
+    assert_eq!(
+        run(checked_entry!(&program, "test::cell_with_comma")).unwrap(),
+        Some(Value::Str("a,b".into()))
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::cell_with_quote")).unwrap(),
+        Some(Value::Str("c\"q\"".into()))
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::cell_with_space")).unwrap(),
+        Some(Value::Str(" x".into()))
+    );
+    assert_eq!(
+        run(checked_entry!(
+            &program,
+            "test::empty_row",
+            Value::Sequence(Vec::new())
+        ))
+        .unwrap(),
+        Some(Value::Str(String::new()))
+    );
+}
+
+#[test]
 fn std_builtins_reject_wrong_argument_types() {
     checker_rejects(
         "pub fn f(): int\n    return std::text::length(42)\n",

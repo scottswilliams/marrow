@@ -8,7 +8,7 @@ use crate::collection::absent_read;
 use crate::env::Env;
 use crate::error::{RuntimeError, decimal_overflow, std_arity, type_error};
 use crate::expr::eval_int;
-use crate::stdlib::eval_text;
+use crate::stdlib::{eval_string_sequence, eval_text};
 use crate::value::Value;
 
 const MAX_BYTES: usize = 1_048_576;
@@ -43,6 +43,14 @@ pub(crate) fn eval_csv(
     env: &mut Env<'_>,
 ) -> Result<Value, RuntimeError> {
     match op {
+        "row" => {
+            let [cells] = args else {
+                return Err(std_arity("csv", op, span));
+            };
+            Ok(Value::Str(format_row(&eval_string_sequence(
+                cells, env, span,
+            )?)))
+        }
         "rowCount" => {
             let [text] = args else {
                 return Err(std_arity("csv", op, span));
@@ -197,6 +205,25 @@ fn finish_field(
     *quoted = false;
     *field_start = true;
     Ok(())
+}
+
+/// Render one RFC 4180 record that the reader parses back to the original cells: a
+/// cell is quoted only when it contains a comma, quote, CR, or LF, and internal
+/// quotes double. No trailing newline is emitted.
+fn format_row(cells: &[String]) -> String {
+    cells
+        .iter()
+        .map(|cell| quote_cell(cell))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn quote_cell(cell: &str) -> String {
+    if cell.contains([',', '"', '\r', '\n']) {
+        format!("\"{}\"", cell.replace('"', "\"\""))
+    } else {
+        cell.to_owned()
+    }
 }
 
 fn row_index(arg: &ExecArg, env: &mut Env<'_>, span: SourceSpan) -> Result<usize, RuntimeError> {

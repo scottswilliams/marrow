@@ -142,10 +142,16 @@ std::text::replace(value: string, from: string, to: string): string
 std::text::join(parts: sequence[string], separator: string): string
 std::text::toUpper(value: string): string
 std::text::toLower(value: string): string
+std::text::urlEncode(value: string): string
+std::text::urlDecode(value: string): string
 
 std::bytes::length(value: bytes): int
 std::bytes::base64Encode(value: bytes): string
 std::bytes::base64Decode(value: string): bytes
+std::bytes::fromText(text: string): bytes
+std::bytes::toText(data: bytes): string
+std::bytes::hexEncode(data: bytes): string
+std::bytes::hexDecode(text: string): bytes
 ```
 
 `std::text::length` counts Unicode scalar values. It does not count terminal
@@ -158,6 +164,32 @@ Case conversion uses simple Unicode case mapping without locale-specific rules:
 each input scalar maps to at most one output scalar, so mappings such as
 `ß` to `SS` or `İ` to `i` plus a combining mark are not used.
 `std::bytes::length` counts bytes.
+
+`urlEncode` is RFC 3986 percent-encoding of the UTF-8 bytes: it keeps `A-Z`,
+`a-z`, `0-9`, `-`, `.`, `_`, and `~` literal and writes every other byte as `%`
+plus two uppercase hex digits, so a space becomes `%20`, never `+`. `urlDecode`
+accepts either hex case, treats `+` as a literal plus, and raises `run.type` on a
+malformed escape or on decoded bytes that are not valid UTF-8.
+
+`fromText` and `toText` cross the UTF-8 boundary; `toText` raises `run.type` on
+invalid UTF-8 rather than replacing bytes. `hexEncode` emits lowercase hex;
+`hexDecode` accepts either case and raises `run.type` on odd length or any
+non-hex character.
+
+## `std::hash`
+
+Cryptographic digests over `bytes`, returning `bytes`:
+
+```mw
+std::hash::sha256(data: bytes): bytes
+std::hash::sha512(data: bytes): bytes
+std::hash::hmacSha256(key: bytes, message: bytes): bytes
+```
+
+`sha256` and `sha512` return the 32- and 64-byte digests. `hmacSha256` is
+HMAC-SHA256 per RFC 2104 over the 64-byte block: a key longer than the block is
+first replaced by its SHA-256 digest. Pair these with `std::bytes::hexEncode` or
+`std::bytes::base64Encode` to render a digest as text.
 
 ## `std::math`
 
@@ -206,7 +238,13 @@ std::json::int(text: string, pointer: string): maybe-present int
 std::json::decimal(text: string, pointer: string): maybe-present decimal
 std::json::bool(text: string, pointer: string): maybe-present bool
 std::json::count(text: string, pointer: string): maybe-present int
+std::json::stringLit(value: string): string
+std::json::stringArray(items: sequence[string]): string
 ```
+
+`stringLit` renders one correctly escaped JSON string literal, including the
+quotes. `stringArray` renders a JSON array of those literals; an empty sequence
+renders as `[]`.
 
 `pointer` is an RFC 6901 JSON Pointer. The empty string selects the root; other
 pointers start with `/`, split on `/`, and decode `~0` to `~` and `~1` to `/`.
@@ -226,6 +264,7 @@ spellings do not become decimal values.
 CSV helpers read a narrow RFC 4180 subset from text and return scalar cells:
 
 ```mw
+std::csv::row(cells: sequence[string]): string
 std::csv::rowCount(text: string): int
 std::csv::hasColumn(text: string, column: string): bool
 std::csv::string(text: string, row: int, column: string): maybe-present string
@@ -233,6 +272,11 @@ std::csv::int(text: string, row: int, column: string): maybe-present int
 std::csv::decimal(text: string, row: int, column: string): maybe-present decimal
 std::csv::bool(text: string, row: int, column: string): maybe-present bool
 ```
+
+`row` renders one RFC 4180 record with no trailing newline, the exact inverse of
+the reader: it quotes a cell containing a comma, double-quote, CR, or LF and
+doubles internal double-quotes. An empty sequence and a one-element sequence
+holding an empty cell both render as an empty string, matching the reader.
 
 The first row is the required header. Data rows are zero-based after the header.
 Missing rows, missing columns, and empty cells are absent. Duplicate or empty

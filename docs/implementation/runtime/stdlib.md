@@ -23,10 +23,11 @@ Dispatch enters from `eval_std_call` and `eval_builtin_call` in `crates/marrow-r
 | File | Responsibility |
 | --- | --- |
 | `crates/marrow-run/src/stdlib.rs` | Builtin-support root: declares the shared args/assertion/conversion/count/error/index/math/output helpers and re-exports their entry points to the crate. |
-| `crates/marrow-run/src/std_pure.rs` | Pure dispatch: `eval_std` routes the module string to text/math/bytes/clock(format+parse) handlers and focused scalar stdlib modules. |
-| `crates/marrow-run/src/std_json.rs`, `std_csv.rs`, `std_id.rs`, `std_random.rs`, `std_audit.rs`, `std_error_helpers.rs`, `std_matrix.rs` | Scalar-only stdlib extensions that return existing `Value` scalars without adding opaque runtime value types. |
+| `crates/marrow-run/src/std_pure.rs` | Pure dispatch: `eval_std` routes the module string to text/math/bytes/hash/clock(format+parse) handlers and focused scalar stdlib modules. |
+| `crates/marrow-run/src/std_json.rs`, `std_csv.rs`, `std_id.rs`, `std_random.rs`, `std_audit.rs`, `std_error_helpers.rs`, `std_matrix.rs`, `std_hash.rs` | Scalar/bytes stdlib extensions that return existing `Value` scalars without adding opaque runtime value types. `std_json` owns JSON string-literal escaping (`string_literal`), reused by `std_audit`. |
+| `crates/marrow-run/src/hex.rs`, `percent.rs`, `base64.rs` | Canonical byte/text codecs: lowercase hex, RFC 3986 percent-encoding, and RFC 4648 base64, each an exact inverse of its decoder. |
 | `crates/marrow-run/src/host_effects.rs` | Capability handlers `eval_clock_capability`/`eval_context`/`eval_env`/`eval_log`/`eval_io`; capability gating and rollback-sensitive write guarding. |
-| `crates/marrow-run/src/stdlib/args.rs` | Typed arg evaluators: `eval_typed_arg` plus `eval_bytes`/`decimal`/`instant`/`date`/`duration`/`text_arg` coerce one `ExecArg` to a concrete `Value`. |
+| `crates/marrow-run/src/stdlib/args.rs` | Typed arg evaluators: `eval_typed_arg` plus `eval_bytes`/`decimal`/`instant`/`date`/`duration`/`text_arg` coerce one `ExecArg` to a concrete `Value`; `eval_string_sequence` is the one owner of `sequence[string]` extraction (text join, json/csv writers). |
 | `crates/marrow-run/src/stdlib/assertions.rs` | `std::assert`: `isTrue`/`isFalse`/`absent`/`fail`; raises `run.assert` on failure, returns `None` on success. |
 | `crates/marrow-run/src/stdlib/conversion.rs` | Scalar/ErrorCode/bytes conversions driven by `ConversionKind`; parses via store `decode_value`/`Decimal`, splitting decimal overflow from malformed text and validating ErrorCode text through `marrow_schema::error`. |
 | `crates/marrow-run/src/stdlib/count.rs` | `count`/`exists` over saved paths, local collections, and typed maybe-present call results; routes through specialized counters before falling back to a store child-count. |

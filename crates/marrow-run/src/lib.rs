@@ -22,6 +22,7 @@
 //! through one runtime path.
 
 pub mod base64;
+pub mod hex;
 pub(crate) mod write;
 
 mod activation;
@@ -43,6 +44,7 @@ mod local_collection;
 mod loop_exec;
 mod neighbor;
 mod path;
+mod percent;
 mod project_session;
 mod range_expr;
 mod read;
@@ -51,6 +53,7 @@ mod statement;
 mod std_audit;
 mod std_csv;
 mod std_error_helpers;
+mod std_hash;
 mod std_id;
 mod std_json;
 mod std_matrix;

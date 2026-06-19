@@ -13,7 +13,7 @@ use crate::error::{RuntimeError, overflow, std_arity, temporal_overflow, type_er
 use crate::expr::eval_int;
 use crate::stdlib::{
     eval_bytes_arg, eval_date_arg, eval_decimal_arg, eval_duration_arg, eval_instant_arg,
-    eval_text, int_modulo, int_remainder,
+    eval_string_sequence, eval_text, int_modulo, int_remainder,
 };
 use crate::value::{Value, canonical_scalar_text, diagnostic_text_preview, saved_value_to_value};
 
@@ -31,6 +31,7 @@ pub(crate) fn eval_std(
         "text" => eval_text_std(op, args, span, env),
         "math" => eval_math_std(op, args, span, env),
         "bytes" => eval_bytes_std(op, args, span, env),
+        "hash" => crate::std_hash::eval_hash(op, args, span, env),
         "clock" => eval_clock_std(op, args, span, env),
         "json" => crate::std_json::eval_json(op, args, span, env),
         "csv" => crate::std_csv::eval_csv(op, args, span, env),
@@ -62,6 +63,8 @@ fn eval_text_std(
         "join" => eval_text_join(args, span, env),
         "toUpper" => eval_text_to_upper(args, span, env),
         "toLower" => eval_text_to_lower(args, span, env),
+        "urlEncode" => eval_text_url_encode(args, span, env),
+        "urlDecode" => eval_text_url_decode(args, span, env),
         other => Err(unsupported(&format!("std::text::{other}"), span)),
     }
 }
@@ -248,6 +251,32 @@ fn eval_text_to_lower(
             .map(simple_lowercase)
             .collect(),
     ))
+}
+
+fn eval_text_url_encode(
+    args: &[ExecArg],
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Value, RuntimeError> {
+    let [text] = args else {
+        return Err(std_arity("text", "urlEncode", span));
+    };
+    Ok(Value::Str(crate::percent::encode(&eval_text(
+        text, env, span,
+    )?)))
+}
+
+fn eval_text_url_decode(
+    args: &[ExecArg],
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Value, RuntimeError> {
+    let [text] = args else {
+        return Err(std_arity("text", "urlDecode", span));
+    };
+    crate::percent::decode(&eval_text(text, env, span)?)
+        .map(Value::Str)
+        .ok_or_else(|| type_error("urlDecode: malformed percent escape or invalid UTF-8", span))
 }
 
 fn simple_uppercase(value: char) -> char {
@@ -553,23 +582,6 @@ fn eval_text_index(
     usize::try_from(value).map_err(|_| type_error("text index must be non-negative", span))
 }
 
-fn eval_string_sequence(
-    arg: &ExecArg,
-    env: &mut Env<'_>,
-    span: SourceSpan,
-) -> Result<Vec<String>, RuntimeError> {
-    match crate::expr::eval_expr(&arg.value, env)? {
-        Value::Sequence(items) => items
-            .into_iter()
-            .map(|value| match value {
-                Value::Str(text) => Ok(text),
-                _ => Err(type_error("join parts must be strings", span)),
-            })
-            .collect(),
-        _ => Err(type_error("join parts must be a string sequence", span)),
-    }
-}
-
 fn round_decimal_half_even_to_integer(
     value: Decimal,
     span: SourceSpan,
@@ -627,6 +639,37 @@ fn eval_bytes_std(
             base64::decode(&text)
                 .map(Value::Bytes)
                 .ok_or_else(|| type_error("base64Decode: invalid base64 text", span))
+        }
+        "fromText" => {
+            let [value] = args else {
+                return Err(std_arity("bytes", op, span));
+            };
+            Ok(Value::Bytes(eval_text(value, env, span)?.into_bytes()))
+        }
+        "toText" => {
+            let [value] = args else {
+                return Err(std_arity("bytes", op, span));
+            };
+            String::from_utf8(eval_bytes_arg(value, env, span)?)
+                .map(Value::Str)
+                .map_err(|_| type_error("toText: bytes are not valid UTF-8", span))
+        }
+        "hexEncode" => {
+            let [value] = args else {
+                return Err(std_arity("bytes", op, span));
+            };
+            Ok(Value::Str(crate::hex::encode(&eval_bytes_arg(
+                value, env, span,
+            )?)))
+        }
+        "hexDecode" => {
+            let [value] = args else {
+                return Err(std_arity("bytes", op, span));
+            };
+            let text = eval_text(value, env, span)?;
+            crate::hex::decode(&text)
+                .map(Value::Bytes)
+                .ok_or_else(|| type_error("hexDecode: invalid hex text", span))
         }
         other => Err(unsupported(&format!("std::bytes::{other}"), span)),
     }

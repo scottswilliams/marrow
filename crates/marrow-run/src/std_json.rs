@@ -10,7 +10,7 @@ use std::result::Result as StdResult;
 use crate::collection::absent_read;
 use crate::env::Env;
 use crate::error::{RuntimeError, decimal_overflow, std_arity, type_error};
-use crate::stdlib::eval_text;
+use crate::stdlib::{eval_string_sequence, eval_text};
 use crate::value::Value;
 
 const MAX_BYTES: usize = 1_048_576;
@@ -53,6 +53,22 @@ pub(crate) fn eval_json(
             };
             let text = eval_text(text, env, span)?;
             Ok(Value::Bool(parse_json(&text).is_ok()))
+        }
+        "stringLit" => {
+            let [text] = args else {
+                return Err(std_arity("json", op, span));
+            };
+            Ok(Value::Str(string_literal(&eval_text(text, env, span)?)))
+        }
+        "stringArray" => {
+            let [items] = args else {
+                return Err(std_arity("json", op, span));
+            };
+            let literals: Vec<String> = eval_string_sequence(items, env, span)?
+                .iter()
+                .map(|item| string_literal(item))
+                .collect();
+            Ok(Value::Str(format!("[{}]", literals.join(","))))
         }
         _ => {
             let Some(scalar_op) = JsonScalarOp::from_name(op) else {
@@ -412,4 +428,10 @@ fn is_null(value: &str) -> bool {
 
 fn json_kind(value: &str) -> Option<u8> {
     value.bytes().find(|byte| !byte.is_ascii_whitespace())
+}
+
+/// Render `text` as a correctly escaped JSON string literal, including the
+/// surrounding quotes. The one owner of JSON string escaping across the runtime.
+pub(crate) fn string_literal(text: &str) -> String {
+    serde_json::Value::String(text.to_owned()).to_string()
 }

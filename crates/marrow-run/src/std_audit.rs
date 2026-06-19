@@ -3,6 +3,7 @@ use marrow_syntax::SourceSpan;
 
 use crate::env::Env;
 use crate::error::{RuntimeError, std_arity};
+use crate::std_json::string_literal;
 use crate::stdlib::eval_text;
 use crate::value::Value;
 
@@ -19,9 +20,9 @@ pub(crate) fn eval_audit(
             };
             Ok(Value::Str(format!(
                 "{{\"action\":{},\"actor\":{},\"subject\":{}}}",
-                json_string(&eval_text(action, env, span)?),
-                json_string(&eval_text(actor, env, span)?),
-                json_string(&eval_text(subject, env, span)?),
+                string_literal(&eval_text(action, env, span)?),
+                string_literal(&eval_text(actor, env, span)?),
+                string_literal(&eval_text(subject, env, span)?),
             )))
         }
         "change" => {
@@ -30,9 +31,9 @@ pub(crate) fn eval_audit(
             };
             Ok(Value::Str(format!(
                 "{{\"field\":{},\"before\":{},\"after\":{}}}",
-                json_string(&eval_text(field, env, span)?),
-                json_string(&eval_text(before, env, span)?),
-                json_string(&eval_text(after, env, span)?),
+                string_literal(&eval_text(field, env, span)?),
+                string_literal(&eval_text(before, env, span)?),
+                string_literal(&eval_text(after, env, span)?),
             )))
         }
         _ => Err(crate::error::unsupported(
@@ -40,8 +41,4 @@ pub(crate) fn eval_audit(
             span,
         )),
     }
-}
-
-fn json_string(text: &str) -> String {
-    serde_json::Value::String(text.to_owned()).to_string()
 }

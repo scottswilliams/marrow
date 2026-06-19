@@ -83,3 +83,22 @@ pub(crate) fn eval_text(
         _ => None,
     })
 }
+
+/// Evaluate a `sequence[string]` argument to its owned elements, faulting if the
+/// value is not a sequence of strings.
+pub(crate) fn eval_string_sequence(
+    arg: &ExecArg,
+    env: &mut Env<'_>,
+    span: SourceSpan,
+) -> Result<Vec<String>, RuntimeError> {
+    let Value::Sequence(items) = eval_expr(&arg.value, env)? else {
+        return Err(type_error("expected a string sequence", span));
+    };
+    items
+        .into_iter()
+        .map(|value| match value {
+            Value::Str(text) => Ok(text),
+            _ => Err(type_error("expected a string sequence", span)),
+        })
+        .collect()
+}

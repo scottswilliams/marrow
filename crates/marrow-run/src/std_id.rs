@@ -7,8 +7,6 @@ use crate::error::{RuntimeError, std_arity};
 use crate::stdlib::eval_text;
 use crate::value::Value;
 
-const LOWER_HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
-
 pub(crate) fn eval_id(
     op: &str,
     args: &[ExecArg],
@@ -55,22 +53,12 @@ fn stable_uuid(seed: &str) -> String {
     bytes.copy_from_slice(&digest[..16]);
     bytes[6] = (bytes[6] & 0x0f) | 0x40;
     bytes[8] = (bytes[8] & 0x3f) | 0x80;
-    let mut out = String::with_capacity(36);
-    push_lower_hex(&mut out, &bytes[0..4]);
-    out.push('-');
-    push_lower_hex(&mut out, &bytes[4..6]);
-    out.push('-');
-    push_lower_hex(&mut out, &bytes[6..8]);
-    out.push('-');
-    push_lower_hex(&mut out, &bytes[8..10]);
-    out.push('-');
-    push_lower_hex(&mut out, &bytes[10..16]);
-    out
-}
-
-fn push_lower_hex(out: &mut String, bytes: &[u8]) {
-    for &byte in bytes {
-        out.push(char::from(LOWER_HEX_DIGITS[usize::from(byte >> 4)]));
-        out.push(char::from(LOWER_HEX_DIGITS[usize::from(byte & 0x0f)]));
-    }
+    [
+        crate::hex::encode(&bytes[0..4]),
+        crate::hex::encode(&bytes[4..6]),
+        crate::hex::encode(&bytes[6..8]),
+        crate::hex::encode(&bytes[8..10]),
+        crate::hex::encode(&bytes[10..16]),
+    ]
+    .join("-")
 }
