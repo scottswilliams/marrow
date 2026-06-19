@@ -135,8 +135,9 @@ resource. `create` and `update` name fields from the `fields` projection; write-
 only generated inputs are deferred. `collection` names either the same backing
 root or one index declared on that backing store. Nested projections,
 keyed-child reads and writes, custom read selection, cursor profiles, JSON
-profiles, and generated clients are later boundary-profile work over the checked
-surface and read-operation facts; the proposed reads-first profile lives in
+profiles, collection serving, and generated clients are later boundary-profile
+work over the checked surface and read-operation facts. `marrow-run` owns the
+admitted transport-neutral singleton and point node-read executor described in
 [Surface ABI](../future/surface-abi.md).
 
 Surface declarations in configured test files use the same parser and

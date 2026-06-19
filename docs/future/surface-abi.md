@@ -2,11 +2,13 @@
 
 `SurfaceAbi` is the proposed application-read boundary over checked
 `surface` declarations. The checker derives transport-neutral
-`SurfaceReadOperationFact`s in v0.1; runtime serving, stable export, generated
-clients, and cursor codecs remain future profiles. This adds no `.mw` syntax
-and does not define HTTP routes, a local server, TypeScript names, JSON wire
-spelling, or a screen console. It consumes the checked facts produced by the
-language described in [Resources And Saved Data](../language/resources-and-storage.md#application-surfaces).
+`SurfaceReadOperationFact`s in v0.1, and `marrow-run` exposes an admitted
+transport-neutral executor for the backing `SingletonRead` and `PointRead`
+node-read shapes. Stable serialized export, generated clients, collection
+pages, cursor codecs, and writes remain future profiles. This adds no `.mw`
+syntax and does not define HTTP routes, a local server, TypeScript names, JSON
+wire spelling, or a screen console. It consumes the checked facts produced by
+the language described in [Resources And Saved Data](../language/resources-and-storage.md#application-surfaces).
 
 The purpose of this profile is to make Marrow's database-language model usable
 as an application boundary without adding a second query language or a raw saved
@@ -64,6 +66,16 @@ not routes or endpoints.
 | `PagedRootCollection` | `collection ^store as alias` on a keyed store. | Page parameters. | Bounded rows in full `Id(^store)` order. |
 | `PagedIndexCollection` | `collection ^store.index as alias` for a non-unique index. | Exact arguments for every non-identity index component plus page parameters. | Bounded rows under that exact index tuple, ordered by the trailing identity suffix. |
 | `UniqueIndexLookup` | `collection ^store.index as alias` for a unique index. | The complete unique-index tuple. | Zero or one projected row. |
+
+The transport-neutral `marrow-run` node-read API does not define JSON or route
+spelling. A point-read result carries `SurfaceReadIdentity`: the accepted store
+catalog ID plus the typed key tuple. Projected fields are ordered by the
+checked projection and carry the accepted resource-member catalog ID plus a
+`SurfaceValue`. Scalars stay scalar; enum values carry the accepted enum and
+member catalog IDs; identity values carry the accepted store catalog ID plus the
+typed key tuple. Field and enum-member render labels may be present for
+displays, but they are not semantic identifiers and do not participate in
+compatibility.
 
 Every collection row carries the typed `Id(^store)` and the declared projection.
 The identity is the database-language handle produced by root or index
@@ -217,8 +229,11 @@ The checker-side reserved codes are `check.surface_decl`,
 `check.surface_catalog_pending`, and `check.surface_operation`. They remain
 checker diagnostics, not runtime service faults.
 
-No `surface.*` or `check.surface_*` code in this section appears in v0.1 command
-output until its owning surface ships.
+`surface.request`, `surface.absent`, `surface.invalid_data`,
+`surface.abi_mismatch`, and `surface.store` are active in the transport-neutral
+`marrow-run` node-read API. They do not appear in v0.1 command output until a
+command or transport profile owns that surface. The cursor, limit, conflict,
+write, and integrity codes remain reserved.
 
 ## Deferred Profiles
 

@@ -237,14 +237,19 @@ source-level name collisions, but only source-root declarations resolve into
 application surface facts.
 
 Those facts are transport-neutral: HTTP routes, JSON spelling, TypeScript names,
-cursor tokens, materialization limits, and runtime serving behavior are boundary
-profiles layered later. A stable exported surface ABI cannot use proposal-only
-catalog IDs; until every referenced durable fact has an accepted catalog ID, the
-facts carry a source-only catalog status rather than a stable client contract. A
-pending catalog proposal for the checked source is reported as its own blocker,
-because accepted IDs alone do not prove the current store, member, or index shape
-is the committed shape. The proposed reads-first boundary profile is described
-in [Surface ABI](../future/surface-abi.md).
+cursor tokens, materialization limits, collection serving, and generated clients
+are boundary profiles layered later. `marrow-run` exposes the admitted
+transport-neutral node-read executor for backing singleton and point reads over
+stable surface facts. Its output uses accepted store and resource-member catalog
+IDs as semantic identity; enum and identity field values use accepted catalog
+IDs as well. Source names remain render labels. A stable exported surface ABI
+cannot use proposal-only catalog IDs; until every referenced durable fact has an
+accepted catalog ID, the facts carry a source-only catalog status rather than a
+stable client contract. A pending catalog proposal for the checked source is
+reported as its own blocker, because accepted IDs alone do not prove the current
+store, member, or index shape is the committed shape. The proposed reads-first
+boundary profile is described in
+[Surface ABI](../future/surface-abi.md).
 
 ## Indexes
 

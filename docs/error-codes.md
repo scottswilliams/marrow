@@ -105,10 +105,11 @@ code is stable and predictable:
 ## Code Reference
 
 The main family sections below list codes emitted by the current build. The
-Deferred Surfaces section reserves future codes that are not emitted yet. Codes
-are grouped by family, and each family description names where a developer first
-meets the code: a project `check`/`run`/`test`, a managed write inside a running
-program, the store, or a `data` maintenance command.
+Application Surfaces section marks which surface codes are active in the
+transport-neutral runtime API and which remain reserved. Codes are grouped by
+family, and each family description names where a developer first meets the
+code: a project `check`/`run`/`test`, a managed write inside a running program,
+the store, or a `data` maintenance command.
 
 ### `parse.*` — kind `parse`
 
@@ -440,7 +441,7 @@ example:
 run.uncaught_error: uncaught error [io.read]: std::io::readText failed for `/no/such/file`: No such file or directory (os error 2)
 ```
 
-## Deferred Surfaces
+## Application Surfaces
 
 `marrow data diff`/`data load` are deferred — see
 [future/data-tools.md](future/data-tools.md). Restore replace is part of the
@@ -448,11 +449,13 @@ current CLI surface; restore merge/repair and cross-engine restore remain
 deferred. No active command-output code family appears for a deferred surface
 until that surface ships.
 
-The `surface.*` family is reserved for the proposed application surface runtime
-and its [future Surface ABI](future/surface-abi.md). These codes do not appear
-in v0.1 command output until that surface ships.
+The `surface.*` family belongs to the application surface runtime and its
+[Surface ABI](future/surface-abi.md). The transport-neutral `marrow-run`
+singleton and point node-read API can emit the active read codes below. They do
+not appear in v0.1 command output until a command or transport profile owns
+that surface.
 
-| Code | Reserved meaning |
+| Code | Meaning |
 |---|---|
 | `surface.request` | A request parameter, identity, index argument, direction/order, or limit cannot decode to the checked surface operation input shape; cursor tokens use `surface.cursor`. Generated-write body decode is future work. |
 | `surface.absent` | A requested record identity is well-formed but no record node exists, or a requested singleton node is absent. |

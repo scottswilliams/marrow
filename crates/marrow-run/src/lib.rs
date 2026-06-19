@@ -61,6 +61,7 @@ mod std_pure;
 mod std_random;
 mod stdlib;
 mod store;
+mod surface;
 mod transaction;
 mod value;
 mod write_dispatch;
@@ -84,6 +85,12 @@ pub use host::{
 pub use project_session::{
     ProjectInvokeError, ProjectMode, ProjectOpen, ProjectSession, ProjectSessionError,
     ProjectSessionNotice, ProjectTestCase, SessionEntry, StoreStamp,
+};
+pub use surface::{
+    SURFACE_ABI_MISMATCH, SURFACE_ABSENT, SURFACE_INVALID_DATA, SURFACE_REQUEST, SURFACE_STORE,
+    SurfaceEnumValue, SurfaceNodeRead, SurfaceNodeReadShape, SurfaceReadError, SurfaceReadField,
+    SurfaceReadIdentity, SurfaceReadInput, SurfaceReadRecord, SurfaceValue, read_surface_point,
+    read_surface_singleton,
 };
 pub use value::{IdentityValue, RunOutput, RunOutputSink, Value};
 pub use write_plan::{WriteDataSegment, WriteOp, WriteTarget};
