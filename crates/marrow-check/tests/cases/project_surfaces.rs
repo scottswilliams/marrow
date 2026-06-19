@@ -570,6 +570,13 @@ surface Books from ^books
             SurfaceReadOperationKind::PagedRootCollection { store },
         ]
     );
+    assert!(
+        surface
+            .read_operations
+            .iter()
+            .all(|operation| operation.operation_tag.is_none()),
+        "source-only surface read operations must not claim stable cursor tags"
+    );
 }
 
 #[test]
@@ -925,6 +932,13 @@ surface Books from ^books
         panic!("expected one surface, got {:#?}", program.facts.surfaces());
     };
     assert_eq!(surface.catalog_status, SurfaceCatalogStatus::Stable);
+    assert!(
+        surface.read_operations.iter().all(|operation| operation
+            .operation_tag
+            .as_deref()
+            .is_some_and(|tag| tag.starts_with("sha256:"))),
+        "stable surface read operations must carry checked operation tags"
+    );
 }
 
 #[test]

@@ -4,11 +4,12 @@
 `surface` declarations. The checker derives transport-neutral
 `SurfaceReadOperationFact`s in v0.1, and `marrow-run` exposes an admitted
 transport-neutral executor for the backing `SingletonRead` and `PointRead`
-node-read shapes. Stable serialized export, generated clients, collection
-pages, cursor codecs, and writes remain future profiles. This adds no `.mw`
-syntax and does not define HTTP routes, a local server, TypeScript names, JSON
-wire spelling, or a screen console. It consumes the checked facts produced by
-the language described in [Resources And Saved Data](../language/resources-and-storage.md#application-surfaces).
+node-read shapes plus root/index collection reads. Stable serialized export,
+generated clients, opaque cursor token codecs, and writes remain future
+profiles. This adds no `.mw` syntax and does not define HTTP routes, a local
+server, TypeScript names, JSON wire spelling, or a screen console. It consumes
+the checked facts produced by the language described in
+[Resources And Saved Data](../language/resources-and-storage.md#application-surfaces).
 
 The purpose of this profile is to make Marrow's database-language model usable
 as an application boundary without adding a second query language or a raw saved
@@ -23,8 +24,9 @@ raw saved paths, or inspect human labels for semantic identity.
 
 The checked fact layer records each read operation with checker-local ids, a
 read kind, a `FullRecord` backing-resource footprint, and the ordered public
-projection. Those facts are construction handles for tooling and future
-profiles, not a serialized stable ABI by themselves.
+projection. When every catalog identity needed by the operation is accepted, it
+also records an operation equality tag. Those facts are construction handles for
+tooling and future profiles, not a serialized stable ABI by themselves.
 
 A checked surface may be `SourceOnly` or `Stable`:
 
@@ -51,8 +53,9 @@ contract; this profile does not promise label stability.
 No new store or catalog digest family is introduced. The surface compatibility
 tag is a deterministic boundary-profile slice over accepted catalog facts and
 canonical operation descriptors. An operation equality tag is the deterministic
-hash of one operation's catalog-id-bound ABI slice and the profile version.
-Catalog epoch is too coarse to fence a surface operation or cursor by itself.
+hash of one operation's catalog-id-bound ABI slice and the profile version,
+computed by the checker and consumed by runtime cursors. Catalog epoch is too
+coarse to fence a surface operation or cursor by itself.
 
 ## Read Shapes
 
@@ -67,13 +70,13 @@ not routes or endpoints.
 | `PagedIndexCollection` | `collection ^store.index as alias` for a non-unique index. | Exact arguments for every non-identity index component plus page parameters. | Bounded rows under that exact index tuple, ordered by the trailing identity suffix. |
 | `UniqueIndexLookup` | `collection ^store.index as alias` for a unique index. | The complete unique-index tuple. | Zero or one projected row. |
 
-The transport-neutral `marrow-run` node-read API does not define JSON or route
-spelling. A point-read result carries `SurfaceReadIdentity`: the accepted store
-catalog ID plus the typed key tuple. Projected fields are ordered by the
-checked projection and carry the accepted resource-member catalog ID plus a
-`SurfaceValue`. Scalars stay scalar; enum values carry the accepted enum and
-member catalog IDs; identity values carry the accepted store catalog ID plus the
-typed key tuple. Field and enum-member render labels may be present for
+The transport-neutral `marrow-run` read API does not define JSON or route
+spelling. A point-read or collection-row result carries `SurfaceReadIdentity`:
+the accepted store catalog ID plus the typed key tuple. Projected fields are
+ordered by the checked projection and carry the accepted resource-member catalog
+ID plus a `SurfaceValue`. Scalars stay scalar; enum values carry the accepted
+enum and member catalog IDs; identity values carry the accepted store catalog ID
+plus the typed key tuple. Field and enum-member render labels may be present for
 displays, but they are not semantic identifiers and do not participate in
 compatibility.
 
@@ -83,6 +86,8 @@ traversal; it is not hidden whole-record materialization.
 
 Non-unique index collection pages require exact arguments for every
 non-identity index component, including identity-typed reference components.
+The declared non-unique index must end with the full backing store identity in
+store declaration order, matching the ordinary saved-index schema invariant.
 They never enumerate arbitrary non-identity components, apply non-key ordering,
 or hide a scan behind a filter. Unique indexes are maybe-present lookups in this
 profile and never produce paged collection operations.
@@ -111,8 +116,9 @@ classifiers outside the checker/runtime facts.
 
 `surface.request` is the request-input failure code for non-cursor read
 parameters: malformed identity keys, index arguments, direction/order, or
-limits. `surface.cursor` is for cursor token codec failures and for well-formed
-cursors whose normalized parameters do not match the current request.
+limits. `surface.cursor` is for typed cursor-boundary failures, future cursor
+token codec failures, and well-formed cursors whose normalized parameters do
+not match the current request.
 
 Generated write object-body decode is outside this read profile.
 
@@ -193,9 +199,14 @@ Continuation semantics are fact-owned:
 
 - typed boundary;
 - normalized request parameters;
-- direction and order;
+- fixed forward key order;
 - operation equality tag;
 - store and profile lineage.
+
+The active transport-neutral runtime cursor uses typed Marrow keys, not an
+encoded token. Root pages carry the last returned `Id(^store)` key tuple.
+Non-unique index pages carry the exact index arguments plus the last returned
+identity suffix. Unique lookups are zero-or-one reads and have no cursor.
 
 Token or display encoding is profile-owned. A remote or generated-client profile
 may render an opaque token. A future console profile may render the typed
@@ -213,7 +224,7 @@ store keys.
 ## Error Codes
 
 The canonical code definitions live in [Error Codes](../error-codes.md). This
-profile maps its future read boundary to the reserved codes there:
+profile maps its read boundary to the codes there:
 
 - request parameter failures: `surface.request`;
 - cursor codec or request-binding failures: `surface.cursor`;
@@ -229,11 +240,12 @@ The checker-side reserved codes are `check.surface_decl`,
 `check.surface_catalog_pending`, and `check.surface_operation`. They remain
 checker diagnostics, not runtime service faults.
 
-`surface.request`, `surface.absent`, `surface.invalid_data`,
+`surface.request`, `surface.absent`, `surface.cursor`,
+`surface.stale_cursor`, `surface.invalid_data`, `surface.limit`,
 `surface.abi_mismatch`, and `surface.store` are active in the transport-neutral
-`marrow-run` node-read API. They do not appear in v0.1 command output until a
-command or transport profile owns that surface. The cursor, limit, conflict,
-write, and integrity codes remain reserved.
+`marrow-run` read API. They do not appear in v0.1 command output until a
+command or transport profile owns that surface. The conflict, write, and
+integrity codes remain reserved.
 
 ## Deferred Profiles
 

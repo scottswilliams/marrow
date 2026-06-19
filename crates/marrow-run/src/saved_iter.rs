@@ -83,27 +83,110 @@ pub(super) fn walk_keyed_children(
     env: &mut Env<'_>,
     visit: &mut impl FnMut(Vec<SavedKey>, &mut Env<'_>) -> Result<ControlFlow<Flow>, RuntimeError>,
 ) -> Result<Flow, RuntimeError> {
-    let mut child = cursor.first(env, query_prefix)?;
+    let mut first = |env: &mut Env<'_>, prefix: &[SavedKey]| cursor.first(env, prefix);
+    let mut next = |env: &mut Env<'_>, prefix: &[SavedKey], anchor: &SavedKey| {
+        cursor.next(env, prefix, anchor)
+    };
+    match walk_keyed_children_after(
+        env,
+        KeyedChildrenWalk {
+            depth,
+            query_prefix,
+            identity_prefix,
+            after_identity: None,
+        },
+        &mut first,
+        &mut next,
+        visit,
+    )? {
+        ControlFlow::Continue(()) => Ok(Flow::Normal),
+        ControlFlow::Break(flow) => Ok(flow),
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct KeyedChildrenWalk<'a> {
+    pub(crate) depth: usize,
+    pub(crate) query_prefix: &'a [SavedKey],
+    pub(crate) identity_prefix: &'a [SavedKey],
+    pub(crate) after_identity: Option<&'a [SavedKey]>,
+}
+
+/// Walk keyed children in forward order, optionally resuming strictly after a
+/// previously yielded identity. This is the shared depth-bounded traversal core
+/// for language loops, counts, and transport-neutral surface pages.
+pub(crate) fn walk_keyed_children_after<C, E, B>(
+    context: &mut C,
+    walk: KeyedChildrenWalk<'_>,
+    first: &mut impl FnMut(&mut C, &[SavedKey]) -> Result<Option<SavedKey>, E>,
+    next: &mut impl FnMut(&mut C, &[SavedKey], &SavedKey) -> Result<Option<SavedKey>, E>,
+    visit: &mut impl FnMut(Vec<SavedKey>, &mut C) -> Result<ControlFlow<B>, E>,
+) -> Result<ControlFlow<B>, E> {
+    let mut child = first_walk_child(
+        context,
+        walk.query_prefix,
+        walk.identity_prefix,
+        walk.after_identity,
+        first,
+    )?;
+    let mut child_after = walk
+        .after_identity
+        .filter(|after| after.starts_with(walk.identity_prefix));
     while let Some(key) = child {
         let anchor = key.clone();
-        let mut next_query = query_prefix.to_vec();
+        let mut next_query = walk.query_prefix.to_vec();
         next_query.push(key.clone());
-        let mut next_identity = identity_prefix.to_vec();
+        let mut next_identity = walk.identity_prefix.to_vec();
         next_identity.push(key);
-        if depth <= 1 {
-            match visit(next_identity, env)? {
-                ControlFlow::Continue(()) => {}
-                ControlFlow::Break(flow) => return Ok(flow),
+        if walk.depth <= 1 {
+            // SavedKey ordering mirrors the store's order-preserving key encoding,
+            // so this typed comparison is the same boundary as the physical scan.
+            if walk
+                .after_identity
+                .is_none_or(|after| next_identity.as_slice() > after)
+            {
+                match visit(next_identity, context)? {
+                    ControlFlow::Continue(()) => {}
+                    ControlFlow::Break(value) => return Ok(ControlFlow::Break(value)),
+                }
             }
         } else {
-            match walk_keyed_children(cursor, depth - 1, &next_query, &next_identity, env, visit)? {
-                Flow::Normal => {}
-                flow => return Ok(flow),
+            match walk_keyed_children_after(
+                context,
+                KeyedChildrenWalk {
+                    depth: walk.depth - 1,
+                    query_prefix: &next_query,
+                    identity_prefix: &next_identity,
+                    after_identity: child_after,
+                },
+                first,
+                next,
+                visit,
+            )? {
+                ControlFlow::Continue(()) => {}
+                ControlFlow::Break(value) => return Ok(ControlFlow::Break(value)),
             }
         }
-        child = cursor.next(env, query_prefix, &anchor)?;
+        child_after = None;
+        child = next(context, walk.query_prefix, &anchor)?;
     }
-    Ok(Flow::Normal)
+    Ok(ControlFlow::Continue(()))
+}
+
+fn first_walk_child<C, E>(
+    context: &mut C,
+    query_prefix: &[SavedKey],
+    identity_prefix: &[SavedKey],
+    after_identity: Option<&[SavedKey]>,
+    first: &mut impl FnMut(&mut C, &[SavedKey]) -> Result<Option<SavedKey>, E>,
+) -> Result<Option<SavedKey>, E> {
+    if let Some(after) = after_identity
+        && after.starts_with(identity_prefix)
+        && let Some(anchor) = after.get(identity_prefix.len()).cloned()
+    {
+        return Ok(Some(anchor));
+    }
+    first(context, query_prefix)
 }
 
 /// Sum the records reachable by walking `depth` keyed levels under `query_prefix`,

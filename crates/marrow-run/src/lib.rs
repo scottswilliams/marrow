@@ -87,9 +87,13 @@ pub use project_session::{
     ProjectSessionNotice, ProjectTestCase, SessionEntry, StoreStamp,
 };
 pub use surface::{
-    SURFACE_ABI_MISMATCH, SURFACE_ABSENT, SURFACE_INVALID_DATA, SURFACE_REQUEST, SURFACE_STORE,
-    SurfaceEnumValue, SurfaceNodeRead, SurfaceNodeReadShape, SurfaceReadError, SurfaceReadField,
-    SurfaceReadIdentity, SurfaceReadInput, SurfaceReadRecord, SurfaceValue, read_surface_point,
+    SURFACE_ABI_MISMATCH, SURFACE_ABSENT, SURFACE_CURSOR, SURFACE_INVALID_DATA, SURFACE_LIMIT,
+    SURFACE_MAX_MATERIALIZED_BYTES, SURFACE_MAX_PAGE_LIMIT, SURFACE_MAX_VALUE_BYTES,
+    SURFACE_REQUEST, SURFACE_STALE_CURSOR, SURFACE_STORE, SurfaceCollectionPage,
+    SurfaceCollectionPageRequest, SurfaceCollectionRead, SurfaceCollectionReadShape,
+    SurfaceEnumValue, SurfaceNodeRead, SurfaceNodeReadShape, SurfacePageBoundary,
+    SurfacePageCursor, SurfaceReadError, SurfaceReadField, SurfaceReadIdentity, SurfaceReadInput,
+    SurfaceReadOperationRef, SurfaceReadRecord, SurfaceValue, read_surface_point,
     read_surface_singleton,
 };
 pub use value::{IdentityValue, RunOutput, RunOutputSink, Value};

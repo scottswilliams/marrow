@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
+use marrow_store::cell::CatalogId;
 use marrow_syntax::{
     Declaration, ParsedSource, SourceSpan, SurfaceDecl, SurfaceItem, SurfaceTarget,
 };
@@ -11,10 +12,10 @@ use crate::diagnostics::{
     SurfaceFieldProblem, SurfaceTargetDiagnostic,
 };
 use crate::facts::{
-    ModuleId, ResourceMemberFact, ResourceMemberId, ResourceMemberKind, StoreFact, StoreIndexId,
-    StoreIndexKeyFact, StoreIndexKeySource, StoredValueMeaning, SurfaceCatalogBlocker,
-    SurfaceCatalogStatus, SurfaceCollectionFact, SurfaceCollectionTarget, SurfaceFact,
-    SurfaceFieldFact, SurfaceId, SurfaceReadFootprint, SurfaceReadOperationFact,
+    ModuleId, ResourceMemberFact, ResourceMemberId, ResourceMemberKind, StoreFact, StoreIndexFact,
+    StoreIndexId, StoreIndexKeyFact, StoreIndexKeySource, StoredValueMeaning,
+    SurfaceCatalogBlocker, SurfaceCatalogStatus, SurfaceCollectionFact, SurfaceCollectionTarget,
+    SurfaceFact, SurfaceFieldFact, SurfaceId, SurfaceReadFootprint, SurfaceReadOperationFact,
     SurfaceReadOperationKind,
 };
 use crate::{CheckDiagnostic, CheckedProgram, DiagnosticPayload};
@@ -232,23 +233,280 @@ fn read_operations(
         resource: store.resource,
     };
     let mut operations = Vec::with_capacity(collections.len() + 1);
-    operations.push(SurfaceReadOperationFact {
-        kind: backing_read_operation_kind(store),
+    operations.push(surface_read_operation_fact(
+        program,
+        store,
+        backing_read_operation_kind(store),
         footprint,
-        projection: projection.clone(),
-        span: surface_span,
-    });
-    operations.extend(
-        collections
-            .iter()
-            .map(|collection| SurfaceReadOperationFact {
-                kind: collection_read_operation_kind(program, collection),
-                footprint,
-                projection: projection.clone(),
-                span: collection.span,
-            }),
-    );
+        projection.clone(),
+        surface_span,
+    ));
+    operations.extend(collections.iter().map(|collection| {
+        surface_read_operation_fact(
+            program,
+            store,
+            collection_read_operation_kind(program, collection),
+            footprint,
+            projection.clone(),
+            collection.span,
+        )
+    }));
     operations
+}
+
+fn surface_read_operation_fact(
+    program: &CheckedProgram,
+    store: &StoreFact,
+    kind: SurfaceReadOperationKind,
+    footprint: SurfaceReadFootprint,
+    projection: Vec<ResourceMemberId>,
+    span: SourceSpan,
+) -> SurfaceReadOperationFact {
+    SurfaceReadOperationFact {
+        kind,
+        footprint,
+        operation_tag: surface_read_operation_tag(program, store, kind, footprint, &projection),
+        projection,
+        span,
+    }
+}
+
+const SURFACE_READ_OPERATION_TAG_VERSION: &str = "surface.read.v1";
+
+fn surface_read_operation_tag(
+    program: &CheckedProgram,
+    store: &StoreFact,
+    kind: SurfaceReadOperationKind,
+    footprint: SurfaceReadFootprint,
+    projection: &[ResourceMemberId],
+) -> Option<String> {
+    let mut payload = String::new();
+    push_tag_part(&mut payload, "version", SURFACE_READ_OPERATION_TAG_VERSION);
+    push_tag_part(
+        &mut payload,
+        "store",
+        accepted_catalog_id(program, store.catalog_id.as_deref())?,
+    );
+    push_identity_key_tag_parts(program, &mut payload, store)?;
+    match footprint {
+        SurfaceReadFootprint::FullRecord { resource } => {
+            let resource = program.facts.resource(resource);
+            push_tag_part(
+                &mut payload,
+                "footprint.resource",
+                accepted_catalog_id(program, resource.catalog_id.as_deref())?,
+            );
+        }
+    }
+    push_tag_part(
+        &mut payload,
+        "projection.len",
+        &projection.len().to_string(),
+    );
+    for member_id in projection {
+        let member = program
+            .facts
+            .resource_members()
+            .iter()
+            .find(|member| member.id == *member_id)?;
+        push_tag_part(
+            &mut payload,
+            "projection.member",
+            accepted_catalog_id(program, member.catalog_id.as_deref())?,
+        );
+        push_projection_member_tag_parts(program, &mut payload, member)?;
+    }
+    match kind {
+        SurfaceReadOperationKind::SingletonRead { .. } => {
+            push_tag_part(&mut payload, "kind", "singleton");
+        }
+        SurfaceReadOperationKind::PointRead { .. } => {
+            push_tag_part(&mut payload, "kind", "point");
+        }
+        SurfaceReadOperationKind::PagedRootCollection { .. } => {
+            push_tag_part(&mut payload, "kind", "paged-root");
+        }
+        SurfaceReadOperationKind::PagedIndexCollection {
+            index,
+            exact_key_count,
+            identity_key_count,
+        } => {
+            push_tag_part(&mut payload, "kind", "paged-index");
+            push_index_tag_parts(program, &mut payload, program.facts.store_index(index))?;
+            push_tag_part(&mut payload, "exact", &exact_key_count.to_string());
+            push_tag_part(&mut payload, "identity", &identity_key_count.to_string());
+        }
+        SurfaceReadOperationKind::UniqueIndexLookup { index, key_count } => {
+            push_tag_part(&mut payload, "kind", "unique-index");
+            push_index_tag_parts(program, &mut payload, program.facts.store_index(index))?;
+            push_tag_part(&mut payload, "keys", &key_count.to_string());
+        }
+    }
+    Some(marrow_project::sha256_digest(payload.as_bytes()))
+}
+
+fn push_index_tag_parts(
+    program: &CheckedProgram,
+    payload: &mut String,
+    index: &StoreIndexFact,
+) -> Option<()> {
+    push_tag_part(
+        payload,
+        "index",
+        accepted_catalog_id(program, index.catalog_id.as_deref())?,
+    );
+    push_tag_part(
+        payload,
+        "index.unique",
+        if index.unique { "true" } else { "false" },
+    );
+    push_tag_part(payload, "index.keys.len", &index.keys.len().to_string());
+    for key in &index.keys {
+        push_meaning_tag_parts(program, payload, "index.key", &key.value_meaning)?;
+    }
+    Some(())
+}
+
+fn push_identity_key_tag_parts(
+    program: &CheckedProgram,
+    payload: &mut String,
+    store: &StoreFact,
+) -> Option<()> {
+    push_tag_part(
+        payload,
+        "identity.keys.len",
+        &store.identity_keys.len().to_string(),
+    );
+    for key in &store.identity_keys {
+        push_meaning_tag_parts(
+            program,
+            payload,
+            "identity.key",
+            key.value_meaning.as_ref()?,
+        )?;
+    }
+    Some(())
+}
+
+fn push_projection_member_tag_parts(
+    program: &CheckedProgram,
+    payload: &mut String,
+    member: &ResourceMemberFact,
+) -> Option<()> {
+    push_tag_part(
+        payload,
+        "projection.member.kind",
+        match member.kind {
+            ResourceMemberKind::Field => "field",
+            ResourceMemberKind::Group => "group",
+        },
+    );
+    push_tag_part(
+        payload,
+        "projection.member.key_count",
+        &member.key_count.to_string(),
+    );
+    push_tag_part(
+        payload,
+        "projection.member.required",
+        match member.plain_field_required? {
+            true => "true",
+            false => "false",
+        },
+    );
+    push_meaning_tag_parts(
+        program,
+        payload,
+        "projection.member.value",
+        member.value_meaning.as_ref()?,
+    )
+}
+
+fn push_meaning_tag_parts(
+    program: &CheckedProgram,
+    payload: &mut String,
+    prefix: &str,
+    meaning: &StoredValueMeaning,
+) -> Option<()> {
+    match meaning {
+        StoredValueMeaning::Scalar(scalar) => {
+            push_prefixed_tag_part(payload, prefix, "scalar", scalar.name());
+        }
+        StoredValueMeaning::Enum { enum_id, members } => {
+            let enum_fact = program.facts.enum_(*enum_id)?;
+            push_prefixed_tag_part(
+                payload,
+                prefix,
+                "enum",
+                accepted_catalog_id(program, enum_fact.catalog_id.as_deref())?,
+            );
+            push_prefixed_tag_part(
+                payload,
+                prefix,
+                "enum.members.len",
+                &members.len().to_string(),
+            );
+            for member_id in members {
+                let member = program
+                    .facts
+                    .enum_members()
+                    .iter()
+                    .find(|member| member.id == *member_id)?;
+                push_prefixed_tag_part(
+                    payload,
+                    prefix,
+                    "enum.member",
+                    accepted_catalog_id(program, member.catalog_id.as_deref())?,
+                );
+            }
+        }
+        StoredValueMeaning::Identity {
+            store_catalog_id,
+            arity,
+            key_scalars,
+            ..
+        } => {
+            push_prefixed_tag_part(
+                payload,
+                prefix,
+                "identity.store",
+                accepted_catalog_id(program, store_catalog_id.as_deref())?,
+            );
+            push_prefixed_tag_part(payload, prefix, "identity.arity", &arity.to_string());
+            for scalar in key_scalars {
+                push_prefixed_tag_part(payload, prefix, "identity.scalar", scalar.name());
+            }
+        }
+    }
+    Some(())
+}
+
+fn accepted_catalog_id<'a>(
+    program: &CheckedProgram,
+    catalog_id: Option<&'a str>,
+) -> Option<&'a str> {
+    let catalog_id = catalog_id?;
+    CatalogId::new(catalog_id.to_string()).ok()?;
+    program
+        .catalog
+        .accepted_entries
+        .iter()
+        .any(|entry| entry.stable_id == catalog_id)
+        .then_some(catalog_id)?;
+    Some(catalog_id)
+}
+
+fn push_tag_part(payload: &mut String, label: &str, value: &str) {
+    payload.push_str(label);
+    payload.push('\0');
+    payload.push_str(&value.len().to_string());
+    payload.push('\0');
+    payload.push_str(value);
+    payload.push('\0');
+}
+
+fn push_prefixed_tag_part(payload: &mut String, prefix: &str, label: &str, value: &str) {
+    push_tag_part(payload, &format!("{prefix}.{label}"), value);
 }
 
 fn backing_read_operation_kind(store: &StoreFact) -> SurfaceReadOperationKind {
@@ -275,7 +533,11 @@ fn collection_read_operation_kind(
                     key_count: fact.keys.len(),
                 }
             } else {
-                let identity_key_count = trailing_identity_key_count(&fact.keys);
+                let store = program.facts.store(fact.store);
+                // Schema validation already rejects non-unique indexes that do
+                // not end with the complete store identity; this keeps the fact
+                // derivation fail-closed if an invalid fact reaches this layer.
+                let identity_key_count = full_identity_suffix_count(store, fact);
                 SurfaceReadOperationKind::PagedIndexCollection {
                     index,
                     exact_key_count: fact.keys.len().saturating_sub(identity_key_count),
@@ -286,11 +548,30 @@ fn collection_read_operation_kind(
     }
 }
 
-fn trailing_identity_key_count(keys: &[StoreIndexKeyFact]) -> usize {
-    keys.iter()
-        .rev()
-        .take_while(|key| key.source == StoreIndexKeySource::IdentityKey)
-        .count()
+fn full_identity_suffix_count(store: &StoreFact, index: &StoreIndexFact) -> usize {
+    let identity_len = store.identity_keys.len();
+    if index.keys.len() < identity_len {
+        return 0;
+    }
+    let Some(suffix) = index
+        .keys
+        .get(index.keys.len().saturating_sub(identity_len)..)
+    else {
+        return 0;
+    };
+    let matches_store_identity =
+        suffix
+            .iter()
+            .zip(&store.identity_keys)
+            .all(|(index_key, identity_key)| {
+                index_key.source == StoreIndexKeySource::IdentityKey
+                    && index_key.name == identity_key.name
+            });
+    if matches_store_identity {
+        identity_len
+    } else {
+        0
+    }
 }
 
 fn surface_declarations(parsed: &ParsedSource) -> impl Iterator<Item = &SurfaceDecl> {

@@ -11,9 +11,10 @@ One invariant organizes the whole subsystem: **durable saved data is never mater
 ## Parts
 
 - **Point reads** (`durable_read.rs`): one scalar/optional field, one layer entry, one exact unique lookup, or whole-resource materialization of members.
-- **Surface node reads** (`surface.rs`): admitted singleton and point reads over
-  stable `SurfaceFact`s; each read validates the full backing record footprint
-  required by the surface profile, then returns only the checked projection.
+- **Surface reads** (`surface.rs`): admitted singleton, point, collection-page,
+  and unique-index reads over stable `SurfaceFact`s; each returned record
+  validates the full backing footprint required by the surface profile, then
+  returns only the checked projection.
 - **Address resolution** (`read.rs`): classify an iterable path into Root / Index branch / ChildLayer; build node-backed record cursors plus index/data child cursors; count and probe presence without materializing.
 - **Loop driver** (`saved_iter.rs` + four scan modules): the `ChildCursor` trait, the depth-bounded `walk_keyed_children`/`count_keyed_children` tree walk, the `LoopShape` row contract, and `SavedLoopSpec`/`SavedLoopPlan` that pick one of four scans (Root / Index / UniqueIndex / ChildLayer).
 - **Builtins** (`collection.rs` + `collection/`): `keys`/`values`/`entries`/`reversed` dispatch, `Direction`, local materialization, and `append`/`nextId`.
@@ -25,7 +26,7 @@ One invariant organizes the whole subsystem: **durable saved data is never mater
 |---|---|
 | `crates/marrow-run/src/read.rs` | Layer/index address resolution (`iterable_layer`, `iterable_index_branch`), record/index/data child-cursor primitives, identity/branch counting and presence, local field reads. |
 | `crates/marrow-run/src/durable_read.rs` | Durable point reads: scalar field, optional field, layer-entry decode, exact unique-index lookup, whole-resource member materialization. |
-| `crates/marrow-run/src/surface.rs` | Transport-neutral surface node reads: store/catalog admission, fact-compiled projection plans, `surface.*` error mapping, singleton/point execution. |
+| `crates/marrow-run/src/surface.rs` | Transport-neutral surface reads: store/catalog admission, fact-compiled projection plans, `surface.*` error mapping, singleton/point execution, collection pages, typed cursors, and unique-index lookups. |
 | `crates/marrow-run/src/saved_iter.rs` | Streaming loop driver: `ChildCursor`, `walk_keyed_children`/`count_keyed_children`, `LoopShape`/`shape_row`, `SavedLoopSpec`/`SavedLoopPlan`. |
 | `crates/marrow-run/src/saved_iter/root.rs` | `RootScan` + `RecordCursor`: streams every record identity under a keyed root, reading the whole resource per shape. |
 | `crates/marrow-run/src/saved_iter/index.rs` | `IndexScan` + `IndexCursor`: streams a non-unique index branch, exact-tuple paged scan (depth 0) or depth-bounded walk; `stream_exact_index_tuple`. |

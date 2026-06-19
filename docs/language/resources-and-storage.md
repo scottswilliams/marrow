@@ -237,12 +237,12 @@ source-level name collisions, but only source-root declarations resolve into
 application surface facts.
 
 Those facts are transport-neutral: HTTP routes, JSON spelling, TypeScript names,
-cursor tokens, materialization limits, collection serving, and generated clients
-are boundary profiles layered later. `marrow-run` exposes the admitted
-transport-neutral node-read executor for backing singleton and point reads over
-stable surface facts. Its output uses accepted store and resource-member catalog
-IDs as semantic identity; enum and identity field values use accepted catalog
-IDs as well. Source names remain render labels. A stable exported surface ABI
+cursor-token codecs, generated clients, and write bodies are boundary profiles
+layered later. `marrow-run` exposes admitted transport-neutral node and
+collection read executors over stable surface facts. Its output uses accepted
+store and resource-member catalog IDs as semantic identity; enum and identity
+field values use accepted catalog IDs as well. Source names remain render
+labels. A stable exported surface ABI
 cannot use proposal-only catalog IDs; until every referenced durable fact has an
 accepted catalog ID, the facts carry a source-only catalog status rather than a
 stable client contract. A pending catalog proposal for the checked source is

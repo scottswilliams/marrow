@@ -451,16 +451,17 @@ until that surface ships.
 
 The `surface.*` family belongs to the application surface runtime and its
 [Surface ABI](future/surface-abi.md). The transport-neutral `marrow-run`
-singleton and point node-read API can emit the active read codes below. They do
+node-read and collection-read API can emit the active read codes below. They do
 not appear in v0.1 command output until a command or transport profile owns
-that surface.
+that surface. Cursor strings remain future transport work; the active runtime
+cursor is a typed continuation value.
 
 | Code | Meaning |
 |---|---|
 | `surface.request` | A request parameter, identity, index argument, direction/order, or limit cannot decode to the checked surface operation input shape; cursor tokens use `surface.cursor`. Generated-write body decode is future work. |
 | `surface.absent` | A requested record identity is well-formed but no record node exists, or a requested singleton node is absent. |
-| `surface.cursor` | A cursor token is malformed, does not decode under the cursor codec, or is well-formed but bound to normalized parameters that do not match the current request. |
-| `surface.stale_cursor` | A cursor token is well-formed, but its operation equality tag, profile tag, or store lineage no longer matches the active surface operation facts. |
+| `surface.cursor` | A typed cursor boundary or future cursor token is malformed, does not decode under its codec, or is well-formed but bound to normalized parameters that do not match the current request. |
+| `surface.stale_cursor` | A typed cursor boundary or future cursor token is well-formed, but its operation equality tag, profile tag, or store lineage no longer matches the active surface operation facts. |
 | `surface.abi_mismatch` | A generated client or transport request targets a surface ABI or profile slice that is no longer active. |
 | `surface.invalid_data` | Backing saved data reached by a surface read cannot be decoded under the checked footprint, including required backing-field absence, malformed materialized values, corrupt traversed identity/key bytes, or an index row whose identity points at no record. Public envelopes are sanitized service faults; repair details stay in operator tooling. |
 | `surface.limit` | A well-formed surface operation would exceed its materialization, row, or decoded-byte budget. |

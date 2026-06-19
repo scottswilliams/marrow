@@ -1339,6 +1339,7 @@ pub struct SurfaceReadOperationFact {
     pub kind: SurfaceReadOperationKind,
     pub footprint: SurfaceReadFootprint,
     pub projection: Vec<ResourceMemberId>,
+    pub operation_tag: Option<String>,
     pub span: SourceSpan,
 }
 

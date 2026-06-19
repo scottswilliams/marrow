@@ -1,16 +1,19 @@
 use std::collections::{HashMap, HashSet};
+use std::ops::ControlFlow;
 
 use marrow_check::{
     CheckedFacts, CheckedProgram, EnumId, EnumMemberId, ResourceId, ResourceMemberFact,
-    ResourceMemberId, ResourceMemberKind, StoreFact, StoredValueMeaning, SurfaceCatalogStatus,
-    SurfaceFact, SurfaceId, SurfaceReadFootprint, SurfaceReadOperationFact,
+    ResourceMemberId, ResourceMemberKind, StoreFact, StoreIndexFact, StoredValueMeaning,
+    SurfaceCatalogStatus, SurfaceFact, SurfaceId, SurfaceReadFootprint, SurfaceReadOperationFact,
     SurfaceReadOperationKind,
 };
 use marrow_store::Decimal;
 use marrow_store::StoreError;
 use marrow_store::cell::CatalogId;
-use marrow_store::key::{SavedKey, decode_identity_payload_arity};
-use marrow_store::tree::{DataPathSegment, TreeStore, decode_tree_enum_member};
+use marrow_store::key::{SavedKey, decode_identity_index_key, decode_identity_payload_arity};
+use marrow_store::tree::{
+    DataPathSegment, EngineProfileDigest, StoreUid, TreeStore, decode_tree_enum_member,
+};
 use marrow_store::value::{
     SavedValue, ScalarType, decode_value, scalar_key_matches_type, validate_scalar_key,
 };
@@ -18,12 +21,19 @@ use marrow_syntax::{Diagnose, SourceSpan};
 
 use crate::error::RuntimeError;
 use crate::evolution::{FenceError, fence};
+use crate::saved_iter::{KeyedChildrenWalk, walk_keyed_children_after};
 
 pub const SURFACE_REQUEST: &str = "surface.request";
 pub const SURFACE_ABSENT: &str = "surface.absent";
 pub const SURFACE_INVALID_DATA: &str = "surface.invalid_data";
+pub const SURFACE_CURSOR: &str = "surface.cursor";
+pub const SURFACE_STALE_CURSOR: &str = "surface.stale_cursor";
+pub const SURFACE_LIMIT: &str = "surface.limit";
 pub const SURFACE_ABI_MISMATCH: &str = "surface.abi_mismatch";
 pub const SURFACE_STORE: &str = "surface.store";
+pub const SURFACE_MAX_PAGE_LIMIT: usize = 128;
+pub const SURFACE_MAX_VALUE_BYTES: usize = 1024 * 1024;
+pub const SURFACE_MAX_MATERIALIZED_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SurfaceReadError {
@@ -82,6 +92,51 @@ pub enum SurfaceReadInput<'a> {
     Point { identity: &'a [SavedKey] },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SurfaceReadOperationRef {
+    pub surface: SurfaceId,
+    pub ordinal: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SurfaceCollectionReadShape {
+    RootPage,
+    IndexPage,
+    UniqueLookup,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SurfaceCollectionPageRequest<'a> {
+    pub exact_keys: &'a [SavedKey],
+    pub limit: usize,
+    pub cursor: Option<&'a SurfacePageCursor>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SurfaceCollectionPage {
+    pub rows: Vec<SurfaceReadRecord>,
+    pub next: Option<SurfacePageCursor>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SurfacePageCursor {
+    pub operation_tag: String,
+    pub store_uid: StoreUid,
+    pub catalog_digest: String,
+    pub source_digest: String,
+    pub engine_profile_digest: EngineProfileDigest,
+    pub boundary: SurfacePageBoundary,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SurfacePageBoundary {
+    RootIdentity(Vec<SavedKey>),
+    IndexIdentity {
+        exact_keys: Vec<SavedKey>,
+        identity: Vec<SavedKey>,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SurfaceReadIdentity {
     /// The accepted catalog identity of the backing store.
@@ -129,6 +184,12 @@ pub struct SurfaceReadRecord {
 pub struct SurfaceNodeRead<'a> {
     store: &'a TreeStore,
     plan: SurfaceNodeReadPlan<'a>,
+}
+
+pub struct SurfaceCollectionRead<'a> {
+    store: &'a TreeStore,
+    lineage: SurfaceStoreLineage,
+    plan: SurfaceCollectionReadPlan<'a>,
 }
 
 impl<'a> SurfaceNodeRead<'a> {
@@ -184,11 +245,11 @@ impl<'a> SurfaceNodeRead<'a> {
                 self.plan.span,
             ));
         }
-        self.plan.validate_identity(identity)?;
+        self.plan.record.validate_identity(identity)?;
         self.read_identity(
             identity,
             Some(SurfaceReadIdentity {
-                store_catalog_id: self.plan.store_catalog_id.clone(),
+                store_catalog_id: self.plan.record.store_catalog_id.clone(),
                 keys: identity.to_vec(),
             }),
         )
@@ -212,11 +273,156 @@ impl<'a> SurfaceNodeRead<'a> {
         identity: &[SavedKey],
         output_identity: Option<SurfaceReadIdentity>,
     ) -> Result<SurfaceReadRecord, SurfaceReadError> {
-        let fields = self.plan.materialize(self.store, identity)?;
-        Ok(SurfaceReadRecord {
-            identity: output_identity,
-            fields,
+        let mut budget = SurfaceMaterializationBudget::new();
+        self.plan.record.materialize(
+            self.store,
+            identity,
+            output_identity,
+            MissingRecord::Absent,
+            &mut budget,
+        )
+    }
+}
+
+impl<'a> SurfaceCollectionRead<'a> {
+    pub fn admit(
+        program: &'a CheckedProgram,
+        store: &'a TreeStore,
+        operation_ref: SurfaceReadOperationRef,
+    ) -> Result<Self, SurfaceReadError> {
+        let lineage = admit_surface_store(program, store)?;
+        Ok(Self {
+            store,
+            lineage,
+            plan: SurfaceCollectionReadPlan::prepare(program, operation_ref)?,
         })
+    }
+
+    pub fn operation_ref(&self) -> SurfaceReadOperationRef {
+        self.plan.operation_ref
+    }
+
+    pub fn shape(&self) -> SurfaceCollectionReadShape {
+        self.plan.shape()
+    }
+
+    pub fn page(
+        &self,
+        request: SurfaceCollectionPageRequest<'_>,
+    ) -> Result<SurfaceCollectionPage, SurfaceReadError> {
+        self.validate_cursor_lineage(request.cursor)?;
+        self.plan.validate_page_request(request)?;
+        // Holding the snapshot guard pins all cursor and materialization reads
+        // below to one coherent store view.
+        let _snapshot = self
+            .store
+            .read_snapshot()
+            .map_err(|error| surface_store_error(error, self.plan.span))?;
+        let identities = match &self.plan.kind {
+            SurfaceCollectionPlanKind::Root => {
+                let cursor = self.plan.root_cursor_boundary(request.cursor)?;
+                self.plan.root_identities_after(
+                    self.store,
+                    cursor.as_deref(),
+                    request.limit.saturating_add(1),
+                )?
+            }
+            SurfaceCollectionPlanKind::Index(index) => {
+                let cursor = self.plan.index_cursor_boundary(request.cursor)?;
+                index.identities_after(
+                    self.store,
+                    &self.plan.record,
+                    request.exact_keys,
+                    cursor.as_ref(),
+                    request.limit.saturating_add(1),
+                )?
+            }
+            SurfaceCollectionPlanKind::Unique(_) => {
+                return Err(request_at(
+                    "unique surface collection operations are lookups, not pages",
+                    self.plan.span,
+                ));
+            }
+        };
+
+        let has_more = identities.len() > request.limit;
+        let page_identities = identities
+            .iter()
+            .take(request.limit)
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut rows = Vec::with_capacity(page_identities.len());
+        let mut budget = SurfaceMaterializationBudget::new();
+        for identity in &page_identities {
+            rows.push(
+                self.plan
+                    .materialize_row(self.store, identity, &mut budget)?,
+            );
+        }
+        let next = if has_more {
+            page_identities
+                .last()
+                .map(|identity| {
+                    self.plan
+                        .page_cursor(&self.lineage, request.exact_keys, identity)
+                })
+                .transpose()?
+        } else {
+            None
+        };
+        Ok(SurfaceCollectionPage { rows, next })
+    }
+
+    pub fn lookup_unique(
+        &self,
+        keys: &[SavedKey],
+    ) -> Result<Option<SurfaceReadRecord>, SurfaceReadError> {
+        let SurfaceCollectionPlanKind::Unique(unique) = &self.plan.kind else {
+            return Err(request_at(
+                "surface collection operation is not a unique lookup",
+                self.plan.span,
+            ));
+        };
+        unique.validate_request_keys(&self.plan.record, keys, self.plan.span)?;
+        // Holding the snapshot guard pins the index lookup and row materialization
+        // below to one coherent store view.
+        let _snapshot = self
+            .store
+            .read_snapshot()
+            .map_err(|error| surface_store_error(error, self.plan.span))?;
+        let Some(identity) = unique.lookup_identity(
+            self.store,
+            keys,
+            self.plan.record.identity_keys.len(),
+            self.plan.span,
+        )?
+        else {
+            return Ok(None);
+        };
+        let mut budget = SurfaceMaterializationBudget::new();
+        self.plan
+            .materialize_row(self.store, &identity, &mut budget)
+            .map(Some)
+    }
+
+    fn validate_cursor_lineage(
+        &self,
+        cursor: Option<&SurfacePageCursor>,
+    ) -> Result<(), SurfaceReadError> {
+        let Some(cursor) = cursor else {
+            return Ok(());
+        };
+        if cursor.store_uid != self.lineage.store_uid
+            || cursor.catalog_digest != self.lineage.catalog_digest
+            || cursor.source_digest != self.lineage.source_digest
+            || cursor.engine_profile_digest != self.lineage.engine_profile_digest
+        {
+            return Err(stale_cursor(
+                "surface cursor store lineage no longer matches",
+                self.plan.span,
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -238,15 +444,61 @@ pub fn read_surface_singleton(
 }
 
 struct SurfaceNodeReadPlan<'a> {
-    facts: &'a CheckedFacts,
     surface: SurfaceId,
     surface_label: String,
+    shape: SurfaceNodeReadShape,
+    record: SurfaceRecordReadPlan<'a>,
+    span: SourceSpan,
+}
+
+struct SurfaceCollectionReadPlan<'a> {
+    operation_ref: SurfaceReadOperationRef,
+    operation_tag: String,
+    kind: SurfaceCollectionPlanKind,
+    record: SurfaceRecordReadPlan<'a>,
+    span: SourceSpan,
+}
+
+struct SurfaceRecordReadPlan<'a> {
+    facts: &'a CheckedFacts,
     store_catalog_id: CatalogId,
     identity_keys: Vec<StoredValueMeaning>,
-    shape: SurfaceNodeReadShape,
     reads: Vec<SurfaceMemberRead>,
     projection: Vec<ResourceMemberId>,
     span: SourceSpan,
+}
+
+enum SurfaceCollectionPlanKind {
+    Root,
+    Index(SurfaceIndexPagePlan),
+    Unique(SurfaceUniqueLookupPlan),
+}
+
+struct SurfaceIndexPagePlan {
+    index_catalog_id: CatalogId,
+    key_meanings: Vec<StoredValueMeaning>,
+    exact_key_count: usize,
+    identity_key_count: usize,
+}
+
+struct SurfaceUniqueLookupPlan {
+    index_catalog_id: CatalogId,
+    key_meanings: Vec<StoredValueMeaning>,
+    key_count: usize,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct SurfaceStoreLineage {
+    store_uid: StoreUid,
+    catalog_digest: String,
+    source_digest: String,
+    engine_profile_digest: EngineProfileDigest,
+}
+
+#[derive(Clone, Copy)]
+enum MissingRecord {
+    Absent,
+    InvalidData,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -260,24 +512,606 @@ struct SurfaceMemberRead {
     projected: bool,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct SurfaceMaterializationBudget {
+    remaining_bytes: usize,
+}
+
+impl SurfaceMaterializationBudget {
+    fn new() -> Self {
+        Self {
+            remaining_bytes: SURFACE_MAX_MATERIALIZED_BYTES,
+        }
+    }
+
+    fn take(&mut self, bytes: usize, span: SourceSpan) -> Result<(), SurfaceReadError> {
+        if bytes > self.remaining_bytes {
+            return Err(limit_error(
+                "surface read materialization byte budget exceeded",
+                span,
+            ));
+        }
+        self.remaining_bytes -= bytes;
+        Ok(())
+    }
+}
+
 impl<'a> SurfaceNodeReadPlan<'a> {
     fn prepare(program: &'a CheckedProgram, surface: SurfaceId) -> Result<Self, SurfaceReadError> {
         let surface = checked_surface(program, surface)?;
         require_stable_surface(surface)?;
         let store = program.facts.store(surface.store);
         let (operation, shape) = backing_node_operation(surface)?;
-        let footprint_resource = checked_footprint_resource(operation, store, surface.span)?;
-        let store_catalog_id = catalog_id(&store.catalog_id, "store", surface.span)?;
-        let identity_keys = identity_key_meanings(store, surface.span)?;
-        let reads =
-            surface_member_reads(&program.facts, footprint_resource, operation, surface.span)?;
+        let record =
+            SurfaceRecordReadPlan::prepare(&program.facts, store, operation, surface.span)?;
         Ok(Self {
-            facts: &program.facts,
             surface: surface.id,
             surface_label: surface.name.clone(),
+            shape,
+            record,
+            span: operation.span,
+        })
+    }
+}
+
+impl<'a> SurfaceCollectionReadPlan<'a> {
+    fn prepare(
+        program: &'a CheckedProgram,
+        operation_ref: SurfaceReadOperationRef,
+    ) -> Result<Self, SurfaceReadError> {
+        let (surface, operation) = checked_surface_operation(program, operation_ref)?;
+        require_stable_surface(surface)?;
+        let store = program.facts.store(surface.store);
+        let record =
+            SurfaceRecordReadPlan::prepare(&program.facts, store, operation, surface.span)?;
+        let kind = collection_plan_kind(&program.facts, surface, operation, surface.span)?;
+        let operation_tag = operation.operation_tag.clone().ok_or_else(|| {
+            abi_mismatch(
+                "checked surface read operation has no stable operation tag",
+                surface.span,
+            )
+        })?;
+        Ok(Self {
+            operation_ref,
+            operation_tag,
+            kind,
+            record,
+            span: operation.span,
+        })
+    }
+
+    fn shape(&self) -> SurfaceCollectionReadShape {
+        match self.kind {
+            SurfaceCollectionPlanKind::Root => SurfaceCollectionReadShape::RootPage,
+            SurfaceCollectionPlanKind::Index(_) => SurfaceCollectionReadShape::IndexPage,
+            SurfaceCollectionPlanKind::Unique(_) => SurfaceCollectionReadShape::UniqueLookup,
+        }
+    }
+
+    fn validate_page_request(
+        &self,
+        request: SurfaceCollectionPageRequest<'_>,
+    ) -> Result<(), SurfaceReadError> {
+        validate_page_limit(request.limit, self.span)?;
+        self.validate_cursor(request.cursor)?;
+        match &self.kind {
+            SurfaceCollectionPlanKind::Root => {
+                if !request.exact_keys.is_empty() {
+                    return Err(request_at(
+                        "root collection pages do not take exact index keys",
+                        self.span,
+                    ));
+                }
+                Ok(())
+            }
+            SurfaceCollectionPlanKind::Index(index) => {
+                index.validate_request_exact_keys(&self.record, request.exact_keys, self.span)?;
+                if let Some(cursor) = request.cursor {
+                    let SurfacePageBoundary::IndexIdentity { exact_keys, .. } = &cursor.boundary
+                    else {
+                        return Err(cursor_error(
+                            "surface cursor boundary does not match the index collection",
+                            self.span,
+                        ));
+                    };
+                    if exact_keys.as_slice() != request.exact_keys {
+                        return Err(cursor_error(
+                            "surface cursor exact arguments do not match the request",
+                            self.span,
+                        ));
+                    }
+                }
+                Ok(())
+            }
+            SurfaceCollectionPlanKind::Unique(_) => Err(request_at(
+                "unique surface collection operations are lookups, not pages",
+                self.span,
+            )),
+        }
+    }
+
+    fn validate_cursor(&self, cursor: Option<&SurfacePageCursor>) -> Result<(), SurfaceReadError> {
+        let Some(cursor) = cursor else {
+            return Ok(());
+        };
+        if cursor.operation_tag != self.operation_tag {
+            return Err(stale_cursor(
+                "surface cursor targets a different operation",
+                self.span,
+            ));
+        }
+        match (&self.kind, &cursor.boundary) {
+            (SurfaceCollectionPlanKind::Root, SurfacePageBoundary::RootIdentity(identity)) => {
+                self.record.validate_identity_cursor(identity)
+            }
+            (
+                SurfaceCollectionPlanKind::Index(index),
+                SurfacePageBoundary::IndexIdentity {
+                    exact_keys,
+                    identity,
+                },
+            ) => index.validate_cursor_boundary(&self.record, exact_keys, identity, self.span),
+            _ => Err(cursor_error(
+                "surface cursor boundary does not match the collection shape",
+                self.span,
+            )),
+        }
+    }
+
+    fn root_cursor_boundary(
+        &self,
+        cursor: Option<&SurfacePageCursor>,
+    ) -> Result<Option<Vec<SavedKey>>, SurfaceReadError> {
+        let Some(cursor) = cursor else {
+            return Ok(None);
+        };
+        let SurfacePageBoundary::RootIdentity(identity) = &cursor.boundary else {
+            return Err(cursor_error(
+                "surface cursor boundary does not match the root collection",
+                self.span,
+            ));
+        };
+        Ok(Some(identity.clone()))
+    }
+
+    fn index_cursor_boundary(
+        &self,
+        cursor: Option<&SurfacePageCursor>,
+    ) -> Result<Option<Vec<SavedKey>>, SurfaceReadError> {
+        let Some(cursor) = cursor else {
+            return Ok(None);
+        };
+        let SurfacePageBoundary::IndexIdentity { identity, .. } = &cursor.boundary else {
+            return Err(cursor_error(
+                "surface cursor boundary does not match the index collection",
+                self.span,
+            ));
+        };
+        Ok(Some(identity.clone()))
+    }
+
+    fn root_identities_after(
+        &self,
+        store: &TreeStore,
+        after: Option<&[SavedKey]>,
+        limit: usize,
+    ) -> Result<Vec<Vec<SavedKey>>, SurfaceReadError> {
+        let mut identities = Vec::new();
+        let arity = self.record.identity_keys.len();
+        let mut context = store;
+        let mut first = |store: &mut &TreeStore, prefix: &[SavedKey]| {
+            store
+                .record_first_child_at_arity(&self.record.store_catalog_id, prefix, arity)
+                .map_err(|error| surface_scan_error(error, self.span))
+        };
+        let mut next = |store: &mut &TreeStore, prefix: &[SavedKey], anchor: &SavedKey| {
+            store
+                .record_next_child_at_arity(&self.record.store_catalog_id, prefix, arity, anchor)
+                .map_err(|error| surface_scan_error(error, self.span))
+        };
+        let mut visit = |identity: Vec<SavedKey>,
+                         _store: &mut &TreeStore|
+         -> Result<ControlFlow<()>, SurfaceReadError> {
+            self.record.validate_identity_data(&identity)?;
+            identities.push(identity);
+            if identities.len() >= limit {
+                Ok(ControlFlow::Break(()))
+            } else {
+                Ok(ControlFlow::Continue(()))
+            }
+        };
+        let _ = walk_keyed_children_after(
+            &mut context,
+            KeyedChildrenWalk {
+                depth: arity,
+                query_prefix: &[],
+                identity_prefix: &[],
+                after_identity: after,
+            },
+            &mut first,
+            &mut next,
+            &mut visit,
+        )?;
+        Ok(identities)
+    }
+
+    fn materialize_row(
+        &self,
+        store: &TreeStore,
+        identity: &[SavedKey],
+        budget: &mut SurfaceMaterializationBudget,
+    ) -> Result<SurfaceReadRecord, SurfaceReadError> {
+        self.record.validate_identity_data(identity)?;
+        self.record.materialize(
+            store,
+            identity,
+            Some(self.record.surface_identity(identity)),
+            MissingRecord::InvalidData,
+            budget,
+        )
+    }
+
+    fn page_cursor(
+        &self,
+        lineage: &SurfaceStoreLineage,
+        exact_keys: &[SavedKey],
+        identity: &[SavedKey],
+    ) -> Result<SurfacePageCursor, SurfaceReadError> {
+        let boundary = match &self.kind {
+            SurfaceCollectionPlanKind::Root => SurfacePageBoundary::RootIdentity(identity.to_vec()),
+            SurfaceCollectionPlanKind::Index(_) => SurfacePageBoundary::IndexIdentity {
+                exact_keys: exact_keys.to_vec(),
+                identity: identity.to_vec(),
+            },
+            SurfaceCollectionPlanKind::Unique(_) => {
+                return Err(abi_mismatch(
+                    "unique lookup operations do not produce page cursors",
+                    self.span,
+                ));
+            }
+        };
+        Ok(SurfacePageCursor {
+            operation_tag: self.operation_tag.clone(),
+            store_uid: lineage.store_uid.clone(),
+            catalog_digest: lineage.catalog_digest.clone(),
+            source_digest: lineage.source_digest.clone(),
+            engine_profile_digest: lineage.engine_profile_digest,
+            boundary,
+        })
+    }
+}
+
+impl SurfaceIndexPagePlan {
+    fn validate_request_exact_keys(
+        &self,
+        record: &SurfaceRecordReadPlan<'_>,
+        exact_keys: &[SavedKey],
+        span: SourceSpan,
+    ) -> Result<(), SurfaceReadError> {
+        if exact_keys.len() != self.exact_key_count {
+            return Err(request_at(
+                format!(
+                    "surface index page expects {} exact key(s), got {}",
+                    self.exact_key_count,
+                    exact_keys.len()
+                ),
+                span,
+            ));
+        }
+        validate_index_keys(
+            record.facts,
+            exact_keys,
+            &self.key_meanings[..self.exact_key_count],
+            span,
+            key_request_error,
+        )
+    }
+
+    fn validate_cursor_boundary(
+        &self,
+        record: &SurfaceRecordReadPlan<'_>,
+        exact_keys: &[SavedKey],
+        identity: &[SavedKey],
+        span: SourceSpan,
+    ) -> Result<(), SurfaceReadError> {
+        self.validate_cursor_exact_keys(record, exact_keys, span)?;
+        record.validate_identity_cursor(identity)?;
+        let mut index_keys = exact_keys.to_vec();
+        index_keys.extend_from_slice(identity);
+        validate_index_keys(
+            record.facts,
+            &index_keys,
+            &self.key_meanings,
+            span,
+            key_cursor_error,
+        )
+    }
+
+    fn validate_cursor_exact_keys(
+        &self,
+        record: &SurfaceRecordReadPlan<'_>,
+        exact_keys: &[SavedKey],
+        span: SourceSpan,
+    ) -> Result<(), SurfaceReadError> {
+        if exact_keys.len() != self.exact_key_count {
+            return Err(cursor_error(
+                "surface cursor exact key boundary has the wrong arity",
+                span,
+            ));
+        }
+        validate_index_keys(
+            record.facts,
+            exact_keys,
+            &self.key_meanings[..self.exact_key_count],
+            span,
+            key_cursor_error,
+        )
+    }
+
+    fn identities_after(
+        &self,
+        store: &TreeStore,
+        record: &SurfaceRecordReadPlan<'_>,
+        exact_keys: &[SavedKey],
+        after: Option<&Vec<SavedKey>>,
+        limit: usize,
+    ) -> Result<Vec<Vec<SavedKey>>, SurfaceReadError> {
+        let mut identities = Vec::new();
+        let span = record.span;
+        let mut context = store;
+        let mut first = |store: &mut &TreeStore, prefix: &[SavedKey]| {
+            store
+                .index_first_child(&self.index_catalog_id, prefix)
+                .map_err(|error| surface_scan_error(error, span))
+        };
+        let mut next = |store: &mut &TreeStore, prefix: &[SavedKey], anchor: &SavedKey| {
+            store
+                .index_next_child(&self.index_catalog_id, prefix, anchor)
+                .map_err(|error| surface_scan_error(error, span))
+        };
+        let mut visit = |identity: Vec<SavedKey>,
+                         _store: &mut &TreeStore|
+         -> Result<ControlFlow<()>, SurfaceReadError> {
+            let mut index_keys = exact_keys.to_vec();
+            index_keys.extend_from_slice(&identity);
+            validate_index_keys(
+                record.facts,
+                &index_keys,
+                &self.key_meanings,
+                span,
+                key_data_error,
+            )?;
+            record.validate_identity_data(&identity)?;
+            identities.push(identity);
+            if identities.len() >= limit {
+                Ok(ControlFlow::Break(()))
+            } else {
+                Ok(ControlFlow::Continue(()))
+            }
+        };
+        let _ = walk_keyed_children_after(
+            &mut context,
+            KeyedChildrenWalk {
+                depth: self.identity_key_count,
+                query_prefix: exact_keys,
+                identity_prefix: &[],
+                after_identity: after.map(Vec::as_slice),
+            },
+            &mut first,
+            &mut next,
+            &mut visit,
+        )?;
+        Ok(identities)
+    }
+}
+
+impl SurfaceUniqueLookupPlan {
+    fn validate_request_keys(
+        &self,
+        record: &SurfaceRecordReadPlan<'_>,
+        keys: &[SavedKey],
+        span: SourceSpan,
+    ) -> Result<(), SurfaceReadError> {
+        if keys.len() != self.key_count {
+            return Err(request_at(
+                format!(
+                    "surface unique lookup expects {} key(s), got {}",
+                    self.key_count,
+                    keys.len()
+                ),
+                span,
+            ));
+        }
+        validate_index_keys(
+            record.facts,
+            keys,
+            &self.key_meanings,
+            span,
+            key_request_error,
+        )
+    }
+
+    fn lookup_identity(
+        &self,
+        store: &TreeStore,
+        keys: &[SavedKey],
+        identity_arity: usize,
+        span: SourceSpan,
+    ) -> Result<Option<Vec<SavedKey>>, SurfaceReadError> {
+        let page = store
+            .scan_index_tuple(&self.index_catalog_id, keys, 2)
+            .map_err(|error| surface_scan_error(error, span))?;
+        if page.truncated || page.entries.len() > 1 {
+            return Err(invalid_data(
+                "stored unique index has multiple entries for one tuple",
+                span,
+            ));
+        }
+        let Some(entry) = page.entries.first() else {
+            return Ok(None);
+        };
+        if entry.index_keys != keys {
+            return Err(invalid_data(
+                "stored unique index entry does not match the requested tuple",
+                span,
+            ));
+        }
+        let identity = decode_identity_payload_arity(&entry.value, identity_arity)
+            .ok_or_else(|| invalid_data("stored unique index identity did not decode", span))?;
+        if entry.identity != identity {
+            return Err(invalid_data(
+                "stored unique index identity does not match the entry payload",
+                span,
+            ));
+        }
+        Ok(Some(identity))
+    }
+}
+
+fn validate_page_limit(limit: usize, span: SourceSpan) -> Result<(), SurfaceReadError> {
+    if limit == 0 {
+        return Err(request_at(
+            "surface page limit must be greater than zero",
+            span,
+        ));
+    }
+    if limit > SURFACE_MAX_PAGE_LIMIT {
+        return Err(limit_error(
+            format!("surface page limit {limit} exceeds the maximum {SURFACE_MAX_PAGE_LIMIT}"),
+            span,
+        ));
+    }
+    Ok(())
+}
+
+fn validate_index_keys(
+    facts: &CheckedFacts,
+    keys: &[SavedKey],
+    meanings: &[StoredValueMeaning],
+    span: SourceSpan,
+    error: fn(String, SourceSpan) -> SurfaceReadError,
+) -> Result<(), SurfaceReadError> {
+    if keys.len() != meanings.len() {
+        return Err(error(
+            format!(
+                "surface index key tuple expects {} key(s), got {}",
+                meanings.len(),
+                keys.len()
+            ),
+            span,
+        ));
+    }
+    for (key, meaning) in keys.iter().zip(meanings) {
+        validate_index_key(facts, key, meaning, span, error)?;
+    }
+    Ok(())
+}
+
+fn validate_index_key(
+    facts: &CheckedFacts,
+    key: &SavedKey,
+    meaning: &StoredValueMeaning,
+    span: SourceSpan,
+    error: fn(String, SourceSpan) -> SurfaceReadError,
+) -> Result<(), SurfaceReadError> {
+    validate_scalar_key(key).map_err(|err| error(err.to_string(), span))?;
+    match meaning {
+        StoredValueMeaning::Scalar(expected) => {
+            if scalar_key_matches_type(key, *expected) {
+                Ok(())
+            } else {
+                Err(error(
+                    "surface index key does not match the checked scalar type".to_string(),
+                    span,
+                ))
+            }
+        }
+        StoredValueMeaning::Enum { enum_id, members } => {
+            let SavedKey::Str(member_catalog_id) = key else {
+                return Err(error(
+                    "surface index key does not match the checked enum type".to_string(),
+                    span,
+                ));
+            };
+            let member = facts.enum_members().iter().find(|member| {
+                member.enum_id == *enum_id
+                    && members.contains(&member.id)
+                    && member.catalog_id.as_deref() == Some(member_catalog_id.as_str())
+            });
+            if member.is_some_and(|member| facts.enum_member_is_selectable(member.id)) {
+                Ok(())
+            } else {
+                Err(error(
+                    "surface index key names no selectable enum member".to_string(),
+                    span,
+                ))
+            }
+        }
+        StoredValueMeaning::Identity {
+            store_catalog_id,
+            arity,
+            key_scalars,
+            ..
+        } => {
+            let SavedKey::Bytes(bytes) = key else {
+                return Err(error(
+                    "surface index key does not match the checked identity type".to_string(),
+                    span,
+                ));
+            };
+            let Some(store_catalog_id) = store_catalog_id.as_deref() else {
+                return Err(abi_mismatch(
+                    "checked identity index key has no accepted store catalog id",
+                    span,
+                ));
+            };
+            let keys =
+                decode_identity_index_key(bytes, store_catalog_id, *arity).ok_or_else(|| {
+                    error(
+                        "surface identity index key did not decode".to_string(),
+                        span,
+                    )
+                })?;
+            if identity_keys_match_scalars(&keys, key_scalars) {
+                Ok(())
+            } else {
+                Err(error(
+                    "surface identity index key does not match the checked identity type"
+                        .to_string(),
+                    span,
+                ))
+            }
+        }
+    }
+}
+
+fn key_request_error(message: String, span: SourceSpan) -> SurfaceReadError {
+    request_at(message, span)
+}
+
+fn key_cursor_error(message: String, span: SourceSpan) -> SurfaceReadError {
+    cursor_error(message, span)
+}
+
+fn key_data_error(message: String, span: SourceSpan) -> SurfaceReadError {
+    invalid_data(message, span)
+}
+
+impl<'a> SurfaceRecordReadPlan<'a> {
+    fn prepare(
+        facts: &'a CheckedFacts,
+        store: &StoreFact,
+        operation: &SurfaceReadOperationFact,
+        surface_span: SourceSpan,
+    ) -> Result<Self, SurfaceReadError> {
+        let footprint_resource = checked_footprint_resource(operation, store, surface_span)?;
+        let store_catalog_id = catalog_id(&store.catalog_id, "store", surface_span)?;
+        let identity_keys = identity_key_meanings(store, surface_span)?;
+        let reads = surface_member_reads(facts, footprint_resource, operation, surface_span)?;
+        Ok(Self {
+            facts,
             store_catalog_id,
             identity_keys,
-            shape,
             reads,
             projection: operation.projection.clone(),
             span: operation.span,
@@ -285,8 +1119,24 @@ impl<'a> SurfaceNodeReadPlan<'a> {
     }
 
     fn validate_identity(&self, identity: &[SavedKey]) -> Result<(), SurfaceReadError> {
+        self.validate_identity_with(identity, key_request_error)
+    }
+
+    fn validate_identity_cursor(&self, identity: &[SavedKey]) -> Result<(), SurfaceReadError> {
+        self.validate_identity_with(identity, cursor_error)
+    }
+
+    fn validate_identity_data(&self, identity: &[SavedKey]) -> Result<(), SurfaceReadError> {
+        self.validate_identity_with(identity, invalid_data)
+    }
+
+    fn validate_identity_with(
+        &self,
+        identity: &[SavedKey],
+        error: fn(String, SourceSpan) -> SurfaceReadError,
+    ) -> Result<(), SurfaceReadError> {
         if identity.len() != self.identity_keys.len() {
-            return Err(request_at(
+            return Err(error(
                 format!(
                     "surface identity expects {} key(s), got {}",
                     self.identity_keys.len(),
@@ -296,7 +1146,7 @@ impl<'a> SurfaceNodeReadPlan<'a> {
             ));
         }
         for (key, meaning) in identity.iter().zip(&self.identity_keys) {
-            validate_scalar_key(key).map_err(|error| request_at(error.to_string(), self.span))?;
+            validate_scalar_key(key).map_err(|err| error(err.to_string(), self.span))?;
             let StoredValueMeaning::Scalar(expected) = meaning else {
                 return Err(abi_mismatch(
                     "checked store identity key is not scalar",
@@ -304,8 +1154,8 @@ impl<'a> SurfaceNodeReadPlan<'a> {
                 ));
             };
             if !scalar_key_matches_type(key, *expected) {
-                return Err(request_at(
-                    "surface identity key does not match the checked store key type",
+                return Err(error(
+                    "surface identity key does not match the checked store key type".to_string(),
                     self.span,
                 ));
             }
@@ -313,28 +1163,46 @@ impl<'a> SurfaceNodeReadPlan<'a> {
         Ok(())
     }
 
+    fn surface_identity(&self, identity: &[SavedKey]) -> SurfaceReadIdentity {
+        SurfaceReadIdentity {
+            store_catalog_id: self.store_catalog_id.clone(),
+            keys: identity.to_vec(),
+        }
+    }
+
     fn materialize(
         &self,
         store: &TreeStore,
         identity: &[SavedKey],
-    ) -> Result<Vec<SurfaceReadField>, SurfaceReadError> {
+        output_identity: Option<SurfaceReadIdentity>,
+        missing_record: MissingRecord,
+        budget: &mut SurfaceMaterializationBudget,
+    ) -> Result<SurfaceReadRecord, SurfaceReadError> {
         if !store
             .data_subtree_exists(&self.store_catalog_id, identity, &[])
             .map_err(|error| surface_store_error(error, self.span))?
         {
-            return Err(surface_error_at(
-                SURFACE_ABSENT,
-                "surface record is absent",
-                self.span,
-            ));
+            return Err(match missing_record {
+                MissingRecord::Absent => {
+                    surface_error_at(SURFACE_ABSENT, "surface record is absent", self.span)
+                }
+                MissingRecord::InvalidData => {
+                    invalid_data("surface index row points at an absent record", self.span)
+                }
+            });
         }
 
         let mut values = HashMap::new();
         for read in &self.reads {
-            let bytes = store
-                .read_data_value(&self.store_catalog_id, identity, &read.path)
+            let prefix = store
+                .read_data_value_prefix(
+                    &self.store_catalog_id,
+                    identity,
+                    &read.path,
+                    SURFACE_MAX_VALUE_BYTES,
+                )
                 .map_err(|error| surface_store_error(error, self.span))?;
-            let Some(bytes) = bytes else {
+            let Some(prefix) = prefix else {
                 if read.required {
                     return Err(invalid_data(
                         format!("required stored field `{}` is absent", read.render_label),
@@ -353,8 +1221,18 @@ impl<'a> SurfaceNodeReadPlan<'a> {
                 }
                 continue;
             };
-            let value =
-                decode_surface_value(self.facts, &bytes, &read.value_meaning).ok_or_else(|| {
+            if prefix.truncated {
+                return Err(limit_error(
+                    format!(
+                        "stored value for `{}` exceeds the surface value byte budget",
+                        read.render_label
+                    ),
+                    self.span,
+                ));
+            }
+            budget.take(prefix.bytes.len(), self.span)?;
+            let value = decode_surface_value(self.facts, &prefix.bytes, &read.value_meaning)
+                .ok_or_else(|| {
                     invalid_data(
                         format!("stored value for `{}` did not decode", read.render_label),
                         self.span,
@@ -382,14 +1260,17 @@ impl<'a> SurfaceNodeReadPlan<'a> {
             };
             fields.push(field);
         }
-        Ok(fields)
+        Ok(SurfaceReadRecord {
+            identity: output_identity,
+            fields,
+        })
     }
 }
 
 fn admit_surface_store(
     program: &CheckedProgram,
     store: &TreeStore,
-) -> Result<(), SurfaceReadError> {
+) -> Result<SurfaceStoreLineage, SurfaceReadError> {
     let accepted_epoch = program.catalog.accepted_epoch.ok_or_else(|| {
         abi_mismatch(
             "surface serving requires a checked program bound to an accepted catalog",
@@ -402,7 +1283,7 @@ fn admit_surface_store(
             SourceSpan::default(),
         )
     })?;
-    let Some(_uid) = store
+    let Some(store_uid) = store
         .read_store_uid()
         .map_err(|error| surface_store_error(error, SourceSpan::default()))?
     else {
@@ -411,7 +1292,7 @@ fn admit_surface_store(
             SourceSpan::default(),
         ));
     };
-    let Some(_commit) = store
+    let Some(commit) = store
         .read_commit_metadata()
         .map_err(|error| surface_store_error(error, SourceSpan::default()))?
     else {
@@ -430,7 +1311,12 @@ fn admit_surface_store(
             SourceSpan::default(),
         ));
     }
-    Ok(())
+    Ok(SurfaceStoreLineage {
+        store_uid,
+        catalog_digest: accepted_digest.to_string(),
+        source_digest: commit.source_digest,
+        engine_profile_digest: commit.engine_profile_digest,
+    })
 }
 
 fn checked_surface(
@@ -442,6 +1328,18 @@ fn checked_surface(
         .surfaces()
         .get(surface.0 as usize)
         .ok_or_else(|| request("checked surface id is not present in this program"))
+}
+
+fn checked_surface_operation(
+    program: &CheckedProgram,
+    operation_ref: SurfaceReadOperationRef,
+) -> Result<(&SurfaceFact, &SurfaceReadOperationFact), SurfaceReadError> {
+    let surface = checked_surface(program, operation_ref.surface)?;
+    let operation = surface
+        .read_operations
+        .get(operation_ref.ordinal)
+        .ok_or_else(|| request("checked surface operation ordinal is not present"))?;
+    Ok((surface, operation))
 }
 
 fn require_stable_surface(surface: &SurfaceFact) -> Result<(), SurfaceReadError> {
@@ -481,6 +1379,97 @@ fn backing_node_operation(
                 surface.span,
             )
         })
+}
+
+fn collection_plan_kind(
+    facts: &CheckedFacts,
+    surface: &SurfaceFact,
+    operation: &SurfaceReadOperationFact,
+    span: SourceSpan,
+) -> Result<SurfaceCollectionPlanKind, SurfaceReadError> {
+    match operation.kind {
+        SurfaceReadOperationKind::PagedRootCollection { store } if store == surface.store => {
+            Ok(SurfaceCollectionPlanKind::Root)
+        }
+        SurfaceReadOperationKind::PagedIndexCollection {
+            index,
+            exact_key_count,
+            identity_key_count,
+        } => {
+            let fact = surface_index_fact(facts, surface, index, span)?;
+            let index_catalog_id = catalog_id(&fact.catalog_id, "store index", span)?;
+            if fact.unique {
+                return Err(abi_mismatch(
+                    "checked paged collection operation names a unique index",
+                    span,
+                ));
+            }
+            let store = facts.store(surface.store);
+            if exact_key_count + identity_key_count != fact.keys.len()
+                || identity_key_count != store.identity_keys.len()
+            {
+                return Err(abi_mismatch(
+                    "checked paged collection operation does not match the index key shape",
+                    span,
+                ));
+            }
+            Ok(SurfaceCollectionPlanKind::Index(SurfaceIndexPagePlan {
+                index_catalog_id,
+                key_meanings: fact
+                    .keys
+                    .iter()
+                    .map(|key| key.value_meaning.clone())
+                    .collect(),
+                exact_key_count,
+                identity_key_count,
+            }))
+        }
+        SurfaceReadOperationKind::UniqueIndexLookup { index, key_count } => {
+            let fact = surface_index_fact(facts, surface, index, span)?;
+            let index_catalog_id = catalog_id(&fact.catalog_id, "store index", span)?;
+            if !fact.unique {
+                return Err(abi_mismatch(
+                    "checked unique lookup operation names a non-unique index",
+                    span,
+                ));
+            }
+            if key_count != fact.keys.len() {
+                return Err(abi_mismatch(
+                    "checked unique lookup operation does not match the index key shape",
+                    span,
+                ));
+            }
+            Ok(SurfaceCollectionPlanKind::Unique(SurfaceUniqueLookupPlan {
+                index_catalog_id,
+                key_meanings: fact
+                    .keys
+                    .iter()
+                    .map(|key| key.value_meaning.clone())
+                    .collect(),
+                key_count,
+            }))
+        }
+        _ => Err(request_at(
+            "checked surface operation is not a collection read",
+            operation.span,
+        )),
+    }
+}
+
+fn surface_index_fact<'a>(
+    facts: &'a CheckedFacts,
+    surface: &SurfaceFact,
+    index: marrow_check::StoreIndexId,
+    span: SourceSpan,
+) -> Result<&'a StoreIndexFact, SurfaceReadError> {
+    let fact = facts.store_index(index);
+    if fact.store != surface.store {
+        return Err(abi_mismatch(
+            "checked surface collection index is outside the backing store",
+            span,
+        ));
+    }
+    Ok(fact)
 }
 
 fn checked_footprint_resource(
@@ -736,6 +1725,18 @@ fn request_at(message: impl Into<String>, span: SourceSpan) -> SurfaceReadError 
     surface_error_at(SURFACE_REQUEST, message, span)
 }
 
+fn cursor_error(message: impl Into<String>, span: SourceSpan) -> SurfaceReadError {
+    surface_error_at(SURFACE_CURSOR, message, span)
+}
+
+fn stale_cursor(message: impl Into<String>, span: SourceSpan) -> SurfaceReadError {
+    surface_error_at(SURFACE_STALE_CURSOR, message, span)
+}
+
+fn limit_error(message: impl Into<String>, span: SourceSpan) -> SurfaceReadError {
+    surface_error_at(SURFACE_LIMIT, message, span)
+}
+
 fn invalid_data(message: impl Into<String>, span: SourceSpan) -> SurfaceReadError {
     surface_error_at(SURFACE_INVALID_DATA, message, span)
 }
@@ -762,6 +1763,19 @@ fn surface_error_at(
 
 fn surface_store_error(error: StoreError, span: SourceSpan) -> SurfaceReadError {
     store_error(format!("a surface read failed: {error}"), span)
+}
+
+fn surface_scan_error(error: StoreError, span: SourceSpan) -> SurfaceReadError {
+    match error {
+        StoreError::Corruption { .. } => {
+            invalid_data("surface collection reached corrupt stored key data", span)
+        }
+        StoreError::InvalidCursor { .. } => cursor_error("surface cursor is invalid", span),
+        StoreError::LimitExceeded { .. } => {
+            limit_error("surface collection exceeded a store limit", span)
+        }
+        other => surface_store_error(other, span),
+    }
 }
 
 fn surface_fence_error(error: FenceError) -> SurfaceReadError {

@@ -2,11 +2,14 @@ use crate::support;
 use support::*;
 
 use marrow_check::{
-    CheckedProgram, CheckedRuntimeProgram, ProjectConfig, SurfaceId, check_project,
+    CheckedProgram, CheckedRuntimeProgram, ProjectConfig, SurfaceId, SurfaceReadOperationKind,
+    check_project,
 };
 use marrow_run::{
-    SURFACE_ABI_MISMATCH, SURFACE_ABSENT, SURFACE_INVALID_DATA, SURFACE_REQUEST, SurfaceEnumValue,
-    SurfaceReadError, SurfaceReadIdentity, SurfaceReadRecord, SurfaceValue, read_surface_point,
+    SURFACE_ABI_MISMATCH, SURFACE_ABSENT, SURFACE_CURSOR, SURFACE_INVALID_DATA, SURFACE_LIMIT,
+    SURFACE_REQUEST, SURFACE_STALE_CURSOR, SurfaceCollectionPageRequest, SurfaceCollectionRead,
+    SurfaceEnumValue, SurfacePageBoundary, SurfaceReadError, SurfaceReadIdentity,
+    SurfaceReadOperationRef, SurfaceReadRecord, SurfaceValue, read_surface_point,
     read_surface_singleton,
 };
 use marrow_store::cell::CatalogId;
@@ -76,6 +79,23 @@ surface Books from ^books
     fields title, status, author
 ";
 
+const COLLECTION_SURFACE: &str = "\
+resource Book
+    required title: string
+    required privateCode: string
+    author: string
+    isbn: string
+store ^books(shelf: string, id: int): Book
+    index byAuthor(author, shelf, id)
+    index byIsbn(isbn) unique
+
+surface Books from ^books
+    fields title, author, isbn
+    collection ^books as list
+    collection ^books.byAuthor as byAuthor
+    collection ^books.byIsbn as byIsbn
+";
+
 #[test]
 fn point_read_materializes_required_non_public_fields_before_projection() {
     let (program, runtime) = committed_program_and_runtime(BOOK_SURFACE);
@@ -116,6 +136,34 @@ fn point_read_materializes_required_non_public_fields_before_projection() {
             ),
             (field_catalog_id(&runtime, "books", &["subtitle"]), None),
         ]
+    );
+}
+
+#[test]
+fn point_read_enforces_stored_value_byte_budget() {
+    let (program, runtime) = committed_program_and_runtime(BOOK_SURFACE);
+    let store = admitted_store(&program);
+    let identity = [SavedKey::Int(1)];
+    write_data_value(
+        &runtime,
+        &store,
+        "books",
+        &identity,
+        &data_path(&runtime, "books", &["title"]),
+        SavedValue::Str("x".repeat(marrow_run::SURFACE_MAX_VALUE_BYTES + 1)),
+    );
+    write_data_value(
+        &runtime,
+        &store,
+        "books",
+        &identity,
+        &data_path(&runtime, "books", &["privateCode"]),
+        SavedValue::Str("internal".into()),
+    );
+
+    assert_surface_error(
+        read_surface_point(&program, &store, surface_id(&program, "Books"), &identity),
+        SURFACE_LIMIT,
     );
 }
 
@@ -365,6 +413,394 @@ fn surface_reads_require_an_admitted_store_catalog() {
     );
 }
 
+#[test]
+fn root_collection_pages_records_in_identity_order_with_typed_cursor() {
+    let (program, runtime) = committed_program_and_runtime(COLLECTION_SURFACE);
+    let store = admitted_store(&program);
+    write_book(&runtime, &store, "b", 1, "Hyperion", "Dan", "isbn-b1");
+    write_book(&runtime, &store, "a", 2, "Dune Messiah", "Frank", "isbn-a2");
+    write_book(&runtime, &store, "a", 1, "Dune", "Frank", "isbn-a1");
+
+    let surface = surface_id(&program, "Books");
+    let read =
+        SurfaceCollectionRead::admit(&program, &store, root_collection_ref(&program, surface))
+            .expect("admit root collection");
+    let first = read
+        .page(SurfaceCollectionPageRequest {
+            exact_keys: &[],
+            limit: 2,
+            cursor: None,
+        })
+        .expect("first page");
+
+    assert_eq!(
+        record_identities(&first.rows),
+        vec![
+            vec![SavedKey::Str("a".into()), SavedKey::Int(1)],
+            vec![SavedKey::Str("a".into()), SavedKey::Int(2)],
+        ]
+    );
+    let next = first.next.as_ref().expect("first page has cursor");
+
+    let second = read
+        .page(SurfaceCollectionPageRequest {
+            exact_keys: &[],
+            limit: 2,
+            cursor: Some(next),
+        })
+        .expect("second page");
+    assert_eq!(
+        record_identities(&second.rows),
+        vec![vec![SavedKey::Str("b".into()), SavedKey::Int(1)]]
+    );
+    assert_eq!(second.next, None);
+
+    let all = vec![
+        vec![SavedKey::Str("a".into()), SavedKey::Int(1)],
+        vec![SavedKey::Str("a".into()), SavedKey::Int(2)],
+        vec![SavedKey::Str("b".into()), SavedKey::Int(1)],
+    ];
+    for limit in 1..=3 {
+        assert_eq!(collect_page_identities(&read, &[], limit), all);
+    }
+}
+
+#[test]
+fn root_collection_cursor_resumes_after_deleted_boundary_identity() {
+    let (program, runtime) = committed_program_and_runtime(COLLECTION_SURFACE);
+    let store = admitted_store(&program);
+    write_book(&runtime, &store, "a", 1, "Dune", "Frank", "isbn-a1");
+    write_book(&runtime, &store, "a", 2, "Dune Messiah", "Frank", "isbn-a2");
+    write_book(&runtime, &store, "b", 1, "Hyperion", "Dan", "isbn-b1");
+
+    let surface = surface_id(&program, "Books");
+    let read =
+        SurfaceCollectionRead::admit(&program, &store, root_collection_ref(&program, surface))
+            .expect("admit root collection");
+    let first = read
+        .page(SurfaceCollectionPageRequest {
+            exact_keys: &[],
+            limit: 1,
+            cursor: None,
+        })
+        .expect("first page");
+    let cursor = first.next.as_ref().expect("first page has cursor");
+
+    store
+        .delete_record_subtree(
+            &store_catalog_id(&runtime, "books"),
+            &[SavedKey::Str("a".into()), SavedKey::Int(1)],
+        )
+        .expect("delete boundary record");
+
+    let second = read
+        .page(SurfaceCollectionPageRequest {
+            exact_keys: &[],
+            limit: 10,
+            cursor: Some(cursor),
+        })
+        .expect("second page after deleted boundary");
+    assert_eq!(
+        record_identities(&second.rows),
+        vec![
+            vec![SavedKey::Str("a".into()), SavedKey::Int(2)],
+            vec![SavedKey::Str("b".into()), SavedKey::Int(1)],
+        ]
+    );
+}
+
+#[test]
+fn index_collection_pages_exact_tuple_in_identity_suffix_order() {
+    let (program, runtime) = committed_program_and_runtime(COLLECTION_SURFACE);
+    let store = admitted_store(&program);
+    write_book(&runtime, &store, "b", 1, "Book B", "Frank", "isbn-b1");
+    write_book(&runtime, &store, "a", 2, "Book A2", "Frank", "isbn-a2");
+    write_book(&runtime, &store, "a", 1, "Book A1", "Frank", "isbn-a1");
+    write_book(&runtime, &store, "a", 3, "Other", "Octavia", "isbn-a3");
+
+    let surface = surface_id(&program, "Books");
+    let read = SurfaceCollectionRead::admit(
+        &program,
+        &store,
+        index_collection_ref(&program, surface, "byAuthor"),
+    )
+    .expect("admit index collection");
+    let first = read
+        .page(SurfaceCollectionPageRequest {
+            exact_keys: &[SavedKey::Str("Frank".into())],
+            limit: 2,
+            cursor: None,
+        })
+        .expect("first index page");
+
+    assert_eq!(
+        record_identities(&first.rows),
+        vec![
+            vec![SavedKey::Str("a".into()), SavedKey::Int(1)],
+            vec![SavedKey::Str("a".into()), SavedKey::Int(2)],
+        ]
+    );
+
+    let second = read
+        .page(SurfaceCollectionPageRequest {
+            exact_keys: &[SavedKey::Str("Frank".into())],
+            limit: 2,
+            cursor: first.next.as_ref(),
+        })
+        .expect("second index page");
+    assert_eq!(
+        record_identities(&second.rows),
+        vec![vec![SavedKey::Str("b".into()), SavedKey::Int(1)]]
+    );
+    assert_eq!(second.next, None);
+}
+
+#[test]
+fn unique_index_lookup_returns_zero_or_one_materialized_record() {
+    let (program, runtime) = committed_program_and_runtime(COLLECTION_SURFACE);
+    let store = admitted_store(&program);
+    write_book(&runtime, &store, "a", 1, "Dune", "Frank", "isbn-a1");
+    write_book(&runtime, &store, "a", 2, "Dune Messiah", "Frank", "isbn-a2");
+
+    let surface = surface_id(&program, "Books");
+    let read = SurfaceCollectionRead::admit(
+        &program,
+        &store,
+        index_collection_ref(&program, surface, "byIsbn"),
+    )
+    .expect("admit unique lookup");
+
+    let found = read
+        .lookup_unique(&[SavedKey::Str("isbn-a1".into())])
+        .expect("unique lookup")
+        .expect("record found");
+    assert_eq!(
+        found.identity.expect("identity").keys,
+        vec![SavedKey::Str("a".into()), SavedKey::Int(1)]
+    );
+    assert_eq!(
+        read.lookup_unique(&[SavedKey::Str("missing".into())])
+            .expect("absent lookup"),
+        None
+    );
+}
+
+#[test]
+fn unique_index_lookup_fails_closed_on_duplicate_or_dangling_entries() {
+    let (program, runtime) = committed_program_and_runtime(COLLECTION_SURFACE);
+    let store = admitted_store(&program);
+    write_book(&runtime, &store, "a", 1, "Dune", "Frank", "isbn-a1");
+    write_unique_index_entry(
+        &runtime,
+        &store,
+        "byIsbn",
+        &[SavedKey::Str("isbn-a1".into())],
+        &[SavedKey::Str("a".into()), SavedKey::Int(2)],
+    );
+
+    let surface = surface_id(&program, "Books");
+    let read = SurfaceCollectionRead::admit(
+        &program,
+        &store,
+        index_collection_ref(&program, surface, "byIsbn"),
+    )
+    .expect("admit unique lookup");
+
+    assert_surface_error(
+        read.lookup_unique(&[SavedKey::Str("isbn-a1".into())]),
+        SURFACE_INVALID_DATA,
+    );
+
+    let (program, runtime) = committed_program_and_runtime(COLLECTION_SURFACE);
+    let store = admitted_store(&program);
+    write_unique_index_entry(
+        &runtime,
+        &store,
+        "byIsbn",
+        &[SavedKey::Str("dangling".into())],
+        &[SavedKey::Str("z".into()), SavedKey::Int(9)],
+    );
+    let surface = surface_id(&program, "Books");
+    let read = SurfaceCollectionRead::admit(
+        &program,
+        &store,
+        index_collection_ref(&program, surface, "byIsbn"),
+    )
+    .expect("admit unique lookup");
+
+    assert_surface_error(
+        read.lookup_unique(&[SavedKey::Str("dangling".into())]),
+        SURFACE_INVALID_DATA,
+    );
+}
+
+#[test]
+fn collection_page_fails_instead_of_skipping_a_corrupt_row() {
+    let (program, runtime) = committed_program_and_runtime(COLLECTION_SURFACE);
+    let store = admitted_store(&program);
+    write_book(&runtime, &store, "a", 1, "Dune", "Frank", "isbn-a1");
+    write_record_presence(
+        &runtime,
+        &store,
+        "books",
+        &[SavedKey::Str("a".into()), SavedKey::Int(2)],
+    );
+    write_non_unique_index_entry(
+        &runtime,
+        &store,
+        "byAuthor",
+        &[
+            SavedKey::Str("Frank".into()),
+            SavedKey::Str("a".into()),
+            SavedKey::Int(2),
+        ],
+        &[SavedKey::Str("a".into()), SavedKey::Int(2)],
+    );
+
+    let surface = surface_id(&program, "Books");
+    let read = SurfaceCollectionRead::admit(
+        &program,
+        &store,
+        index_collection_ref(&program, surface, "byAuthor"),
+    )
+    .expect("admit index collection");
+
+    assert_surface_error(
+        read.page(SurfaceCollectionPageRequest {
+            exact_keys: &[SavedKey::Str("Frank".into())],
+            limit: 10,
+            cursor: None,
+        }),
+        SURFACE_INVALID_DATA,
+    );
+}
+
+#[test]
+fn collection_page_enforces_total_materialization_byte_budget() {
+    let (program, runtime) = committed_program_and_runtime(COLLECTION_SURFACE);
+    let store = admitted_store(&program);
+    let large_title = "x".repeat(marrow_run::SURFACE_MAX_MATERIALIZED_BYTES / 9 + 1);
+    for id in 0..9 {
+        write_book(
+            &runtime,
+            &store,
+            "a",
+            id,
+            &large_title,
+            "Frank",
+            &format!("isbn-a{id}"),
+        );
+    }
+
+    let surface = surface_id(&program, "Books");
+    let read =
+        SurfaceCollectionRead::admit(&program, &store, root_collection_ref(&program, surface))
+            .expect("admit root collection");
+
+    assert_surface_error(
+        read.page(SurfaceCollectionPageRequest {
+            exact_keys: &[],
+            limit: 9,
+            cursor: None,
+        }),
+        SURFACE_LIMIT,
+    );
+}
+
+#[test]
+fn collection_requests_validate_limits_exact_keys_and_cursor_binding() {
+    let (program, runtime) = committed_program_and_runtime(COLLECTION_SURFACE);
+    let store = admitted_store(&program);
+    write_book(&runtime, &store, "a", 1, "Dune", "Frank", "isbn-a1");
+    write_book(&runtime, &store, "a", 2, "Dune Messiah", "Frank", "isbn-a2");
+
+    let surface = surface_id(&program, "Books");
+    let root =
+        SurfaceCollectionRead::admit(&program, &store, root_collection_ref(&program, surface))
+            .expect("admit root collection");
+    let by_author = SurfaceCollectionRead::admit(
+        &program,
+        &store,
+        index_collection_ref(&program, surface, "byAuthor"),
+    )
+    .expect("admit index collection");
+
+    assert_surface_error(
+        root.page(SurfaceCollectionPageRequest {
+            exact_keys: &[],
+            limit: 0,
+            cursor: None,
+        }),
+        SURFACE_REQUEST,
+    );
+    assert_surface_error(
+        root.page(SurfaceCollectionPageRequest {
+            exact_keys: &[],
+            limit: marrow_run::SURFACE_MAX_PAGE_LIMIT + 1,
+            cursor: None,
+        }),
+        SURFACE_LIMIT,
+    );
+    assert_surface_error(
+        by_author.page(SurfaceCollectionPageRequest {
+            exact_keys: &[SavedKey::Int(1)],
+            limit: 1,
+            cursor: None,
+        }),
+        SURFACE_REQUEST,
+    );
+
+    let root_page = root
+        .page(SurfaceCollectionPageRequest {
+            exact_keys: &[],
+            limit: 1,
+            cursor: None,
+        })
+        .expect("root page");
+    let cursor = root_page.next.as_ref().expect("root cursor");
+    assert_surface_error(
+        by_author.page(SurfaceCollectionPageRequest {
+            exact_keys: &[SavedKey::Str("Frank".into())],
+            limit: 1,
+            cursor: Some(cursor),
+        }),
+        SURFACE_STALE_CURSOR,
+    );
+
+    let index_page = by_author
+        .page(SurfaceCollectionPageRequest {
+            exact_keys: &[SavedKey::Str("Frank".into())],
+            limit: 1,
+            cursor: None,
+        })
+        .expect("index page");
+    let cursor = index_page.next.as_ref().expect("index cursor");
+    assert_surface_error(
+        by_author.page(SurfaceCollectionPageRequest {
+            exact_keys: &[SavedKey::Str("Octavia".into())],
+            limit: 1,
+            cursor: Some(cursor),
+        }),
+        SURFACE_CURSOR,
+    );
+
+    let mut forged = cursor.clone();
+    match &mut forged.boundary {
+        SurfacePageBoundary::IndexIdentity { exact_keys, .. } => {
+            exact_keys[0] = SavedKey::Str("Octavia".into());
+        }
+        boundary => panic!("expected index cursor boundary, got {boundary:?}"),
+    }
+    assert_surface_error(
+        by_author.page(SurfaceCollectionPageRequest {
+            exact_keys: &[SavedKey::Str("Frank".into())],
+            limit: 1,
+            cursor: Some(&forged),
+        }),
+        SURFACE_CURSOR,
+    );
+}
+
 fn surface_id(program: &CheckedProgram, name: &str) -> SurfaceId {
     program
         .facts
@@ -383,6 +819,166 @@ fn admitted_store(program: &CheckedProgram) -> TreeStore {
         .write_store_uid(&StoreUid::from_entropy_bytes([7; 16]))
         .expect("write surface test store uid");
     store
+}
+
+fn root_collection_ref(program: &CheckedProgram, surface: SurfaceId) -> SurfaceReadOperationRef {
+    operation_ref(program, surface, |kind| {
+        matches!(kind, SurfaceReadOperationKind::PagedRootCollection { .. })
+    })
+}
+
+fn index_collection_ref(
+    program: &CheckedProgram,
+    surface: SurfaceId,
+    index_name: &str,
+) -> SurfaceReadOperationRef {
+    operation_ref(program, surface, |kind| match *kind {
+        SurfaceReadOperationKind::PagedIndexCollection { index, .. }
+        | SurfaceReadOperationKind::UniqueIndexLookup { index, .. } => {
+            program.facts.store_index(index).name == index_name
+        }
+        _ => false,
+    })
+}
+
+fn operation_ref(
+    program: &CheckedProgram,
+    surface: SurfaceId,
+    matches_kind: impl Fn(&SurfaceReadOperationKind) -> bool,
+) -> SurfaceReadOperationRef {
+    let surface_fact = program.facts.surface(surface);
+    let ordinal = surface_fact
+        .read_operations
+        .iter()
+        .position(|operation| matches_kind(&operation.kind))
+        .expect("surface operation is present");
+    SurfaceReadOperationRef { surface, ordinal }
+}
+
+fn write_book(
+    program: &CheckedRuntimeProgram,
+    store: &TreeStore,
+    shelf: &str,
+    id: i64,
+    title: &str,
+    author: &str,
+    isbn: &str,
+) {
+    let identity = [SavedKey::Str(shelf.into()), SavedKey::Int(id)];
+    write_data_value(
+        program,
+        store,
+        "books",
+        &identity,
+        &data_path(program, "books", &["title"]),
+        SavedValue::Str(title.into()),
+    );
+    write_data_value(
+        program,
+        store,
+        "books",
+        &identity,
+        &data_path(program, "books", &["privateCode"]),
+        SavedValue::Str("internal".into()),
+    );
+    write_data_value(
+        program,
+        store,
+        "books",
+        &identity,
+        &data_path(program, "books", &["author"]),
+        SavedValue::Str(author.into()),
+    );
+    write_data_value(
+        program,
+        store,
+        "books",
+        &identity,
+        &data_path(program, "books", &["isbn"]),
+        SavedValue::Str(isbn.into()),
+    );
+    write_non_unique_index_entry(
+        program,
+        store,
+        "byAuthor",
+        &[
+            SavedKey::Str(author.into()),
+            SavedKey::Str(shelf.into()),
+            SavedKey::Int(id),
+        ],
+        &identity,
+    );
+    write_unique_index_entry(
+        program,
+        store,
+        "byIsbn",
+        &[SavedKey::Str(isbn.into())],
+        &identity,
+    );
+}
+
+fn write_non_unique_index_entry(
+    program: &CheckedRuntimeProgram,
+    store: &TreeStore,
+    index: &str,
+    index_keys: &[SavedKey],
+    identity: &[SavedKey],
+) {
+    store
+        .write_index_entry(
+            &index_catalog_id(program, "books", index),
+            index_keys,
+            identity,
+            Vec::new(),
+        )
+        .expect("non-unique index entry write succeeds");
+}
+
+fn write_unique_index_entry(
+    program: &CheckedRuntimeProgram,
+    store: &TreeStore,
+    index: &str,
+    index_keys: &[SavedKey],
+    identity: &[SavedKey],
+) {
+    store
+        .write_index_entry(
+            &index_catalog_id(program, "books", index),
+            index_keys,
+            identity,
+            encode_identity_payload(identity),
+        )
+        .expect("unique index entry write succeeds");
+}
+
+fn record_identities(records: &[SurfaceReadRecord]) -> Vec<Vec<SavedKey>> {
+    records
+        .iter()
+        .map(|record| record.identity.as_ref().expect("row identity").keys.clone())
+        .collect()
+}
+
+fn collect_page_identities(
+    read: &SurfaceCollectionRead<'_>,
+    exact_keys: &[SavedKey],
+    limit: usize,
+) -> Vec<Vec<SavedKey>> {
+    let mut cursor = None;
+    let mut identities = Vec::new();
+    loop {
+        let page = read
+            .page(SurfaceCollectionPageRequest {
+                exact_keys,
+                limit,
+                cursor: cursor.as_ref(),
+            })
+            .expect("surface page");
+        identities.extend(record_identities(&page.rows));
+        let Some(next) = page.next else {
+            return identities;
+        };
+        cursor = Some(next);
+    }
 }
 
 fn source_only_program(source: &str) -> CheckedProgram {
