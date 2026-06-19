@@ -364,24 +364,28 @@ enum SessionWrites {
 }
 
 pub struct SessionEntry<'a> {
-    name: &'a str,
-    args: SessionArgs<'a>,
+    invocation: SessionInvocation<'a>,
     host: &'a Host,
     output: &'a mut dyn RunOutputSink,
     hook: Option<&'a mut dyn StepHook>,
     writes: SessionWrites,
 }
 
-enum SessionArgs<'a> {
-    Text(Vec<(&'a str, &'a str)>),
+enum SessionInvocation<'a> {
+    Text {
+        name: &'a str,
+        args: Vec<(&'a str, &'a str)>,
+    },
     Protocol(EntryInvocation),
 }
 
 impl<'a> SessionEntry<'a> {
     pub fn new(name: &'a str, host: &'a Host, output: &'a mut dyn RunOutputSink) -> Self {
         Self {
-            name,
-            args: SessionArgs::Text(Vec::new()),
+            invocation: SessionInvocation::Text {
+                name,
+                args: Vec::new(),
+            },
             host,
             output,
             hook: None,
@@ -389,14 +393,33 @@ impl<'a> SessionEntry<'a> {
         }
     }
 
-    pub fn with_text_args(mut self, args: Vec<(&'a str, &'a str)>) -> Self {
-        self.args = SessionArgs::Text(args);
-        self
+    pub fn text(
+        name: &'a str,
+        args: Vec<(&'a str, &'a str)>,
+        host: &'a Host,
+        output: &'a mut dyn RunOutputSink,
+    ) -> Self {
+        Self {
+            invocation: SessionInvocation::Text { name, args },
+            host,
+            output,
+            hook: None,
+            writes: SessionWrites::Commit,
+        }
     }
 
-    pub fn with_protocol_invocation(mut self, invocation: EntryInvocation) -> Self {
-        self.args = SessionArgs::Protocol(invocation);
-        self
+    pub fn protocol(
+        invocation: EntryInvocation,
+        host: &'a Host,
+        output: &'a mut dyn RunOutputSink,
+    ) -> Self {
+        Self {
+            invocation: SessionInvocation::Protocol(invocation),
+            host,
+            output,
+            hook: None,
+            writes: SessionWrites::Commit,
+        }
     }
 
     pub fn with_hook(mut self, hook: &'a mut dyn StepHook) -> Self {
@@ -484,11 +507,11 @@ impl ProjectSession {
     }
 
     pub fn invoke(&self, invocation: SessionEntry<'_>) -> Result<RunOutput, ProjectInvokeError> {
-        let call = match &invocation.args {
-            SessionArgs::Text(args) => {
-                CheckedEntryCall::from_text_args(&self.runtime, invocation.name, args)?
+        let call = match &invocation.invocation {
+            SessionInvocation::Text { name, args } => {
+                CheckedEntryCall::from_text_args(&self.runtime, name, args)?
             }
-            SessionArgs::Protocol(protocol) => {
+            SessionInvocation::Protocol(protocol) => {
                 CheckedEntryCall::from_protocol_invocation(&self.runtime, protocol)?
             }
         };

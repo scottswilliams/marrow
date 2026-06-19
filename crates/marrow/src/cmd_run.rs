@@ -399,8 +399,7 @@ fn execute(request: RunExecution<'_>, nondeterminism: &impl Nondeterminism) -> E
             let trace = observe.traces().then(|| TraceHook::new("", program));
             let mut hook = DryRunHook::new(trace);
             let result = session.invoke(
-                SessionEntry::new(entry, &host, &mut fallback_output)
-                    .with_text_args(text_args.clone())
+                SessionEntry::text(entry, text_args.clone(), &host, &mut fallback_output)
                     .with_hook(&mut hook)
                     .with_isolated_writes(),
             );
@@ -417,15 +416,17 @@ fn execute(request: RunExecution<'_>, nondeterminism: &impl Nondeterminism) -> E
         } else if observe.traces() {
             let mut hook = TraceHook::new("", program);
             let result = session.invoke(
-                SessionEntry::new(entry, &host, &mut fallback_output)
-                    .with_text_args(text_args.clone())
+                SessionEntry::text(entry, text_args.clone(), &host, &mut fallback_output)
                     .with_hook(&mut hook),
             );
             (result, Report::Trace(hook))
         } else {
-            let result = session.invoke(
-                SessionEntry::new(entry, &host, &mut fallback_output).with_text_args(text_args),
-            );
+            let result = session.invoke(SessionEntry::text(
+                entry,
+                text_args,
+                &host,
+                &mut fallback_output,
+            ));
             (result, Report::None)
         }
     };

@@ -4,8 +4,8 @@ use std::path::Path;
 
 use marrow_check::{ProjectConfig, StoreBackend, StoreConfig};
 use marrow_run::{
-    EntryArgument, EntryArgumentValue, EntryDescriptor, EntryScalarArgument, Host, ProjectMode,
-    ProjectOpen, ProjectSession, RUN_ENTRY_ARGUMENT, SessionEntry,
+    EntryArgument, EntryArgumentValue, EntryDescriptor, EntryInvocation, EntryScalarArgument, Host,
+    ProjectMode, ProjectOpen, ProjectSession, RUN_ENTRY_ARGUMENT, SessionEntry,
 };
 use marrow_store::tree::TreeStore;
 use support::{TempDir, write_temp_source};
@@ -98,25 +98,28 @@ fn project_session_invokes_protocol_arguments() {
     let host = Host::new();
     let mut output = String::new();
 
+    let descriptor = EntryDescriptor::resolve(session.runtime_program(), "shelf::echo")
+        .expect("entry descriptor");
     let result = session
-        .invoke(
-            SessionEntry::new("shelf::echo", &host, &mut output).with_protocol_invocation(
-                EntryDescriptor::resolve(session.runtime_program(), "shelf::echo")
-                    .expect("entry descriptor")
-                    .invocation(vec![
-                        EntryArgument {
-                            name: "label".into(),
-                            value: EntryArgumentValue::Scalar(EntryScalarArgument::String(
-                                "typed".into(),
-                            )),
-                        },
-                        EntryArgument {
-                            name: "n".into(),
-                            value: EntryArgumentValue::Scalar(EntryScalarArgument::Int(7)),
-                        },
-                    ]),
-            ),
-        )
+        .invoke(SessionEntry::protocol(
+            EntryInvocation {
+                identity: descriptor.identity,
+                arguments: vec![
+                    EntryArgument {
+                        name: "label".into(),
+                        value: EntryArgumentValue::Scalar(EntryScalarArgument::String(
+                            "typed".into(),
+                        )),
+                    },
+                    EntryArgument {
+                        name: "n".into(),
+                        value: EntryArgumentValue::Scalar(EntryScalarArgument::Int(7)),
+                    },
+                ],
+            },
+            &host,
+            &mut output,
+        ))
         .expect("protocol args invoke");
 
     assert_eq!(output, "typed\n");
@@ -126,20 +129,22 @@ fn project_session_invokes_protocol_arguments() {
 #[test]
 fn project_session_rejects_stale_protocol_invocation_identity() {
     let stale = support::checked_program("module shelf\npub fn echo(n: int): int\n    return n\n");
-    let stale = EntryDescriptor::resolve(&stale, "shelf::echo")
-        .expect("stale descriptor")
-        .invocation(vec![EntryArgument {
+    let stale = EntryDescriptor::resolve(&stale, "shelf::echo").expect("stale descriptor");
+    let stale = EntryInvocation {
+        identity: stale.identity,
+        arguments: vec![EntryArgument {
             name: "n".into(),
             value: EntryArgumentValue::Scalar(EntryScalarArgument::Int(7)),
-        }]);
+        }],
+    };
     let root = TempDir::new("marrow-run-session-stale-protocol-args").expect("create project");
     write_native_config(root.path());
     write_temp_source(
         root.path(),
         Path::new("src/shelf.mw"),
         "module shelf\n\
-         pub fn echo(n: int): int\n\
-         \x20\x20\x20\x20return n + 1\n",
+         pub fn echo(label: string): string\n\
+         \x20\x20\x20\x20return label\n",
     );
     let session = ProjectSession::open(
         root.path(),
@@ -152,9 +157,7 @@ fn project_session_rejects_stale_protocol_invocation_identity() {
     let mut output = String::new();
 
     let error = session
-        .invoke(
-            SessionEntry::new("shelf::echo", &host, &mut output).with_protocol_invocation(stale),
-        )
+        .invoke(SessionEntry::protocol(stale, &host, &mut output))
         .expect_err("stale protocol descriptor should fail closed");
 
     assert_eq!(error.code(), RUN_ENTRY_ARGUMENT);

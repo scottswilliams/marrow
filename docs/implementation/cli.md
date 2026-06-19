@@ -123,10 +123,19 @@ Structured reports that include a `project` field render the canonical absolute 
   opens native stores read-only for classification: it reports would-freeze,
   would-apply, or would-fence as tooling content, does not freeze or auto-apply,
   and does not execute the entry when the fence would not pass.
-- **Arguments and envelopes.** `SessionEntry` carries the selected entry name
-  plus raw text argument pairs into `CheckedEntryCall`, where the checked
-  signature decodes scalars, enums, scalar/enum sequences, and single-key
-  identities or rejects unsupported surfaces with `run.entry_argument`.
+- **Arguments and envelopes.** Text `SessionEntry` calls carry the selected
+  entry name plus raw text argument pairs into `CheckedEntryCall`, where the
+  checked signature decodes scalars, enums, scalar/enum sequences, and
+  single-key identities or rejects unsupported surfaces with
+  `run.entry_argument`. Protocol `SessionEntry` calls carry a
+  `marrow-check` `entry.invoke.v1` descriptor identity plus typed argument
+  values; `marrow-run` admits that identity against the current checked runtime
+  by comparing the callable ABI tag and read-only checked-program context, then
+  decodes only canonical scalar, enum-member, identity, and supported sequence
+  values before execution. Descriptor tags bind entry name, parameter shapes,
+  accepted catalog identities, and return presence, not function bodies or
+  source-spelled return type names; body-only implementation changes under the
+  same signature do not stale a protocol invocation.
   `cmd_run.rs` captures program stdout only for `--format json`, renders the
   result envelope with the session-owned store stamp, and asks `marrow-json` to
   render the CLI-compatible return-value leaf. Resource and local-tree returns

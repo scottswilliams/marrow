@@ -4,8 +4,8 @@ use std::rc::Rc;
 
 use marrow_run::{
     CheckedEntryCall, EntryArgument, EntryArgumentShape, EntryArgumentValue, EntryDescriptor,
-    EntryParameter, EntryScalarArgument, Host, RUN_ENTRY_ARGUMENT, Value, run_entry,
-    run_entry_with_host,
+    EntryInvocation, EntryParameter, EntryScalarArgument, Host, RUN_ENTRY_ARGUMENT, Value,
+    run_entry, run_entry_with_host,
 };
 use marrow_store::tree::TreeStore;
 use marrow_store::value::ScalarType;
@@ -17,6 +17,16 @@ fn entry_parameter<'a>(descriptor: &'a EntryDescriptor, name: &str) -> &'a Entry
         .iter()
         .find(|param| param.name == name)
         .expect("entry parameter")
+}
+
+fn protocol_invocation(
+    descriptor: &EntryDescriptor,
+    arguments: Vec<EntryArgument>,
+) -> EntryInvocation {
+    EntryInvocation {
+        identity: descriptor.identity.clone(),
+        arguments,
+    }
 }
 
 #[test]
@@ -77,40 +87,42 @@ fn protocol_args_admit_canonical_entry_identity_and_typed_values() {
         .expect("archived member")
         .catalog_id
         .clone();
-    let call = CheckedEntryCall::from_protocol_args(
+    let call = CheckedEntryCall::from_protocol_invocation(
         &program,
-        &descriptor.identity,
-        &[
-            EntryArgument {
-                name: "author".into(),
-                value: EntryArgumentValue::Identity {
-                    store_catalog_id: author_store_catalog_id,
-                    keys: vec![EntryScalarArgument::Int(7)],
+        &protocol_invocation(
+            &descriptor,
+            vec![
+                EntryArgument {
+                    name: "author".into(),
+                    value: EntryArgumentValue::Identity {
+                        store_catalog_id: author_store_catalog_id,
+                        keys: vec![EntryScalarArgument::Int(7)],
+                    },
                 },
-            },
-            EntryArgument {
-                name: "status".into(),
-                value: EntryArgumentValue::EnumMember {
-                    member_catalog_id: archived_member_catalog_id,
+                EntryArgument {
+                    name: "status".into(),
+                    value: EntryArgumentValue::EnumMember {
+                        member_catalog_id: archived_member_catalog_id,
+                    },
                 },
-            },
-            EntryArgument {
-                name: "flags".into(),
-                value: EntryArgumentValue::Sequence(vec![
-                    EntryArgumentValue::Scalar(EntryScalarArgument::Bool(true)),
-                    EntryArgumentValue::Scalar(EntryScalarArgument::Bool(false)),
-                ]),
-            },
-            EntryArgument {
-                name: "label".into(),
-                value: EntryArgumentValue::Scalar(EntryScalarArgument::String("done".into())),
-            },
-        ],
+                EntryArgument {
+                    name: "flags".into(),
+                    value: EntryArgumentValue::Sequence(vec![
+                        EntryArgumentValue::Scalar(EntryScalarArgument::Bool(true)),
+                        EntryArgumentValue::Scalar(EntryScalarArgument::Bool(false)),
+                    ]),
+                },
+                EntryArgument {
+                    name: "label".into(),
+                    value: EntryArgumentValue::Scalar(EntryScalarArgument::String("done".into())),
+                },
+            ],
+        ),
     )
     .expect("protocol args are admitted");
 
     assert_eq!(call.identity().canonical_name, "test::accept");
-    assert_eq!(call.identity().requested_name, "accept");
+    assert_eq!(call.identity().requested_name, "test::accept");
     assert_eq!(call.identity().source_digest, program.source_digest());
     assert_eq!(
         call.identity().read_only_context_digest,
@@ -221,29 +233,33 @@ fn protocol_enum_arguments_round_trip_duplicate_leaf_catalog_ids() {
 
     let store = TreeStore::memory();
     let mut output = String::new();
-    let tiger = CheckedEntryCall::from_protocol_args(
+    let tiger = CheckedEntryCall::from_protocol_invocation(
         &program,
-        &descriptor.identity,
-        &[EntryArgument {
-            name: "cat".into(),
-            value: EntryArgumentValue::EnumMember {
-                member_catalog_id: tiger_paw,
-            },
-        }],
+        &protocol_invocation(
+            &descriptor,
+            vec![EntryArgument {
+                name: "cat".into(),
+                value: EntryArgumentValue::EnumMember {
+                    member_catalog_id: tiger_paw,
+                },
+            }],
+        ),
     )
     .expect("tiger paw arg");
     let tiger_result = run_entry(&store, &tiger, &mut output).expect("run tiger");
     assert_eq!(tiger_result.value, Some(Value::Int(2)));
 
-    let lion = CheckedEntryCall::from_protocol_args(
+    let lion = CheckedEntryCall::from_protocol_invocation(
         &program,
-        &descriptor.identity,
-        &[EntryArgument {
-            name: "cat".into(),
-            value: EntryArgumentValue::EnumMember {
-                member_catalog_id: lion_paw,
-            },
-        }],
+        &protocol_invocation(
+            &descriptor,
+            vec![EntryArgument {
+                name: "cat".into(),
+                value: EntryArgumentValue::EnumMember {
+                    member_catalog_id: lion_paw,
+                },
+            }],
+        ),
     )
     .expect("lion paw arg");
     let lion_result = run_entry(&store, &lion, &mut output).expect("run lion");
@@ -251,7 +267,43 @@ fn protocol_enum_arguments_round_trip_duplicate_leaf_catalog_ids() {
 }
 
 #[test]
-fn entry_identity_digest_changes_with_signature_and_body() {
+fn protocol_temporal_arguments_reject_out_of_range_values() {
+    let program = checked_program(
+        "pub fn date_echo(value: date): date\n\
+         \x20   return value\n\
+         pub fn instant_echo(value: instant): instant\n\
+         \x20   return value\n",
+    );
+
+    for (entry, value) in [
+        (
+            "date_echo",
+            EntryArgumentValue::Scalar(EntryScalarArgument::Date(i32::MIN)),
+        ),
+        (
+            "instant_echo",
+            EntryArgumentValue::Scalar(EntryScalarArgument::Instant(i128::MAX)),
+        ),
+    ] {
+        let descriptor = EntryDescriptor::resolve(&program, entry).expect("entry descriptor");
+        let error = CheckedEntryCall::from_protocol_invocation(
+            &program,
+            &protocol_invocation(
+                &descriptor,
+                vec![EntryArgument {
+                    name: "value".into(),
+                    value,
+                }],
+            ),
+        )
+        .expect_err("out-of-range temporal protocol value should reject");
+
+        assert_eq!(error.code(), RUN_ENTRY_ARGUMENT);
+    }
+}
+
+#[test]
+fn entry_tag_changes_with_signature_and_ignores_body_changes() {
     let signature_a = checked_program("pub fn run(n: int): int\n    return n\n");
     let signature_b = checked_program("pub fn run(label: string): string\n    return label\n");
     let body_a = checked_program("pub fn run(n: int): int\n    return n\n");
@@ -263,29 +315,107 @@ fn entry_identity_digest_changes_with_signature_and_body() {
     let body_b = EntryDescriptor::resolve(&body_b, "run").expect("body b");
 
     assert_ne!(
-        signature_a.identity.entry_digest,
-        signature_b.identity.entry_digest
+        signature_a.identity.entry_tag,
+        signature_b.identity.entry_tag
     );
-    assert_ne!(body_a.identity.entry_digest, body_b.identity.entry_digest);
+    assert_eq!(body_a.identity.entry_tag, body_b.identity.entry_tag);
 }
 
 #[test]
-fn stale_protocol_entry_identity_is_rejected_before_running() {
+fn stale_protocol_entry_identity_rejects_signature_changes_before_running() {
     let stale = checked_program("pub fn run(n: int): int\n    return n\n");
     let stale = EntryDescriptor::resolve(&stale, "run").expect("stale descriptor");
-    let current = checked_program("pub fn run(n: int): int\n    return n + 1\n");
+    let current = checked_program("pub fn run(label: string): string\n    return label\n");
 
-    let error = CheckedEntryCall::from_protocol_args(
+    let error = CheckedEntryCall::from_protocol_invocation(
         &current,
-        &stale.identity,
-        &[EntryArgument {
-            name: "n".into(),
-            value: EntryArgumentValue::Scalar(EntryScalarArgument::Int(1)),
-        }],
+        &protocol_invocation(
+            &stale,
+            vec![EntryArgument {
+                name: "n".into(),
+                value: EntryArgumentValue::Scalar(EntryScalarArgument::Int(1)),
+            }],
+        ),
     )
     .expect_err("stale descriptor should fail closed");
 
     assert_eq!(error.code(), RUN_ENTRY_ARGUMENT);
+}
+
+#[test]
+fn stale_protocol_entry_identity_rejects_removed_entries_as_entry_arguments() {
+    let stale = checked_program("pub fn run(n: int): int\n    return n\n");
+    let stale = EntryDescriptor::resolve(&stale, "run").expect("stale descriptor");
+    let current = checked_program("pub fn renamed(n: int): int\n    return n\n");
+
+    let error = CheckedEntryCall::from_protocol_invocation(
+        &current,
+        &protocol_invocation(
+            &stale,
+            vec![EntryArgument {
+                name: "n".into(),
+                value: EntryArgumentValue::Scalar(EntryScalarArgument::Int(1)),
+            }],
+        ),
+    )
+    .expect_err("removed entry descriptor should fail as stale protocol identity");
+
+    assert_eq!(error.code(), RUN_ENTRY_ARGUMENT);
+}
+
+#[test]
+fn stale_protocol_entry_identity_rejects_private_entries_as_entry_arguments() {
+    let stale = checked_program("pub fn run(n: int): int\n    return n\n");
+    let stale = EntryDescriptor::resolve(&stale, "run").expect("stale descriptor");
+    let current = checked_program("fn run(n: int): int\n    return n\n");
+
+    let error = CheckedEntryCall::from_protocol_invocation(
+        &current,
+        &protocol_invocation(
+            &stale,
+            vec![EntryArgument {
+                name: "n".into(),
+                value: EntryArgumentValue::Scalar(EntryScalarArgument::Int(1)),
+            }],
+        ),
+    )
+    .expect_err("private entry descriptor should fail as stale protocol identity");
+
+    assert_eq!(error.code(), RUN_ENTRY_ARGUMENT);
+}
+
+#[test]
+fn protocol_entry_identity_allows_called_function_body_changes() {
+    let stale = checked_program(
+        "fn helper(n: int): int\n\
+         \x20   return n\n\
+         pub fn run(n: int): int\n\
+         \x20   return helper(n)\n",
+    );
+    let stale = EntryDescriptor::resolve(&stale, "run").expect("stale descriptor");
+    let current = checked_program(
+        "fn helper(n: int): int\n\
+         \x20   return n + 1\n\
+         pub fn run(n: int): int\n\
+         \x20   return helper(n)\n",
+    );
+
+    let call = CheckedEntryCall::from_protocol_invocation(
+        &current,
+        &protocol_invocation(
+            &stale,
+            vec![EntryArgument {
+                name: "n".into(),
+                value: EntryArgumentValue::Scalar(EntryScalarArgument::Int(1)),
+            }],
+        ),
+    )
+    .expect("body-only helper changes keep the entry ABI");
+
+    let store = TreeStore::memory();
+    let mut output = String::new();
+    let result = run_entry(&store, &call, &mut output).expect("run current helper body");
+    assert_eq!(result.value, Some(Value::Int(2)));
 }
 
 #[test]
@@ -299,13 +429,15 @@ fn protocol_entry_identity_resolves_by_canonical_descriptor_name() {
          \x20   return n + 10\n",
     ]);
     let descriptor = EntryDescriptor::resolve(&program, "b::run").expect("entry descriptor");
-    let call = CheckedEntryCall::from_protocol_args(
+    let call = CheckedEntryCall::from_protocol_invocation(
         &program,
-        &descriptor.identity,
-        &[EntryArgument {
-            name: "n".into(),
-            value: EntryArgumentValue::Scalar(EntryScalarArgument::Int(5)),
-        }],
+        &protocol_invocation(
+            &descriptor,
+            vec![EntryArgument {
+                name: "n".into(),
+                value: EntryArgumentValue::Scalar(EntryScalarArgument::Int(5)),
+            }],
+        ),
     )
     .expect("canonical protocol descriptor");
 

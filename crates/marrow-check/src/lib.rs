@@ -15,6 +15,7 @@ mod checks;
 mod diagnostics;
 mod driver;
 pub mod durable_path;
+mod entry_abi;
 mod enums;
 pub mod evolution;
 pub mod executable;
@@ -75,6 +76,10 @@ pub use driver::{
 pub use durable_path::{
     PathParseError, PathSegment, StoreLeafKind, display_path, identity_leaf_key_mismatch,
     parse_path,
+};
+pub use entry_abi::{
+    ENTRY_PROTOCOL_TAG_VERSION, EntryArgumentShape, EntryDescriptor, EntryDescriptorError,
+    EntryEnumMember, EntryIdentity, EntryIdentityKey, EntryParameter,
 };
 pub use executable::{
     CheckedArg, CheckedBinaryOp, CheckedBody, CheckedBuiltinCall, CheckedCallTarget,

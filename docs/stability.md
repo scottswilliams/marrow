@@ -80,10 +80,18 @@ cursor tokens, generated clients, and create/delete body decode remain future
 profiles.
 Until serving profiles ship, typed entry invocation (`marrow run` with `--arg`
 and `--format json`) is the supported integration surface.
+The linked-Rust entry descriptor profile is an unstable implementation surface:
+`marrow-check` owns `entry.invoke.v1` descriptor tags over public entry
+signatures, parameter shapes, accepted catalog identities, and return presence,
+while `marrow-run` admits `EntryInvocation` values by checking the callable ABI
+tag and read-only checked-program context before execution. It does not make the
+Rust crates stable, does not define JSON request bodies, and does not publish
+HTTP routes or generated-client names.
 
 The `signature_digest` field in the run JSON envelope is reserved for the future
-function ABI identity model and remains `null` in v0.1. The `raises` field is
-reserved for the future declared error surface and remains `null` in v0.1.
+public JSON exposure of entry ABI identity and remains `null` in v0.1. The
+linked-Rust `entry.invoke.v1` profile does not populate it. The `raises` field
+is reserved for the future declared error surface and remains `null` in v0.1.
 
 A typed JSONL export remains a gated future surface. It depends on the designed
 export boundary and type-identity contract; it is not a v0.1 data export API.

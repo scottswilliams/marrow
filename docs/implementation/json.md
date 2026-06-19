@@ -51,9 +51,10 @@ JSON decode is structural and canonical only: runtime `SurfaceUpdate` owns
 declared update-set authorization, duplicate and non-empty patch validation,
 exact value shape checks, enum membership and selectability, identity store,
 arity, and key-scalar validation, record presence, and post-patch footprint
-validation. HTTP routes, opaque cursor tokens, generated clients,
-entry-argument JSON decode, and create/delete body decode remain outside this
-crate's current profile.
+validation. The linked-Rust `entry.invoke.v1` descriptor and `EntryInvocation`
+path is owned by `marrow-check` and `marrow-run`, not by this JSON crate. HTTP
+routes, opaque cursor tokens, generated clients, entry-argument JSON decode, and
+create/delete body decode remain outside this crate's current profile.
 
 The operation-tag execution functions compose those DTOs with `marrow-run`
 admission. Reads admit stable read tags, decode the point/page/unique request

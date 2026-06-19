@@ -767,6 +767,7 @@ pub struct CheckedRuntimeProgram {
     entry_functions: HashMap<String, CheckedEntryFunction>,
     private_entry_functions: HashSet<String>,
     facts: CheckedFacts,
+    accepted_catalog_ids: HashSet<String>,
     accepted_catalog_epoch: Option<u64>,
     source_digest: String,
     read_only_context_digest: String,
@@ -788,6 +789,12 @@ impl CheckedRuntimeProgram {
             entry_functions,
             private_entry_functions,
             facts: program.facts.clone(),
+            accepted_catalog_ids: program
+                .catalog
+                .accepted_entries
+                .iter()
+                .map(|entry| entry.stable_id.clone())
+                .collect(),
             accepted_catalog_epoch: program.catalog.accepted_epoch,
             source_digest: program.source_digest(),
             read_only_context_digest: program.read_only_context_digest(),
@@ -816,6 +823,10 @@ impl CheckedRuntimeProgram {
 
     pub fn accepted_catalog_epoch(&self) -> Option<u64> {
         self.accepted_catalog_epoch
+    }
+
+    pub fn has_accepted_catalog_id(&self, catalog_id: &str) -> bool {
+        self.accepted_catalog_ids.contains(catalog_id)
     }
 
     pub fn source_digest(&self) -> &str {

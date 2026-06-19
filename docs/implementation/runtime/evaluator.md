@@ -17,7 +17,8 @@ One run is a tree of activations. `run_entry` resolves the entry, builds an `Env
 | File | Responsibility |
 | --- | --- |
 | `crates/marrow-run/src/lib.rs` | Crate root: declares submodules, re-exports the public surface (`run_entry*`, `RuntimeError` + `RUN_*` codes, `Host`/`Frame`/`StepHook`, `Value`/`RunOutput`/`IdentityValue`, `WriteOp`/`WriteTarget`). |
-| `crates/marrow-run/src/entry.rs` | Public entry API: `CheckedEntryCall::new` resolves and type-checks entry args; `run_entry` / `run_entry_with_host` / `run_entry_with_debugger` drive one top-level call into a `RunOutput`. |
+| `crates/marrow-check/src/entry_abi.rs` | Checked entry ABI descriptors: builds `entry.invoke.v1` descriptor identities from public entry signatures, parameter shapes, accepted catalog identities, and return presence. The tag is a callable ABI tag, not a function-body digest. |
+| `crates/marrow-run/src/entry.rs` | Public entry runtime API: `CheckedEntryCall::new` and `from_text_args` resolve text/dynamic entry args; `from_protocol_invocation` admits checker-owned entry descriptor identities and typed protocol values; `run_entry` / `run_entry_with_host` / `run_entry_with_debugger` drive one top-level call into a `RunOutput`. |
 | `crates/marrow-run/src/activation.rs` | One call frame: `invoke` builds the `Env`, binds constants/params, runs the body, and classifies into `Completion`; `complete_call` re-raises that at the caller. |
 | `crates/marrow-run/src/call.rs` | `eval_call` dispatches `CheckedCallTarget` variants; `function_by_ref` resolves module/function by index; `invoke_function` runs a child activation inheriting traversed layers and moving the debugger hook in and out. |
 | `crates/marrow-run/src/call_args.rs` | Argument binding (positional/named/duplicate/missing), resource- and identity-constructor evaluation, `default_value` for uninitialized `var`. |

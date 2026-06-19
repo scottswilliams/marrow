@@ -31,7 +31,6 @@ mod call_args;
 mod collection;
 mod durable_read;
 mod entry;
-mod entry_digest;
 mod env;
 mod error;
 pub mod evolution;
@@ -69,10 +68,8 @@ mod write_dispatch;
 mod write_plan;
 
 pub use entry::{
-    CheckedEntryCall, EntryArgument, EntryArgumentShape, EntryArgumentValue, EntryDescriptor,
-    EntryEnumMember, EntryIdentity, EntryIdentityKey, EntryInvocation, EntryParameter,
-    EntryScalarArgument, evaluate_checked_read_only_expression, run_entry, run_entry_with_debugger,
-    run_entry_with_host,
+    CheckedEntryCall, EntryArgument, EntryArgumentValue, EntryInvocation, EntryScalarArgument,
+    evaluate_checked_read_only_expression, run_entry, run_entry_with_debugger, run_entry_with_host,
 };
 pub use error::{
     CALL_DEPTH_BUDGET, CallDepthFault, RUN_ABSENT, RUN_AMBIGUOUS_FUNCTION, RUN_ASSERT,
@@ -84,6 +81,10 @@ pub use error::{
 pub use host::{
     FixedNondeterminism, Frame, Host, LogSink, Nondeterminism, RunContext, StepHook,
     SystemNondeterminism,
+};
+pub use marrow_check::{
+    ENTRY_PROTOCOL_TAG_VERSION, EntryArgumentShape, EntryDescriptor, EntryDescriptorError,
+    EntryEnumMember, EntryIdentity, EntryIdentityKey, EntryParameter,
 };
 pub use project_session::{
     ProjectInvokeError, ProjectMode, ProjectOpen, ProjectSession, ProjectSessionError,
