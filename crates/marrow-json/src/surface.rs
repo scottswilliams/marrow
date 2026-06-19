@@ -6,8 +6,11 @@ use serde::{Deserialize, Serialize};
 
 mod request;
 pub use request::{
-    DecodedSurfacePageRequest, DecodedSurfacePointRequest, DecodedSurfaceUniqueLookupRequest,
-    SurfacePageRequestJson, SurfacePointRequestJson, SurfaceUniqueLookupRequestJson,
+    DecodedSurfacePageRequest, DecodedSurfacePointRequest, DecodedSurfacePointUpdateRequest,
+    DecodedSurfaceSingletonUpdateRequest, DecodedSurfaceUniqueLookupRequest,
+    SurfacePageRequestJson, SurfacePointRequestJson, SurfacePointUpdateRequestJson,
+    SurfaceSingletonUpdateRequestJson, SurfaceUniqueLookupRequestJson, SurfaceUpdateFieldJson,
+    SurfaceUpdateValueJson,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -253,7 +256,7 @@ mod tests {
     use marrow_run::{
         SURFACE_CURSOR, SURFACE_REQUEST, SurfaceCollectionRead, SurfaceEnumValue, SurfaceNodeRead,
         SurfaceReadError, SurfaceReadField, SurfaceReadIdentity, SurfaceReadOperationRef,
-        SurfaceReadRecord, SurfaceValue,
+        SurfaceReadRecord, SurfaceUpdate, SurfaceValue,
     };
     use marrow_store::Decimal;
     use marrow_store::cell::CatalogId;
@@ -267,7 +270,8 @@ mod tests {
     use crate::surface::{
         SurfaceArgumentJson, SurfaceCursorBoundaryJson, SurfaceCursorJson, SurfaceIdentityJson,
         SurfaceKeyJson, SurfacePageJson, SurfacePageRequestJson, SurfacePointRequestJson,
-        SurfaceRecordJson, SurfaceValueJson,
+        SurfacePointUpdateRequestJson, SurfaceRecordJson, SurfaceSingletonUpdateRequestJson,
+        SurfaceUpdateFieldJson, SurfaceUpdateValueJson, SurfaceValueJson,
     };
 
     static TEMP_PROJECT_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -292,6 +296,40 @@ surface Books from ^books
     fields title
     collection ^books as list
     collection ^books.byStatusAuthor as byStatusAuthor
+";
+
+    const SURFACE_UPDATE_WITH_ENUM_IDENTITY_INDEX: &str = "\
+enum Status
+    draft
+    published
+
+resource Author
+    required name: string
+store ^authors(id: int): Author
+
+resource Book
+    required title: string
+    required privateCode: string
+    required status: Status
+    required author: Id(^authors)
+store ^books(id: int): Book
+    index byStatusAuthor(status, author, id)
+
+surface Books from ^books
+    fields title, status, author
+    update status, author
+    collection ^books.byStatusAuthor as byStatusAuthor
+";
+
+    const SINGLETON_UPDATE_SURFACE: &str = "\
+resource Settings
+    required theme: string
+    mode: string
+store ^settings: Settings
+
+surface SettingsSurface from ^settings
+    fields theme, mode
+    update mode
 ";
 
     const BYTES_INDEX_SURFACE: &str = "\
@@ -544,6 +582,13 @@ surface Files from ^files
         path
     }
 
+    fn field_catalog_id(program: &CheckedRuntimeProgram, root: &str, member: &str) -> CatalogId {
+        match data_path(program, root, &[member]).as_slice() {
+            [DataPathSegment::Member(catalog_id)] => catalog_id.clone(),
+            _ => panic!("member `{member}` is not a top-level data field"),
+        }
+    }
+
     fn accepted_catalog_id(raw: &Option<String>) -> CatalogId {
         CatalogId::new(raw.clone().expect("accepted catalog id")).expect("catalog id")
     }
@@ -642,6 +687,22 @@ surface Files from ^files
             .expect("index entry write succeeds");
     }
 
+    fn write_surface_book_private_code(
+        program: &CheckedRuntimeProgram,
+        store: &TreeStore,
+        id: i64,
+        private_code: &str,
+    ) {
+        write_data_value(
+            program,
+            store,
+            "books",
+            &[SavedKey::Int(id)],
+            &data_path(program, "books", &["privateCode"]),
+            SavedValue::Str(private_code.into()),
+        );
+    }
+
     fn index_cursor_json<'a>(
         program: &'a CheckedProgram,
         runtime: &CheckedRuntimeProgram,
@@ -663,11 +724,20 @@ surface Files from ^files
         author_id: i64,
         limit: usize,
     ) -> SurfacePageRequestJson {
+        book_status_author_page_request(program, "published", author_id, limit)
+    }
+
+    fn book_status_author_page_request(
+        program: &CheckedRuntimeProgram,
+        status_member: &str,
+        author_id: i64,
+        limit: usize,
+    ) -> SurfacePageRequestJson {
         SurfacePageRequestJson {
             exact_keys: vec![
                 SurfaceArgumentJson::Enum {
                     enum_catalog_id: enum_catalog_id(program, "Status").as_str().into(),
-                    member_catalog_id: enum_member_catalog_id(program, "Status", "published")
+                    member_catalog_id: enum_member_catalog_id(program, "Status", status_member)
                         .as_str()
                         .into(),
                 },
@@ -680,6 +750,32 @@ surface Files from ^files
             ],
             limit,
             cursor: None,
+        }
+    }
+
+    fn update_field(
+        catalog_id: CatalogId,
+        value: SurfaceUpdateValueJson,
+    ) -> SurfaceUpdateFieldJson {
+        SurfaceUpdateFieldJson {
+            catalog_id: catalog_id.as_str().into(),
+            value,
+        }
+    }
+
+    fn point_update_request(
+        runtime: &CheckedRuntimeProgram,
+        id: i64,
+        fields: Vec<SurfaceUpdateFieldJson>,
+    ) -> SurfacePointUpdateRequestJson {
+        SurfacePointUpdateRequestJson {
+            identity: SurfaceIdentityJson {
+                store_catalog_id: store_catalog_id(runtime, "books").as_str().into(),
+                keys: vec![SurfaceKeyJson::Int {
+                    value: id.to_string(),
+                }],
+            },
+            fields,
         }
     }
 
@@ -856,6 +952,278 @@ surface Files from ^files
                 Ok(expected)
             );
         }
+    }
+
+    #[test]
+    fn point_update_request_decodes_and_executes_sparse_enum_identity_update() {
+        let (program, runtime) = checked_surface_program(SURFACE_UPDATE_WITH_ENUM_IDENTITY_INDEX);
+        let store = admitted_store(&program);
+        write_surface_book(&runtime, &store, 1, "Dune", "draft", 7);
+        write_surface_book_private_code(&runtime, &store, 1, "internal");
+
+        let surface = surface_id(&program, "Books");
+        let update = SurfaceUpdate::admit(&program, &store, surface).expect("admit update");
+        let request = point_update_request(
+            &runtime,
+            1,
+            vec![
+                update_field(
+                    field_catalog_id(&runtime, "books", "status"),
+                    SurfaceUpdateValueJson::Enum {
+                        enum_catalog_id: enum_catalog_id(&runtime, "Status").as_str().into(),
+                        member_catalog_id: enum_member_catalog_id(&runtime, "Status", "published")
+                            .as_str()
+                            .into(),
+                    },
+                ),
+                update_field(
+                    field_catalog_id(&runtime, "books", "author"),
+                    SurfaceUpdateValueJson::Identity {
+                        store_catalog_id: store_catalog_id(&runtime, "authors").as_str().into(),
+                        keys: vec![SurfaceKeyJson::Int { value: "8".into() }],
+                    },
+                ),
+            ],
+        );
+
+        let decoded = request.decode(&update).expect("decode point update");
+        update
+            .execute(decoded.as_update_input())
+            .expect("execute point update");
+
+        let read = SurfaceNodeRead::admit(&program, &store, surface).expect("admit read");
+        let record = read
+            .read_point(&[SavedKey::Int(1)])
+            .expect("read updated point");
+        assert_eq!(
+            record
+                .fields
+                .iter()
+                .find(|field| field.catalog_id == field_catalog_id(&runtime, "books", "status"))
+                .and_then(|field| field.value.clone()),
+            Some(SurfaceValue::Enum(SurfaceEnumValue {
+                enum_catalog_id: enum_catalog_id(&runtime, "Status"),
+                member_catalog_id: enum_member_catalog_id(&runtime, "Status", "published"),
+                render_label: "published".into(),
+            }))
+        );
+        assert_eq!(
+            record
+                .fields
+                .iter()
+                .find(|field| field.catalog_id == field_catalog_id(&runtime, "books", "author"))
+                .and_then(|field| field.value.clone()),
+            Some(SurfaceValue::Identity(SurfaceReadIdentity {
+                store_catalog_id: store_catalog_id(&runtime, "authors"),
+                keys: vec![SavedKey::Int(8)],
+            }))
+        );
+
+        let by_status_author = book_by_status_author_read(&program, &store);
+        let old_page = book_status_author_page_request(&runtime, "draft", 7, 10)
+            .decode(&by_status_author)
+            .expect("decode old index lookup");
+        assert_eq!(
+            by_status_author
+                .page(old_page.as_page_request())
+                .expect("old index page")
+                .rows,
+            Vec::<SurfaceReadRecord>::new()
+        );
+        let new_page = book_status_author_page_request(&runtime, "published", 8, 10)
+            .decode(&by_status_author)
+            .expect("decode new index lookup");
+        assert_eq!(
+            by_status_author
+                .page(new_page.as_page_request())
+                .expect("new index page")
+                .rows
+                .into_iter()
+                .map(|record| record.identity.expect("row identity").keys)
+                .collect::<Vec<_>>(),
+            vec![vec![SavedKey::Int(1)]]
+        );
+    }
+
+    #[test]
+    fn singleton_update_request_decodes_and_executes_against_keyless_surface() {
+        let (program, runtime) = checked_surface_program(SINGLETON_UPDATE_SURFACE);
+        let store = admitted_store(&program);
+        write_data_value(
+            &runtime,
+            &store,
+            "settings",
+            &[],
+            &data_path(&runtime, "settings", &["theme"]),
+            SavedValue::Str("dark".into()),
+        );
+
+        let surface = surface_id(&program, "SettingsSurface");
+        let update = SurfaceUpdate::admit(&program, &store, surface).expect("admit update");
+        let request = SurfaceSingletonUpdateRequestJson {
+            fields: vec![update_field(
+                field_catalog_id(&runtime, "settings", "mode"),
+                SurfaceUpdateValueJson::String {
+                    value: "compact".into(),
+                },
+            )],
+        };
+
+        let decoded = request.decode(&update).expect("decode singleton update");
+        update
+            .execute(decoded.as_update_input())
+            .expect("execute singleton update");
+
+        let record = SurfaceNodeRead::admit(&program, &store, surface)
+            .expect("admit singleton read")
+            .read_singleton()
+            .expect("read singleton");
+        assert_eq!(
+            record
+                .fields
+                .iter()
+                .find(|field| field.catalog_id == field_catalog_id(&runtime, "settings", "mode"))
+                .and_then(|field| field.value.clone()),
+            Some(SurfaceValue::Str("compact".into()))
+        );
+    }
+
+    #[test]
+    fn point_update_request_against_singleton_surface_returns_surface_request() {
+        let (program, runtime) = checked_surface_program(SINGLETON_UPDATE_SURFACE);
+        let store = admitted_store(&program);
+        let update =
+            SurfaceUpdate::admit(&program, &store, surface_id(&program, "SettingsSurface"))
+                .expect("admit singleton update");
+        let request = SurfacePointUpdateRequestJson {
+            identity: SurfaceIdentityJson {
+                store_catalog_id: store_catalog_id(&runtime, "settings").as_str().into(),
+                keys: Vec::new(),
+            },
+            fields: Vec::new(),
+        };
+
+        assert_surface_error(request.decode(&update), SURFACE_REQUEST);
+    }
+
+    #[test]
+    fn singleton_update_request_against_keyed_surface_returns_surface_request() {
+        let (program, _runtime) = checked_surface_program(SURFACE_UPDATE_WITH_ENUM_IDENTITY_INDEX);
+        let store = admitted_store(&program);
+        let update =
+            SurfaceUpdate::admit(&program, &store, surface_id(&program, "Books")).expect("admit");
+        let request = SurfaceSingletonUpdateRequestJson { fields: Vec::new() };
+
+        assert_surface_error(request.decode(&update), SURFACE_REQUEST);
+    }
+
+    #[test]
+    fn update_request_malformed_scalar_forms_return_surface_request() {
+        let (program, runtime) = checked_surface_program(SURFACE_UPDATE_WITH_ENUM_IDENTITY_INDEX);
+        let store = admitted_store(&program);
+        let update =
+            SurfaceUpdate::admit(&program, &store, surface_id(&program, "Books")).expect("admit");
+        let status = field_catalog_id(&runtime, "books", "status");
+
+        for value in [
+            SurfaceUpdateValueJson::Int { value: "01".into() },
+            SurfaceUpdateValueJson::Decimal {
+                value: "1.50".into(),
+            },
+            SurfaceUpdateValueJson::Bytes {
+                value_b64: "!!!!".into(),
+            },
+        ] {
+            let request =
+                point_update_request(&runtime, 1, vec![update_field(status.clone(), value)]);
+            assert_surface_error(request.decode(&update), SURFACE_REQUEST);
+        }
+    }
+
+    #[test]
+    fn update_request_malformed_field_catalog_id_returns_surface_request() {
+        let (program, runtime) = checked_surface_program(SURFACE_UPDATE_WITH_ENUM_IDENTITY_INDEX);
+        let store = admitted_store(&program);
+        let update =
+            SurfaceUpdate::admit(&program, &store, surface_id(&program, "Books")).expect("admit");
+        let request = SurfacePointUpdateRequestJson {
+            identity: SurfaceIdentityJson {
+                store_catalog_id: store_catalog_id(&runtime, "books").as_str().into(),
+                keys: vec![SurfaceKeyJson::Int { value: "1".into() }],
+            },
+            fields: vec![SurfaceUpdateFieldJson {
+                catalog_id: "not-a-catalog-id".into(),
+                value: SurfaceUpdateValueJson::String {
+                    value: "ignored".into(),
+                },
+            }],
+        };
+
+        assert_surface_error(request.decode(&update), SURFACE_REQUEST);
+    }
+
+    #[test]
+    fn decoded_undeclared_update_field_is_rejected_by_runtime_without_writing() {
+        let (program, runtime) = checked_surface_program(SURFACE_UPDATE_WITH_ENUM_IDENTITY_INDEX);
+        let store = admitted_store(&program);
+        write_surface_book(&runtime, &store, 1, "Dune", "draft", 7);
+        write_surface_book_private_code(&runtime, &store, 1, "internal");
+        let baseline = store
+            .read_commit_metadata()
+            .expect("read baseline commit metadata")
+            .expect("catalog baseline is stamped");
+        let surface = surface_id(&program, "Books");
+        let update = SurfaceUpdate::admit(&program, &store, surface).expect("admit update");
+        let request = point_update_request(
+            &runtime,
+            1,
+            vec![update_field(
+                field_catalog_id(&runtime, "books", "privateCode"),
+                SurfaceUpdateValueJson::String {
+                    value: "leak".into(),
+                },
+            )],
+        );
+
+        let decoded = request.decode(&update).expect("decode syntactic update");
+        assert_surface_error(update.execute(decoded.as_update_input()), SURFACE_REQUEST);
+        assert_eq!(
+            store
+                .read_commit_metadata()
+                .expect("read commit metadata after rejected update")
+                .expect("commit metadata remains"),
+            baseline
+        );
+        let record = SurfaceNodeRead::admit(&program, &store, surface)
+            .expect("admit read")
+            .read_point(&[SavedKey::Int(1)])
+            .expect("read unchanged point");
+        assert_eq!(
+            record
+                .fields
+                .iter()
+                .find(|field| field.catalog_id == field_catalog_id(&runtime, "books", "status"))
+                .and_then(|field| field.value.clone()),
+            Some(SurfaceValue::Enum(SurfaceEnumValue {
+                enum_catalog_id: enum_catalog_id(&runtime, "Status"),
+                member_catalog_id: enum_member_catalog_id(&runtime, "Status", "draft"),
+                render_label: "draft".into(),
+            }))
+        );
+    }
+
+    #[test]
+    fn empty_update_patch_decodes_and_runtime_returns_surface_request() {
+        let (program, runtime) = checked_surface_program(SURFACE_UPDATE_WITH_ENUM_IDENTITY_INDEX);
+        let store = admitted_store(&program);
+        write_surface_book(&runtime, &store, 1, "Dune", "draft", 7);
+        write_surface_book_private_code(&runtime, &store, 1, "internal");
+        let update =
+            SurfaceUpdate::admit(&program, &store, surface_id(&program, "Books")).expect("admit");
+        let request = point_update_request(&runtime, 1, Vec::new());
+
+        let decoded = request.decode(&update).expect("empty update decodes");
+        assert_surface_error(update.execute(decoded.as_update_input()), SURFACE_REQUEST);
     }
 
     #[test]

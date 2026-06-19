@@ -65,15 +65,17 @@ stability for the internal crates.
 
 ## Application Surfaces
 
-The `surface` read foundation is active but not yet a stable transport or
+The `surface` foundation is active but not yet a stable transport or
 generated-client contract. Checked surface facts are compiler facts over stores,
 fields, indexes, read operations, footprints, and projections. Stable read
 operations have accepted-catalog descriptors and operation tags; the active JSON
-DTOs decode checked read request parameters through admitted runtime reads and
-render already-executed surface reads with typed cursor-boundary JSON.
+DTOs decode checked read request parameters through admitted runtime reads,
+decode sparse update request bodies through admitted runtime updates, and render
+already-executed surface reads with typed cursor-boundary JSON.
 Linked-Rust embedding remains an implementation profile for hosting surface
 facts and run sessions, not a separate app-data contract. HTTP serving, opaque
-cursor tokens, generated clients, and write-body decode remain future profiles.
+cursor tokens, serialized surface descriptors, generated clients, and
+create/delete body decode remain future profiles.
 Until serving profiles ship, typed entry invocation (`marrow run` with `--arg`
 and `--format json`) is the supported integration surface.
 

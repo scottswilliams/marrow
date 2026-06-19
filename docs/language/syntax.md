@@ -136,9 +136,10 @@ only generated inputs are deferred. `collection` names either the same backing
 root or one index declared on that backing store. Nested projections,
 keyed-child reads and writes, custom read selection, opaque cursor-token
 codecs, HTTP profiles, and generated clients are later boundary-profile work
-over the checked surface and read-operation facts.
+over the checked surface facts and read-operation facts.
 `marrow-run` owns the admitted transport-neutral node and collection read
-executors, and `marrow-json` owns checked read request-parameter DTO decode plus
+executors plus the admitted sparse update executor, and `marrow-json` owns
+checked read request-parameter and sparse update request-body DTO decode plus
 read-result DTO rendering over those executor outputs, as described in
 [Surface ABI](../future/surface-abi.md).
 

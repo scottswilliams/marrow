@@ -1,11 +1,11 @@
 # Surface ABI Future Profiles
 
-The active surface-read foundation is no longer a future proposal. The checker
+The active surface foundation is no longer a future proposal. The checker
 derives `SurfaceReadOperationFact`s from checked `surface` declarations,
 `SurfaceReadOperationAnalysis::stable_descriptor()` exposes the accepted-catalog
 read descriptor for stable surfaces, `marrow-run` executes admitted
 transport-neutral reads, and `marrow-json` owns the current read request,
-result, and typed cursor-boundary DTOs.
+result, typed cursor-boundary, and sparse update request DTOs.
 
 This page tracks the profiles that are still intentionally deferred. They must
 build on the active checker facts and descriptors. They must not introduce a
@@ -15,7 +15,7 @@ classification outside the checker-owned model.
 
 ## Active Foundation
 
-The active read foundation has these owners:
+The active surface foundation has these owners:
 
 - `surface` declarations in `docs/language/resources-and-storage.md` define the
   language surface syntax and checked field/collection rules.
@@ -29,7 +29,8 @@ The active read foundation has these owners:
 - `crates/marrow-run/src/surface.rs` admits stable read operations against a
   stamped store and materializes the backing record body before projecting.
 - `crates/marrow-json/src/surface.rs` owns the current checked read parameter,
-  result, identity, value, and typed cursor-boundary JSON DTOs.
+  result, identity, value, typed cursor-boundary, and sparse update request JSON
+  DTOs.
 
 The operation tag is a live runtime/json cursor contract. A change to the
 `surface.read.v1` framing must either preserve byte output or deliberately bump
@@ -44,14 +45,15 @@ catalog ID, preserves omitted fields, rejects absent records instead of
 upserting, re-checks store/catalog lineage inside the write bracket before
 mutation, validates the checked read footprint after the combined patch, and
 maps conflicts/write/store failures through `surface.conflict`, `surface.write`,
-and `surface.store`.
+and `surface.store`. `marrow-json` owns JSON request-body DTOs for those sparse
+update patches.
 
 Future write work is still boundary-profile work, not HTTP or generated clients
 by default:
 
 - a serialized descriptor/digest for update operations using the same
   checker-owned framing owner, with its own profile domain/version;
-- JSON or other transport body decoding for update patches;
+- non-JSON transport body decoding for update patches, if a consumer needs it;
 - create, because it needs explicit identity allocation or client-supplied
   identity rules, required-field completeness, replacement semantics, and
   return-shape decisions;
@@ -74,7 +76,7 @@ stable equality values.
 ## Serving Profile
 
 HTTP serving and local server lifetime are deferred until the serialized
-descriptor and write-body decode exist. A production serving profile needs:
+descriptor profile exists. A production serving profile needs:
 
 - routes derived from serialized ABI descriptors, not source names or ordinals;
 - strict JSON-only request and response envelopes;

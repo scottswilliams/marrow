@@ -2,9 +2,9 @@
 
 `marrow-json` owns small JSON DTOs that more than one CLI, tool, or application
 boundary needs. It exists to keep `marrow run --format json`, trace, data
-integrity, store-backed data inspection, and surface reads from copying
+integrity, store-backed data inspection, and surface reads and updates from copying
 entry-return, saved-key, data-snapshot, surface result rendering, and checked
-surface read request-parameter decode logic.
+surface read request-parameter and sparse update request-body decode logic.
 
 The crate deliberately does not define a general `Value` JSON ABI. Its entry
 return renderer preserves the current CLI-compatible result surface: scalars,
@@ -21,15 +21,22 @@ decimals. Cursor/page rendering is context-aware: enum and identity-typed index
 arguments render as branded surface arguments instead of raw saved key bytes or
 plain member strings.
 
-Inbound surface read request parameters are checked against the admitted runtime
-surface read shape. `SurfacePointRequestJson`, `SurfacePageRequestJson`,
-`SurfaceUniqueLookupRequestJson`, `SurfaceArgumentJson`, and `SurfaceCursorJson`
-decode identities, exact index arguments, unique lookup keys, limits, and typed
-cursor boundaries into runtime `SavedKey` and cursor values. The runtime remains
-the semantic owner of store identity, arity, scalar key types, enum membership,
-identity index-key encoding, and cursor boundary shape. HTTP routes, opaque
-cursor tokens, generated clients, entry-argument JSON decode, and generated
-write-body decode remain outside this crate's current profile.
+Inbound surface request parameters and sparse update bodies are checked against
+the admitted runtime surface shape. `SurfacePointRequestJson`,
+`SurfacePageRequestJson`, `SurfaceUniqueLookupRequestJson`,
+`SurfaceArgumentJson`, and `SurfaceCursorJson` decode read identities, exact
+index arguments, unique lookup keys, limits, and typed cursor boundaries into
+runtime `SavedKey` and cursor values. `SurfacePointUpdateRequestJson`,
+`SurfaceSingletonUpdateRequestJson`, `SurfaceUpdateFieldJson`, and
+`SurfaceUpdateValueJson` decode update identities, field catalog IDs, and
+canonical scalar/enum/identity values into runtime `SurfaceUpdateInput` values.
+JSON decode is structural and canonical only: runtime `SurfaceUpdate` owns
+declared update-set authorization, duplicate and non-empty patch validation,
+exact value shape checks, enum membership and selectability, identity store,
+arity, and key-scalar validation, record presence, and post-patch footprint
+validation. HTTP routes, opaque cursor tokens, serialized surface descriptors,
+generated clients, entry-argument JSON decode, and create/delete body decode
+remain outside this crate's current profile.
 
 ## Read next
 
@@ -37,7 +44,7 @@ write-body decode remain outside this crate's current profile.
   `saved_key_to_json`, `data_snapshot_stamp_to_json`,
   `DataSnapshotJson`, and `DataCommitJson`.
 - `crates/marrow-json/src/surface.rs` — surface read result DTOs plus checked
-  surface read request-parameter DTOs.
+  surface read request-parameter and sparse update request DTOs.
 - `crates/marrow/src/cmd_run.rs` — the run JSON envelope and `run.entry_surface`
   mapping.
 - `crates/marrow/src/trace.rs` and `crates/marrow/src/cmd_data/integrity.rs` —

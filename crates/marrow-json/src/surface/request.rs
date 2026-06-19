@@ -1,8 +1,11 @@
 use marrow_run::{
     SurfaceCollectionPage, SurfaceCollectionPageRequest, SurfaceCollectionRead,
     SurfaceCursorBoundaryInputShape, SurfaceIdentityInputShape, SurfaceInputKeyShape,
-    SurfaceNodeRead, SurfacePageBoundary, SurfacePageCursor, SurfaceReadError,
+    SurfaceNodeRead, SurfaceNodeReadShape, SurfacePageBoundary, SurfacePageCursor,
+    SurfaceReadError, SurfaceReadIdentity, SurfaceUpdate, SurfaceUpdateField, SurfaceUpdateInput,
+    SurfaceValue,
 };
+use marrow_store::Decimal;
 use marrow_store::cell::CatalogId;
 use marrow_store::key::{SavedKey, decode_identity_index_key, encode_identity_index_key};
 use marrow_store::tree::StoreUid;
@@ -35,6 +38,60 @@ pub struct SurfaceUniqueLookupRequestJson {
     pub keys: Vec<SurfaceArgumentJson>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SurfacePointUpdateRequestJson {
+    pub identity: SurfaceIdentityJson,
+    pub fields: Vec<SurfaceUpdateFieldJson>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SurfaceSingletonUpdateRequestJson {
+    pub fields: Vec<SurfaceUpdateFieldJson>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SurfaceUpdateFieldJson {
+    pub catalog_id: String,
+    pub value: SurfaceUpdateValueJson,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SurfaceUpdateValueJson {
+    Int {
+        value: String,
+    },
+    Bool {
+        value: bool,
+    },
+    String {
+        value: String,
+    },
+    Date {
+        days_since_epoch: i32,
+    },
+    Duration {
+        nanos: String,
+    },
+    Instant {
+        nanos_since_epoch: String,
+    },
+    Decimal {
+        value: String,
+    },
+    Bytes {
+        value_b64: String,
+    },
+    Enum {
+        enum_catalog_id: String,
+        member_catalog_id: String,
+    },
+    Identity {
+        store_catalog_id: String,
+        keys: Vec<SurfaceKeyJson>,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DecodedSurfacePointRequest {
     identity: Vec<SavedKey>,
@@ -50,6 +107,17 @@ pub struct DecodedSurfacePageRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DecodedSurfaceUniqueLookupRequest {
     keys: Vec<SavedKey>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DecodedSurfacePointUpdateRequest {
+    identity: Vec<SavedKey>,
+    fields: Vec<SurfaceUpdateField>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DecodedSurfaceSingletonUpdateRequest {
+    fields: Vec<SurfaceUpdateField>,
 }
 
 impl SurfacePointRequestJson {
@@ -144,6 +212,55 @@ impl SurfaceUniqueLookupRequestJson {
 impl DecodedSurfaceUniqueLookupRequest {
     pub fn keys(&self) -> &[SavedKey] {
         &self.keys
+    }
+}
+
+impl SurfacePointUpdateRequestJson {
+    pub fn decode(
+        &self,
+        update: &SurfaceUpdate<'_>,
+    ) -> Result<DecodedSurfacePointUpdateRequest, SurfaceReadError> {
+        let shape = update.point_identity_shape()?;
+        Ok(DecodedSurfacePointUpdateRequest {
+            identity: decode_identity_json(
+                &self.identity,
+                &shape,
+                SurfaceJsonErrorContext::Request,
+            )?,
+            fields: decode_update_fields_json(&self.fields, SurfaceJsonErrorContext::Request)?,
+        })
+    }
+}
+
+impl SurfaceSingletonUpdateRequestJson {
+    pub fn decode(
+        &self,
+        update: &SurfaceUpdate<'_>,
+    ) -> Result<DecodedSurfaceSingletonUpdateRequest, SurfaceReadError> {
+        if update.shape() != SurfaceNodeReadShape::Singleton {
+            return Err(SurfaceJsonErrorContext::Request
+                .error("surface singleton update request targets a keyed surface"));
+        }
+        Ok(DecodedSurfaceSingletonUpdateRequest {
+            fields: decode_update_fields_json(&self.fields, SurfaceJsonErrorContext::Request)?,
+        })
+    }
+}
+
+impl DecodedSurfacePointUpdateRequest {
+    pub fn as_update_input(&self) -> SurfaceUpdateInput<'_> {
+        SurfaceUpdateInput::Point {
+            identity: &self.identity,
+            fields: &self.fields,
+        }
+    }
+}
+
+impl DecodedSurfaceSingletonUpdateRequest {
+    pub fn as_update_input(&self) -> SurfaceUpdateInput<'_> {
+        SurfaceUpdateInput::Singleton {
+            fields: &self.fields,
+        }
     }
 }
 
@@ -376,6 +493,84 @@ fn decode_scalar_argument_json(
     context: SurfaceJsonErrorContext,
 ) -> Result<SavedKey, SurfaceReadError> {
     SurfaceScalarInput::from_argument_json(argument).decode(expected, context)
+}
+
+fn decode_update_fields_json(
+    fields: &[SurfaceUpdateFieldJson],
+    context: SurfaceJsonErrorContext,
+) -> Result<Vec<SurfaceUpdateField>, SurfaceReadError> {
+    fields
+        .iter()
+        .map(|field| {
+            Ok(SurfaceUpdateField {
+                catalog_id: parse_catalog_id(&field.catalog_id, "update field", context)?,
+                value: decode_update_value_json(&field.value, context)?,
+            })
+        })
+        .collect()
+}
+
+fn decode_update_value_json(
+    value: &SurfaceUpdateValueJson,
+    context: SurfaceJsonErrorContext,
+) -> Result<SurfaceValue, SurfaceReadError> {
+    Ok(match value {
+        SurfaceUpdateValueJson::Int { value } => {
+            SurfaceValue::Int(parse_i64_string(value, context)?)
+        }
+        SurfaceUpdateValueJson::Bool { value } => SurfaceValue::Bool(*value),
+        SurfaceUpdateValueJson::String { value } => SurfaceValue::Str(value.clone()),
+        SurfaceUpdateValueJson::Date { days_since_epoch } => SurfaceValue::Date(*days_since_epoch),
+        SurfaceUpdateValueJson::Duration { nanos } => {
+            SurfaceValue::Duration(parse_i128_string(nanos, context)?)
+        }
+        SurfaceUpdateValueJson::Instant { nanos_since_epoch } => {
+            SurfaceValue::Instant(parse_i128_string(nanos_since_epoch, context)?)
+        }
+        SurfaceUpdateValueJson::Decimal { value } => {
+            SurfaceValue::Decimal(parse_decimal_string(value, context)?)
+        }
+        SurfaceUpdateValueJson::Bytes { value_b64 } => {
+            SurfaceValue::Bytes(decode_base64(value_b64, context)?)
+        }
+        SurfaceUpdateValueJson::Enum {
+            enum_catalog_id,
+            member_catalog_id,
+        } => SurfaceValue::Enum(marrow_run::SurfaceEnumValue {
+            enum_catalog_id: parse_catalog_id(enum_catalog_id, "enum", context)?,
+            member_catalog_id: parse_catalog_id(member_catalog_id, "enum member", context)?,
+            render_label: String::new(),
+        }),
+        SurfaceUpdateValueJson::Identity {
+            store_catalog_id,
+            keys,
+        } => SurfaceValue::Identity(SurfaceReadIdentity {
+            store_catalog_id: parse_catalog_id(store_catalog_id, "store", context)?,
+            keys: keys
+                .iter()
+                .map(|key| decode_update_identity_key_json(key, context))
+                .collect::<Result<Vec<_>, _>>()?,
+        }),
+    })
+}
+
+fn decode_update_identity_key_json(
+    key: &SurfaceKeyJson,
+    context: SurfaceJsonErrorContext,
+) -> Result<SavedKey, SurfaceReadError> {
+    Ok(match key {
+        SurfaceKeyJson::Int { value } => SavedKey::Int(parse_i64_string(value, context)?),
+        SurfaceKeyJson::Bool { value } => SavedKey::Bool(*value),
+        SurfaceKeyJson::String { value } => SavedKey::Str(value.clone()),
+        SurfaceKeyJson::Date { days_since_epoch } => SavedKey::Date(*days_since_epoch),
+        SurfaceKeyJson::Duration { nanos } => {
+            SavedKey::Duration(parse_i128_string(nanos, context)?)
+        }
+        SurfaceKeyJson::Instant { nanos_since_epoch } => {
+            SavedKey::Instant(parse_i128_string(nanos_since_epoch, context)?)
+        }
+        SurfaceKeyJson::Bytes { value_b64 } => SavedKey::Bytes(decode_base64(value_b64, context)?),
+    })
 }
 
 enum SurfaceScalarInput<'a> {
@@ -689,6 +884,14 @@ fn parse_i128_string(
         .filter(|value| value.to_string() == text)
         .ok_or_else(|| context.error("surface i128 argument must be a canonical decimal string"))?;
     Ok(value)
+}
+
+fn parse_decimal_string(
+    text: &str,
+    context: SurfaceJsonErrorContext,
+) -> Result<Decimal, SurfaceReadError> {
+    Decimal::parse_canonical(text)
+        .map_err(|_| context.error("surface decimal value must be a canonical decimal string"))
 }
 
 fn decode_base64(

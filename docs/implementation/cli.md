@@ -79,11 +79,11 @@ Structured reports that include a `project` field render the canonical absolute 
 | `crates/marrow/src/trace.rs` | `TraceHook` (a `StepHook`) and `WriteTargetNames` mapping catalog ids to store/member/index names. |
 | `crates/marrow/src/dry_run.rs` | `DryRunHook` recording managed writes during isolated dry-run execution and aggregating per-root/per-index create/write/delete counts from the managed write stream. |
 
-### Shared outbound JSON (`marrow-json`)
+### Shared JSON (`marrow-json`)
 
 | File | Responsibility |
 |---|---|
-| `crates/marrow-json/src/lib.rs`, `crates/marrow-json/src/surface.rs` | Outbound rendering for `marrow run --format json` entry returns, the saved-key JSON shape reused by trace and integrity tooling, the `store_snapshot` data-stamp shape reused by data inspection, plus checked surface read request DTO decode and context-aware surface read-result DTOs. It does not define routes, opaque cursor tokens, generated clients, or write-body decode. |
+| `crates/marrow-json/src/lib.rs`, `crates/marrow-json/src/surface.rs` | Outbound rendering for `marrow run --format json` entry returns, the saved-key JSON shape reused by trace and integrity tooling, the `store_snapshot` data-stamp shape reused by data inspection, plus checked surface read request DTO decode, sparse update request DTO decode, and context-aware surface read-result DTOs. It does not define routes, opaque cursor tokens, serialized surface descriptors, generated clients, or create/delete body decode. |
 
 ### Data and durability (`marrow`)
 
