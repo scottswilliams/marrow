@@ -56,8 +56,9 @@ from the checked program or snapshot:
   `SurfaceReadOperationAnalysis` views. Each view carries the source file,
   checked `SurfaceFact`, and checked `SurfaceReadOperationFact`, so editor
   consumers can inspect declared surface operations without walking source
-  syntax, cloning a second ABI model, or mistaking source/config identity for a
-  catalog-bound surface version.
+  syntax or mistaking source/config identity for a catalog-bound surface
+  version. Stable surfaces can also render a checker-owned
+  `SurfaceReadOperationDescriptor`; source-only surfaces cannot.
 - `CheckedFacts::store_indices` carries `StoreIndexFact::usage` as a
   `StoreIndexUsageBitmap`; every current index fact reports no observed
   read/write use.
@@ -173,7 +174,9 @@ add only transport availability and request-envelope concerns around those DTOs.
   `analysis.rs`) — catalog-id declarations for editor navigation, keyed with
   `CatalogEntryKind` and exact declaration-name spans.
 - `SurfaceReadOperationAnalysis` (`analysis.rs`) — a snapshot-bound view over a
-  checked surface operation plus its source file.
+  checked surface operation plus its source file, with
+  `stable_descriptor()` for the accepted-catalog read descriptor when the
+  surface is stable.
 - `CheckedReadOnlyExpression` (`program.rs`) — a source-digest-bound checked
   expression handle for runtime point evaluation.
 - `WitnessFactSet` (`evolution/preview.rs`) — schema and optional backup cell

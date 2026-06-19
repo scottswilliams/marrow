@@ -238,20 +238,21 @@ application surface facts.
 
 Those facts are transport-neutral: HTTP routes, opaque cursor-token codecs,
 TypeScript names, generated clients, and write bodies are boundary profiles
-layered later. `marrow-run` exposes admitted transport-neutral node and
-collection read executors over stable surface facts, and `marrow-json` decodes
-checked read request-parameter DTOs and renders already-executed read results as
-DTOs with accepted catalog IDs and typed values. Runtime output uses accepted
-store and resource-member catalog IDs as semantic identity; enum and identity
-field values use accepted catalog IDs as well. Source names remain render
-labels. A stable exported surface ABI
-cannot use proposal-only catalog IDs; until every referenced durable fact has an
-accepted catalog ID, the facts carry a source-only catalog status rather than a
-stable client contract. A pending catalog proposal for the checked source is
-reported as its own blocker, because accepted IDs alone do not prove the current
-store, member, or index shape is the committed shape. The proposed reads-first
-boundary profile is described in
-[Surface ABI](../future/surface-abi.md).
+layered later. Stable surface reads have checker-owned accepted-catalog
+descriptors and operation tags. `marrow-run` exposes admitted transport-neutral
+node and collection read executors over stable surface facts, and
+`marrow-json` decodes checked read request-parameter DTOs and renders
+already-executed read results as DTOs with accepted catalog IDs and typed
+values. Runtime output uses accepted store and resource-member catalog IDs as
+semantic identity; enum and identity field values use accepted catalog IDs as
+well. Source names remain render labels. A stable exported surface read
+operation cannot use proposal-only catalog IDs; until every referenced durable
+fact has an accepted catalog ID, the facts carry a source-only catalog status
+rather than a stable client contract. A pending catalog proposal for the checked
+source is reported as its own blocker, because accepted IDs alone do not prove
+the current store, member, or index shape is the committed shape. Deferred
+surface profiles are tracked in [Surface ABI Future
+Profiles](../future/surface-abi.md).
 
 ## Indexes
 

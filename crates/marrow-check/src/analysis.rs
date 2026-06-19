@@ -14,8 +14,9 @@ use crate::enums::normalize_program_named_types;
 use crate::{
     CHECK_DUPLICATE_MODULE, CHECK_MULTIPLE_SCRIPTS, CheckDiagnostic, CheckReport, CheckedFile,
     CheckedModule, CheckedProgram, DiagnosticPayload, IO_READ, ProjectSources,
-    SCHEMA_DUPLICATE_ROOT_OWNER, SurfaceFact, SurfaceReadOperationFact, TestResolutionSuppression,
-    check_file_source, enum_visibility, module_path_error, read_source,
+    SCHEMA_DUPLICATE_ROOT_OWNER, SurfaceCatalogStatus, SurfaceFact, SurfaceReadOperationDescriptor,
+    SurfaceReadOperationFact, TestResolutionSuppression, check_file_source, enum_visibility,
+    module_path_error, read_source,
 };
 
 mod catalog_nav;
@@ -78,6 +79,7 @@ impl AnalysisSnapshot {
                 );
                 surface.read_operations.iter().filter_map(move |operation| {
                     file.map(|file| SurfaceReadOperationAnalysis {
+                        program: &self.program,
                         file,
                         surface,
                         operation,
@@ -111,9 +113,23 @@ impl AnalysisSnapshot {
 
 #[derive(Debug, Clone, Copy)]
 pub struct SurfaceReadOperationAnalysis<'a> {
+    program: &'a CheckedProgram,
     pub file: &'a Path,
     pub surface: &'a SurfaceFact,
     pub operation: &'a SurfaceReadOperationFact,
+}
+
+impl SurfaceReadOperationAnalysis<'_> {
+    pub fn stable_descriptor(&self) -> Option<SurfaceReadOperationDescriptor> {
+        match self.surface.catalog_status {
+            SurfaceCatalogStatus::Stable => SurfaceReadOperationDescriptor::from_operation(
+                self.program,
+                self.surface,
+                self.operation,
+            ),
+            SurfaceCatalogStatus::SourceOnly(_) => None,
+        }
+    }
 }
 
 /// One parsed file in an [`AnalysisSnapshot`]: its path, the module name its

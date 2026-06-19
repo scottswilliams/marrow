@@ -30,6 +30,7 @@ pub mod resolve;
 mod rules;
 mod source_spans;
 mod surface;
+mod surface_abi;
 #[cfg(feature = "test-support")]
 pub mod test_support;
 pub mod tooling;
@@ -115,6 +116,12 @@ pub use project_io::{
     recheck_against_store_catalog, render_accepted_catalog_file, resolve_store_path,
 };
 pub use resolve::{Def, DefItem, Resolution, ResolvableKind, resolve};
+pub use surface_abi::{
+    SURFACE_READ_OPERATION_TAG_VERSION, SurfaceReadOperationDescriptor,
+    SurfaceReadOperationDescriptorKind, SurfaceReadOperationIdentityKey,
+    SurfaceReadOperationIndexKey, SurfaceReadOperationIndexKeySource,
+    SurfaceReadOperationProjectionField, SurfaceReadOperationValueShape,
+};
 
 pub(crate) use driver::{
     CheckedFile, TestResolutionSuppression, build_alias_map, builtin_return_type,

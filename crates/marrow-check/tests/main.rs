@@ -134,5 +134,7 @@ mod required_field_assignment;
 mod resource_store_contract;
 #[path = "cases/saved_place_owner_architecture.rs"]
 mod saved_place_owner_architecture;
+#[path = "cases/surface_abi.rs"]
+mod surface_abi;
 #[path = "cases/v01_fixtures.rs"]
 mod v01_fixtures;

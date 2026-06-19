@@ -63,21 +63,19 @@ The nine Rust crate APIs in this workspace (`marrow`, `marrow-catalog`,
 public Rust API. A future embedding contract is one facade surface, never direct
 stability for the internal crates.
 
-## Reserved Future Surfaces
+## Application Surfaces
 
-The application boundary is reserved for the proposed `surface` design. Checked
-surface facts are compiler facts over stores, fields, indexes, read operations,
-footprints, and projections; the active JSON DTOs decode checked read request
-parameters through admitted runtime reads and render already-executed surface
-reads with typed cursor-boundary JSON, but they are not a stable runtime,
-transport, or generated-client contract. The
-[future Surface ABI](future/surface-abi.md) defines the reads-first boundary
-profile over those facts. Linked-Rust embedding remains an implementation
-profile for hosting surface facts and run sessions, not a separate app-data
-contract. HTTP serving, opaque cursor tokens, generated clients, and write-body
-decode remain future profiles. Until serving profiles ship, typed entry
-invocation (`marrow run` with `--arg` and `--format json`) is the supported
-integration surface.
+The `surface` read foundation is active but not yet a stable transport or
+generated-client contract. Checked surface facts are compiler facts over stores,
+fields, indexes, read operations, footprints, and projections. Stable read
+operations have accepted-catalog descriptors and operation tags; the active JSON
+DTOs decode checked read request parameters through admitted runtime reads and
+render already-executed surface reads with typed cursor-boundary JSON.
+Linked-Rust embedding remains an implementation profile for hosting surface
+facts and run sessions, not a separate app-data contract. HTTP serving, opaque
+cursor tokens, generated clients, and write-body decode remain future profiles.
+Until serving profiles ship, typed entry invocation (`marrow run` with `--arg`
+and `--format json`) is the supported integration surface.
 
 The `signature_digest` field in the run JSON envelope is reserved for the future
 function ABI identity model and remains `null` in v0.1. The `raises` field is
