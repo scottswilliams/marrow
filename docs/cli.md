@@ -14,7 +14,7 @@ marrow fmt [--check | --write] <file.mw | projectdir>
 marrow run [--entry <entry>] [--arg name=value]... [--maintenance] \
   [--trace] [--dry-run] [--format text|json] <projectdir>
 marrow test [--trace] [--format text|json|jsonl] [--filter <substring>] <projectdir>
-marrow surface serve [--write] [--addr <loopback:port>] <projectdir>
+marrow surface serve [--write] [--cors-origin <loopback-origin>] [--addr <loopback:port>] <projectdir>
 marrow data <roots|stats|dump|integrity> [--backup <artifact>] [--format text|json|jsonl] <projectdir>
 marrow data recover [--format text|json|jsonl] <projectdir>
 marrow data get [--backup <artifact>] [--format text|json|jsonl] <projectdir> <path>
@@ -166,7 +166,7 @@ $ echo $?
 ## `marrow surface serve`
 
 ```
-marrow surface serve [--write] [--addr <loopback:port>] <projectdir>
+marrow surface serve [--write] [--cors-origin <loopback-origin>] [--addr <loopback:port>] <projectdir>
 ```
 
 Run the local HTTP serving profile for checked application surfaces. By
@@ -179,6 +179,10 @@ saved data.
 - The listener binds only loopback addresses. The default is
   `127.0.0.1:8080`; tests and tooling can pass `--addr 127.0.0.1:0` to let the
   OS choose a loopback port.
+- `--cors-origin` enables browser CORS for one exact loopback origin such as
+  `http://localhost:5173`, `http://127.0.0.1:5173`, or
+  `http://[::1]:5173`. Non-loopback origins, URL paths, and wildcards are
+  usage errors. Without this option, the server emits no CORS headers.
 - On startup the command prints
   `surface serve listening on http://<addr>` to stdout, then handles requests
   until the process exits.
@@ -194,11 +198,14 @@ saved data.
   environment, logging, filesystem, or other host capabilities fail closed as
   `surface.action`; explicit-host action execution is a linked-Rust embedding
   API, not this HTTP profile.
-- Requests must be HTTP/1.0 or HTTP/1.1 `POST` with
+- Operation requests must be HTTP/1.0 or HTTP/1.1 `POST` with
   `Content-Type: application/json`, exactly one `Content-Length`, no
   `Transfer-Encoding`, bounded headers/body, no query string, and an exact
   operation-tag path. The JSON body is a `surface.operation.v1` envelope whose
   `operation_tag` and request kind must match the selected route.
+- With `--cors-origin`, matching browser preflight `OPTIONS` requests over a
+  served route return `204` and `Access-Control-Allow-Origin` for that exact
+  origin. Mismatched origins return `403` and no CORS allow-origin header.
 - The server processes at most one request per connection, rejects trailing
   bytes already buffered after the declared body, returns `Connection: close`,
   and never reads a second request from the connection.
@@ -208,8 +215,8 @@ saved data.
 
 This is a dependency-free local tooling profile, not remote hosting,
 authentication, generated clients, opaque cursor tokens, or create/delete CRUD.
-Exits `2` for usage errors such as non-loopback `--addr`, `1` for
-project/session/listener failures, and otherwise runs until killed.
+Exits `2` for usage errors such as non-loopback `--addr` or `--cors-origin`,
+`1` for project/session/listener failures, and otherwise runs until killed.
 
 ---
 

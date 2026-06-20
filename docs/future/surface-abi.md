@@ -225,13 +225,17 @@ a local HTTP process:
   details;
 - binding is loopback-only because Marrow has no users, roles, or authorization
   model yet;
+- `--cors-origin` optionally emits CORS headers for one exact loopback browser
+  origin and never emits wildcard CORS;
 - store admission uses `ProjectSurfaceReadSession` in default mode and
   `ProjectSurfaceSession` with `--write`, with no UID mint, baseline freeze,
   auto-apply, recovery, restore, maintenance, or hidden write path outside
   admitted sparse updates/actions;
 - the HTTP parser processes at most one request per connection, requires exactly
-  one `Content-Length`, rejects `Transfer-Encoding` and already-buffered
-  trailing bytes, caps headers and bodies, and closes every response.
+  one `Content-Length` on operation `POST` requests, permits an empty CORS
+  preflight to omit `Content-Length` or send `Content-Length: 0`, rejects
+  `Transfer-Encoding` and already-buffered trailing bytes, caps headers and
+  bodies, and closes every response.
 
 The serving profile intentionally reuses the active commit-bound typed cursor
 DTOs in read responses and page requests. A separate opaque cursor-token profile

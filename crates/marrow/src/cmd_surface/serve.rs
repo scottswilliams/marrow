@@ -20,6 +20,9 @@ use marrow_run::{
 use crate::cmd_run::report_session_open_error;
 use crate::{CheckFormat, report_simple_error};
 
+mod cors;
+use cors::CorsPolicy;
+
 const DEFAULT_PORT: u16 = 8080;
 const MAX_HEADER_BYTES: usize = 16 * 1024;
 const MAX_BODY_BYTES: usize = 1024 * 1024;
@@ -27,7 +30,7 @@ const STREAM_TIMEOUT: Duration = Duration::from_secs(15);
 
 const HELP: &str = "\
 Usage:
-  marrow surface serve [--write] [--addr <loopback:port>] <projectdir>
+  marrow surface serve [--write] [--cors-origin <loopback-origin>] [--addr <loopback:port>] <projectdir>
 
 Run a local HTTP surface endpoint. The server accepts one JSON POST per
 connection and closes the response on descriptor-derived
@@ -35,6 +38,9 @@ connection and closes the response on descriptor-derived
 
   --write  Expose update/action routes and open a writable surface session.
            Defaults to read-only mode, serving read routes only.
+  --cors-origin
+           Allow one exact browser Origin such as http://localhost:5173.
+           No CORS headers are emitted unless this option is present.
   --addr   Loopback socket address to bind. Defaults to 127.0.0.1:8080.
 ";
 
@@ -56,7 +62,9 @@ impl ServeMode {
 pub(crate) fn serve(args: &[String]) -> ExitCode {
     let mut addr = default_addr();
     let mut mode = ServeMode::ReadOnly;
+    let mut cors = None;
     let mut saw_addr = false;
+    let mut saw_cors_origin = false;
     let mut saw_write = false;
     let mut dir = None;
     let mut index = 0;
@@ -69,6 +77,25 @@ pub(crate) fn serve(args: &[String]) -> ExitCode {
                 }
                 mode = ServeMode::Write;
                 saw_write = true;
+            }
+            "--cors-origin" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    eprintln!("missing value for --cors-origin");
+                    return ExitCode::from(2);
+                };
+                if saw_cors_origin {
+                    eprintln!("duplicate --cors-origin");
+                    return ExitCode::from(2);
+                }
+                cors = match CorsPolicy::new(value) {
+                    Ok(cors) => Some(cors),
+                    Err(message) => {
+                        eprintln!("{message}");
+                        return ExitCode::from(2);
+                    }
+                };
+                saw_cors_origin = true;
             }
             "--addr" => {
                 index += 1;
@@ -153,7 +180,7 @@ pub(crate) fn serve(args: &[String]) -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    run_server(listener, &session, &routes)
+    run_server(listener, &session, &routes, cors.as_ref())
 }
 
 fn default_addr() -> SocketAddr {
@@ -164,6 +191,7 @@ fn run_server(
     listener: TcpListener,
     session: &SurfaceServeSession,
     routes: &SurfaceRoutes,
+    cors: Option<&CorsPolicy>,
 ) -> ExitCode {
     for connection in listener.incoming() {
         let mut stream = match connection {
@@ -181,7 +209,7 @@ fn run_server(
             eprintln!("io.write: failed to set surface write timeout: {error}");
             continue;
         }
-        let response = handle_connection(&mut stream, session, routes);
+        let response = handle_connection(&mut stream, session, routes, cors);
         if let Err(error) = write_response(&mut stream, &response) {
             eprintln!("io.write: failed to write surface response: {error}");
         }
@@ -261,9 +289,10 @@ fn handle_connection(
     stream: &mut TcpStream,
     session: &SurfaceServeSession,
     routes: &SurfaceRoutes,
+    cors: Option<&CorsPolicy>,
 ) -> SurfaceHttpResponse {
     match read_http_request(stream) {
-        Ok(request) => execute_http_request(request, session, routes),
+        Ok(request) => execute_http_request(request, session, routes, cors),
         Err(failure) => SurfaceHttpResponse::error(failure.status, failure.error),
     }
 }
@@ -272,24 +301,35 @@ fn execute_http_request(
     request: HttpRequest,
     session: &SurfaceServeSession,
     routes: &SurfaceRoutes,
+    cors: Option<&CorsPolicy>,
 ) -> SurfaceHttpResponse {
+    let cors_origin = match cors_origin_for_request(&request, cors) {
+        Ok(origin) => origin,
+        Err(response) => return response,
+    };
+    if request.method == "OPTIONS" && cors.is_some() {
+        return execute_cors_preflight(request, routes, cors_origin);
+    }
     if request.method != "POST" {
         return SurfaceHttpResponse::error(
             HttpStatus::MethodNotAllowed,
             surface_error(SURFACE_REQUEST, "surface routes accept POST only"),
-        );
+        )
+        .with_cors(cors_origin);
     }
     if request.target.contains('?') {
         return SurfaceHttpResponse::error(
             HttpStatus::NotFound,
             surface_error(SURFACE_ABI_MISMATCH, "surface operation is not active"),
-        );
+        )
+        .with_cors(cors_origin);
     }
     let Some(route) = routes.binding_for_path(&request.target) else {
         return SurfaceHttpResponse::error(
             HttpStatus::NotFound,
             surface_error(SURFACE_ABI_MISMATCH, "surface operation is not active"),
-        );
+        )
+        .with_cors(cors_origin);
     };
     if !request.content_type_is_json {
         return SurfaceHttpResponse::error(
@@ -298,7 +338,8 @@ fn execute_http_request(
                 SURFACE_REQUEST,
                 "surface request body must be application/json",
             ),
-        );
+        )
+        .with_cors(cors_origin);
     }
     let operation = match serde_json::from_slice::<SurfaceOperationRequestJson>(&request.body) {
         Ok(operation) => operation,
@@ -309,14 +350,16 @@ fn execute_http_request(
                     SURFACE_REQUEST,
                     "surface request body is not a valid operation",
                 ),
-            );
+            )
+            .with_cors(cors_origin);
         }
     };
     if operation.operation_tag != route.operation_tag {
         return SurfaceHttpResponse::error(
             HttpStatus::BadRequest,
             surface_error(SURFACE_ABI_MISMATCH, "surface operation is not active"),
-        );
+        )
+        .with_cors(cors_origin);
     }
     if !route.request.matches_operation_body(&operation.request) {
         return SurfaceHttpResponse::error(
@@ -325,12 +368,72 @@ fn execute_http_request(
                 SURFACE_REQUEST,
                 "surface operation request body does not match the route",
             ),
-        );
+        )
+        .with_cors(cors_origin);
     }
     match session.execute(&operation) {
-        Ok(response) => SurfaceHttpResponse::json(HttpStatus::Ok, response_value(response)),
-        Err(error) => SurfaceHttpResponse::error(status_for_surface_error(&error.code), error),
+        Ok(response) => SurfaceHttpResponse::json(HttpStatus::Ok, response_value(response))
+            .with_cors(cors_origin),
+        Err(error) => SurfaceHttpResponse::error(status_for_surface_error(&error.code), error)
+            .with_cors(cors_origin),
     }
+}
+
+fn cors_origin_for_request(
+    request: &HttpRequest,
+    cors: Option<&CorsPolicy>,
+) -> Result<Option<String>, SurfaceHttpResponse> {
+    let Some(origin) = &request.origin else {
+        return Ok(None);
+    };
+    let Some(cors) = cors else {
+        return Ok(None);
+    };
+    if cors.allows(origin) {
+        return Ok(Some(origin.clone()));
+    }
+    Err(SurfaceHttpResponse::error(
+        HttpStatus::Forbidden,
+        surface_error(SURFACE_REQUEST, "surface CORS origin is not allowed"),
+    ))
+}
+
+fn execute_cors_preflight(
+    request: HttpRequest,
+    routes: &SurfaceRoutes,
+    cors_origin: Option<String>,
+) -> SurfaceHttpResponse {
+    let Some(cors_origin) = cors_origin else {
+        return SurfaceHttpResponse::error(
+            HttpStatus::Forbidden,
+            surface_error(
+                SURFACE_REQUEST,
+                "surface CORS preflight origin is not allowed",
+            ),
+        );
+    };
+    if request.target.contains('?') {
+        return SurfaceHttpResponse::error(
+            HttpStatus::NotFound,
+            surface_error(SURFACE_ABI_MISMATCH, "surface operation is not active"),
+        )
+        .with_cors(Some(cors_origin));
+    }
+    if routes.binding_for_path(&request.target).is_none() {
+        return SurfaceHttpResponse::error(
+            HttpStatus::NotFound,
+            surface_error(SURFACE_ABI_MISMATCH, "surface operation is not active"),
+        )
+        .with_cors(Some(cors_origin));
+    }
+    if request.access_control_request_method.as_deref() != Some("POST") {
+        return SurfaceHttpResponse::error(
+            HttpStatus::MethodNotAllowed,
+            surface_error(SURFACE_REQUEST, "surface CORS preflight must request POST"),
+        )
+        .with_cors(Some(cors_origin));
+    }
+    SurfaceHttpResponse::empty(HttpStatus::NoContent).with_cors(Some(cors_origin))
 }
 
 fn status_for_surface_error(code: &str) -> HttpStatus {
@@ -349,6 +452,8 @@ fn status_for_surface_error(code: &str) -> HttpStatus {
 struct HttpRequest {
     method: String,
     target: String,
+    origin: Option<String>,
+    access_control_request_method: Option<String>,
     content_type_is_json: bool,
     body: Vec<u8>,
 }
@@ -357,7 +462,16 @@ fn read_http_request(stream: &mut TcpStream) -> Result<HttpRequest, HttpFailure>
     let mut buffer = Vec::new();
     let header_end = read_until_header_end(stream, &mut buffer)?;
     let parsed = parse_head(&buffer[..header_end])?;
-    if parsed.content_length > MAX_BODY_BYTES {
+    let content_length = match parsed.content_length {
+        Some(content_length) => content_length,
+        None if parsed.method == "OPTIONS" => 0,
+        None => {
+            return Err(request_failure(
+                "surface request must contain exactly one Content-Length",
+            ));
+        }
+    };
+    if content_length > MAX_BODY_BYTES {
         return Err(HttpFailure::new(
             HttpStatus::PayloadTooLarge,
             SURFACE_LIMIT,
@@ -365,15 +479,13 @@ fn read_http_request(stream: &mut TcpStream) -> Result<HttpRequest, HttpFailure>
         ));
     }
     let body_start = header_end + 4;
-    let body_end = body_start
-        .checked_add(parsed.content_length)
-        .ok_or_else(|| {
-            HttpFailure::new(
-                HttpStatus::PayloadTooLarge,
-                SURFACE_LIMIT,
-                "surface request body is too large",
-            )
-        })?;
+    let body_end = body_start.checked_add(content_length).ok_or_else(|| {
+        HttpFailure::new(
+            HttpStatus::PayloadTooLarge,
+            SURFACE_LIMIT,
+            "surface request body is too large",
+        )
+    })?;
     if buffer.len() > body_end {
         return Err(HttpFailure::new(
             HttpStatus::BadRequest,
@@ -396,6 +508,8 @@ fn read_http_request(stream: &mut TcpStream) -> Result<HttpRequest, HttpFailure>
     Ok(HttpRequest {
         method: parsed.method,
         target: parsed.target,
+        origin: parsed.origin,
+        access_control_request_method: parsed.access_control_request_method,
         content_type_is_json: parsed.content_type_is_json,
         body: buffer[body_start..body_end].to_vec(),
     })
@@ -443,7 +557,9 @@ fn find_header_end(buffer: &[u8]) -> Option<usize> {
 struct ParsedHead {
     method: String,
     target: String,
-    content_length: usize,
+    origin: Option<String>,
+    access_control_request_method: Option<String>,
+    content_length: Option<usize>,
     content_type_is_json: bool,
 }
 
@@ -471,6 +587,8 @@ fn parse_head(head: &[u8]) -> Result<ParsedHead, HttpFailure> {
     }
 
     let mut content_length = None;
+    let mut origin = None;
+    let mut access_control_request_method = None;
     let mut saw_content_type = false;
     let mut content_type_is_json = false;
     for line in lines {
@@ -506,6 +624,22 @@ fn parse_head(head: &[u8]) -> Result<ParsedHead, HttpFailure> {
                 saw_content_type = true;
                 content_type_is_json = is_json_content_type(value);
             }
+            "origin" => {
+                if origin.is_some() {
+                    return Err(request_failure(
+                        "surface request must contain at most one Origin",
+                    ));
+                }
+                origin = Some(value.to_string());
+            }
+            "access-control-request-method" => {
+                if access_control_request_method.is_some() {
+                    return Err(request_failure(
+                        "surface request must contain at most one Access-Control-Request-Method",
+                    ));
+                }
+                access_control_request_method = Some(value.to_ascii_uppercase());
+            }
             "transfer-encoding" => {
                 return Err(request_failure(
                     "surface request must not use Transfer-Encoding",
@@ -517,9 +651,9 @@ fn parse_head(head: &[u8]) -> Result<ParsedHead, HttpFailure> {
     Ok(ParsedHead {
         method,
         target,
-        content_length: content_length.ok_or_else(|| {
-            request_failure("surface request must contain exactly one Content-Length")
-        })?,
+        origin,
+        access_control_request_method,
+        content_length,
         content_type_is_json,
     })
 }
@@ -551,27 +685,48 @@ impl HttpFailure {
 
 struct SurfaceHttpResponse {
     status: HttpStatus,
-    body: serde_json::Value,
+    body: Option<serde_json::Value>,
+    cors_origin: Option<String>,
 }
 
 impl SurfaceHttpResponse {
     fn json(status: HttpStatus, body: serde_json::Value) -> Self {
-        Self { status, body }
+        Self {
+            status,
+            body: Some(body),
+            cors_origin: None,
+        }
+    }
+
+    fn empty(status: HttpStatus) -> Self {
+        Self {
+            status,
+            body: None,
+            cors_origin: None,
+        }
     }
 
     fn error(status: HttpStatus, error: SurfaceOperationErrorJson) -> Self {
         Self {
             status,
-            body: error_value(error),
+            body: Some(error_value(error)),
+            cors_origin: None,
         }
+    }
+
+    fn with_cors(mut self, origin: Option<String>) -> Self {
+        self.cors_origin = origin;
+        self
     }
 }
 
 #[derive(Clone, Copy)]
 enum HttpStatus {
     Ok,
+    NoContent,
     BadRequest,
     Conflict,
+    Forbidden,
     NotFound,
     MethodNotAllowed,
     PayloadTooLarge,
@@ -584,8 +739,10 @@ impl HttpStatus {
     fn code(self) -> u16 {
         match self {
             Self::Ok => 200,
+            Self::NoContent => 204,
             Self::BadRequest => 400,
             Self::Conflict => 409,
+            Self::Forbidden => 403,
             Self::NotFound => 404,
             Self::MethodNotAllowed => 405,
             Self::PayloadTooLarge => 413,
@@ -598,8 +755,10 @@ impl HttpStatus {
     fn reason(self) -> &'static str {
         match self {
             Self::Ok => "OK",
+            Self::NoContent => "No Content",
             Self::BadRequest => "Bad Request",
             Self::Conflict => "Conflict",
+            Self::Forbidden => "Forbidden",
             Self::NotFound => "Not Found",
             Self::MethodNotAllowed => "Method Not Allowed",
             Self::PayloadTooLarge => "Payload Too Large",
@@ -611,15 +770,34 @@ impl HttpStatus {
 }
 
 fn write_response(stream: &mut TcpStream, response: &SurfaceHttpResponse) -> std::io::Result<()> {
-    let body = serde_json::to_vec(&response.body).unwrap_or_else(|_| {
-        b"{\"code\":\"surface.store\",\"message\":\"surface response could not be encoded\"}"
-            .to_vec()
-    });
+    let body = response
+        .body
+        .as_ref()
+        .map(|body| {
+            serde_json::to_vec(body).unwrap_or_else(|_| {
+                b"{\"code\":\"surface.store\",\"message\":\"surface response could not be encoded\"}"
+                    .to_vec()
+            })
+        })
+        .unwrap_or_default();
     write!(
         stream,
-        "HTTP/1.1 {} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        "HTTP/1.1 {} {}\r\n",
         response.status.code(),
-        response.status.reason(),
+        response.status.reason()
+    )?;
+    if response.body.is_some() {
+        stream.write_all(b"Content-Type: application/json\r\n")?;
+    }
+    if let Some(origin) = &response.cors_origin {
+        write!(
+            stream,
+            "Access-Control-Allow-Origin: {origin}\r\nAccess-Control-Allow-Methods: POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type\r\nVary: Origin\r\n"
+        )?;
+    }
+    write!(
+        stream,
+        "Content-Length: {}\r\nConnection: close\r\n\r\n",
         body.len()
     )?;
     stream.write_all(&body)?;

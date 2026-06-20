@@ -51,7 +51,17 @@ struct ServeProcess {
 
 struct HttpResponse {
     status: u16,
+    headers: Vec<(String, String)>,
     body: Value,
+}
+
+impl HttpResponse {
+    fn header(&self, name: &str) -> Option<&str> {
+        self.headers
+            .iter()
+            .find(|(header, _)| header.eq_ignore_ascii_case(name))
+            .map(|(_, value)| value.as_str())
+    }
 }
 
 impl Drop for ServeProcess {
@@ -68,7 +78,9 @@ fn help_advertises_surface_serve_without_restoring_top_level_serve() {
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let stdout = String::from_utf8(output.stdout).expect("stdout utf8");
     assert!(
-        stdout.contains("marrow surface serve [--write] [--addr <loopback:port>] <projectdir>"),
+        stdout.contains(
+            "marrow surface serve [--write] [--cors-origin <loopback-origin>] [--addr <loopback:port>] <projectdir>"
+        ),
         "{stdout}"
     );
     assert!(
@@ -80,6 +92,7 @@ fn help_advertises_surface_serve_without_restoring_top_level_serve() {
     assert_eq!(serve_help.status.code(), Some(0), "{serve_help:?}");
     let serve_stdout = String::from_utf8(serve_help.stdout).expect("serve stdout utf8");
     assert!(serve_stdout.contains("--write"), "{serve_stdout}");
+    assert!(serve_stdout.contains("--cors-origin"), "{serve_stdout}");
     assert!(
         serve_stdout.contains("/surface/v1/{read|update|action}/<operation-tag>"),
         "{serve_stdout}"
@@ -111,6 +124,34 @@ fn surface_serve_rejects_non_loopback_before_project_load() {
     assert!(
         !stderr.contains("parse."),
         "bind validation should fail before source loading: {stderr}"
+    );
+}
+
+#[test]
+fn surface_serve_rejects_non_loopback_cors_origin_before_project_load() {
+    let dir = support::temp_dir("surface-serve-non-loopback-cors-origin");
+    write(&dir, "marrow.json", support::native_config());
+    write(&dir, "src/app.mw", "module app\npub fn broken(\n");
+
+    let output = marrow(&[
+        "surface",
+        "serve",
+        "--cors-origin",
+        "https://example.com",
+        dir.to_str().unwrap(),
+    ]);
+
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    assert!(
+        output.stdout.is_empty(),
+        "usage failure should not write stdout: {:?}",
+        output.stdout
+    );
+    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+    assert!(stderr.contains("loopback origin"), "{stderr}");
+    assert!(
+        !stderr.contains("parse."),
+        "CORS origin validation should fail before source loading: {stderr}"
     );
 }
 
@@ -157,6 +198,83 @@ fn surface_serve_executes_manifest_point_read_over_http() {
         field_value(record, "author"),
         json!({ "kind": "string", "value": "Frank Herbert" })
     );
+}
+
+#[test]
+fn surface_serve_cors_origin_allows_exact_local_browser_origin() {
+    let fixture = seeded_surface_fixture("surface-serve-cors-origin");
+    let point_route = route_by_alias(&fixture.report, "get");
+    let origin = "http://localhost:5173";
+    let (_server, addr) =
+        spawn_surface_server_with_args(fixture.root(), &["--cors-origin", origin]);
+
+    let preflight = raw_http(
+        addr,
+        format!(
+            "OPTIONS {} HTTP/1.1\r\nHost: {addr}\r\nOrigin: {origin}\r\nAccess-Control-Request-Method: POST\r\nAccess-Control-Request-Headers: content-type\r\nContent-Length: 0\r\n\r\n",
+            point_route.path
+        )
+        .into_bytes(),
+        &[],
+    );
+    assert_eq!(preflight.status, 204, "{:#?}", preflight.body);
+    assert_eq!(
+        preflight.header("access-control-allow-origin"),
+        Some(origin)
+    );
+    assert_eq!(
+        preflight.header("access-control-allow-methods"),
+        Some("POST, OPTIONS")
+    );
+    assert_eq!(
+        preflight.header("access-control-allow-headers"),
+        Some("Content-Type")
+    );
+    assert_eq!(preflight.header("vary"), Some("Origin"));
+
+    let blocked_preflight = raw_http(
+        addr,
+        format!(
+            "OPTIONS {} HTTP/1.1\r\nHost: {addr}\r\nOrigin: http://example.com\r\nAccess-Control-Request-Method: POST\r\nContent-Length: 0\r\n\r\n",
+            point_route.path
+        )
+        .into_bytes(),
+        &[],
+    );
+    assert_eq!(
+        blocked_preflight.status, 403,
+        "{:#?}",
+        blocked_preflight.body
+    );
+    assert_eq!(blocked_preflight.body["code"], "surface.request");
+    assert_eq!(
+        blocked_preflight.header("access-control-allow-origin"),
+        None
+    );
+
+    let blocked_post = post_json(
+        addr,
+        &point_route.path,
+        point_read_request(&fixture.report, &point_route.operation_tag, 1),
+        &[
+            ("Content-Type", "application/json"),
+            ("Origin", "http://example.com"),
+        ],
+    );
+    assert_eq!(blocked_post.status, 403, "{:#?}", blocked_post.body);
+    assert_eq!(blocked_post.body["code"], "surface.request");
+    assert_eq!(blocked_post.header("access-control-allow-origin"), None);
+
+    let response = post_json(
+        addr,
+        &point_route.path,
+        point_read_request(&fixture.report, &point_route.operation_tag, 1),
+        &[("Content-Type", "application/json"), ("Origin", origin)],
+    );
+
+    assert_eq!(response.status, 200, "{:#?}", response.body);
+    assert_eq!(response.header("access-control-allow-origin"), Some(origin));
+    assert_eq!(response.header("vary"), Some("Origin"));
 }
 
 #[test]
@@ -820,9 +938,22 @@ fn parse_response(raw: &[u8]) -> HttpResponse {
         .expect("status code")
         .parse()
         .expect("numeric status");
+    let headers = head
+        .lines()
+        .skip(1)
+        .filter_map(|line| {
+            line.split_once(':')
+                .map(|(name, value)| (name.to_string(), value.trim().to_string()))
+        })
+        .collect();
     HttpResponse {
         status,
-        body: serde_json::from_str(body).expect("response json body"),
+        headers,
+        body: if body.is_empty() {
+            Value::Null
+        } else {
+            serde_json::from_str(body).expect("response json body")
+        },
     }
 }
 

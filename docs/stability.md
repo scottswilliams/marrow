@@ -82,10 +82,11 @@ without exposing backing store handles. The successful check JSON output also
 includes `surface.route.v1` route-manifest rows derived from the exported
 descriptors; those rows name JSON `POST` operation-tag paths and render aliases,
 but they do not make aliases operation identity. `marrow surface serve` is the
-current serving profile: loopback-bound, JSON-only, at most one processed
-request per connection, backed by `ProjectSurfaceReadSession` in default
-read-only mode, and backed by `ProjectSurfaceSession` for sparse-update/action
-routes when `--write` is passed.
+current serving profile: loopback-bound, JSON-only, optional exact loopback CORS
+with `--cors-origin`, at most one processed request per connection, backed by
+`ProjectSurfaceReadSession` in default read-only mode, and backed by
+`ProjectSurfaceSession` for sparse-update/action routes when `--write` is
+passed.
 `marrow-run::ProjectSurfaceReadSession` is an unstable linked-Rust
 implementation profile for read serving over an already accepted native store:
 it opens the store read-only, fences drift, and exposes admitted surface reads
