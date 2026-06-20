@@ -225,6 +225,63 @@ fn rejects_internal_and_private_visibility() {
 }
 
 #[test]
+fn rejects_pub_on_resource_and_store_without_cascade() {
+    // `pub` gates only `fn` and `enum`; a `pub resource`/`pub store` is reported
+    // once at the `pub` token with the remove-`pub` remedy in the message, then
+    // recovered by parsing the rest of the declaration so its members do not raise
+    // a cascade of follow-on errors.
+    for (keyword, decl) in [
+        ("resource", "resource Book\n    title: string"),
+        ("store", "store ^books(id: int): Book"),
+    ] {
+        let source = format!("module app\npub {decl}\n");
+        let parsed = parse_source(&source);
+        let visibility: Vec<_> = parsed
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| {
+                diagnostic.reason == parse_reason(ParseDiagnosticReason::InvalidVisibility)
+            })
+            .collect();
+        assert_eq!(
+            visibility.len(),
+            1,
+            "expected exactly one visibility error for `pub {keyword}`: {:#?}",
+            parsed.diagnostics
+        );
+        // The span points at the `pub` token, on the declaration line.
+        assert_eq!(visibility[0].span.line, 2, "{:#?}", visibility[0]);
+        assert_eq!(
+            &source[visibility[0].span.start_byte..visibility[0].span.end_byte],
+            "pub",
+            "{:#?}",
+            visibility[0]
+        );
+        // The remedy rides in the message, not `help`: the checker drops `help`
+        // when it lowers parse diagnostics, so only an in-message remedy reaches
+        // `marrow check`.
+        assert!(
+            visibility[0].message.contains("remove `pub`"),
+            "expected a remove-`pub` remedy in the message: {:#?}",
+            visibility[0]
+        );
+        // Recovery parses the declaration, so there is no field-line cascade: the
+        // visibility error is the only diagnostic.
+        assert_eq!(
+            parsed.diagnostics.len(),
+            1,
+            "expected no cascade for `pub {keyword}`: {:#?}",
+            parsed.diagnostics
+        );
+        // Recovery yields the underlying declaration, dropping only the `pub`.
+        match keyword {
+            "resource" => assert!(parsed.file.resource("Book").is_some(), "{:#?}", parsed.file),
+            _ => assert_eq!(parsed.file.declarations.len(), 1, "{:#?}", parsed.file),
+        }
+    }
+}
+
+#[test]
 fn requires_indented_resource_and_function_bodies() {
     let parsed = parse_source(
         r#"module app

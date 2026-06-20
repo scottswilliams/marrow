@@ -201,22 +201,27 @@ values.
 General statement chaining and postconditionals are not part of Marrow `.mw`.
 Use normal `if` blocks.
 
-`if const name = place` is a presence-binding guard for saved value reads:
+`if const name = place` is a presence-binding guard for saved value reads. An
+optional `: type` annotation follows the name, exactly as on `const` and `var`:
 
 ```mw
 if const title = ^books(id).title
     print(title)
 else
     print("missing")
+
+if const pages: int = ^books(id).pages
+    print(pages)
 ```
 
 When the saved place is present, Marrow reads it once, binds the value as an
-immutable local `const`, and runs the guarded block. When it is absent, execution
-continues through `else if`, `else`, or the following statement. The right side
-must be a saved value read, such as a field, singleton root, fully addressed
-record or keyed-layer entry, or complete unique-index lookup. Address-only
-collections such as bare keyed roots, unaddressed keyed child layers, and
-non-unique index branches are not binding guards.
+immutable local `const`, and runs the guarded block. The binding's type follows
+from the saved read; a written annotation must name that type. When the place is
+absent, execution continues through `else if`, `else`, or the following
+statement. The right side must be a saved value read, such as a field, singleton
+root, fully addressed record or keyed-layer entry, or complete unique-index
+lookup. Address-only collections such as bare keyed roots, unaddressed keyed
+child layers, and non-unique index branches are not binding guards.
 
 ## Bindings
 

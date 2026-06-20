@@ -287,29 +287,42 @@ impl CheckedStmt {
             },
             syntax::Statement::IfConst {
                 name,
+                ty,
                 value,
                 then_block,
                 else_ifs,
                 else_block,
                 span,
             } => {
-                let value_type = crate::infer::infer_only(
-                    context.program,
-                    value,
-                    scope,
-                    &context.aliases,
-                    context.source_file,
-                );
+                // A written annotation types the binding, exactly as on `const`/`var`;
+                // it must name the saved read's type, which the check pass enforces, so
+                // a program that reaches lowering has a matching annotation. Without one
+                // the binding takes the read's inferred type.
+                let binding_type = match ty {
+                    Some(ty) => crate::enums::resolve_diagnosed_annotation_type(
+                        ty,
+                        context.program,
+                        &context.aliases,
+                        context.source_file,
+                    ),
+                    None => crate::infer::infer_only(
+                        context.program,
+                        value,
+                        scope,
+                        &context.aliases,
+                        context.source_file,
+                    ),
+                };
                 Self::IfConst {
                     name: name.clone(),
-                    binding_type: Some(value_type.clone()),
+                    binding_type: Some(binding_type.clone()),
                     value: CheckedExpr::lower(value, context, scope)?,
                     then_block: lower_scoped_with_binding(
                         then_block,
                         context,
                         scope,
                         name.clone(),
-                        value_type,
+                        binding_type,
                     )?,
                     else_ifs: else_ifs
                         .iter()

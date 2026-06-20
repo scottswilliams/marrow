@@ -274,6 +274,68 @@ fn parse_assign_or_expr(
     }
 }
 
+/// Parse an `if const name [: type] = place` head into the bound name, optional
+/// type annotation, and the place expression. `line` starts at the `const`
+/// keyword. The annotation is validated and stored exactly as `const`/`var` does;
+/// the trailing `=` and value are required. Returns `None` (after reporting a
+/// non-identifier name) when the head is not a binding, so the caller falls back
+/// to treating the line as an ordinary condition expression.
+pub(super) fn parse_if_const_head(
+    source: &str,
+    line: &[Token],
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<(String, Option<TypeRef>, Expression)> {
+    let name_token = line.get(1)?;
+    if name_token.kind != TokenKind::Identifier {
+        if matches!(name_token.kind, TokenKind::Keyword(_)) {
+            diagnostics.push(Diagnostic {
+                code: PARSE_SYNTAX,
+                reason: DiagnosticReason::Parser(ParseDiagnosticReason::Expected(
+                    ExpectedSyntax::ConstName,
+                )),
+                severity: Severity::Error,
+                message: format!(
+                    "expected const name; `{}` is a keyword",
+                    name_token.text(source)
+                ),
+                help: Some("choose an identifier that is not reserved".to_string()),
+                span: name_token.span,
+            });
+        }
+        return None;
+    }
+    let name = name_token.text(source).to_string();
+
+    let mut index = 2;
+    let mut ty = None;
+    if line.get(index).map(|token| token.kind) == Some(TokenKind::Colon) {
+        index += 1;
+        let type_start = index;
+        let type_end = find_top_level_equal(&line[type_start..])
+            .map(|equal| type_start + equal)
+            .unwrap_or(line.len());
+        if type_end == type_start {
+            return None;
+        }
+        if let Err(error) = reject_structural_type_tokens(
+            &line[type_start..type_end],
+            ExpectedSyntax::ConstType,
+            "expected const type annotation",
+        ) {
+            push_parse_error(diagnostics, line_span(line), error);
+            return None;
+        }
+        ty = Some(type_ref_from_tokens(source, &line[type_start..type_end]));
+        index = type_end;
+    }
+
+    if line.get(index).map(|token| token.kind) != Some(TokenKind::Equal) {
+        return None;
+    }
+    let value = expr_of(source, &line[index + 1..], diagnostics)?;
+    Some((name, ty, value))
+}
+
 /// Parse a `for` header `binding in iterable [by step]` into the loop binding,
 /// the iterable expression, and the optional range step. Returns `None` if the
 /// `in` keyword or binding is malformed. `by` is a contextual keyword: it splits

@@ -602,10 +602,13 @@ pub enum Statement {
         else_block: Option<Block>,
         span: SourceSpan,
     },
-    /// `if const name = place`: a saved-read existence guard that binds `name`
-    /// only in the then block when `place` is present.
+    /// `if const name [: type] = place`: a saved-read existence guard that binds
+    /// `name` only in the then block when `place` is present. The binding's type
+    /// is the saved read's type; the optional annotation, parsed exactly as on
+    /// `const`/`var`, names that type when written.
     IfConst {
         name: String,
+        ty: Option<TypeRef>,
         value: Expression,
         then_block: Block,
         else_ifs: Vec<ElseIf>,

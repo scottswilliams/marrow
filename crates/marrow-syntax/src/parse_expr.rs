@@ -4,10 +4,16 @@
 
 use crate::token::is_trivia;
 use crate::{
-    Argument, BinaryOp, Diagnostic, DiagnosticReason, ExpectedSyntax, Expression,
-    InterpolationPart, Keyword, LiteralKind, NESTING_DEPTH_LIMIT, NESTING_LIMIT, PARSE_SYNTAX,
-    ParseDiagnosticReason, Severity, SourceSpan, Token, TokenKind, UnaryOp, UnsupportedSyntax,
+    Argument, BinaryOp, Diagnostic, DiagnosticReason, Expression, InterpolationPart, Keyword,
+    LiteralKind, NESTING_DEPTH_LIMIT, NESTING_LIMIT, PARSE_SYNTAX, ParseDiagnosticReason, Severity,
+    SourceSpan, Token, TokenKind, UnaryOp, UnsupportedSyntax,
 };
+
+/// The remedy shared by the comparison and equality non-associative levels: the
+/// spec directs the author to parenthesize when comparing boolean results. It
+/// rides in the diagnostic message so it survives the checker's parse-diagnostic
+/// lowering and renders in `marrow check`, where `help` is dropped.
+const COMPARE_NONASSOC_REMEDY: &str = "use parentheses to compare boolean results";
 
 /// A value the parser does not fully structure yields `None`, which the caller
 /// turns into a syntax diagnostic.
@@ -49,9 +55,33 @@ impl<'a> ExprParser<'a> {
             return None;
         }
         let expr = self.expression();
+        // A `=` left where the expression should have ended is the `=`-for-`==`
+        // mistake: `=` is assignment only, so it never appears mid-expression.
+        if expr.is_some() {
+            self.report_stray_equals();
+        }
         diagnostics.append(&mut self.diagnostics);
         let expr = expr?;
         (self.pos == self.tokens.len()).then_some(expr)
+    }
+
+    /// If the next unconsumed token is `=`, report the `=`-vs-`==` mistake at that
+    /// token and return `true`. `=` is assignment only, so a `=` reached in
+    /// expression position is this common error rather than a generic one.
+    fn report_stray_equals(&mut self) -> bool {
+        let Some(token) = self.tokens.get(self.pos).copied() else {
+            return false;
+        };
+        if token.kind != TokenKind::Equal {
+            return false;
+        }
+        self.error(
+            token.span,
+            ParseDiagnosticReason::EqualsInExpression,
+            "`=` is assignment, not equality; use `==` for equality".to_string(),
+            None,
+        );
+        true
     }
 
     fn error(
@@ -206,33 +236,74 @@ impl<'a> ExprParser<'a> {
         }
         self.advance();
         let right = self.equality_expr()?;
+        if matches!(self.peek(), Some(TokenKind::Keyword(Keyword::Is))) {
+            return self
+                .reject_chained_operator("is", "use parentheses to group the subtree tests");
+        }
         Some(binary_expr(BinaryOp::Is, left, right))
     }
 
     fn equality_expr(&mut self) -> Option<Expression> {
         let left = self.comparison_expr()?;
-        let op = match self.peek() {
-            Some(TokenKind::EqualEqual) => BinaryOp::Equal,
-            Some(TokenKind::BangEqual) => BinaryOp::NotEqual,
+        let (op, text) = match self.peek() {
+            Some(TokenKind::EqualEqual) => (BinaryOp::Equal, "=="),
+            Some(TokenKind::BangEqual) => (BinaryOp::NotEqual, "!="),
             _ => return Some(left),
         };
         self.advance();
         let right = self.comparison_expr()?;
+        if matches!(
+            self.peek(),
+            Some(TokenKind::EqualEqual | TokenKind::BangEqual)
+        ) {
+            return self.reject_chained_operator(text, COMPARE_NONASSOC_REMEDY);
+        }
         Some(binary_expr(op, left, right))
     }
 
     fn comparison_expr(&mut self) -> Option<Expression> {
         let left = self.range_expr()?;
-        let op = match self.peek() {
-            Some(TokenKind::Less) => BinaryOp::Less,
-            Some(TokenKind::LessEqual) => BinaryOp::LessEqual,
-            Some(TokenKind::Greater) => BinaryOp::Greater,
-            Some(TokenKind::GreaterEqual) => BinaryOp::GreaterEqual,
+        let (op, text) = match self.peek() {
+            Some(TokenKind::Less) => (BinaryOp::Less, "<"),
+            Some(TokenKind::LessEqual) => (BinaryOp::LessEqual, "<="),
+            Some(TokenKind::Greater) => (BinaryOp::Greater, ">"),
+            Some(TokenKind::GreaterEqual) => (BinaryOp::GreaterEqual, ">="),
             _ => return Some(left),
         };
         self.advance();
         let right = self.range_expr()?;
+        if matches!(
+            self.peek(),
+            Some(
+                TokenKind::Less
+                    | TokenKind::LessEqual
+                    | TokenKind::Greater
+                    | TokenKind::GreaterEqual
+            )
+        ) {
+            return self.reject_chained_operator(text, COMPARE_NONASSOC_REMEDY);
+        }
         Some(binary_expr(op, left, right))
+    }
+
+    /// Report a second operator on a non-associative level (`==`/`!=`, a
+    /// comparison, `is`, or `??`) at that operator's own token, mirroring the
+    /// coalesce diagnostic, and abort the expression. `text` is the operator
+    /// spelling and `remedy` the spec fix; both ride in the message so the remedy
+    /// survives the checker's parse-diagnostic lowering and renders in
+    /// `marrow check`, where the `help` field is dropped. Returning `None` after
+    /// reporting suppresses the statement parser's generic fallback, so the only
+    /// diagnostic is this operator-spanned one rather than a misplaced "expected a
+    /// statement" at the line start.
+    fn reject_chained_operator(&mut self, text: &str, remedy: &str) -> Option<Expression> {
+        let operator = self.tokens[self.pos];
+        self.error(
+            operator.span,
+            ParseDiagnosticReason::NonAssociativeOperator,
+            format!("`{text}` does not chain; {remedy}"),
+            None,
+        );
+        None
     }
 
     fn range_expr(&mut self) -> Option<Expression> {
@@ -317,16 +388,8 @@ impl<'a> ExprParser<'a> {
         // `??` is non-associative: a second `??` at the same level is a grammar
         // error rather than a left- or right-folded chain, so reject it here
         // instead of leaving the trailing operand for the statement parser.
-        if let Some(chained) = self.tokens.get(self.pos).copied()
-            && chained.kind == TokenKind::QuestionQuestion
-        {
-            self.error(
-                chained.span,
-                ParseDiagnosticReason::Expected(ExpectedSyntax::Expression),
-                "`??` does not chain; parenthesize one side of the coalesce".to_string(),
-                None,
-            );
-            return None;
+        if matches!(self.peek(), Some(TokenKind::QuestionQuestion)) {
+            return self.reject_chained_operator("??", "write one `??` per read");
         }
         Some(binary_expr(BinaryOp::Coalesce, left, right))
     }
@@ -617,6 +680,9 @@ impl<'a> ExprParser<'a> {
                     self.advance();
                     Some(inner)
                 } else {
+                    // A `=` before the closing `)` is the `=`-for-`==` mistake;
+                    // report it pointedly rather than as an unstructured group.
+                    self.report_stray_equals();
                     None
                 }
             }

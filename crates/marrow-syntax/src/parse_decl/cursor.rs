@@ -237,6 +237,18 @@ impl<'a> DeclParser<'a> {
         })
     }
 
+    /// Whether the current line is `pub resource `/`pub store ` — a `pub` applied
+    /// to a declaration kind that is not visibility-gated. The trailing-space rule
+    /// applies to each word, so `pub` here introduces the (rejected) declaration
+    /// rather than a name path.
+    pub(super) fn pub_precedes_ungated_decl(&self) -> bool {
+        let lead = self.tokens[self.pos];
+        lead.kind == TokenKind::Keyword(Keyword::Pub)
+            && self.space_after(lead)
+            && (self.followed_by_keyword_space(Keyword::Resource)
+                || self.followed_by_keyword_space(Keyword::Store))
+    }
+
     /// Report an error spanning the current header line.
     pub(super) fn error_header(
         &mut self,

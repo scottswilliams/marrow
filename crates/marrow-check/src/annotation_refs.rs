@@ -1,5 +1,6 @@
 use marrow_syntax::{
-    Block, Declaration, EvolveStep, KeyParam, ResourceMember, SourceSpan, Statement, TypeRef,
+    Block, Declaration, ElseIf, EvolveStep, KeyParam, ResourceMember, SourceSpan, Statement,
+    TypeRef,
 };
 
 use crate::source_spans::source_span_at;
@@ -78,6 +79,21 @@ pub(crate) fn walk_block_type_refs(block: &Block, visit: &mut impl FnMut(&TypeRe
     }
 }
 
+fn walk_branch_type_refs(
+    then_block: &Block,
+    else_ifs: &[ElseIf],
+    else_block: Option<&Block>,
+    visit: &mut impl FnMut(&TypeRef),
+) {
+    walk_block_type_refs(then_block, visit);
+    for else_if in else_ifs {
+        walk_block_type_refs(&else_if.block, visit);
+    }
+    if let Some(else_block) = else_block {
+        walk_block_type_refs(else_block, visit);
+    }
+}
+
 fn walk_statement_type_refs(statement: &Statement, visit: &mut impl FnMut(&TypeRef)) {
     match statement {
         Statement::Const { ty, .. } => {
@@ -91,25 +107,25 @@ fn walk_statement_type_refs(statement: &Statement, visit: &mut impl FnMut(&TypeR
                 visit(ty);
             }
         }
-        Statement::If {
-            then_block,
-            else_ifs,
-            else_block,
-            ..
-        }
-        | Statement::IfConst {
+        Statement::IfConst {
+            ty,
             then_block,
             else_ifs,
             else_block,
             ..
         } => {
-            walk_block_type_refs(then_block, visit);
-            for else_if in else_ifs {
-                walk_block_type_refs(&else_if.block, visit);
+            if let Some(ty) = ty {
+                visit(ty);
             }
-            if let Some(else_block) = else_block {
-                walk_block_type_refs(else_block, visit);
-            }
+            walk_branch_type_refs(then_block, else_ifs, else_block.as_ref(), visit);
+        }
+        Statement::If {
+            then_block,
+            else_ifs,
+            else_block,
+            ..
+        } => {
+            walk_branch_type_refs(then_block, else_ifs, else_block.as_ref(), visit);
         }
         Statement::While { body, .. }
         | Statement::For { body, .. }

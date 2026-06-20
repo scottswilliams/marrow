@@ -281,6 +281,50 @@ fn reassigning_a_var_is_allowed() {
     assert!(found.is_empty(), "{found:#?}");
 }
 
+/// `if const name: T = place` carries the same annotation contract as `const`/`var`:
+/// the written type must name the saved read's type. An unresolvable name is a
+/// `check.unknown_type`, a type that disagrees with the read is a
+/// `check.assignment_type`, and a matching annotation checks clean.
+fn if_const_annotation_module(annotation: &str) -> String {
+    format!(
+        "module m\n\
+         resource Book\n    required title: string\n    required pages: int\n\
+         store ^books(id: int): Book\n\n\
+         fn f(id: Id(^books))\n    if const p{annotation} = ^books(id).pages\n        return\n"
+    )
+}
+
+#[test]
+fn if_const_annotation_that_disagrees_with_the_read_is_rejected() {
+    // The saved read is `int`; annotating the binding `string` is the same lie
+    // `const p: string = <int>` is, so it fires `check.assignment_type`.
+    let found = check_module(
+        "if-const-annotation-mismatch",
+        &if_const_annotation_module(": string"),
+        "check.assignment_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn if_const_annotation_with_an_unknown_type_is_rejected() {
+    let found = check_module(
+        "if-const-annotation-unknown",
+        &if_const_annotation_module(": Nonexistent"),
+        "check.unknown_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn if_const_annotation_that_matches_the_read_checks_clean() {
+    let report = check_module_report(
+        "if-const-annotation-match",
+        &if_const_annotation_module(": int"),
+    );
+    assert_clean(&report);
+}
+
 #[test]
 fn an_inner_var_shadowing_an_outer_const_is_assignable() {
     // A `var` in an inner block shadows an outer `const`; the inner name is mutable,

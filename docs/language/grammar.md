@@ -346,7 +346,7 @@ if_stmt         =
     else_clause? ;
 
 if_const_stmt   =
-    "if" "const" identifier "=" expression NEWLINE block
+    "if" "const" identifier type_annotation? "=" expression NEWLINE block
     else_if_clause*
     else_clause? ;
 

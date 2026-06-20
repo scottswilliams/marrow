@@ -90,6 +90,38 @@ fn parses_return_absent_as_a_distinct_statement() {
 }
 
 #[test]
+fn if_const_accepts_a_type_annotation() {
+    // `if const name: T = place` accepts the annotation the same way `const`/`var`
+    // do, rather than dead-ending in a generic "expected an expression" error.
+    let parsed = parse_source(
+        "module app\n\
+         fn title(id: Id(^books))\n\
+         \x20   if const pages: int = ^books(id).pages\n\
+         \x20       print(pages)\n",
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let title = parsed.file.function("title").expect("title function");
+    let Statement::IfConst {
+        name, ty, value, ..
+    } = &title.body.statements[0]
+    else {
+        panic!(
+            "expected an if const statement, got {:?}",
+            title.body.statements[0]
+        );
+    };
+    assert_eq!(name, "pages");
+    assert!(
+        matches!(ty, Some(ty) if ty.text == "int"),
+        "expected the `: int` annotation to be bound, got {ty:?}"
+    );
+    assert!(
+        matches!(value, Expression::Field { name, .. } if name == "pages"),
+        "binding value: {value:?}"
+    );
+}
+
+#[test]
 fn absent_is_not_a_general_expression() {
     for source in [
         "module app\nfn f(): int\n    return absent + 1\n",

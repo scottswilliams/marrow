@@ -47,6 +47,8 @@ pub enum ParseDiagnosticReason {
     EmptyKeyParameters,
     EnumMemberMustBeBareName,
     EnumNeedsMember,
+    /// A bare `=` left in expression position, the common `=`-for-`==` mistake.
+    EqualsInExpression,
     Expected(ExpectedSyntax),
     IndexOutsideStoreBody,
     InvalidVisibility,
@@ -55,6 +57,9 @@ pub enum ParseDiagnosticReason {
     LateModuleDeclaration,
     MatchArmMemberPath,
     NestingLimit,
+    /// A second operator on a non-associative level (`==`/`!=`/`</`is`/`??`),
+    /// which the grammar does not chain.
+    NonAssociativeOperator,
     PositionalArgumentAfterNamed,
     Reserved(ReservedSyntax),
     ResourceMemberInStoreBody,

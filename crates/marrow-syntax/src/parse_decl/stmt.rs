@@ -4,14 +4,16 @@
 //! statement may span several physical lines inside open delimiters.
 
 use super::head::arm_member_path;
-use super::statement_lines::{parse_catch_header, parse_for_header, parse_simple_statement};
+use super::statement_lines::{
+    parse_catch_header, parse_for_header, parse_if_const_head, parse_simple_statement,
+};
 use super::tokens::{
     comment_from_token, expr_of, first_line_end, is_line_comment, line_end, line_span,
 };
 use crate::PARSE_SYNTAX;
 use crate::ast::{
     Block, CatchClause, Comment, CommentMarker, CommentPlacement, ElseIf, Expression, MatchArm,
-    Statement,
+    Statement, TypeRef,
 };
 use crate::diagnostic::{
     Diagnostic, DiagnosticReason, ExpectedSyntax, ParseDiagnosticReason, ReservedSyntax, Severity,
@@ -22,7 +24,11 @@ use crate::token::{Keyword, Token, TokenKind};
 
 enum IfHead {
     Expr(Option<Expression>),
-    ConstBinding { name: String, value: Expression },
+    ConstBinding {
+        name: String,
+        ty: Option<TypeRef>,
+        value: Expression,
+    },
 }
 
 /// A block-introducing keyword that has no statement of its own and only ever
@@ -378,8 +384,9 @@ impl<'a> StmtParser<'a> {
                 else_block,
                 span: join_spans(start, end),
             },
-            IfHead::ConstBinding { name, value } => Statement::IfConst {
+            IfHead::ConstBinding { name, ty, value } => Statement::IfConst {
                 name,
+                ty,
                 value,
                 then_block,
                 else_ifs,
@@ -517,10 +524,9 @@ impl<'a> StmtParser<'a> {
             line.first().map(|token| token.kind),
             Some(TokenKind::Keyword(Keyword::Const))
         ) {
-            self.if_const_head(line)
-                .map_or(IfHead::Expr(None), |(name, value)| IfHead::ConstBinding {
-                    name,
-                    value,
+            parse_if_const_head(self.source, line, &mut self.diagnostics)
+                .map_or(IfHead::Expr(None), |(name, ty, value)| {
+                    IfHead::ConstBinding { name, ty, value }
                 })
         } else {
             IfHead::Expr(expr_of(self.source, line, &mut self.diagnostics))
@@ -534,33 +540,6 @@ impl<'a> StmtParser<'a> {
         }
         self.pos = (newline + 1).min(self.tokens.len());
         head
-    }
-
-    fn if_const_head(&mut self, line: &[Token]) -> Option<(String, Expression)> {
-        let name_token = line.get(1)?;
-        if name_token.kind != TokenKind::Identifier {
-            if matches!(name_token.kind, TokenKind::Keyword(_)) {
-                self.diagnostics.push(Diagnostic {
-                    code: PARSE_SYNTAX,
-                    reason: DiagnosticReason::Parser(ParseDiagnosticReason::Expected(
-                        ExpectedSyntax::ConstName,
-                    )),
-                    severity: Severity::Error,
-                    message: format!(
-                        "expected const name; `{}` is a keyword",
-                        name_token.text(self.source)
-                    ),
-                    help: Some("choose an identifier that is not reserved".to_string()),
-                    span: name_token.span,
-                });
-            }
-            return None;
-        }
-        if line.get(2).map(|token| token.kind) != Some(TokenKind::Equal) {
-            return None;
-        }
-        let value = expr_of(self.source, &line[3..], &mut self.diagnostics)?;
-        Some((name_token.text(self.source).to_string(), value))
     }
 
     /// Consume the rest of a header line up to and including its `NEWLINE`.

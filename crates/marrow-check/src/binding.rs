@@ -31,8 +31,9 @@ use crate::annotation_refs::{
 };
 use crate::checks::{catch_frame, file_prelude, for_frame};
 use crate::enums::{
-    EnumAnnotationResolution, EnumMemberPathResolution, enum_schema_in, resolve_enum_annotation,
-    resolve_enum_member_path, resolve_type,
+    EnumAnnotationResolution, EnumMemberPathResolution, enum_schema_in,
+    resolve_diagnosed_annotation_type, resolve_enum_annotation, resolve_enum_member_path,
+    resolve_type,
 };
 use crate::executable::{SavedMemberRefKind, SavedPlaceResolver, lower_expr_for_file};
 use crate::facts::{FunctionId, LocalId};
@@ -1052,6 +1053,7 @@ impl UseWalker<'_, '_> {
             }
             Statement::IfConst {
                 name,
+                ty,
                 value,
                 then_block,
                 else_ifs,
@@ -1059,7 +1061,28 @@ impl UseWalker<'_, '_> {
                 span,
             } => {
                 self.walk_expr(value, scope, type_scope);
-                self.walk_if_const_then(*span, name, value, then_block, scope, type_scope);
+                // A written annotation resolves for go-to/hover and types the binding,
+                // the same as on `const`/`var`; without one the binding takes the
+                // read's inferred type.
+                let binding_type = match ty {
+                    Some(ty) => {
+                        self.resolve_type_ref(ty);
+                        resolve_diagnosed_annotation_type(
+                            ty,
+                            self.builder.program,
+                            self.aliases,
+                            self.file,
+                        )
+                    }
+                    None => infer_only(
+                        self.builder.program,
+                        value,
+                        type_scope,
+                        self.aliases,
+                        self.file,
+                    ),
+                };
+                self.walk_if_const_then(*span, name, binding_type, then_block, scope, type_scope);
                 for else_if in else_ifs {
                     if let Some(condition) = &else_if.condition {
                         self.walk_expr(condition, scope, type_scope);
@@ -1158,7 +1181,7 @@ impl UseWalker<'_, '_> {
         &mut self,
         statement_span: SourceSpan,
         name: &str,
-        value: &Expression,
+        binding_type: MarrowType,
         body: &Block,
         scope: &mut Vec<HashMap<String, DefId>>,
         type_scope: &mut Vec<HashMap<String, MarrowType>>,
@@ -1168,16 +1191,7 @@ impl UseWalker<'_, '_> {
             frame.insert(name.to_string(), self.define_local(span));
         }
         let mut type_frame = HashMap::new();
-        type_frame.insert(
-            name.to_string(),
-            infer_only(
-                self.builder.program,
-                value,
-                type_scope,
-                self.aliases,
-                self.file,
-            ),
-        );
+        type_frame.insert(name.to_string(), binding_type);
         self.walk_body_in_frame(body, frame, type_frame, scope, type_scope);
     }
 

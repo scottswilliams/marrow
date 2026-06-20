@@ -882,6 +882,7 @@ fn format_statement_with_comments(
         }
         Statement::IfConst {
             name,
+            ty,
             value,
             then_block,
             else_ifs,
@@ -894,7 +895,15 @@ fn format_statement_with_comments(
                 start_byte: span.start_byte,
                 level,
             };
-            return format_if_const(ctx, name, value, then_block, else_ifs, else_block.as_ref());
+            return format_if_const(
+                ctx,
+                name,
+                ty,
+                value,
+                then_block,
+                else_ifs,
+                else_block.as_ref(),
+            );
         }
         Statement::While {
             condition,
@@ -996,6 +1005,7 @@ fn format_if(
 fn format_if_const(
     ctx: StatementFormatContext<'_, '_>,
     name: &str,
+    ty: &Option<TypeRef>,
     value: &Expression,
     then_block: &Block,
     else_ifs: &[ElseIf],
@@ -1003,7 +1013,8 @@ fn format_if_const(
 ) -> String {
     let pad = INDENT.repeat(ctx.level);
     let mut header = format!(
-        "{pad}if const {name} = {}",
+        "{pad}if const {name}{} = {}",
+        format_type_annotation(ty),
         format_expression_at(value, ctx.level)
     );
     append_trailing_comment_between(

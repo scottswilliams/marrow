@@ -174,26 +174,51 @@ fn bare_type_keyword_is_not_a_value() {
 
 #[test]
 fn const_chained_equality_is_not_associative() {
-    // Grammar: equality is non-associative, so `a = b = c` is not a valid
-    // expression. The parser consumes `a = b` then leaves `= c`, which does not
-    // fully parse and so is a syntax error rather than silently nesting.
-    let parsed = parse_source("const Bad: bool = a = b = c\n");
-    assert!(
-        has_reason(
-            &parsed.diagnostics,
-            parse_reason(ParseDiagnosticReason::Expected(ExpectedSyntax::Expression))
-        ),
-        "expected an expression parse error: {:#?}",
-        parsed.diagnostics
-    );
-    let Declaration::Const(decl) = &parsed.file.declarations[0] else {
-        panic!("expected const declaration");
-    };
-    assert!(
-        decl.value.is_none(),
-        "expected chained equality to carry no value, got {:?}",
-        decl.value
-    );
+    // Equality, inequality, comparison, and `is` each sit on their own
+    // non-associative level: a second same-class operator is a grammar error
+    // spanned at that operator, mirroring the `??` diagnostic, rather than a
+    // generic "expected a statement" at the line start.
+    for (source, operator) in [
+        ("const Bad: bool = a == b == c\n", "=="),
+        ("const Bad: bool = a != b != c\n", "!="),
+        ("const Bad: bool = a < b < c\n", "<"),
+        ("const Bad: bool = a is X is Y\n", "is"),
+    ] {
+        let parsed = parse_source(source);
+        let diagnostic = parsed
+            .diagnostics
+            .iter()
+            .find(|diagnostic| {
+                diagnostic.reason == parse_reason(ParseDiagnosticReason::NonAssociativeOperator)
+            })
+            .unwrap_or_else(|| {
+                panic!(
+                    "expected a non-associative-operator error for {source:?}: {:#?}",
+                    parsed.diagnostics
+                )
+            });
+        // The span points at the second operator, not the statement start.
+        assert_eq!(
+            &source[diagnostic.span.start_byte..diagnostic.span.end_byte],
+            operator,
+            "span should cover the second `{operator}`: {diagnostic:#?}"
+        );
+        // The remedy rides in the message so it survives the checker's
+        // parse-diagnostic lowering and renders in `marrow check`.
+        assert!(
+            diagnostic.message.contains("does not chain")
+                && diagnostic.message.contains("parentheses"),
+            "expected the parenthesize remedy in the message: {diagnostic:#?}"
+        );
+        let Declaration::Const(decl) = &parsed.file.declarations[0] else {
+            panic!("expected const declaration for {source:?}");
+        };
+        assert!(
+            decl.value.is_none(),
+            "expected chained `{operator}` to carry no value, got {:?}",
+            decl.value
+        );
+    }
 }
 
 #[test]
@@ -352,15 +377,33 @@ fn coalesce_binds_tighter_than_comparison_and_range_but_looser_than_additive() {
 
 #[test]
 fn chained_coalesce_is_not_associative() {
-    // `??` is non-associative, so `a ?? b ?? c` does not parse.
-    let parsed = parse_source("fn f(a: int): int\n    return ^books(a)?.pages ?? 0 ?? 1\n");
+    // `??` is non-associative, so `a ?? b ?? c` does not parse; the diagnostic is
+    // spanned at the second `??` and carries the spec remedy.
+    let source = "fn f(a: int): int\n    return ^books(a)?.pages ?? 0 ?? 1\n";
+    let parsed = parse_source(source);
+    let diagnostic = parsed
+        .diagnostics
+        .iter()
+        .find(|diagnostic| {
+            diagnostic.reason == parse_reason(ParseDiagnosticReason::NonAssociativeOperator)
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "expected a non-associative-operator error for chained `??`: {:#?}",
+                parsed.diagnostics
+            )
+        });
+    assert_eq!(
+        &source[diagnostic.span.start_byte..diagnostic.span.end_byte],
+        "??",
+        "span should cover the second `??`: {diagnostic:#?}"
+    );
+    // The spec remedy rides in the message, not `help`: the checker drops `help`
+    // when it lowers parse diagnostics, so only an in-message remedy reaches
+    // `marrow check`.
     assert!(
-        has_reason(
-            &parsed.diagnostics,
-            parse_reason(ParseDiagnosticReason::Expected(ExpectedSyntax::Expression))
-        ),
-        "expected an expression parse error for chained `??`: {:#?}",
-        parsed.diagnostics
+        diagnostic.message.contains("write one `??` per read"),
+        "expected the spec remedy in the message: {diagnostic:#?}"
     );
 }
 
@@ -387,16 +430,33 @@ fn underscore_no_longer_parses_as_string_concatenation() {
 
 #[test]
 fn bare_equals_in_expression_position_is_a_parse_error() {
-    // `=` is assignment only; a `=` left over in expression position (here nested
-    // in a condition where it cannot be the statement assignment) does not parse.
-    let parsed = parse_source("fn f(a: int, b: int)\n    if (a = b)\n        return\n");
+    // `=` is assignment only; a `=` left over in expression position is reported
+    // as the `=`-vs-`==` mistake at the `=` token, with a hint to use `==`.
+    let source = "fn f(a: int, b: int)\n    if a = 2\n        return\n";
+    let parsed = parse_source(source);
+    let diagnostic = parsed
+        .diagnostics
+        .iter()
+        .find(|diagnostic| {
+            diagnostic.reason == parse_reason(ParseDiagnosticReason::EqualsInExpression)
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "expected an `=`-in-expression parse error: {:#?}",
+                parsed.diagnostics
+            )
+        });
+    // The span points at the `=` token itself, on the condition line.
+    assert_eq!(diagnostic.span.line, 2, "{diagnostic:#?}");
+    assert_eq!(
+        &source[diagnostic.span.start_byte..diagnostic.span.end_byte],
+        "="
+    );
+    // The `==` hint rides in the message so it survives the checker's
+    // parse-diagnostic lowering and renders in `marrow check`.
     assert!(
-        has_reason(
-            &parsed.diagnostics,
-            parse_reason(ParseDiagnosticReason::Expected(ExpectedSyntax::Expression))
-        ),
-        "expected an expression parse error for a bare `=` in expression position: {:#?}",
-        parsed.diagnostics
+        diagnostic.message.contains("`==` for equality"),
+        "expected an `==` hint in the message: {diagnostic:#?}"
     );
 }
 

@@ -250,14 +250,7 @@ impl StatementCheck<'_> {
                 else_ifs,
                 else_block.as_ref(),
             ),
-            Statement::IfConst {
-                name,
-                value,
-                then_block,
-                else_ifs,
-                else_block,
-                ..
-            } => self.check_if_const(name, value, then_block, else_ifs, else_block.as_ref()),
+            Statement::IfConst { .. } => self.check_if_const(statement),
             Statement::While {
                 condition, body, ..
             } => self.check_while(condition.as_ref(), body),
@@ -537,19 +530,51 @@ impl StatementCheck<'_> {
         self.required_fields.invalidate_all();
     }
 
-    fn check_if_const(
-        &mut self,
-        name: &str,
-        value: &marrow_syntax::Expression,
-        then_block: &marrow_syntax::Block,
-        else_ifs: &[marrow_syntax::ElseIf],
-        else_block: Option<&marrow_syntax::Block>,
-    ) {
+    fn check_if_const(&mut self, statement: &marrow_syntax::Statement) {
+        let marrow_syntax::Statement::IfConst {
+            name,
+            ty: annotation,
+            value,
+            then_block,
+            else_ifs,
+            else_block,
+            span,
+        } = statement
+        else {
+            return;
+        };
+        let annotation = annotation.as_ref();
+        let else_block = else_block.as_ref();
+        let span = *span;
         let value_type = self.infer(value);
         self.check_range_value(value);
         self.check_if_const_value(value);
+        // A written annotation carries the same contract as on `const`/`var`: it
+        // must name the saved read's type. An unresolvable name is a
+        // `check.unknown_type` and a disagreeing type a `check.assignment_type`;
+        // the annotation then types the binding so the then-block sees the written
+        // type rather than the read's inferred one.
+        let binding_type = match annotation {
+            Some(annotation) => {
+                let annotated_type = resolve_diagnosed_annotation_type(
+                    annotation,
+                    self.program,
+                    self.aliases,
+                    self.file,
+                );
+                check_assignment(
+                    self.file,
+                    span,
+                    &annotated_type,
+                    &value_type,
+                    self.diagnostics,
+                );
+                annotated_type
+            }
+            None => value_type,
+        };
         let mut frame = HashMap::new();
-        frame.insert(name.to_string(), value_type);
+        frame.insert(name.to_string(), binding_type);
         self.scope.push(frame);
         self.check_inconclusive_block(then_block);
         self.scope.pop();

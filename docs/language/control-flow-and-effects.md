@@ -15,6 +15,15 @@ else
 
 Conditions must be `bool`.
 
+`if const name = place` guards a saved value read, binding `name` in the then
+block only when `place` is present. An optional `: type` annotation follows the
+name, as on `const` and `var`, and names the saved read's type:
+
+```mw
+if const pages: int = ^books(id).pages
+    print(pages)
+```
+
 ## Short-Circuit Logic
 
 `and` and `or` short-circuit from left to right:

@@ -157,6 +157,18 @@ impl<'a> DeclParser<'a> {
                 file.declarations.push(Declaration::Function(function));
                 file.comments.extend(trailing_comment);
             }
+            // `pub` gates only `fn` and `enum`; a `pub resource`/`pub store` is
+            // reported at the `pub` token, which is then dropped so the rest of the
+            // declaration parses and raises no follow-on cascade.
+            Some(TokenKind::Keyword(Keyword::Pub)) if self.pub_precedes_ungated_decl() => {
+                let pub_token = self.advance();
+                self.error_span(
+                    pub_token.span,
+                    ParseDiagnosticReason::InvalidVisibility,
+                    "resources and stores are not visibility-gated; remove `pub`",
+                );
+                self.dispatch_top_level(file, docs, saw_top_level_item);
+            }
             // `type` is not a keyword in Marrow; it lexes as an identifier.
             Some(TokenKind::Identifier)
                 if self.identifier_is(self.pos, "type") && self.keyword_introduces_decl() =>
