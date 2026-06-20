@@ -344,13 +344,14 @@ directly.
 ### `io.*` — kind `io`
 
 I/O faults. The CLI reports `io.read` when it cannot read a project file
-(e.g. `marrow.json`) and `io.thread` when it cannot start its worker thread.
-The `std::io` builtins raise `io.read`/`io.write` as catchable `Error` values
-inside a running program.
+(e.g. `marrow.json`), `io.listen` when a local listener cannot bind or accept,
+and `io.thread` when it cannot start its worker thread. The `std::io` builtins
+raise `io.read`/`io.write` as catchable `Error` values inside a running program.
 
 | Code | Meaning |
 |---|---|
 | `io.read` | A read failed: a project source file or `marrow.json` could not be read, or `std::io::readText`/`readBytes` failed. |
+| `io.listen` | A local listener could not bind, report its bound address, or accept a connection. |
 | `io.thread` | The CLI could not spawn the worker thread it uses for parsing, checking, and running. |
 | `io.write` | `std::io::writeText`/`writeBytes` failed. |
 
@@ -454,9 +455,9 @@ until that surface ships.
 The `surface.*` family belongs to the application surface runtime and its
 [Surface ABI](future/surface-abi.md). The transport-neutral `marrow-run`
 node-read, collection-read, sparse-update, and action APIs can emit the active
-codes below. They do not appear in v0.1 command output until a command or
-transport profile owns that surface. Cursor strings remain future transport
-work; the active runtime cursor is a typed continuation value.
+codes below. `marrow surface serve` emits sanitized code/message envelopes for
+read-only HTTP serving. Cursor strings remain future transport work; the active
+runtime cursor is a typed continuation value.
 
 | Code | Meaning |
 |---|---|

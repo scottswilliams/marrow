@@ -2323,6 +2323,81 @@ pub fn seed()
     }
 
     #[test]
+    fn surface_route_request_matches_operation_body_kind() {
+        let point_read = serde_json::from_value::<SurfaceOperationRequestBodyJson>(json!({
+            "kind": "point_read",
+            "request": {
+                "identity": {
+                    "store_catalog_id": "cat_00000000000000000000000000000001",
+                    "keys": [{ "kind": "int", "value": "1" }]
+                }
+            }
+        }))
+        .expect("point read body parses");
+        let page = serde_json::from_value::<SurfaceOperationRequestBodyJson>(json!({
+            "kind": "page",
+            "request": { "exact_keys": [], "limit": 1 }
+        }))
+        .expect("page body parses");
+        let unique_lookup = serde_json::from_value::<SurfaceOperationRequestBodyJson>(json!({
+            "kind": "unique_lookup",
+            "request": { "keys": [] }
+        }))
+        .expect("unique lookup body parses");
+        let singleton_update = serde_json::from_value::<SurfaceOperationRequestBodyJson>(json!({
+            "kind": "singleton_update",
+            "request": { "fields": [] }
+        }))
+        .expect("singleton update body parses");
+        let point_update = serde_json::from_value::<SurfaceOperationRequestBodyJson>(json!({
+            "kind": "point_update",
+            "request": {
+                "identity": {
+                    "store_catalog_id": "cat_00000000000000000000000000000001",
+                    "keys": [{ "kind": "int", "value": "1" }]
+                },
+                "fields": []
+            }
+        }))
+        .expect("point update body parses");
+        let action = serde_json::from_value::<SurfaceOperationRequestBodyJson>(json!({
+            "kind": "action",
+            "request": { "arguments": [] }
+        }))
+        .expect("action body parses");
+
+        let cases = [
+            (
+                SurfaceRouteRequestJson::SingletonRead,
+                SurfaceOperationRequestBodyJson::SingletonRead,
+            ),
+            (SurfaceRouteRequestJson::PointRead, point_read),
+            (SurfaceRouteRequestJson::Page, page),
+            (SurfaceRouteRequestJson::UniqueLookup, unique_lookup),
+            (SurfaceRouteRequestJson::SingletonUpdate, singleton_update),
+            (SurfaceRouteRequestJson::PointUpdate, point_update),
+            (SurfaceRouteRequestJson::Action, action),
+        ];
+        for (route_request, body) in cases {
+            assert!(
+                route_request.matches_operation_body(&body),
+                "{route_request:?} should match {body:?}"
+            );
+        }
+        assert!(SurfaceRouteRequestJson::SingletonRead.is_read());
+        assert!(SurfaceRouteRequestJson::PointRead.is_read());
+        assert!(SurfaceRouteRequestJson::Page.is_read());
+        assert!(SurfaceRouteRequestJson::UniqueLookup.is_read());
+        assert!(!SurfaceRouteRequestJson::SingletonUpdate.is_read());
+        assert!(!SurfaceRouteRequestJson::PointUpdate.is_read());
+        assert!(!SurfaceRouteRequestJson::Action.is_read());
+        assert!(
+            !SurfaceRouteRequestJson::Page
+                .matches_operation_body(&SurfaceOperationRequestBodyJson::SingletonRead)
+        );
+    }
+
+    #[test]
     fn surface_abi_omits_duplicate_stable_action_operation_tags() {
         let (program, _runtime) = checked_surface_program(DUPLICATE_ACTION_TAG_SURFACES);
         let duplicate_tag = checker_action_operation_tag(&program, "Books", "addBook");

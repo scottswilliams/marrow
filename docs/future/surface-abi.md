@@ -80,10 +80,14 @@ The active surface foundation has these owners:
   sparse-update, and action request bodies by operation tag without exposing
   private store handles. The default project operation helper runs actions with
   a zero-capability host; callers that need host capabilities use the
-  explicit-host helper. HTTP serving, generated clients, and opaque cursor
-  tokens remain separate profiles. Serialized ABI export includes only callable
-  read/update/action operation tags and routes derived from those exported
-  descriptors.
+  explicit-host helper. `marrow surface serve` is the first HTTP serving
+  profile: a loopback-only, dependency-free, read-only local endpoint over
+  descriptor-derived `/surface/v1/read/<operation-tag>` routes and
+  `surface.operation.v1` envelopes. Generated clients, opaque cursor tokens,
+  create/delete profiles, writable HTTP routes, remote binding, and
+  authentication remain separate profiles. Serialized ABI export includes only
+  callable read/update/action operation tags and routes derived from those
+  exported descriptors.
 
 Operation tags are live runtime/json contracts. A change to either
 `surface.read.v1`, `surface.update.v1`, or `entry.invoke.v1` action framing must
@@ -205,25 +209,27 @@ stable equality values.
 
 ## Serving Profile
 
-HTTP serving and local server lifetime remain deferred until a serving profile
-maps the active route manifest and operation envelope to store-open policy,
-network binding, and process lifetime. A production serving profile needs:
+`marrow surface serve` maps the active route manifest and operation envelope to
+a local read-only HTTP process:
 
-- serving routes taken from `surface.route.v1`, not source names or ordinals;
-- strict JSON-only transport around the active operation envelope;
-- sanitized `surface.*` error codes and no raw store details;
-- an explicit choice between the active commit-bound cursor DTOs and a separate
-  opaque cursor-token profile;
-- loopback binding by default, because Marrow has no users or roles yet;
-- read-only store admission for read serving, with no UID mint, baseline
+- serving routes are taken from `surface.route.v1`, not source names or ordinals;
+- only descriptor-derived `/surface/v1/read/<operation-tag>` paths are exposed;
+- the transport is JSON-only around the active `surface.operation.v1` envelope;
+- route operation tag, body operation tag, and body request kind must agree;
+- errors use sanitized `surface.*` code/message envelopes with no raw store
+  details;
+- binding is loopback-only because Marrow has no users, roles, or authorization
+  model yet;
+- store admission uses `ProjectSurfaceReadSession`, with no UID mint, baseline
   freeze, auto-apply, recovery, restore, maintenance, or hidden write path;
-- an explicit architecture decision before adding an HTTP dependency.
+- the HTTP parser processes at most one request per connection, requires exactly
+  one `Content-Length`, rejects `Transfer-Encoding` and already-buffered
+  trailing bytes, caps headers and bodies, and closes every response.
 
-The active `ProjectSurfaceReadSession` and `ProjectSurfaceSession` satisfy only
-the preparatory linked-Rust project slices, and `surface.route.v1` satisfies only
-the descriptor-derived manifest slice. They are not the serving profile: they
-have no process lifetime, network binding, generated-client surface, opaque
-cursor token, or public HTTP compatibility guarantee.
+The serving profile intentionally reuses the active commit-bound typed cursor
+DTOs in read responses and page requests. A separate opaque cursor-token profile
+remains future work. Writable HTTP routes, generated clients, remote serving,
+authn/authz, and an HTTP dependency also remain future architecture decisions.
 
 ## Generated Clients And LSP
 

@@ -1,8 +1,10 @@
 # Operations
 
 This page covers the v0.1 local CLI and native store. Marrow does not ship a
-background server or remote transport in v0.1; operator procedures are ordinary
-CLI commands over a project directory and its configured store.
+background service manager or remote transport in v0.1; operator procedures are
+ordinary CLI commands over a project directory and its configured store.
+`marrow surface serve` is a foreground, loopback-only, read-only local serving
+profile over checked application-surface read routes.
 
 ## Writer Model
 
@@ -15,6 +17,11 @@ Commands that can take the write side include `marrow run` when it can write
 saved data or freeze identity, `marrow evolve apply`, `marrow restore`, and
 `marrow data recover`. Read-only inspection commands can still block a writer
 while they hold a native store open.
+
+`marrow surface serve` opens the configured native store read-only through
+`ProjectSurfaceReadSession`, so it can coexist with other read-only opens and
+blocks write-capable commands while it is running. It does not auto-apply
+catalog drift, repair the store, or expose update/action routes.
 
 ## Deploying A Catalog Change
 

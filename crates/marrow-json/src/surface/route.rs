@@ -1,8 +1,8 @@
 use serde::Serialize;
 
 use super::{
-    SURFACE_OPERATION_PROFILE_VERSION, SurfaceAbiJson, SurfaceReadOperationKindJson,
-    SurfaceUpdateOperationKindJson,
+    SURFACE_OPERATION_PROFILE_VERSION, SurfaceAbiJson, SurfaceOperationRequestBodyJson,
+    SurfaceReadOperationKindJson, SurfaceUpdateOperationKindJson,
 };
 
 pub const SURFACE_ROUTE_PROFILE_VERSION: &str = "surface.route.v1";
@@ -46,6 +46,41 @@ pub enum SurfaceRouteRequestJson {
     SingletonUpdate,
     PointUpdate,
     Action,
+}
+
+impl SurfaceRouteRequestJson {
+    pub fn is_read(&self) -> bool {
+        matches!(
+            self,
+            Self::SingletonRead | Self::PointRead | Self::Page | Self::UniqueLookup
+        )
+    }
+
+    pub fn matches_operation_body(&self, body: &SurfaceOperationRequestBodyJson) -> bool {
+        matches!(
+            (self, body),
+            (
+                Self::SingletonRead,
+                SurfaceOperationRequestBodyJson::SingletonRead
+            ) | (
+                Self::PointRead,
+                SurfaceOperationRequestBodyJson::PointRead { .. }
+            ) | (Self::Page, SurfaceOperationRequestBodyJson::Page { .. })
+                | (
+                    Self::UniqueLookup,
+                    SurfaceOperationRequestBodyJson::UniqueLookup { .. }
+                )
+                | (
+                    Self::SingletonUpdate,
+                    SurfaceOperationRequestBodyJson::SingletonUpdate { .. }
+                )
+                | (
+                    Self::PointUpdate,
+                    SurfaceOperationRequestBodyJson::PointUpdate { .. }
+                )
+                | (Self::Action, SurfaceOperationRequestBodyJson::Action { .. })
+        )
+    }
 }
 
 impl SurfaceRouteManifestJson {

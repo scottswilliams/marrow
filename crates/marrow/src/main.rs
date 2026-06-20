@@ -15,6 +15,7 @@ mod cmd_fmt;
 mod cmd_init;
 mod cmd_restore;
 mod cmd_run;
+mod cmd_surface;
 mod cmd_test;
 mod dry_run;
 mod trace;
@@ -32,6 +33,7 @@ Usage:
   marrow fmt [--check | --write] <file.mw | projectdir>
   marrow run [--entry <entry>] [--maintenance] [--trace] [--dry-run] [--format text|json] <projectdir>
   marrow test [--trace] [--format text|json|jsonl] <projectdir>
+  marrow surface serve [--addr <loopback:port>] <projectdir>
   marrow data <roots|stats|dump|integrity> [--backup <artifact>] [--format text|json|jsonl] <projectdir>
   marrow data recover [--format text|json|jsonl] <projectdir>
   marrow data get [--backup <artifact>] [--format text|json|jsonl] <projectdir> <path>
@@ -93,6 +95,7 @@ fn dispatch(command: &str, rest: &[String]) -> ExitCode {
         "fmt" => cmd_fmt::fmt(rest),
         "run" => cmd_run::run(rest),
         "test" => cmd_test::test(rest),
+        "surface" => cmd_surface::surface(rest),
         "data" => cmd_data::data(rest),
         "backup" => cmd_backup::backup(rest),
         "restore" => cmd_restore::restore(rest),

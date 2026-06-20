@@ -81,7 +81,10 @@ point/singleton update plus action DTOs execute over `ProjectSurfaceSession`,
 without exposing backing store handles. The successful check JSON output also
 includes `surface.route.v1` route-manifest rows derived from the exported
 descriptors; those rows name JSON `POST` operation-tag paths and render aliases,
-but they do not start a server or make aliases operation identity.
+but they do not make aliases operation identity. `marrow surface serve` is the
+current serving profile for the read rows only: loopback-bound, JSON-only,
+read-only, at most one processed request per connection, and backed by
+`ProjectSurfaceReadSession`.
 `marrow-run::ProjectSurfaceReadSession` is an unstable linked-Rust
 implementation profile for read serving over an already accepted native store:
 it opens the store read-only, fences drift, and exposes admitted surface reads
@@ -96,11 +99,12 @@ another writer or read-only inspection. Linked-Rust embedding remains an
 implementation profile for hosting surface facts, run sessions, and these
 project surface slices, not a stable app-data contract. The default project
 operation envelope helper runs actions with a zero-capability host; callers that
-need host capabilities use the explicit-host helper. HTTP serving, opaque cursor
-tokens, generated clients, and create/delete body decode remain future profiles.
-Until serving profiles ship, Marrow has no stable HTTP, network-lifetime, or
-generated-client application contract. Linked-Rust surface helpers, route
-manifest rows, and typed entry invocation remain implementation profiles.
+need host capabilities use the explicit-host helper. The only shipped HTTP
+profile is `marrow surface serve` for loopback read-only operation envelopes.
+Opaque cursor tokens, generated clients, writable HTTP routes, remote serving,
+and create/delete body decode remain future profiles. Linked-Rust surface
+helpers, route manifest rows, and typed entry invocation remain implementation
+profiles.
 The linked-Rust entry descriptor profile is an unstable implementation surface:
 `marrow-check` owns `entry.invoke.v1` descriptor tags over public entry
 signatures, parameter shapes, accepted catalog identities, return presence, and

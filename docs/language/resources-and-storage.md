@@ -257,17 +257,19 @@ Configured test-file `surface` declarations are still parsed and checked for
 source-level name collisions, but only source-root declarations resolve into
 application surface facts.
 
-Those facts are transport-neutral: HTTP serving, opaque cursor-token codecs,
-TypeScript names, generated clients, and create/delete bodies are boundary
-profiles layered later. Stable surface reads, sparse updates, and actions have
-checker-owned descriptors and operation tags. `marrow-json` can render a
-`surface.route.v1` manifest from those descriptors, using operation-tag paths
-and aliases as labels, but the route manifest is not a server or client
-contract by itself. Read descriptors carry the generated `get` alias or
-declared collection alias as render metadata; action descriptors carry their
-declared action alias. A surface remains source-only until its backing store,
-projected fields, update fields, collection indexes, and every action parameter
-and return durable type have accepted catalog IDs.
+Those facts are transport-neutral: opaque cursor-token codecs, TypeScript
+names, generated clients, writable HTTP routes, and create/delete bodies are
+boundary profiles layered later. Stable surface reads, sparse updates, and
+actions have checker-owned descriptors and operation tags. `marrow-json` can
+render a `surface.route.v1` manifest from those descriptors, using
+operation-tag paths and aliases as labels. `marrow surface serve` is the local
+loopback read-only serving profile over the manifest's read routes and
+`surface.operation.v1` envelopes; the manifest is still not a generated-client
+contract by itself. Read descriptors carry the generated `get` alias or declared
+collection alias as render metadata; action descriptors carry their declared
+action alias. A surface remains source-only until its backing store, projected
+fields, update fields, collection indexes, and every action parameter and return
+durable type have accepted catalog IDs.
 `marrow-run` exposes admitted transport-neutral node and collection read
 executors over stable surface facts, plus an unstable read-only project session
 that opens an already accepted native store and admits those reads by operation
