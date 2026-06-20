@@ -108,7 +108,7 @@ fn index_key_columns(
                     return Ok(None);
                 }
                 let default = acc
-                    .default_value_for(member_catalog_id, member.leaf.as_ref())
+                    .default_value_for(member_catalog_id, member.leaf.as_ref(), member.error_code)
                     .and_then(Result::ok);
                 columns.push(IndexKeyColumn::Member {
                     path: DataPathSegment::Member(catalog_id(member_catalog_id)?),
@@ -322,6 +322,7 @@ mod tests {
                 kind: CheckedSavedMemberKind::Field { required: true },
                 catalog_id: Some("cat_000000000000000000000000000000bb".to_string()),
                 leaf: Some(StoreLeafKind::Scalar(ScalarType::Str)),
+                error_code: false,
                 typed_entry: false,
                 group_members: Vec::new(),
             }],

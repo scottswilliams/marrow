@@ -44,6 +44,234 @@ fn a_field_write_updates_saved_data() {
     assert_eq!(outcome.value, Some(Value::Str("Mort".into())));
 }
 
+/// A program that writes and reads a `Log` error code through a dynamic value.
+const ERROR_CODE_WRITER: &str = "\
+resource Log
+    required code: ErrorCode
+store ^logs(id: int): Log
+
+pub fn set_code(id: int, c: string)
+    ^logs(id).code = c
+
+pub fn code_of(id: int): string
+    return ^logs(id).code ?? \"\"
+";
+
+#[test]
+fn a_dynamic_invalid_error_code_write_faults_and_persists_nothing() {
+    let program = checked_program(ERROR_CODE_WRITER);
+    let store = TreeStore::memory();
+    let result = run_entry(
+        &store,
+        checked_entry!(
+            &program,
+            "test::set_code",
+            Value::Int(1),
+            Value::Str("no good code".into())
+        ),
+    );
+    assert_run_error(result, "run.type");
+    assert_eq!(
+        run_entry(
+            &store,
+            checked_entry!(&program, "test::code_of", Value::Int(1))
+        )
+        .expect("read")
+        .value,
+        Some(Value::Str(String::new())),
+        "an invalid error code must never reach saved data"
+    );
+}
+
+#[test]
+fn a_dynamic_invalid_error_code_constructor_field_faults() {
+    let program = checked_program(
+        "resource Log\n\
+         \x20   required code: ErrorCode\n\
+         store ^logs(id: int): Log\n\n\
+         pub fn make(id: int, c: string)\n\
+         \x20   ^logs(id) = Log(code: c)\n\n\
+         pub fn code_of(id: int): string\n\
+         \x20   return ^logs(id).code ?? \"\"\n",
+    );
+    let store = TreeStore::memory();
+    let result = run_entry(
+        &store,
+        checked_entry!(
+            &program,
+            "test::make",
+            Value::Int(1),
+            Value::Str("no good code".into())
+        ),
+    );
+    assert_run_error(result, "run.type");
+    assert_eq!(
+        run_entry(
+            &store,
+            checked_entry!(&program, "test::code_of", Value::Int(1))
+        )
+        .expect("read")
+        .value,
+        Some(Value::Str(String::new())),
+        "a constructor must not let invalid error-code text reach saved data"
+    );
+}
+
+#[test]
+fn a_dynamic_valid_error_code_write_persists() {
+    let program = checked_program(ERROR_CODE_WRITER);
+    let store = TreeStore::memory();
+    run_entry(
+        &store,
+        checked_entry!(
+            &program,
+            "test::set_code",
+            Value::Int(1),
+            Value::Str("app.missing".into())
+        ),
+    )
+    .expect("write");
+    assert_eq!(
+        run_entry(
+            &store,
+            checked_entry!(&program, "test::code_of", Value::Int(1))
+        )
+        .expect("read")
+        .value,
+        Some(Value::Str("app.missing".into()))
+    );
+}
+
+/// A program that writes and reads a keyed-leaf `ErrorCode` through a dynamic value.
+const KEYED_LEAF_ERROR_CODE_WRITER: &str = "\
+resource Log
+    tags(k: int): ErrorCode
+store ^logs(id: int): Log
+
+pub fn set_tag(id: int, k: int, c: string)
+    ^logs(id).tags(k) = c
+
+pub fn tag_of(id: int, k: int): string
+    return ^logs(id).tags(k) ?? \"\"
+";
+
+#[test]
+fn a_dynamic_invalid_keyed_leaf_error_code_write_faults_and_persists_nothing() {
+    let program = checked_program(KEYED_LEAF_ERROR_CODE_WRITER);
+    let store = TreeStore::memory();
+    let result = run_entry(
+        &store,
+        checked_entry!(
+            &program,
+            "test::set_tag",
+            Value::Int(1),
+            Value::Int(0),
+            Value::Str("no good code".into())
+        ),
+    );
+    assert_run_error(result, "run.type");
+    assert_eq!(
+        run_entry(
+            &store,
+            checked_entry!(&program, "test::tag_of", Value::Int(1), Value::Int(0))
+        )
+        .expect("read")
+        .value,
+        Some(Value::Str(String::new())),
+        "an invalid error code must never reach a keyed-leaf place"
+    );
+}
+
+#[test]
+fn a_dynamic_valid_keyed_leaf_error_code_write_persists() {
+    let program = checked_program(KEYED_LEAF_ERROR_CODE_WRITER);
+    let store = TreeStore::memory();
+    run_entry(
+        &store,
+        checked_entry!(
+            &program,
+            "test::set_tag",
+            Value::Int(1),
+            Value::Int(0),
+            Value::Str("app.ok".into())
+        ),
+    )
+    .expect("write");
+    assert_eq!(
+        run_entry(
+            &store,
+            checked_entry!(&program, "test::tag_of", Value::Int(1), Value::Int(0))
+        )
+        .expect("read")
+        .value,
+        Some(Value::Str("app.ok".into()))
+    );
+}
+
+/// A program that appends to and reads a `sequence[ErrorCode]` through a dynamic value.
+const SEQUENCE_ERROR_CODE_WRITER: &str = "\
+resource Log
+    codes: sequence[ErrorCode]
+store ^logs(id: int): Log
+
+pub fn add_code(id: int, c: string)
+    append(^logs(id).codes, c)
+
+pub fn first_code(id: int): string
+    return ^logs(id).codes(1) ?? \"\"
+";
+
+#[test]
+fn a_dynamic_invalid_sequence_error_code_append_faults_and_persists_nothing() {
+    let program = checked_program(SEQUENCE_ERROR_CODE_WRITER);
+    let store = TreeStore::memory();
+    let result = run_entry(
+        &store,
+        checked_entry!(
+            &program,
+            "test::add_code",
+            Value::Int(1),
+            Value::Str("no good code".into())
+        ),
+    );
+    assert_run_error(result, "run.type");
+    assert_eq!(
+        run_entry(
+            &store,
+            checked_entry!(&program, "test::first_code", Value::Int(1))
+        )
+        .expect("read")
+        .value,
+        Some(Value::Str(String::new())),
+        "an invalid error code must never be appended to a sequence place"
+    );
+}
+
+#[test]
+fn a_dynamic_valid_sequence_error_code_append_persists() {
+    let program = checked_program(SEQUENCE_ERROR_CODE_WRITER);
+    let store = TreeStore::memory();
+    run_entry(
+        &store,
+        checked_entry!(
+            &program,
+            "test::add_code",
+            Value::Int(1),
+            Value::Str("app.ok".into())
+        ),
+    )
+    .expect("append");
+    assert_eq!(
+        run_entry(
+            &store,
+            checked_entry!(&program, "test::first_code", Value::Int(1))
+        )
+        .expect("read")
+        .value,
+        Some(Value::Str("app.ok".into()))
+    );
+}
+
 #[test]
 fn out_of_transaction_field_write_rejects_partial_required_record() {
     let program = checked_program(

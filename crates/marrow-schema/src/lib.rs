@@ -32,7 +32,8 @@ pub use errors::{
 };
 pub use presence::ReturnPresence;
 pub use types::{
-    IndexSchema, KeyDef, Node, NodeKind, ResourceSchema, StoreSchema, Type, scalar_type_from_name,
+    IndexSchema, KeyDef, Node, NodeKind, ResourceSchema, StoreSchema, Type, is_error_code_spelling,
+    scalar_type_from_name,
 };
 pub use validate::{
     check_saved_member_rules, check_saved_named_member_fields,

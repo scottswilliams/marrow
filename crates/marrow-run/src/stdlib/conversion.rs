@@ -131,7 +131,12 @@ fn convert_to_string(value: Value, span: SourceSpan) -> Result<Value, RuntimeErr
     Ok(Value::Str(text))
 }
 
-fn convert_to_error_code(value: Value, span: SourceSpan) -> Result<Value, RuntimeError> {
+/// Validate a value coerced into an `ErrorCode` place, returning it unchanged when
+/// it satisfies the dotted-lowercase grammar and a catchable `run.type` error
+/// otherwise. The runtime's one error-code coercion gate, shared by the
+/// `ErrorCode(...)` constructor and a dynamic value stored into an `ErrorCode`
+/// field or binding, so invalid code text can never reach saved data.
+pub(crate) fn convert_to_error_code(value: Value, span: SourceSpan) -> Result<Value, RuntimeError> {
     match &value {
         Value::Str(text) if marrow_schema::error::is_error_code_text(text) => {
             Ok(Value::Str(text.clone()))

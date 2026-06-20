@@ -71,7 +71,7 @@ fn book_top_level_fields() {
     let loaned_to = top_level_fields(&schema)
         .find(|f| f.name == "loanedTo")
         .expect("loanedTo field");
-    let NodeKind::Slot { ty, required } = &loaned_to.kind else {
+    let NodeKind::Slot { ty, required, .. } = &loaned_to.kind else {
         panic!("loanedTo is a slot");
     };
     assert!(!required, "loanedTo is sparse");
@@ -108,7 +108,7 @@ fn book_notes_is_a_group() {
 
     assert_eq!(notes.members.len(), 1);
     let text = &notes.members[0];
-    let NodeKind::Slot { ty, required } = &text.kind else {
+    let NodeKind::Slot { ty, required, .. } = &text.kind else {
         panic!("notes.text should be a field");
     };
     assert_eq!(text.name, "text");
@@ -129,7 +129,9 @@ fn book_versions_is_a_history_group() {
         .members
         .iter()
         .map(|member| match &member.kind {
-            NodeKind::Slot { ty, required } => (member.name.as_str(), *required, ty.to_string()),
+            NodeKind::Slot { ty, required, .. } => {
+                (member.name.as_str(), *required, ty.to_string())
+            }
             NodeKind::Group => panic!("unexpected nested group `{}`", member.name),
         })
         .collect();

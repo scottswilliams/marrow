@@ -27,7 +27,7 @@ One apply path serves two callers:
 | `evolution/admission.rs` | Gates `RepairRequired` (`NotActivatable`) and destructive retires; requires maintenance plus an exact per-id scoped `Approval`. |
 | `evolution/auto_apply.rs` | Classifies the witness's heaviest record obligation (`RunObligation`) and applies only `ZeroMutation` via the production path, else `MustFence`. |
 | `evolution/backfill.rs` | Writes non-transform verdicts: default backfills, index subtree rebuilds, index drops, retire deletes; re-scans each root from the live store inside the caller's transaction. |
-| `evolution/transform.rs` | Per-record checked-transform execution; binds reads as `old`, runs the pure body, encodes to the target leaf; splits discharge divergence (`Corruption`) from `TransformBodyFaulted`. |
+| `evolution/transform.rs` | Per-record checked-transform execution; binds reads as `old`, runs the pure body, gates an `ErrorCode` target's result through the shared grammar owner, encodes to the target leaf; splits discharge divergence (`Corruption`) from `TransformBodyFaulted`. |
 | `evolution/locate.rs` | Read-only `MemberLocation`/`PathStep` resolution and per-record iteration of a place's stored records. |
 | `evolution/lifecycle.rs` | Sole owner of retired-id classification: proposal entries Reserved now but Active in the accepted catalog. |
 | `evolution/rebuild.rs` | Restore-side `rebuild_store_indexes`; re-derives declared indexes from committed records inside the caller's transaction. |

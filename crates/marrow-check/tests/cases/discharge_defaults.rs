@@ -252,6 +252,92 @@ fn non_canonical_temporal_default_fails_closed() -> Result<(), Box<dyn std::erro
     Ok(())
 }
 
+/// An `evolve default` on an `ErrorCode` member is a constant string literal, so it must
+/// satisfy the same dotted-lowercase grammar the constructor and the field-write path
+/// enforce. A non-conforming literal is not a value the place may hold, so it fails closed
+/// as a rejected default rather than pre-encoding an invalid code into the backfill bytes.
+#[test]
+fn invalid_error_code_default_fails_closed() -> Result<(), Box<dyn std::error::Error>> {
+    let root = temp_project("discharge-invalid-error-code-default", |root| {
+        write(
+            root,
+            "src/logs.mw",
+            "module logs\n\
+             resource Log\n\
+             \x20   required note: string\n\
+             \x20   required code: ErrorCode\n\
+             store ^logs(id: int): Log\n\
+             evolve\n\
+             \x20   default Log.code = \"NOT A VALID CODE\"\n\
+             pub fn add(note: string): Id(^logs)\n\
+             \x20   return nextId(^logs)\n",
+        );
+    });
+    let program = commit_then_check(&root).expect("committed fixture");
+    let place = root_place(&program, "logs")?;
+    let store = TreeStore::memory();
+    let seed = Seed::new(&store, &place);
+    seed.record(1);
+    seed.member(1, "note", Scalar::Str("seed".into()));
+
+    let (result, diagnostics) = preview(&program, &store).expect("preview");
+
+    let code_id = member_catalog_id(&place, "code")?;
+    // An ErrorCode default that violates the grammar is not a value the place could hold,
+    // so it fails closed by the same typed cause a non-canonical temporal default does.
+    assert_fails_closed(
+        &result,
+        &diagnostics,
+        &code_id,
+        RepairReason::DefaultRejected {
+            reason: RejectedDefault::NotEncodable,
+        },
+    );
+
+    Ok(())
+}
+
+/// An `evolve default` on an `ErrorCode` member whose literal *is* a valid dotted-lowercase
+/// code discharges to a normal `Default` backfill, proving the grammar gate rejects only
+/// non-conforming literals rather than every string default into an `ErrorCode` place.
+#[test]
+fn valid_error_code_default_backfills() -> Result<(), Box<dyn std::error::Error>> {
+    let root = temp_project("discharge-valid-error-code-default", |root| {
+        write(
+            root,
+            "src/logs.mw",
+            "module logs\n\
+             resource Log\n\
+             \x20   required note: string\n\
+             \x20   required code: ErrorCode\n\
+             store ^logs(id: int): Log\n\
+             evolve\n\
+             \x20   default Log.code = \"io.read\"\n\
+             pub fn add(note: string): Id(^logs)\n\
+             \x20   return nextId(^logs)\n",
+        );
+    });
+    let program = commit_then_check(&root).expect("committed fixture");
+    let place = root_place(&program, "logs")?;
+    let store = TreeStore::memory();
+    let seed = Seed::new(&store, &place);
+    seed.record(1);
+    seed.member(1, "note", Scalar::Str("seed".into()));
+
+    let result = witness(&program, &store);
+
+    let code_id = member_catalog_id(&place, "code")?;
+    match verdict_for(&result, &code_id) {
+        Verdict::Default { value } => {
+            assert_eq!(value.scalar_type, marrow_store::value::ScalarType::Str);
+            assert_eq!(value.encoded, encode_value(&Scalar::Str("io.read".into()))?);
+        }
+        other => panic!("expected a default, got {other:#?}"),
+    }
+
+    Ok(())
+}
+
 /// An `evolve default` whose value is not a constant the checker can evaluate is not
 /// a default at all; it fails closed with a diagnostic steering the developer to a
 /// transform. A per-record-varying fill is a transform, not a default.

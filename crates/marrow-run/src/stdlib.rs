@@ -18,7 +18,7 @@ pub(crate) use args::{
     eval_string_sequence, eval_text,
 };
 pub(crate) use assertions::eval_assert;
-pub(crate) use conversion::{ConversionKind, eval_conversion};
+pub(crate) use conversion::{ConversionKind, convert_to_error_code, eval_conversion};
 pub(crate) use count::{eval_count, eval_exists};
 pub(crate) use error_constructor::eval_error_constructor;
 pub(crate) use index_lookup::{

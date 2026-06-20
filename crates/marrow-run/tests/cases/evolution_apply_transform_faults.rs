@@ -6,8 +6,9 @@ use crate::evolution_apply_support;
 use evolution_apply_support::*;
 
 use marrow_run::evolution::{ApplyError, apply};
-use marrow_store::tree::TreeStore;
-use marrow_store::value::Scalar;
+use marrow_store::key::SavedKey;
+use marrow_store::tree::{DataPathSegment, TreeStore};
+use marrow_store::value::{Scalar, ScalarType, decode_value};
 
 /// A transform whose read member's stored bytes do not decode under the current type
 /// is non-activatable: apply refuses with a typed not-activatable error, staging no
@@ -53,6 +54,119 @@ fn transform_undecodable_read_is_refused() -> Result<(), Box<dyn std::error::Err
         store.read_commit_metadata().expect("read"),
         None,
         "no stamp"
+    );
+
+    Ok(())
+}
+
+/// A transform that recomputes an `ErrorCode` member from a string the developer's body
+/// produces must enforce the same dotted-lowercase grammar the constructor and the
+/// field-write path enforce. A body returning a non-conforming code is a per-record body
+/// fault: apply names the target, rolls the whole transaction back byte-identical, and
+/// leaves the store unstamped, so an invalid code can never be persisted to an `ErrorCode`
+/// place through the transform write path.
+#[test]
+fn transform_into_error_code_rejects_invalid_code() -> Result<(), Box<dyn std::error::Error>> {
+    let root = temp_project("apply-transform-error-code", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Log\n\
+             \x20   required note: string\n\
+             \x20   required code: ErrorCode\n\
+             store ^logs(id: int): Log\n\
+             evolve\n\
+             \x20   transform Log.code\n\
+             \x20       return old.note\n\
+             pub fn add(note: string): Id(^logs)\n\
+             \x20   return nextId(^logs)\n",
+        );
+    });
+    let program = commit_then_check(&root).expect("committed fixture");
+    let place = root_place(&program, "logs")?;
+    let store = TreeStore::memory();
+    let seed = Seed {
+        store: &store,
+        place: &place,
+    };
+    // `note` holds text that is not a valid error code; the transform body returns it.
+    seed.record(1);
+    seed.member(1, "note", Scalar::Str("this is not a valid code".into()));
+    seed.member(1, "code", Scalar::Str("valid.code".into()));
+
+    let store_id = store_id_of(&place)?;
+    let code_id = member_catalog_id(&place, "code")?;
+    let before = read_str(&store, &store_id, 1, &code_id);
+
+    let w = witness(&program, &store);
+    let result = apply(&w, &program, &store, false, None);
+
+    let Err(ApplyError::TransformBodyFaulted { target, .. }) = &result else {
+        panic!("expected TransformBodyFaulted, got {result:#?}");
+    };
+    assert_eq!(
+        target.as_str(),
+        code_id,
+        "the fault names the transform target"
+    );
+    assert_eq!(
+        read_str(&store, &store_id, 1, &code_id),
+        before,
+        "the invalid code is never written to the ErrorCode field"
+    );
+    assert_eq!(
+        store.read_commit_metadata().expect("read"),
+        None,
+        "no stamp after a rejected transform body"
+    );
+
+    Ok(())
+}
+
+/// A transform that recomputes an `ErrorCode` member from a string that *is* a valid
+/// dotted-lowercase code activates: the grammar gate accepts a conforming value, so the
+/// recomputed code is written and the store is stamped. This proves the gate rejects only
+/// non-conforming codes rather than every transform into an `ErrorCode` field.
+#[test]
+fn transform_into_error_code_accepts_valid_code() -> Result<(), Box<dyn std::error::Error>> {
+    let root = temp_project("apply-transform-error-code-ok", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Log\n\
+             \x20   required note: string\n\
+             \x20   required code: ErrorCode\n\
+             store ^logs(id: int): Log\n\
+             evolve\n\
+             \x20   transform Log.code\n\
+             \x20       return old.note\n\
+             pub fn add(note: string): Id(^logs)\n\
+             \x20   return nextId(^logs)\n",
+        );
+    });
+    let program = commit_then_check(&root).expect("committed fixture");
+    let place = root_place(&program, "logs")?;
+    let store = TreeStore::memory();
+    let seed = Seed {
+        store: &store,
+        place: &place,
+    };
+    seed.record(1);
+    seed.member(1, "note", Scalar::Str("io.read".into()));
+    seed.member(1, "code", Scalar::Str("old.code".into()));
+
+    let store_id = store_id_of(&place)?;
+    let code_id = member_catalog_id(&place, "code")?;
+
+    let w = witness(&program, &store);
+    apply(&w, &program, &store, false, None).expect("apply succeeds");
+
+    assert_eq!(
+        read_str(&store, &store_id, 1, &code_id),
+        Some("io.read".to_string()),
+        "the conforming recomputed code is written"
     );
 
     Ok(())
@@ -348,4 +462,27 @@ fn transform_body_drift_aborts_before_apply() -> Result<(), Box<dyn std::error::
     );
 
     Ok(())
+}
+
+/// Read a stored `Str` member value as a `String`, or `None` when the cell is absent.
+fn read_str(
+    store: &TreeStore,
+    store_id: &marrow_store::cell::CatalogId,
+    id: i64,
+    member_id: &str,
+) -> Option<String> {
+    let member = marrow_store::cell::CatalogId::new(member_id).expect("member id");
+    let bytes = store
+        .read_data_value(
+            store_id,
+            &[SavedKey::Int(id)],
+            &[DataPathSegment::Member(member)],
+        )
+        .expect("read member");
+    bytes.map(
+        |bytes| match decode_value(&bytes, ScalarType::Str).expect("decode value") {
+            Scalar::Str(text) => text,
+            other => panic!("expected a string value, got {other:?}"),
+        },
+    )
 }

@@ -1,5 +1,5 @@
 use marrow_check::{
-    CheckedArg as ExecArg, CheckedExpr as ExecExpr, CheckedSavedPlace, StoreLeafKind,
+    CheckedArg as ExecArg, CheckedExpr as ExecExpr, CheckedSavedLayer, CheckedSavedPlace,
 };
 use marrow_store::key::SavedKey;
 use marrow_syntax::SourceSpan;
@@ -9,6 +9,7 @@ use crate::error::{RUN_TYPE, RuntimeError, assign_error, overflow, unsupported, 
 use crate::expr::eval_expr;
 use crate::index_maintenance::IndexWriteContext;
 use crate::path::{direct_root_place, lower};
+use crate::statement::coerce_error_code_value;
 use crate::store::{DataAddress, LayerAddress};
 use crate::value::{Value, identity_value, value_to_leaf};
 use crate::write::{next_id, next_layer_pos, plan_layer_leaf_write};
@@ -100,9 +101,14 @@ fn eval_saved_append(
     let Some(place) = target.saved_place() else {
         return Err(unsupported("appending to this path", span));
     };
-    let leaf =
-        append_leaf(place, layer).ok_or_else(|| unsupported("appending to this layer", span))?;
-    let saved = value_to_leaf(eval_expr(value, env)?, leaf, span)?;
+    let append_layer =
+        append_layer(place, layer).ok_or_else(|| unsupported("appending to this layer", span))?;
+    let leaf = append_layer
+        .leaf
+        .as_ref()
+        .ok_or_else(|| unsupported("appending to this layer", span))?;
+    let value = coerce_error_code_value(eval_expr(value, env)?, append_layer.error_code, span)?;
+    let saved = value_to_leaf(value, leaf, span)?;
     let mut prefix_layers = parent_addresses;
     let Some(layer_facts) = place.layers.last() else {
         return Err(unsupported("appending to this layer", span));
@@ -122,13 +128,12 @@ fn eval_saved_append(
     Ok(Value::Int(pos))
 }
 
-fn append_leaf<'a>(place: &'a CheckedSavedPlace, layer: &str) -> Option<&'a StoreLeafKind> {
+fn append_layer<'a>(place: &'a CheckedSavedPlace, layer: &str) -> Option<&'a CheckedSavedLayer> {
     place
         .layers
         .iter()
         .rev()
         .find(|candidate| candidate.name == layer)
-        .and_then(|candidate| candidate.leaf.as_ref())
 }
 
 fn next_append_position(

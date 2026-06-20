@@ -1048,6 +1048,75 @@ enum FieldResolution {
     UnresolvedBase,
 }
 
+/// Whether an assignment target names a place declared `ErrorCode`, so a value
+/// stored into it must satisfy the dotted-lowercase grammar. Resolves the place's
+/// declaring schema node from its base type, covering a plain field (`entry.code`,
+/// `^logs(1).code`) and a keyed-leaf write (`^logs(1).tags(0)`) alike. `false` for
+/// any target that is not a resolvable resource field or keyed leaf.
+pub(crate) fn assignment_target_is_error_code(
+    program: &CheckedProgram,
+    target: &marrow_syntax::Expression,
+    scope: &[HashMap<String, MarrowType>],
+    aliases: &HashMap<String, Vec<String>>,
+    file: &Path,
+    transform_old: Option<crate::presence::TransformOldReadScope<'_>>,
+) -> bool {
+    use marrow_syntax::Expression;
+    // A keyed-leaf write `place.layer(key) = value` carries the leaf name on the
+    // `Field` callee; a plain-field write carries it on the target itself.
+    let member = match target {
+        Expression::Field { base, name, .. } | Expression::OptionalField { base, name, .. } => {
+            Some((base.as_ref(), name.as_str()))
+        }
+        Expression::Call { callee, .. } => match callee.as_ref() {
+            Expression::Field { base, name, .. } | Expression::OptionalField { base, name, .. } => {
+                Some((base.as_ref(), name.as_str()))
+            }
+            _ => None,
+        },
+        _ => None,
+    };
+    let Some((base, name)) = member else {
+        return false;
+    };
+    let mut sink = Vec::new();
+    let base_type = infer_assignment_target_type_with_read_scope(
+        program,
+        base,
+        scope,
+        aliases,
+        file,
+        &mut sink,
+        transform_old,
+    );
+    resolved_field_node(program, &base_type, name).is_some_and(marrow_schema::Node::is_error_code)
+}
+
+/// The schema node declaring `field` on a resource-shaped base, or `None` when the
+/// base is not a resolvable resource value or carries no such field. The resource
+/// tree walk itself is owned by [`marrow_schema::ResourceSchema::node_at`]; this
+/// only maps the base type into the resource name and saved-path chain it reads.
+fn resolved_field_node<'a>(
+    program: &'a CheckedProgram,
+    base_type: &MarrowType,
+    field: &str,
+) -> Option<&'a marrow_schema::Node> {
+    let (name, chain): (&str, Vec<&str>) = match base_type {
+        MarrowType::Resource(name) => (name, vec![field]),
+        MarrowType::GroupEntry {
+            resource: name,
+            layers,
+        } => {
+            let mut chain: Vec<&str> = layers.iter().map(String::as_str).collect();
+            chain.push(field);
+            (name, chain)
+        }
+        _ => return None,
+    };
+    let (resource, _) = resolve_resource_type(program, name)?;
+    resource.node_at(&chain)
+}
+
 /// Resolve a field read off a resource-shaped value (`book.title`) through that
 /// resource's schema while distinguishing a missing member from an untyped base.
 fn local_field_resolution(
@@ -1097,17 +1166,10 @@ fn resource_field_resolution(
     chain: &[&str],
     layers: &[String],
 ) -> FieldResolution {
-    let Some((member, parents)) = chain.split_last() else {
+    let Some(member) = chain.last() else {
         return FieldResolution::UnresolvedBase;
     };
-    let members = match parents {
-        [] => &resource.members,
-        _ => match resource.descend_layers(parents) {
-            Some(node) => &node.members,
-            None => return FieldResolution::UnknownField,
-        },
-    };
-    let Some(node) = members.iter().find(|node| node.name == *member) else {
+    let Some(node) = resource.node_at(chain) else {
         return FieldResolution::UnknownField;
     };
     if let Some(ty) = node.plain_field_type() {

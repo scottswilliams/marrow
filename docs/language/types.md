@@ -33,13 +33,18 @@ libraries when an application needs locale-aware collation or presentation.
 `std::clock::parseDuration`. Local time zone presentation belongs at host or
 standard-library boundaries, not in the saved-data model.
 
-String literals in an `ErrorCode` position are checked as error codes:
+A string in an `ErrorCode` position is checked as an error code wherever it
+lands — an `ErrorCode` field, an `ErrorCode` binding, or the `code` of an
+`Error`:
 
 ```mw
 throw Error(code: "book.absent", message: "Book does not exist.")
 ```
 
-Use `ErrorCode(text)` when a dynamic value must be validated as an error code.
+A string literal that is not a valid error code is rejected at check, so
+invalid code text cannot be written to an `ErrorCode` place. A dynamic value is
+validated where it reaches the place: it must satisfy the grammar at that point,
+and `ErrorCode(text)` is the explicit way to validate one before use.
 
 Error codes are lowercase dotted text such as `parse.syntax` or
 `book.already_loaned`. Segments use lowercase letters, digits, and

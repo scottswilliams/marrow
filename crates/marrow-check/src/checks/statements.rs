@@ -12,8 +12,9 @@ use marrow_syntax::SourceSpan;
 use crate::enums::{MatchCheck, check_match, resolve_diagnosed_annotation_type};
 use crate::executable::{SavedPlaceResolver, lower_expr_for_file};
 use crate::infer::{
-    bind, infer_assignment_target_type_with_read_scope, infer_type_with_read_scope,
-    local_binding_with_read_scope, reject_saved_access_with_suggested_index,
+    assignment_target_is_error_code, bind, infer_assignment_target_type_with_read_scope,
+    infer_type_with_read_scope, local_binding_with_read_scope,
+    reject_saved_access_with_suggested_index,
 };
 use crate::resolve::resolve_store_by_root;
 use crate::{
@@ -339,7 +340,7 @@ impl StatementCheck<'_> {
             }
             None => MarrowType::Unknown,
         };
-        if let (Some(annotation), Some(_)) = (annotation, value) {
+        if let (Some(annotation), Some(value)) = (annotation, value) {
             check_assignment(
                 self.file,
                 span,
@@ -352,6 +353,14 @@ impl StatementCheck<'_> {
                 &value_type,
                 self.diagnostics,
             );
+            if marrow_schema::is_error_code_spelling(&annotation.text) {
+                super::calls::check_error_code_literal(
+                    value,
+                    "an `ErrorCode` binding",
+                    self.file,
+                    self.diagnostics,
+                );
+            }
         }
         self.bind_local(statement);
     }
@@ -427,6 +436,21 @@ impl StatementCheck<'_> {
         }
         self.check_lossy_round_trip_warning(target);
         check_assignment(self.file, span, &target_type, &value_type, self.diagnostics);
+        if assignment_target_is_error_code(
+            self.program,
+            target,
+            self.scope,
+            self.aliases,
+            self.file,
+            self.transform_old,
+        ) {
+            super::calls::check_error_code_literal(
+                value,
+                "an `ErrorCode` field",
+                self.file,
+                self.diagnostics,
+            );
+        }
         self.required_fields.assign_target(target);
     }
 

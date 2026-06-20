@@ -300,9 +300,10 @@ impl Accumulator {
         &self,
         raw_catalog_id: &str,
         leaf: Option<&StoreLeafKind>,
+        error_code: bool,
     ) -> Option<Result<super::witness::DefaultValue, RejectedDefault>> {
         let value = self.defaults.get(raw_catalog_id)?;
-        Some(default_value_for_leaf(value, leaf))
+        Some(default_value_for_leaf(value, leaf, error_code))
     }
 
     fn insert_affected(

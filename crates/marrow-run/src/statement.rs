@@ -21,6 +21,7 @@ use crate::host::Frame;
 use crate::local_collection::eval_local_collection_write;
 use crate::loop_exec::{eval_for, eval_while};
 use crate::path::direct_root_place;
+use crate::stdlib::convert_to_error_code;
 use crate::transaction::eval_transaction;
 use crate::value::Value;
 use crate::write_dispatch::{
@@ -33,8 +34,15 @@ pub(crate) fn eval_statement(
 ) -> Result<Flow, RuntimeError> {
     before_statement_hook(statement, env)?;
     match statement {
-        ExecStmt::Const { name, value, .. } => {
+        ExecStmt::Const {
+            name,
+            value,
+            coerce_error_code,
+            span,
+            ..
+        } => {
             let value = eval_expr(value, env)?;
+            let value = coerce_error_code_value(value, *coerce_error_code, *span)?;
             env.bind(name.clone(), value, false);
             Ok(Flow::Normal)
         }
@@ -44,6 +52,7 @@ pub(crate) fn eval_statement(
             ty,
             resource_default,
             value,
+            coerce_error_code,
             span,
             ..
         } => eval_var(
@@ -52,16 +61,17 @@ pub(crate) fn eval_statement(
             ty.as_ref(),
             *resource_default,
             value.as_ref(),
+            *coerce_error_code,
             *span,
             env,
         ),
         ExecStmt::Assign {
             target,
             value,
+            coerce_error_code,
             span,
-            ..
         } => {
-            eval_assignment(target, value, *span, env)?;
+            eval_assignment(target, value, *coerce_error_code, *span, env)?;
             Ok(Flow::Normal)
         }
         ExecStmt::Delete { path, span, .. } => {
@@ -143,12 +153,14 @@ fn before_statement_hook(statement: &ExecStmt, env: &mut Env<'_>) -> Result<(), 
     result
 }
 
+#[allow(clippy::too_many_arguments)]
 fn eval_var(
     name: &str,
     key_count: usize,
     ty: Option<&Type>,
     resource_default: bool,
     value: Option<&ExecExpr>,
+    coerce_error_code: bool,
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<Flow, RuntimeError> {
@@ -157,7 +169,7 @@ fn eval_var(
         return Ok(Flow::Normal);
     }
     let value = match value {
-        Some(expr) => eval_expr(expr, env)?,
+        Some(expr) => coerce_error_code_value(eval_expr(expr, env)?, coerce_error_code, span)?,
         None => match ty {
             Some(Type::Named(_)) if resource_default => Value::Resource(Vec::new()),
             Some(ty) => default_value(ty)
@@ -169,17 +181,33 @@ fn eval_var(
     Ok(Flow::Normal)
 }
 
+/// Enforce the error-code grammar on a value stored into an `ErrorCode` place when
+/// the place demands it; otherwise pass the value through. A string literal is
+/// rejected earlier at check, so this guards dynamic values reaching the place.
+pub(crate) fn coerce_error_code_value(
+    value: Value,
+    coerce_error_code: bool,
+    span: SourceSpan,
+) -> Result<Value, RuntimeError> {
+    if coerce_error_code {
+        convert_to_error_code(value, span)
+    } else {
+        Ok(value)
+    }
+}
+
 fn eval_assignment(
     target: &ExecExpr,
     value: &ExecExpr,
+    coerce_error_code: bool,
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<(), RuntimeError> {
     if let ExecExpr::Field { base, name, .. } = target {
         if base.saved_place().is_some() {
-            eval_saved_field_write(target, value, span, env)
+            eval_saved_field_write(target, value, coerce_error_code, span, env)
         } else {
-            eval_local_field_set(base, name, value, span, env)
+            eval_local_field_set(base, name, value, coerce_error_code, span, env)
         }
     } else if direct_root_place(target).is_some() {
         eval_resource_write(target, value, span, env)

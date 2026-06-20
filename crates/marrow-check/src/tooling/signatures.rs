@@ -135,7 +135,7 @@ fn constructor_field(
     if !member.is_plain_field() {
         return None;
     }
-    let NodeKind::Slot { ty, required } = &member.kind else {
+    let NodeKind::Slot { ty, required, .. } = &member.kind else {
         return None;
     };
     Some(ResourceConstructorField {

@@ -11,6 +11,7 @@ use crate::env::Env;
 use crate::error::{RuntimeError, type_error};
 use crate::expr::eval_expr;
 use crate::path::lower_keys;
+use crate::statement::coerce_error_code_value;
 use crate::value::Value;
 use crate::value::identity_value;
 
@@ -120,7 +121,12 @@ pub(crate) fn eval_resource_constructor(
                     .position(|field| &field.name == name)
             })
             .expect("checked resource constructor binds each argument to a field");
-        slots[index] = Some(eval_expr(&arg.value, env)?);
+        let value = eval_expr(&arg.value, env)?;
+        slots[index] = Some(coerce_error_code_value(
+            value,
+            constructor.fields[index].error_code,
+            arg.value.span(),
+        )?);
     }
 
     Ok(Value::Resource(

@@ -19,16 +19,21 @@ use crate::StoreLeafKind;
 /// constant default, because a computed fill is a transform, not a default; a scalar leaf
 /// evaluates its value through [`eval_const_default`]. A rejected default returns its
 /// typed cause so the verdict names which way the default failed.
+///
+/// `error_code` marks a leaf declared `ErrorCode`: it stores as a `Str` like any other, so
+/// the leaf kind alone cannot carry the grammar, and the caller threads the bit from the
+/// member that owns the spelling.
 pub(crate) fn default_value_for_leaf(
     value: &Expression,
     leaf: Option<&StoreLeafKind>,
+    error_code: bool,
 ) -> Result<DefaultValue, RejectedDefault> {
     // A non-scalar member cannot take a constant default; a computed fill over an enum,
     // identity, or non-tokenizable leaf is a transform, so this is the not-constant cause.
     let Some(StoreLeafKind::Scalar(scalar)) = leaf else {
         return Err(RejectedDefault::NotConstant);
     };
-    eval_const_default(value, *scalar)
+    eval_const_default(value, *scalar, error_code)
 }
 
 /// Evaluate `value` to the encoded constant a defaulting obligation backfills, typed
@@ -37,10 +42,22 @@ pub(crate) fn default_value_for_leaf(
 fn eval_const_default(
     value: &Expression,
     leaf: ScalarType,
+    error_code: bool,
 ) -> Result<DefaultValue, RejectedDefault> {
     let scalar = const_scalar(value)?;
     if scalar.ty() != leaf {
         return Err(RejectedDefault::TypeMismatch);
+    }
+    // An ErrorCode leaf stores as a `Str` but admits only the dotted-lowercase grammar, so
+    // a literal that does not conform is a value the place could never hold, not an
+    // encodable default. The same grammar owner the constructor and field-write path use.
+    if error_code {
+        let Scalar::Str(text) = &scalar else {
+            return Err(RejectedDefault::TypeMismatch);
+        };
+        if !marrow_schema::error::is_error_code_text(text) {
+            return Err(RejectedDefault::NotEncodable);
+        }
     }
     let encoded = encode_value(&scalar).map_err(|_| RejectedDefault::NotEncodable)?;
     Ok(DefaultValue {

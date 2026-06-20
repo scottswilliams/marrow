@@ -17,7 +17,10 @@ use crate::errors::{
 use crate::validate::{
     Namespace, check_duplicate_key_params, check_identity_key, check_store_index,
 };
-use crate::{IndexSchema, KeyDef, Node, NodeKind, ResourceSchema, ScalarType, StoreSchema, Type};
+use crate::{
+    IndexSchema, KeyDef, Node, NodeKind, ResourceSchema, ScalarType, StoreSchema, Type,
+    is_error_code_spelling,
+};
 
 /// Compile a parsed resource declaration into a [`ResourceSchema`].
 ///
@@ -219,7 +222,7 @@ fn member_node(member: &ResourceMember, errors: &mut Vec<SchemaError>) -> Node {
             // plain top-level field.
             match Type::resolve(&field.ty) {
                 Type::Sequence(element) => sequence_leaf(field, *element),
-                ty => slot_node(field, ty, vec![], field.required),
+                ty => slot_node(field, ty, vec![], field.required, error_code(field)),
             }
         }
         // A keyed field is a keyed-leaf layer; its declared type is the leaf type
@@ -231,6 +234,7 @@ fn member_node(member: &ResourceMember, errors: &mut Vec<SchemaError>) -> Node {
                 Type::resolve(&field.ty),
                 field.keys.iter().map(key_def).collect(),
                 false,
+                error_code(field),
             )
         }
         ResourceMember::Group(group) => {
@@ -248,16 +252,33 @@ fn member_node(member: &ResourceMember, errors: &mut Vec<SchemaError>) -> Node {
 }
 
 /// A `Slot` node for `field`, carrying its value type, key parameters (empty for
-/// a plain field, the keyed-leaf keys otherwise), and required flag.
-fn slot_node(field: &FieldDecl, ty: Type, key_params: Vec<KeyDef>, required: bool) -> Node {
+/// a plain field, the keyed-leaf keys otherwise), required flag, and whether the
+/// declared spelling was `ErrorCode`.
+fn slot_node(
+    field: &FieldDecl,
+    ty: Type,
+    key_params: Vec<KeyDef>,
+    required: bool,
+    error_code: bool,
+) -> Node {
     Node {
         name: field.name.clone(),
         docs: field.docs.clone(),
         key_params,
         entry_type: None,
         members: Vec::new(),
-        kind: NodeKind::Slot { ty, required },
+        kind: NodeKind::Slot {
+            ty,
+            required,
+            error_code,
+        },
     }
+}
+
+/// Whether a field's declared spelling is `ErrorCode`, which stores as a `Str` but
+/// constrains its values to the dotted-lowercase grammar.
+fn error_code(field: &FieldDecl) -> bool {
+    is_error_code_spelling(&field.ty.text)
 }
 
 /// Desugar `name: sequence[T]` into the keyed leaf `name(pos: int): T`. The
@@ -265,6 +286,8 @@ fn slot_node(field: &FieldDecl, ty: Type, key_params: Vec<KeyDef>, required: boo
 /// resulting node is identical to the one `name(pos: int): T` produces and
 /// append/read/traverse work unchanged.
 fn sequence_leaf(field: &FieldDecl, element: Type) -> Node {
+    let element_is_error_code =
+        sequence_element(&field.ty.text).is_some_and(is_error_code_spelling);
     slot_node(
         field,
         element,
@@ -273,6 +296,7 @@ fn sequence_leaf(field: &FieldDecl, element: Type) -> Node {
             ty: Type::Scalar(ScalarType::Int),
         }],
         false,
+        element_is_error_code,
     )
 }
 

@@ -458,6 +458,153 @@ fn an_invalid_literal_error_code_conversion_is_a_call_argument_error() {
 }
 
 #[test]
+fn an_invalid_string_literal_bound_to_an_error_code_is_rejected() {
+    // A bare string literal coerced into an `ErrorCode` binding must satisfy the
+    // same grammar as `ErrorCode(...)`; the constructor cannot be the only gate.
+    let found = check_module(
+        "error-code-binding-invalid",
+        "module m\nfn f()\n    const c: ErrorCode = \"ALSO BAD\"\n",
+        "check.call_argument",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn a_valid_string_literal_bound_to_an_error_code_checks_clean() {
+    let report = check_module_report(
+        "error-code-binding-valid",
+        "module m\nfn f()\n    const c: ErrorCode = \"app.bad_input\"\n",
+    );
+    assert_clean(&report);
+}
+
+#[test]
+fn an_invalid_string_literal_assigned_to_a_saved_error_code_field_is_rejected() {
+    let found = check_module(
+        "error-code-saved-field-invalid",
+        "module m\n\
+         resource Log\n    required code: ErrorCode\n\
+         store ^logs(id: int): Log\n\n\
+         fn f()\n    ^logs(1).code = \"no good code\"\n",
+        "check.call_argument",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn a_valid_string_literal_assigned_to_a_saved_error_code_field_checks_clean() {
+    let report = check_module_report(
+        "error-code-saved-field-valid",
+        "module m\n\
+         resource Log\n    required code: ErrorCode\n\
+         store ^logs(id: int): Log\n\n\
+         fn f()\n    ^logs(1).code = \"app.ok\"\n",
+    );
+    assert!(
+        with_code(&report, "check.call_argument").is_empty(),
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
+fn an_invalid_string_literal_assigned_to_a_local_error_code_field_is_rejected() {
+    let found = check_module(
+        "error-code-local-field-invalid",
+        "module m\n\
+         resource Log\n    required code: ErrorCode\n\n\
+         fn f()\n    var entry: Log\n    entry.code = \"no good code\"\n",
+        "check.call_argument",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn an_invalid_string_literal_in_a_constructor_error_code_field_is_rejected() {
+    let found = check_module(
+        "error-code-constructor-invalid",
+        "module m\n\
+         resource Log\n    required code: ErrorCode\n\n\
+         fn f()\n    var entry = Log(code: \"no good code\")\n",
+        "check.call_argument",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn a_valid_string_literal_in_a_constructor_error_code_field_checks_clean() {
+    let report = check_module_report(
+        "error-code-constructor-valid",
+        "module m\n\
+         resource Log\n    required code: ErrorCode\n\n\
+         fn f()\n    var entry = Log(code: \"app.ok\")\n",
+    );
+    assert!(
+        with_code(&report, "check.call_argument").is_empty(),
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
+fn an_invalid_string_literal_assigned_to_a_keyed_leaf_error_code_is_rejected() {
+    let found = check_module(
+        "error-code-keyed-leaf-invalid",
+        "module m\n\
+         resource Log\n    tags(k: int): ErrorCode\n\
+         store ^logs(id: int): Log\n\n\
+         fn f()\n    ^logs(1).tags(0) = \"no good code\"\n",
+        "check.call_argument",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn a_valid_string_literal_assigned_to_a_keyed_leaf_error_code_checks_clean() {
+    let report = check_module_report(
+        "error-code-keyed-leaf-valid",
+        "module m\n\
+         resource Log\n    tags(k: int): ErrorCode\n\
+         store ^logs(id: int): Log\n\n\
+         fn f()\n    ^logs(1).tags(0) = \"app.ok\"\n",
+    );
+    assert!(
+        with_code(&report, "check.call_argument").is_empty(),
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
+fn an_invalid_string_literal_appended_to_a_sequence_error_code_is_rejected() {
+    let found = check_module(
+        "error-code-append-invalid",
+        "module m\n\
+         resource Log\n    codes: sequence[ErrorCode]\n\
+         store ^logs(id: int): Log\n\n\
+         fn f()\n    append(^logs(1).codes, \"no good code\")\n",
+        "check.call_argument",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn a_valid_string_literal_appended_to_a_sequence_error_code_checks_clean() {
+    let report = check_module_report(
+        "error-code-append-valid",
+        "module m\n\
+         resource Log\n    codes: sequence[ErrorCode]\n\
+         store ^logs(id: int): Log\n\n\
+         fn f()\n    append(^logs(1).codes, \"app.ok\")\n",
+    );
+    assert!(
+        with_code(&report, "check.call_argument").is_empty(),
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
 fn invalid_error_code_literals_with_bad_conversion_shape_are_diagnosed() {
     let report = check_module_report(
         "conv-error-code-invalid-shape",

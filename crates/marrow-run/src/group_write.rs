@@ -12,6 +12,7 @@ use crate::error::{RuntimeError, unsupported};
 use crate::expr::eval_expr;
 use crate::index_maintenance::IndexWriteContext;
 use crate::path::{lower, lower_keys};
+use crate::statement::coerce_error_code_value;
 use crate::store::{DataAddress, LayerAddress};
 use crate::value::{Value, identity_keys_of, value_to_leaf};
 use crate::write::{
@@ -79,7 +80,11 @@ fn write_layer_leaf(
     value: &ExecExpr,
     env: &mut Env<'_>,
 ) -> Result<(), RuntimeError> {
-    let value = eval_expr(value, env)?;
+    let value = coerce_error_code_value(
+        eval_expr(value, env)?,
+        target.layer_facts.error_code,
+        target.span,
+    )?;
     let expected = target.layer_facts.key_params.as_slice();
     let layer_keys = lower_keys(keys, target.span, false, None, expected, env)?;
     let mut layers = target.parent_addresses.to_vec();

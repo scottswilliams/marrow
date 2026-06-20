@@ -21,6 +21,9 @@ pub struct CheckedResourceConstructor {
 pub struct CheckedResourceConstructorField {
     pub name: String,
     pub required: bool,
+    /// The field is declared `ErrorCode`, so a dynamic value bound to it must
+    /// satisfy the dotted-lowercase grammar. A string literal is rejected at check.
+    pub error_code: bool,
     pub ty: CheckedRuntimeValueType,
 }
 
@@ -93,12 +96,13 @@ fn checked_resource_constructor_field(
     if !node.is_plain_field() {
         return None;
     }
-    let NodeKind::Slot { required, ty } = &node.kind else {
+    let NodeKind::Slot { required, ty, .. } = &node.kind else {
         return None;
     };
     Some(CheckedResourceConstructorField {
         name: node.name.clone(),
         required: *required,
+        error_code: node.is_error_code(),
         ty: checked_runtime_value_type(
             program,
             checked_constructor_field_type(program, module, ty),

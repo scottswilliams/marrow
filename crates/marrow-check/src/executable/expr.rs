@@ -65,6 +65,9 @@ pub struct CheckedSavedLayer {
     pub args: Vec<CheckedArg>,
     pub key_params: Vec<CheckedSavedKeyParam>,
     pub leaf: Option<crate::StoreLeafKind>,
+    /// The leaf was declared `ErrorCode`, so a value written through this layer
+    /// must satisfy the dotted-lowercase grammar. A keyed-leaf or sequence element.
+    pub error_code: bool,
     pub typed_entry: bool,
     pub members: Vec<CheckedSavedMember>,
     pub span: SourceSpan,
@@ -78,6 +81,9 @@ pub struct CheckedSavedMember {
     pub kind: CheckedSavedMemberKind,
     pub catalog_id: Option<String>,
     pub leaf: Option<crate::StoreLeafKind>,
+    /// The leaf was declared `ErrorCode`, so a value written to it must satisfy the
+    /// dotted-lowercase grammar.
+    pub error_code: bool,
     pub typed_entry: bool,
     pub group_members: Vec<CheckedSavedMember>,
 }

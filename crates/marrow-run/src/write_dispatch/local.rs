@@ -4,12 +4,14 @@ use marrow_syntax::SourceSpan;
 use crate::env::Env;
 use crate::error::{RuntimeError, assign_error, unsupported};
 use crate::expr::eval_expr;
+use crate::statement::coerce_error_code_value;
 use crate::value::Value;
 
 pub(crate) fn eval_local_field_set(
     base: &ExecExpr,
     field: &str,
     value: &ExecExpr,
+    coerce_error_code: bool,
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<(), RuntimeError> {
@@ -19,7 +21,7 @@ pub(crate) fn eval_local_field_set(
     let [name] = segments.as_slice() else {
         return Err(unsupported("setting a field of this value", span));
     };
-    let new_value = eval_expr(value, env)?;
+    let new_value = coerce_error_code_value(eval_expr(value, env)?, coerce_error_code, span)?;
     write_local_field(name, field, new_value, span, env)
 }
 

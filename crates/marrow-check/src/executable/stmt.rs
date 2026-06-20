@@ -85,6 +85,9 @@ pub enum CheckedStmt {
         name: String,
         binding_type: Option<MarrowType>,
         value: CheckedExpr,
+        /// The binding is declared `ErrorCode`, so a dynamic value the runtime
+        /// stores into it must satisfy the dotted-lowercase grammar.
+        coerce_error_code: bool,
         span: SourceSpan,
     },
     Var {
@@ -94,11 +97,15 @@ pub enum CheckedStmt {
         binding_type: Option<MarrowType>,
         resource_default: bool,
         value: Option<CheckedExpr>,
+        coerce_error_code: bool,
         span: SourceSpan,
     },
     Assign {
         target: CheckedExpr,
         value: CheckedExpr,
+        /// The assignment target is an `ErrorCode` field, so a dynamic value the
+        /// runtime writes into it must satisfy the dotted-lowercase grammar.
+        coerce_error_code: bool,
         span: SourceSpan,
     },
     Delete {
@@ -190,11 +197,15 @@ impl CheckedStmt {
     ) -> Option<Self> {
         Some(match statement {
             syntax::Statement::Const {
-                name, value, span, ..
+                name,
+                ty,
+                value,
+                span,
             } => Self::Const {
                 name: name.clone(),
                 binding_type,
                 value: CheckedExpr::lower(value, context, scope)?,
+                coerce_error_code: annotation_is_error_code(ty.as_ref()),
                 span: *span,
             },
             syntax::Statement::Var {
@@ -215,6 +226,7 @@ impl CheckedStmt {
                     resolves_resource_type(context.program, context.from_module, &name)
                 }),
                 value: lower_optional_expr(value.as_ref(), context, scope)?,
+                coerce_error_code: annotation_is_error_code(ty.as_ref()),
                 span: *span,
             },
             syntax::Statement::Assign {
@@ -224,6 +236,14 @@ impl CheckedStmt {
             } => Self::Assign {
                 target: CheckedExpr::lower(target, context, scope)?,
                 value: CheckedExpr::lower(value, context, scope)?,
+                coerce_error_code: crate::infer::assignment_target_is_error_code(
+                    context.program,
+                    target,
+                    scope,
+                    &context.aliases,
+                    context.source_file,
+                    None,
+                ),
                 span: *span,
             },
             syntax::Statement::Delete { path, span } => Self::Delete {
@@ -484,4 +504,10 @@ fn resolves_resource_type(program: &CheckedProgram, from_module: &str, name: &st
             ..
         })
     )
+}
+
+/// Whether a binding annotation declares `ErrorCode`, so the runtime validates a
+/// dynamic value the binding stores. A string literal is already rejected at check.
+fn annotation_is_error_code(ty: Option<&syntax::TypeRef>) -> bool {
+    ty.is_some_and(|ty| marrow_schema::is_error_code_spelling(&ty.text))
 }

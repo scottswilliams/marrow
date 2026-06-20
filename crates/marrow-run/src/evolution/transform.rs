@@ -32,6 +32,7 @@ use marrow_syntax::SourceSpan;
 use crate::activation::{Completion, Invocation, invoke};
 use crate::env::{Context, TransactionState};
 use crate::host::Host;
+use crate::statement::coerce_error_code_value;
 use crate::store::DataAddress;
 use crate::value::{RunOutputSink, Value, decode_leaf, value_to_leaf};
 
@@ -148,10 +149,10 @@ fn recompute(
     module: &CheckedRuntimeModule,
     body: &marrow_check::CheckedBody,
     old: Value,
-    target_leaf: &StoreLeafKind,
+    target: &TargetLeaf,
 ) -> Result<Vec<u8>, String> {
     let value = run_transform(runtime, store, module, body, old)?;
-    encode_target(value, target_leaf)
+    encode_target(value, target)
 }
 
 /// Build the `old` resource value for one record: each read member's stored bytes
@@ -235,10 +236,30 @@ fn run_transform(
 /// could not be held by the target leaf. The checker proved the body's result types as
 /// the target, so a failure here means the value lost its type through dynamic
 /// evaluation: a body fault, not store corruption.
-fn encode_target(value: Value, leaf: &StoreLeafKind) -> Result<Vec<u8>, String> {
+///
+/// An `ErrorCode` target erases to a `Str` leaf, so the body type-checks while computing
+/// an arbitrary string. The dotted-lowercase grammar is enforced here through the one
+/// grammar owner the constructor and field-write paths use, so a non-conforming code is a
+/// per-record body fault that fails the apply closed rather than persisting to the place.
+fn encode_target(value: Value, target: &TargetLeaf) -> Result<Vec<u8>, String> {
+    let value = if target.error_code {
+        coerce_error_code_value(value, true, SourceSpan::default())
+            .map_err(|error| error.message)?
+    } else {
+        value
+    };
     let leaf_value =
-        value_to_leaf(value, leaf, SourceSpan::default()).map_err(|error| error.message)?;
+        value_to_leaf(value, &target.leaf, SourceSpan::default()).map_err(|error| error.message)?;
     leaf_value.bytes().map_err(|error| error.to_string())
+}
+
+/// The encode target a transform recomputes into: the member's leaf kind and whether it
+/// was declared `ErrorCode`, so a recomputed value is gated by the dotted-lowercase
+/// grammar before it reaches the leaf, exactly as the constructor and field-write paths
+/// gate a dynamic value reaching an `ErrorCode` place.
+struct TargetLeaf {
+    leaf: StoreLeafKind,
+    error_code: bool,
 }
 
 /// Every place and target leaf for a transform target catalog id, when the target is a
@@ -246,7 +267,7 @@ fn encode_target(value: Value, leaf: &StoreLeafKind) -> Result<Vec<u8>, String> 
 fn locate_targets<'a>(
     places: &'a [CheckedSavedPlace],
     target_id: &CatalogId,
-) -> Vec<(&'a CheckedSavedPlace, StoreLeafKind)> {
+) -> Vec<(&'a CheckedSavedPlace, TargetLeaf)> {
     places
         .iter()
         .filter_map(|place| {
@@ -260,12 +281,16 @@ fn locate_targets<'a>(
         .collect()
 }
 
-/// The leaf kind of a transform target member, when it is a plain scalar/enum/identity
+/// The encode target of a transform target member, when it is a plain scalar/enum/identity
 /// field. A group target has no leaf to encode to.
-fn target_leaf(member: &CheckedSavedMember) -> Option<StoreLeafKind> {
+fn target_leaf(member: &CheckedSavedMember) -> Option<TargetLeaf> {
     matches!(member.kind, CheckedSavedMemberKind::Field { .. })
         .then(|| member.leaf.clone())
         .flatten()
+        .map(|leaf| TargetLeaf {
+            leaf,
+            error_code: member.error_code,
+        })
 }
 
 /// The runtime module that owns a transform, resolved by the resource the transform

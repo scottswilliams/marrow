@@ -116,6 +116,14 @@ pub fn scalar_type_from_name(name: &str) -> Option<ScalarType> {
     })
 }
 
+/// Whether a source type spelling names `ErrorCode`. `ErrorCode` resolves to a
+/// [`ScalarType::Str`] like `string`, so the spelling is otherwise lost; a field
+/// or binding declared with it enforces the dotted-lowercase grammar on the
+/// values it accepts. The one place that recognizes the spelling.
+pub fn is_error_code_spelling(text: &str) -> bool {
+    text.trim() == "ErrorCode"
+}
+
 /// The compiled tree shape of a resource declaration.
 ///
 /// Members are kept in source order in one `Vec` rather than a map: a resource
@@ -130,6 +138,20 @@ pub struct ResourceSchema {
 }
 
 impl ResourceSchema {
+    /// The schema node a saved-path chain (outermost first) names: every name but the
+    /// last is a group layer to descend into, and the last names a member of that
+    /// layer's tree, of any kind. `None` for an empty chain or a name the schema does
+    /// not declare at that position. This is the one canonical resource-tree member
+    /// walk; the typed accessors below project it to the shape each caller needs.
+    pub fn node_at(&self, chain: &[&str]) -> Option<&Node> {
+        let (&member, parents) = chain.split_last()?;
+        let members = match parents {
+            [] => &self.members,
+            _ => &self.descend_layers(parents)?.members,
+        };
+        members.iter().find(|node| node.name == member)
+    }
+
     /// The declared type of a stored field named by its saved-path chain
     /// (outermost first), where the last name is a scalar field and every earlier
     /// name is a group layer to descend into. `None` for an empty chain or a name
@@ -137,14 +159,9 @@ impl ResourceSchema {
     ///
     /// A keyed-leaf layer read at the same position is [`Self::leaf_type`]; the two
     /// differ only in whether the terminal name is a field (a [`NodeKind::Slot`]) or
-    /// a group (a [`NodeKind::Group`]) to descend, so both share the one walk.
+    /// a group (a [`NodeKind::Group`]) to descend.
     pub fn field_type(&self, chain: &[&str]) -> Option<&Type> {
-        let (&leaf, groups) = chain.split_last()?;
-        let members = match groups {
-            [] => &self.members,
-            _ => &self.descend_layers(groups)?.members,
-        };
-        plain_field(members, leaf)
+        self.node_at(chain)?.plain_field_type()
     }
 
     /// The declared leaf value type of the keyed-leaf layer named by its chain
@@ -170,16 +187,6 @@ impl ResourceSchema {
     }
 }
 
-/// The value type of a *plain* field member named `name`: a `Slot` with no key
-/// parameters. A keyed leaf or a group of the same name is not a plain field, so
-/// it resolves to `None`.
-fn plain_field<'a>(members: &'a [Node], name: &str) -> Option<&'a Type> {
-    members.iter().find_map(|node| match &node.kind {
-        NodeKind::Slot { ty, .. } if node.name == name && node.key_params.is_empty() => Some(ty),
-        _ => None,
-    })
-}
-
 /// The layer node named `name`: a group or a keyed leaf — anything but a plain
 /// field (a `Slot` with no key parameters), which is not a layer to descend.
 fn layer_member<'a>(members: &'a [Node], name: &str) -> Option<&'a Node> {
@@ -202,6 +209,18 @@ impl Node {
             NodeKind::Slot { ty, .. } if self.key_params.is_empty() => Some(ty),
             _ => None,
         }
+    }
+
+    /// Whether this node is a `Slot` declared `ErrorCode`, so a value written to
+    /// it must satisfy the dotted-lowercase error-code grammar.
+    pub fn is_error_code(&self) -> bool {
+        matches!(
+            self.kind,
+            NodeKind::Slot {
+                error_code: true,
+                ..
+            }
+        )
     }
 
     /// The type a single value cell of this `Slot` holds — a plain field's own
@@ -289,7 +308,14 @@ pub struct Node {
 pub enum NodeKind {
     /// A scalar value: a top-level field or a keyed leaf. `required` varies only
     /// on a top-level/group field; a keyed leaf never exposes it (always false).
-    Slot { ty: Type, required: bool },
+    /// `error_code` records that the field was declared `ErrorCode`: its value
+    /// stores as a `Str` like any other, but a value reaching it must satisfy the
+    /// dotted-lowercase grammar, so the spelling cannot be recovered from `ty`.
+    Slot {
+        ty: Type,
+        required: bool,
+        error_code: bool,
+    },
     /// A keyed or unkeyed group, whose value lives in the node's `members`.
     Group,
 }

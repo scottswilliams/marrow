@@ -116,6 +116,9 @@ struct LeafObligation {
     /// (`sequence`/`unknown`). Such a leaf arises only as a retype, so any present cell counts
     /// as populated and the retype check fails it closed.
     leaf: Option<StoreLeafKind>,
+    /// The leaf was declared `ErrorCode`, so a constant default backfilled into it must
+    /// satisfy the dotted-lowercase grammar; its `Str` leaf kind cannot carry the spelling.
+    error_code: bool,
     /// Effective requiredness at the member's nesting. An optional leaf becomes an obligation
     /// only when retyped or over a shrunk enum, so the scan can learn whether it has bytes.
     required: bool,
@@ -193,6 +196,7 @@ enum MemberLeafOutcome {
     Obligation {
         label: String,
         leaf: Option<StoreLeafKind>,
+        error_code: bool,
         required: bool,
         renamed: bool,
         retyped: bool,
@@ -245,6 +249,7 @@ fn classify_member_leaf(
     MemberLeafOutcome::Obligation {
         label: member_label(place, member),
         leaf,
+        error_code: member.error_code,
         required,
         renamed,
         retyped,
@@ -273,6 +278,7 @@ fn emit_member_leaf(
         MemberLeafOutcome::Obligation {
             label,
             leaf,
+            error_code,
             required,
             renamed,
             retyped,
@@ -281,6 +287,7 @@ fn emit_member_leaf(
             path,
             label,
             leaf,
+            error_code,
             required,
             renamed,
             retyped,
@@ -306,6 +313,7 @@ fn emit_disappeared_leaf(
         path,
         label: member_label(place, member),
         leaf: None,
+        error_code: false,
         required: false,
         renamed: false,
         retyped: true,
@@ -671,7 +679,7 @@ fn classify_leaf(
             ),
         );
     }
-    let verdict = match acc.default_value_for(id.as_str(), leaf.leaf.as_ref()) {
+    let verdict = match acc.default_value_for(id.as_str(), leaf.leaf.as_ref(), leaf.error_code) {
         Some(Ok(value)) => {
             acc.counts.records_to_backfill += state.missing_count;
             Verdict::Default { value }

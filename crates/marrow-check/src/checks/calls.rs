@@ -181,6 +181,7 @@ fn check_special_single_name_call(
             check_arity(name, 2, args, env.span, env.file, env.diagnostics);
             check_append_args(env, args);
             check_append(env, args);
+            check_append_error_code_literal(env, args);
             Some(MarrowType::Primitive(ScalarType::Int))
         }
         _ => None,
@@ -664,7 +665,12 @@ fn check_error_code_conversion_literal(
     check_error_code_literal(&arg.value, "`ErrorCode(...)`", file, diagnostics);
 }
 
-fn check_error_code_literal(
+/// Reject a string literal that does not satisfy the dotted-lowercase error-code
+/// grammar, naming the offending place with `label`. The one literal-validation
+/// entrypoint shared by the `ErrorCode(...)` constructor, the `Error.code` field,
+/// and a literal coerced into an `ErrorCode`-typed place. A non-literal value is
+/// left to its run-time coercion.
+pub(crate) fn check_error_code_literal(
     expr: &marrow_syntax::Expression,
     label: &str,
     file: &Path,
@@ -815,6 +821,25 @@ fn saved_layer_is_group(
         .is_some_and(|layer| layer.leaf.is_none())
 }
 
+/// Reject a string literal appended to a `sequence[ErrorCode]` (or any keyed leaf
+/// declared `ErrorCode`), the same grammar gate the constructor and a field write
+/// apply. A dynamic value is validated at the append boundary at run.
+fn check_append_error_code_literal(env: &mut CallEnv<'_>, args: &[marrow_syntax::Argument]) {
+    let [target, value] = args else { return };
+    let appends_error_code = lower_expr_for_file(env.program, env.file, &target.value, env.scope)
+        .and_then(|expr| expr.saved_place().cloned())
+        .and_then(|place| place.layers.last().cloned())
+        .is_some_and(|layer| layer.error_code);
+    if appends_error_code {
+        check_error_code_literal(
+            &value.value,
+            "an `ErrorCode` sequence",
+            env.file,
+            env.diagnostics,
+        );
+    }
+}
+
 fn check_conversion_arg(
     target: ConversionTarget,
     arg_types: &[MarrowType],
@@ -920,6 +945,28 @@ fn check_resource_constructor_args(input: ResourceConstructorCheck<'_>) {
             )
         },
     );
+    check_constructor_error_code_literals(label, &fields, args, file, diagnostics);
+}
+
+/// Reject a string literal supplied for an `ErrorCode` field of a resource
+/// constructor, the same gate the constructor's own `ErrorCode(...)` applies. A
+/// dynamic value is validated at the write boundary.
+fn check_constructor_error_code_literals(
+    label: &str,
+    fields: &[&marrow_schema::Node],
+    args: &[marrow_syntax::Argument],
+    file: &Path,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    for arg in args {
+        let Some(name) = &arg.name else { continue };
+        if fields
+            .iter()
+            .any(|field| field.name == *name && field.is_error_code())
+        {
+            check_error_code_literal(&arg.value, &format!("`{label}.{name}`"), file, diagnostics);
+        }
+    }
 }
 
 fn constructor_field_type(
