@@ -899,9 +899,13 @@ fn open_surface_session(
     if populated_unstamped_store(&program, &store.store)? {
         return Err(ProjectSessionError::UnstampedStore);
     }
-    if program.catalog.accepted_epoch.is_none() {
+    if store.store.read_store_uid()?.is_none() || store.store.read_commit_metadata()?.is_none() {
         return Err(ProjectSessionError::DurableStoreRequired);
     }
+    // The fence owns the no-accepted-epoch decision for both open paths: a stamped store opened
+    // by a program with no accepted epoch fails closed with `run.durable_store_required`. Once it
+    // passes, the program carries an accepted epoch and digest to drift-check against.
+    fence_run(&program, &store.store).map_err(ProjectSessionError::Fence)?;
     let accepted_digest =
         program
             .catalog
@@ -911,10 +915,6 @@ fn open_surface_session(
                 code: marrow_catalog::CATALOG_INVALID,
                 message: "accepted catalog digest is missing from the checked program".to_string(),
             })?;
-    if store.store.read_store_uid()?.is_none() || store.store.read_commit_metadata()?.is_none() {
-        return Err(ProjectSessionError::DurableStoreRequired);
-    }
-    fence_run(&program, &store.store).map_err(ProjectSessionError::Fence)?;
     let found = store.store.catalog_snapshot_digest()?;
     if found.as_deref() != Some(accepted_digest) {
         return Err(ProjectSessionError::SchemaDrift {
@@ -1007,7 +1007,12 @@ fn open_run_store(
         establish_store_baseline(root, config, &store.store, checked)?
     };
     match fence_run(&checked.program, &store.store) {
-        Ok(()) => finish_open(checked, store, isolate_writes),
+        Ok(()) => {
+            if !isolate_writes {
+                reproject_committed_lock(root, &store.store, &checked.program)?;
+            }
+            finish_open(checked, store, isolate_writes)
+        }
         Err(FenceError::SchemaDrift) => {
             if isolate_writes {
                 return classify_dry_run_drift(root, config, &checked, store, notices);
@@ -1303,6 +1308,30 @@ fn establish_store_baseline(
     }
     marrow_check::recheck_source_project_analysis_against_store_catalog(root, config, store)
         .map(CheckedSourceProgram::from_snapshot)
+        .map_err(ProjectSessionError::from)
+}
+
+/// Re-project `marrow.lock` from the committed store baseline. The store is the sole write-time
+/// authority; the lock is its committed source-tree projection. A writable commit-path open
+/// re-projects after the fence agrees the store matches this binary, so a baseline this open just
+/// established — or one a prior open committed before it could project the lock — converges to a
+/// fresh lock. Re-projection rebuilds the accepted identity and shape from the committed store
+/// snapshot; the id ledger is carried forward from the existing lock when one is present. The
+/// projection is idempotent on the bytes it would write, so a converged store re-projects nothing.
+/// It runs only on the writable open path through the single lock-write owner, never as a read
+/// side effect.
+fn reproject_committed_lock(
+    root: &Path,
+    store: &TreeStore,
+    program: &CheckedProgram,
+) -> Result<(), ProjectSessionError> {
+    let Some(snapshot) = store.read_catalog_snapshot()? else {
+        return Ok(());
+    };
+    let ledger = marrow_check::read_committed_lock(root)?
+        .map(|lock| lock.ledger)
+        .unwrap_or_default();
+    marrow_check::project_store_lock(root, &snapshot, &ledger, &program.source_digest())
         .map_err(ProjectSessionError::from)
 }
 

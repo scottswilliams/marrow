@@ -37,6 +37,11 @@ fn write_native_config(root: &Path) {
     .expect("write marrow.json");
 }
 
+/// The committed source-tree lock projection a baseline run writes from the store.
+fn lock_path(root: &Path) -> std::path::PathBuf {
+    root.join("marrow.lock")
+}
+
 /// A native config with no `run.defaultEntry`, for fixtures that drive a
 /// parameterized entry through an explicit override rather than the default.
 fn write_native_config_no_default(root: &Path) {
@@ -162,8 +167,8 @@ fn surface_read_session_serves_existing_native_store_without_advancing_it() {
     drop(seed);
 
     let store_path = root.path().join(".data").join("marrow.redb");
-    let catalog_path = root.path().join("marrow.catalog.json");
-    let catalog_before = fs::read(&catalog_path).expect("seed run renders accepted catalog");
+    let lock_path = lock_path(root.path());
+    let lock_before = fs::read(&lock_path).expect("seed run projects the committed lock");
     let before = {
         let store = TreeStore::open_read_only(&store_path).expect("open seeded store");
         store
@@ -234,9 +239,9 @@ fn surface_read_session_serves_existing_native_store_without_advancing_it() {
     };
     assert_eq!(before, after, "surface reads must not advance commits");
     assert_eq!(
-        catalog_before,
-        fs::read(&catalog_path).expect("read accepted catalog after surface read"),
-        "surface reads must not rewrite accepted catalog artifacts"
+        lock_before,
+        fs::read(&lock_path).expect("read committed lock after surface read"),
+        "surface reads must not rewrite the committed lock"
     );
 }
 
@@ -337,7 +342,7 @@ fn surface_write_session_requires_existing_accepted_native_store_without_creatin
         "write surface session must not create the configured native data dir"
     );
     assert!(
-        !root.path().join("marrow.catalog.json").exists(),
+        !lock_path(root.path()).exists(),
         "write surface session must not freeze accepted catalog identity"
     );
 }
@@ -386,13 +391,13 @@ fn surface_write_session_rejects_populated_unstamped_store_without_minting_uid()
         "write surface session must not stamp commit metadata while rejecting an unstamped store"
     );
     assert!(
-        !root.path().join("marrow.catalog.json").exists(),
+        !lock_path(root.path()).exists(),
         "write surface session must not freeze accepted catalog identity"
     );
 }
 
 #[test]
-fn surface_read_session_does_not_repair_missing_catalog_artifact() {
+fn surface_read_session_does_not_repair_a_missing_lock() {
     let root =
         TempDir::new("marrow-run-surface-read-session-missing-catalog").expect("create project");
     write_native_config(root.path());
@@ -410,8 +415,8 @@ fn surface_read_session_does_not_repair_missing_catalog_artifact() {
     drop(seed);
 
     let store_path = root.path().join(".data").join("marrow.redb");
-    let catalog_path = root.path().join("marrow.catalog.json");
-    fs::remove_file(&catalog_path).expect("remove accepted catalog artifact");
+    let lock_path = lock_path(root.path());
+    fs::remove_file(&lock_path).expect("remove committed lock");
     let before = {
         let store = TreeStore::open_read_only(&store_path).expect("open seeded store");
         store
@@ -423,8 +428,8 @@ fn surface_read_session_does_not_repair_missing_catalog_artifact() {
     let session = ProjectSurfaceReadSession::open(root.path())
         .expect("open surface read session from store snapshot");
     assert!(
-        !catalog_path.exists(),
-        "read-only surface session must not repair a missing accepted catalog artifact"
+        !lock_path.exists(),
+        "read-only surface session must not re-project a missing lock"
     );
     assert_eq!(
         session
@@ -444,13 +449,13 @@ fn surface_read_session_does_not_repair_missing_catalog_artifact() {
     };
     assert_eq!(before, after, "surface read must not advance commits");
     assert!(
-        !catalog_path.exists(),
-        "read-only surface session must leave the missing artifact missing"
+        !lock_path.exists(),
+        "read-only surface session must leave the missing lock missing"
     );
 }
 
 #[test]
-fn surface_read_session_does_not_repair_invalid_catalog_artifact() {
+fn surface_read_session_fails_closed_on_a_corrupt_lock() {
     let root =
         TempDir::new("marrow-run-surface-read-session-invalid-catalog").expect("create project");
     write_native_config(root.path());
@@ -467,17 +472,26 @@ fn surface_read_session_does_not_repair_invalid_catalog_artifact() {
     assert_eq!(invoke(&seed, "shelf::seed"), "");
     drop(seed);
 
-    let catalog_path = root.path().join("marrow.catalog.json");
-    fs::write(&catalog_path, "not catalog json").expect("replace accepted catalog artifact");
+    // The live store is the sole accepted authority and a valid stamped store wins
+    // unconditionally, even against a corrupt committed lock: the read binds from the store and
+    // leaves the corrupt lock exactly as found, neither repairing it nor failing on it.
+    let lock_path = lock_path(root.path());
+    fs::write(&lock_path, "not a valid lock").expect("corrupt the committed lock");
 
-    let error = ProjectSurfaceReadSession::open(root.path())
-        .expect_err("invalid accepted catalog artifact remains invalid");
+    let session = ProjectSurfaceReadSession::open(root.path())
+        .expect("a valid stamped store wins over a corrupt lock");
+    let point_tag = point_read_operation_tag(session.program(), "Counters");
+    session
+        .admit_read_by_operation_tag(&point_tag)
+        .expect("admit point read against the store-bound surface")
+        .point_read()
+        .expect("point read shape");
+    drop(session);
 
-    assert_eq!(error.code(), "catalog.invalid");
     assert_eq!(
-        fs::read_to_string(&catalog_path).expect("read invalid catalog artifact"),
-        "not catalog json",
-        "read-only surface session must not repair an invalid accepted catalog artifact"
+        fs::read_to_string(&lock_path).expect("read corrupt lock"),
+        "not a valid lock",
+        "read-only surface session must not repair a corrupt lock when the store wins"
     );
 }
 
@@ -500,7 +514,7 @@ fn surface_read_session_requires_an_existing_accepted_native_store() {
         "read-only surface session must not create the configured native data dir"
     );
     assert!(
-        !root.path().join("marrow.catalog.json").exists(),
+        !lock_path(root.path()).exists(),
         "read-only surface session must not freeze accepted catalog identity"
     );
 }
@@ -534,7 +548,7 @@ fn surface_read_session_rejects_populated_unstamped_store_before_baseline() {
 
     assert_eq!(error.code(), "run.store_unstamped");
     assert!(
-        !root.path().join("marrow.catalog.json").exists(),
+        !lock_path(root.path()).exists(),
         "read-only surface session must not freeze accepted catalog identity"
     );
 }
@@ -557,8 +571,8 @@ fn surface_read_session_fences_drift_without_auto_apply() {
     drop(seed);
 
     let store_path = root.path().join(".data").join("marrow.redb");
-    let catalog_path = root.path().join("marrow.catalog.json");
-    let catalog_before = fs::read(&catalog_path).expect("seed run renders accepted catalog");
+    let lock_path = lock_path(root.path());
+    let lock_before = fs::read(&lock_path).expect("seed run projects the committed lock");
     let before = {
         let store = TreeStore::open_read_only(&store_path).expect("open seeded store");
         store
@@ -585,9 +599,9 @@ fn surface_read_session_fences_drift_without_auto_apply() {
     };
     assert_eq!(before, after, "read serving must not auto-apply drift");
     assert_eq!(
-        catalog_before,
-        fs::read(&catalog_path).expect("read accepted catalog after fenced serving open"),
-        "read serving must not rewrite accepted catalog artifacts"
+        lock_before,
+        fs::read(&lock_path).expect("read committed lock after fenced serving open"),
+        "read serving must not rewrite the committed lock"
     );
 }
 
@@ -701,8 +715,8 @@ fn fresh_memory_run_does_not_create_native_store_or_catalog_artifact() {
         "fresh-memory session must not create the configured native data dir"
     );
     assert!(
-        !root.path().join("marrow.catalog.json").exists(),
-        "fresh-memory session must not freeze or render accepted catalog identity"
+        !lock_path(root.path()).exists(),
+        "fresh-memory session must not project the committed lock"
     );
 }
 
@@ -802,8 +816,8 @@ fn fresh_memory_run_does_not_read_or_advance_an_existing_native_store() {
     drop(seed);
 
     let store_path = root.path().join(".data").join("marrow.redb");
-    let catalog_path = root.path().join("marrow.catalog.json");
-    let catalog_before = fs::read(&catalog_path).expect("seed run renders accepted catalog");
+    let lock_path = lock_path(root.path());
+    let lock_before = fs::read(&lock_path).expect("seed run projects the committed lock");
     let before = {
         let store = TreeStore::open_read_only(&store_path).expect("open real store");
         store
@@ -837,9 +851,9 @@ fn fresh_memory_run_does_not_read_or_advance_an_existing_native_store() {
         "fresh-memory run must not advance the real store commit"
     );
     assert_eq!(
-        catalog_before,
-        fs::read(&catalog_path).expect("fresh-memory run preserves accepted catalog"),
-        "fresh-memory run must not rewrite the accepted catalog artifact"
+        lock_before,
+        fs::read(&lock_path).expect("fresh-memory run preserves the committed lock"),
+        "fresh-memory run must not rewrite the committed lock"
     );
 }
 
@@ -869,6 +883,10 @@ fn opening_a_store_behind_the_accepted_catalog_returns_the_typed_fence_code() {
             .expect("baseline catalog")
     };
 
+    // The store is the accepted authority, so a store behind its own published catalog is one
+    // whose catalog snapshot was advanced past its commit stamp: the program binds the advanced
+    // accepted epoch from the snapshot, while the stamp still records the older epoch. Publishing
+    // the advanced snapshot without re-stamping reproduces exactly that state.
     write_temp_source(root.path(), Path::new("src/shelf.mw"), advanced_source());
     let (report, advanced) =
         marrow_check::check_project_with_catalog(root.path(), &config, Some(&baseline))
@@ -878,11 +896,18 @@ fn opening_a_store_behind_the_accepted_catalog_returns_the_typed_fence_code() {
         .catalog
         .proposal
         .expect("advanced source proposes the next catalog");
-    fs::write(
-        root.path().join("marrow.catalog.json"),
-        advanced_catalog.to_json_pretty().expect("catalog renders"),
-    )
-    .expect("write advanced accepted catalog");
+    assert!(
+        advanced_catalog.epoch > baseline.epoch,
+        "advanced source advances the catalog epoch"
+    );
+    {
+        let store = marrow_store::tree::TreeStore::open(&store_path).expect("reopen native store");
+        store.begin().expect("begin");
+        store
+            .replace_catalog_snapshot(&advanced_catalog)
+            .expect("publish the advanced catalog snapshot without re-stamping");
+        store.commit().expect("commit");
+    }
 
     let error =
         ProjectSession::open(root.path(), ProjectMode::Run).expect_err("store behind is fenced");

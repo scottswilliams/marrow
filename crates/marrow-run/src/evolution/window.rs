@@ -5,6 +5,11 @@
 //! store has no stamp and is adopted on the first commit. The stamp this
 //! module builds and the fence it enforces read the same facts, so a store this binary
 //! just wrote always passes its own fence.
+//!
+//! A binary that binds no accepted epoch is not admitted against any durable identity, so it
+//! may adopt only a genuinely unstamped store. The same `&store` the fence already reads tells
+//! the two apart: a store carrying commit metadata was admitted and written by some binary, so
+//! a no-accepted-epoch open over it fails closed rather than seizing a writable handle.
 
 use marrow_catalog::CatalogMetadata;
 use marrow_store::StoreError;
@@ -60,10 +65,21 @@ pub(crate) fn metadata_stamp(facts: StampFacts) -> PlanStep {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FenceError {
-    StoreEvolved { stored: u64, accepted: u64 },
-    StoreBehind { stored: u64, accepted: u64 },
+    StoreEvolved {
+        stored: u64,
+        accepted: u64,
+    },
+    StoreBehind {
+        stored: u64,
+        accepted: u64,
+    },
     SchemaDrift,
     EngineProfileDrift,
+    /// The opening program binds no accepted epoch, but the store is already stamped against
+    /// some accepted identity. A binary that is not admitted against that identity cannot take
+    /// a writable handle, so the open fails closed exactly as the surface path's
+    /// `DurableStoreRequired` guard does.
+    DurableStoreRequired,
     Store(StoreError),
 }
 
@@ -80,6 +96,7 @@ impl FenceError {
             FenceError::StoreBehind { .. } => "run.store_behind",
             FenceError::SchemaDrift => "run.schema_drift",
             FenceError::EngineProfileDrift => "run.engine_profile",
+            FenceError::DurableStoreRequired => "run.durable_store_required",
             FenceError::Store(error) => error.code(),
         }
     }
@@ -102,6 +119,9 @@ impl FenceError {
             FenceError::EngineProfileDrift => {
                 "store engine profile does not match this binary's storage layout".to_string()
             }
+            FenceError::DurableStoreRequired => {
+                "store is already stamped against an accepted catalog, but this program binds no accepted identity to admit against it; run the program that owns this store, or remove the store to start fresh".to_string()
+            }
             FenceError::Store(error) => error.to_string(),
         }
     }
@@ -115,17 +135,21 @@ impl FenceError {
 /// version number; two structurally different schemas can share an epoch, so the source
 /// digest is the schema-bearing fence that distinguishes them. A fresh store has
 /// no stamp and is adopted on the first commit.
+///
+/// A program that binds no accepted epoch is admitted against no durable identity. It may
+/// adopt a genuinely unstamped store, but a store already carrying commit metadata was stamped
+/// against some accepted identity, so the open fails closed with [`FenceError::DurableStoreRequired`]
+/// rather than seize a writable handle the binary was never admitted for.
 pub fn fence(
     accepted_epoch: Option<u64>,
     expected_source_digest: &str,
     store: &TreeStore,
 ) -> Result<(), FenceError> {
-    let Some(accepted) = accepted_epoch else {
-        return Ok(());
-    };
-
     let Some(commit) = store.read_commit_metadata()? else {
         return Ok(());
+    };
+    let Some(accepted) = accepted_epoch else {
+        return Err(FenceError::DurableStoreRequired);
     };
     let expected_profile = current_engine_profile();
     if commit.layout_epoch != expected_profile.layout_epoch()
@@ -281,13 +305,23 @@ mod tests {
     }
 
     #[test]
-    fn no_accepted_catalog_does_not_fence() {
+    fn no_accepted_catalog_over_a_stamped_store_fails_closed() {
         let store = TreeStore::memory();
         stamp_with_digest(
             &store,
             5,
             "sha256:00000000000000000000000000000000000000000000000000000000deadbeef",
         );
-        fence(None, DIGEST, &store).expect("no catalog, no fence");
+        let error = fence(None, DIGEST, &store)
+            .expect_err("a stamped store is off-limits to a binary with no accepted epoch");
+        assert_eq!(error, FenceError::DurableStoreRequired);
+        assert_eq!(error.code(), "run.durable_store_required");
+    }
+
+    #[test]
+    fn no_accepted_catalog_over_an_unstamped_store_is_adopted() {
+        let store = TreeStore::memory();
+        fence(None, DIGEST, &store)
+            .expect("a genuinely unstamped store is adopted even with no accepted epoch");
     }
 }

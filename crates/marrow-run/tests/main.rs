@@ -116,6 +116,8 @@ mod evolution_apply_transforms;
 mod evolution_auto_apply;
 #[path = "cases/project_session.rs"]
 mod project_session;
+#[path = "cases/run_cli_fence.rs"]
+mod run_cli_fence;
 #[path = "cases/scenario_db_edge_cases.rs"]
 mod scenario_db_edge_cases;
 #[path = "cases/scenario_evolve_identity_and_fence.rs"]

@@ -484,7 +484,9 @@ fn fence_next_command(dir: &str, error: &FenceError) -> String {
     match error {
         FenceError::StoreBehind { .. } => format!("marrow evolve apply {dir}"),
         FenceError::SchemaDrift => format!("marrow evolve preview {dir}"),
-        FenceError::StoreEvolved { .. } | FenceError::EngineProfileDrift => doctor_command(dir),
+        FenceError::StoreEvolved { .. }
+        | FenceError::EngineProfileDrift
+        | FenceError::DurableStoreRequired => doctor_command(dir),
         FenceError::Store(store) => match store {
             StoreError::RecoveryRequired => format!("marrow data recover {dir}"),
             _ => doctor_command(dir),
