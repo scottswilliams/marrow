@@ -280,7 +280,7 @@ later. Stable surface reads, computed reads, creates, sparse updates, deletes,
 and actions have
 checker-owned descriptors and operation tags. `marrow-json` can render a
 `surface.route.v1` manifest from those descriptors, using operation-tag paths
-and aliases as labels. `marrow surface serve` is the local loopback serving
+and aliases as labels. `marrow serve` is the local loopback serving
 profile over manifest routes and `surface.operation.v1` envelopes: default mode
 serves read routes, including computed reads, while `--write` also serves
 create, sparse-update, delete, and action routes through the writable project

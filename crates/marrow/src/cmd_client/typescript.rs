@@ -3,9 +3,10 @@ use std::process::ExitCode;
 
 use crate::{CheckFormat, report_simple_error};
 
+const COMMAND: &str = "client typescript";
 const HELP: &str = "\
 Usage:
-  marrow surface client typescript <projectdir>
+  marrow client typescript <projectdir>
 
 Generate a self-contained TypeScript client from the checked surface ABI.
 ";
@@ -19,15 +20,12 @@ pub(crate) fn typescript(args: &[String]) -> ExitCode {
                 return ExitCode::SUCCESS;
             }
             value if value.starts_with('-') => {
-                return crate::unknown_option("surface client typescript", value);
+                return crate::unknown_option(COMMAND, value);
             }
             value => {
-                if let Err(code) = crate::take_single_target(
-                    &mut target,
-                    value,
-                    "surface client typescript",
-                    "project directory",
-                ) {
+                if let Err(code) =
+                    crate::take_single_target(&mut target, value, COMMAND, "project directory")
+                {
                     return code;
                 }
             }
@@ -38,7 +36,7 @@ pub(crate) fn typescript(args: &[String]) -> ExitCode {
         eprintln!("missing project directory");
         return ExitCode::from(2);
     };
-    if let Err(code) = crate::reject_bare_file_target("surface client typescript", &target) {
+    if let Err(code) = crate::reject_bare_file_target(COMMAND, &target) {
         return code;
     }
     render_client(&target)

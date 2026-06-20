@@ -14,8 +14,8 @@ marrow fmt [--check | --write] <file.mw | projectdir>
 marrow run [--entry <entry>] [--arg name=value]... [--maintenance] \
   [--trace] [--dry-run] [--format text|json] <projectdir>
 marrow test [--trace] [--format text|json|jsonl] [--filter <substring>] <projectdir>
-marrow surface client typescript <projectdir>
-marrow surface serve [--write] [--cors-origin <loopback-origin>] [--addr <loopback:port>] <projectdir>
+marrow serve [--write] [--cors-origin <loopback-origin>] [--addr <loopback:port>] <projectdir>
+marrow client typescript <projectdir>
 marrow data <roots|stats|dump|integrity> [--backup <artifact>] [--format text|json|jsonl] <projectdir>
 marrow data recover [--format text|json|jsonl] <projectdir>
 marrow data get [--backup <artifact>] [--format text|json|jsonl] <projectdir> <path>
@@ -28,6 +28,21 @@ marrow --help
 A project directory contains a `marrow.json`; see
 [project-config.md](project-config.md) for its fields. Every subcommand accepts
 `--help` (or `-h`) and prints its own usage.
+
+Common starting points:
+
+```console
+$ marrow check .
+$ marrow run .
+$ marrow serve .
+$ marrow serve --write --cors-origin http://localhost:5173 .
+$ marrow client typescript . > marrow-client.ts
+```
+
+Use `marrow check` before deployment or generation, `marrow run` for entry
+execution, `marrow serve` to run the local project API, and
+`marrow client typescript` when a browser or Node tool needs the matching
+TypeScript client.
 
 ## Version
 
@@ -157,9 +172,9 @@ Check a project directory containing `marrow.json` and report diagnostics.
 - `surface_routes` is
   the `surface.route.v1` manifest derived from exported surface descriptors:
   JSON `POST` operation-tag paths plus render aliases and request-body kinds.
-  The manifest is data; `marrow surface serve` is the local serving profile that
-  consumes it, and `marrow surface client typescript` is the generated-client
-  profile that renders a thin TypeScript operation-envelope client from it.
+  The manifest is data; `marrow serve` is the local serving profile that
+  consumes it, and `marrow client typescript` renders a thin TypeScript
+  operation-envelope client from it.
   Remote serving and opaque cursor tokens remain out of scope.
 
 Exits `0` when there are no errors, `1` when there are diagnostics or
@@ -185,10 +200,10 @@ $ echo $?
 
 ---
 
-## `marrow surface client typescript`
+## `marrow client typescript`
 
 ```
-marrow surface client typescript <projectdir>
+marrow client typescript <projectdir>
 ```
 
 Generate a self-contained TypeScript client for the checked application surface
@@ -216,10 +231,10 @@ that bypass the generated client.
 
 ---
 
-## `marrow surface serve`
+## `marrow serve`
 
 ```
-marrow surface serve [--write] [--cors-origin <loopback-origin>] [--addr <loopback:port>] <projectdir>
+marrow serve [--write] [--cors-origin <loopback-origin>] [--addr <loopback:port>] <projectdir>
 ```
 
 Run the local HTTP serving profile for checked application surfaces. By
@@ -237,8 +252,8 @@ create, freeze, migrate, repair, or auto-apply saved data.
   `http://[::1]:5173`. Non-loopback origins, URL paths, and wildcards are
   usage errors. Without this option, the server emits no CORS headers.
 - On startup the command prints
-  `surface serve listening on http://<addr>` to stdout, then handles requests
-  until the process exits.
+  `serve listening on http://<addr>` to stdout, then handles requests until the
+  process exits.
 - The active route set is derived from the same `surface.route.v1` manifest
   exported by `marrow check --format json|jsonl`. Default mode serves only
   `/surface/v1/read/<operation-tag>` rows, including computed reads; `--write`
@@ -274,7 +289,7 @@ create, freeze, migrate, repair, or auto-apply saved data.
   no source path, store path, or raw backend detail.
 
 This is a dependency-free local tooling profile, not remote hosting,
-authentication, generated clients, or opaque cursor tokens.
+authentication, or opaque cursor tokens.
 Exits `2` for usage errors such as non-loopback `--addr` or `--cors-origin`,
 `1` for project/session/listener failures, and otherwise runs until killed.
 

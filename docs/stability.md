@@ -84,12 +84,12 @@ point/singleton create/update/delete plus action DTOs execute over
 `ProjectSurfaceSession`, without exposing backing store handles. The successful
 check JSON output also includes `surface.route.v1` route-manifest rows derived
 from the exported descriptors; those rows name JSON `POST` operation-tag paths
-and render aliases, but they do not make aliases operation identity. `marrow
-surface serve` is the current serving profile: loopback-bound, JSON-only,
+and render aliases, but they do not make aliases operation identity. The current
+serving profile is `marrow serve`: loopback-bound, JSON-only,
 optional exact loopback CORS with `--cors-origin`, at most one processed request
 per connection, backed by `ProjectSurfaceReadSession` in default read-only mode,
 and backed by `ProjectSurfaceSession` for create/update/delete/action routes
-when `--write` is passed. `marrow surface client typescript` is the current
+when `--write` is passed. `marrow client typescript` is the current
 generated-client profile: it renders a self-contained TypeScript wrapper over
 the same ABI, route manifest, and operation envelope without opening the store.
 `marrow-run::ProjectSurfaceReadSession` is an unstable linked-Rust
@@ -109,7 +109,7 @@ contract. Computed reads always run with a zero-capability host, and
 host-effecting computed reads are rejected by the checker. The default project
 operation envelope helper also runs actions with a zero-capability host; callers
 that need action host capabilities use the explicit-host helper. The only
-shipped HTTP profile is `marrow surface serve` for loopback operation envelopes.
+shipped HTTP profile is `marrow serve` for loopback operation envelopes.
 Opaque cursor tokens and remote serving remain future profiles.
 Linked-Rust surface
 helpers, route manifest rows, and typed entry invocation remain implementation

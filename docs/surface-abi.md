@@ -110,14 +110,14 @@ The active surface foundation has these owners:
   computed reads with a zero-capability host because host-effecting computed
   reads are rejected by the checker. The default project operation helper runs
   actions with a zero-capability host; callers that need action host
-  capabilities use the explicit-host helper. `marrow surface serve` is the first
+  capabilities use the explicit-host helper. `marrow serve` is the first
   HTTP serving profile: a loopback-only, dependency-free local endpoint over
   descriptor-derived
   `/surface/v1/{read|create|update|delete|action}/<operation-tag>` routes and
   `surface.operation.v1` envelopes. Computed reads use the read route prefix. It
   defaults to read-only serving and exposes create/update/delete/action routes
   only with `--write`.
-  `marrow surface client typescript` is the first generated-client profile: a
+  `marrow client typescript` is the first generated-client profile: a
   self-contained TypeScript wrapper over the same route manifest and operation
   envelope. Opaque cursor tokens, remote binding, and authentication remain
   separate profiles. Serialized ABI export includes only callable
@@ -283,7 +283,7 @@ stable equality values.
 
 ## Serving Profile
 
-`marrow surface serve` maps the active route manifest and operation envelope to
+`marrow serve` maps the active route manifest and operation envelope to
 a local HTTP process:
 
 - serving routes are taken from `surface.route.v1`, not source names or ordinals;
@@ -319,7 +319,7 @@ remain future architecture decisions.
 
 ## TypeScript Client Profile
 
-`marrow surface client typescript` maps the active serialized ABI and
+`marrow client typescript` maps the active serialized ABI and
 `surface.route.v1` manifest to a self-contained TypeScript operation client. It
 validates route/ABI agreement before rendering and requires a bijection: every
 exported operation descriptor must have exactly one route row. It does not read
@@ -339,7 +339,7 @@ intentionally envelope-only: active profile version, echoed operation tag, and
 expected result kind. The client
 returns the server-owned JSON DTO payload; it does not build model classes,
 prove catalog IDs, re-decode response values against descriptors, or become an
-authority boundary. `marrow-json`, `marrow-run`, and `marrow surface serve`
+authority boundary. `marrow-json`, `marrow-run`, and `marrow serve`
 continue to validate every request from clients that bypass generated code.
 
 ## Generated Clients And LSP

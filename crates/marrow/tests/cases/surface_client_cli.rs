@@ -31,7 +31,7 @@ surface Books from ^books\n\
 \x20\x20\x20\x20action retitle\n";
 
 #[test]
-fn surface_client_typescript_prints_generated_client_without_opening_store() {
+fn client_typescript_prints_generated_client_without_opening_store() {
     let root = temp_project("surface-client-typescript", |root| {
         write(root, "marrow.json", support::native_config());
         write(root, "src/app.mw", CLIENT_SURFACE_SOURCE);
@@ -43,7 +43,6 @@ fn surface_client_typescript_prints_generated_client_without_opening_store() {
     std::fs::remove_file(&store_path).expect("remove store file");
 
     let output = marrow(&[
-        "surface",
         "client",
         "typescript",
         root.to_str().expect("project path utf8"),
@@ -68,14 +67,13 @@ fn surface_client_typescript_prints_generated_client_without_opening_store() {
 }
 
 #[test]
-fn surface_client_typescript_reports_project_diagnostics() {
+fn client_typescript_reports_project_diagnostics() {
     let root = temp_project_uncommitted("surface-client-typescript-bad-check", |root| {
         write(root, "marrow.json", support::native_config());
         write(root, "src/app.mw", "module app\npub fn broken(\n");
     });
 
     let output = marrow(&[
-        "surface",
         "client",
         "typescript",
         root.to_str().expect("project path utf8"),
@@ -91,8 +89,21 @@ fn surface_client_typescript_reports_project_diagnostics() {
 }
 
 #[test]
-fn surface_client_typescript_usage_failures_exit_two() {
-    let output = marrow(&["surface", "client", "typescript"]);
+fn client_help_advertises_top_level_command() {
+    let output = marrow(&["client", "--help"]);
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let stdout = String::from_utf8(output.stdout).expect("stdout utf8");
+    assert!(stdout.contains("marrow client typescript <projectdir>"));
+    assert!(
+        !stdout.contains("marrow surface"),
+        "client help should not advertise removed surface commands: {stdout}"
+    );
+}
+
+#[test]
+fn client_typescript_usage_failures_exit_two() {
+    let output = marrow(&["client", "typescript"]);
 
     assert_eq!(output.status.code(), Some(2), "{output:?}");
     assert!(output.stdout.is_empty(), "{output:?}");

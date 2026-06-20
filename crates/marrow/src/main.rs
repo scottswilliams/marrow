@@ -8,6 +8,7 @@ use serde_json::json;
 mod backup;
 mod cmd_backup;
 mod cmd_check;
+mod cmd_client;
 mod cmd_data;
 mod cmd_doctor;
 mod cmd_evolve;
@@ -15,7 +16,7 @@ mod cmd_fmt;
 mod cmd_init;
 mod cmd_restore;
 mod cmd_run;
-mod cmd_surface;
+mod cmd_serve;
 mod cmd_test;
 mod dry_run;
 mod trace;
@@ -33,8 +34,8 @@ Usage:
   marrow fmt [--check | --write] <file.mw | projectdir>
   marrow run [--entry <entry>] [--arg name=value]... [--maintenance] [--trace] [--dry-run] [--format text|json] <projectdir>
   marrow test [--trace] [--format text|json|jsonl] [--filter <substring>] <projectdir>
-  marrow surface client typescript <projectdir>
-  marrow surface serve [--write] [--cors-origin <loopback-origin>] [--addr <loopback:port>] <projectdir>
+  marrow serve [--write] [--cors-origin <loopback-origin>] [--addr <loopback:port>] <projectdir>
+  marrow client typescript <projectdir>
   marrow data <roots|stats|dump|integrity> [--backup <artifact>] [--format text|json|jsonl] <projectdir>
   marrow data recover [--format text|json|jsonl] <projectdir>
   marrow data get [--backup <artifact>] [--format text|json|jsonl] <projectdir> <path>
@@ -96,7 +97,8 @@ fn dispatch(command: &str, rest: &[String]) -> ExitCode {
         "fmt" => cmd_fmt::fmt(rest),
         "run" => cmd_run::run(rest),
         "test" => cmd_test::test(rest),
-        "surface" => cmd_surface::surface(rest),
+        "serve" => cmd_serve::serve(rest),
+        "client" => cmd_client::client(rest),
         "data" => cmd_data::data(rest),
         "backup" => cmd_backup::backup(rest),
         "restore" => cmd_restore::restore(rest),

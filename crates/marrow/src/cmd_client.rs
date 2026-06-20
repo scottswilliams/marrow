@@ -4,8 +4,8 @@ mod typescript;
 
 const HELP: &str = "\
 Usage:
-  marrow surface client typescript <projectdir>
-  marrow surface client --help
+  marrow client typescript <projectdir>
+  marrow client --help
 
 Generate descriptor-derived application-surface clients.
 ";
@@ -22,8 +22,8 @@ pub(crate) fn client(args: &[String]) -> ExitCode {
             ExitCode::SUCCESS
         }
         other => {
-            eprintln!("unknown surface client command: {other}");
-            eprintln!("run `marrow surface client --help` for available commands");
+            eprintln!("unknown client command: {other}");
+            eprintln!("run `marrow client --help` for available commands");
             ExitCode::from(2)
         }
     }

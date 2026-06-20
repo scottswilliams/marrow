@@ -30,8 +30,8 @@ fn an_unknown_subcommand_is_a_usage_failure() {
 }
 
 #[test]
-fn removed_server_commands_are_usage_failures() {
-    for command in ["serve", "lsp"] {
+fn removed_surface_and_lsp_commands_are_usage_failures() {
+    for command in ["surface", "lsp"] {
         let output = marrow(&[command]);
         assert_eq!(output.status.code(), Some(2), "{command}: {output:?}");
         assert!(
@@ -42,13 +42,13 @@ fn removed_server_commands_are_usage_failures() {
         let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
         assert!(
             stderr.contains("unknown command"),
-            "{command} should be removed from dispatch: {stderr}"
+            "{command} should stay removed from dispatch: {stderr}"
         );
     }
 }
 
 #[test]
-fn help_does_not_advertise_removed_server_commands() {
+fn help_does_not_advertise_removed_lsp_or_surface_alias_commands() {
     let output = marrow(&["--help"]);
 
     assert_eq!(output.status.code(), Some(0), "{output:?}");
@@ -58,9 +58,17 @@ fn help_does_not_advertise_removed_server_commands() {
         output.stderr
     );
     let stdout = String::from_utf8(output.stdout).expect("stdout utf8");
-    for command in ["serve", "lsp"] {
-        assert!(!stdout.contains(&format!("marrow {command}")), "{stdout}");
-    }
+    assert!(!stdout.contains("marrow lsp"), "{stdout}");
+    assert!(!stdout.contains("surface serve"), "{stdout}");
+    assert!(!stdout.contains("surface client"), "{stdout}");
+    assert!(
+        stdout.contains("marrow serve "),
+        "serve should be canonical top-level help: {stdout}"
+    );
+    assert!(
+        stdout.contains("marrow client typescript "),
+        "client generation should be canonical top-level help: {stdout}"
+    );
 }
 
 #[test]

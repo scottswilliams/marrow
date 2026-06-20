@@ -74,25 +74,31 @@ impl Drop for ServeProcess {
 }
 
 #[test]
-fn help_advertises_surface_serve_without_restoring_top_level_serve() {
+fn help_advertises_top_level_serve() {
     let output = marrow(&["--help"]);
 
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let stdout = String::from_utf8(output.stdout).expect("stdout utf8");
     assert!(
         stdout.contains(
-            "marrow surface serve [--write] [--cors-origin <loopback-origin>] [--addr <loopback:port>] <projectdir>"
+            "marrow serve [--write] [--cors-origin <loopback-origin>] [--addr <loopback:port>] <projectdir>"
         ),
         "{stdout}"
     );
     assert!(
-        !stdout.contains(&format!("marrow {} ", "serve")),
-        "top-level serve must stay removed: {stdout}"
+        !stdout.contains("surface serve"),
+        "root help should not advertise removed surface commands: {stdout}"
     );
 
-    let serve_help = marrow(&["surface", "serve", "--help"]);
+    let serve_help = marrow(&["serve", "--help"]);
     assert_eq!(serve_help.status.code(), Some(0), "{serve_help:?}");
     let serve_stdout = String::from_utf8(serve_help.stdout).expect("serve stdout utf8");
+    assert!(
+        serve_stdout.contains(
+            "marrow serve [--write] [--cors-origin <loopback-origin>] [--addr <loopback:port>] <projectdir>"
+        ),
+        "{serve_stdout}"
+    );
     assert!(serve_stdout.contains("--write"), "{serve_stdout}");
     assert!(serve_stdout.contains("--cors-origin"), "{serve_stdout}");
     assert!(
@@ -107,13 +113,7 @@ fn surface_serve_rejects_non_loopback_before_project_load() {
     write(&dir, "marrow.json", support::native_config());
     write(&dir, "src/app.mw", "module app\npub fn broken(\n");
 
-    let output = marrow(&[
-        "surface",
-        "serve",
-        "--addr",
-        "0.0.0.0:0",
-        dir.to_str().unwrap(),
-    ]);
+    let output = marrow(&["serve", "--addr", "0.0.0.0:0", dir.to_str().unwrap()]);
 
     assert_eq!(output.status.code(), Some(2), "{output:?}");
     assert!(
@@ -136,7 +136,6 @@ fn surface_serve_rejects_non_loopback_cors_origin_before_project_load() {
     write(&dir, "src/app.mw", "module app\npub fn broken(\n");
 
     let output = marrow(&[
-        "surface",
         "serve",
         "--cors-origin",
         "https://example.com",
@@ -1016,7 +1015,7 @@ fn spawn_surface_server(root: &Path) -> (ServeProcess, SocketAddr) {
 
 fn spawn_surface_server_with_args(root: &Path, extra_args: &[&str]) -> (ServeProcess, SocketAddr) {
     let project = root.to_str().expect("project path utf8");
-    let mut args = vec!["surface", "serve", "--addr", "127.0.0.1:0"];
+    let mut args = vec!["serve", "--addr", "127.0.0.1:0"];
     args.extend(extra_args.iter().copied());
     args.push(project);
     let mut child = Command::new(env!("CARGO_BIN_EXE_marrow"))
@@ -1039,7 +1038,7 @@ fn spawn_surface_server_with_args(root: &Path, extra_args: &[&str]) -> (ServePro
     }
     let addr_text = line
         .trim()
-        .strip_prefix("surface serve listening on http://")
+        .strip_prefix("serve listening on http://")
         .unwrap_or_else(|| panic!("unexpected listen line: {line:?}"));
     let addr = addr_text.parse().expect("listen address");
     (

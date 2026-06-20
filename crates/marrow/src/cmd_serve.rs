@@ -29,22 +29,6 @@ const MAX_HEADER_BYTES: usize = 16 * 1024;
 const MAX_BODY_BYTES: usize = 1024 * 1024;
 const STREAM_TIMEOUT: Duration = Duration::from_secs(15);
 
-const HELP: &str = "\
-Usage:
-  marrow surface serve [--write] [--cors-origin <loopback-origin>] [--addr <loopback:port>] <projectdir>
-
-Run a local HTTP surface endpoint. The server accepts one JSON POST per
-connection and closes the response on descriptor-derived
-/surface/v1/{read|create|update|delete|action}/<operation-tag> routes.
-
-  --write  Expose create/update/delete/action routes and open a writable surface session.
-           Defaults to read-only mode, serving read routes including computed reads.
-  --cors-origin
-           Allow one exact browser Origin such as http://localhost:5173.
-           No CORS headers are emitted unless this option is present.
-  --addr   Loopback socket address to bind. Defaults to 127.0.0.1:8080.
-";
-
 #[derive(Clone, Copy)]
 enum ServeMode {
     ReadOnly,
@@ -59,6 +43,23 @@ impl ServeMode {
         }
     }
 }
+
+const COMMAND: &str = "serve";
+const HELP: &str = "\
+Usage:
+  marrow serve [--write] [--cors-origin <loopback-origin>] [--addr <loopback:port>] <projectdir>
+
+Run a local HTTP surface endpoint. The server accepts one JSON POST per
+connection and closes the response on descriptor-derived
+/surface/v1/{read|create|update|delete|action}/<operation-tag> routes.
+
+  --write  Expose create/update/delete/action routes and open a writable surface session.
+           Defaults to read-only mode, serving read routes including computed reads.
+  --cors-origin
+           Allow one exact browser Origin such as http://localhost:5173.
+           No CORS headers are emitted unless this option is present.
+  --addr   Loopback socket address to bind. Defaults to 127.0.0.1:8080.
+";
 
 pub(crate) fn serve(args: &[String]) -> ExitCode {
     let mut addr = default_addr();
@@ -122,11 +123,11 @@ pub(crate) fn serve(args: &[String]) -> ExitCode {
                 return ExitCode::SUCCESS;
             }
             value if value.starts_with('-') => {
-                return crate::unknown_option("surface serve", value);
+                return crate::unknown_option(COMMAND, value);
             }
             value => {
                 if let Err(code) =
-                    crate::take_single_target(&mut dir, value, "surface serve", "project directory")
+                    crate::take_single_target(&mut dir, value, COMMAND, "project directory")
                 {
                     return code;
                 }
@@ -177,7 +178,7 @@ pub(crate) fn serve(args: &[String]) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    println!("surface serve listening on http://{bound_addr}");
+    println!("serve listening on http://{bound_addr}");
     if let Err(error) = std::io::stdout().flush() {
         report_simple_error(
             "io.write",
