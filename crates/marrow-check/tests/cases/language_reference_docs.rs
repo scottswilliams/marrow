@@ -44,10 +44,10 @@ fn documented_codes_in_family(family_heading: &str) -> std::collections::BTreeSe
             continue;
         }
         let trimmed = line.trim_start();
-        if let Some(rest) = trimmed.strip_prefix("| `") {
-            if let Some(code) = rest.split('`').next() {
-                codes.insert(code.to_string());
-            }
+        if let Some(rest) = trimmed.strip_prefix("| `")
+            && let Some(code) = rest.split('`').next()
+        {
+            codes.insert(code.to_string());
         }
     }
 
