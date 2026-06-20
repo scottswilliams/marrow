@@ -112,7 +112,7 @@ pub(crate) fn check_resolved_files(
                 | DiagnosticPayload::DuplicateNamedArgument(_)
                 | DiagnosticPayload::AppendTarget(_)
                 | DiagnosticPayload::ConversionUnsupportedSource(_)
-                | DiagnosticPayload::InterpolationUnsupportedSource { .. }
+                | DiagnosticPayload::RenderUnsupportedSource { .. }
                 | DiagnosticPayload::ReservedCatalogPathReuse { .. }
                 | DiagnosticPayload::CatalogIntent(_)
                 | DiagnosticPayload::SuggestedIndex { .. }

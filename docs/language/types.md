@@ -516,7 +516,7 @@ Any other statically known source type is rejected at check time
 | `bool(...)` | `bool`, `int` |
 | `int(...)` | `int`, `string`, `decimal` |
 | `decimal(...)` | `decimal`, `int`, `string` |
-| `string(...)` | `string`, `int`, `decimal`, `bool`, `bytes`, `date`, `instant`, `duration` |
+| `string(...)` | `string`, `int`, `decimal`, `bool`, `bytes`, `date`, `instant`, `duration`, an enum |
 | `bytes(...)` | `bytes`, `string` |
 | `ErrorCode(...)` | `string` |
 | `date(...)` | `date`, `string` |
@@ -525,8 +525,13 @@ Any other statically known source type is rejected at check time
 
 At run time the value must actually convert: `bool(...)` accepts only the
 canonical boolean values `false`, `true`, `0`, and `1`; `int(...)` accepts a
-decimal only when it is integral; `string(...)` of `bytes` requires valid
-UTF-8; numeric text and `date(...)` text must be canonical Marrow spelling.
+decimal only when it is integral; numeric text and `date(...)` text must be
+canonical Marrow spelling. Over its accepted sources `string(...)` is total,
+rendering each as `print` does: a temporal as its canonical text, `bytes` as
+`0x`-prefixed lowercase hex, and an enum as its `Enum::member` spelling.
+`string(...)` does not accept a saved identity (`Id(^...)`) — that is rejected at
+check; `print` and interpolation render an identity by its key directly. Decode
+bytes as UTF-8 text through `std::bytes::toText`, not `string(...)`.
 `instant(...)` and `duration(...)` accept standard RFC-3339/ISO-8601 spelling —
 including trailing-zero fractional seconds and explicit numeric instant offsets,
 which normalize to the canonical UTC value (see

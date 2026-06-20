@@ -1,7 +1,8 @@
 use crate::support;
 use crate::support_conversion;
 use marrow_check::{
-    AppendTargetDiagnostic, ConversionTarget, DiagnosticPayload, MarrowType, ScalarType,
+    AppendTargetDiagnostic, CheckDiagnostic, ConversionTarget, DiagnosticPayload, MarrowType,
+    ScalarType,
 };
 
 use support::{assert_clean, check_module, check_module_report, with_code};
@@ -226,6 +227,8 @@ fn bytes_conversion_accepts_string_bytes_and_unknown_sources() {
 
 #[test]
 fn conversion_calls_reject_known_unsupported_sources() {
+    // `string(enum)` is an accepted source (it renders the member name), so only the
+    // genuinely-unsupported conversions are rejected — `int(enum)` among them.
     let found = check_module(
         "conv-known-bad-sources",
         "module m\n\
@@ -234,11 +237,10 @@ fn conversion_calls_reject_known_unsupported_sources() {
          fn durationFromInt(): duration\n    return duration(1)\n\n\
          fn boolFromString(): bool\n    return bool(\"true\")\n\n\
          fn decimalFromBool(): decimal\n    return decimal(true)\n\n\
-         fn enumToInt(): int\n    return int(Color::green)\n\n\
-         fn enumToString(): string\n    return string(Color::green)\n",
+         fn enumToInt(): int\n    return int(Color::green)\n",
         "check.call_argument",
     );
-    assert_eq!(found.len(), 6, "{found:#?}");
+    assert_eq!(found.len(), 5, "{found:#?}");
     let color = MarrowType::Enum {
         module: "m".into(),
         name: "Color".into(),
@@ -265,8 +267,7 @@ fn conversion_calls_reject_known_unsupported_sources() {
                 ConversionTarget::Decimal,
                 MarrowType::Primitive(ScalarType::Bool)
             ),
-            conversion_source_payload(ConversionTarget::Int, color.clone()),
-            conversion_source_payload(ConversionTarget::Str, color),
+            conversion_source_payload(ConversionTarget::Int, color),
         ],
         "{found:#?}"
     );
@@ -313,29 +314,21 @@ fn conversion_calls_reject_named_arguments() {
 }
 
 #[test]
-fn interpolation_rejects_enum_values() {
-    let found = check_module(
+fn interpolation_renders_enum_values() {
+    // An enum renders directly in interpolation as its `Enum::member` spelling.
+    let report = check_module_report(
         "interp-enum",
         "module m\n\
          enum Color\n    red\n    green\n\n\
          fn f(c: Color): string\n    return $\"c={c}\"\n",
-        "check.operator_type",
     );
-    assert_eq!(found.len(), 1, "{found:#?}");
-    assert_eq!(
-        found[0].payload,
-        DiagnosticPayload::InterpolationUnsupportedSource {
-            source: MarrowType::Enum {
-                module: "m".into(),
-                name: "Color".into(),
-            },
-        }
-    );
+    assert_clean(&report);
 }
 
 #[test]
-fn interpolation_rejects_temporal_values() {
-    let found = check_module(
+fn interpolation_renders_temporal_values() {
+    // Dates, instants, and durations render directly as their canonical text.
+    let report = check_module_report(
         "interp-temporals",
         "module m\n\
          fn f(): string\n\
@@ -343,33 +336,19 @@ fn interpolation_rejects_temporal_values() {
          \x20   const i = std::clock::parseInstant(\"2026-01-01T00:00:00Z\")\n\
          \x20   const span = 1.hour\n\
          \x20   return $\"{d} {i} {span}\"\n",
-        "check.operator_type",
     );
-    assert_eq!(found.len(), 3, "{found:#?}");
-    for source in [
-        MarrowType::Primitive(ScalarType::Date),
-        MarrowType::Primitive(ScalarType::Instant),
-        MarrowType::Primitive(ScalarType::Duration),
-    ] {
-        assert!(
-            found.iter().any(|diagnostic| diagnostic.payload
-                == DiagnosticPayload::InterpolationUnsupportedSource {
-                    source: source.clone(),
-                }),
-            "{source:?}: {found:#?}"
-        );
-    }
+    assert_clean(&report);
 }
 
 #[test]
-fn print_allows_runtime_rendering_to_decide_value_support() {
+fn print_renders_temporals_bytes_and_enums_at_check() {
+    // `print` renders the same value set interpolation does: temporals, bytes, and
+    // enums are accepted at check, leaving the runtime to produce the text.
     let report = check_module_report(
-        "output-runtime-rendered",
+        "output-renderable",
         "module m\n\
          enum Color\n    red\n    green\n\n\
-         resource Book\n    required title: string\n\
-         store ^books(id: int): Book\n\n\
-         fn f(c: Color, items: sequence[string], book: Book)\n\
+         fn f(c: Color)\n\
          \x20   const d = std::clock::parseDate(\"2026-01-01\")\n\
          \x20   const i = std::clock::parseInstant(\"2026-01-01T00:00:00Z\")\n\
          \x20   const span = 1.hour\n\
@@ -378,11 +357,64 @@ fn print_allows_runtime_rendering_to_decide_value_support() {
          \x20   print(i)\n\
          \x20   print(span)\n\
          \x20   print(b)\n\
-         \x20   print(c)\n\
-         \x20   print(items)\n\
-         \x20   print(book)\n",
+         \x20   print(c)\n",
     );
     assert_clean(&report);
+}
+
+#[test]
+fn print_rejects_non_renderable_values_at_check() {
+    // The genuinely non-renderable shapes — sequences, local trees, and resources —
+    // are a check error at the `print` argument, the same rejection interpolation
+    // makes, so a `run.unsupported` never surfaces at runtime.
+    let found = check_module(
+        "output-non-renderable",
+        "module m\n\
+         resource Book\n    required title: string\n\
+         store ^books(id: int): Book\n\n\
+         fn f(items: sequence[string], book: Book)\n\
+         \x20   print(items)\n\
+         \x20   print(book)\n",
+        "check.operator_type",
+    );
+    assert_eq!(found.len(), 2, "{found:#?}");
+    for source in [
+        MarrowType::Sequence(Box::new(MarrowType::Primitive(ScalarType::Str))),
+        MarrowType::Resource("m::Book".into()),
+    ] {
+        assert!(
+            found.iter().any(|diagnostic| diagnostic.payload
+                == DiagnosticPayload::RenderUnsupportedSource {
+                    source: source.clone(),
+                }),
+            "{source:?}: {found:#?}"
+        );
+    }
+}
+
+#[test]
+fn print_and_interpolation_reject_the_same_non_renderable_set() {
+    // Static parity: every value type interpolation rejects, `print` also rejects,
+    // and vice versa. The two render surfaces accept and reject in lockstep.
+    let non_renderable = "module m\n\
+         resource Book\n    required title: string\n\
+         store ^books(id: int): Book\n\n\
+         fn viaPrint(items: sequence[string], book: Book)\n\
+         \x20   print(items)\n\
+         \x20   print(book)\n\
+         fn viaInterp(items: sequence[string], book: Book): string\n\
+         \x20   return $\"{items}{book}\"\n";
+    let found = check_module("render-parity", non_renderable, "check.operator_type");
+    // Two rejections from each surface over the same two source types, in source order.
+    assert_eq!(found.len(), 4, "{found:#?}");
+    let render_source = |diagnostic: &CheckDiagnostic| match &diagnostic.payload {
+        DiagnosticPayload::RenderUnsupportedSource { source } => source.clone(),
+        other => panic!("unexpected payload: {other:#?}"),
+    };
+    let (print_diagnostics, interp_diagnostics) = found.split_at(2);
+    let print_sources: Vec<MarrowType> = print_diagnostics.iter().map(render_source).collect();
+    let interp_sources: Vec<MarrowType> = interp_diagnostics.iter().map(render_source).collect();
+    assert_eq!(print_sources, interp_sources, "{found:#?}");
 }
 
 #[test]

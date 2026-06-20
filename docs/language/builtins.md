@@ -193,14 +193,16 @@ newline to the default output stream:
 print($"saved {id}")
 ```
 
-It renders `string`, `int`, `bool`, `decimal`, and saved identity values at
-runtime. A single-key identity renders as its key, and a composite identity
-renders as `identity(k1, k2)`. Other values, including `instant`, `date`,
-`duration`, `bytes`, enums, sequences, local trees, and resources raise
-`run.unsupported`; format temporal values explicitly with
-`std::clock::formatInstant`, `std::clock::formatDate`, or
-`std::clock::formatDuration`. `print` produces no value. Complex IO belongs in
-`std::io`.
+It renders every scalar, every enum, and a saved identity. Scalars render in
+their canonical form: an `instant`, `date`, or `duration` as its canonical text,
+and `bytes` as `0x`-prefixed lowercase hex (matching `data dump`). An enum
+renders as its `Enum::member` source spelling. A single-key identity renders as
+its key, and a composite identity renders as `identity(k1, k2)`.
+
+`print` and string interpolation render the same set and reject the same set: a
+sequence, local tree, or resource has no direct text form and is a check error at
+the `print` argument when its type is statically known. `print` produces no value. Complex
+IO belongs in `std::io`.
 
 ## Delete
 
@@ -238,6 +240,12 @@ lists the matrix.
 Date, instant, and duration conversions validate canonical Marrow values. Use
 `std::clock` helpers for parsing or formatting text at user and host
 boundaries.
+
+`string(...)` renders any scalar plus an enum, each as the text `print` does: a
+temporal as its canonical text, `bytes` as `0x`-prefixed lowercase hex, and an
+enum as its `Enum::member` spelling. It does not accept a saved identity, which
+`print` renders directly. UTF-8 decoding of bytes is the separate
+`std::bytes::toText` path; `string(bytes)` never depends on valid UTF-8.
 
 ## IDs
 

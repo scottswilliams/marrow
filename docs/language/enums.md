@@ -47,6 +47,10 @@ level a `state: Status` field reads back as its member: a read of `state` is a
 `Status` value, equal to `Status::archived` again. Raw inspection works on the
 stored bytes, so `marrow data get` shows the stored member identity.
 
+`string(Status::archived)`, `print(Status::archived)`, and interpolation all
+render an enum as its `Enum::member` source spelling — `Status::archived` —
+dropping the module prefix.
+
 Because the stored value is a member identity rather than a position, removing a
 selectable member — or marking it `category`, or giving it children, all of which
 make it no longer selectable — is checked against saved data, not assumed safe.

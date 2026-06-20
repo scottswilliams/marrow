@@ -842,6 +842,86 @@ fn short_form_std_call_runs() {
 }
 
 #[test]
+fn print_renders_temporals_and_bytes_directly() {
+    // `print` renders temporals as their canonical text and bytes as `0x`-prefixed
+    // lowercase hex (dump parity), no explicit conversion required.
+    let program = checked_program(
+        "pub fn showDate(t: string)\n    print(std::clock::parseDate(t))\n\
+         pub fn showInstant(t: string)\n    print(std::clock::parseInstant(t))\n\
+         pub fn showDuration()\n    print(1.hour)\n\
+         pub fn showBytes(b: bytes)\n    print(b)\n",
+    );
+    assert_eq!(
+        run_full(checked_entry!(
+            &program,
+            "test::showDate",
+            Value::Str("2024-02-29".into())
+        ))
+        .expect("date")
+        .output,
+        "2024-02-29\n"
+    );
+    assert_eq!(
+        run_full(checked_entry!(
+            &program,
+            "test::showInstant",
+            Value::Str("2026-05-28T12:00:00Z".into())
+        ))
+        .expect("instant")
+        .output,
+        "2026-05-28T12:00:00Z\n"
+    );
+    assert_eq!(
+        run_full(checked_entry!(&program, "test::showDuration"))
+            .expect("duration")
+            .output,
+        "PT3600S\n"
+    );
+    assert_eq!(
+        run_full(checked_entry!(
+            &program,
+            "test::showBytes",
+            Value::Bytes(vec![0x73, 0x6e, 0x6f, 0xff])
+        ))
+        .expect("bytes")
+        .output,
+        "0x736e6fff\n"
+    );
+}
+
+#[test]
+fn string_of_bytes_yields_prefixed_lowercase_hex() {
+    // `string(bytes)` renders the bytes as `0x`-prefixed lowercase hex, matching the
+    // print/interpolation display and `data dump`. UTF-8 decoding lives in
+    // `std::bytes::toText`; this conversion never depends on valid UTF-8.
+    let program = checked_program("pub fn hex(b: bytes): string\n    return string(b)\n");
+    assert_eq!(
+        run(checked_entry!(
+            &program,
+            "test::hex",
+            Value::Bytes(vec![0x73, 0x6e, 0x6f, 0x77])
+        )),
+        Ok(Some(Value::Str("0x736e6f77".into())))
+    );
+    assert_eq!(
+        run(checked_entry!(
+            &program,
+            "test::hex",
+            Value::Bytes(vec![0xff, 0x00])
+        )),
+        Ok(Some(Value::Str("0xff00".into())))
+    );
+    assert_eq!(
+        run(checked_entry!(
+            &program,
+            "test::hex",
+            Value::Bytes(Vec::new())
+        )),
+        Ok(Some(Value::Str("0x".into())))
+    );
+}
+
+#[test]
 fn scalar_conversions_validate_a_dynamic_value() {
     // A conversion builtin asserts a dynamically-typed value is the target type
     // and returns it (the `unknown` → concrete bridge).
@@ -1036,7 +1116,7 @@ fn conversion_builtins_accept_documented_sources() {
         (
             "stringFromBytes",
             Value::Bytes("snow".as_bytes().to_vec()),
-            Value::Str("snow".into()),
+            Value::Str("0x736e6f77".into()),
         ),
         (
             "bytesFromBytes",
@@ -1076,7 +1156,6 @@ fn conversion_builtins_accept_documented_sources() {
 fn documented_conversions_reject_invalid_dynamic_values() {
     let program = checked_program(
         "pub fn intFromDecimal(v: decimal): int\n    return int(v)\n\
-         pub fn stringFromBytes(v: bytes): string\n    return string(v)\n\
          pub fn dateFromText(v: string): date\n    return date(v)\n\
          fn unknownInt(): unknown\n    return 9\n\
          pub fn bytesFromUnknown(): bytes\n    return bytes(unknownInt())\n",
@@ -1086,7 +1165,6 @@ fn documented_conversions_reject_invalid_dynamic_values() {
             "intFromDecimal",
             Value::Decimal(Decimal::parse("1.5").expect("decimal")),
         ),
-        ("stringFromBytes", Value::Bytes(vec![0xff])),
         ("dateFromText", Value::Str("2021-02-29".into())),
     ];
     for (entry, input) in cases {
@@ -1108,13 +1186,13 @@ fn documented_conversions_reject_invalid_dynamic_values() {
 #[test]
 fn documented_conversion_failures_are_catchable_type_errors() {
     let program = checked_program(
-        "pub fn code(v: bytes): string\n    try\n        return string(v)\n    catch err: Error\n        return err.code\n",
+        "pub fn code(v: string): string\n    try\n        var n: int = int(v)\n    catch err: Error\n        return err.code\n    return \"none\"\n",
     );
     assert_eq!(
         run(checked_entry!(
             &program,
             "test::code",
-            Value::Bytes(vec![0xff])
+            Value::Str("not a number".into())
         )),
         Ok(Some(Value::Str(RUN_TYPE.into())))
     );
@@ -1194,16 +1272,22 @@ fn a_conversion_error_message_includes_the_rejected_string() {
 
 #[test]
 fn conversion_error_message_includes_a_bounded_bytes_preview() {
-    let program = checked_program("pub fn s(v: bytes): string\n    return string(v)\n");
+    // A bytes value reaching a conversion that rejects it (here `int`, via an
+    // `unknown` source) renders as a bounded `bytes[len]` preview, never its raw
+    // contents.
+    let program = checked_program(
+        "fn raw(v: bytes): unknown\n    return v\n\
+         pub fn n(v: bytes): int\n    return int(raw(v))\n",
+    );
     assert_eq!(
         run(checked_entry!(
             &program,
-            "test::s",
+            "test::n",
             Value::Bytes(vec![0xff])
         ))
         .unwrap_err()
         .message,
-        "cannot convert value bytes[1] to string"
+        "cannot convert value bytes[1] to int"
     );
 }
 

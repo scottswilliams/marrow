@@ -59,6 +59,20 @@ fn the_string_and_error_code_conversions_have_distinct_source_sets() {
 }
 
 #[test]
+fn the_string_conversion_accepts_an_enum_source() {
+    // `string(enum)` renders the member name, so an enum is an accepted source
+    // alongside the scalars.
+    let clean = check_module(
+        "convert-string-from-enum",
+        "module m\n\
+         enum Color\n    red\n    green\n\n\
+         fn caller(c: Color): string\n    return string(c)\n",
+        "check.call_argument",
+    );
+    assert!(clean.is_empty(), "{clean:#?}");
+}
+
+#[test]
 fn a_builtin_call_is_not_arity_checked_and_an_unknown_call_is_not_a_mismatch() {
     // `print` is a builtin (dispatched before user functions) and `mystery` does
     // not resolve to a declared function; neither is an arity/argument mismatch.

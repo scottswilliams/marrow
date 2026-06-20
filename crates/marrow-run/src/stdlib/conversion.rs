@@ -7,7 +7,7 @@ use crate::env::Env;
 use crate::error::{RuntimeError, conversion_error, decimal_overflow, type_error};
 use crate::expr::eval_expr;
 use crate::stdlib::{parse_iso8601_duration_nanos, parse_rfc3339_instant_nanos};
-use crate::value::{Value, canonical_scalar_text, diagnostic_value_preview, saved_value_to_value};
+use crate::value::{Value, diagnostic_value_preview, render, saved_value_to_value};
 
 /// The conversion a checked call resolves to: a scalar target or the `ErrorCode`
 /// spelling, whose storage envelope is a string. The checker already settled
@@ -110,25 +110,17 @@ fn convert_to_decimal(value: Value, span: SourceSpan) -> Result<Value, RuntimeEr
 }
 
 fn convert_to_string(value: Value, span: SourceSpan) -> Result<Value, RuntimeError> {
-    let text = match &value {
-        Value::Str(text) => text.clone(),
-        Value::Int(n) => n.to_string(),
-        Value::Bool(b) => b.to_string(),
-        Value::Decimal(decimal) => decimal.to_text(),
-        Value::Bytes(bytes) => match std::str::from_utf8(bytes) {
-            Ok(text) => text.to_string(),
-            Err(_) => return Err(conversion_error_for_value(&value, "string", span)),
-        },
-        Value::Date(days) => canonical_scalar_text(SavedValue::Date(*days), span)?,
-        Value::Instant(nanos) => canonical_scalar_text(SavedValue::Instant(*nanos), span)?,
-        Value::Duration(nanos) => canonical_scalar_text(SavedValue::Duration(*nanos), span)?,
-        Value::Sequence(_)
-        | Value::LocalTree(_)
-        | Value::Resource(_)
-        | Value::Identity(_)
-        | Value::Enum(_) => return Err(conversion_error_for_value(&value, "string", span)),
-    };
-    Ok(Value::Str(text))
+    // `string(...)` admits every scalar and an enum and renders them through the one
+    // canonical renderer that `print` and interpolation use, so the surfaces never
+    // disagree on text. It narrows out the shapes the conversion matrix excludes —
+    // saved identity and the non-renderable collection/resource shapes — as a
+    // catchable conversion fault rather than the renderer's internal-invariant error.
+    match &value {
+        Value::Sequence(_) | Value::LocalTree(_) | Value::Resource(_) | Value::Identity(_) => {
+            Err(conversion_error_for_value(&value, "string", span))
+        }
+        _ => Ok(Value::Str(render(value, span)?)),
+    }
 }
 
 /// Validate a value coerced into an `ErrorCode` place, returning it unchanged when

@@ -240,7 +240,7 @@ pub(crate) fn infer_type_with_read_scope(
                             transform_old,
                         );
                         if type_renderable_at_runtime(&ty) == Some(false) {
-                            diagnostics.push(interpolation_unsupported_source_diagnostic(
+                            diagnostics.push(render_unsupported_source_diagnostic(
                                 file,
                                 expr.span(),
                                 ty,
@@ -431,6 +431,7 @@ pub(crate) fn infer_type_with_read_scope(
                     transform_old,
                 }));
             }
+            check_print_argument_renderable(callee, args, &arg_types, file, diagnostics);
             if let Some(ty) = local_collection_access_type(
                 callee,
                 args,
@@ -749,17 +750,49 @@ fn infer_saved_key_range_arg_type(
     })
 }
 
-fn interpolation_unsupported_source_diagnostic(
+/// Reject a `print` argument whose type has no direct text form, the same set
+/// string interpolation rejects, so a non-renderable value faults at check rather
+/// than at runtime. Only a single positional argument is examined; arity and other
+/// builtins are handled on the call path.
+fn check_print_argument_renderable(
+    callee: &marrow_syntax::Expression,
+    args: &[marrow_syntax::Argument],
+    arg_types: &[MarrowType],
+    file: &Path,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    let marrow_syntax::Expression::Name { segments, .. } = callee else {
+        return;
+    };
+    if segments.as_slice() != ["print"] {
+        return;
+    }
+    let ([arg], [ty]) = (args, arg_types) else {
+        return;
+    };
+    if type_renderable_at_runtime(ty) == Some(false) {
+        diagnostics.push(render_unsupported_source_diagnostic(
+            file,
+            arg.value.span(),
+            ty.clone(),
+        ));
+    }
+}
+
+/// The rejection both render surfaces — `print` and string interpolation — raise
+/// for a value type that has no direct text form. The two surfaces accept and
+/// reject the same set, so they share one diagnostic.
+fn render_unsupported_source_diagnostic(
     file: &Path,
     span: SourceSpan,
     source: MarrowType,
 ) -> CheckDiagnostic {
     let message = format!(
-        "interpolation cannot render `{}`; convert it explicitly",
+        "cannot render `{}`; convert it explicitly",
         marrow_type_name(&source)
     );
     CheckDiagnostic::error(CHECK_OPERATOR_TYPE, file, span, message)
-        .with_payload(DiagnosticPayload::InterpolationUnsupportedSource { source })
+        .with_payload(DiagnosticPayload::RenderUnsupportedSource { source })
 }
 
 /// Reject a string literal whose escape decoding fails — an escape outside the

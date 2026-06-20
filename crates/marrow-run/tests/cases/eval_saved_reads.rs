@@ -5,7 +5,7 @@ use crate::support;
 use support::*;
 
 use marrow_check::CheckedRuntimeProgram;
-use marrow_run::{RUN_ABSENT, RUN_TYPE, RUN_UNSUPPORTED, Value};
+use marrow_run::{RUN_ABSENT, RUN_TYPE, Value};
 use marrow_store::key::SavedKey;
 use marrow_store::tree::TreeStore;
 use marrow_store::value::SavedValue;
@@ -25,15 +25,6 @@ fn output_accumulates_across_calls() {
     );
     let outcome = run_full(checked_entry!(&program, "test::main")).expect("run");
     assert_eq!(outcome.output, "hi a\nhi b\n");
-}
-
-#[test]
-fn print_faults_at_runtime_for_values_without_text_rendering() {
-    let program = checked_program(
-        "pub fn main()\n    print(std::clock::parseInstant(\"2026-05-28T12:00:00Z\"))\n",
-    );
-    let result = run_full(checked_entry!(&program, "test::main"));
-    assert_run_error(result, RUN_UNSUPPORTED);
 }
 
 #[test]

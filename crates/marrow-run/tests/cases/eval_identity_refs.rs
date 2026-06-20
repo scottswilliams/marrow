@@ -330,3 +330,44 @@ fn a_whole_resource_write_with_an_identity_field_round_trips() {
         Some(Value::Bool(true))
     );
 }
+
+const DOC_STORE: &str = "resource Doc\n\
+     \x20   title: string\nstore ^docs(id: int): Doc\n\n";
+
+#[test]
+fn print_and_interpolation_render_a_saved_identity_by_its_key() {
+    // `print`/interpolation render an identity directly as its key. `string(...)`
+    // narrows identity out (see the rejection test), so the surfaces diverge by
+    // design: only the render surfaces accept identity.
+    let program = checked_program(&format!(
+        "{DOC_STORE}\
+         pub fn show()\n\
+         \x20   const id = nextId(^docs)\n\
+         \x20   ^docs(id).title = \"T\"\n\
+         \x20   print(id)\n\
+         \x20   print($\"doc {{id}}\")\n",
+    ));
+    let store = TreeStore::memory();
+    assert_eq!(
+        run_entry(&store, checked_entry!(&program, "test::show"))
+            .expect("print identity")
+            .output,
+        "1\ndoc 1\n"
+    );
+}
+
+#[test]
+fn string_of_a_saved_identity_is_rejected_at_check() {
+    // `string(...)` does not accept a saved identity; the conversion matrix narrows
+    // it out at check, even though `print` renders one. The matrix, not the renderer,
+    // owns which shapes `string(...)` admits.
+    checker_rejects(
+        &format!(
+            "{DOC_STORE}\
+             pub fn label(): string\n\
+             \x20   const id = nextId(^docs)\n\
+             \x20   return string(id)\n"
+        ),
+        "check.call_argument",
+    );
+}

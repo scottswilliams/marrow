@@ -82,6 +82,47 @@ fn an_entry_enum_argument_uses_checked_catalog_identity() {
 }
 
 #[test]
+fn string_of_an_enum_yields_its_short_qualified_member_name() {
+    // `string(enum)` renders the `Enum::member` form as declared, dropping the
+    // module prefix so the text reads as the value's source spelling.
+    let program = checked_program(
+        "enum Status\n    active\n    archived\n\n\
+         pub fn label(): string\n    return string(Status::active)\n",
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::label")),
+        Ok(Some(Value::Str("Status::active".into())))
+    );
+}
+
+#[test]
+fn print_renders_an_enum_directly_as_its_member_name() {
+    // `print(enum)` renders the value rather than faulting; no explicit `string()`.
+    let program = checked_program(
+        "enum Status\n    active\n    archived\n\n\
+         pub fn show()\n    print(Status::archived)\n",
+    );
+    assert_eq!(
+        run_full(checked_entry!(&program, "test::show"))
+            .expect("print enum")
+            .output,
+        "Status::archived\n"
+    );
+}
+
+#[test]
+fn interpolation_renders_an_enum_directly_as_its_member_name() {
+    let program = checked_program(
+        "enum Status\n    active\n    archived\n\n\
+         pub fn label(): string\n    return $\"state={Status::active}\"\n",
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::label")),
+        Ok(Some(Value::Str("state=Status::active".into())))
+    );
+}
+
+#[test]
 fn an_enum_index_uses_catalog_member_keys() {
     let program = checked_program(
         "enum Status\n    active\n    archived\n    banned\n\n\

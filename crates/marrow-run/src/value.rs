@@ -99,7 +99,11 @@ pub struct EnumValue {
     pub(crate) member_id: EnumMemberId,
     pub(crate) enum_catalog_id: String,
     pub(crate) member_catalog_id: String,
+    /// The full `module::Enum::member` catalog path, used where a value names its
+    /// stored identity (debugger preview, index-conflict diagnostic with dump parity).
     display_name: String,
+    /// The `Enum::member` source spelling a `print`/`string` rendering produces.
+    render_name: String,
 }
 
 impl EnumValue {
@@ -121,6 +125,12 @@ impl EnumValue {
 
     pub fn render_label(&self) -> &str {
         &self.display_name
+    }
+
+    /// The `Enum::member` text this value renders as through `print`, interpolation,
+    /// and `string(...)`.
+    pub fn render_name(&self) -> &str {
+        &self.render_name
     }
 }
 
@@ -705,6 +715,7 @@ pub(crate) fn enum_value_from_member(
         enum_catalog_id: enum_fact.catalog_id.clone()?,
         member_catalog_id: member.catalog_id.clone()?,
         display_name: facts.enum_member_catalog_path(member_id)?,
+        render_name: facts.enum_member_short_path(member_id)?,
     })
 }
 
@@ -727,9 +738,14 @@ pub(crate) fn saved_value_to_value(value: SavedValue) -> Value {
     }
 }
 
-/// Render a scalar value as text: integers in decimal, booleans as
-/// `true`/`false`, strings as themselves. Resource values have no text form, and
-/// an instant is rendered through `std::clock::formatInstant`, not directly.
+/// The one renderer for `print`, interpolation, and `string(...)`: scalars in their
+/// canonical form, an enum as its `Enum::member` source spelling, bytes as
+/// `0x`-prefixed lowercase hex, and a saved identity by its key(s). `print` and
+/// interpolation render every shape reaching here; `string(...)` narrows the saved
+/// identity out before calling, so its acceptance is decided by the conversion
+/// matrix, not by this function. The non-renderable shapes — sequences, local trees,
+/// and resources — are rejected at check for a statically-typed argument, so they
+/// reach here only through an `unknown`-typed value, which faults at run.
 pub(crate) fn render(value: Value, span: SourceSpan) -> Result<String, RuntimeError> {
     match value {
         Value::Int(n) => Ok(n.to_string()),
@@ -737,15 +753,22 @@ pub(crate) fn render(value: Value, span: SourceSpan) -> Result<String, RuntimeEr
         Value::Str(s) => Ok(s),
         Value::Decimal(d) => Ok(d.to_text()),
         Value::Identity(identity) => Ok(render_identity(&identity)),
-        Value::Bytes(_) => Err(unsupported("rendering a bytes value", span)),
+        Value::Bytes(bytes) => Ok(render_bytes_hex(&bytes)),
+        Value::Enum(value) => Ok(value.render_name),
+        Value::Instant(nanos) => canonical_scalar_text(SavedValue::Instant(nanos), span),
+        Value::Date(days) => canonical_scalar_text(SavedValue::Date(days), span),
+        Value::Duration(nanos) => canonical_scalar_text(SavedValue::Duration(nanos), span),
         Value::Sequence(_) => Err(unsupported("rendering a sequence value", span)),
         Value::LocalTree(_) => Err(unsupported("rendering a local tree value", span)),
-        Value::Instant(_) => Err(unsupported("rendering an instant value", span)),
-        Value::Date(_) => Err(unsupported("rendering a date value", span)),
-        Value::Duration(_) => Err(unsupported("rendering a duration value", span)),
         Value::Resource(_) => Err(unsupported("rendering a resource value", span)),
-        Value::Enum(_) => Err(unsupported("rendering an enum value", span)),
     }
+}
+
+/// The `0x`-prefixed lowercase hex a bytes value renders as, matching `data dump`.
+pub(crate) fn render_bytes_hex(bytes: &[u8]) -> String {
+    let mut text = String::from("0x");
+    text.push_str(&crate::hex::encode(bytes));
+    text
 }
 
 fn render_identity(identity: &IdentityValue) -> String {

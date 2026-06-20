@@ -343,6 +343,12 @@ impl ConversionTarget {
         }
     }
 
+    /// Whether this conversion accepts an enum source. Only `string` does: it
+    /// renders the member's `Enum::member` spelling.
+    pub(crate) fn accepts_enum(self) -> bool {
+        matches!(self, Self::Str)
+    }
+
     /// The source types this conversion accepts statically, plus unknown.
     pub fn accepted_source_types(self) -> Vec<MarrowType> {
         self.accepted_sources()
@@ -359,6 +365,9 @@ impl ConversionTarget {
             .iter()
             .map(|scalar| format!("`{}`", scalar.name()))
             .collect();
+        if self.accepts_enum() {
+            parts.push("an enum".to_string());
+        }
         parts.push("`unknown`".to_string());
         join_or_list(&parts)
     }
@@ -367,8 +376,8 @@ impl ConversionTarget {
         match source {
             MarrowType::Unknown | MarrowType::Invalid => true,
             MarrowType::Primitive(scalar) => self.accepted_sources().contains(scalar),
-            MarrowType::Enum { .. }
-            | MarrowType::Error
+            MarrowType::Enum { .. } => self.accepts_enum(),
+            MarrowType::Error
             | MarrowType::GroupEntry { .. }
             | MarrowType::Identity(_)
             | MarrowType::LocalTree { .. }
@@ -654,8 +663,9 @@ pub enum DiagnosticPayload {
     AppendTarget(AppendTargetDiagnostic),
     /// `check.call_argument`: a conversion call rejects the known source type.
     ConversionUnsupportedSource(ConversionUnsupportedSourceDiagnostic),
-    /// `check.operator_type`: interpolation rejects a known source type.
-    InterpolationUnsupportedSource { source: MarrowType },
+    /// `check.operator_type`: a render surface (print/interpolation) rejects a
+    /// known source type.
+    RenderUnsupportedSource { source: MarrowType },
     /// `check.catalog_intent`: a source declaration reused a reserved catalog path.
     ReservedCatalogPathReuse {
         source_kind: CatalogEntryKind,

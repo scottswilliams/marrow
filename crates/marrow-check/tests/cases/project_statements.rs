@@ -1,5 +1,5 @@
 use crate::support;
-use marrow_check::{DiagnosticPayload, MarrowType, ScalarType, check_project};
+use marrow_check::{DiagnosticPayload, check_project};
 use marrow_project::parse_config;
 
 use support::{
@@ -218,19 +218,14 @@ fn rejects_an_operator_on_wrongly_typed_operands() {
 }
 
 #[test]
-fn bytes_interpolation_is_a_check_error() {
-    let found = check_module(
+fn bytes_interpolation_renders_as_hex() {
+    // A `bytes` value renders directly in interpolation as `0x`-prefixed hex, so it
+    // is an accepted render source rather than a check error.
+    let report = check_module_report(
         "interp-bytes",
         "module m\nfn f(): string\n    const b: bytes = b\"hi\"\n    return $\"<{b}>\"\n",
-        "check.operator_type",
     );
-    assert_eq!(found.len(), 1, "{found:#?}");
-    assert_eq!(
-        found[0].payload,
-        DiagnosticPayload::InterpolationUnsupportedSource {
-            source: MarrowType::Primitive(ScalarType::Bytes),
-        }
-    );
+    assert_clean(&report);
 }
 
 #[test]

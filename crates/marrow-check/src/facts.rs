@@ -249,6 +249,15 @@ impl CheckedFacts {
         ))
     }
 
+    /// The `Enum::member` form a member renders as, dropping the module prefix so
+    /// the text reads as the value's source spelling rather than its catalog path.
+    pub fn enum_member_short_path(&self, id: EnumMemberId) -> Option<String> {
+        let member = self.enum_member(id)?;
+        let enum_fact = self.enum_(member.enum_id)?;
+        let path = member_name_path(&self.enum_members, id.0 as usize)?;
+        Some(format!("{}::{}", enum_fact.name, path.join("::")))
+    }
+
     pub fn resource_member_catalog_path(&self, id: ResourceMemberId) -> Option<String> {
         let member = self.resource_members.get(id.0 as usize)?;
         let resource = self.resources.get(member.resource.0 as usize)?;
