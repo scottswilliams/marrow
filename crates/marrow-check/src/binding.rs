@@ -783,7 +783,11 @@ impl<'p> IndexBuilder<'p> {
         aliases: &HashMap<String, Vec<String>>,
         module: &str,
     ) {
-        walk_declaration_type_refs(declaration, TypeAnnotationBodies::Omit, &mut |ty| {
+        let bodies = match declaration {
+            Declaration::Evolve(_) => TypeAnnotationBodies::Include,
+            _ => TypeAnnotationBodies::Omit,
+        };
+        walk_declaration_type_refs(declaration, bodies, &mut |ty| {
             self.collect_type_ref(file, source, aliases, module, ty);
         });
 

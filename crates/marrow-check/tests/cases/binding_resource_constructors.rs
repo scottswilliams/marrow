@@ -162,3 +162,31 @@ fn alias_qualified_type_ref_expands_alias_to_imported_resource() {
     assert_eq!(def.kind, SymbolKind::Resource, "{def:?}");
     assert_eq!(def.file, *imported_file, "{def:?}");
 }
+
+#[test]
+fn evolve_transform_local_type_annotation_resolves_to_resource() {
+    let source = "module books\n\
+        resource Book\n    \
+        required title: string\n    \
+        required slug: string\n\
+        store ^books(id: int): Book\n\
+        evolve\n    \
+        transform Book.title\n        \
+        const draft: Book = Book(title: old.slug, slug: old.slug)\n        \
+        return draft.title\n";
+    let (index, paths) = checked_index(
+        "evolve-transform-local-type-ref-resource",
+        &[("src/books.mw", source)],
+    );
+    let file = &paths[0];
+
+    let annotation = source
+        .find("draft: Book")
+        .expect("transform local type annotation")
+        + "draft: ".len();
+    let def = index
+        .definition(file, annotation + 1)
+        .expect("transform local type annotation resolves");
+    assert_eq!(def.kind, SymbolKind::Resource, "{def:?}");
+    assert_eq!(def.file, *file, "{def:?}");
+}
