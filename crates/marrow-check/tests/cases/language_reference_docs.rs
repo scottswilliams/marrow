@@ -19,6 +19,41 @@ fn language_docs_dir() -> std::path::PathBuf {
         .join("language")
 }
 
+fn docs_dir() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("docs")
+}
+
+/// Pull the dotted codes documented in a single `### \`family.*\`` table from
+/// `error-codes.md`. A code row starts with `| \`code\` |`, so the codes are read
+/// directly from the rendered reference, never from prose.
+fn documented_codes_in_family(family_heading: &str) -> std::collections::BTreeSet<String> {
+    let text =
+        std::fs::read_to_string(docs_dir().join("error-codes.md")).expect("read error-codes");
+    let mut codes = std::collections::BTreeSet::new();
+    let mut in_section = false;
+
+    for line in text.lines() {
+        if line.starts_with("### ") {
+            in_section = line.contains(family_heading);
+            continue;
+        }
+        if !in_section {
+            continue;
+        }
+        let trimmed = line.trim_start();
+        if let Some(rest) = trimmed.strip_prefix("| `") {
+            if let Some(code) = rest.split('`').next() {
+                codes.insert(code.to_string());
+            }
+        }
+    }
+
+    codes
+}
+
 fn mw_blocks(file_name: &str) -> Vec<MwBlock> {
     let path = language_docs_dir().join(file_name);
     let text = std::fs::read_to_string(path).expect("read language doc");
@@ -187,5 +222,35 @@ fn documented_module_examples_check_clean() {
     assert!(
         checked >= MIN_DOCUMENTED_MODULE_EXAMPLES,
         "expected at least {MIN_DOCUMENTED_MODULE_EXAMPLES} documented module examples, found {checked}"
+    );
+}
+
+/// Code-truth guard: the `catalog.*` family in `error-codes.md` documents exactly the
+/// dotted codes the catalog/lock layer exports as typed `&str` constants — no phantom
+/// documented code the crate never emits, and no exported code left undocumented.
+/// `marrow_catalog::LOCK_CORRUPT` (`catalog.lock_corrupt`) must be present and the deleted
+/// `catalog.merge_conflict` must be absent.
+#[test]
+fn error_codes_doc_documents_exactly_the_typed_lock_and_catalog_code_constants() {
+    let exported: std::collections::BTreeSet<String> = [
+        marrow_catalog::CATALOG_INVALID.to_string(),
+        marrow_catalog::LOCK_CORRUPT.to_string(),
+    ]
+    .into_iter()
+    .collect();
+
+    let documented = documented_codes_in_family("`catalog.*`");
+
+    assert_eq!(
+        documented, exported,
+        "error-codes.md catalog.* family must list exactly the typed catalog/lock code constants"
+    );
+    assert!(
+        documented.contains(marrow_catalog::LOCK_CORRUPT),
+        "catalog.lock_corrupt must be documented"
+    );
+    assert!(
+        !documented.contains("catalog.merge_conflict"),
+        "catalog.merge_conflict was deleted from the code and must not be documented"
     );
 }

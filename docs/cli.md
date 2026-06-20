@@ -135,17 +135,20 @@ ok: . checked
 ## `marrow check`
 
 ```
-marrow check [--format text|json|jsonl] <projectdir>
+marrow check [--format text|json|jsonl] [--locked] <projectdir>
 ```
 
 Check a project directory containing `marrow.json` and report diagnostics.
 
 - It loads `marrow.json` and runs the project checker over every source root
   plus configured test files: parse, type, effect, and durable-place checks. It
-  binds durable identity from the committed
-  `marrow.catalog.json` artifact, repairing that file from a committed store
-  snapshot when the local store already has one; it never creates the store or
-  freezes identity.
+  binds saved-data identity from the live store when one is present and readable,
+  falling back to the committed `marrow.lock` projection otherwise; the read is
+  read-only, so check never opens the store for repair, creates one, or writes
+  the source tree. With `--locked`, a `marrow.lock` whose recorded source shape is
+  behind the current source is a fatal `check.stale_lock` error for CI; by default
+  it is a non-fatal advisory, since a later `run` or `evolve apply` regenerates the
+  lock.
 - Passing a bare `.mw` file is a usage error. Run `marrow check` on the project
   directory that contains `marrow.json`.
 - When `marrow.json` sets `run.defaultEntry`, the check verifies it names a
@@ -167,8 +170,8 @@ Check a project directory containing `marrow.json` and report diagnostics.
   - `work_shape`: one of `compute_only`, `read_only`, or `writes_saved_data`.
   Store and index identities are these structural paths, not physical catalog
   ids: a path is deterministic at every check, even before a freeze assigns a
-  `cat_*` id, and joins to the committed `marrow.catalog.json` by its `path`
-  field for callers that need the physical key.
+  `cat_*` id, and joins to the committed `marrow.lock` entry by its `path` field
+  for callers that need the physical key.
 - `surface_routes` is
   the `surface.route.v1` manifest derived from exported surface descriptors:
   JSON `POST` operation-tag paths plus render aliases and request-body kinds.
@@ -208,8 +211,8 @@ marrow client typescript <projectdir>
 
 Generate a self-contained TypeScript client for the checked application surface
 operation envelope. The command runs the same read-only project analysis used by
-`marrow check`, binding only the committed `marrow.catalog.json` artifact; it
-does not open, create, repair, or mutate the saved-data store.
+`marrow check`, binding saved-data identity from the committed `marrow.lock`
+projection; it does not open, create, repair, or mutate the saved-data store.
 
 - A successful check prints TypeScript to stdout and diagnostics nowhere.
 - A failed check reports the existing text diagnostics to stderr, exits `1`,
@@ -305,7 +308,8 @@ Inspect a project for operator triage without repairing or writing anything.
 `doctor` aggregates independent probes where possible:
 
 - load `marrow.json`;
-- validate the accepted `marrow.catalog.json` artifact digest;
+- validate the committed `marrow.lock` projection and report a corrupt or stale
+  lock, or a lock that collides with the live store, as findings;
 - run the normal project check summary;
 - open the configured native store read-only when a store file exists;
 - report store lock/recovery/open failures as findings instead of stopping
@@ -315,8 +319,11 @@ Inspect a project for operator triage without repairing or writing anything.
 - sample saved-data integrity with
   `DOCTOR_INTEGRITY_SAMPLE_LIMIT = 64` as one shared traversal cap.
 
-`doctor` never creates the native data directory, never opens a write-capable
-store handle, never renders or repairs `marrow.catalog.json`, and never runs the
+The live store is always the authority. When the committed `marrow.lock` and the
+store disagree — a stale lock, or the same epoch with a different shape — `doctor`
+reports the collision and names the regenerate step; the store wins and `doctor`
+repairs nothing. It never creates the native data directory, never opens a
+write-capable store handle, never regenerates `marrow.lock`, and never runs the
 full unbounded `marrow data integrity` scan.
 
 Text and JSONL render one finding per line. Text output also prints a
@@ -373,7 +380,7 @@ witness, then reports the counts and blocking diagnostics. With
 `--from-backup <artifact>`, preview validates the backup artifact, mounts it in
 memory, and derives the witness from that point-in-time data instead of opening
 the configured store; the mount is read-only and does not restore, activate, or
-write catalog files. With `--scaffold`, text output is formatter-produced `.mw`
+write to the store or lock. With `--scaffold`, text output is formatter-produced `.mw`
 source containing one ready-to-paste `evolve` block per repairable obligation:
 each names its target in the resource-qualified form the checker resolves
 (`Book.pages`) and seeds a default or transform body with a type-correct constant
@@ -383,17 +390,18 @@ source. JSON and JSONL keep the preview envelope and include the scaffold string
 `evolve apply` recomputes that preview witness over the live project and store,
 requires an exact match, checks the activation window, and commits the data work
 plus metadata stamp in one transaction. Like `run`, it records a project's
-baseline durable identity first when the project has none yet, then applies the
-evolution against the accepted catalog. The advanced accepted catalog rows commit
-in that same store transaction as the data work and the slim commit stamp, so
-the catalog never advances without the data behind it; after that commit, the
-CLI renders `marrow.catalog.json` from the committed store snapshot. Any
-Retire-bearing apply also requires either `--backup <path>` or `--no-backup`: a
-backup is written through the typed atomic backup path and validated before
-apply mutates the store, while `--no-backup` records the explicit opt-out in the
-rendered receipt. Evolve refuses backup paths that resolve to managed project
-artifacts or subtrees: `marrow.json`, `marrow.catalog.json`, source roots, test
-paths, and the native data directory/store file. The command output still
+baseline saved-data identity first when the project has none yet, then applies the
+evolution. The advanced accepted shape commits in that same store transaction as
+the data work and the slim commit stamp, so the accepted shape never advances
+without the data behind it; the live store is the sole write-time authority. After
+that commit, the CLI regenerates `marrow.lock` as a one-way projection of the
+committed store snapshot, so the committed lock tracks the store and can never
+override it. Any Retire-bearing apply also requires either `--backup <path>` or
+`--no-backup`: a backup is written through the typed atomic backup path and
+validated before apply mutates the store, while `--no-backup` records the explicit
+opt-out in the rendered receipt. Evolve refuses backup paths that resolve to
+managed project artifacts or subtrees: `marrow.json`, `marrow.lock`, source roots,
+test paths, and the native data directory/store file. The command output still
 renders receipt counts for defaults, transforms, retires, rebuilt indexes, and
 recovery-point choice, but those counts are not persisted in commit metadata.
 Destructive retire also needs `--maintenance` and an approval whose catalog ID
@@ -457,14 +465,17 @@ a saved `store`, or an `enum`) needs a configured `native` store and otherwise
 fails with `run.durable_store_required`. Omitting `store` is a `config.invalid`
 project configuration error.
 
-A clean run records the project's baseline durable identity if it has none yet:
-the first run of a project with a durable surface freezes the accepted catalog
-into the store transactionally as it commits, or republishes an already
-committed `marrow.catalog.json` into an empty local store, then renders the file
-from that committed snapshot. A project already past its baseline proposes no
-change and the store's catalog rows are left untouched; if the store snapshot is
-ahead of the file, or the file contains a torn non-conflict render, the command
-repairs the file from the store and proceeds.
+A clean run records the project's baseline saved-data identity if it has none yet.
+The first run of a project with a durable surface freezes its identity into the
+store transactionally as it commits. When the local store is empty and a committed
+`marrow.lock` exists, the run seeds the store from the lock instead of minting
+fresh identity, so a fresh checkout adopts the committed identity exactly; a
+corrupt lock refuses the run (`catalog.lock_corrupt`) rather than minting around
+it, and fresh identity is minted only when no lock exists. The live store is the
+sole write-time authority: after a baseline or evolution commits, the CLI
+regenerates `marrow.lock` as a one-way projection of the committed store snapshot.
+A project already past its baseline proposes no change and the store is left
+untouched; `marrow.lock` can never override or repair a valid live store.
 There is no separate acceptance step. See [data-evolution.md](data-evolution.md).
 
 Opening a native store is fenced against its catalog activation stamp. A store
@@ -807,7 +818,7 @@ Write a typed portable backup of a project's saved data. The backup is a Marrow
 artifact, not a raw engine-file copy: a small header, a typed manifest, the
 accepted-catalog section, and the project's canonical ordered data-cell stream.
 The catalog section carries the accepted catalog rows, so a restored store is
-self-contained and can render the committed `marrow.catalog.json` artifact. The
+self-contained and can regenerate the committed `marrow.lock` projection. The
 manifest binds the data to the program that wrote it — its source digest,
 accepted catalog epoch and digest, engine profile, value-codec version,
 data-stream digest, store UID, and one integrity checksum over the manifest,

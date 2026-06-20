@@ -82,10 +82,11 @@ reported as `store.corruption`).
 cannot be applied exactly. A command run against a project whose `marrow.json`
 is unreadable reports `io.read`; an invalid `marrow.json` reports
 `config.invalid`.
-`marrow doctor` wraps existing typed project, catalog, store, fence, and data
-facts in `doctor.*` findings. Each finding carries the underlying code or typed
-facts in `data` when one exists and names an exact next command or manual
-remedy.
+`marrow doctor` wraps existing typed project, lock, store, fence, and data
+facts in `doctor.*` findings. The live store is always the authority; `doctor`
+reports a stale or colliding committed `marrow.lock` but repairs nothing. Each
+finding carries the underlying code or typed facts in `data` when one exists and
+names an exact next command or manual remedy.
 
 ## How `kind` Is Assigned
 
@@ -162,7 +163,9 @@ over every configured source and test file.
 | `check.next_id_requires_single_int` | `nextId(^root)` names a root with no default integer allocation policy (composite identity, a non-integer key, or a keyless singleton). The static counterpart of `write.next_id_unsupported`. |
 | `check.next_id_collision` | A warning: two `nextId(^root)` results for the same store are both written as record keys with no write to that store between the two allocations. `nextId` returns `max + 1` and does not advance until a record is written, so both calls return the same value and the second write silently overwrites the first. Interleave the writes (`allocate, write, allocate, write`) for distinct ids. |
 | `check.rejected_surface` | Source uses a parsed construct outside the accepted v0.1 surface, such as old saved traversal method shapers including `.take(...)`, `.window(...)`, and `.resume(...)`. Reserved syntax forms such as `merge`, `lock`, and `~` are parser diagnostics instead. |
-| `check.catalog_intent` | Binding source against the accepted catalog cannot resolve durable identity soundly: a proposed catalog whose identities collide, a reserved spelling reused without an `evolve` intent, or an `evolve` intent that cannot carry identity forward — a rename without an accepted entry holding the new canonical path and old alias. A source declaration the accepted catalog does not yet record is informational, not an error: it reports that durable identity is not yet frozen, and running the program or applying an evolution records it. |
+| `check.catalog_intent` | Binding source against the accepted saved-data identity cannot resolve it soundly: proposed declarations whose identities collide, a reserved spelling reused without an `evolve` intent, or an `evolve` intent that cannot carry identity forward — a rename without an accepted entry holding the new canonical path and old alias. A source declaration not yet recorded as accepted identity is informational, not an error: it reports that durable identity is not yet frozen, and running the program or applying an evolution records it. |
+| `check.lock_corrupt` | The committed `marrow.lock` cannot seed first-run identity for a fresh empty store: a source declaration would adopt a stable id the lock's append-only ledger has retired. Adoption fails closed so a retired id is never reissued. Restore or regenerate `marrow.lock` from a valid live store. |
+| `check.stale_lock` | A non-fatal advisory: the committed `marrow.lock` records a different producing source shape than the current source, so the lock is behind the project. `marrow check` is read-only and cannot regenerate it, so it reports the staleness and still passes; a `run` or `evolve apply` regenerates the lock. `marrow check --locked` treats this condition as a failure for CI. |
 | `check.durable_store_required` | The program declares a durable surface (a `resource`, a saved `store`, or an `enum`) but the configured store backend is `memory`, which has no durable identity. The static counterpart of `run.durable_store_required`. |
 | `check.bare_maybe_present_read` | A maybe-present saved read or call result appears in value position without a read-site resolution form such as `??`, `exists(...)`, `if const name = place`, optional chaining, or an attached-data traversal. A `required` declaration is a validity rule for populated records; it is not a proof that arbitrary saved data is present at this read site. |
 | `check.literal_range` | A numeric literal is provably outside its type's range (an integer beyond `i64`, or a decimal outside the 34-digit / 34-place envelope). The static counterpart of the runtime numeric range faults. |
@@ -223,25 +226,29 @@ Resource-schema rules. Reported during a project check alongside `check.*`.
 
 | Code | Meaning |
 |---|---|
-| `catalog.invalid` | An accepted catalog artifact is malformed, has an unsupported format version, fails digest validation, or carries catalog data that cannot be decoded. |
-| `catalog.merge_conflict` | `marrow.catalog.json` or another accepted-catalog metadata section contains Git conflict marker lines. Resolve the conflict and rerun the command. |
+| `catalog.invalid` | An accepted catalog snapshot is malformed, has an unsupported format version, fails digest validation, or carries catalog data that cannot be decoded. |
+| `catalog.lock_corrupt` | The committed `marrow.lock` projection is malformed or fails its structural validation. A corrupt lock refuses the command; it is never silently regenerated, and Marrow never mints fresh identity around it. Regenerate `marrow.lock` from a valid live store, or restore the committed file. |
 
 ### `doctor.*` — kind `tooling`
 
 Read-only triage findings from `marrow doctor`. They aggregate existing typed
-facts and never repair, render catalogs, apply evolution, or run an unbounded
-integrity scan.
+facts and never repair, regenerate the lock, apply evolution, or run an unbounded
+integrity scan. The live store is always the authority; `doctor` reports when the
+committed `marrow.lock` is stale or collides with it, but the operator regenerates
+the lock — `doctor` repairs nothing.
 
 | Code | Meaning |
 |---|---|
 | `doctor.config_invalid` | `doctor` could not load `marrow.json`. `data.underlying_code` is usually `io.read` or `config.invalid`; fix the config and rerun the printed `marrow doctor` command. |
-| `doctor.catalog_invalid` | The accepted `marrow.catalog.json` artifact failed catalog validation, including digest mismatch or conflict-marker rejection. `data.underlying_code` carries the `catalog.*` code; restore or regenerate the artifact, then run the printed `marrow check` command. |
-| `doctor.catalog_unreadable` | The accepted catalog artifact exists but could not be read. Make it readable, then run the printed `marrow check` command. |
+| `doctor.lock_corrupt` | The committed `marrow.lock` projection exists but is malformed. `data.underlying_code` carries `catalog.lock_corrupt`; regenerate `marrow.lock` from a valid live store or restore the committed file, then run the printed `marrow check` command. |
 | `doctor.check_failed` | The project check summary reported diagnostics or could not load source. Run the printed `marrow check` command for the full diagnostic report. |
 | `doctor.store_locked` | The configured native store exists but a read-only open reported `store.locked`. Close the process holding the store, then rerun the printed `marrow doctor` command. |
 | `doctor.store_recovery_required` | The configured native store needs a write-capable recovery open before read-only inspection. Run the printed `marrow data recover` command. |
 | `doctor.store_unavailable` | A read-only store open or metadata read failed with another `store.*` code such as corruption, format-version mismatch, or I/O failure. The finding data carries the underlying store code. |
-| `doctor.catalog_drift` | The accepted catalog artifact and store catalog snapshot differ. The finding data carries both epochs and digests so an operator can choose which artifact to restore. |
+| `doctor.populated_unstamped` | The native store holds saved records but carries no catalog activation stamp, so the run path would fence it. Run the printed `marrow evolve apply` command to activate the accepted shape. |
+| `doctor.catalog_collision` | The store and the committed `marrow.lock` record the same epoch but different shape digests, so the lock no longer matches the live store at that epoch. The store wins; regenerate `marrow.lock` by running the project, then commit it. |
+| `doctor.store_lock_epoch_mismatch` | The store's accepted epoch and the committed `marrow.lock` epoch differ. The store wins; the finding data carries both epochs so an operator can confirm the store is current and regenerate the lock. |
+| `doctor.stale_lock` | The committed `marrow.lock` records a different producing source shape digest than the current source, so the lock is stale against the project. The store remains authoritative; regenerate `marrow.lock` by running the project. |
 | `doctor.fence_mismatch` | The activation fence classification does not match the checked project. `data.underlying_code` carries the `run.*` or `store.*` fence code, and `next_command` names the evolve, recovery, or rerun command to use next. |
 | `doctor.integrity_sample_failed` | The bounded saved-data integrity sample found problems or could not complete. Run the printed `marrow data integrity` command for the full read-only report. |
 
@@ -399,7 +406,7 @@ Source-native data-evolution preview/apply faults.
 | `evolve.approval_required` | A destructive retire needs an approval naming the catalog ID and populated count from preview. |
 | `evolve.approval_mismatch` | The supplied destructive approval did not match the exact preview witness. |
 | `evolve.requires_backup` | A Retire-bearing apply did not name `--backup <path>` or explicit `--no-backup`. Apply refuses before approval checks or evolution work. |
-| `evolve.backup_path_managed` | `evolve apply --backup` named a managed project artifact or subtree: `marrow.json`, `marrow.catalog.json`, source roots, test paths, or the native data directory/store file. Apply refuses before backup creation or evolution work. |
+| `evolve.backup_path_managed` | `evolve apply --backup` named a managed project artifact or subtree: `marrow.json`, `marrow.lock`, source roots, test paths, or the native data directory/store file. Apply refuses before backup creation or evolution work. |
 | `evolve.transform_faulted` | A checked transform body faulted while running against real data, so apply rolled back. |
 
 ### `test.*` — kind `tooling`

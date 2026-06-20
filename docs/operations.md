@@ -52,15 +52,30 @@ Use this choreography for a production catalog change:
    closed without it.
 7. Start the new writer after apply succeeds.
 
-The apply transaction advances accepted catalog rows, data and index effects,
-and commit metadata together. After commit, the CLI renders
-`marrow.catalog.json` from the committed store snapshot; if the process stops
-between the store commit and file render, the next state-aware command repairs
-the file from the store snapshot.
+The apply transaction advances accepted identity, data and index effects, and
+commit metadata together in the live store, which is the sole write-time
+authority. After commit, the CLI regenerates `marrow.lock` as a one-way
+projection of the committed store snapshot; the committed lock follows the store
+and never overrides it. Commit the regenerated `marrow.lock` alongside the
+deployed source.
 
 `marrow run` can auto-apply zero-record-mutation drift, but explicit
 `preview`/`apply` is the deployment path when operators need a reviewed witness
 and a named maintenance window.
+
+## Diagnosing A Project
+
+`marrow doctor <projectdir>` is the read-only triage command. It loads
+`marrow.json`, runs the check summary, opens the store read-only when one exists,
+and reports store, fence, and lock findings without repairing anything. When the
+committed `marrow.lock` is stale or collides with the live store, `doctor` names
+the regenerate step (`doctor.stale_lock`, `doctor.catalog_collision`,
+`doctor.store_lock_epoch_mismatch`): the store is authoritative, so run the
+program or `marrow evolve apply` to regenerate `marrow.lock`, then commit it. A
+corrupt lock is reported as `doctor.lock_corrupt`; restore or regenerate the file.
+`doctor` samples saved-data integrity within a bounded cap and names the full
+`marrow data integrity` command when more is needed. See
+[cli.md](cli.md#marrow-doctor) for the finding envelope.
 
 ## Commit And Epoch Lineage
 
@@ -145,7 +160,7 @@ Every emitting surface belongs to one regime:
 | `std::log`, run trace, dry-run, check, test, evolve, restore receipts, and data command reports | Tooling egress | Compiler/runtime/store facts for operators and tools; message prose is not a stable API. |
 | `marrow data dump`, `data get`, and `data integrity` findings | Admin inspection egress | May expose saved paths or value bytes; not a backup format, sync format, or production data API. |
 | `marrow backup` archives | Portable data egress | The canonical exit format for saved data: manifest, accepted catalog rows, and typed data cells. |
-| `marrow.catalog.json`, `marrow init`, and `marrow fmt --write` | Source-tree egress | Project/source artifacts in the working tree; not saved-data export. |
+| `marrow.lock`, `marrow init`, and `marrow fmt --write` | Source-tree egress | Project/source artifacts in the working tree; not saved-data export. |
 
 Encryption is not a `.mw` language feature in v0.1. Encryption belongs in the
 filesystem, disk layer, or a future backend profile; backend profiles can grow

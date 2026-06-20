@@ -139,8 +139,9 @@ from the checked program or snapshot:
   a backup path it streams archive cells to add bounded count and sample facts.
   It never opens a live store.
 - Ordinary `marrow check` reads each source file through the analysis pipeline
-  and reads the fixed `marrow.catalog.json` artifact when present. It does not
-  open, repair, or create the native store.
+  and binds the live store snapshot when one is present and readable, falling back
+  to the committed `marrow.lock` projection for first-run adoption. The read is
+  read-only: it does not open the store for repair or create one.
 
 Catalog navigation spans are owned upstream of `analysis.rs`. Syntax carries
 token-tight spans for declaration names, name-expression segments, field
@@ -247,11 +248,13 @@ add only transport availability and request-envelope concerns around those DTOs.
 ## Entry points
 
 - `analyze_source_project` is crate-internal (`pub(crate)`); the public entry is
-  `analyze_project`. Both take the accepted catalog as an
-  `Option<&CatalogMetadata>` input the caller supplies. The convenience
-  `check_project` binds no accepted catalog (the first-run shape);
-  `check_project_with_catalog` takes the committed `marrow.catalog.json`
-  artifact. The checker has no store-open fallback.
+  `analyze_project`. Both take the accepted reference as two caller-supplied
+  inputs: an `Option<&CatalogMetadata>` store snapshot and an
+  `Option<&CatalogLock>` committed projection for first-run adoption. The
+  convenience `check_project` binds neither (the first-run shape with no committed
+  lock); `check_project_with_catalog` threads a store snapshot. The CLI owns
+  store/lock selection and passes the result here; the checker has no store-open
+  fallback of its own.
 
 ## Read next
 

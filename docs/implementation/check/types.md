@@ -47,7 +47,7 @@ The orchestration that sequences the passes lives in `analysis.rs`, outside this
   names, not the names inside them. Saved roots are project-wide; source names
   are module-scoped — the two namespaces never collapse.
 - **Strict typing across conversion boundaries.** An `Unknown` value flowing into a concrete typed place with a conversion boundary (`expects_conversion`) is `check.untyped_value`, not silent acceptance.
-- **Catalog identity is committed as a file artifact.** Production durable identity is the fixed `marrow.catalog.json` artifact. The store keeps a private copy as the crash bridge and transaction participant: state-establishing commands commit catalog rows with the data they describe, then render the file from that committed snapshot. Ordinary check reads only the file artifact and never opens the store to repair, create, or rewind catalog renders.
+- **The live store owns accepted identity; `marrow.lock` is its projection.** Production saved-data identity is the live store catalog family, written in the same transaction as the data it describes — the sole write-time authority. The committed `marrow.lock` is a one-way projection of that snapshot: state-establishing commands regenerate it after the store commit, and it seeds a fresh empty store for first-run adoption. Ordinary check binds the store snapshot when present and the committed lock otherwise; it never opens the store to repair or create it, and the lock can never override or rewrite the store.
 
 ## Code-reality notes
 

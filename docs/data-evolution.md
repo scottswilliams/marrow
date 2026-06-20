@@ -114,17 +114,16 @@ marrow evolve apply ./project
 
 ## Renames
 
-A field's source name is how code spells it. Its durable identity is owned by the
-accepted catalog in `marrow.catalog.json`, with the store copy acting as the
-transaction participant and crash bridge, not by source annotations, source
-order, or a best-effort source diff. A rename is an explicit catalog decision:
+A field's source name is how code spells it. Its saved-data identity is owned by
+the live store, not by source annotations, source order, or a best-effort source
+diff. A rename is an explicit decision:
 
 ```mw
 evolve
     rename Book.title -> Book.displayTitle
 ```
 
-The accepted catalog records the new canonical path, the old path as an alias,
+The accepted identity records the new canonical path, the old path as an alias,
 and the same stable ID. Stored cells addressed by that stable member ID remain
 attached to the renamed field; no best-effort name matching or migration script
 preserves identity. A source rename without a matching `evolve rename` intent
@@ -134,66 +133,67 @@ same-resource added field with the same durable leaf shape, check-time repair
 guidance names `evolve rename` first; otherwise it points at the destructive
 retire path.
 
-## Accepted Catalog Metadata
+## Saved-Data Identity And `marrow.lock`
 
-The accepted catalog is the fixed `marrow.catalog.json` artifact in the project
-root, with a private copy in the store as the crash bridge for state-establishing
-commands. It has no `marrow.json` input and is not Marrow language data — there
-is no `^catalog` root, resource, standard-library, or data-CLI surface
-that can read, scan, or mutate it.
+The live store is the sole authority for accepted saved-data identity. The store
+records, in the same transaction that writes the data, the accepted identity of
+every durable entity: a stable ID, lifecycle state, canonical path with any old
+aliases, and the accepted shape its data was written under. `active` entries bind
+current source to stable IDs; `reserved` entries remember retired spellings that
+must not be reused, so a later source declaration at the same path is rejected
+rather than minted as a fresh identity. Renames keep identity continuity by
+recording old spellings as aliases.
 
-The snapshot records its catalog epoch and digest. Each entry records:
+`marrow.lock` is a generated, committed, never-hand-edited projection of that
+accepted identity, kept in the project root and tracked in source control like
+`Cargo.lock`. Each entry projects a stable ID, lifecycle, canonical path, and a
+shape fingerprint; the lock also carries the append-only ledger of retired and
+reserved IDs and the producing source shape. It is not Marrow language data —
+there is no `^catalog` root, resource, standard-library, or data-CLI surface that
+can read, scan, or mutate it.
 
-- the declaration kind;
-- the canonical catalog path and any old aliases;
-- the stable ID;
-- lifecycle state;
-- the accepted shape its durable data was written under: a store's
-  identity-key shape, a store index's declaration shape, or a resource member's
-  identity-aware structural signature.
+The lock is always subordinate to a valid live store. It does two things, and only
+these two:
 
-`active` entries bind current source to stable IDs. `reserved` entries remember
-spellings that must not be reused after a retire; a later source declaration at
-the same catalog path is rejected rather than minted as a fresh identity.
-Renames keep identity continuity on the active entry by recording old spellings
-as aliases. `reserved` is the durable inactive spelling for a retired catalog
-path.
+- It **seeds** a fresh empty store. When the store is empty and a committed
+  `marrow.lock` exists, the first write adopts the committed identity from the lock
+  instead of minting fresh, so a fresh checkout reproduces the committed identity
+  exactly. Adoption fails closed: a corrupt lock refuses the command
+  (`catalog.lock_corrupt`) rather than minting around it, and an adoption that
+  would reissue a retired ID or regress the epoch is rejected. Fresh identity is
+  minted only when no lock exists.
+- It **reports staleness**. When the lock's recorded source shape is behind the
+  current source, `marrow check` reports a non-fatal `check.stale_lock` advisory
+  and still passes, since a later `run` or `evolve apply` regenerates the lock.
+  `marrow check --locked` treats a stale lock as a failure, giving CI the
+  enforcement a lockfile convention expects.
 
-Source-only checks read `marrow.catalog.json` when it exists. If the native store
-already holds a committed catalog and the file is missing, stale, or a torn
-non-conflict render, the command repairs the file from the committed store
-snapshot and proceeds; it never creates a store for that repair. Git conflict
-markers remain `catalog.merge_conflict`: resolve the source-tree conflict and
-rerun the command. A project whose durable identity is not yet recorded is
-reported informationally, not as a failure. Checked facts expose catalog-backed
-IDs for resources, stores, store indexes, resource members, enums, and enum
-members. Runtime value encoding remains a separate storage concern; the catalog
-is the durable schema identity exposed to tools, evolution, and checked facts.
+The lock can never override or repair a valid live store. There is no path that
+rewrites the store from the file; the projection runs one way, store to lock.
 
 ### Branch And Team Workflow
 
 Merged source is truth. Development stores are disposable. Production identities
-flow only through deployed catalogs and `marrow evolve apply`, never through a
+flow only through deployed code and `marrow evolve apply`, never through a
 developer's local `.data` directory.
 
-When two branches conflict in `marrow.catalog.json`, keep the conflict visible:
-`marrow check` reports `catalog.merge_conflict` until the artifact is resolved.
-After resolving the source and catalog file, `marrow check` should pass against
-the merged artifact. A local store from the losing branch is older than the
-merged catalog and is fenced by activation, typically as `run.store_behind`,
+Treat a `marrow.lock` merge conflict like any generated lockfile: do not
+hand-merge it. Resolve the source conflict, then run the program or
+`marrow evolve apply` to regenerate `marrow.lock` from the live store, and commit
+the regenerated file. A local store from the losing branch is older than the
+merged identity and is fenced by activation, typically as `run.store_behind`,
 until `marrow evolve apply` activates or replaces that local store. Do not copy a
-development store forward to rescue a merge; replay the accepted source and
-catalog path.
+development store forward to rescue a merge; replay the accepted source path.
 
-The accepted snapshot is advanced only by the flows that establish durable
-state — running the program and `marrow evolve apply` — each writing the catalog
-rows in the same store transaction as the data and metadata they commit. The
-first such command on a project with a durable surface freezes the proposed
-identity into the store, or republishes an already committed `marrow.catalog.json`
-into an empty local store, then renders the file from the committed snapshot;
-once a baseline exists, later identity changes flow through `evolve apply`
-rather than being written from a check. There is no separate command to inspect
-or accept a proposal.
+Accepted identity advances only through the flows that establish durable state —
+running the program and `marrow evolve apply` — each writing the accepted identity
+in the same store transaction as the data and metadata they commit. The first such
+command on a project with a durable surface freezes the proposed identity into the
+store, or seeds an empty local store from a committed `marrow.lock`. After the
+commit, the CLI regenerates `marrow.lock` from the committed store snapshot; once a
+baseline exists, later identity changes flow through `evolve apply` rather than
+being written from a check. There is no separate command to inspect or accept a
+proposal.
 
 A stable ID is a random opaque 128-bit value in the `cat_<32 lowercase hex>`
 shape. It is allocated independently of the source path, so it never changes
@@ -258,10 +258,9 @@ per-effect counts or digests. The accepted catalog rows, the catalog epoch, the
 commit metadata, and the data and index cells all advance in that one store
 transaction, so a reader sees either the whole activation or none of it. There
 is no separate post-commit acceptance step: after the transaction commits, the
-CLI renders `marrow.catalog.json` from the committed store snapshot. If the
-process stops between the store commit and file render, leaving the file missing
-or partially written, the next command repairs the file from the store snapshot
-and proceeds. A failure before commit rolls every effect back to the prior
+CLI regenerates `marrow.lock` as a one-way projection of the committed store
+snapshot. The committed store is the authority; the lock follows it and never
+the reverse. A failure before commit rolls every effect back to the prior
 accepted snapshot.
 
 A program with no accepted catalog has no durable activation context, so there is

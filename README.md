@@ -42,7 +42,7 @@ The first implementation target is deliberately small:
 
 ## Scope And Security
 
-Marrow treats project source, `marrow.json`, `marrow.catalog.json`, native store
+Marrow treats project source, `marrow.json`, `marrow.lock`, native store
 files, backup archives, CLI arguments, and host-provided environment, filesystem,
 clock, log, and output channels as untrusted inputs. The compiler and runtime
 fail closed with typed diagnostics or `run.*` / `store.*` faults; they do not

@@ -47,7 +47,7 @@ untouched — no `marrow.redb` is written.
 `--backup <artifact>`. The flag selects the backup as the read target for the
 checked project, validates it through the restore artifact contract, replays it
 into memory, and inspects that memory store. It does not open the configured
-native store, take its file lock, render `marrow.catalog.json`, or write durable
+native store, take its file lock, regenerate `marrow.lock`, or write durable
 state. Backup validation reports the same typed `restore.*` refusals as restore
 for unsupported format, corrupt chunks, engine/value-codec mismatch,
 source/catalog mismatch, and invalid data. `data recover` does not accept
