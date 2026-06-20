@@ -7,7 +7,7 @@ use crate::ast::{
     Comment, CommentMarker, CommentPlacement, SavedRoot, SurfaceDecl, SurfaceItem, SurfaceTarget,
 };
 use crate::diagnostic::{ExpectedSyntax, ParseDiagnosticReason, SourceSpan};
-use crate::token::{Token, TokenKind};
+use crate::token::{Keyword, Token, TokenKind};
 
 impl<'a> DeclParser<'a> {
     pub(super) fn parse_surface(&mut self) -> SurfaceDecl {
@@ -114,8 +114,12 @@ impl<'a> DeclParser<'a> {
         let err = self.content_span();
         let lead = self.tokens[self.pos];
         let lead_word = (lead.kind == TokenKind::Identifier).then(|| lead.text(self.source));
+        let lead_delete = matches!(lead.kind, TokenKind::Keyword(Keyword::Delete));
         let (header, trailing_comment) = self.take_header_line_with_trailing_comment();
         comments.extend(trailing_comment);
+        if lead_delete {
+            return self.parse_surface_delete_item(span, err, &header[1..]);
+        }
         match lead_word {
             Some("fields") => self.parse_surface_field_item(span, err, &header[1..]),
             Some("collection") => self.parse_surface_collection_item(span, err, &header[1..]),
@@ -126,7 +130,7 @@ impl<'a> DeclParser<'a> {
                 self.error_span(
                     err,
                     ParseDiagnosticReason::Expected(ExpectedSyntax::SurfaceItem),
-                    "expected a surface item: `fields`, `collection`, `action`, `create`, or `update`",
+                    "expected a surface item: `fields`, `collection`, `action`, `create`, `update`, or `delete`",
                 );
                 None
             }
@@ -167,6 +171,23 @@ impl<'a> DeclParser<'a> {
             .map(|names| SurfaceItem::Update { names, span })
             .map_err(|error| self.error_span(err, error.reason, error.message))
             .ok()
+    }
+
+    fn parse_surface_delete_item(
+        &mut self,
+        span: SourceSpan,
+        err: SourceSpan,
+        tokens: &[Token],
+    ) -> Option<SurfaceItem> {
+        if tokens.is_empty() {
+            return Some(SurfaceItem::Delete { span });
+        }
+        self.error_span(
+            err,
+            ParseDiagnosticReason::Expected(ExpectedSyntax::SurfaceItem),
+            "expected `delete` with no surface item payload",
+        );
+        None
     }
 
     fn parse_surface_collection_item(

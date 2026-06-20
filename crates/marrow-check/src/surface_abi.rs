@@ -14,6 +14,8 @@ use crate::program::CheckedProgram;
 
 pub const SURFACE_READ_OPERATION_TAG_VERSION: &str = "surface.read.v1";
 pub const SURFACE_UPDATE_OPERATION_TAG_VERSION: &str = "surface.update.v1";
+pub const SURFACE_CREATE_OPERATION_TAG_VERSION: &str = "surface.create.v1";
+pub const SURFACE_DELETE_OPERATION_TAG_VERSION: &str = "surface.delete.v1";
 
 #[derive(Debug, Clone)]
 pub struct SurfaceActionOperationDescriptor {
@@ -142,6 +144,72 @@ pub struct SurfaceUpdateOperationDescriptor {
     pub fields: Vec<SurfaceUpdateOperationField>,
 }
 
+#[derive(Debug, Clone)]
+pub struct SurfaceCreateOperationDescriptor {
+    pub profile_version: &'static str,
+    pub operation_tag: String,
+    pub kind: SurfaceCreateOperationDescriptorKind,
+    pub body_semantics: SurfaceCreateBodySemantics,
+    pub identity_policy: SurfaceCreateIdentityPolicy,
+    pub existence_semantics: SurfaceCreateExistenceSemantics,
+    pub store_catalog_id: CatalogId,
+    pub resource_catalog_id: CatalogId,
+    pub identity_keys: Vec<SurfaceOperationIdentityKey>,
+    pub fields: Vec<SurfaceCreateOperationField>,
+    pub projection: Vec<SurfaceReadOperationProjectionField>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SurfaceCreateOperationDescriptorKind {
+    SingletonCreate,
+    PointCreate,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SurfaceCreateBodySemantics {
+    ExactDeclaredBody,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SurfaceCreateIdentityPolicy {
+    SingletonNoIdentity,
+    ClientSuppliedIdentity,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SurfaceCreateExistenceSemantics {
+    RejectExistingNoReplace,
+}
+
+#[derive(Debug, Clone)]
+pub struct SurfaceCreateOperationField {
+    pub render_label: String,
+    pub member_catalog_id: CatalogId,
+    pub value: SurfaceOperationValueShape,
+}
+
+#[derive(Debug, Clone)]
+pub struct SurfaceDeleteOperationDescriptor {
+    pub profile_version: &'static str,
+    pub operation_tag: String,
+    pub kind: SurfaceDeleteOperationDescriptorKind,
+    pub semantics: SurfaceDeleteSemantics,
+    pub store_catalog_id: CatalogId,
+    pub resource_catalog_id: CatalogId,
+    pub identity_keys: Vec<SurfaceOperationIdentityKey>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SurfaceDeleteOperationDescriptorKind {
+    SingletonDelete,
+    PointDelete,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SurfaceDeleteSemantics {
+    RejectAbsentFullSubtree,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SurfaceUpdateOperationDescriptorKind {
     SingletonUpdate,
@@ -181,6 +249,64 @@ impl SurfaceUpdateOperationDescriptor {
             resource_catalog_id,
             identity_keys: identity_key_descriptors(program, store)?,
             fields: update_field_descriptors(program, &surface.update)?,
+        })
+    }
+}
+
+impl SurfaceCreateOperationDescriptor {
+    pub fn from_surface(program: &CheckedProgram, surface: &SurfaceFact) -> Option<Self> {
+        require_stable_surface(surface)?;
+        if surface.create.is_empty() {
+            return None;
+        }
+        let store = program.facts.store(surface.store);
+        let projection = surface
+            .fields
+            .iter()
+            .map(|field| field.member)
+            .collect::<Vec<_>>();
+        let resource_catalog_id = accepted_catalog_id(
+            program,
+            program.facts.resource(store.resource).catalog_id.as_deref(),
+        )?;
+        Some(Self {
+            profile_version: SURFACE_CREATE_OPERATION_TAG_VERSION,
+            operation_tag: surface_create_operation_tag(
+                program,
+                store,
+                &surface.create,
+                &projection,
+            )?,
+            kind: create_descriptor_kind(store),
+            body_semantics: SurfaceCreateBodySemantics::ExactDeclaredBody,
+            identity_policy: create_identity_policy(store),
+            existence_semantics: SurfaceCreateExistenceSemantics::RejectExistingNoReplace,
+            store_catalog_id: accepted_catalog_id(program, store.catalog_id.as_deref())?,
+            resource_catalog_id,
+            identity_keys: identity_key_descriptors(program, store)?,
+            fields: create_field_descriptors(program, &surface.create)?,
+            projection: projection_descriptors(program, &projection)?,
+        })
+    }
+}
+
+impl SurfaceDeleteOperationDescriptor {
+    pub fn from_surface(program: &CheckedProgram, surface: &SurfaceFact) -> Option<Self> {
+        require_stable_surface(surface)?;
+        surface.delete.as_ref()?;
+        let store = program.facts.store(surface.store);
+        let resource_catalog_id = accepted_catalog_id(
+            program,
+            program.facts.resource(store.resource).catalog_id.as_deref(),
+        )?;
+        Some(Self {
+            profile_version: SURFACE_DELETE_OPERATION_TAG_VERSION,
+            operation_tag: surface_delete_operation_tag(program, store)?,
+            kind: delete_descriptor_kind(store),
+            semantics: SurfaceDeleteSemantics::RejectAbsentFullSubtree,
+            store_catalog_id: accepted_catalog_id(program, store.catalog_id.as_deref())?,
+            resource_catalog_id,
+            identity_keys: identity_key_descriptors(program, store)?,
         })
     }
 }
@@ -242,6 +368,26 @@ pub(crate) fn surface_update_operation_tag(
     Some(marrow_project::sha256_digest(payload.as_bytes()))
 }
 
+pub(crate) fn surface_create_operation_tag(
+    program: &CheckedProgram,
+    store: &StoreFact,
+    create: &[SurfaceFieldFact],
+    projection: &[ResourceMemberId],
+) -> Option<String> {
+    let mut payload = String::new();
+    push_create_operation_payload(program, &mut payload, store, create, projection)?;
+    Some(marrow_project::sha256_digest(payload.as_bytes()))
+}
+
+pub(crate) fn surface_delete_operation_tag(
+    program: &CheckedProgram,
+    store: &StoreFact,
+) -> Option<String> {
+    let mut payload = String::new();
+    push_delete_operation_payload(program, &mut payload, store)?;
+    Some(marrow_project::sha256_digest(payload.as_bytes()))
+}
+
 fn descriptor_kind(
     program: &CheckedProgram,
     kind: SurfaceReadOperationKind,
@@ -279,6 +425,30 @@ fn update_descriptor_kind(store: &StoreFact) -> SurfaceUpdateOperationDescriptor
         SurfaceUpdateOperationDescriptorKind::SingletonUpdate
     } else {
         SurfaceUpdateOperationDescriptorKind::PointUpdate
+    }
+}
+
+fn create_descriptor_kind(store: &StoreFact) -> SurfaceCreateOperationDescriptorKind {
+    if store.identity_keys.is_empty() {
+        SurfaceCreateOperationDescriptorKind::SingletonCreate
+    } else {
+        SurfaceCreateOperationDescriptorKind::PointCreate
+    }
+}
+
+fn delete_descriptor_kind(store: &StoreFact) -> SurfaceDeleteOperationDescriptorKind {
+    if store.identity_keys.is_empty() {
+        SurfaceDeleteOperationDescriptorKind::SingletonDelete
+    } else {
+        SurfaceDeleteOperationDescriptorKind::PointDelete
+    }
+}
+
+fn create_identity_policy(store: &StoreFact) -> SurfaceCreateIdentityPolicy {
+    if store.identity_keys.is_empty() {
+        SurfaceCreateIdentityPolicy::SingletonNoIdentity
+    } else {
+        SurfaceCreateIdentityPolicy::ClientSuppliedIdentity
     }
 }
 
@@ -334,6 +504,23 @@ fn update_field_descriptors(
         .collect::<Option<Vec<_>>>()?;
     fields.sort_by(|left, right| left.member_catalog_id.cmp(&right.member_catalog_id));
     Some(fields)
+}
+
+fn create_field_descriptors(
+    program: &CheckedProgram,
+    create: &[SurfaceFieldFact],
+) -> Option<Vec<SurfaceCreateOperationField>> {
+    create
+        .iter()
+        .map(|field| {
+            let member = resource_member(program, field.member)?;
+            Some(SurfaceCreateOperationField {
+                render_label: field.name.clone(),
+                member_catalog_id: accepted_catalog_id(program, member.catalog_id.as_deref())?,
+                value: value_shape(program, member.value_meaning.as_ref()?)?,
+            })
+        })
+        .collect()
 }
 
 fn index_key_descriptors_for_operation(
@@ -546,6 +733,105 @@ fn push_update_operation_payload(
         push_tag_part(payload, "field.member", catalog_id);
         push_member_tag_parts(program, payload, "field.member", member)?;
     }
+    Some(())
+}
+
+fn push_create_operation_payload(
+    program: &CheckedProgram,
+    payload: &mut String,
+    store: &StoreFact,
+    create: &[SurfaceFieldFact],
+    projection: &[ResourceMemberId],
+) -> Option<()> {
+    push_tag_part(payload, "version", SURFACE_CREATE_OPERATION_TAG_VERSION);
+    push_tag_part(
+        payload,
+        "store",
+        accepted_catalog_id_text(program, store.catalog_id.as_deref())?,
+    );
+    push_tag_part(
+        payload,
+        "footprint.resource",
+        accepted_catalog_id_text(
+            program,
+            program.facts.resource(store.resource).catalog_id.as_deref(),
+        )?,
+    );
+    push_identity_key_tag_parts(program, payload, store)?;
+    push_tag_part(payload, "body", "exact_declared");
+    push_tag_part(
+        payload,
+        "identity_policy",
+        match create_identity_policy(store) {
+            SurfaceCreateIdentityPolicy::SingletonNoIdentity => "singleton_no_identity",
+            SurfaceCreateIdentityPolicy::ClientSuppliedIdentity => "client_supplied_identity",
+        },
+    );
+    push_tag_part(payload, "existence", "reject_existing_no_replace");
+    push_tag_part(
+        payload,
+        "kind",
+        match create_descriptor_kind(store) {
+            SurfaceCreateOperationDescriptorKind::SingletonCreate => "singleton",
+            SurfaceCreateOperationDescriptorKind::PointCreate => "point",
+        },
+    );
+    let mut fields = create
+        .iter()
+        .map(|field| {
+            let member = resource_member(program, field.member)?;
+            let catalog_id = accepted_catalog_id_text(program, member.catalog_id.as_deref())?;
+            Some((catalog_id, member))
+        })
+        .collect::<Option<Vec<_>>>()?;
+    fields.sort_by_key(|(catalog_id, _)| *catalog_id);
+    push_tag_part(payload, "fields.len", &fields.len().to_string());
+    for (catalog_id, member) in fields {
+        push_tag_part(payload, "field.member", catalog_id);
+        push_member_tag_parts(program, payload, "field.member", member)?;
+    }
+    push_tag_part(payload, "projection.len", &projection.len().to_string());
+    for member_id in projection {
+        let member = resource_member(program, *member_id)?;
+        push_tag_part(
+            payload,
+            "projection.member",
+            accepted_catalog_id_text(program, member.catalog_id.as_deref())?,
+        );
+        push_member_tag_parts(program, payload, "projection.member", member)?;
+    }
+    Some(())
+}
+
+fn push_delete_operation_payload(
+    program: &CheckedProgram,
+    payload: &mut String,
+    store: &StoreFact,
+) -> Option<()> {
+    push_tag_part(payload, "version", SURFACE_DELETE_OPERATION_TAG_VERSION);
+    push_tag_part(
+        payload,
+        "store",
+        accepted_catalog_id_text(program, store.catalog_id.as_deref())?,
+    );
+    push_tag_part(
+        payload,
+        "footprint.resource",
+        accepted_catalog_id_text(
+            program,
+            program.facts.resource(store.resource).catalog_id.as_deref(),
+        )?,
+    );
+    push_identity_key_tag_parts(program, payload, store)?;
+    push_tag_part(payload, "semantics", "reject_absent_full_subtree");
+    push_tag_part(
+        payload,
+        "kind",
+        match delete_descriptor_kind(store) {
+            SurfaceDeleteOperationDescriptorKind::SingletonDelete => "singleton",
+            SurfaceDeleteOperationDescriptorKind::PointDelete => "point",
+        },
+    );
     Some(())
 }
 

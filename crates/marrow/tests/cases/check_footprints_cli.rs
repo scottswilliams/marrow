@@ -363,8 +363,8 @@ fn check_json_surface_abi_ordering_and_descriptor_presence_are_deterministic() {
 }
 
 #[test]
-fn check_json_surface_abi_excludes_reserved_create_metadata() {
-    let root = temp_project("check-json-surface-abi-create-reserved", |root| {
+fn check_json_surface_abi_exports_create_descriptor() {
+    let root = temp_project("check-json-surface-abi-create-descriptor", |root| {
         write(
             root,
             "marrow.json",
@@ -389,9 +389,26 @@ fn check_json_surface_abi_excludes_reserved_create_metadata() {
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let report = support::json(output.stdout);
     let books = surface(&report, "Books");
-    assert!(
-        books.get("create").is_none(),
-        "create is parsed/resolved reserved metadata, not a serialized ABI descriptor: {books:#?}"
+    assert_eq!(
+        books["create"]["profile_version"], "surface.create.v1",
+        "{books:#?}"
+    );
+    assert_eq!(
+        books["create"]["kind"],
+        json!({ "kind": "point_create" }),
+        "{books:#?}"
+    );
+    assert_eq!(
+        books["create"]["body_semantics"], "exact_declared_body",
+        "{books:#?}"
+    );
+    assert_eq!(
+        books["create"]["existence_semantics"], "reject_existing_no_replace",
+        "{books:#?}"
+    );
+    assert_eq!(
+        books["create"]["fields"][0]["render_label"], "title",
+        "{books:#?}"
     );
     assert!(books.get("update").is_some(), "{books:#?}");
 }
@@ -441,24 +458,30 @@ fn check_json_reports_surface_route_manifest() {
             .iter()
             .map(|route| route["alias"].as_str().expect("route alias"))
             .collect::<Vec<_>>(),
-        vec!["get", "byShelf", "update"]
+        vec!["get", "byShelf", "create", "update"]
     );
     assert_eq!(
         routes
             .iter()
             .map(|route| route["request"]["kind"].as_str().expect("request kind"))
             .collect::<Vec<_>>(),
-        vec!["point_read", "page", "point_update"]
+        vec!["point_read", "page", "point_create", "point_update"]
     );
     assert!(
-        routes.iter().all(|route| route.get("create").is_none()
-            && route.get("delete").is_none()
+        routes.iter().all(|route| route.get("delete").is_none()
             && route["method"] == "POST"
             && route["path"]
                 .as_str()
                 .expect("route path")
                 .contains(route["operation_tag"].as_str().expect("operation tag"))),
-        "routes stay descriptor-derived and omit unresolved CRUD profiles: {routes:#?}"
+        "routes stay descriptor-derived and omit absent delete operations: {routes:#?}"
+    );
+    assert!(
+        routes.iter().any(|route| route["path"]
+            .as_str()
+            .expect("route path")
+            .starts_with("/surface/v1/create/")),
+        "create route uses its operation-family prefix: {routes:#?}"
     );
 }
 

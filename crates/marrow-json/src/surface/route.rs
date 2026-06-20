@@ -45,6 +45,10 @@ pub enum SurfaceRouteRequestJson {
     UniqueLookup,
     SingletonUpdate,
     PointUpdate,
+    SingletonCreate,
+    PointCreate,
+    SingletonDelete,
+    PointDelete,
     Action,
 }
 
@@ -64,10 +68,22 @@ impl SurfaceRouteManifestJson {
                     .expect("read descriptor has catalog binding");
                 route_from_binding(binding, route_surface.clone())
             }));
+            if let Some(create) = &surface.create {
+                let binding = catalog
+                    .binding(&create.operation_tag)
+                    .expect("create descriptor has catalog binding");
+                routes.push(route_from_binding(binding, route_surface.clone()));
+            }
             if let Some(update) = &surface.update {
                 let binding = catalog
                     .binding(&update.operation_tag)
                     .expect("update descriptor has catalog binding");
+                routes.push(route_from_binding(binding, route_surface.clone()));
+            }
+            if let Some(delete) = &surface.delete {
+                let binding = catalog
+                    .binding(&delete.operation_tag)
+                    .expect("delete descriptor has catalog binding");
                 routes.push(route_from_binding(binding, route_surface.clone()));
             }
             routes.extend(surface.actions.iter().map(|action| {

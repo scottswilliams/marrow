@@ -24,7 +24,8 @@ use crate::evolution::{
 };
 use crate::host::{Host, Nondeterminism, StepHook, SystemNondeterminism};
 use crate::surface::{
-    SurfaceActionInvocation, SurfaceReadError, SurfaceReadOperation, SurfaceUpdate,
+    SurfaceActionInvocation, SurfaceCreate, SurfaceDelete, SurfaceReadError, SurfaceReadOperation,
+    SurfaceUpdate,
 };
 use crate::value::{RunOutput, RunOutputSink};
 
@@ -680,6 +681,20 @@ impl ProjectSurfaceSession {
         operation_tag: &str,
     ) -> Result<SurfaceUpdate<'_>, SurfaceReadError> {
         SurfaceUpdate::admit_by_operation_tag(&self.program, &self.store, operation_tag)
+    }
+
+    pub fn admit_create_by_operation_tag(
+        &self,
+        operation_tag: &str,
+    ) -> Result<SurfaceCreate<'_>, SurfaceReadError> {
+        SurfaceCreate::admit_by_operation_tag(&self.program, &self.store, operation_tag)
+    }
+
+    pub fn admit_delete_by_operation_tag(
+        &self,
+        operation_tag: &str,
+    ) -> Result<SurfaceDelete<'_>, SurfaceReadError> {
+        SurfaceDelete::admit_by_operation_tag(&self.program, &self.store, operation_tag)
     }
 
     pub fn admit_action_by_operation_tag(

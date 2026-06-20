@@ -8,12 +8,14 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
 
 use super::execute::{
-    execute_page, execute_point_read, execute_point_update, execute_singleton_read,
-    execute_singleton_update, execute_unique_lookup,
+    execute_page, execute_point_create, execute_point_delete, execute_point_read,
+    execute_point_update, execute_singleton_create, execute_singleton_delete,
+    execute_singleton_read, execute_singleton_update, execute_unique_lookup,
 };
 use super::{
     SurfaceActionValueJson, SurfaceOperationKind, SurfacePageJson, SurfacePageRequestJson,
-    SurfacePointRequestJson, SurfacePointUpdateRequestJson, SurfaceRecordJson,
+    SurfacePointCreateRequestJson, SurfacePointDeleteRequestJson, SurfacePointRequestJson,
+    SurfacePointUpdateRequestJson, SurfaceRecordJson, SurfaceSingletonCreateRequestJson,
     SurfaceSingletonUpdateRequestJson, SurfaceUniqueLookupRequestJson,
     surface_action_value_to_json,
 };
@@ -46,6 +48,16 @@ pub enum SurfaceOperationRequestBodyJson {
     PointUpdate {
         request: SurfacePointUpdateRequestJson,
     },
+    SingletonCreate {
+        request: SurfaceSingletonCreateRequestJson,
+    },
+    PointCreate {
+        request: SurfacePointCreateRequestJson,
+    },
+    SingletonDelete,
+    PointDelete {
+        request: SurfacePointDeleteRequestJson,
+    },
     Action {
         request: SurfaceActionRequestJson,
     },
@@ -65,6 +77,8 @@ pub enum SurfaceOperationResultJson {
     Page { page: SurfacePageJson },
     OptionalRecord { record: Option<SurfaceRecordJson> },
     Updated,
+    Created { record: SurfaceRecordJson },
+    Deleted,
     Action { result: SurfaceActionResultJson },
 }
 
@@ -122,6 +136,12 @@ pub fn execute_project_surface_operation_with_host(
     let result = match kind {
         SurfaceOperationKind::SingletonUpdate | SurfaceOperationKind::PointUpdate => {
             execute_update_for_session(session, request)?
+        }
+        SurfaceOperationKind::SingletonCreate | SurfaceOperationKind::PointCreate => {
+            execute_create_for_session(session, request)?
+        }
+        SurfaceOperationKind::SingletonDelete | SurfaceOperationKind::PointDelete => {
+            execute_delete_for_session(session, request)?
         }
         SurfaceOperationKind::Action => match &request.request {
             SurfaceOperationRequestBodyJson::Action { request: action } => {
@@ -223,6 +243,26 @@ fn execute_update_for_session(
     execute_update_operation(update, &request.request).map_err(SurfaceOperationErrorJson::from)
 }
 
+fn execute_create_for_session(
+    session: &ProjectSurfaceSession,
+    request: &SurfaceOperationRequestJson,
+) -> Result<SurfaceOperationResultJson, SurfaceOperationErrorJson> {
+    let create = session
+        .admit_create_by_operation_tag(&request.operation_tag)
+        .map_err(SurfaceOperationErrorJson::from)?;
+    execute_create_operation(create, &request.request).map_err(SurfaceOperationErrorJson::from)
+}
+
+fn execute_delete_for_session(
+    session: &ProjectSurfaceSession,
+    request: &SurfaceOperationRequestJson,
+) -> Result<SurfaceOperationResultJson, SurfaceOperationErrorJson> {
+    let delete = session
+        .admit_delete_by_operation_tag(&request.operation_tag)
+        .map_err(SurfaceOperationErrorJson::from)?;
+    execute_delete_operation(delete, &request.request).map_err(SurfaceOperationErrorJson::from)
+}
+
 fn execute_read_operation(
     operation: SurfaceReadOperation<'_>,
     operation_tag: &str,
@@ -247,6 +287,10 @@ fn execute_read_operation(
         }
         SurfaceOperationRequestBodyJson::SingletonUpdate { .. }
         | SurfaceOperationRequestBodyJson::PointUpdate { .. }
+        | SurfaceOperationRequestBodyJson::SingletonCreate { .. }
+        | SurfaceOperationRequestBodyJson::PointCreate { .. }
+        | SurfaceOperationRequestBodyJson::SingletonDelete
+        | SurfaceOperationRequestBodyJson::PointDelete { .. }
         | SurfaceOperationRequestBodyJson::Action { .. } => Err(SurfaceError::request(
             "surface operation request body does not match a read operation",
         )),
@@ -270,8 +314,68 @@ fn execute_update_operation(
         | SurfaceOperationRequestBodyJson::PointRead { .. }
         | SurfaceOperationRequestBodyJson::Page { .. }
         | SurfaceOperationRequestBodyJson::UniqueLookup { .. }
+        | SurfaceOperationRequestBodyJson::SingletonCreate { .. }
+        | SurfaceOperationRequestBodyJson::PointCreate { .. }
+        | SurfaceOperationRequestBodyJson::SingletonDelete
+        | SurfaceOperationRequestBodyJson::PointDelete { .. }
         | SurfaceOperationRequestBodyJson::Action { .. } => Err(SurfaceError::request(
             "surface operation request body does not match an update operation",
+        )),
+    }
+}
+
+fn execute_create_operation(
+    create: marrow_run::SurfaceCreate<'_>,
+    request: &SurfaceOperationRequestBodyJson,
+) -> Result<SurfaceOperationResultJson, SurfaceError> {
+    match request {
+        SurfaceOperationRequestBodyJson::SingletonCreate { request } => {
+            Ok(SurfaceOperationResultJson::Created {
+                record: execute_singleton_create(create, request)?,
+            })
+        }
+        SurfaceOperationRequestBodyJson::PointCreate { request } => {
+            Ok(SurfaceOperationResultJson::Created {
+                record: execute_point_create(create, request)?,
+            })
+        }
+        SurfaceOperationRequestBodyJson::SingletonRead
+        | SurfaceOperationRequestBodyJson::PointRead { .. }
+        | SurfaceOperationRequestBodyJson::Page { .. }
+        | SurfaceOperationRequestBodyJson::UniqueLookup { .. }
+        | SurfaceOperationRequestBodyJson::SingletonUpdate { .. }
+        | SurfaceOperationRequestBodyJson::PointUpdate { .. }
+        | SurfaceOperationRequestBodyJson::SingletonDelete
+        | SurfaceOperationRequestBodyJson::PointDelete { .. }
+        | SurfaceOperationRequestBodyJson::Action { .. } => Err(SurfaceError::request(
+            "surface operation request body does not match a create operation",
+        )),
+    }
+}
+
+fn execute_delete_operation(
+    delete: marrow_run::SurfaceDelete<'_>,
+    request: &SurfaceOperationRequestBodyJson,
+) -> Result<SurfaceOperationResultJson, SurfaceError> {
+    match request {
+        SurfaceOperationRequestBodyJson::SingletonDelete => {
+            execute_singleton_delete(delete)?;
+            Ok(SurfaceOperationResultJson::Deleted)
+        }
+        SurfaceOperationRequestBodyJson::PointDelete { request } => {
+            execute_point_delete(delete, request)?;
+            Ok(SurfaceOperationResultJson::Deleted)
+        }
+        SurfaceOperationRequestBodyJson::SingletonRead
+        | SurfaceOperationRequestBodyJson::PointRead { .. }
+        | SurfaceOperationRequestBodyJson::Page { .. }
+        | SurfaceOperationRequestBodyJson::UniqueLookup { .. }
+        | SurfaceOperationRequestBodyJson::SingletonUpdate { .. }
+        | SurfaceOperationRequestBodyJson::PointUpdate { .. }
+        | SurfaceOperationRequestBodyJson::SingletonCreate { .. }
+        | SurfaceOperationRequestBodyJson::PointCreate { .. }
+        | SurfaceOperationRequestBodyJson::Action { .. } => Err(SurfaceError::request(
+            "surface operation request body does not match a delete operation",
         )),
     }
 }

@@ -64,6 +64,16 @@ from the checked program or snapshot:
   non-empty `update` list. The descriptor is checker-owned, uses
   `surface.update.v1`, carries `non_empty_patch` semantics, and is suppressed
   for source-only surfaces.
+- `AnalysisSnapshot::surface_create_operations()` iterates snapshot-bound
+  `SurfaceCreateOperationAnalysis` views for stable-surface candidates with a
+  non-empty `create` list. The descriptor is checker-owned, uses
+  `surface.create.v1`, carries exact declared-body, identity-policy, and
+  reject-existing semantics, and is suppressed for source-only surfaces.
+- `AnalysisSnapshot::surface_delete_operations()` iterates snapshot-bound
+  `SurfaceDeleteOperationAnalysis` views for stable-surface candidates with a
+  `delete` declaration. The descriptor is checker-owned, uses
+  `surface.delete.v1`, carries reject-absent full-subtree semantics, and is
+  suppressed for source-only surfaces.
 - `AnalysisSnapshot::surface_action_operations()` iterates snapshot-bound
   `SurfaceActionOperationAnalysis` views for declared surface actions. The
   descriptor is checker-owned, reuses `entry.invoke.v1` identity, parameter

@@ -13,11 +13,15 @@ mod request;
 mod route;
 mod route_binding;
 pub use execute::{
-    execute_project_surface_page_by_tag, execute_project_surface_point_read_by_tag,
-    execute_project_surface_point_update_by_tag, execute_project_surface_singleton_read_by_tag,
+    execute_project_surface_page_by_tag, execute_project_surface_point_create_by_tag,
+    execute_project_surface_point_delete_by_tag, execute_project_surface_point_read_by_tag,
+    execute_project_surface_point_update_by_tag, execute_project_surface_singleton_create_by_tag,
+    execute_project_surface_singleton_delete_by_tag, execute_project_surface_singleton_read_by_tag,
     execute_project_surface_singleton_update_by_tag, execute_project_surface_unique_lookup_by_tag,
-    execute_surface_page_by_tag, execute_surface_point_read_by_tag,
-    execute_surface_point_update_by_tag, execute_surface_singleton_read_by_tag,
+    execute_surface_page_by_tag, execute_surface_point_create_by_tag,
+    execute_surface_point_delete_by_tag, execute_surface_point_read_by_tag,
+    execute_surface_point_update_by_tag, execute_surface_singleton_create_by_tag,
+    execute_surface_singleton_delete_by_tag, execute_surface_singleton_read_by_tag,
     execute_surface_singleton_update_by_tag, execute_surface_unique_lookup_by_tag,
 };
 pub use operation::{
@@ -31,11 +35,14 @@ pub use operation_catalog::{
     SurfaceOperationCatalogErrorKind, SurfaceOperationKind,
 };
 pub use request::{
-    DecodedSurfacePageRequest, DecodedSurfacePointRequest, DecodedSurfacePointUpdateRequest,
-    DecodedSurfaceSingletonUpdateRequest, DecodedSurfaceUniqueLookupRequest,
-    SurfacePageRequestJson, SurfacePointRequestJson, SurfacePointUpdateRequestJson,
+    DecodedSurfacePageRequest, DecodedSurfacePointCreateRequest, DecodedSurfacePointDeleteRequest,
+    DecodedSurfacePointRequest, DecodedSurfacePointUpdateRequest,
+    DecodedSurfaceSingletonCreateRequest, DecodedSurfaceSingletonUpdateRequest,
+    DecodedSurfaceUniqueLookupRequest, SurfaceCreateFieldJson, SurfacePageRequestJson,
+    SurfacePointCreateRequestJson, SurfacePointDeleteRequestJson, SurfacePointRequestJson,
+    SurfacePointUpdateRequestJson, SurfaceSingletonCreateRequestJson,
     SurfaceSingletonUpdateRequestJson, SurfaceUniqueLookupRequestJson, SurfaceUpdateFieldJson,
-    SurfaceUpdateValueJson,
+    SurfaceWriteValueJson,
 };
 pub use route::{
     SURFACE_ROUTE_PROFILE_VERSION, SurfaceRouteJson, SurfaceRouteManifestJson,
@@ -59,6 +66,10 @@ pub struct SurfaceDescriptorJson {
     pub read: Vec<SurfaceReadOperationDescriptorJson>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub update: Option<SurfaceUpdateOperationDescriptorJson>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub create: Option<SurfaceCreateOperationDescriptorJson>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub delete: Option<SurfaceDeleteOperationDescriptorJson>,
     pub actions: Vec<SurfaceActionOperationDescriptorJson>,
 }
 
@@ -175,6 +186,78 @@ pub struct SurfaceUpdateFieldDescriptorJson {
     pub member_catalog_id: String,
     pub backing_required: bool,
     pub value: SurfaceOperationValueShapeJson,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SurfaceCreateOperationDescriptorJson {
+    pub profile_version: String,
+    pub operation_tag: String,
+    pub kind: SurfaceCreateOperationKindJson,
+    pub body_semantics: SurfaceCreateBodySemanticsJson,
+    pub identity_policy: SurfaceCreateIdentityPolicyJson,
+    pub existence_semantics: SurfaceCreateExistenceSemanticsJson,
+    pub store_catalog_id: String,
+    pub resource_catalog_id: String,
+    pub identity_keys: Vec<SurfaceOperationIdentityKeyJson>,
+    pub fields: Vec<SurfaceCreateFieldDescriptorJson>,
+    pub projection: Vec<SurfaceReadProjectionFieldJson>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SurfaceCreateOperationKindJson {
+    SingletonCreate,
+    PointCreate,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SurfaceCreateBodySemanticsJson {
+    ExactDeclaredBody,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SurfaceCreateIdentityPolicyJson {
+    SingletonNoIdentity,
+    ClientSuppliedIdentity,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SurfaceCreateExistenceSemanticsJson {
+    RejectExistingNoReplace,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SurfaceCreateFieldDescriptorJson {
+    pub render_label: String,
+    pub member_catalog_id: String,
+    pub value: SurfaceOperationValueShapeJson,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SurfaceDeleteOperationDescriptorJson {
+    pub profile_version: String,
+    pub operation_tag: String,
+    pub kind: SurfaceDeleteOperationKindJson,
+    pub semantics: SurfaceDeleteSemanticsJson,
+    pub store_catalog_id: String,
+    pub resource_catalog_id: String,
+    pub identity_keys: Vec<SurfaceOperationIdentityKeyJson>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SurfaceDeleteOperationKindJson {
+    SingletonDelete,
+    PointDelete,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SurfaceDeleteSemanticsJson {
+    RejectAbsentFullSubtree,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -318,6 +401,18 @@ impl SurfaceDescriptorJson {
             } else {
                 None
             },
+            create: if stable {
+                marrow_check::SurfaceCreateOperationDescriptor::from_surface(program, surface)
+                    .map(SurfaceCreateOperationDescriptorJson::from)
+            } else {
+                None
+            },
+            delete: if stable {
+                marrow_check::SurfaceDeleteOperationDescriptor::from_surface(program, surface)
+                    .map(SurfaceDeleteOperationDescriptorJson::from)
+            } else {
+                None
+            },
             actions: if stable {
                 surface
                     .actions
@@ -352,6 +447,20 @@ fn omit_uncallable_operation_tags(surfaces: &mut [SurfaceDescriptorJson]) {
         {
             surface.update = None;
         }
+        if surface
+            .create
+            .as_ref()
+            .is_some_and(|create| duplicate_tags.contains(&create.operation_tag))
+        {
+            surface.create = None;
+        }
+        if surface
+            .delete
+            .as_ref()
+            .is_some_and(|delete| duplicate_tags.contains(&delete.operation_tag))
+        {
+            surface.delete = None;
+        }
         surface
             .actions
             .retain(|action| !duplicate_tags.contains(&action.operation_tag));
@@ -364,6 +473,12 @@ fn all_operation_tags(surfaces: &[SurfaceDescriptorJson]) -> Vec<&str> {
         tags.extend(surface.read.iter().map(|read| read.operation_tag.as_str()));
         if let Some(update) = &surface.update {
             tags.push(update.operation_tag.as_str());
+        }
+        if let Some(create) = &surface.create {
+            tags.push(create.operation_tag.as_str());
+        }
+        if let Some(delete) = &surface.delete {
+            tags.push(delete.operation_tag.as_str());
         }
         tags.extend(
             surface
@@ -589,6 +704,129 @@ impl From<marrow_check::SurfaceUpdateOperationField> for SurfaceUpdateFieldDescr
             member_catalog_id: field.member_catalog_id.as_str().to_string(),
             backing_required: field.backing_required,
             value: SurfaceOperationValueShapeJson::from(field.value),
+        }
+    }
+}
+
+impl From<marrow_check::SurfaceCreateOperationDescriptor> for SurfaceCreateOperationDescriptorJson {
+    fn from(descriptor: marrow_check::SurfaceCreateOperationDescriptor) -> Self {
+        Self {
+            profile_version: descriptor.profile_version.to_string(),
+            operation_tag: descriptor.operation_tag,
+            kind: SurfaceCreateOperationKindJson::from(descriptor.kind),
+            body_semantics: SurfaceCreateBodySemanticsJson::from(descriptor.body_semantics),
+            identity_policy: SurfaceCreateIdentityPolicyJson::from(descriptor.identity_policy),
+            existence_semantics: SurfaceCreateExistenceSemanticsJson::from(
+                descriptor.existence_semantics,
+            ),
+            store_catalog_id: descriptor.store_catalog_id.as_str().to_string(),
+            resource_catalog_id: descriptor.resource_catalog_id.as_str().to_string(),
+            identity_keys: descriptor
+                .identity_keys
+                .into_iter()
+                .map(SurfaceOperationIdentityKeyJson::from)
+                .collect(),
+            fields: descriptor
+                .fields
+                .into_iter()
+                .map(SurfaceCreateFieldDescriptorJson::from)
+                .collect(),
+            projection: descriptor
+                .projection
+                .into_iter()
+                .map(SurfaceReadProjectionFieldJson::from)
+                .collect(),
+        }
+    }
+}
+
+impl From<marrow_check::SurfaceCreateOperationDescriptorKind> for SurfaceCreateOperationKindJson {
+    fn from(kind: marrow_check::SurfaceCreateOperationDescriptorKind) -> Self {
+        match kind {
+            marrow_check::SurfaceCreateOperationDescriptorKind::SingletonCreate => {
+                Self::SingletonCreate
+            }
+            marrow_check::SurfaceCreateOperationDescriptorKind::PointCreate => Self::PointCreate,
+        }
+    }
+}
+
+impl From<marrow_check::SurfaceCreateBodySemantics> for SurfaceCreateBodySemanticsJson {
+    fn from(semantics: marrow_check::SurfaceCreateBodySemantics) -> Self {
+        match semantics {
+            marrow_check::SurfaceCreateBodySemantics::ExactDeclaredBody => Self::ExactDeclaredBody,
+        }
+    }
+}
+
+impl From<marrow_check::SurfaceCreateIdentityPolicy> for SurfaceCreateIdentityPolicyJson {
+    fn from(policy: marrow_check::SurfaceCreateIdentityPolicy) -> Self {
+        match policy {
+            marrow_check::SurfaceCreateIdentityPolicy::SingletonNoIdentity => {
+                Self::SingletonNoIdentity
+            }
+            marrow_check::SurfaceCreateIdentityPolicy::ClientSuppliedIdentity => {
+                Self::ClientSuppliedIdentity
+            }
+        }
+    }
+}
+
+impl From<marrow_check::SurfaceCreateExistenceSemantics> for SurfaceCreateExistenceSemanticsJson {
+    fn from(semantics: marrow_check::SurfaceCreateExistenceSemantics) -> Self {
+        match semantics {
+            marrow_check::SurfaceCreateExistenceSemantics::RejectExistingNoReplace => {
+                Self::RejectExistingNoReplace
+            }
+        }
+    }
+}
+
+impl From<marrow_check::SurfaceCreateOperationField> for SurfaceCreateFieldDescriptorJson {
+    fn from(field: marrow_check::SurfaceCreateOperationField) -> Self {
+        Self {
+            render_label: field.render_label,
+            member_catalog_id: field.member_catalog_id.as_str().to_string(),
+            value: SurfaceOperationValueShapeJson::from(field.value),
+        }
+    }
+}
+
+impl From<marrow_check::SurfaceDeleteOperationDescriptor> for SurfaceDeleteOperationDescriptorJson {
+    fn from(descriptor: marrow_check::SurfaceDeleteOperationDescriptor) -> Self {
+        Self {
+            profile_version: descriptor.profile_version.to_string(),
+            operation_tag: descriptor.operation_tag,
+            kind: SurfaceDeleteOperationKindJson::from(descriptor.kind),
+            semantics: SurfaceDeleteSemanticsJson::from(descriptor.semantics),
+            store_catalog_id: descriptor.store_catalog_id.as_str().to_string(),
+            resource_catalog_id: descriptor.resource_catalog_id.as_str().to_string(),
+            identity_keys: descriptor
+                .identity_keys
+                .into_iter()
+                .map(SurfaceOperationIdentityKeyJson::from)
+                .collect(),
+        }
+    }
+}
+
+impl From<marrow_check::SurfaceDeleteOperationDescriptorKind> for SurfaceDeleteOperationKindJson {
+    fn from(kind: marrow_check::SurfaceDeleteOperationDescriptorKind) -> Self {
+        match kind {
+            marrow_check::SurfaceDeleteOperationDescriptorKind::SingletonDelete => {
+                Self::SingletonDelete
+            }
+            marrow_check::SurfaceDeleteOperationDescriptorKind::PointDelete => Self::PointDelete,
+        }
+    }
+}
+
+impl From<marrow_check::SurfaceDeleteSemantics> for SurfaceDeleteSemanticsJson {
+    fn from(semantics: marrow_check::SurfaceDeleteSemantics) -> Self {
+        match semantics {
+            marrow_check::SurfaceDeleteSemantics::RejectAbsentFullSubtree => {
+                Self::RejectAbsentFullSubtree
+            }
         }
     }
 }
@@ -1026,7 +1264,7 @@ mod tests {
     };
     use marrow_run::{
         Host, ProjectOpen, ProjectSession, ProjectSurfaceReadSession, ProjectSurfaceSession,
-        SURFACE_ABI_MISMATCH, SURFACE_ACTION, SURFACE_CONFLICT, SURFACE_CURSOR,
+        SURFACE_ABI_MISMATCH, SURFACE_ABSENT, SURFACE_ACTION, SURFACE_CONFLICT, SURFACE_CURSOR,
         SURFACE_INVALID_DATA, SURFACE_LIMIT, SURFACE_MAX_VALUE_BYTES, SURFACE_REQUEST,
         SURFACE_STALE_CURSOR, SessionEntry, SurfaceActionInvocation, SurfaceCollectionRead,
         SurfaceEnumValue, SurfaceNodeRead, SurfaceReadError, SurfaceReadField, SurfaceReadIdentity,
@@ -1047,16 +1285,18 @@ mod tests {
     use crate::surface::{
         SURFACE_OPERATION_PROFILE_VERSION, SurfaceAbiJson, SurfaceActionArgumentShapeJson,
         SurfaceActionRequestJson, SurfaceActionResultJson, SurfaceActionValueJson,
-        SurfaceArgumentJson, SurfaceCatalogStatusJson, SurfaceCursorBoundaryJson,
-        SurfaceCursorJson, SurfaceIdentityJson, SurfaceKeyJson, SurfaceOperationCatalog,
-        SurfaceOperationCatalogErrorKind, SurfaceOperationErrorJson, SurfaceOperationKind,
-        SurfaceOperationRequestBodyJson, SurfaceOperationRequestJson, SurfaceOperationResultJson,
-        SurfacePageJson, SurfacePageRequestJson, SurfacePointRequestJson,
+        SurfaceArgumentJson, SurfaceCatalogStatusJson, SurfaceCreateFieldJson,
+        SurfaceCreateOperationKindJson, SurfaceCursorBoundaryJson, SurfaceCursorJson,
+        SurfaceDeleteOperationKindJson, SurfaceIdentityJson, SurfaceKeyJson,
+        SurfaceOperationCatalog, SurfaceOperationCatalogErrorKind, SurfaceOperationErrorJson,
+        SurfaceOperationKind, SurfaceOperationRequestBodyJson, SurfaceOperationRequestJson,
+        SurfaceOperationResultJson, SurfacePageJson, SurfacePageRequestJson,
+        SurfacePointCreateRequestJson, SurfacePointDeleteRequestJson, SurfacePointRequestJson,
         SurfacePointUpdateRequestJson, SurfaceReadOperationKindJson, SurfaceRecordJson,
         SurfaceRouteBindingErrorKind, SurfaceRouteBindings, SurfaceRouteManifestJson,
         SurfaceRouteMethodJson, SurfaceRouteRequestJson, SurfaceSingletonUpdateRequestJson,
-        SurfaceUniqueLookupRequestJson, SurfaceUpdateFieldJson, SurfaceUpdateValueJson,
-        SurfaceValueJson,
+        SurfaceUniqueLookupRequestJson, SurfaceUpdateFieldJson, SurfaceValueJson,
+        SurfaceWriteValueJson,
     };
 
     static TEMP_PROJECT_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -1221,6 +1461,18 @@ surface Books from ^books
     action addBook
 ";
 
+    const SURFACE_CREATE_DELETE: &str = "\
+resource Book
+    required title: string
+    required author: string
+store ^books(id: int): Book
+
+surface Books from ^books
+    fields title, author
+    create title, author
+    delete
+";
+
     const DUPLICATE_ACTION_TAG_SURFACES: &str = "\
 resource Book
     required title: string
@@ -1297,6 +1549,23 @@ pub fn seed()
     first.title = \"Dune\"
     transaction
         ^books(1) = first
+";
+
+    const PROJECT_CREATE_DELETE_SURFACE: &str = "\
+module shelf
+
+resource Book
+    required title: string
+    required author: string
+store ^books(id: int): Book
+
+surface Books from ^books
+    fields title, author
+    create title, author
+    delete
+
+pub fn seed()
+    return
 ";
 
     const PROJECT_COLLECTION_UPDATE_SURFACE: &str = "\
@@ -1674,6 +1943,24 @@ pub fn seed()
             .unwrap_or_else(|| panic!("surface `{surface_name}` exposes an update tag"))
     }
 
+    fn create_operation_tag(program: &CheckedProgram, surface_name: &str) -> String {
+        SurfaceAbiJson::from_program(program)
+            .surfaces
+            .into_iter()
+            .find(|surface| surface.name == surface_name)
+            .and_then(|surface| surface.create.map(|create| create.operation_tag))
+            .unwrap_or_else(|| panic!("surface `{surface_name}` exposes a create tag"))
+    }
+
+    fn delete_operation_tag(program: &CheckedProgram, surface_name: &str) -> String {
+        SurfaceAbiJson::from_program(program)
+            .surfaces
+            .into_iter()
+            .find(|surface| surface.name == surface_name)
+            .and_then(|surface| surface.delete.map(|delete| delete.operation_tag))
+            .unwrap_or_else(|| panic!("surface `{surface_name}` exposes a delete tag"))
+    }
+
     fn checker_update_operation_tag(program: &CheckedProgram, surface: SurfaceId) -> String {
         SurfaceUpdateOperationDescriptor::from_surface(program, program.facts.surface(surface))
             .map(|descriptor| descriptor.operation_tag)
@@ -2044,11 +2331,15 @@ pub fn seed()
         }
     }
 
-    fn update_field(
-        catalog_id: CatalogId,
-        value: SurfaceUpdateValueJson,
-    ) -> SurfaceUpdateFieldJson {
+    fn update_field(catalog_id: CatalogId, value: SurfaceWriteValueJson) -> SurfaceUpdateFieldJson {
         SurfaceUpdateFieldJson {
+            catalog_id: catalog_id.as_str().into(),
+            value,
+        }
+    }
+
+    fn create_field(catalog_id: CatalogId, value: SurfaceWriteValueJson) -> SurfaceCreateFieldJson {
+        SurfaceCreateFieldJson {
             catalog_id: catalog_id.as_str().into(),
             value,
         }
@@ -2067,6 +2358,36 @@ pub fn seed()
                 }],
             },
             fields,
+        }
+    }
+
+    fn point_create_request(
+        runtime: &CheckedRuntimeProgram,
+        id: i64,
+        fields: Vec<SurfaceCreateFieldJson>,
+    ) -> SurfacePointCreateRequestJson {
+        SurfacePointCreateRequestJson {
+            identity: SurfaceIdentityJson {
+                store_catalog_id: store_catalog_id(runtime, "books").as_str().into(),
+                keys: vec![SurfaceKeyJson::Int {
+                    value: id.to_string(),
+                }],
+            },
+            fields,
+        }
+    }
+
+    fn point_delete_request(
+        runtime: &CheckedRuntimeProgram,
+        id: i64,
+    ) -> SurfacePointDeleteRequestJson {
+        SurfacePointDeleteRequestJson {
+            identity: SurfaceIdentityJson {
+                store_catalog_id: store_catalog_id(runtime, "books").as_str().into(),
+                keys: vec![SurfaceKeyJson::Int {
+                    value: id.to_string(),
+                }],
+            },
         }
     }
 
@@ -2271,6 +2592,42 @@ pub fn seed()
     }
 
     #[test]
+    fn surface_abi_exports_create_delete_descriptors() {
+        let (program, _runtime) = checked_surface_program(SURFACE_CREATE_DELETE);
+        let abi = SurfaceAbiJson::from_program(&program);
+        let books_json = abi
+            .surfaces
+            .iter()
+            .find(|surface| surface.name == "Books")
+            .expect("Books descriptor");
+        let create = books_json.create.as_ref().expect("create descriptor");
+        let delete = books_json.delete.as_ref().expect("delete descriptor");
+
+        assert_eq!(create.profile_version, "surface.create.v1");
+        assert_eq!(delete.profile_version, "surface.delete.v1");
+        assert_eq!(create.kind, SurfaceCreateOperationKindJson::PointCreate);
+        assert_eq!(delete.kind, SurfaceDeleteOperationKindJson::PointDelete);
+        assert_eq!(
+            create
+                .fields
+                .iter()
+                .map(|field| field.render_label.as_str())
+                .collect::<Vec<_>>(),
+            vec!["title", "author"]
+        );
+        assert_eq!(
+            create
+                .projection
+                .iter()
+                .map(|field| field.render_label.as_str())
+                .collect::<Vec<_>>(),
+            vec!["title", "author"]
+        );
+        assert_eq!(create.store_catalog_id, delete.store_catalog_id);
+        assert_eq!(create.resource_catalog_id, delete.resource_catalog_id);
+    }
+
+    #[test]
     fn surface_route_manifest_derives_tag_routes_from_surface_abi() {
         let (program, _runtime) = checked_surface_program(SURFACE_UPDATE_WITH_ENUM_IDENTITY_INDEX);
         let abi = SurfaceAbiJson::from_program(&program);
@@ -2309,6 +2666,51 @@ pub fn seed()
                 "route path carries the admitted operation tag: {route:#?}"
             );
         }
+    }
+
+    #[test]
+    fn surface_route_manifest_and_catalog_include_create_delete_routes() {
+        let (program, _runtime) = checked_surface_program(SURFACE_CREATE_DELETE);
+        let abi = SurfaceAbiJson::from_program(&program);
+        let manifest = SurfaceRouteManifestJson::from_abi(&abi);
+        let catalog = SurfaceOperationCatalog::from_abi(&abi).expect("operation catalog");
+        let create_tag = create_operation_tag(&program, "Books");
+        let delete_tag = delete_operation_tag(&program, "Books");
+
+        assert_eq!(
+            catalog.kind(&create_tag),
+            Some(SurfaceOperationKind::PointCreate)
+        );
+        assert_eq!(
+            catalog.kind(&delete_tag),
+            Some(SurfaceOperationKind::PointDelete)
+        );
+        let books_routes = manifest
+            .routes
+            .iter()
+            .filter(|route| route.surface.name == "Books")
+            .collect::<Vec<_>>();
+        assert_eq!(
+            books_routes
+                .iter()
+                .map(|route| (route.alias.as_str(), route.request))
+                .collect::<Vec<_>>(),
+            vec![
+                ("get", SurfaceRouteRequestJson::PointRead),
+                ("create", SurfaceRouteRequestJson::PointCreate),
+                ("delete", SurfaceRouteRequestJson::PointDelete),
+            ]
+        );
+        assert!(
+            books_routes
+                .iter()
+                .any(|route| route.path.starts_with("/surface/v1/create/"))
+        );
+        assert!(
+            books_routes
+                .iter()
+                .any(|route| route.path.starts_with("/surface/v1/delete/"))
+        );
     }
 
     #[test]
@@ -2756,7 +3158,7 @@ pub fn seed()
                 1,
                 vec![update_field(
                     field_catalog_id(&runtime, "books", "title"),
-                    SurfaceUpdateValueJson::String {
+                    SurfaceWriteValueJson::String {
                         value: "Dune Revised".into(),
                     },
                 )],
@@ -2866,7 +3268,7 @@ pub fn seed()
                         1,
                         vec![update_field(
                             field_catalog_id(&runtime, "books", "title"),
-                            SurfaceUpdateValueJson::String {
+                            SurfaceWriteValueJson::String {
                                 value: "Dune Revised".into(),
                             },
                         )],
@@ -2901,6 +3303,142 @@ pub fn seed()
             Some(&SurfaceValueJson::String {
                 value: "Dune Revised".into()
             })
+        );
+    }
+
+    #[test]
+    fn surface_operation_envelope_dispatches_project_create_and_delete() {
+        let root = TempProject::new("marrow-json-project-surface-create-delete");
+        write_native_project(&root, PROJECT_CREATE_DELETE_SURFACE);
+        seed_project(&root, "shelf::seed");
+
+        let read_session =
+            ProjectSurfaceReadSession::open(root.path()).expect("open project read session");
+        let runtime = read_session.program().runtime();
+        let create_tag = create_operation_tag(read_session.program(), "Books");
+        let read_only_create = SurfaceOperationRequestJson {
+            profile_version: SURFACE_OPERATION_PROFILE_VERSION.into(),
+            operation_tag: create_tag.clone(),
+            request: SurfaceOperationRequestBodyJson::PointCreate {
+                request: point_create_request(
+                    &runtime,
+                    1,
+                    vec![
+                        create_field(
+                            field_catalog_id(&runtime, "books", "title"),
+                            SurfaceWriteValueJson::String {
+                                value: "Dune".into(),
+                            },
+                        ),
+                        create_field(
+                            field_catalog_id(&runtime, "books", "author"),
+                            SurfaceWriteValueJson::String {
+                                value: "Frank".into(),
+                            },
+                        ),
+                    ],
+                ),
+            },
+        };
+        assert_operation_error(
+            crate::surface::execute_project_surface_operation_read_only(
+                &read_session,
+                &read_only_create,
+            ),
+            SURFACE_ABI_MISMATCH,
+        );
+        drop(read_session);
+
+        let session =
+            ProjectSurfaceSession::open(root.path()).expect("open project surface session");
+        let runtime = session.program().runtime();
+        let surface = surface_id(session.program(), "Books");
+        let read_tag = read_operation_tag_matching(session.program(), surface, |kind| {
+            matches!(kind, SurfaceReadOperationKind::PointRead { .. })
+        });
+        let create_tag = create_operation_tag(session.program(), "Books");
+        let delete_tag = delete_operation_tag(session.program(), "Books");
+
+        let create_response = crate::surface::execute_project_surface_operation(
+            &session,
+            &SurfaceOperationRequestJson {
+                profile_version: SURFACE_OPERATION_PROFILE_VERSION.into(),
+                operation_tag: create_tag.clone(),
+                request: SurfaceOperationRequestBodyJson::PointCreate {
+                    request: point_create_request(
+                        &runtime,
+                        1,
+                        vec![
+                            create_field(
+                                field_catalog_id(&runtime, "books", "title"),
+                                SurfaceWriteValueJson::String {
+                                    value: "Dune".into(),
+                                },
+                            ),
+                            create_field(
+                                field_catalog_id(&runtime, "books", "author"),
+                                SurfaceWriteValueJson::String {
+                                    value: "Frank".into(),
+                                },
+                            ),
+                        ],
+                    ),
+                },
+            },
+        )
+        .expect("operation envelope executes point create");
+        assert_eq!(create_response.operation_tag, create_tag);
+        let SurfaceOperationResultJson::Created { record } = create_response.result else {
+            panic!("expected created result: {create_response:?}");
+        };
+        assert_eq!(
+            field_value(&record, &field_catalog_id(&runtime, "books", "title")),
+            Some(&SurfaceValueJson::String {
+                value: "Dune".into()
+            })
+        );
+
+        let verify_response = crate::surface::execute_project_surface_operation(
+            &session,
+            &SurfaceOperationRequestJson {
+                profile_version: SURFACE_OPERATION_PROFILE_VERSION.into(),
+                operation_tag: read_tag.clone(),
+                request: SurfaceOperationRequestBodyJson::PointRead {
+                    request: point_read_request(&runtime, 1),
+                },
+            },
+        )
+        .expect("operation envelope reads created record");
+        assert!(matches!(
+            verify_response.result,
+            SurfaceOperationResultJson::Record { .. }
+        ));
+
+        let delete_response = crate::surface::execute_project_surface_operation(
+            &session,
+            &SurfaceOperationRequestJson {
+                profile_version: SURFACE_OPERATION_PROFILE_VERSION.into(),
+                operation_tag: delete_tag.clone(),
+                request: SurfaceOperationRequestBodyJson::PointDelete {
+                    request: point_delete_request(&runtime, 1),
+                },
+            },
+        )
+        .expect("operation envelope executes point delete");
+        assert_eq!(delete_response.operation_tag, delete_tag);
+        assert_eq!(delete_response.result, SurfaceOperationResultJson::Deleted);
+        assert_operation_error(
+            crate::surface::execute_project_surface_operation(
+                &session,
+                &SurfaceOperationRequestJson {
+                    profile_version: SURFACE_OPERATION_PROFILE_VERSION.into(),
+                    operation_tag: read_tag,
+                    request: SurfaceOperationRequestBodyJson::PointRead {
+                        request: point_read_request(&runtime, 1),
+                    },
+                },
+            ),
+            SURFACE_ABSENT,
         );
     }
 
@@ -3305,7 +3843,7 @@ pub fn seed()
                         2,
                         vec![update_field(
                             field_catalog_id(&runtime, "books", "title"),
-                            SurfaceUpdateValueJson::String {
+                            SurfaceWriteValueJson::String {
                                 value: "Dune Messiah Revised".into(),
                             },
                         )],
@@ -3495,7 +4033,7 @@ pub fn seed()
                             1,
                             vec![update_field(
                                 field_catalog_id(&runtime, "books", "title"),
-                                SurfaceUpdateValueJson::String {
+                                SurfaceWriteValueJson::String {
                                     value: "Dune Revised".into(),
                                 },
                             )],
@@ -3643,7 +4181,7 @@ pub fn seed()
                             2,
                             vec![update_field(
                                 field_catalog_id(&runtime, "books", "isbn"),
-                                SurfaceUpdateValueJson::String {
+                                SurfaceWriteValueJson::String {
                                     value: "isbn-a1".into(),
                                 },
                             )],
@@ -3881,7 +4419,7 @@ pub fn seed()
                 1,
                 vec![update_field(
                     field_catalog_id(&runtime, "books", "status"),
-                    SurfaceUpdateValueJson::Enum {
+                    SurfaceWriteValueJson::Enum {
                         enum_catalog_id: enum_catalog_id(&runtime, "Status").as_str().into(),
                         member_catalog_id: enum_member_catalog_id(&runtime, "Status", "published")
                             .as_str()
@@ -3933,7 +4471,7 @@ pub fn seed()
             &SurfaceSingletonUpdateRequestJson {
                 fields: vec![update_field(
                     field_catalog_id(&runtime, "settings", "mode"),
-                    SurfaceUpdateValueJson::String {
+                    SurfaceWriteValueJson::String {
                         value: "compact".into(),
                     },
                 )],
@@ -4113,9 +4651,7 @@ pub fn seed()
     #[test]
     fn surface_execute_module_does_not_introduce_serving_or_lifecycle_concepts() {
         let source = include_str!("surface/execute.rs").to_lowercase();
-        for forbidden in [
-            "route", "server", "http", "client", "create", "delete", "opaque",
-        ] {
+        for forbidden in ["route", "server", "http", "client", "opaque"] {
             assert!(
                 !source.contains(forbidden),
                 "surface JSON execute boundary must stay transport-neutral: {forbidden}"
@@ -4126,9 +4662,7 @@ pub fn seed()
     #[test]
     fn surface_operation_module_does_not_introduce_serving_or_lifecycle_concepts() {
         let source = include_str!("surface/operation.rs").to_lowercase();
-        for forbidden in [
-            "route", "server", "http", "client", "create", "delete", "opaque",
-        ] {
+        for forbidden in ["route", "server", "http", "client", "opaque"] {
             assert!(
                 !source.contains(forbidden),
                 "surface operation envelope must stay transport-neutral: {forbidden}"
@@ -4358,7 +4892,7 @@ pub fn seed()
             vec![
                 update_field(
                     field_catalog_id(&runtime, "books", "status"),
-                    SurfaceUpdateValueJson::Enum {
+                    SurfaceWriteValueJson::Enum {
                         enum_catalog_id: enum_catalog_id(&runtime, "Status").as_str().into(),
                         member_catalog_id: enum_member_catalog_id(&runtime, "Status", "published")
                             .as_str()
@@ -4367,7 +4901,7 @@ pub fn seed()
                 ),
                 update_field(
                     field_catalog_id(&runtime, "books", "author"),
-                    SurfaceUpdateValueJson::Identity {
+                    SurfaceWriteValueJson::Identity {
                         store_catalog_id: store_catalog_id(&runtime, "authors").as_str().into(),
                         keys: vec![SurfaceKeyJson::Int { value: "8".into() }],
                     },
@@ -4452,7 +4986,7 @@ pub fn seed()
         let request = SurfaceSingletonUpdateRequestJson {
             fields: vec![update_field(
                 field_catalog_id(&runtime, "settings", "mode"),
-                SurfaceUpdateValueJson::String {
+                SurfaceWriteValueJson::String {
                     value: "compact".into(),
                 },
             )],
@@ -4482,14 +5016,14 @@ pub fn seed()
         for (member, value, expected) in [
             (
                 "day",
-                SurfaceUpdateValueJson::Date {
+                SurfaceWriteValueJson::Date {
                     days_since_epoch: SUPPORTED_DATE_MIN_DAYS - 1,
                 },
                 SurfaceValue::Date(0),
             ),
             (
                 "seenAt",
-                SurfaceUpdateValueJson::Instant {
+                SurfaceWriteValueJson::Instant {
                     nanos_since_epoch: (SUPPORTED_INSTANT_MAX_NANOS + 1).to_string(),
                 },
                 SurfaceValue::Instant(0),
@@ -4579,11 +5113,11 @@ pub fn seed()
         let status = field_catalog_id(&runtime, "books", "status");
 
         for value in [
-            SurfaceUpdateValueJson::Int { value: "01".into() },
-            SurfaceUpdateValueJson::Decimal {
+            SurfaceWriteValueJson::Int { value: "01".into() },
+            SurfaceWriteValueJson::Decimal {
                 value: "1.50".into(),
             },
-            SurfaceUpdateValueJson::Bytes {
+            SurfaceWriteValueJson::Bytes {
                 value_b64: "!!!!".into(),
             },
         ] {
@@ -4606,7 +5140,7 @@ pub fn seed()
             },
             fields: vec![SurfaceUpdateFieldJson {
                 catalog_id: "not-a-catalog-id".into(),
-                value: SurfaceUpdateValueJson::String {
+                value: SurfaceWriteValueJson::String {
                     value: "ignored".into(),
                 },
             }],
@@ -4632,7 +5166,7 @@ pub fn seed()
             1,
             vec![update_field(
                 field_catalog_id(&runtime, "books", "privateCode"),
-                SurfaceUpdateValueJson::String {
+                SurfaceWriteValueJson::String {
                     value: "leak".into(),
                 },
             )],

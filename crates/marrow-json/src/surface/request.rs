@@ -1,9 +1,9 @@
 use marrow_run::{
-    SurfaceCollectionPage, SurfaceCollectionPageRequest, SurfaceCollectionRead,
-    SurfaceCursorBoundaryInputShape, SurfaceIdentityInputShape, SurfaceInputKeyShape,
-    SurfaceNodeRead, SurfaceNodeReadShape, SurfacePageBoundary, SurfacePageCursor,
-    SurfaceReadError, SurfaceReadIdentity, SurfaceUpdate, SurfaceUpdateField, SurfaceUpdateInput,
-    SurfaceValue,
+    SurfaceCollectionPage, SurfaceCollectionPageRequest, SurfaceCollectionRead, SurfaceCreate,
+    SurfaceCreateField, SurfaceCreateInput, SurfaceCursorBoundaryInputShape, SurfaceDelete,
+    SurfaceDeleteInput, SurfaceIdentityInputShape, SurfaceInputKeyShape, SurfaceNodeRead,
+    SurfaceNodeReadShape, SurfacePageBoundary, SurfacePageCursor, SurfaceReadError,
+    SurfaceReadIdentity, SurfaceUpdate, SurfaceUpdateField, SurfaceUpdateInput, SurfaceValue,
 };
 use marrow_store::Decimal;
 use marrow_store::cell::CatalogId;
@@ -50,14 +50,36 @@ pub struct SurfaceSingletonUpdateRequestJson {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SurfacePointCreateRequestJson {
+    pub identity: SurfaceIdentityJson,
+    pub fields: Vec<SurfaceCreateFieldJson>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SurfaceSingletonCreateRequestJson {
+    pub fields: Vec<SurfaceCreateFieldJson>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SurfacePointDeleteRequestJson {
+    pub identity: SurfaceIdentityJson,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SurfaceUpdateFieldJson {
     pub catalog_id: String,
-    pub value: SurfaceUpdateValueJson,
+    pub value: SurfaceWriteValueJson,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SurfaceCreateFieldJson {
+    pub catalog_id: String,
+    pub value: SurfaceWriteValueJson,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-pub enum SurfaceUpdateValueJson {
+pub enum SurfaceWriteValueJson {
     Int {
         value: String,
     },
@@ -118,6 +140,22 @@ pub struct DecodedSurfacePointUpdateRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DecodedSurfaceSingletonUpdateRequest {
     fields: Vec<SurfaceUpdateField>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DecodedSurfacePointCreateRequest {
+    identity: Vec<SavedKey>,
+    fields: Vec<SurfaceCreateField>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DecodedSurfaceSingletonCreateRequest {
+    fields: Vec<SurfaceCreateField>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DecodedSurfacePointDeleteRequest {
+    identity: Vec<SavedKey>,
 }
 
 impl SurfacePointRequestJson {
@@ -257,11 +295,84 @@ impl SurfaceSingletonUpdateRequestJson {
     }
 }
 
+impl SurfacePointCreateRequestJson {
+    pub fn decode(
+        &self,
+        create: &SurfaceCreate<'_>,
+    ) -> Result<DecodedSurfacePointCreateRequest, SurfaceReadError> {
+        let shape = create.point_identity_shape()?;
+        Ok(DecodedSurfacePointCreateRequest {
+            identity: decode_identity_json(
+                &self.identity,
+                &shape,
+                SurfaceJsonErrorContext::Request,
+            )?,
+            fields: decode_create_fields_json(&self.fields, SurfaceJsonErrorContext::Request)?,
+        })
+    }
+}
+
+impl SurfaceSingletonCreateRequestJson {
+    pub fn decode(
+        &self,
+        create: &SurfaceCreate<'_>,
+    ) -> Result<DecodedSurfaceSingletonCreateRequest, SurfaceReadError> {
+        if create.shape() != SurfaceNodeReadShape::Singleton {
+            return Err(SurfaceJsonErrorContext::Request
+                .error("surface singleton create request targets a keyed surface"));
+        }
+        Ok(DecodedSurfaceSingletonCreateRequest {
+            fields: decode_create_fields_json(&self.fields, SurfaceJsonErrorContext::Request)?,
+        })
+    }
+}
+
+impl SurfacePointDeleteRequestJson {
+    pub fn decode(
+        &self,
+        delete: &SurfaceDelete<'_>,
+    ) -> Result<DecodedSurfacePointDeleteRequest, SurfaceReadError> {
+        let shape = delete.point_identity_shape()?;
+        Ok(DecodedSurfacePointDeleteRequest {
+            identity: decode_identity_json(
+                &self.identity,
+                &shape,
+                SurfaceJsonErrorContext::Request,
+            )?,
+        })
+    }
+}
+
 impl DecodedSurfacePointUpdateRequest {
     pub fn as_update_input(&self) -> SurfaceUpdateInput<'_> {
         SurfaceUpdateInput::Point {
             identity: &self.identity,
             fields: &self.fields,
+        }
+    }
+}
+
+impl DecodedSurfacePointCreateRequest {
+    pub fn as_create_input(&self) -> SurfaceCreateInput<'_> {
+        SurfaceCreateInput::Point {
+            identity: &self.identity,
+            fields: &self.fields,
+        }
+    }
+}
+
+impl DecodedSurfaceSingletonCreateRequest {
+    pub fn as_create_input(&self) -> SurfaceCreateInput<'_> {
+        SurfaceCreateInput::Singleton {
+            fields: &self.fields,
+        }
+    }
+}
+
+impl DecodedSurfacePointDeleteRequest {
+    pub fn as_delete_input(&self) -> SurfaceDeleteInput<'_> {
+        SurfaceDeleteInput::Point {
+            identity: &self.identity,
         }
     }
 }
@@ -532,36 +643,51 @@ fn decode_update_fields_json(
         .map(|field| {
             Ok(SurfaceUpdateField {
                 catalog_id: parse_catalog_id(&field.catalog_id, "update field", context)?,
-                value: decode_update_value_json(&field.value, context)?,
+                value: decode_surface_write_value_json(&field.value, context)?,
             })
         })
         .collect()
 }
 
-fn decode_update_value_json(
-    value: &SurfaceUpdateValueJson,
+fn decode_create_fields_json(
+    fields: &[SurfaceCreateFieldJson],
+    context: SurfaceJsonErrorContext,
+) -> Result<Vec<SurfaceCreateField>, SurfaceReadError> {
+    fields
+        .iter()
+        .map(|field| {
+            Ok(SurfaceCreateField {
+                catalog_id: parse_catalog_id(&field.catalog_id, "create field", context)?,
+                value: decode_surface_write_value_json(&field.value, context)?,
+            })
+        })
+        .collect()
+}
+
+fn decode_surface_write_value_json(
+    value: &SurfaceWriteValueJson,
     context: SurfaceJsonErrorContext,
 ) -> Result<SurfaceValue, SurfaceReadError> {
     Ok(match value {
-        SurfaceUpdateValueJson::Int { value } => {
+        SurfaceWriteValueJson::Int { value } => {
             SurfaceValue::Int(parse_i64_string(value, context)?)
         }
-        SurfaceUpdateValueJson::Bool { value } => SurfaceValue::Bool(*value),
-        SurfaceUpdateValueJson::String { value } => SurfaceValue::Str(value.clone()),
-        SurfaceUpdateValueJson::Date { days_since_epoch } => SurfaceValue::Date(*days_since_epoch),
-        SurfaceUpdateValueJson::Duration { nanos } => {
+        SurfaceWriteValueJson::Bool { value } => SurfaceValue::Bool(*value),
+        SurfaceWriteValueJson::String { value } => SurfaceValue::Str(value.clone()),
+        SurfaceWriteValueJson::Date { days_since_epoch } => SurfaceValue::Date(*days_since_epoch),
+        SurfaceWriteValueJson::Duration { nanos } => {
             SurfaceValue::Duration(parse_i128_string(nanos, context)?)
         }
-        SurfaceUpdateValueJson::Instant { nanos_since_epoch } => {
+        SurfaceWriteValueJson::Instant { nanos_since_epoch } => {
             SurfaceValue::Instant(parse_i128_string(nanos_since_epoch, context)?)
         }
-        SurfaceUpdateValueJson::Decimal { value } => {
+        SurfaceWriteValueJson::Decimal { value } => {
             SurfaceValue::Decimal(parse_decimal_string(value, context)?)
         }
-        SurfaceUpdateValueJson::Bytes { value_b64 } => {
+        SurfaceWriteValueJson::Bytes { value_b64 } => {
             SurfaceValue::Bytes(decode_base64(value_b64, context)?)
         }
-        SurfaceUpdateValueJson::Enum {
+        SurfaceWriteValueJson::Enum {
             enum_catalog_id,
             member_catalog_id,
         } => SurfaceValue::Enum(marrow_run::SurfaceEnumValue {
@@ -569,20 +695,20 @@ fn decode_update_value_json(
             member_catalog_id: parse_catalog_id(member_catalog_id, "enum member", context)?,
             render_label: String::new(),
         }),
-        SurfaceUpdateValueJson::Identity {
+        SurfaceWriteValueJson::Identity {
             store_catalog_id,
             keys,
         } => SurfaceValue::Identity(SurfaceReadIdentity {
             store_catalog_id: parse_catalog_id(store_catalog_id, "store", context)?,
             keys: keys
                 .iter()
-                .map(|key| decode_update_identity_key_json(key, context))
+                .map(|key| decode_surface_write_identity_key_json(key, context))
                 .collect::<Result<Vec<_>, _>>()?,
         }),
     })
 }
 
-fn decode_update_identity_key_json(
+fn decode_surface_write_identity_key_json(
     key: &SurfaceKeyJson,
     context: SurfaceJsonErrorContext,
 ) -> Result<SavedKey, SurfaceReadError> {

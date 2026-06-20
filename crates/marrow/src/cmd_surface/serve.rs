@@ -35,9 +35,9 @@ Usage:
 
 Run a local HTTP surface endpoint. The server accepts one JSON POST per
 connection and closes the response on descriptor-derived
-/surface/v1/{read|update|action}/<operation-tag> routes.
+/surface/v1/{read|create|update|delete|action}/<operation-tag> routes.
 
-  --write  Expose update/action routes and open a writable surface session.
+  --write  Expose create/update/delete/action routes and open a writable surface session.
            Defaults to read-only mode, serving read routes only.
   --cors-origin
            Allow one exact browser Origin such as http://localhost:5173.

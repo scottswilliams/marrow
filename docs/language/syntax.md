@@ -115,36 +115,40 @@ surface Books from ^books
     action addBook
     create title, author, blurb
     update title, blurb
+    delete
 ```
 
-`fields`, `create`, and `update` take comma-separated field names. `collection`
-targets either the root (`^books`) or one index path (`^books.byAuthor`) and then
-names the alias after `as`. `action` exposes a public function by bare
-same-module name or qualified module path; omitting `as` uses the function leaf
-as the alias. If the index itself is named `as`, the target keeps that source
-shape:
+`fields`, `create`, and `update` take comma-separated field names. `delete`
+takes no fields. `collection` targets either the root (`^books`) or one index
+path (`^books.byAuthor`) and then names the alias after `as`. `action` exposes a
+public function by bare same-module name or qualified module path; omitting `as`
+uses the function leaf as the alias. If the index itself is named `as`, the
+target keeps that source shape:
 
 ```mw
 collection ^books.as as byAs
 ```
 
-The words `from`, `fields`, `collection`, `action`, `as`, `create`, and
-`update` are contextual to this syntax. Documentation comments do not attach to
-`surface` declarations in v0.1.
+The words `from`, `fields`, `collection`, `action`, `as`, `create`, `update`,
+and `delete` are contextual to this syntax. Documentation comments do not attach
+to `surface` declarations in v0.1.
 
 The checked v0.1 surface shape is intentionally narrow. `from ^root` must name
 one declared store root. `fields` names top-level unkeyed fields on that store's
-resource. `create` and `update` name fields from the `fields` projection; write-
-only generated inputs are deferred. `collection` names either the same backing
-root or one index declared on that backing store. Nested projections,
-keyed-child reads and writes, custom read selection, opaque cursor-token
-codecs, HTTP profiles, and generated clients are later boundary-profile work
-over the checked surface facts and operation facts.
+resource. `create` and `update` name fields from the `fields` projection;
+write-only generated inputs are deferred. A stable non-empty `create` declares
+an exact-body create operation and must cover required top-level backing fields
+that have no default. A stable non-empty `update` declares a sparse-update
+operation. `delete` declares a reject-absent full-subtree delete operation.
+`collection` names either the same backing root or one index declared on that
+backing store. Nested projections, keyed-child reads and writes, custom read
+selection, opaque cursor-token codecs, remote serving, and generated clients are
+later boundary-profile work over the checked surface facts and operation facts.
 `marrow-run` owns the admitted transport-neutral node and collection read
-executors plus the admitted sparse update and action executors, and
-`marrow-json` owns checked read request-parameter, sparse update request-body,
-and action argument/result DTOs plus read-result DTO rendering over those
-executor outputs, as described in
+executors plus the admitted create, sparse update, delete, and action
+executors, and `marrow-json` owns checked read request-parameter, generated
+write request-body, and action argument/result DTOs plus result DTO rendering
+over those executor outputs, as described in
 [Surface ABI](../surface-abi.md).
 
 Surface declarations in configured test files use the same parser and

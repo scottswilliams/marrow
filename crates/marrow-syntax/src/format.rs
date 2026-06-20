@@ -533,6 +533,7 @@ fn format_surface_item(item: &SurfaceItem, level: usize) -> String {
         SurfaceItem::Update { names, .. } => {
             format!("{pad}update {}", format_surface_name_list(names))
         }
+        SurfaceItem::Delete { .. } => format!("{pad}delete"),
     }
 }
 

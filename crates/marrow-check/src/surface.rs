@@ -19,8 +19,8 @@ use crate::facts::{
     ModuleId, ResourceMemberFact, ResourceMemberId, ResourceMemberKind, StoreFact, StoreIndexFact,
     StoreIndexId, StoreIndexKeyFact, StoreIndexKeySource, StoredValueMeaning, SurfaceActionFact,
     SurfaceCatalogBlocker, SurfaceCatalogStatus, SurfaceCollectionFact, SurfaceCollectionTarget,
-    SurfaceFact, SurfaceFieldFact, SurfaceId, SurfaceReadFootprint, SurfaceReadOperationFact,
-    SurfaceReadOperationKind,
+    SurfaceDeleteFact, SurfaceFact, SurfaceFieldFact, SurfaceId, SurfaceReadFootprint,
+    SurfaceReadOperationFact, SurfaceReadOperationKind,
 };
 use crate::surface_abi::surface_read_operation_tag;
 use crate::{
@@ -134,6 +134,7 @@ impl<'a> SurfaceChecker<'a> {
         };
 
         let (fields, create, update) = self.resolve_fields(file, store, surface);
+        let delete = resolve_delete(surface);
         let collections = resolve_collections(
             self.program,
             file,
@@ -168,6 +169,7 @@ impl<'a> SurfaceChecker<'a> {
             self.program,
             store,
             &fields,
+            &create,
             &update,
             &collections,
             &actions,
@@ -188,6 +190,7 @@ impl<'a> SurfaceChecker<'a> {
             fields,
             create,
             update,
+            delete,
             collections,
             actions,
             read_operations,
@@ -234,6 +237,7 @@ impl<'a> SurfaceChecker<'a> {
             &projected,
             self.diagnostics,
         );
+        validate_create_completeness(field_context, surface, &create, self.diagnostics);
         (fields, create, update)
     }
 
@@ -904,6 +908,90 @@ fn resolve_field_list(
     fields
 }
 
+fn resolve_delete(surface: &SurfaceDecl) -> Option<SurfaceDeleteFact> {
+    surface.items.iter().find_map(|item| match item {
+        SurfaceItem::Delete { span } => Some(SurfaceDeleteFact { span: *span }),
+        _ => None,
+    })
+}
+
+fn validate_create_completeness(
+    context: SurfaceFieldContext<'_>,
+    surface: &SurfaceDecl,
+    create: &[SurfaceFieldFact],
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    if create.is_empty() {
+        return;
+    }
+    let create_members = create
+        .iter()
+        .map(|field| field.member)
+        .collect::<HashSet<_>>();
+    let span = create
+        .first()
+        .map(|field| field.span)
+        .unwrap_or(surface.span);
+    for member in context.program.facts.resource_members() {
+        if member.resource != context.store.resource || member.plain_field_required != Some(true) {
+            continue;
+        }
+        if create_members.contains(&member.id) {
+            continue;
+        }
+        if member.parent.is_none() {
+            push_field_diagnostic(
+                context.file,
+                span,
+                SurfaceFieldList::Create,
+                &member.name,
+                SurfaceFieldProblem::RequiredNotCreateAddressable,
+                diagnostics,
+            );
+            continue;
+        }
+        if path_is_inside_unkeyed_record(context.program, member.id) {
+            let name = member_path_label(context.program, member.id);
+            push_field_diagnostic(
+                context.file,
+                span,
+                SurfaceFieldList::Create,
+                &name,
+                SurfaceFieldProblem::RequiredNotCreateAddressable,
+                diagnostics,
+            );
+        }
+    }
+}
+
+fn path_is_inside_unkeyed_record(program: &CheckedProgram, member_id: ResourceMemberId) -> bool {
+    let mut current = Some(member_id);
+    while let Some(id) = current {
+        let Some(member) = program.facts.resource_members().get(id.0 as usize) else {
+            return false;
+        };
+        if member.key_count != 0 {
+            return false;
+        }
+        current = member.parent;
+    }
+    true
+}
+
+fn member_path_label(program: &CheckedProgram, member_id: ResourceMemberId) -> String {
+    let mut names = Vec::new();
+    let mut current = Some(member_id);
+    while let Some(id) = current {
+        let Some(member) = program.facts.resource_members().get(id.0 as usize) else {
+            break;
+        };
+        names.push(member.name.as_str());
+        current = member.parent;
+    }
+    names.reverse();
+    names.join(".")
+}
+
 fn resolve_input_field_list(
     context: SurfaceFieldContext<'_>,
     surface: &SurfaceDecl,
@@ -1349,6 +1437,9 @@ fn push_field_diagnostic(
                 list.label()
             )
         }
+        SurfaceFieldProblem::RequiredNotCreateAddressable => {
+            format!("surface create item must include required backing field `{name}`")
+        }
     };
     diagnostics.push(
         CheckDiagnostic::error(CHECK_SURFACE_FIELD, file, span, message).with_payload(
@@ -1365,6 +1456,7 @@ fn catalog_status(
     program: &CheckedProgram,
     store: &StoreFact,
     fields: &[SurfaceFieldFact],
+    create: &[SurfaceFieldFact],
     update: &[SurfaceFieldFact],
     collections: &[SurfaceCollectionFact],
     actions: &[SurfaceActionFact],
@@ -1373,7 +1465,7 @@ fn catalog_status(
     if program.catalog.proposal.is_some() {
         blockers.push(SurfaceCatalogBlocker::PendingCatalogProposal);
     }
-    if !surface_has_catalog_ids(program, store, fields, update, collections, actions) {
+    if !surface_has_catalog_ids(program, store, fields, create, update, collections, actions) {
         blockers.push(SurfaceCatalogBlocker::MissingAcceptedCatalogIds);
     }
     if blockers.is_empty() {
@@ -1387,6 +1479,7 @@ fn surface_has_catalog_ids(
     program: &CheckedProgram,
     store: &StoreFact,
     fields: &[SurfaceFieldFact],
+    create: &[SurfaceFieldFact],
     update: &[SurfaceFieldFact],
     collections: &[SurfaceCollectionFact],
     actions: &[SurfaceActionFact],
@@ -1394,6 +1487,7 @@ fn surface_has_catalog_ids(
     store.catalog_id.is_some()
         && program.facts.resource(store.resource).catalog_id.is_some()
         && fields_have_catalog_ids(program, fields)
+        && fields_have_catalog_ids(program, create)
         && fields_have_catalog_ids(program, update)
         && collections_have_catalog_ids(program, collections)
         && actions_have_catalog_ids(program, actions)

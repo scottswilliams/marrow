@@ -35,6 +35,7 @@ fn parses_surface_declaration_with_contextual_items() {
          \x20   collection ^books.byAuthor as byAuthor\n\
          \x20   create title, author, blurb\n\
          \x20   update title, blurb\n\
+         \x20   delete\n\
          \x20   action addBook\n\
          \x20   action shelf::loanBook as loan\n",
     );
@@ -42,7 +43,7 @@ fn parses_surface_declaration_with_contextual_items() {
     assert_eq!(surface.name, "Books");
     assert_eq!(surface.store.root, "books");
     assert!(surface.store.keys.is_empty());
-    assert_eq!(surface.items.len(), 7);
+    assert_eq!(surface.items.len(), 8);
     assert_eq!(
         surface.items[0],
         SurfaceItem::Fields {
@@ -87,18 +88,24 @@ fn parses_surface_declaration_with_contextual_items() {
     );
     assert_eq!(
         surface.items[5],
-        SurfaceItem::Action {
-            function: vec!["addBook".into()],
-            alias: "addBook".into(),
+        SurfaceItem::Delete {
             span: surface.items[5].span(),
         }
     );
     assert_eq!(
         surface.items[6],
         SurfaceItem::Action {
+            function: vec!["addBook".into()],
+            alias: "addBook".into(),
+            span: surface.items[6].span(),
+        }
+    );
+    assert_eq!(
+        surface.items[7],
+        SurfaceItem::Action {
             function: vec!["shelf".into(), "loanBook".into()],
             alias: "loan".into(),
-            span: surface.items[6].span(),
+            span: surface.items[7].span(),
         }
     );
 }
@@ -197,6 +204,10 @@ fn reports_malformed_surface_header_and_items() {
             "module app\nsurface Books from ^books\n    bogus title\n",
             ExpectedSyntax::SurfaceItem,
         ),
+        (
+            "module app\nsurface Books from ^books\n    delete title\n",
+            ExpectedSyntax::SurfaceItem,
+        ),
     ];
     for (source, expected) in cases {
         let parsed = parse_source(source);
@@ -231,6 +242,10 @@ fn malformed_surface_items_do_not_also_report_missing_body() {
         ),
         (
             "module app\nsurface Books from ^books\n    bogus title\n",
+            ExpectedSyntax::SurfaceItem,
+        ),
+        (
+            "module app\nsurface Books from ^books\n    delete title\n",
             ExpectedSyntax::SurfaceItem,
         ),
     ];

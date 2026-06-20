@@ -5,12 +5,15 @@ derives `SurfaceReadOperationFact`s from checked `surface` declarations,
 `SurfaceReadOperationAnalysis::stable_descriptor()` exposes the accepted-catalog
 read descriptor for stable surfaces, `SurfaceUpdateOperationAnalysis` exposes
 the accepted-catalog sparse-update descriptor for stable non-empty `update`
-surfaces, `SurfaceActionOperationAnalysis` exposes action descriptors over
-`entry.invoke.v1`, `marrow-run` executes admitted transport-neutral reads,
-sparse updates, and actions, and `marrow-json` owns the current check-output
-descriptor DTOs, read request/result DTOs, typed cursor-boundary DTOs, sparse
-update request DTOs, action request/result DTOs, and a transport-neutral JSON
-operation envelope over those DTOs.
+surfaces, `SurfaceCreateOperationAnalysis` exposes exact-body create
+descriptors for stable non-empty `create` surfaces,
+`SurfaceDeleteOperationAnalysis` exposes full-subtree delete descriptors for
+stable `delete` surfaces, `SurfaceActionOperationAnalysis` exposes action
+descriptors over `entry.invoke.v1`, `marrow-run` executes admitted
+transport-neutral reads, creates, sparse updates, deletes, and actions, and
+`marrow-json` owns the current check-output descriptor DTOs, request/result
+DTOs, typed cursor-boundary DTOs, and a transport-neutral JSON operation
+envelope over those DTOs.
 
 This page owns the active ABI and the explicitly deferred profiles that must
 build on it. Deferred profiles must not introduce a second saved-data access
@@ -27,13 +30,14 @@ The active surface foundation has these owners:
 - `crates/marrow-check/src/surface.rs` resolves declarations to `SurfaceFact`
   and `SurfaceReadOperationFact` values, including resolved public action
   function refs. Read operation facts carry the generated `get` alias or the
-  declared collection alias as render metadata. The parsed/resolved `create`
-  list is reserved metadata and is excluded from the active serialized ABI
-  profile.
+  declared collection alias as render metadata. Non-empty `create` lists,
+  non-empty `update` lists, and `delete` declarations are active generated
+  operation facts over checked top-level projection fields.
 - `crates/marrow-check/src/surface_abi.rs` owns the shared length-prefixed
-  digest framing and typed descriptors for `surface.read.v1` and
-  `surface.update.v1`, plus action descriptors that reuse `entry.invoke.v1`
-  identity, parameter shapes, and return shape.
+  digest framing and typed descriptors for `surface.read.v1`,
+  `surface.create.v1`, `surface.update.v1`, and `surface.delete.v1`, plus
+  action descriptors that reuse `entry.invoke.v1` identity, parameter shapes,
+  and return shape.
 - `AnalysisSnapshot::surface_read_operations()` returns snapshot-bound
   `SurfaceReadOperationAnalysis` values. A stable surface can produce a
   `SurfaceReadOperationDescriptor`; a source-only surface cannot.
@@ -41,72 +45,86 @@ The active surface foundation has these owners:
   `SurfaceUpdateOperationAnalysis` values for surfaces with non-empty update
   sets. Stable surfaces can produce a sparse update descriptor; source-only
   surfaces cannot.
+- `AnalysisSnapshot::surface_create_operations()` returns snapshot-bound
+  `SurfaceCreateOperationAnalysis` values for surfaces with non-empty create
+  sets. Stable surfaces can produce an exact-body create descriptor; source-only
+  surfaces cannot.
+- `AnalysisSnapshot::surface_delete_operations()` returns snapshot-bound
+  `SurfaceDeleteOperationAnalysis` values for surfaces with a `delete`
+  declaration. Stable surfaces can produce a full-subtree delete descriptor;
+  source-only surfaces cannot.
 - `AnalysisSnapshot::surface_action_operations()` returns snapshot-bound
   `SurfaceActionOperationAnalysis` values for declared actions. Stable surfaces
   can produce an action descriptor; source-only surfaces cannot.
-- `crates/marrow-run/src/surface.rs` admits stable read/update/action operations
-  against a stamped store, materializes the backing record body before
-  projecting reads, returns page cursors bound to the visible store commit, and
-  applies non-empty sparse update patches through managed writes. It also admits
-  surface actions by operation tag and fails closed when duplicate checked action
-  tags exist.
+- `crates/marrow-run/src/surface.rs` admits stable
+  read/create/update/delete/action operations against a stamped store,
+  materializes the backing record body before projecting reads, returns page
+  cursors bound to the visible store commit, applies exact create bodies and
+  non-empty sparse update patches through managed writes, deletes whole record
+  subtrees, and admits surface actions by operation tag. Runtime admission fails
+  closed when any active checked surface operation tag is duplicated.
 - `marrow-run::ProjectSurfaceReadSession` is the preparatory linked-Rust
   read-serving boundary. It checks a project, opens the configured native store
   read-only, requires an already accepted and stamped durable store, fences
   source/catalog drift without auto-apply, and exposes admitted surface reads by
-  operation tag. It does not expose routes, generated-client names, update
-  methods, action execution, UID minting, baseline freeze, recovery, restore,
-  maintenance, or any hidden write path.
+  operation tag. It does not expose routes, generated-client names, create,
+  update, delete, action execution, UID minting, baseline freeze, recovery,
+  restore, maintenance, or any hidden write path.
 - `marrow-run::ProjectSurfaceSession` is the linked-Rust read/write surface
   boundary. It checks a project, opens an existing configured native store
   writable, requires the same accepted catalog, store UID, commit metadata, and
-  drift fence as the read session, and exposes admitted surface reads, sparse
-  updates, and actions by operation tag without exposing the store handle. It is a
-  single-owner, sequential session; while it is open, the native writer lock
-  makes that session the owning process/session for reads and updates and
-  excludes another writer or read-only inspection handle. It does not mint UIDs,
-  freeze baselines, auto-create stores, auto-apply drift, repair catalogs,
-  restore, recover beyond the native backend's writer-open replay, enter
-  maintenance, derive routes, define generated CRUD semantics, or define a
+  drift fence as the read session, and exposes admitted surface reads, creates,
+  sparse updates, deletes, and actions by operation tag without exposing the
+  store handle. It is a single-owner, sequential session; while it is open, the
+  native writer lock makes that session the owning process/session for reads and
+  writes and excludes another writer or read-only inspection handle. It does not
+  mint UIDs, freeze baselines, auto-create stores, auto-apply drift, repair
+  catalogs, restore, recover beyond the native backend's writer-open replay,
+  enter maintenance, derive routes, define generated client names, or define a
   stable public Rust API.
 - `crates/marrow-json/src/surface.rs` owns the current checked read parameter,
-  result, identity, value, commit-bound typed cursor-boundary, sparse update
-  request, action argument/result, operation-tag execution, transport-neutral
-  operation envelope, route manifest, and serialized surface ABI JSON DTOs.
+  result, identity, value, commit-bound typed cursor-boundary, create request,
+  sparse update request, delete request, action argument/result, operation-tag
+  execution, transport-neutral operation envelope, route manifest, and
+  serialized surface ABI JSON DTOs.
   Execution accepts caller-supplied checked program and store references, read
   DTOs also execute against `ProjectSurfaceReadSession`, point/singleton update
-  DTOs also execute against `ProjectSurfaceSession`, action DTOs execute against
-  `ProjectSurfaceSession`, and `surface.operation.v1` dispatches read,
-  sparse-update, and action request bodies by operation tag without exposing
-  private store handles. The default project operation helper runs actions with
-  a zero-capability host; callers that need host capabilities use the
-  explicit-host helper. `marrow surface serve` is the first HTTP serving
+  DTOs, point/singleton create DTOs, point/singleton delete DTOs, and action DTOs
+  execute against `ProjectSurfaceSession`, and `surface.operation.v1` dispatches
+  read, create, sparse-update, delete, and action request bodies by operation tag
+  without exposing private store handles. The default project operation helper
+  runs actions with a zero-capability host; callers that need host capabilities
+  use the explicit-host helper. `marrow surface serve` is the first HTTP serving
   profile: a loopback-only, dependency-free local endpoint over
-  descriptor-derived `/surface/v1/{read|update|action}/<operation-tag>` routes
-  and `surface.operation.v1` envelopes. It defaults to read-only serving and
-  exposes sparse-update/action routes only with `--write`. Generated clients,
-  opaque cursor tokens, create/delete profiles, remote binding, and
-  authentication remain separate profiles. Serialized ABI export includes only
-  callable read/update/action operation tags and routes derived from those
+  descriptor-derived
+  `/surface/v1/{read|create|update|delete|action}/<operation-tag>` routes and
+  `surface.operation.v1` envelopes. It defaults to read-only serving and exposes
+  create/update/delete/action routes only with `--write`. Generated clients,
+  opaque cursor tokens, remote binding, and authentication remain separate
+  profiles. Serialized ABI export includes only callable
+  read/create/update/delete/action operation tags and routes derived from those
   exported descriptors.
 
 Operation tags are live runtime/json contracts. A change to either
-`surface.read.v1`, `surface.update.v1`, or `entry.invoke.v1` action framing must
-either preserve byte output or deliberately bump the relevant profile version and
-accept stale cached operation identity.
+`surface.read.v1`, `surface.create.v1`, `surface.update.v1`,
+`surface.delete.v1`, or `entry.invoke.v1` action framing must either preserve
+byte output or deliberately bump the relevant profile version and accept stale
+cached operation identity.
 
 ## Operation Envelope Profile
 
 The active JSON operation envelope is `surface.operation.v1`. It is
 transport-neutral: callers supply a profile version, an operation tag, and one
 typed request body; `marrow-json` admits the tag through `marrow-run` and then
-lets the admitted read, update, or action handle validate the requested body
-shape.
+lets the admitted read, create, update, delete, or action handle validate the
+requested body shape.
 
 The request body variants are singleton read, point read, page, unique lookup,
-singleton update, point update, and action. The response envelope echoes the
-active profile version and operation tag and returns a record, page, optional
-record, updated result, or action result. Action request arguments use the
+singleton create, point create, singleton update, point update, singleton
+delete, point delete, and action. The response envelope echoes the active
+profile version and operation tag and returns a record, page, optional record,
+created record, updated result, deleted result, or action result. Action request
+arguments use the
 existing `entry.invoke.v1` argument JSON shape for scalars, enums, identities,
 and scalar/enum sequences; action results carry captured program output and an
 optional surface action value DTO with accepted catalog IDs for enum and
@@ -127,53 +145,61 @@ do not serialize spans, source paths, store paths, backend details, or runtime
 internals.
 
 `ProjectSurfaceReadSession` dispatches read request bodies only and fails
-closed on update or action request bodies. `ProjectSurfaceSession` dispatches
-stable read operation tags, sparse-update operation tags, and action operation
-tags. Wrong profile versions and unknown tags are ABI mismatches. A known tag
-with the wrong typed body shape is a request error. Runtime failures after an
-action is admitted are sanitized as `surface.action`; action argument decode
-failures are `surface.request`.
+closed on create, update, delete, or action request bodies.
+`ProjectSurfaceSession` dispatches stable read, create, sparse-update, delete,
+and action operation tags. Wrong profile versions and unknown tags are ABI
+mismatches. A known tag with the wrong typed body shape is a request error.
+Runtime failures after an action is admitted are sanitized as `surface.action`;
+action argument decode failures are `surface.request`.
 
 ## Write Profiles
 
-`marrow-run` owns the first transport-neutral surface write profile: an admitted
-runtime update handle over stable, non-empty `SurfaceFact.update` declarations,
-ordinary public-function actions over `entry.invoke.v1`, plus
-`ProjectSurfaceSession` for linked-Rust project writes against an already
-accepted and stamped native store. Sparse updates apply non-empty field patches
-addressed by accepted resource-member catalog ID, preserve omitted fields,
-reject absent records instead of upserting, re-check store/catalog lineage
-inside the write bracket before mutation, validate the checked read footprint
-after the combined patch, and map conflicts/write/store failures through
-`surface.conflict`, `surface.write`, and `surface.store`. `marrow-json` owns
-JSON request-body DTOs and linked project execution wrappers for those point and
-singleton sparse update patches. Actions are ordinary checked Marrow functions:
-their writes, transactions, host-effect checks, thrown errors, and return values
-come from the language runtime rather than a generated CRUD side channel.
+`marrow-run` owns the first transport-neutral surface write profile: admitted
+runtime create/update/delete handles over stable surface declarations, ordinary
+public-function actions over `entry.invoke.v1`, plus `ProjectSurfaceSession` for
+linked-Rust project writes against an already accepted and stamped native store.
+Creates accept an exact declared field body addressed by accepted
+resource-member catalog ID. A keyed store uses caller-supplied identity keys; a
+singleton store takes no identity. Create rejects an existing record instead of
+replacing it, writes the whole declared body through the managed resource-write
+planner, validates the checked read footprint, and returns the public
+projection. Sparse updates apply non-empty field patches, preserve omitted
+fields, reject absent records instead of upserting, re-check store/catalog
+lineage inside the write bracket before mutation, validate the checked read
+footprint after the combined patch, and return no record body. Deletes reject an
+absent record and remove the full backing record subtree plus generated index
+rows through the managed delete planner. Generated writes map
+conflicts/write/store failures through `surface.conflict`, `surface.write`, and
+`surface.store`. `marrow-json` owns JSON request-body DTOs and linked project
+execution wrappers for point and singleton creates, updates, and deletes.
+Actions are ordinary checked Marrow functions: their writes, transactions,
+host-effect checks, thrown errors, and return values come from the language
+runtime rather than a generated CRUD side channel.
 
 Future write work is still boundary-profile work, not HTTP or generated clients
 by default:
 
-- non-JSON transport body decoding for update patches, if a consumer needs it;
-- create, because it needs explicit identity allocation or client-supplied
-  identity rules, required-field completeness, replacement semantics, and
-  return-shape decisions;
-- delete, because no surface delete fact exists yet and idempotent vs absent
-  semantics need a profile decision.
+- non-JSON transport body decoding for generated write requests, if a consumer
+  needs it;
+- explicit server-side identity allocation, if the language grows a checked
+  allocator profile beyond caller-supplied identities;
+- idempotent delete or upsert variants, if they are introduced as explicit
+  operation semantics rather than silently changing the v0.1 create/delete tags.
 
 ## Serialized Descriptor Profile
 
 The active serialized ABI profile lives in `marrow check --format json|jsonl`
 under `surface_abi` and `surface_routes` and is rendered by `marrow-json` DTOs
 from checker-owned facts. The `surface_abi` object serializes accepted catalog
-IDs, callable canonical read/update/action operation descriptors, value shapes,
-entry parameter shapes, operation tags, read/action aliases, and render labels
+IDs, callable canonical read/create/update/delete/action operation descriptors,
+value shapes, entry parameter shapes, operation tags, read/action aliases, and render labels
 as labels. It must not serialize checker-local IDs, source spans, raw saved
-paths, backend cursor bytes, physical store keys, or `create` metadata.
+paths, backend cursor bytes, physical store keys, or unowned request syntax.
 
 `SurfaceAbiJson` curates duplicate stable operation tags out of the export. If a
 stable operation tag is duplicated anywhere in the checked program, every read,
-update, or action descriptor with that tag is omitted from the serialized ABI.
+create, update, delete, or action descriptor with that tag is omitted from the
+serialized ABI.
 Runtime tag admission still fails closed on duplicates in checked facts. Checker
 diagnostics for duplicate stable tags are a reserved future improvement, not
 current behavior.
@@ -182,13 +208,23 @@ current behavior.
 that already-curated `SurfaceAbiJson`. Each row is a strict JSON `POST` route
 over `surface.operation.v1`, carries the admitted operation tag, and names the
 surface label, operation alias, and expected request-body kind. Read routes use
-`/surface/v1/read/{operation_tag}`, sparse-update routes use
-`/surface/v1/update/{operation_tag}`, and action routes use
+`/surface/v1/read/{operation_tag}`, create routes use
+`/surface/v1/create/{operation_tag}`, sparse-update routes use
+`/surface/v1/update/{operation_tag}`, delete routes use
+`/surface/v1/delete/{operation_tag}`, and action routes use
 `/surface/v1/action/{operation_tag}`. Route paths are derived from operation
 tags, not source names, aliases, ordinals, or raw saved paths. Aliases remain
 render/client labels; they are not route identity or operation equality.
 Source-only surfaces and duplicate-tag operations have no route rows because
 they have no callable descriptor rows.
+
+`surface.create.v1` tags include the profile domain, store catalog ID, backing
+resource footprint catalog ID, singleton-vs-point shape, identity-key value
+shapes, exact declared-body semantics, singleton or caller-supplied identity
+policy, reject-existing semantics, the create field set sorted by accepted
+resource-member catalog ID, the public projection shape, and the full-record read
+footprint used to validate the result. Render labels and create declaration
+order do not affect the tag.
 
 `surface.update.v1` tags include the profile domain, store catalog ID, backing
 resource footprint catalog ID, singleton-vs-point shape, identity-key value
@@ -196,6 +232,11 @@ shapes, `non_empty_patch` semantics, and the update field set sorted by accepted
 resource-member catalog ID. Render labels and update declaration order do not
 affect the tag. Read projection order remains ABI-semantic for
 `surface.read.v1` because it is the output field order.
+
+`surface.delete.v1` tags include the profile domain, store catalog ID, backing
+resource footprint catalog ID, singleton-vs-point shape, identity-key value
+shapes, and reject-absent full-subtree semantics. Delete returns no record body;
+callers that need the deleted public projection read it before deleting.
 
 Surface action operation tags are the resolved function's `entry.invoke.v1`
 entry tag. That tag includes profile domain, canonical entry name, return
@@ -217,7 +258,9 @@ a local HTTP process:
 - default mode exposes only descriptor-derived
   `/surface/v1/read/<operation-tag>` paths;
 - `--write` additionally exposes descriptor-derived
+  `/surface/v1/create/<operation-tag>`,
   `/surface/v1/update/<operation-tag>` and
+  `/surface/v1/delete/<operation-tag>`, and
   `/surface/v1/action/<operation-tag>` paths;
 - the transport is JSON-only around the active `surface.operation.v1` envelope;
 - route operation tag, body operation tag, and body request kind must agree;
@@ -230,7 +273,7 @@ a local HTTP process:
 - store admission uses `ProjectSurfaceReadSession` in default mode and
   `ProjectSurfaceSession` with `--write`, with no UID mint, baseline freeze,
   auto-apply, recovery, restore, maintenance, or hidden write path outside
-  admitted sparse updates/actions;
+  admitted create/update/delete/action operations;
 - the HTTP parser processes at most one request per connection, requires exactly
   one `Content-Length` on operation `POST` requests, permits an empty CORS
   preflight to omit `Content-Length` or send `Content-Length: 0`, rejects
@@ -245,7 +288,7 @@ HTTP dependency also remain future architecture decisions.
 ## Generated Clients And LSP
 
 Generated clients consume the serialized descriptor and route profiles. Read,
-update, and action aliases give renderers checked operation labels, and
+create, update, delete, and action aliases give renderers checked operation labels, and
 `surface.route.v1` gives clients the canonical operation-tag route path. Client
 method naming remains a separate compatibility contract from operation equality.
 Labels can guide rendering, but accepted catalog IDs and canonical operation
@@ -253,7 +296,9 @@ descriptors remain the semantic identity.
 
 LSP and MCP tooling should consume
 `AnalysisSnapshot::surface_read_operations()`,
+`AnalysisSnapshot::surface_create_operations()`,
 `AnalysisSnapshot::surface_update_operations()`,
+`AnalysisSnapshot::surface_delete_operations()`,
 `AnalysisSnapshot::surface_action_operations()`, and their
 `stable_descriptor()` methods. They should present operation summaries without
 inventing routes, cursor encodings, generated client names, or a raw saved-path

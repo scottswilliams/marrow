@@ -489,6 +489,32 @@ surface Books from ^books
 }
 
 #[test]
+fn duplicate_delete_items_collide_inside_one_surface() {
+    let source = "\
+module app
+surface Books from ^books
+    delete
+    delete
+";
+    let root = temp_project("surface-delete-duplicate", |root| {
+        write(root, "src/app.mw", source);
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+
+    let collisions = surface_collisions(&report);
+    assert_eq!(collisions.len(), 1, "{:#?}", report.diagnostics);
+    assert_surface_collision_payload(
+        collisions[0],
+        "delete",
+        SurfaceCollisionNameKind::DeleteItem,
+        SurfaceCollisionNameKind::DeleteItem,
+        source,
+        3,
+    );
+    assert_eq!(collisions[0].span.line, 4, "{:#?}", collisions[0]);
+}
+
+#[test]
 fn distinct_surfaces_have_independent_local_namespaces() {
     let source = "\
 module app
@@ -731,6 +757,7 @@ surface Books from ^books
     collection ^books.byAuthor as byAuthor
     create title, author
     update title
+    delete
 ";
     let root = temp_project("surface-facts", |root| {
         write(root, "src/app.mw", source);
@@ -789,6 +816,10 @@ surface Books from ^books
             .collect::<Vec<_>>(),
         vec![("title", title)]
     );
+    assert!(
+        surface.delete.is_some(),
+        "delete item resolves to a surface fact"
+    );
     assert_eq!(
         surface
             .collections
@@ -799,6 +830,65 @@ surface Books from ^books
             ("list", SurfaceCollectionTarget::StoreRoot(store)),
             ("byAuthor", SurfaceCollectionTarget::StoreIndex(by_author)),
         ]
+    );
+}
+
+#[test]
+fn active_surface_create_rejects_required_unaddressable_backing_fields() {
+    let source = "\
+module app
+resource Book
+    title: string
+    details
+        required subtitle: string
+store ^books(id: int): Book
+surface Books from ^books
+    fields title
+    create title
+";
+    let root = temp_project("surface-create-required-unaddressable", |root| {
+        write(root, "src/app.mw", source);
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+
+    let fields = surface_fields(&report);
+    assert_eq!(fields.len(), 1, "{:#?}", report.diagnostics);
+    assert_eq!(
+        fields[0].payload,
+        DiagnosticPayload::SurfaceField(SurfaceFieldDiagnostic {
+            list: SurfaceFieldList::Create,
+            name: "details.subtitle".into(),
+            problem: SurfaceFieldProblem::RequiredNotCreateAddressable,
+        })
+    );
+}
+
+#[test]
+fn active_surface_create_rejects_missing_required_top_level_fields() {
+    let source = "\
+module app
+resource Book
+    required title: string
+    required author: string
+store ^books(id: int): Book
+surface Books from ^books
+    fields title, author
+    create title
+";
+    let root = temp_project("surface-create-required-missing", |root| {
+        write(root, "src/app.mw", source);
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+
+    let fields = surface_fields(&report);
+    assert_eq!(fields.len(), 1, "{:#?}", report.diagnostics);
+    assert_eq!(
+        fields[0].payload,
+        DiagnosticPayload::SurfaceField(SurfaceFieldDiagnostic {
+            list: SurfaceFieldList::Create,
+            name: "author".into(),
+            problem: SurfaceFieldProblem::RequiredNotCreateAddressable,
+        })
     );
 }
 

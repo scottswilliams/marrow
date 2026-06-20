@@ -5,9 +5,11 @@ use marrow_catalog::{CatalogEntry, CatalogEntryKind};
 use marrow_check::{
     AnalysisSnapshot, CheckedProgram, ENTRY_PROTOCOL_TAG_VERSION, EntryDescriptor, ProjectSources,
     SurfaceActionOperationDescriptor, SurfaceCatalogBlocker, SurfaceCatalogStatus,
-    SurfaceOperationValueShape, SurfaceReadOperationDescriptor, SurfaceReadOperationDescriptorKind,
-    SurfaceUpdateOperationDescriptor, SurfaceUpdateOperationDescriptorKind, analyze_project,
-    check_project,
+    SurfaceCreateBodySemantics, SurfaceCreateExistenceSemantics, SurfaceCreateIdentityPolicy,
+    SurfaceCreateOperationDescriptorKind, SurfaceDeleteOperationDescriptorKind,
+    SurfaceDeleteSemantics, SurfaceOperationValueShape, SurfaceReadOperationDescriptor,
+    SurfaceReadOperationDescriptorKind, SurfaceUpdateOperationDescriptor,
+    SurfaceUpdateOperationDescriptorKind, analyze_project, check_project,
 };
 use marrow_schema::ScalarType;
 use marrow_store::cell::CatalogId;
@@ -54,6 +56,24 @@ fn update_tag(snapshot: &AnalysisSnapshot) -> String {
         .and_then(|operation| operation.stable_descriptor())
         .map(|descriptor| descriptor.operation_tag)
         .expect("stable update operation tag")
+}
+
+fn create_tag(snapshot: &AnalysisSnapshot) -> String {
+    snapshot
+        .surface_create_operations()
+        .next()
+        .and_then(|operation| operation.stable_descriptor())
+        .map(|descriptor| descriptor.operation_tag)
+        .expect("stable create operation tag")
+}
+
+fn delete_tag(snapshot: &AnalysisSnapshot) -> String {
+    snapshot
+        .surface_delete_operations()
+        .next()
+        .and_then(|operation| operation.stable_descriptor())
+        .map(|descriptor| descriptor.operation_tag)
+        .expect("stable delete operation tag")
 }
 
 fn update_tags_by_surface(snapshot: &AnalysisSnapshot) -> Vec<(String, String)> {
@@ -1009,6 +1029,147 @@ surface Books from ^books
         } if store_catalog_id.as_str() == facts.store(authors).catalog_id.as_deref().unwrap()
             && key_scalars.as_slice() == [ScalarType::Int]
     ));
+}
+
+#[test]
+fn stable_create_and_delete_operation_descriptors_export_catalog_bound_shapes() {
+    let source = "\
+module app
+resource Book
+    required title: string
+    required author: string
+    isbn: string
+store ^books(shelf: string, id: int): Book
+surface Books from ^books
+    fields title, author, isbn
+    create title, author
+    delete
+";
+    let (_root, snapshot) = stable_snapshot("surface-create-delete-abi-shapes", source);
+    let program = &snapshot.program;
+    let creates = snapshot.surface_create_operations().collect::<Vec<_>>();
+    let deletes = snapshot.surface_delete_operations().collect::<Vec<_>>();
+    let [create] = creates.as_slice() else {
+        panic!("expected one create operation, got {creates:#?}");
+    };
+    let [delete] = deletes.as_slice() else {
+        panic!("expected one delete operation, got {deletes:#?}");
+    };
+    let create = create
+        .stable_descriptor()
+        .expect("stable create descriptor");
+    let delete = delete
+        .stable_descriptor()
+        .expect("stable delete descriptor");
+
+    assert_eq!(create.profile_version, "surface.create.v1");
+    assert_eq!(delete.profile_version, "surface.delete.v1");
+    assert!(create.operation_tag.starts_with("sha256:"));
+    assert!(delete.operation_tag.starts_with("sha256:"));
+    assert_ne!(create.operation_tag, delete.operation_tag);
+    assert!(matches!(
+        create.kind,
+        SurfaceCreateOperationDescriptorKind::PointCreate
+    ));
+    assert!(matches!(
+        delete.kind,
+        SurfaceDeleteOperationDescriptorKind::PointDelete
+    ));
+    assert_eq!(
+        create.body_semantics,
+        SurfaceCreateBodySemantics::ExactDeclaredBody
+    );
+    assert_eq!(
+        create.identity_policy,
+        SurfaceCreateIdentityPolicy::ClientSuppliedIdentity
+    );
+    assert_eq!(
+        create.existence_semantics,
+        SurfaceCreateExistenceSemantics::RejectExistingNoReplace
+    );
+    assert_eq!(
+        delete.semantics,
+        SurfaceDeleteSemantics::RejectAbsentFullSubtree
+    );
+
+    let facts = &program.facts;
+    let module = facts.module_id("app").expect("module");
+    let book = facts.resource_id(module, "Book").expect("Book");
+    let store = facts.store_id(module, "books").expect("^books");
+    let title = facts.resource_member_id(book, &["title"]).expect("title");
+    let author = facts.resource_member_id(book, &["author"]).expect("author");
+    let isbn = facts.resource_member_id(book, &["isbn"]).expect("isbn");
+
+    assert_eq!(
+        create.store_catalog_id,
+        catalog_id(facts.store(store).catalog_id.as_deref().expect("store id"))
+    );
+    assert_eq!(delete.store_catalog_id, create.store_catalog_id);
+    assert_eq!(
+        create
+            .fields
+            .iter()
+            .map(|field| field.member_catalog_id.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            facts.resource_members()[title.0 as usize]
+                .catalog_id
+                .as_deref()
+                .expect("title id"),
+            facts.resource_members()[author.0 as usize]
+                .catalog_id
+                .as_deref()
+                .expect("author id"),
+        ]
+    );
+    assert_eq!(
+        create
+            .projection
+            .iter()
+            .map(|field| field.member_catalog_id.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            facts.resource_members()[title.0 as usize]
+                .catalog_id
+                .as_deref()
+                .expect("title id"),
+            facts.resource_members()[author.0 as usize]
+                .catalog_id
+                .as_deref()
+                .expect("author id"),
+            facts.resource_members()[isbn.0 as usize]
+                .catalog_id
+                .as_deref()
+                .expect("isbn id"),
+        ]
+    );
+}
+
+#[test]
+fn create_and_delete_operation_tags_have_distinct_domains() {
+    let source = "\
+module app
+resource Settings
+    required mode: string
+store ^settings: Settings
+surface SettingsSurface from ^settings
+    fields mode
+    create mode
+    update mode
+    delete
+";
+    let (_root, snapshot) = stable_snapshot("surface-create-delete-abi-domain", source);
+    let read = read_tags(&snapshot.program);
+    let update = update_tag(&snapshot);
+    let create = create_tag(&snapshot);
+    let delete = delete_tag(&snapshot);
+
+    assert_eq!(read.len(), 1);
+    assert_ne!(read[0], create);
+    assert_ne!(read[0], delete);
+    assert_ne!(update, create);
+    assert_ne!(update, delete);
+    assert_ne!(create, delete);
 }
 
 #[test]

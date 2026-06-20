@@ -2,16 +2,16 @@
 //!
 //! This crate preserves the existing `marrow run --format json` return-value
 //! shape, saved-key shape, and data snapshot shape used in tooling reports, plus
-//! checked surface ABI descriptor DTOs, read request/result DTOs, sparse update
-//! request DTOs, surface action request/result DTOs, operation envelopes, and
-//! descriptor-derived surface route manifests. Surface read DTOs can execute
-//! against a `marrow_run::ProjectSurfaceReadSession`, and point/singleton
-//! update and action DTOs can execute against a
+//! checked surface ABI descriptor DTOs, read request/result DTOs, generated
+//! write request/result DTOs, surface action request/result DTOs, operation
+//! envelopes, and descriptor-derived surface route manifests. Surface read DTOs
+//! can execute against a `marrow_run::ProjectSurfaceReadSession`, and
+//! point/singleton create/update/delete and action DTOs can execute against a
 //! `marrow_run::ProjectSurfaceSession`, without exposing the backing store. The
 //! zero-capability project operation helper uses `Host::new()`; callers that
 //! need host capabilities use the explicit-host helper. It is not a general
 //! `Value` codec, and it does not define HTTP serving, generated clients,
-//! opaque cursor tokens, or create/delete body decode.
+//! or opaque cursor tokens.
 
 use marrow_check::tooling::{DataCommitStamp, DataSnapshotStamp};
 use marrow_run::Value;

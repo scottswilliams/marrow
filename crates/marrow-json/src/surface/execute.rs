@@ -1,13 +1,15 @@
 use marrow_check::CheckedProgram;
 use marrow_run::{
-    ProjectSurfaceReadSession, ProjectSurfaceSession, SurfaceError, SurfaceReadError,
-    SurfaceReadInput, SurfaceReadOperation, SurfaceUpdate,
+    ProjectSurfaceReadSession, ProjectSurfaceSession, SurfaceCreate, SurfaceDelete,
+    SurfaceDeleteInput, SurfaceError, SurfaceReadError, SurfaceReadInput, SurfaceReadOperation,
+    SurfaceUpdate,
 };
 use marrow_store::tree::TreeStore;
 
 use super::{
-    SurfacePageJson, SurfacePageRequestJson, SurfacePointRequestJson,
-    SurfacePointUpdateRequestJson, SurfaceRecordJson, SurfaceSingletonUpdateRequestJson,
+    SurfacePageJson, SurfacePageRequestJson, SurfacePointCreateRequestJson,
+    SurfacePointDeleteRequestJson, SurfacePointRequestJson, SurfacePointUpdateRequestJson,
+    SurfaceRecordJson, SurfaceSingletonCreateRequestJson, SurfaceSingletonUpdateRequestJson,
     SurfaceUniqueLookupRequestJson,
 };
 
@@ -181,4 +183,108 @@ pub(super) fn execute_singleton_update(
 ) -> Result<(), SurfaceError> {
     let decoded = request.decode(&update)?;
     update.execute(decoded.as_update_input())
+}
+
+pub fn execute_surface_point_create_by_tag(
+    program: &CheckedProgram,
+    store: &TreeStore,
+    operation_tag: &str,
+    request: &SurfacePointCreateRequestJson,
+) -> Result<SurfaceRecordJson, SurfaceError> {
+    let create = SurfaceCreate::admit_by_operation_tag(program, store, operation_tag)?;
+    execute_point_create(create, request)
+}
+
+pub fn execute_project_surface_point_create_by_tag(
+    session: &ProjectSurfaceSession,
+    operation_tag: &str,
+    request: &SurfacePointCreateRequestJson,
+) -> Result<SurfaceRecordJson, SurfaceError> {
+    let create = session.admit_create_by_operation_tag(operation_tag)?;
+    execute_point_create(create, request)
+}
+
+pub(super) fn execute_point_create(
+    create: SurfaceCreate<'_>,
+    request: &SurfacePointCreateRequestJson,
+) -> Result<SurfaceRecordJson, SurfaceError> {
+    let decoded = request.decode(&create)?;
+    let record = create.execute(decoded.as_create_input())?;
+    Ok(SurfaceRecordJson::from(&record))
+}
+
+pub fn execute_surface_singleton_create_by_tag(
+    program: &CheckedProgram,
+    store: &TreeStore,
+    operation_tag: &str,
+    request: &SurfaceSingletonCreateRequestJson,
+) -> Result<SurfaceRecordJson, SurfaceError> {
+    let create = SurfaceCreate::admit_by_operation_tag(program, store, operation_tag)?;
+    execute_singleton_create(create, request)
+}
+
+pub fn execute_project_surface_singleton_create_by_tag(
+    session: &ProjectSurfaceSession,
+    operation_tag: &str,
+    request: &SurfaceSingletonCreateRequestJson,
+) -> Result<SurfaceRecordJson, SurfaceError> {
+    let create = session.admit_create_by_operation_tag(operation_tag)?;
+    execute_singleton_create(create, request)
+}
+
+pub(super) fn execute_singleton_create(
+    create: SurfaceCreate<'_>,
+    request: &SurfaceSingletonCreateRequestJson,
+) -> Result<SurfaceRecordJson, SurfaceError> {
+    let decoded = request.decode(&create)?;
+    let record = create.execute(decoded.as_create_input())?;
+    Ok(SurfaceRecordJson::from(&record))
+}
+
+pub fn execute_surface_point_delete_by_tag(
+    program: &CheckedProgram,
+    store: &TreeStore,
+    operation_tag: &str,
+    request: &SurfacePointDeleteRequestJson,
+) -> Result<(), SurfaceError> {
+    let delete = SurfaceDelete::admit_by_operation_tag(program, store, operation_tag)?;
+    execute_point_delete(delete, request)
+}
+
+pub fn execute_project_surface_point_delete_by_tag(
+    session: &ProjectSurfaceSession,
+    operation_tag: &str,
+    request: &SurfacePointDeleteRequestJson,
+) -> Result<(), SurfaceError> {
+    let delete = session.admit_delete_by_operation_tag(operation_tag)?;
+    execute_point_delete(delete, request)
+}
+
+pub(super) fn execute_point_delete(
+    delete: SurfaceDelete<'_>,
+    request: &SurfacePointDeleteRequestJson,
+) -> Result<(), SurfaceError> {
+    let decoded = request.decode(&delete)?;
+    delete.execute(decoded.as_delete_input())
+}
+
+pub fn execute_surface_singleton_delete_by_tag(
+    program: &CheckedProgram,
+    store: &TreeStore,
+    operation_tag: &str,
+) -> Result<(), SurfaceError> {
+    let delete = SurfaceDelete::admit_by_operation_tag(program, store, operation_tag)?;
+    execute_singleton_delete(delete)
+}
+
+pub fn execute_project_surface_singleton_delete_by_tag(
+    session: &ProjectSurfaceSession,
+    operation_tag: &str,
+) -> Result<(), SurfaceError> {
+    let delete = session.admit_delete_by_operation_tag(operation_tag)?;
+    execute_singleton_delete(delete)
+}
+
+pub(super) fn execute_singleton_delete(delete: SurfaceDelete<'_>) -> Result<(), SurfaceError> {
+    delete.execute(SurfaceDeleteInput::Singleton)
 }

@@ -32,14 +32,14 @@ Nine crates stacked in dependency order, lowest first:
   drives managed saved writes inside transactions, applies schema evolution, and
   owns linked-Rust project surface sessions over accepted native stores.
 - **json** — JSON DTOs for entry return values, saved-key leaves, data snapshot
-  stamps, surface ABI descriptors, surface reads, sparse update request bodies,
-  action request/results, and operation envelopes. It preserves existing
+  stamps, surface ABI descriptors, surface reads, generated write request
+  bodies, action request/results, and operation envelopes. It preserves existing
   machine-readable CLI shapes and owns checked surface read request-parameter
-  decode, project update/action execution wrappers, accepted-catalog surface
-  action value rendering, read/action alias descriptor rendering, and
+  decode, project create/update/delete/action execution wrappers,
+  accepted-catalog surface action value rendering, read/action alias descriptor rendering, and
   context-aware cursor-boundary rendering. It also renders the descriptor-derived
   `surface.route.v1` manifest for check JSON output; HTTP serving, opaque cursor
-  tokens, generated clients, and create/delete body decode are not owned here.
+  tokens, and generated clients are not owned here.
 - **project / cli** — `marrow.json`, discovery, and the operator binary that
   wires the above together, renders results, and owns the local loopback
   `marrow surface serve` HTTP process around checked surface DTOs.
@@ -85,8 +85,8 @@ over data the checker has not proven safe.
 | `marrow-schema` | Resource/store/enum compilation; stdlib + Error tables | [schema.md](schema.md) |
 | `marrow-check` | Resolution, types, facts, catalog identity, evolution, lowering | [check/](check/README.md) |
 | `marrow-store` | Tree-cell storage contract; key/value codecs; mem + redb engines | [store.md](store.md) |
-| `marrow-run` | Tree-walking interpreter; saved reads/writes; evolution apply; read-only surface session | [runtime/](runtime/README.md) |
-| `marrow-json` | JSON for entry returns, tooling keys, data stamps, and checked surface read/update/action DTOs | [json.md](json.md) |
+| `marrow-run` | Tree-walking interpreter; saved reads/writes; evolution apply; project surface sessions | [runtime/](runtime/README.md) |
+| `marrow-json` | JSON for entry returns, tooling keys, data stamps, and checked surface operation DTOs | [json.md](json.md) |
 | `marrow-catalog` | Accepted-catalog model: epoch/digest/entries, validation, structural-signature decode | [check/](check/README.md) |
 | `marrow-project` | `marrow.json` schema, discovery, the project digest | [cli.md](cli.md) |
 | `marrow` | CLI dispatch, run/test/fmt, data/backup/evolve | [cli.md](cli.md) |

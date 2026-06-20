@@ -4,8 +4,9 @@ use std::ops::ControlFlow;
 use marrow_check::{
     CheckedFacts, CheckedProgram, EntryIdentity, EnumId, EnumMemberId, ResourceId,
     ResourceMemberFact, ResourceMemberId, ResourceMemberKind, StoreFact, StoreIndexFact,
-    StoredValueMeaning, SurfaceActionOperationDescriptor, SurfaceCatalogStatus, SurfaceFact,
-    SurfaceId, SurfaceReadFootprint, SurfaceReadOperationFact, SurfaceReadOperationKind,
+    StoredValueMeaning, SurfaceActionOperationDescriptor, SurfaceCatalogStatus,
+    SurfaceCreateOperationDescriptor, SurfaceDeleteOperationDescriptor, SurfaceFact, SurfaceId,
+    SurfaceReadFootprint, SurfaceReadOperationFact, SurfaceReadOperationKind,
     SurfaceUpdateOperationDescriptor, checked_saved_root_place,
 };
 use marrow_store::Decimal;
@@ -32,6 +33,11 @@ use crate::write::{
     WRITE_UNIQUE_CONFLICT, WRITE_UNKNOWN_FIELD, WriteError, plan_field_patch_write,
 };
 use crate::write_plan::WritePlan;
+
+mod create_delete;
+pub use create_delete::{
+    SurfaceCreate, SurfaceCreateField, SurfaceCreateInput, SurfaceDelete, SurfaceDeleteInput,
+};
 
 pub const SURFACE_REQUEST: &str = "surface.request";
 pub const SURFACE_ABSENT: &str = "surface.absent";
@@ -879,7 +885,7 @@ struct SurfaceUpdatePlan<'a> {
     source_digest: String,
     place: marrow_check::CheckedSavedPlace,
     record: SurfaceRecordReadPlan<'a>,
-    fields: HashMap<CatalogId, SurfaceUpdateMember>,
+    fields: HashMap<CatalogId, SurfaceWriteMember>,
     span: SourceSpan,
 }
 
@@ -912,12 +918,12 @@ struct SurfaceUniqueLookupPlan {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct SurfaceUpdateMember {
+struct SurfaceWriteMember {
     member: ResourceMemberId,
     value_meaning: StoredValueMeaning,
 }
 
-enum PlannedSurfaceUpdateValue {
+enum PlannedSurfaceWriteValue {
     Leaf(LeafValue),
     Identity {
         keys: Vec<SavedKey>,
@@ -978,6 +984,87 @@ impl SurfaceMaterializationBudget {
         }
         self.remaining_bytes -= bytes;
         Ok(())
+    }
+}
+
+pub(super) struct SurfaceWriteCommit<'a> {
+    program: &'a CheckedProgram,
+    store: &'a TreeStore,
+    span: SourceSpan,
+    accepted_epoch: Option<u64>,
+    source_digest: &'a str,
+}
+
+impl<'a> SurfaceWriteCommit<'a> {
+    pub(super) fn new(
+        program: &'a CheckedProgram,
+        store: &'a TreeStore,
+        span: SourceSpan,
+        accepted_epoch: Option<u64>,
+        source_digest: &'a str,
+    ) -> Self {
+        Self {
+            program,
+            store,
+            span,
+            accepted_epoch,
+            source_digest,
+        }
+    }
+
+    pub(super) fn run<R>(
+        self,
+        before_plan: impl FnOnce(&TreeStore) -> Result<(), SurfaceError>,
+        build_plan: impl FnOnce(&TreeStore) -> Result<WritePlan, SurfaceError>,
+        after_plan: impl FnOnce(&TreeStore) -> Result<R, SurfaceError>,
+    ) -> Result<R, SurfaceError> {
+        self.store
+            .begin()
+            .map_err(|error| surface_store_error(error, self.span))?;
+        if let Err(error) = admit_surface_store(self.program, self.store) {
+            let _ = self.store.rollback();
+            return Err(error);
+        }
+        if let Err(error) = before_plan(self.store) {
+            let _ = self.store.rollback();
+            return Err(error);
+        }
+        let mut plan = match build_plan(self.store) {
+            Ok(plan) => plan,
+            Err(error) => {
+                let _ = self.store.rollback();
+                return Err(error);
+            }
+        };
+        if let Err(error) =
+            crate::env::stamp_managed_write(&mut plan, self.accepted_epoch, self.source_digest)
+        {
+            let _ = self.store.rollback();
+            return Err(surface_store_error(error, self.span));
+        }
+        if let Err(error) = plan
+            .commit(self.store, true)
+            .map_err(|error| surface_store_error(error, self.span))
+        {
+            let _ = self.store.rollback();
+            return Err(error);
+        }
+        let result = match after_plan(self.store) {
+            Ok(result) => result,
+            Err(error) => {
+                let _ = self.store.rollback();
+                return Err(error);
+            }
+        };
+        if let Err(error) = self
+            .store
+            .commit()
+            .map_err(|error| surface_store_error(error, self.span))
+        {
+            let _ = self.store.rollback();
+            return Err(error);
+        }
+        Ok(result)
     }
 }
 
@@ -1367,18 +1454,18 @@ impl<'a> SurfaceUpdatePlan<'a> {
                     self.span,
                 )
             })?;
-            let value = lower_surface_update_value(
+            let value = lower_surface_write_value(
                 &field.value,
                 &member.value_meaning,
                 self.record.facts,
                 self.span,
             )?;
             patch.push(match value {
-                PlannedSurfaceUpdateValue::Leaf(value) => FieldPatchValue::Leaf {
+                PlannedSurfaceWriteValue::Leaf(value) => FieldPatchValue::Leaf {
                     member: member.member,
                     value,
                 },
-                PlannedSurfaceUpdateValue::Identity {
+                PlannedSurfaceWriteValue::Identity {
                     keys,
                     referenced_arity,
                 } => FieldPatchValue::Identity {
@@ -1396,7 +1483,7 @@ impl<'a> SurfaceUpdatePlan<'a> {
             self.record.facts,
             self.span,
         )
-        .map_err(map_update_plan_error)
+        .map_err(map_surface_write_plan_error)
     }
 
     fn commit_update(
@@ -1406,49 +1493,18 @@ impl<'a> SurfaceUpdatePlan<'a> {
         identity: &[SavedKey],
         fields: &[SurfaceUpdateField],
     ) -> Result<(), SurfaceReadError> {
-        store
-            .begin()
-            .map_err(|error| surface_store_error(error, self.span))?;
-        if let Err(error) = admit_surface_store(program, store) {
-            let _ = store.rollback();
-            return Err(error);
-        }
-        if let Err(error) = self.require_present(store, identity) {
-            let _ = store.rollback();
-            return Err(error);
-        }
-        let mut plan = match self.update_plan(identity, fields, store) {
-            Ok(plan) => plan,
-            Err(error) => {
-                let _ = store.rollback();
-                return Err(error);
-            }
-        };
-        if let Err(error) =
-            crate::env::stamp_managed_write(&mut plan, self.accepted_epoch, &self.source_digest)
-        {
-            let _ = store.rollback();
-            return Err(surface_store_error(error, self.span));
-        }
-        if let Err(error) = plan
-            .commit(store, true)
-            .map_err(|error| surface_store_error(error, self.span))
-        {
-            let _ = store.rollback();
-            return Err(error);
-        }
-        if let Err(error) = self.validate_after_patch(store, identity) {
-            let _ = store.rollback();
-            return Err(error);
-        }
-        if let Err(error) = store
-            .commit()
-            .map_err(|error| surface_store_error(error, self.span))
-        {
-            let _ = store.rollback();
-            return Err(error);
-        }
-        Ok(())
+        SurfaceWriteCommit::new(
+            program,
+            store,
+            self.span,
+            self.accepted_epoch,
+            &self.source_digest,
+        )
+        .run(
+            |store| self.require_present(store, identity),
+            |store| self.update_plan(identity, fields, store),
+            |store| self.validate_after_patch(store, identity),
+        )
     }
 
     fn require_present(
@@ -2261,6 +2317,16 @@ fn surface_operation_tag_count(program: &CheckedProgram, operation_tag: &str) ->
         {
             count += 1;
         }
+        if SurfaceCreateOperationDescriptor::from_surface(program, surface)
+            .is_some_and(|descriptor| descriptor.operation_tag == operation_tag)
+        {
+            count += 1;
+        }
+        if SurfaceDeleteOperationDescriptor::from_surface(program, surface)
+            .is_some_and(|descriptor| descriptor.operation_tag == operation_tag)
+        {
+            count += 1;
+        }
         count += surface
             .actions
             .iter()
@@ -2489,7 +2555,7 @@ fn surface_update_members(
     facts: &CheckedFacts,
     surface: &SurfaceFact,
     store: &StoreFact,
-) -> Result<HashMap<CatalogId, SurfaceUpdateMember>, SurfaceReadError> {
+) -> Result<HashMap<CatalogId, SurfaceWriteMember>, SurfaceReadError> {
     let mut fields = HashMap::new();
     for field in &surface.update {
         let member = resource_member(facts, field.member, field.span)?;
@@ -2504,7 +2570,7 @@ fn surface_update_members(
         if fields
             .insert(
                 catalog_id,
-                SurfaceUpdateMember {
+                SurfaceWriteMember {
                     member: member.id,
                     value_meaning,
                 },
@@ -2611,20 +2677,20 @@ fn decode_surface_value(
     }
 }
 
-fn lower_surface_update_value(
+fn lower_surface_write_value(
     value: &SurfaceValue,
     meaning: &StoredValueMeaning,
     facts: &CheckedFacts,
     span: SourceSpan,
-) -> Result<PlannedSurfaceUpdateValue, SurfaceReadError> {
+) -> Result<PlannedSurfaceWriteValue, SurfaceReadError> {
     match meaning {
-        StoredValueMeaning::Scalar(expected) => lower_surface_scalar_update(value, *expected, span),
+        StoredValueMeaning::Scalar(expected) => lower_surface_scalar_write(value, *expected, span),
         StoredValueMeaning::Enum { enum_id, members } => match value {
             SurfaceValue::Enum(value) => {
-                lower_surface_enum_update(value, facts, *enum_id, members, span)
+                lower_surface_enum_write(value, facts, *enum_id, members, span)
             }
             _ => Err(request_at(
-                "surface update value does not match the checked field shape",
+                "surface write value does not match the checked field shape",
                 span,
             )),
         },
@@ -2635,21 +2701,21 @@ fn lower_surface_update_value(
             ..
         } => match value {
             SurfaceValue::Identity(value) => {
-                lower_surface_identity_update(value, store_catalog_id, *arity, key_scalars)
+                lower_surface_identity_write(value, store_catalog_id, *arity, key_scalars)
             }
             _ => Err(request_at(
-                "surface update value does not match the checked field shape",
+                "surface write value does not match the checked field shape",
                 span,
             )),
         },
     }
 }
 
-fn lower_surface_scalar_update(
+fn lower_surface_scalar_write(
     value: &SurfaceValue,
     expected: ScalarType,
     span: SourceSpan,
-) -> Result<PlannedSurfaceUpdateValue, SurfaceReadError> {
+) -> Result<PlannedSurfaceWriteValue, SurfaceReadError> {
     let saved = match value {
         SurfaceValue::Int(value) if expected == ScalarType::Int => SavedValue::Int(*value),
         SurfaceValue::Bool(value) if expected == ScalarType::Bool => SavedValue::Bool(*value),
@@ -2669,16 +2735,16 @@ fn lower_surface_scalar_update(
         }
         _ => {
             return Err(request_at(
-                "surface update scalar value does not match the checked field type",
+                "surface write scalar value does not match the checked field type",
                 span,
             ));
         }
     };
-    validate_surface_scalar_update_range(&saved, span)?;
+    validate_surface_scalar_write_range(&saved, span)?;
     Ok(leaf_scalar(saved))
 }
 
-fn validate_surface_scalar_update_range(
+fn validate_surface_scalar_write_range(
     value: &SavedValue,
     span: SourceSpan,
 ) -> Result<(), SurfaceReadError> {
@@ -2695,23 +2761,23 @@ fn validate_surface_scalar_update_range(
     }
 }
 
-fn leaf_scalar(value: SavedValue) -> PlannedSurfaceUpdateValue {
-    PlannedSurfaceUpdateValue::Leaf(LeafValue::Scalar(value))
+fn leaf_scalar(value: SavedValue) -> PlannedSurfaceWriteValue {
+    PlannedSurfaceWriteValue::Leaf(LeafValue::Scalar(value))
 }
 
-fn lower_surface_enum_update(
+fn lower_surface_enum_write(
     value: &SurfaceEnumValue,
     facts: &CheckedFacts,
     enum_id: EnumId,
     members: &[EnumMemberId],
     span: SourceSpan,
-) -> Result<PlannedSurfaceUpdateValue, SurfaceReadError> {
+) -> Result<PlannedSurfaceWriteValue, SurfaceReadError> {
     let enum_fact = facts
         .enum_(enum_id)
         .ok_or_else(|| abi_mismatch("checked enum id is missing", span))?;
     if enum_fact.catalog_id.as_deref() != Some(value.enum_catalog_id.as_str()) {
         return Err(request_at(
-            "surface update enum value names a different enum",
+            "surface write enum value names a different enum",
             span,
         ));
     }
@@ -2722,13 +2788,13 @@ fn lower_surface_enum_update(
     });
     let Some(member) = member else {
         return Err(request_at(
-            "surface update enum value names no accepted enum member",
+            "surface write enum value names no accepted enum member",
             span,
         ));
     };
     if !facts.enum_member_is_selectable(member.id) {
         return Err(request_at(
-            "surface update enum value names an unselectable enum member",
+            "surface write enum value names an unselectable enum member",
             span,
         ));
     }
@@ -2736,34 +2802,34 @@ fn lower_surface_enum_update(
         value.enum_catalog_id.clone(),
         value.member_catalog_id.clone(),
     ))
-    .map_err(|_| request_at("surface update enum value could not be encoded", span))?;
+    .map_err(|_| request_at("surface write enum value could not be encoded", span))?;
     let display_name = facts
         .enum_member_catalog_path(member.id)
         .ok_or_else(|| abi_mismatch("enum member has no catalog path", span))?;
-    Ok(PlannedSurfaceUpdateValue::Leaf(LeafValue::Enum {
+    Ok(PlannedSurfaceWriteValue::Leaf(LeafValue::Enum {
         bytes,
         index_key: SavedKey::Str(value.member_catalog_id.as_str().to_string()),
         display_name,
     }))
 }
 
-fn lower_surface_identity_update(
+fn lower_surface_identity_write(
     value: &SurfaceReadIdentity,
     raw_store_catalog_id: &Option<String>,
     arity: usize,
     key_scalars: &[ScalarType],
-) -> Result<PlannedSurfaceUpdateValue, SurfaceReadError> {
+) -> Result<PlannedSurfaceWriteValue, SurfaceReadError> {
     if raw_store_catalog_id.as_deref() != Some(value.store_catalog_id.as_str()) {
         return Err(request(
-            "surface update identity value names a different store",
+            "surface write identity value names a different store",
         ));
     }
     if value.keys.len() != arity || !identity_keys_match_scalars(&value.keys, key_scalars) {
         return Err(request(
-            "surface update identity value does not match the checked store key shape",
+            "surface write identity value does not match the checked store key shape",
         ));
     }
-    Ok(PlannedSurfaceUpdateValue::Identity {
+    Ok(PlannedSurfaceWriteValue::Identity {
         keys: value.keys.clone(),
         referenced_arity: arity,
     })
@@ -2888,7 +2954,7 @@ fn write_error(message: impl Into<String>, span: SourceSpan) -> SurfaceReadError
     surface_error_at(SURFACE_WRITE, message, span)
 }
 
-fn map_update_plan_error(error: WriteError) -> SurfaceReadError {
+fn map_surface_write_plan_error(error: WriteError) -> SurfaceReadError {
     match error.code {
         WRITE_UNIQUE_CONFLICT => conflict_error(error.message, SourceSpan::default()),
         WRITE_INVALID_DATA => invalid_data(error.message, SourceSpan::default()),

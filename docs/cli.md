@@ -141,8 +141,8 @@ Check a project directory containing `marrow.json` and report diagnostics.
   the `surface.route.v1` manifest derived from exported surface descriptors:
   JSON `POST` operation-tag paths plus render aliases and request-body kinds.
   The manifest is data; `marrow surface serve` is the local serving profile that
-  consumes it. Generated clients, create/delete profiles, remote serving, and
-  opaque cursor tokens remain out of scope.
+  consumes it. Generated clients, remote serving, and opaque cursor tokens
+  remain out of scope.
 
 Exits `0` when there are no errors, `1` when there are diagnostics or
 `marrow.json` cannot be read, and `2` for usage errors such as a non-directory
@@ -176,7 +176,7 @@ marrow surface serve [--write] [--cors-origin <loopback-origin>] [--addr <loopba
 Run the local HTTP serving profile for checked application surfaces. By
 default the command opens the project through `ProjectSurfaceReadSession` and
 serves read routes only. With `--write`, it opens `ProjectSurfaceSession` and
-also exposes sparse-update and action routes. Both modes require an already
+also exposes create, sparse-update, delete, and action routes. Both modes require an already
 accepted native store and never create, freeze, migrate, repair, or auto-apply
 saved data.
 
@@ -193,7 +193,9 @@ saved data.
 - The active route set is derived from the same `surface.route.v1` manifest
   exported by `marrow check --format json|jsonl`. Default mode serves only
   `/surface/v1/read/<operation-tag>` rows; `--write` additionally serves
+  `/surface/v1/create/<operation-tag>`,
   `/surface/v1/update/<operation-tag>` and
+  `/surface/v1/delete/<operation-tag>`, and
   `/surface/v1/action/<operation-tag>` rows.
 - `--write` is single-owner and sequential through the native writer lock while
   the process is running. It excludes another writer and read-only inspection
@@ -218,7 +220,7 @@ saved data.
   no source path, store path, or raw backend detail.
 
 This is a dependency-free local tooling profile, not remote hosting,
-authentication, generated clients, opaque cursor tokens, or create/delete CRUD.
+authentication, generated clients, or opaque cursor tokens.
 Exits `2` for usage errors such as non-loopback `--addr` or `--cors-origin`,
 `1` for project/session/listener failures, and otherwise runs until killed.
 

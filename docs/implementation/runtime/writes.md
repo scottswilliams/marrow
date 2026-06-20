@@ -12,7 +12,7 @@ stamp fold into the same plan; the whole plan runs inside the active transaction
 
 ## The shape
 
-`plan → commit`, never write-as-you-go. `write.rs` is the planning core for all write kinds; `write_plan.rs` defines the committable unit and the begin/apply/commit-or-rollback contract. The five per-kind modules under `write_dispatch/` plus `group_write.rs` are thin: lower the target, hand checked facts and a value to the planner, apply, defer the required-entry check. `surface.rs` also uses the planner directly for admitted sparse surface updates. `transaction.rs` wraps multi-statement atomicity around language statements. `index_maintenance.rs` stages index steps into each plan, including combined field patches whose affected indexes must be rewritten from the final tuple rather than from one field at a time. `store.rs` is the only place checked names become physical store keys.
+`plan → commit`, never write-as-you-go. `write.rs` is the planning core for all write kinds; `write_plan.rs` defines the committable unit and the begin/apply/commit-or-rollback contract. The five per-kind modules under `write_dispatch/` plus `group_write.rs` are thin: lower the target, hand checked facts and a value to the planner, apply, defer the required-entry check. `surface.rs` also uses the planner directly for admitted surface creates, sparse updates, and deletes. `transaction.rs` wraps multi-statement atomicity around language statements. `index_maintenance.rs` stages index steps into each plan, including combined field patches whose affected indexes must be rewritten from the final tuple rather than from one field at a time. `store.rs` is the only place checked names become physical store keys.
 
 Step order is the correctness contract: within a plan, `DeleteData` (clear the old subtree) precedes `WriteRecordPresence` and per-field `WriteData`, and stale `DeleteIndex` precedes fresh `WriteIndex`, so a replace never leaves a stale field or index branch. Required-field enforcement is mode-split: outside a transaction the check rejects an incompletion before it lands; inside one it defers to the outermost commit, so an intermediate incomplete record is legal mid-transaction. The catalog-epoch stamp rides the same transaction as the data, and `WritePlan` resolves the stamp's commit ID against the predecessor metadata visible in that transaction. Transaction breadth is bounded the way depth is: `apply_plan` charges each in-transaction plan's staged payload to `TransactionState`, failing closed with catchable `write.transaction_too_large` once the running total crosses `TRANSACTION_WRITE_BYTE_BUDGET`, so an unbounded write set aborts before the in-memory buffer exhausts memory.
 
@@ -48,7 +48,9 @@ Step order is the correctness contract: within a plan, `DeleteData` (clear the o
 ## Read next
 
 - `write.rs` → `plan_resource_write` — the canonical plan shape: identity resolution, required-field collection, unique rejection, `DeleteData`-then-`WriteData` ordering, index-rewrite folding.
-- `write.rs` → `plan_field_patch_write` — sparse multi-field patch planning for callers that already have checked field/value facts and need one committable update plan.
+- `write.rs` → `plan_resource_write`, `plan_field_patch_write`, and
+  `plan_resource_delete` — the planner entries used by generated surface
+  create, update, and delete operations.
 - `write_plan.rs` → `WritePlan::commit` / `apply_steps` — the exact begin/apply/commit-or-rollback contract and each `PlanStep` → `TreeStore` mapping.
 - `transaction.rs` → `eval_transaction` — deferred entry validation, commit-metadata stamping, store commit, discard-on-failure.
 - `index_maintenance.rs` → `stage_resource_index_rewrites` / `check_unique_conflict` — how teardown+rewrite is staged and how unique conflicts are detected ignoring self-identity.

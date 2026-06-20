@@ -40,8 +40,9 @@ mod walk;
 
 pub use analysis::{
     AnalysisIdentity, AnalysisSnapshot, AnalyzedFile, CatalogDeclaration,
-    SurfaceActionOperationAnalysis, SurfaceReadOperationAnalysis, SurfaceUpdateOperationAnalysis,
-    UseSite, UseSiteKind, analyze_project, scope_at, type_at,
+    SurfaceActionOperationAnalysis, SurfaceCreateOperationAnalysis, SurfaceDeleteOperationAnalysis,
+    SurfaceReadOperationAnalysis, SurfaceUpdateOperationAnalysis, UseSite, UseSiteKind,
+    analyze_project, scope_at, type_at,
 };
 pub use binding::{
     BindingIndex, ParameterDefinition, RenameAction, RenameSafety, SourceEdit, SymbolKind,
@@ -103,8 +104,8 @@ pub use facts::{
     ResourceId, ResourceMemberFact, ResourceMemberId, ResourceMemberKind, SavedPlaceEffect,
     StoreFact, StoreId, StoreIdentityKeyFact, StoreIndexFact, StoreIndexId, StoreIndexKeyFact,
     StoreIndexKeySource, StoredValueMeaning, SurfaceActionFact, SurfaceCatalogBlocker,
-    SurfaceCatalogStatus, SurfaceCollectionFact, SurfaceCollectionTarget, SurfaceFact,
-    SurfaceFieldFact, SurfaceId, SurfaceReadFootprint, SurfaceReadOperationFact,
+    SurfaceCatalogStatus, SurfaceCollectionFact, SurfaceCollectionTarget, SurfaceDeleteFact,
+    SurfaceFact, SurfaceFieldFact, SurfaceId, SurfaceReadFootprint, SurfaceReadOperationFact,
     SurfaceReadOperationKind, WorkShapeClass,
 };
 pub use facts::{
@@ -129,12 +130,17 @@ pub use project_io::{
 };
 pub use resolve::{Def, DefItem, Resolution, ResolvableKind, resolve};
 pub use surface_abi::{
+    SURFACE_CREATE_OPERATION_TAG_VERSION, SURFACE_DELETE_OPERATION_TAG_VERSION,
     SURFACE_READ_OPERATION_TAG_VERSION, SURFACE_UPDATE_OPERATION_TAG_VERSION,
-    SurfaceActionOperationDescriptor, SurfaceOperationIdentityKey, SurfaceOperationValueShape,
-    SurfaceReadOperationDescriptor, SurfaceReadOperationDescriptorKind,
-    SurfaceReadOperationIndexKey, SurfaceReadOperationIndexKeySource,
-    SurfaceReadOperationProjectionField, SurfaceUpdateOperationDescriptor,
-    SurfaceUpdateOperationDescriptorKind, SurfaceUpdateOperationField, SurfaceUpdatePatchSemantics,
+    SurfaceActionOperationDescriptor, SurfaceCreateBodySemantics, SurfaceCreateExistenceSemantics,
+    SurfaceCreateIdentityPolicy, SurfaceCreateOperationDescriptor,
+    SurfaceCreateOperationDescriptorKind, SurfaceCreateOperationField,
+    SurfaceDeleteOperationDescriptor, SurfaceDeleteOperationDescriptorKind, SurfaceDeleteSemantics,
+    SurfaceOperationIdentityKey, SurfaceOperationValueShape, SurfaceReadOperationDescriptor,
+    SurfaceReadOperationDescriptorKind, SurfaceReadOperationIndexKey,
+    SurfaceReadOperationIndexKeySource, SurfaceReadOperationProjectionField,
+    SurfaceUpdateOperationDescriptor, SurfaceUpdateOperationDescriptorKind,
+    SurfaceUpdateOperationField, SurfaceUpdatePatchSemantics,
 };
 
 pub(crate) use driver::{

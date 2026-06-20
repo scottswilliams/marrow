@@ -1,12 +1,15 @@
 use std::collections::BTreeMap;
 
 use super::{
-    SurfaceAbiJson, SurfaceOperationRequestBodyJson, SurfaceReadOperationKindJson,
-    SurfaceRouteRequestJson, SurfaceUpdateOperationKindJson,
+    SurfaceAbiJson, SurfaceCreateOperationKindJson, SurfaceDeleteOperationKindJson,
+    SurfaceOperationRequestBodyJson, SurfaceReadOperationKindJson, SurfaceRouteRequestJson,
+    SurfaceUpdateOperationKindJson,
 };
 
 const SURFACE_READ_ROUTE_PREFIX: &str = "/surface/v1/read/";
 const SURFACE_UPDATE_ROUTE_PREFIX: &str = "/surface/v1/update/";
+const SURFACE_CREATE_ROUTE_PREFIX: &str = "/surface/v1/create/";
+const SURFACE_DELETE_ROUTE_PREFIX: &str = "/surface/v1/delete/";
 const SURFACE_ACTION_ROUTE_PREFIX: &str = "/surface/v1/action/";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -17,6 +20,10 @@ pub enum SurfaceOperationKind {
     UniqueLookup,
     SingletonUpdate,
     PointUpdate,
+    SingletonCreate,
+    PointCreate,
+    SingletonDelete,
+    PointDelete,
     Action,
 }
 
@@ -57,7 +64,13 @@ impl SurfaceOperationKind {
     pub fn requires_write_session(self) -> bool {
         matches!(
             self,
-            Self::SingletonUpdate | Self::PointUpdate | Self::Action
+            Self::SingletonUpdate
+                | Self::PointUpdate
+                | Self::SingletonCreate
+                | Self::PointCreate
+                | Self::SingletonDelete
+                | Self::PointDelete
+                | Self::Action
         )
     }
 
@@ -83,6 +96,22 @@ impl SurfaceOperationKind {
                     Self::PointUpdate,
                     SurfaceOperationRequestBodyJson::PointUpdate { .. }
                 )
+                | (
+                    Self::SingletonCreate,
+                    SurfaceOperationRequestBodyJson::SingletonCreate { .. }
+                )
+                | (
+                    Self::PointCreate,
+                    SurfaceOperationRequestBodyJson::PointCreate { .. }
+                )
+                | (
+                    Self::SingletonDelete,
+                    SurfaceOperationRequestBodyJson::SingletonDelete
+                )
+                | (
+                    Self::PointDelete,
+                    SurfaceOperationRequestBodyJson::PointDelete { .. }
+                )
                 | (Self::Action, SurfaceOperationRequestBodyJson::Action { .. })
         )
     }
@@ -93,6 +122,8 @@ impl SurfaceOperationKind {
                 SURFACE_READ_ROUTE_PREFIX
             }
             Self::SingletonUpdate | Self::PointUpdate => SURFACE_UPDATE_ROUTE_PREFIX,
+            Self::SingletonCreate | Self::PointCreate => SURFACE_CREATE_ROUTE_PREFIX,
+            Self::SingletonDelete | Self::PointDelete => SURFACE_DELETE_ROUTE_PREFIX,
             Self::Action => SURFACE_ACTION_ROUTE_PREFIX,
         }
     }
@@ -105,6 +136,10 @@ impl SurfaceOperationKind {
             Self::UniqueLookup => SurfaceRouteRequestJson::UniqueLookup,
             Self::SingletonUpdate => SurfaceRouteRequestJson::SingletonUpdate,
             Self::PointUpdate => SurfaceRouteRequestJson::PointUpdate,
+            Self::SingletonCreate => SurfaceRouteRequestJson::SingletonCreate,
+            Self::PointCreate => SurfaceRouteRequestJson::PointCreate,
+            Self::SingletonDelete => SurfaceRouteRequestJson::SingletonDelete,
+            Self::PointDelete => SurfaceRouteRequestJson::PointDelete,
             Self::Action => SurfaceRouteRequestJson::Action,
         }
     }
@@ -133,6 +168,18 @@ impl SurfaceOperationKind {
             }
             if let Some(descriptor) =
                 marrow_check::SurfaceUpdateOperationDescriptor::from_surface(program, surface)
+                    .filter(|descriptor| descriptor.operation_tag == operation_tag)
+            {
+                record_kind_match(&mut matched, Self::from(descriptor.kind), operation_tag)?;
+            }
+            if let Some(descriptor) =
+                marrow_check::SurfaceCreateOperationDescriptor::from_surface(program, surface)
+                    .filter(|descriptor| descriptor.operation_tag == operation_tag)
+            {
+                record_kind_match(&mut matched, Self::from(descriptor.kind), operation_tag)?;
+            }
+            if let Some(descriptor) =
+                marrow_check::SurfaceDeleteOperationDescriptor::from_surface(program, surface)
                     .filter(|descriptor| descriptor.operation_tag == operation_tag)
             {
                 record_kind_match(&mut matched, Self::from(descriptor.kind), operation_tag)?;
@@ -170,6 +217,20 @@ impl SurfaceOperationCatalog {
                     },
                 )?;
             }
+            if let Some(create) = &surface.create {
+                let kind = SurfaceOperationKind::from(&create.kind);
+                insert_binding(
+                    &mut by_tag,
+                    SurfaceOperationBinding {
+                        operation_tag: create.operation_tag.clone(),
+                        kind,
+                        path: operation_path(kind, &create.operation_tag),
+                        surface_module: surface.module.clone(),
+                        surface_name: surface.name.clone(),
+                        alias: "create".into(),
+                    },
+                )?;
+            }
             if let Some(update) = &surface.update {
                 let kind = SurfaceOperationKind::from(&update.kind);
                 insert_binding(
@@ -181,6 +242,20 @@ impl SurfaceOperationCatalog {
                         surface_module: surface.module.clone(),
                         surface_name: surface.name.clone(),
                         alias: "update".into(),
+                    },
+                )?;
+            }
+            if let Some(delete) = &surface.delete {
+                let kind = SurfaceOperationKind::from(&delete.kind);
+                insert_binding(
+                    &mut by_tag,
+                    SurfaceOperationBinding {
+                        operation_tag: delete.operation_tag.clone(),
+                        kind,
+                        path: operation_path(kind, &delete.operation_tag),
+                        surface_module: surface.module.clone(),
+                        surface_name: surface.name.clone(),
+                        alias: "delete".into(),
                     },
                 )?;
             }
@@ -246,6 +321,28 @@ impl From<marrow_check::SurfaceUpdateOperationDescriptorKind> for SurfaceOperati
     }
 }
 
+impl From<marrow_check::SurfaceCreateOperationDescriptorKind> for SurfaceOperationKind {
+    fn from(kind: marrow_check::SurfaceCreateOperationDescriptorKind) -> Self {
+        match kind {
+            marrow_check::SurfaceCreateOperationDescriptorKind::SingletonCreate => {
+                Self::SingletonCreate
+            }
+            marrow_check::SurfaceCreateOperationDescriptorKind::PointCreate => Self::PointCreate,
+        }
+    }
+}
+
+impl From<marrow_check::SurfaceDeleteOperationDescriptorKind> for SurfaceOperationKind {
+    fn from(kind: marrow_check::SurfaceDeleteOperationDescriptorKind) -> Self {
+        match kind {
+            marrow_check::SurfaceDeleteOperationDescriptorKind::SingletonDelete => {
+                Self::SingletonDelete
+            }
+            marrow_check::SurfaceDeleteOperationDescriptorKind::PointDelete => Self::PointDelete,
+        }
+    }
+}
+
 impl From<&SurfaceReadOperationKindJson> for SurfaceOperationKind {
     fn from(kind: &SurfaceReadOperationKindJson) -> Self {
         match kind {
@@ -267,6 +364,24 @@ impl From<&SurfaceUpdateOperationKindJson> for SurfaceOperationKind {
     }
 }
 
+impl From<&SurfaceCreateOperationKindJson> for SurfaceOperationKind {
+    fn from(kind: &SurfaceCreateOperationKindJson) -> Self {
+        match kind {
+            SurfaceCreateOperationKindJson::SingletonCreate => Self::SingletonCreate,
+            SurfaceCreateOperationKindJson::PointCreate => Self::PointCreate,
+        }
+    }
+}
+
+impl From<&SurfaceDeleteOperationKindJson> for SurfaceOperationKind {
+    fn from(kind: &SurfaceDeleteOperationKindJson) -> Self {
+        match kind {
+            SurfaceDeleteOperationKindJson::SingletonDelete => Self::SingletonDelete,
+            SurfaceDeleteOperationKindJson::PointDelete => Self::PointDelete,
+        }
+    }
+}
+
 impl From<&SurfaceRouteRequestJson> for SurfaceOperationKind {
     fn from(request: &SurfaceRouteRequestJson) -> Self {
         match request {
@@ -276,6 +391,10 @@ impl From<&SurfaceRouteRequestJson> for SurfaceOperationKind {
             SurfaceRouteRequestJson::UniqueLookup => Self::UniqueLookup,
             SurfaceRouteRequestJson::SingletonUpdate => Self::SingletonUpdate,
             SurfaceRouteRequestJson::PointUpdate => Self::PointUpdate,
+            SurfaceRouteRequestJson::SingletonCreate => Self::SingletonCreate,
+            SurfaceRouteRequestJson::PointCreate => Self::PointCreate,
+            SurfaceRouteRequestJson::SingletonDelete => Self::SingletonDelete,
+            SurfaceRouteRequestJson::PointDelete => Self::PointDelete,
             SurfaceRouteRequestJson::Action => Self::Action,
         }
     }

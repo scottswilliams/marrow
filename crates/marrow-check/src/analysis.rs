@@ -16,7 +16,8 @@ use crate::{
     CHECK_READ_ONLY_EXPRESSION_CONTEXT, CheckDiagnostic, CheckReport, CheckedDebugExpression,
     CheckedFile, CheckedModule, CheckedProgram, DebugSourceIdentity, DefaultEntryProblem,
     DiagnosticPayload, IO_READ, ProjectSources, SCHEMA_DUPLICATE_ROOT_OWNER, SurfaceActionFact,
-    SurfaceActionOperationDescriptor, SurfaceCatalogStatus, SurfaceFact,
+    SurfaceActionOperationDescriptor, SurfaceCatalogStatus, SurfaceCreateOperationDescriptor,
+    SurfaceDeleteFact, SurfaceDeleteOperationDescriptor, SurfaceFact,
     SurfaceReadOperationDescriptor, SurfaceReadOperationFact, SurfaceUpdateOperationDescriptor,
     TestResolutionSuppression, check_file_source, enum_visibility, module_path_error, read_source,
 };
@@ -111,6 +112,57 @@ impl AnalysisSnapshot {
                     program: &self.program,
                     file,
                     surface,
+                })
+            })
+    }
+
+    pub fn surface_create_operations(
+        &self,
+    ) -> impl Iterator<Item = SurfaceCreateOperationAnalysis<'_>> {
+        let modules = self.program.facts.modules();
+        self.program
+            .facts
+            .surfaces()
+            .iter()
+            .filter(|surface| !surface.create.is_empty())
+            .filter_map(move |surface| {
+                let file = modules
+                    .get(surface.module.0 as usize)
+                    .map(|module| module.source_file.as_path());
+                debug_assert!(
+                    file.is_some(),
+                    "checked surface module id belongs to the analyzed facts"
+                );
+                file.map(|file| SurfaceCreateOperationAnalysis {
+                    program: &self.program,
+                    file,
+                    surface,
+                })
+            })
+    }
+
+    pub fn surface_delete_operations(
+        &self,
+    ) -> impl Iterator<Item = SurfaceDeleteOperationAnalysis<'_>> {
+        let modules = self.program.facts.modules();
+        self.program
+            .facts
+            .surfaces()
+            .iter()
+            .filter_map(move |surface| {
+                let delete = surface.delete.as_ref()?;
+                let file = modules
+                    .get(surface.module.0 as usize)
+                    .map(|module| module.source_file.as_path());
+                debug_assert!(
+                    file.is_some(),
+                    "checked surface module id belongs to the analyzed facts"
+                );
+                file.map(|file| SurfaceDeleteOperationAnalysis {
+                    program: &self.program,
+                    file,
+                    surface,
+                    delete,
                 })
             })
     }
@@ -235,6 +287,43 @@ impl SurfaceUpdateOperationAnalysis<'_> {
         match self.surface.catalog_status {
             SurfaceCatalogStatus::Stable => {
                 SurfaceUpdateOperationDescriptor::from_surface(self.program, self.surface)
+            }
+            SurfaceCatalogStatus::SourceOnly(_) => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct SurfaceCreateOperationAnalysis<'a> {
+    program: &'a CheckedProgram,
+    pub file: &'a Path,
+    pub surface: &'a SurfaceFact,
+}
+
+impl SurfaceCreateOperationAnalysis<'_> {
+    pub fn stable_descriptor(&self) -> Option<SurfaceCreateOperationDescriptor> {
+        match self.surface.catalog_status {
+            SurfaceCatalogStatus::Stable => {
+                SurfaceCreateOperationDescriptor::from_surface(self.program, self.surface)
+            }
+            SurfaceCatalogStatus::SourceOnly(_) => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct SurfaceDeleteOperationAnalysis<'a> {
+    program: &'a CheckedProgram,
+    pub file: &'a Path,
+    pub surface: &'a SurfaceFact,
+    pub delete: &'a SurfaceDeleteFact,
+}
+
+impl SurfaceDeleteOperationAnalysis<'_> {
+    pub fn stable_descriptor(&self) -> Option<SurfaceDeleteOperationDescriptor> {
+        match self.surface.catalog_status {
+            SurfaceCatalogStatus::Stable => {
+                SurfaceDeleteOperationDescriptor::from_surface(self.program, self.surface)
             }
             SurfaceCatalogStatus::SourceOnly(_) => None,
         }

@@ -1537,7 +1537,7 @@ fn builtin_name_diagnostic(file: &Path, name: &str, span: SourceSpan) -> CheckDi
     )
 }
 
-const GENERATED_SURFACE_OPERATION_NAMES: &[&str] = &["id", "get", "create", "update"];
+const GENERATED_SURFACE_OPERATION_NAMES: &[&str] = &["id", "get", "create", "update", "delete"];
 
 fn check_surface_local_namespace(
     file: &Path,
@@ -1562,6 +1562,7 @@ fn check_surface_local_namespace(
     let mut fields: HashMap<&str, (SourceSpan, SurfaceCollisionNameKind)> = HashMap::new();
     let mut create: HashMap<&str, (SourceSpan, SurfaceCollisionNameKind)> = HashMap::new();
     let mut update: HashMap<&str, (SourceSpan, SurfaceCollisionNameKind)> = HashMap::new();
+    let mut delete: HashMap<&str, (SourceSpan, SurfaceCollisionNameKind)> = HashMap::new();
     for item in &surface.items {
         match item {
             SurfaceItem::Fields { names, span } => {
@@ -1612,6 +1613,16 @@ fn check_surface_local_namespace(
                     names,
                     *span,
                     SurfaceCollisionNameKind::UpdateItem,
+                );
+            }
+            SurfaceItem::Delete { span } => {
+                collided |= introduce_surface_local_name(
+                    file,
+                    diagnostics,
+                    &mut delete,
+                    "delete",
+                    *span,
+                    SurfaceCollisionNameKind::DeleteItem,
                 );
             }
         }

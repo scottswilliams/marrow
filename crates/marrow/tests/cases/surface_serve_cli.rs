@@ -34,7 +34,9 @@ pub fn retitle(id: int, title: string): string\n\
 \n\
 surface Books from ^books\n\
 \x20\x20\x20\x20fields title, author\n\
+\x20\x20\x20\x20create title, author\n\
 \x20\x20\x20\x20update author\n\
+\x20\x20\x20\x20delete\n\
 \x20\x20\x20\x20collection ^books.byAuthor as byAuthor\n\
 \x20\x20\x20\x20action retitle\n";
 
@@ -94,7 +96,7 @@ fn help_advertises_surface_serve_without_restoring_top_level_serve() {
     assert!(serve_stdout.contains("--write"), "{serve_stdout}");
     assert!(serve_stdout.contains("--cors-origin"), "{serve_stdout}");
     assert!(
-        serve_stdout.contains("/surface/v1/{read|update|action}/<operation-tag>"),
+        serve_stdout.contains("/surface/v1/{read|create|update|delete|action}/<operation-tag>"),
         "{serve_stdout}"
     );
 }
@@ -301,12 +303,17 @@ fn surface_serve_cors_origin_allows_exact_local_browser_origin() {
 fn surface_serve_fails_closed_on_request_shape_mismatches() {
     let fixture = seeded_surface_fixture("surface-serve-strict");
     let point_route = route_by_alias(&fixture.report, "get");
+    let create_route = route_by_alias(&fixture.report, "create");
+    let delete_route = route_by_alias(&fixture.report, "delete");
     let update_route = route_by_alias(&fixture.report, "update");
     let store_catalog_id =
         read_descriptor(&fixture.report, &point_route.operation_tag)["store_catalog_id"]
             .as_str()
             .expect("point read store catalog id")
             .to_string();
+    let create = create_descriptor(&fixture.report, &create_route.operation_tag);
+    let title_catalog_id = create_field_catalog_id(create, "title");
+    let author_catalog_id = create_field_catalog_id(create, "author");
     let (_server, addr) = spawn_surface_server(fixture.root());
     let good_body = json!({
         "profile_version": "surface.operation.v1",
@@ -377,6 +384,66 @@ fn surface_serve_fails_closed_on_request_shape_mismatches() {
     );
     assert_eq!(write_route.status, 404, "{:#?}", write_route.body);
     assert_eq!(write_route.body["code"], "surface.abi_mismatch");
+
+    let create_route_response = post_json(
+        addr,
+        &create_route.path,
+        json!({
+            "profile_version": "surface.operation.v1",
+            "operation_tag": create_route.operation_tag,
+            "request": {
+                "kind": "point_create",
+                "request": {
+                    "identity": {
+                        "store_catalog_id": store_catalog_id,
+                        "keys": [{ "kind": "int", "value": "3" }]
+                    },
+                    "fields": [
+                        {
+                            "catalog_id": title_catalog_id,
+                            "value": { "kind": "string", "value": "Children of Dune" }
+                        },
+                        {
+                            "catalog_id": author_catalog_id,
+                            "value": { "kind": "string", "value": "Frank Herbert" }
+                        }
+                    ]
+                }
+            }
+        }),
+        &[("Content-Type", "application/json")],
+    );
+    assert_eq!(
+        create_route_response.status, 404,
+        "{:#?}",
+        create_route_response.body
+    );
+    assert_eq!(create_route_response.body["code"], "surface.abi_mismatch");
+
+    let delete_route_response = post_json(
+        addr,
+        &delete_route.path,
+        json!({
+            "profile_version": "surface.operation.v1",
+            "operation_tag": delete_route.operation_tag,
+            "request": {
+                "kind": "point_delete",
+                "request": {
+                    "identity": {
+                        "store_catalog_id": delete_descriptor(&fixture.report, &delete_route.operation_tag)["store_catalog_id"],
+                        "keys": [{ "kind": "int", "value": "1" }]
+                    }
+                }
+            }
+        }),
+        &[("Content-Type", "application/json")],
+    );
+    assert_eq!(
+        delete_route_response.status, 404,
+        "{:#?}",
+        delete_route_response.body
+    );
+    assert_eq!(delete_route_response.body["code"], "surface.abi_mismatch");
 }
 
 #[test]
@@ -451,6 +518,106 @@ fn surface_serve_write_mode_executes_sparse_update_over_http() {
         field_value(&read_response.body["result"]["record"], "author"),
         json!({ "kind": "string", "value": "Brian Herbert" })
     );
+}
+
+#[test]
+fn surface_serve_write_mode_executes_create_and_delete_over_http() {
+    let fixture = seeded_surface_fixture("surface-serve-write-create-delete");
+    let point_route = route_by_alias(&fixture.report, "get");
+    let create_route = route_by_alias(&fixture.report, "create");
+    let delete_route = route_by_alias(&fixture.report, "delete");
+    let create = create_descriptor(&fixture.report, &create_route.operation_tag);
+    let delete = delete_descriptor(&fixture.report, &delete_route.operation_tag);
+    let store_catalog_id = create["store_catalog_id"]
+        .as_str()
+        .expect("create store catalog id")
+        .to_string();
+    assert_eq!(
+        delete["store_catalog_id"]
+            .as_str()
+            .expect("delete store catalog id"),
+        store_catalog_id
+    );
+    let title_catalog_id = create_field_catalog_id(create, "title");
+    let author_catalog_id = create_field_catalog_id(create, "author");
+    let (_server, addr) = spawn_surface_server_with_args(fixture.root(), &["--write"]);
+
+    let create_response = post_json(
+        addr,
+        &create_route.path,
+        json!({
+            "profile_version": "surface.operation.v1",
+            "operation_tag": create_route.operation_tag,
+            "request": {
+                "kind": "point_create",
+                "request": {
+                    "identity": {
+                        "store_catalog_id": store_catalog_id,
+                        "keys": [{ "kind": "int", "value": "3" }]
+                    },
+                    "fields": [
+                        {
+                            "catalog_id": title_catalog_id,
+                            "value": { "kind": "string", "value": "Children of Dune" }
+                        },
+                        {
+                            "catalog_id": author_catalog_id,
+                            "value": { "kind": "string", "value": "Frank Herbert" }
+                        }
+                    ]
+                }
+            }
+        }),
+        &[("Content-Type", "application/json")],
+    );
+    assert_eq!(create_response.status, 200, "{:#?}", create_response.body);
+    assert_eq!(create_response.body["result"]["kind"], "created");
+    assert_eq!(
+        field_value(&create_response.body["result"]["record"], "title"),
+        json!({ "kind": "string", "value": "Children of Dune" })
+    );
+
+    let read_response = post_json(
+        addr,
+        &point_route.path,
+        point_read_request(&fixture.report, &point_route.operation_tag, 3),
+        &[("Content-Type", "application/json")],
+    );
+    assert_eq!(read_response.status, 200, "{:#?}", read_response.body);
+    assert_eq!(
+        field_value(&read_response.body["result"]["record"], "author"),
+        json!({ "kind": "string", "value": "Frank Herbert" })
+    );
+
+    let delete_response = post_json(
+        addr,
+        &delete_route.path,
+        json!({
+            "profile_version": "surface.operation.v1",
+            "operation_tag": delete_route.operation_tag,
+            "request": {
+                "kind": "point_delete",
+                "request": {
+                    "identity": {
+                        "store_catalog_id": delete["store_catalog_id"],
+                        "keys": [{ "kind": "int", "value": "3" }]
+                    }
+                }
+            }
+        }),
+        &[("Content-Type", "application/json")],
+    );
+    assert_eq!(delete_response.status, 200, "{:#?}", delete_response.body);
+    assert_eq!(delete_response.body["result"]["kind"], "deleted");
+
+    let absent_response = post_json(
+        addr,
+        &point_route.path,
+        point_read_request(&fixture.report, &point_route.operation_tag, 3),
+        &[("Content-Type", "application/json")],
+    );
+    assert_eq!(absent_response.status, 404, "{:#?}", absent_response.body);
+    assert_eq!(absent_response.body["code"], "surface.absent");
 }
 
 #[test]
@@ -801,6 +968,26 @@ fn update_descriptor<'a>(report: &'a Value, operation_tag: &str) -> &'a Value {
         .unwrap_or_else(|| panic!("update descriptor {operation_tag} in {report:#?}"))
 }
 
+fn create_descriptor<'a>(report: &'a Value, operation_tag: &str) -> &'a Value {
+    report["surface_abi"]["surfaces"]
+        .as_array()
+        .expect("surface descriptors")
+        .iter()
+        .filter_map(|surface| surface.get("create"))
+        .find(|create| create["operation_tag"] == operation_tag)
+        .unwrap_or_else(|| panic!("create descriptor {operation_tag} in {report:#?}"))
+}
+
+fn delete_descriptor<'a>(report: &'a Value, operation_tag: &str) -> &'a Value {
+    report["surface_abi"]["surfaces"]
+        .as_array()
+        .expect("surface descriptors")
+        .iter()
+        .filter_map(|surface| surface.get("delete"))
+        .find(|delete| delete["operation_tag"] == operation_tag)
+        .unwrap_or_else(|| panic!("delete descriptor {operation_tag} in {report:#?}"))
+}
+
 fn update_field_catalog_id(update: &Value, label: &str) -> String {
     update["fields"]
         .as_array()
@@ -809,6 +996,17 @@ fn update_field_catalog_id(update: &Value, label: &str) -> String {
         .find(|field| field["render_label"] == label)
         .and_then(|field| field["member_catalog_id"].as_str())
         .unwrap_or_else(|| panic!("update field {label} in {update:#?}"))
+        .to_string()
+}
+
+fn create_field_catalog_id(create: &Value, label: &str) -> String {
+    create["fields"]
+        .as_array()
+        .expect("create fields")
+        .iter()
+        .find(|field| field["render_label"] == label)
+        .and_then(|field| field["member_catalog_id"].as_str())
+        .unwrap_or_else(|| panic!("create field {label} in {create:#?}"))
         .to_string()
 }
 

@@ -221,10 +221,14 @@ The initial checker contract admits only direct store-backed shapes:
   resource. Identity keys, store indexes, groups, keyed child layers, nested
   paths, and fields from other stores are not field targets.
 - `create` and `update` resolve each name to a field already named by `fields`.
-  `update` participates in the active sparse-update ABI when the surface is
-  stable and the list is non-empty. `create` is parsed/resolved reserved
-  metadata only: it is excluded from serialized descriptors and does not imply
-  identity allocation, replacement, or request-body semantics.
+  A non-empty `create` participates in the active exact-body create ABI when the
+  surface is stable. It must cover every required top-level backing field that
+  has no default; v0.1 create inputs do not address required fields inside
+  unkeyed groups. A non-empty `update` participates in the active sparse-update
+  ABI when the surface is stable.
+- `delete` declares the active generated delete operation. It has no field list:
+  keyed stores delete one caller-identified record, and singleton stores delete
+  the singleton record.
 - `collection ^root as alias` names the backing store root.
 - `collection ^root.index as alias` names an index declared on the backing store.
 - `action functionName` or `action module::functionName as alias` exposes an
@@ -258,46 +262,53 @@ source-level name collisions, but only source-root declarations resolve into
 application surface facts.
 
 Those facts are transport-neutral: opaque cursor-token codecs, TypeScript
-names, generated clients, remote serving, and create/delete bodies are boundary
-profiles layered later. Stable surface reads, sparse updates, and actions have
-checker-owned descriptors and operation tags. `marrow-json` can
-render a `surface.route.v1` manifest from those descriptors, using
-operation-tag paths and aliases as labels. `marrow surface serve` is the local
-loopback serving profile over manifest routes and `surface.operation.v1`
-envelopes: default mode serves read routes only, while `--write` also serves
-sparse-update and action routes through the writable project surface session.
-The manifest is still not a generated-client contract by itself. Read
-descriptors carry the generated `get` alias or declared
-collection alias as render metadata; action descriptors carry their declared
-action alias. A surface remains source-only until its backing store, projected
-fields, update fields, collection indexes, and every action parameter and return
-durable type have accepted catalog IDs.
+names, generated clients, and remote serving are boundary profiles layered
+later. Stable surface reads, creates, sparse updates, deletes, and actions have
+checker-owned descriptors and operation tags. `marrow-json` can render a
+`surface.route.v1` manifest from those descriptors, using operation-tag paths
+and aliases as labels. `marrow surface serve` is the local loopback serving
+profile over manifest routes and `surface.operation.v1` envelopes: default mode
+serves read routes only, while `--write` also serves create, sparse-update,
+delete, and action routes through the writable project surface session. The
+manifest is still not a generated-client contract by itself. Read descriptors
+carry the generated `get` alias or declared collection alias as render metadata;
+action descriptors carry their declared action alias. Create, update, and delete
+descriptors use generated operation labels. A surface remains source-only until
+its backing store, projected fields, create fields, update fields, collection
+indexes, and every action parameter and return durable type have accepted
+catalog IDs.
 `marrow-run` exposes admitted transport-neutral node and collection read
 executors over stable surface facts, plus an unstable read-only project session
 that opens an already accepted native store and admits those reads by operation
 tag without creating, freezing, migrating, or repairing data. It also exposes a
-writable project surface session that admits reads, sparse updates, and actions
-by operation tag without exposing the store handle. Sparse updates preserve
-omitted fields, reject absent records instead of upserting, and commit
-atomically through managed write/index maintenance. Actions execute the resolved
-`pub fn` through the same checked entry invocation machinery as `marrow run`, so
-their writes, transactions, host-effect checks, and return values are language
-semantics, not a generated CRUD side channel. Surface action JSON results use
-the surface value DTO with accepted catalog IDs for enums and identities rather
-than checker-local runtime IDs or source root labels.
+writable project surface session that admits reads, creates, sparse updates,
+deletes, and actions by operation tag without exposing the store handle. Creates
+require an exact declared field body, use caller-supplied identity for keyed
+stores, reject existing records instead of replacing them, commit through managed
+write/index maintenance, and return the public projection. Sparse updates
+preserve omitted fields, reject absent records instead of upserting, and commit
+atomically through managed write/index maintenance. Deletes reject absent
+records and remove the full backing record subtree plus generated index rows.
+Actions execute the resolved `pub fn` through the same checked entry invocation
+machinery as `marrow run`, so their writes, transactions, host-effect checks,
+and return values are language semantics, not a generated CRUD side channel.
+Surface action JSON results use the surface value DTO with accepted catalog IDs
+for enums and identities rather than checker-local runtime IDs or source root
+labels.
 
 `marrow-json` renders check-output surface ABI descriptors, decodes checked read
-request-parameter DTOs, sparse update request-body DTOs, and action argument
-DTOs, and renders already-executed read/action results as DTOs with accepted
-catalog IDs and typed values. Runtime output uses accepted store and
-resource-member catalog IDs as semantic identity; enum and identity field values
-use accepted catalog IDs as well. Source names remain render labels. A stable
-exported surface operation cannot use proposal-only catalog IDs; until every
-referenced durable fact has an accepted catalog ID, the facts carry a
-source-only catalog status rather than a stable client contract. A pending
-catalog proposal for the checked source is reported as its own blocker, because
-accepted IDs alone do not prove the current store, member, or index shape is the
-committed shape. Deferred surface profiles are tracked in
+request-parameter DTOs, create request-body DTOs, sparse update request-body
+DTOs, delete request DTOs, and action argument DTOs, and renders
+already-executed read/create/action results as DTOs with accepted catalog IDs
+and typed values. Runtime output uses accepted store and resource-member catalog
+IDs as semantic identity; enum and identity field values use accepted catalog
+IDs as well. Source names remain render labels. A stable exported surface
+operation cannot use proposal-only catalog IDs; until every referenced durable
+fact has an accepted catalog ID, the facts carry a source-only catalog status
+rather than a stable client contract. A pending catalog proposal for the checked
+source is reported as its own blocker, because accepted IDs alone do not prove
+the current store, member, or index shape is the committed shape. Deferred
+surface profiles are tracked in
 [Surface ABI](../surface-abi.md).
 
 ## Indexes

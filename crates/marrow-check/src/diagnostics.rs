@@ -459,6 +459,7 @@ pub enum SurfaceCollisionNameKind {
     ActionAlias,
     CreateItem,
     UpdateItem,
+    DeleteItem,
 }
 
 impl SurfaceCollisionNameKind {
@@ -477,6 +478,7 @@ impl SurfaceCollisionNameKind {
             Self::ActionAlias => "surface action alias",
             Self::CreateItem => "surface create item",
             Self::UpdateItem => "surface update item",
+            Self::DeleteItem => "surface delete item",
         }
     }
 }
@@ -558,6 +560,7 @@ pub enum SurfaceFieldProblem {
     Invalid,
     Ambiguous,
     NotProjected,
+    RequiredNotCreateAddressable,
 }
 
 /// Structured facts for a `check.surface_field` diagnostic.

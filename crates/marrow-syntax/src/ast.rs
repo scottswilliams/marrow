@@ -395,6 +395,9 @@ pub enum SurfaceItem {
         names: Vec<String>,
         span: SourceSpan,
     },
+    Delete {
+        span: SourceSpan,
+    },
 }
 
 impl SurfaceItem {
@@ -404,7 +407,8 @@ impl SurfaceItem {
             | Self::Collection { span, .. }
             | Self::Action { span, .. }
             | Self::Create { span, .. }
-            | Self::Update { span, .. } => *span,
+            | Self::Update { span, .. }
+            | Self::Delete { span } => *span,
         }
     }
 }

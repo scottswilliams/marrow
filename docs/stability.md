@@ -68,16 +68,17 @@ stability for the internal crates.
 The `surface` foundation is active but not yet a stable transport or
 generated-client contract. Checked surface facts are compiler facts over stores,
 fields, indexes, read operations, footprints, projections, sparse update fields,
-and declared public actions. Stable reads, sparse updates, and actions have
-accepted-catalog descriptors and operation tags; action tags reuse
-`entry.invoke.v1` identity over parameters and return shape. `marrow check
---format json|jsonl` exports the current surface ABI descriptor set for
-successful checks. The active JSON DTOs decode checked read request parameters
-through admitted runtime reads, decode sparse update request bodies through
-admitted runtime updates, decode action arguments through `entry.invoke.v1`, and
-render already-executed surface reads and action results with accepted-catalog
-typed JSON. Read DTOs also execute over `ProjectSurfaceReadSession`, and
-point/singleton update plus action DTOs execute over `ProjectSurfaceSession`,
+create fields, delete operations, and declared public actions. Stable reads,
+creates, sparse updates, deletes, and actions have accepted-catalog descriptors
+and operation tags; action tags reuse `entry.invoke.v1` identity over parameters
+and return shape. `marrow check --format json|jsonl` exports the current surface
+ABI descriptor set for successful checks. The active JSON DTOs decode checked
+read request parameters through admitted runtime reads, decode generated write
+request bodies through admitted runtime create/update/delete handles, decode
+action arguments through `entry.invoke.v1`, and render already-executed surface
+reads, creates, and action results with accepted-catalog typed JSON. Read DTOs
+also execute over `ProjectSurfaceReadSession`, and point/singleton
+create/update/delete plus action DTOs execute over `ProjectSurfaceSession`,
 without exposing backing store handles. The successful check JSON output also
 includes `surface.route.v1` route-manifest rows derived from the exported
 descriptors; those rows name JSON `POST` operation-tag paths and render aliases,
@@ -85,7 +86,7 @@ but they do not make aliases operation identity. `marrow surface serve` is the
 current serving profile: loopback-bound, JSON-only, optional exact loopback CORS
 with `--cors-origin`, at most one processed request per connection, backed by
 `ProjectSurfaceReadSession` in default read-only mode, and backed by
-`ProjectSurfaceSession` for sparse-update/action routes when `--write` is
+`ProjectSurfaceSession` for create/update/delete/action routes when `--write` is
 passed.
 `marrow-run::ProjectSurfaceReadSession` is an unstable linked-Rust
 implementation profile for read serving over an already accepted native store:
@@ -94,17 +95,17 @@ by operation tag. `marrow-run::ProjectSurfaceSession` is the matching unstable
 linked-Rust implementation profile for read/write surface execution over an
 existing accepted native store: it opens the store writable, requires store UID
 and commit metadata, fences drift without hidden repair, and exposes admitted
-surface reads, sparse updates, and actions by operation tag. It is a
+surface reads, creates, sparse updates, deletes, and actions by operation tag. It is a
 single-owner, sequential session; while it is open, the native writer lock makes
-it the owning process/session for these reads, updates, and actions and excludes
-another writer or read-only inspection. Linked-Rust embedding remains an
+it the owning process/session for these reads and writes and excludes another
+writer or read-only inspection. Linked-Rust embedding remains an
 implementation profile for hosting surface facts, run sessions, and these
 project surface slices, not a stable app-data contract. The default project
 operation envelope helper runs actions with a zero-capability host; callers that
 need host capabilities use the explicit-host helper. The only shipped HTTP
 profile is `marrow surface serve` for loopback operation envelopes. Opaque
-cursor tokens, generated clients, remote serving, and create/delete body decode
-remain future profiles. Linked-Rust surface
+cursor tokens, generated clients, and remote serving remain future profiles.
+Linked-Rust surface
 helpers, route manifest rows, and typed entry invocation remain implementation
 profiles.
 The linked-Rust entry descriptor profile is an unstable implementation surface:
