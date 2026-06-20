@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use marrow_check::evolution::preview;
+use marrow_check::tooling;
 use marrow_check::{
     AnalysisIdentity, AnalysisSnapshot, CheckReport, CheckedProgram, CheckedRuntimeProgram,
     CheckedSavedPlace, ProjectConfig,
@@ -689,6 +690,40 @@ impl ProjectSurfaceReadSession {
 
     pub fn store_stamp(&self) -> Result<StoreStamp, ProjectSessionError> {
         store_stamp(&self.store)
+    }
+
+    pub fn saved_data_roots(&self) -> Result<tooling::StampedData<Vec<String>>, StoreError> {
+        tooling::stamped_data_roots_in_store(&self.program, &self.store)
+    }
+
+    pub fn saved_data_children(
+        &self,
+        segments: &[tooling::DataPathSegment],
+        limit: usize,
+        resume: Option<&SavedKey>,
+    ) -> Result<tooling::StampedData<tooling::DataChildrenPage>, tooling::ToolingError> {
+        tooling::stamped_data_children(&self.program, &self.store, segments, limit, resume)
+    }
+
+    pub fn saved_data_preview(
+        &self,
+        segments: &[tooling::DataPathSegment],
+        limit: usize,
+    ) -> Result<Option<tooling::StampedData<tooling::DataPreviewReadResult>>, tooling::ToolingError>
+    {
+        let Some(path) = tooling::resolve_data_path(&self.program, segments)? else {
+            return Ok(None);
+        };
+        tooling::stamped_preview_data_path(&self.program, &self.store, &path, limit)
+            .map(Some)
+            .map_err(tooling::ToolingError::from)
+    }
+
+    pub fn saved_data_integrity_sample(
+        &self,
+        limit: usize,
+    ) -> Result<tooling::StampedData<tooling::IntegrityProblemSample>, StoreError> {
+        tooling::stamped_integrity_problem_details(&self.program, &self.store, limit)
     }
 
     pub fn admit_read_by_operation_tag(

@@ -223,6 +223,38 @@ fn surface_read_session_serves_existing_native_store_without_advancing_it() {
         .expect("read surface page");
     assert_eq!(page.rows.len(), 1);
 
+    let roots = session.saved_data_roots().expect("read saved data roots");
+    assert_eq!(roots.data, vec!["counter"]);
+    let children = session
+        .saved_data_children(
+            &[marrow_check::tooling::DataPathSegment::Root(
+                "counter".into(),
+            )],
+            10,
+            None,
+        )
+        .expect("read saved data children");
+    assert_eq!(
+        children.data.children,
+        vec![marrow_check::tooling::DataChild::Key(SavedKey::Int(1))]
+    );
+    let preview = session
+        .saved_data_preview(
+            &[
+                marrow_check::tooling::DataPathSegment::Root("counter".into()),
+                marrow_check::tooling::DataPathSegment::Key(SavedKey::Int(1)),
+                marrow_check::tooling::DataPathSegment::Field("value".into()),
+            ],
+            16,
+        )
+        .expect("preview saved data path")
+        .expect("path is present");
+    assert_eq!(preview.data.preview.expect("value preview").text, "1");
+    let integrity = session
+        .saved_data_integrity_sample(10)
+        .expect("sample saved data integrity");
+    assert!(integrity.data.items_checked > 0);
+
     let update_tag = update_operation_tag(session.program(), "Counters");
     let error = match session.admit_read_by_operation_tag(&update_tag) {
         Ok(_) => panic!("read session must reject update operation tags"),
