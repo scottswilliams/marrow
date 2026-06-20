@@ -45,6 +45,153 @@ fn sample_snapshot() -> CatalogMetadata {
     .expect("catalog builds")
 }
 
+/// A single-store snapshot whose only store entry carries the given accepted key
+/// shape, so a sibling pair differs only in `accepted_key_shape`.
+fn store_snapshot_with_key_shape(key_shape: &str) -> CatalogMetadata {
+    CatalogMetadata::new(
+        7,
+        vec![CatalogEntry {
+            kind: CatalogEntryKind::Store,
+            path: "books".to_string(),
+            stable_id: stable_id(1),
+            aliases: Vec::new(),
+            lifecycle: CatalogLifecycle::Active,
+            accepted_key_shape: Some(key_shape.to_string()),
+            accepted_index_shape: None,
+            accepted_struct: None,
+        }],
+    )
+    .expect("catalog builds")
+}
+
+/// A single-member snapshot whose only member entry carries the given accepted
+/// structural signature, so a sibling pair differs only in `accepted_struct`.
+fn member_snapshot_with_struct(struct_signature: &str) -> CatalogMetadata {
+    CatalogMetadata::new(
+        7,
+        vec![CatalogEntry {
+            kind: CatalogEntryKind::ResourceMember,
+            path: "books.title".to_string(),
+            stable_id: stable_id(2),
+            aliases: Vec::new(),
+            lifecycle: CatalogLifecycle::Active,
+            accepted_key_shape: None,
+            accepted_index_shape: None,
+            accepted_struct: Some(struct_signature.to_string()),
+        }],
+    )
+    .expect("catalog builds")
+}
+
+/// A single store-index snapshot whose only index entry carries the given accepted
+/// index shape, so a sibling pair differs only in `accepted_index_shape` — here the
+/// uniqueness flag, the dimension the evolution discharge keys a derived rebuild on.
+fn index_snapshot_with_index_shape(index_shape: &str) -> CatalogMetadata {
+    CatalogMetadata::new(
+        7,
+        vec![CatalogEntry {
+            kind: CatalogEntryKind::StoreIndex,
+            path: "books.byTitle".to_string(),
+            stable_id: stable_id(3),
+            aliases: Vec::new(),
+            lifecycle: CatalogLifecycle::Active,
+            accepted_key_shape: None,
+            accepted_index_shape: Some(index_shape.to_string()),
+            accepted_struct: None,
+        }],
+    )
+    .expect("catalog builds")
+}
+
+/// Publish two snapshots that differ only in one accepted-shape field and return the
+/// store digest each one yields back. A digest read recomputes the canonical digest
+/// from the stored entry rows, so equal digests would prove the differing shape never
+/// reached durable rows — the fingerprint-only collapse this lane forbids.
+fn republished_digests(left: &CatalogMetadata, right: &CatalogMetadata) -> (String, String) {
+    let store = TreeStore::memory();
+    store
+        .replace_catalog_snapshot(left)
+        .expect("publish left snapshot");
+    let left_digest = store
+        .catalog_snapshot_digest()
+        .expect("left digest")
+        .expect("left catalog present");
+    store
+        .replace_catalog_snapshot(right)
+        .expect("publish right snapshot");
+    let right_digest = store
+        .catalog_snapshot_digest()
+        .expect("right digest")
+        .expect("right catalog present");
+    (left_digest, right_digest)
+}
+
+/// The store-resident catalog rows are the full accepted shape, not an identity
+/// fingerprint. Two snapshots that differ only in one accepted-shape field — key
+/// arity, leaf type, or index uniqueness — must round-trip back with the differing
+/// field intact and must yield different store digests. A fingerprint-only store
+/// would collapse these into one indistinguishable row beyond a single snapshot, so
+/// these assertions bite the moment the shared `CatalogMetadata` shrinks across the
+/// store seam.
+#[test]
+fn store_catalog_rows_discriminate_full_accepted_shape_not_a_fingerprint() {
+    // Read-back fidelity: every accepted_* field survives publish/read exactly.
+    let snapshot = sample_snapshot();
+    let store = TreeStore::memory();
+    store
+        .replace_catalog_snapshot(&snapshot)
+        .expect("publish catalog");
+    let read = store
+        .read_catalog_snapshot()
+        .expect("read catalog")
+        .expect("catalog present");
+    for (read_entry, written_entry) in read.entries.iter().zip(snapshot.entries.iter()) {
+        assert_eq!(
+            read_entry.accepted_key_shape,
+            written_entry.accepted_key_shape
+        );
+        assert_eq!(read_entry.accepted_struct, written_entry.accepted_struct);
+        assert_eq!(
+            read_entry.accepted_index_shape,
+            written_entry.accepted_index_shape
+        );
+    }
+
+    // Key-arity divergence: one int key vs. a composite int,string key.
+    let (one_key, two_keys) = republished_digests(
+        &store_snapshot_with_key_shape("int"),
+        &store_snapshot_with_key_shape("int,string"),
+    );
+    assert_ne!(
+        one_key, two_keys,
+        "a store digest must distinguish key arity, not collapse it to a fingerprint"
+    );
+
+    // Leaf-type divergence on a member: leaf:int vs. leaf:string.
+    let (leaf_int, leaf_string) = republished_digests(
+        &member_snapshot_with_struct("leaf:int"),
+        &member_snapshot_with_struct("leaf:string"),
+    );
+    assert_ne!(
+        leaf_int, leaf_string,
+        "a store digest must distinguish a member leaf type, not collapse it"
+    );
+
+    // Index-uniqueness divergence: the same key column, unique vs. non-unique.
+    let (non_unique, unique) = republished_digests(
+        &index_snapshot_with_index_shape(
+            "unique=false;keys=[member:cat_00000000000000000000000000000002:string]",
+        ),
+        &index_snapshot_with_index_shape(
+            "unique=true;keys=[member:cat_00000000000000000000000000000002:string]",
+        ),
+    );
+    assert_ne!(
+        non_unique, unique,
+        "a store digest must distinguish index uniqueness, not collapse it"
+    );
+}
+
 fn sample_commit_metadata() -> CommitMetadata {
     CommitMetadata {
         commit_id: 0,
@@ -59,7 +206,7 @@ fn sample_commit_metadata() -> CommitMetadata {
 }
 
 #[test]
-fn memory_store_round_trips_a_catalog_snapshot() {
+fn memory_store_round_trips_and_discriminates_a_catalog_snapshot() {
     let snapshot = sample_snapshot();
     let store = TreeStore::memory();
     store
@@ -83,6 +230,18 @@ fn memory_store_round_trips_a_catalog_snapshot() {
     assert_eq!(
         store.catalog_snapshot_digest().expect("digest"),
         Some(snapshot.digest)
+    );
+
+    // Equality alone a fingerprint-only store could satisfy for one snapshot, so the
+    // round-trip is strengthened to a discrimination oracle: a sibling differing only
+    // in one member leaf type publishes a different store digest.
+    let (leaf_int, leaf_string) = republished_digests(
+        &member_snapshot_with_struct("leaf:int"),
+        &member_snapshot_with_struct("leaf:string"),
+    );
+    assert_ne!(
+        leaf_int, leaf_string,
+        "the store digest reflects member shape, not just identity"
     );
 }
 
@@ -239,12 +398,13 @@ fn data_apis_cannot_read_write_or_delete_a_catalog_row() {
     );
 }
 
-/// A catalog snapshot whose entries cover composite store key shapes still
-/// reconstructs exactly, so the digest the checker will compare against is stable
-/// across a store reopen.
+/// A catalog snapshot whose entries cover composite store key shapes reconstructs
+/// exactly across a reopen, and the persisted digest discriminates store key arity:
+/// a sibling differing only in its accepted key shape persists a different digest, so
+/// a reopened native store cannot have collapsed the row to an identity fingerprint.
 #[cfg(feature = "native")]
 #[test]
-fn redb_round_trips_a_catalog_digest_used_for_comparison() {
+fn redb_persists_a_shape_discriminating_catalog_digest() {
     let dir = common::TempDir::new("marrow-store-test").expect("temp dir");
     let path = dir.path().join("digest.redb");
     let snapshot = CatalogMetadata::new(
@@ -271,6 +431,36 @@ fn redb_round_trips_a_catalog_digest_used_for_comparison() {
     let store = TreeStore::open(&path).expect("reopen");
     assert_eq!(
         store.catalog_snapshot_digest().expect("digest"),
-        Some(digest)
+        Some(digest.clone())
+    );
+
+    // The same entry re-keyed to a single int identity persists a different digest, so
+    // the reopened row carried the full key shape rather than a collapsed fingerprint.
+    let rekeyed = CatalogMetadata::new(
+        3,
+        vec![CatalogEntry {
+            kind: CatalogEntryKind::Store,
+            path: "orders".to_string(),
+            stable_id: stable_id(5),
+            aliases: vec!["purchases".to_string()],
+            lifecycle: CatalogLifecycle::Reserved,
+            accepted_key_shape: Some("int".to_string()),
+            accepted_index_shape: None,
+            accepted_struct: None,
+        }],
+    )
+    .expect("catalog builds");
+    store
+        .replace_catalog_snapshot(&rekeyed)
+        .expect("publish rekeyed");
+    drop(store);
+    let store = TreeStore::open(&path).expect("reopen rekeyed");
+    let rekeyed_digest = store
+        .catalog_snapshot_digest()
+        .expect("rekeyed digest")
+        .expect("rekeyed catalog present");
+    assert_ne!(
+        rekeyed_digest, digest,
+        "a native store digest must distinguish store key arity across a reopen"
     );
 }

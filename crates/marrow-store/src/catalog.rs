@@ -573,6 +573,34 @@ mod tests {
     }
 
     #[test]
+    fn tampering_one_entry_accepted_struct_against_the_stored_header_is_corruption() {
+        let mut backend = MemStore::default();
+        let snapshot = sample_snapshot();
+        replace_catalog_snapshot(&mut backend, &snapshot).expect("write");
+
+        // Rewrite only the member entry's accepted structural signature, leaving its
+        // identity, path, lifecycle, and the stored header digest untouched. The header
+        // digest is recomputed over the decoded entries on read and covers shape, so a
+        // shape-only tamper that an identity fingerprint would miss still fails closed.
+        let member = snapshot
+            .entries
+            .iter()
+            .position(|entry| entry.accepted_struct.is_some())
+            .expect("a member entry with an accepted struct");
+        let tampered = CatalogEntry {
+            accepted_struct: Some("leaf:int".to_string()),
+            ..snapshot.entries[member].clone()
+        };
+        backend
+            .write(
+                &entry_key(&tampered.stable_id),
+                encode_entry(member as u64, &tampered).expect("encode"),
+            )
+            .expect("tamper row");
+        assert_corruption(read_catalog_snapshot(&backend));
+    }
+
+    #[test]
     fn an_unknown_header_version_is_corruption() {
         let mut backend = MemStore::default();
         let snapshot = sample_snapshot();
