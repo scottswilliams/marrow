@@ -217,6 +217,12 @@ fn read_local_sequence(
         .ok_or_else(|| absent_read("`local sequence` is absent".into(), span))
 }
 
+/// A sequence is a 1-based integer-keyed tree. A position outside that domain —
+/// zero or negative — addresses no node, so it reads as absent like any
+/// out-of-range position, resolvable at the read site by `??`/`if const`/
+/// `exists`/`catch`. Returning the absent fault keeps the spec's promise that
+/// every positional read is maybe-present, rather than aborting an otherwise
+/// guarded read with an uncatchable type fault.
 fn eval_local_sequence_index(
     args: &[ExecArg],
     span: SourceSpan,
@@ -230,7 +236,7 @@ fn eval_local_sequence_index(
         return Err(type_error("a local sequence key must be an int", span));
     };
     if pos < 1 {
-        return Err(type_error("a local sequence key must be positive", span));
+        return Err(absent_read("`local sequence` is absent".into(), span));
     }
     usize::try_from(pos - 1).map_err(|_| overflow(span))
 }

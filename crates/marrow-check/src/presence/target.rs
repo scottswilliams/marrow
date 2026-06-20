@@ -1,6 +1,8 @@
 use super::calls::{maybe_present_result, neighbor_read};
 use super::keys::{expression_key, saved_place_key};
+use super::read_only::guard_subexpr_admissible;
 use super::scope::NameScope;
+use crate::CheckedCallTarget;
 use crate::CheckedExpr;
 use crate::CheckedProgram;
 use crate::MarrowType;
@@ -73,6 +75,9 @@ pub(crate) fn bindable_saved_value_read_in_type_scope(
         return true;
     }
     let scope = NameScope::from_type_scope(type_scope, transform_old);
+    if local_maybe_present_read(program, expr, &scope) {
+        return true;
+    }
     read_target_with_scope(program, expr, &scope).is_some_and(|target| {
         target.read == PresenceProofRead::Direct && target.value == ReadTargetValue::Value
     })
@@ -90,6 +95,9 @@ fn read_resolution_in_type_scope(
         return Some(PresenceProofRead::Direct);
     }
     let scope = NameScope::from_type_scope(type_scope, transform_old);
+    if local_maybe_present_read(program, expr, &scope) {
+        return Some(PresenceProofRead::Direct);
+    }
     read_target_with_scope(program, expr, &scope).map(|target| target.read)
 }
 
@@ -124,6 +132,68 @@ pub(super) fn saved_path_read_target_with_scope(
     scope: &NameScope,
 ) -> Option<ReadTarget> {
     saved_place_target(program, expr, scope)
+}
+
+/// Whether `expr` is a resolvable maybe-present read that carries no persisted
+/// presence proof: a local-collection indexed read of a bound name, or a
+/// sparse-field read of a bound materialized value. Such a read is guardable by
+/// `??`/`if const`/`exists`, and the runtime resolves it at the read site by
+/// catching the absent fault, so the checker accepts the guard and rejects a bare
+/// read without recording a saved-data proof.
+///
+/// The guardable set is widened strictly by construction. A `LocalCollection`
+/// call target is a read of a bound sequence or keyed tree — never `append`, which
+/// is a distinct builtin — and its key sub-expressions are screened through the
+/// production read-only effect analysis, so a write, allocation (`nextId(^s)`),
+/// host call, or throw smuggled into a key stays rejected. A sparse-field read's
+/// base must be a bound materialized value — a bound name or a chained group layer
+/// rooted at one — never a call or constructor in the read place. A call result
+/// must be bound to a name first; evaluating an inline call as the guard base would
+/// run its body, which may write saved data, open a transaction, call a host
+/// capability, or throw, and no such effect may ride into a guard.
+pub(super) fn local_maybe_present_read(
+    program: &CheckedProgram,
+    expr: &CheckedExpr,
+    scope: &NameScope,
+) -> bool {
+    match expr {
+        CheckedExpr::Call {
+            args,
+            target: CheckedCallTarget::LocalCollection { .. },
+            ..
+        } => args
+            .iter()
+            .all(|arg| guard_subexpr_admissible(program, &arg.value)),
+        CheckedExpr::Field { base, name, .. } => bound_base_value_type(program, base, scope)
+            .is_some_and(|base_type| crate::infer::sparse_member(program, &base_type, name)),
+        _ => false,
+    }
+}
+
+/// The materialized type of a sparse-field guard's base, admitted only when the
+/// base is a bound value with no call in the read place: a bound name resolves
+/// through the presence scope, and a chained group layer (`p.address`) descends
+/// through the group member to its bound root. A call or constructor base yields
+/// `None`, so its result must be bound to a name before its sparse field is
+/// guarded — there is no expression to evaluate in the read place but the name.
+fn bound_base_value_type(
+    program: &CheckedProgram,
+    base: &CheckedExpr,
+    scope: &NameScope,
+) -> Option<MarrowType> {
+    match base {
+        CheckedExpr::Name { segments, .. } => {
+            let [bound] = segments.as_slice() else {
+                return None;
+            };
+            scope.lookup_type(bound).cloned()
+        }
+        CheckedExpr::Field { base, name, .. } => {
+            let inner = bound_base_value_type(program, base, scope)?;
+            crate::infer::member_value_type(program, &inner, name)
+        }
+        _ => None,
+    }
 }
 
 pub(super) fn proof_place(target: &ReadTarget) -> Option<PresenceProofPlace> {

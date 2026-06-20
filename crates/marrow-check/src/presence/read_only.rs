@@ -31,6 +31,36 @@ impl ReadOnlyExpressionEffects {
     pub(crate) fn unindexed_collection_reads_reachable(&self) -> bool {
         self.direct.unindexed_collection_reads || self.closure.unindexed_collection_reads
     }
+
+    /// Whether this expression carries any effect — a write, allocation
+    /// (`append`/`nextId`), host call, throw, or an opaque user-function call —
+    /// that disqualifies it from a presence guard's key or base position. A guard
+    /// resolves a maybe-present read by catching the absent fault at the read
+    /// site, so its sub-expressions must be effect-free pure reads; an effect
+    /// smuggled in as a key would run every time the guard is evaluated.
+    ///
+    /// Only the direct effects of the expression itself are inspected, because the
+    /// guard predicates run before per-function effect closures are computed. A
+    /// user-function call is therefore opaque here: its body may write, so it is
+    /// rejected on sight rather than admitted as a pure read.
+    fn guard_effect_reachable(&self) -> bool {
+        !self.direct.saved_writes.is_empty()
+            || !self.direct.store_writes.is_empty()
+            || !self.direct.saved_index_writes.is_empty()
+            || self.direct.transactions
+            || self.direct.throws
+            || !self.direct.host_calls.is_empty()
+            || !self.direct.user_function_calls.is_empty()
+            || self.saved_write_span.is_some()
+    }
+}
+
+/// Whether `expression` may appear as the key or base of a presence guard. The
+/// read place itself is already known guardable; this screens its sub-expressions
+/// so an effect — `nextId(^s)`, `append(...)`, or any user-function call whose
+/// body the guard cannot yet see — can never ride into the guard.
+pub(super) fn guard_subexpr_admissible(program: &CheckedProgram, expression: &CheckedExpr) -> bool {
+    !read_only_expression_effects(program, expression).guard_effect_reachable()
 }
 
 pub(crate) fn read_only_expression_effects(

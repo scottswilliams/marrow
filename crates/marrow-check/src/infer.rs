@@ -1191,6 +1191,21 @@ fn local_field_resolution(
     }
 }
 
+/// The materialized type of `field` read off a value of `base_type`, when it
+/// resolves to a concrete member type — a plain field's scalar or a nested
+/// unkeyed group's `GroupEntry`. The presence walk uses this to descend a chained
+/// group base such as `p.address` before classifying its sparse fields.
+pub(crate) fn member_value_type(
+    program: &CheckedProgram,
+    base_type: &MarrowType,
+    field: &str,
+) -> Option<MarrowType> {
+    match local_field_resolution(program, base_type, field) {
+        FieldResolution::Resolved(ty) => Some(ty),
+        _ => None,
+    }
+}
+
 fn resource_field_resolution(
     program: &CheckedProgram,
     resource: &marrow_schema::ResourceSchema,
@@ -1225,6 +1240,63 @@ fn error_field_type(field: &str) -> Option<MarrowType> {
         descriptor.ty.clone(),
         TypeNames::default(),
     ))
+}
+
+/// Whether `field` read off a materialized value of `base_type` is a sparse
+/// (maybe-present) plain field — a resource field declared without `required`, or
+/// an `Error`'s optional `help`/`data`. A required field, a layer, an unknown
+/// field, or a base that is not a materialized resource value is not sparse, so a
+/// presence guard only widens to fields that can genuinely be absent at runtime.
+pub(crate) fn sparse_member(program: &CheckedProgram, base_type: &MarrowType, field: &str) -> bool {
+    match base_type {
+        MarrowType::Resource(name) => resolve_resource_type(program, name)
+            .is_some_and(|(resource, _)| resource_member_sparse(resource, &[field])),
+        MarrowType::GroupEntry {
+            resource: name,
+            layers,
+        } => resolve_resource_type(program, name).is_some_and(|(resource, _)| {
+            let mut chain: Vec<&str> = layers.iter().map(String::as_str).collect();
+            chain.push(field);
+            resource_member_sparse(resource, &chain)
+        }),
+        MarrowType::Error => {
+            marrow_schema::error::field(field).is_some_and(|descriptor| !descriptor.required)
+        }
+        MarrowType::Primitive(_)
+        | MarrowType::Enum { .. }
+        | MarrowType::Identity(_)
+        | MarrowType::Sequence(_)
+        | MarrowType::LocalTree { .. }
+        | MarrowType::Invalid
+        | MarrowType::Unknown => false,
+    }
+}
+
+/// Whether the resource node addressed by `chain` is a sparse plain field. A
+/// plain field carries `required` on its `Slot`; a layer or absent node is not a
+/// sparse field.
+fn resource_member_sparse(resource: &marrow_schema::ResourceSchema, chain: &[&str]) -> bool {
+    let Some((member, parents)) = chain.split_last() else {
+        return false;
+    };
+    let members = match parents {
+        [] => &resource.members,
+        _ => match resource.descend_layers(parents) {
+            Some(node) => &node.members,
+            None => return false,
+        },
+    };
+    members.iter().any(|node| {
+        node.name == *member
+            && matches!(
+                node.kind,
+                marrow_schema::NodeKind::Slot {
+                    required: false,
+                    ..
+                }
+            )
+            && node.key_params.is_empty()
+    })
 }
 
 fn unknown_field_diagnostic(file: &Path, span: SourceSpan, field: &str) -> CheckDiagnostic {

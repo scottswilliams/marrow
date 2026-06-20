@@ -359,16 +359,73 @@ fn append_and_count_over_a_local_sequence_are_typed_int() {
 
 #[test]
 fn reads_and_writes_a_local_sequence_by_position() {
+    // A positional read is maybe-present, so each read resolves with `??`; the
+    // write target on the left of `=` is a place, not a read.
     let program = checked_program(
         "pub fn seq_index(): int\n\
          \x20   var xs: sequence[int]\n\
          \x20   xs(1) = 10\n\
-         \x20   xs(1) = xs(1) + 5\n\
-         \x20   return xs(1)\n",
+         \x20   xs(1) = (xs(1) ?? 0) + 5\n\
+         \x20   return xs(1) ?? -1\n",
     );
     assert_eq!(
         run(checked_entry!(&program, "test::seq_index")).unwrap(),
         Some(Value::Int(15))
+    );
+}
+
+#[test]
+fn guards_resolve_present_and_absent_local_collection_reads() {
+    // A positional sequence read and a keyed-tree read are maybe-present: `??`
+    // yields the value when present and the default when absent, and `if const`
+    // takes its else branch on an absent key. The runtime resolves each at the read
+    // site by catching the absent fault, never surfacing `run.absent_element`.
+    let program = checked_program(
+        "pub fn probe(): int\n\
+         \x20   var xs: sequence[int]\n\
+         \x20   append(xs, 10)\n\
+         \x20   var counts(k: string): int\n\
+         \x20   counts(\"a\") = 5\n\
+         \x20   var total = (xs(1) ?? -1) + (xs(9) ?? -1)\n\
+         \x20   total = total + (counts(\"a\") ?? -1)\n\
+         \x20   if const missing = counts(\"absent\")\n\
+         \x20       total = total + missing\n\
+         \x20   else\n\
+         \x20       total = total + 1000\n\
+         \x20   return total\n",
+    );
+    // present 10, absent -1, present 5, missing key adds 1000: 10 - 1 + 5 + 1000.
+    assert_eq!(
+        run(checked_entry!(&program, "test::probe")).unwrap(),
+        Some(Value::Int(1014))
+    );
+}
+
+#[test]
+fn guards_resolve_a_non_positive_sequence_position() {
+    // A position outside the 1-based domain has no node, so `xs(0)`/`xs(-1)` is a
+    // hole the same as any out-of-range read. The guard catches the absent fault
+    // and yields the fallback rather than aborting with an uncatchable type fault,
+    // so the spec's "resolved at the read site" holds for every int position.
+    let program = checked_program(
+        "pub fn probe(): int\n\
+         \x20   var xs: sequence[int]\n\
+         \x20   append(xs, 10)\n\
+         \x20   var total = (xs(0) ?? -1) + (xs(-1) ?? -2)\n\
+         \x20   if const v = xs(0)\n\
+         \x20       total = total + v\n\
+         \x20   else\n\
+         \x20       total = total + 100\n\
+         \x20   if exists(xs(-5))\n\
+         \x20       total = total + 1000\n\
+         \x20   else\n\
+         \x20       total = total + 10\n\
+         \x20   return total\n",
+    );
+    // xs(0) -> -1, xs(-1) -> -2, if const else 100, if exists else 10: -1 -2 +100 +10.
+    assert_eq!(
+        run(checked_entry!(&program, "test::probe")).unwrap(),
+        Some(Value::Int(107))
     );
 }
 
@@ -695,7 +752,7 @@ fn reads_and_writes_a_multi_key_local_tree() {
         "pub fn keyed(day: date): int\n\
          \x20   var counts(day: date, category: string): int\n\
          \x20   counts(day, \"open\") = 3\n\
-         \x20   return counts(day, \"open\")\n",
+         \x20   return counts(day, \"open\") ?? -1\n",
     );
     assert_eq!(
         run(checked_entry!(&program, "test::keyed", Value::Date(1))).unwrap(),

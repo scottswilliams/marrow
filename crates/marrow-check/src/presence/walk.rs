@@ -1,13 +1,15 @@
 use super::calls::{maybe_present_result, std_path_arg_mask};
 use super::effects::{
-    condition_narrowings, invalidate_removed_narrowings, negated_exists_narrowings, saved_targets,
-    targets_invalidated_by_key_bindings, targets_invalidated_by_written_target,
-    traversal_narrowing,
+    condition_narrowings, invalidate_removed_narrowings, loop_value_binding_type,
+    negated_exists_narrowings, saved_targets, targets_invalidated_by_key_bindings,
+    targets_invalidated_by_written_target, traversal_narrowing,
 };
 use super::keys::saved_place_key;
 use super::proofs::{PresenceRecorder, ReadContext, read_proof, record_read};
 use super::scope::NameScope;
-use super::target::{ReadTarget, read_target_with_scope, saved_path_read_target_with_scope};
+use super::target::{
+    ReadTarget, local_maybe_present_read, read_target_with_scope, saved_path_read_target_with_scope,
+};
 use super::writes::{call_writes_saved_data, expr_calls_saved_writer};
 use crate::executable::CheckedExecutableContext;
 use crate::{
@@ -664,9 +666,12 @@ fn collect_for_statement(
     );
     collect_optional_bare_expr(program, parts.step, narrowed, scope, recorder, events);
     scope.push_frame();
-    scope.bind(&parts.binding.first);
+    let (first_type, second_type) =
+        loop_value_binding_type(program, parts.iterable, parts.binding, scope)
+            .unwrap_or((None, None));
+    scope.bind_with_type(&parts.binding.first, first_type);
     if let Some(second) = &parts.binding.second {
-        scope.bind(second);
+        scope.bind_with_type(second, second_type);
     }
     let mut body_narrowed = narrowed.clone();
     if let Some(target) = traversal_narrowing(program, parts.iterable, parts.binding, scope) {
@@ -715,7 +720,7 @@ fn collect_try_statement(
     remove_invalidated(narrowed, &body_events.invalidated);
     if let Some(catch) = catch {
         scope.push_frame();
-        scope.bind(&catch.name);
+        scope.bind_with_type(&catch.name, Some(MarrowType::Error));
         let catch_start = narrowed.clone();
         let mut catch_narrowed = catch_start.clone();
         let mut catch_events = InvalidationLog::tracking(catch_start.clone());
@@ -821,6 +826,14 @@ fn collect_expr(
             events,
         );
         return;
+    }
+    if context == ReadContext::Bare && local_maybe_present_read(program, expr, scope) {
+        recorder.diagnostics.push(CheckDiagnostic::error(
+            crate::CHECK_BARE_MAYBE_PRESENT_READ,
+            scope.source_file(),
+            expr.span(),
+            "maybe-present value must be resolved at the read site",
+        ));
     }
 
     match expr {

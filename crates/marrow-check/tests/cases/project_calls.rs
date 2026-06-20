@@ -529,7 +529,7 @@ fn a_typed_keyed_resource_layer_loop_binds_key_and_entry_value() {
          \x20   for seq, comment in ^posts(id).comments\n\
          \x20       var typed_seq: int = seq\n\
          \x20       var body: string = comment.body\n\
-         \x20       var author: string = comment.meta.author\n",
+         \x20       var author: string = comment.meta.author ?? \"\"\n",
     );
     assert_clean(&report);
 }
@@ -1097,7 +1097,7 @@ fn partial_non_unique_index_branches_accept_two_name_loops() {
         "module m\n\
          resource Book\n    author: string\n    shelf: string\n\
          store ^books(id: int): Book\n\n    index byAuthorShelf(author, shelf, id)\n\n\
-         fn f()\n    for id, book in ^books.byAuthorShelf(\"ann\")\n        var typed_id: Id(^books) = id\n        print($\"{book.shelf}\")\n",
+         fn f()\n    for id, book in ^books.byAuthorShelf(\"ann\")\n        var typed_id: Id(^books) = id\n        print($\"{book.shelf ?? \"\"}\")\n",
     );
     assert_clean(&report);
 }

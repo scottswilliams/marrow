@@ -82,6 +82,8 @@ mod enum_member_id_stability;
 mod error_cascade_isolation;
 #[path = "cases/language_reference_docs.rs"]
 mod language_reference_docs;
+#[path = "cases/local_maybe_present_reads.rs"]
+mod local_maybe_present_reads;
 #[path = "cases/lossy_round_trip.rs"]
 mod lossy_round_trip;
 #[path = "cases/optional_chain_enum_typing.rs"]

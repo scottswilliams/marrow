@@ -73,7 +73,7 @@ fn error_fields_keep_their_declared_types() {
     // `help` is a string scalar and `data` is the open `unknown` payload; reading
     // each off a caught error must type and run as the descriptor declares.
     let program = checked_program(
-        "pub fn pick(): string\n    try\n        throw Error(code: \"x.y\", message: \"m\", help: \"try again\", data: \"raw\")\n    catch err: Error\n        return err.help\n",
+        "pub fn pick(): string\n    try\n        throw Error(code: \"x.y\", message: \"m\", help: \"try again\", data: \"raw\")\n    catch err: Error\n        return err.help ?? \"\"\n",
     );
     assert_eq!(
         run(checked_entry!(&program, "test::pick")),
@@ -84,6 +84,25 @@ fn error_fields_keep_their_declared_types() {
 #[test]
 fn throw_is_an_error_value() {
     checker_rejects("pub fn bad()\n    throw 7\n", "check.throw_type");
+}
+
+#[test]
+fn guards_resolve_an_absent_caught_error_sparse_field() {
+    // `help` is sparse, so a caught error without it resolves through `??` to the
+    // default and `exists` to false, never surfacing `run.absent_element`.
+    let program = checked_program(
+        "pub fn pick(): string\n\
+         \x20   try\n\
+         \x20       throw Error(code: \"x.y\", message: \"m\")\n\
+         \x20   catch err: Error\n\
+         \x20       if exists(err.help)\n\
+         \x20           return err.help ?? \"\"\n\
+         \x20       return \"no help\"\n",
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::pick")),
+        Ok(Some(Value::Str("no help".into())))
+    );
 }
 
 #[test]

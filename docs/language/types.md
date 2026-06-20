@@ -145,6 +145,16 @@ Use the absence-default `??` when absence is expected:
 const subtitle: string = ^books(id).subtitle ?? ""
 ```
 
+A sparse field stays maybe-present when its resource is materialized into a
+local value. Reading the field off a bound record uses the same resolutions as a
+saved read, so a whole-record read followed by a bare sparse-field access is the
+same compile error:
+
+```mw
+if const book = ^books(id)
+    const subtitle = book.subtitle ?? ""
+```
+
 ## Maybe Return Types
 
 A user function may return a maybe-present value by spelling `maybe` in the
@@ -301,8 +311,16 @@ Sequences are ordered by key. Holes can exist because they are trees
 underneath; use `count(path)` for the number of populated immediate children,
 not for the highest numeric key.
 
-Sequence helpers use positive integer positions. If zero or negative integer
-keys have meaning, use an integer-keyed tree rather than a sequence.
+Sequence positions are 1-based. A zero or negative position addresses no node,
+so it reads as absent like any out-of-range position. If zero or negative keys
+carry meaning in their own right, use an integer-keyed tree rather than a
+sequence.
+
+A positional read `xs(pos)` is maybe-present: a hole has no node, so the read is
+resolved at the read site with `xs(pos) ?? fallback`, `if const v = xs(pos)`, or
+`if exists(xs(pos))`, the same forms as any maybe-present read. This holds for
+every integer position, including out-of-range and non-positive ones, which
+resolve to the fallback. A bare positional read is a compile error.
 
 Because a sequence is a keyed tree, a `for` loop over one binds its 1-based
 positions, with `values(...)` binding elements — the same loop shapes as any
@@ -323,6 +341,10 @@ The type declaration says:
 - first layer key: `day: date`,
 - second layer key: `category: string`,
 - leaf value: `int`.
+
+Keyed trees are sparse, so a keyed read `counts(today, "open")` is maybe-present
+and resolved at the read site with `??`, `if const`, or `exists`, local or saved
+alike; a bare keyed read is a compile error.
 
 Keyed trees can be local or nested inside saved resources:
 

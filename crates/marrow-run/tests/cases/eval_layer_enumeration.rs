@@ -225,7 +225,7 @@ pub fn enroll(s: string, c: string, st: string)
 
 pub fn statuses()
     for id, enrollment in ^enrollments
-        print(enrollment.status)
+        print(enrollment.status ?? \"\")
 ";
 
 #[test]
@@ -260,7 +260,7 @@ fn reversed_over_a_composite_root_is_a_true_reverse() {
     // reader and the writer share one committed catalog so their member catalog ids
     // address the same store cells.
     let program = checked_program(&format!(
-        "{ENROLLMENT_PRIMARY}\npub fn revStatuses()\n    for id, enrollment in reversed(^enrollments)\n        print(enrollment.status)\n"
+        "{ENROLLMENT_PRIMARY}\npub fn revStatuses()\n    for id, enrollment in reversed(^enrollments)\n        print(enrollment.status ?? \"\")\n"
     ));
     let store = TreeStore::memory();
     let enroll = |s: &str, c: &str, st: &str| {

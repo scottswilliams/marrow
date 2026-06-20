@@ -167,11 +167,11 @@ fn local_collections_can_be_subscripted() {
              fn keyed(today: date): int\n\
              \x20   var counts(day: date, category: string): int\n\
              \x20   counts(today, \"open\") = 3\n\
-             \x20   return counts(today, \"open\")\n\
+             \x20   return counts(today, \"open\") ?? -1\n\
              fn seqIndex(): int\n\
              \x20   var xs: sequence[int]\n\
              \x20   xs(1) = 10\n\
-             \x20   return xs(1)\n",
+             \x20   return xs(1) ?? -1\n",
         );
     });
     let (report, _) = check_project(&root, &config()).expect("check");

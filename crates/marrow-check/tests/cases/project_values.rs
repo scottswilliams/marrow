@@ -336,7 +336,7 @@ fn same_named_resources_use_their_own_module_shape() {
             "module b\n\
              resource Book\n    title: string\n\
              store ^bBooks(id: int): Book\n\
-             fn f(): string\n    const b = Book(title: \"ok\")\n    return b.title\n",
+             fn f(): string\n    const b = Book(title: \"ok\")\n    return b.title ?? \"\"\n",
         );
     });
     let (report, _program) = check_project(&root, &config()).expect("check");

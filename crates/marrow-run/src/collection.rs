@@ -4,7 +4,7 @@ use marrow_check::{CheckedArg as ExecArg, CheckedExpr as ExecExpr};
 use marrow_syntax::SourceSpan;
 
 use crate::env::Env;
-use crate::error::{RUN_ABSENT, RUN_TYPE, RuntimeError, unsupported};
+use crate::error::{RUN_ABSENT, RUN_TYPE, RuntimeError, raise_fault, unsupported};
 use crate::expr::eval_expr;
 use crate::local_collection::{
     enumerate_local_collection_dir, enumerate_local_keys_call_arg, materialize_local_collection_dir,
@@ -30,9 +30,12 @@ pub(crate) enum Direction {
     Descending,
 }
 
-/// The absent-element error for a fixed read address.
+/// The absent-element fault for a fixed read address. It is catchable so a
+/// maybe-present read at the read site — a positional sequence element, a keyed
+/// tree entry, or a stdlib cell selection — resolves through `??`/`if const`/
+/// `exists`/`catch`; an unguarded one still surfaces with `run.absent_element`.
 pub(crate) fn absent_read(message: String, span: SourceSpan) -> RuntimeError {
-    RuntimeError::fault(RUN_ABSENT, message, span)
+    raise_fault(RUN_ABSENT, message, span)
 }
 
 pub(crate) fn durable_collection_value(span: SourceSpan) -> RuntimeError {

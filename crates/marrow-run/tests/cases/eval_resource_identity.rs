@@ -247,7 +247,7 @@ fn whole_resource_read_through_an_identity() {
     // The primary-root iterator yields a composite identity that can be used for
     // a whole-resource read.
     let program = checked_program(
-        "resource Enrollment\n    status: string\nstore ^enrollments(studentId: string, courseId: string): Enrollment\n\npub fn statusOf(): string\n    for id in ^enrollments\n        var e: Enrollment = ^enrollments(id)\n        return e.status\n    return \"\"\n",
+        "resource Enrollment\n    status: string\nstore ^enrollments(studentId: string, courseId: string): Enrollment\n\npub fn statusOf(): string\n    for id in ^enrollments\n        var e: Enrollment = ^enrollments(id)\n        return e.status ?? \"\"\n    return \"\"\n",
     );
     let store = TreeStore::memory();
     write_data_value(

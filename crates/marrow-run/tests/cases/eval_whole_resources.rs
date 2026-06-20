@@ -104,7 +104,9 @@ fn constructs_a_resource_value_with_a_local_resource_field() {
          \x20\x20\x20\x20address: Address\n\n\
          pub fn city(): string\n\
          \x20\x20\x20\x20const person = Person(name: \"Sam\", address: Address(city: \"Paris\"))\n\
-         \x20\x20\x20\x20return person.address.city\n",
+         \x20\x20\x20\x20if const addr = person.address\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20return addr.city ?? \"\"\n\
+         \x20\x20\x20\x20return \"\"\n",
     );
     let store = TreeStore::memory();
     let outcome = run_entry(&store, checked_entry!(&program, "test::city")).expect("city");

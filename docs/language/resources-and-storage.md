@@ -596,8 +596,10 @@ key. It does not fill holes left by delete, failed work, or explicit keyed
 writes. Sequence keys are stable storage positions; use an ordered local value
 when code needs dense, gap-free positions.
 
-Sequence helpers use positive integer positions. Use an integer-keyed tree
-when zero or negative keys are part of the data model.
+Sequence positions are 1-based. A zero, negative, or out-of-range position
+addresses no node and reads as absent, resolved at the read site with `??`,
+`if const`, or `exists`. Use an integer-keyed tree only when zero or negative
+keys carry meaning in their own right.
 
 Keyed trees are for named or sparse layers:
 

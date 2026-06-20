@@ -318,7 +318,8 @@ fn a_whole_resource_write_with_an_identity_field_round_trips() {
          \x20   if exists(^books(1))\n\
          \x20       const b = ^books(1)\n\
          \x20       for author in keys(^authors)\n\
-         \x20           return b.authorId == author\n\
+         \x20           if const stored = b.authorId\n\
+         \x20               return stored == author\n\
          \x20   return false\n",
     );
     let store = TreeStore::memory();

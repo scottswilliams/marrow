@@ -1208,7 +1208,7 @@ fn type_at_a_cross_module_resource_field_read_uses_the_one_resolver() {
         use shelf\n\
         fn describe(thing: shelf::Thing): string\n    \
         return thing.name\n";
-    let shelf = "module shelf\nresource Thing\n    name: string\n";
+    let shelf = "module shelf\nresource Thing\n    required name: string\n";
     let (snapshot, paths) = analyze_overlay(
         "type-at-cross-module-field",
         &[("src/m.mw", m), ("src/shelf.mw", shelf)],

@@ -32,6 +32,17 @@ These are for sparse paths. They do not suppress schema or decoding errors; a
 missing required field in saved data is still invalid data. The operators are
 covered in detail under Operators in the syntax reference.
 
+The same forms resolve every maybe-present read, not only saved paths: a local
+positional read `xs(pos)`, a local keyed read `counts(k)`, and a sparse field of
+a materialized value such as `book.subtitle`, `person.address.zip`, a loop-bound
+group entry's field, or a caught `err.help`. A bare such read is a compile error.
+
+The guarded expression and its key and base sub-expressions must be effect-free
+reads. A write, an allocation, a host call, or any user-function call inside the
+guard is rejected, whether it is the read itself (`exists(append(xs, v))`,
+`exists(nextId(^s))`) or smuggled in as a key (`counts(nextId(^s)) ?? 0`,
+`counts(writeBook())`), so the guard never runs a side effect.
+
 ## Collection Traversal
 
 A durable collection — a store root, keyed child layer, or index branch — is an

@@ -33,7 +33,7 @@ fn a_return_value_updates_a_local() {
 #[test]
 fn a_returned_resource_updates_a_local_resource() {
     let program = checked_program(
-        "resource Book\n    title: string\nstore ^books(id: int): Book\n\npub fn withTitle(book: Book): Book\n    var updated: Book = book\n    updated.title = \"Small Gods\"\n    return updated\n\npub fn main(): string\n    var book: Book\n    book.title = \"draft\"\n    book = withTitle(book)\n    return book.title\n",
+        "resource Book\n    title: string\nstore ^books(id: int): Book\n\npub fn withTitle(book: Book): Book\n    var updated: Book = book\n    updated.title = \"Small Gods\"\n    return updated\n\npub fn main(): string\n    var book: Book\n    book.title = \"draft\"\n    book = withTitle(book)\n    return book.title ?? \"\"\n",
     );
     assert_eq!(
         run(checked_entry!(&program, "test::main")),
@@ -45,7 +45,7 @@ fn a_returned_resource_updates_a_local_resource() {
 fn an_uninitialized_qualified_resource_var_starts_empty() {
     let program = checked_program_modules(&[
         "module library\nresource Book\n    title: string\n",
-        "module app\nuse library\npub fn main(): string\n    var book: library::Book\n    book.title = \"draft\"\n    return book.title\n",
+        "module app\nuse library\npub fn main(): string\n    var book: library::Book\n    book.title = \"draft\"\n    return book.title ?? \"\"\n",
     ]);
     assert_eq!(
         run(checked_entry!(&program, "app::main")),
@@ -67,7 +67,7 @@ fn uninitialized_bare_foreign_resource_var_is_not_project_wide() {
 #[test]
 fn a_return_value_updates_a_local_resource_field() {
     let program = checked_program(
-        "resource Book\n    title: string\nstore ^books(id: int): Book\n\npub fn upper(s: string): string\n    return \"UPPER\"\n\npub fn main(): string\n    var book: Book\n    book.title = \"draft\"\n    book.title = upper(book.title)\n    return book.title\n",
+        "resource Book\n    title: string\nstore ^books(id: int): Book\n\npub fn upper(s: string): string\n    return \"UPPER\"\n\npub fn main(): string\n    var book: Book\n    book.title = \"draft\"\n    book.title = upper(book.title ?? \"\")\n    return book.title ?? \"\"\n",
     );
     assert_eq!(
         run(checked_entry!(&program, "test::main")),

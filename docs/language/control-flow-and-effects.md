@@ -256,6 +256,17 @@ error value. If the type annotation is omitted, `Error` is used. Applications
 can store errors in their own saved resources when they want persistent audit or
 diagnostics; those saved resources model persistent fields concretely.
 
+`code` and `message` are always present, so `err.code` and `err.message` read
+directly. `help` and `data` are sparse, so a bare `err.help` or `err.data` is a
+compile error; resolve each at the read site like any maybe-present read:
+
+```mw
+catch err: Error
+    print($"{err.message} ({err.help ?? "no help"})")
+    if exists(err.data)
+        print("error carries data")
+```
+
 Use catch-cleanup-rethrow when cleanup must run after a caught error:
 
 ```mw
