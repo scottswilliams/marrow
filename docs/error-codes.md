@@ -299,12 +299,14 @@ code, except `run.uncaught_error` — see "Typed Errors In Running Programs".
 
 ### `value.*` — kind `runtime`
 
-Value codec range faults raised while formatting or writing runtime values.
-These are catchable `Error` values inside a running program.
+Value codec range faults raised at the store write/read boundary while encoding
+a runtime value to its canonical saved bytes or projecting it to an
+order-preserving key. These are catchable `Error` values inside a running
+program.
 
 | Code | Meaning |
 |---|---|
-| `value.range` | A date or instant lies outside Marrow's supported calendar range, years 0001-9999. |
+| `value.range` | A `date` or `instant` reaching the store codec lies outside Marrow's supported calendar range, years 0001-9999. This is a store-boundary integrity guard, not a source-arithmetic fault: every `.mw` temporal path (the `date`/`instant` constructors, `std::clock` parse and `addDays` helpers, and `+`/`-` arithmetic) shares the same 0001-9999 envelope and already raises `run.temporal_overflow` before an out-of-range value can be produced, so no ordinary checked program reaches this code. It fires only if a value that bypasses those bounds reaches the canonical encoder or key projection. |
 
 ### `write.*` — kind `tooling`
 

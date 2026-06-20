@@ -457,7 +457,7 @@ binds looser than additive expressions and tighter than ranges and comparisons:
 `count ?? 0 < 5` is `(count ?? 0) < 5`,
 `start ?? 1 .. n` is `(start ?? 1) .. n`, and `x ?? y + 1` is `x ?? (y + 1)`.
 Its left operand must be a maybe-present read — a path read (including a keyed
-child such as `^patients(id).visits(date)`), a `?.` chain, or a maybe-present
+child such as `^patients(id).visits(someDate)`), a `?.` chain, or a maybe-present
 call result such as `next`/`prev` or a maybe-returning user function; that
 constraint is enforced by the checker, not the grammar.
 

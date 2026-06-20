@@ -86,7 +86,7 @@ A `date` steps in whole calendar days using calendar arithmetic, so it crosses
 month and leap-day boundaries correctly; the date step must be a whole number of
 days. An `instant` steps by its duration in UTC.
 
-A loop never runs forever. For `int`, the step's sign sets the direction: a
+A range loop never runs forever. For `int`, the step's sign sets the direction: a
 positive step ascends, a negative one descends (`10..1 by -1` counts down). A
 step pointing away from the end iterates zero times rather than looping
 endlessly. When the endpoints and step are all literals, a provably wrong
@@ -217,6 +217,13 @@ reverse.
 while loanCount < limit
     loanCount = loanCount + 1
 ```
+
+Unlike a range loop, a `while` loop is unbounded: it runs until its condition is
+false, and Marrow imposes no step or fuel limit, so `while true` with no exit
+runs forever. Iteration is intentionally unbounded; ensuring a loop terminates is
+the program author's responsibility. Recursion and source nesting are capped only
+to fail closed against stack overflow, not as a work budget — see the
+[cost model](cost-model.md).
 
 A loop over a saved layer must not change that layer's key set while traversing
 it. Deleting, appending, writing a whole keyed entry, or writing a field at a key

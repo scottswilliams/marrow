@@ -110,6 +110,18 @@ Fixed ceilings keep pathological depth from exhausting the native stack and a
 pathological transaction from exhausting memory. All are fail-closed: the program
 stops with a located diagnostic, never a process crash.
 
+These ceilings bound depth and breadth — recursion, source nesting, and a single
+transaction's staged write set — because each one maps to a finite native
+resource (the call stack or buffered memory) that a runaway program would
+exhaust. They are not a general step or fuel budget. Iteration is deliberately
+unbounded: a `for` or `while` loop runs as many times as its source dictates,
+and Marrow adds no per-loop step cap, so a `while true` with no exit runs
+forever. Bounding iteration would mean inventing a fuel limit Marrow does not
+have; instead, terminating loops is the program author's contract, the same as
+in any general-purpose language. The asymmetry is intentional: recursion and
+nesting are capped only to fail closed against stack overflow, never to ration
+how much work a loop may do.
+
 - **Nesting limit (256).** Source may nest expressions (parentheses, operators)
   and statement blocks (`if`, `while`, `for`, …) up to 256 levels deep. Deeper
   source stops at the offending span with `check.nesting_limit`.

@@ -142,7 +142,7 @@ std::text::split(value: string, separator: string): sequence[string]
 std::text::slice(value: string, start: int, end: int): string
 std::text::startsWith(value: string, prefix: string): bool
 std::text::endsWith(value: string, suffix: string): bool
-std::text::indexOf(value: string, needle: string): maybe-present int
+std::text::indexOf(value: string, needle: string): maybe int
 std::text::replace(value: string, from: string, to: string): string
 std::text::join(parts: sequence[string], separator: string): string
 std::text::toUpper(value: string): string
@@ -238,11 +238,11 @@ type and do not map JSON objects to Marrow resources:
 
 ```mw
 std::json::valid(text: string): bool
-std::json::string(text: string, pointer: string): maybe-present string
-std::json::int(text: string, pointer: string): maybe-present int
-std::json::decimal(text: string, pointer: string): maybe-present decimal
-std::json::bool(text: string, pointer: string): maybe-present bool
-std::json::count(text: string, pointer: string): maybe-present int
+std::json::string(text: string, pointer: string): maybe string
+std::json::int(text: string, pointer: string): maybe int
+std::json::decimal(text: string, pointer: string): maybe decimal
+std::json::bool(text: string, pointer: string): maybe bool
+std::json::count(text: string, pointer: string): maybe int
 std::json::stringLit(value: string): string
 std::json::stringArray(items: sequence[string]): string
 ```
@@ -274,10 +274,10 @@ CSV helpers read a narrow RFC 4180 subset from text and return scalar cells:
 std::csv::row(cells: sequence[string]): string
 std::csv::rowCount(text: string): int
 std::csv::hasColumn(text: string, column: string): bool
-std::csv::string(text: string, row: int, column: string): maybe-present string
-std::csv::int(text: string, row: int, column: string): maybe-present int
-std::csv::decimal(text: string, row: int, column: string): maybe-present decimal
-std::csv::bool(text: string, row: int, column: string): maybe-present bool
+std::csv::string(text: string, row: int, column: string): maybe string
+std::csv::int(text: string, row: int, column: string): maybe int
+std::csv::decimal(text: string, row: int, column: string): maybe decimal
+std::csv::bool(text: string, row: int, column: string): maybe bool
 ```
 
 `row` renders one RFC 4180 record with no trailing newline, the exact inverse of
@@ -323,9 +323,9 @@ a SHA-256-derived `u128`; `decimal` returns an exact canonical decimal in
 Run context is host-provided request metadata:
 
 ```mw
-std::context::actor(): maybe-present string
-std::context::requestId(): maybe-present string
-std::context::idempotencyKey(): maybe-present string
+std::context::actor(): maybe string
+std::context::requestId(): maybe string
+std::context::idempotencyKey(): maybe string
 ```
 
 A run without context capability raises `run.capability`. A provided context

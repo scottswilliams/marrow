@@ -410,8 +410,8 @@ commands are read-only and never modify the store:
 
 ```text
 $ marrow data dump <projectdir>
-^books(1).title	Small Gods
-^books(1).shelf	fiction
+^books(1).title	"Small Gods"
+^books(1).shelf	"fiction"
 ^books(1).isbn	111
 ```
 

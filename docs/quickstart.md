@@ -176,19 +176,23 @@ marrow data dump .
 ```
 
 ```text
-^books(1).title	Small Gods
-^books(1).author	Terry Pratchett
-^books(1).shelf	fiction
-^books(2).title	Sourcery
-^books(2).author	Terry Pratchett
-^books(2).shelf	fiction
-^books(3).title	Small Gods
-^books(3).author	Terry Pratchett
-^books(3).shelf	fiction
-^books(4).title	Sourcery
-^books(4).author	Terry Pratchett
-^books(4).shelf	fiction
+^books(1).title	"Small Gods"
+^books(1).author	"Terry Pratchett"
+^books(1).shelf	"fiction"
+^books(2).title	"Sourcery"
+^books(2).author	"Terry Pratchett"
+^books(2).shelf	"fiction"
+^books(3).title	"Small Gods"
+^books(3).author	"Terry Pratchett"
+^books(3).shelf	"fiction"
+^books(4).title	"Sourcery"
+^books(4).author	"Terry Pratchett"
+^books(4).shelf	"fiction"
 ```
+
+`data dump` renders each value through its checked leaf type, so strings are
+quoted and escaped, bytes are `0x<hex>`, and `Id(^store)` references print as
+saved paths.
 
 One record is one saved entity, an identity tuple such as `^books(1)`; one cell
 is one stored path/value pair, so each saved book above is one record with three
@@ -202,7 +206,7 @@ marrow data get . '^books(1).title'
 ```
 
 ```text
-Small Gods
+"Small Gods"
 ```
 
 Verify that every stored value decodes against the schema:
@@ -223,7 +227,7 @@ marrow data stats --format json .
 ```
 
 ```text
-{"project":"/absolute/path/to/shelf","records":4,"cells":12,"roots":1}
+{"cells":12,"project":"/absolute/path/to/shelf","records":4,"roots":1}
 ```
 
 `marrow data` inspection commands are read-only; `marrow data recover` is the

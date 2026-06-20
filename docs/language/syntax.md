@@ -71,7 +71,7 @@ resource Patient
         required first: string
         required last: string
 
-    visits(date: date)
+    visits(visitDate: date)
         note: string
 
 store ^patients(id: string): Patient

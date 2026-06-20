@@ -88,7 +88,7 @@ resource Patient
         first: string
         last: string
 
-    visits(date: date)
+    visits(visitDate: date)
         note: string
         provider: string
 
