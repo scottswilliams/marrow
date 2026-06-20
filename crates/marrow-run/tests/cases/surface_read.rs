@@ -61,6 +61,16 @@ surface Books from ^books
     fields title
 ";
 
+const OPTIONAL_PRIVATE_SURFACE: &str = "\
+resource Book
+    required title: string
+    internalScore: int
+store ^books(id: int): Book
+
+surface Books from ^books
+    fields title
+";
+
 const ENUM_AND_IDENTITY_SURFACE: &str = "\
 enum Status
     draft
@@ -476,6 +486,34 @@ fn point_read_reports_projected_decode_failures_as_invalid_data() {
         &identity,
         &data_path(&runtime, "books", &["privateCode"]),
         SavedValue::Str("internal".into()),
+    );
+
+    assert_surface_error(
+        read_surface_point(&program, &store, surface_id(&program, "Books"), &identity),
+        SURFACE_INVALID_DATA,
+    );
+}
+
+#[test]
+fn point_read_validates_present_private_optional_unkeyed_fields_before_projection() {
+    let (program, runtime) = committed_program_and_runtime(OPTIONAL_PRIVATE_SURFACE);
+    let store = admitted_store(&program);
+    let identity = [SavedKey::Int(1)];
+    write_data_value(
+        &runtime,
+        &store,
+        "books",
+        &identity,
+        &data_path(&runtime, "books", &["title"]),
+        SavedValue::Str("Dune".into()),
+    );
+    write_data_bytes(
+        &runtime,
+        &store,
+        "books",
+        &identity,
+        &data_path(&runtime, "books", &["internalScore"]),
+        vec![0xff],
     );
 
     assert_surface_error(

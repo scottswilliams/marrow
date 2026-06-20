@@ -176,8 +176,8 @@ fn named_groups(
     label: impl Fn(&SurfaceClientGroup) -> &str,
 ) -> Vec<NamedGroup> {
     groups.sort_by(|left, right| {
-        sanitize_identifier(label(left))
-            .cmp(&sanitize_identifier(label(right)))
+        sanitize_group_identifier(label(left))
+            .cmp(&sanitize_group_identifier(label(right)))
             .then_with(|| group_suffix(left).cmp(&group_suffix(right)))
     });
     let mut used = BTreeSet::new();
@@ -186,7 +186,7 @@ fn named_groups(
         .map(|group| {
             let name = unique_name(
                 &mut used,
-                &sanitize_identifier(label(&group)),
+                &sanitize_group_identifier(label(&group)),
                 &group_suffix(&group),
             );
             NamedGroup { name, group }
@@ -196,8 +196,8 @@ fn named_groups(
 
 fn named_operations(mut operations: Vec<SurfaceRouteBinding>) -> Vec<NamedOperation> {
     operations.sort_by(|left, right| {
-        sanitize_identifier(&left.alias)
-            .cmp(&sanitize_identifier(&right.alias))
+        sanitize_property_identifier(&left.alias)
+            .cmp(&sanitize_property_identifier(&right.alias))
             .then_with(|| left.operation_tag.cmp(&right.operation_tag))
     });
     let mut used = BTreeSet::new();
@@ -206,7 +206,7 @@ fn named_operations(mut operations: Vec<SurfaceRouteBinding>) -> Vec<NamedOperat
         .map(|binding| {
             let name = unique_name(
                 &mut used,
-                &sanitize_identifier(&binding.alias),
+                &sanitize_property_identifier(&binding.alias),
                 &operation_tag_suffix(&binding.operation_tag),
             );
             NamedOperation { name, binding }
@@ -302,7 +302,15 @@ fn request_type(kind: SurfaceOperationKind) -> Option<&'static str> {
     }
 }
 
-fn sanitize_identifier(label: &str) -> String {
+fn sanitize_group_identifier(label: &str) -> String {
+    sanitize_identifier(label, true)
+}
+
+fn sanitize_property_identifier(label: &str) -> String {
+    sanitize_identifier(label, false)
+}
+
+fn sanitize_identifier(label: &str, avoid_reserved_words: bool) -> String {
     let mut sanitized = String::new();
     for character in label.chars() {
         if sanitized.is_empty() {
@@ -323,7 +331,7 @@ fn sanitize_identifier(label: &str) -> String {
     if sanitized.is_empty() {
         sanitized.push('_');
     }
-    if is_reserved_word(&sanitized) {
+    if avoid_reserved_words && is_reserved_word(&sanitized) {
         sanitized.push('_');
     }
     sanitized

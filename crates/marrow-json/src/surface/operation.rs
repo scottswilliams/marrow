@@ -24,6 +24,7 @@ use super::{
 pub const SURFACE_OPERATION_PROFILE_VERSION: &str = "surface.operation.v1";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SurfaceOperationRequestJson {
     pub profile_version: String,
     pub operation_tag: String,
@@ -31,7 +32,7 @@ pub struct SurfaceOperationRequestJson {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum SurfaceOperationRequestBodyJson {
     SingletonRead,
     PointRead {
@@ -100,11 +101,13 @@ pub enum SurfaceOperationResultJson {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SurfaceActionRequestJson {
     pub arguments: Vec<Json>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SurfaceComputedReadRequestJson {
     pub arguments: Vec<Json>,
 }

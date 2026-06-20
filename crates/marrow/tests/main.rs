@@ -1,6 +1,7 @@
 mod support;
 mod support_data;
 mod support_evolve;
+mod support_surface;
 
 #[path = "cases/backup_cli.rs"]
 mod backup_cli;

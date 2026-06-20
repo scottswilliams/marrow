@@ -20,11 +20,13 @@ use super::{
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SurfacePointRequestJson {
     pub identity: SurfaceIdentityJson,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SurfacePageRequestJson {
     #[serde(default)]
     pub exact_keys: Vec<SurfaceArgumentJson>,
@@ -34,51 +36,59 @@ pub struct SurfacePageRequestJson {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SurfaceUniqueLookupRequestJson {
     pub keys: Vec<SurfaceArgumentJson>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SurfacePointUpdateRequestJson {
     pub identity: SurfaceIdentityJson,
     pub fields: Vec<SurfaceUpdateFieldJson>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SurfaceSingletonUpdateRequestJson {
     pub fields: Vec<SurfaceUpdateFieldJson>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SurfacePointCreateRequestJson {
     pub identity: SurfaceIdentityJson,
     pub fields: Vec<SurfaceCreateFieldJson>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SurfaceSingletonCreateRequestJson {
     pub fields: Vec<SurfaceCreateFieldJson>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SurfacePointDeleteRequestJson {
     pub identity: SurfaceIdentityJson,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SurfaceUpdateFieldJson {
     pub catalog_id: String,
     pub value: SurfaceWriteValueJson,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SurfaceCreateFieldJson {
     pub catalog_id: String,
     pub value: SurfaceWriteValueJson,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum SurfaceWriteValueJson {
     Int {
         value: String,

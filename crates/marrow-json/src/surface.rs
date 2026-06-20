@@ -410,6 +410,7 @@ pub struct SurfaceCallableIdentityKeyJson {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SurfaceIdentityJson {
     pub store_catalog_id: String,
     pub keys: Vec<SurfaceKeyJson>,
@@ -1171,6 +1172,7 @@ impl From<marrow_check::EntryIdentityKey> for SurfaceCallableIdentityKeyJson {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SurfaceCursorJson {
     pub operation_tag: String,
     pub store_uid: String,
@@ -1183,7 +1185,7 @@ pub struct SurfaceCursorJson {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum SurfaceCursorBoundaryJson {
     RootIdentity {
         identity: SurfaceIdentityJson,
@@ -1195,7 +1197,7 @@ pub enum SurfaceCursorBoundaryJson {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum SurfaceKeyJson {
     Int { value: String },
     Bool { value: bool },
@@ -1207,7 +1209,7 @@ pub enum SurfaceKeyJson {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum SurfaceArgumentJson {
     Int {
         value: String,
@@ -3472,8 +3474,8 @@ pub fn seed()
             .expect("sanitized surface methods");
         let method_names = methods.keys().map(String::as_str).collect::<Vec<_>>();
         assert_eq!(method_names.len(), expected_read_count);
-        assert!(methods.contains_key("delete_"), "{methods:#?}");
-        assert!(method_names.iter().all(|name| name.starts_with("delete_")));
+        assert!(methods.contains_key("delete"), "{methods:#?}");
+        assert!(method_names.iter().all(|name| name.starts_with("delete")));
         assert!(method_names.iter().any(|name| name.contains("__")));
         assert_eq!(
             methods

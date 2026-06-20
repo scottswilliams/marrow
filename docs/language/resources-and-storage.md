@@ -267,6 +267,14 @@ store's normalized resource shape, a referenced field, or a referenced index is
 already rejected by schema or checker validation; best-effort schema facts are
 not a public application contract.
 
+Surface reads separate validation footprint from projection. Before emitting a
+record, Marrow materializes and decodes the bounded unkeyed backing-record body:
+every plain field under the record and unkeyed groups is checked, including
+private optional fields when present. Keyed child layers are not swept by a
+point read because they are unbounded; expose them through their own checked
+collections or actions. The response then contains only the declared public
+projection.
+
 Configured test-file `surface` declarations are still parsed and checked for
 source-level name collisions, but only source-root declarations resolve into
 application surface facts.

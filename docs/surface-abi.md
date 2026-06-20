@@ -70,12 +70,12 @@ The active surface foundation has these owners:
   source-only surfaces cannot.
 - `crates/marrow-run/src/surface.rs` admits stable read, computed-read, create,
   update, delete, and action operations against a stamped store,
-  materializes the backing record body before projecting reads, returns page
-  cursors bound to the visible store commit, applies exact create bodies and
-  non-empty sparse update patches through managed writes, deletes whole record
-  subtrees, and admits surface actions and computed reads by operation tag.
-  Runtime admission fails closed when any active checked surface operation tag
-  is duplicated.
+  materializes the bounded unkeyed backing-record body before projecting reads,
+  returns page cursors bound to the visible store commit, applies exact create
+  bodies and non-empty sparse update patches through managed writes, deletes
+  whole record subtrees, and admits surface actions and computed reads by
+  operation tag. Runtime admission fails closed when any active checked surface
+  operation tag is duplicated.
 - `marrow-run::ProjectSurfaceReadSession` is the preparatory linked-Rust
   read-serving boundary. It checks a project, opens the configured native store
   read-only, requires an already accepted and stamped durable store, fences
@@ -137,6 +137,10 @@ transport-neutral: callers supply a profile version, an operation tag, and one
 typed request body; `marrow-json` admits the tag through `marrow-run` and then
 lets the admitted read, computed-read, create, update, delete, or action handle
 validate the requested body shape.
+
+The operation envelope and the surface-owned request DTOs are closed JSON
+objects. Unknown fields are request errors rather than extension points; new
+request fields require an explicit profile/version decision.
 
 The request body variants are singleton read, point read, page, unique lookup,
 computed read, singleton create, point create, singleton update, point update,
@@ -248,8 +252,8 @@ resource footprint catalog ID, singleton-vs-point shape, identity-key value
 shapes, exact declared-body semantics, singleton or caller-supplied identity
 policy, reject-existing semantics, the create field set sorted by accepted
 resource-member catalog ID, the public projection shape, and the full-record read
-footprint used to validate the result. Render labels and create declaration
-order do not affect the tag.
+footprint used to validate the bounded unkeyed result body. Render labels and
+create declaration order do not affect the tag.
 
 `surface.update.v1` tags include the profile domain, store catalog ID, backing
 resource footprint catalog ID, singleton-vs-point shape, identity-key value

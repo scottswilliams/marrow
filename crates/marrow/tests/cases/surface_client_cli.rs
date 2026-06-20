@@ -1,4 +1,11 @@
 use crate::support;
+use crate::support_surface::{
+    create_descriptor, create_field_catalog_id, route_by_alias, spawn_surface_server_with_args,
+};
+
+use serde_json::Value;
+use std::path::PathBuf;
+use std::process::Command;
 
 use support::{marrow, temp_project, temp_project_uncommitted, write};
 
@@ -14,13 +21,20 @@ pub fn seed()\n\
 \x20\x20\x20\x20var book: Book\n\
 \x20\x20\x20\x20book.title = \"Dune\"\n\
 \x20\x20\x20\x20book.author = \"Frank Herbert\"\n\
+\x20\x20\x20\x20var sequel: Book\n\
+\x20\x20\x20\x20sequel.title = \"Dune Messiah\"\n\
+\x20\x20\x20\x20sequel.author = \"Frank Herbert\"\n\
 \x20\x20\x20\x20transaction\n\
 \x20\x20\x20\x20\x20\x20\x20\x20^books(1) = book\n\
+\x20\x20\x20\x20\x20\x20\x20\x20^books(2) = sequel\n\
 \n\
 pub fn retitle(id: int, title: string): string\n\
 \x20\x20\x20\x20transaction\n\
 \x20\x20\x20\x20\x20\x20\x20\x20^books(id).title = title\n\
 \x20\x20\x20\x20return title\n\
+\n\
+pub fn describe(id: int): string\n\
+\x20\x20\x20\x20return (^books(id).title ?? \"\") + \"|\" + (^books(id).author ?? \"\")\n\
 \n\
 surface Books from ^books\n\
 \x20\x20\x20\x20fields title, author\n\
@@ -109,4 +123,313 @@ fn client_typescript_usage_failures_exit_two() {
     assert!(output.stdout.is_empty(), "{output:?}");
     let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
     assert!(stderr.contains("missing project directory"), "{stderr}");
+}
+
+#[test]
+fn client_typescript_generated_client_runs_against_live_surface_server() {
+    let Some(node) = node_with_type_stripping() else {
+        if std::env::var_os("CI").is_some() || std::env::var_os("MARROW_TEST_NODE").is_some() {
+            panic!("generated TypeScript client E2E requires Node with --experimental-strip-types");
+        }
+        eprintln!("skipping generated TypeScript client E2E; compatible node not found");
+        return;
+    };
+    let root = temp_project("surface-client-typescript-e2e", |root| {
+        write(root, "marrow.json", support::native_config());
+        write(root, "src/app.mw", CLIENT_SURFACE_SOURCE);
+    });
+    let seed = marrow(&["run", "--entry", "app::seed", root.to_str().unwrap()]);
+    assert_eq!(seed.status.code(), Some(0), "seed: {seed:?}");
+
+    let check = marrow(&["check", "--format", "json", root.to_str().unwrap()]);
+    assert_eq!(check.status.code(), Some(0), "check: {check:?}");
+    let report = support::json(check.stdout);
+    let ids = surface_ids(&report);
+
+    let client = marrow(&[
+        "client",
+        "typescript",
+        root.to_str().expect("project path utf8"),
+    ]);
+    assert_eq!(client.status.code(), Some(0), "client: {client:?}");
+    assert!(client.stderr.is_empty(), "client: {client:?}");
+    let app = support::temp_dir("surface-client-typescript-e2e-app");
+    write(
+        &app,
+        "marrow-client.ts",
+        &String::from_utf8(client.stdout).expect("client utf8"),
+    );
+    write(&app, "app.ts", &generated_client_app(&ids));
+
+    {
+        let (_server, addr) = spawn_surface_server_with_args(&root, &["--write"]);
+        let output = Command::new(node)
+            .arg("--experimental-strip-types")
+            .arg("--no-warnings")
+            .arg(app.join("app.ts"))
+            .current_dir(&app)
+            .env("MARROW_SURFACE_BASE_URL", format!("http://{addr}"))
+            .output()
+            .expect("run generated client app");
+
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "generated client app failed\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            String::from_utf8(output.stdout)
+                .expect("app stdout utf8")
+                .trim(),
+            "generated-client-e2e-ok"
+        );
+    }
+
+    let recover = marrow(&[
+        "data",
+        "recover",
+        "--format",
+        "json",
+        root.to_str().expect("project path utf8"),
+    ]);
+    assert_eq!(recover.status.code(), Some(0), "recover: {recover:?}");
+
+    let describe = marrow(&[
+        "run",
+        "--entry",
+        "app::describe",
+        "--arg",
+        "id=1",
+        "--format",
+        "json",
+        root.to_str().expect("project path utf8"),
+    ]);
+    assert_eq!(describe.status.code(), Some(0), "describe: {describe:?}");
+    let envelope = support::json(describe.stdout);
+    assert_eq!(
+        envelope["return"],
+        serde_json::json!({ "kind": "string", "value": "The Dispossessed|Ursula Le Guin" })
+    );
+
+    let integrity = marrow(&[
+        "data",
+        "integrity",
+        "--format",
+        "json",
+        root.to_str().expect("project path utf8"),
+    ]);
+    assert_eq!(integrity.status.code(), Some(0), "integrity: {integrity:?}");
+}
+
+struct SurfaceClientIds {
+    store_catalog_id: String,
+    title_catalog_id: String,
+    author_catalog_id: String,
+}
+
+fn node_with_type_stripping() -> Option<PathBuf> {
+    let candidates = std::env::var_os("MARROW_TEST_NODE")
+        .map(PathBuf::from)
+        .into_iter()
+        .chain(std::env::var_os("PATH").into_iter().flat_map(|path| {
+            std::env::split_paths(&path)
+                .map(|dir| dir.join("node"))
+                .collect::<Vec<_>>()
+        }));
+    for candidate in candidates {
+        let Ok(output) = Command::new(&candidate).arg("--help").output() else {
+            continue;
+        };
+        let help = String::from_utf8_lossy(&output.stdout);
+        if output.status.success() && help.contains("--experimental-strip-types") {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+fn surface_ids(report: &Value) -> SurfaceClientIds {
+    let create_route = route_by_alias(report, "create");
+    let create = create_descriptor(report, &create_route.operation_tag);
+    SurfaceClientIds {
+        store_catalog_id: create["store_catalog_id"]
+            .as_str()
+            .expect("create store catalog id")
+            .to_string(),
+        title_catalog_id: create_field_catalog_id(create, "title"),
+        author_catalog_id: create_field_catalog_id(create, "author"),
+    }
+}
+
+fn generated_client_app(ids: &SurfaceClientIds) -> String {
+    format!(
+        r#"import assert from "node:assert/strict";
+import {{ createMarrowSurfaceClient }} from "./marrow-client.ts";
+
+const ids = {{
+  store: {store},
+  title: {title},
+  author: {author},
+}};
+const client = createMarrowSurfaceClient({{
+  baseUrl: process.env.MARROW_SURFACE_BASE_URL,
+}});
+
+const key = (id) => ({{
+  store_catalog_id: ids.store,
+  keys: [{{ kind: "int", value: id }}],
+}});
+const field = (record, label) => {{
+  const found = record.fields.find((item) => item.render_label === label);
+  assert.ok(found, `missing field ${{label}}`);
+  return found.value;
+}};
+const get = async (id) => client.app.Books.get({{ identity: key(id) }});
+
+const seeded = await get(1);
+assert.equal(seeded.result.kind, "record");
+assert.deepEqual(field(seeded.result.record, "title"), {{
+  kind: "string",
+  value: "Dune",
+}});
+
+const staleAfterCreate = await client.app.Books.byAuthor({{
+  exact_keys: [{{ kind: "string", value: "Frank Herbert" }}],
+  limit: 1,
+}});
+assert.ok(staleAfterCreate.result.page.next);
+
+const created = await client.app.Books.create({{
+  identity: key(3n),
+  fields: [
+    {{
+      catalog_id: ids.title,
+      value: {{ kind: "string", value: "Children of Dune" }},
+    }},
+    {{
+      catalog_id: ids.author,
+      value: {{ kind: "string", value: "Frank Herbert" }},
+    }},
+  ],
+}});
+assert.equal(created.result.kind, "created");
+assert.deepEqual(field(created.result.record, "title"), {{
+  kind: "string",
+  value: "Children of Dune",
+}});
+await assert.rejects(
+  () =>
+    client.app.Books.byAuthor({{
+      exact_keys: [{{ kind: "string", value: "Frank Herbert" }}],
+      limit: 10,
+      cursor: staleAfterCreate.result.page.next,
+    }}),
+  (error) => error.code === "surface.stale_cursor",
+);
+
+const staleAfterUpdate = await client.app.Books.byAuthor({{
+  exact_keys: [{{ kind: "string", value: "Frank Herbert" }}],
+  limit: 1,
+}});
+assert.ok(staleAfterUpdate.result.page.next);
+
+const updated = await client.app.Books.update({{
+  identity: key(1),
+  fields: [
+    {{
+      catalog_id: ids.author,
+      value: {{ kind: "string", value: "Ursula Le Guin" }},
+    }},
+  ],
+}});
+assert.equal(updated.result.kind, "updated");
+const updatedRead = await get(1);
+assert.deepEqual(field(updatedRead.result.record, "author"), {{
+  kind: "string",
+  value: "Ursula Le Guin",
+}});
+await assert.rejects(
+  () =>
+    client.app.Books.byAuthor({{
+      exact_keys: [{{ kind: "string", value: "Frank Herbert" }}],
+      limit: 10,
+      cursor: staleAfterUpdate.result.page.next,
+    }}),
+  (error) => error.code === "surface.stale_cursor",
+);
+
+const frank = await client.app.Books.byAuthor({{
+  exact_keys: [{{ kind: "string", value: "Frank Herbert" }}],
+  limit: 10,
+}});
+assert.equal(frank.result.kind, "page");
+assert.deepEqual(
+  frank.result.page.rows.map((record) => field(record, "title").value),
+  ["Dune Messiah", "Children of Dune"],
+);
+
+const staleAfterAction = await client.app.Books.byAuthor({{
+  exact_keys: [{{ kind: "string", value: "Frank Herbert" }}],
+  limit: 1,
+}});
+assert.ok(staleAfterAction.result.page.next);
+
+const retitled = await client.app.Books.retitle({{
+  arguments: [
+    {{ name: "id", value: {{ kind: "int", value: "1" }} }},
+    {{ name: "title", value: {{ kind: "string", value: "The Dispossessed" }} }},
+  ],
+}});
+assert.equal(retitled.result.kind, "action");
+assert.deepEqual(retitled.result.result.value, {{
+  kind: "string",
+  value: "The Dispossessed",
+}});
+const retitledRead = await get(1);
+assert.deepEqual(field(retitledRead.result.record, "title"), {{
+  kind: "string",
+  value: "The Dispossessed",
+}});
+await assert.rejects(
+  () =>
+    client.app.Books.byAuthor({{
+      exact_keys: [{{ kind: "string", value: "Frank Herbert" }}],
+      limit: 10,
+      cursor: staleAfterAction.result.page.next,
+    }}),
+  (error) => error.code === "surface.stale_cursor",
+);
+
+const staleAfterDelete = await client.app.Books.byAuthor({{
+  exact_keys: [{{ kind: "string", value: "Frank Herbert" }}],
+  limit: 1,
+}});
+assert.ok(staleAfterDelete.result.page.next);
+
+const deleted = await client.app.Books.delete({{ identity: key(3) }});
+assert.equal(deleted.result.kind, "deleted");
+await assert.rejects(() => get(3), (error) => error.code === "surface.absent");
+await assert.rejects(
+  () =>
+    client.app.Books.byAuthor({{
+      exact_keys: [{{ kind: "string", value: "Frank Herbert" }}],
+      limit: 10,
+      cursor: staleAfterDelete.result.page.next,
+    }}),
+  (error) => error.code === "surface.stale_cursor",
+);
+
+await assert.rejects(
+  () => get(Number.MAX_SAFE_INTEGER + 1),
+  /safe integers/,
+);
+
+console.log("generated-client-e2e-ok");
+"#,
+        store = serde_json::to_string(&ids.store_catalog_id).expect("store id json"),
+        title = serde_json::to_string(&ids.title_catalog_id).expect("title id json"),
+        author = serde_json::to_string(&ids.author_catalog_id).expect("author id json"),
+    )
 }

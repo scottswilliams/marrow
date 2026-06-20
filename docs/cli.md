@@ -280,7 +280,9 @@ create, freeze, migrate, repair, or auto-apply saved data.
   `Content-Type: application/json`, exactly one `Content-Length`, no
   `Transfer-Encoding`, bounded headers/body, no query string, and an exact
   operation-tag path. The JSON body is a `surface.operation.v1` envelope whose
-  `operation_tag` and request kind must match the selected route.
+  `operation_tag` and request kind must match the selected route. Unknown fields
+  in the operation envelope or surface-owned request DTOs are rejected as
+  `surface.request`.
 - With `--cors-origin`, matching browser preflight `OPTIONS` requests over a
   served route return `204` and `Access-Control-Allow-Origin` for that exact
   origin. Mismatched origins return `403` and no CORS allow-origin header.

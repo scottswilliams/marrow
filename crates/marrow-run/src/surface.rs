@@ -2590,7 +2590,7 @@ fn surface_member_reads(
     read_ids.extend(operation.projection.iter().copied());
     for member in facts.resource_members() {
         if member.resource == resource
-            && member.plain_field_required == Some(true)
+            && member.plain_field_required.is_some()
             && path_is_inside_unkeyed_record(facts, member.id)
         {
             read_ids.insert(member.id);

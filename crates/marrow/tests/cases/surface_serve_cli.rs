@@ -1,9 +1,13 @@
 use crate::support;
+use crate::support_surface::{
+    create_descriptor, create_field_catalog_id, delete_descriptor, read_descriptor, route_by_alias,
+    spawn_surface_server, spawn_surface_server_with_args, update_descriptor,
+    update_field_catalog_id,
+};
 use serde_json::{Value, json};
-use std::io::{BufRead, BufReader, ErrorKind, Read, Write};
+use std::io::{ErrorKind, Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::path::Path;
-use std::process::{Child, ChildStderr, ChildStdout, Command, Stdio};
 use std::time::Duration;
 
 use support::{marrow, marrow_sub, temp_project, write};
@@ -45,12 +49,6 @@ struct SurfaceFixture {
     report: Value,
 }
 
-struct ServeProcess {
-    child: Child,
-    _stdout: BufReader<ChildStdout>,
-    _stderr: ChildStderr,
-}
-
 struct HttpResponse {
     status: u16,
     headers: Vec<(String, String)>,
@@ -63,13 +61,6 @@ impl HttpResponse {
             .iter()
             .find(|(header, _)| header.eq_ignore_ascii_case(name))
             .map(|(_, value)| value.as_str())
-    }
-}
-
-impl Drop for ServeProcess {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
     }
 }
 
@@ -443,6 +434,191 @@ fn surface_serve_fails_closed_on_request_shape_mismatches() {
         delete_route_response.body
     );
     assert_eq!(delete_route_response.body["code"], "surface.abi_mismatch");
+}
+
+#[test]
+fn surface_serve_rejects_unknown_json_fields_without_mutation() {
+    let fixture = seeded_surface_fixture("surface-serve-unknown-json");
+    let point_route = route_by_alias(&fixture.report, "get");
+    let page_route = route_by_alias(&fixture.report, "byAuthor");
+    let update_route = route_by_alias(&fixture.report, "update");
+    let update = update_descriptor(&fixture.report, &update_route.operation_tag);
+    let store_catalog_id = update["store_catalog_id"]
+        .as_str()
+        .expect("update store catalog id")
+        .to_string();
+    let author_catalog_id = update_field_catalog_id(update, "author");
+    let (_server, addr) = spawn_surface_server_with_args(fixture.root(), &["--write"]);
+
+    let mut top_level = point_read_request(&fixture.report, &point_route.operation_tag, 1);
+    top_level["smuggled"] = json!(true);
+    let response = post_json(
+        addr,
+        &point_route.path,
+        top_level,
+        &[("Content-Type", "application/json")],
+    );
+    assert_eq!(response.status, 400, "{:#?}", response.body);
+    assert_eq!(response.body["code"], "surface.request");
+
+    let mut request = point_read_request(&fixture.report, &point_route.operation_tag, 1);
+    request["request"]["request"]["smuggled"] = json!("ignored-if-not-strict");
+    let response = post_json(
+        addr,
+        &point_route.path,
+        request,
+        &[("Content-Type", "application/json")],
+    );
+    assert_eq!(response.status, 400, "{:#?}", response.body);
+    assert_eq!(response.body["code"], "surface.request");
+
+    let mut identity = point_read_request(&fixture.report, &point_route.operation_tag, 1);
+    identity["request"]["request"]["identity"]["smuggled"] = json!("wrong-store");
+    let response = post_json(
+        addr,
+        &point_route.path,
+        identity,
+        &[("Content-Type", "application/json")],
+    );
+    assert_eq!(response.status, 400, "{:#?}", response.body);
+    assert_eq!(response.body["code"], "surface.request");
+
+    let first_page = post_json(
+        addr,
+        &page_route.path,
+        json!({
+            "profile_version": "surface.operation.v1",
+            "operation_tag": page_route.operation_tag,
+            "request": {
+                "kind": "page",
+                "request": {
+                    "exact_keys": [{ "kind": "string", "value": "Frank Herbert" }],
+                    "limit": 1
+                }
+            }
+        }),
+        &[("Content-Type", "application/json")],
+    );
+    assert_eq!(first_page.status, 200, "{:#?}", first_page.body);
+    let mut cursor = first_page.body["result"]["page"]["next"].clone();
+    assert!(
+        cursor.is_object(),
+        "expected page cursor: {:#?}",
+        first_page.body
+    );
+    cursor["smuggled"] = json!("old-boundary");
+    let cursor_response = post_json(
+        addr,
+        &page_route.path,
+        json!({
+            "profile_version": "surface.operation.v1",
+            "operation_tag": page_route.operation_tag,
+            "request": {
+                "kind": "page",
+                "request": {
+                    "exact_keys": [{ "kind": "string", "value": "Frank Herbert" }],
+                    "limit": 10,
+                    "cursor": cursor
+                }
+            }
+        }),
+        &[("Content-Type", "application/json")],
+    );
+    assert_eq!(cursor_response.status, 400, "{:#?}", cursor_response.body);
+    assert_eq!(cursor_response.body["code"], "surface.request");
+
+    let mut boundary_cursor = first_page.body["result"]["page"]["next"].clone();
+    boundary_cursor["boundary"]["smuggled"] = json!("wrong-anchor");
+    let boundary_response = post_json(
+        addr,
+        &page_route.path,
+        json!({
+            "profile_version": "surface.operation.v1",
+            "operation_tag": page_route.operation_tag,
+            "request": {
+                "kind": "page",
+                "request": {
+                    "exact_keys": [{ "kind": "string", "value": "Frank Herbert" }],
+                    "limit": 10,
+                    "cursor": boundary_cursor
+                }
+            }
+        }),
+        &[("Content-Type", "application/json")],
+    );
+    assert_eq!(
+        boundary_response.status, 400,
+        "{:#?}",
+        boundary_response.body
+    );
+    assert_eq!(boundary_response.body["code"], "surface.request");
+
+    let update_response = post_json(
+        addr,
+        &update_route.path,
+        json!({
+            "profile_version": "surface.operation.v1",
+            "operation_tag": update_route.operation_tag,
+            "request": {
+                "kind": "point_update",
+                "request": {
+                    "identity": {
+                        "store_catalog_id": store_catalog_id,
+                        "keys": [{ "kind": "int", "value": "1" }]
+                    },
+                    "fields": [{
+                        "catalog_id": author_catalog_id,
+                        "value": { "kind": "string", "value": "Ursula Le Guin" },
+                        "smuggled": { "catalog_id": author_catalog_id, "value": { "kind": "string", "value": "wrong" } }
+                    }]
+                }
+            }
+        }),
+        &[("Content-Type", "application/json")],
+    );
+    assert_eq!(update_response.status, 400, "{:#?}", update_response.body);
+    assert_eq!(update_response.body["code"], "surface.request");
+
+    let value_response = post_json(
+        addr,
+        &update_route.path,
+        json!({
+            "profile_version": "surface.operation.v1",
+            "operation_tag": update_route.operation_tag,
+            "request": {
+                "kind": "point_update",
+                "request": {
+                    "identity": {
+                        "store_catalog_id": store_catalog_id,
+                        "keys": [{ "kind": "int", "value": "1" }]
+                    },
+                    "fields": [{
+                        "catalog_id": author_catalog_id,
+                        "value": {
+                            "kind": "string",
+                            "value": "Ursula Le Guin",
+                            "smuggled": "alternate"
+                        }
+                    }]
+                }
+            }
+        }),
+        &[("Content-Type", "application/json")],
+    );
+    assert_eq!(value_response.status, 400, "{:#?}", value_response.body);
+    assert_eq!(value_response.body["code"], "surface.request");
+
+    let read_response = post_json(
+        addr,
+        &point_route.path,
+        point_read_request(&fixture.report, &point_route.operation_tag, 1),
+        &[("Content-Type", "application/json")],
+    );
+    assert_eq!(read_response.status, 200, "{:#?}", read_response.body);
+    assert_eq!(
+        field_value(&read_response.body["result"]["record"], "author"),
+        json!({ "kind": "string", "value": "Frank Herbert" })
+    );
 }
 
 #[test]
@@ -919,136 +1095,6 @@ fn seeded_surface_fixture(name: &str) -> SurfaceFixture {
         _root: root,
         report: support::json(checked.stdout),
     }
-}
-
-struct SurfaceRoute {
-    path: String,
-    operation_tag: String,
-}
-
-fn route_by_alias(report: &Value, alias: &str) -> SurfaceRoute {
-    let route = report["surface_routes"]["routes"]
-        .as_array()
-        .expect("surface routes")
-        .iter()
-        .find(|route| route["alias"] == alias)
-        .unwrap_or_else(|| panic!("route alias {alias} in {report:#?}"));
-    SurfaceRoute {
-        path: route["path"].as_str().expect("route path").to_string(),
-        operation_tag: route["operation_tag"]
-            .as_str()
-            .expect("operation tag")
-            .to_string(),
-    }
-}
-
-fn read_descriptor<'a>(report: &'a Value, operation_tag: &str) -> &'a Value {
-    report["surface_abi"]["surfaces"]
-        .as_array()
-        .expect("surface descriptors")
-        .iter()
-        .flat_map(|surface| {
-            surface["read"]
-                .as_array()
-                .expect("surface read descriptors")
-                .iter()
-        })
-        .find(|read| read["operation_tag"] == operation_tag)
-        .unwrap_or_else(|| panic!("read descriptor {operation_tag} in {report:#?}"))
-}
-
-fn update_descriptor<'a>(report: &'a Value, operation_tag: &str) -> &'a Value {
-    report["surface_abi"]["surfaces"]
-        .as_array()
-        .expect("surface descriptors")
-        .iter()
-        .filter_map(|surface| surface.get("update"))
-        .find(|update| update["operation_tag"] == operation_tag)
-        .unwrap_or_else(|| panic!("update descriptor {operation_tag} in {report:#?}"))
-}
-
-fn create_descriptor<'a>(report: &'a Value, operation_tag: &str) -> &'a Value {
-    report["surface_abi"]["surfaces"]
-        .as_array()
-        .expect("surface descriptors")
-        .iter()
-        .filter_map(|surface| surface.get("create"))
-        .find(|create| create["operation_tag"] == operation_tag)
-        .unwrap_or_else(|| panic!("create descriptor {operation_tag} in {report:#?}"))
-}
-
-fn delete_descriptor<'a>(report: &'a Value, operation_tag: &str) -> &'a Value {
-    report["surface_abi"]["surfaces"]
-        .as_array()
-        .expect("surface descriptors")
-        .iter()
-        .filter_map(|surface| surface.get("delete"))
-        .find(|delete| delete["operation_tag"] == operation_tag)
-        .unwrap_or_else(|| panic!("delete descriptor {operation_tag} in {report:#?}"))
-}
-
-fn update_field_catalog_id(update: &Value, label: &str) -> String {
-    update["fields"]
-        .as_array()
-        .expect("update fields")
-        .iter()
-        .find(|field| field["render_label"] == label)
-        .and_then(|field| field["member_catalog_id"].as_str())
-        .unwrap_or_else(|| panic!("update field {label} in {update:#?}"))
-        .to_string()
-}
-
-fn create_field_catalog_id(create: &Value, label: &str) -> String {
-    create["fields"]
-        .as_array()
-        .expect("create fields")
-        .iter()
-        .find(|field| field["render_label"] == label)
-        .and_then(|field| field["member_catalog_id"].as_str())
-        .unwrap_or_else(|| panic!("create field {label} in {create:#?}"))
-        .to_string()
-}
-
-fn spawn_surface_server(root: &Path) -> (ServeProcess, SocketAddr) {
-    spawn_surface_server_with_args(root, &[])
-}
-
-fn spawn_surface_server_with_args(root: &Path, extra_args: &[&str]) -> (ServeProcess, SocketAddr) {
-    let project = root.to_str().expect("project path utf8");
-    let mut args = vec!["serve", "--addr", "127.0.0.1:0"];
-    args.extend(extra_args.iter().copied());
-    args.push(project);
-    let mut child = Command::new(env!("CARGO_BIN_EXE_marrow"))
-        .args(args)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn surface server");
-    let stdout = child.stdout.take().expect("surface stdout pipe");
-    let mut stderr = child.stderr.take().expect("surface stderr pipe");
-    let mut reader = BufReader::new(stdout);
-    let mut line = String::new();
-    if reader.read_line(&mut line).expect("read listen line") == 0 {
-        let status = child.wait().expect("wait failed surface server");
-        let mut error = String::new();
-        stderr
-            .read_to_string(&mut error)
-            .expect("read server stderr");
-        panic!("surface server exited before listening: status={status:?} stderr={error}");
-    }
-    let addr_text = line
-        .trim()
-        .strip_prefix("serve listening on http://")
-        .unwrap_or_else(|| panic!("unexpected listen line: {line:?}"));
-    let addr = addr_text.parse().expect("listen address");
-    (
-        ServeProcess {
-            child,
-            _stdout: reader,
-            _stderr: stderr,
-        },
-        addr,
-    )
 }
 
 fn point_read_request(report: &Value, operation_tag: &str, id: i64) -> Value {
