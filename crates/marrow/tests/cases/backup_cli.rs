@@ -1024,17 +1024,14 @@ fn restore_of_epoch_n_backup_refuses_after_project_catalog_advances_to_n_plus_on
         message.contains(&format!("backup catalog digest {}", backup_catalog.digest)),
         "{message}"
     );
+    // The current-project reference is the committed marrow.lock, whose epoch high-water the
+    // advance moved to N+1. The lock records identity-and-shape fingerprints rather than the
+    // store catalog's digest, so the project side reports its epoch and no catalog digest.
     assert!(
         message.contains(&format!("project catalog epoch {}", advanced_catalog.epoch)),
         "{message}"
     );
-    assert!(
-        message.contains(&format!(
-            "project catalog digest {}",
-            advanced_catalog.digest
-        )),
-        "{message}"
-    );
+    assert!(message.contains("project catalog digest none"), "{message}");
     assert_store_empty(&data_dir);
     let committed_lock = marrow_catalog::CatalogLock::from_lock_json(
         &fs::read_to_string(root.join("marrow.lock")).expect("advanced committed lock remains"),

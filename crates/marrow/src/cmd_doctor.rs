@@ -3,6 +3,7 @@
 use std::path::Path;
 use std::process::ExitCode;
 
+use marrow_catalog::{CatalogLifecycle, CatalogLock, CatalogMetadata, LockEntry};
 use marrow_check::ProjectIoError;
 use marrow_check::tooling::{IntegritySample, sample_integrity_problems};
 use marrow_run::evolution::{FenceError, current_engine_profile, fence};
@@ -70,20 +71,37 @@ fn run_doctor(dir: &str, format: CheckFormat) -> ExitCode {
     let mut findings = Vec::new();
 
     let config = probe_config(root, dir, &mut findings);
-    let accepted = probe_catalog_artifact(root, dir, &mut findings);
-    let program = match (&config, &accepted) {
-        (Some(config), Some(accepted)) => {
-            probe_check(root, dir, config, accepted.as_ref(), &mut findings)
-        }
-        (Some(config), None) => probe_check(root, dir, config, None, &mut findings),
-        (None, _) => None,
-    };
+    let lock = probe_lock(root, dir, &mut findings);
     let store = config
         .as_ref()
         .and_then(|config| probe_store_open(root, dir, config, &mut findings));
-    let store_report = store
+    // The live store is the sole accepted authority; the committed lock only seeds first-run
+    // adoption when no store snapshot is present, mirroring the surface check path. Binding the
+    // store snapshot lets a healthy stamped project check and fence cleanly.
+    let accepted = store
         .as_ref()
-        .map(|store| probe_store_facts(dir, store, &accepted, &mut findings));
+        .and_then(|store| store.read_catalog_snapshot().ok().flatten());
+    let program = match &config {
+        Some(config) => probe_check(
+            root,
+            dir,
+            config,
+            accepted.as_ref(),
+            lock.as_ref(),
+            &mut findings,
+        ),
+        None => None,
+    };
+    let store_report = store.as_ref().map(|store| {
+        probe_store_facts(
+            dir,
+            store,
+            accepted.as_ref(),
+            lock.as_ref(),
+            program.as_ref(),
+            &mut findings,
+        )
+    });
     let fence_report = match (&store, &program) {
         (Some(store), Some(program)) => Some(probe_fence(dir, store, program, &mut findings)),
         _ => None,
@@ -135,28 +153,18 @@ fn probe_config(
     }
 }
 
-fn probe_catalog_artifact(
-    root: &Path,
-    dir: &str,
-    findings: &mut Vec<Finding>,
-) -> Option<Option<marrow_catalog::CatalogMetadata>> {
-    match marrow_check::read_accepted_catalog_artifact(root) {
-        Ok(accepted) => Some(accepted),
-        Err(error @ ProjectIoError::Catalog { .. }) => {
-            findings.push(project_error_finding(
-                "doctor.catalog_invalid",
-                "accepted catalog artifact is invalid",
-                "restore or regenerate marrow.catalog.json, then rerun the next command",
-                check_command(dir),
-                error,
-            ));
-            None
-        }
+/// Read the committed `marrow.lock` through its canonical reader. A present-but-corrupt lock
+/// fails closed with the typed `doctor.lock_corrupt` finding so a hostile lock is never treated
+/// as absent; an absent lock is a true first run. The live store, not the lock, remains the
+/// binding authority, so a corrupt lock does not block the store-fact probes.
+fn probe_lock(root: &Path, dir: &str, findings: &mut Vec<Finding>) -> Option<CatalogLock> {
+    match marrow_check::read_committed_lock(root) {
+        Ok(lock) => lock,
         Err(error) => {
             findings.push(project_error_finding(
-                "doctor.catalog_unreadable",
-                "accepted catalog artifact could not be read",
-                "make marrow.catalog.json readable, then rerun the next command",
+                "doctor.lock_corrupt",
+                "committed marrow.lock could not be read",
+                "regenerate marrow.lock with a run or evolve apply, then rerun the next command",
                 check_command(dir),
                 error,
             ));
@@ -169,7 +177,8 @@ fn probe_check(
     root: &Path,
     dir: &str,
     config: &marrow_project::ProjectConfig,
-    accepted: Option<&marrow_catalog::CatalogMetadata>,
+    accepted: Option<&CatalogMetadata>,
+    lock: Option<&CatalogLock>,
     findings: &mut Vec<Finding>,
 ) -> Option<marrow_check::CheckedProgram> {
     let snapshot = match marrow_check::analyze_project(
@@ -177,7 +186,7 @@ fn probe_check(
         config,
         &marrow_check::ProjectSources::new(),
         accepted,
-        None,
+        lock,
     ) {
         Ok(snapshot) => snapshot,
         Err(error) => {
@@ -281,7 +290,9 @@ fn probe_store_open(
 fn probe_store_facts(
     dir: &str,
     store: &TreeStore,
-    accepted: &Option<Option<marrow_catalog::CatalogMetadata>>,
+    accepted: Option<&CatalogMetadata>,
+    lock: Option<&CatalogLock>,
+    program: Option<&marrow_check::CheckedProgram>,
     findings: &mut Vec<Finding>,
 ) -> StoreReport {
     let current_profile = current_engine_profile();
@@ -299,29 +310,15 @@ fn probe_store_facts(
             None
         }
     };
-    let store_catalog = match store.read_catalog_snapshot() {
-        Ok(snapshot) => snapshot,
-        Err(error) => {
-            findings.push(store_fact_error(dir, "store catalog snapshot", error));
-            None
-        }
-    };
 
-    if let (Some(Some(accepted)), Some(store_catalog)) = (accepted, &store_catalog)
-        && accepted != store_catalog
-    {
-        let mut data = serde_json::Map::new();
-        data.insert("artifact_epoch".into(), json!(accepted.epoch));
-        data.insert("artifact_digest".into(), json!(accepted.digest));
-        data.insert("store_epoch".into(), json!(store_catalog.epoch));
-        data.insert("store_digest".into(), json!(store_catalog.digest));
-        findings.push(Finding::new(
-            "doctor.catalog_drift",
-            "accepted catalog artifact differs from the store snapshot",
-            "restore the intended catalog artifact, then rerun the next command",
-            check_command(dir),
-            data,
-        ));
+    if commit.is_none() && probe_populated(store, dir, findings) == Some(true) {
+        findings.push(populated_unstamped_finding(dir));
+    }
+    if let (Some(lock), Some(accepted)) = (lock, accepted) {
+        probe_lock_against_store(dir, lock, accepted, findings);
+    }
+    if let (Some(lock), Some(program)) = (lock, program) {
+        probe_stale_lock(dir, lock, program, findings);
     }
 
     StoreReport {
@@ -338,6 +335,146 @@ fn probe_store_facts(
             profile_digest: current_profile.digest_hex(),
         },
     }
+}
+
+/// Whether the live store holds any durable records. A read error reports its own store-fact
+/// finding and suppresses the populated check rather than misclassifying an unreadable store as
+/// empty.
+fn probe_populated(store: &TreeStore, dir: &str, findings: &mut Vec<Finding>) -> Option<bool> {
+    match store.is_empty() {
+        Ok(empty) => Some(!empty),
+        Err(error) => {
+            findings.push(store_fact_error(dir, "store contents", error));
+            None
+        }
+    }
+}
+
+/// A populated store with no commit stamp: records exist but no accepted identity admits them.
+/// The remedy mirrors the run path's fail-closed verdict for this condition — run the owning
+/// program or remove the store — so doctor reports the same resolution the next write path enforces.
+fn populated_unstamped_finding(dir: &str) -> Finding {
+    Finding::new(
+        "doctor.populated_unstamped",
+        "the store holds saved data but carries no accepted commit stamp",
+        "run the program that owns this store, or remove the store to start fresh",
+        doctor_command(dir),
+        serde_json::Map::new(),
+    )
+}
+
+/// Compare the committed lock against the live store's accepted snapshot. The lock is the
+/// subordinate source-tree projection; the live store is the binding authority, so neither verdict
+/// ever advises overwriting the store from the lock. Disagreement falls into exactly one of two
+/// typed findings: at the same epoch a shape divergence is a `catalog_collision`; at different
+/// epochs the lock has drifted from the store's accepted epoch, the gate CI fails on.
+fn probe_lock_against_store(
+    dir: &str,
+    lock: &CatalogLock,
+    accepted: &CatalogMetadata,
+    findings: &mut Vec<Finding>,
+) {
+    if lock.epoch_high_water != accepted.epoch {
+        let mut data = serde_json::Map::new();
+        data.insert("lock_epoch".into(), json!(lock.epoch_high_water));
+        data.insert("store_epoch".into(), json!(accepted.epoch));
+        findings.push(Finding::new(
+            "doctor.store_lock_epoch_mismatch",
+            "the committed lock and the live store record different accepted epochs",
+            "the live store is authoritative; regenerate marrow.lock with a run or evolve apply",
+            doctor_command(dir),
+            data,
+        ));
+        return;
+    }
+    let committed_fingerprints = sorted_fingerprints(lock.entries.clone());
+    let store_fingerprints = store_fingerprints(accepted);
+    if committed_fingerprints == store_fingerprints {
+        return;
+    }
+    let mut data = serde_json::Map::new();
+    data.insert("lock_epoch".into(), json!(lock.epoch_high_water));
+    data.insert("store_epoch".into(), json!(accepted.epoch));
+    data.insert(
+        "lock_digest".into(),
+        json!(lock_shape_digest(&committed_fingerprints)),
+    );
+    data.insert(
+        "store_digest".into(),
+        json!(lock_shape_digest(&store_fingerprints)),
+    );
+    findings.push(Finding::new(
+        "doctor.catalog_collision",
+        "the committed lock and the live store record the same accepted epoch with different shapes",
+        "the live store is authoritative; regenerate marrow.lock with a run or evolve apply",
+        doctor_command(dir),
+        data,
+    ));
+}
+
+/// A committed lock whose recorded source digest no longer matches the checked source. The lock is
+/// inert and subordinate to the live store, so this is reported, never repaired.
+fn probe_stale_lock(
+    dir: &str,
+    lock: &CatalogLock,
+    program: &marrow_check::CheckedProgram,
+    findings: &mut Vec<Finding>,
+) {
+    let source_digest = program.source_digest();
+    if lock.source_digest == source_digest {
+        return;
+    }
+    let mut data = serde_json::Map::new();
+    data.insert(
+        "lock_source_digest".into(),
+        json!(lock.source_digest.clone()),
+    );
+    data.insert("source_digest".into(), json!(source_digest));
+    findings.push(Finding::new(
+        "doctor.stale_lock",
+        "the committed lock is behind the current source",
+        "regenerate marrow.lock with a run or evolve apply",
+        check_command(dir),
+        data,
+    ));
+}
+
+/// The active accepted entries of a store snapshot, fingerprinted into lock entries through the
+/// canonical [`LockEntry`] owner and sorted by stable id. This is the same projection the committed
+/// lock records, so the two compare directly without re-parsing any shape grammar.
+fn store_fingerprints(snapshot: &CatalogMetadata) -> Vec<LockEntry> {
+    sorted_fingerprints(
+        snapshot
+            .entries
+            .iter()
+            .filter(|entry| entry.lifecycle == CatalogLifecycle::Active)
+            .map(LockEntry::from_catalog_entry)
+            .collect(),
+    )
+}
+
+/// Sort lock entries into the canonical stable-id order both the committed lock and the store
+/// projection share, so two entry sets compare independent of their stored order.
+fn sorted_fingerprints(mut entries: Vec<LockEntry>) -> Vec<LockEntry> {
+    entries.sort_by(|left, right| left.stable_id.cmp(&right.stable_id));
+    entries
+}
+
+/// A stable digest over an already-sorted lock entry set, folding every field the collision
+/// comparison uses (kind, path, lifecycle, stable id, shape fingerprint). Two entry sets share this
+/// digest exactly when their entries are equal, so the collision finding's debug/admin data differs
+/// precisely when the finding fires.
+fn lock_shape_digest(entries: &[LockEntry]) -> String {
+    entries
+        .iter()
+        .map(|entry| {
+            format!(
+                "{:?}:{}:{:?}:{}={}",
+                entry.kind, entry.path, entry.lifecycle, entry.stable_id, entry.shape_fingerprint
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(";")
 }
 
 fn probe_fence(

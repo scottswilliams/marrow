@@ -10,6 +10,7 @@ pub(crate) fn check(args: &[String]) -> ExitCode {
     let mut format = CheckFormat::Text;
     let mut saw_format = false;
     let mut target = None;
+    let mut locked = false;
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
@@ -20,13 +21,21 @@ pub(crate) fn check(args: &[String]) -> ExitCode {
                     return code;
                 }
             }
+            "--locked" => {
+                if locked {
+                    eprintln!("duplicate --locked");
+                    return ExitCode::from(2);
+                }
+                locked = true;
+            }
             "--help" | "-h" => {
                 print!(
                     "\
 Usage:
-  marrow check [--format text|json|jsonl] <projectdir>
+  marrow check [--format text|json|jsonl] [--locked] <projectdir>
 
 Check a project directory containing marrow.json and report diagnostics.
+With --locked, a stale marrow.lock is a fatal error for CI rather than an advisory.
 "
                 );
                 return ExitCode::SUCCESS;
@@ -50,7 +59,16 @@ Check a project directory containing marrow.json and report diagnostics.
     if let Err(code) = crate::reject_bare_file_target("check", &target) {
         return code;
     }
-    check_project_dir(&target, format)
+    check_project_dir(&target, format, locked)
+}
+
+/// How a stale committed lock is treated. The ordinary edit -> check -> run loop edits source ahead
+/// of the next write path, so a stale lock is a non-fatal advisory by default; `--locked` (the
+/// lockfile-ecosystem convention) makes it fatal so CI fails against a lock the source has outrun.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LockStrictness {
+    Advisory,
+    Fatal,
 }
 
 /// A committed `marrow.lock` whose recorded source digest no longer matches the digest of the
@@ -62,9 +80,15 @@ const CHECK_STALE_LOCK: &str = "check.stale_lock";
 
 /// Check a whole project: load `<dir>/marrow.json`, then run the project
 /// checker over its source roots and configured test files. The committed lock binds first-run
-/// identity and, when it disagrees with the current source digest, surfaces a non-fatal
-/// stale-lock advisory; check never opens or repairs the store.
-fn check_project_dir(dir: &str, format: CheckFormat) -> ExitCode {
+/// identity and, when it disagrees with the current source digest, surfaces a stale-lock condition
+/// — a non-fatal advisory by default, fatal under `--locked`; check never opens or repairs the
+/// store.
+fn check_project_dir(dir: &str, format: CheckFormat, locked: bool) -> ExitCode {
+    let strictness = if locked {
+        LockStrictness::Fatal
+    } else {
+        LockStrictness::Advisory
+    };
     let config = match crate::load_config_with_format(dir, format) {
         Ok(config) => config,
         Err(code) => return code,
@@ -102,18 +126,23 @@ fn check_project_dir(dir: &str, format: CheckFormat) -> ExitCode {
         return ExitCode::FAILURE;
     }
     crate::report_project_with_program(dir, &snapshot.report, &snapshot.program, format);
-    if let Some(lock) = &lock
-        && lock.source_digest != snapshot.program.source_digest()
-    {
-        report_stale_lock_advisory(format);
+    let stale = lock
+        .as_ref()
+        .is_some_and(|lock| lock.source_digest != snapshot.program.source_digest());
+    if stale {
+        report_stale_lock(format);
+        if strictness == LockStrictness::Fatal {
+            return ExitCode::FAILURE;
+        }
     }
     ExitCode::SUCCESS
 }
 
-/// Emit the non-fatal stale-lock advisory on stderr in the requested format. It is written to
-/// stderr in every format so it never joins the primary check result on stdout, keeping the
-/// structured envelope a single parseable value.
-fn report_stale_lock_advisory(format: CheckFormat) {
+/// Emit the stale-lock condition on stderr in the requested format. It is written to stderr in
+/// every format so it never joins the primary check result on stdout, keeping the structured
+/// envelope a single parseable value. The same typed code reports it whether the run treats it as
+/// a non-fatal advisory or, under `--locked`, fails on it.
+fn report_stale_lock(format: CheckFormat) {
     const MESSAGE: &str =
         "marrow.lock is behind the current source; a run or evolve apply re-projects it";
     match format {

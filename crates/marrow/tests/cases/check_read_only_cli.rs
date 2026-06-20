@@ -310,6 +310,85 @@ fn check_reports_a_stale_lock_when_the_source_digest_drifts() {
 }
 
 #[test]
+fn check_locked_fails_on_a_stale_lock_that_plain_check_only_advises() {
+    // The lockfile-ecosystem convention: `--locked` (cf. cargo --locked) turns the stale-lock
+    // advisory into a fatal CI gate. Plain `check` keeps the non-fatal advisory so the ordinary
+    // edit -> check -> run loop is never blocked; both report the same typed stale-lock code, and
+    // neither opens or rewrites the store.
+    let root = native_books_project("check-ro-locked-strict", REQUIRED_BASELINE_SOURCE);
+    let accepted = commit_catalog(&root);
+    let accepted_place = root_place(&accepted, "books").expect("books root place");
+    {
+        let store = open_native_store(&root);
+        seed_title_only(&store, &accepted_place, 1, "Dune");
+    }
+    let lock_before = committed_lock(&root);
+    let store_before = fs::read(native_store_path(&root)).expect("read store before check");
+
+    // Drift the source so the committed lock is stale.
+    write(&root, "src/books.mw", OPTIONAL_PAGES_DEFAULT_INDEX_SOURCE);
+
+    let advisory = marrow(&["check", root.to_str().unwrap()]);
+    assert_eq!(
+        advisory.status.code(),
+        Some(0),
+        "plain check keeps the stale lock non-fatal: {advisory:?}"
+    );
+    assert!(
+        String::from_utf8(advisory.stderr)
+            .expect("stderr utf8")
+            .contains("check.stale_lock"),
+        "plain check still surfaces the typed advisory"
+    );
+
+    let strict = marrow(&["check", "--locked", root.to_str().unwrap()]);
+    assert_eq!(
+        strict.status.code(),
+        Some(1),
+        "--locked makes a stale lock fatal: {strict:?}"
+    );
+    assert!(
+        String::from_utf8(strict.stderr)
+            .expect("stderr utf8")
+            .contains("check.stale_lock"),
+        "--locked reports the same typed stale-lock code"
+    );
+
+    // Both runs are read-only: the store bytes and committed lock are untouched.
+    assert_eq!(
+        fs::read(native_store_path(&root)).expect("read store after check"),
+        store_before,
+        "a --locked check must not open or rewrite the store"
+    );
+    assert_eq!(
+        committed_lock(&root),
+        lock_before,
+        "a --locked check must not re-project the committed lock"
+    );
+}
+
+#[test]
+fn check_locked_passes_a_fresh_lock() {
+    // `--locked` only fails on staleness: a project whose committed lock matches the current
+    // source checks cleanly with exit 0 and emits no stale-lock advisory.
+    let root = native_books_project("check-ro-locked-fresh", REQUIRED_BASELINE_SOURCE);
+    commit_catalog(&root);
+
+    let strict = marrow(&["check", "--locked", root.to_str().unwrap()]);
+    assert_eq!(
+        strict.status.code(),
+        Some(0),
+        "--locked passes a fresh lock: {strict:?}"
+    );
+    assert!(
+        !String::from_utf8(strict.stderr)
+            .expect("stderr utf8")
+            .contains("check.stale_lock"),
+        "a fresh lock raises no stale-lock condition"
+    );
+}
+
+#[test]
 fn evolve_apply_advances_the_committed_lock_and_store() -> Result<(), Box<dyn std::error::Error>> {
     // The contrast for the committed case: `evolve apply` is the durable write path that
     // a check must not be. It advances the accepted catalog epoch, stamps the store, and

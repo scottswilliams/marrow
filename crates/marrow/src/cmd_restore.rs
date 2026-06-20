@@ -291,23 +291,60 @@ fn report_backup_error(error: BackupError, format: CheckFormat) -> ExitCode {
     ExitCode::FAILURE
 }
 
+/// Gate a restore or preview against the current project's accepted reference, which is the
+/// committed `marrow.lock` — never the saved-data store, whose own catalog the restore is about to
+/// overwrite. Restore re-establishes identity from the backup's self-describing catalog section;
+/// the lock is consulted only as the current reference, so a refused restore protects an accepted
+/// epoch the lock already records. A missing lock is a true first run with no current reference to
+/// disagree with, so the restore is allowed. The lock and the backup are compared through the lock
+/// fingerprint projection so a shape change at the same epoch is caught, not just an epoch bump.
 fn reject_current_catalog_mismatch(
     dir: &str,
     prologue: &BackupPrologue,
     format: CheckFormat,
 ) -> Result<(), ExitCode> {
-    let Some(current) = crate::read_accepted_catalog_artifact(dir, format)? else {
+    let Some(lock) = crate::read_committed_lock(dir, format)? else {
         return Ok(());
     };
-    let backup_catalog = CatalogFingerprintRef::from_catalog(prologue.catalog());
-    let project_catalog = CatalogFingerprintRef::from_catalog(Some(&current));
-    if project_catalog == backup_catalog {
+    let backup_lock = project_lock_reference(prologue.catalog());
+    let project_lock = lock_reference(&lock);
+    if project_lock == backup_lock {
         return Ok(());
     }
     Err(report_backup_error(
-        BackupError::catalog_mismatch(backup_catalog, project_catalog),
+        BackupError::catalog_mismatch(
+            CatalogFingerprintRef::from_catalog(prologue.catalog()),
+            CatalogFingerprintRef::from_parts(Some(lock.epoch_high_water), None),
+        ),
         format,
     ))
+}
+
+/// The committed-lock reference a restore compares against: the accepted epoch high-water and the
+/// active entries' identity-and-shape fingerprints in stable id order.
+type LockReference = (u64, Vec<marrow_catalog::LockEntry>);
+
+fn lock_reference(lock: &marrow_catalog::CatalogLock) -> LockReference {
+    let mut entries = lock.entries.clone();
+    entries.sort_by(|left, right| left.stable_id.cmp(&right.stable_id));
+    (lock.epoch_high_water, entries)
+}
+
+/// Project the backup's self-describing catalog section into the same committed-lock reference, so
+/// a backup written at the project's current accepted shape compares equal. An unstamped backup
+/// (no accepted catalog) projects to epoch zero with no entries.
+fn project_lock_reference(catalog: Option<&marrow_catalog::CatalogMetadata>) -> LockReference {
+    let Some(catalog) = catalog else {
+        return (0, Vec::new());
+    };
+    let mut entries: Vec<marrow_catalog::LockEntry> = catalog
+        .entries
+        .iter()
+        .filter(|entry| entry.lifecycle == marrow_catalog::CatalogLifecycle::Active)
+        .map(marrow_catalog::LockEntry::from_catalog_entry)
+        .collect();
+    entries.sort_by(|left, right| left.stable_id.cmp(&right.stable_id));
+    (catalog.epoch, entries)
 }
 
 struct RestoreTargetFiles {

@@ -523,17 +523,6 @@ pub(crate) fn read_accepted_store_catalog(
         .map_err(|error| project_io_exit(dir, error, format))
 }
 
-/// Read the committed lock without consulting the saved-data store, failing closed on a corrupt
-/// lock. There is no store authority to bind here, so the accepted catalog is the first-run
-/// `None`; the lock is consumed for first-run adoption at analyze time, never materialized here.
-pub(crate) fn read_accepted_catalog_artifact(
-    dir: &str,
-    format: CheckFormat,
-) -> Result<Option<marrow_catalog::CatalogMetadata>, ExitCode> {
-    marrow_check::read_accepted_catalog_artifact(Path::new(dir))
-        .map_err(|error| project_io_exit(dir, error, format))
-}
-
 /// Read the committed lock as a typed value, failing closed on a corrupt lock. `marrow check`
 /// uses it to report a stale lock by comparing the lock's source digest against the program's,
 /// reading the committed projection without opening or repairing the store.

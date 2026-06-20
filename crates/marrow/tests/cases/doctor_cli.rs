@@ -16,16 +16,47 @@ fn store_path(project: &Path) -> PathBuf {
     project.join(".data").join("marrow.redb")
 }
 
-fn corrupt_catalog_digest(project: &Path) {
-    fs::write(
-        project.join("marrow.catalog.json"),
-        r#"{
-  "epoch": 1,
-  "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
-  "entries": []
-}"#,
+fn lock_path(project: &Path) -> PathBuf {
+    project.join("marrow.lock")
+}
+
+fn committed_lock(project: &Path) -> marrow_catalog::CatalogLock {
+    marrow_check::read_committed_lock(project)
+        .expect("read committed lock")
+        .expect("project has a committed lock")
+}
+
+/// Overwrite the committed lock with bytes the production lock reader rejects, leaving the
+/// stamped store untouched. Doctor reports `doctor.lock_corrupt` rather than treating the
+/// corrupt lock as absent.
+fn corrupt_lock(project: &Path) {
+    fs::write(lock_path(project), "{ this is not a valid lock")
+        .expect("write corrupt committed lock");
+}
+
+/// Rewrite the committed lock so it shares the store's epoch high-water but records a different
+/// shape: one entry's fingerprint is flipped while every stable id and the epoch stay fixed. The
+/// store stamp and rows are left exactly as the seed wrote them, so doctor sees the same epoch on
+/// both sides and a divergent shape — the collision doctor must report against the live store.
+fn drift_lock_shape_same_epoch(project: &Path) {
+    let committed = committed_lock(project);
+    let mut entries = committed.entries.clone();
+    let first = entries
+        .first_mut()
+        .expect("a committed lock entry to drift");
+    first.shape_fingerprint = "sha256:".to_string() + &"f".repeat(64);
+    let drifted = marrow_catalog::CatalogLock::new(
+        entries,
+        committed.ledger.clone(),
+        committed.epoch_high_water,
+        committed.source_digest.clone(),
     )
-    .expect("write corrupt catalog artifact");
+    .expect("drifted lock builds");
+    fs::write(
+        lock_path(project),
+        drifted.to_lock_json_pretty().expect("lock renders"),
+    )
+    .expect("write shape-drifted committed lock");
 }
 
 fn truncate_store_body(project: &Path) {
@@ -115,9 +146,9 @@ pub fn main()
 }
 
 #[test]
-fn doctor_aggregates_locked_store_and_corrupt_catalog() {
-    let (project, dir) = seeded_project("doctor-lock-catalog");
-    corrupt_catalog_digest(&project);
+fn doctor_aggregates_locked_store_and_corrupt_lock() {
+    let (project, dir) = seeded_project("doctor-lock-corrupt");
+    corrupt_lock(&project);
     let _writer = marrow_store::tree::TreeStore::open(&store_path(&project))
         .expect("hold native writer open");
 
@@ -132,7 +163,10 @@ fn doctor_aggregates_locked_store_and_corrupt_catalog() {
     let value = json(output.stdout);
     let codes = finding_codes(&value);
     assert!(codes.contains(&"doctor.store_locked"), "{value:#?}");
-    assert!(codes.contains(&"doctor.catalog_invalid"), "{value:#?}");
+    assert!(
+        codes.contains(&"doctor.lock_corrupt"),
+        "a corrupt committed lock aggregates with the locked store: {value:#?}"
+    );
 
     let locked = finding(&value, "doctor.store_locked");
     assert_eq!(
@@ -145,15 +179,218 @@ fn doctor_aggregates_locked_store_and_corrupt_catalog() {
         "{value:#?}"
     );
 
-    let catalog = finding(&value, "doctor.catalog_invalid");
+    let corrupt = finding(&value, "doctor.lock_corrupt");
     assert_eq!(
-        catalog["data"]["underlying_code"], "catalog.invalid",
+        corrupt["data"]["underlying_code"],
+        marrow_catalog::LOCK_CORRUPT,
+        "{value:#?}"
+    );
+}
+
+#[test]
+fn doctor_reports_same_epoch_different_digest_collision_against_lock_and_store_without_advising_file_repair()
+ {
+    let (project, dir) = seeded_project("doctor-catalog-collision");
+
+    // The committed lock and the stamped store agree on epoch but disagree on shape after the
+    // lock's shape fingerprint is flipped. Capture the store stamp and rows, then the drifted lock
+    // bytes, so the repairs-nothing invariant can be checked byte-for-byte after doctor runs.
+    let store_before = fs::read(store_path(&project)).expect("read store before doctor");
+    let store_snapshot = {
+        let store = marrow_store::tree::TreeStore::open_read_only(&store_path(&project))
+            .expect("open store read-only");
+        store
+            .read_catalog_snapshot()
+            .expect("read store catalog snapshot")
+            .expect("a stamped store carries an accepted catalog")
+    };
+    drift_lock_shape_same_epoch(&project);
+    let committed = committed_lock(&project);
+    let lock_before = fs::read(lock_path(&project)).expect("read drifted committed lock");
+
+    let output = marrow(&["doctor", "--format", "json", &dir]);
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert!(output.stderr.is_empty(), "{:?}", output.stderr);
+    let value = json(output.stdout);
+    let codes = finding_codes(&value);
+    assert!(
+        codes.contains(&"doctor.catalog_collision"),
+        "doctor reports the same-epoch-different-digest collision: {value:#?}"
+    );
+    assert!(
+        !codes.contains(&"doctor.catalog_drift"),
+        "the old file-over-store drift finding is gone: {value:#?}"
+    );
+
+    // No finding advises a file restore — asserted structurally over the code set, never over
+    // prose. The retired drift remedy was the only file-restore remedy doctor emitted.
+    assert!(
+        !codes.contains(&"doctor.catalog_invalid") && !codes.contains(&"doctor.catalog_unreadable"),
+        "doctor advises no file-restore remedy: {value:#?}"
+    );
+
+    let collision = finding(&value, "doctor.catalog_collision");
+    assert_eq!(
+        collision["data"]["lock_epoch"],
+        serde_json::json!(committed.epoch_high_water),
         "{value:#?}"
     );
     assert_eq!(
-        catalog["next_command"],
-        serde_json::json!(format!("marrow check {dir}")),
+        collision["data"]["store_epoch"],
+        serde_json::json!(store_snapshot.epoch),
         "{value:#?}"
+    );
+    assert_eq!(
+        collision["data"]["lock_epoch"], collision["data"]["store_epoch"],
+        "a collision is same-epoch by definition: {value:#?}"
+    );
+    assert_ne!(
+        collision["data"]["lock_digest"], collision["data"]["store_digest"],
+        "a collision is different-digest by definition: {value:#?}"
+    );
+
+    // The store report block names the live store as the binding authority.
+    assert_eq!(value["store"]["stamp"], "stamped", "{value:#?}");
+    assert!(
+        value["store"]["store_uid"].is_string(),
+        "the store block reports the live store uid: {value:#?}"
+    );
+
+    // Doctor writes nothing: the store stamp, rows, and the committed lock bytes are byte-identical
+    // before and after the probe.
+    assert_eq!(
+        fs::read(store_path(&project)).expect("read store after doctor"),
+        store_before,
+        "doctor must not rewrite the store"
+    );
+    assert_eq!(
+        fs::read(lock_path(&project)).expect("read committed lock after doctor"),
+        lock_before,
+        "doctor must not rewrite the committed lock"
+    );
+}
+
+#[test]
+fn doctor_reports_a_stale_lock_against_the_live_store_without_writing() {
+    let (project, dir) = seeded_project("doctor-stale-lock");
+
+    // Mutate the committed lock's recorded source digest so it no longer matches the checked
+    // source while leaving its identity and epoch intact: a stale lock, not a collision.
+    let committed = committed_lock(&project);
+    let stale = marrow_catalog::CatalogLock::new(
+        committed.entries.clone(),
+        committed.ledger.clone(),
+        committed.epoch_high_water,
+        "sha256:".to_string() + &"a".repeat(64),
+    )
+    .expect("stale lock builds");
+    fs::write(
+        lock_path(&project),
+        stale.to_lock_json_pretty().expect("lock renders"),
+    )
+    .expect("write stale committed lock");
+    let store_before = fs::read(store_path(&project)).expect("read store before doctor");
+    let lock_before = fs::read(lock_path(&project)).expect("read stale committed lock");
+
+    let output = marrow(&["doctor", "--format", "json", &dir]);
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let value = json(output.stdout);
+    let codes = finding_codes(&value);
+    assert!(
+        codes.contains(&"doctor.stale_lock"),
+        "doctor reports the stale lock: {value:#?}"
+    );
+    assert!(
+        !codes.contains(&"doctor.catalog_collision"),
+        "a stale lock is not a same-epoch shape collision: {value:#?}"
+    );
+    let stale = finding(&value, "doctor.stale_lock");
+    assert_eq!(
+        stale["data"]["lock_source_digest"],
+        serde_json::json!("sha256:".to_string() + &"a".repeat(64)),
+        "{value:#?}"
+    );
+
+    assert_eq!(
+        fs::read(store_path(&project)).expect("read store after doctor"),
+        store_before,
+        "doctor must not rewrite the store"
+    );
+    assert_eq!(
+        fs::read(lock_path(&project)).expect("read committed lock after doctor"),
+        lock_before,
+        "doctor must not rewrite the committed lock"
+    );
+}
+
+#[test]
+fn doctor_reports_a_store_vs_lock_epoch_mismatch_distinct_from_a_collision() {
+    let (project, dir) = seeded_project("doctor-store-lock-epoch");
+
+    // Advance the committed lock's epoch high-water past the store's accepted epoch while keeping
+    // its identity and source digest intact: the lock and the live store now record different
+    // accepted epochs, the gate CI must fail on. This is not a same-epoch shape collision.
+    let committed = committed_lock(&project);
+    let ahead = marrow_catalog::CatalogLock::new(
+        committed.entries.clone(),
+        committed.ledger.clone(),
+        committed.epoch_high_water + 1,
+        committed.source_digest.clone(),
+    )
+    .expect("epoch-ahead lock builds");
+    let store_epoch = {
+        let store = marrow_store::tree::TreeStore::open_read_only(&store_path(&project))
+            .expect("open store read-only");
+        store
+            .read_catalog_snapshot()
+            .expect("read store catalog snapshot")
+            .expect("a stamped store carries an accepted catalog")
+            .epoch
+    };
+    fs::write(
+        lock_path(&project),
+        ahead.to_lock_json_pretty().expect("lock renders"),
+    )
+    .expect("write epoch-ahead committed lock");
+    let store_before = fs::read(store_path(&project)).expect("read store before doctor");
+    let lock_before = fs::read(lock_path(&project)).expect("read epoch-ahead committed lock");
+
+    let output = marrow(&["doctor", "--format", "json", &dir]);
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let value = json(output.stdout);
+    let codes = finding_codes(&value);
+    assert!(
+        codes.contains(&"doctor.store_lock_epoch_mismatch"),
+        "doctor reports the store-vs-lock epoch mismatch: {value:#?}"
+    );
+    assert!(
+        !codes.contains(&"doctor.catalog_collision"),
+        "an epoch mismatch is not a same-epoch shape collision: {value:#?}"
+    );
+    let mismatch = finding(&value, "doctor.store_lock_epoch_mismatch");
+    assert_eq!(
+        mismatch["data"]["lock_epoch"],
+        serde_json::json!(committed.epoch_high_water + 1),
+        "{value:#?}"
+    );
+    assert_eq!(
+        mismatch["data"]["store_epoch"],
+        serde_json::json!(store_epoch),
+        "{value:#?}"
+    );
+
+    assert_eq!(
+        fs::read(store_path(&project)).expect("read store after doctor"),
+        store_before,
+        "doctor must not rewrite the store"
+    );
+    assert_eq!(
+        fs::read(lock_path(&project)).expect("read committed lock after doctor"),
+        lock_before,
+        "doctor must not rewrite the committed lock"
     );
 }
 
