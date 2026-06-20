@@ -232,6 +232,26 @@ fn surface_serve_cors_origin_allows_exact_local_browser_origin() {
     );
     assert_eq!(preflight.header("vary"), Some("Origin"));
 
+    let non_empty_preflight = raw_http(
+        addr,
+        format!(
+            "OPTIONS {} HTTP/1.1\r\nHost: {addr}\r\nOrigin: {origin}\r\nAccess-Control-Request-Method: POST\r\nContent-Length: 2\r\n\r\n{{}}",
+            point_route.path
+        )
+        .into_bytes(),
+        &[],
+    );
+    assert_eq!(
+        non_empty_preflight.status, 400,
+        "{:#?}",
+        non_empty_preflight.body
+    );
+    assert_eq!(non_empty_preflight.body["code"], "surface.request");
+    assert_eq!(
+        non_empty_preflight.header("access-control-allow-origin"),
+        Some(origin)
+    );
+
     let blocked_preflight = raw_http(
         addr,
         format!(

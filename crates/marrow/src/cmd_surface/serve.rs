@@ -433,6 +433,13 @@ fn execute_cors_preflight(
         )
         .with_cors(Some(cors_origin));
     }
+    if !request.body.is_empty() {
+        return SurfaceHttpResponse::error(
+            HttpStatus::BadRequest,
+            surface_error(SURFACE_REQUEST, "surface CORS preflight body must be empty"),
+        )
+        .with_cors(Some(cors_origin));
+    }
     SurfaceHttpResponse::empty(HttpStatus::NoContent).with_cors(Some(cors_origin))
 }
 
