@@ -62,12 +62,44 @@ pub(crate) fn render_data_path(
     }
 }
 
-pub(crate) fn push_key(path: &mut String, key: &SavedKey) -> usize {
-    let prior_len = path.len();
-    path.push('(');
-    path.push_str(&render_key(key));
-    path.push(')');
-    prior_len
+/// Where a pushed key began, so a streaming walk can roll it back. A key that
+/// extended an open composite group restores the group's closing `)`.
+pub(crate) struct KeyMark {
+    restore_len: usize,
+    reclose_group: bool,
+}
+
+/// Append one key, opening a fresh `(...)` group unless the path already ends in
+/// a key: a run of consecutive keys is one composite identity or member key and
+/// renders as a single comma group that re-parses.
+pub(crate) fn push_key(path: &mut String, key: &SavedKey) -> KeyMark {
+    if path.ends_with(')') {
+        path.pop();
+        let restore_len = path.len();
+        path.push(',');
+        path.push_str(&render_key(key));
+        path.push(')');
+        KeyMark {
+            restore_len,
+            reclose_group: true,
+        }
+    } else {
+        let restore_len = path.len();
+        path.push('(');
+        path.push_str(&render_key(key));
+        path.push(')');
+        KeyMark {
+            restore_len,
+            reclose_group: false,
+        }
+    }
+}
+
+pub(crate) fn pop_key(path: &mut String, mark: KeyMark) {
+    path.truncate(mark.restore_len);
+    if mark.reclose_group {
+        path.push(')');
+    }
 }
 
 pub fn render_data_value(program: &CheckedProgram, leaf: &StoreLeafKind, bytes: &[u8]) -> String {
@@ -343,8 +375,15 @@ fn push_char_with_limit(text: &mut String, ch: char, limit: usize) -> bool {
     true
 }
 
+/// Append one preview key, joining the trailing composite group with a comma in
+/// place of its closing `)` rather than opening a fresh `(...)` when the text
+/// already ends in a key, so a run of consecutive keys renders as the same
+/// single comma group as the non-preview path and re-parses.
 fn push_key_preview(text: &mut String, key: &SavedKey, limit: usize) -> bool {
-    if !push_char_with_limit(text, '(', limit) {
+    if text.ends_with(')') {
+        text.pop();
+        text.push(',');
+    } else if !push_char_with_limit(text, '(', limit) {
         return false;
     }
     if !push_key_body_preview(text, key, limit) {
@@ -563,6 +602,23 @@ mod tests {
         let preview = render_data_value_preview(&program, &leaf, &payload, 128);
 
         assert_eq!(full, rendered_segments);
+        assert_eq!(preview.text, full);
+        assert!(!preview.truncated, "{preview:?}");
+    }
+
+    #[test]
+    fn composite_identity_preview_matches_full_comma_rendering() {
+        let program = CheckedProgram::default();
+        let leaf = StoreLeafKind::Identity {
+            store_root: "enrolls".into(),
+            arity: 2,
+        };
+        let payload =
+            encode_identity_payload(&[SavedKey::Str("s1".into()), SavedKey::Str("c9".into())]);
+        let full = render_data_value(&program, &leaf, &payload);
+        let preview = render_data_value_preview(&program, &leaf, &payload, 128);
+
+        assert_eq!(full, r#"^enrolls("s1","c9")"#);
         assert_eq!(preview.text, full);
         assert!(!preview.truncated, "{preview:?}");
     }

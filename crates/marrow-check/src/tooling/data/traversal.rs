@@ -9,7 +9,7 @@ use crate::{CheckedProgram, CheckedSavedMember, CheckedSavedMemberKind, CheckedS
 
 use super::path::inspection_root_place;
 use super::record_nav;
-use super::render::{push_key, push_member};
+use super::render::{pop_key, push_key, push_member};
 use super::shape::{stored_key_mismatch, tooling_catalog_id};
 use super::{DataRecord, DebugDataPayload, KeyMismatch};
 
@@ -172,7 +172,7 @@ fn visit_identity_records_until(
         record_nav::first_record_child(store, store_id, identity, place.identity_keys.len())?;
     while let Some(key) = child {
         let next_after = key.clone();
-        let prior_len = push_key(path, &key);
+        let mark = push_key(path, &key);
         let next_mismatch = match mismatch.clone() {
             Some(mismatch) => Some(mismatch),
             None => stored_key_mismatch(place.identity_keys[key_index].scalar, &key)?,
@@ -193,12 +193,12 @@ fn visit_identity_records_until(
             ControlFlow::Break(count) => {
                 records = fold_records(records, count)?;
                 identity.pop();
-                path.truncate(prior_len);
+                pop_key(path, mark);
                 return Ok(ControlFlow::Break(records));
             }
         }
         identity.pop();
-        path.truncate(prior_len);
+        pop_key(path, mark);
         child = record_nav::next_record_child(
             store,
             store_id,
@@ -344,7 +344,7 @@ fn visit_member_keys_until(
     )?;
     while let Some(key) = child {
         let next_after = key.clone();
-        let prior_len = push_key(path, &key);
+        let mark = push_key(path, &key);
         let next_mismatch = match mismatch.clone() {
             Some(mismatch) => Some(mismatch),
             None => stored_key_mismatch(cursor.member.key_params[key_index].scalar, &key)?,
@@ -358,12 +358,12 @@ fn visit_member_keys_until(
             ControlFlow::Break(count) => {
                 records = fold_records(records, count)?;
                 data_path.pop();
-                path.truncate(prior_len);
+                pop_key(path, mark);
                 return Ok(ControlFlow::Break(records));
             }
         }
         data_path.pop();
-        path.truncate(prior_len);
+        pop_key(path, mark);
         child = cursor.context.store.data_next_child(
             cursor.context.store_id,
             cursor.context.identity,

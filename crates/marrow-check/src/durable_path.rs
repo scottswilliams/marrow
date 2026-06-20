@@ -49,14 +49,27 @@ pub fn display_path(segments: &[PathSegment]) -> String {
                 text.push('.');
                 text.push_str(name);
             }
+            // A run of consecutive keys is one composite identity or member key,
+            // rendered as a single comma group that re-parses.
             PathSegment::RecordKey(key) | PathSegment::IndexKey(key) => {
-                text.push('(');
-                text.push_str(&display_key(key));
-                text.push(')');
+                push_display_key(&mut text, &display_key(key));
             }
         }
     }
     text
+}
+
+/// Append one key into the trailing comma group, opening a fresh `(...)` unless
+/// the prior segment was already a key.
+fn push_display_key(text: &mut String, key: &str) {
+    if text.ends_with(')') {
+        text.pop();
+        text.push(',');
+    } else {
+        text.push('(');
+    }
+    text.push_str(key);
+    text.push(')');
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -125,23 +138,62 @@ impl PathTextParser<'_> {
                     self.seen_member = true;
                 }
                 b'(' => {
-                    let close = self
-                        .rest
-                        .find(')')
-                        .ok_or_else(|| self.error("a closing `)` for a key"))?;
-                    let key = self.parse_key(&self.rest[1..close])?;
-                    let segment = if self.seen_member {
-                        PathSegment::IndexKey(key)
-                    } else {
-                        PathSegment::RecordKey(key)
-                    };
-                    self.segments.push(segment);
-                    self.rest = &self.rest[close + 1..];
+                    let (inside, close) = self.split_key_group(&self.rest[1..])?;
+                    for part in inside {
+                        let key = self.parse_key(part)?;
+                        let segment = if self.seen_member {
+                            PathSegment::IndexKey(key)
+                        } else {
+                            PathSegment::RecordKey(key)
+                        };
+                        self.segments.push(segment);
+                    }
+                    self.rest = &self.rest[1 + close + 1..];
                 }
                 _ => return Err(self.error("`.name` or `(key)` after a path segment")),
             }
         }
         Ok(())
+    }
+
+    /// Scan a key group from just after its opening `(`. Returns each
+    /// comma-separated part and the byte offset of the closing `)` within
+    /// `inside`. Commas and the closing paren are split only at the top level: a
+    /// quoted string key may carry either, so quotes (with backslash escapes)
+    /// suppress splitting.
+    fn split_key_group<'b>(
+        &self,
+        inside: &'b str,
+    ) -> Result<(Vec<&'b str>, usize), PathParseError> {
+        let mut parts = Vec::new();
+        let mut start = 0usize;
+        let mut quoted = false;
+        let mut escaped = false;
+        for (index, byte) in inside.bytes().enumerate() {
+            if quoted {
+                if escaped {
+                    escaped = false;
+                } else if byte == b'\\' {
+                    escaped = true;
+                } else if byte == b'"' {
+                    quoted = false;
+                }
+                continue;
+            }
+            match byte {
+                b'"' => quoted = true,
+                b',' => {
+                    parts.push(&inside[start..index]);
+                    start = index + 1;
+                }
+                b')' => {
+                    parts.push(&inside[start..index]);
+                    return Ok((parts, index));
+                }
+                _ => {}
+            }
+        }
+        Err(self.error("a closing `)` for a key"))
     }
 
     fn parse_key(&self, text: &str) -> Result<SavedKey, PathParseError> {
@@ -294,6 +346,65 @@ mod tests {
             SavedKey::Instant(_)
         ));
         assert!(matches!(record_key("^r(PT1S)"), SavedKey::Duration(_)));
+    }
+
+    fn record_keys(text: &str) -> Vec<SavedKey> {
+        parse_path(text)
+            .expect("parse")
+            .into_iter()
+            .filter_map(|segment| match segment {
+                PathSegment::RecordKey(key) => Some(key),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn parse_path_splits_a_composite_key_on_top_level_commas() {
+        assert_eq!(
+            record_keys(r#"^r("a","b")"#),
+            vec![
+                SavedKey::Str("a".to_string()),
+                SavedKey::Str("b".to_string())
+            ]
+        );
+        assert_eq!(
+            record_keys("^r(1,2,3)"),
+            vec![SavedKey::Int(1), SavedKey::Int(2), SavedKey::Int(3)]
+        );
+    }
+
+    #[test]
+    fn parse_path_accepts_the_old_paren_per_key_composite_form() {
+        assert_eq!(
+            record_keys(r#"^r("a")("b")"#),
+            vec![
+                SavedKey::Str("a".to_string()),
+                SavedKey::Str("b".to_string())
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_path_keeps_a_quoted_comma_inside_one_key() {
+        assert_eq!(
+            record_keys(r#"^r("a,b","c")"#),
+            vec![
+                SavedKey::Str("a,b".to_string()),
+                SavedKey::Str("c".to_string())
+            ]
+        );
+    }
+
+    #[test]
+    fn display_path_renders_a_composite_key_as_one_comma_group() {
+        let path = [
+            PathSegment::Root("r".to_string()),
+            PathSegment::RecordKey(SavedKey::Str("a".to_string())),
+            PathSegment::RecordKey(SavedKey::Str("b".to_string())),
+        ];
+
+        assert_eq!(display_path(&path), r#"^r("a","b")"#);
     }
 
     #[test]
