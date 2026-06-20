@@ -10,10 +10,11 @@ use marrow_check::tooling::{
     CallableValueShape, DataChild, DataPathError, DataPathSegment, DataPresence, DeclaredDataChild,
     DeclaredDataChildKind, DeclaredDataKeyParam, MAX_VALUE_PREVIEW_LIMIT, ResourceConstructorField,
     SourceDataPathSegment, ToolingError, declared_data_children, declared_source_data_children,
-    declared_source_receiver_data_children, intrinsic_callable_signature, resolve_data_path,
-    resource_constructor_signature, sample_integrity_problem_details, sample_integrity_problems,
-    stamped_data_children, stamped_data_roots_in_store, stamped_integrity_problem_details,
-    stamped_preview_data_path, stamped_read_data_path,
+    declared_source_receiver_data_children, intrinsic_callable_signature,
+    intrinsic_callable_signature_for_file, resolve_data_path, resource_constructor_signature,
+    sample_integrity_problem_details, sample_integrity_problems, stamped_data_children,
+    stamped_data_roots_in_store, stamped_integrity_problem_details, stamped_preview_data_path,
+    stamped_read_data_path,
 };
 use marrow_check::{
     CHECK_READ_ONLY_EXPRESSION_HOST_EFFECT, CHECK_READ_ONLY_EXPRESSION_UNINDEXED_LOOKUP,
@@ -391,6 +392,141 @@ fn intrinsic_callable_signature_returns_standard_library_shapes() {
     assert_eq!(
         intrinsic_callable_signature(&path_segments(&["foo", "std", "text", "contains"])),
         None
+    );
+}
+
+#[test]
+fn intrinsic_callable_signature_for_file_expands_import_aliases() {
+    let text =
+        "module app\nuse std::text\nfn run(): bool\n    return text::contains(\"abc\", \"b\")\n";
+    let clock = "module clock_user\nuse std::clock\nfn run(): instant\n    return clock::now()\n";
+    let (snapshot, paths) = analyze_overlay(
+        "intrinsic-callable-signature-import-aliases",
+        &[("src/app.mw", text), ("src/clock_user.mw", clock)],
+    );
+    assert!(
+        !snapshot.report.has_errors(),
+        "{:#?}",
+        snapshot.report.diagnostics
+    );
+
+    let imported_text = intrinsic_callable_signature_for_file(
+        &snapshot,
+        &paths[0],
+        &path_segments(&["text", "contains"]),
+    )
+    .expect("imported std text operation");
+    let canonical_text = intrinsic_callable_signature(&path_segments(&["std", "text", "contains"]))
+        .expect("canonical std text operation");
+    assert_eq!(imported_text, canonical_text);
+
+    let imported_clock = intrinsic_callable_signature_for_file(
+        &snapshot,
+        &paths[1],
+        &path_segments(&["clock", "now"]),
+    )
+    .expect("imported std clock operation");
+    assert_eq!(
+        imported_clock,
+        intrinsic_callable_signature(&path_segments(&["std", "clock", "now"]))
+            .expect("canonical std clock operation")
+    );
+
+    assert_eq!(
+        intrinsic_callable_signature_for_file(
+            &snapshot,
+            &paths[0],
+            &path_segments(&["clock", "now"]),
+        ),
+        None
+    );
+}
+
+#[test]
+fn intrinsic_callable_signature_for_file_fails_closed_for_ambiguous_alias_heads() {
+    let duplicate_alias = "module app\nuse text\nuse std::text\nfn run(): bool\n    return true\n";
+    let (duplicate_snapshot, duplicate_paths) = analyze_overlay(
+        "intrinsic-callable-signature-duplicate-alias",
+        &[
+            ("src/app.mw", duplicate_alias),
+            ("src/text.mw", "module text\n"),
+        ],
+    );
+    assert!(
+        duplicate_snapshot.report.has_errors(),
+        "the duplicate import fixture should be rejected"
+    );
+    assert_eq!(
+        intrinsic_callable_signature_for_file(
+            &duplicate_snapshot,
+            &duplicate_paths[0],
+            &path_segments(&["text", "contains"]),
+        ),
+        None
+    );
+
+    let declaration_collision = "module app\nuse std::text\nfn text(): bool\n    return true\n\nfn run(): bool\n    return true\n";
+    let (collision_snapshot, collision_paths) = analyze_overlay(
+        "intrinsic-callable-signature-declaration-collision",
+        &[("src/app.mw", declaration_collision)],
+    );
+    assert!(
+        collision_snapshot.report.has_errors(),
+        "the import and function collision fixture should be rejected"
+    );
+    assert_eq!(
+        intrinsic_callable_signature_for_file(
+            &collision_snapshot,
+            &collision_paths[0],
+            &path_segments(&["text", "contains"]),
+        ),
+        None
+    );
+
+    let surface_collision = "module app\n\
+        use std::text\n\
+        resource Book\n    \
+        title: string\n\
+        store ^books(id: int): Book\n\
+        surface text from ^books\n    \
+        fields title\n\
+        fn run(): bool\n    \
+        return true\n";
+    let (surface_snapshot, surface_paths) = analyze_overlay(
+        "intrinsic-callable-signature-surface-collision",
+        &[("src/app.mw", surface_collision)],
+    );
+    assert!(
+        surface_snapshot.report.has_errors(),
+        "the import and surface collision fixture should be rejected"
+    );
+    assert_eq!(
+        intrinsic_callable_signature_for_file(
+            &surface_snapshot,
+            &surface_paths[0],
+            &path_segments(&["text", "contains"]),
+        ),
+        None
+    );
+
+    let clean_import =
+        "module app\nuse std::text\nfn run(): bool\n    return text::contains(\"abc\", \"b\")\n";
+    let (clean_snapshot, clean_paths) = analyze_overlay(
+        "intrinsic-callable-signature-clean-import",
+        &[("src/app.mw", clean_import)],
+    );
+    assert!(
+        !clean_snapshot.report.has_errors(),
+        "{:#?}",
+        clean_snapshot.report.diagnostics
+    );
+    assert_eq!(
+        intrinsic_callable_signature_for_file(
+            &clean_snapshot,
+            &clean_paths[0],
+            &path_segments(&["text", "contains"]),
+        ),
+        intrinsic_callable_signature(&path_segments(&["std", "text", "contains"]))
     );
 }
 

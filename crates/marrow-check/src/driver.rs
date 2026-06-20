@@ -1085,6 +1085,42 @@ pub(crate) fn expand_alias(
     segments.to_vec()
 }
 
+pub(crate) fn expand_unique_import_alias(
+    source: &marrow_syntax::SourceFile,
+    segments: &[String],
+) -> Result<Vec<String>, AmbiguousImportAlias> {
+    if segments.len() < 2 {
+        return Ok(segments.to_vec());
+    }
+    let Some(head) = segments.first() else {
+        return Ok(segments.to_vec());
+    };
+    let mut import_matches = source
+        .uses
+        .iter()
+        .filter(|use_decl| short_name(&use_decl.name) == head.as_str());
+    let Some(import) = import_matches.next() else {
+        return Ok(segments.to_vec());
+    };
+    if import_matches.next().is_some() || source_declares_top_level_name(source, head) {
+        return Err(AmbiguousImportAlias);
+    }
+    Ok(split_type_path(&import.name)
+        .into_iter()
+        .chain(segments[1..].iter().cloned())
+        .collect())
+}
+
+pub(crate) struct AmbiguousImportAlias;
+
+fn source_declares_top_level_name(source: &marrow_syntax::SourceFile, name: &str) -> bool {
+    source
+        .declarations
+        .iter()
+        .filter_map(declaration_introduced_name)
+        .any(|intro| intro.name == name)
+}
+
 fn expand_leading_alias(
     segments: &[String],
     aliases: &std::collections::HashMap<String, Vec<String>>,
@@ -1242,49 +1278,7 @@ fn check_duplicate_declarations(
 
     let mut rejected_surfaces = crate::surface::RejectedSurfaceDeclarations::default();
 
-    // A `use shelf::books` introduces the short name `books`.
-    let mut introduced: Vec<IntroducedName<'_>> = Vec::new();
-    for use_decl in &source.uses {
-        let short = short_name(&use_decl.name);
-        introduced.push(IntroducedName {
-            name: short,
-            span: use_decl.span,
-            kind: NameKind::Import,
-        });
-    }
-    for declaration in &source.declarations {
-        let introduced_name = match declaration {
-            Declaration::Const(decl) => IntroducedName {
-                name: decl.name.as_str(),
-                span: decl.span,
-                kind: NameKind::Const,
-            },
-            Declaration::Resource(decl) => IntroducedName {
-                name: decl.name.as_str(),
-                span: decl.span,
-                kind: NameKind::Resource,
-            },
-            Declaration::Store(_) => continue,
-            Declaration::Surface(decl) => IntroducedName {
-                name: decl.name.as_str(),
-                span: decl.span,
-                kind: NameKind::Surface,
-            },
-            Declaration::Function(decl) => IntroducedName {
-                name: decl.name.as_str(),
-                span: decl.span,
-                kind: NameKind::Function,
-            },
-            Declaration::Enum(decl) => IntroducedName {
-                name: decl.name.as_str(),
-                span: decl.span,
-                kind: NameKind::Enum,
-            },
-            Declaration::Evolve(_) => continue,
-        };
-        introduced.push(introduced_name);
-    }
-    introduced.sort_by_key(|intro| (intro.span.line, intro.span.start_byte));
+    let introduced = source_top_level_names(source);
 
     let mut first_seen: HashMap<&str, TopLevelNameOwners> = HashMap::new();
     for intro in &introduced {
@@ -1413,6 +1407,66 @@ fn check_duplicate_declarations(
     }
 
     rejected_surfaces
+}
+
+fn source_top_level_names(source: &marrow_syntax::SourceFile) -> Vec<IntroducedName<'_>> {
+    let mut introduced: Vec<IntroducedName<'_>> = source
+        .uses
+        .iter()
+        .map(import_introduced_name)
+        .chain(
+            source
+                .declarations
+                .iter()
+                .filter_map(declaration_introduced_name),
+        )
+        .collect();
+    introduced.sort_by_key(|intro| (intro.span.line, intro.span.start_byte));
+    introduced
+}
+
+fn import_introduced_name(use_decl: &marrow_syntax::UseDecl) -> IntroducedName<'_> {
+    IntroducedName {
+        name: short_name(&use_decl.name),
+        span: use_decl.span,
+        kind: NameKind::Import,
+    }
+}
+
+fn declaration_introduced_name(
+    declaration: &marrow_syntax::Declaration,
+) -> Option<IntroducedName<'_>> {
+    use marrow_syntax::Declaration;
+
+    match declaration {
+        Declaration::Const(decl) => Some(IntroducedName {
+            name: decl.name.as_str(),
+            span: decl.span,
+            kind: NameKind::Const,
+        }),
+        Declaration::Resource(decl) => Some(IntroducedName {
+            name: decl.name.as_str(),
+            span: decl.span,
+            kind: NameKind::Resource,
+        }),
+        Declaration::Store(_) => None,
+        Declaration::Surface(decl) => Some(IntroducedName {
+            name: decl.name.as_str(),
+            span: decl.span,
+            kind: NameKind::Surface,
+        }),
+        Declaration::Function(decl) => Some(IntroducedName {
+            name: decl.name.as_str(),
+            span: decl.span,
+            kind: NameKind::Function,
+        }),
+        Declaration::Enum(decl) => Some(IntroducedName {
+            name: decl.name.as_str(),
+            span: decl.span,
+            kind: NameKind::Enum,
+        }),
+        Declaration::Evolve(_) => None,
+    }
 }
 
 /// The `check.duplicate_declaration` diagnostic, shared by module-scope detection

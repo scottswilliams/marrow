@@ -3,6 +3,7 @@ use std::path::Path;
 use marrow_schema::{NodeKind, stdlib};
 use stdlib::{ParamType, ReturnType};
 
+use crate::analysis::AnalysisSnapshot;
 use crate::diagnostics::ConversionTarget;
 use crate::executable::{CheckedBuiltinCall, CheckedBuiltinReturnShape, CheckedBuiltinValueShape};
 use crate::program::{CheckedModule, CheckedProgram, MarrowType, TypeNames};
@@ -81,6 +82,19 @@ pub fn intrinsic_callable_signature(segments: &[String]) -> Option<CallableSigna
             .or_else(|| builtin_signature(name)),
         _ => None,
     }
+}
+
+pub fn intrinsic_callable_signature_for_file(
+    snapshot: &AnalysisSnapshot,
+    file: &Path,
+    segments: &[String],
+) -> Option<CallableSignature> {
+    let analyzed = snapshot
+        .files
+        .iter()
+        .find(|analyzed| analyzed.path == file)?;
+    let expanded = crate::expand_unique_import_alias(&analyzed.parsed.file, segments).ok()?;
+    intrinsic_callable_signature(&expanded)
 }
 
 pub fn resource_constructor_signature(
