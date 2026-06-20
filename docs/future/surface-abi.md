@@ -72,17 +72,18 @@ The active surface foundation has these owners:
 - `crates/marrow-json/src/surface.rs` owns the current checked read parameter,
   result, identity, value, commit-bound typed cursor-boundary, sparse update
   request, action argument/result, operation-tag execution, transport-neutral
-  operation envelope, and serialized surface ABI JSON DTOs. Execution accepts
-  caller-supplied checked program and store references, read DTOs also execute
-  against `ProjectSurfaceReadSession`, point/singleton update DTOs also execute
-  against `ProjectSurfaceSession`, action DTOs execute against
+  operation envelope, route manifest, and serialized surface ABI JSON DTOs.
+  Execution accepts caller-supplied checked program and store references, read
+  DTOs also execute against `ProjectSurfaceReadSession`, point/singleton update
+  DTOs also execute against `ProjectSurfaceSession`, action DTOs execute against
   `ProjectSurfaceSession`, and `surface.operation.v1` dispatches read,
   sparse-update, and action request bodies by operation tag without exposing
   private store handles. The default project operation helper runs actions with
   a zero-capability host; callers that need host capabilities use the
-  explicit-host helper. Serving, route derivation, generated clients, and opaque
-  cursor tokens remain separate profiles. Serialized ABI export includes only
-  callable read/update/action operation tags.
+  explicit-host helper. HTTP serving, generated clients, and opaque cursor
+  tokens remain separate profiles. Serialized ABI export includes only callable
+  read/update/action operation tags and routes derived from those exported
+  descriptors.
 
 Operation tags are live runtime/json contracts. A change to either
 `surface.read.v1`, `surface.update.v1`, or `entry.invoke.v1` action framing must
@@ -158,11 +159,12 @@ by default:
 ## Serialized Descriptor Profile
 
 The active serialized ABI profile lives in `marrow check --format json|jsonl`
-under `surface_abi` and is rendered by `marrow-json` DTOs from checker-owned
-facts. It serializes accepted catalog IDs, callable canonical read/update/action
-operation descriptors, value shapes, entry parameter shapes, operation tags,
-read/action aliases, and render labels as labels. It must not serialize checker-local IDs, source spans, raw saved paths,
-backend cursor bytes, physical store keys, or `create` metadata.
+under `surface_abi` and `surface_routes` and is rendered by `marrow-json` DTOs
+from checker-owned facts. The `surface_abi` object serializes accepted catalog
+IDs, callable canonical read/update/action operation descriptors, value shapes,
+entry parameter shapes, operation tags, read/action aliases, and render labels
+as labels. It must not serialize checker-local IDs, source spans, raw saved
+paths, backend cursor bytes, physical store keys, or `create` metadata.
 
 `SurfaceAbiJson` curates duplicate stable operation tags out of the export. If a
 stable operation tag is duplicated anywhere in the checked program, every read,
@@ -170,6 +172,18 @@ update, or action descriptor with that tag is omitted from the serialized ABI.
 Runtime tag admission still fails closed on duplicates in checked facts. Checker
 diagnostics for duplicate stable tags are a reserved future improvement, not
 current behavior.
+
+`SurfaceRouteManifestJson` renders the `surface.route.v1` route manifest from
+that already-curated `SurfaceAbiJson`. Each row is a strict JSON `POST` route
+over `surface.operation.v1`, carries the admitted operation tag, and names the
+surface label, operation alias, and expected request-body kind. Read routes use
+`/surface/v1/read/{operation_tag}`, sparse-update routes use
+`/surface/v1/update/{operation_tag}`, and action routes use
+`/surface/v1/action/{operation_tag}`. Route paths are derived from operation
+tags, not source names, aliases, ordinals, or raw saved paths. Aliases remain
+render/client labels; they are not route identity or operation equality.
+Source-only surfaces and duplicate-tag operations have no route rows because
+they have no callable descriptor rows.
 
 `surface.update.v1` tags include the profile domain, store catalog ID, backing
 resource footprint catalog ID, singleton-vs-point shape, identity-key value
@@ -192,10 +206,10 @@ stable equality values.
 ## Serving Profile
 
 HTTP serving and local server lifetime remain deferred until a serving profile
-maps the serialized descriptors and active operation envelope to routes,
-store-open policy, and process lifetime. A production serving profile needs:
+maps the active route manifest and operation envelope to store-open policy,
+network binding, and process lifetime. A production serving profile needs:
 
-- routes derived from serialized ABI descriptors, not source names or ordinals;
+- serving routes taken from `surface.route.v1`, not source names or ordinals;
 - strict JSON-only transport around the active operation envelope;
 - sanitized `surface.*` error codes and no raw store details;
 - an explicit choice between the active commit-bound cursor DTOs and a separate
@@ -206,17 +220,19 @@ store-open policy, and process lifetime. A production serving profile needs:
 - an explicit architecture decision before adding an HTTP dependency.
 
 The active `ProjectSurfaceReadSession` and `ProjectSurfaceSession` satisfy only
-the preparatory linked-Rust project slices. They are not the serving profile:
-they have no route mapping, process lifetime, network binding, generated-client
-surface, opaque cursor token, or public compatibility guarantee.
+the preparatory linked-Rust project slices, and `surface.route.v1` satisfies only
+the descriptor-derived manifest slice. They are not the serving profile: they
+have no process lifetime, network binding, generated-client surface, opaque
+cursor token, or public HTTP compatibility guarantee.
 
 ## Generated Clients And LSP
 
-Generated clients consume the serialized descriptor profile. Read and action
-aliases give renderers a checked operation label, but naming and route-rendering
-rules are a separate compatibility contract from operation equality. Labels can
-guide rendering, but accepted catalog IDs and canonical operation descriptors
-remain the semantic identity.
+Generated clients consume the serialized descriptor and route profiles. Read,
+update, and action aliases give renderers checked operation labels, and
+`surface.route.v1` gives clients the canonical operation-tag route path. Client
+method naming remains a separate compatibility contract from operation equality.
+Labels can guide rendering, but accepted catalog IDs and canonical operation
+descriptors remain the semantic identity.
 
 LSP and MCP tooling should consume
 `AnalysisSnapshot::surface_read_operations()`,

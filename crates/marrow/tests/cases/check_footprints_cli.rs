@@ -397,6 +397,72 @@ fn check_json_surface_abi_excludes_reserved_create_metadata() {
 }
 
 #[test]
+fn check_json_reports_surface_route_manifest() {
+    let root = temp_project("check-json-surface-routes", |root| {
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".data" } }"#,
+        );
+        write(
+            root,
+            "src/app.mw",
+            "module app\n\
+             resource Book\n\
+             \x20   title: string\n\
+             \x20   shelf: string\n\
+             store ^books(id: int): Book\n\
+             \x20   index byShelf(shelf, id)\n\
+             surface Books from ^books\n\
+             \x20   fields title, shelf\n\
+             \x20   create title, shelf\n\
+             \x20   update shelf\n\
+             \x20   collection ^books.byShelf as byShelf\n",
+        );
+    });
+
+    let output = marrow_sub("check", &["--format", "json", root.to_str().unwrap()]);
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let report = support::json(output.stdout);
+    let routes = report["surface_routes"]["routes"]
+        .as_array()
+        .expect("surface route manifest routes");
+    assert_eq!(
+        report["surface_routes"]["profile_version"],
+        "surface.route.v1"
+    );
+    assert_eq!(
+        report["surface_routes"]["operation_profile_version"],
+        "surface.operation.v1"
+    );
+    assert_eq!(
+        routes
+            .iter()
+            .map(|route| route["alias"].as_str().expect("route alias"))
+            .collect::<Vec<_>>(),
+        vec!["get", "byShelf", "update"]
+    );
+    assert_eq!(
+        routes
+            .iter()
+            .map(|route| route["request"]["kind"].as_str().expect("request kind"))
+            .collect::<Vec<_>>(),
+        vec!["point_read", "page", "point_update"]
+    );
+    assert!(
+        routes.iter().all(|route| route.get("create").is_none()
+            && route.get("delete").is_none()
+            && route["method"] == "POST"
+            && route["path"]
+                .as_str()
+                .expect("route path")
+                .contains(route["operation_tag"].as_str().expect("operation tag"))),
+        "routes stay descriptor-derived and omit unresolved CRUD profiles: {routes:#?}"
+    );
+}
+
+#[test]
 fn failed_check_json_suppresses_entry_footprints() {
     let root = temp_project("check-json-failed-no-entry-footprints", |root| {
         write(
@@ -439,5 +505,9 @@ fn failed_check_json_suppresses_entry_footprints() {
     assert!(
         report.get("surface_abi").is_none(),
         "failed checks must not publish partial surface ABI descriptors: {report:#?}"
+    );
+    assert!(
+        report.get("surface_routes").is_none(),
+        "failed checks must not publish partial surface routes: {report:#?}"
     );
 }

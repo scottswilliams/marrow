@@ -252,14 +252,14 @@ fn project_envelope(
         ("status".into(), json!(status)),
     ]);
     if let Some(program) = program {
+        let surface_abi = marrow_json::surface::SurfaceAbiJson::from_program(program);
+        let surface_routes = marrow_json::surface::SurfaceRouteManifestJson::from_abi(&surface_abi);
         envelope.insert(
             "entry_footprints".into(),
             json!(entry_footprint_records(program)),
         );
-        envelope.insert(
-            "surface_abi".into(),
-            json!(marrow_json::surface::SurfaceAbiJson::from_program(program)),
-        );
+        envelope.insert("surface_abi".into(), json!(surface_abi));
+        envelope.insert("surface_routes".into(), json!(surface_routes));
     }
     envelope
 }

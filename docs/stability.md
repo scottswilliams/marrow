@@ -78,7 +78,10 @@ admitted runtime updates, decode action arguments through `entry.invoke.v1`, and
 render already-executed surface reads and action results with accepted-catalog
 typed JSON. Read DTOs also execute over `ProjectSurfaceReadSession`, and
 point/singleton update plus action DTOs execute over `ProjectSurfaceSession`,
-without exposing backing store handles.
+without exposing backing store handles. The successful check JSON output also
+includes `surface.route.v1` route-manifest rows derived from the exported
+descriptors; those rows name JSON `POST` operation-tag paths and render aliases,
+but they do not start a server or make aliases operation identity.
 `marrow-run::ProjectSurfaceReadSession` is an unstable linked-Rust
 implementation profile for read serving over an already accepted native store:
 it opens the store read-only, fences drift, and exposes admitted surface reads
@@ -95,9 +98,9 @@ project surface slices, not a stable app-data contract. The default project
 operation envelope helper runs actions with a zero-capability host; callers that
 need host capabilities use the explicit-host helper. HTTP serving, opaque cursor
 tokens, generated clients, and create/delete body decode remain future profiles.
-Until serving profiles ship, Marrow has no stable HTTP or generated-client
-application contract. Linked-Rust surface helpers and typed entry invocation
-remain implementation profiles.
+Until serving profiles ship, Marrow has no stable HTTP, network-lifetime, or
+generated-client application contract. Linked-Rust surface helpers, route
+manifest rows, and typed entry invocation remain implementation profiles.
 The linked-Rust entry descriptor profile is an unstable implementation surface:
 `marrow-check` owns `entry.invoke.v1` descriptor tags over public entry
 signatures, parameter shapes, accepted catalog identities, return presence, and

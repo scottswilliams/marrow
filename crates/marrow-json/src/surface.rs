@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 mod execute;
 mod operation;
 mod request;
+mod route;
 pub use execute::{
     execute_project_surface_page_by_tag, execute_project_surface_point_read_by_tag,
     execute_project_surface_point_update_by_tag, execute_project_surface_singleton_read_by_tag,
@@ -29,6 +30,10 @@ pub use request::{
     SurfacePageRequestJson, SurfacePointRequestJson, SurfacePointUpdateRequestJson,
     SurfaceSingletonUpdateRequestJson, SurfaceUniqueLookupRequestJson, SurfaceUpdateFieldJson,
     SurfaceUpdateValueJson,
+};
+pub use route::{
+    SURFACE_ROUTE_PROFILE_VERSION, SurfaceRouteJson, SurfaceRouteManifestJson,
+    SurfaceRouteMethodJson, SurfaceRouteRequestJson, SurfaceRouteSurfaceJson,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -1037,6 +1042,7 @@ mod tests {
         SurfaceOperationRequestBodyJson, SurfaceOperationRequestJson, SurfaceOperationResultJson,
         SurfacePageJson, SurfacePageRequestJson, SurfacePointRequestJson,
         SurfacePointUpdateRequestJson, SurfaceReadOperationKindJson, SurfaceRecordJson,
+        SurfaceRouteManifestJson, SurfaceRouteMethodJson, SurfaceRouteRequestJson,
         SurfaceSingletonUpdateRequestJson, SurfaceUniqueLookupRequestJson, SurfaceUpdateFieldJson,
         SurfaceUpdateValueJson, SurfaceValueJson,
     };
@@ -2236,6 +2242,84 @@ pub fn seed()
                 .collect::<Vec<_>>(),
             vec!["get", "byStatusAuthor"]
         );
+    }
+
+    #[test]
+    fn surface_route_manifest_derives_tag_routes_from_surface_abi() {
+        let (program, _runtime) = checked_surface_program(SURFACE_UPDATE_WITH_ENUM_IDENTITY_INDEX);
+        let abi = SurfaceAbiJson::from_program(&program);
+        let manifest = SurfaceRouteManifestJson::from_abi(&abi);
+
+        assert_eq!(manifest.profile_version, "surface.route.v1");
+        assert_eq!(manifest.operation_profile_version, "surface.operation.v1");
+        let books_routes = manifest
+            .routes
+            .iter()
+            .filter(|route| route.surface.name == "Books")
+            .collect::<Vec<_>>();
+        assert_eq!(
+            books_routes
+                .iter()
+                .map(|route| route.alias.as_str())
+                .collect::<Vec<_>>(),
+            vec!["get", "byStatusAuthor", "update"]
+        );
+        assert_eq!(
+            books_routes
+                .iter()
+                .map(|route| &route.request)
+                .collect::<Vec<_>>(),
+            vec![
+                &SurfaceRouteRequestJson::PointRead,
+                &SurfaceRouteRequestJson::Page,
+                &SurfaceRouteRequestJson::PointUpdate,
+            ]
+        );
+        for route in books_routes {
+            assert_eq!(route.method, SurfaceRouteMethodJson::Post);
+            assert_eq!(route.surface.module, "test");
+            assert!(
+                route.path.ends_with(&route.operation_tag),
+                "route path carries the admitted operation tag: {route:#?}"
+            );
+        }
+    }
+
+    #[test]
+    fn surface_route_manifest_includes_action_routes() {
+        let (program, _runtime) = checked_surface_program(SURFACE_ACTIONS);
+        let abi = SurfaceAbiJson::from_program(&program);
+        let manifest = SurfaceRouteManifestJson::from_abi(&abi);
+
+        let action_route = manifest
+            .routes
+            .iter()
+            .find(|route| route.alias == "addBook")
+            .expect("action route");
+        assert_eq!(action_route.request, SurfaceRouteRequestJson::Action);
+        assert!(action_route.path.starts_with("/surface/v1/action/"));
+        assert!(action_route.path.ends_with(&action_route.operation_tag));
+    }
+
+    #[test]
+    fn surface_route_manifest_uses_curated_stable_abi() {
+        let (program, _runtime) = checked_surface_program(DUPLICATE_READ_TAG_SURFACES);
+        let abi = SurfaceAbiJson::from_program(&program);
+        let manifest = SurfaceRouteManifestJson::from_abi(&abi);
+
+        assert_eq!(
+            manifest
+                .routes
+                .iter()
+                .map(|route| route.surface.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Notes"]
+        );
+
+        let source_only = checked_source_only_surface_program(SOURCE_ONLY_UPDATE_SURFACE);
+        let source_only_abi = SurfaceAbiJson::from_program(&source_only);
+        let source_only_manifest = SurfaceRouteManifestJson::from_abi(&source_only_abi);
+        assert!(source_only_manifest.routes.is_empty());
     }
 
     #[test]

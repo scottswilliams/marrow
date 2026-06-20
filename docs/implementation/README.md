@@ -37,8 +37,9 @@ Nine crates stacked in dependency order, lowest first:
   machine-readable CLI shapes and owns checked surface read request-parameter
   decode, project update/action execution wrappers, accepted-catalog surface
   action value rendering, read/action alias descriptor rendering, and
-  context-aware cursor-boundary rendering; routes, opaque cursor tokens,
-  generated clients, and create/delete body decode are not owned here.
+  context-aware cursor-boundary rendering. It also renders the descriptor-derived
+  `surface.route.v1` manifest for check JSON output; HTTP serving, opaque cursor
+  tokens, generated clients, and create/delete body decode are not owned here.
 - **project / cli** — `marrow.json`, discovery, and the operator binary that
   wires the above together and renders results.
 

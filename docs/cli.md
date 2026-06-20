@@ -131,6 +131,12 @@ Check a project directory containing `marrow.json` and report diagnostics.
   freezes identity.
 - Passing a bare `.mw` file is a usage error. Run `marrow check` on the project
   directory that contains `marrow.json`.
+- On successful `json` or `jsonl` checks, the report includes
+  `entry_footprints`, `surface_abi`, and `surface_routes`. `surface_routes` is
+  the `surface.route.v1` manifest derived from exported surface descriptors:
+  JSON `POST` operation-tag paths plus render aliases and request-body kinds.
+  It is not an HTTP server, generated client, create/delete profile, or opaque
+  cursor-token codec.
 
 Exits `0` when there are no errors, `1` when there are diagnostics or
 `marrow.json` cannot be read, and `2` for usage errors such as a non-directory
