@@ -1,7 +1,7 @@
 use crate::support;
 use marrow_check::{
-    CHECK_CALL_ARGUMENT, CHECK_NEIGHBOR_UNSUPPORTED, CHECK_NEXT_ID_REQUIRES_SINGLE_INT,
-    CHECK_OPERATOR_TYPE, CHECK_UNRESOLVED_CALL, check_project,
+    CHECK_CALL_ARGUMENT, CHECK_KEY_REQUIRES_SINGLE_KEY, CHECK_NEIGHBOR_UNSUPPORTED,
+    CHECK_NEXT_ID_REQUIRES_SINGLE_INT, CHECK_OPERATOR_TYPE, CHECK_UNRESOLVED_CALL, check_project,
 };
 
 use support::{check_module, check_module_report, config, temp_project, with_code, write};
@@ -486,6 +486,164 @@ fn navigating_an_unknown_typed_value_still_defers() {
     );
     assert!(
         with_code(&report, "check.unknown_field").is_empty(),
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
+// --- key(id): project a single-key identity to its scalar key ---
+
+/// `key(id)` over a single-scalar-key store types to that key's scalar. The result
+/// type is proven by misuse: a string key plus an int is a `check.operator_type`
+/// error, so if `key` regressed to `Unknown` the misuse would pass silently.
+#[test]
+fn key_of_a_string_keyed_identity_types_the_key_scalar() {
+    let root = temp_project("program-key-string", |root| {
+        write(
+            root,
+            "src/shelf/tags.mw",
+            "module shelf::tags\n\
+             resource Tag\n\
+             \x20   required label: string\n\
+             store ^tags(slug: string): Tag\n\
+             fn bad(t: Id(^tags))\n\
+             \x20   const x = key(t) + 1\n",
+        );
+    });
+    let (report, _) = check_project(&root, &config()).expect("check");
+
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == CHECK_OPERATOR_TYPE),
+        "{:#?}",
+        report.diagnostics
+    );
+    assert!(
+        !report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == CHECK_UNRESOLVED_CALL),
+        "key must be a recognized builtin: {:#?}",
+        report.diagnostics
+    );
+}
+
+/// Used at its declared key scalar, `key(id)` checks clean across every saved-key
+/// scalar — int, bool, date, and bytes keys all project to their own type.
+#[test]
+fn key_projects_every_scalar_key_type_cleanly() {
+    let cases: &[(&str, &str, &str)] = &[
+        ("int", "int", "n + 1"),
+        ("date", "date", "d"),
+        ("bytes", "bytes", "b"),
+    ];
+    for (name, key_ty, use_expr) in cases {
+        let root = temp_project(&format!("program-key-{name}"), |root| {
+            write(
+                root,
+                "src/shelf/things.mw",
+                &format!(
+                    "module shelf::things\n\
+                     resource Thing\n\
+                     \x20   required label: string\n\
+                     store ^things(k: {key_ty}): Thing\n\
+                     pub fn project(t: Id(^things)): {key_ty}\n\
+                     \x20   const n: {key_ty} = key(t)\n\
+                     \x20   const d: {key_ty} = key(t)\n\
+                     \x20   const b: {key_ty} = key(t)\n\
+                     \x20   return {use_expr}\n"
+                ),
+            );
+        });
+        let (report, _) = check_project(&root, &config()).expect("check");
+        assert!(!report.has_errors(), "{name}: {:#?}", report.diagnostics);
+    }
+}
+
+/// A bool key projects to `bool`: returning it under a `bool` return type checks
+/// clean, while the same value plus an int is an operator-type error.
+#[test]
+fn key_of_a_bool_keyed_identity_types_bool() {
+    let root = temp_project("program-key-bool", |root| {
+        write(
+            root,
+            "src/shelf/flags.mw",
+            "module shelf::flags\n\
+             resource Flag\n\
+             \x20   required note: string\n\
+             store ^flags(on: bool): Flag\n\
+             pub fn project(f: Id(^flags)): bool\n\
+             \x20   return key(f)\n\
+             fn bad(f: Id(^flags))\n\
+             \x20   const x = key(f) + 1\n",
+        );
+    });
+    let (report, _) = check_project(&root, &config()).expect("check");
+
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == CHECK_OPERATOR_TYPE),
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
+/// `key(id)` over a composite multi-key identity has no single scalar to project,
+/// so it is rejected with `check.key_requires_single_key` rather than leaking a
+/// partial key or mis-typing the result.
+#[test]
+fn key_of_a_composite_identity_is_flagged() {
+    let root = temp_project("program-key-composite", |root| {
+        write(
+            root,
+            "src/shelf/enroll.mw",
+            "module shelf::enroll\n\
+             resource Enrollment\n\
+             \x20   required grade: string\n\
+             store ^enrollments(studentId: string, courseId: string): Enrollment\n\
+             fn project(e: Id(^enrollments))\n\
+             \x20   const k = key(e)\n",
+        );
+    });
+    let (report, _) = check_project(&root, &config()).expect("check");
+
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == CHECK_KEY_REQUIRES_SINGLE_KEY),
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
+/// `key` takes exactly one argument; a zero- or two-argument call reports the
+/// standard `check.call_argument` arity diagnostic.
+#[test]
+fn key_with_wrong_arity_is_flagged() {
+    let root = temp_project("program-key-arity", |root| {
+        write(
+            root,
+            "src/shelf/tags.mw",
+            "module shelf::tags\n\
+             resource Tag\n\
+             \x20   required label: string\n\
+             store ^tags(slug: string): Tag\n\
+             fn bad(t: Id(^tags))\n\
+             \x20   const x = key(t, t)\n",
+        );
+    });
+    let (report, _) = check_project(&root, &config()).expect("check");
+
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == CHECK_CALL_ARGUMENT),
         "{:#?}",
         report.diagnostics
     );

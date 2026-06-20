@@ -168,7 +168,7 @@ fn context_helpers_read_host_fields_and_missing_fields_are_absent() {
     let program = checked_program(
         "pub fn actor(): string\n    return std::context::actor() ?? \"none\"\n\n\
          pub fn request(): string\n    return std::context::requestId() ?? \"none\"\n\n\
-         pub fn key(): string\n    return std::context::idempotencyKey() ?? \"none\"\n",
+         pub fn idemKey(): string\n    return std::context::idempotencyKey() ?? \"none\"\n",
     );
     let store = TreeStore::memory();
     let host =
@@ -186,7 +186,7 @@ fn context_helpers_read_host_fields_and_missing_fields_are_absent() {
         Some(Value::Str("req-1".into()))
     );
     assert_eq!(
-        run_entry_with_host(&store, &host, checked_entry!(&program, "test::key"))
+        run_entry_with_host(&store, &host, checked_entry!(&program, "test::idemKey"))
             .unwrap()
             .value,
         Some(Value::Str("none".into()))

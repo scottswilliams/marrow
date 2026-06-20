@@ -87,6 +87,69 @@ fn allocates_and_uses_a_single_key_store_identity() {
     );
 }
 
+/// `key(id)` projects a single-scalar-key identity back to its key value. The
+/// string slug written for a record is the exact value `key` returns when the
+/// store iterator hands the identity back.
+const TAG_KEY: &str = "\
+resource Tag
+    required label: string
+store ^tags(slug: string): Tag
+
+pub fn save(s: string, l: string)
+    ^tags(s).label = l
+
+pub fn firstSlug(): string
+    for id in ^tags
+        return key(id)
+    return \"\"
+";
+
+#[test]
+fn key_projects_a_string_identity_back_to_its_slug() {
+    let program = checked_program(TAG_KEY);
+    let store = TreeStore::memory();
+    run_entry(
+        &store,
+        checked_entry!(
+            &program,
+            "test::save",
+            Value::Str("rust".into()),
+            Value::Str("Systems".into()),
+        ),
+    )
+    .expect("save");
+    let value = run_entry(&store, checked_entry!(&program, "test::firstSlug"))
+        .expect("firstSlug")
+        .value;
+    assert_eq!(value, Some(Value::Str("rust".into())));
+}
+
+/// The int-keyed family: an allocated `Id(^books)` projects back to the `int` key
+/// it lowered to. This proves `key` reads the lowered key, not a re-derived value.
+const BOOK_KEY: &str = "\
+resource Book
+    required title: string
+store ^books(id: int): Book
+
+pub fn save(t: string): int
+    const id = nextId(^books)
+    ^books(id).title = t
+    return key(id)
+";
+
+#[test]
+fn key_projects_an_allocated_int_identity_to_its_key() {
+    let program = checked_program(BOOK_KEY);
+    let store = TreeStore::memory();
+    let value = run_entry(
+        &store,
+        checked_entry!(&program, "test::save", Value::Str("Mort".into())),
+    )
+    .expect("save")
+    .value;
+    assert_eq!(value, Some(Value::Int(1)));
+}
+
 #[test]
 fn a_plain_int_identity_still_works() {
     // The bare int path remains the executable single-key store identity path.

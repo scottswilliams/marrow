@@ -192,6 +192,7 @@ pub enum CheckedBuiltinCall {
     Reversed,
     Next,
     Prev,
+    Key,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

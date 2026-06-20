@@ -126,6 +126,11 @@ pub const CHECK_NEXT_ID_COLLISION: &str = "check.next_id_collision";
 /// single key position to seek). The runtime would reject these with an
 /// uncatchable `run.unsupported` fault; the checker catches it before a run.
 pub const CHECK_NEIGHBOR_UNSUPPORTED: &str = "check.neighbor_unsupported";
+/// `key(id)` is applied to a composite multi-key identity, which has no single
+/// scalar key to project. A composite identity is reconstructed as a whole value,
+/// never exposed as a tuple of raw key components, so the misuse is rejected
+/// rather than leaking a partial key.
+pub const CHECK_KEY_REQUIRES_SINGLE_KEY: &str = "check.key_requires_single_key";
 /// `values`/`entries` is applied to an address-only collection such as a
 /// non-unique index branch. These shapes are valid for key traversal, but they do
 /// not have materialized values distinct from their keys.

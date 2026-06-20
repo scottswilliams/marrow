@@ -19,8 +19,9 @@ use crate::durable_read::{eval_index_lookup, eval_resource_read, eval_saved_laye
 use crate::env::{Context, Env};
 use crate::error::{
     CALL_DEPTH_BUDGET, RUN_ABSENT, RUN_UNKNOWN_FUNCTION, RuntimeError, call_depth_exceeded,
-    unsupported,
+    type_error, unsupported,
 };
+use crate::expr::eval_expr;
 use crate::host_effects::{eval_clock_capability, eval_context, eval_env, eval_io, eval_log};
 use crate::local_collection::eval_local_collection_read;
 use crate::neighbor::eval_neighbor;
@@ -29,7 +30,7 @@ use crate::stdlib::{
     ConversionKind, eval_assert, eval_conversion, eval_count, eval_error_constructor, eval_exists,
     eval_output,
 };
-use crate::value::Value;
+use crate::value::{Value, saved_key_to_value};
 
 pub(crate) fn eval_call(
     call: &ExecExpr,
@@ -227,7 +228,27 @@ fn eval_builtin_call(
         CheckedBuiltinCall::Reversed => eval_reversed(args, span, env).map(Some),
         CheckedBuiltinCall::Next => eval_neighbor(Direction::Ascending, args, span, env).map(Some),
         CheckedBuiltinCall::Prev => eval_neighbor(Direction::Descending, args, span, env).map(Some),
+        CheckedBuiltinCall::Key => eval_key(args, span, env).map(Some),
     }
+}
+
+/// Project a single-key store identity to its scalar key value. The checker has
+/// already gated the argument to a single-key identity, so the lowered keys hold
+/// exactly one segment; decode it through the shared key-to-value path.
+fn eval_key(args: &[ExecArg], span: SourceSpan, env: &mut Env<'_>) -> Result<Value, RuntimeError> {
+    let [arg] = args else {
+        return Err(type_error("`key` takes one argument", span));
+    };
+    let Value::Identity(identity) = eval_expr(&arg.value, env)? else {
+        return Err(type_error("`key` requires a store identity", span));
+    };
+    let [single_key] = identity.keys() else {
+        return Err(type_error(
+            "`key` requires a single-key store identity",
+            span,
+        ));
+    };
+    saved_key_to_value(single_key.clone(), span)
 }
 
 fn eval_std_call(

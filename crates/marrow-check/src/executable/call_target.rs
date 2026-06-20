@@ -228,6 +228,7 @@ impl CheckedBuiltinCall {
 const VALUE: &[CheckedBuiltinCallParameter] = &[param("value", CheckedBuiltinValueShape::Value)];
 const PATH: &[CheckedBuiltinCallParameter] = &[param("path", CheckedBuiltinValueShape::SavedPath)];
 const ROOT: &[CheckedBuiltinCallParameter] = &[param("root", CheckedBuiltinValueShape::SavedRoot)];
+const IDENTITY: &[CheckedBuiltinCallParameter] = &[param("id", CheckedBuiltinValueShape::Identity)];
 const COLLECTION: &[CheckedBuiltinCallParameter] =
     &[param("collection", CheckedBuiltinValueShape::Collection)];
 const LAYER_VALUE: &[CheckedBuiltinCallParameter] = &[
@@ -248,6 +249,7 @@ const BUILTIN_CALLS: &[CheckedBuiltinCallDescriptor] = &[
     descriptor("reversed", CheckedBuiltinCall::Reversed, COLLECTION, ret_value(CheckedBuiltinValueShape::Sequence), "Returns the collection in reverse order."),
     descriptor("next", CheckedBuiltinCall::Next, PATH, ret_value(CheckedBuiltinValueShape::Value), "Returns the next key after a saved path."),
     descriptor("prev", CheckedBuiltinCall::Prev, PATH, ret_value(CheckedBuiltinValueShape::Value), "Returns the previous key before a saved path."),
+    descriptor("key", CheckedBuiltinCall::Key, IDENTITY, ret_value(CheckedBuiltinValueShape::Value), "Returns the scalar key of a single-key store identity."),
 ];
 
 const fn descriptor(

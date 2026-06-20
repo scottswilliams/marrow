@@ -289,6 +289,19 @@ identity value after the key argument count and scalar types match the store's
 declared identity keys. A constructed identity is not a presence proof; the first
 saved read still resolves absence in the ordinary way.
 
+`key(id)` projects a store identity back to its scalar key, the inverse of the
+single-argument `Id(^store, key)`:
+
+```mw
+for id in ^tags
+    print(key(id))
+```
+
+It is defined only for a store with a single identity key, and returns that key's
+type. A composite identity is reconstructed as a whole value, never exposed as a
+tuple of raw key components, so `key` over a composite-identity root is rejected
+at check.
+
 ## Errors
 
 `Error(...)` constructs a builtin error resource value:

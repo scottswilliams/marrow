@@ -17,13 +17,13 @@ use crate::typerules::{
 };
 use crate::{
     AppendTargetDiagnostic, CHECK_AMBIGUOUS_CALL, CHECK_CALL_ARGUMENT,
-    CHECK_COLLECTION_UNSUPPORTED, CHECK_NEIGHBOR_UNSUPPORTED, CHECK_NEXT_ID_REQUIRES_SINGLE_INT,
-    CHECK_PRIVATE_FUNCTION, CHECK_UNRESOLVED_CALL, CHECK_UNTYPED_VALUE, CheckDiagnostic,
-    CheckedModule, CheckedProgram, ConversionTarget, ConversionUnsupportedSourceDiagnostic, Def,
-    DefItem, DiagnosticPayload, MarrowType, Resolution, ResolvableKind, TypeNames,
-    builtin_return_type, conversion_return_type, identity_type_for_store, is_builtin_call,
-    is_unknown_std_operation, module_of_file, resolve, resource_type_name, std_call_params,
-    std_call_return_type,
+    CHECK_COLLECTION_UNSUPPORTED, CHECK_KEY_REQUIRES_SINGLE_KEY, CHECK_NEIGHBOR_UNSUPPORTED,
+    CHECK_NEXT_ID_REQUIRES_SINGLE_INT, CHECK_PRIVATE_FUNCTION, CHECK_UNRESOLVED_CALL,
+    CHECK_UNTYPED_VALUE, CheckDiagnostic, CheckedModule, CheckedProgram, ConversionTarget,
+    ConversionUnsupportedSourceDiagnostic, Def, DefItem, DiagnosticPayload, MarrowType, Resolution,
+    ResolvableKind, TypeNames, builtin_return_type, conversion_return_type,
+    identity_type_for_store, is_builtin_call, is_unknown_std_operation, module_of_file, resolve,
+    resource_type_name, std_call_params, std_call_return_type,
 };
 
 use super::collections::{
@@ -146,6 +146,10 @@ fn check_special_single_name_call(
         "next" | "prev" => {
             check_arity(name, 1, args, env.span, env.file, env.diagnostics);
             Some(check_neighbor(env, name, args, arg_types))
+        }
+        "key" => {
+            check_arity(name, 1, args, env.span, env.file, env.diagnostics);
+            Some(check_key(env, arg_types))
         }
         // `entries` is validated comprehensively by the two-name-loop-head and
         // value-position rules (it is valid nowhere else), so its scalar and
@@ -1182,6 +1186,39 @@ fn check_neighbor(
         ),
         _ => MarrowType::Unknown,
     }
+}
+
+/// Type `key(id)`, projecting a single-key store identity to its scalar key. A
+/// composite identity has no single key to project — it is reconstructed as a
+/// whole value, never a tuple of raw components — so it reports
+/// `check.key_requires_single_key`. A non-identity argument is left `Unknown` for
+/// the runtime, and an unresolved root is reported elsewhere, so neither is
+/// double-reported here.
+fn check_key(env: &mut CallEnv<'_>, arg_types: &[MarrowType]) -> MarrowType {
+    let Some(MarrowType::Identity(root)) = arg_types.first() else {
+        return MarrowType::Unknown;
+    };
+    let Some(store) = resolve_store_by_root(env.program, root) else {
+        return MarrowType::Unknown;
+    };
+    let [single_key] = store.store.identity_keys.as_slice() else {
+        env.diagnostics.push(CheckDiagnostic::error(
+            CHECK_KEY_REQUIRES_SINGLE_KEY,
+            env.file,
+            env.span,
+            format!(
+                "`key` projects a single identity key, but `^{root}` ({}) is reconstructed \
+                 as a whole identity value, not a single key",
+                store.store.next_id_shape(),
+            ),
+        ));
+        return MarrowType::Unknown;
+    };
+    single_key
+        .ty
+        .scalar()
+        .map(MarrowType::Primitive)
+        .unwrap_or(MarrowType::Unknown)
 }
 
 /// Check `append(layer, value)` against the statically declared layer key kind.

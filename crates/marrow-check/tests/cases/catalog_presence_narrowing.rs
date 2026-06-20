@@ -208,7 +208,7 @@ fn saved_write_in_exists_key_expression_blocks_repeated_path_narrowing() {
              \x20   seen: bool\n\
              store ^books(id: int): Book\n\
              store ^flags(id: int): Flag\n\
-             fn key(id: int): int\n\
+             fn keyOf(id: int): int\n\
              \x20   if exists(^flags(0).seen)\n\
              \x20       delete ^books(id).subtitle\n\
              \x20   else\n\
@@ -216,8 +216,8 @@ fn saved_write_in_exists_key_expression_blocks_repeated_path_narrowing() {
              \x20   return id\n\
              fn stale(): string\n\
              \x20   ^books(1).subtitle = \"present\"\n\
-             \x20   if exists(^books(key(1)).subtitle)\n\
-             \x20       return ^books(key(1)).subtitle\n\
+             \x20   if exists(^books(keyOf(1)).subtitle)\n\
+             \x20       return ^books(keyOf(1)).subtitle\n\
              \x20   return \"missing\"\n",
     );
 }
@@ -233,7 +233,7 @@ fn saved_write_in_if_const_key_expression_blocks_repeated_path_narrowing() {
              \x20   seen: bool\n\
              store ^books(id: int): Book\n\
              store ^flags(id: int): Flag\n\
-             fn key(id: int): int\n\
+             fn keyOf(id: int): int\n\
              \x20   if exists(^flags(0).seen)\n\
              \x20       delete ^books(id).subtitle\n\
              \x20   else\n\
@@ -241,8 +241,8 @@ fn saved_write_in_if_const_key_expression_blocks_repeated_path_narrowing() {
              \x20   return id\n\
              fn stale(): string\n\
              \x20   ^books(1).subtitle = \"present\"\n\
-             \x20   if const value = ^books(key(1)).subtitle\n\
-             \x20       return ^books(key(1)).subtitle\n\
+             \x20   if const value = ^books(keyOf(1)).subtitle\n\
+             \x20       return ^books(keyOf(1)).subtitle\n\
              \x20   return \"missing\"\n",
     );
 }
@@ -255,12 +255,12 @@ fn saved_write_in_neighbor_path_key_expression_blocks_repeated_path_narrowing() 
              resource Book\n\
              \x20   title: string\n\
              store ^books(id: int): Book\n\
-             fn key(id: int): int\n\
+             fn keyOf(id: int): int\n\
              \x20   delete ^books(id).title\n\
              \x20   return id\n\
              fn stale(id: int, fallback: Id(^books)): string\n\
              \x20   if exists(^books(id).title)\n\
-             \x20       const neighbor: Id(^books) = next(^books(key(id))) ?? fallback\n\
+             \x20       const neighbor: Id(^books) = next(^books(keyOf(id))) ?? fallback\n\
              \x20       return ^books(id).title\n\
              \x20   return \"missing\"\n",
     );
