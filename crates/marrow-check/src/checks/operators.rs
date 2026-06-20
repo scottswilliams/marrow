@@ -496,21 +496,7 @@ pub(crate) fn check_coalesce(check: CoalesceCheck<'_>) -> MarrowType {
     if matches!(left_type, MarrowType::Invalid) || matches!(right_type, MarrowType::Invalid) {
         return MarrowType::Invalid;
     }
-    let Some(module_index) = program
-        .modules
-        .iter()
-        .position(|module| module.source_file == file)
-    else {
-        diagnostics.push(operator_diagnostic(
-            file,
-            span,
-            "operator `??` applies only to a path read or `?.` chain".to_string(),
-        ));
-        return MarrowType::Unknown;
-    };
-    let context = crate::executable::CheckedExecutableContext::new(program, module_index);
-    let mut lower_scope = scope.to_vec();
-    let Some(left) = crate::CheckedExpr::lower(left, &context, &mut lower_scope) else {
+    let Some(left) = crate::executable::lower_expr_for_file(program, file, left, scope) else {
         diagnostics.push(operator_diagnostic(
             file,
             span,

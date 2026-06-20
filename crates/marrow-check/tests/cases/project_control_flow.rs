@@ -703,6 +703,46 @@ fn writing_a_field_in_a_record_loop_is_allowed() {
 }
 
 #[test]
+fn inner_block_shadowing_resolves_to_the_innermost_binding_type() {
+    // An inner block re-binds `x` to a different type; inside the block `x` is the
+    // inner `int`, and after the block the outer `string` is back in scope. Both
+    // uses are well-typed, so the program checks clean only if scope resolution
+    // honors the innermost binding within the block and restores the outer one
+    // after it. A regression that lost or leaked the inner frame would mistype one
+    // of the `length` calls and report `check.call_argument`.
+    let report = check_module_report(
+        "shadow-inner-type",
+        "module m\n\
+         fn f()\n    \
+         const x: string = \"hi\"\n    \
+         if true\n        \
+         const x: int = 3\n        \
+         const a: int = x + 1\n    \
+         const n: int = std::text::length(x)\n",
+    );
+    assert_clean(&report);
+}
+
+#[test]
+fn inner_block_shadow_is_not_visible_after_the_block() {
+    // The inner `int` shadow of `x` must not survive its block: after the `if`,
+    // using `x` where an `int` is required is a real type error because the outer
+    // `string` binding is the one in scope. This pins that the inner scope frame
+    // is popped — the exact semantics the binding pass relies on.
+    let found = check_module(
+        "shadow-scope-exit",
+        "module m\n\
+         fn f()\n    \
+         const x: string = \"hi\"\n    \
+         if true\n        \
+         const x: int = 3\n    \
+         const bad: int = x\n",
+        "check.assignment_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
 fn lock_is_rejected_by_the_parser() {
     let report = check_module_report(
         "lock-reserved",

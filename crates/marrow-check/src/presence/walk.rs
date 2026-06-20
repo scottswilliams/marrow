@@ -36,8 +36,7 @@ pub(crate) fn check_presence(program: &mut CheckedProgram, diagnostics: &mut Vec
             for constant in &module.constants {
                 if let Some(value) = &constant.value {
                     let context = CheckedExecutableContext::new(program_view, module_index);
-                    let mut lower_scope = Vec::new();
-                    let Some(value) = CheckedExpr::lower(value, &context, &mut lower_scope) else {
+                    let Some(value) = CheckedExpr::lower(value, &context, &[]) else {
                         continue;
                     };
                     let mut scope = NameScope::default();

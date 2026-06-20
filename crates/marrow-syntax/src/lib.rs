@@ -41,17 +41,20 @@ use parse_decl::DeclParser;
 
 pub const PARSE_SYNTAX: &str = "parse.syntax";
 
-/// The maximum nesting depth the recursive-descent parser will structure before
-/// it stops and reports [`NESTING_LIMIT`]. It bounds both expression nesting
-/// (parentheses, unary and binary operands) and statement-block nesting (`if`,
-/// `while`, `for`, …), so deeply nested source fails closed with a located
-/// diagnostic rather than overflowing the native stack. 256 follows the
-/// Clang/rustc convention; it is fixed in v0.1, not configurable.
+/// The maximum nesting depth the front end will structure before it stops and
+/// reports [`NESTING_LIMIT`]. The lexer enforces it for layout blocks (`if`,
+/// resource groups, enum members, …) by capping the indent stack, so the token
+/// stream — and the AST and every later walk over it — stays bounded no matter
+/// how deep the source nests; the expression parser enforces it for token-level
+/// nesting (parentheses, unary and binary operands) on a single line. Deeper
+/// source fails closed with a located diagnostic rather than overflowing the
+/// native stack. 256 follows the Clang/rustc convention; it is fixed in v0.1,
+/// not configurable.
 pub const NESTING_DEPTH_LIMIT: usize = 256;
 
 /// Reported when source nests deeper than [`NESTING_DEPTH_LIMIT`]. It renders as
 /// a `check`-kind diagnostic so it surfaces alongside the type-check findings the
-/// operator already reads, even though the parser raises it.
+/// operator already reads, even though the front end raises it.
 pub const NESTING_LIMIT: &str = "check.nesting_limit";
 
 pub fn is_reserved_word(text: &str) -> bool {
@@ -312,6 +315,170 @@ mod nesting_limit {
         format!("module app\n\npub fn main()\n    return {expr}\n")
     }
 
+    /// A flat left-associated `1 op 1 op …` chain of `depth` operators. The AST
+    /// nests as deep as the chain is long even though the source is one wide line,
+    /// so it must be counted toward the same nesting limit as parentheses.
+    fn flat_operator_chain(op: &str, depth: usize) -> String {
+        let chain = vec!["1"; depth + 1].join(&format!(" {op} "));
+        format!("module app\n\npub fn main()\n    return {chain}\n")
+    }
+
+    /// A flat field-access chain `a.f.f.…` of `depth` segments. Each `.f` deepens
+    /// the AST by one, so it must be counted like a parenthesis.
+    fn field_access_chain(depth: usize) -> String {
+        let chain = format!("a{}", ".f".repeat(depth));
+        format!("module app\n\npub fn main()\n    return {chain}\n")
+    }
+
+    /// `depth` enum members each nested under the previous one by indentation.
+    fn nested_enum_members(depth: usize) -> String {
+        let mut source = String::from("module app\n\nenum E\n");
+        for level in 0..depth {
+            source.push_str(&"    ".repeat(level + 1));
+            source.push_str(&format!("m{level}\n"));
+        }
+        source
+    }
+
+    /// `depth` resource groups each nested under the previous one, with a leaf
+    /// field at the bottom so the innermost group has a body.
+    fn nested_resource_groups(depth: usize) -> String {
+        let mut source = String::from("module app\n\nresource R\n");
+        for level in 0..depth {
+            source.push_str(&"    ".repeat(level + 1));
+            source.push_str(&format!("g{level}(k: int)\n"));
+        }
+        source.push_str(&"    ".repeat(depth + 1));
+        source.push_str("leaf: int\n");
+        source
+    }
+
+    fn located_nesting_limit(source: String) -> super::Diagnostic {
+        parse_on_large_stack(source)
+            .diagnostics
+            .into_iter()
+            .find(|diagnostic| diagnostic.code == NESTING_LIMIT)
+            .expect("a located nesting-limit diagnostic")
+    }
+
+    fn nesting_limit_count(source: &str) -> usize {
+        parse_on_large_stack(source.to_string())
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.code == NESTING_LIMIT)
+            .count()
+    }
+
+    /// Layout nesting is capped in the lexer, so however deep the source nests,
+    /// the token stream the parser and every later walk see stays bounded by the
+    /// limit. Without this bound a deep nest would materialize a token, AST node,
+    /// and walk frame per level — the unbounded front-end work the depth limit
+    /// exists to prevent. A 50x-deeper nest must produce essentially the same
+    /// token count, not 50x more.
+    #[test]
+    fn over_deep_layout_yields_a_bounded_token_stream() {
+        for build in [
+            nested_resource_groups as fn(usize) -> String,
+            nested_enum_members,
+            nested_ifs,
+        ] {
+            let shallow = super::lex_source(&build(NESTING_DEPTH_LIMIT * 4))
+                .tokens
+                .len();
+            let deep = super::lex_source(&build(NESTING_DEPTH_LIMIT * 50))
+                .tokens
+                .len();
+            // The over-deep tail contributes no content tokens, so going 12.5x
+            // deeper leaves the stream within a few framing tokens of the limit
+            // rather than scaling with depth.
+            assert!(
+                deep <= shallow + 8,
+                "a 50x-deeper nest must not grow the token stream with depth \
+                 (4x-limit={shallow}, 50x-limit={deep})"
+            );
+        }
+    }
+
+    /// A whole over-deep region trips the limit once, not once per line, so a
+    /// deeply nested file yields a single diagnostic rather than a flood.
+    #[test]
+    fn over_deep_layout_reports_the_limit_once() {
+        assert_eq!(
+            nesting_limit_count(&nested_resource_groups(NESTING_DEPTH_LIMIT * 4)),
+            1
+        );
+        assert_eq!(
+            nesting_limit_count(&nested_enum_members(NESTING_DEPTH_LIMIT * 4)),
+            1
+        );
+        assert_eq!(nesting_limit_count(&nested_ifs(NESTING_DEPTH_LIMIT * 4)), 1);
+    }
+
+    /// Two independent over-deep enums each report their own overflow: leaving
+    /// the first over-deep region re-arms the once-per-region diagnostic.
+    #[test]
+    fn separate_over_deep_regions_each_report() {
+        let nest = |name: &str| {
+            let mut source = format!("enum {name}\n");
+            for level in 0..(NESTING_DEPTH_LIMIT * 2) {
+                source.push_str(&"    ".repeat(level + 1));
+                source.push_str(&format!("m{level}\n"));
+            }
+            source
+        };
+        let source = format!("module app\n\n{}\n{}", nest("A"), nest("B"));
+        assert_eq!(nesting_limit_count(&source), 2);
+    }
+
+    /// Sibling members or statements at the same depth are not nesting; an
+    /// arbitrarily wide body must never trip the layout limit.
+    #[test]
+    fn wide_bodies_do_not_trip_the_limit() {
+        let mut wide_resource = String::from("module app\n\nresource R\n");
+        for index in 0..(NESTING_DEPTH_LIMIT * 10) {
+            wide_resource.push_str(&format!("    f{index}: int\n"));
+        }
+        assert_eq!(nesting_limit_count(&wide_resource), 0);
+    }
+
+    #[test]
+    fn deep_flat_operator_chains_report_the_nesting_limit() {
+        for op in ["+", "*", "and", "or"] {
+            let located = located_nesting_limit(flat_operator_chain(op, NESTING_DEPTH_LIMIT + 50));
+            assert!(
+                located.span.line > 0,
+                "the diagnostic for a deep `{op}` chain is located: {located:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn deep_field_access_chains_report_the_nesting_limit() {
+        let located = located_nesting_limit(field_access_chain(NESTING_DEPTH_LIMIT + 50));
+        assert!(
+            located.span.line > 0,
+            "the diagnostic for a deep field-access chain is located: {located:?}"
+        );
+    }
+
+    #[test]
+    fn deeply_nested_enum_members_report_the_nesting_limit() {
+        let located = located_nesting_limit(nested_enum_members(NESTING_DEPTH_LIMIT + 50));
+        assert!(
+            located.span.line > 0,
+            "the diagnostic for deep enum nesting is located: {located:?}"
+        );
+    }
+
+    #[test]
+    fn deeply_nested_resource_groups_report_the_nesting_limit() {
+        let located = located_nesting_limit(nested_resource_groups(NESTING_DEPTH_LIMIT + 50));
+        assert!(
+            located.span.line > 0,
+            "the diagnostic for deep resource-group nesting is located: {located:?}"
+        );
+    }
+
     #[test]
     fn deeply_nested_statements_report_the_nesting_limit() {
         let located = parse_on_large_stack(nested_ifs(NESTING_DEPTH_LIMIT + 50))
@@ -347,6 +514,24 @@ mod nesting_limit {
         assert!(
             !codes(nested_parens(NESTING_DEPTH_LIMIT - 1)).contains(&NESTING_LIMIT),
             "expressions just under the limit should parse without the nesting error"
+        );
+        for op in ["+", "*", "and", "or"] {
+            assert!(
+                !codes(flat_operator_chain(op, NESTING_DEPTH_LIMIT - 1)).contains(&NESTING_LIMIT),
+                "a `{op}` chain just under the limit should parse without the nesting error"
+            );
+        }
+        assert!(
+            !codes(field_access_chain(NESTING_DEPTH_LIMIT - 1)).contains(&NESTING_LIMIT),
+            "a field-access chain just under the limit should parse without the nesting error"
+        );
+        assert!(
+            !codes(nested_enum_members(NESTING_DEPTH_LIMIT - 1)).contains(&NESTING_LIMIT),
+            "enum nesting just under the limit should parse without the nesting error"
+        );
+        assert!(
+            !codes(nested_resource_groups(NESTING_DEPTH_LIMIT - 1)).contains(&NESTING_LIMIT),
+            "resource-group nesting just under the limit should parse without the nesting error"
         );
     }
 }

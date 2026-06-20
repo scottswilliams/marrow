@@ -215,7 +215,7 @@ impl CheckedExpr {
     pub(crate) fn lower(
         expr: &syntax::Expression,
         context: &CheckedExecutableContext<'_>,
-        scope: &mut Vec<HashMap<String, MarrowType>>,
+        scope: &[HashMap<String, MarrowType>],
     ) -> Option<Self> {
         Some(match expr {
             syntax::Expression::Literal { kind, text, span } => Self::Literal {
@@ -379,7 +379,7 @@ impl CheckedExpr {
 pub(super) fn lower_optional_expr(
     expr: Option<&syntax::Expression>,
     context: &CheckedExecutableContext<'_>,
-    scope: &mut Vec<HashMap<String, MarrowType>>,
+    scope: &[HashMap<String, MarrowType>],
 ) -> Option<Option<CheckedExpr>> {
     match expr {
         Some(expr) => Some(Some(CheckedExpr::lower(expr, context, scope)?)),

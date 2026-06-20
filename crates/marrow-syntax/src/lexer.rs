@@ -6,12 +6,22 @@ use crate::token::{
     duration_unit_seconds, is_identifier_continue_char, is_identifier_start_char, keyword,
 };
 use crate::{
-    Diagnostic, DiagnosticReason, LexedSource, LexerDiagnosticReason, ObsoleteOperator,
-    PARSE_SYNTAX, Severity, SourceSpan, Token, TokenKind,
+    Diagnostic, DiagnosticReason, LexedSource, LexerDiagnosticReason, NESTING_DEPTH_LIMIT,
+    NESTING_LIMIT, ObsoleteOperator, PARSE_SYNTAX, ParseDiagnosticReason, Severity, SourceSpan,
+    Token, TokenKind,
 };
 
 pub fn lex_source(source: &str) -> LexedSource {
     Lexer::new(source).lex()
+}
+
+/// Whether a line opened a block within the layout nesting limit or past it. An
+/// over-deep line opens no block and has its content dropped, so the token stream
+/// the parser sees is bounded by the limit.
+#[derive(PartialEq, Eq)]
+enum Indent {
+    Within,
+    OverDeep,
 }
 
 struct Lexer<'a> {
@@ -21,6 +31,9 @@ struct Lexer<'a> {
     diagnostics: Vec<Diagnostic>,
     indents: Vec<usize>,
     open_delimiters: usize,
+    /// Set once the layout nesting limit is first crossed, so a run of over-deep
+    /// lines reports [`NESTING_LIMIT`] a single time rather than per line.
+    reported_nesting_limit: bool,
 }
 
 impl<'a> Lexer<'a> {
@@ -32,6 +45,7 @@ impl<'a> Lexer<'a> {
             diagnostics: Vec::new(),
             indents: Vec::new(),
             open_delimiters: 0,
+            reported_nesting_limit: false,
         }
     }
 
@@ -49,8 +63,10 @@ impl<'a> Lexer<'a> {
             let is_doc_comment = line.doc_comment().is_some();
             if line.is_comment() || is_doc_comment {
                 let starts_in_delimiters = self.open_delimiters > 0;
-                if !starts_in_delimiters {
-                    self.apply_comment_indent(line, is_doc_comment);
+                if !starts_in_delimiters
+                    && self.apply_comment_indent(line, is_doc_comment) == Indent::OverDeep
+                {
+                    continue;
                 }
 
                 let kind = if is_doc_comment {
@@ -66,8 +82,11 @@ impl<'a> Lexer<'a> {
             }
 
             let starts_in_delimiters = self.open_delimiters > 0;
-            if !starts_in_delimiters {
-                self.apply_indent(line);
+            if !starts_in_delimiters && self.apply_indent(line) == Indent::OverDeep {
+                // The line nests past the layout limit. Its content is dropped so
+                // the token stream — and the AST and every later walk over it —
+                // stays bounded by the limit no matter how deep the source goes.
+                continue;
             }
             self.lex_line(line);
             if self.open_delimiters == 0 {
@@ -83,9 +102,24 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    fn apply_indent(&mut self, line: Line<'a>) {
+    /// Open or close indented blocks to match `line`, returning whether the line
+    /// nests past the layout limit. A line deeper than the limit opens no further
+    /// block: it reports [`NESTING_LIMIT`] once at the limit and is reported
+    /// [`Indent::OverDeep`] so the caller drops its content, keeping the token
+    /// stream bounded by the limit regardless of source depth. The indent stack
+    /// stays at the limit's width while the over-deep region lasts, so a return to
+    /// or below that width resumes normal layout.
+    fn apply_indent(&mut self, line: Line<'a>) -> Indent {
         let current = self.current_indent();
         if line.indent > current {
+            // The outermost declaration body is one indent above the file's
+            // top level and is not itself a nesting level, so the stack may hold
+            // that body plus [`NESTING_DEPTH_LIMIT`] nested blocks before a deeper
+            // block fails closed.
+            if self.indents.len() > NESTING_DEPTH_LIMIT {
+                self.report_nesting_limit(line);
+                return Indent::OverDeep;
+            }
             self.indents.push(line.indent);
             self.push(
                 TokenKind::Indent,
@@ -96,16 +130,21 @@ impl<'a> Lexer<'a> {
                     column: 1,
                 },
             );
-            return;
+            return Indent::Within;
         }
 
         if line.indent == current {
-            return;
+            return Indent::Within;
         }
 
         while line.indent < self.current_indent() {
             self.indents.pop();
             self.push(TokenKind::Dedent, self.empty_span(line, line.indent));
+        }
+        if self.indents.len() <= NESTING_DEPTH_LIMIT {
+            // Left the over-deep region, so a later independent deep nest reports
+            // its own overflow rather than being silenced by the earlier one.
+            self.reported_nesting_limit = false;
         }
 
         if line.indent != self.current_indent() {
@@ -115,12 +154,38 @@ impl<'a> Lexer<'a> {
                 "indentation does not match an open block",
             );
         }
+        Indent::Within
     }
 
-    fn apply_comment_indent(&mut self, line: Line<'a>, is_doc_comment: bool) {
+    /// Report the layout nesting overflow once, at the first line that would open
+    /// a block past the limit. Suppressed while the over-deep region lasts so a
+    /// run of deeper lines yields a single diagnostic, not one per line.
+    fn report_nesting_limit(&mut self, line: Line<'a>) {
+        if self.reported_nesting_limit {
+            return;
+        }
+        self.reported_nesting_limit = true;
+        self.diagnostics.push(Diagnostic {
+            code: NESTING_LIMIT,
+            reason: DiagnosticReason::Parser(ParseDiagnosticReason::NestingLimit),
+            severity: Severity::Error,
+            message: format!("source nests deeper than the limit of {NESTING_DEPTH_LIMIT}"),
+            help: None,
+            span: SourceSpan {
+                start_byte: line.start_byte + line.indent,
+                end_byte: line.end_byte,
+                line: line.number,
+                column: (line.indent + 1) as u32,
+            },
+        });
+    }
+
+    fn apply_comment_indent(&mut self, line: Line<'a>, is_doc_comment: bool) -> Indent {
         let current = self.current_indent();
         if is_doc_comment || line.indent >= current {
-            self.apply_indent(line);
+            self.apply_indent(line)
+        } else {
+            Indent::Within
         }
     }
 

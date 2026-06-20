@@ -566,17 +566,7 @@ impl StatementCheck<'_> {
     }
 
     fn check_if_const_value(&mut self, value: &marrow_syntax::Expression) {
-        let Some(module_index) = self
-            .program
-            .modules
-            .iter()
-            .position(|module| module.source_file == self.file)
-        else {
-            return;
-        };
-        let context = crate::executable::CheckedExecutableContext::new(self.program, module_index);
-        let mut lower_scope = self.scope.clone();
-        let Some(value) = crate::CheckedExpr::lower(value, &context, &mut lower_scope) else {
+        let Some(value) = lower_expr_for_file(self.program, self.file, value, self.scope) else {
             return;
         };
         if !crate::presence::bindable_saved_value_read_in_type_scope(

@@ -8,6 +8,7 @@ use super::statement_lines::{parse_catch_header, parse_for_header, parse_simple_
 use super::tokens::{
     comment_from_token, expr_of, first_line_end, is_line_comment, line_end, line_span,
 };
+use crate::PARSE_SYNTAX;
 use crate::ast::{
     Block, CatchClause, Comment, CommentMarker, CommentPlacement, ElseIf, Expression, MatchArm,
     Statement,
@@ -18,7 +19,6 @@ use crate::diagnostic::{
 };
 use crate::parse_expr::join_spans;
 use crate::token::{Keyword, Token, TokenKind};
-use crate::{NESTING_DEPTH_LIMIT, NESTING_LIMIT, PARSE_SYNTAX};
 
 enum IfHead {
     Expr(Option<Expression>),
@@ -51,11 +51,6 @@ pub(super) struct StmtParser<'a> {
     /// malformed statement becomes a deterministic diagnostic instead of being
     /// silently accepted.
     diagnostics: Vec<Diagnostic>,
-    /// How many nested blocks deep the parser currently is. Each compound
-    /// statement's indented body descends one level; exceeding
-    /// [`NESTING_DEPTH_LIMIT`] stops the descent with a located [`NESTING_LIMIT`]
-    /// error before the native stack can overflow.
-    depth: usize,
 }
 
 impl<'a> StmtParser<'a> {
@@ -66,7 +61,6 @@ impl<'a> StmtParser<'a> {
             pos: 0,
             comments: Vec::new(),
             diagnostics: Vec::new(),
-            depth: 0,
         }
     }
 
@@ -619,17 +613,7 @@ impl<'a> StmtParser<'a> {
     /// at the end of the body token slice. A fresh comment accumulator is swapped
     /// in for the duration so this nested block's comments do not leak into the
     /// parent block.
-    ///
-    /// Each nested block descends one level. Past [`NESTING_DEPTH_LIMIT`] the body
-    /// is skipped with a located [`NESTING_LIMIT`] error rather than recursed into,
-    /// so deeply nested compound statements fail closed instead of overflowing the
-    /// stack.
     fn parse_nested_block(&mut self) -> Block {
-        self.depth += 1;
-        if self.depth > NESTING_DEPTH_LIMIT {
-            self.depth -= 1;
-            return self.nesting_limited_block();
-        }
         let start = self.advance().span; // `INDENT`
         let outer = std::mem::take(&mut self.comments);
         let statements = self.statements();
@@ -639,34 +623,10 @@ impl<'a> StmtParser<'a> {
         } else {
             statements.last().map_or(start, Statement::span)
         };
-        self.depth -= 1;
         Block {
             statements,
             comments,
             span: join_spans(start, end),
-        }
-    }
-
-    /// Skip an over-deep block whole and report the nesting overflow at its
-    /// opening token, returning an empty block in its place. Skipping rather than
-    /// recursing keeps the parser off the stack while still consuming the tokens
-    /// so the surrounding statements parse.
-    fn nesting_limited_block(&mut self) -> Block {
-        let start = self.tokens[self.pos].span;
-        let end = self.skip_block();
-        let span = join_spans(start, end);
-        self.diagnostics.push(Diagnostic {
-            code: NESTING_LIMIT,
-            reason: DiagnosticReason::Parser(ParseDiagnosticReason::NestingLimit),
-            severity: Severity::Error,
-            message: format!("statements nest deeper than the limit of {NESTING_DEPTH_LIMIT}"),
-            help: None,
-            span,
-        });
-        Block {
-            statements: Vec::new(),
-            comments: Vec::new(),
-            span,
         }
     }
 

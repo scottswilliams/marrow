@@ -1188,10 +1188,10 @@ impl CheckedRuntimeConst {
         Self {
             name: constant.name.clone(),
             ty: constant.ty.clone(),
-            value: constant.value.as_ref().and_then(|value| {
-                let mut scope = Vec::new();
-                CheckedExpr::lower(value, context, &mut scope)
-            }),
+            value: constant
+                .value
+                .as_ref()
+                .and_then(|value| CheckedExpr::lower(value, context, &[])),
             span: constant.span,
         }
     }

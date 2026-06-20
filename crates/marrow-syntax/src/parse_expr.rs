@@ -118,6 +118,28 @@ impl<'a> ExprParser<'a> {
         result
     }
 
+    /// Account for one more level of left-associated nesting built by a binary
+    /// operator chain or a postfix field/call chain. A flat `1 + 1 + …` line or
+    /// `a.f.f…` chain builds an AST as deep as it is long without recursing here,
+    /// so each accumulation step must count toward the same limit as a
+    /// parenthesis. Returns `false` once the limit is crossed, after reporting the
+    /// overflow, so the chain stops growing. The caller unwinds the levels it
+    /// added with [`Self::leave_chain`] before returning, since the finished chain
+    /// sits at its caller's depth.
+    fn enter_chain_level(&mut self) -> bool {
+        self.depth += 1;
+        if self.depth > NESTING_DEPTH_LIMIT {
+            self.depth -= 1;
+            self.nesting_limit_error();
+            return false;
+        }
+        true
+    }
+
+    fn leave_chain(&mut self, levels: usize) {
+        self.depth -= levels;
+    }
+
     /// Report the nesting-limit overflow at the next unconsumed token (the deepest
     /// construct the parser reached), or at end of input when none remains.
     fn nesting_limit_error(&mut self) {
@@ -135,24 +157,42 @@ impl<'a> ExprParser<'a> {
         });
     }
 
-    fn or_expr(&mut self) -> Option<Expression> {
-        let mut left = self.and_expr()?;
-        while matches!(self.peek(), Some(TokenKind::Keyword(Keyword::Or))) {
+    /// Parse a left-associated chain of one operator precedence: an `operand`,
+    /// then each `operator operand` repetition the operator table accepts. Each
+    /// repetition deepens the AST by one node, so it counts toward the nesting
+    /// limit; the levels added are unwound once the chain is complete, since the
+    /// finished chain sits at its caller's depth.
+    fn binary_chain(
+        &mut self,
+        operand: impl Fn(&mut Self) -> Option<Expression>,
+        operator: impl Fn(TokenKind) -> Option<BinaryOp>,
+    ) -> Option<Expression> {
+        let mut left = operand(self)?;
+        let mut levels = 0;
+        while let Some(op) = self.peek().and_then(&operator) {
+            if !self.enter_chain_level() {
+                self.leave_chain(levels);
+                return None;
+            }
+            levels += 1;
             self.advance();
-            let right = self.and_expr()?;
-            left = binary_expr(BinaryOp::Or, left, right);
+            let right = operand(self)?;
+            left = binary_expr(op, left, right);
         }
+        self.leave_chain(levels);
         Some(left)
     }
 
+    fn or_expr(&mut self) -> Option<Expression> {
+        self.binary_chain(Self::and_expr, |kind| {
+            matches!(kind, TokenKind::Keyword(Keyword::Or)).then_some(BinaryOp::Or)
+        })
+    }
+
     fn and_expr(&mut self) -> Option<Expression> {
-        let mut left = self.is_expr()?;
-        while matches!(self.peek(), Some(TokenKind::Keyword(Keyword::And))) {
-            self.advance();
-            let right = self.is_expr()?;
-            left = binary_expr(BinaryOp::And, left, right);
-        }
-        Some(left)
+        self.binary_chain(Self::is_expr, |kind| {
+            matches!(kind, TokenKind::Keyword(Keyword::And)).then_some(BinaryOp::And)
+        })
     }
 
     /// `is` sits one level looser than equality and tighter than `and`, on its own
@@ -292,34 +332,20 @@ impl<'a> ExprParser<'a> {
     }
 
     fn additive_expr(&mut self) -> Option<Expression> {
-        let mut left = self.multiplicative_expr()?;
-        loop {
-            let op = match self.peek() {
-                Some(TokenKind::Plus) => BinaryOp::Add,
-                Some(TokenKind::Minus) => BinaryOp::Subtract,
-                _ => break,
-            };
-            self.advance();
-            let right = self.multiplicative_expr()?;
-            left = binary_expr(op, left, right);
-        }
-        Some(left)
+        self.binary_chain(Self::multiplicative_expr, |kind| match kind {
+            TokenKind::Plus => Some(BinaryOp::Add),
+            TokenKind::Minus => Some(BinaryOp::Subtract),
+            _ => None,
+        })
     }
 
     fn multiplicative_expr(&mut self) -> Option<Expression> {
-        let mut left = self.unary_expr()?;
-        loop {
-            let op = match self.peek() {
-                Some(TokenKind::Star) => BinaryOp::Multiply,
-                Some(TokenKind::Slash) => BinaryOp::Divide,
-                Some(TokenKind::Percent) => BinaryOp::Remainder,
-                _ => break,
-            };
-            self.advance();
-            let right = self.unary_expr()?;
-            left = binary_expr(op, left, right);
-        }
-        Some(left)
+        self.binary_chain(Self::unary_expr, |kind| match kind {
+            TokenKind::Star => Some(BinaryOp::Multiply),
+            TokenKind::Slash => Some(BinaryOp::Divide),
+            TokenKind::Percent => Some(BinaryOp::Remainder),
+            _ => None,
+        })
     }
 
     fn unary_expr(&mut self) -> Option<Expression> {
@@ -340,7 +366,21 @@ impl<'a> ExprParser<'a> {
 
     fn postfix_expr(&mut self) -> Option<Expression> {
         let mut expr = self.primary_expr()?;
+        let mut levels = 0;
         loop {
+            // A `.f`, `?.f`, or `(…)` postfix each wraps the current expression in
+            // one more node, so a long `a.f.f…` or `a()()…` chain deepens the AST
+            // by its length and counts toward the nesting limit.
+            if matches!(
+                self.peek(),
+                Some(TokenKind::LeftParen | TokenKind::Dot | TokenKind::QuestionDot)
+            ) {
+                if !self.enter_chain_level() {
+                    self.leave_chain(levels);
+                    return None;
+                }
+                levels += 1;
+            }
             match self.peek() {
                 Some(TokenKind::LeftParen) => {
                     let open = self.advance();
@@ -386,6 +426,7 @@ impl<'a> ExprParser<'a> {
                 _ => break,
             }
         }
+        self.leave_chain(levels);
         Some(expr)
     }
 

@@ -11,12 +11,12 @@ later crates. Zero dependencies — it is the most upstream crate.
 
 `parse_source(&str) -> ParsedSource` is the file entry point. It runs two stages and merges their diagnostics:
 
-1. `lex_source` — text to a flat token stream. The lexer maintains an indent stack and an `open_delimiters` counter, synthesizing `INDENT`/`DEDENT`/`NEWLINE` layout tokens (not lexical characters) and suppressing them inside `(`/`[`. Tabs and obsolete operators (`&&`, `||`, `!`, `#`) and the reserved `~` are lexer diagnostics.
+1. `lex_source` — text to a flat token stream. The lexer maintains an indent stack and an `open_delimiters` counter, synthesizing `INDENT`/`DEDENT`/`NEWLINE` layout tokens (not lexical characters) and suppressing them inside `(`/`[`. It caps the indent stack at `NESTING_DEPTH_LIMIT`: a line nesting past the limit opens no block, has its content dropped, and reports a single `check.nesting_limit`, so the token stream stays bounded however deep the source nests. Tabs and obsolete operators (`&&`, `||`, `!`, `#`) and the reserved `~` are lexer diagnostics.
 2. `DeclParser::parse` — tokens to declarations/statements/expressions via recursive descent.
 
 `parse_expression(&str) -> (Option<Expression>, Vec<Diagnostic>)` is the expression-only public entry point used by callers that already know they are parsing one expression. It runs the same lexer, then feeds the token stream straight to `ExprParser::parse_complete`.
 
-Diagnostics from each entry are sorted by `(line, start_byte)`. Output uses the `parse.syntax` code, except that the expression and statement parsers each carry a descent-depth counter and stop at `NESTING_DEPTH_LIMIT` (256) with a located `check.nesting_limit`, so deeply nested source fails closed rather than overflowing the stack. Tests assert on the typed `reason`, never prose.
+Diagnostics from each entry are sorted by `(line, start_byte)`. Output uses the `parse.syntax` code, except for the `check.nesting_limit` raised at `NESTING_DEPTH_LIMIT` (256) so deeply nested source fails closed rather than overflowing the stack. Layout nesting — statement blocks, resource groups, enum members — is capped in the lexer's indent stack, which keeps the token stream bounded so the parser and every later walk never recurse past the limit. Token-level nesting on one line — parentheses, unary and interpolated operands, and flat operator/postfix chains where each accumulation step counts and is unwound when the chain finishes — is capped by `ExprParser`'s depth counter. Tests assert on the typed `reason`, never prose.
 
 ## Three parser layers, one token stream
 

@@ -124,8 +124,7 @@ pub(crate) fn lower_expr_for_file(
         .iter()
         .position(|module| module.source_file == file)?;
     let context = CheckedExecutableContext::new(program, module_index);
-    let mut scope = scope.to_vec();
-    CheckedExpr::lower(expr, &context, &mut scope)
+    CheckedExpr::lower(expr, &context, scope)
 }
 
 impl<'a> CheckedExecutableContext<'a> {

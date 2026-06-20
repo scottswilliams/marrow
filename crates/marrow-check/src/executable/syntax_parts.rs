@@ -19,7 +19,7 @@ impl CheckedInterpolationPart {
     pub(super) fn lower(
         part: &syntax::InterpolationPart,
         context: &CheckedExecutableContext<'_>,
-        scope: &mut Vec<HashMap<String, MarrowType>>,
+        scope: &[HashMap<String, MarrowType>],
     ) -> Option<Self> {
         Some(match part {
             syntax::InterpolationPart::Text { text, span } => Self::Text {
@@ -43,7 +43,7 @@ impl CheckedArg {
     pub(super) fn lower(
         arg: &syntax::Argument,
         context: &CheckedExecutableContext<'_>,
-        scope: &mut Vec<HashMap<String, MarrowType>>,
+        scope: &[HashMap<String, MarrowType>],
     ) -> Option<Self> {
         Some(Self {
             name: arg.name.clone(),

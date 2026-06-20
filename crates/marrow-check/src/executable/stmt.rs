@@ -185,7 +185,7 @@ impl CheckedStmt {
     fn lower_binding_or_write(
         statement: &syntax::Statement,
         context: &CheckedExecutableContext<'_>,
-        scope: &mut Vec<HashMap<String, MarrowType>>,
+        scope: &[HashMap<String, MarrowType>],
         binding_type: Option<MarrowType>,
     ) -> Option<Self> {
         Some(match statement {
