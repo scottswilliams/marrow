@@ -16,17 +16,27 @@ const SURFACE_SOURCE: &str = "module app\n\
  store ^books(id: int): Book\n\
  \x20\x20\x20\x20index byAuthor(author, id)\n\
  \n\
- pub fn seed()\n\
- \x20\x20\x20\x20var book: Book\n\
- \x20\x20\x20\x20book.title = \"Dune\"\n\
- \x20\x20\x20\x20book.author = \"Frank Herbert\"\n\
- \x20\x20\x20\x20transaction\n\
- \x20\x20\x20\x20\x20\x20\x20\x20^books(1) = book\n\
- \n\
- surface Books from ^books\n\
- \x20\x20\x20\x20fields title, author\n\
- \x20\x20\x20\x20update author\n\
- \x20\x20\x20\x20collection ^books.byAuthor as byAuthor\n";
+pub fn seed()\n\
+\x20\x20\x20\x20var book: Book\n\
+\x20\x20\x20\x20book.title = \"Dune\"\n\
+\x20\x20\x20\x20book.author = \"Frank Herbert\"\n\
+\x20\x20\x20\x20var sequel: Book\n\
+\x20\x20\x20\x20sequel.title = \"Dune Messiah\"\n\
+\x20\x20\x20\x20sequel.author = \"Frank Herbert\"\n\
+\x20\x20\x20\x20transaction\n\
+\x20\x20\x20\x20\x20\x20\x20\x20^books(1) = book\n\
+\x20\x20\x20\x20\x20\x20\x20\x20^books(2) = sequel\n\
+\n\
+pub fn retitle(id: int, title: string): string\n\
+\x20\x20\x20\x20transaction\n\
+\x20\x20\x20\x20\x20\x20\x20\x20^books(id).title = title\n\
+\x20\x20\x20\x20return title\n\
+\n\
+surface Books from ^books\n\
+\x20\x20\x20\x20fields title, author\n\
+\x20\x20\x20\x20update author\n\
+\x20\x20\x20\x20collection ^books.byAuthor as byAuthor\n\
+\x20\x20\x20\x20action retitle\n";
 
 struct SurfaceFixture {
     _root: support::TempProject,
@@ -58,12 +68,21 @@ fn help_advertises_surface_serve_without_restoring_top_level_serve() {
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let stdout = String::from_utf8(output.stdout).expect("stdout utf8");
     assert!(
-        stdout.contains("marrow surface serve [--addr <loopback:port>] <projectdir>"),
+        stdout.contains("marrow surface serve [--write] [--addr <loopback:port>] <projectdir>"),
         "{stdout}"
     );
     assert!(
         !stdout.contains(&format!("marrow {} ", "serve")),
         "top-level serve must stay removed: {stdout}"
+    );
+
+    let serve_help = marrow(&["surface", "serve", "--help"]);
+    assert_eq!(serve_help.status.code(), Some(0), "{serve_help:?}");
+    let serve_stdout = String::from_utf8(serve_help.stdout).expect("serve stdout utf8");
+    assert!(serve_stdout.contains("--write"), "{serve_stdout}");
+    assert!(
+        serve_stdout.contains("/surface/v1/{read|update|action}/<operation-tag>"),
+        "{serve_stdout}"
     );
 }
 
@@ -116,7 +135,7 @@ fn surface_serve_executes_manifest_point_read_over_http() {
                 "kind": "point_read",
                 "request": {
                     "identity": {
-                        "store_catalog_id": store_catalog_id,
+                        "store_catalog_id": store_catalog_id.clone(),
                         "keys": [{ "kind": "int", "value": "1" }]
                     }
                 }
@@ -220,6 +239,217 @@ fn surface_serve_fails_closed_on_request_shape_mismatches() {
     );
     assert_eq!(write_route.status, 404, "{:#?}", write_route.body);
     assert_eq!(write_route.body["code"], "surface.abi_mismatch");
+}
+
+#[test]
+fn surface_serve_write_mode_executes_sparse_update_over_http() {
+    let fixture = seeded_surface_fixture("surface-serve-write-update");
+    let point_route = route_by_alias(&fixture.report, "get");
+    let update_route = route_by_alias(&fixture.report, "update");
+    let update = update_descriptor(&fixture.report, &update_route.operation_tag);
+    let store_catalog_id = update["store_catalog_id"]
+        .as_str()
+        .expect("update store catalog id")
+        .to_string();
+    let author_catalog_id = update_field_catalog_id(update, "author");
+    let (_server, addr) = spawn_surface_server_with_args(fixture.root(), &["--write"]);
+
+    let kind_mismatch = post_json(
+        addr,
+        &update_route.path,
+        json!({
+            "profile_version": "surface.operation.v1",
+            "operation_tag": update_route.operation_tag,
+            "request": {
+                "kind": "point_read",
+                "request": {
+                    "identity": {
+                        "store_catalog_id": store_catalog_id,
+                        "keys": [{ "kind": "int", "value": "1" }]
+                    }
+                }
+            }
+        }),
+        &[("Content-Type", "application/json")],
+    );
+    assert_eq!(kind_mismatch.status, 400, "{:#?}", kind_mismatch.body);
+    assert_eq!(kind_mismatch.body["code"], "surface.request");
+
+    let update_response = post_json(
+        addr,
+        &update_route.path,
+        json!({
+            "profile_version": "surface.operation.v1",
+            "operation_tag": update_route.operation_tag,
+            "request": {
+                "kind": "point_update",
+                "request": {
+                    "identity": {
+                        "store_catalog_id": store_catalog_id,
+                        "keys": [{ "kind": "int", "value": "1" }]
+                    },
+                    "fields": [{
+                        "catalog_id": author_catalog_id,
+                        "value": { "kind": "string", "value": "Brian Herbert" }
+                    }]
+                }
+            }
+        }),
+        &[("Content-Type", "application/json")],
+    );
+
+    assert_eq!(update_response.status, 200, "{:#?}", update_response.body);
+    assert_eq!(update_response.body["result"]["kind"], "updated");
+
+    let read_response = post_json(
+        addr,
+        &point_route.path,
+        point_read_request(&fixture.report, &point_route.operation_tag, 1),
+        &[("Content-Type", "application/json")],
+    );
+
+    assert_eq!(read_response.status, 200, "{:#?}", read_response.body);
+    assert_eq!(
+        field_value(&read_response.body["result"]["record"], "author"),
+        json!({ "kind": "string", "value": "Brian Herbert" })
+    );
+}
+
+#[test]
+fn surface_serve_write_mode_executes_action_over_http() {
+    let fixture = seeded_surface_fixture("surface-serve-write-action");
+    let point_route = route_by_alias(&fixture.report, "get");
+    let action_route = route_by_alias(&fixture.report, "retitle");
+    let (_server, addr) = spawn_surface_server_with_args(fixture.root(), &["--write"]);
+
+    let action_response = post_json(
+        addr,
+        &action_route.path,
+        json!({
+            "profile_version": "surface.operation.v1",
+            "operation_tag": action_route.operation_tag,
+            "request": {
+                "kind": "action",
+                "request": {
+                    "arguments": [
+                        {
+                            "name": "id",
+                            "value": { "kind": "int", "value": "1" }
+                        },
+                        {
+                            "name": "title",
+                            "value": { "kind": "string", "value": "Dune HTTP" }
+                        }
+                    ]
+                }
+            }
+        }),
+        &[("Content-Type", "application/json")],
+    );
+
+    assert_eq!(action_response.status, 200, "{:#?}", action_response.body);
+    assert_eq!(action_response.body["result"]["kind"], "action");
+    assert_eq!(action_response.body["result"]["result"]["output"], "");
+    assert_eq!(
+        action_response.body["result"]["result"]["value"],
+        json!({ "kind": "string", "value": "Dune HTTP" })
+    );
+
+    let read_response = post_json(
+        addr,
+        &point_route.path,
+        point_read_request(&fixture.report, &point_route.operation_tag, 1),
+        &[("Content-Type", "application/json")],
+    );
+
+    assert_eq!(read_response.status, 200, "{:#?}", read_response.body);
+    assert_eq!(
+        field_value(&read_response.body["result"]["record"], "title"),
+        json!({ "kind": "string", "value": "Dune HTTP" })
+    );
+}
+
+#[test]
+fn surface_serve_write_mode_reports_stale_cursor_as_conflict() {
+    let fixture = seeded_surface_fixture("surface-serve-write-stale-cursor");
+    let page_route = route_by_alias(&fixture.report, "byAuthor");
+    let update_route = route_by_alias(&fixture.report, "update");
+    let update = update_descriptor(&fixture.report, &update_route.operation_tag);
+    let store_catalog_id = update["store_catalog_id"]
+        .as_str()
+        .expect("update store catalog id")
+        .to_string();
+    let author_catalog_id = update_field_catalog_id(update, "author");
+    let (_server, addr) = spawn_surface_server_with_args(fixture.root(), &["--write"]);
+
+    let first_page = post_json(
+        addr,
+        &page_route.path,
+        json!({
+            "profile_version": "surface.operation.v1",
+            "operation_tag": page_route.operation_tag,
+            "request": {
+                "kind": "page",
+                "request": {
+                    "exact_keys": [{ "kind": "string", "value": "Frank Herbert" }],
+                    "limit": 1
+                }
+            }
+        }),
+        &[("Content-Type", "application/json")],
+    );
+    assert_eq!(first_page.status, 200, "{:#?}", first_page.body);
+    let cursor = first_page.body["result"]["page"]["next"].clone();
+    assert!(
+        cursor.is_object(),
+        "first page must return a cursor: {:#?}",
+        first_page.body
+    );
+
+    let update_response = post_json(
+        addr,
+        &update_route.path,
+        json!({
+            "profile_version": "surface.operation.v1",
+            "operation_tag": update_route.operation_tag,
+            "request": {
+                "kind": "point_update",
+                "request": {
+                    "identity": {
+                        "store_catalog_id": store_catalog_id,
+                        "keys": [{ "kind": "int", "value": "1" }]
+                    },
+                    "fields": [{
+                        "catalog_id": author_catalog_id,
+                        "value": { "kind": "string", "value": "Brian Herbert" }
+                    }]
+                }
+            }
+        }),
+        &[("Content-Type", "application/json")],
+    );
+    assert_eq!(update_response.status, 200, "{:#?}", update_response.body);
+
+    let stale_page = post_json(
+        addr,
+        &page_route.path,
+        json!({
+            "profile_version": "surface.operation.v1",
+            "operation_tag": page_route.operation_tag,
+            "request": {
+                "kind": "page",
+                "request": {
+                    "exact_keys": [{ "kind": "string", "value": "Frank Herbert" }],
+                    "limit": 10,
+                    "cursor": cursor
+                }
+            }
+        }),
+        &[("Content-Type", "application/json")],
+    );
+
+    assert_eq!(stale_page.status, 409, "{:#?}", stale_page.body);
+    assert_eq!(stale_page.body["code"], "surface.stale_cursor");
 }
 
 #[test]
@@ -423,15 +653,38 @@ fn read_descriptor<'a>(report: &'a Value, operation_tag: &str) -> &'a Value {
         .unwrap_or_else(|| panic!("read descriptor {operation_tag} in {report:#?}"))
 }
 
+fn update_descriptor<'a>(report: &'a Value, operation_tag: &str) -> &'a Value {
+    report["surface_abi"]["surfaces"]
+        .as_array()
+        .expect("surface descriptors")
+        .iter()
+        .filter_map(|surface| surface.get("update"))
+        .find(|update| update["operation_tag"] == operation_tag)
+        .unwrap_or_else(|| panic!("update descriptor {operation_tag} in {report:#?}"))
+}
+
+fn update_field_catalog_id(update: &Value, label: &str) -> String {
+    update["fields"]
+        .as_array()
+        .expect("update fields")
+        .iter()
+        .find(|field| field["render_label"] == label)
+        .and_then(|field| field["member_catalog_id"].as_str())
+        .unwrap_or_else(|| panic!("update field {label} in {update:#?}"))
+        .to_string()
+}
+
 fn spawn_surface_server(root: &Path) -> (ServeProcess, SocketAddr) {
+    spawn_surface_server_with_args(root, &[])
+}
+
+fn spawn_surface_server_with_args(root: &Path, extra_args: &[&str]) -> (ServeProcess, SocketAddr) {
+    let project = root.to_str().expect("project path utf8");
+    let mut args = vec!["surface", "serve", "--addr", "127.0.0.1:0"];
+    args.extend(extra_args.iter().copied());
+    args.push(project);
     let mut child = Command::new(env!("CARGO_BIN_EXE_marrow"))
-        .args([
-            "surface",
-            "serve",
-            "--addr",
-            "127.0.0.1:0",
-            root.to_str().expect("project path utf8"),
-        ])
+        .args(args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -461,6 +714,26 @@ fn spawn_surface_server(root: &Path) -> (ServeProcess, SocketAddr) {
         },
         addr,
     )
+}
+
+fn point_read_request(report: &Value, operation_tag: &str, id: i64) -> Value {
+    let store_catalog_id = read_descriptor(report, operation_tag)["store_catalog_id"]
+        .as_str()
+        .expect("point read store catalog id")
+        .to_string();
+    json!({
+        "profile_version": "surface.operation.v1",
+        "operation_tag": operation_tag,
+        "request": {
+            "kind": "point_read",
+            "request": {
+                "identity": {
+                    "store_catalog_id": store_catalog_id,
+                    "keys": [{ "kind": "int", "value": id.to_string() }]
+                }
+            }
+        }
+    })
 }
 
 fn post_json(addr: SocketAddr, path: &str, body: Value, headers: &[(&str, &str)]) -> HttpResponse {

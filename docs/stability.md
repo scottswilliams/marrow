@@ -82,9 +82,10 @@ without exposing backing store handles. The successful check JSON output also
 includes `surface.route.v1` route-manifest rows derived from the exported
 descriptors; those rows name JSON `POST` operation-tag paths and render aliases,
 but they do not make aliases operation identity. `marrow surface serve` is the
-current serving profile for the read rows only: loopback-bound, JSON-only,
-read-only, at most one processed request per connection, and backed by
-`ProjectSurfaceReadSession`.
+current serving profile: loopback-bound, JSON-only, at most one processed
+request per connection, backed by `ProjectSurfaceReadSession` in default
+read-only mode, and backed by `ProjectSurfaceSession` for sparse-update/action
+routes when `--write` is passed.
 `marrow-run::ProjectSurfaceReadSession` is an unstable linked-Rust
 implementation profile for read serving over an already accepted native store:
 it opens the store read-only, fences drift, and exposes admitted surface reads
@@ -100,9 +101,9 @@ implementation profile for hosting surface facts, run sessions, and these
 project surface slices, not a stable app-data contract. The default project
 operation envelope helper runs actions with a zero-capability host; callers that
 need host capabilities use the explicit-host helper. The only shipped HTTP
-profile is `marrow surface serve` for loopback read-only operation envelopes.
-Opaque cursor tokens, generated clients, writable HTTP routes, remote serving,
-and create/delete body decode remain future profiles. Linked-Rust surface
+profile is `marrow surface serve` for loopback operation envelopes. Opaque
+cursor tokens, generated clients, remote serving, and create/delete body decode
+remain future profiles. Linked-Rust surface
 helpers, route manifest rows, and typed entry invocation remain implementation
 profiles.
 The linked-Rust entry descriptor profile is an unstable implementation surface:

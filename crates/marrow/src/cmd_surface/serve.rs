@@ -1,48 +1,75 @@
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::path::Path;
 use std::process::ExitCode;
 use std::time::Duration;
 
+use marrow_check::CheckedProgram;
 use marrow_json::surface::{
     SurfaceAbiJson, SurfaceOperationErrorJson, SurfaceOperationRequestJson,
     SurfaceOperationResponseJson, SurfaceRouteManifestJson, SurfaceRouteRequestJson,
-    execute_project_surface_operation_read_only,
+    execute_project_surface_operation, execute_project_surface_operation_read_only,
 };
 use marrow_run::{
-    ProjectSurfaceReadSession, SURFACE_ABI_MISMATCH, SURFACE_ABSENT, SURFACE_INVALID_DATA,
-    SURFACE_LIMIT, SURFACE_REQUEST, SURFACE_STORE,
+    ProjectSessionError, ProjectSurfaceReadSession, ProjectSurfaceSession, SURFACE_ABI_MISMATCH,
+    SURFACE_ABSENT, SURFACE_ACTION, SURFACE_CONFLICT, SURFACE_INVALID_DATA, SURFACE_LIMIT,
+    SURFACE_REQUEST, SURFACE_STALE_CURSOR, SURFACE_STORE, SURFACE_WRITE,
 };
 
 use crate::cmd_run::report_session_open_error;
 use crate::{CheckFormat, report_simple_error};
 
-const DEFAULT_ADDR: &str = "127.0.0.1:8080";
-const READ_ROUTE_PREFIX: &str = "/surface/v1/read/";
+const DEFAULT_PORT: u16 = 8080;
 const MAX_HEADER_BYTES: usize = 16 * 1024;
 const MAX_BODY_BYTES: usize = 1024 * 1024;
 const STREAM_TIMEOUT: Duration = Duration::from_secs(15);
 
 const HELP: &str = "\
 Usage:
-  marrow surface serve [--addr <loopback:port>] <projectdir>
+  marrow surface serve [--write] [--addr <loopback:port>] <projectdir>
 
-Run a local read-only HTTP surface endpoint. The server accepts one JSON POST
-per connection and closes the response on descriptor-derived
-/surface/v1/read/<operation-tag> routes.
+Run a local HTTP surface endpoint. The server accepts one JSON POST per
+connection and closes the response on descriptor-derived
+/surface/v1/{read|update|action}/<operation-tag> routes.
 
-  --addr  Loopback socket address to bind. Defaults to 127.0.0.1:8080.
+  --write  Expose update/action routes and open a writable surface session.
+           Defaults to read-only mode, serving read routes only.
+  --addr   Loopback socket address to bind. Defaults to 127.0.0.1:8080.
 ";
 
+#[derive(Clone, Copy)]
+enum ServeMode {
+    ReadOnly,
+    Write,
+}
+
+impl ServeMode {
+    fn allows(self, request: SurfaceRouteRequestJson) -> bool {
+        match self {
+            Self::ReadOnly => request.is_read(),
+            Self::Write => true,
+        }
+    }
+}
+
 pub(crate) fn serve(args: &[String]) -> ExitCode {
-    let mut addr = DEFAULT_ADDR
-        .parse::<SocketAddr>()
-        .expect("default surface address parses");
+    let mut addr = default_addr();
+    let mut mode = ServeMode::ReadOnly;
     let mut saw_addr = false;
+    let mut saw_write = false;
     let mut dir = None;
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
+            "--write" => {
+                if saw_write {
+                    eprintln!("duplicate --write");
+                    return ExitCode::from(2);
+                }
+                mode = ServeMode::Write;
+                saw_write = true;
+            }
             "--addr" => {
                 index += 1;
                 let Some(value) = args.get(index) else {
@@ -89,11 +116,11 @@ pub(crate) fn serve(args: &[String]) -> ExitCode {
         return ExitCode::from(2);
     }
 
-    let session = match ProjectSurfaceReadSession::open(&dir) {
+    let session = match SurfaceServeSession::open(&dir, mode) {
         Ok(session) => session,
         Err(error) => return report_session_open_error(&dir, error, CheckFormat::Text),
     };
-    let routes = ReadRoutes::from_session(&session);
+    let routes = SurfaceRoutes::from_program(session.program(), mode);
     let listener = match TcpListener::bind(addr) {
         Ok(listener) => listener,
         Err(error) => {
@@ -129,10 +156,14 @@ pub(crate) fn serve(args: &[String]) -> ExitCode {
     run_server(listener, &session, &routes)
 }
 
+fn default_addr() -> SocketAddr {
+    SocketAddr::from(([127, 0, 0, 1], DEFAULT_PORT))
+}
+
 fn run_server(
     listener: TcpListener,
-    session: &ProjectSurfaceReadSession,
-    routes: &ReadRoutes,
+    session: &SurfaceServeSession,
+    routes: &SurfaceRoutes,
 ) -> ExitCode {
     for connection in listener.incoming() {
         let mut stream = match connection {
@@ -158,33 +189,78 @@ fn run_server(
     ExitCode::SUCCESS
 }
 
-struct ReadRoutes {
-    routes: BTreeMap<String, SurfaceRouteRequestJson>,
+enum SurfaceServeSession {
+    ReadOnly(ProjectSurfaceReadSession),
+    Write(ProjectSurfaceSession),
 }
 
-impl ReadRoutes {
-    fn from_session(session: &ProjectSurfaceReadSession) -> Self {
-        let abi = SurfaceAbiJson::from_program(session.program());
+impl SurfaceServeSession {
+    fn open(root: impl AsRef<Path>, mode: ServeMode) -> Result<Self, ProjectSessionError> {
+        match mode {
+            ServeMode::ReadOnly => ProjectSurfaceReadSession::open(root).map(Self::ReadOnly),
+            ServeMode::Write => ProjectSurfaceSession::open(root).map(Self::Write),
+        }
+    }
+
+    fn program(&self) -> &CheckedProgram {
+        match self {
+            Self::ReadOnly(session) => session.program(),
+            Self::Write(session) => session.program(),
+        }
+    }
+
+    fn execute(
+        &self,
+        operation: &SurfaceOperationRequestJson,
+    ) -> Result<SurfaceOperationResponseJson, SurfaceOperationErrorJson> {
+        match self {
+            Self::ReadOnly(session) => {
+                execute_project_surface_operation_read_only(session, operation)
+            }
+            Self::Write(session) => execute_project_surface_operation(session, operation),
+        }
+    }
+}
+
+struct SurfaceRoutes {
+    routes: BTreeMap<String, SurfaceRouteBinding>,
+}
+
+struct SurfaceRouteBinding {
+    operation_tag: String,
+    request: SurfaceRouteRequestJson,
+}
+
+impl SurfaceRoutes {
+    fn from_program(program: &CheckedProgram, mode: ServeMode) -> Self {
+        let abi = SurfaceAbiJson::from_program(program);
         let manifest = SurfaceRouteManifestJson::from_abi(&abi);
         let routes = manifest
             .routes
             .into_iter()
-            .filter(|route| route.path.starts_with(READ_ROUTE_PREFIX))
-            .filter(|route| route.request.is_read())
-            .map(|route| (route.path, route.request))
+            .filter(|route| mode.allows(route.request))
+            .map(|route| {
+                (
+                    route.path,
+                    SurfaceRouteBinding {
+                        operation_tag: route.operation_tag,
+                        request: route.request,
+                    },
+                )
+            })
             .collect();
         Self { routes }
     }
 
-    fn request_for_path(&self, path: &str) -> Option<&SurfaceRouteRequestJson> {
+    fn binding_for_path(&self, path: &str) -> Option<&SurfaceRouteBinding> {
         self.routes.get(path)
     }
 }
 
 fn handle_connection(
     stream: &mut TcpStream,
-    session: &ProjectSurfaceReadSession,
-    routes: &ReadRoutes,
+    session: &SurfaceServeSession,
+    routes: &SurfaceRoutes,
 ) -> SurfaceHttpResponse {
     match read_http_request(stream) {
         Ok(request) => execute_http_request(request, session, routes),
@@ -194,8 +270,8 @@ fn handle_connection(
 
 fn execute_http_request(
     request: HttpRequest,
-    session: &ProjectSurfaceReadSession,
-    routes: &ReadRoutes,
+    session: &SurfaceServeSession,
+    routes: &SurfaceRoutes,
 ) -> SurfaceHttpResponse {
     if request.method != "POST" {
         return SurfaceHttpResponse::error(
@@ -203,13 +279,13 @@ fn execute_http_request(
             surface_error(SURFACE_REQUEST, "surface routes accept POST only"),
         );
     }
-    if request.target.contains('?') || !request.target.starts_with(READ_ROUTE_PREFIX) {
+    if request.target.contains('?') {
         return SurfaceHttpResponse::error(
             HttpStatus::NotFound,
             surface_error(SURFACE_ABI_MISMATCH, "surface operation is not active"),
         );
     }
-    let Some(route_request) = routes.request_for_path(&request.target) else {
+    let Some(route) = routes.binding_for_path(&request.target) else {
         return SurfaceHttpResponse::error(
             HttpStatus::NotFound,
             surface_error(SURFACE_ABI_MISMATCH, "surface operation is not active"),
@@ -236,17 +312,13 @@ fn execute_http_request(
             );
         }
     };
-    let path_tag = request
-        .target
-        .strip_prefix(READ_ROUTE_PREFIX)
-        .expect("read route prefix checked");
-    if operation.operation_tag != path_tag {
+    if operation.operation_tag != route.operation_tag {
         return SurfaceHttpResponse::error(
             HttpStatus::BadRequest,
             surface_error(SURFACE_ABI_MISMATCH, "surface operation is not active"),
         );
     }
-    if !route_request.matches_operation_body(&operation.request) {
+    if !route.request.matches_operation_body(&operation.request) {
         return SurfaceHttpResponse::error(
             HttpStatus::BadRequest,
             surface_error(
@@ -255,7 +327,7 @@ fn execute_http_request(
             ),
         );
     }
-    match execute_project_surface_operation_read_only(session, &operation) {
+    match session.execute(&operation) {
         Ok(response) => SurfaceHttpResponse::json(HttpStatus::Ok, response_value(response)),
         Err(error) => SurfaceHttpResponse::error(status_for_surface_error(&error.code), error),
     }
@@ -264,8 +336,11 @@ fn execute_http_request(
 fn status_for_surface_error(code: &str) -> HttpStatus {
     match code {
         SURFACE_ABSENT => HttpStatus::NotFound,
+        SURFACE_CONFLICT | SURFACE_STALE_CURSOR => HttpStatus::Conflict,
         SURFACE_LIMIT => HttpStatus::PayloadTooLarge,
-        SURFACE_INVALID_DATA | SURFACE_STORE => HttpStatus::InternalServerError,
+        SURFACE_ACTION | SURFACE_INVALID_DATA | SURFACE_STORE | SURFACE_WRITE => {
+            HttpStatus::InternalServerError
+        }
         SURFACE_ABI_MISMATCH | SURFACE_REQUEST => HttpStatus::BadRequest,
         _ => HttpStatus::BadRequest,
     }
@@ -496,6 +571,7 @@ impl SurfaceHttpResponse {
 enum HttpStatus {
     Ok,
     BadRequest,
+    Conflict,
     NotFound,
     MethodNotAllowed,
     PayloadTooLarge,
@@ -509,6 +585,7 @@ impl HttpStatus {
         match self {
             Self::Ok => 200,
             Self::BadRequest => 400,
+            Self::Conflict => 409,
             Self::NotFound => 404,
             Self::MethodNotAllowed => 405,
             Self::PayloadTooLarge => 413,
@@ -522,6 +599,7 @@ impl HttpStatus {
         match self {
             Self::Ok => "OK",
             Self::BadRequest => "Bad Request",
+            Self::Conflict => "Conflict",
             Self::NotFound => "Not Found",
             Self::MethodNotAllowed => "Method Not Allowed",
             Self::PayloadTooLarge => "Payload Too Large",

@@ -41,7 +41,7 @@ Nine crates stacked in dependency order, lowest first:
   `surface.route.v1` manifest for check JSON output; HTTP serving, opaque cursor
   tokens, generated clients, and create/delete body decode are not owned here.
 - **project / cli** — `marrow.json`, discovery, and the operator binary that
-  wires the above together, renders results, and owns the local read-only
+  wires the above together, renders results, and owns the local loopback
   `marrow surface serve` HTTP process around checked surface DTOs.
 
 `check` is the spine. It is the one owner of resolution, types, facts, identity,

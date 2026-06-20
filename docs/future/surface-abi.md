@@ -81,10 +81,11 @@ The active surface foundation has these owners:
   private store handles. The default project operation helper runs actions with
   a zero-capability host; callers that need host capabilities use the
   explicit-host helper. `marrow surface serve` is the first HTTP serving
-  profile: a loopback-only, dependency-free, read-only local endpoint over
-  descriptor-derived `/surface/v1/read/<operation-tag>` routes and
-  `surface.operation.v1` envelopes. Generated clients, opaque cursor tokens,
-  create/delete profiles, writable HTTP routes, remote binding, and
+  profile: a loopback-only, dependency-free local endpoint over
+  descriptor-derived `/surface/v1/{read|update|action}/<operation-tag>` routes
+  and `surface.operation.v1` envelopes. It defaults to read-only serving and
+  exposes sparse-update/action routes only with `--write`. Generated clients,
+  opaque cursor tokens, create/delete profiles, remote binding, and
   authentication remain separate profiles. Serialized ABI export includes only
   callable read/update/action operation tags and routes derived from those
   exported descriptors.
@@ -210,26 +211,32 @@ stable equality values.
 ## Serving Profile
 
 `marrow surface serve` maps the active route manifest and operation envelope to
-a local read-only HTTP process:
+a local HTTP process:
 
 - serving routes are taken from `surface.route.v1`, not source names or ordinals;
-- only descriptor-derived `/surface/v1/read/<operation-tag>` paths are exposed;
+- default mode exposes only descriptor-derived
+  `/surface/v1/read/<operation-tag>` paths;
+- `--write` additionally exposes descriptor-derived
+  `/surface/v1/update/<operation-tag>` and
+  `/surface/v1/action/<operation-tag>` paths;
 - the transport is JSON-only around the active `surface.operation.v1` envelope;
 - route operation tag, body operation tag, and body request kind must agree;
 - errors use sanitized `surface.*` code/message envelopes with no raw store
   details;
 - binding is loopback-only because Marrow has no users, roles, or authorization
   model yet;
-- store admission uses `ProjectSurfaceReadSession`, with no UID mint, baseline
-  freeze, auto-apply, recovery, restore, maintenance, or hidden write path;
+- store admission uses `ProjectSurfaceReadSession` in default mode and
+  `ProjectSurfaceSession` with `--write`, with no UID mint, baseline freeze,
+  auto-apply, recovery, restore, maintenance, or hidden write path outside
+  admitted sparse updates/actions;
 - the HTTP parser processes at most one request per connection, requires exactly
   one `Content-Length`, rejects `Transfer-Encoding` and already-buffered
   trailing bytes, caps headers and bodies, and closes every response.
 
 The serving profile intentionally reuses the active commit-bound typed cursor
 DTOs in read responses and page requests. A separate opaque cursor-token profile
-remains future work. Writable HTTP routes, generated clients, remote serving,
-authn/authz, and an HTTP dependency also remain future architecture decisions.
+remains future work. Generated clients, remote serving, authn/authz, and an
+HTTP dependency also remain future architecture decisions.
 
 ## Generated Clients And LSP
 

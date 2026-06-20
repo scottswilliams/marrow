@@ -14,7 +14,7 @@ marrow fmt [--check | --write] <file.mw | projectdir>
 marrow run [--entry <entry>] [--arg name=value]... [--maintenance] \
   [--trace] [--dry-run] [--format text|json] <projectdir>
 marrow test [--trace] [--format text|json|jsonl] [--filter <substring>] <projectdir>
-marrow surface serve [--addr <loopback:port>] <projectdir>
+marrow surface serve [--write] [--addr <loopback:port>] <projectdir>
 marrow data <roots|stats|dump|integrity> [--backup <artifact>] [--format text|json|jsonl] <projectdir>
 marrow data recover [--format text|json|jsonl] <projectdir>
 marrow data get [--backup <artifact>] [--format text|json|jsonl] <projectdir> <path>
@@ -136,9 +136,9 @@ Check a project directory containing `marrow.json` and report diagnostics.
   `entry_footprints`, `surface_abi`, and `surface_routes`. `surface_routes` is
   the `surface.route.v1` manifest derived from exported surface descriptors:
   JSON `POST` operation-tag paths plus render aliases and request-body kinds.
-  The manifest is data; `marrow surface serve` is the local read-only serving
-  profile that consumes it. Generated clients, create/delete profiles, writable
-  HTTP routes, and opaque cursor tokens remain out of scope.
+  The manifest is data; `marrow surface serve` is the local serving profile that
+  consumes it. Generated clients, create/delete profiles, remote serving, and
+  opaque cursor tokens remain out of scope.
 
 Exits `0` when there are no errors, `1` when there are diagnostics or
 `marrow.json` cannot be read, and `2` for usage errors such as a non-directory
@@ -166,13 +166,15 @@ $ echo $?
 ## `marrow surface serve`
 
 ```
-marrow surface serve [--addr <loopback:port>] <projectdir>
+marrow surface serve [--write] [--addr <loopback:port>] <projectdir>
 ```
 
-Run the read-only local HTTP serving profile for checked application surfaces.
-The command opens the project through `ProjectSurfaceReadSession`, so it
-requires an already accepted native store and never creates, freezes, migrates,
-repairs, or writes saved data.
+Run the local HTTP serving profile for checked application surfaces. By
+default the command opens the project through `ProjectSurfaceReadSession` and
+serves read routes only. With `--write`, it opens `ProjectSurfaceSession` and
+also exposes sparse-update and action routes. Both modes require an already
+accepted native store and never create, freeze, migrate, repair, or auto-apply
+saved data.
 
 - The listener binds only loopback addresses. The default is
   `127.0.0.1:8080`; tests and tooling can pass `--addr 127.0.0.1:0` to let the
@@ -181,9 +183,17 @@ repairs, or writes saved data.
   `surface serve listening on http://<addr>` to stdout, then handles requests
   until the process exits.
 - The active route set is derived from the same `surface.route.v1` manifest
-  exported by `marrow check --format json|jsonl`, but only
-  `/surface/v1/read/<operation-tag>` rows are served. Update and action routes
-  are not exposed by this command.
+  exported by `marrow check --format json|jsonl`. Default mode serves only
+  `/surface/v1/read/<operation-tag>` rows; `--write` additionally serves
+  `/surface/v1/update/<operation-tag>` and
+  `/surface/v1/action/<operation-tag>` rows.
+- `--write` is single-owner and sequential through the native writer lock while
+  the process is running. It excludes another writer and read-only inspection
+  handle for the same store file.
+- Served actions run with zero host capabilities. Actions that require clock,
+  environment, logging, filesystem, or other host capabilities fail closed as
+  `surface.action`; explicit-host action execution is a linked-Rust embedding
+  API, not this HTTP profile.
 - Requests must be HTTP/1.0 or HTTP/1.1 `POST` with
   `Content-Type: application/json`, exactly one `Content-Length`, no
   `Transfer-Encoding`, bounded headers/body, no query string, and an exact
@@ -197,9 +207,9 @@ repairs, or writes saved data.
   no source path, store path, or raw backend detail.
 
 This is a dependency-free local tooling profile, not remote hosting,
-authentication, generated clients, opaque cursor tokens, create/delete CRUD, or
-write/action serving. Exits `2` for usage errors such as non-loopback `--addr`,
-`1` for project/session/listener failures, and otherwise runs until killed.
+authentication, generated clients, opaque cursor tokens, or create/delete CRUD.
+Exits `2` for usage errors such as non-loopback `--addr`, `1` for
+project/session/listener failures, and otherwise runs until killed.
 
 ---
 

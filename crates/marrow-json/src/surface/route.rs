@@ -6,6 +6,9 @@ use super::{
 };
 
 pub const SURFACE_ROUTE_PROFILE_VERSION: &str = "surface.route.v1";
+const SURFACE_READ_ROUTE_PREFIX: &str = "/surface/v1/read/";
+const SURFACE_UPDATE_ROUTE_PREFIX: &str = "/surface/v1/update/";
+const SURFACE_ACTION_ROUTE_PREFIX: &str = "/surface/v1/action/";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SurfaceRouteManifestJson {
@@ -36,7 +39,7 @@ pub struct SurfaceRouteSurfaceJson {
     pub name: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SurfaceRouteRequestJson {
     SingletonRead,
@@ -54,6 +57,16 @@ impl SurfaceRouteRequestJson {
             self,
             Self::SingletonRead | Self::PointRead | Self::Page | Self::UniqueLookup
         )
+    }
+
+    fn path_prefix(&self) -> &'static str {
+        match self {
+            Self::SingletonRead | Self::PointRead | Self::Page | Self::UniqueLookup => {
+                SURFACE_READ_ROUTE_PREFIX
+            }
+            Self::SingletonUpdate | Self::PointUpdate => SURFACE_UPDATE_ROUTE_PREFIX,
+            Self::Action => SURFACE_ACTION_ROUTE_PREFIX,
+        }
     }
 
     pub fn matches_operation_body(&self, body: &SurfaceOperationRequestBodyJson) -> bool {
@@ -91,27 +104,34 @@ impl SurfaceRouteManifestJson {
                 module: surface.module.clone(),
                 name: surface.name.clone(),
             };
-            routes.extend(surface.read.iter().map(|read| SurfaceRouteJson {
-                method: SurfaceRouteMethodJson::Post,
-                path: operation_path("read", &read.operation_tag),
-                surface: route_surface.clone(),
-                alias: read.alias.clone(),
-                operation_tag: read.operation_tag.clone(),
-                request: read_request(&read.kind),
+            routes.extend(surface.read.iter().map(|read| {
+                let request = read_request(&read.kind);
+                SurfaceRouteJson {
+                    method: SurfaceRouteMethodJson::Post,
+                    path: operation_path(request.path_prefix(), &read.operation_tag),
+                    surface: route_surface.clone(),
+                    alias: read.alias.clone(),
+                    operation_tag: read.operation_tag.clone(),
+                    request,
+                }
             }));
             if let Some(update) = &surface.update {
+                let request = update_request(&update.kind);
                 routes.push(SurfaceRouteJson {
                     method: SurfaceRouteMethodJson::Post,
-                    path: operation_path("update", &update.operation_tag),
+                    path: operation_path(request.path_prefix(), &update.operation_tag),
                     surface: route_surface.clone(),
                     alias: "update".into(),
                     operation_tag: update.operation_tag.clone(),
-                    request: update_request(&update.kind),
+                    request,
                 });
             }
             routes.extend(surface.actions.iter().map(|action| SurfaceRouteJson {
                 method: SurfaceRouteMethodJson::Post,
-                path: operation_path("action", &action.operation_tag),
+                path: operation_path(
+                    SurfaceRouteRequestJson::Action.path_prefix(),
+                    &action.operation_tag,
+                ),
                 surface: route_surface.clone(),
                 alias: action.alias.clone(),
                 operation_tag: action.operation_tag.clone(),
@@ -126,8 +146,8 @@ impl SurfaceRouteManifestJson {
     }
 }
 
-fn operation_path(kind: &str, operation_tag: &str) -> String {
-    format!("/surface/v1/{kind}/{operation_tag}")
+fn operation_path(prefix: &str, operation_tag: &str) -> String {
+    format!("{prefix}{operation_tag}")
 }
 
 fn read_request(kind: &SurfaceReadOperationKindJson) -> SurfaceRouteRequestJson {

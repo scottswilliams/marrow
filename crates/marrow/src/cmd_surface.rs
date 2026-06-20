@@ -4,7 +4,7 @@ mod serve;
 
 const HELP: &str = "\
 Usage:
-  marrow surface serve [--addr <loopback:port>] <projectdir>
+  marrow surface serve [--write] [--addr <loopback:port>] <projectdir>
   marrow surface --help
 
 Expose descriptor-derived application-surface routes for local tooling.

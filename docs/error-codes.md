@@ -456,8 +456,9 @@ The `surface.*` family belongs to the application surface runtime and its
 [Surface ABI](future/surface-abi.md). The transport-neutral `marrow-run`
 node-read, collection-read, sparse-update, and action APIs can emit the active
 codes below. `marrow surface serve` emits sanitized code/message envelopes for
-read-only HTTP serving. Cursor strings remain future transport work; the active
-runtime cursor is a typed continuation value.
+HTTP serving in both default read-only mode and `--write` mode. Cursor strings
+remain future transport work; the active runtime cursor is a typed continuation
+value.
 
 | Code | Meaning |
 |---|---|

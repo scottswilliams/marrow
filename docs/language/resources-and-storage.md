@@ -258,14 +258,16 @@ source-level name collisions, but only source-root declarations resolve into
 application surface facts.
 
 Those facts are transport-neutral: opaque cursor-token codecs, TypeScript
-names, generated clients, writable HTTP routes, and create/delete bodies are
-boundary profiles layered later. Stable surface reads, sparse updates, and
-actions have checker-owned descriptors and operation tags. `marrow-json` can
+names, generated clients, remote serving, and create/delete bodies are boundary
+profiles layered later. Stable surface reads, sparse updates, and actions have
+checker-owned descriptors and operation tags. `marrow-json` can
 render a `surface.route.v1` manifest from those descriptors, using
 operation-tag paths and aliases as labels. `marrow surface serve` is the local
-loopback read-only serving profile over the manifest's read routes and
-`surface.operation.v1` envelopes; the manifest is still not a generated-client
-contract by itself. Read descriptors carry the generated `get` alias or declared
+loopback serving profile over manifest routes and `surface.operation.v1`
+envelopes: default mode serves read routes only, while `--write` also serves
+sparse-update and action routes through the writable project surface session.
+The manifest is still not a generated-client contract by itself. Read
+descriptors carry the generated `get` alias or declared
 collection alias as render metadata; action descriptors carry their declared
 action alias. A surface remains source-only until its backing store, projected
 fields, update fields, collection indexes, and every action parameter and return
