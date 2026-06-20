@@ -1,4 +1,4 @@
-use crate::support::catalog::{catalog, catalog_path, entry, write_catalog};
+use crate::support::catalog::{catalog, entry, write_catalog};
 use crate::support::{assert_clean, check_with_accepted, config, temp_project, write};
 
 use marrow_catalog::{CatalogEntry, CatalogEntryKind};
@@ -107,6 +107,21 @@ fn catalog_id(raw: &str) -> CatalogId {
     CatalogId::new(raw.to_string()).expect("valid catalog id")
 }
 
+/// Commit `metadata` into a store and read it back, so the surface ABI binds the identity
+/// the store holds rather than a source-tree artifact. The store snapshot is the durable
+/// authority for accepted identity, so a stable-descriptor assertion that flows through this
+/// helper proves the tag came from store-resident ids, not from re-reading source on disk.
+fn store_resident(metadata: &marrow_catalog::CatalogMetadata) -> marrow_catalog::CatalogMetadata {
+    let store = marrow_store::tree::TreeStore::memory();
+    store
+        .replace_catalog_snapshot(metadata)
+        .expect("commit accepted catalog");
+    store
+        .read_catalog_snapshot()
+        .expect("read store catalog snapshot")
+        .expect("store holds the committed accepted catalog")
+}
+
 fn function_ref(snapshot: &AnalysisSnapshot, name: &str) -> marrow_check::CheckedFunctionRef {
     let module = snapshot.program.facts.modules()[0].id;
     let function_id = snapshot
@@ -181,7 +196,7 @@ surface Books from ^books
 }
 
 #[test]
-fn surface_update_operation_tag_keeps_v1_bytes_stable() {
+fn surface_update_operation_tag_keeps_v1_bytes_stable_from_store_identity() {
     let root = temp_project("surface-update-abi-tag-stability", |root| {
         write(
             root,
@@ -196,50 +211,67 @@ surface Books from ^books
     update title
 ",
         );
-        write_catalog(
-            root,
-            &catalog(vec![
-                entry(
-                    CatalogEntryKind::Resource,
-                    "app::Book",
-                    "cat_00000000000000000000000000000001",
-                    &[],
-                ),
-                CatalogEntry {
-                    accepted_key_shape: Some("int".to_string()),
-                    ..entry(
-                        CatalogEntryKind::Store,
-                        "app::^books",
-                        "cat_00000000000000000000000000000002",
-                        &[],
-                    )
-                },
-                CatalogEntry {
-                    accepted_struct: Some("leaf:string".to_string()),
-                    ..entry(
-                        CatalogEntryKind::ResourceMember,
-                        "app::Book::title",
-                        "cat_00000000000000000000000000000003",
-                        &[],
-                    )
-                },
-            ]),
-        );
     });
+
+    let source_only =
+        analyze_project(&root, &config(), &ProjectSources::new(), None, None).expect("analyze");
+    assert_clean(&source_only.report);
+    assert_eq!(
+        source_only.program.facts.surfaces()[0].catalog_status,
+        SurfaceCatalogStatus::SourceOnly(vec![
+            SurfaceCatalogBlocker::PendingCatalogProposal,
+            SurfaceCatalogBlocker::MissingAcceptedCatalogIds,
+        ]),
+        "without store-resident identity the surface carries no stable update ABI"
+    );
+    assert!(
+        source_only
+            .surface_update_operations()
+            .next()
+            .and_then(|operation| operation.stable_descriptor())
+            .is_none()
+    );
+
+    let accepted = store_resident(&catalog(vec![
+        entry(
+            CatalogEntryKind::Resource,
+            "app::Book",
+            "cat_00000000000000000000000000000001",
+            &[],
+        ),
+        CatalogEntry {
+            accepted_key_shape: Some("int".to_string()),
+            ..entry(
+                CatalogEntryKind::Store,
+                "app::^books",
+                "cat_00000000000000000000000000000002",
+                &[],
+            )
+        },
+        CatalogEntry {
+            accepted_struct: Some("leaf:string".to_string()),
+            ..entry(
+                CatalogEntryKind::ResourceMember,
+                "app::Book::title",
+                "cat_00000000000000000000000000000003",
+                &[],
+            )
+        },
+    ]));
     let snapshot = analyze_project(
         &root,
         &config(),
         &ProjectSources::new(),
-        Some(
-            &marrow_catalog::CatalogMetadata::from_json(
-                &std::fs::read_to_string(catalog_path(&root)).expect("read catalog"),
-            )
-            .expect("catalog parses"),
-        ),
+        Some(&accepted),
         None,
     )
     .expect("stable analysis");
     assert_clean(&snapshot.report);
+    assert_eq!(
+        snapshot.program.facts.surfaces()[0].catalog_status,
+        SurfaceCatalogStatus::Stable,
+        "store-resident identity makes the surface part of the stable ABI"
+    );
 
     assert_eq!(
         update_tag(&snapshot),
@@ -1573,7 +1605,27 @@ surface Books from ^books
     fields title, author
     update title, author
 ";
-    let (root, snapshot) = stable_snapshot("surface-update-abi-labels", source);
+    let root = temp_project("surface-update-abi-labels", |root| {
+        write(root, "src/app.mw", source)
+    });
+    let (baseline_report, baseline_program) =
+        check_project(&root, &config()).expect("baseline check");
+    assert_clean(&baseline_report);
+    let accepted = store_resident(
+        &baseline_program
+            .catalog
+            .proposal
+            .expect("first run proposes catalog ids"),
+    );
+    let snapshot = analyze_project(
+        &root,
+        &config(),
+        &ProjectSources::new(),
+        Some(&accepted),
+        None,
+    )
+    .expect("stable analysis");
+    assert_clean(&snapshot.report);
     let original_descriptor = snapshot
         .surface_update_operations()
         .next()
@@ -1600,10 +1652,6 @@ surface Library from ^books
     update author, title
 ",
     );
-    let accepted = marrow_catalog::CatalogMetadata::from_json(
-        &std::fs::read_to_string(catalog_path(&root)).expect("read catalog"),
-    )
-    .expect("catalog parses");
     let renamed = analyze_project(
         &root,
         &config(),

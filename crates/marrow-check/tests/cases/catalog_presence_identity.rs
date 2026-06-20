@@ -9,8 +9,9 @@ use support::{check_with_accepted, config, temp_project, write};
 
 /// The baseline accepted catalog a state-establishing flow freezes for the project under
 /// `root`: the proposal a first-run check produces. A real run commits this snapshot in
-/// the store transaction, then renders `marrow.catalog.json`; this checker test reads it
-/// straight off the proposal and passes it as caller-supplied analysis input.
+/// the store transaction, then projects the committed store snapshot into `marrow.lock`;
+/// this checker test reads it straight off the proposal and passes it as caller-supplied
+/// analysis input.
 fn commit_baseline(root: &Path) -> CatalogMetadata {
     let (report, program) =
         check_project_with_catalog(root, &config(), None).expect("first-run check");
