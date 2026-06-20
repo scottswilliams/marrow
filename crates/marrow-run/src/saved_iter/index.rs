@@ -7,19 +7,17 @@ use marrow_syntax::SourceSpan;
 use crate::collection::Direction;
 use crate::durable_read::read_resource;
 use crate::env::{Env, Flow, TraversedLayer};
-use crate::error::{Located, RuntimeError, unsupported};
+use crate::error::RuntimeError;
 use crate::read::{
-    INDEX_SCAN_PAGE_LIMIT, IndexBranchAddress, collected_identity_value, first_index_child,
-    next_index_child, validate_index_branch_yield, validate_scanned_index_entry,
-    validate_walked_index_identity_entries,
+    IndexBranchAddress, collected_identity_value, first_index_child, next_index_child,
+    stream_index_branch,
 };
 
-use super::{ChildCursor, LoopShape, SavedLoopRow, SavedLoopSpec, shape_row, walk_keyed_children};
+use super::{ChildCursor, LoopShape, SavedLoopRow, SavedLoopSpec, shape_row};
 
 pub(super) struct IndexScan {
     place: CheckedSavedPlace,
     branch: IndexBranchAddress,
-    yields_identity: bool,
     dir: Direction,
     shape: LoopShape,
     span: SourceSpan,
@@ -33,7 +31,6 @@ impl IndexScan {
     ) -> Self {
         Self {
             place: place.clone(),
-            yields_identity: branch.yields_identity,
             branch,
             dir: spec.dir,
             shape: spec.shape,
@@ -50,67 +47,27 @@ impl IndexScan {
         env: &mut Env<'_>,
         visit: &mut impl FnMut(SavedLoopRow, &mut Env<'_>) -> Result<ControlFlow<Flow>, RuntimeError>,
     ) -> Result<Flow, RuntimeError> {
-        let mut visit_keys =
-            |keys: Vec<SavedKey>, env: &mut Env<'_>| self.visit_keys(keys, env, visit);
-        if self.branch.depth == 0 {
-            return stream_exact_index_tuple(
-                &self.place,
-                &self.branch,
-                self.dir,
-                self.span,
-                env,
-                &mut visit_keys,
-            );
-        }
-        let identity_prefix = self
-            .branch
-            .arg_keys
-            .get(self.branch.identity_start..)
-            .map_or_else(Vec::new, |keys| keys.to_vec());
-        let cursor = IndexCursor::new(&self.branch.index.index, self.dir, self.span);
-        walk_keyed_children(
-            &cursor,
-            self.branch.depth,
-            &self.branch.arg_keys,
-            &identity_prefix,
+        stream_index_branch(
+            &self.place,
+            &self.branch,
+            self.dir,
+            self.span,
             env,
-            &mut visit_keys,
+            &mut |identity: Vec<SavedKey>, env: &mut Env<'_>| {
+                self.yield_identity(identity, env, visit)
+            },
         )
     }
 
-    fn visit_keys(
+    fn yield_identity(
         &self,
-        keys: Vec<SavedKey>,
+        identity: Vec<SavedKey>,
         env: &mut Env<'_>,
         visit: &mut impl FnMut(SavedLoopRow, &mut Env<'_>) -> Result<ControlFlow<Flow>, RuntimeError>,
     ) -> Result<ControlFlow<Flow>, RuntimeError> {
-        if self.branch.depth > 0 && self.yields_identity {
-            validate_walked_index_identity_entries(
-                &self.place,
-                &self.branch,
-                &keys,
-                self.span,
-                env,
-            )?;
-        }
-        let decoded =
-            validate_index_branch_yield(&self.place, &self.branch, &keys, self.span, env)?;
-        let key = if self.yields_identity {
-            collected_identity_value(&keys, Some(&self.place.root), self.span)?
-        } else if let Some(value) = decoded {
-            value
-        } else {
-            collected_identity_value(&keys, None, self.span)?
-        };
+        let key = collected_identity_value(&identity, Some(&self.place.root), self.span)?;
         let row = shape_row(self.shape, key, || {
-            if self.yields_identity {
-                read_resource(&self.place, &keys, self.span, env)
-            } else {
-                Err(unsupported(
-                    "values/entries over this index branch",
-                    self.span,
-                ))
-            }
+            read_resource(&self.place, &identity, self.span, env)
         })?;
         visit(row, env)
     }
@@ -149,82 +106,4 @@ impl ChildCursor for IndexCursor<'_> {
     ) -> Result<Option<SavedKey>, RuntimeError> {
         next_index_child(env.store, self.index, prefix, anchor, self.dir, self.span)
     }
-}
-
-fn stream_exact_index_tuple(
-    place: &CheckedSavedPlace,
-    branch: &IndexBranchAddress,
-    dir: Direction,
-    span: SourceSpan,
-    env: &mut Env<'_>,
-    visit: &mut impl FnMut(Vec<SavedKey>, &mut Env<'_>) -> Result<ControlFlow<Flow>, RuntimeError>,
-) -> Result<Flow, RuntimeError> {
-    let mut page = match (&branch.range, dir) {
-        (Some(range), Direction::Ascending) => env
-            .store
-            .scan_index_range(
-                &branch.index.index,
-                &branch.arg_keys,
-                range,
-                INDEX_SCAN_PAGE_LIMIT,
-            )
-            .map_err(|error| error.located(span))?,
-        (Some(range), Direction::Descending) => env
-            .store
-            .scan_index_range_reverse(
-                &branch.index.index,
-                &branch.arg_keys,
-                range,
-                INDEX_SCAN_PAGE_LIMIT,
-            )
-            .map_err(|error| error.located(span))?,
-        (None, _) => env
-            .store
-            .scan_index_tuple(&branch.index.index, &branch.arg_keys, INDEX_SCAN_PAGE_LIMIT)
-            .map_err(|error| error.located(span))?,
-    };
-    loop {
-        for entry in page.entries {
-            validate_scanned_index_entry(place, branch, &entry, span, env)?;
-            match visit(entry.identity, env)? {
-                ControlFlow::Continue(()) => {}
-                ControlFlow::Break(flow) => return Ok(flow),
-            }
-        }
-        let Some(cursor) = page.cursor else {
-            break;
-        };
-        page = match (&branch.range, dir) {
-            (Some(range), Direction::Ascending) => env
-                .store
-                .scan_index_range_after(
-                    &branch.index.index,
-                    &branch.arg_keys,
-                    range,
-                    &cursor,
-                    INDEX_SCAN_PAGE_LIMIT,
-                )
-                .map_err(|error| error.located(span))?,
-            (Some(range), Direction::Descending) => env
-                .store
-                .scan_index_range_before(
-                    &branch.index.index,
-                    &branch.arg_keys,
-                    range,
-                    &cursor,
-                    INDEX_SCAN_PAGE_LIMIT,
-                )
-                .map_err(|error| error.located(span))?,
-            (None, _) => env
-                .store
-                .scan_index_tuple_after(
-                    &branch.index.index,
-                    &branch.arg_keys,
-                    &cursor,
-                    INDEX_SCAN_PAGE_LIMIT,
-                )
-                .map_err(|error| error.located(span))?,
-        };
-    }
-    Ok(Flow::Normal)
 }

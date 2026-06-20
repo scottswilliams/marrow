@@ -161,7 +161,6 @@ impl<'a> SavedPlaceResolver<'a> {
             return None;
         };
         (args.len() <= *arg_count).then_some(IndexBranchInfo {
-            place,
             name,
             unique: *unique,
             arg_count: args.len(),
@@ -169,17 +168,11 @@ impl<'a> SavedPlaceResolver<'a> {
         })
     }
 
+    /// A non-unique index branch always yields the store identity in its branch,
+    /// so any partial prefix supports identity reads and two-name resource loops.
     pub(crate) fn non_unique_index_branch_yields_identity(&self, expr: &CheckedExpr) -> bool {
-        let Some(info) = self.index_branch_info(expr) else {
-            return false;
-        };
-        if info.unique {
-            return false;
-        }
-        let identity_start = info
-            .key_count
-            .saturating_sub(info.place.identity_keys.len());
-        info.arg_count >= identity_start
+        self.index_branch_info(expr)
+            .is_some_and(|info| !info.unique)
     }
 
     pub(crate) fn saved_key_params<'p>(
@@ -356,25 +349,10 @@ impl<'a> SavedPlaceResolver<'a> {
                 .then(|| checked_key_param_type(&place.identity_keys[position]))
                 .flatten()
             }
-            CheckedSavedTerminal::Index {
-                args,
-                unique,
-                arg_count,
-                ..
-            } => {
-                if *unique {
-                    return Some(MarrowType::Identity(place.root.clone()));
-                }
-                let identity_start = arg_count.saturating_sub(place.identity_keys.len());
-                if args.len() < identity_start {
-                    let index = self.terminal_index(place)?;
-                    return index
-                        .keys
-                        .get(args.len())
-                        .map(|key| self.index_key_type(key));
-                }
-                Some(MarrowType::Identity(place.root.clone()))
-            }
+            // A non-unique index branch streams the store identity stored in
+            // that branch regardless of how many leading components were pinned,
+            // so a single-name loop over any partial prefix binds an identity.
+            CheckedSavedTerminal::Index { .. } => Some(MarrowType::Identity(place.root.clone())),
             CheckedSavedTerminal::Field { .. } => None,
         }
     }
@@ -420,13 +398,6 @@ impl<'a> SavedPlaceResolver<'a> {
             _ => return None,
         };
         args.iter().position(|arg| checked_range_expr(&arg.value))
-    }
-
-    fn terminal_index<'p>(&self, place: &'p CheckedSavedPlace) -> Option<&'p CheckedSavedIndex> {
-        let CheckedSavedTerminal::Index { name, .. } = &place.terminal else {
-            return None;
-        };
-        place.indexes.iter().find(|index| index.name == *name)
     }
 
     fn leaf_type(&self, leaf: &StoreLeafKind) -> Option<MarrowType> {
@@ -765,7 +736,6 @@ fn checked_key_param_type(key: &CheckedSavedKeyParam) -> Option<MarrowType> {
 }
 
 pub(crate) struct IndexBranchInfo<'p> {
-    pub(crate) place: &'p CheckedSavedPlace,
     pub(crate) name: &'p str,
     pub(crate) unique: bool,
     pub(crate) arg_count: usize,

@@ -55,7 +55,7 @@ pub(super) fn shape_row(
 
 /// One keyed level of a saved-tree child walk. Record and index iteration share
 /// this first/next contract; only the cell kind they address differs.
-pub(super) trait ChildCursor {
+pub(crate) trait ChildCursor {
     fn first(
         &self,
         env: &mut Env<'_>,
@@ -75,7 +75,7 @@ pub(super) trait ChildCursor {
 /// separately so an index walk can seek over its full argument-plus-identity prefix
 /// while yielding only the identity suffix; a record walk passes the same slice for
 /// both. A `Break` from `visit` stops the whole walk.
-pub(super) fn walk_keyed_children(
+pub(crate) fn walk_keyed_children(
     cursor: &dyn ChildCursor,
     depth: usize,
     query_prefix: &[SavedKey],

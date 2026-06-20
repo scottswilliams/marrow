@@ -818,15 +818,18 @@ fn named_saved_index_key_arguments_are_rejected() {
 }
 
 #[test]
-fn partial_non_unique_index_branches_bind_the_next_index_key_until_identity_suffix() {
+fn partial_non_unique_index_branches_bind_the_store_identity() {
+    // Every single-name loop over a non-unique index branch binds the store
+    // identity it streams, whether the prefix is empty, partial, or the full
+    // field prefix; it never binds an intermediate index field.
     let report = check_module_report(
         "partial-index-loop",
         "module m\n\
          resource Book\n    author: string\n    shelf: string\n\
          store ^books(id: int): Book\n\n    index byAuthorShelf(author, shelf, id)\n\n\
          fn f()\n    \
-         for author in ^books.byAuthorShelf\n        var typed_author: string = author\n    \
-         for shelf in ^books.byAuthorShelf(\"ann\")\n        var typed_shelf: string = shelf\n    \
+         for id in ^books.byAuthorShelf\n        var bare_id: Id(^books) = id\n    \
+         for id in ^books.byAuthorShelf(\"ann\")\n        var prefix_id: Id(^books) = id\n    \
          for id in ^books.byAuthorShelf(\"ann\", \"fiction\")\n        var typed_id: Id(^books) = id\n",
     );
     assert_clean(&report);
@@ -1071,16 +1074,17 @@ fn identity_yielding_index_branches_bind_identity_and_resource_pairs() {
 }
 
 #[test]
-fn non_identity_index_branches_reject_two_name_loops() {
-    let found = check_module(
-        "non-identity-index-pair-loop",
+fn partial_non_unique_index_branches_accept_two_name_loops() {
+    // A partial prefix over a non-unique index yields the store identity, so a
+    // two-name loop pairs that identity with the materialized record.
+    let report = check_module_report(
+        "partial-index-pair-loop",
         "module m\n\
          resource Book\n    author: string\n    shelf: string\n\
          store ^books(id: int): Book\n\n    index byAuthorShelf(author, shelf, id)\n\n\
-         fn f()\n    for shelf, book in ^books.byAuthorShelf(\"ann\")\n        print($\"{shelf}\")\n",
-        "check.collection_unsupported",
+         fn f()\n    for id, book in ^books.byAuthorShelf(\"ann\")\n        var typed_id: Id(^books) = id\n        print($\"{book.shelf}\")\n",
     );
-    assert_eq!(found.len(), 1, "{found:#?}");
+    assert_clean(&report);
 }
 
 #[test]

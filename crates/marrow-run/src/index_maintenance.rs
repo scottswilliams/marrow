@@ -248,6 +248,37 @@ pub(crate) fn stage_field_index_deletes(
     Ok(())
 }
 
+/// Write the entry for every index keyed solely by identity components. These
+/// indexes mention no resource field, so a field write never lists them, yet
+/// they exist whenever the record does. Writing them idempotently on each
+/// record-establishing write keeps incremental maintenance in step with a bulk
+/// restore rebuild, which populates them from identity alone.
+pub(crate) fn stage_identity_only_index_writes(
+    steps: &mut Vec<PlanStep>,
+    context: IndexWriteContext<'_>,
+) -> Result<(), WriteError> {
+    for index in &context.place.indexes {
+        if index.unique || !index_is_identity_only(index) {
+            continue;
+        }
+        if let Some(keys) = stored_index_keys(&index.keys, context)? {
+            steps.push(PlanStep::WriteIndex {
+                address: index_address(index, keys, context.span)?,
+                identity: context.identity.to_vec(),
+                value: index_entry_value(index.unique, context.identity),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn index_is_identity_only(index: &CheckedSavedIndex) -> bool {
+    index
+        .keys
+        .iter()
+        .all(|key| matches!(key.source, StoreIndexKeySource::IdentityKey))
+}
+
 fn stage_field_index_rewrites_for_value(
     steps: &mut Vec<PlanStep>,
     context: IndexWriteContext<'_>,

@@ -115,7 +115,7 @@ fn eval_saved_append(
         return Err(unsupported("appending to this layer", span));
     };
     entry_layer.keys = vec![SavedKey::Int(pos)];
-    let plan = plan_layer_leaf_write(place, &identity, &entry_layers, &saved, span);
+    let plan = plan_layer_leaf_write(place, &identity, &entry_layers, &saved, env.store, span);
     env.apply_plan(plan, span)?;
     Ok(Value::Int(pos))
 }

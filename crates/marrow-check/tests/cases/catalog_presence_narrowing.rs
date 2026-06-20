@@ -612,10 +612,14 @@ fn exact_non_unique_index_loop_over_composite_root_narrows_identity_reads() {
 }
 
 #[test]
-fn non_unique_index_prefix_loop_does_not_narrow_record_identity_reads() {
-    assert_bare_present_read(
-        "presence-index-prefix-loop-not-identity",
-        "module books\n\
+fn bare_non_unique_index_loop_narrows_record_identity_reads() {
+    // A bare loop over a non-unique index streams store identities of records
+    // with that field populated, so the whole-record read is proven present.
+    let root = temp_project("presence-index-bare-loop-identity", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
              resource Book\n\
              \x20   required title: string\n\
              \x20   category: string\n\
@@ -625,7 +629,12 @@ fn non_unique_index_prefix_loop_does_not_narrow_record_identity_reads() {
              \x20   for id in ^books.byCategory\n\
              \x20       const book: Book = ^books(id)\n\
              \x20       print(book.title)\n",
-    );
+        );
+    });
+
+    let (report, _program) = check_project(&root, &config()).expect("check");
+
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
 }
 
 #[test]

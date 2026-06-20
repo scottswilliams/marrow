@@ -182,12 +182,12 @@ pub(super) fn index_traversal_yields_identity(place: &CheckedSavedPlace) -> bool
     else {
         return false;
     };
-    let index_key_count = index.keys.len();
     if *unique {
-        return args.len() == index_key_count;
+        return args.len() == index.keys.len();
     }
-    let identity_start = index_key_count.saturating_sub(place.identity_keys.len());
-    args.len() >= identity_start
+    // A non-unique index branch always streams the store identity, for any
+    // partial prefix down to the full one.
+    true
 }
 
 pub(super) fn invalidate_removed_narrowings(

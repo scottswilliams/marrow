@@ -14,8 +14,8 @@ use crate::path::{lower, lower_keys};
 use crate::store::{DataAddress, LayerAddress};
 use crate::value::{Value, identity_keys_of, value_to_leaf};
 use crate::write::{
-    plan_layer_group_write, plan_layer_identity_leaf_write, plan_layer_leaf_write,
-    validate_required_fields_after_group_write,
+    ReferencedIdentity, plan_layer_group_write, plan_layer_identity_leaf_write,
+    plan_layer_leaf_write, validate_required_fields_after_group_write,
 };
 use crate::write_dispatch::{created_required_paths_for_value, resource_value_of};
 
@@ -91,14 +91,24 @@ fn write_layer_leaf(
                 target.place,
                 target.identity,
                 &layers,
-                &keys,
-                *arity,
+                ReferencedIdentity {
+                    keys: &keys,
+                    referenced_arity: *arity,
+                },
+                env.store,
                 target.span,
             )
         }
         StoreLeafKind::Scalar(_) | StoreLeafKind::Enum { .. } => {
             let saved = value_to_leaf(value, leaf, target.span)?;
-            plan_layer_leaf_write(target.place, target.identity, &layers, &saved, target.span)
+            plan_layer_leaf_write(
+                target.place,
+                target.identity,
+                &layers,
+                &saved,
+                env.store,
+                target.span,
+            )
         }
     };
     env.apply_plan(plan, target.span)
@@ -131,7 +141,14 @@ fn write_direct_group_entry(
         target.span,
         env,
     )?;
-    let plan = plan_layer_group_write(target.place, target.identity, &layers, &value, target.span);
+    let plan = plan_layer_group_write(
+        target.place,
+        target.identity,
+        &layers,
+        &value,
+        env.store,
+        target.span,
+    );
     let plan = if env.transaction_depth() == 0 {
         plan.and_then(|plan| {
             validate_required_fields_after_group_write(

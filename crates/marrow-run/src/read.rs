@@ -1,5 +1,7 @@
 //! Saved-data reads and layer/index enumeration.
 
+use std::ops::ControlFlow;
+
 use marrow_check::{
     CheckedBuiltinCall, CheckedCallTarget, CheckedExpr as ExecExpr, CheckedSavedKeyParam,
     CheckedSavedPlace, CheckedSavedTerminal, StoredValueMeaning,
@@ -11,14 +13,17 @@ use marrow_store::value::{ScalarType, scalar_key_matches_type, validate_scalar_k
 use marrow_syntax::SourceSpan;
 
 use crate::collection::Direction;
-use crate::env::Env;
+use crate::env::{Env, Flow};
 use crate::error::{
     Located, RUN_ABSENT, RuntimeError, overflow, raise_fault, type_error, unsupported,
 };
 use crate::expr::eval_expr;
 use crate::path::{direct_root_place, guard_key_type, lower, lower_keys};
 use crate::range_expr::checked_range;
-use crate::saved_iter::{IndexCursor, RecordCursor, count_keyed_children};
+use crate::saved_iter::{
+    ChildCursor, IndexCursor, KeyedChildrenWalk, RecordCursor, count_keyed_children,
+    walk_keyed_children_after,
+};
 use crate::store::{DataAddress, IndexAddress, LayerAddress};
 use crate::value::{
     Value, index_key_to_value, saved_key_to_value, validate_place_identity_keys,
@@ -60,14 +65,29 @@ pub(crate) fn keys_argument(expr: &ExecExpr) -> Option<&ExecExpr> {
     }
 }
 
+/// An ordered range supplied for the final scanned index component. A scalar
+/// component sorts by its order-preserving key bytes, so the store scans a byte
+/// range directly. Enum components are stored as content-independent member ids
+/// whose bytes do not follow the declared order, so the range resolves to the
+/// in-range members in declaration order and each is scanned as an exact key.
+pub(crate) enum IndexRange {
+    Scalar(IndexRangeBounds),
+    EnumMembers(Vec<SavedKey>),
+}
+
+/// A non-unique index branch addressed for iteration, counting, or presence.
+/// `arg_keys` are the exact leading components the caller pinned; `walk_depth` is
+/// the number of levels still to walk below them and below an enum-range member;
+/// `range` bounds the position after `arg_keys` when the caller supplied an
+/// ordered range. Every visited entry is a full index tuple, and its store
+/// identity is the suffix at `identity_start..`.
 pub(crate) struct IndexBranchAddress {
     pub(crate) index: IndexAddress,
     pub(crate) arg_keys: Vec<SavedKey>,
-    pub(crate) range: Option<IndexRangeBounds>,
+    pub(crate) range: Option<IndexRange>,
     pub(crate) key_meanings: Vec<StoredValueMeaning>,
     pub(crate) identity_start: usize,
-    pub(crate) depth: usize,
-    pub(crate) yields_identity: bool,
+    pub(crate) walk_depth: usize,
 }
 
 #[derive(Clone)]
@@ -191,7 +211,6 @@ fn iterable_index_branch(
         .ok_or_else(|| unsupported("this index lookup", span))?;
     let mut arg_keys = Vec::new();
     let mut range = None;
-    let mut range_position = None;
     for (position, arg) in args.iter().enumerate() {
         if arg.name.is_some() {
             return Err(unsupported("an index lookup with named arguments", span));
@@ -200,7 +219,6 @@ fn iterable_index_branch(
             index_range_bounds(&arg.value, &index.keys[position].value_meaning, span, env)?
         {
             range = Some(bounds);
-            range_position = Some(position);
             break;
         }
         let key = value_to_index_key(
@@ -210,15 +228,29 @@ fn iterable_index_branch(
         )?;
         arg_keys.push(key);
     }
+    // A bare or partial-prefix walk whose leading unpinned component is an enum
+    // must stream that level in declared ordinal order, not the member-id byte
+    // order a raw cursor would yield. Treating it as a full-member range routes it
+    // through the same ordinal walk a ranged enum scan uses, so bare and ranged
+    // agree.
+    if range.is_none()
+        && let Some(StoredValueMeaning::Enum { members, .. }) =
+            index.keys.get(arg_keys.len()).map(|key| &key.value_meaning)
+    {
+        range = Some(IndexRange::EnumMembers(enum_member_keys(
+            members, span, env,
+        )?));
+    }
     let identity_start = arg_count.saturating_sub(place.identity_keys.len());
-    let depth = if args.len() < identity_start {
-        1
-    } else {
-        arg_count.saturating_sub(args.len())
+    // Levels still to walk below the exact prefix. A scalar range pins its
+    // position to a single byte span, so the store scans it without a walk; an
+    // enum range consumes one extra level per member; otherwise the loop walks
+    // from the exact prefix down to the leaf.
+    let walk_depth = match &range {
+        Some(IndexRange::Scalar(_)) => 0,
+        Some(IndexRange::EnumMembers(_)) => arg_count.saturating_sub(arg_keys.len() + 1),
+        None => arg_count.saturating_sub(arg_keys.len()),
     };
-    let yields_identity = range_position
-        .map(|position| position + 1 >= identity_start)
-        .unwrap_or(args.len() >= identity_start);
     Ok(Some(IndexBranchAddress {
         index: IndexAddress::from_place(place, name, arg_keys.clone(), span)?,
         arg_keys,
@@ -229,20 +261,22 @@ fn iterable_index_branch(
             .map(|key| key.value_meaning.clone())
             .collect(),
         identity_start,
-        depth: if range_position.is_some() { 0 } else { depth },
-        yields_identity,
+        walk_depth,
     }))
 }
 
 fn index_range_bounds(
     expr: &ExecExpr,
-    meaning: &marrow_check::StoredValueMeaning,
+    meaning: &StoredValueMeaning,
     span: SourceSpan,
     env: &mut Env<'_>,
-) -> Result<Option<IndexRangeBounds>, RuntimeError> {
+) -> Result<Option<IndexRange>, RuntimeError> {
     let Some(range) = checked_range(expr) else {
         return Ok(None);
     };
+    if let StoredValueMeaning::Enum { members, .. } = meaning {
+        return enum_range_members(&range, members, span, env).map(Some);
+    }
     let lower = match range.start {
         Some(start) => Some(value_to_index_key(eval_expr(start, env)?, meaning, span)?),
         None => None,
@@ -251,11 +285,80 @@ fn index_range_bounds(
         Some(end) => Some(value_to_index_key(eval_expr(end, env)?, meaning, span)?),
         None => None,
     };
-    Ok(Some(IndexRangeBounds {
+    Ok(Some(IndexRange::Scalar(IndexRangeBounds {
         lower,
         upper,
         upper_inclusive: range.inclusive_end,
-    }))
+    })))
+}
+
+/// Resolve an ordered enum range to the in-range members in declaration order.
+/// The store keys enum components by content-independent member ids, which do
+/// not sort by ordinal, so an open bound spans every declared member rather than
+/// a key-byte tail. Each kept member becomes an exact lookup key.
+fn enum_range_members(
+    range: &crate::range_expr::CheckedRange<'_>,
+    members: &[marrow_check::EnumMemberId],
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<IndexRange, RuntimeError> {
+    let ordinal = |expr: &ExecExpr, env: &mut Env<'_>| -> Result<usize, RuntimeError> {
+        let Value::Enum(value) = eval_expr(expr, env)? else {
+            return Err(type_error(
+                "this index range bound takes an enum value",
+                span,
+            ));
+        };
+        members
+            .iter()
+            .position(|member| *member == value.member_id())
+            .ok_or_else(|| type_error("this index range bound takes a different enum", span))
+    };
+    let start = match range.start {
+        Some(start) => ordinal(start, env)?,
+        None => 0,
+    };
+    let end = match range.end {
+        Some(end) => {
+            let position = ordinal(end, env)?;
+            if range.inclusive_end {
+                position + 1
+            } else {
+                position
+            }
+        }
+        None => members.len(),
+    };
+    let in_range = members.get(start..end.min(members.len())).unwrap_or(&[]);
+    Ok(IndexRange::EnumMembers(enum_member_keys(
+        in_range, span, env,
+    )?))
+}
+
+/// Resolve a declared enum-member list to the index keys an enum component holds,
+/// in the given declaration order. The store keys an enum component by each
+/// member's content-independent committed id, so iterating an enum level in
+/// ordinal order means scanning these member keys in turn — the one owner shared
+/// by a ranged enum scan and a bare enum-led walk.
+fn enum_member_keys(
+    members: &[marrow_check::EnumMemberId],
+    span: SourceSpan,
+    env: &Env<'_>,
+) -> Result<Vec<SavedKey>, RuntimeError> {
+    members
+        .iter()
+        .map(|member| {
+            let catalog_id = env
+                .program
+                .facts()
+                .enum_member(*member)
+                .and_then(|member| member.catalog_id.clone())
+                .ok_or_else(|| {
+                    type_error("this enum index component has no committed member", span)
+                })?;
+            Ok(SavedKey::Str(catalog_id))
+        })
+        .collect()
 }
 
 pub(crate) fn key_range_bounds(
@@ -400,128 +503,250 @@ fn count_index_branch(
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<usize, RuntimeError> {
-    if branch.depth == 0 {
-        return count_exact_index_tuple(place, branch, span, env);
-    }
-    let cursor = IndexCursor::new(&branch.index.index, Direction::Ascending, span);
-    count_keyed_children(
-        &cursor,
-        branch.depth,
-        &branch.arg_keys,
-        env,
+    let mut count = 0usize;
+    stream_index_branch(
+        place,
+        branch,
+        Direction::Ascending,
         span,
-        |keys, env| {
-            validate_walked_index_branch_yield(place, branch, keys, span, env)?;
-            Ok(1)
+        env,
+        &mut |_, _| {
+            count = count.checked_add(1).ok_or_else(|| overflow(span))?;
+            Ok(ControlFlow::Continue(()))
+        },
+    )?;
+    Ok(count)
+}
+
+/// Stream the store identities a non-unique index branch yields, in `dir` order,
+/// validating each entry. A scalar range scans an order-preserving key-byte span;
+/// an enum range walks each in-range member in declaration order; a plain branch
+/// walks every level below the exact prefix. The identity is the trailing
+/// `identity_start..` suffix of the full index tuple, and a corrupt or stale
+/// entry fails closed rather than yielding a wrong identity.
+pub(crate) fn stream_index_branch(
+    place: &CheckedSavedPlace,
+    branch: &IndexBranchAddress,
+    dir: Direction,
+    span: SourceSpan,
+    env: &mut Env<'_>,
+    visit: &mut impl FnMut(Vec<SavedKey>, &mut Env<'_>) -> Result<ControlFlow<Flow>, RuntimeError>,
+) -> Result<Flow, RuntimeError> {
+    match &branch.range {
+        Some(IndexRange::Scalar(range)) => {
+            scan_scalar_range(place, branch, range, dir, span, env, visit)
+        }
+        Some(IndexRange::EnumMembers(members)) => {
+            reject_unknown_enum_member_children(branch, span, env)?;
+            for member in members_in_dir(members, dir) {
+                let mut prefix = branch.arg_keys.clone();
+                prefix.push(member);
+                if let ControlFlow::Break(flow) =
+                    walk_index_prefix(place, branch, &prefix, dir, span, env, visit)?
+                {
+                    return Ok(flow);
+                }
+            }
+            Ok(Flow::Normal)
+        }
+        None => match walk_index_prefix(place, branch, &branch.arg_keys, dir, span, env, visit)? {
+            ControlFlow::Continue(()) => Ok(Flow::Normal),
+            ControlFlow::Break(flow) => Ok(flow),
+        },
+    }
+}
+
+fn members_in_dir(members: &[SavedKey], dir: Direction) -> Vec<SavedKey> {
+    match dir {
+        Direction::Ascending => members.to_vec(),
+        Direction::Descending => members.iter().rev().cloned().collect(),
+    }
+}
+
+/// Fail closed when the enum level holds a physical child that is not a declared
+/// member of the type. Scanning the enum level by its declared members streams it
+/// in ordinal order, but it would also silently skip a corrupt or stale member id
+/// the type never declared; this guard rescans the physical children once so such
+/// an entry raises a typed fault rather than vanishing from the result. It
+/// validates against every declared member, not the in-range subset, so a valid
+/// member outside a partial range is kept while a corrupt one still fails closed.
+fn reject_unknown_enum_member_children(
+    branch: &IndexBranchAddress,
+    span: SourceSpan,
+    env: &Env<'_>,
+) -> Result<(), RuntimeError> {
+    let level = branch.arg_keys.len();
+    let Some(StoredValueMeaning::Enum { members, .. }) = branch.key_meanings.get(level) else {
+        return Ok(());
+    };
+    let declared = enum_member_keys(members, span, env)?;
+    let index = &branch.index.index;
+    let prefix = &branch.arg_keys;
+    let mut child = first_index_child(env.store, index, prefix, Direction::Ascending, span)?;
+    while let Some(key) = child {
+        if !declared.contains(&key) {
+            return Err(type_error(
+                "stored enum index component is not a declared member",
+                span,
+            ));
+        }
+        child = next_index_child(env.store, index, prefix, &key, Direction::Ascending, span)?;
+    }
+    Ok(())
+}
+
+/// Walk `branch.walk_depth` levels below `prefix`, yielding the store identity of
+/// each leaf entry. `prefix` is the exact argument keys, with an enum-range
+/// member already appended when present. A fully pinned tuple (`walk_depth == 0`)
+/// is read as an exact index entry rather than walked.
+fn walk_index_prefix(
+    place: &CheckedSavedPlace,
+    branch: &IndexBranchAddress,
+    prefix: &[SavedKey],
+    dir: Direction,
+    span: SourceSpan,
+    env: &mut Env<'_>,
+    visit: &mut impl FnMut(Vec<SavedKey>, &mut Env<'_>) -> Result<ControlFlow<Flow>, RuntimeError>,
+) -> Result<ControlFlow<Flow>, RuntimeError> {
+    if branch.walk_depth == 0 {
+        return scan_exact_index_tuple(place, branch, prefix, span, env, visit);
+    }
+    // Preserve the loop's `ControlFlow<Flow>` rather than collapsing it to a bare
+    // `Flow`: when this walk is one in-range enum member among several, the member
+    // loop in `stream_index_branch` must distinguish a body `break` (which stops
+    // the whole walk) from the member's natural completion (which advances to the
+    // next member).
+    let cursor = IndexCursor::new(&branch.index.index, dir, span);
+    walk_keyed_children_after(
+        env,
+        KeyedChildrenWalk {
+            depth: branch.walk_depth,
+            query_prefix: prefix,
+            identity_prefix: prefix,
+            after_identity: None,
+        },
+        &mut |env: &mut Env<'_>, prefix: &[SavedKey]| cursor.first(env, prefix),
+        &mut |env: &mut Env<'_>, prefix: &[SavedKey], anchor: &SavedKey| {
+            cursor.next(env, prefix, anchor)
+        },
+        &mut |tuple: Vec<SavedKey>, env: &mut Env<'_>| {
+            let identity = walked_index_tuple_identity(place, branch, &tuple, span, env)?;
+            visit(identity, env)
         },
     )
 }
 
-fn count_exact_index_tuple(
+/// Read the exact index entry at a fully pinned tuple, yielding its store
+/// identity. A non-unique index tuple is distinct per entry, so a corrupt sibling
+/// under the same key fails closed in `validate_scanned_index_entry`.
+fn scan_exact_index_tuple(
     place: &CheckedSavedPlace,
     branch: &IndexBranchAddress,
+    tuple: &[SavedKey],
     span: SourceSpan,
-    env: &Env<'_>,
-) -> Result<usize, RuntimeError> {
-    let mut count = 0usize;
-    let mut page = match &branch.range {
-        Some(range) => env.store.scan_index_range(
-            &branch.index.index,
-            &branch.arg_keys,
-            range,
-            INDEX_SCAN_PAGE_LIMIT,
-        ),
-        None => {
+    env: &mut Env<'_>,
+    visit: &mut impl FnMut(Vec<SavedKey>, &mut Env<'_>) -> Result<ControlFlow<Flow>, RuntimeError>,
+) -> Result<ControlFlow<Flow>, RuntimeError> {
+    let mut page = env
+        .store
+        .scan_index_tuple(&branch.index.index, tuple, INDEX_SCAN_PAGE_LIMIT)
+        .map_err(|error| error.located(span))?;
+    loop {
+        for entry in std::mem::take(&mut page.entries) {
+            validate_scanned_index_entry(place, branch, &entry, span, env)?;
+            if let ControlFlow::Break(flow) = visit(entry.identity, env)? {
+                return Ok(ControlFlow::Break(flow));
+            }
+        }
+        let Some(cursor) = page.cursor else {
+            return Ok(ControlFlow::Continue(()));
+        };
+        page = env
+            .store
+            .scan_index_tuple_after(&branch.index.index, tuple, &cursor, INDEX_SCAN_PAGE_LIMIT)
+            .map_err(|error| error.located(span))?;
+    }
+}
+
+fn scan_scalar_range(
+    place: &CheckedSavedPlace,
+    branch: &IndexBranchAddress,
+    range: &IndexRangeBounds,
+    dir: Direction,
+    span: SourceSpan,
+    env: &mut Env<'_>,
+    visit: &mut impl FnMut(Vec<SavedKey>, &mut Env<'_>) -> Result<ControlFlow<Flow>, RuntimeError>,
+) -> Result<Flow, RuntimeError> {
+    let index = &branch.index.index;
+    let prefix = &branch.arg_keys;
+    let mut page = match dir {
+        Direction::Ascending => {
             env.store
-                .scan_index_tuple(&branch.index.index, &branch.arg_keys, INDEX_SCAN_PAGE_LIMIT)
+                .scan_index_range(index, prefix, range, INDEX_SCAN_PAGE_LIMIT)
+        }
+        Direction::Descending => {
+            env.store
+                .scan_index_range_reverse(index, prefix, range, INDEX_SCAN_PAGE_LIMIT)
         }
     }
     .map_err(|error| error.located(span))?;
     loop {
-        for entry in &page.entries {
-            validate_scanned_index_entry(place, branch, entry, span, env)?;
+        for entry in std::mem::take(&mut page.entries) {
+            validate_scanned_index_entry(place, branch, &entry, span, env)?;
+            if let ControlFlow::Break(flow) = visit(entry.identity, env)? {
+                return Ok(flow);
+            }
         }
-        count = count
-            .checked_add(page.entries.len())
-            .ok_or_else(|| overflow(span))?;
         let Some(cursor) = page.cursor else {
-            break;
+            return Ok(Flow::Normal);
         };
-        page = match &branch.range {
-            Some(range) => env.store.scan_index_range_after(
-                &branch.index.index,
-                &branch.arg_keys,
+        page = match dir {
+            Direction::Ascending => env.store.scan_index_range_after(
+                index,
+                prefix,
                 range,
                 &cursor,
                 INDEX_SCAN_PAGE_LIMIT,
             ),
-            None => env.store.scan_index_tuple_after(
-                &branch.index.index,
-                &branch.arg_keys,
+            Direction::Descending => env.store.scan_index_range_before(
+                index,
+                prefix,
+                range,
                 &cursor,
                 INDEX_SCAN_PAGE_LIMIT,
             ),
         }
         .map_err(|error| error.located(span))?;
     }
-    Ok(count)
 }
 
-pub(crate) fn validate_index_branch_yield(
+/// Validate a fully walked index tuple and return the store identity it points
+/// to. Each component must decode under its declared meaning and the trailing
+/// `identity_start..` suffix must be a valid store identity; the exact tuple is
+/// rescanned so a corrupt sibling entry under the same key fails closed rather
+/// than yielding a wrong identity.
+pub(crate) fn walked_index_tuple_identity(
     place: &CheckedSavedPlace,
     branch: &IndexBranchAddress,
-    keys: &[SavedKey],
+    tuple: &[SavedKey],
     span: SourceSpan,
     env: &Env<'_>,
-) -> Result<Option<Value>, RuntimeError> {
-    if branch.yields_identity {
-        validate_place_identity_keys(place, keys, span)?;
-        return Ok(None);
+) -> Result<Vec<SavedKey>, RuntimeError> {
+    if tuple.len() != branch.key_meanings.len() {
+        return Err(type_error(
+            "stored index entry does not match the index key shape",
+            span,
+        ));
     }
-    let Some(meaning) = branch.key_meanings.get(branch.arg_keys.len()) else {
-        return Ok(None);
-    };
-    let [key] = keys else {
-        return Err(unsupported("iterating a composite non-identity key", span));
-    };
-    index_key_to_value(env.program, key, meaning, span).map(Some)
-}
-
-fn validate_walked_index_branch_yield(
-    place: &CheckedSavedPlace,
-    branch: &IndexBranchAddress,
-    keys: &[SavedKey],
-    span: SourceSpan,
-    env: &Env<'_>,
-) -> Result<(), RuntimeError> {
-    if !branch.yields_identity {
-        validate_index_branch_yield(place, branch, keys, span, env)?;
-        return Ok(());
+    for (key, meaning) in tuple.iter().zip(&branch.key_meanings) {
+        index_key_to_value(env.program, key, meaning, span)?;
     }
-    let mut index_keys = branch.arg_keys.clone();
-    index_keys.extend_from_slice(keys);
-    validate_scanned_index_tuple_entries(place, branch, &index_keys, span, env)?;
-    let mut identity = branch
-        .arg_keys
+    let identity = tuple
         .get(branch.identity_start..)
-        .map_or_else(Vec::new, |keys| keys.to_vec());
-    identity.extend_from_slice(keys);
-    validate_place_identity_keys(place, &identity, span)
-}
-
-pub(crate) fn validate_walked_index_identity_entries(
-    place: &CheckedSavedPlace,
-    branch: &IndexBranchAddress,
-    identity: &[SavedKey],
-    span: SourceSpan,
-    env: &Env<'_>,
-) -> Result<(), RuntimeError> {
-    let mut index_keys = branch
-        .arg_keys
-        .get(..branch.identity_start)
-        .map_or_else(Vec::new, |keys| keys.to_vec());
-    index_keys.extend_from_slice(identity);
-    validate_scanned_index_tuple_entries(place, branch, &index_keys, span, env)
+        .map_or_else(Vec::new, <[SavedKey]>::to_vec);
+    validate_place_identity_keys(place, &identity, span)?;
+    validate_scanned_index_tuple_entries(place, branch, tuple, span, env)?;
+    Ok(identity)
 }
 
 pub(crate) fn validate_scanned_index_entry(
@@ -539,12 +764,6 @@ pub(crate) fn validate_scanned_index_entry(
     }
     for (key, meaning) in entry.index_keys.iter().zip(&branch.key_meanings) {
         index_key_to_value(env.program, key, meaning, span)?;
-    }
-    if !branch.yields_identity {
-        return Err(type_error(
-            "stored index entry is not an identity-yielding tuple",
-            span,
-        ));
     }
     validate_place_identity_keys(place, &entry.identity, span)?;
     let Some(index_identity) = entry.index_keys.get(branch.identity_start..) else {

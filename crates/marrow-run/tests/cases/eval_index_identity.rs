@@ -369,7 +369,11 @@ fn index_over_identity_field_streams_matching_records() {
 }
 
 #[test]
-fn partial_non_unique_identity_component_traversal_yields_identity_values() {
+fn bare_non_unique_index_iteration_yields_store_identities() {
+    // A single-variable loop over a non-unique index branch yields the store
+    // identity stored in that branch, never the leading field component. With
+    // no argument the branch is the whole index, so every identity streams in
+    // index-key order.
     let program = checked_program(
         "resource Author\n\
          \x20   required name: string\n\
@@ -388,24 +392,28 @@ fn partial_non_unique_identity_component_traversal_yields_identity_values() {
          \x20   book.title = \"Book\"\n\
          \x20   book.author = ann\n\
          \x20   ^books(7) = book\n\
+         \x20   var other: Book\n\
+         \x20   other.title = \"Other\"\n\
+         \x20   other.author = ann\n\
+         \x20   ^books(3) = other\n\
          \n\
-         pub fn authorNamesByBranch()\n\
-         \x20   for author in ^books.byAuthor\n\
-         \x20       print(^authors(author).name ?? \"\")\n",
+         pub fn titlesByBareBranch()\n\
+         \x20   for id in ^books.byAuthor\n\
+         \x20       print(^books(id).title ?? \"\")\n",
     );
     let store = TreeStore::memory();
     run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed");
 
-    let outcome = run_entry(
-        &store,
-        checked_entry!(&program, "test::authorNamesByBranch"),
-    )
-    .expect("run");
-    assert_eq!(outcome.output, "Ann\n");
+    let outcome =
+        run_entry(&store, checked_entry!(&program, "test::titlesByBareBranch")).expect("run");
+    // Index order is (author, id): the two books for `ann` stream id 3 then 7.
+    assert_eq!(outcome.output, "Other\nBook\n");
 }
 
 #[test]
-fn partial_non_unique_enum_component_traversal_yields_enum_values() {
+fn bare_non_unique_enum_index_iteration_yields_store_identities() {
+    // A bare loop over an enum-led index yields identities, not the enum field;
+    // the loop variable addresses each record so titles read back.
     let program = checked_program(
         "enum Status\n\
          \x20   draft\n\
@@ -423,20 +431,128 @@ fn partial_non_unique_enum_component_traversal_yields_enum_values() {
          \x20   book.status = Status::published\n\
          \x20   ^books(1) = book\n\
          \n\
-         pub fn publishedStatusesByBranch()\n\
-         \x20   for status in ^books.byStatus\n\
-         \x20       if status is Status::published\n\
-         \x20           print(\"published\")\n",
+         pub fn titlesByBareBranch()\n\
+         \x20   for id in ^books.byStatus\n\
+         \x20       print(^books(id).title ?? \"\")\n",
     );
     let store = TreeStore::memory();
     run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed");
 
-    let outcome = run_entry(
-        &store,
-        checked_entry!(&program, "test::publishedStatusesByBranch"),
-    )
-    .expect("run");
-    assert_eq!(outcome.output, "published\n");
+    let outcome =
+        run_entry(&store, checked_entry!(&program, "test::titlesByBareBranch")).expect("run");
+    assert_eq!(outcome.output, "Published\n");
+}
+
+#[test]
+fn bare_enum_led_index_iterates_in_declared_ordinal_order() {
+    // A bare loop over an enum-led index streams identities in declared ordinal
+    // order, not member-id byte order. Enum index components are stored as
+    // content-independent member ids whose bytes do not sort by ordinal, so the
+    // bare walk must order by the declared member list exactly as a ranged scan
+    // over all members does. With one record per member carrying an `ord` field
+    // matching its ordinal, the streamed `ord` values reveal the traversal order.
+    let program = checked_program(
+        "enum Size\n\
+         \x20   small\n\
+         \x20   medium\n\
+         \x20   large\n\
+         \x20   huge\n\
+         \n\
+         resource Item\n\
+         \x20   required size: Size\n\
+         \x20   ord: int\n\
+         store ^items(id: int): Item\n\
+         \x20   index bySize(size, id)\n\
+         \n\
+         pub fn seed()\n\
+         \x20   ^items(1).size = Size::small\n\
+         \x20   ^items(1).ord = 1\n\
+         \x20   ^items(2).size = Size::medium\n\
+         \x20   ^items(2).ord = 2\n\
+         \x20   ^items(3).size = Size::large\n\
+         \x20   ^items(3).ord = 3\n\
+         \x20   ^items(4).size = Size::huge\n\
+         \x20   ^items(4).ord = 4\n\
+         \n\
+         pub fn bareAscending()\n\
+         \x20   for id in ^items.bySize\n\
+         \x20       print(^items(id).ord ?? 0)\n\
+         \n\
+         pub fn rangedAscending()\n\
+         \x20   for id in ^items.bySize(Size::small..=Size::huge)\n\
+         \x20       print(^items(id).ord ?? 0)\n\
+         \n\
+         pub fn bareDescending()\n\
+         \x20   for id in reversed(^items.bySize)\n\
+         \x20       print(^items(id).ord ?? 0)\n",
+    );
+    let store = TreeStore::memory();
+    run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed");
+
+    let bare = run_entry(&store, checked_entry!(&program, "test::bareAscending"))
+        .expect("bare")
+        .output;
+    let ranged = run_entry(&store, checked_entry!(&program, "test::rangedAscending"))
+        .expect("ranged")
+        .output;
+    let descending = run_entry(&store, checked_entry!(&program, "test::bareDescending"))
+        .expect("descending")
+        .output;
+
+    // Bare iteration matches a full-range scan and the declared ordinal order.
+    assert_eq!(bare, "1\n2\n3\n4\n");
+    assert_eq!(bare, ranged);
+    // Reversed bare iteration is the declared ordinal order, descending.
+    assert_eq!(descending, "4\n3\n2\n1\n");
+}
+
+#[test]
+fn partial_prefix_over_a_long_index_yields_store_identities() {
+    // A single-argument prefix over a three-component index binds the trailing
+    // store identity, exactly like the two-component case, never the next
+    // intermediate (rank) component.
+    let program = checked_program(
+        "resource Book\n\
+         \x20   shelf: string\n\
+         \x20   rank: int\n\
+         store ^books(id: int): Book\n\
+         \x20   index byShelfRank(shelf, rank, id)\n\
+         \x20   index byShelf(shelf, id)\n\
+         \n\
+         pub fn add(id: int, s: string, r: int)\n\
+         \x20   ^books(id).shelf = s\n\
+         \x20   ^books(id).rank = r\n\
+         \n\
+         pub fn idsOnShelf()\n\
+         \x20   for id in ^books.byShelfRank(\"fiction\")\n\
+         \x20       print(id)\n\
+         \n\
+         pub fn idsByTwoComponent()\n\
+         \x20   for id in ^books.byShelf(\"fiction\")\n\
+         \x20       print(id)\n",
+    );
+    let store = TreeStore::memory();
+    let add = |id: i64, shelf: &str, rank: i64| {
+        run_entry(
+            &store,
+            checked_entry!(
+                &program,
+                "test::add",
+                Value::Int(id),
+                Value::Str(shelf.into()),
+                Value::Int(rank)
+            ),
+        )
+        .expect("add");
+    };
+    add(1, "fiction", 10);
+    add(2, "fiction", 20);
+
+    let long = run_entry(&store, checked_entry!(&program, "test::idsOnShelf")).expect("run");
+    assert_eq!(long.output, "1\n2\n");
+    let short =
+        run_entry(&store, checked_entry!(&program, "test::idsByTwoComponent")).expect("run");
+    assert_eq!(short.output, "1\n2\n");
 }
 
 #[test]
@@ -942,6 +1058,130 @@ fn traverses_a_composite_identity_index() {
     .expect("count")
     .value;
     assert_eq!(inactive_count, Some(Value::Int(0)));
+}
+
+#[test]
+fn identity_key_led_index_on_a_composite_store_is_maintained_by_managed_writes() {
+    // On a composite-identity store, an index whose leading component is an
+    // identity key (here `b`) must be populated by ordinary managed writes,
+    // identically to a field-led index. A field write that creates the record
+    // maintains every index entry the record determines, not only those that
+    // mention the written field.
+    let program = checked_program(
+        "resource Link\n\
+         \x20   tag: int\n\
+         store ^links(a: int, b: int): Link\n\
+         \x20   index byTag(tag, a, b)\n\
+         \x20   index byB(b, a, b)\n\
+         \x20   index byA(a, b)\n\
+         \n\
+         pub fn seed()\n\
+         \x20   ^links(Id(^links, 10, 1)).tag = 7\n\
+         \x20   ^links(Id(^links, 30, 1)).tag = 7\n\
+         \x20   ^links(Id(^links, 20, 2)).tag = 9\n\
+         \n\
+         pub fn countByTag(t: int): int\n\
+         \x20   return count(^links.byTag(t))\n\
+         \n\
+         pub fn countByB(b: int): int\n\
+         \x20   return count(^links.byB(b))\n\
+         \n\
+         pub fn countByA(a: int): int\n\
+         \x20   return count(^links.byA(a))\n\
+         \n\
+         pub fn pairsByB(b: int)\n\
+         \x20   for link in ^links.byB(b)\n\
+         \x20       print(\"link\")\n",
+    );
+    let store = TreeStore::memory();
+    run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed");
+
+    let count = |entry: &str, key: i64| {
+        run_entry(&store, checked_entry!(&program, entry, Value::Int(key)))
+            .expect(entry)
+            .value
+    };
+    // Field-led index: the reference baseline.
+    assert_eq!(count("test::countByTag", 7), Some(Value::Int(2)));
+    // Identity-key-led indexes must be maintained the same way.
+    assert_eq!(count("test::countByB", 1), Some(Value::Int(2)));
+    assert_eq!(count("test::countByB", 2), Some(Value::Int(1)));
+    assert_eq!(count("test::countByA", 10), Some(Value::Int(1)));
+    assert_eq!(count("test::countByA", 30), Some(Value::Int(1)));
+}
+
+#[test]
+fn identity_led_index_is_maintained_when_a_record_is_established_by_a_layer_or_append_write() {
+    // An identity-only / identity-led index mentions no resource field, so a write
+    // that establishes a record by a keyed-leaf layer write, a nested-group write,
+    // or an `append` must still populate it. The oracle is a restore-style index
+    // rebuild, which derives every index from identity alone: live managed-write
+    // counts must equal the rebuilt counts for every identity-led index branch.
+    let source = "resource Link\n\
+         \x20   meta\n\
+         \x20       note: string\n\
+         \x20   notes(n: int): string\n\
+         \x20   tags(p: int): string\n\
+         store ^links(a: int, b: int): Link\n\
+         \x20   index byA(a, b)\n\
+         \x20   index byB(b, a, b)\n\
+         \n\
+         pub fn seedLayer()\n\
+         \x20   ^links(Id(^links, 1, 1)).notes(0) = \"x\"\n\
+         \x20   ^links(Id(^links, 2, 1)).notes(0) = \"y\"\n\
+         \n\
+         pub fn seedNested()\n\
+         \x20   ^links(Id(^links, 3, 1)).meta.note = \"m\"\n\
+         \n\
+         pub fn seedAppend()\n\
+         \x20   const p: int = append(^links(Id(^links, 4, 1)).tags, \"t\")\n\
+         \n\
+         pub fn countByA(a: int): int\n\
+         \x20   return count(^links.byA(a))\n\
+         \n\
+         pub fn countByB(b: int): int\n\
+         \x20   return count(^links.byB(b))\n";
+    let (program, runtime) = committed_program_and_runtime(source);
+    let store = TreeStore::memory();
+    for entry in ["test::seedLayer", "test::seedNested", "test::seedAppend"] {
+        run_entry(&store, checked_entry!(&runtime, entry)).expect(entry);
+    }
+
+    let count = |entry: &str, key: i64| {
+        run_entry(&store, checked_entry!(&runtime, entry, Value::Int(key)))
+            .expect(entry)
+            .value
+    };
+    let live_by_a = [count("test::countByA", 1), count("test::countByA", 4)];
+    let live_by_b = [count("test::countByB", 1)];
+
+    // Rebuild every index from data alone, exactly as a restore does.
+    let place = marrow_check::checked_saved_root_place(
+        &program,
+        "links",
+        marrow_syntax::SourceSpan::default(),
+    )
+    .expect("checked saved place for ^links");
+    for index in &place.indexes {
+        let index_id = catalog_id(&index.catalog_id);
+        store
+            .delete_index_subtree(&index_id, &[])
+            .expect("clear index subtree");
+    }
+    store.begin().expect("begin rebuild");
+    marrow_run::evolution::rebuild_store_indexes(&program, &store).expect("rebuild indexes");
+    store.commit().expect("commit rebuild");
+
+    let rebuilt_by_a = [count("test::countByA", 1), count("test::countByA", 4)];
+    let rebuilt_by_b = [count("test::countByB", 1)];
+
+    // Live managed-write maintenance must match the rebuild for every branch.
+    assert_eq!(live_by_a, rebuilt_by_a);
+    assert_eq!(live_by_b, rebuilt_by_b);
+    // And the rebuild is the source of truth: each `a` is unique, while all four
+    // records share `b = 1`, so the identity-led `byB(1)` branch holds all four.
+    assert_eq!(rebuilt_by_a, [Some(Value::Int(1)), Some(Value::Int(1))]);
+    assert_eq!(rebuilt_by_b, [Some(Value::Int(4))]);
 }
 
 #[test]

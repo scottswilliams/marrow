@@ -9,8 +9,9 @@ use crate::path::{SavedPath, Terminal, lower};
 use crate::store::{DataAddress, LayerAddress};
 use crate::value::{LeafValue, Value, identity_keys_of, value_to_leaf};
 use crate::write::{
-    WriteError, plan_field_write, plan_identity_field_write, plan_nested_field_write,
-    plan_nested_identity_field_write, validate_required_fields_after_field_write,
+    ReferencedIdentity, WriteError, plan_field_write, plan_identity_field_write,
+    plan_nested_field_write, plan_nested_identity_field_write,
+    validate_required_fields_after_field_write,
 };
 use crate::write_dispatch::required::created_required_field_path;
 use crate::write_plan::WritePlan;
@@ -73,8 +74,10 @@ fn write_identity_saved_field(
         &path.place,
         &path.identity,
         field,
-        &keys,
-        arity,
+        ReferencedIdentity {
+            keys: &keys,
+            referenced_arity: arity,
+        },
         env.store,
         span,
     );
@@ -161,8 +164,11 @@ pub(crate) fn write_nested_field(
             identity,
             &path.layer_addresses,
             field,
-            &keys,
-            *arity,
+            ReferencedIdentity {
+                keys: &keys,
+                referenced_arity: *arity,
+            },
+            env.store,
             span,
         )
     } else {
@@ -173,6 +179,7 @@ pub(crate) fn write_nested_field(
             &path.layer_addresses,
             field,
             &saved,
+            env.store,
             span,
         )
     };

@@ -25,9 +25,8 @@ pub fn count_on(shelf: string): int
 
 pub fn count_via_bare_index(): int
     var c = 0
-    for shelf in ^books.byShelf
-        for id in ^books.byShelf(shelf)
-            c = c + 1
+    for id in ^books.byShelf
+        c = c + 1
     return c
 
 pub fn reshelve_while_iterating()
@@ -128,7 +127,7 @@ fn iterates_index_keys() {
 }
 
 #[test]
-fn bare_index_iteration_yields_first_level_keys() {
+fn bare_index_iteration_streams_every_store_identity() {
     let program = checked_program(&book_shelf());
     let store = TreeStore::memory();
     let add = |id: i64, title: &str, shelf: &str| {
@@ -385,14 +384,16 @@ fn bounded_enum_range_rejects_corrupt_ranged_component() {
          \x20       print(id)\n",
     );
     let store = TreeStore::memory();
-    let corrupt_status = format!(
-        "{}~",
-        enum_member_catalog_id(&program, "Status", "draft").as_str()
-    );
+    // The entry sits under the valid `draft` member but carries a non-int id
+    // key, so it lands inside the ranged member walk and fails closed when the
+    // walked tuple cannot decode to a store identity.
+    let draft = enum_member_catalog_id(&program, "Status", "draft")
+        .as_str()
+        .to_string();
     store
         .write_index_entry(
             &index_catalog_id(&program, "books", "byStatus"),
-            &[SavedKey::Str(corrupt_status), SavedKey::Int(1)],
+            &[SavedKey::Str(draft), SavedKey::Str("not-an-int".into())],
             &[SavedKey::Int(1)],
             Vec::new(),
         )
@@ -405,4 +406,168 @@ fn bounded_enum_range_rejects_corrupt_ranged_component() {
     ] {
         assert_run_error(run_entry(&store, checked_entry!(&program, entry)), RUN_TYPE);
     }
+}
+
+/// An ordered range over an enum-typed index component must yield exactly the
+/// identities whose component falls in the declared ordinal range. Enum index
+/// keys are stored as content-independent member ids, which do not sort by
+/// ordinal, so the range cannot be a raw key-byte span; it must walk the
+/// in-range members in declaration order.
+const PRIORITY_TASKS: &str = "\
+enum Priority
+    low
+    medium
+    high
+resource Task
+    required prio: Priority
+store ^tasks(id: int): Task
+
+    index byPrio(prio, id)
+
+pub fn seed()
+    ^tasks(1).prio = Priority::low
+    ^tasks(2).prio = Priority::high
+    ^tasks(3).prio = Priority::medium
+
+pub fn idsInRange(): string
+    var out = \"\"
+    for id in ^tasks.byPrio(Priority::low..=Priority::high)
+        out = out + $\"{id} \"
+    return out
+
+pub fn idsFromLow(): string
+    var out = \"\"
+    for id in ^tasks.byPrio(Priority::low..)
+        out = out + $\"{id} \"
+    return out
+
+pub fn idsLowToMedium(): string
+    var out = \"\"
+    for id in ^tasks.byPrio(Priority::low..=Priority::medium)
+        out = out + $\"{id} \"
+    return out
+
+pub fn idsMediumExact(): string
+    var out = \"\"
+    for id in ^tasks.byPrio(Priority::medium)
+        out = out + $\"{id} \"
+    return out
+
+pub fn countInRange(): int
+    return count(^tasks.byPrio(Priority::low..=Priority::high))
+
+pub fn existsMediumOrHigh(): bool
+    return exists(^tasks.byPrio(Priority::medium..=Priority::high))
+
+pub fn breakAfterFirstBare(): string
+    var out = \"\"
+    var n = 0
+    for id in ^tasks.byPrio
+        out = out + $\"{id} \"
+        n = n + 1
+        if n == 1
+            break
+    return out
+
+pub fn breakAfterFirstRange(): string
+    var out = \"\"
+    var n = 0
+    for id in ^tasks.byPrio(Priority::low..=Priority::high)
+        out = out + $\"{id} \"
+        n = n + 1
+        if n == 1
+            break
+    return out
+
+pub fn breakAfterFirstPairs(): string
+    var out = \"\"
+    var n = 0
+    for id, task in ^tasks.byPrio
+        out = out + $\"{id} \"
+        n = n + 1
+        if n == 1
+            break
+    return out
+
+pub fn breakAfterFirstReversed(): string
+    var out = \"\"
+    var n = 0
+    for id in reversed(^tasks.byPrio)
+        out = out + $\"{id} \"
+        n = n + 1
+        if n == 1
+            break
+    return out
+";
+
+#[test]
+fn ranged_enum_index_component_yields_ordinal_range_identities() {
+    let program = checked_program(PRIORITY_TASKS);
+    let store = TreeStore::memory();
+    run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed");
+
+    let call_str = |entry: &str| {
+        run_entry(&store, checked_entry!(&program, entry))
+            .expect(entry)
+            .value
+    };
+    // Identities sort by (prio ordinal, id), so low(1), medium(3), high(2).
+    assert_eq!(
+        call_str("test::idsInRange"),
+        Some(Value::Str("1 3 2 ".into()))
+    );
+    assert_eq!(
+        call_str("test::idsFromLow"),
+        Some(Value::Str("1 3 2 ".into()))
+    );
+    assert_eq!(
+        call_str("test::idsLowToMedium"),
+        Some(Value::Str("1 3 ".into()))
+    );
+    assert_eq!(
+        call_str("test::idsMediumExact"),
+        Some(Value::Str("3 ".into()))
+    );
+    assert_eq!(call_str("test::countInRange"), Some(Value::Int(3)));
+    assert_eq!(
+        call_str("test::existsMediumOrHigh"),
+        Some(Value::Bool(true))
+    );
+}
+
+/// A `break` in the loop body must stop the whole index walk even when the break
+/// lands at an enum-member boundary. Each in-range enum member is walked as its
+/// own keyed sub-scan, so the member loop must observe the body break rather than
+/// reading the first sub-scan's natural completion as permission to advance to the
+/// next member. The break here fires after the first identity, which sits exactly
+/// on the boundary between the first and second populated member.
+#[test]
+fn break_stops_enum_led_index_walk_at_member_boundary() {
+    let program = checked_program(PRIORITY_TASKS);
+    let store = TreeStore::memory();
+    run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed");
+
+    let call_str = |entry: &str| {
+        run_entry(&store, checked_entry!(&program, entry))
+            .expect(entry)
+            .value
+    };
+    // Ascending identity order is low(1), medium(3), high(2); reversed is the
+    // reverse. A break after the first identity must yield exactly one id.
+    assert_eq!(
+        call_str("test::breakAfterFirstBare"),
+        Some(Value::Str("1 ".into()))
+    );
+    assert_eq!(
+        call_str("test::breakAfterFirstRange"),
+        Some(Value::Str("1 ".into()))
+    );
+    assert_eq!(
+        call_str("test::breakAfterFirstPairs"),
+        Some(Value::Str("1 ".into()))
+    );
+    assert_eq!(
+        call_str("test::breakAfterFirstReversed"),
+        Some(Value::Str("2 ".into()))
+    );
 }

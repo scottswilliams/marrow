@@ -11,7 +11,7 @@ use crate::index_maintenance::{
     reject_field_unique_conflicts, reject_identity_field_unique_conflicts,
     reject_resource_unique_conflicts, stage_field_index_deletes, stage_field_index_rewrites,
     stage_field_patch_index_rewrites, stage_identity_field_index_rewrites,
-    stage_resource_index_deletes, stage_resource_index_rewrites,
+    stage_identity_only_index_writes, stage_resource_index_deletes, stage_resource_index_rewrites,
 };
 use crate::store::{
     DataAddress, IndexAddress, LayerAddress, data_exists, max_int_data_child, max_int_record_child,
@@ -43,6 +43,15 @@ pub(crate) enum FieldPatchValue {
         keys: Vec<SavedKey>,
         referenced_arity: usize,
     },
+}
+
+/// An identity value bound for an identity-typed place: the keys to store paired
+/// with the arity the source referenced, so `staged_identity_value` can reject a
+/// value whose key count disagrees with the place's declared identity.
+#[derive(Clone, Copy)]
+pub(crate) struct ReferencedIdentity<'a> {
+    pub(crate) keys: &'a [SavedKey],
+    pub(crate) referenced_arity: usize,
 }
 
 impl ResourceValue {
@@ -204,13 +213,11 @@ pub(crate) fn plan_field_write(
     })?;
     check_type(field, leaf, value)?;
     reject_field_unique_conflicts(index_context, field, value)?;
-    let mut steps = vec![
-        record_presence_step(place, identity, span)?,
-        PlanStep::WriteData {
-            address: data_address(place, identity, &[], &[field.to_string()], span)?,
-            value: value.bytes()?,
-        },
-    ];
+    let mut steps = record_establishing_steps(place, identity, store, span)?;
+    steps.push(PlanStep::WriteData {
+        address: data_address(place, identity, &[], &[field.to_string()], span)?,
+        value: value.bytes()?,
+    });
     stage_field_index_rewrites(&mut steps, index_context, field, value)?;
     Ok(WritePlan { steps })
 }
@@ -219,8 +226,7 @@ pub(crate) fn plan_identity_field_write(
     place: &CheckedSavedPlace,
     identity: &[SavedKey],
     field: &str,
-    keys: &[SavedKey],
-    referenced_arity: usize,
+    value: ReferencedIdentity<'_>,
     store: &TreeStore,
     span: SourceSpan,
 ) -> Result<WritePlan, WriteError> {
@@ -230,15 +236,13 @@ pub(crate) fn plan_identity_field_write(
         code: WRITE_UNKNOWN_FIELD,
         message: format!("resource `{}` has no field `{field}`", place.resource_name),
     })?;
-    reject_identity_field_unique_conflicts(index_context, field, keys)?;
-    let mut steps = vec![
-        record_presence_step(place, identity, span)?,
-        PlanStep::WriteData {
-            address: data_address(place, identity, &[], &[field.to_string()], span)?,
-            value: staged_identity_value(field, leaf, keys, referenced_arity)?,
-        },
-    ];
-    stage_identity_field_index_rewrites(&mut steps, index_context, field, keys)?;
+    reject_identity_field_unique_conflicts(index_context, field, value.keys)?;
+    let mut steps = record_establishing_steps(place, identity, store, span)?;
+    steps.push(PlanStep::WriteData {
+        address: data_address(place, identity, &[], &[field.to_string()], span)?,
+        value: staged_identity_value(field, leaf, value.keys, value.referenced_arity)?,
+    });
+    stage_identity_field_index_rewrites(&mut steps, index_context, field, value.keys)?;
     Ok(WritePlan { steps })
 }
 
@@ -289,7 +293,7 @@ pub(crate) fn plan_field_patch_write(
 
     let index_context = IndexWriteContext::new(place, identity, store, span);
     reject_field_patch_unique_conflicts(index_context, &index_patch)?;
-    let mut steps = vec![record_presence_step(place, identity, span)?];
+    let mut steps = record_establishing_steps(place, identity, store, span)?;
     for PatchFieldWrite {
         member_catalog_id,
         bytes,
@@ -472,6 +476,7 @@ pub(crate) fn plan_layer_leaf_write(
     identity: &[SavedKey],
     layers: &[LayerAddress],
     value: &LeafValue,
+    store: &TreeStore,
     span: SourceSpan,
 ) -> Result<WritePlan, WriteError> {
     let layer = leaf_layer(place, layers)?;
@@ -482,24 +487,20 @@ pub(crate) fn plan_layer_leaf_write(
         });
     };
     check_type(&layer.name, leaf, value)?;
-    Ok(WritePlan {
-        steps: vec![
-            record_presence_step(place, identity, span)?,
-            PlanStep::WriteData {
-                address: DataAddress::layer_prefix(place, identity, layers, span)
-                    .map_err(store_error)?,
-                value: value.bytes()?,
-            },
-        ],
-    })
+    let mut steps = record_establishing_steps(place, identity, store, span)?;
+    steps.push(PlanStep::WriteData {
+        address: DataAddress::layer_prefix(place, identity, layers, span).map_err(store_error)?,
+        value: value.bytes()?,
+    });
+    Ok(WritePlan { steps })
 }
 
 pub(crate) fn plan_layer_identity_leaf_write(
     place: &CheckedSavedPlace,
     identity: &[SavedKey],
     layers: &[LayerAddress],
-    keys: &[SavedKey],
-    referenced_arity: usize,
+    value: ReferencedIdentity<'_>,
+    store: &TreeStore,
     span: SourceSpan,
 ) -> Result<WritePlan, WriteError> {
     let layer = leaf_layer(place, layers)?;
@@ -509,16 +510,12 @@ pub(crate) fn plan_layer_identity_leaf_write(
             message: format!("keyed layer `{}` is a group, not a leaf", layer.name),
         });
     };
-    Ok(WritePlan {
-        steps: vec![
-            record_presence_step(place, identity, span)?,
-            PlanStep::WriteData {
-                address: DataAddress::layer_prefix(place, identity, layers, span)
-                    .map_err(store_error)?,
-                value: staged_identity_value(&layer.name, leaf, keys, referenced_arity)?,
-            },
-        ],
-    })
+    let mut steps = record_establishing_steps(place, identity, store, span)?;
+    steps.push(PlanStep::WriteData {
+        address: DataAddress::layer_prefix(place, identity, layers, span).map_err(store_error)?,
+        value: staged_identity_value(&layer.name, leaf, value.keys, value.referenced_arity)?,
+    });
+    Ok(WritePlan { steps })
 }
 
 pub(crate) fn plan_nested_field_write(
@@ -527,6 +524,7 @@ pub(crate) fn plan_nested_field_write(
     layers: &[LayerAddress],
     field: &str,
     value: &LeafValue,
+    store: &TreeStore,
     span: SourceSpan,
 ) -> Result<WritePlan, WriteError> {
     let members = checked_members_for_layers(place, layers)?;
@@ -535,15 +533,12 @@ pub(crate) fn plan_nested_field_write(
         message: format!("group layer has no field `{field}`"),
     })?;
     check_type(field, leaf, value)?;
-    Ok(WritePlan {
-        steps: vec![
-            record_presence_step(place, identity, span)?,
-            PlanStep::WriteData {
-                address: data_address(place, identity, layers, &[field.to_string()], span)?,
-                value: value.bytes()?,
-            },
-        ],
-    })
+    let mut steps = record_establishing_steps(place, identity, store, span)?;
+    steps.push(PlanStep::WriteData {
+        address: data_address(place, identity, layers, &[field.to_string()], span)?,
+        value: value.bytes()?,
+    });
+    Ok(WritePlan { steps })
 }
 
 pub(crate) fn plan_nested_identity_field_write(
@@ -551,8 +546,8 @@ pub(crate) fn plan_nested_identity_field_write(
     identity: &[SavedKey],
     layers: &[LayerAddress],
     field: &str,
-    keys: &[SavedKey],
-    referenced_arity: usize,
+    value: ReferencedIdentity<'_>,
+    store: &TreeStore,
     span: SourceSpan,
 ) -> Result<WritePlan, WriteError> {
     let members = checked_members_for_layers(place, layers)?;
@@ -560,15 +555,12 @@ pub(crate) fn plan_nested_identity_field_write(
         code: WRITE_UNKNOWN_FIELD,
         message: format!("group layer has no field `{field}`"),
     })?;
-    Ok(WritePlan {
-        steps: vec![
-            record_presence_step(place, identity, span)?,
-            PlanStep::WriteData {
-                address: data_address(place, identity, layers, &[field.to_string()], span)?,
-                value: staged_identity_value(field, leaf, keys, referenced_arity)?,
-            },
-        ],
-    })
+    let mut steps = record_establishing_steps(place, identity, store, span)?;
+    steps.push(PlanStep::WriteData {
+        address: data_address(place, identity, layers, &[field.to_string()], span)?,
+        value: staged_identity_value(field, leaf, value.keys, value.referenced_arity)?,
+    });
+    Ok(WritePlan { steps })
 }
 
 pub(crate) fn plan_layer_group_write(
@@ -576,6 +568,7 @@ pub(crate) fn plan_layer_group_write(
     identity: &[SavedKey],
     layers: &[LayerAddress],
     value: &ResourceValue,
+    store: &TreeStore,
     span: SourceSpan,
 ) -> Result<WritePlan, WriteError> {
     let group = group_layer(place, layers)?;
@@ -584,7 +577,7 @@ pub(crate) fn plan_layer_group_write(
     let mut steps = vec![PlanStep::DeleteData {
         address: entry.clone(),
     }];
-    steps.push(record_presence_step(place, identity, span)?);
+    steps.extend(record_establishing_steps(place, identity, store, span)?);
     steps.push(PlanStep::WriteDataNode { address: entry });
     for FieldWrite { path, bytes } in to_write {
         steps.push(PlanStep::WriteData {
@@ -665,6 +658,23 @@ fn record_presence_step(
     Ok(PlanStep::WriteRecordPresence {
         address: DataAddress::record(place, identity, span).map_err(store_error)?,
     })
+}
+
+/// Establish the record's store identity and the index entries it determines
+/// regardless of any field. Every managed write that can create a record routes
+/// through here, so an index keyed solely by identity components — which no field
+/// write would list — is populated incrementally exactly as a restore rebuild
+/// populates it from identity alone.
+fn record_establishing_steps(
+    place: &CheckedSavedPlace,
+    identity: &[SavedKey],
+    store: &TreeStore,
+    span: SourceSpan,
+) -> Result<Vec<PlanStep>, WriteError> {
+    let mut steps = vec![record_presence_step(place, identity, span)?];
+    let context = IndexWriteContext::new(place, identity, store, span);
+    stage_identity_only_index_writes(&mut steps, context)?;
+    Ok(steps)
 }
 
 /// Resolve every materialized plain field of `members` against the supplied

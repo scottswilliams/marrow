@@ -30,7 +30,7 @@ Step order is the correctness contract: within a plan, `DeleteData` (clear the o
 | `crates/marrow-run/src/write_dispatch/delete.rs` | Delete dispatch: field/nested/unkeyed-group/layer-entry/record/root; required-field and maintenance-capability guards; maintenance delete notes. |
 | `crates/marrow-run/src/group_write.rs` | Keyed-group-entry and keyed-leaf writes: lower record identity + parent layers + entry keys, branch leaf vs whole-entry, plan, apply. |
 | `crates/marrow-run/src/transaction.rs` | User transaction block: open or join the flat transaction, run the body, then abort-and-discard on escape, or validate deferred entry checks + stamp metadata + commit at the outer boundary. |
-| `crates/marrow-run/src/index_maintenance.rs` | Generated-index maintenance: stage delete-old + write-new index entries, stage delete-on-delete, reject unique conflicts via a 2-row scan, rewrite indexes from combined field patches, rebuild an entry for evolution backfill. |
+| `crates/marrow-run/src/index_maintenance.rs` | Generated-index maintenance: stage delete-old + write-new index entries, stage delete-on-delete, reject unique conflicts via a 2-row scan, rewrite indexes from combined field patches, write identity-only indexes (keyed solely by identity, so no field write lists them) on each record-establishing write, rebuild an entry for evolution backfill. |
 | `crates/marrow-run/src/store.rs` | Address layer: `DataAddress`/`LayerAddress`/`IndexAddress` resolve checked ids + identity + keys + member paths into store segments; thin `TreeStore` read wrappers. |
 
 ## Key types
