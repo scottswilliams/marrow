@@ -8,8 +8,10 @@ use serde::{Deserialize, Serialize};
 
 mod execute;
 mod operation;
+mod operation_catalog;
 mod request;
 mod route;
+mod route_binding;
 pub use execute::{
     execute_project_surface_page_by_tag, execute_project_surface_point_read_by_tag,
     execute_project_surface_point_update_by_tag, execute_project_surface_singleton_read_by_tag,
@@ -24,6 +26,10 @@ pub use operation::{
     SurfaceOperationResponseJson, SurfaceOperationResultJson, execute_project_surface_operation,
     execute_project_surface_operation_read_only, execute_project_surface_operation_with_host,
 };
+pub use operation_catalog::{
+    SurfaceOperationBinding, SurfaceOperationCatalog, SurfaceOperationCatalogError,
+    SurfaceOperationCatalogErrorKind, SurfaceOperationKind,
+};
 pub use request::{
     DecodedSurfacePageRequest, DecodedSurfacePointRequest, DecodedSurfacePointUpdateRequest,
     DecodedSurfaceSingletonUpdateRequest, DecodedSurfaceUniqueLookupRequest,
@@ -34,6 +40,10 @@ pub use request::{
 pub use route::{
     SURFACE_ROUTE_PROFILE_VERSION, SurfaceRouteJson, SurfaceRouteManifestJson,
     SurfaceRouteMethodJson, SurfaceRouteRequestJson, SurfaceRouteSurfaceJson,
+};
+pub use route_binding::{
+    SurfaceRouteBinding, SurfaceRouteBindingError, SurfaceRouteBindingErrorKind,
+    SurfaceRouteBindings,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -1038,13 +1048,15 @@ mod tests {
         SURFACE_OPERATION_PROFILE_VERSION, SurfaceAbiJson, SurfaceActionArgumentShapeJson,
         SurfaceActionRequestJson, SurfaceActionResultJson, SurfaceActionValueJson,
         SurfaceArgumentJson, SurfaceCatalogStatusJson, SurfaceCursorBoundaryJson,
-        SurfaceCursorJson, SurfaceIdentityJson, SurfaceKeyJson, SurfaceOperationErrorJson,
+        SurfaceCursorJson, SurfaceIdentityJson, SurfaceKeyJson, SurfaceOperationCatalog,
+        SurfaceOperationCatalogErrorKind, SurfaceOperationErrorJson, SurfaceOperationKind,
         SurfaceOperationRequestBodyJson, SurfaceOperationRequestJson, SurfaceOperationResultJson,
         SurfacePageJson, SurfacePageRequestJson, SurfacePointRequestJson,
         SurfacePointUpdateRequestJson, SurfaceReadOperationKindJson, SurfaceRecordJson,
-        SurfaceRouteManifestJson, SurfaceRouteMethodJson, SurfaceRouteRequestJson,
-        SurfaceSingletonUpdateRequestJson, SurfaceUniqueLookupRequestJson, SurfaceUpdateFieldJson,
-        SurfaceUpdateValueJson, SurfaceValueJson,
+        SurfaceRouteBindingErrorKind, SurfaceRouteBindings, SurfaceRouteManifestJson,
+        SurfaceRouteMethodJson, SurfaceRouteRequestJson, SurfaceSingletonUpdateRequestJson,
+        SurfaceUniqueLookupRequestJson, SurfaceUpdateFieldJson, SurfaceUpdateValueJson,
+        SurfaceValueJson,
     };
 
     static TEMP_PROJECT_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -1192,6 +1204,20 @@ pub fn addBook(title: string): string
 
 surface Books from ^books
     fields title
+    action addBook
+";
+
+    const SURFACE_ACTION_UPDATE: &str = "\
+resource Book
+    required title: string
+store ^books(id: int): Book
+
+pub fn addBook(title: string): string
+    return title
+
+surface Books from ^books
+    fields title
+    update title
     action addBook
 ";
 
@@ -2323,7 +2349,127 @@ pub fn seed()
     }
 
     #[test]
-    fn surface_route_request_matches_operation_body_kind() {
+    fn surface_operation_catalog_derives_existing_operation_kinds() {
+        let (program, _runtime) = checked_surface_program(SURFACE_ACTION_UPDATE);
+        let abi = SurfaceAbiJson::from_program(&program);
+        let catalog = SurfaceOperationCatalog::from_abi(&abi).expect("catalog from ABI");
+
+        let books = abi
+            .surfaces
+            .iter()
+            .find(|surface| surface.name == "Books")
+            .expect("Books surface");
+        let read = books
+            .read
+            .iter()
+            .find(|read| read.alias == "get")
+            .expect("point read");
+        let update = books.update.as_ref().expect("update descriptor");
+        let action = books
+            .actions
+            .iter()
+            .find(|action| action.alias == "addBook")
+            .expect("action descriptor");
+
+        assert_eq!(
+            catalog.kind(&read.operation_tag),
+            Some(SurfaceOperationKind::PointRead)
+        );
+        assert_eq!(
+            catalog.kind(&update.operation_tag),
+            Some(SurfaceOperationKind::PointUpdate)
+        );
+        assert_eq!(
+            catalog.kind(&action.operation_tag),
+            Some(SurfaceOperationKind::Action)
+        );
+    }
+
+    #[test]
+    fn surface_operation_catalog_rejects_malformed_duplicate_abi_rows() {
+        let (program, _runtime) = checked_surface_program(SURFACE_ACTION_UPDATE);
+        let mut abi = SurfaceAbiJson::from_program(&program);
+        let duplicate = abi.surfaces[0].read[0].operation_tag.clone();
+        abi.surfaces[0]
+            .update
+            .as_mut()
+            .expect("update")
+            .operation_tag = duplicate;
+
+        let error = SurfaceOperationCatalog::from_abi(&abi).expect_err("duplicate ABI row rejects");
+        assert_eq!(
+            error.kind(),
+            SurfaceOperationCatalogErrorKind::DuplicateOperationTag
+        );
+    }
+
+    #[test]
+    fn surface_route_bindings_validate_against_abi_catalog() {
+        let (program, _runtime) = checked_surface_program(SURFACE_ACTION_UPDATE);
+        let abi = SurfaceAbiJson::from_program(&program);
+        let catalog = SurfaceOperationCatalog::from_abi(&abi).expect("catalog from ABI");
+        let manifest = SurfaceRouteManifestJson::from_abi(&abi);
+        let bindings = SurfaceRouteBindings::from_manifest(&manifest, &catalog).expect("bindings");
+
+        assert_eq!(bindings.len(), manifest.routes.len());
+        for binding in bindings.iter() {
+            let expected = catalog
+                .binding(&binding.operation_tag)
+                .expect("route operation has ABI binding");
+            assert_eq!(binding.path, expected.path);
+            assert_eq!(binding.kind, expected.kind);
+            assert_eq!(binding.surface_module, expected.surface_module);
+            assert_eq!(binding.surface_name, expected.surface_name);
+            assert_eq!(binding.alias, expected.alias);
+        }
+    }
+
+    #[test]
+    fn surface_route_bindings_reject_forged_labels_duplicates_and_wrong_kind() {
+        let (program, _runtime) = checked_surface_program(SURFACE_ACTION_UPDATE);
+        let abi = SurfaceAbiJson::from_program(&program);
+        let catalog = SurfaceOperationCatalog::from_abi(&abi).expect("catalog from ABI");
+        let manifest = SurfaceRouteManifestJson::from_abi(&abi);
+
+        let mut wrong_alias = manifest.clone();
+        wrong_alias.routes[0].alias = "forged".into();
+        assert_eq!(
+            SurfaceRouteBindings::from_manifest(&wrong_alias, &catalog)
+                .expect_err("forged alias rejects")
+                .kind(),
+            SurfaceRouteBindingErrorKind::AliasMismatch
+        );
+
+        let mut duplicate_path = manifest.clone();
+        duplicate_path.routes[1].path = duplicate_path.routes[0].path.clone();
+        assert_eq!(
+            SurfaceRouteBindings::from_manifest(&duplicate_path, &catalog)
+                .expect_err("duplicate path rejects")
+                .kind(),
+            SurfaceRouteBindingErrorKind::DuplicatePath
+        );
+
+        let mut duplicate_tag = manifest.clone();
+        duplicate_tag.routes[1].operation_tag = duplicate_tag.routes[0].operation_tag.clone();
+        assert_eq!(
+            SurfaceRouteBindings::from_manifest(&duplicate_tag, &catalog)
+                .expect_err("duplicate route tag rejects")
+                .kind(),
+            SurfaceRouteBindingErrorKind::DuplicateOperationTag
+        );
+
+        let mut wrong_request = manifest.clone();
+        wrong_request.routes[0].request = SurfaceRouteRequestJson::Action;
+        assert_eq!(
+            SurfaceRouteBindings::from_manifest(&wrong_request, &catalog)
+                .expect_err("wrong request kind rejects")
+                .kind(),
+            SurfaceRouteBindingErrorKind::RequestKindMismatch
+        );
+    }
+
+    #[test]
+    fn surface_operation_kind_matches_operation_body_kind() {
         let point_read = serde_json::from_value::<SurfaceOperationRequestBodyJson>(json!({
             "kind": "point_read",
             "request": {
@@ -2368,31 +2514,31 @@ pub fn seed()
 
         let cases = [
             (
-                SurfaceRouteRequestJson::SingletonRead,
+                SurfaceOperationKind::SingletonRead,
                 SurfaceOperationRequestBodyJson::SingletonRead,
             ),
-            (SurfaceRouteRequestJson::PointRead, point_read),
-            (SurfaceRouteRequestJson::Page, page),
-            (SurfaceRouteRequestJson::UniqueLookup, unique_lookup),
-            (SurfaceRouteRequestJson::SingletonUpdate, singleton_update),
-            (SurfaceRouteRequestJson::PointUpdate, point_update),
-            (SurfaceRouteRequestJson::Action, action),
+            (SurfaceOperationKind::PointRead, point_read),
+            (SurfaceOperationKind::Page, page),
+            (SurfaceOperationKind::UniqueLookup, unique_lookup),
+            (SurfaceOperationKind::SingletonUpdate, singleton_update),
+            (SurfaceOperationKind::PointUpdate, point_update),
+            (SurfaceOperationKind::Action, action),
         ];
-        for (route_request, body) in cases {
+        for (kind, body) in cases {
             assert!(
-                route_request.matches_operation_body(&body),
-                "{route_request:?} should match {body:?}"
+                kind.matches_operation_body(&body),
+                "{kind:?} should match {body:?}"
             );
         }
-        assert!(SurfaceRouteRequestJson::SingletonRead.is_read());
-        assert!(SurfaceRouteRequestJson::PointRead.is_read());
-        assert!(SurfaceRouteRequestJson::Page.is_read());
-        assert!(SurfaceRouteRequestJson::UniqueLookup.is_read());
-        assert!(!SurfaceRouteRequestJson::SingletonUpdate.is_read());
-        assert!(!SurfaceRouteRequestJson::PointUpdate.is_read());
-        assert!(!SurfaceRouteRequestJson::Action.is_read());
+        assert!(SurfaceOperationKind::SingletonRead.is_read());
+        assert!(SurfaceOperationKind::PointRead.is_read());
+        assert!(SurfaceOperationKind::Page.is_read());
+        assert!(SurfaceOperationKind::UniqueLookup.is_read());
+        assert!(!SurfaceOperationKind::SingletonUpdate.is_read());
+        assert!(!SurfaceOperationKind::PointUpdate.is_read());
+        assert!(!SurfaceOperationKind::Action.is_read());
         assert!(
-            !SurfaceRouteRequestJson::Page
+            !SurfaceOperationKind::Page
                 .matches_operation_body(&SurfaceOperationRequestBodyJson::SingletonRead)
         );
     }
@@ -3988,6 +4134,45 @@ pub fn seed()
                 "surface operation envelope must stay transport-neutral: {forbidden}"
             );
         }
+    }
+
+    #[test]
+    fn surface_operation_envelope_does_not_build_json_abi_per_request() {
+        let source = include_str!("surface/operation.rs");
+        for forbidden in [
+            "SurfaceAbiJson::from_program",
+            "SurfaceOperationCatalog::from_abi",
+        ] {
+            assert!(
+                !source.contains(forbidden),
+                "surface operation envelope must not rebuild JSON ABI catalog on each request: {forbidden}"
+            );
+        }
+    }
+
+    #[test]
+    fn surface_route_manifest_uses_operation_kind_projection() {
+        let source = include_str!("surface/route.rs");
+        for forbidden in [
+            "SurfaceReadOperationKindJson",
+            "SurfaceUpdateOperationKindJson",
+            "fn read_request",
+            "fn update_request",
+        ] {
+            assert!(
+                !source.contains(forbidden),
+                "surface route manifest must use the operation kind projection owner: {forbidden}"
+            );
+        }
+    }
+
+    #[test]
+    fn surface_route_bindings_do_not_expose_generated_client_api_before_client_lane() {
+        let source = include_str!("surface/route_binding.rs");
+        assert!(
+            !source.contains("from_routes_for_client"),
+            "generated-client route validation API belongs to the client lane"
+        );
     }
 
     #[test]

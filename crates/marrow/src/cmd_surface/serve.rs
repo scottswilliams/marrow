@@ -7,9 +7,10 @@ use std::time::Duration;
 
 use marrow_check::CheckedProgram;
 use marrow_json::surface::{
-    SurfaceAbiJson, SurfaceOperationErrorJson, SurfaceOperationRequestJson,
-    SurfaceOperationResponseJson, SurfaceRouteManifestJson, SurfaceRouteRequestJson,
-    execute_project_surface_operation, execute_project_surface_operation_read_only,
+    SurfaceAbiJson, SurfaceOperationCatalog, SurfaceOperationErrorJson,
+    SurfaceOperationRequestJson, SurfaceOperationResponseJson, SurfaceRouteBinding,
+    SurfaceRouteBindings, SurfaceRouteManifestJson, execute_project_surface_operation,
+    execute_project_surface_operation_read_only,
 };
 use marrow_run::{
     ProjectSessionError, ProjectSurfaceReadSession, ProjectSurfaceSession, SURFACE_ABI_MISMATCH,
@@ -51,9 +52,9 @@ enum ServeMode {
 }
 
 impl ServeMode {
-    fn allows(self, request: SurfaceRouteRequestJson) -> bool {
+    fn allows(self, binding: &SurfaceRouteBinding) -> bool {
         match self {
-            Self::ReadOnly => request.is_read(),
+            Self::ReadOnly => binding.kind.is_read(),
             Self::Write => true,
         }
     }
@@ -147,7 +148,13 @@ pub(crate) fn serve(args: &[String]) -> ExitCode {
         Ok(session) => session,
         Err(error) => return report_session_open_error(&dir, error, CheckFormat::Text),
     };
-    let routes = SurfaceRoutes::from_program(session.program(), mode);
+    let routes = match SurfaceRoutes::from_program(session.program(), mode) {
+        Ok(routes) => routes,
+        Err(message) => {
+            report_simple_error(SURFACE_ABI_MISMATCH, &message, CheckFormat::Text);
+            return ExitCode::FAILURE;
+        }
+    };
     let listener = match TcpListener::bind(addr) {
         Ok(listener) => listener,
         Err(error) => {
@@ -254,30 +261,19 @@ struct SurfaceRoutes {
     routes: BTreeMap<String, SurfaceRouteBinding>,
 }
 
-struct SurfaceRouteBinding {
-    operation_tag: String,
-    request: SurfaceRouteRequestJson,
-}
-
 impl SurfaceRoutes {
-    fn from_program(program: &CheckedProgram, mode: ServeMode) -> Self {
+    fn from_program(program: &CheckedProgram, mode: ServeMode) -> Result<Self, String> {
         let abi = SurfaceAbiJson::from_program(program);
         let manifest = SurfaceRouteManifestJson::from_abi(&abi);
-        let routes = manifest
-            .routes
-            .into_iter()
-            .filter(|route| mode.allows(route.request))
-            .map(|route| {
-                (
-                    route.path,
-                    SurfaceRouteBinding {
-                        operation_tag: route.operation_tag,
-                        request: route.request,
-                    },
-                )
-            })
+        let catalog = SurfaceOperationCatalog::from_abi(&abi).map_err(|error| error.to_string())?;
+        let bindings = SurfaceRouteBindings::from_manifest(&manifest, &catalog)
+            .map_err(|error| error.to_string())?;
+        let routes = bindings
+            .iter()
+            .filter(|binding| mode.allows(binding))
+            .map(|binding| (binding.path.clone(), binding.clone()))
             .collect();
-        Self { routes }
+        Ok(Self { routes })
     }
 
     fn binding_for_path(&self, path: &str) -> Option<&SurfaceRouteBinding> {
@@ -361,7 +357,7 @@ fn execute_http_request(
         )
         .with_cors(cors_origin);
     }
-    if !route.request.matches_operation_body(&operation.request) {
+    if !route.kind.matches_operation_body(&operation.request) {
         return SurfaceHttpResponse::error(
             HttpStatus::BadRequest,
             surface_error(

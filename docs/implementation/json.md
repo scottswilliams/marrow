@@ -40,17 +40,23 @@ and surface labels, typed catalog status, stable read descriptors, optional
 sparse update descriptors for stable surfaces with a non-empty update set, and
 action descriptors that reuse `entry.invoke.v1` identity, parameter shapes, and
 return shape, but only when their operation tags are callable through runtime
-tag admission. `SurfaceRouteManifestJson` renders the companion
-`surface_routes` object from that already-curated descriptor export. Each route
+tag admission. `SurfaceOperationCatalog` derives the operation tag, request
+kind, path, surface labels, and alias from that already-curated descriptor
+export. `SurfaceRouteManifestJson` renders the companion `surface_routes`
+object from the same ABI, and `SurfaceRouteBindings` validates a manifest
+against the catalog before serving consumes it. Each route
 row is a JSON `POST` path under `/surface/v1/{read|update|action}/` with the
-admitted operation tag in the path, the operation alias as a render/client
-label, and the request-body kind expected by `surface.operation.v1`.
+admitted operation tag in the path, the operation alias as a render label, and
+the request-body kind expected by `surface.operation.v1`.
 Duplicate stable operation tags are omitted from all read, update, or action
 descriptors that share the tag, and therefore from the route manifest.
 Source-only surfaces serialize blocker strings and no operation descriptors or
-route rows. Duplicate-tag checker diagnostics remain future work. Update fields
-expose `backing_required` only as backing-field metadata; sparse update request
-bodies remain non-empty patches and no field is mandatory on every request.
+route rows. Duplicate-tag checker diagnostics remain future work. Route binding
+rejects malformed manifests: wrong profile, non-`POST` method, path/tag/kind
+mismatches, forged labels, duplicate paths, or duplicate route operation tags.
+Update fields expose `backing_required` only as backing-field metadata; sparse
+update request bodies remain non-empty patches and no field is mandatory on
+every request.
 
 Inbound surface request parameters and sparse update bodies are checked against
 the admitted runtime surface shape. `SurfacePointRequestJson`,
@@ -80,7 +86,7 @@ exact value shape checks, enum membership and selectability, identity store,
 arity, and key-scalar validation, record presence, and post-patch footprint
 validation. The linked-Rust `entry.invoke.v1` descriptor and `EntryInvocation`
 path is owned by `marrow-check` and `marrow-run`; this crate only embeds that
-argument JSON shape for surface action request bodies. HTTP routes, opaque
+argument JSON shape for surface action request bodies. HTTP listeners, opaque
 cursor tokens, generated clients, and create/delete body decode remain outside
 this crate's current profile. The route manifest is a descriptor over the
 operation envelope, not a listener, router implementation, generated client, or
@@ -102,7 +108,9 @@ action value. Runtime action failures are sanitized as `surface.action`;
 argument decode failures are `surface.request`.
 
 The operation envelope functions compose those same typed bodies into a single
-project-session dispatch profile. `execute_project_surface_operation_read_only`
+project-session dispatch profile. They derive the active operation kind from the
+current checked program, validate the request body kind against the operation
+tag, and only then admit the matching runtime handle. `execute_project_surface_operation_read_only`
 accepts read bodies through `ProjectSurfaceReadSession` and rejects update or
 action bodies as an ABI mismatch. `execute_project_surface_operation` accepts
 read, sparse-update, and action bodies through `ProjectSurfaceSession`, using a
@@ -113,8 +121,9 @@ response envelope with record, page, optional-record, updated, or action
 results. Error envelopes contain only a stable code and public message. The
 project helpers use the session's private store handle and do not add HTTP
 serving, generated clients, create/delete bodies, or opaque cursor token codecs.
-Wrong profile versions fail before tag admission; unknown tags fail through
-runtime admission; wrong read/update/action shape requests remain
+Wrong profile versions fail before tag admission; unknown tags and duplicate
+tags fail through operation-kind preflight over checked facts; wrong
+read/update/action shape requests are rejected by that same preflight as
 `surface.request`; cursor mismatches stay on the existing cursor error path.
 
 ## Read next
@@ -122,9 +131,10 @@ runtime admission; wrong read/update/action shape requests remain
 - `crates/marrow-json/src/lib.rs` — `entry_return_to_json`,
   `saved_key_to_json`, `data_snapshot_stamp_to_json`,
   `DataSnapshotJson`, and `DataCommitJson`.
-- `crates/marrow-json/src/surface.rs` — surface ABI descriptor DTOs, surface
-  read result DTOs, checked surface read request-parameter and sparse update
-  request DTOs, action DTOs, operation envelope DTOs, descriptor alias
+- `crates/marrow-json/src/surface.rs` and `crates/marrow-json/src/surface/` —
+  surface ABI descriptor DTOs, operation catalog and route binding validation,
+  surface read result DTOs, checked surface read request-parameter and sparse
+  update request DTOs, action DTOs, operation envelope DTOs, descriptor alias
   rendering, route manifest rendering, and in-process operation-tag execution
   helpers.
 - `crates/marrow/src/cmd_run.rs` — the run JSON envelope and `run.entry_surface`

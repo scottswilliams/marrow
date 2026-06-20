@@ -67,6 +67,7 @@ impl SurfaceActionInvocation {
         program: &CheckedProgram,
         operation_tag: &str,
     ) -> Result<Self, SurfaceReadError> {
+        require_unique_surface_operation_tag(program, operation_tag)?;
         let mut matches = program.facts.surfaces().iter().flat_map(|surface| {
             surface.actions.iter().filter_map(move |action| {
                 let descriptor =
@@ -2172,6 +2173,7 @@ fn checked_read_operation_by_tag<'a>(
     program: &'a CheckedProgram,
     operation_tag: &str,
 ) -> Result<SurfaceReadOperationMatch<'a>, SurfaceReadError> {
+    require_unique_surface_operation_tag(program, operation_tag)?;
     let mut matched = None;
     for surface in program.facts.surfaces() {
         for (ordinal, operation) in surface.read_operations.iter().enumerate() {
@@ -2206,6 +2208,7 @@ fn checked_update_surface_by_tag<'a>(
     program: &'a CheckedProgram,
     operation_tag: &str,
 ) -> Result<&'a SurfaceFact, SurfaceError> {
+    require_unique_surface_operation_tag(program, operation_tag)?;
     let mut matched = None;
     for surface in program.facts.surfaces() {
         let Some(descriptor) = SurfaceUpdateOperationDescriptor::from_surface(program, surface)
@@ -2229,6 +2232,45 @@ fn checked_update_surface_by_tag<'a>(
             SourceSpan::default(),
         )
     })
+}
+
+fn require_unique_surface_operation_tag(
+    program: &CheckedProgram,
+    operation_tag: &str,
+) -> Result<(), SurfaceReadError> {
+    let count = surface_operation_tag_count(program, operation_tag);
+    if count > 1 {
+        return Err(abi_mismatch(
+            "surface operation tag is ambiguous",
+            SourceSpan::default(),
+        ));
+    }
+    Ok(())
+}
+
+fn surface_operation_tag_count(program: &CheckedProgram, operation_tag: &str) -> usize {
+    let mut count = 0;
+    for surface in program.facts.surfaces() {
+        count += surface
+            .read_operations
+            .iter()
+            .filter(|read| read.operation_tag.as_deref() == Some(operation_tag))
+            .count();
+        if SurfaceUpdateOperationDescriptor::from_surface(program, surface)
+            .is_some_and(|descriptor| descriptor.operation_tag == operation_tag)
+        {
+            count += 1;
+        }
+        count += surface
+            .actions
+            .iter()
+            .filter(|action| {
+                SurfaceActionOperationDescriptor::from_action(program, surface, action)
+                    .is_some_and(|descriptor| descriptor.operation_tag == operation_tag)
+            })
+            .count();
+    }
+    count
 }
 
 fn require_stable_surface(surface: &SurfaceFact) -> Result<(), SurfaceReadError> {
