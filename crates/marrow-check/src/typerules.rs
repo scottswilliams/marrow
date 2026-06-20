@@ -12,20 +12,52 @@ use crate::{CHECK_LITERAL_RANGE, CheckDiagnostic, MarrowType};
 /// significant digits and 34 fractional places.
 pub(crate) const DECIMAL_MAX_DIGITS: usize = 34;
 
-/// Reject a numeric literal provably out of range at check time. The lexer emits
-/// bare digits with the sign as a separate unary operator, so an integer is in
-/// range exactly when it parses as `i64`; a decimal stays within the 34-digit
-/// envelope.
+/// Whether an integer literal carries a leading unary minus. The lexer tokenizes a
+/// bare magnitude with the sign as a separate unary operator, but the negation
+/// shifts the representable bound: `9223372036854775808` is `i64::MAX + 1` and out
+/// of range on its own, yet negated it is exactly `i64::MIN`, a valid value.
+#[derive(Clone, Copy)]
+pub(crate) enum LiteralSign {
+    Bare,
+    Negated,
+}
+
+/// The text and span of the integer literal under a `-` unary operator, or `None`
+/// for any other shape. A negated integer literal is the one place a magnitude of
+/// `i64::MAX + 1` is in range, so range-checking and constant-folding both pivot on
+/// recognizing it.
+pub(crate) fn negated_integer_literal(
+    op: marrow_syntax::UnaryOp,
+    operand: &marrow_syntax::Expression,
+) -> Option<(&str, SourceSpan)> {
+    match (op, operand) {
+        (
+            marrow_syntax::UnaryOp::Neg,
+            marrow_syntax::Expression::Literal {
+                kind: marrow_syntax::LiteralKind::Integer,
+                text,
+                span,
+            },
+        ) => Some((text, *span)),
+        _ => None,
+    }
+}
+
+/// Reject a numeric literal provably out of range at check time. An integer is in
+/// range when its magnitude parses as `i64`, except that a negated magnitude may
+/// also be exactly `i64::MAX + 1`, which negates to `i64::MIN`. A decimal stays
+/// within the 34-digit envelope.
 pub(crate) fn check_literal_range(
     kind: marrow_syntax::LiteralKind,
     text: &str,
+    sign: LiteralSign,
     span: SourceSpan,
     file: &Path,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
     use marrow_syntax::LiteralKind;
     let out_of_range = match kind {
-        LiteralKind::Integer => text.parse::<i64>().is_err(),
+        LiteralKind::Integer => integer_out_of_range(text, sign),
         LiteralKind::Decimal => decimal_out_of_envelope(text),
         // A duration literal's magnitude is checked at run time, where it shares
         // the int/decimal overflow path, so nothing is flagged here.
@@ -56,6 +88,17 @@ fn elide(text: &str) -> std::borrow::Cow<'_, str> {
         std::borrow::Cow::Owned(format!("{head}…"))
     } else {
         std::borrow::Cow::Borrowed(text)
+    }
+}
+
+/// Whether an integer literal's magnitude is outside `i64`. A bare magnitude must
+/// itself fit `i64`; a negated one may reach `i64::MAX + 1`, whose negation is
+/// `i64::MIN`. The negated case folds the sign before parsing rather than parsing
+/// the bare magnitude, which would reject `i64::MIN`.
+fn integer_out_of_range(text: &str, sign: LiteralSign) -> bool {
+    match sign {
+        LiteralSign::Bare => text.parse::<i64>().is_err(),
+        LiteralSign::Negated => format!("-{text}").parse::<i64>().is_err(),
     }
 }
 

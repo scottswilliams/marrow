@@ -1,1 +1,1 @@
-{ "sourceRoots": ["src"], "store": { "backend": "memory" }, "tests": ["tests"] }
+{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".marrow/data" }, "tests": ["tests"] }

@@ -27,18 +27,35 @@ fn keys_saved_root_loop_returns_ids_in_store_order() {
 }
 
 #[test]
-fn direct_saved_root_loop_streams_ids_and_reads_current_values() {
+fn direct_saved_root_loop_streams_ids_and_reads_current_field() {
+    // A field write at the loop key rewrites the current record; iteration reads the
+    // updated value when it revisits that key. This is the allowed read-your-writes
+    // form. (A field write at a non-loop key is rejected at check — it may insert a
+    // sibling mid-traversal — so the safe pattern writes only the current entry.)
     let program = checked_program(&format!(
-        "{BOOK_PRIMARY_SCHEMA}pub fn seed()\n    ^books(1).title = \"A\"\n    ^books(2).title = \"B\"\n\npub fn mutateFutureValue(): int\n    var total = 0\n    for id in ^books\n        if const title = ^books(id).title\n            if title == \"A\"\n                total = total * 10 + 1\n                ^books(2).title = \"Z\"\n            else if title == \"B\"\n                total = total * 10 + 2\n            else if title == \"Z\"\n                total = total * 10 + 9\n    return total\n"
+        "{BOOK_PRIMARY_SCHEMA}pub fn seed()\n    ^books(1).title = \"A\"\n    ^books(2).title = \"B\"\n\npub fn rewriteCurrent(): int\n    var total = 0\n    for id in ^books\n        if const title = ^books(id).title\n            if title == \"A\"\n                total = total * 10 + 1\n                ^books(id).title = \"Z\"\n            else if title == \"B\"\n                total = total * 10 + 2\n    return total\n"
     ));
     let store = TreeStore::memory();
     run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed");
 
     assert_eq!(
-        run_entry(&store, checked_entry!(&program, "test::mutateFutureValue"))
+        run_entry(&store, checked_entry!(&program, "test::rewriteCurrent"))
             .expect("loop")
             .value,
-        Some(Value::Int(19))
+        Some(Value::Int(12))
+    );
+}
+
+#[test]
+fn a_field_write_at_a_non_loop_key_during_traversal_is_checker_rejected() {
+    // Writing a field at a literal key that is not the loop key may insert a sibling
+    // into the traversed root, so the conservative rule rejects it at check even when
+    // the key happens to exist.
+    checker_rejects(
+        &format!(
+            "{BOOK_PRIMARY_SCHEMA}pub fn rewriteSibling()\n    for id in ^books\n        ^books(2).title = \"Z\"\n"
+        ),
+        "check.loop_mutates_traversed_layer",
     );
 }
 

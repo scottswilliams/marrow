@@ -116,6 +116,12 @@ pub const CHECK_REJECTED_SURFACE: &str = "check.rejected_surface";
 /// Accepted catalog metadata is missing, invalid, or lacks an accepted durable
 /// identity binding for a source declaration.
 pub const CHECK_CATALOG_INTENT: &str = "check.catalog_intent";
+/// The program declares a durable surface — a store, enum, or resource that needs
+/// committed catalog identity — but the configured store backend is `memory`, which
+/// has no durable identity. The runtime would reject the program as
+/// `run.durable_store_required`; the checker rejects it earlier because the backend
+/// is statically known.
+pub const CHECK_DURABLE_STORE_REQUIRED: &str = "check.durable_store_required";
 /// An `evolve` step names a target that does not resolve to a catalog-addressable
 /// entity: a resource member, saved root, store index, enum, or enum member that
 /// the current source declares (or, for a rename's source side, an entry the

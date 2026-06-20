@@ -233,7 +233,9 @@ const MaxLoans: int = 5  ; module-level constant, evaluated at compile time
 
 A module-level `const` must be a compile-time constant expression; a local
 `const` may bind any value, including runtime results. A `const` cannot be
-reassigned.
+reassigned, and neither can a loop variable, an `if const` binding, or a
+parameter; assigning to any of them is a check error. A `var` shadowing one of
+these in an inner block introduces a fresh mutable binding.
 
 ## Equality And Assignment
 

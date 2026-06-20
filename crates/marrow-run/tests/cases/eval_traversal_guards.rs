@@ -55,14 +55,16 @@ fn helper_deleting_from_the_root_being_traversed_is_a_traversal_fault() {
 }
 
 #[test]
-fn field_write_creating_a_record_in_the_traversed_root_is_a_traversal_fault() {
-    let program = checked_program(&format!(
-        "{BOOK_PRIMARY_SCHEMA}pub fn seed()\n    ^books(1).title = \"a\"\n    ^books(2).title = \"b\"\n\npub fn grow()\n    for id in ^books\n        ^books(99).title = \"new\"\n"
-    ));
-    let store = TreeStore::memory();
-    run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed");
-    let faulted = run_entry(&store, checked_entry!(&program, "test::grow"));
-    assert_run_error(faulted, RUN_TRAVERSAL);
+fn field_write_creating_a_record_in_the_traversed_root_is_checker_rejected() {
+    // A field write at a literal key that is not the loop key may insert a new record
+    // into the traversed root. The key is statically not the loop key, so the checker
+    // rejects it rather than deferring to the runtime traversal guard.
+    checker_rejects(
+        &format!(
+            "{BOOK_PRIMARY_SCHEMA}pub fn grow()\n    for id in ^books\n        ^books(99).title = \"new\"\n"
+        ),
+        "check.loop_mutates_traversed_layer",
+    );
 }
 
 #[test]

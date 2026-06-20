@@ -98,15 +98,17 @@ value does not print it.
 ### `store.backend` and `store.dataDir`
 
 The required storage selection. `marrow test` always runs each test on a fresh
-in-memory store. `marrow run` admits the memory backend only for a program with
-no durable declarations; a program that declares a durable surface (a
-`resource`, a saved `store`, or an `enum`) fails with
-`run.durable_store_required` and needs a native store. The supported production
-saved-data backend is the native redb store.
+in-memory store. The memory backend admits only a program with no durable
+declarations; a program that declares a durable surface (a `resource`, a saved
+`store`, or an `enum`) needs a native store. The backend is statically known, so
+`marrow check` rejects a durable program under the memory backend with
+`check.durable_store_required`; `marrow run` enforces the same contract as
+`run.durable_store_required`. The supported production saved-data backend is the
+native redb store.
 
 - `memory` — an in-memory store. Creates no files. `dataDir` is ignored if
   present (and may be omitted). This backend is not a production `^` durability
-  profile; `run` refuses a durable program here.
+  profile; a durable program is rejected at check here.
 
   ```json
   { "sourceRoots": ["src"], "store": { "backend": "memory" } }

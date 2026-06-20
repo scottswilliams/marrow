@@ -172,12 +172,15 @@ pub fn check_source_files(
 }
 
 pub fn test_project_config() -> ProjectConfig {
+    // The runtime suites declare durable surfaces, which require a native store to
+    // establish committed identity at check time; the program then runs against an
+    // in-memory store for test speed. The config backend drives only the check.
     ProjectConfig {
         source_roots: vec!["src".into()],
         default_entry: None,
         store: StoreConfig {
-            backend: StoreBackend::Memory,
-            data_dir: None,
+            backend: StoreBackend::Native,
+            data_dir: Some(".marrow/data".into()),
         },
         tests: Vec::new(),
     }

@@ -195,8 +195,9 @@ fn run_recreates_the_store_catalog_from_the_committed_file_when_the_store_is_mis
 #[test]
 fn a_memory_backed_durable_baseline_fails_with_a_typed_error() {
     // A project whose source declares a durable surface (a saved root) but configures no
-    // persistent store has identity nothing can hold. It must fail closed rather than run
-    // with an identity nothing stamps.
+    // persistent store has identity nothing can hold. The backend is statically known, so
+    // `run` checks the project first and fails closed with the typed check error before
+    // ever reaching the runtime.
     let root = support::temp_project_uncommitted("run-memory-durable", |root| {
         write(
             root,
@@ -221,7 +222,7 @@ fn a_memory_backed_durable_baseline_fails_with_a_typed_error() {
     let segments: Vec<&str> = stderr.trim().split(": ").collect();
     let (_, code) = find_code_segment(&segments);
     assert_eq!(
-        code, "run.durable_store_required",
+        code, "check.durable_store_required",
         "a memory-backed durable baseline reports the typed error: {stderr}"
     );
 }

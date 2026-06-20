@@ -311,6 +311,70 @@ fn is_non_pair_collection_wrapper(iterable: &marrow_syntax::Expression) -> bool 
     is_collection_wrapper(iterable, "keys") || is_collection_wrapper(iterable, "values")
 }
 
+/// Whether `expr` of type `ty` is a concrete non-iterable scalar — an `int`,
+/// `string`, `bool`, enum value, or store identity. A range literal types to its
+/// endpoint scalar but is genuinely iterable, so it is excluded syntactically.
+/// `Unknown` defers, keeping cross-module unresolved values free of false positives.
+/// Shared by the collection combinators (`for`, `count`, `reversed`) that need a
+/// collection, not a scalar.
+pub(crate) fn is_concrete_scalar_value(expr: &marrow_syntax::Expression, ty: &MarrowType) -> bool {
+    // A range is iterable, and a saved path carries its own presence/traversal
+    // semantics (a saved scalar's `count` is its presence), so neither is a local
+    // non-iterable scalar.
+    if marrow_syntax::range_expr(expr).is_some() || crate::rules::is_saved_path(expr) {
+        return false;
+    }
+    matches!(
+        ty,
+        MarrowType::Primitive(_) | MarrowType::Enum { .. } | MarrowType::Identity(_)
+    )
+}
+
+/// Whether `expr` binds through the saved or local collection-loop paths — that is,
+/// it is a recognized iterable (a saved layer/index branch or a local sequence/map),
+/// whose leaf scalar type must not be mistaken for a non-iterable scalar.
+pub(crate) fn is_recognized_collection(
+    program: &CheckedProgram,
+    expr: &marrow_syntax::Expression,
+    scope: &[HashMap<String, MarrowType>],
+    aliases: &HashMap<String, Vec<String>>,
+    file: &Path,
+) -> bool {
+    [false, true].into_iter().any(|two_name| {
+        local_collection_loop_binding_types(program, two_name, expr, scope, aliases, file).is_some()
+            || collection_loop_binding_types(program, two_name, expr, scope, file).is_some()
+    })
+}
+
+/// Reject a `for` loop whose iterable is a concrete non-iterable scalar. A recognized
+/// collection binds through the collection-loop paths, so its leaf scalar type is not
+/// mistaken for a non-iterable. When the iterable is a combinator call whose argument
+/// rule already reported an unusable argument at this span, the loop defers to that
+/// single root-cause diagnostic instead of re-flagging the combinator's result.
+pub(super) fn check_for_scalar_iterable(
+    program: &CheckedProgram,
+    file: &Path,
+    iterable: &marrow_syntax::Expression,
+    scope: &[HashMap<String, MarrowType>],
+    aliases: &HashMap<String, Vec<String>>,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    if is_recognized_collection(program, iterable, scope, aliases, file)
+        || has_collection_unsupported(diagnostics, file, iterable.span())
+    {
+        return;
+    }
+    let iterable_type = infer_type(program, iterable, scope, aliases, file, &mut Vec::new());
+    if is_concrete_scalar_value(iterable, &iterable_type) {
+        diagnostics.push(CheckDiagnostic::error(
+            CHECK_COLLECTION_UNSUPPORTED,
+            file,
+            iterable.span(),
+            "this value is a scalar, which cannot be iterated",
+        ));
+    }
+}
+
 pub(super) fn check_for_entries_support(
     program: &CheckedProgram,
     file: &Path,
@@ -467,7 +531,7 @@ fn entries_unsupported(
     CheckDiagnostic::error(CHECK_COLLECTION_UNSUPPORTED, file, span, message)
 }
 
-fn has_collection_unsupported(
+pub(super) fn has_collection_unsupported(
     diagnostics: &[CheckDiagnostic],
     file: &Path,
     span: marrow_syntax::SourceSpan,

@@ -17,7 +17,7 @@ fn check_tests_report(name: &str, app_src: &str, test_src: &str) -> marrow_check
         write(root, "tests/app_test.mw", test_src);
     });
     let cfg = parse_config(
-        r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" }, "tests": ["tests"] }"#,
+        r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".marrow/data" }, "tests": ["tests"] }"#,
     )
     .expect("config");
     let (src_report, src_program) = check_project(&root, &cfg).expect("check src");
@@ -243,6 +243,55 @@ fn saved_path_assignment_targets_are_allowed() {
     let found = check_script(
         "assign-saved",
         "fn f()\n    ^books(id).title = x\n",
+        "check.invalid_assign_target",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn reassigning_an_immutable_binding_is_rejected() {
+    // A `const`, a loop variable, and an `if const` binding are immutable. Each
+    // reassignment fires exactly one `check.invalid_assign_target`; a `var` does not.
+    let cases: &[(&str, &str)] = &[
+        ("reassign-const", "fn f()\n    const c = 1\n    c = 2\n"),
+        (
+            "reassign-loop-var",
+            "fn f()\n    for i in 0..3\n        i = 99\n",
+        ),
+    ];
+    for (name, source) in cases {
+        let found = check_script(name, source, "check.invalid_assign_target");
+        assert_eq!(found.len(), 1, "{name}: {found:#?}");
+    }
+
+    let if_const = check_module(
+        "reassign-if-const",
+        "module m\n\
+         resource Book\n    required title: string\n\
+         store ^books(id: int): Book\n\n\
+         fn f(id: Id(^books))\n    if const v = ^books(id).title\n        v = \"x\"\n",
+        "check.invalid_assign_target",
+    );
+    assert_eq!(if_const.len(), 1, "{if_const:#?}");
+}
+
+#[test]
+fn reassigning_a_var_is_allowed() {
+    let found = check_script(
+        "reassign-var",
+        "fn f()\n    var x = 1\n    x = 2\n",
+        "check.invalid_assign_target",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn an_inner_var_shadowing_an_outer_const_is_assignable() {
+    // A `var` in an inner block shadows an outer `const`; the inner name is mutable,
+    // and assigning it does not fire on the still-immutable outer `const`.
+    let found = check_script(
+        "shadow-const-with-var",
+        "fn f()\n    const c = 1\n    if true\n        var c = 2\n        c = 3\n",
         "check.invalid_assign_target",
     );
     assert!(found.is_empty(), "{found:#?}");
@@ -658,6 +707,37 @@ fn reversed_loop_mutating_the_traversed_layer_is_rejected() {
 }
 
 #[test]
+fn appending_into_an_outer_sibling_entry_is_rejected() {
+    // `append(^org(99).tags, …)` auto-creates the enclosing `^org(99)` entry, inserting
+    // a sibling into the traversed `^org` layer — the runtime faults `run.traversal`.
+    // The enclosing keyed step is judged against the traversed layer like a write.
+    let found = check_module(
+        "loop-append-outer-sibling",
+        "module m\n\
+         resource Org\n    name: string\n    tags(pos: int): string\n\
+         store ^org(id: int): Org\n\n\
+         fn f()\n    for oid in ^org\n        append(^org(99).tags, \"x\")\n",
+        "check.loop_mutates_traversed_layer",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn appending_into_the_loop_key_entry_is_allowed() {
+    // The same append at the outer loop key targets the current entry's own layer, so
+    // it inserts no sibling into the traversed `^org` layer and the runtime allows it.
+    let found = check_module(
+        "loop-append-loop-key",
+        "module m\n\
+         resource Org\n    name: string\n    tags(pos: int): string\n\
+         store ^org(id: int): Org\n\n\
+         fn f()\n    for oid in ^org\n        append(^org(oid).tags, \"x\")\n",
+        "check.loop_mutates_traversed_layer",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
 fn collecting_keys_first_then_mutating_is_allowed() {
     // The documented safe pattern: snapshot the keys into a local, iterate the
     // local, and mutate the layer. The loop traverses a local value, not the layer.
@@ -697,6 +777,141 @@ fn writing_a_field_in_a_record_loop_is_allowed() {
          resource Book\n    required title: string\n\
          store ^books(id: int): Book\n\n\
          fn f()\n    for id, book in ^books\n        ^books(id).title = \"x\"\n",
+        "check.loop_mutates_traversed_layer",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn inserting_into_the_traversed_layer_by_field_write_is_rejected() {
+    // A field write to a key that is not the loop key — here the literal `99` — may
+    // insert a new entry into the layer being traversed, which the runtime faults as
+    // `run.traversal`. The conservative rule rejects it at check, like delete.
+    let found = check_module(
+        "loop-field-insert",
+        "module m\n\
+         resource Book\n    required title: string\n\
+         store ^books(id: int): Book\n\n\
+         fn f()\n    for id in ^books\n        ^books(99).title = \"x\"\n",
+        "check.loop_mutates_traversed_layer",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn shadowing_the_loop_variable_before_a_field_write_is_rejected() {
+    // The loop-key exception holds only while the loop variable still names the live
+    // loop binding. Rebinding `id` to a literal inside the body means `^books(id)` no
+    // longer addresses the current entry, so the conservative rule flags the write.
+    let found = check_module(
+        "loop-shadow-field-insert",
+        "module m\n\
+         resource Book\n    required title: string\n\
+         store ^books(id: int): Book\n\n\
+         fn f()\n    for id in ^books\n        if true\n            const id = 99\n            ^books(id).title = \"x\"\n",
+        "check.loop_mutates_traversed_layer",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn inserting_into_a_nested_traversed_layer_by_field_write_is_rejected() {
+    // The conservative rule reaches nested keyed layers: writing a field at a literal
+    // team key while traversing the same team layer may insert a sibling team.
+    let found = check_module(
+        "loop-nested-field-insert",
+        "module m\n\
+         resource Team\n    required lead: string\n\
+         resource Org\n    required name: string\n    teams(teamId: int): Team\n\
+         store ^orgs(id: int): Org\n\n\
+         fn f()\n    for orgId in ^orgs\n        for teamId in ^orgs(orgId).teams\n            ^orgs(orgId).teams(99).lead = \"x\"\n",
+        "check.loop_mutates_traversed_layer",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn writing_a_nested_layer_field_at_the_loop_key_is_allowed() {
+    // The same nested write at the loop key revisits the current entry and is safe.
+    let found = check_module(
+        "loop-nested-field-loop-key",
+        "module m\n\
+         resource Team\n    required lead: string\n\
+         resource Org\n    required name: string\n    teams(teamId: int): Team\n\
+         store ^orgs(id: int): Org\n\n\
+         fn f()\n    for orgId in ^orgs\n        for teamId in ^orgs(orgId).teams\n            ^orgs(orgId).teams(teamId).lead = \"x\"\n",
+        "check.loop_mutates_traversed_layer",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn writing_a_whole_keyed_entry_at_the_loop_key_is_rejected() {
+    // A whole keyed-entry write replaces the entry by clearing and rewriting its
+    // subtree, which invalidates the loop cursor even at the current key — the runtime
+    // faults `run.traversal` regardless of the key. The checker rejects it like a
+    // delete, so a whole-entry write is never exempted by the loop key.
+    let found = check_module(
+        "loop-whole-entry-loop-key",
+        "module m\n\
+         resource Team\n    required lead: string\n\
+         resource Org\n    required name: string\n    teams(teamId: int): Team\n\
+         store ^orgs(id: int): Org\n\n\
+         fn f()\n    for k, v in entries(^orgs(1).teams)\n        ^orgs(1).teams(k) = Team(lead: \"x\")\n",
+        "check.loop_mutates_traversed_layer",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn writing_a_field_at_the_loop_key_in_a_two_name_layer_loop_is_allowed() {
+    // A field write at the loop key revisits the current entry without clearing its
+    // subtree, so the runtime allows it. Only a whole-entry write or a non-loop key is
+    // unsafe; the two-name loop exposes the live key the field write addresses.
+    let found = check_module(
+        "loop-field-write-loop-key",
+        "module m\n\
+         resource Team\n    required lead: string\n\
+         resource Org\n    required name: string\n    teams(teamId: int): Team\n\
+         store ^orgs(id: int): Org\n\n\
+         fn f()\n    for k, v in entries(^orgs(1).teams)\n        ^orgs(1).teams(k).lead = \"x\"\n",
+        "check.loop_mutates_traversed_layer",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn inserting_at_an_outer_sibling_key_of_a_deep_field_write_is_rejected() {
+    // The outer keyed entry `^org(99)` belongs to the traversed `^org` layer, so the
+    // deep field write auto-creates a sibling entry mid-traversal even though the inner
+    // key is a literal team key. Every keyed step of the path is checked against each
+    // traversed layer, not just the innermost, so the non-loop outer key `99` is
+    // rejected — matching the runtime, which faults `run.traversal` on this shape.
+    let found = check_module(
+        "loop-outer-sibling-deep-field",
+        "module m\n\
+         resource Team\n    required lead: string\n\
+         resource Org\n    required name: string\n    teams(teamId: int): Team\n\
+         store ^org(id: int): Org\n\n\
+         fn f()\n    for oid in ^org\n        ^org(99).teams(1).lead = \"x\"\n",
+        "check.loop_mutates_traversed_layer",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn writing_a_deep_field_at_the_outer_loop_key_is_allowed() {
+    // The same deep write at the outer loop key `oid` addresses the current entry of
+    // the traversed `^org` layer, so it inserts no sibling and the runtime allows it.
+    // The inner literal team key is irrelevant: `^org(oid).teams` is a different layer
+    // than the traversed `^org`, so only the outer key is judged against it.
+    let found = check_module(
+        "loop-outer-loop-key-deep-field",
+        "module m\n\
+         resource Team\n    required lead: string\n\
+         resource Org\n    required name: string\n    teams(teamId: int): Team\n\
+         store ^org(id: int): Org\n\n\
+         fn f()\n    for oid in ^org\n        ^org(oid).teams(1).lead = \"x\"\n",
         "check.loop_mutates_traversed_layer",
     );
     assert!(found.is_empty(), "{found:#?}");

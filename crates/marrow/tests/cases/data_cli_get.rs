@@ -147,7 +147,10 @@ fn data_get_and_integrity_on_an_unseeded_project_write_no_records() {
 }
 
 #[test]
-fn data_get_without_native_store_reports_null_snapshot() {
+fn data_get_on_a_memory_backed_durable_project_is_a_check_error() {
+    // A durable surface under the `memory` backend has no durable identity, so the
+    // project does not check. `data get` checks the project first and reports the typed
+    // error rather than inspecting a store that could never exist.
     let project = support::temp_project("data-get-memory-store", |root| {
         support::write(
             root,
@@ -160,11 +163,13 @@ fn data_get_without_native_store_reports_null_snapshot() {
 
     let get = marrow(&["data", "get", "--format", "json", &dir, "^counter(1).value"]);
 
-    assert_eq!(get.status.code(), Some(0), "{get:?}");
+    assert_eq!(get.status.code(), Some(1), "{get:?}");
     let get = json(get);
-    assert_eq!(get["presence"], serde_json::json!("absent"));
-    assert_eq!(get["value_b64"], serde_json::Value::Null);
-    assert_eq!(get["store_snapshot"], serde_json::Value::Null);
+    assert_eq!(get["status"], serde_json::json!("failed"));
+    assert_eq!(
+        get["diagnostics"][0]["code"],
+        serde_json::json!("check.durable_store_required")
+    );
 }
 
 #[test]

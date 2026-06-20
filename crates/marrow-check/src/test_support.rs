@@ -25,13 +25,15 @@ use crate::{
 type TestSupportResult<T> = Result<T, Box<dyn std::error::Error>>;
 
 /// The standard single-`src`-root project config the source-driven suites check under.
+/// The suites exercise durable surfaces (stores, enums, resources), which require a
+/// native store to establish committed identity, so the default backend is native.
 pub fn test_config() -> ProjectConfig {
     ProjectConfig {
         source_roots: vec!["src".into()],
         default_entry: None,
         store: StoreConfig {
-            backend: StoreBackend::Memory,
-            data_dir: None,
+            backend: StoreBackend::Native,
+            data_dir: Some(".marrow/data".into()),
         },
         tests: Vec::new(),
     }

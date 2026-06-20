@@ -5,16 +5,17 @@
 //! constant expressions. They do not need type or effect facts, so they run
 //! directly on each declaration.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use marrow_schema::Type;
 use marrow_syntax::{
-    Block, CatchClause, Expression, FunctionDecl, InterpolationPart, Statement, format_expression,
+    Block, CatchClause, Expression, FunctionDecl, InterpolationPart, SourceSpan, Statement,
+    format_expression,
 };
 
 use crate::checks::{check_entries_value_position, check_range_value};
-use crate::typerules::check_literal_range;
+use crate::typerules::{LiteralSign, check_literal_range, negated_integer_literal};
 use crate::walk::for_each_child_expr;
 use crate::{CHECK_COMMIT_AMPLIFICATION, CHECK_TRY_HANDLER, CheckDiagnostic};
 
@@ -36,29 +37,46 @@ pub(crate) fn check_function_body(
     function: &FunctionDecl,
     out: &mut Vec<CheckDiagnostic>,
 ) {
-    let read_only_params: HashSet<String> = function
+    let immutable: HashMap<String, ImmutableKind> = function
         .params
         .iter()
-        .map(|param| param.name.clone())
+        .map(|param| (param.name.clone(), ImmutableKind::Parameter))
         .collect();
-    walk_block(
-        file,
-        &function.body,
-        &read_only_params,
-        &HashSet::new(),
-        out,
-    );
+    walk_block(file, &function.body, &immutable, &HashSet::new(), out);
     walk_loop_control_flow(file, &function.body, 0, out);
     walk_loop_layer_mutations(file, &function.body, &mut Vec::new(), out);
     walk_commit_amplification(file, &function.body, false, false, out);
 }
 
 /// Apply the structural body rules to an `evolve transform` block, which has no
-/// function parameters and so no read-only bindings.
+/// function parameters and so no immutable bindings to start.
 pub(crate) fn check_transform_body(file: &Path, body: &Block, out: &mut Vec<CheckDiagnostic>) {
-    walk_block(file, body, &HashSet::new(), &HashSet::new(), out);
+    walk_block(file, body, &HashMap::new(), &HashSet::new(), out);
     walk_loop_control_flow(file, body, 0, out);
     walk_loop_layer_mutations(file, body, &mut Vec::new(), out);
+}
+
+/// An immutable local place: one that names a binding which assignment cannot
+/// rewrite. The kind shapes the diagnostic message; the rule is the same for all.
+#[derive(Clone, Copy)]
+enum ImmutableKind {
+    Parameter,
+    Const,
+    LoopVariable,
+    IfConstBinding,
+}
+
+impl ImmutableKind {
+    fn message(self, name: &str) -> String {
+        match self {
+            Self::Parameter => format!("parameter `{name}` is read-only"),
+            Self::Const => format!("`{name}` is a constant and cannot be reassigned"),
+            Self::LoopVariable => format!("loop variable `{name}` cannot be reassigned"),
+            Self::IfConstBinding => {
+                format!("`{name}` is an `if const` binding and cannot be reassigned")
+            }
+        }
+    }
 }
 
 /// A `const` value must be a compile-time constant expression: literals and
@@ -83,12 +101,22 @@ pub(crate) fn check_const_value(file: &Path, value: &Expression, out: &mut Vec<C
 fn check_literal_ranges(file: &Path, expr: &Expression, out: &mut Vec<CheckDiagnostic>) {
     match expr {
         Expression::Literal { kind, text, span } => {
-            check_literal_range(*kind, text, *span, file, out);
+            check_literal_range(*kind, text, LiteralSign::Bare, *span, file, out);
         }
         Expression::Field { base, .. } | Expression::OptionalField { base, .. } => {
             check_literal_ranges(file, base, out)
         }
-        Expression::Unary { operand, .. } => check_literal_ranges(file, operand, out),
+        Expression::Unary { op, operand, .. } => match negated_integer_literal(*op, operand) {
+            Some((text, span)) => check_literal_range(
+                marrow_syntax::LiteralKind::Integer,
+                text,
+                LiteralSign::Negated,
+                span,
+                file,
+                out,
+            ),
+            None => check_literal_ranges(file, operand, out),
+        },
         Expression::Binary { left, right, .. } => {
             check_literal_ranges(file, left, out);
             check_literal_ranges(file, right, out);
@@ -117,21 +145,44 @@ fn check_literal_ranges(file: &Path, expr: &Expression, out: &mut Vec<CheckDiagn
 }
 
 /// Walk a block applying the catch and assign-target rules to each statement,
-/// recursing into nested blocks.
+/// recursing into nested blocks. The block-scoped clone of `immutable` means a
+/// shadowing binding in an inner block does not leak its mutability out.
 fn walk_block(
     file: &Path,
     block: &Block,
-    read_only_params: &HashSet<String>,
+    immutable: &HashMap<String, ImmutableKind>,
     inherited_local_collections: &HashSet<String>,
     out: &mut Vec<CheckDiagnostic>,
 ) {
-    let mut read_only_params = read_only_params.clone();
+    let mut immutable = immutable.clone();
     let mut local_collections = inherited_local_collections.clone();
+    // The first declaration of each local name in this block, so a second `const` or
+    // `var` of the same name is reported as a same-block redeclaration. An inner block
+    // gets a fresh map, so shadowing across blocks stays allowed.
+    let mut declared: HashMap<&str, SourceSpan> = HashMap::new();
     for statement in &block.statements {
-        walk_statement(file, statement, &read_only_params, &local_collections, out);
-        if let Some(name) = statement_binding_name(statement) {
-            read_only_params.remove(name);
-            local_collections.remove(name);
+        walk_statement(file, statement, &immutable, &local_collections, out);
+        if let Some((name, span)) = local_declaration(statement) {
+            if let Some(first) = declared.get(name) {
+                out.push(crate::driver::duplicate_declaration_diagnostic(
+                    file, name, span, *first,
+                ));
+            } else {
+                declared.insert(name, span);
+            }
+        }
+        match statement {
+            // A `const` binding is immutable; a `var` rebinding the same name makes it
+            // mutable again, though a same-block redeclaration is already reported.
+            Statement::Const { name, .. } => {
+                immutable.insert(name.clone(), ImmutableKind::Const);
+                local_collections.remove(name);
+            }
+            Statement::Var { name, .. } => {
+                immutable.remove(name);
+                local_collections.remove(name);
+            }
+            _ => {}
         }
         if let Some(name) = local_collection_binding_name(statement) {
             local_collections.insert(name);
@@ -139,47 +190,93 @@ fn walk_block(
     }
 }
 
+/// The `(name, span)` a `const`/`var` statement declares in its block, or `None` for
+/// any other statement.
+fn local_declaration(statement: &Statement) -> Option<(&str, SourceSpan)> {
+    match statement {
+        Statement::Const { name, span, .. } | Statement::Var { name, span, .. } => {
+            Some((name, *span))
+        }
+        _ => None,
+    }
+}
+
+/// A block walked with one name bound immutably for its duration — a loop variable
+/// over the loop body, or an `if const` binding over its then block.
+fn walk_block_with_immutable(
+    file: &Path,
+    block: &Block,
+    immutable: &HashMap<String, ImmutableKind>,
+    local_collections: &HashSet<String>,
+    bound: &[(&str, ImmutableKind)],
+    out: &mut Vec<CheckDiagnostic>,
+) {
+    let mut immutable = immutable.clone();
+    for (name, kind) in bound {
+        immutable.insert((*name).to_string(), *kind);
+    }
+    walk_block(file, block, &immutable, local_collections, out);
+}
+
 fn walk_statement(
     file: &Path,
     statement: &Statement,
-    read_only_params: &HashSet<String>,
+    immutable: &HashMap<String, ImmutableKind>,
     local_collections: &HashSet<String>,
     out: &mut Vec<CheckDiagnostic>,
 ) {
     match statement {
         Statement::Assign { target, .. } => {
-            check_assignment_target(file, target, read_only_params, local_collections, out);
+            check_assignment_target(file, target, immutable, local_collections, out);
         }
         Statement::If {
             then_block,
             else_ifs,
             else_block,
             ..
+        } => {
+            walk_block(file, then_block, immutable, local_collections, out);
+            for else_if in else_ifs {
+                walk_block(file, &else_if.block, immutable, local_collections, out);
+            }
+            if let Some(block) = else_block {
+                walk_block(file, block, immutable, local_collections, out);
+            }
         }
-        | Statement::IfConst {
+        // The `if const` binding is immutable only inside the then block; the else
+        // arms do not see it.
+        Statement::IfConst {
+            name,
             then_block,
             else_ifs,
             else_block,
             ..
         } => {
-            walk_block(file, then_block, read_only_params, local_collections, out);
+            walk_block_with_immutable(
+                file,
+                then_block,
+                immutable,
+                local_collections,
+                &[(name, ImmutableKind::IfConstBinding)],
+                out,
+            );
             for else_if in else_ifs {
-                walk_block(
-                    file,
-                    &else_if.block,
-                    read_only_params,
-                    local_collections,
-                    out,
-                );
+                walk_block(file, &else_if.block, immutable, local_collections, out);
             }
             if let Some(block) = else_block {
-                walk_block(file, block, read_only_params, local_collections, out);
+                walk_block(file, block, immutable, local_collections, out);
             }
         }
-        Statement::While { body, .. }
-        | Statement::For { body, .. }
-        | Statement::Transaction { body, .. } => {
-            walk_block(file, body, read_only_params, local_collections, out)
+        // A loop variable is immutable across the loop body.
+        Statement::For { binding, body, .. } => {
+            let mut bound = vec![(binding.first.as_str(), ImmutableKind::LoopVariable)];
+            if let Some(second) = &binding.second {
+                bound.push((second.as_str(), ImmutableKind::LoopVariable));
+            }
+            walk_block_with_immutable(file, body, immutable, local_collections, &bound, out);
+        }
+        Statement::While { body, .. } | Statement::Transaction { body, .. } => {
+            walk_block(file, body, immutable, local_collections, out)
         }
         Statement::Try { body, catch, .. } => {
             if catch.is_none() {
@@ -190,15 +287,15 @@ fn walk_statement(
                     "a `try` block has no `catch` clause",
                 ));
             }
-            walk_block(file, body, read_only_params, local_collections, out);
+            walk_block(file, body, immutable, local_collections, out);
             if let Some(catch) = catch {
                 check_catch(file, catch, out);
-                walk_block(file, &catch.block, read_only_params, local_collections, out);
+                walk_block(file, &catch.block, immutable, local_collections, out);
             }
         }
         Statement::Match { arms, .. } => {
             for arm in arms {
-                walk_block(file, &arm.block, read_only_params, local_collections, out);
+                walk_block(file, &arm.block, immutable, local_collections, out);
             }
         }
         Statement::Const { .. }
@@ -216,7 +313,7 @@ fn walk_statement(
 fn check_assignment_target(
     file: &Path,
     target: &Expression,
-    read_only_params: &HashSet<String>,
+    immutable: &HashMap<String, ImmutableKind>,
     local_collections: &HashSet<String>,
     out: &mut Vec<CheckDiagnostic>,
 ) {
@@ -231,13 +328,13 @@ fn check_assignment_target(
     }
 
     if let Some(name) = place_root_name(target)
-        && read_only_params.contains(name)
+        && let Some(kind) = immutable.get(name)
     {
         out.push(diagnostic(
             CHECK_INVALID_ASSIGN_TARGET,
             file,
             target,
-            &format!("parameter `{name}` is read-only"),
+            &kind.message(name),
         ));
     }
 }
@@ -268,27 +365,6 @@ fn is_local_collection_lookup(target: &Expression, local_collections: &HashSet<S
         return false;
     };
     local_collections.contains(name)
-}
-
-fn statement_binding_name(statement: &Statement) -> Option<&str> {
-    match statement {
-        Statement::Const { name, .. } | Statement::Var { name, .. } => Some(name),
-        Statement::Assign { .. }
-        | Statement::Delete { .. }
-        | Statement::Return { .. }
-        | Statement::ReturnAbsent { .. }
-        | Statement::Break { .. }
-        | Statement::Continue { .. }
-        | Statement::Throw { .. }
-        | Statement::Expr { .. }
-        | Statement::IfConst { .. }
-        | Statement::If { .. }
-        | Statement::While { .. }
-        | Statement::For { .. }
-        | Statement::Transaction { .. }
-        | Statement::Try { .. }
-        | Statement::Match { .. } => None,
-    }
 }
 
 /// A `catch` annotation, if present, must name `Error`. A bare catch is fine.
@@ -381,20 +457,34 @@ fn walk_loop_control_flow(
     }
 }
 
+/// A saved layer an enclosing `for` loop is traversing, with the loop's key binding.
+/// A field write into this layer at the loop key revisits the current entry and is
+/// safe; a write at any other key may insert or rewrite a sibling mid-traversal.
+struct TraversedLayer {
+    text: String,
+    loop_key: Option<String>,
+}
+
 /// Walk a block reporting a write, delete, or append that mutates the same saved
 /// layer an enclosing `for` loop is traversing, forbidden because mutating a tree
-/// layer while iterating it has undefined ordering. `traversed` holds the canonical
-/// text of each enclosing loop's traversed saved layer.
+/// layer while iterating it has undefined ordering. `traversed` holds a
+/// [`TraversedLayer`] for each enclosing loop's traversed saved layer, carrying its
+/// canonical text and live loop-key binding.
 fn walk_loop_layer_mutations(
     file: &Path,
     block: &Block,
-    traversed: &mut Vec<String>,
+    traversed: &mut Vec<TraversedLayer>,
     out: &mut Vec<CheckDiagnostic>,
 ) {
     for statement in &block.statements {
-        if let Some(affected) = mutated_layer(statement)
-            && traversed.iter().any(|layer| layer == &affected)
-        {
+        if let Some(rebound) = rebound_name(statement) {
+            for layer in traversed.iter_mut() {
+                if layer.loop_key.as_deref() == Some(rebound) {
+                    layer.loop_key = None;
+                }
+            }
+        }
+        if loop_layer_mutation(statement, traversed) {
             out.push(diagnostic_at(
                 CHECK_LOOP_MUTATES_TRAVERSED_LAYER,
                 file,
@@ -424,15 +514,22 @@ fn walk_loop_layer_mutations(
                     walk_loop_layer_mutations(file, block, traversed, out);
                 }
             }
-            Statement::For { iterable, body, .. } => {
-                let pushed = traversed_layer(iterable);
-                if let Some(layer) = &pushed {
-                    traversed.push(layer.clone());
+            Statement::For {
+                binding,
+                iterable,
+                body,
+                ..
+            } => {
+                let pushed = traversed_layer(iterable).map(|text| TraversedLayer {
+                    text,
+                    loop_key: Some(binding.first.clone()),
+                });
+                let depth = traversed.len();
+                if let Some(layer) = pushed {
+                    traversed.push(layer);
                 }
                 walk_loop_layer_mutations(file, body, traversed, out);
-                if pushed.is_some() {
-                    traversed.pop();
-                }
+                traversed.truncate(depth);
             }
             Statement::While { body, .. } | Statement::Transaction { body, .. } => {
                 walk_loop_layer_mutations(file, body, traversed, out);
@@ -660,47 +757,89 @@ fn traversal_argument(expr: &Expression) -> Option<&Expression> {
     }
 }
 
-/// The saved layer a statement adds keys to or removes keys from, as canonical
-/// text, or `None` when the statement does not change a saved layer's key set. A
-/// whole-record/keyed-entry write or `delete` of `^root(key…)` affects the parent
-/// layer (the callee). `append(path, v)` affects the named layer. A scalar field
-/// write or field delete keeps the layer's keys, so it is not reported here.
-fn mutated_layer(statement: &Statement) -> Option<String> {
+/// Whether `statement` mutates a layer the enclosing loop is traversing in a way
+/// the loop cannot tolerate. A write or delete descends a chain of keyed entries
+/// `^root(k0).layer(k1)…`; every keyed step is judged against each traversed layer,
+/// not just the innermost, because an outer sibling key inserts a new entry into an
+/// enclosing layer just as readily as the final step does. A *terminal* step — the
+/// whole keyed entry the write replaces or the delete removes — is always unsafe at a
+/// traversed layer: replacing an entry clears and rewrites its subtree (and a delete
+/// removes the key), which invalidates the cursor even at the current key. An
+/// *enclosing* step, descended into by a field or a further key, is safe only when its
+/// key is provably the loop's key binding; any other key may insert or rewrite a
+/// sibling mid-traversal, so the conservative rule flags it (failing closed on a
+/// computed-equal key). An `append(path, v)` adds a key to `path`'s own layer (always
+/// unsafe at a matching traversed layer) and, by auto-creating any absent enclosing
+/// entry, may insert a sibling into an enclosing layer just like a write.
+fn loop_layer_mutation(statement: &Statement, traversed: &[TraversedLayer]) -> bool {
     match statement {
-        Statement::Assign { target, .. } => keyed_entry_parent(target),
-        Statement::Delete { path, .. } => keyed_entry_parent(path),
+        Statement::Assign { target, .. } => place_inserts_into(target, true, traversed),
+        Statement::Delete { path, .. } => place_inserts_into(path, true, traversed),
         Statement::Expr {
             value: Expression::Call { callee, args, .. },
             ..
-        } => append_target(callee, args).map(format_expression),
-        Statement::Expr { .. }
-        | Statement::Const { .. }
-        | Statement::Var { .. }
-        | Statement::Return { .. }
-        | Statement::ReturnAbsent { .. }
-        | Statement::Break { .. }
-        | Statement::Continue { .. }
-        | Statement::Throw { .. }
-        | Statement::IfConst { .. }
-        | Statement::If { .. }
-        | Statement::While { .. }
-        | Statement::For { .. }
-        | Statement::Transaction { .. }
-        | Statement::Try { .. }
-        | Statement::Match { .. } => None,
+        } => append_target(callee, args).is_some_and(|path| {
+            traversed.iter().any(|t| t.text == format_expression(path))
+                || place_inserts_into(path, false, traversed)
+        }),
+        _ => false,
     }
 }
 
-/// The layer that gains or loses a key when `target` (a `^root(key…)` or
-/// `^root(key…).layer(key…)` place) is written or deleted whole: the
-/// callee with the final key step dropped. A scalar field place
-/// (`^root(key…).field`) is not a keyed entry, so it returns `None` — writing a
-/// field does not change the parent layer's keys.
-fn keyed_entry_parent(target: &Expression) -> Option<String> {
-    match target {
-        Expression::Call { callee, .. } if is_saved_path(callee) => Some(format_expression(callee)),
+/// Whether writing or deleting `place` changes the key set of any traversed layer.
+/// Walks the keyed-entry spine from the place outward. `terminal` marks the outermost
+/// keyed entry as the one the operation replaces or removes whole — that step has no
+/// loop-key exemption; every step reached by descending through it is an enclosing
+/// entry whose loop key is exempt.
+fn place_inserts_into(place: &Expression, terminal: bool, traversed: &[TraversedLayer]) -> bool {
+    match place {
+        Expression::Call { callee, args, .. } if is_saved_path(callee) => {
+            keyed_step_unsafe(callee, args.last(), terminal, traversed)
+                || place_inserts_into(callee, false, traversed)
+        }
+        Expression::Field { base, .. } => place_inserts_into(base, false, traversed),
+        _ => false,
+    }
+}
+
+/// Whether a single keyed step `parent(key)` is an unsafe mutation of a traversed
+/// layer. A terminal step clears or removes the entry, so any matching layer is unsafe;
+/// an enclosing step is unsafe only when its key is not provably the loop key.
+fn keyed_step_unsafe(
+    parent: &Expression,
+    key: Option<&marrow_syntax::Argument>,
+    terminal: bool,
+    traversed: &[TraversedLayer],
+) -> bool {
+    let layer = format_expression(parent);
+    let key = key.filter(|arg| arg.name.is_none()).map(|arg| &arg.value);
+    traversed.iter().any(|t| {
+        t.text == layer
+            && (terminal || !key.is_some_and(|key| key_is_loop_key(key, t.loop_key.as_deref())))
+    })
+}
+
+/// The local name a statement rebinds in the loop body — a `const`/`var`
+/// declaration, or an assignment whose target is a bare local name. Once a loop
+/// variable's name is rebound, it no longer denotes the live loop key, so the
+/// traversed layer drops its loop-key exception and every subsequent field write
+/// is treated as a sibling write (failing closed on shadowing).
+fn rebound_name(statement: &Statement) -> Option<&str> {
+    match statement {
+        Statement::Const { name, .. } | Statement::Var { name, .. } => Some(name),
+        Statement::Assign { target, .. } => place_root_name(target),
         _ => None,
     }
+}
+
+/// Whether `key` is provably the loop's key binding — a bare name equal to the loop
+/// variable. A literal or any computed expression is not provably the loop key, so
+/// the conservative rule treats it as a sibling write.
+fn key_is_loop_key(key: &Expression, loop_key: Option<&str>) -> bool {
+    let (Expression::Name { segments, .. }, Some(loop_key)) = (key, loop_key) else {
+        return false;
+    };
+    matches!(segments.as_slice(), [name] if name == loop_key)
 }
 
 /// The saved layer argument of `append(path, value)`, or `None` for any other
@@ -722,13 +861,42 @@ fn append_target<'a>(
 }
 
 /// A saved-data path: a `^root`, a key lookup on a saved path, or a field of one.
-fn is_saved_path(expr: &Expression) -> bool {
+pub(crate) fn is_saved_path(expr: &Expression) -> bool {
     match expr {
         Expression::SavedRoot { .. } => true,
         Expression::Field { base, .. } => is_saved_path(base),
         Expression::Call { callee, .. } => is_saved_path(callee),
         _ => false,
     }
+}
+
+/// A traversal of saved data: a saved path, or a `keys`/`values`/`entries`/`reversed`
+/// call wrapping one. Such a traversal yields its elements only by direct iteration;
+/// the runtime refuses to materialize it as a value, so it cannot be nested inside
+/// another value-materializing combinator.
+pub(crate) fn is_saved_traversal(expr: &Expression) -> bool {
+    match traversal_argument(expr) {
+        Some(inner) => is_saved_traversal(inner),
+        None => is_saved_path(expr),
+    }
+}
+
+/// A `keys`/`values`/`entries`/`reversed` call already wrapping a saved traversal.
+/// A bare saved layer can be counted or iterated, but once a combinator has produced a
+/// saved stream the value-materializing combinators (`count`/`keys`/`values`) cannot
+/// consume it, so wrapping such a stream in one of them is rejected.
+pub(crate) fn is_wrapped_saved_traversal(expr: &Expression) -> bool {
+    traversal_argument(expr).is_some() && is_saved_traversal(expr)
+}
+
+/// A `reversed(...)` call over a saved traversal. `reversed` reverses a
+/// `keys`/`values`/`entries` stream or a bare saved layer in place, but reversing the
+/// result of another `reversed` would force the inner stream to materialize, which the
+/// runtime refuses. This is the one wrap `reversed` itself cannot consume.
+pub(crate) fn is_reversed_over_saved_traversal(expr: &Expression) -> bool {
+    matches!(expr, Expression::Call { callee, args, .. }
+        if matches!(callee.as_ref(), Expression::Name { segments, .. } if segments.as_slice() == ["reversed"])
+            && matches!(args.as_slice(), [inner] if inner.name.is_none() && is_saved_traversal(&inner.value)))
 }
 
 /// A writable place: a bare name, a saved root, a field of a place, or a key

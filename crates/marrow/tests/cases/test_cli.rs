@@ -11,8 +11,10 @@ fn run_test_args(args: &[&str]) -> std::process::Output {
     marrow_sub("test", args)
 }
 
-const CONFIG: &str =
-    r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" }, "tests": ["tests"] }"#;
+// `marrow test` always runs each test on a fresh in-memory store regardless of the
+// configured backend, but the fixtures declare durable surfaces, so the project must
+// configure a native store to check cleanly.
+const CONFIG: &str = r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".marrow/data" }, "tests": ["tests"] }"#;
 
 fn mixed_outcome_project(name: &str) -> support::TempProject {
     temp_project(name, |root| {

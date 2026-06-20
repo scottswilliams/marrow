@@ -358,7 +358,7 @@ fn checked_test_program_preserves_source_facts_and_resolves_test_facts() {
         );
     });
     let cfg = parse_config(
-        r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" }, "tests": ["tests"] }"#,
+        r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".marrow/data" }, "tests": ["tests"] }"#,
     )
     .expect("config");
     let (src_report, src_program) = check_project(&root, &cfg).expect("check source");

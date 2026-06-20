@@ -121,7 +121,10 @@ fn inspecting_an_unseeded_project_reports_no_data_and_writes_no_records() {
 }
 
 #[test]
-fn data_roots_without_native_store_reports_null_snapshot() {
+fn data_roots_on_a_memory_backed_durable_project_is_a_check_error() {
+    // A durable surface under the `memory` backend has no durable identity, so the
+    // project does not check. `data roots` checks the project first and reports the
+    // typed error.
     let project = support::temp_project("data-roots-memory-store", |root| {
         support::write(
             root,
@@ -134,10 +137,13 @@ fn data_roots_without_native_store_reports_null_snapshot() {
 
     let roots = marrow(&["data", "roots", "--format", "json", &dir]);
 
-    assert_eq!(roots.status.code(), Some(0), "{roots:?}");
+    assert_eq!(roots.status.code(), Some(1), "{roots:?}");
     let roots = json(roots);
-    assert_eq!(roots["roots"], serde_json::json!([]));
-    assert_eq!(roots["store_snapshot"], serde_json::Value::Null);
+    assert_eq!(roots["status"], serde_json::json!("failed"));
+    assert_eq!(
+        roots["diagnostics"][0]["code"],
+        serde_json::json!("check.durable_store_required")
+    );
 }
 
 #[test]

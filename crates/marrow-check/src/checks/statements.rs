@@ -23,8 +23,8 @@ use crate::{
 
 use super::collections::{
     catch_frame, check_entries_value_position, check_for_collection_support,
-    check_for_entries_support, for_frame, is_saved_index_branch_path, is_saved_index_range_path,
-    is_saved_key_range_path, is_saved_path_with_key_range_arg,
+    check_for_entries_support, check_for_scalar_iterable, for_frame, is_saved_index_branch_path,
+    is_saved_index_range_path, is_saved_key_range_path, is_saved_path_with_key_range_arg,
 };
 use super::operators::{check_assignment, check_condition, check_return_type, check_throw_type};
 use super::ranges::{
@@ -643,6 +643,14 @@ impl StatementCheck<'_> {
             self.program,
             self.file,
             binding,
+            iterable,
+            self.scope,
+            self.aliases,
+            self.diagnostics,
+        );
+        check_for_scalar_iterable(
+            self.program,
+            self.file,
             iterable,
             self.scope,
             self.aliases,

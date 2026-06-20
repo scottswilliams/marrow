@@ -131,7 +131,7 @@ over every configured source and test file.
 | `check.module_path` | A library file declares a module name that does not match its path. |
 | `check.duplicate_module` | Two library files declare the same module name. |
 | `check.multiple_scripts` | A project holds more than one file without a `module` declaration. A project may have at most one single-file script (its entrypoint); every other file must declare a `module`. |
-| `check.duplicate_declaration` | A name is declared or imported more than once within a single file. |
+| `check.duplicate_declaration` | A name is declared more than once within one scope: a top-level name declared or imported twice in a file, or a local `const`/`var` redeclared in the same block. Shadowing the name in an inner block is allowed. |
 | `check.surface_collision` | A surface declaration name collides with a module-level or builtin name; a collection alias or action alias collides with another operation alias or generated `id`, `get`, `create`, or `update`; or a `fields`, `create`, or `update` payload list repeats a name. |
 | `check.surface_target` | A surface declaration targets an unknown, ambiguous, or invalid store root; a store whose normalized resource shape is ambiguous or invalid; a foreign store root; a keyless singleton root as a collection; or an unknown, ambiguous, or schema-invalid index on the surface's backing store. |
 | `check.surface_field` | A surface `fields`, `create`, or `update` item names an unknown, ambiguous, or schema-invalid field, a non-top-level/non-plain member, or a generated write field that is not part of the declared read projection. |
@@ -152,13 +152,14 @@ over every configured source and test file.
 | `check.untyped_value` | A value whose type cannot be resolved (`unknown`) is stored into a concrete typed place. |
 | `check.key_type` | A saved key or identity argument's type does not match the key it addresses: a scalar of the wrong type in a keyed lookup, or an identity of a foreign store root spliced into a keyspace. |
 | `check.unresolved_name` | A bare name used as a value resolves to no binding in scope. |
-| `check.unknown_field` | A dotted field read names no field on a resolved resource-shaped value. |
+| `check.unknown_field` | A dotted or optional (`?.`) field read names no field on a resolved value: a resource-shaped value with no such member, or a value with no fields at all (a scalar, enum, identity, sequence, or keyed map). |
 | `check.unresolved_call` | A call names a function that is neither a builtin nor a declared function. |
 | `check.private_function` | A qualified call (`module::fn`) names a function that exists but is not `pub`, so it is not callable from another module. The name resolves; the visibility does not. |
 | `check.ambiguous_call` | A bare call names a `pub` function reachable in two or more modules, so the bare name cannot pick one — it must be qualified (`module::fn`). |
 | `check.next_id_requires_single_int` | `nextId(^root)` names a root with no default integer allocation policy (composite identity, a non-integer key, or a keyless singleton). The static counterpart of `write.next_id_unsupported`. |
 | `check.rejected_surface` | Source uses a parsed construct outside the accepted v0.1 surface, such as old saved traversal method shapers including `.take(...)`, `.window(...)`, and `.resume(...)`. Reserved syntax forms such as `merge`, `lock`, and `~` are parser diagnostics instead. |
 | `check.catalog_intent` | Binding source against the accepted catalog cannot resolve durable identity soundly: a proposed catalog whose identities collide, a reserved spelling reused without an `evolve` intent, or an `evolve` intent that cannot carry identity forward — a rename without an accepted entry holding the new canonical path and old alias. A source declaration the accepted catalog does not yet record is informational, not an error: it reports that durable identity is not yet frozen, and running the program or applying an evolution records it. |
+| `check.durable_store_required` | The program declares a durable surface (a `resource`, a saved `store`, or an `enum`) but the configured store backend is `memory`, which has no durable identity. The static counterpart of `run.durable_store_required`. |
 | `check.bare_maybe_present_read` | A maybe-present saved read or call result appears in value position without a read-site resolution form such as `??`, `exists(...)`, `if const name = place`, optional chaining, or an attached-data traversal. A `required` declaration is a validity rule for populated records; it is not a proof that arbitrary saved data is present at this read site. |
 | `check.literal_range` | A numeric literal is provably outside its type's range (an integer beyond `i64`, or a decimal outside the 34-digit / 34-place envelope). The static counterpart of the runtime numeric range faults. |
 | `check.string_escape` | A string literal or interpolation text segment carries a backslash escape outside the recognized set (`\\`, `\"`, `\n`, `\r`, `\t`), or a trailing lone backslash. |
@@ -176,13 +177,13 @@ over every configured source and test file.
 | `check.category_not_selectable` | A category enum member is named in value position; only a concrete member under it is selectable. |
 | `check.is_requires_enum` | The left operand of `is` is not an enum value. |
 | `check.is_type` | The right operand of `is` is not a member of the left operand's enum. |
-| `check.invalid_assign_target` | An assignment target is not a writable place. |
+| `check.invalid_assign_target` | An assignment target is not a writable place: a non-place expression, a read-only parameter, or an immutable binding (a `const`, a loop variable, or an `if const` binding). |
 | `check.non_constant_const` | A `const` initializer is not a constant expression. |
-| `check.loop_mutates_traversed_layer` | A loop over a saved layer mutates that same layer. The static counterpart of `run.traversal`. |
+| `check.loop_mutates_traversed_layer` | A loop over a saved layer mutates that same layer: a whole keyed-entry write, delete, or append that changes its key set, or a field write at a key that is not provably the loop's key (which may insert or rewrite a sibling). Collect the keys into a local sequence first. The static counterpart of `run.traversal`. |
 | `check.neighbor_unsupported` | `next`/`prev` targets a shape with no single key level to seek: a composite-identity record or an index branch. |
 | `check.range` | A range-for header is ill-formed: the endpoints are not the same steppable type, or the `by` step does not match them (an `int` for `int`, a positive duration for `date`/`instant`). `instant` requires an explicit step; a zero step, a literal step pointing away from literal endpoints (a dead loop), a negated duration on a temporal range, or a `by` on a non-range iterable is rejected. |
 | `check.range_value` | A range expression appears outside a `for` iterable. Ranges are loop shapes, not values. |
-| `check.collection_unsupported` | A collection operation uses a shape v0.1 does not support: `values` or `entries` on an address-only index branch, a generated index branch as a resource member/call chain, or a hidden lookup with no matching declared index. Missing-index diagnostics may render an `add: index ...` remedy. |
+| `check.collection_unsupported` | A collection operation uses a shape v0.1 does not support: a `for`, `count`, or `reversed` over a value that is a scalar rather than a collection; `reversed` over an already-reversed saved traversal; `values` or `entries` on an address-only index branch; a generated index branch as a resource member/call chain; or a hidden lookup with no matching declared index. Missing-index diagnostics may render an `add: index ...` remedy. |
 | `check.read_only_expression_context` | A checked read-only expression request names a module or program context that does not exist. |
 | `check.read_only_expression_write` | A checked read-only expression would write or allocate saved data, or open a transaction. |
 | `check.read_only_expression_host_effect` | A checked read-only expression would call a host-effecting operation. |

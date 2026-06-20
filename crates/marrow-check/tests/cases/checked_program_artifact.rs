@@ -113,7 +113,7 @@ fn manually_assembled_non_empty_program_cannot_claim_source_digest() {
 )]
 fn test_program_finalization_does_not_mask_manual_source_digest() {
     let cfg = parse_config(
-        r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" }, "tests": ["tests"] }"#,
+        r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".marrow/data" }, "tests": ["tests"] }"#,
     )
     .expect("config");
     let root = temp_project("program-manual-test-digest", |root| {

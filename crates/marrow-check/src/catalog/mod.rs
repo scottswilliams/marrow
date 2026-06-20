@@ -11,8 +11,9 @@ use crate::evolution::{DefaultIntent, EvolveIntents, RenameIntent, RetireIntent,
 use crate::facts::{StoreIndexFact, StoreIndexKeySource, StoredValueMeaning};
 use crate::program::{EvolveDefault, EvolveTransform};
 use crate::{
-    CHECK_CATALOG_INTENT, CHECK_EVOLVE_TARGET, CatalogIntentDiagnostic, CatalogIntentKind,
-    CatalogPathCandidate, CheckDiagnostic, CheckedProgram, DiagnosticPayload,
+    CHECK_CATALOG_INTENT, CHECK_DURABLE_STORE_REQUIRED, CHECK_EVOLVE_TARGET,
+    CatalogIntentDiagnostic, CatalogIntentKind, CatalogPathCandidate, CheckDiagnostic,
+    CheckedProgram, DiagnosticPayload,
 };
 
 mod source_digest;
@@ -99,6 +100,36 @@ pub(crate) fn bind_catalog<'a, I>(
     program.catalog.declared_member_structs = declared_member_structs;
     program.catalog.ambiguous_source_keys = binding.ambiguous_source_keys;
     program.catalog.proposal = binding.proposal;
+}
+
+/// Reject a durable program configured against a non-durable store backend. A store,
+/// enum, or resource needs committed catalog identity, which a `memory` backend cannot
+/// establish; the runtime would fault `run.durable_store_required`. The trigger mirrors
+/// the runtime's pending-baseline condition: an unaccepted program whose catalog
+/// proposal carries entries. A pure-scalar program proposes nothing and stays clean.
+pub(crate) fn require_durable_store(
+    program: &CheckedProgram,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    let proposes_durable_identity = program.catalog.accepted_epoch.is_none()
+        && program
+            .catalog
+            .proposal
+            .as_ref()
+            .is_some_and(|proposal| !proposal.entries.is_empty());
+    if !proposes_durable_identity {
+        return;
+    }
+    let source_entries = source_catalog_entries(program);
+    let Some(anchor) = source_entries.first() else {
+        return;
+    };
+    diagnostics.push(CheckDiagnostic::error(
+        CHECK_DURABLE_STORE_REQUIRED,
+        &anchor.file,
+        anchor.span,
+        "this program declares durable data, which requires a native store; the configured `memory` backend has no durable identity",
+    ));
 }
 
 /// The single owner of each store's `(stable_id, identity-key shape token)` from source, for

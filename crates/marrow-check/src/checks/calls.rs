@@ -27,7 +27,8 @@ use crate::{
 };
 
 use super::collections::{
-    collection_loop_binding_types, is_saved_index_branch_path, is_saved_index_range_path,
+    collection_loop_binding_types, has_collection_unsupported, is_concrete_scalar_value,
+    is_recognized_collection, is_saved_index_branch_path, is_saved_index_range_path,
     is_saved_key_range_path, saved_path_key_type,
 };
 use super::diagnostics::{call_diagnostic, key_type_diagnostic};
@@ -49,6 +50,7 @@ pub(crate) struct CallCheck<'a> {
 struct CallEnv<'a> {
     program: &'a CheckedProgram,
     scope: &'a [HashMap<String, MarrowType>],
+    aliases: &'a HashMap<String, Vec<String>>,
     span: SourceSpan,
     file: &'a Path,
     transform_old: Option<crate::presence::TransformOldReadScope<'a>>,
@@ -74,6 +76,7 @@ pub(crate) fn check_call(input: CallCheck<'_>) -> MarrowType {
     let mut env = CallEnv {
         program,
         scope,
+        aliases,
         span,
         file,
         transform_old,
@@ -132,13 +135,40 @@ fn check_special_single_name_call(
         )),
         "reversed" => {
             check_arity(name, 1, args, env.span, env.file, env.diagnostics);
+            // A rejected argument has no stream to reverse; typing the result `invalid`
+            // (not the argument's own scalar type) keeps a typed consumer from stacking a
+            // second diagnostic on the one root-cause error.
+            if check_collection_combinator_args(env, name, args, arg_types) {
+                return Some(MarrowType::Invalid);
+            }
             Some(reversed_type(env, args, arg_types))
         }
         "next" | "prev" => {
             check_arity(name, 1, args, env.span, env.file, env.diagnostics);
             Some(check_neighbor(env, name, args, arg_types))
         }
-        "values" | "entries" => {
+        // `entries` is validated comprehensively by the two-name-loop-head and
+        // value-position rules (it is valid nowhere else), so its scalar and
+        // wrapped-traversal arguments are reported there; double-checking here would
+        // duplicate the diagnostic. `keys`/`values` have no such owner, so they take
+        // the shared combinator argument rule.
+        "keys" | "values" => {
+            check_arity(name, 1, args, env.span, env.file, env.diagnostics);
+            let rejected = check_collection_combinator_args(env, name, args, arg_types);
+            if !rejected && name == "values" {
+                check_value_materialization_args(env, name, args);
+            }
+            // A rejected argument has no stream to key or materialize; typing the
+            // result `invalid` (not `unknown`) keeps a typed consumer from stacking a
+            // second `check.untyped_value` on the one root-cause error. A valid argument
+            // stays `unknown` for the saved-shape typing path.
+            Some(if rejected {
+                MarrowType::Invalid
+            } else {
+                MarrowType::Unknown
+            })
+        }
+        "entries" => {
             check_arity(name, 1, args, env.span, env.file, env.diagnostics);
             check_value_materialization_args(env, name, args);
             Some(MarrowType::Unknown)
@@ -164,7 +194,12 @@ fn check_builtin_call(
         check_error_constructor_args(args, arg_types, env.span, env.file, env.diagnostics);
         return MarrowType::Error;
     }
-    check_builtin_call_args(env, segments, args, arg_types);
+    if check_builtin_call_args(env, segments, args, arg_types) {
+        // `count` of a rejected argument has nothing to count; typing the result
+        // `invalid` (not `unknown`) keeps a typed consumer from stacking a second
+        // `check.untyped_value` on the one root-cause error.
+        return MarrowType::Invalid;
+    }
     if segments == ["std", "assert", "equal"] {
         check_assert_equal_args(&label, arg_types, env.span, env.file, env.diagnostics);
         return std_call_return_type(segments).unwrap_or(MarrowType::Unknown);
@@ -396,16 +431,22 @@ fn check_user_function_call(
     function.return_type.clone().unwrap_or(MarrowType::Unknown)
 }
 
+/// Validate a single-name builtin's arguments, returning whether a collection
+/// combinator (`count`) rejected its argument so the caller can type the result
+/// `invalid`.
 fn check_builtin_call_args(
     env: &mut CallEnv<'_>,
     segments: &[String],
     args: &[marrow_syntax::Argument],
     arg_types: &[MarrowType],
-) {
-    let [name] = segments else { return };
+) -> bool {
+    let [name] = segments else { return false };
     if name.as_str() == "exists" {
         check_exists_args(env, args);
-        return;
+        return false;
+    }
+    if name.as_str() == "count" {
+        return check_collection_combinator_args(env, "count", args, arg_types);
     }
     if let Some(target) = ConversionTarget::from_name(name) {
         check_conversion_call_shape(target, args, env.span, env.file, env.diagnostics);
@@ -414,6 +455,7 @@ fn check_builtin_call_args(
             check_error_code_conversion_literal(args, env.file, env.diagnostics);
         }
     }
+    false
 }
 
 fn check_std_call_args(
@@ -446,6 +488,18 @@ fn assert_absent_arg_is_saved_path(env: &CallEnv<'_>, expr: &marrow_syntax::Expr
     }
     lower_expr_for_file(env.program, env.file, expr, env.scope)
         .is_some_and(|expr| expr.saved_place().is_some())
+}
+
+/// Whether a collection combinator's argument is a concrete non-iterable scalar. A
+/// recognized saved layer or local collection is excluded first, so a keyed-leaf
+/// layer's leaf scalar type is not mistaken for a non-iterable value.
+fn combinator_arg_is_scalar(
+    env: &CallEnv<'_>,
+    arg: &marrow_syntax::Expression,
+    arg_type: &MarrowType,
+) -> bool {
+    !is_recognized_collection(env.program, arg, env.scope, env.aliases, env.file)
+        && is_concrete_scalar_value(arg, arg_type)
 }
 
 fn check_exists_args(env: &mut CallEnv<'_>, args: &[marrow_syntax::Argument]) {
@@ -650,6 +704,62 @@ fn check_conversion_call_shape(
             format!("argument to `{label}` cannot be named `{name}`"),
         ));
     }
+}
+
+/// The shared argument rule for the value-materializing combinators (`count`/`keys`/
+/// `values`) and `reversed`: a concrete scalar has nothing to traverse, and an
+/// argument that yields a saved stream this combinator cannot consume lazily would
+/// fault at runtime. `count`/`keys`/`values` reject any combinator already wrapping a
+/// saved traversal; `reversed` reverses `keys`/`values`/`entries` streams in place and
+/// rejects only a re-`reversed` saved stream. Either is a check error rather than a
+/// deferred runtime fault. Returns whether the argument is rejected, so the caller
+/// types the result `invalid` and the enclosing `for` does not re-report the same root
+/// cause. When the argument is an inner combinator that already reported its own error
+/// at the argument span, the outer combinator counts the argument rejected but defers
+/// to that single diagnostic instead of pushing a duplicate.
+fn check_collection_combinator_args(
+    env: &mut CallEnv<'_>,
+    name: &str,
+    args: &[marrow_syntax::Argument],
+    arg_types: &[MarrowType],
+) -> bool {
+    let ([arg], [arg_type]) = (args, arg_types) else {
+        return false;
+    };
+    if arg.name.is_some() {
+        return false;
+    }
+    // An inner combinator over a scalar types its result a scalar, so the outer
+    // combinator sees one too. Defer to the inner combinator's already-reported error
+    // rather than re-flagging the same root cause, while still treating the argument as
+    // rejected so the result types `invalid`.
+    if has_collection_unsupported(env.diagnostics, env.file, arg.value.span()) {
+        return true;
+    }
+    if combinator_arg_is_scalar(env, &arg.value, arg_type) {
+        env.diagnostics.push(CheckDiagnostic::error(
+            CHECK_COLLECTION_UNSUPPORTED,
+            env.file,
+            env.span,
+            format!("`{name}` needs a collection, but this value is a scalar"),
+        ));
+        return true;
+    }
+    let unconsumable = if name == "reversed" {
+        crate::rules::is_reversed_over_saved_traversal(&arg.value)
+    } else {
+        crate::rules::is_wrapped_saved_traversal(&arg.value)
+    };
+    if unconsumable {
+        env.diagnostics.push(CheckDiagnostic::error(
+            CHECK_COLLECTION_UNSUPPORTED,
+            env.file,
+            env.span,
+            format!("`{name}` cannot re-materialize a saved traversal; iterate it directly"),
+        ));
+        return true;
+    }
+    false
 }
 
 fn check_value_materialization_args(

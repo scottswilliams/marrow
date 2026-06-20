@@ -117,18 +117,19 @@ pub(crate) fn check_return_values(
 }
 
 /// A sound under-approximation of "every reachable path returns or diverges". It
-/// is conservative — a body ending in a call or a loop may diverge, so it is not
-/// flagged — favoring no false positives over catching every genuine case.
+/// is conservative — a body ending in a loop may diverge, so it is not flagged —
+/// favoring no false positives over catching every genuine case.
 pub(crate) fn block_returns(block: &marrow_syntax::Block) -> bool {
     block.statements.last().is_some_and(statement_returns)
 }
 
 fn statement_returns(statement: &marrow_syntax::Statement) -> bool {
-    use marrow_syntax::{Expression, Statement};
+    use marrow_syntax::Statement;
     match statement {
         Statement::Return { .. } | Statement::ReturnAbsent { .. } | Statement::Throw { .. } => true,
-        // A call may throw or loop forever, so a function ending in one is allowed.
-        Statement::Expr { value, .. } => matches!(value, Expression::Call { .. }),
+        // A trailing expression is discarded, not returned, so it never satisfies a
+        // declared return type — a function ending in a call must still return.
+        Statement::Expr { .. } => false,
         Statement::If {
             then_block,
             else_ifs,

@@ -175,6 +175,13 @@ while loanCount < limit
     loanCount = loanCount + 1
 ```
 
+A loop over a saved layer must not change that layer's key set while traversing
+it. Deleting, appending, writing a whole keyed entry, or writing a field at a key
+that is not the loop's own key all risk inserting or removing a sibling
+mid-traversal and are rejected. Writing a field of the current entry — at the loop
+key — is fine. To rewrite the key set, snapshot the keys first
+(`const ids = keys(^books)`), iterate the local, and mutate the layer.
+
 ## Exiting Nested Loops
 
 `break` exits the innermost loop. `continue` skips to the next iteration of the

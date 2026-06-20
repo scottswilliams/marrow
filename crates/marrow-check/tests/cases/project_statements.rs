@@ -1,10 +1,17 @@
 use crate::support;
 use marrow_check::{DiagnosticPayload, MarrowType, ScalarType, check_project};
+use marrow_project::parse_config;
 
 use support::{
     assert_clean, check_module, check_module_report, check_script, config, temp_project, with_code,
     write,
 };
+
+/// A `memory`-backend project config, for the durable-store-required suite. A durable
+/// surface under it cannot establish committed identity, so the checker rejects it.
+fn memory_config() -> marrow_project::ProjectConfig {
+    parse_config(r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" } }"#).expect("config")
+}
 
 #[test]
 fn reports_unknown_types_in_signatures_and_consts() {
@@ -156,18 +163,35 @@ fn reports_a_value_function_that_may_not_return() {
 
 #[test]
 fn functions_that_return_on_all_paths_are_not_flagged() {
-    // Exhaustive if/else; ends in return; void; ends in a call; ends in a loop.
+    // Exhaustive if/else; ends in return; void body; ends in a loop.
     let found = check_module(
         "returns-all-paths",
         "module m\n\
          fn a(c: bool): int\n    if c\n        return 1\n    else\n        return 2\n\n\
          fn b(): int\n    return 7\n\n\
          fn c()\n    var x = 1\n\n\
-         fn d(): int\n    helper()\n\n\
          fn e(c: bool): int\n    while c\n        return 1\n",
         "check.missing_return",
     );
     assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn a_value_function_ending_in_a_trailing_call_is_flagged() {
+    // A trailing expression is discarded, never returned, so a declared-return
+    // function whose body ends in a call — void or value-producing — does not
+    // return on that path. `helper()` ignores its result; `g(): int` does too.
+    let found = check_module(
+        "trailing-call-missing-return",
+        "module m\n\
+         fn helper()\n    var x = 1\n\n\
+         fn g(): int\n    return 1\n\n\
+         fn ends_in_void_call(): int\n    helper()\n\n\
+         fn ends_in_print(): int\n    print(\"x\")\n\n\
+         fn ends_in_value_call(): int\n    g()\n",
+        "check.missing_return",
+    );
+    assert_eq!(found.len(), 3, "{found:#?}");
 }
 
 /// Each operator enforces its operand types: a single `check.operator_type` fires when
@@ -218,6 +242,56 @@ fn infers_parameter_types_for_operator_checks() {
         "check.operator_type",
     );
     assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn a_durable_surface_under_a_memory_backend_is_a_check_error() {
+    // A store, an enum, and a resource each need committed catalog identity, which a
+    // `memory` backend cannot establish — the runtime faults `run.durable_store_required`,
+    // and the checker rejects them earlier because the backend is statically known.
+    let cases: &[(&str, &str)] = &[
+        (
+            "durable-store-memory",
+            "module m\nresource Book\n    required title: string\n\nstore ^books(id: int): Book\n",
+        ),
+        (
+            "durable-enum-memory",
+            "module m\nenum Color\n    Red\n    Green\n",
+        ),
+        (
+            "durable-resource-memory",
+            "module m\nresource Book\n    required title: string\n",
+        ),
+    ];
+    for (name, src) in cases {
+        let root = temp_project(name, |root| write(root, "src/m.mw", src));
+        let (report, _program) = check_project(&root, &memory_config()).expect("check");
+        assert_eq!(
+            with_code(&report, "check.durable_store_required").len(),
+            1,
+            "{name}: {:#?}",
+            report.diagnostics
+        );
+    }
+}
+
+#[test]
+fn a_pure_scalar_program_under_a_memory_backend_is_clean() {
+    // A program that declares no durable surface proposes no catalog identity, so it
+    // runs under a `memory` backend and the checker leaves it clean.
+    let root = temp_project("pure-scalar-memory", |root| {
+        write(
+            root,
+            "src/m.mw",
+            "module m\nfn add(a: int, b: int): int\n    return a + b\n",
+        );
+    });
+    let (report, _program) = check_project(&root, &memory_config()).expect("check");
+    assert!(
+        with_code(&report, "check.durable_store_required").is_empty(),
+        "{:#?}",
+        report.diagnostics
+    );
 }
 
 #[test]
@@ -645,4 +719,45 @@ fn read_only_parameter_checks_respect_local_shadowing() {
          fn caller(value: int): int\n    if true\n        var value: int = 0\n        value = value + 1\n        value = set_to(value)\n        return value\n    return value\n",
     );
     assert_clean(&report);
+}
+
+#[test]
+fn redeclaring_a_local_in_the_same_block_is_a_check_error() {
+    // A second `const`/`var` of the same name in one block is a redeclaration, even
+    // when the type changes. A redeclaration carries the first declaration's line in
+    // its payload.
+    let cases: &[(&str, &str)] = &[
+        (
+            "redeclare-const",
+            "fn f()\n    const x = 1\n    const x = 2\n",
+        ),
+        ("redeclare-var", "fn f()\n    var x = 1\n    var x = 2\n"),
+        (
+            "redeclare-type-change",
+            "fn f()\n    const x = 1\n    const x = \"two\"\n",
+        ),
+    ];
+    for (name, source) in cases {
+        let found = check_script(name, source, "check.duplicate_declaration");
+        assert_eq!(found.len(), 1, "{name}: {found:#?}");
+        assert!(
+            matches!(
+                &found[0].payload,
+                DiagnosticPayload::DuplicateDeclaration { name, .. } if name == "x"
+            ),
+            "{name}: {found:#?}"
+        );
+    }
+}
+
+#[test]
+fn shadowing_a_local_in_an_inner_block_is_allowed() {
+    // A `const` in an inner block shadows an outer one of the same name; distinct
+    // blocks are distinct scopes, so this is not a redeclaration.
+    let found = check_script(
+        "shadow-inner-block",
+        "fn f()\n    const x = 1\n    if true\n        const x = 2\n        print(x)\n",
+        "check.duplicate_declaration",
+    );
+    assert!(found.is_empty(), "{found:#?}");
 }

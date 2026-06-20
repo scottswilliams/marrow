@@ -1502,8 +1502,8 @@ pub fn seed()
             source_roots: vec!["src".into()],
             default_entry: None,
             store: StoreConfig {
-                backend: StoreBackend::Memory,
-                data_dir: None,
+                backend: StoreBackend::Native,
+                data_dir: Some(".marrow/data".into()),
             },
             tests: Vec::new(),
         };
@@ -1531,8 +1531,8 @@ pub fn seed()
             source_roots: vec!["src".into()],
             default_entry: None,
             store: StoreConfig {
-                backend: StoreBackend::Memory,
-                data_dir: None,
+                backend: StoreBackend::Native,
+                data_dir: Some(".marrow/data".into()),
             },
             tests: Vec::new(),
         };

@@ -1397,7 +1397,9 @@ fn check_duplicate_declarations(
     rejected_surfaces
 }
 
-fn duplicate_declaration_diagnostic(
+/// The `check.duplicate_declaration` diagnostic, shared by module-scope detection
+/// here and same-block redeclaration detection in [`crate::rules`].
+pub(crate) fn duplicate_declaration_diagnostic(
     file: &Path,
     name: &str,
     span: SourceSpan,

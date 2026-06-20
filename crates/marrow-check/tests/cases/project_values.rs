@@ -30,6 +30,33 @@ fn an_in_range_int_literal_is_not_flagged() {
 }
 
 #[test]
+fn i64_min_is_in_range_only_when_negated() {
+    // `i64::MIN` (`-9223372036854775808`) is a valid value, so it checks clean even
+    // though its bare magnitude is `i64::MAX + 1`. The same magnitude unnegated, and
+    // a magnitude one past it negated, are out of range.
+    let negated = check_script(
+        "int-literal-min",
+        "fn f()\n    const m: int = -9223372036854775808\n",
+        "check.literal_range",
+    );
+    assert!(negated.is_empty(), "{negated:#?}");
+
+    let unnegated = check_script(
+        "int-literal-min-magnitude",
+        "fn f()\n    const m: int = 9223372036854775808\n",
+        "check.literal_range",
+    );
+    assert_eq!(unnegated.len(), 1, "{unnegated:#?}");
+
+    let below_min = check_script(
+        "int-literal-below-min",
+        "fn f()\n    const m: int = -9223372036854775809\n",
+        "check.literal_range",
+    );
+    assert_eq!(below_min.len(), 1, "{below_min:#?}");
+}
+
+#[test]
 fn an_over_envelope_decimal_literal_is_flagged_at_check_time() {
     // 35 significant digits exceeds the 34-digit decimal envelope.
     let found = check_script(

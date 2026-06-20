@@ -571,3 +571,74 @@ fn break_stops_enum_led_index_walk_at_member_boundary() {
         Some(Value::Str("2 ".into()))
     );
 }
+
+/// A `bool`-keyed index. `bool` sorts `false` (0x00) before `true` (0x01) through
+/// the order-preserving key encoding, so a `bool` index component ranges like any
+/// other ordered key.
+const TASK_DONE_FLAG: &str = "\
+resource Task
+    required title: string
+    required done: bool
+store ^tasks(id: int): Task
+
+    index byDone(done, id)
+
+pub fn add(id: int, title: string, done: bool)
+    ^tasks(id) = Task(title: title, done: done)
+
+pub fn titlesInRange()
+    for id in ^tasks.byDone(false..=true)
+        print(^tasks(id).title ?? \"\")
+
+pub fn titlesExclusive()
+    for id in ^tasks.byDone(false..true)
+        print(^tasks(id).title ?? \"\")
+
+pub fn titlesDone(done: bool)
+    for id in ^tasks.byDone(done)
+        print(^tasks(id).title ?? \"\")
+";
+
+#[test]
+fn bool_index_component_ranges_in_key_order() {
+    let program = checked_program(TASK_DONE_FLAG);
+    let store = TreeStore::memory();
+    for (id, title, done) in [(1, "a", false), (2, "b", true), (3, "c", false)] {
+        run_entry(
+            &store,
+            checked_entry!(
+                &program,
+                "test::add",
+                Value::Int(id),
+                Value::Str(title.into()),
+                Value::Bool(done),
+            ),
+        )
+        .expect("add");
+    }
+
+    // The inclusive range covers both flag values, false-keyed (1, 3) before
+    // true-keyed (2).
+    let inclusive = run_entry(&store, checked_entry!(&program, "test::titlesInRange"))
+        .expect("inclusive range");
+    assert_eq!(inclusive.output, "a\nc\nb\n");
+
+    // The exclusive upper bound drops the true-keyed entry, leaving only false.
+    let exclusive = run_entry(&store, checked_entry!(&program, "test::titlesExclusive"))
+        .expect("exclusive range");
+    assert_eq!(exclusive.output, "a\nc\n");
+
+    // Exact lookups still partition by flag.
+    let done = run_entry(
+        &store,
+        checked_entry!(&program, "test::titlesDone", Value::Bool(true)),
+    )
+    .expect("done");
+    assert_eq!(done.output, "b\n");
+    let not_done = run_entry(
+        &store,
+        checked_entry!(&program, "test::titlesDone", Value::Bool(false)),
+    )
+    .expect("not done");
+    assert_eq!(not_done.output, "a\nc\n");
+}

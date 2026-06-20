@@ -18,7 +18,8 @@ use crate::enums::{
 use crate::executable::{SavedAccessRejection, SavedPlaceResolver, lower_expr_for_file};
 use crate::program::TypeNames;
 use crate::typerules::{
-    check_literal_range, marrow_type_name, type_compatible, type_renderable_at_runtime,
+    LiteralSign, check_literal_range, marrow_type_name, negated_integer_literal, type_compatible,
+    type_renderable_at_runtime,
 };
 use crate::{
     CHECK_AMBIGUOUS_MEMBER, CHECK_CATEGORY_NOT_SELECTABLE, CHECK_COLLECTION_UNSUPPORTED,
@@ -210,7 +211,7 @@ pub(crate) fn infer_type_with_read_scope(
     }
     match expr {
         Expression::Literal { kind, text, span } => {
-            check_literal_range(*kind, text, *span, file, diagnostics);
+            check_literal_range(*kind, text, LiteralSign::Bare, *span, file, diagnostics);
             match kind {
                 marrow_syntax::LiteralKind::String => {
                     check_string_escapes(text, *span, file, diagnostics);
@@ -263,15 +264,31 @@ pub(crate) fn infer_type_with_read_scope(
             })
         }
         Expression::Unary { op, operand, span } => {
-            let operand = infer_type_with_read_scope(
-                program,
-                operand,
-                scope,
-                aliases,
-                file,
-                diagnostics,
-                transform_old,
-            );
+            // A `-` over an integer literal range-checks against the negated bound, so
+            // `i64::MIN` is in range though its bare magnitude is not. Checking the
+            // operand here keeps the literal arm from rejecting that magnitude on its own.
+            let operand = if let Some((text, literal_span)) = negated_integer_literal(*op, operand)
+            {
+                check_literal_range(
+                    marrow_syntax::LiteralKind::Integer,
+                    text,
+                    LiteralSign::Negated,
+                    literal_span,
+                    file,
+                    diagnostics,
+                );
+                literal_type(marrow_syntax::LiteralKind::Integer)
+            } else {
+                infer_type_with_read_scope(
+                    program,
+                    operand,
+                    scope,
+                    aliases,
+                    file,
+                    diagnostics,
+                    transform_old,
+                )
+            };
             check_unary(*op, &operand, *span, file, diagnostics)
         }
         Expression::Binary {
@@ -545,13 +562,17 @@ fn infer_field_access(input: FieldAccessInfer<'_, '_>) -> MarrowType {
     }
     match local_field_resolution(input.program, &base_type, input.name) {
         FieldResolution::Resolved(ty) => ty,
-        FieldResolution::UnknownField if input.context == FieldAccessContext::Read => {
+        FieldResolution::UnknownField | FieldResolution::NoFields
+            if input.context == FieldAccessContext::Read =>
+        {
             input
                 .diagnostics
                 .push(unknown_field_diagnostic(input.file, input.span, input.name));
             MarrowType::Invalid
         }
-        FieldResolution::UnknownField | FieldResolution::NonValueMember => MarrowType::Unknown,
+        FieldResolution::UnknownField
+        | FieldResolution::NoFields
+        | FieldResolution::NonValueMember => MarrowType::Unknown,
         FieldResolution::InvalidBase => MarrowType::Invalid,
         FieldResolution::UnresolvedBase => MarrowType::Unknown,
     }
@@ -1013,6 +1034,10 @@ enum FieldResolution {
     UnknownField,
     NonValueMember,
     InvalidBase,
+    /// The base is a concrete value with no resource fields — a scalar, enum,
+    /// identity, sequence, or keyed map. A field read off it can never resolve, so
+    /// it is a definite error rather than a deferred one.
+    NoFields,
     UnresolvedBase,
 }
 
@@ -1045,7 +1070,15 @@ fn local_field_resolution(
             .map(FieldResolution::Resolved)
             .unwrap_or(FieldResolution::UnknownField),
         MarrowType::Invalid => FieldResolution::InvalidBase,
-        _ => FieldResolution::UnresolvedBase,
+        // A scalar, enum, identity, sequence, or keyed map carries no resource
+        // fields, so a field read off it can never resolve. `Unknown` alone defers,
+        // keeping cross-module unresolved bases free of false positives.
+        MarrowType::Primitive(_)
+        | MarrowType::Enum { .. }
+        | MarrowType::Identity(_)
+        | MarrowType::Sequence(_)
+        | MarrowType::LocalTree { .. } => FieldResolution::NoFields,
+        MarrowType::Unknown => FieldResolution::UnresolvedBase,
     }
 }
 

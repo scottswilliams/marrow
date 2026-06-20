@@ -78,9 +78,14 @@ pub fn write(root: &Path, relative: &str, contents: &str) {
     fs::write(path, contents).expect("write file");
 }
 
-/// The standard project config: a single `src` source root.
+/// The standard project config: a single `src` source root. The suites exercise durable
+/// surfaces (stores, enums, resources), which require a native store to establish
+/// committed identity, so the default backend is native.
 pub fn config() -> ProjectConfig {
-    parse_config(r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" } }"#).expect("config")
+    parse_config(
+        r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".marrow/data" } }"#,
+    )
+    .expect("config")
 }
 
 /// Assert `report` carries no errors, dumping every diagnostic on failure.

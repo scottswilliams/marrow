@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use marrow_schema::StoreSchema;
+use marrow_schema::{ScalarType, StoreSchema};
 use marrow_syntax::{Argument, SourceSpan};
 
 use crate::executable::{SavedKeyParamTarget, SavedPlaceResolver, lower_expr_for_file};
@@ -437,8 +437,14 @@ fn check_range_key_arg(
     }
 }
 
+/// Whether a key or index component can carry a range bound. Saved keys are
+/// orderable scalars — every scalar except `decimal`, which is not a key type — and,
+/// for index components, enums. `bool` keys sort `false` before `true` through the
+/// same order-preserving byte encoding, so a `bool` component ranges like any other
+/// ordered key, distinct from value-comparison orderability.
 fn ordered_range_component(expected: &MarrowType, allow_enum: bool) -> bool {
     match expected {
+        MarrowType::Primitive(ScalarType::Bool) => true,
         MarrowType::Primitive(scalar) => is_ordered(*scalar),
         MarrowType::Enum { .. } => allow_enum,
         _ => false,

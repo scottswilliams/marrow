@@ -648,6 +648,9 @@ pub(crate) fn analyze_source_project(
             .map(|(file, parsed)| (file.path.as_path(), parsed)),
         &mut report.diagnostics,
     );
+    if config.store.backend == StoreBackend::Memory {
+        crate::catalog::require_durable_store(&program, &mut report.diagnostics);
+    }
     let backing_validity = backing_invalidations.resolve(&program);
     crate::surface::check_surfaces(
         &mut program,

@@ -724,7 +724,7 @@ fn surface_read_operation_analysis_excludes_configured_test_file_surfaces() {
         return\n",
     );
     let cfg = parse_config(
-        r#"{ "sourceRoots": ["src"], "tests": ["tests"], "store": { "backend": "memory" } }"#,
+        r#"{ "sourceRoots": ["src"], "tests": ["tests"], "store": { "backend": "native", "dataDir": ".marrow/data" } }"#,
     )
     .expect("config");
 
@@ -1115,7 +1115,7 @@ fn sites_for_reports_enum_uses_from_configured_tests() {
         const s: status::Status = status::Status::active\n";
     write(&root, "tests/smoke.mw", test_source);
     let cfg = parse_config(
-        r#"{ "sourceRoots": ["src"], "tests": ["tests"], "store": { "backend": "memory" } }"#,
+        r#"{ "sourceRoots": ["src"], "tests": ["tests"], "store": { "backend": "native", "dataDir": ".marrow/data" } }"#,
     )
     .expect("config");
 
@@ -1174,7 +1174,7 @@ fn sites_for_ignores_test_local_enum_catalog_uses() {
     let test_source = "enum Scratch\n    one\nconst s: Scratch = Scratch::one\n";
     write(&root, "tests/smoke.mw", test_source);
     let cfg = parse_config(
-        r#"{ "sourceRoots": ["src"], "tests": ["tests"], "store": { "backend": "memory" } }"#,
+        r#"{ "sourceRoots": ["src"], "tests": ["tests"], "store": { "backend": "native", "dataDir": ".marrow/data" } }"#,
     )
     .expect("config");
 
@@ -1454,7 +1454,7 @@ fn sites_for_source_enum_annotations_ignore_test_local_public_enums() {
         "pub enum Status\n    active\nfn smoke()\n    return\n",
     );
     let cfg = parse_config(
-        r#"{ "sourceRoots": ["src"], "tests": ["tests"], "store": { "backend": "memory" } }"#,
+        r#"{ "sourceRoots": ["src"], "tests": ["tests"], "store": { "backend": "native", "dataDir": ".marrow/data" } }"#,
     )
     .expect("config");
 

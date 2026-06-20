@@ -557,12 +557,14 @@ pub(super) mod test_support {
     }
 
     fn config() -> ProjectConfig {
+        // Backup/restore exercises durable data, which requires a native store to
+        // establish committed identity at check time.
         ProjectConfig {
             source_roots: vec!["src".into()],
             default_entry: None,
             store: StoreConfig {
-                backend: StoreBackend::Memory,
-                data_dir: None,
+                backend: StoreBackend::Native,
+                data_dir: Some(".marrow/data".into()),
             },
             tests: Vec::new(),
         }

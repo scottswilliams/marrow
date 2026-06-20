@@ -113,6 +113,21 @@ fn detects_an_over_range_integer_literal() {
 }
 
 #[test]
+fn evaluates_the_i64_min_literal() {
+    // `i64::MIN` is written as `-9223372036854775808`; its bare magnitude is
+    // `i64::MAX + 1` and out of range, so the negated literal must reach the runtime
+    // as a single folded value rather than overflowing before the minus applies.
+    assert_eq!(
+        eval_source(
+            "pub fn f(): int\n    return -9223372036854775808\n",
+            "f",
+            vec![],
+        ),
+        Ok(Some(Value::Int(i64::MIN)))
+    );
+}
+
+#[test]
 fn detects_an_over_envelope_decimal_literal() {
     checker_rejects(
         "pub fn f(): decimal\n    return 9.9999999999999999999999999999999999\n",
@@ -127,12 +142,12 @@ fn rejects_an_unbound_name() {
 
 #[test]
 fn rejects_assignment_to_an_immutable_binding() {
-    let result = eval_source(
+    // Reassigning a `const` is rejected at check, since immutability is statically
+    // known — the runtime never sees the program.
+    checker_rejects(
         "pub fn f(): int\n    const x = 1\n    x = 2\n    return x\n",
-        "f",
-        Vec::new(),
+        "check.invalid_assign_target",
     );
-    assert_run_error(result, RUN_TYPE);
 }
 
 #[test]

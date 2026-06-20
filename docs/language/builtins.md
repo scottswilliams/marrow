@@ -53,7 +53,10 @@ below name the common walk shapes.
 `keys(...)` is the lightest traversal shape when code only needs identities,
 positions, map keys, or other addresses. Over a durable collection these
 builtins are loop-iterable forms only: materializing durable saved data as a
-value is rejected, so iterate the result directly. Over a local collection,
+value is rejected, so iterate the result directly. Because the result is a
+stream, not a value, wrapping a saved traversal in `count`, `keys`, or `values`
+— such as `count(reversed(^books))` or `values(keys(^books))` — is rejected at
+check; count or iterate the saved layer itself. Over a local collection,
 `keys(...)` yields an address sequence that can be passed around as a value.
 `values(...)` yields stored values where value materialization is available.
 `entries(...)` is not a value: use it only as `for key, value in entries(...)`,
@@ -120,6 +123,11 @@ true reverse, not a copy of the forward result reversed after the fact. An early
 `reversed(^enrollments)` is the exact reverse of `^enrollments`, not its
 outermost key flipped over a forward tail. Over a `sequence` value, the elements
 are reversed directly.
+
+A saved traversal is iterated, never materialized as a value, so it cannot be
+re-reversed: `reversed(reversed(^books))` is rejected at check. Reverse a saved
+layer once and iterate it directly. (Re-reversing an in-memory `sequence` is
+fine, since a `sequence` is already a materialized value.)
 
 ### Stored Neighbors
 

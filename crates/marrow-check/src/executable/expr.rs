@@ -297,11 +297,24 @@ impl CheckedExpr {
                     span: *span,
                 }
             }
-            syntax::Expression::Unary { op, operand, span } => Self::Unary {
-                op: CheckedUnaryOp::lower(*op),
-                operand: Box::new(Self::lower(operand, context, scope)?),
-                span: *span,
-            },
+            syntax::Expression::Unary { op, operand, span } => {
+                // A `-` over an integer literal folds the sign into the literal text. The
+                // runtime parses a literal's magnitude as `i64` before any operator runs,
+                // so only the folded `-9223372036854775808` reaches `i64::MIN`; the bare
+                // magnitude is `i64::MAX + 1` and would overflow on its own.
+                match crate::typerules::negated_integer_literal(*op, operand) {
+                    Some((text, literal_span)) => Self::Literal {
+                        kind: CheckedLiteralKind::Integer,
+                        text: format!("-{text}"),
+                        span: literal_span,
+                    },
+                    None => Self::Unary {
+                        op: CheckedUnaryOp::lower(*op),
+                        operand: Box::new(Self::lower(operand, context, scope)?),
+                        span: *span,
+                    },
+                }
+            }
             syntax::Expression::Binary {
                 op,
                 left,
