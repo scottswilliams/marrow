@@ -708,6 +708,16 @@ pub(crate) fn is_partial_key_layer_path(
         .is_some_and(|expr| SavedPlaceResolver::new(program).is_partial_key_layer_path(&expr))
 }
 
+pub(crate) fn is_saved_collection_path(
+    program: &CheckedProgram,
+    path: &marrow_syntax::Expression,
+    scope: &[HashMap<String, MarrowType>],
+    file: &Path,
+) -> bool {
+    checked_saved_expr(program, path, scope, file)
+        .is_some_and(|expr| SavedPlaceResolver::new(program).is_saved_collection(&expr))
+}
+
 fn saved_key_range_subject(mut path: &marrow_syntax::Expression) -> &marrow_syntax::Expression {
     loop {
         if let Some(inner) = reversed_call_arg(path) {

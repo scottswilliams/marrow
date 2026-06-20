@@ -27,8 +27,8 @@ use super::calls::is_by_value_collection_slot;
 use super::collections::{
     catch_frame, check_entries_value_position, check_for_collection_support,
     check_for_entries_support, check_for_scalar_iterable, for_frame, has_collection_unsupported,
-    is_partial_key_layer_path, is_saved_index_branch_path, is_saved_index_range_path,
-    is_saved_key_range_path, is_saved_path_with_key_range_arg,
+    is_partial_key_layer_path, is_saved_collection_path, is_saved_index_branch_path,
+    is_saved_index_range_path, is_saved_key_range_path, is_saved_path_with_key_range_arg,
 };
 use super::operators::{check_assignment, check_condition, check_return_type, check_throw_type};
 use super::ranges::{
@@ -475,6 +475,13 @@ impl StatementCheck<'_> {
                 self.file,
                 target.span(),
                 "a partially keyed layer addresses an inner sub-layer, not a writable entry; supply every key column to write an entry",
+            ));
+        } else if is_saved_collection_path(self.program, target, self.scope, self.file) {
+            self.diagnostics.push(CheckDiagnostic::error(
+                crate::rules::CHECK_INVALID_ASSIGN_TARGET,
+                self.file,
+                target.span(),
+                "a bare store root addresses the whole collection, not a writable record; supply every identity key to write an entry",
             ));
         }
         if self.is_nested_local_resource_field_write(target)

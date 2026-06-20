@@ -716,6 +716,60 @@ fn read_only_parameters_are_not_assignment_targets() {
 }
 
 #[test]
+fn a_bare_keyed_store_root_is_not_an_assignment_target() {
+    // A keyed store root addressed with no identity key names the whole collection,
+    // not a writable record. Every right-hand side is rejected at check; the runtime
+    // would otherwise fault on the unaddressed root. The diagnostic is span-anchored
+    // on the target and carries no payload, matching the other invalid-target cases.
+    let cases: &[(&str, &str)] = &[
+        ("bare-root-scalar", "    ^books = 5\n"),
+        (
+            "bare-root-local-seq",
+            "    var xs: sequence[int]\n    append(xs, 1)\n    ^books = xs\n",
+        ),
+        ("bare-root-keys", "    ^books = keys(^others)\n"),
+    ];
+    for (name, body) in cases {
+        let src = format!(
+            "module m\n\
+             resource Book\n    required title: string\n\
+             store ^books(id: int): Book\n\
+             store ^others(id: int): Book\n\n\
+             fn f()\n{body}"
+        );
+        let report = check_module_report(name, &src);
+        let found = with_code(&report, "check.invalid_assign_target");
+        assert_eq!(found.len(), 1, "{name}: {:#?}", report.diagnostics);
+        assert_eq!(found[0].payload, DiagnosticPayload::None, "{name}");
+        // The diagnostic anchors on the bare-root target, on the line that writes it.
+        let target_line = src
+            .lines()
+            .position(|line| line.trim_start().starts_with("^books ="))
+            .expect("target line") as u32
+            + 1;
+        assert_eq!(found[0].span.line, target_line, "{name}: {:#?}", found[0]);
+    }
+}
+
+#[test]
+fn a_keyed_record_write_and_keyless_root_write_remain_valid_targets() {
+    // The legitimate saved writes are untouched: a fully keyed record write addresses
+    // one entry, and a keyless singleton root addresses its sole record directly.
+    let report = check_module_report(
+        "valid-saved-write-targets",
+        "module m\n\
+         resource Book\n    required title: string\n\
+         resource Settings\n    required maxLoans: int\n\
+         store ^books(id: int): Book\n\
+         store ^settings: Settings\n\n\
+         fn writeKeyed(b: Book)\n    ^books(1) = b\n\n\
+         fn writeKeyless(s: Settings)\n    ^settings = s\n",
+    );
+    let found = with_code(&report, "check.invalid_assign_target");
+    assert!(found.is_empty(), "{:#?}", report.diagnostics);
+}
+
+#[test]
 fn read_only_parameter_checks_respect_local_shadowing() {
     let report = check_module_report(
         "readonly-param-shadow",
