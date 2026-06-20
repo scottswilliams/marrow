@@ -2,7 +2,9 @@ use marrow_syntax::SourceSpan;
 
 use crate::executable::{CheckedBodyVisitor, walk_checked_expr};
 use crate::facts::{DirectEffectFacts, EffectClosureFacts};
-use crate::{CheckedBuiltinCall, CheckedCallTarget, CheckedExpr, CheckedProgram};
+use crate::{
+    CheckedBuiltinCall, CheckedCallTarget, CheckedExpr, CheckedProgram, DebugExpressionDataAccess,
+};
 
 use super::{direct_effects_for_expr, effect_closure_for_direct};
 
@@ -30,6 +32,18 @@ impl ReadOnlyExpressionEffects {
 
     pub(crate) fn unindexed_collection_reads_reachable(&self) -> bool {
         self.direct.unindexed_collection_reads || self.closure.unindexed_collection_reads
+    }
+
+    pub(crate) fn debug_expression_data_access(&self) -> DebugExpressionDataAccess {
+        if self.direct.saved_reads.is_empty()
+            && self.direct.saved_index_reads.is_empty()
+            && self.closure.saved_reads.is_empty()
+            && self.closure.saved_index_reads.is_empty()
+        {
+            DebugExpressionDataAccess::LocalOnly
+        } else {
+            DebugExpressionDataAccess::RequiresDurableData
+        }
     }
 
     /// Whether this expression carries any effect — a write, allocation

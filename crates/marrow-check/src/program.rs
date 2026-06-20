@@ -92,8 +92,15 @@ pub struct CheckedDebugExpression {
     debug_source_identity: DebugSourceIdentity,
     source_digest: String,
     read_only_context_digest: String,
+    data_access: DebugExpressionDataAccess,
     expression: CheckedExpr,
     ty: MarrowType,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DebugExpressionDataAccess {
+    LocalOnly,
+    RequiresDurableData,
 }
 
 impl CheckedDebugExpression {
@@ -119,6 +126,10 @@ impl CheckedDebugExpression {
 
     pub fn read_only_context_digest(&self) -> &str {
         &self.read_only_context_digest
+    }
+
+    pub fn data_access(&self) -> DebugExpressionDataAccess {
+        self.data_access
     }
 
     pub fn expression(&self) -> &CheckedExpr {
@@ -234,6 +245,7 @@ impl CheckedProgram {
             debug_source_identity,
             source_digest: self.source_digest(),
             read_only_context_digest: self.read_only_context_digest(),
+            data_access: checked.data_access,
             expression: checked.expression,
             ty: checked.ty,
         })
@@ -585,6 +597,7 @@ fn module_constant_scope(module: &CheckedModule) -> Vec<HashMap<String, MarrowTy
 
 struct CheckedExpressionInScope {
     expression: CheckedExpr,
+    data_access: DebugExpressionDataAccess,
     ty: MarrowType,
 }
 
@@ -627,6 +640,7 @@ impl CheckedProgram {
         };
 
         let read_only_effects = crate::presence::read_only_expression_effects(self, &expression);
+        let data_access = read_only_effects.debug_expression_data_access();
         diagnostics.extend(read_only_expression_diagnostics(
             &module.source_file,
             &expression,
@@ -639,7 +653,11 @@ impl CheckedProgram {
             return Err(diagnostics);
         }
 
-        Ok(CheckedExpressionInScope { expression, ty })
+        Ok(CheckedExpressionInScope {
+            expression,
+            data_access,
+            ty,
+        })
     }
 }
 

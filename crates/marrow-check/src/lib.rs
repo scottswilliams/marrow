@@ -122,8 +122,8 @@ pub use marrow_schema::{
 pub use program::{
     CheckedConst, CheckedDebugExpression, CheckedEntryFunction, CheckedFunction, CheckedModule,
     CheckedParam, CheckedProgram, CheckedReadOnlyExpression, CheckedRuntimeConst,
-    CheckedRuntimeFunction, CheckedRuntimeModule, CheckedRuntimeProgram, DebugSourceIdentity,
-    EvolveTransform, FileId, MarrowType, ProgramCatalog, RuntimeStopPoint,
+    CheckedRuntimeFunction, CheckedRuntimeModule, CheckedRuntimeProgram, DebugExpressionDataAccess,
+    DebugSourceIdentity, EvolveTransform, FileId, MarrowType, ProgramCatalog, RuntimeStopPoint,
 };
 pub use project_io::{
     CONFIG_DATA_DIR, ProjectIoError, check_project_against, check_source_project_analysis_against,

@@ -19,8 +19,8 @@ use marrow_check::tooling::{
 };
 use marrow_check::{
     CHECK_READ_ONLY_EXPRESSION_HOST_EFFECT, CHECK_READ_ONLY_EXPRESSION_UNINDEXED_LOOKUP,
-    CHECK_READ_ONLY_EXPRESSION_WRITE, CatalogEntryKind, CheckedProgram, DiagnosticPayload,
-    ProjectSources, StoreLeafKind, SurfaceCatalogBlocker, SurfaceCatalogStatus,
+    CHECK_READ_ONLY_EXPRESSION_WRITE, CatalogEntryKind, CheckedProgram, DebugExpressionDataAccess,
+    DiagnosticPayload, ProjectSources, StoreLeafKind, SurfaceCatalogBlocker, SurfaceCatalogStatus,
     SurfaceReadFootprint, SurfaceReadOperationKind, UseSiteKind, analyze_project, check_project,
     scope_at, type_at,
 };
@@ -1502,6 +1502,59 @@ fn checked_debug_expression_reuses_read_only_effect_diagnostics() {
             .iter()
             .any(|diagnostic| diagnostic.code == CHECK_READ_ONLY_EXPRESSION_UNINDEXED_LOOKUP),
         "{unindexed:#?}"
+    );
+}
+
+#[test]
+fn checked_debug_expression_reports_durable_data_access() {
+    let source = "module m\n\
+        resource Book\n    \
+        required title: string\n    \
+        shelf: string\n\
+        store ^books(id: int): Book\n    \
+        index byShelf(shelf, id)\n\
+        fn bookTitle(id: int): string\n    \
+        return ^books(id).title ?? \"\"\n\
+        fn f(id: int)\n    \
+        const before = id + 1\n    \
+        print(before)\n";
+    let (snapshot, paths) =
+        analyze_overlay("debug-expression-data-access", &[("src/m.mw", source)]);
+    assert!(
+        !snapshot.report.has_errors(),
+        "{:#?}",
+        snapshot.report.diagnostics
+    );
+    let path = paths.into_iter().next().expect("source path");
+    let span = stop_span(source, "print(before)");
+
+    let local = snapshot
+        .checked_debug_expression(&path, span, "before > 0")
+        .expect("local-only debug expression is admitted");
+    assert_eq!(local.data_access(), DebugExpressionDataAccess::LocalOnly);
+
+    let durable = snapshot
+        .checked_debug_expression(&path, span, "^books(id).title")
+        .expect("read-only durable debug expression is admitted with data-access fact");
+    assert_eq!(
+        durable.data_access(),
+        DebugExpressionDataAccess::RequiresDurableData
+    );
+
+    let transitive = snapshot
+        .checked_debug_expression(&path, span, "bookTitle(id) == \"Dune\"")
+        .expect("helper-mediated durable debug expression is admitted with data-access fact");
+    assert_eq!(
+        transitive.data_access(),
+        DebugExpressionDataAccess::RequiresDurableData
+    );
+
+    let indexed = snapshot
+        .checked_debug_expression(&path, span, "count(^books.byShelf(\"fiction\")) > 0")
+        .expect("indexed durable debug expression is admitted with data-access fact");
+    assert_eq!(
+        indexed.data_access(),
+        DebugExpressionDataAccess::RequiresDurableData
     );
 }
 

@@ -122,6 +122,11 @@ from the checked program or snapshot:
   returns a `CheckedReadOnlyExpression` handle. Runtime evaluation uses
   `marrow_run::evaluate_checked_read_only_expression`, which reuses the checked
   lowered expression and the production evaluator.
+- `AnalysisSnapshot::checked_debug_expression` adds a checked source location
+  and source-digest binding for debugger watches and conditionals. Its
+  `CheckedDebugExpression::data_access` fact reports whether the admitted
+  expression is local-only or requires saved data, using the same direct and
+  transitive read-only effects that enforce the debug-expression diagnostics.
 - `CheckedRuntimeProgram::stop_points()` returns snapshot-scoped
   `RuntimeStopPoint` facts for the checked statement spans the evaluator can
   report through `StepHook::before_statement`. Each point carries a `FileId` and
