@@ -76,7 +76,7 @@ pub fn resolve<'p>(
     if module_prefix.is_empty() {
         return resolve_bare(program, from_module, leaf, kind);
     }
-    resolve_qualified(program, &module_prefix.join("::"), leaf, kind)
+    resolve_qualified(program, from_module, &module_prefix.join("::"), leaf, kind)
 }
 
 /// Resolve a bare `leaf` in `from_module` only, where it is visible regardless of
@@ -128,10 +128,14 @@ fn resolve_bare<'p>(
     }
 }
 
-/// Resolve a qualified `module::leaf`, which cross-module must be `pub`. A
-/// non-`pub` leaf is a distinct [`Resolution::NotVisible`], not an unresolved name.
+/// Resolve a qualified `module::leaf` referenced from `from_module`. A non-`pub`
+/// leaf is visible only when `module_name` is the referencing module itself, so a
+/// module reaches its own private items by their full path just as a bare name
+/// does; from any other module a non-`pub` leaf is a distinct
+/// [`Resolution::NotVisible`], not an unresolved name.
 fn resolve_qualified<'p>(
     program: &'p CheckedProgram,
+    from_module: &str,
     module_name: &str,
     leaf: &str,
     kind: ResolvableKind,
@@ -142,7 +146,7 @@ fn resolve_qualified<'p>(
     let Some(item) = lookup_in_module(module, leaf, kind) else {
         return Resolution::Unresolved;
     };
-    if is_public(&item) {
+    if module_name == from_module || is_public(&item) {
         Resolution::Found(Def { module, kind, item })
     } else {
         Resolution::NotVisible(format!("{module_name}::{leaf}"))

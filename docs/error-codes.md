@@ -167,7 +167,6 @@ over every configured source and test file.
 | `check.loop_control_flow` | A `break`/`continue` is outside any loop. |
 | `check.catch_type` | A `catch` annotation is not `Error`. |
 | `check.throw_type` | A `throw` operand is known not to be an `Error` value. |
-| `check.try_handler` | A `try` block has no `catch` clause. |
 | `check.match_requires_enum` | A `match` scrutinee is not an enum value, or names an enum the project does not declare. |
 | `check.unknown_enum_member` | A `match` arm path, or an `Enum::member` reference, walks to no member the enum declares. |
 | `check.duplicate_match_arm` | Two `match` arms cover the same member — a repeated arm, or a leaf already covered by an enclosing category arm. |

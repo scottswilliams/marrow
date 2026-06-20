@@ -1,5 +1,16 @@
 use marrow_syntax::SourceSpan;
 
+/// The span of a whole-file diagnostic: the start of the file. A diagnostic that
+/// names a file but no declaration within it still points somewhere an editor can
+/// place, never the unplaceable `0:0`.
+pub(crate) fn start_of_file() -> SourceSpan {
+    SourceSpan {
+        line: 1,
+        column: 1,
+        ..SourceSpan::default()
+    }
+}
+
 pub(crate) fn source_span_at(source: &str, start_byte: usize, end_byte: usize) -> SourceSpan {
     let prefix = &source.as_bytes()[..start_byte.min(source.len())];
     let line_start = prefix

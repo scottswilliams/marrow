@@ -588,7 +588,7 @@ fn reject_saved_access(
     reject_saved_access_inner(program, expr, scope, file, diagnostics, false)
 }
 
-fn reject_saved_access_with_suggested_index(
+pub(crate) fn reject_saved_access_with_suggested_index(
     program: &CheckedProgram,
     expr: &marrow_syntax::Expression,
     scope: &[HashMap<String, MarrowType>],
@@ -929,26 +929,35 @@ fn enum_member_value_type(
             MarrowType::Invalid
         }
         MemberPathResolution::NotFound => {
+            let (index, member) = resolved.unresolved_segment(segments);
+            let member = member.to_string();
+            let segment_span = name_segment_span(expr, index).unwrap_or(span);
             diagnostics.push(
                 CheckDiagnostic::error(
                     CHECK_UNKNOWN_ENUM_MEMBER,
                     file,
-                    span,
-                    format!(
-                        "`{enum_name}` has no member `{}`",
-                        segments[segments.len() - 1]
-                    ),
+                    segment_span,
+                    format!("`{enum_name}` has no member `{member}`"),
                 )
                 .with_payload(DiagnosticPayload::Enum(
                     EnumDiagnostic::UnknownMember {
                         enum_name: enum_name.clone(),
-                        member: resolved.member_label,
+                        member,
                     },
                 )),
             );
             MarrowType::Invalid
         }
     }
+}
+
+/// The span of the segment at `index` within a `Name` expression, for a diagnostic
+/// that blames one written path segment rather than the whole reference.
+fn name_segment_span(expr: &marrow_syntax::Expression, index: usize) -> Option<SourceSpan> {
+    let marrow_syntax::Expression::Name { segment_spans, .. } = expr else {
+        return None;
+    };
+    segment_spans.get(index).copied()
 }
 
 fn local_collection_access_type(

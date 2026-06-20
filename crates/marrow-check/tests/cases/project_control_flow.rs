@@ -151,13 +151,17 @@ fn break_and_continue_inside_a_loop_are_allowed() {
 }
 
 #[test]
-fn catch_with_non_error_type_is_rejected() {
+fn catch_with_non_error_type_is_rejected_at_the_type() {
+    // The annotation `string` is the offending node, so the diagnostic spans the
+    // type token on the `catch` line, not the catch body.
     let found = check_script(
         "catch-bad-type",
         "fn f()\n    try\n        x = 1\n    catch e: string\n        return\n",
         "check.catch_type",
     );
     assert_eq!(found.len(), 1, "{found:#?}");
+    assert_eq!(found[0].span.line, 4);
+    assert_eq!(found[0].span.column, 14);
 }
 
 #[test]
@@ -198,23 +202,15 @@ fn throwing_an_error_value_is_allowed() {
 }
 
 #[test]
-fn try_requires_a_catch_clause() {
+fn a_try_without_a_catch_is_not_a_checker_concern() {
+    // The grammar requires `catch`, so a bare `try` is a parse error the parser owns.
+    // The checker must not re-report it as a second, duplicate diagnostic.
     let found = check_script(
         "bare-try",
         "fn f()\n    try\n        print(\"x\")\n",
         "check.try_handler",
     );
-    assert_eq!(found.len(), 1, "{found:#?}");
-}
-
-#[test]
-fn try_with_catch_is_allowed() {
-    let with_catch = check_script(
-        "try-catch",
-        "fn f()\n    try\n        print(\"x\")\n    catch e\n        return\n",
-        "check.try_handler",
-    );
-    assert!(with_catch.is_empty(), "{with_catch:#?}");
+    assert!(found.is_empty(), "{found:#?}");
 }
 
 #[test]

@@ -66,7 +66,9 @@ fn is_with_a_non_enum_left_is_rejected() {
 }
 
 #[test]
-fn is_against_a_different_enum_is_rejected() {
+fn is_against_a_different_enum_is_rejected_at_the_right_operand() {
+    // The right operand names the wrong enum, so the diagnostic spans `Dog::poodle`
+    // on the `is` line, not the whole `pet is Dog::poodle` expression.
     let errors = check_module(
         "is-cross-enum",
         &format!(
@@ -81,6 +83,27 @@ fn is_against_a_different_enum_is_rejected() {
         "check.is_type",
     );
     assert_eq!(errors.len(), 1, "{errors:#?}");
+    assert_eq!(errors[0].span.line, 12);
+    assert_eq!(errors[0].span.column, 19);
+}
+
+#[test]
+fn is_against_a_non_member_right_is_rejected_at_the_right_operand() {
+    // The right operand is not a member of the left's enum, so the diagnostic spans
+    // the offending right operand rather than the whole `is` expression.
+    let errors = check_module(
+        "is-non-member",
+        &format!(
+            "{}\
+             fn f(pet: Cat): bool\n    \
+             return pet is Cat::nope\n",
+            cat_enum()
+        ),
+        "check.is_type",
+    );
+    assert_eq!(errors.len(), 1, "{errors:#?}");
+    assert_eq!(errors[0].span.line, 8);
+    assert_eq!(errors[0].span.column, 19);
 }
 
 #[test]

@@ -1,4 +1,5 @@
 use crate::support;
+use marrow_check::DiagnosticPayload;
 use support::{assert_clean, check_module, check_module_report, with_code};
 
 fn codes(report: &marrow_check::CheckReport) -> Vec<&str> {
@@ -24,6 +25,37 @@ fn a_nested_group_field_read_resolves_its_type() {
         "check.untyped_value",
     );
     assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn a_loop_over_an_undeclared_index_is_a_collection_error_not_a_key_type_error() {
+    // `^books.byShelf("fiction")` calls a member that is not a declared index. The
+    // root cause is the missing index, so the diagnostic is the collection-unsupported
+    // code carrying the index it would take to admit the lookup — never the
+    // `check.key_type` "address it with an identity" error, which describes a
+    // different mistake.
+    let report = check_module_report(
+        "loop-undeclared-index",
+        "module m\n\
+         resource Book\n    shelf: string\n\
+         store ^books(id: int): Book\n\n\
+         fn f(shelf: string)\n    for id in ^books.byShelf(shelf)\n        print(id)\n",
+    );
+
+    let found = with_code(&report, "check.collection_unsupported");
+    assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
+    let DiagnosticPayload::SuggestedIndex { declaration } = &found[0].payload else {
+        panic!(
+            "expected suggested index payload, got {:#?}",
+            found[0].payload
+        );
+    };
+    assert_eq!(declaration, "index byShelf(shelf, id)");
+    assert!(
+        with_code(&report, "check.key_type").is_empty(),
+        "an undeclared-index lookup is not a key-type error: {:#?}",
+        report.diagnostics
+    );
 }
 
 #[test]

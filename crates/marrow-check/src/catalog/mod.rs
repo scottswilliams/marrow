@@ -304,10 +304,10 @@ fn member_struct_module(source: &SourceCatalogEntry) -> &str {
         .unwrap_or("")
 }
 
-/// A catalog-intent error for a project-level failure not tied to one declaration, so it
-/// carries no source span.
+/// A catalog-intent error for a project-level failure not tied to one declaration. It
+/// names the file and points at its start, never an unplaceable `0:0` span.
 fn catalog_diagnostic(file: std::path::PathBuf, message: String) -> CheckDiagnostic {
-    CheckDiagnostic::error(CHECK_CATALOG_INTENT, &file, SourceSpan::default(), message)
+    catalog_error(file, crate::source_spans::start_of_file(), message)
 }
 
 fn catalog_error(file: std::path::PathBuf, span: SourceSpan, message: String) -> CheckDiagnostic {
@@ -1901,6 +1901,17 @@ fn proposed_catalog_entry<E: CatalogIdEntropy>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_project_level_catalog_diagnostic_points_at_the_start_of_its_file() {
+        let diagnostic = catalog_diagnostic(
+            std::path::PathBuf::from("src/books.mw"),
+            "accepted catalog metadata is not valid".to_string(),
+        );
+        assert_eq!(diagnostic.code, CHECK_CATALOG_INTENT);
+        assert_eq!(diagnostic.span.line, 1);
+        assert_eq!(diagnostic.span.column, 1);
+    }
 
     fn active_entry(kind: CatalogEntryKind, path: &str, stable_id: &str) -> CatalogEntry {
         CatalogEntry {

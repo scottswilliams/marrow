@@ -331,6 +331,12 @@ fn two_module_less_scripts_are_a_check_error() {
             && found.iter().any(|d| d.file.ends_with("two.mw")),
         "{found:#?}"
     );
+    // A whole-file diagnostic points at the start of the file (1:1), never a 0:0
+    // span an editor cannot place.
+    assert!(
+        found.iter().all(|d| d.span.line == 1 && d.span.column == 1),
+        "{found:#?}"
+    );
 }
 
 #[test]

@@ -207,8 +207,9 @@ pub(crate) fn check_assignment(
 }
 
 /// Validate a unary operator against its operand type, returning the result type,
-/// or [`MarrowType::Unknown`] when the operand is not a known primitive or the
-/// operator is misused (which records a diagnostic).
+/// [`MarrowType::Unknown`] when the operand is not a known primitive, or
+/// [`MarrowType::Invalid`] when the operator is misused (which records a diagnostic),
+/// so a reported fault poisons the result rather than cascading an untyped-value error.
 pub(crate) fn check_unary(
     op: marrow_syntax::UnaryOp,
     operand: &MarrowType,
@@ -252,14 +253,15 @@ pub(crate) fn check_unary(
                 operand.name(),
             ),
         ));
-        return MarrowType::Unknown;
+        return MarrowType::Invalid;
     }
     MarrowType::Primitive(operand)
 }
 
 /// Validate a binary operator against its operand types, returning the result
-/// type, or [`MarrowType::Unknown`] when either operand is not a known primitive
-/// or the operator is misused (which records a diagnostic).
+/// type, [`MarrowType::Unknown`] when either operand is not a known primitive, or
+/// [`MarrowType::Invalid`] when the operator is misused (which records a diagnostic),
+/// so a reported fault poisons the result rather than cascading an untyped-value error.
 pub(crate) fn check_binary(
     op: marrow_syntax::BinaryOp,
     left: &MarrowType,
@@ -388,7 +390,7 @@ pub(crate) fn check_binary(
                 right.name(),
             ),
         ));
-        return MarrowType::Unknown;
+        return MarrowType::Invalid;
     }
     result
 }
@@ -529,7 +531,7 @@ pub(crate) fn check_coalesce(check: CoalesceCheck<'_>) -> MarrowType {
                         marrow_type_name(right_type),
                     ),
                 ));
-                MarrowType::Unknown
+                MarrowType::Invalid
             }
             None => left_type.clone(),
         };
@@ -549,7 +551,7 @@ pub(crate) fn check_coalesce(check: CoalesceCheck<'_>) -> MarrowType {
                     default.name(),
                 ),
             ));
-            MarrowType::Unknown
+            MarrowType::Invalid
         }
         // An untyped leaf falls back to the default's type; an untyped default
         // leaves the result the leaf type. Either way an unknown stays unknown.

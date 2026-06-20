@@ -330,17 +330,20 @@ fn check_match_coverage(
         let arm_ordinal = match schema.walk_member_path(&segments) {
             MemberPathResolution::Found(ordinal) => ordinal,
             MemberPathResolution::NotFound => {
+                let offending = unresolved_member_segment(schema, &arm.path);
+                let member = arm.path[offending].clone();
+                let segment_span = arm.path_spans.get(offending).copied().unwrap_or(arm.span);
                 env.diagnostics.push(
                     CheckDiagnostic::error(
                         CHECK_UNKNOWN_ENUM_MEMBER,
                         env.file,
-                        arm.span,
-                        format!("`{enum_name}` has no member `{arm_label}`"),
+                        segment_span,
+                        format!("`{enum_name}` has no member `{member}`"),
                     )
                     .with_payload(DiagnosticPayload::Enum(
                         EnumDiagnostic::UnknownMember {
                             enum_name: enum_name.to_string(),
-                            member: arm_label,
+                            member,
                         },
                     )),
                 );
@@ -438,6 +441,56 @@ pub(crate) struct ResolvedMemberPath<'p> {
     /// member-path walk. Each caller applies its own position rule (a value rejects
     /// a category; an `is` operand admits one) and reports ambiguity the same way.
     pub member: MemberPathResolution,
+}
+
+impl ResolvedMemberPath<'_> {
+    /// The original-segment index and name of the first written segment that breaks
+    /// the member walk, for a [`MemberPathResolution::NotFound`] value-position path.
+    /// Shifts the relative offending index by the enum prefix so the caller spans the
+    /// right `Name` segment.
+    pub(crate) fn unresolved_segment<'s>(&self, segments: &'s [String]) -> (usize, &'s str) {
+        let relative = &segments[self.enum_index + 1..];
+        let relative_index = unresolved_member_segment(self.schema, relative);
+        let index = self.enum_index + 1 + relative_index;
+        (index, segments[index].as_str())
+    }
+}
+
+/// The relative index of the first segment that breaks a `NotFound` member walk. A
+/// qualified path walks parent→child from a top-level member, so the offending
+/// segment is the first with no member at its level: `cat::tabby` over `mammal::cat`
+/// blames `cat` (not a direct member) rather than the leaf `tabby`, which exists
+/// deeper. A bare single name that resolves nowhere blames itself.
+fn unresolved_member_segment(schema: &marrow_schema::EnumSchema, relative: &[String]) -> usize {
+    let [first, ..] = relative else {
+        return 0;
+    };
+    // A qualified path must start at a unique top-level member; when the first segment
+    // is not one, it is itself the offending segment.
+    if relative.len() > 1 && !is_top_level_member(schema, first) {
+        return 0;
+    }
+    // The start is valid, so the break is the first child segment with no member at
+    // its level.
+    for end in 1..relative.len() {
+        let prefix: Vec<&str> = relative[..=end].iter().map(String::as_str).collect();
+        if matches!(
+            schema.walk_member_path(&prefix),
+            MemberPathResolution::NotFound
+        ) {
+            return end;
+        }
+    }
+    relative.len().saturating_sub(1)
+}
+
+/// Whether `name` is the schema's unique top-level member — the only valid start of
+/// a qualified member path.
+fn is_top_level_member(schema: &marrow_schema::EnumSchema, name: &str) -> bool {
+    matches!(
+        schema.walk_member_path(&[name]),
+        MemberPathResolution::Found(ordinal) if schema.member_path(ordinal) == [name]
+    )
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -636,17 +689,20 @@ pub(crate) fn check_is(input: IsCheck<'_>) -> MarrowType {
         }
         return bool_type;
     };
+    // Every right-operand fault below blames the member path itself, so each spans
+    // the right operand rather than the whole `left is right` expression.
+    let right_span = right.span();
     let resolved = match resolve_enum_member_path(program, right, aliases, file) {
         EnumMemberPathResolution::Resolved(resolved) => resolved,
         EnumMemberPathResolution::AmbiguousBareForeignOwner(ambiguous) => {
-            diagnostics.push(ambiguous.diagnostic(file, span));
+            diagnostics.push(ambiguous.diagnostic(file, right_span));
             return bool_type;
         }
         EnumMemberPathResolution::MissingOrNonEnum => {
             diagnostics.push(CheckDiagnostic::error(
                 CHECK_IS_TYPE,
                 file,
-                span,
+                right_span,
                 format!("operator `is` requires a member of `{left_name}` on the right"),
             ));
             return bool_type;
@@ -657,7 +713,7 @@ pub(crate) fn check_is(input: IsCheck<'_>) -> MarrowType {
             CheckDiagnostic::error(
                 CHECK_PRIVATE_ENUM,
                 file,
-                span,
+                right_span,
                 format!(
                     "enum `{private}` is private to its module; mark it `pub` to use it from another module"
                 ),
@@ -672,7 +728,7 @@ pub(crate) fn check_is(input: IsCheck<'_>) -> MarrowType {
         diagnostics.push(CheckDiagnostic::error(
             CHECK_IS_TYPE,
             file,
-            span,
+            right_span,
             format!(
                 "operator `is` compares within one enum, but the left is `{left_name}` and the right names `{}`",
                 resolved.enum_name
@@ -690,7 +746,7 @@ pub(crate) fn check_is(input: IsCheck<'_>) -> MarrowType {
             CheckDiagnostic::error(
                 CHECK_AMBIGUOUS_MEMBER,
                 file,
-                span,
+                right_span,
                 format!(
                     "`{}` names more than one member of `{left_name}`; qualify as {}",
                     member_path_label(right),
@@ -706,7 +762,7 @@ pub(crate) fn check_is(input: IsCheck<'_>) -> MarrowType {
         MemberPathResolution::NotFound => diagnostics.push(CheckDiagnostic::error(
             CHECK_IS_TYPE,
             file,
-            span,
+            right_span,
             format!("operator `is` requires a member of `{left_name}` on the right"),
         )),
     }

@@ -1,9 +1,9 @@
 //! Structural rules over the parsed tree.
 //!
-//! These checks read only the parsed syntax tree: try-handler presence, `catch`
-//! type annotations, assignment targets, and `const` values that are not
-//! constant expressions. They do not need type or effect facts, so they run
-//! directly on each declaration.
+//! These checks read only the parsed syntax tree: `catch` type annotations,
+//! assignment targets, and `const` values that are not constant expressions.
+//! They do not need type or effect facts, so they run directly on each
+//! declaration.
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -17,7 +17,7 @@ use marrow_syntax::{
 use crate::checks::{check_entries_value_position, check_range_value};
 use crate::typerules::{LiteralSign, check_literal_range, negated_integer_literal};
 use crate::walk::for_each_child_expr;
-use crate::{CHECK_COMMIT_AMPLIFICATION, CHECK_TRY_HANDLER, CheckDiagnostic};
+use crate::{CHECK_COMMIT_AMPLIFICATION, CheckDiagnostic};
 
 /// A `break`/`continue` is outside any loop, so it could never resolve at runtime.
 pub const CHECK_LOOP_CONTROL_FLOW: &str = "check.loop_control_flow";
@@ -279,14 +279,6 @@ fn walk_statement(
             walk_block(file, body, immutable, local_collections, out)
         }
         Statement::Try { body, catch, .. } => {
-            if catch.is_none() {
-                out.push(diagnostic_at(
-                    CHECK_TRY_HANDLER,
-                    file,
-                    statement,
-                    "a `try` block has no `catch` clause",
-                ));
-            }
             walk_block(file, body, immutable, local_collections, out);
             if let Some(catch) = catch {
                 check_catch(file, catch, out);
@@ -375,7 +367,7 @@ fn check_catch(file: &Path, catch: &CatchClause, out: &mut Vec<CheckDiagnostic>)
         out.push(CheckDiagnostic::error(
             CHECK_CATCH_TYPE,
             file,
-            catch.block.span,
+            ty.span,
             format!("catch type must be `Error`, found `{}`", ty.text),
         ));
     }

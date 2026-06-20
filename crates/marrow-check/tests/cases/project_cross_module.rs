@@ -78,6 +78,31 @@ fn cross_module_call_to_a_private_fn_is_a_visibility_error() {
 }
 
 #[test]
+fn fully_qualified_call_to_an_own_module_private_fn_resolves_clean() {
+    // A module may call its own module-private function by the function's own
+    // fully-qualified path. `aaa::secret` is private, but `aaa::run` is itself in
+    // `aaa`, so qualifying it as `aaa::secret()` resolves like a bare same-module
+    // call — visibility gates only cross-module reach. No `check.private_function`,
+    // and no `check.untyped_value` cascade onto the typed `return`.
+    let report = check_two_modules(
+        "resolve-own-module-fqn-private",
+        "module aaa\nfn secret(): int\n    return 1\nfn run(): int\n    return aaa::secret()\n",
+        "module zzz\n",
+    );
+    assert!(
+        with_code(&report, "check.private_function").is_empty(),
+        "a module calling its own private fn by its full path must resolve clean: {:#?}",
+        report.diagnostics
+    );
+    assert!(
+        with_code(&report, "check.untyped_value").is_empty(),
+        "the self-qualified private call resolves, so its result is typed: {:#?}",
+        report.diagnostics
+    );
+    assert_clean(&report);
+}
+
+#[test]
 fn cross_module_use_of_a_private_enum_is_a_visibility_error() {
     let root = temp_project("cross-private-enum", |root| {
         write(

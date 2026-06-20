@@ -13,7 +13,7 @@ use crate::enums::{MatchCheck, check_match, resolve_diagnosed_annotation_type};
 use crate::executable::{SavedPlaceResolver, lower_expr_for_file};
 use crate::infer::{
     bind, infer_assignment_target_type_with_read_scope, infer_type_with_read_scope,
-    local_binding_with_read_scope,
+    local_binding_with_read_scope, reject_saved_access_with_suggested_index,
 };
 use crate::resolve::resolve_store_by_root;
 use crate::{
@@ -603,6 +603,31 @@ impl StatementCheck<'_> {
         step: Option<&marrow_syntax::Expression>,
         body: &marrow_syntax::Block,
     ) {
+        // A loop iterable is a collection read, so a `^root.member(args)` lookup whose
+        // member is not a declared index is a missing-index lookup: report it with the
+        // index that would admit it rather than a member-access key-type error, and skip
+        // the iterable checks below that would re-report the same root cause.
+        if reject_saved_access_with_suggested_index(
+            self.program,
+            iterable,
+            self.scope,
+            self.file,
+            self.diagnostics,
+        ) {
+            let frame = for_frame(
+                self.program,
+                binding,
+                iterable,
+                self.scope,
+                self.aliases,
+                self.file,
+            );
+            self.scope.push(frame);
+            self.check_inconclusive_block(body);
+            self.scope.pop();
+            self.required_fields.invalidate_all();
+            return;
+        }
         infer_type_with_read_scope(
             self.program,
             iterable,

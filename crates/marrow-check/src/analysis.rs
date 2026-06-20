@@ -592,7 +592,7 @@ pub(crate) fn analyze_source_project(
             report.diagnostics.push(CheckDiagnostic::error(
                 CHECK_MULTIPLE_SCRIPTS,
                 &script.source_file,
-                SourceSpan::default(),
+                crate::source_spans::start_of_file(),
                 "a project may have at most one file without a `module` \
                     declaration (its single-file script); declare a `module` for this file",
             ));

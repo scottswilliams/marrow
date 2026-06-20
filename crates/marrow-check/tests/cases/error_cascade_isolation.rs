@@ -1,5 +1,5 @@
 use crate::support;
-use support::{check_module_report, config, temp_project, write};
+use support::{check_module_report, config, temp_project, with_code, write};
 
 use marrow_check::check_project;
 
@@ -44,6 +44,45 @@ fn a_single_unresolved_name_reports_exactly_one_diagnostic() {
         report.diagnostics
     );
     assert_eq!(report.diagnostics[0].code, "check.unresolved_name");
+}
+
+/// A rejected binary operator is one fault, not two. `a + b` over `int` and `decimal`
+/// is the lone mistake: it reports one `check.operator_type` at the operator and types
+/// its result poisoned, so the surrounding `const c: decimal = …` does not stack a
+/// second `check.untyped_value` over the same expression.
+#[test]
+fn a_rejected_operator_does_not_cascade_an_untyped_value() {
+    let report = check_module_report(
+        "cascade-operator-untyped",
+        "module m\n\
+         fn f()\n\
+         \x20   const a: int = 3\n\
+         \x20   const b: decimal = 2.5\n\
+         \x20   const c: decimal = a + b\n",
+    );
+
+    let operator = with_code(&report, "check.operator_type");
+    assert_eq!(operator.len(), 1, "{:#?}", report.diagnostics);
+    assert_eq!(operator[0].span.line, 5);
+    assert_eq!(operator[0].span.column, 24);
+    assert!(
+        with_code(&report, "check.untyped_value").is_empty(),
+        "a rejected operator poisons its result, so no untyped-value cascades: {:#?}",
+        report.diagnostics
+    );
+}
+
+/// An unresolved name used as an assignment target is one fault. `x = 5` for an
+/// undeclared `x` reports exactly one `check.unresolved_name`; the recovery never
+/// re-reports it.
+#[test]
+fn an_unresolved_assignment_target_reports_exactly_one_diagnostic() {
+    let report = check_module_report("cascade-unresolved-target", "module m\nfn f()\n    x = 5\n");
+
+    let unresolved = with_code(&report, "check.unresolved_name");
+    assert_eq!(unresolved.len(), 1, "{:#?}", report.diagnostics);
+    assert_eq!(unresolved[0].span.line, 3);
+    assert_eq!(unresolved[0].span.column, 5);
 }
 
 /// Two independent faults in two separate functions stay independent: one diagnostic

@@ -65,6 +65,37 @@ fn reports_an_unknown_enum_member() {
 }
 
 #[test]
+fn a_partial_enum_path_names_the_segment_that_is_not_a_direct_member() {
+    // `Animal::cat::tabby` skips the `mammal` parent, so `cat` is not a direct member
+    // of `Animal`. The diagnostic names `cat` (not the leaf `tabby`, which does exist)
+    // and spans the offending segment, not the enum head.
+    let found = check_module(
+        "partial-enum-path",
+        "module m\n\
+         enum Animal\n    \
+         category mammal\n        \
+         category cat\n            \
+         tabby\n            \
+         siamese\n    \
+         bird\n\n\
+         fn f(): Animal\n    return Animal::cat::tabby\n",
+        "check.unknown_enum_member",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+    assert_enum_payload(
+        &found[0],
+        EnumDiagnostic::UnknownMember {
+            enum_name: "Animal".into(),
+            member: "cat".into(),
+        },
+    );
+    // `return Animal::cat::tabby` on line 10: `Animal` starts at column 12, so `cat`
+    // (after `Animal::`) starts at column 20.
+    assert_eq!(found[0].span.line, 10);
+    assert_eq!(found[0].span.column, 20);
+}
+
+#[test]
 fn the_checked_program_carries_enum_schemas() {
     let root = temp_project("enum-program", |root| {
         write(
@@ -191,6 +222,42 @@ fn a_match_arm_for_an_unknown_member_is_a_check_error() {
             member: "deleted".into(),
         },
     );
+}
+
+#[test]
+fn a_partial_match_arm_path_names_the_segment_that_is_not_a_direct_member() {
+    // The arm `cat::tabby` skips the `mammal` parent, so `cat` is not a direct member.
+    // The diagnostic names `cat` and spans that arm segment, not the leaf `tabby`.
+    let found = check_module(
+        "match-partial-arm",
+        "module m\n\
+         enum Animal\n    \
+         category mammal\n        \
+         category cat\n            \
+         tabby\n            \
+         siamese\n    \
+         bird\n\n\
+         fn f(a: Animal): int\n    \
+         match a\n        \
+         cat::tabby\n            \
+         return 1\n        \
+         _\n            \
+         return 0\n",
+        "check.unknown_enum_member",
+    );
+    let partial: Vec<_> = found
+        .iter()
+        .filter(|d| {
+            d.payload
+                == DiagnosticPayload::Enum(EnumDiagnostic::UnknownMember {
+                    enum_name: "Animal".into(),
+                    member: "cat".into(),
+                })
+        })
+        .collect();
+    assert_eq!(partial.len(), 1, "{found:#?}");
+    // `cat::tabby` arm: `cat` is the first segment, at column 9 under the arm indent.
+    assert_eq!(partial[0].span.column, 9);
 }
 
 #[test]
