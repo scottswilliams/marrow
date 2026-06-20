@@ -133,6 +133,30 @@ for pos, tag in ^books(id).tags
     print($"{pos}: {tag}")
 ```
 
+A composite keyed layer is a chain of single-key sub-layers (see
+[Resources and Saved Data](resources-and-storage.md)), so a loop over it binds one
+key column. The single variable is the outer column; descend the layer at that key
+to reach the inner column:
+
+```mw
+for row in ^grids(id).cells
+    for col, value in ^grids(id).cells(row)
+        print($"({row},{col}) = {value}")
+```
+
+A value-reading loop head over a composite layer that still has more than one
+column to fill pairs a key with a value that is itself a sub-layer, so it is
+rejected at compile time. This covers the bare two-name form
+(`for row, col in ^grids(id).cells`) and the `values(...)` and `entries(...)`
+wrappers (`for v in values(^grids(id).cells)`,
+`for row, v in entries(^grids(id).cells)`). Descend one column at a time instead;
+`keys(...)` and `count(...)`, which read only the next key column, remain valid.
+
+A saved path that names a single stored value — a fully-keyed leaf
+(`^grids(id).cells(row, col)`), a scalar field (`^books(id).title`), or a whole
+record (`^books(id)`) — is not an iterable. A `for` loop over one is a compile-time
+error, since there is no key to stream.
+
 `entries(...)` is the explicit two-name loop-head form for the same address/value
 walk. It is not a collection value that can be assigned, returned, or passed to
 single-variable loops:

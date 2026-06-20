@@ -15,7 +15,10 @@ use crate::enums::{
     EnumMemberPathResolution, IsCheck, check_is, join_or, resolve_diagnosed_annotation_type,
     resolve_enum_member_path,
 };
-use crate::executable::{SavedAccessRejection, SavedPlaceResolver, lower_expr_for_file};
+use crate::executable::{
+    CheckedBuiltinCall, CheckedBuiltinValueShape, SavedAccessRejection, SavedPlaceResolver,
+    lower_expr_for_file,
+};
 use crate::program::TypeNames;
 use crate::typerules::{
     LiteralSign, check_literal_range, marrow_type_name, negated_integer_literal, type_compatible,
@@ -23,9 +26,9 @@ use crate::typerules::{
 };
 use crate::{
     CHECK_AMBIGUOUS_MEMBER, CHECK_CATEGORY_NOT_SELECTABLE, CHECK_COLLECTION_UNSUPPORTED,
-    CHECK_OPERATOR_TYPE, CHECK_PRIVATE_ENUM, CHECK_UNKNOWN_ENUM_MEMBER, CHECK_UNKNOWN_FIELD,
-    CHECK_UNRESOLVED_NAME, CheckDiagnostic, CheckedProgram, DiagnosticPayload, EnumDiagnostic,
-    MarrowType, resolve_resource_type,
+    CHECK_LAYER_NOT_VALUE, CHECK_OPERATOR_TYPE, CHECK_PRIVATE_ENUM, CHECK_UNKNOWN_ENUM_MEMBER,
+    CHECK_UNKNOWN_FIELD, CHECK_UNRESOLVED_NAME, CheckDiagnostic, CheckedProgram, DiagnosticPayload,
+    EnumDiagnostic, MarrowType, resolve_resource_type,
 };
 
 /// Infer a type during post-check resolution, discarding diagnostics the checking
@@ -183,8 +186,14 @@ pub(crate) fn infer_assignment_target_type_with_read_scope(
             diagnostics,
             transform_old,
             context: FieldAccessContext::AssignmentTarget,
+            position: ValuePosition::Value,
         }),
-        _ => infer_type_with_read_scope(
+        // A write or delete target is an address, not a value read. A partially keyed
+        // composite layer there names an inner sub-layer, which the dedicated
+        // invalid-target rejection owns; routing through the collection-subject
+        // position keeps the value-read partial-key gate from stacking a second
+        // diagnostic on the same span.
+        _ => infer_collection_subject_type_with_read_scope(
             program,
             expr,
             scope,
@@ -196,9 +205,69 @@ pub(crate) fn infer_assignment_target_type_with_read_scope(
     }
 }
 
+/// Where a saved access sits relative to its consumer. A value position binds,
+/// returns, renders, or passes the access as a scalar, so a partially keyed composite
+/// layer there is a non-value misuse. A collection-subject position streams it — a
+/// `for` iterable or a collection builtin's argument — where a partial key is the valid
+/// inner sub-layer to traverse, so the non-value rejection must not fire.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ValuePosition {
+    Value,
+    CollectionSubject,
+}
+
 pub(crate) fn infer_type_with_read_scope(
     program: &CheckedProgram,
     expr: &marrow_syntax::Expression,
+    scope: &[HashMap<String, MarrowType>],
+    aliases: &HashMap<String, Vec<String>>,
+    file: &Path,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+    transform_old: Option<crate::presence::TransformOldReadScope<'_>>,
+) -> MarrowType {
+    infer_value(
+        program,
+        expr,
+        ValuePosition::Value,
+        scope,
+        aliases,
+        file,
+        diagnostics,
+        transform_old,
+    )
+}
+
+/// Infer the type of a saved access that its consumer streams as a collection — a
+/// `for` iterable or a collection builtin's argument. The result is discarded or
+/// replaced by the builtin's own type; this surfaces the subject's key-argument and
+/// structural diagnostics without the value-position partial-key rejection, since a
+/// partially keyed composite layer is a valid inner sub-layer to stream.
+pub(crate) fn infer_collection_subject_type_with_read_scope(
+    program: &CheckedProgram,
+    expr: &marrow_syntax::Expression,
+    scope: &[HashMap<String, MarrowType>],
+    aliases: &HashMap<String, Vec<String>>,
+    file: &Path,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+    transform_old: Option<crate::presence::TransformOldReadScope<'_>>,
+) -> MarrowType {
+    infer_value(
+        program,
+        expr,
+        ValuePosition::CollectionSubject,
+        scope,
+        aliases,
+        file,
+        diagnostics,
+        transform_old,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn infer_value(
+    program: &CheckedProgram,
+    expr: &marrow_syntax::Expression,
+    position: ValuePosition,
     scope: &[HashMap<String, MarrowType>],
     aliases: &HashMap<String, Vec<String>>,
     file: &Path,
@@ -406,8 +475,15 @@ pub(crate) fn infer_type_with_read_scope(
         } => {
             // A bare single-segment callee names a function, not a value, so it is
             // left to `check_call` rather than flagged as an unresolved value name.
+            // A keyed callee whose base is already a definite error (a descent off a
+            // partial-key layer or a materialized record) makes the whole keyed access
+            // invalid: that owning error is the sole diagnostic, so the result stays
+            // `Invalid` and a surrounding `??`/return suppresses its cascade. The callee
+            // is inferred in collection-subject position: a partial-key layer callee
+            // (`^cubes(1).cells` in `^cubes(1).cells(x)`) is the valid descent target the
+            // arguments complete, not a value-read that the partial-key gate may reject.
             if !is_bare_name(callee) {
-                infer_type_with_read_scope(
+                let callee_type = infer_collection_subject_type_with_read_scope(
                     program,
                     callee,
                     scope,
@@ -416,12 +492,16 @@ pub(crate) fn infer_type_with_read_scope(
                     diagnostics,
                     transform_old,
                 );
+                if matches!(callee_type, MarrowType::Invalid) {
+                    return MarrowType::Invalid;
+                }
             }
             let mut arg_types = Vec::with_capacity(args.len());
-            for arg in args {
+            for (index, arg) in args.iter().enumerate() {
                 arg_types.push(infer_call_arg_type(CallArgInfer {
                     program,
                     callee,
+                    arg_index: index,
                     arg_name: arg.name.as_deref(),
                     arg: &arg.value,
                     scope,
@@ -470,7 +550,7 @@ pub(crate) fn infer_type_with_read_scope(
             // A call-shaped saved read (keyed-leaf or whole-record) is not a function
             // call; type it through its saved shape once the call path comes back Unknown.
             if matches!(call_type, MarrowType::Unknown) {
-                saved_expr_type(program, expr, scope, file).unwrap_or(MarrowType::Unknown)
+                bare_saved_value_type(program, expr, *span, position, scope, file, diagnostics)
             } else {
                 call_type
             }
@@ -495,12 +575,13 @@ pub(crate) fn infer_type_with_read_scope(
             diagnostics,
             transform_old,
             context: FieldAccessContext::Read,
+            position,
         }),
         Expression::Name { segments, span, .. } if segments.len() >= 2 => {
             enum_member_value_type(program, expr, segments, *span, aliases, file, diagnostics)
         }
-        Expression::SavedRoot { .. } => {
-            saved_expr_type(program, expr, scope, file).unwrap_or(MarrowType::Unknown)
+        Expression::SavedRoot { span, .. } => {
+            bare_saved_value_type(program, expr, *span, position, scope, file, diagnostics)
         }
         Expression::Name { .. } => MarrowType::Unknown,
     }
@@ -524,6 +605,7 @@ struct FieldAccessInfer<'a, 'd> {
     diagnostics: &'d mut Vec<CheckDiagnostic>,
     transform_old: Option<crate::presence::TransformOldReadScope<'a>>,
     context: FieldAccessContext,
+    position: ValuePosition,
 }
 
 fn infer_field_access(input: FieldAccessInfer<'_, '_>) -> MarrowType {
@@ -535,6 +617,19 @@ fn infer_field_access(input: FieldAccessInfer<'_, '_>) -> MarrowType {
         input.diagnostics,
     ) {
         return MarrowType::Unknown;
+    }
+    // A `.field` or child-layer descends off a record value. A partially keyed
+    // composite layer is an iterable inner sub-layer, not a record, so descending
+    // off it would address durable data with an unfilled key column elided. Reject
+    // the descent on the field span before resolving its type.
+    if descends_off_partial_key_layer(input.program, input.base, input.scope, input.file) {
+        input.diagnostics.push(layer_not_value_diagnostic(
+            input.file,
+            input.span,
+            input.name,
+            LayerNotValueReason::PartialKeyLayer,
+        ));
+        return MarrowType::Invalid;
     }
     let base_type = match input.context {
         FieldAccessContext::Read => infer_type_with_read_scope(
@@ -556,6 +651,29 @@ fn infer_field_access(input: FieldAccessInfer<'_, '_>) -> MarrowType {
             input.transform_old,
         ),
     };
+    // A bare-key field access in a value position is itself a value-read entry, like the
+    // call and saved-root arms. A partially keyed composite layer there — `^grids(1).cells`,
+    // every key column unfilled — names an iterable inner sub-layer, never a scalar, so
+    // the one value-read gate rejects it here too rather than letting it fall through to
+    // the untyped catch-all and fault `run.unsupported` in a position that imposes no
+    // type expectation. A collection-subject access streams the layer, so the gate's
+    // position guard skips it there.
+    if input.context == FieldAccessContext::Read
+        && let Some(checked) = checked_expr(input.program, input.expr, input.scope, input.file)
+        && SavedPlaceResolver::new(input.program)
+            .partial_key_layer_name(&checked)
+            .is_some()
+    {
+        return bare_saved_value_type(
+            input.program,
+            input.expr,
+            input.span,
+            input.position,
+            input.scope,
+            input.file,
+            input.diagnostics,
+        );
+    }
     if let Some(ty) = saved_expr_type(input.program, input.expr, input.scope, input.file) {
         return ty;
     }
@@ -567,6 +685,28 @@ fn infer_field_access(input: FieldAccessInfer<'_, '_>) -> MarrowType {
             input
                 .diagnostics
                 .push(unknown_field_diagnostic(input.file, input.span, input.name));
+            MarrowType::Invalid
+        }
+        // A keyed child layer is reached only through its saved address, never
+        // pulled into a materialized record value. Reading it off a materialized
+        // value can never resolve, so a Read names a definite error. A saved-path
+        // access of the same shape (`^outers(1).groups`) resolves through its
+        // address and is handled above, so it is excluded here.
+        FieldResolution::NonValueMember
+            if input.context == FieldAccessContext::Read
+                && !reads_through_saved_place(
+                    input.program,
+                    input.expr,
+                    input.scope,
+                    input.file,
+                ) =>
+        {
+            input.diagnostics.push(layer_not_value_diagnostic(
+                input.file,
+                input.span,
+                input.name,
+                LayerNotValueReason::MaterializedValue,
+            ));
             MarrowType::Invalid
         }
         FieldResolution::UnknownField
@@ -645,6 +785,7 @@ fn reject_saved_access_inner(
 struct CallArgInfer<'a, 'd> {
     program: &'a CheckedProgram,
     callee: &'a marrow_syntax::Expression,
+    arg_index: usize,
     arg_name: Option<&'a str>,
     arg: &'a marrow_syntax::Expression,
     scope: &'a [HashMap<String, MarrowType>],
@@ -681,6 +822,18 @@ fn infer_call_arg_type(input: CallArgInfer<'_, '_>) -> MarrowType {
     {
         return ty;
     }
+    if input.arg_name.is_none() && callee_streams_collection_argument(input.callee, input.arg_index)
+    {
+        return infer_collection_subject_type_with_read_scope(
+            input.program,
+            input.arg,
+            input.scope,
+            input.aliases,
+            input.file,
+            input.diagnostics,
+            input.transform_old,
+        );
+    }
     infer_type_with_read_scope(
         input.program,
         input.arg,
@@ -697,6 +850,33 @@ fn callee_accepts_missing_index_suggestion(callee: &marrow_syntax::Expression) -
         callee,
         marrow_syntax::Expression::Name { segments, .. } if segments.as_slice() == ["count"]
     )
+}
+
+/// Whether the `arg_index`-th positional argument of builtin `callee` accepts a saved
+/// subject streamed as a collection rather than read as a scalar. The builtin descriptor
+/// table is the sole owner of this argument shape: a parameter typed as a collection,
+/// saved path, or saved layer takes its subject in streamed position, so a partially keyed
+/// composite layer is inferred there instead of being rejected as a non-value.
+fn callee_streams_collection_argument(
+    callee: &marrow_syntax::Expression,
+    arg_index: usize,
+) -> bool {
+    let marrow_syntax::Expression::Name { segments, .. } = callee else {
+        return false;
+    };
+    let [name] = segments.as_slice() else {
+        return false;
+    };
+    CheckedBuiltinCall::descriptor_for_name(name).is_some_and(|descriptor| {
+        descriptor.params.get(arg_index).is_some_and(|param| {
+            matches!(
+                param.shape,
+                CheckedBuiltinValueShape::Collection
+                    | CheckedBuiltinValueShape::SavedPath
+                    | CheckedBuiltinValueShape::SavedLayer
+            )
+        })
+    })
 }
 
 fn infer_saved_key_range_arg_type(
@@ -865,6 +1045,32 @@ fn checked_expr(
     lower_expr_for_file(program, file, expr, scope)
 }
 
+/// Whether `expr` resolves to a saved place — a path rooted at saved data that the
+/// runtime reads through its address. A field access that lowers to a saved place
+/// (`^outers(1).groups`) is a saved-path descent, distinct from the same-shaped
+/// access read off a materialized record value (`inner.groups`).
+fn reads_through_saved_place(
+    program: &CheckedProgram,
+    expr: &marrow_syntax::Expression,
+    scope: &[HashMap<String, MarrowType>],
+    file: &Path,
+) -> bool {
+    checked_expr(program, expr, scope, file).is_some_and(|expr| expr.saved_place().is_some())
+}
+
+/// Whether `base` is a saved place whose innermost keyed layer is only partially
+/// addressed. Such a base names an iterable inner sub-layer, not a record value, so
+/// a `.field` or child-layer access off it cannot descend into a value.
+fn descends_off_partial_key_layer(
+    program: &CheckedProgram,
+    base: &marrow_syntax::Expression,
+    scope: &[HashMap<String, MarrowType>],
+    file: &Path,
+) -> bool {
+    checked_expr(program, base, scope, file)
+        .is_some_and(|base| SavedPlaceResolver::new(program).is_partial_key_layer_path(&base))
+}
+
 fn saved_expr_type(
     program: &CheckedProgram,
     expr: &marrow_syntax::Expression,
@@ -873,6 +1079,38 @@ fn saved_expr_type(
 ) -> Option<MarrowType> {
     let expr = checked_expr(program, expr, scope, file)?;
     SavedPlaceResolver::new(program).value_type(&expr)
+}
+
+/// The type of a saved access read in a bare value position — a scalar bind without
+/// `??`, an interpolation, a plain call argument, or a function return. A partially
+/// keyed composite layer names an iterable inner sub-layer, never a scalar, so reading
+/// it as a value is rejected here with the same `LayerNotValue` diagnostic a `.field`
+/// descent off a partial key raises; otherwise the access resolves through its saved
+/// shape. This is the single value-read entry the strict partial-key gate guards, so a
+/// one-remaining-column prefix cannot leak as a value and fault `run.absent_element`.
+/// A collection-subject position streams the layer, so the rejection is skipped there.
+fn bare_saved_value_type(
+    program: &CheckedProgram,
+    expr: &marrow_syntax::Expression,
+    span: SourceSpan,
+    position: ValuePosition,
+    scope: &[HashMap<String, MarrowType>],
+    file: &Path,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) -> MarrowType {
+    if position == ValuePosition::Value
+        && let Some(checked) = checked_expr(program, expr, scope, file)
+        && let Some(layer) = SavedPlaceResolver::new(program).partial_key_layer_name(&checked)
+    {
+        diagnostics.push(layer_not_value_diagnostic(
+            file,
+            span,
+            layer,
+            LayerNotValueReason::PartialKeyValue,
+        ));
+        return MarrowType::Invalid;
+    }
+    saved_expr_type(program, expr, scope, file).unwrap_or(MarrowType::Unknown)
 }
 
 /// The type of a member-path literal `Enum::seg…` in value position, owning the
@@ -1305,6 +1543,46 @@ fn unknown_field_diagnostic(file: &Path, span: SourceSpan, field: &str) -> Check
         file,
         span,
         format!("field `{field}` is not declared on this value's type"),
+    )
+}
+
+/// Why a `.field`/child-layer access or a bare value read names a sub-layer rather
+/// than a value.
+#[derive(Clone, Copy)]
+enum LayerNotValueReason {
+    /// The base is a materialized record value; keyed child layers are not pulled
+    /// into it and are reached only through their saved address.
+    MaterializedValue,
+    /// The base is a saved address whose innermost composite layer is only partially
+    /// keyed, so it names an iterable inner sub-layer with key columns still to fill.
+    PartialKeyLayer,
+    /// A value-read position reads a partially keyed composite layer directly. The
+    /// address names an iterable inner sub-layer, so reading it as a scalar would
+    /// check clean and fault `run.absent_element`.
+    PartialKeyValue,
+}
+
+fn layer_not_value_diagnostic(
+    file: &Path,
+    span: SourceSpan,
+    field: &str,
+    reason: LayerNotValueReason,
+) -> CheckDiagnostic {
+    let message = match reason {
+        LayerNotValueReason::MaterializedValue => format!(
+            "`{field}` is a keyed child layer; read it through its saved address, not through a materialized value"
+        ),
+        LayerNotValueReason::PartialKeyLayer => format!(
+            "`{field}` descends off a partially keyed layer; supply every key column to reach a record before descending into it"
+        ),
+        LayerNotValueReason::PartialKeyValue => format!(
+            "`{field}` is a partially keyed layer, not a value; supply every key column to read one entry"
+        ),
+    };
+    CheckDiagnostic::error(CHECK_LAYER_NOT_VALUE, file, span, message).with_payload(
+        DiagnosticPayload::LayerNotValue {
+            field: field.to_string(),
+        },
     )
 }
 

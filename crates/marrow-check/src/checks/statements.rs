@@ -13,19 +13,21 @@ use crate::enums::{MatchCheck, check_match, resolve_diagnosed_annotation_type};
 use crate::executable::{SavedPlaceResolver, lower_expr_for_file};
 use crate::infer::{
     assignment_target_is_error_code, bind, infer_assignment_target_type_with_read_scope,
-    infer_type_with_read_scope, local_binding_with_read_scope,
-    reject_saved_access_with_suggested_index,
+    infer_collection_subject_type_with_read_scope, infer_type_with_read_scope,
+    local_binding_with_read_scope, reject_saved_access_with_suggested_index,
 };
 use crate::resolve::resolve_store_by_root;
 use crate::{
     CHECK_CALL_ARGUMENT, CHECK_COLLECTION_UNSUPPORTED, CHECK_CONDITION_TYPE, CHECK_KEY_TYPE,
-    CHECK_LOSSY_ROUND_TRIP, CHECK_UNRESOLVED_NAME, CheckDiagnostic, CheckedProgram, MarrowType,
+    CHECK_LAYER_NOT_VALUE, CHECK_LOSSY_ROUND_TRIP, CHECK_UNRESOLVED_NAME, CheckDiagnostic,
+    CheckedProgram, MarrowType,
 };
 
 use super::collections::{
     catch_frame, check_entries_value_position, check_for_collection_support,
-    check_for_entries_support, check_for_scalar_iterable, for_frame, is_saved_index_branch_path,
-    is_saved_index_range_path, is_saved_key_range_path, is_saved_path_with_key_range_arg,
+    check_for_entries_support, check_for_scalar_iterable, for_frame, is_partial_key_layer_path,
+    is_saved_index_branch_path, is_saved_index_range_path, is_saved_key_range_path,
+    is_saved_path_with_key_range_arg,
 };
 use super::operators::{check_assignment, check_condition, check_return_type, check_throw_type};
 use super::ranges::{
@@ -411,6 +413,13 @@ impl StatementCheck<'_> {
                 target.span(),
                 "saved key ranges cannot be assigned",
             ));
+        } else if is_partial_key_layer_path(self.program, target, self.scope, self.file) {
+            self.diagnostics.push(CheckDiagnostic::error(
+                crate::rules::CHECK_INVALID_ASSIGN_TARGET,
+                self.file,
+                target.span(),
+                "a partially keyed layer addresses an inner sub-layer, not a writable entry; supply every key column to write an entry",
+            ));
         }
         if self.is_nested_local_resource_field_write(target)
             && !has_invalid_assign_target(self.diagnostics, self.file, target.span())
@@ -486,13 +495,40 @@ impl StatementCheck<'_> {
     }
 
     fn check_delete_statement(&mut self, path: &marrow_syntax::Expression) {
-        self.infer(path);
+        // A delete target is an address, not a value read. Inferring it through the
+        // collection-subject position surfaces its key-argument and structural
+        // diagnostics while leaving the value-read partial-key gate silent, so the
+        // dedicated partial-key delete rejection below is the single root cause.
+        infer_collection_subject_type_with_read_scope(
+            self.program,
+            path,
+            self.scope,
+            self.aliases,
+            self.file,
+            self.diagnostics,
+            self.transform_old,
+        );
+        check_entries_value_position(self.file, path, self.diagnostics);
         if is_saved_index_branch_path(self.program, path, self.scope, self.file) {
             self.diagnostics.push(CheckDiagnostic::error(
                 CHECK_COLLECTION_UNSUPPORTED,
                 self.file,
                 path.span(),
                 "generated index branches cannot be deleted",
+            ));
+        } else if is_saved_path_with_key_range_arg(self.program, path, self.scope, self.file) {
+            self.diagnostics.push(CheckDiagnostic::error(
+                crate::rules::CHECK_INVALID_ASSIGN_TARGET,
+                self.file,
+                path.span(),
+                "saved key ranges cannot be deleted",
+            ));
+        } else if is_partial_key_layer_path(self.program, path, self.scope, self.file) {
+            self.diagnostics.push(CheckDiagnostic::error(
+                crate::rules::CHECK_INVALID_ASSIGN_TARGET,
+                self.file,
+                path.span(),
+                "a partially keyed layer addresses an inner sub-layer, not a deletable entry; supply every key column to delete an entry",
             ));
         }
     }
@@ -624,6 +660,13 @@ impl StatementCheck<'_> {
             self.scope,
             self.transform_old,
         ) {
+            // A partial-key composite layer is the precise root cause when it is the
+            // subject: the type pass already recorded `check.layer_not_value` on this
+            // span, so the generic "requires a saved value read" message would only
+            // stack a second diagnostic on the same mistake.
+            if has_layer_not_value(self.diagnostics, self.file, value.span()) {
+                return;
+            }
             self.diagnostics.push(CheckDiagnostic::error(
                 CHECK_CONDITION_TYPE,
                 self.file,
@@ -677,7 +720,7 @@ impl StatementCheck<'_> {
             self.required_fields.invalidate_all();
             return;
         }
-        infer_type_with_read_scope(
+        infer_collection_subject_type_with_read_scope(
             self.program,
             iterable,
             self.scope,
@@ -988,6 +1031,14 @@ fn has_invalid_assign_target(
 ) -> bool {
     diagnostics.iter().any(|diagnostic| {
         diagnostic.code == crate::rules::CHECK_INVALID_ASSIGN_TARGET
+            && diagnostic.file == file
+            && diagnostic.span == span
+    })
+}
+
+fn has_layer_not_value(diagnostics: &[CheckDiagnostic], file: &Path, span: SourceSpan) -> bool {
+    diagnostics.iter().any(|diagnostic| {
+        diagnostic.code == CHECK_LAYER_NOT_VALUE
             && diagnostic.file == file
             && diagnostic.span == span
     })

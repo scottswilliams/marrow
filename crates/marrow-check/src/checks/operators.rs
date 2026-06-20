@@ -506,7 +506,7 @@ pub(crate) fn check_coalesce(check: CoalesceCheck<'_>) -> MarrowType {
         ));
         return MarrowType::Unknown;
     };
-    if !crate::presence::read_resolves_in_type_scope(program, &left, scope, transform_old) {
+    if !crate::presence::read_value_resolves_in_type_scope(program, &left, scope, transform_old) {
         diagnostics.push(operator_diagnostic(
             file,
             span,

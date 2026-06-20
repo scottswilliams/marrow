@@ -418,6 +418,295 @@ fn neighbors_on_a_keyed_child_layer_position() {
     );
 }
 
+/// A composite keyed layer is a chain of single-key sub-layers. A partial prefix
+/// names an inner sub-layer, so its edge neighbor is the first/last entry of that
+/// inner column under the prefix — the same descent `count` and iteration take. A
+/// fully-keyed leaf is a position within the final column, so its neighbor is the
+/// stored sibling in that column under the same outer prefix.
+const GRID_NEIGHBORS: &str = "\
+resource Grid
+    cells(row: int, col: int): string
+store ^grids(id: int): Grid
+
+pub fn seed()
+    ^grids(1).cells(0, 2) = \"a\"
+    ^grids(1).cells(0, 7) = \"b\"
+    ^grids(1).cells(5, 1) = \"c\"
+
+pub fn firstInner(row: int): int
+    return next(^grids(1).cells(row)) ?? -1
+
+pub fn lastInner(row: int): int
+    return prev(^grids(1).cells(row)) ?? -1
+
+pub fn nextLeaf(row: int, col: int): int
+    return next(^grids(1).cells(row, col)) ?? -1
+
+pub fn prevLeaf(row: int, col: int): int
+    return prev(^grids(1).cells(row, col)) ?? -1
+";
+
+#[test]
+fn neighbor_of_a_partial_composite_prefix_seeks_the_inner_column_edge() {
+    // `cells(0)` descends to the inner `col` sub-layer under row 0, whose stored
+    // columns are 2 and 7. `next` is the first (2), `prev` the last (7) — the same
+    // entries the descending loop and `count` see, never the outer `row` column.
+    let program = checked_program(GRID_NEIGHBORS);
+    let store = TreeStore::memory();
+    run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed");
+
+    assert_eq!(
+        run_entry(
+            &store,
+            checked_entry!(&program, "test::firstInner", Value::Int(0))
+        )
+        .expect("firstInner")
+        .value,
+        Some(Value::Int(2))
+    );
+    assert_eq!(
+        run_entry(
+            &store,
+            checked_entry!(&program, "test::lastInner", Value::Int(0))
+        )
+        .expect("lastInner")
+        .value,
+        Some(Value::Int(7))
+    );
+}
+
+#[test]
+fn neighbor_of_a_fully_keyed_composite_leaf_seeks_the_final_column() {
+    // `cells(0, 2)` is a position in the inner `col` column under row 0; its
+    // neighbor is the stored sibling in that column. The successor of col 2 is 7,
+    // the predecessor of col 7 is 2. Stepping off an edge is a catchable absent.
+    let program = checked_program(GRID_NEIGHBORS);
+    let store = TreeStore::memory();
+    run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed");
+
+    assert_eq!(
+        run_entry(
+            &store,
+            checked_entry!(&program, "test::nextLeaf", Value::Int(0), Value::Int(2))
+        )
+        .expect("nextLeaf")
+        .value,
+        Some(Value::Int(7))
+    );
+    assert_eq!(
+        run_entry(
+            &store,
+            checked_entry!(&program, "test::prevLeaf", Value::Int(0), Value::Int(7))
+        )
+        .expect("prevLeaf")
+        .value,
+        Some(Value::Int(2))
+    );
+    // The successor of the last column under row 0 steps off the edge: a catchable
+    // absent that `?? -1` recovers, never an uncatchable `run.unsupported`.
+    assert_eq!(
+        run_entry(
+            &store,
+            checked_entry!(&program, "test::nextLeaf", Value::Int(0), Value::Int(7))
+        )
+        .expect("nextLeaf edge")
+        .value,
+        Some(Value::Int(-1))
+    );
+}
+
+/// A neighbor fixture spanning every key arity over the same composite layer: a
+/// fully-keyed leaf, a partial outer prefix, the bare layer with no column filled,
+/// and an absent key. Each probe coalesces an edge/absent result to a sentinel, so a
+/// regression that faulted `run.unsupported` or surfaced an uncatchable
+/// `run.absent_element` would fail the run rather than return the sentinel cleanly.
+const GRID_NEIGHBOR_ARITIES: &str = "\
+resource Grid
+    cells(row: int, col: int): string
+store ^grids(id: int): Grid
+
+pub fn seed()
+    ^grids(1).cells(0, 2) = \"a\"
+    ^grids(1).cells(0, 7) = \"b\"
+    ^grids(1).cells(5, 1) = \"c\"
+
+pub fn nextLeaf(row: int, col: int): int
+    return next(^grids(1).cells(row, col)) ?? -1
+
+pub fn prevLeaf(row: int, col: int): int
+    return prev(^grids(1).cells(row, col)) ?? -1
+
+pub fn nextPrefix(row: int): int
+    return next(^grids(1).cells(row)) ?? -1
+
+pub fn prevPrefix(row: int): int
+    return prev(^grids(1).cells(row)) ?? -1
+
+pub fn nextBare(): int
+    return next(^grids(1).cells) ?? -1
+
+pub fn prevBare(): int
+    return prev(^grids(1).cells) ?? -1
+";
+
+#[test]
+fn neighbor_over_every_composite_key_arity_returns_cleanly() {
+    // The runtime already navigates a composite layer one column at a time. This pins
+    // the observed neighbor value at each key arity — the full leaf seeks a sibling in
+    // the final column, the partial outer prefix and the bare layer seek the edge of
+    // the first unfilled column, and an absent key falls off cleanly — and proves none
+    // of them faults `run.unsupported` or escapes an uncatchable `run.absent_element`.
+    let program = checked_program(GRID_NEIGHBOR_ARITIES);
+    let store = TreeStore::memory();
+    run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed");
+
+    let probe = |func: &str, args: Vec<Value>| {
+        run_entry(
+            &store,
+            checked_entry_call(&program, &format!("test::{func}"), args),
+        )
+        .unwrap_or_else(|error| panic!("{func} faulted: {error:?}"))
+        .value
+    };
+
+    // A fully-keyed leaf seeks the stored sibling in the inner `col` column under the
+    // same `row`: after col 2 is col 7, before col 7 is col 2.
+    assert_eq!(
+        probe("nextLeaf", vec![Value::Int(0), Value::Int(2)]),
+        Some(Value::Int(7))
+    );
+    assert_eq!(
+        probe("prevLeaf", vec![Value::Int(0), Value::Int(7)]),
+        Some(Value::Int(2))
+    );
+
+    // A partial outer prefix descends to the inner `col` column under `row` 0, whose
+    // stored values are 2 and 7: `next` is the first (2), `prev` the last (7).
+    assert_eq!(
+        probe("nextPrefix", vec![Value::Int(0)]),
+        Some(Value::Int(2))
+    );
+    assert_eq!(
+        probe("prevPrefix", vec![Value::Int(0)]),
+        Some(Value::Int(7))
+    );
+
+    // The bare layer fills no column, so the seek navigates the outer `row` column,
+    // whose stored values are 0 and 5: `next` is the first (0), `prev` the last (5).
+    assert_eq!(probe("nextBare", vec![]), Some(Value::Int(0)));
+    assert_eq!(probe("prevBare", vec![]), Some(Value::Int(5)));
+
+    // An absent outer key (`row` 99 has no stored inner column) and an absent inner
+    // key (`col` 99 under `row` 0) both step off the edge: a catchable absent the `??`
+    // recovers to the sentinel, never an uncatchable fault.
+    assert_eq!(
+        probe("nextPrefix", vec![Value::Int(99)]),
+        Some(Value::Int(-1))
+    );
+    assert_eq!(
+        probe("nextLeaf", vec![Value::Int(0), Value::Int(99)]),
+        Some(Value::Int(-1))
+    );
+}
+
+/// A composite-leaf grid for proving `delete` is surgical: deleting a fully-keyed
+/// leaf removes exactly that entry, never the inner sub-tree under a partial prefix.
+/// A partial-key `delete` is rejected at check (see the checker tests), so the only
+/// delete that reaches the runtime is the fully-keyed one this fixture exercises.
+const GRID_DELETE: &str = "\
+resource Grid
+    cells(row: int, col: int): string
+store ^grids(id: int): Grid
+
+pub fn seed()
+    ^grids(1).cells(1, 2) = \"a\"
+    ^grids(1).cells(1, 3) = \"b\"
+    ^grids(1).cells(2, 2) = \"c\"
+
+pub fn delLeaf(row: int, col: int)
+    delete ^grids(1).cells(row, col)
+
+pub fn leaf(row: int, col: int): string
+    return ^grids(1).cells(row, col) ?? \"gone\"
+";
+
+#[test]
+fn deleting_a_fully_keyed_composite_leaf_removes_only_that_entry() {
+    // `delete ^grids(1).cells(1, 2)` drops exactly the (1,2) leaf. Its sibling in the
+    // same inner column (1,3) and the entry under a different row (2,2) both survive,
+    // so the fully-keyed delete is a single-entry delete, never a prefix cascade.
+    let program = checked_program(GRID_DELETE);
+    let store = TreeStore::memory();
+    run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed");
+
+    run_entry(
+        &store,
+        checked_entry!(&program, "test::delLeaf", Value::Int(1), Value::Int(2)),
+    )
+    .expect("delete the fully-keyed leaf");
+
+    let leaf = |row: i64, col: i64| {
+        run_entry(
+            &store,
+            checked_entry!(&program, "test::leaf", Value::Int(row), Value::Int(col)),
+        )
+        .expect("read leaf")
+        .value
+    };
+    assert_eq!(leaf(1, 2), Some(Value::Str("gone".into())));
+    assert_eq!(leaf(1, 3), Some(Value::Str("b".into())));
+    assert_eq!(leaf(2, 2), Some(Value::Str("c".into())));
+}
+
+/// A three-key cube layer peels one column per supplied key, so a partial prefix of
+/// any length descends to the first unfilled column. The edge neighbor of that
+/// prefix is the first/last entry of that column under the pinned prefix.
+const CUBE_NEIGHBORS: &str = "\
+resource Cube
+    cells(x: int, y: int, z: int): string
+store ^cubes(id: int): Cube
+
+pub fn seed()
+    ^cubes(1).cells(0, 0, 3) = \"p\"
+    ^cubes(1).cells(0, 5, 0) = \"q\"
+    ^cubes(1).cells(4, 0, 0) = \"r\"
+
+pub fn firstAfterX(x: int): int
+    return next(^cubes(1).cells(x)) ?? -1
+
+pub fn firstAfterXY(x: int, y: int): int
+    return next(^cubes(1).cells(x, y)) ?? -1
+";
+
+#[test]
+fn neighbor_of_a_multi_column_partial_prefix_descends_to_the_first_unfilled_column() {
+    // `cells(0)` leaves two columns (`y`, `z`); its edge neighbor is the first `y`
+    // under x 0 — among y values 0 and 5, the first is 0, not the next `x`. A
+    // two-column prefix `cells(0, 0)` descends to the `z` column, first value 3.
+    let program = checked_program(CUBE_NEIGHBORS);
+    let store = TreeStore::memory();
+    run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed");
+
+    assert_eq!(
+        run_entry(
+            &store,
+            checked_entry!(&program, "test::firstAfterX", Value::Int(0))
+        )
+        .expect("firstAfterX")
+        .value,
+        Some(Value::Int(0))
+    );
+    assert_eq!(
+        run_entry(
+            &store,
+            checked_entry!(&program, "test::firstAfterXY", Value::Int(0), Value::Int(0))
+        )
+        .expect("firstAfterXY")
+        .value,
+        Some(Value::Int(3))
+    );
+}
+
 #[test]
 fn reversed_over_an_in_memory_sequence_reverses_directly() {
     // `reversed(values(std::text::split(...)))` reverses the in-memory element

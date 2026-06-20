@@ -4,7 +4,7 @@
 use crate::support;
 use support::*;
 
-use marrow_run::{RUN_TYPE, RUN_UNSUPPORTED, Value};
+use marrow_run::{RUN_UNSUPPORTED, Value};
 use marrow_store::key::SavedKey;
 use marrow_store::tree::TreeStore;
 use marrow_store::value::SavedValue;
@@ -197,20 +197,6 @@ fn keys_of_a_primary_root_as_a_value_is_rejected() {
     assert_run_error(
         run_entry(&store, checked_entry!(&program, "test::ids")),
         RUN_UNSUPPORTED,
-    );
-}
-
-#[test]
-fn iterating_a_singleton_root_is_a_type_error() {
-    // A keyless singleton has no identities to enumerate; iterating it is a
-    // type error, not a silent empty loop.
-    let program = checked_program(
-        "resource Settings\n    theme: string\nstore ^settings: Settings\n\npub fn each()\n    for s in ^settings\n        print(\"x\")\n",
-    );
-    let store = TreeStore::memory();
-    assert_run_error(
-        run_entry(&store, checked_entry!(&program, "test::each")),
-        RUN_TYPE,
     );
 }
 
@@ -537,4 +523,223 @@ fn two_name_keyed_group_layer_loop_yields_key_and_entry() {
 
     let outcome = run_entry(&store, checked_entry!(&program, "test::versionEntries")).expect("run");
     assert_eq!(outcome.output, "1: first\n2: second\n");
+}
+
+/// A composite-key leaf layer (`cells(row, col): T`) is a chain of single-key
+/// sub-layers. The outer loop binds the outer key, and `cells(outer)` descends
+/// to the inner sub-layer of `col -> value`.
+const GRID_CELLS: &str = "\
+resource Grid
+    cells(row: int, col: int): string
+store ^grids(id: int): Grid
+
+pub fn seed()
+    ^grids(1).cells(1, 1) = \"a\"
+    ^grids(1).cells(1, 2) = \"b\"
+    ^grids(1).cells(2, 1) = \"c\"
+
+pub fn outerRows()
+    for row in ^grids(1).cells
+        print($\"{row}\")
+
+pub fn innerCols(row: int)
+    for col in ^grids(1).cells(row)
+        print($\"{col}\")
+
+pub fn innerEntries(row: int)
+    for col, v in ^grids(1).cells(row)
+        print($\"{col}={v}\")
+
+pub fn descendValue(row: int, col: int)
+    print(^grids(1).cells(row, col) ?? \"absent\")
+
+pub fn innerCount(row: int)
+    print($\"{count(^grids(1).cells(row))}\")
+
+pub fn innerColsReversed(row: int)
+    for col in reversed(^grids(1).cells(row))
+        print($\"{col}\")
+";
+
+#[test]
+fn outer_loop_over_a_composite_leaf_layer_binds_the_outer_key() {
+    let program = checked_program(GRID_CELLS);
+    let store = TreeStore::memory();
+    run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed");
+
+    // The outer key set is the distinct row keys in key order.
+    let outcome = run_entry(&store, checked_entry!(&program, "test::outerRows")).expect("run");
+    assert_eq!(outcome.output, "1\n2\n");
+}
+
+#[test]
+fn partial_key_descent_iterates_the_inner_sub_layer() {
+    let program = checked_program(GRID_CELLS);
+    let store = TreeStore::memory();
+    run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed");
+
+    // `cells(1)` descends to the inner `col` sub-layer with two entries.
+    let outcome = run_entry(
+        &store,
+        checked_entry!(&program, "test::innerCols", Value::Int(1)),
+    )
+    .expect("run");
+    assert_eq!(outcome.output, "1\n2\n");
+
+    // `cells(2)` has a single inner column.
+    let outcome = run_entry(
+        &store,
+        checked_entry!(&program, "test::innerCols", Value::Int(2)),
+    )
+    .expect("run");
+    assert_eq!(outcome.output, "1\n");
+}
+
+#[test]
+fn partial_key_descent_two_name_loop_yields_inner_key_and_value() {
+    let program = checked_program(GRID_CELLS);
+    let store = TreeStore::memory();
+    run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed");
+
+    let outcome = run_entry(
+        &store,
+        checked_entry!(&program, "test::innerEntries", Value::Int(1)),
+    )
+    .expect("run");
+    assert_eq!(outcome.output, "1=a\n2=b\n");
+}
+
+#[test]
+fn full_key_descent_reads_the_leaf_value() {
+    let program = checked_program(GRID_CELLS);
+    let store = TreeStore::memory();
+    run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed");
+
+    let outcome = run_entry(
+        &store,
+        checked_entry!(&program, "test::descendValue", Value::Int(1), Value::Int(2)),
+    )
+    .expect("run");
+    assert_eq!(outcome.output, "b\n");
+}
+
+#[test]
+fn count_over_a_partial_key_descent_counts_inner_entries() {
+    let program = checked_program(GRID_CELLS);
+    let store = TreeStore::memory();
+    run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed");
+
+    let outcome = run_entry(
+        &store,
+        checked_entry!(&program, "test::innerCount", Value::Int(1)),
+    )
+    .expect("run");
+    assert_eq!(outcome.output, "2\n");
+}
+
+#[test]
+fn reversed_partial_key_descent_walks_inner_keys_descending() {
+    let program = checked_program(GRID_CELLS);
+    let store = TreeStore::memory();
+    run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed");
+
+    let outcome = run_entry(
+        &store,
+        checked_entry!(&program, "test::innerColsReversed", Value::Int(1)),
+    )
+    .expect("run");
+    assert_eq!(outcome.output, "2\n1\n");
+}
+
+#[test]
+fn partial_key_descent_over_an_empty_inner_layer_resolves_cleanly() {
+    // An outer key with no inner entries iterates zero times and counts zero —
+    // never a `run.absent_element` fault from a check-clean program.
+    let program = checked_program(&format!(
+        "{GRID_CELLS}\npub fn emptyInner()\n    for col in ^grids(1).cells(99)\n        print($\"{{col}}\")\n    print($\"{{count(^grids(1).cells(99))}}\")\n"
+    ));
+    let store = TreeStore::memory();
+    run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed");
+
+    let outcome = run_entry(&store, checked_entry!(&program, "test::emptyInner")).expect("run");
+    assert_eq!(outcome.output, "0\n");
+}
+
+/// A three-key cube layer descends one column at a time: `cells(x)` and
+/// `cells(x, y)` each peel a column until the final `z -> string` sub-layer, whose
+/// keys, values, and entries iterate as a leaf collection.
+const CUBE_CELLS: &str = "\
+resource Cube
+    cells(x: int, y: int, z: int): string
+store ^cubes(id: int): Cube
+
+pub fn seed()
+    ^cubes(1).cells(1, 2, 3) = \"a\"
+    ^cubes(1).cells(1, 2, 4) = \"b\"
+
+pub fn descendToLeaf()
+    for x in ^cubes(1).cells
+        for y in ^cubes(1).cells(x)
+            for z, v in ^cubes(1).cells(x, y)
+                print($\"{x},{y},{z}={v}\")
+
+pub fn leafValues(x: int, y: int)
+    for v in values(^cubes(1).cells(x, y))
+        print($\"{v}\")
+";
+
+#[test]
+fn three_key_descent_chain_iterates_the_leaf_without_faulting() {
+    // The full descent the checker permits runs end to end: peeling each column in
+    // turn reaches the leaf sub-layer, whose two-name and value loops yield the
+    // stored values — never a `run.absent_element` or `run.unsupported` fault.
+    let program = checked_program(CUBE_CELLS);
+    let store = TreeStore::memory();
+    run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed");
+
+    let outcome = run_entry(&store, checked_entry!(&program, "test::descendToLeaf")).expect("run");
+    assert_eq!(outcome.output, "1,2,3=a\n1,2,4=b\n");
+
+    let outcome = run_entry(
+        &store,
+        checked_entry!(&program, "test::leafValues", Value::Int(1), Value::Int(2)),
+    )
+    .expect("run");
+    assert_eq!(outcome.output, "a\nb\n");
+}
+
+/// A keyless singleton store whose record carries a keyed leaf layer. The layer
+/// streams its own key column independent of the root's empty identity.
+const SETTINGS_COUNTS: &str = "\
+resource Settings
+    counts(name: string): int
+store ^settings: Settings
+
+pub fn seed()
+    ^settings.counts(\"a\") = 1
+    ^settings.counts(\"b\") = 2
+
+pub fn names()
+    for name in ^settings.counts
+        print($\"{name}\")
+
+pub fn pairs()
+    for name, c in ^settings.counts
+        print($\"{name}={c}\")
+";
+
+#[test]
+fn a_layer_on_a_singleton_root_iterates_its_key_column() {
+    // The layer on a keyless singleton is iterable just as one on a keyed root is:
+    // the single-name loop binds the layer key, the two-name loop binds key and
+    // value — neither is mistaken for a single non-iterable value.
+    let program = checked_program(SETTINGS_COUNTS);
+    let store = TreeStore::memory();
+    run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed");
+
+    let outcome = run_entry(&store, checked_entry!(&program, "test::names")).expect("run");
+    assert_eq!(outcome.output, "a\nb\n");
+
+    let outcome = run_entry(&store, checked_entry!(&program, "test::pairs")).expect("run");
+    assert_eq!(outcome.output, "a=1\nb=2\n");
 }

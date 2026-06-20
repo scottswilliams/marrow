@@ -64,7 +64,7 @@ pub(crate) fn check_saved_key_args(check: SavedKeyArgCheck<'_, '_>) {
             );
         }
         SavedKeyParamTarget::Layer(layer) => {
-            check_checked_key_args(
+            check_layer_key_args(
                 &layer.key_params,
                 check.args,
                 check.arg_types,
@@ -72,6 +72,98 @@ pub(crate) fn check_saved_key_args(check: SavedKeyArgCheck<'_, '_>) {
                 check.file,
                 check.diagnostics,
             );
+        }
+    }
+}
+
+/// Check the key arguments of a keyed layer. A composite layer is a chain of
+/// single-key sub-layers, so a partial prefix is a valid descent into the inner
+/// sub-layer; only supplying more keys than the layer declares is an error. A
+/// range argument ranges a declared column, so it fills every column. The per-key
+/// matching is shared with [`check_checked_key_args`]; only the arity policy and
+/// this no-trailing-column range guard differ.
+fn check_layer_key_args(
+    keys: &[CheckedSavedKeyParam],
+    args: &[Argument],
+    arg_types: &[MarrowType],
+    span: SourceSpan,
+    file: &Path,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    if arg_types.len() > keys.len() {
+        diagnostics.push(key_type_diagnostic(
+            file,
+            span,
+            format!(
+                "this keyed access expects at most {} key argument(s), but {} were given",
+                keys.len(),
+                arg_types.len(),
+            ),
+        ));
+        return;
+    }
+    if range_arg_position(args).is_some() && args.len() != keys.len() {
+        diagnostics.push(key_type_diagnostic(
+            file,
+            span,
+            "a ranged key argument must leave no further key columns".to_string(),
+        ));
+        return;
+    }
+    check_supplied_layer_keys(keys, args, arg_types, span, file, diagnostics);
+}
+
+/// Match each supplied key argument against the column it fills. A range argument,
+/// when present, is checked in range position and must be the final argument; every
+/// other argument is checked nominally. Shared by the exact-arity full-address
+/// caller and the partial-prefix layer caller, which screen arity beforehand.
+fn check_supplied_layer_keys(
+    keys: &[CheckedSavedKeyParam],
+    args: &[Argument],
+    arg_types: &[MarrowType],
+    span: SourceSpan,
+    file: &Path,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    let range_arg = range_arg_position(args);
+    if let Some(range_arg) = range_arg
+        && range_arg + 1 != args.len()
+    {
+        diagnostics.push(key_type_diagnostic(
+            file,
+            span,
+            "a key range argument must be the final key argument".to_string(),
+        ));
+        return;
+    }
+    for (position, (key, arg_type)) in keys.iter().zip(arg_types).enumerate() {
+        let expected = SavedPlaceResolver::saved_key_param_type(key);
+        if range_arg == Some(position) {
+            check_range_key_arg(
+                RangeKeyArg {
+                    expected: &expected,
+                    actual: arg_type,
+                    component: format!("key `{}`", key.name),
+                    arg: &args[position].value,
+                    allow_enum: false,
+                },
+                span,
+                file,
+                diagnostics,
+            );
+            continue;
+        }
+        if !saved_key_arg_matches(&expected, arg_type) {
+            diagnostics.push(key_type_diagnostic(
+                file,
+                span,
+                format!(
+                    "key `{}` expects `{}`, but this value is `{}`",
+                    key.name,
+                    marrow_type_name(&expected),
+                    marrow_type_name(arg_type),
+                ),
+            ));
         }
     }
 }
@@ -281,9 +373,9 @@ fn checked_index_target(
     Some((name, *unique, *arg_count, &index.keys))
 }
 
-/// Check key arguments against declared key parameters. A range argument, when
-/// present, is checked in range position and must be the final argument; every
-/// other argument is checked nominally.
+/// Check key arguments against declared key parameters under an exact-arity policy:
+/// a full address fills every key column. The per-key matching is shared with
+/// [`check_layer_key_args`] through [`check_supplied_layer_keys`].
 fn check_checked_key_args(
     keys: &[CheckedSavedKeyParam],
     args: &[Argument],
@@ -304,47 +396,7 @@ fn check_checked_key_args(
         ));
         return;
     }
-    let range_arg = range_arg_position(args);
-    if let Some(range_arg) = range_arg
-        && range_arg + 1 != args.len()
-    {
-        diagnostics.push(key_type_diagnostic(
-            file,
-            span,
-            "a key range argument must be the final key argument".to_string(),
-        ));
-        return;
-    }
-    for (position, (key, arg_type)) in keys.iter().zip(arg_types).enumerate() {
-        let expected = SavedPlaceResolver::saved_key_param_type(key);
-        if range_arg == Some(position) {
-            check_range_key_arg(
-                RangeKeyArg {
-                    expected: &expected,
-                    actual: arg_type,
-                    component: format!("key `{}`", key.name),
-                    arg: &args[position].value,
-                    allow_enum: false,
-                },
-                span,
-                file,
-                diagnostics,
-            );
-            continue;
-        }
-        if !saved_key_arg_matches(&expected, arg_type) {
-            diagnostics.push(key_type_diagnostic(
-                file,
-                span,
-                format!(
-                    "key `{}` expects `{}`, but this value is `{}`",
-                    key.name,
-                    marrow_type_name(&expected),
-                    marrow_type_name(arg_type),
-                ),
-            ));
-        }
-    }
+    check_supplied_layer_keys(keys, args, arg_types, span, file, diagnostics);
 }
 
 fn check_index_range_arg(

@@ -550,15 +550,25 @@ fn accepts_if_const_over_a_constructed_composite_identity() {
 
 #[test]
 fn rejects_if_const_over_an_address_only_saved_layer() {
-    let found = check_module(
+    // A bare keyed layer (`^books(id).tags`, no key column filled) names an iterable
+    // sub-layer, not a bindable value. The partial-key type pass owns that mistake with
+    // a precise `check.layer_not_value`; the generic "requires a saved value read"
+    // condition check suppresses its cascade once that is recorded on the span, so the
+    // subject is rejected with exactly one diagnostic.
+    let report = check_module_report(
         "if-const-layer",
         "module m\n\
          resource Book\n    tags(pos: int): string\n\
          store ^books(id: int): Book\n\n\
          fn f(id: Id(^books))\n    if const tags = ^books(id).tags\n        return\n",
-        "check.condition_type",
     );
-    assert_eq!(found.len(), 1, "{found:#?}");
+    let found = with_code(&report, "check.layer_not_value");
+    assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
+    assert!(
+        with_code(&report, "check.condition_type").is_empty(),
+        "the precise partial-key error owns the rejection: {:#?}",
+        report.diagnostics
+    );
 }
 
 #[test]

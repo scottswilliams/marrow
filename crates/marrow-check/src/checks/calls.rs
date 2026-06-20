@@ -793,6 +793,11 @@ fn check_value_materialization_args(
 
 fn check_append_args(env: &mut CallEnv<'_>, args: &[marrow_syntax::Argument]) {
     let [target, _value] = args else { return };
+    // A multi-column layer is rejected as composite, the more precise diagnostic, so
+    // the group-vs-leaf check only speaks for single-column layers.
+    if saved_append_target_is_composite(env.program, &target.value, env.scope, env.file) {
+        return;
+    }
     if !saved_layer_is_group(env.program, &target.value, env.scope, env.file) {
         return;
     }
@@ -819,6 +824,21 @@ fn saved_layer_is_group(
         .and_then(|expr| expr.saved_place().cloned())
         .and_then(|place| place.layers.last().cloned())
         .is_some_and(|layer| layer.leaf.is_none())
+}
+
+/// Whether an `append` target's innermost layer declares more than one key column.
+/// Such a composite layer is a chain of single-key sub-layers, so it has no single
+/// position for `append` to allocate regardless of how many columns the prefix fills.
+fn saved_append_target_is_composite(
+    program: &CheckedProgram,
+    expr: &marrow_syntax::Expression,
+    scope: &[HashMap<String, MarrowType>],
+    file: &Path,
+) -> bool {
+    lower_expr_for_file(program, file, expr, scope)
+        .and_then(|expr| expr.saved_place().cloned())
+        .and_then(|place| place.layers.last().cloned())
+        .is_some_and(|layer| layer.key_params.len() > 1)
 }
 
 /// Reject a string literal appended to a `sequence[ErrorCode]` (or any keyed leaf
@@ -1276,6 +1296,25 @@ fn check_append(env: &mut CallEnv<'_>, args: &[marrow_syntax::Argument]) {
         return;
     };
     if target.name.is_some() {
+        return;
+    }
+    // A composite layer is a chain of single-key sub-layers with no single column to
+    // allocate a position in, so no shape of it is a valid `append` target — neither
+    // the bare outer layer, a partial prefix, nor the full leaf. Reject it before the
+    // per-column int check, whose inner-column key type would otherwise admit it.
+    if saved_append_target_is_composite(env.program, &target.value, env.scope, env.file) {
+        env.diagnostics.push(
+            CheckDiagnostic::error(
+                CHECK_CALL_ARGUMENT,
+                env.file,
+                env.span,
+                "`append` requires a single int-keyed layer, but this layer keys multiple \
+                 columns; allocate a position only in a single-column layer",
+            )
+            .with_payload(DiagnosticPayload::AppendTarget(
+                AppendTargetDiagnostic::CompositeLayer,
+            )),
+        );
         return;
     }
     let Some(key_type) = saved_path_key_type(env.program, &target.value, env.scope, env.file)

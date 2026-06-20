@@ -275,11 +275,52 @@ pub(super) fn check_for_collection_support(
         return;
     }
 
+    // Diagnostics report at the loop's written iterable; the checked place is
+    // derived from the path under any `reversed(...)` wrapper.
+    let span = iterable.span();
     let iterable = reversed_call_arg(iterable).unwrap_or(iterable);
+    let resolver = SavedPlaceResolver::new(program);
+
+    // A value-reading loop head pairs each streamed key with the value at it: a
+    // two-name binding, or a `values(...)`/`entries(...)` wrapper. When the value
+    // position is itself a sub-layer (a composite layer with more than one column
+    // still to fill), there is no leaf to pair, so the head must descend one column
+    // first. The wrapper's inner path carries that shape, so unwrap to it.
+    let value_head = binding.second.is_some()
+        || collection_wrapper_arg(iterable, "values").is_some()
+        || collection_wrapper_arg(iterable, "entries").is_some();
+    if value_head {
+        let inner = collection_wrapper_arg(iterable, "values")
+            .or_else(|| collection_wrapper_arg(iterable, "entries"))
+            .unwrap_or(iterable);
+        if checked_saved_expr(program, inner, scope, file)
+            .is_some_and(|checked| resolver.value_position_is_sublayer(&checked))
+        {
+            diagnostics.push(CheckDiagnostic::error(
+                CHECK_COLLECTION_UNSUPPORTED,
+                file,
+                span,
+                "a value loop over a composite keyed layer must descend one key at a time: iterate the outer key, then descend the layer at that key for the inner key",
+            ));
+            return;
+        }
+    }
+
     let Some(checked_iterable) = checked_saved_expr(program, iterable, scope, file) else {
         return;
     };
-    let resolver = SavedPlaceResolver::new(program);
+    // A path that names one stored value — a fully-keyed leaf, a scalar field, a
+    // single-key full entry, or a whole record — has no key to stream, so a `for`
+    // over it is a clean check error rather than an accepted-then-faulted iteration.
+    if resolver.addresses_single_value(&checked_iterable) {
+        diagnostics.push(CheckDiagnostic::error(
+            CHECK_COLLECTION_UNSUPPORTED,
+            file,
+            span,
+            "this saved path names a single value, which cannot be iterated",
+        ));
+        return;
+    }
     let Some(index) = resolver.index_branch_info(&checked_iterable) else {
         return;
     };
@@ -655,6 +696,16 @@ pub(crate) fn is_saved_index_range_path(
 ) -> bool {
     checked_saved_expr(program, path, scope, file)
         .is_some_and(|expr| SavedPlaceResolver::new(program).is_index_range_path(&expr))
+}
+
+pub(crate) fn is_partial_key_layer_path(
+    program: &CheckedProgram,
+    path: &marrow_syntax::Expression,
+    scope: &[HashMap<String, MarrowType>],
+    file: &Path,
+) -> bool {
+    checked_saved_expr(program, path, scope, file)
+        .is_some_and(|expr| SavedPlaceResolver::new(program).is_partial_key_layer_path(&expr))
 }
 
 fn saved_key_range_subject(mut path: &marrow_syntax::Expression) -> &marrow_syntax::Expression {

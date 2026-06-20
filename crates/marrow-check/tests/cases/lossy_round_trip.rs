@@ -312,7 +312,7 @@ fn invalid_keyed_entry_addressing_does_not_warn() {
              resource Post\n    comments(seq: int): Comment\n\
              store ^posts(id: int): Post\n\n\
              fn replace(post: Id(^posts), replacement: Comment)\n    ^posts(post).comments() = replacement\n",
-            CHECK_KEY_TYPE,
+            "check.invalid_assign_target",
         ),
         (
             "parent-layer-range-key",

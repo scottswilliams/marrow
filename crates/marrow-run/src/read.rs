@@ -127,7 +127,14 @@ pub(crate) fn iterable_layer<'a>(
     }
     match path {
         ExecExpr::Field { .. } => Ok(IterableLayer::ChildLayer),
-        ExecExpr::Call { .. } if path.saved_place().is_some_and(layer_call_has_range) => {
+        // A keyed-layer call iterates as a child layer when its final argument is a
+        // range bound, or when it pins only a partial key prefix and descends into
+        // the inner sub-layer of a composite layer.
+        ExecExpr::Call { .. }
+            if path.saved_place().is_some_and(|place| {
+                layer_call_has_range(place) || layer_call_is_partial(place)
+            }) =>
+        {
             Ok(IterableLayer::ChildLayer)
         }
         other => Err(unsupported("iterating this saved path", other.span())),
@@ -180,6 +187,17 @@ fn layer_call_has_range(place: &CheckedSavedPlace) -> bool {
             .layers
             .last()
             .is_some_and(|layer| layer.args.iter().any(|arg| is_key_range_expr(&arg.value)))
+}
+
+/// Whether the innermost layer is addressed by a partial key prefix — fewer keys
+/// than it declares — so iterating it descends into the inner sub-layer of a
+/// composite layer.
+fn layer_call_is_partial(place: &CheckedSavedPlace) -> bool {
+    matches!(place.terminal, CheckedSavedTerminal::Record)
+        && place
+            .layers
+            .last()
+            .is_some_and(|layer| layer.args.len() < layer.key_params.len())
 }
 
 pub(crate) fn is_key_range_expr(expr: &ExecExpr) -> bool {
@@ -822,10 +840,16 @@ fn child_layer_prefix_address(
     path: &ExecExpr,
     env: &mut Env<'_>,
 ) -> Result<ChildLayerPrefixAddress, RuntimeError> {
-    let ExecExpr::Field { base, .. } = path else {
-        return Err(unsupported("iterating this saved path", path.span()));
-    };
     let span = path.span();
+    let (base, exact_args) = match path {
+        ExecExpr::Field { base, .. } => (base.as_ref(), &[][..]),
+        // A partial-key layer call pins a prefix and counts the inner sub-layer.
+        ExecExpr::Call { callee, args, .. } => match callee.as_ref() {
+            ExecExpr::Field { base, .. } => (base.as_ref(), args.as_slice()),
+            _ => return Err(unsupported("iterating this saved path", span)),
+        },
+        _ => return Err(unsupported("iterating this saved path", span)),
+    };
     let base_path = lower(base, env)?;
     let Some(place) = path.saved_place() else {
         return Err(unsupported("iterating this saved path", path.span()));
@@ -833,8 +857,10 @@ fn child_layer_prefix_address(
     let Some(layer_facts) = place.layers.last() else {
         return Err(unsupported("iterating this saved path", path.span()));
     };
+    let exact_prefix = lower_keys(exact_args, span, false, None, &layer_facts.key_params, env)?;
+    let exact_key_count = exact_prefix.len();
     let mut layers = base_path.layer_addresses;
-    layers.push(LayerAddress::from_checked(layer_facts, Vec::new()));
+    layers.push(LayerAddress::from_checked(layer_facts, exact_prefix));
     let address = DataAddress::layer_prefix(place, &base_path.identity, &layers, span)?;
     Ok(ChildLayerPrefixAddress {
         address,
@@ -843,7 +869,7 @@ fn child_layer_prefix_address(
             .iter()
             .map(|param| param.scalar)
             .collect(),
-        exact_key_count: 0,
+        exact_key_count,
     })
 }
 

@@ -88,33 +88,38 @@ fn neighbor_target(expr: &ExecExpr, env: &mut Env<'_>) -> Result<NeighborTarget,
         return Err(unsupported("`next`/`prev` of this path", span));
     };
     let last_keys = last_keys.clone();
-    let expected_key = path
+    let key_params = path
         .place
         .layers
         .last()
-        .and_then(|layer| layer.key_params.first())
-        .and_then(|param| param.scalar);
+        .map(|layer| layer.key_params.as_slice())
+        .unwrap_or_default();
+    // A composite layer is a chain of single-key sub-layers, so the column a
+    // neighbor seek navigates is the first one the supplied prefix leaves unfilled.
+    // A partial prefix (`cells(row)`) descends to that inner column and seeks its
+    // edge entry; a fully-keyed leaf (`cells(row, col)`) is a position within the
+    // final column, so the last supplied key anchors a sibling seek under the prefix
+    // of the columns before it. Either way the seek scans exactly the sub-layer
+    // `count` and iteration descend into on the same path.
+    let (prefix, anchor, column) = if last_keys.len() < key_params.len() {
+        (last_keys.as_slice(), None, last_keys.len())
+    } else {
+        let Some((last, rest)) = last_keys.split_last() else {
+            return Err(unsupported("`next`/`prev` of this path", span));
+        };
+        (rest, Some(last.clone()), last_keys.len().saturating_sub(1))
+    };
+    let expected_key = key_params.get(column).and_then(|param| param.scalar);
     let mut parent_layers = path.layer_addresses;
     if let Some(last) = parent_layers.last_mut() {
-        last.keys.clear();
+        last.keys = prefix.to_vec();
     }
     let parent = DataAddress::layer_prefix(&path.place, &path.identity, &parent_layers, span)?;
-    match last_keys.as_slice() {
-        [] => Ok(NeighborTarget::Data {
-            parent,
-            anchor: None,
-            expected_key,
-        }),
-        [key] => Ok(NeighborTarget::Data {
-            parent,
-            anchor: Some(key.clone()),
-            expected_key,
-        }),
-        _ => Err(unsupported(
-            "`next`/`prev` of a multi-key layer position (scope a single key level)",
-            span,
-        )),
-    }
+    Ok(NeighborTarget::Data {
+        parent,
+        anchor,
+        expected_key,
+    })
 }
 
 enum NeighborTarget {

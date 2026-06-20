@@ -29,7 +29,7 @@ pub use expr::{
 use expr::{checked_enum_member_ref_in, function_ref};
 pub(crate) use place::{
     SavedAccessRejection, SavedKeyParamTarget, SavedMemberRefKind, SavedPlaceResolver,
-    accepted_saved_place, checked_saved_index_read, checked_saved_place_effect,
+    accepted_saved_place, checked_saved_index_read, checked_saved_place_effect, place_fully_keyed,
 };
 pub(crate) use runtime_value::checked_runtime_value_type;
 pub use runtime_value::{

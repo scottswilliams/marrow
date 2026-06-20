@@ -400,9 +400,10 @@ they do not apply to unique indexes. A bare `..`, `start..=`, non-trailing range
 composite endpoint, or `by` step in a saved key argument is rejected.
 Ranged saved-key calls are traversal shapes, not value reads: use them as loop
 iterables, through `keys`/`values`/`entries` loop wrappers, or in supported
-cardinality/presence calls. In v0.1, ranged `exists(...)` is supported for
-non-unique index branches; store-root and keyed-layer ranges are traversed
-rather than tested as a single lookup value.
+cardinality/presence calls. A ranged key argument names a span of entries, not
+one entry, so it is also rejected as a write or `delete` address. In v0.1, ranged
+`exists(...)` is supported for non-unique index branches; store-root and
+keyed-layer ranges are traversed rather than tested as a single lookup value.
 
 Index arguments may name store keys or top-level fields only. Field components
 may be orderable scalars, enums, or `Id(^store)` typed references; an identity
@@ -674,6 +675,47 @@ sparse keys is passed over, never visited as an empty position. This stored-only
 gap-skipping, key-ordered walk is the storage guarantee the `reversed`,
 `next`, and `prev` helpers in the builtins reference rest on.
 
+### Composite Keyed Layers
+
+A keyed layer may declare more than one key column:
+
+```mw
+resource Grid
+    cells(row: int, col: int): string
+
+store ^grids(id: int): Grid
+```
+
+A composite layer is a chain of single-key sub-layers, not a tuple key. Each key
+column descends one level. With no key, `^grids(id).cells` iterates the outermost
+column (`row`); supplying that key descends into the inner sub-layer of the
+remaining columns:
+
+```mw
+for row in ^grids(id).cells
+    for col, value in ^grids(id).cells(row)
+        print($"({row},{col}) = {value}")
+```
+
+`^grids(id).cells(row)` is the inner `col -> string` sub-layer: iterate it,
+`count` it, or take its `next`/`prev` neighbor — the first or last `col` stored
+under that `row`. Filling every column addresses one entry, so
+`^grids(id).cells(row, col)` reads the leaf value, its `next`/`prev` neighbor is
+the stored sibling in the final column under the same prefix, and a single-paren
+range bounds the final column under an exact prefix
+(`^grids(id).cells(row, lo..hi)`).
+
+A partial key names a sub-layer to descend, not a value: a bare read of it (`??`,
+`if const`, a scalar binding), a write to it, and a `delete` of it are rejected at
+compile time, as is a two-name loop that would pair a key with a value while more
+than one column remains. Filling every column reaches a deletable entry; a partial
+prefix would otherwise destroy the whole inner sub-tree under it. `append` allocates
+a position in a single int-keyed layer, so it is not available on a composite layer
+at all — there is no single column to extend.
+Iterate the outer column, then descend the layer at that key. There are no tuples;
+this column-by-column descent is the tuple-free navigation model, the same
+keyed-tree shape every other layer uses.
+
 ## Reading And Writing
 
 Read and write fields directly:
@@ -702,6 +744,12 @@ child layers such as history, sequences, or keyed trees; those are read, written
 and traversed through their saved addresses (for example `^books(id).versions(v)`).
 A whole read is useful for small records and construction; read or traverse the
 child layers you need directly.
+
+Because a materialized value carries no keyed child layers, reading one off such a
+value is a compile-time error. Binding a record — whole (`if const b = ^books(id)`)
+or by a composite-layer descent (`for col, inner in ^outers(id).groups(row)`) — then
+naming its keyed child layer (`b.versions`, `inner.items`) is rejected; reach the
+layer through its saved address instead.
 
 Whole-record assignment is exact. It replaces the saved record at that
 address, clearing every field, unkeyed group, and keyed child layer omitted from

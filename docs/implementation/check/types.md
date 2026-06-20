@@ -61,6 +61,6 @@ The orchestration that sequences the passes lives in `analysis.rs`, outside this
 
 - `program.rs` — `CheckedProgram`, `MarrowType`, `MarrowType::from_resolved`, `lower_runtime_bodies` (the artifact and lattice every downstream crate reads against).
 - `checks/calls.rs` and `checks/statements.rs` — `check_call`, `StatementCheck::check` (the dispatch heart; how every type diagnostic is produced and how scope threads through blocks).
-- `infer.rs` — `infer_type`, `saved_call_type` (layered `^root(key).layer(key).field` typing — the trickiest part of the lattice).
+- `infer.rs` — `infer_type`, `saved_call_type` (layered `^root(key).layer(key).field` typing — the trickiest part of the lattice). A partially keyed composite layer names an iterable inner sub-layer, never a scalar: `ValuePosition` gates this, so a `.field`/child-layer descent or a bare value read (scalar bind, interpolation, plain call argument, return) of one is a `check.layer_not_value` error, while a non-value position (a `for` iterable, a `keys`/`values`/`entries`/`count` argument, or a write/delete target) skips the gate so its dedicated owner — streaming for the former, the invalid-target check for the latter — is the single root cause.
 - `facts.rs` — `CheckedFacts::from_modules`, `StoredValueMeaning::stored_key` (id-assignment order and the single owner of durable member-byte → `SavedKey` decoding).
 - `resolve.rs` — `resolve`, `resolve_store_by_root` (the resolution outcome shared by checker, runtime, and binding tooling).

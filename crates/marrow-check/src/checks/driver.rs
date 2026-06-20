@@ -119,6 +119,7 @@ pub(crate) fn check_resolved_files(
                 | DiagnosticPayload::SuggestedIndex { .. }
                 | DiagnosticPayload::RequiredAbsent { .. }
                 | DiagnosticPayload::TypeMismatch { .. }
+                | DiagnosticPayload::LayerNotValue { .. }
                 | DiagnosticPayload::None => true,
             });
     }

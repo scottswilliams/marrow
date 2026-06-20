@@ -50,7 +50,7 @@ One invariant organizes the whole subsystem: **durable saved data is never mater
 | `crates/marrow-run/src/saved_iter/root.rs` | `RootScan` + `RecordCursor`: streams every record identity under a keyed root, reading the whole resource per shape. |
 | `crates/marrow-run/src/saved_iter/index.rs` | `IndexScan` + `IndexCursor`: streams a non-unique index branch by delegating to `read.rs` `stream_index_branch`; every yield is a store identity. |
 | `crates/marrow-run/src/saved_iter/unique.rs` | `UniqueIndexScan`: yields at most one identity from a complete unique-index lookup. |
-| `crates/marrow-run/src/saved_iter/child_layer.rs` | `ChildLayerScan`: streams keys of a keyed child layer (e.g. `^t(x).rows`) via data child cursors. |
+| `crates/marrow-run/src/saved_iter/child_layer.rs` | `ChildLayerScan`: streams one key column of a keyed child layer via data child cursors. A composite layer is a chain of single-key sub-layers, so a partial-key prefix pins the exact leading keys and streams the next column (descent), and a trailing range bounds it. |
 | `crates/marrow-run/src/collection.rs` | `keys`/`values`/`entries`/`reversed` dispatch, `Direction`, `absent_read` (catchable `run.absent_element` for a fixed local/stdlib-cell read address), the no-materialize-durable rule. |
 | `crates/marrow-run/src/collection/materialize.rs` | `values_or_entries`/`MaterializeKind`, `reversed_materialized`/`reversed_keys`: materialize local keyed collections, reject durable places. |
 | `crates/marrow-run/src/collection/append.rs` | `eval_append`/`eval_next_id`: append to a local sequence or saved layer (read next free position, guard, plan+apply leaf write), mint next record id. |

@@ -158,34 +158,43 @@ fn child_layer_base(layer: &ExecExpr) -> Result<&ExecExpr, RuntimeError> {
     }
 }
 
+/// The exact key prefix and optional final range bound an iterable layer pins. A
+/// partial key prefix descends into the inner sub-layer of a composite layer; a
+/// trailing range bounds the iterated column under that prefix. The streamed column
+/// is the first one left unpinned, so a layer with neither extra keys nor a range
+/// (zero args) streams its outermost column with an empty prefix.
 fn layer_key_range(
     layer: &CheckedSavedLayer,
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<(Vec<SavedKey>, Option<IndexRangeBounds>), RuntimeError> {
-    let Some(range_position) = layer
+    if let Some(range_position) = layer
         .args
         .iter()
         .position(|arg| is_key_range_expr(&arg.value))
-    else {
-        return Ok((Vec::new(), None));
-    };
-    if range_position + 1 != layer.args.len() || layer.args.len() != layer.key_params.len() {
+    {
+        if range_position + 1 != layer.args.len() || layer.args.len() != layer.key_params.len() {
+            return Err(unsupported("iterating this saved path", span));
+        }
+        let exact_prefix = lower_keys(
+            &layer.args[..range_position],
+            span,
+            false,
+            None,
+            &layer.key_params,
+            env,
+        )?;
+        let range = key_range_bounds(
+            &layer.args[range_position].value,
+            &layer.key_params[range_position],
+            span,
+            env,
+        )?;
+        return Ok((exact_prefix, range));
+    }
+    if layer.args.len() >= layer.key_params.len() {
         return Err(unsupported("iterating this saved path", span));
     }
-    let exact_prefix = lower_keys(
-        &layer.args[..range_position],
-        span,
-        false,
-        None,
-        &layer.key_params,
-        env,
-    )?;
-    let range = key_range_bounds(
-        &layer.args[range_position].value,
-        &layer.key_params[range_position],
-        span,
-        env,
-    )?;
-    Ok((exact_prefix, range))
+    let exact_prefix = lower_keys(&layer.args, span, false, None, &layer.key_params, env)?;
+    Ok((exact_prefix, None))
 }

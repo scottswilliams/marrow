@@ -85,6 +85,11 @@ pub const CHECK_KEY_TYPE: &str = "check.key_type";
 pub const CHECK_UNRESOLVED_NAME: &str = "check.unresolved_name";
 /// A dotted field read names no member on a resolved resource-shaped value.
 pub const CHECK_UNKNOWN_FIELD: &str = "check.unknown_field";
+/// A field read names a keyed child layer on a materialized record value. A whole
+/// read materializes scalars and unkeyed groups but not keyed child layers, which
+/// are reached only through their saved addresses (`^books(id).versions(v)`). The
+/// field is declared, so this is distinct from [`CHECK_UNKNOWN_FIELD`].
+pub const CHECK_LAYER_NOT_VALUE: &str = "check.layer_not_value";
 /// A call names a function that is neither a builtin nor a declared function. Only
 /// reported for calls in files that are part of a fully parsed project — a library
 /// module or a module-less script — so a module excluded by a parse error never
@@ -262,6 +267,9 @@ pub enum AppendTargetDiagnostic {
     GroupLayer,
     /// The target layer's key is not the integer position `append` allocates.
     NonIntKeyedLayer { key_type: MarrowType },
+    /// The target is a composite (multi-column) keyed layer, which is a chain of
+    /// sub-layers with no single column for `append` to allocate a position in.
+    CompositeLayer,
 }
 
 /// The target of a scalar-conversion builtin. The language spellings `string` and
@@ -709,6 +717,10 @@ pub enum DiagnosticPayload {
     CatalogIntent(CatalogIntentDiagnostic),
     /// `check.collection_unsupported`: a lookup names no declared index.
     SuggestedIndex { declaration: String },
+    /// `check.layer_not_value`: a `.field`/child-layer descends off a base that
+    /// names a keyed sub-layer rather than a record value — a keyed child layer read
+    /// off a materialized value, or a descent off a partially keyed composite layer.
+    LayerNotValue { field: String },
     /// `check.required_absent`: a sparse local resource is written to a saved root.
     RequiredAbsent {
         local: String,

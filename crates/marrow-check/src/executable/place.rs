@@ -175,6 +175,59 @@ impl<'a> SavedPlaceResolver<'a> {
             .is_some_and(|info| !info.unique)
     }
 
+    /// Whether the innermost keyed layer is addressed by a partial key prefix — at
+    /// least one column unfilled and no range bound. Such a path names an iterable
+    /// inner sub-layer, not a writable entry, so it is a read/descend place only.
+    pub(crate) fn is_partial_key_layer_path(&self, expr: &CheckedExpr) -> bool {
+        self.layer_columns_remaining(expr)
+            .is_some_and(|remaining| remaining > 0)
+    }
+
+    /// The innermost keyed layer's member name when `expr` is a partial-key layer
+    /// path, naming the sub-layer that a value-read position wrongly treats as a
+    /// scalar. `None` for any path that is not a partial-key layer.
+    pub(crate) fn partial_key_layer_name<'e>(&self, expr: &'e CheckedExpr) -> Option<&'e str> {
+        self.is_partial_key_layer_path(expr)
+            .then(|| expr.saved_place()?.layers.last())
+            .flatten()
+            .map(|layer| layer.name.as_str())
+    }
+
+    /// Whether the path names exactly one stored value rather than a collection: it
+    /// yields a value but no key to stream (a fully-keyed leaf, a scalar field, a
+    /// single-key full entry, or a whole record). Such a place cannot be the iterable
+    /// of a `for` loop, which streams keys; iterating it is a clean check error.
+    pub(crate) fn addresses_single_value(&self, expr: &CheckedExpr) -> bool {
+        self.value_type(expr).is_some() && self.key_type(expr).is_none()
+    }
+
+    /// Whether iterating this path would pair each streamed key with a sub-layer
+    /// rather than a leaf value — a partial composite layer with more than one column
+    /// still to fill. Its value position is itself a collection, so any value-reading
+    /// loop head (`values(...)`, `entries(...)`, or a two-name binding) over it must
+    /// descend one column first.
+    pub(crate) fn value_position_is_sublayer(&self, expr: &CheckedExpr) -> bool {
+        self.layer_columns_remaining(expr)
+            .is_some_and(|remaining| remaining > 1)
+    }
+
+    /// The number of key columns still unfilled on the innermost keyed layer of a
+    /// record-terminal access. A composite layer is a chain of single-key
+    /// sub-layers, so more than one remaining column means the access names a
+    /// sub-layer whose entries are themselves sub-layers — a two-name loop over it
+    /// cannot pair a key with a scalar value and must descend one column instead.
+    pub(crate) fn layer_columns_remaining(&self, expr: &CheckedExpr) -> Option<usize> {
+        let place = expr.saved_place()?;
+        if !matches!(place.terminal, CheckedSavedTerminal::Record) {
+            return None;
+        }
+        let layer = place.layers.last()?;
+        if range_arg_position_in(&layer.args).is_some() {
+            return None;
+        }
+        Some(layer.key_params.len().saturating_sub(layer.args.len()))
+    }
+
     pub(crate) fn saved_key_params<'p>(
         &self,
         callee: &'p CheckedExpr,
@@ -222,7 +275,7 @@ impl<'a> SavedPlaceResolver<'a> {
         if !matches!(place.terminal, CheckedSavedTerminal::Record) {
             return None;
         }
-        if !root_record_addressed(place) || !place.layers.iter().all(layer_record_addressed) {
+        if !place_fully_keyed(place) {
             return None;
         }
         let Some(layer) = place.layers.last() else {
@@ -306,10 +359,17 @@ impl<'a> SavedPlaceResolver<'a> {
         match &place.terminal {
             CheckedSavedTerminal::Record => {
                 if let Some(layer) = place.layers.last() {
-                    if let Some(leaf) = &layer.leaf {
-                        return self.leaf_type(leaf);
+                    // A partially addressed composite layer is an iterable sub-layer,
+                    // not a scalar value; its leaf becomes a value only once a single
+                    // key column remains (the two-name descent value) or every column
+                    // is filled (a value read).
+                    if layer_value_yields_leaf(layer) {
+                        if let Some(leaf) = &layer.leaf {
+                            return self.leaf_type(leaf);
+                        }
+                        return self.group_entry_type(place);
                     }
-                    return self.group_entry_type(place);
+                    return None;
                 }
                 (place.identity_keys.is_empty() || !place.identity_args.is_empty()).then(|| {
                     MarrowType::Resource(crate::resource_type_name(
@@ -327,22 +387,30 @@ impl<'a> SavedPlaceResolver<'a> {
 
     fn place_key_type(&self, place: &CheckedSavedPlace) -> Option<MarrowType> {
         match &place.terminal {
+            // A layer access streams the layer's key column regardless of the store's
+            // identity shape, so a layer on a keyless singleton root is iterable just
+            // as one on a keyed root is.
+            CheckedSavedTerminal::Record if place.layers.last().is_some() => {
+                let layer = place.layers.last()?;
+                if let Some(position) = range_arg_position_in(&layer.args) {
+                    return (position + 1 == layer.args.len()
+                        && layer.args.len() == layer.key_params.len())
+                    .then(|| checked_key_param_type(&layer.key_params[position]))
+                    .flatten();
+                }
+                // A composite layer is a chain of single-key sub-layers: each
+                // supplied key descends one column, so the key being streamed is
+                // the first unfilled column. A fully addressed layer is a value
+                // read, not an iterable, and yields no key.
+                layer
+                    .key_params
+                    .get(layer.args.len())
+                    .and_then(checked_key_param_type)
+            }
             CheckedSavedTerminal::Record if place.identity_args.is_empty() => {
                 (!place.identity_keys.is_empty()).then(|| MarrowType::Identity(place.root.clone()))
             }
             CheckedSavedTerminal::Record => {
-                if let Some(layer) = place.layers.last() {
-                    if let Some(position) = range_arg_position_in(&layer.args) {
-                        return (position + 1 == layer.args.len()
-                            && layer.args.len() == layer.key_params.len())
-                        .then(|| checked_key_param_type(&layer.key_params[position]))
-                        .flatten();
-                    }
-                    return match layer.key_params.as_slice() {
-                        [key] => checked_key_param_type(key),
-                        _ => None,
-                    };
-                }
                 let position = range_arg_position_in(&place.identity_args)?;
                 (position + 1 == place.identity_args.len()
                     && place.identity_args.len() == place.identity_keys.len())
@@ -727,8 +795,35 @@ fn root_record_addressed(place: &CheckedSavedPlace) -> bool {
     place.identity_keys.is_empty() || !place.identity_args.is_empty()
 }
 
-fn layer_record_addressed(layer: &CheckedSavedLayer) -> bool {
-    layer.key_params.is_empty() || !layer.args.is_empty()
+/// Whether every keyed layer fills its key columns. A composite layer is a chain of
+/// single-key sub-layers, so a leaf value or record is reached only once every
+/// column is supplied; a partial prefix names an iterable inner sub-layer to
+/// descend, never a value, field base, write target, or delete target.
+fn layer_fully_keyed(layer: &CheckedSavedLayer) -> bool {
+    layer.args.len() == layer.key_params.len()
+}
+
+/// Whether this place names a fully-keyed leaf value or record: the root is
+/// addressed and every keyed layer fills its key columns. This is the single
+/// predicate gating every value, read, write, delete, and field-descent position;
+/// a place that fails it addresses only an iterable inner sub-layer.
+pub(crate) fn place_fully_keyed(place: &CheckedSavedPlace) -> bool {
+    root_record_addressed(place) && place.layers.iter().all(layer_fully_keyed)
+}
+
+/// Whether the entry value at a layer access is its declared leaf or group entry.
+/// A composite layer is a chain of single-key sub-layers, so the leaf is reached
+/// only once every key column is filled (a value read) or exactly one column
+/// remains (the value a two-name descent loop pairs with the inner key). With more
+/// than one column left, the access names a deeper sub-layer, not a value. A range
+/// argument streams the column it fills, so it pairs with a leaf only when it leaves
+/// no further column; a range that leaves a deeper column addresses no leaf at all.
+fn layer_value_yields_leaf(layer: &CheckedSavedLayer) -> bool {
+    let remaining = layer.key_params.len().saturating_sub(layer.args.len());
+    if range_arg_position_in(&layer.args).is_some() {
+        return remaining == 0;
+    }
+    remaining <= 1
 }
 
 fn checked_key_param_type(key: &CheckedSavedKeyParam) -> Option<MarrowType> {
@@ -925,6 +1020,17 @@ pub(super) fn checked_field_place(
         };
         place.span = span;
         return Some(place);
+    }
+    // A `.field` or child-layer descends off a record value. When the innermost
+    // layer is only partially keyed it names an iterable inner sub-layer, not a
+    // record, so there is nothing to descend off: refuse the place so no phantom
+    // address is ever formed. The field-access checker reports the rejection.
+    if place
+        .layers
+        .last()
+        .is_some_and(|layer| !layer_fully_keyed(layer))
+    {
+        return None;
     }
     if let Some(member) = checked_plain_field_member(&place.members, name) {
         place.terminal = CheckedSavedTerminal::Field {

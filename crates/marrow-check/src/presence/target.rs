@@ -7,7 +7,7 @@ use crate::CheckedExpr;
 use crate::CheckedProgram;
 use crate::MarrowType;
 use crate::executable::{
-    accepted_saved_place, checked_saved_index_read, checked_saved_place_effect,
+    accepted_saved_place, checked_saved_index_read, checked_saved_place_effect, place_fully_keyed,
 };
 use crate::facts::{PresenceProofPlace, PresenceProofRead, ResourceMemberId, SavedPlaceEffect};
 
@@ -44,13 +44,57 @@ pub(super) enum ReadTargetValue {
     AddressOnly,
 }
 
-pub(crate) fn read_resolves_in_type_scope(
+/// The resolution of a maybe-present read. A local guardable read (a maybe-present
+/// call result or a local-collection/sparse-field read) carries no `ReadTarget`,
+/// only the fact that it is a `Direct` maybe-present value; a saved read resolves to
+/// a full [`ReadTarget`]. The public predicates apply their terminal check over this.
+enum ReadResolution {
+    LocalValue,
+    Saved(ReadTarget),
+}
+
+fn resolve_read_target(
+    program: &CheckedProgram,
+    expr: &CheckedExpr,
+    type_scope: &[std::collections::HashMap<String, MarrowType>],
+    transform_old: Option<super::TransformOldReadScope<'_>>,
+) -> Option<ReadResolution> {
+    if let CheckedExpr::Call { target, .. } = expr
+        && maybe_present_result(target)
+    {
+        return Some(ReadResolution::LocalValue);
+    }
+    let scope = NameScope::from_type_scope(type_scope, transform_old);
+    if local_maybe_present_read(program, expr, &scope) {
+        return Some(ReadResolution::LocalValue);
+    }
+    read_target_with_scope(program, expr, &scope).map(ReadResolution::Saved)
+}
+
+/// Whether `expr` resolves to a maybe-present *value* read — what `??` defaults.
+/// An address-only place such as a keyed child layer addressed by only a partial
+/// key prefix is rejected: it names an inner sub-layer to descend, not a value to
+/// default.
+pub(crate) fn read_value_resolves_in_type_scope(
     program: &CheckedProgram,
     expr: &CheckedExpr,
     type_scope: &[std::collections::HashMap<String, MarrowType>],
     transform_old: Option<super::TransformOldReadScope<'_>>,
 ) -> bool {
-    read_resolution_in_type_scope(program, expr, type_scope, transform_old).is_some()
+    match resolve_read_target(program, expr, type_scope, transform_old) {
+        Some(ReadResolution::LocalValue) => true,
+        // A `next`/`prev` neighbor read resolves an iterable to a single
+        // maybe-present neighbor value, so it defaults regardless of whether its
+        // underlying subject is itself an addressable value.
+        Some(ReadResolution::Saved(target)) => {
+            target.value == ReadTargetValue::Value
+                || matches!(
+                    target.read,
+                    PresenceProofRead::Next | PresenceProofRead::Prev
+                )
+        }
+        None => false,
+    }
 }
 
 pub(crate) fn exists_target_in_type_scope(
@@ -69,18 +113,13 @@ pub(crate) fn bindable_saved_value_read_in_type_scope(
     type_scope: &[std::collections::HashMap<String, MarrowType>],
     transform_old: Option<super::TransformOldReadScope<'_>>,
 ) -> bool {
-    if let CheckedExpr::Call { target, .. } = expr
-        && maybe_present_result(target)
-    {
-        return true;
+    match resolve_read_target(program, expr, type_scope, transform_old) {
+        Some(ReadResolution::LocalValue) => true,
+        Some(ReadResolution::Saved(target)) => {
+            target.read == PresenceProofRead::Direct && target.value == ReadTargetValue::Value
+        }
+        None => false,
     }
-    let scope = NameScope::from_type_scope(type_scope, transform_old);
-    if local_maybe_present_read(program, expr, &scope) {
-        return true;
-    }
-    read_target_with_scope(program, expr, &scope).is_some_and(|target| {
-        target.read == PresenceProofRead::Direct && target.value == ReadTargetValue::Value
-    })
 }
 
 fn read_resolution_in_type_scope(
@@ -89,16 +128,10 @@ fn read_resolution_in_type_scope(
     type_scope: &[std::collections::HashMap<String, MarrowType>],
     transform_old: Option<super::TransformOldReadScope<'_>>,
 ) -> Option<PresenceProofRead> {
-    if let CheckedExpr::Call { target, .. } = expr
-        && maybe_present_result(target)
-    {
-        return Some(PresenceProofRead::Direct);
+    match resolve_read_target(program, expr, type_scope, transform_old)? {
+        ReadResolution::LocalValue => Some(PresenceProofRead::Direct),
+        ReadResolution::Saved(target) => Some(target.read),
     }
-    let scope = NameScope::from_type_scope(type_scope, transform_old);
-    if local_maybe_present_read(program, expr, &scope) {
-        return Some(PresenceProofRead::Direct);
-    }
-    read_target_with_scope(program, expr, &scope).map(|target| target.read)
 }
 
 pub(super) fn read_target_with_scope(
@@ -281,12 +314,9 @@ fn saved_place_target(
 }
 
 fn saved_target_value(place: &crate::CheckedSavedPlace) -> ReadTargetValue {
-    let root_addressed = place.identity_keys.is_empty() || !place.identity_args.is_empty();
-    let layers_addressed = place
-        .layers
-        .iter()
-        .all(|layer| layer.key_params.is_empty() || !layer.args.is_empty());
-    if !(root_addressed && layers_addressed) {
+    // A composite layer is a value read only once every key column is filled. A
+    // partial prefix names an inner sub-layer to descend, not a maybe-present value.
+    if !place_fully_keyed(place) {
         return ReadTargetValue::AddressOnly;
     }
     match &place.terminal {

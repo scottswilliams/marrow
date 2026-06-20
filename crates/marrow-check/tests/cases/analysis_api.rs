@@ -1735,12 +1735,11 @@ fn sites_for_reports_proposal_saved_layer_uses_from_lowered_bodies() {
 fn sites_for_reports_keyed_saved_layer_segment_not_same_named_argument() {
     let source = "module m\n\
         resource Book\n    \
-        versions(version: int)\n        \
-        required title: string\n\
+        versions(version: int): string\n\
         store ^books(id: int): Book\n\
         fn f(id: Id(^books), versions: int)\n    \
-        for n, version in ^books(id).versions(versions)\n        \
-        print(version.title)\n";
+        const title: string = ^books(id).versions(versions) ?? \"\"\n    \
+        print(title)\n";
     let (snapshot, paths) = analyze_overlay(
         "analysis-use-sites-keyed-layer-segment",
         &[("src/m.mw", source)],

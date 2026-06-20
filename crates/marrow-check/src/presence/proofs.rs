@@ -1,5 +1,7 @@
 use super::scope::NameScope;
-use super::target::{ReadTarget, proof_place, read_file, read_target_with_scope};
+use super::target::{
+    ReadPlace, ReadTarget, ReadTargetValue, proof_place, read_file, read_target_with_scope,
+};
 use crate::facts::{
     PresenceProofDraft, PresenceProofPlace, PresenceProofRead, PresenceProofSource,
     PresenceProofStatus,
@@ -21,6 +23,18 @@ pub(super) fn read_proof(
     scope: &NameScope,
 ) -> Option<ReadProof> {
     let target = read_target_with_scope(program, expr, scope)?;
+    // A direct address-only saved read is a partial-key composite layer — an iterable
+    // inner sub-tree, not a maybe-present value. Descending a field off it is already
+    // owned by `check.layer_not_value`, so recording a presence proof here would only
+    // pile a second `bare_maybe_present_read` on the same mistake. A neighbor read of
+    // such a prefix still resolves a single edge value, and an index range is its own
+    // store-index presence, so both keep their proofs.
+    if matches!(target.place, ReadPlace::Saved { .. })
+        && target.value == ReadTargetValue::AddressOnly
+        && target.read == PresenceProofRead::Direct
+    {
+        return None;
+    }
     let place = proof_place(&target)?;
     let (source, status) = match context {
         ReadContext::Resolved => (

@@ -15,7 +15,7 @@ pub(crate) use direct::{direct_effects_for_block, direct_effects_for_expr};
 pub(crate) use read_only::{ReadOnlyExpressionEffects, read_only_expression_effects};
 pub(crate) use target::{
     bindable_saved_value_read_in_type_scope, exists_target_in_type_scope,
-    read_resolves_in_type_scope,
+    read_value_resolves_in_type_scope,
 };
 pub(crate) use writes::{effect_closure, effect_closure_for_direct};
 
