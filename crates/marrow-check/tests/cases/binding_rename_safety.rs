@@ -323,6 +323,44 @@ fn a_source_only_parameter_rename_edits_only_identifier_tokens() {
 }
 
 #[test]
+fn an_imported_module_alias_has_no_source_only_rename_action() {
+    let library = "module shelf::books\n\
+        resource Book\n    \
+        required title: string\n\
+        pub fn title(): string\n    \
+        return \"Dune\"\n";
+    let app = "module shelf::app\n\
+        use shelf::books\n\
+        fn run(items: sequence[books::Book]): string\n    \
+        return books::title()\n";
+    let (index, paths) = analyze(
+        "rename-import-alias",
+        &[("src/shelf/books.mw", library), ("src/shelf/app.mw", app)],
+    );
+    let file = &paths[1];
+
+    let call_offset = app.find("books::title").expect("alias use") + 1;
+    let def = index
+        .definition(file, call_offset)
+        .expect("the imported module alias use resolves to its import");
+    assert_eq!(def.kind, SymbolKind::ModuleRef, "{def:?}");
+    assert_eq!(index.rename_safety(&def), RenameSafety::SourceOnly);
+    assert_eq!(&app[def.span.start_byte..def.span.end_byte], "books");
+
+    assert!(
+        index.rename_action(&def, "volumes").is_none(),
+        "module imports have no alias syntax, so rename_action must not generate module-target edits"
+    );
+
+    let type_offset = app.find("sequence[books::Book]").expect("alias type") + "sequence[".len();
+    let type_def = index
+        .definition(file, type_offset + 1)
+        .expect("the imported module alias in a wrapped type resolves to its import");
+    assert_eq!(type_def, def, "{type_def:?}");
+    assert!(index.rename_action(&type_def, "volumes").is_none());
+}
+
+#[test]
 fn a_documented_source_only_parameter_rename_edits_only_identifier_tokens() {
     let source = "module m\n\
         pub fn greet(\n    \

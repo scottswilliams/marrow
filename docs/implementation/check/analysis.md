@@ -83,7 +83,9 @@ from the checked program or snapshot:
   direct callees and report typed store/index ids, not source spellings.
 - `BindingIndex::rename_action` returns source edits plus a canonical
   `evolve rename` fragment for saved-data-backed definitions, so editor callers
-  do not synthesize catalog paths or formatter output themselves.
+  do not synthesize catalog paths or formatter output themselves. Imported
+  module references remain navigation facts only because imports have no alias
+  syntax to edit independently of the module path.
 - `BindingIndex::parameter_definition` maps a parameter definition or use back
   to its checked `FunctionFact`, `LocalFact`, and parameter ordinal. Editor
   callers use that identity to join token-tight source spans to signature facts

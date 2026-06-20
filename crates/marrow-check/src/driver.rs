@@ -1047,7 +1047,7 @@ pub(crate) fn split_type_path(path: &str) -> Vec<String> {
 }
 
 /// The unqualified last segment of a `::`-separated path (`shelf::books` → `books`).
-fn short_name(path: &str) -> &str {
+pub(crate) fn short_name(path: &str) -> &str {
     path.rsplit("::").next().unwrap_or(path)
 }
 

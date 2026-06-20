@@ -40,7 +40,7 @@ use crate::infer::{infer_only, local_binding};
 use crate::source_spans::source_span_at;
 use crate::{
     AnalysisSnapshot, CheckedProgram, Def, DefItem, Resolution, ResolvableKind, expand_alias,
-    resolve, resolve_function_in_module, split_type_path,
+    resolve, resolve_function_in_module, short_name, split_type_path,
 };
 
 /// What a [`SymbolRef`] names. The kinds the index resolves, grouped by where they
@@ -85,12 +85,13 @@ pub struct SymbolRef {
 
 /// Whether renaming a symbol is safe to do purely in source.
 ///
-/// `SourceOnly` symbols (locals, parameters, constants, functions, module
-/// aliases, and resources with no saved root) exist only in source, so a rename
-/// that updates every reference is complete. `SavedDataBacked` symbols name
-/// something encoded on disk — a saved field/group/layer/index, or a resource
-/// attached to a saved root. Renaming such a symbol requires catalog-backed
-/// evolution intent rather than a source-only edit.
+/// `SourceOnly` symbols exist only in source, so they are not backed by saved
+/// data. Most have source rename actions, but module aliases intentionally do not:
+/// v0.1 imports have no alias syntax, so editing the imported path leaf would
+/// retarget the import. `SavedDataBacked` symbols name something encoded on disk
+/// — a saved field/group/layer/index, or a resource attached to a saved root.
+/// Renaming such a symbol requires catalog-backed evolution intent rather than a
+/// source-only edit.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RenameSafety {
     /// Safe to rename in source alone.
@@ -236,6 +237,9 @@ impl BindingIndex {
 
     pub fn rename_action(&self, def: &SymbolRef, new_name: &str) -> Option<RenameAction> {
         let binding = self.binding_for(def)?;
+        if binding.definition.kind == SymbolKind::ModuleRef {
+            return None;
+        }
         let edits = binding
             .references
             .iter()
@@ -311,6 +315,7 @@ struct ResolvedEnumMemberUse {
 struct IndexBuilder<'p> {
     program: &'p CheckedProgram,
     bindings: Vec<Binding>,
+    module_aliases: HashMap<PathBuf, HashMap<String, DefId>>,
     /// Module-level definitions visible project-wide, keyed for use resolution:
     /// `(module name, leaf name, kind)` -> the defining binding. Module-qualified
     /// functions, resources, and constants resolve here.
@@ -342,6 +347,7 @@ impl<'p> IndexBuilder<'p> {
         Self {
             program,
             bindings: Vec::new(),
+            module_aliases: HashMap::new(),
             module_scope: ModuleScope::default(),
         }
     }
@@ -431,16 +437,23 @@ impl<'p> IndexBuilder<'p> {
             .collect();
 
         // `use shelf::books` introduces the short name `books` as a module
-        // reference. The whole `use` path is the definition span.
+        // reference.
         for use_decl in &parsed.file.uses {
-            self.define(
-                SymbolRef {
-                    file: file.to_path_buf(),
-                    span: use_decl.span,
-                    kind: SymbolKind::ModuleRef,
-                },
-                RenameSafety::SourceOnly,
-            );
+            let short = short_name(&use_decl.name);
+            if let Some(span) = last_name_span(source, use_decl.span, short) {
+                let id = self.define(
+                    SymbolRef {
+                        file: file.to_path_buf(),
+                        span,
+                        kind: SymbolKind::ModuleRef,
+                    },
+                    RenameSafety::SourceOnly,
+                );
+                self.module_aliases
+                    .entry(file.to_path_buf())
+                    .or_default()
+                    .insert(short.to_string(), id);
+            }
         }
 
         for declaration in &parsed.file.declarations {
@@ -796,6 +809,8 @@ impl<'p> IndexBuilder<'p> {
         module: &str,
         ty: &TypeRef,
     ) {
+        let schema_type = SchemaType::resolve(ty);
+        self.collect_type_module_alias_use(file, source, ty, &schema_type);
         if let EnumAnnotationResolution::Visible(resolved) =
             resolve_enum_annotation(ty, self.program, aliases, file)
         {
@@ -813,6 +828,50 @@ impl<'p> IndexBuilder<'p> {
             return;
         }
         self.collect_resource_type_ref(file, source, aliases, module, ty);
+    }
+
+    fn collect_type_module_alias_use(
+        &mut self,
+        file: &Path,
+        source: &str,
+        ty: &TypeRef,
+        schema_type: &SchemaType,
+    ) {
+        match schema_type {
+            SchemaType::Sequence(element) => {
+                self.collect_type_module_alias_use(file, source, ty, element);
+            }
+            SchemaType::Named(name) => {
+                let segments = split_type_path(name);
+                self.collect_module_alias_use(file, source, ty.span, &segments);
+            }
+            SchemaType::Identity(_) | SchemaType::Scalar(_) | SchemaType::Unknown => {}
+        }
+    }
+
+    fn collect_module_alias_use(
+        &mut self,
+        file: &Path,
+        source: &str,
+        span: SourceSpan,
+        segments: &[String],
+    ) {
+        let Some(first) = segments.first().filter(|_| segments.len() > 1) else {
+            return;
+        };
+        let Some(def) = self
+            .module_aliases
+            .get(file)
+            .and_then(|aliases| aliases.get(first.as_str()))
+            .copied()
+        else {
+            return;
+        };
+        if let Some(segment_spans) = qualified_segment_spans(source, span, segments)
+            && let Some(alias_span) = segment_spans.first().copied()
+        {
+            self.use_of(def, file, alias_span, SymbolKind::ModuleRef);
+        }
     }
 
     fn collect_resource_type_ref(
@@ -1268,6 +1327,7 @@ impl UseWalker<'_, '_> {
         span: SourceSpan,
         scope: &[HashMap<String, DefId>],
     ) {
+        self.resolve_module_alias_use(segments, span);
         if let [name] = segments {
             // A single-segment name is a local, parameter, module constant,
             // resource, or imported alias.
@@ -1449,6 +1509,7 @@ impl UseWalker<'_, '_> {
         else {
             return false;
         };
+        self.resolve_module_alias_use(segments, *callee_span);
         // Constructors are call-shaped but name resources, not functions. Resolve
         // them with the same module-aware resource resolver used by the checker.
         let resolved_segments = expand_alias(segments, self.aliases);
@@ -1485,6 +1546,11 @@ impl UseWalker<'_, '_> {
             return true;
         }
         false
+    }
+
+    fn resolve_module_alias_use(&mut self, segments: &[String], span: SourceSpan) {
+        self.builder
+            .collect_module_alias_use(self.file, self.source, span, segments);
     }
 
     fn resolve_saved_path(
