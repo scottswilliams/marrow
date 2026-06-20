@@ -252,7 +252,7 @@ evolve_step     =
 evolve_target   = saved_path | qualified_name | local_path ;
 ```
 
-An `evolve` block declares durable intent about catalog-addressable entities: a
+An `evolve` block declares durable intent about addressable durable entities: a
 resource member, a saved root, a store index, an enum, or an enum member. Each
 target is written in the same surface form the language already uses to reference
 that entity (`Book.title`, `^books`, `^books.byTitle`, `Status::archived`).

@@ -77,8 +77,8 @@ resource Patient
 store ^patients(id: string): Patient
 ```
 
-Source stable-id annotations are not part of v0.1; durable field identity
-belongs in the catalog.
+Saved data carries its own durable identity, so a field's identity is never
+declared in source.
 
 Fields are sparse by default. Add `required` when a resource is invalid
 without a populated field:
@@ -162,7 +162,7 @@ surface facts.
 
 ## Evolution
 
-An `evolve` block declares durable intent about catalog-addressable entities,
+An `evolve` block declares durable intent about addressable durable entities,
 which a plain source change never implies:
 
 ```mw

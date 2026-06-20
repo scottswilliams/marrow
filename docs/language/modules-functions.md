@@ -315,7 +315,7 @@ Module-level declarations — functions, constants, enums, resources, and surfac
 `int`. An imported short module name binds the import even when it matches a
 builtin name, shadowing the builtin within the file. Local variables may also
 shadow builtin names. Surface declarations participate here as source names only;
-they are not catalog entries, route declarations, or callable values. Custom
+they are not durable saved-data entities, route declarations, or callable values. Custom
 application behavior remains ordinary `pub fn` code until a future surface
 profile groups checked functions explicitly.
 

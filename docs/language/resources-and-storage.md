@@ -14,7 +14,7 @@ different physical residency while still satisfying the backend contract;
 source remains `^`.
 
 Ordinary application code declares stores for saved roots. Inspection, data
-evolution, backup, and restore tools operate through checked tree-cell facts
+evolution, backup, and restore tools operate through the checked tree
 rather than treating backend keys as source semantics.
 
 Saved address syntax is logical. Marrow decides how roots, keyed layers, fields,
@@ -185,21 +185,18 @@ value, or the type of the field. In the example above, code still reads and writ
 ^books(id).title = "Small Gods"
 ```
 
-Durable identity is owned by the accepted catalog, not by source spelling. The
-committed artifact is `marrow.catalog.json`; the store keeps a private copy
-beside the data it identifies so state-establishing commands can commit catalog
-rows and data together and repair interrupted file renders. There is no JSON ABI,
-no `^catalog` root, no catalog resource, standard-library, or data-CLI
-surface, and no stable-id annotations in source. Each resource, store, field,
-keyed layer, index, enum, and enum member gets an opaque stable id, recorded when
-the project first runs against a durable store. The accepted catalog advances on
-`run` for changes that mutate no stored record, and through `evolve apply` for
-record work and data-loss decisions; every advance writes through one store
-transaction, then renders `marrow.catalog.json` from the committed snapshot.
-Because identity lives in the catalog, renaming a field in source does not change
-its durable identity or move stored data — the rename carries identity forward
-through `evolve rename` or an alias the accepted catalog already records (see
-Evolution below).
+Saved data has a stable identity that does not depend on source spelling. The
+live store is the authority for the identity and shape of accepted saved data;
+the checked `.mw` program is the authority for the shape you want next. `marrow.lock`
+is a generated file: commit it, but never hand-edit it. It seeds the saved-data
+identity of a fresh empty store and reports a stale lock when it no longer matches
+the source, yet a valid store always wins — the lock never overrides or repairs
+live saved data. Saved-data identity is never declared in source.
+
+Because identity belongs to the saved data, not to the name, renaming a field in
+source does not by itself change that field's identity or move stored data. A rename
+is explicit: `evolve rename` (or an alias the store already records) carries identity
+and stored data forward to the new name (see Evolution below).
 
 Adding a sparse field is a source change. Adding a required field requires
 explicit data-evolution work that populates existing saved resources before code
@@ -209,8 +206,8 @@ generated index tree when matching base data already exists.
 ## Application Surfaces
 
 A `surface Name from ^root` declaration is a checked application contract over an
-existing store. It does not declare saved data, mint catalog identity, change the
-source digest for durable data, or alter backup, restore, or evolution
+existing store. It does not declare saved data, establish saved-data identity,
+change the saved shape, or alter backup, restore, or evolution
 obligations. The backing store, projected fields, generated write inputs,
 collection aliases, action aliases, and computed-read aliases resolve to
 existing checked facts.
@@ -241,8 +238,8 @@ public-function reads:
   reuses the function's `entry.invoke.v1` identity, argument shapes, and return
   shape, so workflows and CRUD-like operations are authored once as normal
   checked functions rather than repeated in a separate surface language. The
-  active action JSON surface accepts scalar values, enums with accepted catalog
-  IDs, identities whose store and scalar keys have accepted catalog IDs, and
+  active action JSON surface accepts scalar values, enums with accepted stable
+  ids, identities whose store and scalar keys have accepted stable ids, and
   sequences of scalars or enums. Resource trees, local trees, errors, unknown
   values, and unsupported sequence elements are ordinary function types but are
   not exported as surface action parameters or returns yet.
@@ -292,7 +289,7 @@ update, and delete descriptors use generated operation labels. A surface remains
 source-only until
 its backing store, projected fields, create fields, update fields, collection
 indexes, and every action/computed-read parameter and return durable type have
-accepted catalog IDs.
+accepted stable ids.
 `marrow-run` exposes admitted transport-neutral node and collection read
 executors over stable surface facts, plus an unstable read-only project session
 that opens an already accepted native store and admits those reads by operation
@@ -309,28 +306,28 @@ records and remove the full backing record subtree plus generated index rows.
 Actions execute the resolved `pub fn` through the same checked entry invocation
 machinery as `marrow run`, so their writes, transactions, host-effect checks,
 and return values are language semantics, not a generated CRUD side channel.
-Surface action JSON results use the surface value DTO with accepted catalog IDs
+Surface action JSON results use the surface value DTO with accepted stable ids
 for enums and identities rather than checker-local runtime IDs or source root
 labels.
 Computed reads execute through the same checked entry invocation machinery in a
 read-only effect profile. Their JSON results carry captured output plus an
 optional computed-read value DTO; resource results carry the accepted resource
-catalog ID and accepted resource-member catalog IDs for each declared result
+stable id and accepted resource-member stable ids for each declared result
 field.
 
 `marrow-json` renders check-output surface ABI descriptors, decodes checked read
 request-parameter DTOs, create request-body DTOs, sparse update request-body
 DTOs, delete request DTOs, action argument DTOs, and computed-read argument
 DTOs, and renders already-executed read, create, action, and computed-read
-results as DTOs with accepted catalog IDs
-and typed values. Runtime output uses accepted store and resource-member catalog
-IDs as semantic identity; enum and identity field values use accepted catalog
-IDs as well. Source names remain render labels. A stable exported surface
-operation cannot use proposal-only catalog IDs; until every referenced durable
-fact has an accepted catalog ID, the facts carry a source-only catalog status
-rather than a stable client contract. A pending catalog proposal for the checked
-source is reported as its own blocker, because accepted IDs alone do not prove
-the current store, member, or index shape is the committed shape. Deferred
+results as DTOs with accepted stable ids
+and typed values. Runtime output uses accepted store and resource-member stable
+ids as semantic identity; enum and identity field values use accepted stable
+ids as well. Source names remain render labels. A stable exported surface
+operation cannot use proposal-only stable ids; until every referenced durable
+fact has an accepted stable id, the facts carry no stable descriptor
+rather than a stable client contract. A pending evolution for the checked
+source is reported as its own blocker, because accepted ids alone do not prove
+the current store, member, or index shape is the shape the store holds. Deferred
 surface profiles are tracked in
 [Surface ABI](../surface-abi.md).
 
@@ -852,32 +849,31 @@ Cascading cleanup is ordinary application or data-evolution code.
 
 ## Backup And Restore
 
-Typed backup and restore are commands (`marrow backup`, `marrow restore`).
-Backups are not engine files: a backup carries a manifest with the source,
-catalog, engine-profile, and value-codec facts, plus the canonical tree-cell data
-stream as typed cell targets, so it restores under the Marrow storage contract
-rather than by copying raw bytes. The generated indexes are derived data, so a
-backup omits them and a restore rebuilds them from the restored records.
-Backups are deterministic and portable across conforming backends at the same
-layout and codec, but byte identity requires matching accepted catalog facts,
-engine profile, value codec, and stored data. Stable IDs are random opaque
-values that freeze when accepted, so divergent catalog histories may still
-freeze distinct accepted IDs for source that looks equivalent.
+Typed backup and restore are commands (`marrow backup`, `marrow restore`). A
+backup is the portable, full-state path for a project's saved data: it is
+self-describing and carries every saved-data identity and shape it needs to be
+restored under the Marrow storage contract rather than by copying raw bytes. The
+generated indexes are derived data, so a backup omits them and a restore rebuilds
+them from the restored records. Backups are deterministic and portable across
+conforming backends, but byte identity requires the same saved-data identities,
+shape, and stored data. Saved-data identities are stable values fixed when they
+are first accepted, so two projects whose histories diverged may hold distinct
+identities for source that looks equivalent.
 
 Restore replays a backup into an empty store by default, or into a counted
-replace target with `restore --replace --count N`, and validates the data
-conditions required for activation. The replay is all-or-nothing: any checksum,
-framing, or verification failure rolls the target back to its prior state.
-Managed cells under roots or members the current source/catalog does not declare
-are rejected as data-attached integrity failures; restore never treats
-raw saved paths as the production backup contract.
+replace target with `restore --replace --count N`, and validates the conditions
+required to bring the data back online. Restore re-establishes saved-data identity
+from the backup itself, never from `marrow.lock`. The replay is all-or-nothing:
+any checksum, framing, or verification failure rolls the target back to its prior
+state. Saved data under roots or members the current source does not declare is
+rejected as an integrity failure; restore never treats raw saved paths as the
+production backup contract.
 
 Backup-backed inspection is not restore. `marrow data ... --backup` and
-`marrow evolve preview --from-backup` validate the same artifact framing,
-catalog section, engine/value-codec identity, data checksum, and trailing-byte
-contract, then replay the data into an ephemeral memory store. That mount is a
-read target only: it never opens or locks the configured native store, never
-renders a catalog artifact, and never writes durable state.
+`marrow evolve preview --from-backup` validate the same self-describing backup
+section, data checksum, and trailing-byte contract, then replay the data into an
+ephemeral memory store. That mount is a read target only: it never opens or locks
+the configured native store and never writes durable state.
 
 ## Transactions
 
@@ -922,7 +918,7 @@ committed saved data, or they roll back. Marrow does not require application
 code to handle half-applied generated indexes.
 
 ID allocation is allowed to leave gaps, including gaps left by failed or
-rolled-back work. Treat IDs as opaque identifiers, not business counters.
+rolled-back work. Treat IDs as opaque values, not business counters.
 
 ## Concurrency
 
@@ -994,12 +990,12 @@ data-integrity risk.
 
 ## Evolution
 
-Durable schema changes state their intent in an `evolve` block. A bare source
+Database shape changes state their intent in an `evolve` block. A bare source
 diff implies nothing about stored data: renaming a member in the resource alone
 is ambiguous between delete-and-add and identity-preserving rename. The old
-catalog entity and its stored cells remain tied to the prior accepted identity,
-and the newly spelled member does not inherit them unless source evolution states
-that intent. The `evolve` block names what the change means for durable identity:
+entity and its stored data keep their saved-data identity, and the newly spelled
+member does not inherit them unless source evolution states that intent. The
+`evolve` block names what the change means for saved-data identity:
 
 ```mw
 evolve
@@ -1009,14 +1005,14 @@ evolve
 ```
 
 `rename old -> new` declares that the entity now spelled `new` is the durable
-entity formerly spelled `old`, so its stable identity and stored data carry
-forward and the old path is kept as an alias. A saved-data-backed rename is
-rejected unless an `evolve rename` states this intent, or the accepted catalog
-already records the alias; either way authorizes it, so identity is never silently
+entity formerly spelled `old`, so its saved-data identity and stored data carry
+forward and the old path is kept as an alias. A rename over populated saved data
+is rejected unless an `evolve rename` states this intent, or the store already
+records the alias; either way authorizes it, so identity is never silently
 reassigned. `default` gives the value to backfill where a newly populated member
 is absent. `retire` is destructive: it states intent to remove an entity and its
-stored data. `transform` computes the new shape of an entity from the old through
-a checked body.
+stored data, reserving its identity so a later entity cannot reuse it. `transform`
+computes the new shape of an entity from the old through a checked body.
 
 A `default` value must be a constant the checker can evaluate when the change is
 discharged: a literal such as `"unknown"`, `0`, or `true`. The same fill is written
@@ -1034,7 +1030,7 @@ evolve
 ```
 
 The target must be a top-level member of the resource; a nested member under a group
-or keyed layer is rejected. The same v0.1 fence applies inside typed keyed-entry
+or keyed layer is rejected. The same v0.1 restriction applies inside typed keyed-entry
 layers such as `Post.comments(seq): Comment`: nested retire, default, and
 transform work below that layer fails closed rather than freezing an entry
 evolution contract.
@@ -1060,13 +1056,17 @@ current type. A record whose stored bytes no longer decode fails the change clos
 with a repair diagnostic, so a transform applies only over data that is unchanged or
 compatibly widened in the members it reads.
 
-The intent is checked against the source and the accepted catalog; it does not
-itself rewrite stored data. A change that backfills, transforms, or destructively
-drops stored data is applied explicitly with `evolve apply`; a change that mutates
-no stored record is applied automatically when the project next runs. An explicit
-Retire-bearing apply requires a recovery choice: `--backup <path>` writes and
-validates a typed backup before mutation, while `--no-backup` records the
-operator's opt-out in the apply receipt.
+`evolve preview` checks the intent against the source and the live store and reports
+a typed verdict for the change as a whole — `safe`, `needs-data`, or `destructive` —
+without rewriting stored data. A `safe` change touches no stored record and is applied
+automatically when the project next runs; a `needs-data` change (a backfill or
+transform) or a `destructive` change (a retire) is gated and applied explicitly with
+`evolve apply`. A pending evolution that has not been applied is a blocker: the project
+will not run against the store until the change is applied or withdrawn. A stale lock
+is reported when `marrow.lock` no longer matches the source; the lock is regenerated,
+never hand-edited. An explicit retire-bearing apply requires a recovery choice:
+`--backup <path>` writes and validates a typed backup before mutation, while
+`--no-backup` records the operator's opt-out in the apply receipt.
 
 ## Passing Resource Values
 

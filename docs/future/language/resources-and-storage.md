@@ -35,9 +35,9 @@ model because they mix two different axes: semantic lifetime and physical
 residency.
 
 Ephemeral roots reuse resource shapes and ordinary checked reads, writes, and
-iteration, but they do not receive catalog identity, do not appear in portable
-backups, and are not data-evolved. A source, catalog, type, or build change
-discards and rebuilds them by manifest match.
+iteration, but they do not receive durable saved-data identity, do not appear in
+portable backups, and are not data-evolved. A source, shape, type, or build
+change discards and rebuilds them by manifest match.
 
 Natural uses are fast computed structures that should not become durable
 B-tree indexes: full-text and inverted indexes, graph adjacency, vector indexes,

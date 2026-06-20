@@ -60,7 +60,7 @@ identities.
 An `enum` is a named, fixed set of values — the user-defined generalization of
 `bool`. It is a named scalar-valued type: a value such as `Status::archived`
 compares nominally (it equals only a value of the same enum) and stores as the
-member's stable catalog identity, decoded back to the current source member, so
+member's stable saved-data identity, decoded back to the current source member, so
 reordering members does not change stored meaning. See [Enums](enums.md).
 
 ## Saved Types
