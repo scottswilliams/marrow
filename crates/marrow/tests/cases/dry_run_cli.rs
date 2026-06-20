@@ -1212,9 +1212,12 @@ fn dry_run_json_reports_per_root_and_index_write_counts() {
     let report: serde_json::Value =
         serde_json::from_str(String::from_utf8(dry.stderr).expect("stderr utf8").trim())
             .expect("dry-run json");
+    // Two field writes to the same record establish its node once, so the root
+    // reports a single create for the record node and two field writes, matching
+    // the one presence node and two leaf cells a real run commits.
     assert_eq!(
         report["write_counts"]["roots"]["books"],
-        serde_json::json!({ "creates": 2, "writes": 2, "deletes": 0 }),
+        serde_json::json!({ "creates": 1, "writes": 2, "deletes": 0 }),
         "{report}"
     );
     assert_eq!(
@@ -1237,6 +1240,136 @@ fn dry_run_json_reports_per_root_and_index_write_counts() {
         }),
         "dry-run index target keys must use typed saved-key JSON: {report}"
     );
+}
+
+#[test]
+fn dry_run_counts_a_record_node_create_once_per_identity() {
+    // A record written field by field re-establishes its node before each field
+    // write, so the planned-write stream holds one empty-path node write per field.
+    // The count summary must collapse those to a single record-node create and
+    // count each field once, reconciling with the leaf cells a real run commits.
+    let project = temp_project("dryrun-node-create-once", |root| {
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".data" }, "run": { "defaultEntry": "app::main" } }"#,
+        );
+        write(
+            root,
+            "src/app.mw",
+            "module app\n\n\
+             resource Thing\n\
+             \x20\x20\x20\x20a: string\n\
+             \x20\x20\x20\x20b: string\n\
+             \x20\x20\x20\x20c: string\n\
+             \x20\x20\x20\x20d: string\n\
+             \x20\x20\x20\x20e: string\n\
+             store ^things(id: int): Thing\n\n\
+             pub fn main()\n\
+             \x20\x20\x20\x20^things(1).a = \"1\"\n\
+             \x20\x20\x20\x20^things(1).b = \"2\"\n\
+             \x20\x20\x20\x20^things(1).c = \"3\"\n\
+             \x20\x20\x20\x20^things(1).d = \"4\"\n\
+             \x20\x20\x20\x20^things(1).e = \"5\"\n",
+        );
+    });
+    let dir = project.to_str().unwrap().to_string();
+
+    let dry = marrow(&["run", "--dry-run", "--format", "json", &dir]);
+    assert_eq!(dry.status.code(), Some(0), "{dry:?}");
+    let report: serde_json::Value =
+        serde_json::from_str(String::from_utf8(dry.stderr).expect("stderr utf8").trim())
+            .expect("dry-run json");
+    assert_eq!(
+        report["write_counts"]["roots"]["things"],
+        serde_json::json!({ "creates": 1, "writes": 5, "deletes": 0 }),
+        "five field writes to one record are one node create and five field writes: {report}"
+    );
+
+    // The counts reconcile with what a real run commits: a real run of the same
+    // entry leaves five leaf cells under the one record.
+    let real = marrow(&["run", &dir]);
+    assert_eq!(real.status.code(), Some(0), "real run: {real:?}");
+    let stats = marrow(&["data", "stats", "--format", "json", &dir]);
+    assert_eq!(stats.status.code(), Some(0), "stats: {stats:?}");
+    let stats_json: serde_json::Value =
+        serde_json::from_str(String::from_utf8(stats.stdout).expect("stdout utf8").trim())
+            .expect("stats json");
+    assert_eq!(
+        stats_json["cells"], 5,
+        "dry-run field writes must reconcile with the committed leaf cells: {stats_json}"
+    );
+}
+
+#[test]
+fn dry_run_counts_a_sparse_write_to_an_existing_record_as_no_create() {
+    // Seeding a record commits its node once. A later sparse write to that already
+    // committed record re-establishes the same node but creates nothing: the real
+    // run adds one leaf cell and no new record. The dry-run create count must read
+    // the prior state in the isolated store copy and report `creates: 0`.
+    let project = temp_project("dryrun-existing-record-no-create", |root| {
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".data" }, "run": { "defaultEntry": "app::main" } }"#,
+        );
+        write(
+            root,
+            "src/app.mw",
+            "module app\n\n\
+             resource Book\n\
+             \x20\x20\x20\x20required title: string\n\
+             \x20\x20\x20\x20help: string\n\
+             store ^books(id: int): Book\n\n\
+             pub fn seed()\n\
+             \x20\x20\x20\x20^books(1).title = \"Small Gods\"\n\n\
+             pub fn main()\n\
+             \x20\x20\x20\x20^books(1).help = \"see also\"\n",
+        );
+    });
+    let dir = project.to_str().unwrap().to_string();
+
+    let seed = marrow(&["run", "--entry", "app::seed", &dir]);
+    assert_eq!(seed.status.code(), Some(0), "seed run: {seed:?}");
+
+    let dry = marrow(&[
+        "run",
+        "--entry",
+        "app::main",
+        "--dry-run",
+        "--format",
+        "json",
+        &dir,
+    ]);
+    assert_eq!(dry.status.code(), Some(0), "{dry:?}");
+    let report: serde_json::Value =
+        serde_json::from_str(String::from_utf8(dry.stderr).expect("stderr utf8").trim())
+            .expect("dry-run json");
+    assert_eq!(
+        report["write_counts"]["roots"]["books"],
+        serde_json::json!({ "creates": 0, "writes": 1, "deletes": 0 }),
+        "a sparse write to an already committed record creates nothing: {report}"
+    );
+
+    // The dry-run create/write counts reconcile with the real run: it adds exactly
+    // one leaf cell and no new record node.
+    let cells_before = stat_cells(&dir);
+    let real = marrow(&["run", "--entry", "app::main", &dir]);
+    assert_eq!(real.status.code(), Some(0), "real run: {real:?}");
+    assert_eq!(
+        stat_cells(&dir),
+        cells_before + 1,
+        "the sparse write commits exactly one new leaf cell"
+    );
+}
+
+fn stat_cells(dir: &str) -> u64 {
+    let stats = marrow(&["data", "stats", "--format", "json", dir]);
+    assert_eq!(stats.status.code(), Some(0), "stats: {stats:?}");
+    let stats_json: serde_json::Value =
+        serde_json::from_str(String::from_utf8(stats.stdout).expect("stdout utf8").trim())
+            .expect("stats json");
+    stats_json["cells"].as_u64().expect("cells is a number")
 }
 
 #[test]

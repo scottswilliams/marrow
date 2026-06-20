@@ -9,9 +9,20 @@ use marrow_store::tree::TreeStore;
 
 use crate::{CheckReport, CheckedProgram};
 
+/// The native store `dataDir` directory could not be created.
+pub const CONFIG_DATA_DIR: &str = "config.data_dir";
+
 #[derive(Debug)]
 pub enum ProjectIoError {
     Io {
+        path: PathBuf,
+        error: std::io::Error,
+    },
+    /// The native store's `dataDir` directory could not be created: the path is
+    /// occupied by a non-directory file, a parent denies access, or the
+    /// filesystem is read-only. This is a write-path (directory-creation) fault,
+    /// distinct from a read of an existing file, so it never carries `io.read`.
+    DataDirCreate {
         path: PathBuf,
         error: std::io::Error,
     },
@@ -38,6 +49,7 @@ impl ProjectIoError {
     pub fn code(&self) -> &'static str {
         match self {
             Self::Io { .. } => crate::IO_READ,
+            Self::DataDirCreate { .. } => CONFIG_DATA_DIR,
             Self::Config { code, .. } => code,
             Self::Catalog { code, .. } => code,
             Self::Check { .. } => "check.failed",
@@ -49,6 +61,11 @@ impl ProjectIoError {
     pub fn message(&self) -> String {
         match self {
             Self::Io { error, .. } => error.to_string(),
+            Self::DataDirCreate { path, error } => format!(
+                "cannot create the native store `dataDir` directory {}: {error}; \
+                 point `dataDir` at a writable directory or remove the file occupying it",
+                path.display()
+            ),
             Self::Config { message, .. } => message.clone(),
             Self::Catalog { message, .. } => message.clone(),
             Self::Check { .. } => "project failed to check".to_string(),
@@ -113,7 +130,7 @@ pub fn resolve_store_path(
         return Ok(None);
     };
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|error| ProjectIoError::Io {
+        fs::create_dir_all(parent).map_err(|error| ProjectIoError::DataDirCreate {
             path: parent.to_path_buf(),
             error,
         })?;
@@ -315,7 +332,7 @@ mod tests {
 
     use marrow_project::{ProjectConfig, StoreBackend, StoreConfig};
 
-    use super::{ProjectIoError, native_store_path, resolve_store_path};
+    use super::{CONFIG_DATA_DIR, ProjectIoError, native_store_path, resolve_store_path};
 
     fn native_config(data_dir: Option<&str>) -> ProjectConfig {
         ProjectConfig {
@@ -367,5 +384,36 @@ mod tests {
         let error = resolve_store_path(Path::new("/project"), &native_config(None)).unwrap_err();
 
         assert_native_data_dir_error(error);
+    }
+
+    #[test]
+    fn resolve_store_path_reports_a_dir_create_failure_as_a_config_fault() {
+        // Creating the `dataDir` directory is a write-path operation owned here,
+        // so any `create_dir_all` failure is a `config.data_dir` fault regardless
+        // of its errno — never the `io.read` of an existing file. A project root
+        // under a regular file fails the directory creation deterministically.
+        let dir = std::env::temp_dir().join(format!(
+            "marrow-datadir-create-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(&dir, b"not a directory").expect("write occupying file");
+
+        let error = resolve_store_path(&dir, &native_config(Some(".data"))).unwrap_err();
+        std::fs::remove_file(&dir).ok();
+
+        assert!(
+            matches!(error, ProjectIoError::DataDirCreate { .. }),
+            "a dataDir directory-creation failure is a typed config fault, not an Io read",
+        );
+        assert_eq!(error.code(), CONFIG_DATA_DIR);
+        let message = error.message();
+        assert!(
+            message.contains("create") && message.contains("dataDir"),
+            "the message names the directory it could not create: {message}"
+        );
     }
 }

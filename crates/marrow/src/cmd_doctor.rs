@@ -429,7 +429,9 @@ fn project_error_finding(
     data.insert("underlying_code".into(), json!(error.code()));
     data.insert("message".into(), json!(error.message()));
     match error {
-        ProjectIoError::Io { path, .. } | ProjectIoError::CheckLoad { path, .. } => {
+        ProjectIoError::Io { path, .. }
+        | ProjectIoError::DataDirCreate { path, .. }
+        | ProjectIoError::CheckLoad { path, .. } => {
             data.insert("path".into(), json!(path.display().to_string()));
         }
         ProjectIoError::Config { .. }

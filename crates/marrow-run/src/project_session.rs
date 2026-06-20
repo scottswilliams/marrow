@@ -329,6 +329,13 @@ impl From<marrow_check::ProjectIoError> for ProjectSessionError {
     fn from(error: marrow_check::ProjectIoError) -> Self {
         match error {
             marrow_check::ProjectIoError::Io { path, error } => Self::Io { path, error },
+            // The `dataDir` directory-creation fault owns its `config.data_dir`
+            // code and write-path message in `marrow-check`; surface those rather
+            // than reclassifying I/O failures by errno here.
+            ref create @ marrow_check::ProjectIoError::DataDirCreate { .. } => Self::Config {
+                code: create.code(),
+                message: create.message(),
+            },
             marrow_check::ProjectIoError::Config { code, message } => {
                 Self::Config { code, message }
             }

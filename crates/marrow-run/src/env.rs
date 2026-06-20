@@ -307,9 +307,20 @@ impl<'p> Env<'p> {
         self.guard_generated_index_mutations(&plan, span)?;
         // Offer each staged operation to an installed write observer in commit
         // order; an ordinary run has no hook and pays only this `is_some` check.
-        if let Some(hook) = self.hook.as_deref_mut() {
-            for (op, target, value) in plan.steps() {
-                hook.before_write(op, &target, value, self.depth);
+        // Re-establishing the presence of a record that already exists commits
+        // nothing, so the observer never sees it: a dry-run create count then
+        // tracks records actually created, not presence statements emitted.
+        if self.hook.is_some() {
+            let depth = self.depth;
+            for (step, (op, target, value)) in plan.steps.iter().zip(plan.steps()) {
+                if let PlanStep::WriteRecordPresence { address } = step
+                    && self.record_exists(address, span)?
+                {
+                    continue;
+                }
+                if let Some(hook) = self.hook.as_deref_mut() {
+                    hook.before_write(op, &target, value, depth);
+                }
             }
         }
         let in_transaction = self.transaction_depth() > 0;

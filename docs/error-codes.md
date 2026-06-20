@@ -362,6 +362,7 @@ Project-loading faults from `marrow.json` and source discovery.
 | Code | Meaning |
 |---|---|
 | `config.invalid` | `marrow.json` is malformed JSON, has an unknown key, is missing a required field, or names an unknown backend. |
+| `config.data_dir` | The native store `dataDir` directory could not be created: the path is occupied by a non-directory file, a parent denies access, or the filesystem is read-only. Point `dataDir` at a writable directory or remove the file occupying it. |
 | `project.source_root` | A configured source root could not be walked (e.g. the directory does not exist). |
 
 ### `data.*` — kind `tooling`

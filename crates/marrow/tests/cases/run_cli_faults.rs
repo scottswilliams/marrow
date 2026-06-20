@@ -1,6 +1,7 @@
 use crate::support;
 use support::{
-    ParsedResult, TempProject, last_fault, marrow_sub, parse_result_line, temp_project, write,
+    ParsedResult, TempProject, last_fault, marrow_sub, parse_result_line, temp_project,
+    temp_project_uncommitted, write,
 };
 
 /// Parse the fault line into its typed slots. The line's grammar (`file:line:col: code:
@@ -53,6 +54,92 @@ fn an_uncaught_throw_surfaces_the_located_thrown_code() {
         fault.file
     );
     assert_eq!(fault.line, Some(4));
+}
+
+#[test]
+fn a_data_dir_occupied_by_a_file_reports_an_accurate_directory_fault() {
+    // The native `dataDir` is created on the write path; a regular file occupying
+    // that path is a configuration fault, not a read failure. The fault must carry
+    // a config-family code and a message that names the dataDir as a directory it
+    // could not create, never `io.read` or "failed to read".
+    let root = temp_project_uncommitted("run-data-dir-occupied", |root| {
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".data" }, "run": { "defaultEntry": "app::main" } }"#,
+        );
+        write(
+            root,
+            "src/app.mw",
+            "module app\n\npub fn main()\n    print(\"hi\")\n",
+        );
+        write(root, ".data", "not a directory");
+    });
+
+    let output = marrow_sub("run", &[root.to_str().unwrap()]);
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let fault = parse_fault(&output.stderr);
+    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+    assert_eq!(
+        fault.code.as_str(),
+        "config.data_dir",
+        "a dataDir occupied by a file is a config fault: {stderr}"
+    );
+    assert!(
+        !stderr.contains("io.read") && !stderr.contains("failed to read"),
+        "a directory-creation failure must not render as a read failure: {stderr}"
+    );
+    assert!(
+        stderr.contains(".data") && stderr.contains("create") && stderr.contains("dataDir"),
+        "the fault must name the dataDir directory it could not create: {stderr}"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn a_data_dir_create_denied_by_permissions_reports_a_directory_fault_not_a_read() {
+    // Creating the native `dataDir` is a write-path operation. When the parent
+    // directory denies write access, the `create_dir_all` fails with
+    // `PermissionDenied`, a different errno from an occupied-by-file failure but
+    // the same directory-creation fault: it must carry the config-family code and
+    // never render as `io.read` or "failed to read".
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = temp_project_uncommitted("run-data-dir-denied", |root| {
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": "ro/data" }, "run": { "defaultEntry": "app::main" } }"#,
+        );
+        write(
+            root,
+            "src/app.mw",
+            "module app\n\npub fn main()\n    print(\"hi\")\n",
+        );
+        let locked = root.join("ro");
+        std::fs::create_dir(&locked).expect("create read-only parent");
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o500))
+            .expect("lock parent directory");
+    });
+
+    let output = marrow_sub("run", &[root.to_str().unwrap()]);
+
+    // Restore write access so the self-cleaning temp project can be removed.
+    std::fs::set_permissions(root.join("ro"), std::fs::Permissions::from_mode(0o700)).ok();
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let fault = parse_fault(&output.stderr);
+    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+    assert_eq!(
+        fault.code.as_str(),
+        "config.data_dir",
+        "a dataDir whose directory cannot be created is a config fault: {stderr}"
+    );
+    assert!(
+        !stderr.contains("io.read") && !stderr.contains("failed to read"),
+        "a directory-creation failure must not render as a read failure: {stderr}"
+    );
 }
 
 #[test]

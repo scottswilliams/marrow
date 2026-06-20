@@ -473,7 +473,11 @@ committed)` summary. Under `json`, the report object contains `committed`,
 value bytes, and a structured `target`. Target identities, index keys, and keyed
 data path segments use the same typed saved-key JSON objects as `marrow data`.
 `write_counts.roots` and `write_counts.indexes` are objects keyed by root or
-index name; each leaf is `{ "creates": N, "writes": N, "deletes": N }`.
+index name; each leaf is `{ "creates": N, "writes": N, "deletes": N }`. `creates`
+counts records the run would newly create: a record establishes one create
+regardless of how many field assignments touch it, and a write to a record that
+already exists is a write, not a create. The `writes`/`deletes` summary equals
+the sum of the per-target counts.
 
 `--trace` composes with `--dry-run`: the run is traced while its saved writes are
 isolated from the configured store. This composition is text-only: trace events

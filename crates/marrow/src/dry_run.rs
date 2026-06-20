@@ -143,11 +143,7 @@ pub(crate) fn report(
 ) {
     let names = WriteTargetNames::from_program(program);
     let write_counts = write_counts(planned, &names);
-    let writes = planned
-        .iter()
-        .filter(|step| matches!(step.op, WriteOp::Write))
-        .count();
-    let deletes = planned.len() - writes;
+    let (writes, deletes) = write_counts.totals();
     match format {
         ReportFormat::Text => {
             for message in &actions.messages {
@@ -205,6 +201,20 @@ struct TargetCounts {
 }
 
 impl WriteCounts {
+    /// The headline `write`/`delete` totals, summed from the per-target counts so
+    /// they reconcile with the per-root and per-index breakdown the report renders.
+    fn totals(&self) -> (usize, usize) {
+        self.roots.values().chain(self.indexes.values()).fold(
+            (0, 0),
+            |(writes, deletes), counts| {
+                (
+                    writes + counts.creates + counts.writes,
+                    deletes + counts.deletes,
+                )
+            },
+        )
+    }
+
     fn render_text(&self) {
         for (root, counts) in &self.roots {
             eprintln!(
@@ -255,6 +265,9 @@ fn write_counts(planned: &[PlannedWrite], names: &WriteTargetNames) -> WriteCoun
                     .roots
                     .entry(names.root_display(store).to_string())
                     .or_default();
+                // Only a record that did not already exist reaches the observer as an
+                // empty-path node write, so each such write is one record create. A
+                // re-established existing record is filtered upstream and never counted.
                 match step.op {
                     WriteOp::Write if path.is_empty() => entry.creates += 1,
                     WriteOp::Write => entry.writes += 1,
