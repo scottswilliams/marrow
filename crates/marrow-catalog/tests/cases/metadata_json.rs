@@ -8,7 +8,7 @@ use std::hash::{Hash, Hasher};
 
 use marrow_catalog::{
     CATALOG_INVALID, CATALOG_MERGE_CONFLICT, CatalogEntry, CatalogEntryKind, CatalogLifecycle,
-    CatalogMetadata,
+    CatalogLock, CatalogMetadata, LOCK_CORRUPT, LockEntry, LockLedgerTombstone,
 };
 
 /// An `Active` catalog entry with a `cat_`-shaped stable id minted deterministically from
@@ -289,6 +289,18 @@ fn git_conflict_markers_report_a_typed_merge_conflict() {
 }
 
 #[test]
+fn git_conflict_markers_report_a_typed_lock_corruption() {
+    let lock = sample_lock();
+    let clean = lock.to_lock_json_pretty().expect("lock renders");
+    let conflicted = format!("<<<<<<< HEAD\n{clean}\n=======\n{clean}\n>>>>>>> branch\n");
+
+    let error =
+        CatalogLock::from_lock_json(&conflicted).expect_err("conflict markers are rejected");
+
+    assert_eq!(error.code, LOCK_CORRUPT);
+}
+
+#[test]
 fn parallel_additions_merge_without_regenerating_ids() {
     let branch_a_id = "cat_11111111111111111111111111111111";
     let branch_b_id = "cat_22222222222222222222222222222222";
@@ -432,4 +444,328 @@ fn rejects_hostile_catalog_json_families() {
     )
     .expect_err("null byte accepted structural signature must fail closed");
     assert_eq!(error.code, CATALOG_INVALID);
+}
+
+/// A `Store` catalog entry carrying an accepted key shape, for fingerprint fixtures.
+fn store_entry(path: &str, stable_id: &str, key_shape: &str) -> CatalogEntry {
+    let mut entry = literal_entry(CatalogEntryKind::Store, path, stable_id, &[]);
+    entry.accepted_key_shape = Some(key_shape.to_string());
+    entry
+}
+
+/// A `StoreIndex` catalog entry carrying an accepted index shape, for fingerprint fixtures.
+fn index_entry(path: &str, stable_id: &str, index_shape: &str) -> CatalogEntry {
+    let mut entry = literal_entry(CatalogEntryKind::StoreIndex, path, stable_id, &[]);
+    entry.accepted_index_shape = Some(index_shape.to_string());
+    entry
+}
+
+/// A `ResourceMember` catalog entry carrying an accepted structural signature, for fixtures.
+fn member_entry(path: &str, stable_id: &str, struct_sig: &str) -> CatalogEntry {
+    let mut entry = literal_entry(CatalogEntryKind::ResourceMember, path, stable_id, &[]);
+    entry.accepted_struct = Some(struct_sig.to_string());
+    entry
+}
+
+/// A well-formed `sha256:`-prefixed producing source digest for lock fixtures.
+fn sample_source_digest() -> String {
+    "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string()
+}
+
+/// A lock with several fingerprinted entries, a non-empty cross-lifecycle ledger, a monotonic
+/// `epoch_high_water` above every tombstone, and a producing `source_digest`.
+fn sample_lock() -> CatalogLock {
+    let entries = vec![
+        LockEntry::from_catalog_entry(&store_entry(
+            "books::^books",
+            "cat_11111111111111111111111111111111",
+            "int,string",
+        )),
+        LockEntry::from_catalog_entry(&index_entry(
+            "books::^books::byTitle",
+            "cat_22222222222222222222222222222222",
+            "unique=false;keys=cat_33333333333333333333333333333333",
+        )),
+        LockEntry::from_catalog_entry(&member_entry(
+            "books::Book::title",
+            "cat_33333333333333333333333333333333",
+            "leaf:string",
+        )),
+    ];
+    let ledger = vec![
+        LockLedgerTombstone {
+            id: "cat_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+            lifecycle: CatalogLifecycle::Reserved,
+            high_water: 4,
+        },
+        LockLedgerTombstone {
+            id: "cat_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string(),
+            lifecycle: CatalogLifecycle::Reserved,
+            high_water: 6,
+        },
+    ];
+    CatalogLock::new(entries, ledger, 9, sample_source_digest()).expect("sample lock builds")
+}
+
+#[test]
+fn lock_round_trips_fingerprints_ledger_epoch_high_water_and_source_digest() {
+    let lock = sample_lock();
+    let json = lock.to_lock_json_pretty().expect("lock renders");
+    let parsed = CatalogLock::from_lock_json(&json).expect("lock parses");
+
+    assert_eq!(parsed.entries, lock.entries);
+    assert_eq!(parsed.ledger, lock.ledger);
+    assert_eq!(parsed.epoch_high_water, lock.epoch_high_water);
+    assert_eq!(parsed.epoch_high_water, 9);
+    assert_eq!(parsed.source_digest, lock.source_digest);
+
+    for lock_entry in &parsed.entries {
+        assert!(
+            lock_entry.shape_fingerprint.starts_with("sha256:"),
+            "fingerprint must be a sha256 hash: {}",
+            lock_entry.shape_fingerprint
+        );
+        assert_eq!(
+            "sha256:".len() + 64,
+            lock_entry.shape_fingerprint.len(),
+            "fingerprint must be 32 hex bytes: {}",
+            lock_entry.shape_fingerprint
+        );
+    }
+
+    for forbidden in [
+        "leaf:",
+        "keyed-group:",
+        "unique=",
+        "books::^books",
+        "byTitle",
+    ] {
+        assert!(
+            !json.contains(forbidden),
+            "lock projection leaked shape text `{forbidden}`: {json}"
+        );
+    }
+}
+
+#[test]
+fn fingerprints_separate_shapes_and_ignore_renames() {
+    let key_int = LockEntry::from_catalog_entry(&store_entry(
+        "a::^s",
+        "cat_11111111111111111111111111111111",
+        "int",
+    ));
+    let key_int_string = LockEntry::from_catalog_entry(&store_entry(
+        "a::^s",
+        "cat_11111111111111111111111111111111",
+        "int,string",
+    ));
+    assert_ne!(
+        key_int.shape_fingerprint, key_int_string.shape_fingerprint,
+        "store key arity must change the fingerprint"
+    );
+
+    let struct_int = LockEntry::from_catalog_entry(&member_entry(
+        "a::B::m",
+        "cat_22222222222222222222222222222222",
+        "leaf:int",
+    ));
+    let struct_bool = LockEntry::from_catalog_entry(&member_entry(
+        "a::B::m",
+        "cat_22222222222222222222222222222222",
+        "leaf:bool",
+    ));
+    assert_ne!(
+        struct_int.shape_fingerprint, struct_bool.shape_fingerprint,
+        "struct leaf type must change the fingerprint"
+    );
+
+    let index_nonunique = LockEntry::from_catalog_entry(&index_entry(
+        "a::^s::byX",
+        "cat_33333333333333333333333333333333",
+        "unique=false;keys=cat_44444444444444444444444444444444",
+    ));
+    let index_unique = LockEntry::from_catalog_entry(&index_entry(
+        "a::^s::byX",
+        "cat_33333333333333333333333333333333",
+        "unique=true;keys=cat_44444444444444444444444444444444",
+    ));
+    assert_ne!(
+        index_nonunique.shape_fingerprint, index_unique.shape_fingerprint,
+        "index uniqueness must change the fingerprint"
+    );
+
+    let original = LockEntry::from_catalog_entry(&member_entry(
+        "books::Book::title",
+        "cat_55555555555555555555555555555555",
+        "leaf:string",
+    ));
+    let renamed = LockEntry::from_catalog_entry(&member_entry(
+        "library::Tome::name",
+        "cat_55555555555555555555555555555555",
+        "leaf:string",
+    ));
+    assert_eq!(
+        original.shape_fingerprint, renamed.shape_fingerprint,
+        "a pure rename preserving shape must preserve the fingerprint"
+    );
+}
+
+#[test]
+fn from_lock_json_rejects_hostile_families() {
+    let lock = sample_lock();
+    let clean = lock.to_lock_json_pretty().expect("lock renders");
+    CatalogLock::from_lock_json(&clean).expect("the clean baseline parses");
+
+    let fingerprint = &lock.entries[0].shape_fingerprint;
+
+    // Non-sha256 fingerprint: wrong length.
+    let short_fingerprint = clean.replacen(fingerprint.as_str(), "sha256:0123456789abcdef", 1);
+    // Non-sha256 fingerprint: missing prefix.
+    let unprefixed_fingerprint = clean.replacen(
+        fingerprint.as_str(),
+        &fingerprint.replacen("sha256:", "weak:", 1),
+        1,
+    );
+    // A ledger entry reissuing an id that is also an active LockEntry.
+    let reissued_active_id = clean.replacen(
+        "cat_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "cat_11111111111111111111111111111111",
+        1,
+    );
+    // epoch_high_water below a tombstone's recorded high-water (tombstone high_water 6 > 5).
+    let low_epoch_high_water = clean.replacen("\"epochHighWater\": 9", "\"epochHighWater\": 5", 1);
+    // A non-sha256 source_digest.
+    let non_sha_source_digest = clean.replacen(
+        "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "weak:0000",
+        1,
+    );
+    // Duplicate ledger id (reissued tombstone, never silently deduped).
+    let duplicate_ledger_id = clean.replacen(
+        "cat_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "cat_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        1,
+    );
+    // A ledger tombstone recording the active lifecycle, which the ledger never holds.
+    let active_tombstone = clean.replacen(
+        "      \"id\": \"cat_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\n      \"lifecycle\": \"reserved\"",
+        "      \"id\": \"cat_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\n      \"lifecycle\": \"active\"",
+        1,
+    );
+    // An injected unknown JSON field at the root (serde deny_unknown_fields).
+    let unknown_field = clean.replacen("{", "{\n  \"authoritative\": true,", 1);
+    // An unknown key inside a nested LockEntry object (serde deny_unknown_fields).
+    let unknown_entry_field = clean.replacen(
+        "      \"stableId\": \"cat_11111111111111111111111111111111\",",
+        "      \"stableId\": \"cat_11111111111111111111111111111111\",\n      \"authoritative\": true,",
+        1,
+    );
+    // An unknown key inside a nested LockLedgerTombstone object (serde deny_unknown_fields).
+    let unknown_tombstone_field = clean.replacen(
+        "      \"id\": \"cat_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",",
+        "      \"id\": \"cat_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\n      \"authoritative\": true,",
+        1,
+    );
+
+    for (label, hostile) in [
+        ("short fingerprint", short_fingerprint),
+        ("unprefixed fingerprint", unprefixed_fingerprint),
+        ("ledger reissues an active id", reissued_active_id),
+        ("epoch high water below tombstone", low_epoch_high_water),
+        ("non-sha source digest", non_sha_source_digest),
+        ("duplicate ledger id", duplicate_ledger_id),
+        ("active lifecycle tombstone", active_tombstone),
+        ("unknown root field", unknown_field),
+        ("unknown entry field", unknown_entry_field),
+        ("unknown tombstone field", unknown_tombstone_field),
+    ] {
+        assert_ne!(
+            hostile, clean,
+            "{label}: the mutation must actually change the JSON, or the case tests nothing"
+        );
+        let error = CatalogLock::from_lock_json(&hostile).expect_err(label);
+        assert_eq!(error.code, LOCK_CORRUPT, "{label}");
+    }
+}
+
+/// The id NUL guard fires at the [`CatalogLock::new`] boundary for a NUL embedded in either a
+/// stable id or a ledger id, pinning the guard rather than serde's control-char rejection. The
+/// message text proves the guard, not just the code, produced the failure.
+#[test]
+fn lock_new_rejects_nul_in_ids() {
+    let nul_stable_entry = LockEntry::from_catalog_entry(&member_entry(
+        "books::Book::title",
+        "cat_5555555555555555555555555555555\u{0}",
+        "leaf:string",
+    ));
+    let stable_error = CatalogLock::new(
+        vec![nul_stable_entry],
+        Vec::new(),
+        1,
+        sample_source_digest(),
+    )
+    .expect_err("a NUL in a stable id is rejected");
+    assert_eq!(stable_error.code, LOCK_CORRUPT);
+    assert!(
+        stable_error
+            .message
+            .contains("entry stable id must not contain a NUL byte"),
+        "expected the id NUL guard message, got: {}",
+        stable_error.message
+    );
+
+    let nul_ledger = LockLedgerTombstone {
+        id: "cat_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\u{0}".to_string(),
+        lifecycle: CatalogLifecycle::Reserved,
+        high_water: 1,
+    };
+    let ledger_error = CatalogLock::new(Vec::new(), vec![nul_ledger], 1, sample_source_digest())
+        .expect_err("a NUL in a ledger id is rejected");
+    assert_eq!(ledger_error.code, LOCK_CORRUPT);
+    assert!(
+        ledger_error
+            .message
+            .contains("ledger id must not contain a NUL byte"),
+        "expected the id NUL guard message, got: {}",
+        ledger_error.message
+    );
+}
+
+/// A ` ` escape in the lock JSON decodes into a real NUL inside the string, reaching
+/// [`CatalogLock::from_lock_json`]'s id NUL guard rather than being rejected as a raw control
+/// character. The escape lands in a stable id, so the id guard rejects it with [`LOCK_CORRUPT`].
+#[test]
+fn from_lock_json_rejects_escaped_nul_in_id() {
+    let lock = CatalogLock::new(
+        vec![LockEntry::from_catalog_entry(&member_entry(
+            "books::Book::title",
+            "cat_55555555555555555555555555555555",
+            "leaf:string",
+        ))],
+        Vec::new(),
+        1,
+        sample_source_digest(),
+    )
+    .expect("baseline lock builds");
+    let clean = lock.to_lock_json_pretty().expect("lock renders");
+
+    // Replace the final hex digit of the stable id with an escaped NUL; serde decodes the escape
+    // into a real NUL inside the decoded string, so validate() sees a NUL the id guard must reject.
+    let escaped = clean.replacen(
+        "cat_55555555555555555555555555555555",
+        "cat_5555555555555555555555555555555\\u0000",
+        1,
+    );
+    assert!(
+        escaped.contains("\\u0000"),
+        "the fixture must carry a JSON escape, not a raw NUL: {escaped}"
+    );
+
+    let error = CatalogLock::from_lock_json(&escaped).expect_err("an escaped NUL id is rejected");
+    assert_eq!(error.code, LOCK_CORRUPT);
+    assert!(
+        error.message.contains("must not contain a NUL byte"),
+        "expected the id NUL guard message, got: {}",
+        error.message
+    );
 }

@@ -1,9 +1,12 @@
-//! The Marrow accepted catalog semantic model: the committed snapshot of durable
-//! identity bindings (epoch, digest, entries), its validation invariants, and the
-//! identity-aware structural-signature decode every catalog consumer reads shape
-//! through.
+//! The Marrow accepted catalog semantic model. Two committed projections share this owner:
+//! the full-shape [`CatalogMetadata`] the backup path persists, and the thin, inert
+//! [`CatalogLock`] the source tree commits — a per-entry stable id, lifecycle, and shape
+//! fingerprint, the append-only cross-lifecycle id ledger, a monotonic epoch high-water, and
+//! the producing source digest. The lock is data only: it carries no field or method that
+//! could write to, repair, or override a store. The identity-aware structural-signature decode
+//! every catalog consumer reads shape through lives here too.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
@@ -13,6 +16,9 @@ use sha2::{Digest, Sha256};
 pub const CATALOG_INVALID: &str = "catalog.invalid";
 /// Stable error code for an accepted catalog metadata file with Git conflict markers.
 pub const CATALOG_MERGE_CONFLICT: &str = "catalog.merge_conflict";
+/// Stable error code for a corrupt committed catalog lock projection. This is the wire and
+/// documentation constant every consumer matches the lock's fail-closed rejection against.
+pub const LOCK_CORRUPT: &str = "catalog.lock_corrupt";
 const LOWER_HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
 
 /// A committed accepted catalog snapshot. Source checks may read it and propose
@@ -225,6 +231,234 @@ pub fn structural_signature(signature: &str) -> Option<StructuralSignature<'_>> 
 /// through [`structural_signature`], so the convention is owned in one place.
 pub fn structural_signature_leaf_token(signature: &str) -> Option<&str> {
     structural_signature(signature).and_then(StructuralSignature::leaf_token)
+}
+
+/// The thin committed source-tree projection of catalog state. Unlike [`CatalogMetadata`], it
+/// records each entry's shape as an opaque [`shape fingerprint`](LockEntry::shape_fingerprint)
+/// rather than its full text, and adds the complete append-only cross-lifecycle id ledger, a
+/// monotonic epoch high-water, and the producing source digest. It is inert: it owns no path to
+/// a store and self-validates only, so a checked-in lock can be read and compared but never
+/// repairs, overrides, or writes durable state.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CatalogLock {
+    pub entries: Vec<LockEntry>,
+    pub ledger: Vec<LockLedgerTombstone>,
+    pub epoch_high_water: u64,
+    pub source_digest: String,
+}
+
+impl CatalogLock {
+    /// Build a lock from already-fingerprinted entries, validating its self-consistency
+    /// invariants so an in-memory lock cannot be constructed in a state the wire form would
+    /// reject.
+    pub fn new(
+        entries: Vec<LockEntry>,
+        ledger: Vec<LockLedgerTombstone>,
+        epoch_high_water: u64,
+        source_digest: String,
+    ) -> Result<Self, CatalogError> {
+        let lock = Self {
+            entries,
+            ledger,
+            epoch_high_water,
+            source_digest,
+        };
+        lock.validate()?;
+        Ok(lock)
+    }
+
+    /// Project the lock to canonical pretty JSON. Entries and ledger tombstones are emitted in a
+    /// stable identity order, so the same logical lock with its vectors in any order renders
+    /// byte-identically.
+    pub fn to_lock_json_pretty(&self) -> Result<String, CatalogError> {
+        serde_json::to_string_pretty(&self.canonical())
+            .map_err(|error| CatalogError::new(error.to_string()))
+    }
+
+    /// Parse a committed lock projection, failing closed with [`LOCK_CORRUPT`] on any corruption:
+    /// Git conflict markers, an unknown field, a malformed fingerprint or source digest, a NUL
+    /// byte in any id, a ledger id reused by an active entry, a ledger tombstone recording the
+    /// active lifecycle, a duplicate ledger id, or an epoch high-water below a tombstone's
+    /// recorded high-water. It never panics and is never lenient.
+    pub fn from_lock_json(json: &str) -> Result<Self, CatalogError> {
+        if contains_conflict_marker(json) {
+            return Err(CatalogError::lock_corrupt("contains Git conflict markers"));
+        }
+        let lock: Self = serde_json::from_str(json).map_err(CatalogError::lock_corrupt)?;
+        lock.validate()?;
+        Ok(lock)
+    }
+
+    fn canonical(&self) -> Self {
+        let mut entries = self.entries.clone();
+        entries.sort_by(|left, right| left.stable_id.cmp(&right.stable_id));
+        let mut ledger = self.ledger.clone();
+        ledger.sort_by(|left, right| left.id.cmp(&right.id));
+        Self {
+            entries,
+            ledger,
+            epoch_high_water: self.epoch_high_water,
+            source_digest: self.source_digest.clone(),
+        }
+    }
+
+    fn validate(&self) -> Result<(), CatalogError> {
+        let active_ids = self.validate_entries()?;
+        self.validate_ledger(&active_ids)?;
+        validate_sha256("source digest", &self.source_digest)
+    }
+
+    fn validate_entries(&self) -> Result<HashSet<&str>, CatalogError> {
+        let mut active_ids: HashSet<&str> = HashSet::new();
+        for entry in &self.entries {
+            require_lock_stable_id("entry stable id", &entry.stable_id)?;
+            validate_sha256("shape fingerprint", &entry.shape_fingerprint)?;
+            if !active_ids.insert(entry.stable_id.as_str()) {
+                return Err(CatalogError::lock_corrupt(format!(
+                    "entry stable id `{}` appears twice",
+                    entry.stable_id
+                )));
+            }
+        }
+        Ok(active_ids)
+    }
+
+    fn validate_ledger(&self, active_ids: &HashSet<&str>) -> Result<(), CatalogError> {
+        let mut ledger_ids: HashSet<&str> = HashSet::new();
+        for tombstone in &self.ledger {
+            require_lock_stable_id("ledger id", &tombstone.id)?;
+            if tombstone.lifecycle == CatalogLifecycle::Active {
+                return Err(CatalogError::lock_corrupt(format!(
+                    "ledger id `{}` records the active lifecycle",
+                    tombstone.id
+                )));
+            }
+            if active_ids.contains(tombstone.id.as_str()) {
+                return Err(CatalogError::lock_corrupt(format!(
+                    "ledger id `{}` is reissued by an active entry",
+                    tombstone.id
+                )));
+            }
+            if !ledger_ids.insert(tombstone.id.as_str()) {
+                return Err(CatalogError::lock_corrupt(format!(
+                    "ledger id `{}` is recorded twice",
+                    tombstone.id
+                )));
+            }
+            if tombstone.high_water > self.epoch_high_water {
+                return Err(CatalogError::lock_corrupt(format!(
+                    "epoch high-water {} is below ledger high-water {} for id `{}`",
+                    self.epoch_high_water, tombstone.high_water, tombstone.id
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// One fingerprinted entry in the committed lock: a stable id, its lifecycle, and an opaque
+/// shape fingerprint. The fingerprint stands in for the full accepted shape so the lock records
+/// a fingerprint of the shape each identity was last accepted under without committing the shape
+/// text. The lock does not cryptographically bind a fingerprint to its identity or to the source
+/// digest, so it detects an accidental shape change, not a hostile re-pairing of valid parts.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LockEntry {
+    pub stable_id: String,
+    pub lifecycle: CatalogLifecycle,
+    /// A `sha256:`-prefixed fold of the entry kind and its accepted shape fields, so two entries
+    /// fingerprint identically exactly when their kind and shape match: a key-shape, struct-leaf,
+    /// or index-uniqueness change shifts the fingerprint, while a pure rename preserving the shape
+    /// leaves it unchanged, letting the lock detect a shape change without re-parsing the grammar.
+    pub shape_fingerprint: String,
+}
+
+impl LockEntry {
+    /// Fingerprint a catalog entry into a lock entry, reusing the shape fields
+    /// [`CatalogEntry`] already owns. The accepted key shape, index shape, and structural
+    /// signature are folded as their canonical wire text alongside the entry kind, so the lock
+    /// site never re-parses the structural-signature grammar.
+    pub fn from_catalog_entry(entry: &CatalogEntry) -> Self {
+        Self {
+            stable_id: entry.stable_id.clone(),
+            lifecycle: entry.lifecycle,
+            shape_fingerprint: shape_fingerprint(entry),
+        }
+    }
+}
+
+/// An append-only cross-lifecycle id tombstone: an id that was reserved or retired, the
+/// lifecycle it rests in, and the epoch high-water at which it was recorded. Tombstones make
+/// the ledger a complete history, so a retired id is never silently reissued.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LockLedgerTombstone {
+    pub id: String,
+    pub lifecycle: CatalogLifecycle,
+    pub high_water: u64,
+}
+
+/// The pre-image a [`shape fingerprint`](LockEntry::shape_fingerprint) folds: the entry kind tag
+/// and the three accepted shape fields, by their canonical wire text. Folding the kind alongside
+/// the shape keeps two kinds with coincidentally equal shape text distinct.
+#[derive(Serialize)]
+struct FingerprintPreimage<'a> {
+    kind: u8,
+    key_shape: &'a Option<String>,
+    index_shape: &'a Option<String>,
+    struct_signature: &'a Option<String>,
+}
+
+fn shape_fingerprint(entry: &CatalogEntry) -> String {
+    let preimage = FingerprintPreimage {
+        kind: entry.kind.tag(),
+        key_shape: &entry.accepted_key_shape,
+        index_shape: &entry.accepted_index_shape,
+        struct_signature: &entry.accepted_struct,
+    };
+    let json = serde_json::to_string(&preimage)
+        .expect("a fingerprint pre-image of owned shape fields serializes");
+    digest_json(&json)
+}
+
+fn validate_sha256(label: &str, value: &str) -> Result<(), CatalogError> {
+    let Some(hex) = value.strip_prefix("sha256:") else {
+        return Err(CatalogError::lock_corrupt(format!(
+            "{label} is not a sha256 digest"
+        )));
+    };
+    let well_formed = hex.len() == 64
+        && hex
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase());
+    if well_formed {
+        Ok(())
+    } else {
+        Err(CatalogError::lock_corrupt(format!(
+            "{label} is not a sha256 digest"
+        )))
+    }
+}
+
+fn require_lock_stable_id(label: &str, id: &str) -> Result<(), CatalogError> {
+    reject_lock_nul(label, id)?;
+    if is_catalog_stable_id(id) {
+        Ok(())
+    } else {
+        Err(CatalogError::lock_corrupt(format!(
+            "{label} must match cat_<32 lowercase hex>"
+        )))
+    }
+}
+
+fn reject_lock_nul(label: &str, value: &str) -> Result<(), CatalogError> {
+    if value.contains('\0') {
+        return Err(CatalogError::lock_corrupt(format!(
+            "{label} must not contain a NUL byte"
+        )));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -458,6 +692,15 @@ impl CatalogError {
         Self {
             code: CATALOG_MERGE_CONFLICT,
             message: "catalog metadata contains Git conflict markers; resolve the conflict in marrow.catalog.json and rerun the command".to_string(),
+        }
+    }
+
+    /// A corrupt committed lock projection. Owned by the lock codec; its message names
+    /// `marrow.lock` so an operator knows which committed file to resolve.
+    fn lock_corrupt(detail: impl fmt::Display) -> Self {
+        Self {
+            code: LOCK_CORRUPT,
+            message: format!("marrow.lock is corrupt: {detail}"),
         }
     }
 }
