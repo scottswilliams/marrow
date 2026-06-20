@@ -580,7 +580,7 @@ fn bind_against_accepted(
         diagnostics,
     );
     let mut proposal_entries = catalog.entries.clone();
-    let mut allocator = StableIdAllocator::over(&proposal_entries);
+    let mut allocator = StableIdAllocator::over(&[], &proposal_entries);
     let mut changed = bind_source_entries(
         &accepted_index,
         source,
@@ -714,7 +714,7 @@ fn bind_first_run(
     for retire in &evolve.retires {
         report_unresolved_intent(&retire.file, retire.span, diagnostics);
     }
-    let mut allocator = StableIdAllocator::empty();
+    let mut allocator = StableIdAllocator::empty(&[]);
     let mut proposal_entries: Vec<CatalogEntry> = source_entries
         .iter()
         .map(|source| proposed_catalog_entry(source, &mut allocator))

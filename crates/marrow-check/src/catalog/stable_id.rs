@@ -1,40 +1,57 @@
 use std::collections::HashSet;
 use std::io::{self, Read};
 
-use marrow_catalog::CatalogEntry;
+use marrow_catalog::{CatalogEntry, LockLedgerTombstone};
 
 use crate::hex::push_lower_hex;
 
 /// Hands out random opaque 128-bit catalog ids (`cat_<32 lowercase hex>`), re-rolling
-/// against the ids already in use. Ids are random rather than a monotonic counter so
-/// branch-parallel work, which has no single coordinator, cannot collide when two
-/// branches allocate identity for different entities and merge. A clash from a hand-edited
-/// or badly merged catalog fails closed at `CatalogMetadata::validate()`, which the
-/// proposal runs at check time.
+/// against the ids it must never reuse. Ids are random rather than a monotonic counter so
+/// branch-parallel work, which has no single coordinator, cannot collide when two branches
+/// allocate identity for different entities and merge. A clash from a hand-edited or badly
+/// merged catalog fails closed at `CatalogMetadata::validate()`, which the proposal runs at
+/// check time.
+///
+/// The never-reuse set is seeded from the lock's complete append-only id ledger — its
+/// reserved and retired tombstones — which is the durable authority for ids that must never
+/// be reissued, even across store loss when no surviving entry carries them. Live proposal
+/// entries contribute too, but only the ledger guarantees a retired id stays dead.
 pub(super) struct StableIdAllocator<E = OsCatalogIdEntropy> {
     used: HashSet<String>,
     entropy: E,
 }
 
 impl StableIdAllocator<OsCatalogIdEntropy> {
-    pub(super) fn empty() -> Self {
+    /// First-run minting with the adopted lock's id ledger: an empty store may still inherit
+    /// retired ids from a present lock, so even minting from scratch must skip them. A
+    /// genuinely-no-lock first run passes an empty ledger.
+    pub(super) fn empty(ledger: &[LockLedgerTombstone]) -> Self {
         Self {
-            used: HashSet::new(),
+            used: seed_never_reuse(ledger, &[]),
             entropy: OsCatalogIdEntropy,
         }
     }
 
-    /// Seeds the in-use set from every recorded entry regardless of lifecycle, so a
-    /// retired id is never handed back out to a new entity.
-    pub(super) fn over(entries: &[CatalogEntry]) -> Self {
+    /// Seeds the never-reuse set from the lock id ledger unioned with the in-memory proposal
+    /// entries, so an id retired into a tombstone is never handed back out even when no
+    /// surviving entry still carries it.
+    pub(super) fn over(ledger: &[LockLedgerTombstone], entries: &[CatalogEntry]) -> Self {
         Self {
-            used: entries
-                .iter()
-                .map(|entry| entry.stable_id.clone())
-                .collect(),
+            used: seed_never_reuse(ledger, entries),
             entropy: OsCatalogIdEntropy,
         }
     }
+}
+
+/// The union of every id the lock ledger records (its reserved and retired tombstones) with
+/// the ids of the supplied proposal entries — the complete set of ids `allocate()` must never
+/// reissue.
+fn seed_never_reuse(ledger: &[LockLedgerTombstone], entries: &[CatalogEntry]) -> HashSet<String> {
+    ledger
+        .iter()
+        .map(|tombstone| tombstone.id.clone())
+        .chain(entries.iter().map(|entry| entry.stable_id.clone()))
+        .collect()
 }
 
 #[cfg(test)]
@@ -94,7 +111,9 @@ mod tests {
     use std::collections::{HashSet, VecDeque};
     use std::io;
 
-    use super::{CatalogIdEntropy, StableIdAllocator, catalog_id_from_bytes};
+    use marrow_catalog::{CatalogLifecycle, LockLedgerTombstone};
+
+    use super::{CatalogIdEntropy, StableIdAllocator, catalog_id_from_bytes, seed_never_reuse};
 
     struct ScriptedEntropy {
         ids: VecDeque<[u8; 16]>,
@@ -156,6 +175,37 @@ mod tests {
         assert_eq!(
             error.as_ref().map_err(|error| error.kind()),
             Err(io::ErrorKind::Other)
+        );
+    }
+
+    fn tombstone(bytes: [u8; 16], high_water: u64) -> LockLedgerTombstone {
+        LockLedgerTombstone {
+            id: catalog_id_from_bytes(bytes),
+            lifecycle: CatalogLifecycle::Reserved,
+            high_water,
+        }
+    }
+
+    #[test]
+    fn stable_id_allocator_never_reissues_a_tombstoned_ledger_id() {
+        let tombstoned = [0x33; 16];
+        let unique = [0x44; 16];
+        let ledger = [tombstone(tombstoned, 7)];
+
+        // The retired id survives only as a ledger tombstone: no surviving entry carries it.
+        let seed = seed_never_reuse(&ledger, &[]);
+        assert!(
+            seed.contains(&catalog_id_from_bytes(tombstoned)),
+            "the never-reuse seed must include a tombstone-only id"
+        );
+
+        let mut allocator =
+            StableIdAllocator::with_entropy(seed, ScriptedEntropy::new([tombstoned, unique]));
+        let allocated = allocator.allocate();
+
+        assert!(
+            matches!(allocated.as_deref(), Ok(id) if id == catalog_id_from_bytes(unique)),
+            "allocate() must re-roll past the tombstoned id and return the unique one"
         );
     }
 }
