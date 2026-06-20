@@ -52,6 +52,14 @@ fn write_native_config_no_default(root: &Path) {
     .expect("write marrow.json");
 }
 
+fn write_memory_config_with_tests(root: &Path) {
+    fs::write(
+        root.join("marrow.json"),
+        r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" }, "tests": ["tests"] }"#,
+    )
+    .expect("write marrow.json");
+}
+
 fn baseline_source() -> &'static str {
     "module shelf\n\
      resource Counter\n\
@@ -752,6 +760,65 @@ fn run_session_source_analysis_identity_changes_for_body_edits() {
         first_entry.identity.entry_tag,
         second_entry.identity.entry_tag
     );
+}
+
+#[test]
+fn run_session_exposes_the_source_analysis_snapshot_used_by_its_runtime_program() {
+    let root = TempDir::new("marrow-run-session-analysis-snapshot").expect("create project");
+    write_native_config(root.path());
+    write_temp_source(root.path(), Path::new("src/shelf.mw"), baseline_source());
+
+    let session = ProjectSession::open(root.path(), ProjectOpen::run().with_isolated_writes())
+        .expect("open session");
+    let snapshot = session.source_analysis_snapshot();
+
+    assert_eq!(
+        snapshot.content_identity(),
+        session.source_analysis_identity()
+    );
+    assert_eq!(
+        snapshot.program.source_digest(),
+        session.runtime_program().source_digest()
+    );
+    assert_eq!(
+        snapshot.program.read_only_context_digest(),
+        session.runtime_program().read_only_context_digest()
+    );
+}
+
+#[test]
+fn test_session_keeps_source_analysis_snapshot_separate_from_test_program() {
+    let root = TempDir::new("marrow-run-session-test-source-snapshot").expect("create project");
+    write_memory_config_with_tests(root.path());
+    write_temp_source(
+        root.path(),
+        Path::new("src/shelf.mw"),
+        "module shelf\n\npub fn helper(): int\n    return 1\n",
+    );
+    write_temp_source(
+        root.path(),
+        Path::new("tests/smoke_test.mw"),
+        "pub fn smoke()\n    std::assert::isTrue(shelf::helper() == 1)\n",
+    );
+
+    let session = ProjectSession::open(root.path(), ProjectOpen::test()).expect("open tests");
+    let source_modules: Vec<&str> = session
+        .source_analysis_snapshot()
+        .program
+        .modules
+        .iter()
+        .map(|module| module.name.as_str())
+        .collect();
+    let session_modules: Vec<&str> = session
+        .program()
+        .modules
+        .iter()
+        .map(|module| module.name.as_str())
+        .collect();
+
+    assert_eq!(source_modules, ["shelf"]);
+    assert!(session_modules.contains(&"tests::smoke_test"));
+    assert_eq!(session.test_cases()[0].name, "tests::smoke_test::smoke");
 }
 
 #[test]
