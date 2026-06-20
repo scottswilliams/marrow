@@ -101,6 +101,14 @@ pub const CHECK_AMBIGUOUS_CALL: &str = "check.ambiguous_call";
 /// identity key. The runtime backstops this with `write.next_id_unsupported`; the
 /// checker catches it before a run.
 pub const CHECK_NEXT_ID_REQUIRES_SINGLE_INT: &str = "check.next_id_requires_single_int";
+/// Two `nextId(^root)` results for the same store are both written as record keys
+/// with no intervening write to that store between the two allocations. `nextId`
+/// does not advance until a record is written, so both allocations return the same
+/// value (`max + 1`) and the second write silently overwrites the first. A warning,
+/// not an error: the program is well-typed, but the duplicate-key write is almost
+/// never intended. Interleaving the writes (`allocate, write, allocate, write`)
+/// makes each id distinct.
+pub const CHECK_NEXT_ID_COLLISION: &str = "check.next_id_collision";
 /// `next`/`prev` is applied to a shape it cannot navigate: a composite
 /// multi-key identity record (its identity spans several key levels, not the one
 /// `next`/`prev` step over) or an index branch (it inspects identities, with no

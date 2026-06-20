@@ -2,6 +2,7 @@ mod calls;
 mod direct;
 mod effects;
 mod keys;
+mod nextid;
 mod proofs;
 mod read_only;
 mod scope;
@@ -29,4 +30,5 @@ pub(crate) fn check_presence(
     diagnostics: &mut Vec<crate::CheckDiagnostic>,
 ) {
     walk::check_presence(program, diagnostics);
+    nextid::check_next_id_collisions(program, diagnostics);
 }

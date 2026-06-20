@@ -530,6 +530,278 @@ fn a_self_referencing_identity_field_accepts_its_own_identity() {
 }
 
 #[test]
+fn two_unwritten_next_ids_used_as_distinct_keys_warn() {
+    // Both `a` and `b` allocate from `^docs` with no write to `^docs` between the two
+    // `nextId` calls, so they hold the same value (max + 1). Writing each as its own
+    // record key inserts the same record twice — a silent overwrite. The checker warns.
+    let found = check_module(
+        "nextid-collision",
+        "module m\n\
+         resource Doc\n    title: string\n\
+         store ^docs(id: int): Doc\n\n\
+         fn f()\n\
+         \x20   const a = nextId(^docs)\n\
+         \x20   const b = nextId(^docs)\n\
+         \x20   ^docs(a).title = \"x\"\n\
+         \x20   ^docs(b).title = \"y\"\n",
+        "check.next_id_collision",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+    assert_eq!(
+        found[0].severity,
+        marrow_syntax::Severity::Warning,
+        "{found:#?}"
+    );
+}
+
+#[test]
+fn allocate_then_write_interleaved_does_not_warn() {
+    // The safe pattern: write `^docs(a)` before allocating `b`. The intervening write
+    // advances the allocation, so `b` is a fresh, distinct id. No collision, no warning.
+    let found = check_module(
+        "nextid-interleaved",
+        "module m\n\
+         resource Doc\n    title: string\n\
+         store ^docs(id: int): Doc\n\n\
+         fn f()\n\
+         \x20   const a = nextId(^docs)\n\
+         \x20   ^docs(a).title = \"x\"\n\
+         \x20   const b = nextId(^docs)\n\
+         \x20   ^docs(b).title = \"y\"\n",
+        "check.next_id_collision",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn a_single_next_id_does_not_warn() {
+    // One allocation written once is the ordinary, correct shape.
+    let found = check_module(
+        "nextid-single",
+        "module m\n\
+         resource Doc\n    title: string\n\
+         store ^docs(id: int): Doc\n\n\
+         fn f()\n\
+         \x20   const a = nextId(^docs)\n\
+         \x20   ^docs(a).title = \"x\"\n",
+        "check.next_id_collision",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn two_next_ids_for_different_stores_do_not_warn() {
+    // `a` and `b` allocate from different stores, so their values are independent and
+    // never collide, even with no intervening write to either.
+    let found = check_module(
+        "nextid-distinct-stores",
+        "module m\n\
+         resource Doc\n    title: string\n\
+         store ^docs(id: int): Doc\n\n\
+         resource Tag\n    name: string\n\
+         store ^tags(id: int): Tag\n\n\
+         fn f()\n\
+         \x20   const a = nextId(^docs)\n\
+         \x20   const b = nextId(^tags)\n\
+         \x20   ^docs(a).title = \"x\"\n\
+         \x20   ^tags(b).name = \"y\"\n",
+        "check.next_id_collision",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn interleaved_writes_inside_a_transaction_do_not_warn() {
+    // A transaction does not make two equal ids distinct, but interleaving the writes
+    // still advances allocation between allocations, so the transactional form is the
+    // safe one and must not warn.
+    let found = check_module(
+        "nextid-transaction-interleaved",
+        "module m\n\
+         resource Doc\n    title: string\n\
+         store ^docs(id: int): Doc\n\n\
+         fn f()\n\
+         \x20   transaction\n\
+         \x20       const a = nextId(^docs)\n\
+         \x20       ^docs(a).title = \"x\"\n\
+         \x20       const b = nextId(^docs)\n\
+         \x20       ^docs(b).title = \"y\"\n",
+        "check.next_id_collision",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn allocations_in_mutually_exclusive_branches_do_not_warn() {
+    // `a` and `b` live in disjoint branches, so they are never both written in one
+    // run. The two writes cannot collide; no warning.
+    let found = check_module(
+        "nextid-branches",
+        "module m\n\
+         resource Doc\n    title: string\n\
+         store ^docs(id: int): Doc\n\n\
+         fn f(flag: bool)\n\
+         \x20   if flag\n\
+         \x20       const a = nextId(^docs)\n\
+         \x20       ^docs(a).title = \"x\"\n\
+         \x20   else\n\
+         \x20       const b = nextId(^docs)\n\
+         \x20       ^docs(b).title = \"y\"\n",
+        "check.next_id_collision",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn a_single_allocation_written_each_loop_iteration_does_not_warn() {
+    // Each iteration allocates and writes one id; the write advances allocation before
+    // the next iteration allocates, so no two written ids are ever equal.
+    let found = check_module(
+        "nextid-loop",
+        "module m\n\
+         resource Doc\n    title: string\n\
+         store ^docs(id: int): Doc\n\n\
+         fn f()\n\
+         \x20   for n in 1..3\n\
+         \x20       const a = nextId(^docs)\n\
+         \x20       ^docs(a).title = \"x\"\n",
+        "check.next_id_collision",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn two_allocations_inside_one_loop_body_warn() {
+    // Within a single iteration, `a` and `b` allocate with no write between them, so
+    // they are equal and writing both is a collision — the loop does not excuse it.
+    let found = check_module(
+        "nextid-loop-collision",
+        "module m\n\
+         resource Doc\n    title: string\n\
+         store ^docs(id: int): Doc\n\n\
+         fn f()\n\
+         \x20   for n in 1..3\n\
+         \x20       const a = nextId(^docs)\n\
+         \x20       const b = nextId(^docs)\n\
+         \x20       ^docs(a).title = \"x\"\n\
+         \x20       ^docs(b).title = \"y\"\n",
+        "check.next_id_collision",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn hoisted_allocations_written_in_mutually_exclusive_branches_do_not_warn() {
+    // Both ids are allocated up front, then each is written in a different arm of one
+    // `if`. The two writes are on disjoint paths and never both run, so a write in one
+    // arm must not be seen as a colliding sibling of a write in the other arm.
+    let found = check_module(
+        "nextid-hoisted-branches",
+        "module m\n\
+         resource Doc\n    title: string\n\
+         store ^docs(id: int): Doc\n\n\
+         fn f(flag: bool)\n\
+         \x20   const a = nextId(^docs)\n\
+         \x20   const b = nextId(^docs)\n\
+         \x20   if flag\n\
+         \x20       ^docs(a).title = \"x\"\n\
+         \x20   else\n\
+         \x20       ^docs(b).title = \"y\"\n",
+        "check.next_id_collision",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn hoisted_allocations_written_in_mutually_exclusive_match_arms_do_not_warn() {
+    // The same disjoint-path reasoning holds across `match` arms.
+    let found = check_module(
+        "nextid-hoisted-match",
+        "module m\n\
+         resource Doc\n    title: string\n\
+         store ^docs(id: int): Doc\n\n\
+         fn f(n: int)\n\
+         \x20   const a = nextId(^docs)\n\
+         \x20   const b = nextId(^docs)\n\
+         \x20   match n\n\
+         \x20       0\n\
+         \x20           ^docs(a).title = \"x\"\n\
+         \x20       _\n\
+         \x20           ^docs(b).title = \"y\"\n",
+        "check.next_id_collision",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn two_writes_of_one_cohort_in_a_single_arm_still_warn() {
+    // A branch must not hide a real collision: when both same-cohort ids are written
+    // on a common path inside one arm, the second write overwrites the first.
+    let found = check_module(
+        "nextid-branch-real-collision",
+        "module m\n\
+         resource Doc\n    title: string\n\
+         store ^docs(id: int): Doc\n\n\
+         fn f(flag: bool)\n\
+         \x20   const a = nextId(^docs)\n\
+         \x20   const b = nextId(^docs)\n\
+         \x20   if flag\n\
+         \x20       ^docs(a).title = \"x\"\n\
+         \x20       ^docs(b).title = \"y\"\n",
+        "check.next_id_collision",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn a_user_function_write_between_allocations_advances_the_cohort() {
+    // `writer()` writes `^docs` through its effect closure, so `b` allocated after the
+    // call is a fresh id distinct from `a`. The unmodeled-but-known write must suppress
+    // the warning, never invent one.
+    let found = check_module(
+        "nextid-writer-between",
+        "module m\n\
+         resource Doc\n    title: string\n\
+         store ^docs(id: int): Doc\n\n\
+         fn writer()\n\
+         \x20   const c = nextId(^docs)\n\
+         \x20   ^docs(c).title = \"w\"\n\n\
+         fn f()\n\
+         \x20   const a = nextId(^docs)\n\
+         \x20   writer()\n\
+         \x20   const b = nextId(^docs)\n\
+         \x20   ^docs(a).title = \"x\"\n\
+         \x20   ^docs(b).title = \"y\"\n",
+        "check.next_id_collision",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn a_user_function_write_in_value_position_advances_the_cohort() {
+    // The same write-between-allocations suppression holds when the writer call is in
+    // value position (`const x = writer()`), not just a bare statement.
+    let found = check_module(
+        "nextid-writer-value",
+        "module m\n\
+         resource Doc\n    title: string\n\
+         store ^docs(id: int): Doc\n\n\
+         fn writer(): int\n\
+         \x20   const c = nextId(^docs)\n\
+         \x20   ^docs(c).title = \"w\"\n\
+         \x20   return 0\n\n\
+         fn f()\n\
+         \x20   const a = nextId(^docs)\n\
+         \x20   const used = writer()\n\
+         \x20   const b = nextId(^docs)\n\
+         \x20   ^docs(a).title = \"x\"\n\
+         \x20   ^docs(b).title = \"y\"\n",
+        "check.next_id_collision",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
 fn an_unknown_value_into_an_unknown_place_is_not_flagged() {
     // `unknown` is the explicit dynamic opt-out: storing an unresolved value into
     // an `unknown`-typed place is allowed.

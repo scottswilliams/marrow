@@ -251,8 +251,20 @@ For a typed store root, `nextId` returns that store's identity type:
 const id: Id(^books) = nextId(^books)
 ```
 
-`nextId(...)` is an effectful value function. The checker tracks the
-allocation just as it tracks `append(...)` and direct saved writes.
+`nextId(...)` returns the next-available identity — the current maximum plus one.
+It does not advance the allocation until a record is actually written, so two
+`nextId(^root)` calls with no write to that store between them return the *same*
+value. Allocate, write, then allocate again to obtain distinct ids:
+
+```mw
+const a = nextId(^books)
+^books(a) = first
+const b = nextId(^books)
+^books(b) = second
+```
+
+Binding two ids and writing both without an intervening write inserts the same
+record twice; the checker warns (`check.next_id_collision`).
 
 Marrow provides a default per-root allocation policy for a store with one `int`
 identity key. Composite identities and non-integer identities are

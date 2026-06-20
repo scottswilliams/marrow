@@ -25,8 +25,9 @@ Narrowing identity is by **span-stripped canonical key**, never by structural `C
 
 | File | Responsibility |
 | --- | --- |
-| `presence.rs` | Module root; defines `check_presence` as a thin wrapper over `walk::check_presence` and re-exports `direct_effects_for_block` plus type-check read-resolution predicates. |
+| `presence.rs` | Module root; defines `check_presence` as a thin wrapper that runs `walk::check_presence` then `nextid::check_next_id_collisions`, and re-exports `direct_effects_for_block` plus type-check read-resolution predicates. |
 | `presence/walk.rs` | Flow-sensitive driver over function, constant, and transform bodies; threads narrowed set + scope, classifies reads, dispatches builtins, invalidates on writes and branch joins. |
+| `presence/nextid.rs` | Source-order walk over each body that warns (`CHECK_NEXT_ID_COLLISION`) when two `nextId(^store)` results allocated with no write to that store between them are both written as record keys. A write advances the store's cohort; an unmodeled write advances every cohort, so it only suppresses the warning. |
 | `presence/direct.rs` | Body-local effect collector producing `DirectEffectFacts` for one block without expanding callee effects, including typed store roots and direct user-function refs. |
 | `presence/effects.rs` | Narrowing algebra: condition/loop narrowings and the invalidation (key-binding, written-target overlap, removed-on-branch, saved-wipe) rules. |
 | `presence/keys.rs` | Sole owner of the canonical span-stripped narrowing key; extracts `SavedPlaceKey` from the checked saved place. |
