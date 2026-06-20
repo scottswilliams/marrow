@@ -25,7 +25,7 @@ mod catalog_nav;
 mod cursor;
 
 pub use catalog_nav::{CatalogDeclaration, UseSite, UseSiteKind};
-pub(crate) use cursor::span_covers;
+pub(crate) use cursor::{debug_expression_scope_before, span_covers};
 pub use cursor::{scope_at, type_at};
 
 /// Stable content identity for an analyzed source/config set.

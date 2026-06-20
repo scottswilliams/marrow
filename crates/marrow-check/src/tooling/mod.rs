@@ -13,10 +13,11 @@ pub use data::{
     MAX_PREVIEW_ITEMS, MAX_VALUE_PREVIEW_LIMIT, MemberFlavor, ResolvedDataPath,
     SourceDataPathSegment, StampedData, count_data_records, data_children,
     data_children_supports_paging, data_path_under_prefix, data_roots_in_store,
-    declared_data_children, declared_source_data_children, preview_data_path, read_data_path,
-    render_data_path_segments, render_data_path_value, render_data_value, resolve_data_path,
-    resolve_source_text_data_path, stamped_data_children, stamped_data_roots_in_store,
-    stamped_preview_data_path, stamped_read_data_path, visit_data_records, walk_data,
+    declared_data_children, declared_source_data_children, declared_source_receiver_data_children,
+    preview_data_path, read_data_path, render_data_path_segments, render_data_path_value,
+    render_data_value, resolve_data_path, resolve_source_text_data_path, stamped_data_children,
+    stamped_data_roots_in_store, stamped_preview_data_path, stamped_read_data_path,
+    visit_data_records, walk_data,
 };
 pub use integrity::{
     IntegrityOutcome, IntegrityProblem, IntegrityProblemSample, IntegritySample,

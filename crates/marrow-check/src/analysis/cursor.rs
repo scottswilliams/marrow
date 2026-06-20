@@ -71,15 +71,21 @@ pub fn scope_at(
     let prelude = file_prelude(program, file, parsed);
     // Imports and module constants are the outermost frame; a later frame's
     // binding shadows them. Imports name modules, so they carry no value type.
+    let function = enclosing_function(parsed, offset);
+    let module_constants = if function.is_some() {
+        prelude.module_constants.clone()
+    } else {
+        visible_module_constants_before(parsed, &prelude.module_constants, offset)
+    };
     let mut scope: Vec<HashMap<String, MarrowType>> = vec![
         prelude
             .aliases
             .keys()
             .map(|alias| (alias.clone(), MarrowType::Unknown))
             .collect(),
-        prelude.module_constants.clone(),
+        module_constants,
     ];
-    if let Some(function) = enclosing_function(parsed, offset) {
+    if let Some(function) = function {
         scope.extend(function_base_scope(
             program,
             function,
@@ -115,7 +121,11 @@ pub(crate) fn debug_expression_scope_before(
 ) -> Vec<HashMap<String, MarrowType>> {
     let prelude = file_prelude(program, file, parsed);
     let Some(function) = enclosing_function(parsed, span.start_byte) else {
-        return vec![prelude.module_constants];
+        return vec![visible_module_constants_before(
+            parsed,
+            &prelude.module_constants,
+            span.start_byte,
+        )];
     };
     let mut scope = function_base_scope(
         program,
@@ -133,6 +143,23 @@ pub(crate) fn debug_expression_scope_before(
         &mut scope,
     );
     scope
+}
+
+fn visible_module_constants_before(
+    parsed: &marrow_syntax::ParsedSource,
+    module_constants: &HashMap<String, MarrowType>,
+    offset: usize,
+) -> HashMap<String, MarrowType> {
+    let mut visible = module_constants.clone();
+    for declaration in &parsed.file.declarations {
+        let marrow_syntax::Declaration::Const(constant) = declaration else {
+            continue;
+        };
+        if constant.span.start_byte >= offset || span_covers(constant.span, offset) {
+            visible.remove(&constant.name);
+        }
+    }
+    visible
 }
 
 /// The function declaration whose body span covers `offset`, if any. A cursor in a
@@ -198,19 +225,32 @@ fn walk_block_to_offset(
         if statement.span().start_byte >= offset {
             break;
         }
-        // Record the binding this statement introduces, exactly as the checker
-        // does, before deciding whether to descend into it.
-        if let Some((name, ty)) = local_binding(program, statement, scope, aliases, file) {
+        let statement_covers_offset = span_covers(statement.span(), offset);
+        let in_initializer = statement_covers_offset
+            && binding_initializer_span(statement).is_some_and(|span| span_covers(span, offset));
+        // Record the binding this statement introduces after its initializer,
+        // exactly as the checker does, before deciding whether to descend into it.
+        if !in_initializer
+            && let Some((name, ty)) = local_binding(program, statement, scope, aliases, file)
+        {
             bind(scope, &name, ty);
         }
         // Descend into the nested block (and its loop/catch frame) that the cursor
         // sits in. Only one statement can cover the cursor, so the walk stops here.
-        if span_covers(statement.span(), offset)
-            && let Some(body) = descend_target(program, statement, offset, aliases, file, scope)
-        {
-            walk_block_to_offset(program, body, offset, aliases, file, scope);
+        if statement_covers_offset {
+            if let Some(body) = descend_target(program, statement, offset, aliases, file, scope) {
+                walk_block_to_offset(program, body, offset, aliases, file, scope);
+            }
             return;
         }
+    }
+}
+
+fn binding_initializer_span(statement: &marrow_syntax::Statement) -> Option<SourceSpan> {
+    match statement {
+        marrow_syntax::Statement::Const { value, .. } => Some(value.span()),
+        marrow_syntax::Statement::Var { value, .. } => value.as_ref().map(|value| value.span()),
+        _ => None,
     }
 }
 

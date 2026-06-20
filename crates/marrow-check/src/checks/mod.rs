@@ -29,7 +29,9 @@ pub(crate) use driver::{
 };
 pub(crate) use operators::{CoalesceCheck, check_binary, check_coalesce, check_unary};
 pub(crate) use ranges::check_range_value;
-pub(crate) use saved_keys::{SavedKeyArgCheck, check_saved_key_args};
+pub(crate) use saved_keys::{
+    SavedKeyArgCheck, check_saved_key_args, saved_root_args_address_record,
+};
 pub(crate) use statements::{
     TransformBlockTypeCheck, check_block_types, check_transform_block_types,
 };

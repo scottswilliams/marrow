@@ -8,10 +8,10 @@ use marrow_check::program::MarrowType;
 use marrow_check::tooling::{
     DataChild, DataPathError, DataPathSegment, DataPresence, DeclaredDataChild,
     DeclaredDataChildKind, DeclaredDataKeyParam, MAX_VALUE_PREVIEW_LIMIT, SourceDataPathSegment,
-    ToolingError, declared_data_children, declared_source_data_children, resolve_data_path,
-    sample_integrity_problem_details, sample_integrity_problems, stamped_data_children,
-    stamped_data_roots_in_store, stamped_integrity_problem_details, stamped_preview_data_path,
-    stamped_read_data_path,
+    ToolingError, declared_data_children, declared_source_data_children,
+    declared_source_receiver_data_children, resolve_data_path, sample_integrity_problem_details,
+    sample_integrity_problems, stamped_data_children, stamped_data_roots_in_store,
+    stamped_integrity_problem_details, stamped_preview_data_path, stamped_read_data_path,
 };
 use marrow_check::{
     CHECK_READ_ONLY_EXPRESSION_HOST_EFFECT, CHECK_READ_ONLY_EXPRESSION_UNINDEXED_LOOKUP,
@@ -63,6 +63,45 @@ fn stop_span(source: &str, needle: &str) -> SourceSpan {
             .map_or(before.len(), |(_, line)| line.len()) as u32
             + 1,
     }
+}
+
+fn required_string_child(name: &str) -> DeclaredDataChild {
+    DeclaredDataChild {
+        name: name.to_string(),
+        kind: DeclaredDataChildKind::Field { required: true },
+        key_params: Vec::new(),
+        leaf: Some(StoreLeafKind::Scalar(StoreScalarType::Str)),
+    }
+}
+
+fn declared_receiver_children(
+    test_name: &str,
+    source: &str,
+    receiver: &str,
+    scope_marker: &str,
+) -> Vec<DeclaredDataChild> {
+    let (snapshot, paths) = analyze_overlay(test_name, &[("src/m.mw", source)]);
+    assert!(
+        !snapshot.report.has_errors(),
+        "{:#?}",
+        snapshot.report.diagnostics
+    );
+    let path = paths.into_iter().next().expect("source path");
+    let parsed = snapshot
+        .files
+        .iter()
+        .find(|file| file.path == path)
+        .expect("analyzed source")
+        .parsed
+        .clone();
+
+    declared_source_receiver_data_children(
+        &snapshot.program,
+        &path,
+        &parsed,
+        receiver,
+        stop_span(source, scope_marker),
+    )
 }
 
 #[test]
@@ -2258,6 +2297,216 @@ fn evolution_preview_reads_counts_and_samples_from_backup() {
         ]
     );
     assert!(!backup.samples_truncated);
+}
+
+#[test]
+fn declared_source_receiver_children_single_key_root() {
+    let source = "module m\n\
+        resource Book\n    \
+        required title: string\n\
+        store ^books(id: int): Book\n\
+        fn f(id: int)\n    \
+        print(0)\n";
+
+    let children = declared_receiver_children(
+        "analysis-source-receiver-single-key-root",
+        source,
+        "^books(id)",
+        "print(0)",
+    );
+
+    assert_eq!(children, vec![required_string_child("title")]);
+}
+
+#[test]
+fn declared_source_receiver_children_composite_scalar_keys() {
+    let source = "module m\n\
+        resource Pair\n    \
+        required label: string\n\
+        store ^pairs(left: int, right: int): Pair\n\
+        fn f(left: int, right: int)\n    \
+        print(0)\n";
+
+    let children = declared_receiver_children(
+        "analysis-source-receiver-composite-scalar-keys",
+        source,
+        "^pairs(left, right)",
+        "print(0)",
+    );
+
+    assert_eq!(children, vec![required_string_child("label")]);
+}
+
+#[test]
+fn declared_source_receiver_children_composite_identity_arg() {
+    let source = "module m\n\
+        resource Pair\n    \
+        required label: string\n\
+        store ^pairs(left: int, right: int): Pair\n\
+        fn f(left: int, right: int)\n    \
+        const pair: Id(^pairs) = Id(^pairs, left, right)\n    \
+        print(0)\n";
+
+    let children = declared_receiver_children(
+        "analysis-source-receiver-composite-identity-arg",
+        source,
+        "^pairs(pair)",
+        "print(0)",
+    );
+
+    assert_eq!(children, vec![required_string_child("label")]);
+}
+
+#[test]
+fn declared_source_receiver_children_keyed_layer_entry() {
+    let source = "module m\n\
+        resource Book\n    \
+        notes(noteId: string)\n        \
+        required text: string\n\
+        store ^books(id: int): Book\n\
+        fn f(id: int, noteId: string)\n    \
+        print(0)\n";
+
+    let children = declared_receiver_children(
+        "analysis-source-receiver-keyed-layer-entry",
+        source,
+        "^books(id).notes(noteId)",
+        "print(0)",
+    );
+
+    assert_eq!(children, vec![required_string_child("text")]);
+}
+
+#[test]
+fn declared_source_receiver_children_empty_for_partial_identity() {
+    let source = "module m\n\
+        resource Pair\n    \
+        required label: string\n\
+        store ^pairs(left: int, right: int): Pair\n\
+        fn f(left: int)\n    \
+        print(0)\n";
+
+    let children = declared_receiver_children(
+        "analysis-source-receiver-partial-identity",
+        source,
+        "^pairs(left)",
+        "print(0)",
+    );
+
+    assert_eq!(children, Vec::<DeclaredDataChild>::new());
+}
+
+#[test]
+fn declared_source_receiver_children_empty_for_partial_keyed_layer() {
+    let source = "module m\n\
+        resource Book\n    \
+        notes(noteId: string)\n        \
+        required text: string\n\
+        store ^books(id: int): Book\n\
+        fn f(id: int)\n    \
+        print(0)\n";
+
+    let children = declared_receiver_children(
+        "analysis-source-receiver-partial-keyed-layer",
+        source,
+        "^books(id).notes",
+        "print(0)",
+    );
+
+    assert_eq!(children, Vec::<DeclaredDataChild>::new());
+}
+
+#[test]
+fn declared_source_receiver_children_empty_for_wrong_identity() {
+    let source = "module m\n\
+        resource Book\n    \
+        required title: string\n\
+        store ^books(id: int): Book\n\
+        resource Pair\n    \
+        required label: string\n\
+        store ^pairs(left: int, right: int): Pair\n\
+        fn f(other: Id(^books))\n    \
+        print(0)\n";
+
+    let children = declared_receiver_children(
+        "analysis-source-receiver-wrong-identity",
+        source,
+        "^pairs(other)",
+        "print(0)",
+    );
+
+    assert_eq!(children, Vec::<DeclaredDataChild>::new());
+}
+
+#[test]
+fn declared_source_receiver_children_empty_for_self_referential_initializer() {
+    let source = "module m\n\
+        resource Book\n    \
+        required title: string\n\
+        store ^books(id: int): Book\n\
+        fn f()\n    \
+        const id: Id(^books) = ^books(id).title\n";
+    let (snapshot, paths) = analyze_overlay(
+        "analysis-source-receiver-self-referential-initializer",
+        &[("src/m.mw", source)],
+    );
+    assert!(
+        snapshot.report.has_errors(),
+        "self-referential initializer should not type-check"
+    );
+    let path = paths.into_iter().next().expect("source path");
+    let parsed = snapshot
+        .files
+        .iter()
+        .find(|file| file.path == path)
+        .expect("analyzed source")
+        .parsed
+        .clone();
+
+    let children = declared_source_receiver_data_children(
+        &snapshot.program,
+        &path,
+        &parsed,
+        "^books(id)",
+        stop_span(source, "^books(id)"),
+    );
+
+    assert_eq!(children, Vec::<DeclaredDataChild>::new());
+}
+
+#[test]
+fn declared_source_receiver_children_empty_for_module_const_self_reference() {
+    let source = "module m\n\
+        resource Book\n    \
+        required title: string\n\
+        store ^books(id: int): Book\n\
+        const id: Id(^books) = ^books(id).title\n";
+    let (snapshot, paths) = analyze_overlay(
+        "analysis-source-receiver-module-const-self-reference",
+        &[("src/m.mw", source)],
+    );
+    assert!(
+        snapshot.report.has_errors(),
+        "self-referential module const should not type-check"
+    );
+    let path = paths.into_iter().next().expect("source path");
+    let parsed = snapshot
+        .files
+        .iter()
+        .find(|file| file.path == path)
+        .expect("analyzed source")
+        .parsed
+        .clone();
+
+    let children = declared_source_receiver_data_children(
+        &snapshot.program,
+        &path,
+        &parsed,
+        "^books(id)",
+        stop_span(source, "^books(id)"),
+    );
+
+    assert_eq!(children, Vec::<DeclaredDataChild>::new());
 }
 
 #[test]
