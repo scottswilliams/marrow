@@ -1,7 +1,8 @@
 use crate::{
-    ConstDecl, Declaration, DiagnosticReason, EnumMember, EvolveStep, ExpectedSyntax, LexedSource,
-    ParseDiagnosticReason, ParsedSource, ResourceMember, SourceSpan, SurfaceItem, Token, TokenKind,
-    is_expression_callable_keyword, is_expression_path_segment_keyword, token::is_trivia,
+    ConstDecl, Declaration, DiagnosticReason, EnumMember, EvolveStep, ExpectedSyntax, Keyword,
+    LexedSource, ParseDiagnosticReason, ParsedSource, ResourceMember, SourceSpan, SurfaceItem,
+    Token, TokenKind, is_expression_callable_keyword, is_expression_path_segment_keyword,
+    token::is_trivia,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -218,10 +219,21 @@ fn looks_like_declaration_syntax(
 ) -> bool {
     let root_byte = tokens[root].span.start_byte;
     declaration_header_contains(parsed, root_byte)
+        || follows_local_declaration_keyword(source, tokens, root)
         || declaration_member_span_contains(parsed, root_byte)
         || declaration_syntax_diagnostic_contains(parsed, root_byte)
         || (is_first_significant_token_on_line(source, tokens, root)
             && key_list_has_type_suffix(source, tokens, open))
+}
+
+fn follows_local_declaration_keyword(source: &str, tokens: &[Token], root: usize) -> bool {
+    let Some(previous) = previous_significant_token(tokens, root) else {
+        return false;
+    };
+    matches!(
+        tokens[previous].kind,
+        TokenKind::Keyword(Keyword::Const | Keyword::Var)
+    ) && same_line_between(source, &tokens[previous], &tokens[root])
 }
 
 fn key_list_has_type_suffix(source: &str, tokens: &[Token], open: usize) -> bool {

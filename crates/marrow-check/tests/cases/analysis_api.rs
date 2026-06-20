@@ -226,6 +226,10 @@ fn active_callable_context_ignores_declarations_types_and_member_keys() {
         "module app(|\n",
         "module app\nuse library(|\n",
         "module app\nuse library::books(|\n",
+        "module app\nfn run(): int\n    var count(|\n",
+        "module app\nfn run(): int\n    var int(|\n",
+        "module app\nfn run(): int\n    const count(|\n",
+        "module app\nfn run(): int\n    const int(|\n",
         "surface app(|\n",
         "resource Book\n    author: string\nstore ^books(id: int): Book\n    index by author::name(|\n",
     ] {
