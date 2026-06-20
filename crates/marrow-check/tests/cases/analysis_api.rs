@@ -2,20 +2,20 @@
 //! reconstructing the cursor's lexical scope exactly as the checker does and
 //! emitting no diagnostics of their own.
 use crate::support;
-use std::path::PathBuf;
+use std::{fs, path::PathBuf};
 
 use marrow_check::program::MarrowType;
 use marrow_check::tooling::{
-    ActiveCallableContext, CallableArgumentStyle, CallableParameter, CallableSignature,
-    CallableSignatureKind, CallableValueShape, DataChild, DataPathError, DataPathSegment,
-    DataPresence, DeclaredDataChild, DeclaredDataChildKind, DeclaredDataKeyParam,
+    ActiveCallableContext, CallableArgumentStyle, CallableCalleeContext, CallableParameter,
+    CallableSignature, CallableSignatureKind, CallableValueShape, DataChild, DataPathError,
+    DataPathSegment, DataPresence, DeclaredDataChild, DeclaredDataChildKind, DeclaredDataKeyParam,
     MAX_VALUE_PREVIEW_LIMIT, ResourceConstructorField, SourceDataPathSegment, ToolingError,
-    active_callable_context, declared_data_children, declared_source_data_children,
-    declared_source_receiver_data_children, intrinsic_callable_signature,
-    intrinsic_callable_signature_for_file, resolve_data_path, resource_constructor_signature,
-    sample_integrity_problem_details, sample_integrity_problems, stamped_data_children,
-    stamped_data_roots_in_store, stamped_integrity_problem_details, stamped_preview_data_path,
-    stamped_read_data_path,
+    active_callable_context, callable_callee_contexts, declared_data_children,
+    declared_source_data_children, declared_source_receiver_data_children,
+    intrinsic_callable_signature, intrinsic_callable_signature_for_file, resolve_data_path,
+    resource_constructor_signature, sample_integrity_problem_details, sample_integrity_problems,
+    stamped_data_children, stamped_data_roots_in_store, stamped_integrity_problem_details,
+    stamped_preview_data_path, stamped_read_data_path,
 };
 use marrow_check::{
     CHECK_READ_ONLY_EXPRESSION_HOST_EFFECT, CHECK_READ_ONLY_EXPRESSION_UNINDEXED_LOOKUP,
@@ -118,6 +118,171 @@ fn active_context_at_marker(source: &str) -> Option<ActiveCallableContext> {
     let lexed = marrow_syntax::lex_source(&source);
     let parsed = marrow_syntax::parse_source(&source);
     active_callable_context(&source, &lexed, &parsed, offset)
+}
+
+fn callable_callees(source: &str) -> Vec<CallableCalleeContext> {
+    let lexed = marrow_syntax::lex_source(source);
+    let parsed = marrow_syntax::parse_source(source);
+    callable_callee_contexts(source, &lexed, &parsed)
+}
+
+#[test]
+fn callable_callee_contexts_reports_expression_callees() {
+    let source = "module app\nuse std::text\nfn run(): int\n    return outer(text::length(\"abc\"), Id(^books, 1))\n";
+    let contexts = callable_callees(source);
+    let paths = contexts
+        .iter()
+        .map(|context| context.callee_path_segments.clone())
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        paths,
+        vec![
+            path_segments(&["outer"]),
+            path_segments(&["text", "length"]),
+            path_segments(&["Id"]),
+        ]
+    );
+    assert_eq!(
+        &source[contexts[1].callee_span.start_byte..contexts[1].callee_span.end_byte],
+        "text::length"
+    );
+    assert_eq!(
+        &source[contexts[1].callee_leaf_span.start_byte..contexts[1].callee_leaf_span.end_byte],
+        "length"
+    );
+}
+
+#[test]
+fn callable_callee_contexts_reports_nested_named_argument_values() {
+    let source = "module app\nfn run()\n    return Outer(arg: Book(field: Id(^books, 1)))\n";
+    let contexts = callable_callees(source);
+
+    assert_eq!(
+        contexts
+            .iter()
+            .map(|context| context.callee_path_segments.clone())
+            .collect::<Vec<_>>(),
+        vec![
+            path_segments(&["Outer"]),
+            path_segments(&["Book"]),
+            path_segments(&["Id"]),
+        ]
+    );
+}
+
+#[test]
+fn callable_callee_contexts_reports_named_argument_values_under_member_calls() {
+    let source = "module app\nfn run(book: Book)\n    return book.items(id: Id(^books, 1))\n";
+    let contexts = callable_callees(source);
+
+    assert_eq!(
+        contexts
+            .iter()
+            .map(|context| context.callee_path_segments.clone())
+            .collect::<Vec<_>>(),
+        vec![path_segments(&["Id"])]
+    );
+}
+
+#[test]
+fn callable_callee_contexts_reports_incomplete_const_initializer_call() {
+    let source = "module app\nconst DEFAULT = Book(^books, 1\n";
+    let contexts = callable_callees(source);
+
+    assert_eq!(
+        contexts
+            .iter()
+            .map(|context| context.callee_path_segments.clone())
+            .collect::<Vec<_>>(),
+        vec![path_segments(&["Book"])]
+    );
+}
+
+#[test]
+fn callable_callee_contexts_ignores_type_annotations() {
+    let source = "module app\nstore ^authors(id: int): Author\npub fn run(\n    ids: sequence[Id(^authors)],\n): sequence[Id(^authors)]\n    return Id(^authors, 1)\n";
+    let contexts = callable_callees(source);
+
+    assert_eq!(
+        contexts
+            .iter()
+            .map(|context| context.callee_path_segments.clone())
+            .collect::<Vec<_>>(),
+        vec![path_segments(&["Id"])]
+    );
+    assert_eq!(
+        &source[contexts[0].callee_span.start_byte..contexts[0].callee_span.end_byte],
+        "Id"
+    );
+}
+
+#[test]
+fn callable_callee_contexts_handles_multiline_nested_callees() {
+    let depth = 64;
+    let mut source = "module app\nfn run()\n    return ".to_string();
+    for index in 0..depth {
+        source.push_str(&format!("f{index}(\n        "));
+    }
+    source.push('0');
+    for _ in 0..depth {
+        source.push(')');
+    }
+    source.push('\n');
+
+    let contexts = callable_callees(&source);
+
+    assert_eq!(contexts.len(), depth);
+    assert_eq!(contexts[0].callee_path_segments, path_segments(&["f0"]));
+    assert_eq!(
+        contexts[depth - 1].callee_path_segments,
+        path_segments(&[&format!("f{}", depth - 1)])
+    );
+}
+
+#[test]
+fn callable_callee_contexts_handles_deeply_nested_callees() {
+    let depth = 64;
+    let mut source = "module app\nfn run()\n    return ".to_string();
+    for index in 0..depth {
+        source.push_str(&format!("f{index}("));
+    }
+    source.push('0');
+    for _ in 0..depth {
+        source.push(')');
+    }
+    source.push('\n');
+
+    let contexts = callable_callees(&source);
+
+    assert_eq!(contexts.len(), depth);
+    assert_eq!(contexts[0].callee_path_segments, path_segments(&["f0"]));
+    assert_eq!(
+        contexts[depth - 1].callee_path_segments,
+        path_segments(&[&format!("f{}", depth - 1)])
+    );
+}
+
+#[test]
+fn callable_callee_contexts_does_not_rescan_matching_parens() {
+    let path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../marrow-syntax/src/active_call.rs");
+    let source = fs::read_to_string(&path).unwrap_or_else(|err| {
+        panic!("failed to read {}: {err}", path.display());
+    });
+    let start = source
+        .find("fn looks_like_declaration_syntax_indexed")
+        .expect("batch declaration classifier exists");
+    let end = source[start..]
+        .find("fn callee_segment_indices_before")
+        .map(|offset| start + offset)
+        .expect("next helper exists");
+    let body = &source[start..end];
+
+    assert!(
+        !body.contains("key_list_has_type_suffix("),
+        "batch callable callee collection must not rescan forward from each open paren"
+    );
 }
 
 #[test]

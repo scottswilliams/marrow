@@ -9,7 +9,9 @@ use crate::executable::{CheckedBuiltinCall, CheckedBuiltinReturnShape, CheckedBu
 use crate::program::{CheckedModule, CheckedProgram, MarrowType, TypeNames};
 use crate::resolve::{Def, DefItem, Resolution, ResolvableKind};
 
-pub use marrow_syntax::{ActiveCallableContext, active_callable_context};
+pub use marrow_syntax::{
+    ActiveCallableContext, CallableCalleeContext, active_callable_context, callable_callee_contexts,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CallableSignature {

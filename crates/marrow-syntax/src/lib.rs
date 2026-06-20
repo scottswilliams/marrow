@@ -17,7 +17,9 @@ mod parse_decl;
 mod parse_expr;
 mod token;
 
-pub use active_call::{ActiveCallableContext, active_callable_context};
+pub use active_call::{
+    ActiveCallableContext, CallableCalleeContext, active_callable_context, callable_callee_contexts,
+};
 pub use ast::{
     Argument, BinaryOp, Block, CatchClause, Comment, CommentMarker, CommentPlacement, ConstDecl,
     Declaration, ElseIf, EnumDecl, EnumMember, EvolveDecl, EvolveStep, Expression, FieldDecl,

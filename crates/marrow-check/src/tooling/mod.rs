@@ -27,10 +27,11 @@ pub use integrity::{
     visit_integrity_problems,
 };
 pub use signatures::{
-    ActiveCallableContext, CallableArgumentStyle, CallableParameter, CallableSignature,
-    CallableSignatureKind, CallableValueShape, ResourceConstructorField,
-    ResourceConstructorSignature, active_callable_context, intrinsic_callable_signature,
-    intrinsic_callable_signature_for_file, resource_constructor_signature,
+    ActiveCallableContext, CallableArgumentStyle, CallableCalleeContext, CallableParameter,
+    CallableSignature, CallableSignatureKind, CallableValueShape, ResourceConstructorField,
+    ResourceConstructorSignature, active_callable_context, callable_callee_contexts,
+    intrinsic_callable_signature, intrinsic_callable_signature_for_file,
+    resource_constructor_signature,
 };
 
 #[derive(Debug)]

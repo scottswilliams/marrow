@@ -12,6 +12,13 @@ pub struct ActiveCallableContext {
     pub named_argument: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CallableCalleeContext {
+    pub callee_path_segments: Vec<String>,
+    pub callee_span: SourceSpan,
+    pub callee_leaf_span: SourceSpan,
+}
+
 pub fn active_callable_context(
     source: &str,
     lexed: &LexedSource,
@@ -38,6 +45,68 @@ pub fn active_callable_context(
     })
 }
 
+pub fn callable_callee_contexts(
+    source: &str,
+    lexed: &LexedSource,
+    parsed: &ParsedSource,
+) -> Vec<CallableCalleeContext> {
+    let tokens = context_tokens(lexed);
+    let suppression = CallableSuppressionIndex::new(parsed);
+    let parens = ParenFacts::new(source, &tokens);
+    let mut stack: Vec<OpenParenContext> = Vec::new();
+    let mut contexts = Vec::new();
+
+    for (index, token) in tokens.iter().enumerate() {
+        match token.kind {
+            TokenKind::LeftParen => {
+                let parent_suppressed = stack.last().is_some_and(|open| open.suppressed);
+                let state = if parent_suppressed {
+                    CalleeLookup::None
+                } else {
+                    callee_lookup_before(
+                        source,
+                        &tokens,
+                        &suppression,
+                        &parens,
+                        stack.last(),
+                        index,
+                    )
+                };
+                let accepts_named_arguments = matches!(
+                    state,
+                    CalleeLookup::Callable(_) | CalleeLookup::NamedArgumentHost
+                );
+                let suppresses_nested = matches!(state, CalleeLookup::SuppressesNested);
+                stack.push(OpenParenContext {
+                    suppressed: parent_suppressed || suppresses_nested,
+                    accepts_named_arguments,
+                });
+                if let CalleeLookup::Callable(context) = state {
+                    contexts.push(context);
+                }
+            }
+            TokenKind::RightParen => {
+                stack.pop();
+            }
+            _ => {}
+        }
+    }
+
+    contexts
+}
+
+struct OpenParenContext {
+    suppressed: bool,
+    accepts_named_arguments: bool,
+}
+
+enum CalleeLookup {
+    Callable(CallableCalleeContext),
+    NamedArgumentHost,
+    SuppressesNested,
+    None,
+}
+
 fn open_parens_before_cursor(tokens: &[Token], cursor_byte_offset: usize) -> Vec<usize> {
     let mut stack = Vec::new();
     for (index, token) in tokens.iter().enumerate() {
@@ -61,6 +130,15 @@ fn callee_path_before(
     parsed: &ParsedSource,
     open: usize,
 ) -> Option<Vec<String>> {
+    callee_context_before(source, tokens, parsed, open).map(|context| context.callee_path_segments)
+}
+
+fn callee_context_before(
+    source: &str,
+    tokens: &[Token],
+    parsed: &ParsedSource,
+    open: usize,
+) -> Option<CallableCalleeContext> {
     let segment_indices = callee_segment_indices_before(tokens, open)?;
     let root = segment_indices[0];
 
@@ -69,11 +147,127 @@ fn callee_path_before(
     }
 
     starts_at_callable_root(source, tokens, parsed, root, open).then(|| {
-        segment_indices
+        let leaf = *segment_indices
+            .last()
+            .expect("callee segment indices are nonempty");
+        CallableCalleeContext {
+            callee_path_segments: segment_indices
+                .iter()
+                .map(|index| tokens[*index].text(source).to_string())
+                .collect(),
+            callee_span: SourceSpan {
+                start_byte: tokens[root].span.start_byte,
+                end_byte: tokens[leaf].span.end_byte,
+                line: tokens[root].span.line,
+                column: tokens[root].span.column,
+            },
+            callee_leaf_span: tokens[leaf].span,
+        }
+    })
+}
+
+fn callee_lookup_before(
+    source: &str,
+    tokens: &[Token],
+    suppression: &CallableSuppressionIndex,
+    parens: &ParenFacts,
+    parent: Option<&OpenParenContext>,
+    open: usize,
+) -> CalleeLookup {
+    let Some(segment_indices) = callee_segment_indices_before(tokens, open) else {
+        return CalleeLookup::None;
+    };
+    let root = segment_indices[0];
+
+    if !starts_at_callable_root_indexed(source, tokens, suppression, parens, parent, root, open) {
+        return CalleeLookup::SuppressesNested;
+    }
+
+    if starts_after_non_call_path_operator(tokens, root) {
+        return CalleeLookup::NamedArgumentHost;
+    }
+
+    let leaf = *segment_indices
+        .last()
+        .expect("callee segment indices are nonempty");
+    CalleeLookup::Callable(CallableCalleeContext {
+        callee_path_segments: segment_indices
             .iter()
             .map(|index| tokens[*index].text(source).to_string())
-            .collect()
+            .collect(),
+        callee_span: SourceSpan {
+            start_byte: tokens[root].span.start_byte,
+            end_byte: tokens[leaf].span.end_byte,
+            line: tokens[root].span.line,
+            column: tokens[root].span.column,
+        },
+        callee_leaf_span: tokens[leaf].span,
     })
+}
+
+fn starts_at_callable_root_indexed(
+    source: &str,
+    tokens: &[Token],
+    suppression: &CallableSuppressionIndex,
+    parens: &ParenFacts,
+    parent: Option<&OpenParenContext>,
+    root: usize,
+    open: usize,
+) -> bool {
+    !looks_like_type_annotation_indexed(source, tokens, suppression, parent, root)
+        && !looks_like_declaration_syntax_indexed(source, tokens, suppression, parens, root, open)
+}
+
+fn looks_like_type_annotation_indexed(
+    source: &str,
+    tokens: &[Token],
+    suppression: &CallableSuppressionIndex,
+    parent: Option<&OpenParenContext>,
+    root: usize,
+) -> bool {
+    if suppression.type_refs.contains(tokens[root].span.start_byte) {
+        return true;
+    }
+    let Some(colon_index) = root.checked_sub(1) else {
+        return false;
+    };
+    let colon = &tokens[colon_index];
+    colon.kind == TokenKind::Colon
+        && same_line_between(source, colon, &tokens[root])
+        && !colon_is_named_argument_value_indexed(source, tokens, parent, colon_index)
+}
+
+fn colon_is_named_argument_value_indexed(
+    source: &str,
+    tokens: &[Token],
+    parent: Option<&OpenParenContext>,
+    colon_index: usize,
+) -> bool {
+    let Some(name_index) = colon_index.checked_sub(1) else {
+        return false;
+    };
+    if tokens[name_index].kind != TokenKind::Identifier
+        || !same_line_between(source, &tokens[name_index], &tokens[colon_index])
+    {
+        return false;
+    }
+
+    parent.is_some_and(|open| open.accepts_named_arguments)
+}
+
+fn looks_like_declaration_syntax_indexed(
+    source: &str,
+    tokens: &[Token],
+    suppression: &CallableSuppressionIndex,
+    parens: &ParenFacts,
+    root: usize,
+    open: usize,
+) -> bool {
+    let root_byte = tokens[root].span.start_byte;
+    suppression.declarations.contains(root_byte)
+        || follows_local_declaration_keyword(source, tokens, root)
+        || (is_first_significant_token_on_line(source, tokens, root)
+            && parens.has_type_suffix(open))
 }
 
 fn callee_segment_indices_before(tokens: &[Token], open: usize) -> Option<Vec<usize>> {
@@ -108,6 +302,355 @@ fn callee_segment_indices_before(tokens: &[Token], open: usize) -> Option<Vec<us
             .iter()
             .all(|index| is_callable_path_segment(tokens[*index].kind)))
     .then_some(segments)
+}
+
+struct ParenFacts {
+    type_suffix_by_open: Vec<bool>,
+}
+
+impl ParenFacts {
+    fn new(source: &str, tokens: &[Token]) -> Self {
+        let mut type_suffix_by_open = vec![false; tokens.len()];
+        let mut stack = Vec::new();
+
+        for (index, token) in tokens.iter().enumerate() {
+            match token.kind {
+                TokenKind::LeftParen => stack.push(index),
+                TokenKind::RightParen => {
+                    let Some(open) = stack.pop() else {
+                        continue;
+                    };
+                    if tokens.get(index + 1).is_some_and(|next| {
+                        next.kind == TokenKind::Colon && same_line_between(source, token, next)
+                    }) {
+                        type_suffix_by_open[open] = true;
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        Self {
+            type_suffix_by_open,
+        }
+    }
+
+    fn has_type_suffix(&self, open: usize) -> bool {
+        self.type_suffix_by_open.get(open).copied().unwrap_or(false)
+    }
+}
+
+struct CallableSuppressionIndex {
+    type_refs: ByteRanges,
+    declarations: ByteRanges,
+}
+
+impl CallableSuppressionIndex {
+    fn new(parsed: &ParsedSource) -> Self {
+        let mut type_refs = ByteRanges::default();
+        let mut declarations = ByteRanges::default();
+
+        if let Some(module) = &parsed.file.module {
+            declarations.push(module.span);
+        }
+        for use_decl in &parsed.file.uses {
+            declarations.push(use_decl.span);
+        }
+        for declaration in &parsed.file.declarations {
+            collect_declaration_suppression(parsed, declaration, &mut type_refs, &mut declarations);
+        }
+        for diagnostic in &parsed.diagnostics {
+            if diagnostic_suppresses_callable(diagnostic) {
+                declarations.push(diagnostic.span);
+            }
+        }
+
+        type_refs.finish();
+        declarations.finish();
+        Self {
+            type_refs,
+            declarations,
+        }
+    }
+}
+
+#[derive(Default)]
+struct ByteRanges {
+    ranges: Vec<ByteRange>,
+}
+
+#[derive(Clone, Copy)]
+struct ByteRange {
+    start: usize,
+    end: usize,
+}
+
+impl ByteRanges {
+    fn push(&mut self, span: SourceSpan) {
+        self.ranges.push(ByteRange {
+            start: span.start_byte,
+            end: span.end_byte,
+        });
+    }
+
+    fn finish(&mut self) {
+        self.ranges.sort_by_key(|range| (range.start, range.end));
+        let mut merged: Vec<ByteRange> = Vec::new();
+        for range in self.ranges.drain(..) {
+            if range.start >= range.end {
+                continue;
+            }
+            if let Some(last) = merged.last_mut()
+                && range.start <= last.end
+            {
+                last.end = last.end.max(range.end);
+                continue;
+            }
+            merged.push(range);
+        }
+        self.ranges = merged;
+    }
+
+    fn contains(&self, byte: usize) -> bool {
+        let index = self.ranges.partition_point(|range| range.start <= byte);
+        index > 0 && byte < self.ranges[index - 1].end
+    }
+}
+
+fn collect_declaration_suppression(
+    parsed: &ParsedSource,
+    declaration: &Declaration,
+    type_refs: &mut ByteRanges,
+    declarations: &mut ByteRanges,
+) {
+    match declaration {
+        Declaration::Const(decl) => {
+            collect_optional_type_ref(decl.ty.as_ref(), type_refs);
+            declarations.push(const_header_suppression_span(parsed, decl));
+        }
+        Declaration::Resource(resource) => {
+            declarations.push(resource.span);
+            for member in &resource.members {
+                collect_resource_member_suppression(member, type_refs, declarations);
+            }
+        }
+        Declaration::Store(store) => {
+            declarations.push(store.span);
+            collect_key_param_type_refs(&store.root.keys, type_refs);
+            for index in &store.indexes {
+                declarations.push(index.span);
+            }
+        }
+        Declaration::Surface(surface) => {
+            declarations.push(surface.span);
+            collect_key_param_type_refs(&surface.store.keys, type_refs);
+            for item in &surface.items {
+                declarations.push(surface_item_span(item));
+            }
+        }
+        Declaration::Function(function) => {
+            declarations.push(function.span);
+            for param in &function.params {
+                type_refs.push(param.ty.span);
+            }
+            collect_optional_type_ref(function.return_type.as_ref(), type_refs);
+            collect_block_type_refs(&function.body, type_refs);
+        }
+        Declaration::Enum(enum_decl) => {
+            declarations.push(enum_decl.span);
+            for member in &enum_decl.members {
+                collect_enum_member_suppression(member, declarations);
+            }
+        }
+        Declaration::Evolve(evolve) => {
+            declarations.push(evolve.span);
+            for step in &evolve.steps {
+                collect_evolve_step_suppression(step, type_refs, declarations);
+            }
+        }
+    }
+}
+
+fn collect_resource_member_suppression(
+    member: &ResourceMember,
+    type_refs: &mut ByteRanges,
+    declarations: &mut ByteRanges,
+) {
+    declarations.push(member.span());
+    match member {
+        ResourceMember::Field(field) => {
+            collect_key_param_type_refs(&field.keys, type_refs);
+            type_refs.push(field.ty.span);
+        }
+        ResourceMember::Group(group) => {
+            collect_key_param_type_refs(&group.keys, type_refs);
+            for member in &group.members {
+                collect_resource_member_suppression(member, type_refs, declarations);
+            }
+        }
+    }
+}
+
+fn collect_enum_member_suppression(member: &EnumMember, declarations: &mut ByteRanges) {
+    declarations.push(member.span);
+    for member in &member.members {
+        collect_enum_member_suppression(member, declarations);
+    }
+}
+
+fn collect_evolve_step_suppression(
+    step: &EvolveStep,
+    type_refs: &mut ByteRanges,
+    declarations: &mut ByteRanges,
+) {
+    match step {
+        EvolveStep::Rename { from, to, .. } => {
+            declarations.push(from.span());
+            declarations.push(to.span());
+        }
+        EvolveStep::Default { target, .. }
+        | EvolveStep::Retire { target, .. }
+        | EvolveStep::Transform { target, .. } => declarations.push(target.span()),
+    }
+    if let EvolveStep::Transform { body, .. } = step {
+        collect_block_type_refs(body, type_refs);
+    }
+}
+
+fn collect_block_type_refs(block: &Block, type_refs: &mut ByteRanges) {
+    for statement in &block.statements {
+        collect_statement_type_refs(statement, type_refs);
+    }
+}
+
+fn collect_statement_type_refs(statement: &Statement, type_refs: &mut ByteRanges) {
+    match statement {
+        Statement::Const { ty, .. } => collect_optional_type_ref(ty.as_ref(), type_refs),
+        Statement::Var { keys, ty, .. } => {
+            collect_key_param_type_refs(keys, type_refs);
+            collect_optional_type_ref(ty.as_ref(), type_refs);
+        }
+        Statement::IfConst {
+            ty,
+            then_block,
+            else_ifs,
+            else_block,
+            ..
+        } => {
+            collect_optional_type_ref(ty.as_ref(), type_refs);
+            collect_block_type_refs(then_block, type_refs);
+            for else_if in else_ifs {
+                collect_block_type_refs(&else_if.block, type_refs);
+            }
+            if let Some(block) = else_block {
+                collect_block_type_refs(block, type_refs);
+            }
+        }
+        Statement::If {
+            then_block,
+            else_ifs,
+            else_block,
+            ..
+        } => {
+            collect_block_type_refs(then_block, type_refs);
+            for else_if in else_ifs {
+                collect_block_type_refs(&else_if.block, type_refs);
+            }
+            if let Some(block) = else_block {
+                collect_block_type_refs(block, type_refs);
+            }
+        }
+        Statement::While { body, .. }
+        | Statement::For { body, .. }
+        | Statement::Transaction { body, .. } => collect_block_type_refs(body, type_refs),
+        Statement::Try { body, catch, .. } => {
+            collect_block_type_refs(body, type_refs);
+            if let Some(catch) = catch {
+                collect_optional_type_ref(catch.ty.as_ref(), type_refs);
+                collect_block_type_refs(&catch.block, type_refs);
+            }
+        }
+        Statement::Match { arms, .. } => {
+            for arm in arms {
+                collect_block_type_refs(&arm.block, type_refs);
+            }
+        }
+        Statement::Assign { .. }
+        | Statement::Delete { .. }
+        | Statement::Return { .. }
+        | Statement::ReturnAbsent { .. }
+        | Statement::Break { .. }
+        | Statement::Continue { .. }
+        | Statement::Throw { .. }
+        | Statement::Expr { .. } => {}
+    }
+}
+
+fn collect_key_param_type_refs(keys: &[KeyParam], type_refs: &mut ByteRanges) {
+    for key in keys {
+        type_refs.push(key.ty.span);
+    }
+}
+
+fn collect_optional_type_ref(ty: Option<&TypeRef>, type_refs: &mut ByteRanges) {
+    if let Some(ty) = ty {
+        type_refs.push(ty.span);
+    }
+}
+
+fn diagnostic_suppresses_callable(diagnostic: &crate::Diagnostic) -> bool {
+    matches!(
+        diagnostic.reason,
+        DiagnosticReason::Parser(ParseDiagnosticReason::MatchArmMemberPath)
+            | DiagnosticReason::Parser(ParseDiagnosticReason::EmptyIndexArguments)
+            | DiagnosticReason::Parser(ParseDiagnosticReason::EmptyKeyParameters)
+            | DiagnosticReason::Parser(ParseDiagnosticReason::EnumMemberMustBeBareName)
+            | DiagnosticReason::Parser(ParseDiagnosticReason::IndexOutsideStoreBody)
+            | DiagnosticReason::Parser(ParseDiagnosticReason::ResourceMemberInStoreBody)
+            | DiagnosticReason::Parser(ParseDiagnosticReason::Expected(
+                ExpectedSyntax::Declaration
+                    | ExpectedSyntax::EnumBody
+                    | ExpectedSyntax::EnumHeader
+                    | ExpectedSyntax::EnumName
+                    | ExpectedSyntax::EvolveStep
+                    | ExpectedSyntax::EvolveTargetPath
+                    | ExpectedSyntax::FieldType
+                    | ExpectedSyntax::FunctionBody
+                    | ExpectedSyntax::FunctionHeader
+                    | ExpectedSyntax::FunctionName
+                    | ExpectedSyntax::FunctionParameterList
+                    | ExpectedSyntax::FunctionReturnType
+                    | ExpectedSyntax::ImportName
+                    | ExpectedSyntax::IndexArgumentList
+                    | ExpectedSyntax::IndexFieldPath
+                    | ExpectedSyntax::IndexName
+                    | ExpectedSyntax::IndexTail
+                    | ExpectedSyntax::KeyName
+                    | ExpectedSyntax::KeyParameterList
+                    | ExpectedSyntax::KeyType
+                    | ExpectedSyntax::ModuleName
+                    | ExpectedSyntax::ParameterName
+                    | ExpectedSyntax::ParameterType
+                    | ExpectedSyntax::ResourceBody
+                    | ExpectedSyntax::ResourceHeader
+                    | ExpectedSyntax::ResourceMemberName
+                    | ExpectedSyntax::ResourceMemberSyntax
+                    | ExpectedSyntax::ResourceName
+                    | ExpectedSyntax::StoreResourceName
+                    | ExpectedSyntax::StoreRoot
+                    | ExpectedSyntax::SurfaceAction
+                    | ExpectedSyntax::SurfaceBody
+                    | ExpectedSyntax::SurfaceCollection
+                    | ExpectedSyntax::SurfaceFieldList
+                    | ExpectedSyntax::SurfaceCollectionTarget
+                    | ExpectedSyntax::SurfaceHeader
+                    | ExpectedSyntax::SurfaceItem
+                    | ExpectedSyntax::SurfaceName
+                    | ExpectedSyntax::SurfaceRead
+                    | ExpectedSyntax::SurfaceStore
+                    | ExpectedSyntax::TransformBody,
+            ))
+    )
 }
 
 fn starts_at_callable_root(
@@ -175,138 +718,13 @@ fn looks_like_type_annotation(
 }
 
 fn parsed_type_ref_contains(parsed: &ParsedSource, byte: usize) -> bool {
-    parsed
-        .file
-        .declarations
-        .iter()
-        .any(|declaration| declaration_type_ref_contains(declaration, byte))
-}
-
-fn declaration_type_ref_contains(declaration: &Declaration, byte: usize) -> bool {
-    match declaration {
-        Declaration::Const(decl) => optional_type_ref_contains(decl.ty.as_ref(), byte),
-        Declaration::Resource(resource) => resource
-            .members
-            .iter()
-            .any(|member| resource_member_type_ref_contains(member, byte)),
-        Declaration::Store(store) => key_params_type_ref_contains(&store.root.keys, byte),
-        Declaration::Surface(surface) => key_params_type_ref_contains(&surface.store.keys, byte),
-        Declaration::Function(function) => {
-            function
-                .params
-                .iter()
-                .any(|param| type_ref_contains(&param.ty, byte))
-                || optional_type_ref_contains(function.return_type.as_ref(), byte)
-                || block_type_ref_contains(&function.body, byte)
-        }
-        Declaration::Enum(_) => false,
-        Declaration::Evolve(evolve) => evolve
-            .steps
-            .iter()
-            .any(|step| evolve_step_type_ref_contains(step, byte)),
+    let mut type_refs = ByteRanges::default();
+    let mut declarations = ByteRanges::default();
+    for declaration in &parsed.file.declarations {
+        collect_declaration_suppression(parsed, declaration, &mut type_refs, &mut declarations);
     }
-}
-
-fn resource_member_type_ref_contains(member: &ResourceMember, byte: usize) -> bool {
-    match member {
-        ResourceMember::Field(field) => {
-            key_params_type_ref_contains(&field.keys, byte) || type_ref_contains(&field.ty, byte)
-        }
-        ResourceMember::Group(group) => {
-            key_params_type_ref_contains(&group.keys, byte)
-                || group
-                    .members
-                    .iter()
-                    .any(|member| resource_member_type_ref_contains(member, byte))
-        }
-    }
-}
-
-fn evolve_step_type_ref_contains(step: &EvolveStep, byte: usize) -> bool {
-    match step {
-        EvolveStep::Transform { body, .. } => block_type_ref_contains(body, byte),
-        EvolveStep::Rename { .. } | EvolveStep::Default { .. } | EvolveStep::Retire { .. } => false,
-    }
-}
-
-fn block_type_ref_contains(block: &Block, byte: usize) -> bool {
-    block
-        .statements
-        .iter()
-        .any(|statement| statement_type_ref_contains(statement, byte))
-}
-
-fn statement_type_ref_contains(statement: &Statement, byte: usize) -> bool {
-    match statement {
-        Statement::Const { ty, .. } => optional_type_ref_contains(ty.as_ref(), byte),
-        Statement::Var { keys, ty, .. } => {
-            key_params_type_ref_contains(keys, byte)
-                || optional_type_ref_contains(ty.as_ref(), byte)
-        }
-        Statement::IfConst {
-            ty,
-            then_block,
-            else_ifs,
-            else_block,
-            ..
-        } => {
-            optional_type_ref_contains(ty.as_ref(), byte)
-                || block_type_ref_contains(then_block, byte)
-                || else_ifs
-                    .iter()
-                    .any(|else_if| block_type_ref_contains(&else_if.block, byte))
-                || else_block
-                    .as_ref()
-                    .is_some_and(|block| block_type_ref_contains(block, byte))
-        }
-        Statement::If {
-            then_block,
-            else_ifs,
-            else_block,
-            ..
-        } => {
-            block_type_ref_contains(then_block, byte)
-                || else_ifs
-                    .iter()
-                    .any(|else_if| block_type_ref_contains(&else_if.block, byte))
-                || else_block
-                    .as_ref()
-                    .is_some_and(|block| block_type_ref_contains(block, byte))
-        }
-        Statement::While { body, .. }
-        | Statement::For { body, .. }
-        | Statement::Transaction { body, .. } => block_type_ref_contains(body, byte),
-        Statement::Try { body, catch, .. } => {
-            block_type_ref_contains(body, byte)
-                || catch.as_ref().is_some_and(|catch| {
-                    optional_type_ref_contains(catch.ty.as_ref(), byte)
-                        || block_type_ref_contains(&catch.block, byte)
-                })
-        }
-        Statement::Match { arms, .. } => arms
-            .iter()
-            .any(|arm| block_type_ref_contains(&arm.block, byte)),
-        Statement::Assign { .. }
-        | Statement::Delete { .. }
-        | Statement::Return { .. }
-        | Statement::ReturnAbsent { .. }
-        | Statement::Break { .. }
-        | Statement::Continue { .. }
-        | Statement::Throw { .. }
-        | Statement::Expr { .. } => false,
-    }
-}
-
-fn key_params_type_ref_contains(keys: &[KeyParam], byte: usize) -> bool {
-    keys.iter().any(|key| type_ref_contains(&key.ty, byte))
-}
-
-fn optional_type_ref_contains(ty: Option<&TypeRef>, byte: usize) -> bool {
-    ty.is_some_and(|ty| type_ref_contains(ty, byte))
-}
-
-fn type_ref_contains(ty: &TypeRef, byte: usize) -> bool {
-    span_contains(ty.span, byte)
+    type_refs.finish();
+    type_refs.contains(byte)
 }
 
 fn colon_is_named_argument_value(
@@ -448,16 +866,28 @@ fn declaration_header_span_contains(
 }
 
 fn const_header_span_contains(parsed: &ParsedSource, decl: &ConstDecl, byte: usize) -> bool {
-    span_contains(decl.span, byte) && !const_value_span_contains(parsed, decl, byte)
+    span_contains(const_header_suppression_span(parsed, decl), byte)
 }
 
-fn const_value_span_contains(parsed: &ParsedSource, decl: &ConstDecl, byte: usize) -> bool {
-    decl.value
-        .as_ref()
-        .is_some_and(|value| span_contains(value.span(), byte))
-        || parsed.diagnostics.iter().any(|diagnostic| {
+fn const_header_suppression_span(parsed: &ParsedSource, decl: &ConstDecl) -> SourceSpan {
+    SourceSpan {
+        start_byte: decl.span.start_byte,
+        end_byte: const_header_end(parsed, decl),
+        line: decl.span.line,
+        column: decl.span.column,
+    }
+}
+
+fn const_header_end(parsed: &ParsedSource, decl: &ConstDecl) -> usize {
+    if let Some(value) = &decl.value {
+        return value.span().start_byte;
+    }
+
+    parsed
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| {
             span_contains(decl.span, diagnostic.span.start_byte)
-                && span_contains(diagnostic.span, byte)
                 && matches!(
                     diagnostic.reason,
                     DiagnosticReason::Parser(ParseDiagnosticReason::Expected(
@@ -465,6 +895,9 @@ fn const_value_span_contains(parsed: &ParsedSource, decl: &ConstDecl, byte: usiz
                     ))
                 )
         })
+        .map(|diagnostic| diagnostic.span.start_byte)
+        .min()
+        .unwrap_or(decl.span.end_byte)
 }
 
 fn declaration_member_span_contains(parsed: &ParsedSource, byte: usize) -> bool {
@@ -533,59 +966,7 @@ fn evolve_step_target_span_contains(step: &EvolveStep, byte: usize) -> bool {
 
 fn declaration_syntax_diagnostic_contains(parsed: &ParsedSource, byte: usize) -> bool {
     parsed.diagnostics.iter().any(|diagnostic| {
-        span_contains(diagnostic.span, byte)
-            && matches!(
-                diagnostic.reason,
-                DiagnosticReason::Parser(ParseDiagnosticReason::MatchArmMemberPath)
-                    | DiagnosticReason::Parser(ParseDiagnosticReason::EmptyIndexArguments)
-                    | DiagnosticReason::Parser(ParseDiagnosticReason::EmptyKeyParameters)
-                    | DiagnosticReason::Parser(ParseDiagnosticReason::EnumMemberMustBeBareName)
-                    | DiagnosticReason::Parser(ParseDiagnosticReason::IndexOutsideStoreBody)
-                    | DiagnosticReason::Parser(ParseDiagnosticReason::ResourceMemberInStoreBody)
-                    | DiagnosticReason::Parser(ParseDiagnosticReason::Expected(
-                        ExpectedSyntax::Declaration
-                            | ExpectedSyntax::EnumBody
-                            | ExpectedSyntax::EnumHeader
-                            | ExpectedSyntax::EnumName
-                            | ExpectedSyntax::EvolveStep
-                            | ExpectedSyntax::EvolveTargetPath
-                            | ExpectedSyntax::FieldType
-                            | ExpectedSyntax::FunctionBody
-                            | ExpectedSyntax::FunctionHeader
-                            | ExpectedSyntax::FunctionName
-                            | ExpectedSyntax::FunctionParameterList
-                            | ExpectedSyntax::FunctionReturnType
-                            | ExpectedSyntax::ImportName
-                            | ExpectedSyntax::IndexArgumentList
-                            | ExpectedSyntax::IndexFieldPath
-                            | ExpectedSyntax::IndexName
-                            | ExpectedSyntax::IndexTail
-                            | ExpectedSyntax::KeyName
-                            | ExpectedSyntax::KeyParameterList
-                            | ExpectedSyntax::KeyType
-                            | ExpectedSyntax::ModuleName
-                            | ExpectedSyntax::ParameterName
-                            | ExpectedSyntax::ParameterType
-                            | ExpectedSyntax::ResourceBody
-                            | ExpectedSyntax::ResourceHeader
-                            | ExpectedSyntax::ResourceMemberName
-                            | ExpectedSyntax::ResourceMemberSyntax
-                            | ExpectedSyntax::ResourceName
-                            | ExpectedSyntax::StoreResourceName
-                            | ExpectedSyntax::StoreRoot
-                            | ExpectedSyntax::SurfaceAction
-                            | ExpectedSyntax::SurfaceBody
-                            | ExpectedSyntax::SurfaceCollection
-                            | ExpectedSyntax::SurfaceFieldList
-                            | ExpectedSyntax::SurfaceCollectionTarget
-                            | ExpectedSyntax::SurfaceHeader
-                            | ExpectedSyntax::SurfaceItem
-                            | ExpectedSyntax::SurfaceName
-                            | ExpectedSyntax::SurfaceRead
-                            | ExpectedSyntax::SurfaceStore
-                            | ExpectedSyntax::TransformBody,
-                    ))
-            )
+        span_contains(diagnostic.span, byte) && diagnostic_suppresses_callable(diagnostic)
     })
 }
 
