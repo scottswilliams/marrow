@@ -195,6 +195,39 @@ pub enum CheckedBuiltinCall {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CheckedBuiltinCallDescriptor {
+    pub spelling: &'static str,
+    pub call: CheckedBuiltinCall,
+    pub params: &'static [CheckedBuiltinCallParameter],
+    pub return_shape: CheckedBuiltinReturnShape,
+    pub docs: &'static str,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CheckedBuiltinCallParameter {
+    pub label: &'static str,
+    pub shape: CheckedBuiltinValueShape,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CheckedBuiltinValueShape {
+    Value,
+    Collection,
+    Sequence,
+    SavedPath,
+    SavedLayer,
+    SavedRoot,
+    Identity,
+    Scalar(ScalarType),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CheckedBuiltinReturnShape {
+    Void,
+    Value(CheckedBuiltinValueShape),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CheckedStdCall {
     pub module: &'static str,
     pub op: &'static str,

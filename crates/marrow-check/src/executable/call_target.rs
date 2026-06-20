@@ -6,8 +6,10 @@ use crate::program::{CheckedProgram, MarrowType};
 use crate::resolve::{Def, DefItem, Resolution, ResolvableKind, resolve, resolve_store_by_root};
 
 use super::{
-    CheckedArg, CheckedBuiltinCall, CheckedCallTarget, CheckedExpr, CheckedIdentityConstructor,
-    CheckedSavedKeyParam, CheckedStdCall, checked_resource_constructor, function_ref, resource_ref,
+    CheckedArg, CheckedBuiltinCall, CheckedBuiltinCallDescriptor, CheckedBuiltinCallParameter,
+    CheckedBuiltinReturnShape, CheckedBuiltinValueShape, CheckedCallTarget, CheckedExpr,
+    CheckedIdentityConstructor, CheckedSavedKeyParam, CheckedStdCall, checked_resource_constructor,
+    function_ref, resource_ref,
 };
 
 impl CheckedCallTarget {
@@ -182,24 +184,20 @@ fn expanded_name_call(
 }
 
 impl CheckedBuiltinCall {
+    pub(crate) fn descriptor_for_name(name: &str) -> Option<&'static CheckedBuiltinCallDescriptor> {
+        BUILTIN_CALLS
+            .iter()
+            .find(|descriptor| descriptor.spelling == name)
+    }
+
     pub(crate) fn from_name(name: &str) -> Option<Self> {
-        Some(match name {
-            "print" => Self::Print,
-            "exists" => Self::Exists,
-            "nextId" => Self::NextId,
-            "append" => Self::Append,
-            "keys" => Self::Keys,
-            "count" => Self::Count,
-            "values" => Self::Values,
-            "entries" => Self::Entries,
-            "reversed" => Self::Reversed,
-            "next" => Self::Next,
-            "prev" => Self::Prev,
-            other => match ConversionTarget::from_name(other)? {
-                ConversionTarget::ErrorCode => Self::ErrorCode,
-                ConversionTarget::Bytes => Self::Bytes,
-                t => Self::Conversion(t.scalar()),
-            },
+        if let Some(descriptor) = Self::descriptor_for_name(name) {
+            return Some(descriptor.call);
+        }
+        Some(match ConversionTarget::from_name(name)? {
+            ConversionTarget::ErrorCode => Self::ErrorCode,
+            ConversionTarget::Bytes => Self::Bytes,
+            target => Self::Conversion(target.scalar()),
         })
     }
 
@@ -224,5 +222,88 @@ impl CheckedBuiltinCall {
     /// records a positional presence read.
     pub(crate) fn is_neighbor_read(self) -> bool {
         matches!(self, Self::Next | Self::Prev)
+    }
+}
+
+const VALUE: &[CheckedBuiltinCallParameter] = &[param("value", CheckedBuiltinValueShape::Value)];
+const PATH: &[CheckedBuiltinCallParameter] = &[param("path", CheckedBuiltinValueShape::SavedPath)];
+const ROOT: &[CheckedBuiltinCallParameter] = &[param("root", CheckedBuiltinValueShape::SavedRoot)];
+const COLLECTION: &[CheckedBuiltinCallParameter] =
+    &[param("collection", CheckedBuiltinValueShape::Collection)];
+const LAYER_VALUE: &[CheckedBuiltinCallParameter] = &[
+    param("layer", CheckedBuiltinValueShape::SavedLayer),
+    param("value", CheckedBuiltinValueShape::Value),
+];
+
+#[rustfmt::skip]
+const BUILTIN_CALLS: &[CheckedBuiltinCallDescriptor] = &[
+    descriptor("print", CheckedBuiltinCall::Print, VALUE, ret_void(), "Writes rendered text to output with a newline."),
+    descriptor("exists", CheckedBuiltinCall::Exists, PATH, ret_scalar(marrow_schema::ScalarType::Bool), "Returns true when the saved path exists."),
+    descriptor("nextId", CheckedBuiltinCall::NextId, ROOT, ret_value(CheckedBuiltinValueShape::Identity), "Returns the next id for a saved root."),
+    descriptor("append", CheckedBuiltinCall::Append, LAYER_VALUE, ret_scalar(marrow_schema::ScalarType::Int), "Appends a value to a layer and returns its key."),
+    descriptor("keys", CheckedBuiltinCall::Keys, COLLECTION, ret_value(CheckedBuiltinValueShape::Sequence), "Returns the keys in a collection."),
+    descriptor("count", CheckedBuiltinCall::Count, COLLECTION, ret_scalar(marrow_schema::ScalarType::Int), "Returns child count for a saved path, 1 for a scalar, or 0 when absent."),
+    descriptor("values", CheckedBuiltinCall::Values, COLLECTION, ret_value(CheckedBuiltinValueShape::Sequence), "Returns the values in a collection."),
+    descriptor("entries", CheckedBuiltinCall::Entries, COLLECTION, ret_value(CheckedBuiltinValueShape::Sequence), "Returns the entries in a collection."),
+    descriptor("reversed", CheckedBuiltinCall::Reversed, COLLECTION, ret_value(CheckedBuiltinValueShape::Sequence), "Returns the collection in reverse order."),
+    descriptor("next", CheckedBuiltinCall::Next, PATH, ret_value(CheckedBuiltinValueShape::Value), "Returns the next key after a saved path."),
+    descriptor("prev", CheckedBuiltinCall::Prev, PATH, ret_value(CheckedBuiltinValueShape::Value), "Returns the previous key before a saved path."),
+];
+
+const fn descriptor(
+    spelling: &'static str,
+    call: CheckedBuiltinCall,
+    params: &'static [CheckedBuiltinCallParameter],
+    return_shape: CheckedBuiltinReturnShape,
+    docs: &'static str,
+) -> CheckedBuiltinCallDescriptor {
+    CheckedBuiltinCallDescriptor {
+        spelling,
+        call,
+        params,
+        return_shape,
+        docs,
+    }
+}
+
+const fn param(
+    label: &'static str,
+    shape: CheckedBuiltinValueShape,
+) -> CheckedBuiltinCallParameter {
+    CheckedBuiltinCallParameter { label, shape }
+}
+
+const fn ret_void() -> CheckedBuiltinReturnShape {
+    CheckedBuiltinReturnShape::Void
+}
+
+const fn ret_scalar(scalar: marrow_schema::ScalarType) -> CheckedBuiltinReturnShape {
+    ret_value(CheckedBuiltinValueShape::Scalar(scalar))
+}
+
+const fn ret_value(shape: CheckedBuiltinValueShape) -> CheckedBuiltinReturnShape {
+    CheckedBuiltinReturnShape::Value(shape)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn builtin_descriptors_round_trip_through_call_identity() {
+        let mut spellings = std::collections::HashSet::new();
+        for descriptor in BUILTIN_CALLS {
+            assert!(
+                spellings.insert(descriptor.spelling),
+                "duplicate builtin descriptor for {}",
+                descriptor.spelling
+            );
+            assert_eq!(
+                CheckedBuiltinCall::from_name(descriptor.spelling),
+                Some(descriptor.call)
+            );
+        }
+
+        assert_eq!(CheckedBuiltinCall::from_name("write"), None);
     }
 }

@@ -6,13 +6,14 @@ use std::path::PathBuf;
 
 use marrow_check::program::MarrowType;
 use marrow_check::tooling::{
-    DataChild, DataPathError, DataPathSegment, DataPresence, DeclaredDataChild,
+    CallableArgumentStyle, CallableParameter, CallableSignature, CallableSignatureKind,
+    CallableValueShape, DataChild, DataPathError, DataPathSegment, DataPresence, DeclaredDataChild,
     DeclaredDataChildKind, DeclaredDataKeyParam, MAX_VALUE_PREVIEW_LIMIT, ResourceConstructorField,
     SourceDataPathSegment, ToolingError, declared_data_children, declared_source_data_children,
-    declared_source_receiver_data_children, resolve_data_path, resource_constructor_signature,
-    sample_integrity_problem_details, sample_integrity_problems, stamped_data_children,
-    stamped_data_roots_in_store, stamped_integrity_problem_details, stamped_preview_data_path,
-    stamped_read_data_path,
+    declared_source_receiver_data_children, intrinsic_callable_signature, resolve_data_path,
+    resource_constructor_signature, sample_integrity_problem_details, sample_integrity_problems,
+    stamped_data_children, stamped_data_roots_in_store, stamped_integrity_problem_details,
+    stamped_preview_data_path, stamped_read_data_path,
 };
 use marrow_check::{
     CHECK_READ_ONLY_EXPRESSION_HOST_EFFECT, CHECK_READ_ONLY_EXPRESSION_UNINDEXED_LOOKUP,
@@ -225,6 +226,215 @@ fn resource_constructor_signature_fails_closed_for_ambiguous_bare_foreign_resour
     assert_eq!(
         resource_constructor_signature(&snapshot.program, &paths[2], &path_segments(&["Book"])),
         None
+    );
+}
+
+#[test]
+fn intrinsic_callable_signature_returns_builtin_shapes_without_stale_removed_builtins() {
+    assert_eq!(
+        intrinsic_callable_signature(&path_segments(&["count"])),
+        Some(CallableSignature {
+            path: path_segments(&["count"]),
+            kind: CallableSignatureKind::Builtin,
+            argument_style: CallableArgumentStyle::Positional,
+            docs: vec![
+                "Returns child count for a saved path, 1 for a scalar, or 0 when absent."
+                    .to_string()
+            ],
+            params: vec![CallableParameter {
+                label: "collection".to_string(),
+                required: true,
+                repeat: false,
+                shape: CallableValueShape::Collection,
+                docs: Vec::new(),
+            }],
+            return_shape: Some(CallableValueShape::Type(MarrowType::Primitive(
+                ScalarType::Int
+            ))),
+        })
+    );
+
+    assert_eq!(
+        intrinsic_callable_signature(&path_segments(&["nextId"]))
+            .expect("nextId signature")
+            .return_shape,
+        Some(CallableValueShape::Identity)
+    );
+    let append =
+        intrinsic_callable_signature(&path_segments(&["append"])).expect("append signature");
+    assert_eq!(
+        append
+            .params
+            .iter()
+            .map(|param| &param.shape)
+            .collect::<Vec<_>>(),
+        [&CallableValueShape::SavedLayer, &CallableValueShape::Value,]
+    );
+    assert_eq!(append.argument_style, CallableArgumentStyle::Positional);
+    assert_eq!(
+        append.return_shape,
+        Some(CallableValueShape::Type(MarrowType::Primitive(
+            ScalarType::Int
+        )))
+    );
+    assert_eq!(
+        intrinsic_callable_signature(&path_segments(&["print"]))
+            .expect("print signature")
+            .return_shape,
+        None
+    );
+    assert_eq!(
+        intrinsic_callable_signature(&path_segments(&["write"])),
+        None
+    );
+}
+
+#[test]
+fn intrinsic_callable_signature_returns_identity_constructor_shape() {
+    assert_eq!(
+        intrinsic_callable_signature(&path_segments(&["Id"])),
+        Some(CallableSignature {
+            path: path_segments(&["Id"]),
+            kind: CallableSignatureKind::IdentityConstructor,
+            argument_style: CallableArgumentStyle::Positional,
+            docs: Vec::new(),
+            params: vec![
+                CallableParameter {
+                    label: "root".to_string(),
+                    required: true,
+                    repeat: false,
+                    shape: CallableValueShape::SavedRoot,
+                    docs: Vec::new(),
+                },
+                CallableParameter {
+                    label: "key".to_string(),
+                    required: true,
+                    repeat: true,
+                    shape: CallableValueShape::Value,
+                    docs: Vec::new(),
+                },
+            ],
+            return_shape: Some(CallableValueShape::Identity),
+        })
+    );
+}
+
+#[test]
+fn intrinsic_callable_signature_returns_conversion_shapes_with_error_code_identity() {
+    assert_eq!(
+        intrinsic_callable_signature(&path_segments(&["int"])),
+        Some(CallableSignature {
+            path: path_segments(&["int"]),
+            kind: CallableSignatureKind::ScalarConversion,
+            argument_style: CallableArgumentStyle::Positional,
+            docs: Vec::new(),
+            params: vec![CallableParameter {
+                label: "value".to_string(),
+                required: true,
+                repeat: false,
+                shape: CallableValueShape::Value,
+                docs: Vec::new(),
+            }],
+            return_shape: Some(CallableValueShape::Type(MarrowType::Primitive(
+                ScalarType::Int
+            ))),
+        })
+    );
+
+    assert_eq!(
+        intrinsic_callable_signature(&path_segments(&["ErrorCode"]))
+            .expect("ErrorCode signature")
+            .return_shape,
+        Some(CallableValueShape::ErrorCode)
+    );
+}
+
+#[test]
+fn intrinsic_callable_signature_returns_standard_library_shapes() {
+    assert_eq!(
+        intrinsic_callable_signature(&path_segments(&["std", "text", "contains"])),
+        Some(CallableSignature {
+            path: path_segments(&["std", "text", "contains"]),
+            kind: CallableSignatureKind::StandardLibrary,
+            argument_style: CallableArgumentStyle::Positional,
+            docs: Vec::new(),
+            params: vec![
+                CallableParameter {
+                    label: "string".to_string(),
+                    required: true,
+                    repeat: false,
+                    shape: CallableValueShape::Type(MarrowType::Primitive(ScalarType::Str)),
+                    docs: Vec::new(),
+                },
+                CallableParameter {
+                    label: "string".to_string(),
+                    required: true,
+                    repeat: false,
+                    shape: CallableValueShape::Type(MarrowType::Primitive(ScalarType::Str)),
+                    docs: Vec::new(),
+                },
+            ],
+            return_shape: Some(CallableValueShape::Type(MarrowType::Primitive(
+                ScalarType::Bool
+            ))),
+        })
+    );
+
+    let absent = intrinsic_callable_signature(&path_segments(&["std", "assert", "absent"]))
+        .expect("std::assert::absent signature");
+    assert_eq!(absent.params[0].shape, CallableValueShape::SavedPath);
+    assert_eq!(absent.return_shape, None);
+    assert_eq!(
+        intrinsic_callable_signature(&path_segments(&["std", "text", "missing"])),
+        None
+    );
+    assert_eq!(
+        intrinsic_callable_signature(&path_segments(&["foo", "std", "text", "contains"])),
+        None
+    );
+}
+
+#[test]
+fn intrinsic_callable_signature_returns_error_constructor_shape() {
+    assert_eq!(
+        intrinsic_callable_signature(&path_segments(&["Error"])),
+        Some(CallableSignature {
+            path: path_segments(&["Error"]),
+            kind: CallableSignatureKind::ErrorConstructor,
+            argument_style: CallableArgumentStyle::NamedFields,
+            docs: Vec::new(),
+            params: vec![
+                CallableParameter {
+                    label: "code".to_string(),
+                    required: true,
+                    repeat: false,
+                    shape: CallableValueShape::ErrorCode,
+                    docs: Vec::new(),
+                },
+                CallableParameter {
+                    label: "message".to_string(),
+                    required: true,
+                    repeat: false,
+                    shape: CallableValueShape::Type(MarrowType::Primitive(ScalarType::Str)),
+                    docs: Vec::new(),
+                },
+                CallableParameter {
+                    label: "help".to_string(),
+                    required: false,
+                    repeat: false,
+                    shape: CallableValueShape::Type(MarrowType::Primitive(ScalarType::Str)),
+                    docs: Vec::new(),
+                },
+                CallableParameter {
+                    label: "data".to_string(),
+                    required: false,
+                    repeat: false,
+                    shape: CallableValueShape::Type(MarrowType::Unknown),
+                    docs: Vec::new(),
+                },
+            ],
+            return_shape: Some(CallableValueShape::Type(MarrowType::Error)),
+        })
     );
 }
 

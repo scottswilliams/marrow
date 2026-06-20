@@ -27,7 +27,9 @@ pub use integrity::{
     visit_integrity_problems,
 };
 pub use signatures::{
-    ResourceConstructorField, ResourceConstructorSignature, resource_constructor_signature,
+    CallableArgumentStyle, CallableParameter, CallableSignature, CallableSignatureKind,
+    CallableValueShape, ResourceConstructorField, ResourceConstructorSignature,
+    intrinsic_callable_signature, resource_constructor_signature,
 };
 
 #[derive(Debug)]
