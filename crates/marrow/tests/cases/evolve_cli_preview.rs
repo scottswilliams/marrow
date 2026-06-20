@@ -1,4 +1,5 @@
 use std::fs;
+use std::path::Path;
 
 use crate::support;
 use crate::support_evolve;
@@ -535,8 +536,9 @@ fn evolve_preview_scaffold_emits_parseable_formatted_evolve_blocks()
         "missing required member should get a parseable default skeleton: {scaffold}"
     );
     assert!(
-        scaffold.contains("evolve\n    transform Book.price\n        return 0"),
-        "type-change repair should get a parseable transform skeleton: {scaffold}"
+        scaffold.contains("evolve\n    transform Book.price\n        return \"\""),
+        "type-change repair should get a type-correct transform skeleton for the new \
+         string member: {scaffold}"
     );
     assert_eq!(
         fs::read_to_string(root.join("src/books.mw")).expect("read source"),
@@ -552,6 +554,91 @@ fn evolve_preview_scaffold_emits_parseable_formatted_evolve_blocks()
          \x20   return nextId(^books)\n",
         "--scaffold must not edit source"
     );
+
+    Ok(())
+}
+
+/// A nested-module project (`shop::books`) whose source file lives at the matching
+/// `src/shop/books.mw` path. A multi-segment module catalog path exposes whether the
+/// scaffold strips the whole module prefix or only its first segment.
+fn nested_books_project(name: &str, source: &str) -> support::TempProject {
+    support::temp_project_uncommitted(name, |root: &Path| {
+        write(root, "marrow.json", support::native_config());
+        write(root, "src/shop/books.mw", source);
+    })
+}
+
+/// The evolve blocks a scaffold emits, spliced into source and fed back through the
+/// production checker, must name targets the checker resolves and type-correct defaults:
+/// no `check.evolve_target` and no `check.evolve_type`. This is the ready-to-paste
+/// contract the CLI map promises, across a nested module, the default and retire
+/// families, and int plus several non-int leaf types.
+#[test]
+fn evolve_preview_scaffold_round_trips_through_the_checker()
+-> Result<(), Box<dyn std::error::Error>> {
+    let baseline = "module shop::books\n\
+         resource Book\n\
+         \x20   required title: string\n\
+         \x20   required cost: int\n\
+         \x20   subtitle: string\n\
+         store ^books(id: int): Book\n";
+    let root = nested_books_project("evolve-preview-scaffold-roundtrip", baseline);
+    let program = commit_catalog(&root);
+    let place = root_place(&program, "books")?;
+    {
+        let store = open_native_store(&root);
+        seed_title_only(&store, &place, 1, "Dune");
+        seed_member(&store, &place, 1, "cost", Scalar::Int(7));
+        seed_member(
+            &store,
+            &place,
+            1,
+            "subtitle",
+            Scalar::Str("Appendix".into()),
+        );
+    }
+
+    // Add required leaves across int and several non-int types (default family), retype the
+    // populated `cost` from int to decimal (transform family), and drop the populated
+    // `subtitle` (retire family), so the scaffold emits all three across non-int leaf types.
+    let evolved = "module shop::books\n\
+         resource Book\n\
+         \x20   required title: string\n\
+         \x20   required cost: decimal\n\
+         \x20   required pages: int\n\
+         \x20   required edition: string\n\
+         \x20   required hardcover: bool\n\
+         \x20   required price: decimal\n\
+         \x20   required published: date\n\
+         store ^books(id: int): Book\n";
+    write(&root, "src/shop/books.mw", evolved);
+
+    let output = marrow(&["evolve", "preview", "--scaffold", root.to_str().unwrap()]);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let scaffold = String::from_utf8(output.stdout).expect("scaffold utf8");
+    assert!(
+        scaffold.contains("default ")
+            && scaffold.contains("transform ")
+            && scaffold.contains("retire "),
+        "round-trip must exercise the default, transform, and retire families: {scaffold}"
+    );
+
+    // Splice every emitted evolve block into the source, the way a developer pastes the
+    // scaffold, then re-check through the production pipeline.
+    write(&root, "src/shop/books.mw", &format!("{evolved}{scaffold}"));
+    let check = marrow(&["check", root.to_str().unwrap()]);
+    let stderr = String::from_utf8(check.stderr).expect("check stderr utf8");
+    for code in [
+        "check.evolve_target",
+        "check.evolve_type",
+        "check.evolve_transform",
+        "check.return_type",
+    ] {
+        assert!(
+            !stderr.contains(code),
+            "pasted scaffold must check clean, found {code}: {stderr}\n--- pasted ---\n{evolved}{scaffold}"
+        );
+    }
 
     Ok(())
 }

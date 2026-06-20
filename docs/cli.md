@@ -303,9 +303,11 @@ witness, then reports the counts and blocking diagnostics. With
 memory, and derives the witness from that point-in-time data instead of opening
 the configured store; the mount is read-only and does not restore, activate, or
 write catalog files. With `--scaffold`, text output is formatter-produced `.mw`
-source containing one ready-to-paste `evolve` block per repairable obligation;
-it never edits project source. JSON and JSONL keep the preview envelope and
-include the scaffold string.
+source containing one ready-to-paste `evolve` block per repairable obligation:
+each names its target in the resource-qualified form the checker resolves
+(`Book.pages`) and seeds a default or transform body with a type-correct constant
+of the member's leaf type, so a pasted block checks clean. It never edits project
+source. JSON and JSONL keep the preview envelope and include the scaffold string.
 
 `evolve apply` recomputes that preview witness over the live project and store,
 requires an exact match, checks the activation window, and commits the data work

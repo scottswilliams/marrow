@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use marrow_check::evolution::{
     EvolutionWitness, RejectedDefault, RepairDiagnostic, RepairReason, Verdict,
 };
+use marrow_check::{CheckedModule, ResourceSchema, ScalarType, Type};
 use marrow_run::evolution::{ApplyError, ApplyOutcome};
 
 use crate::{CheckFormat, report_simple_error, report_simple_error_with_data, write_json};
@@ -21,19 +22,26 @@ pub(super) struct SourceLabels {
 struct SourceTarget {
     display: String,
     scaffold: String,
+    /// The type-correct constant an `evolve default` scaffold backfills this target with,
+    /// for a scalar resource member; `None` for a target with no defaultable leaf type
+    /// (a store root, index, enum, or a non-scalar member).
+    default_literal: Option<&'static str>,
 }
 
 impl SourceLabels {
     pub(super) fn from_program(program: &marrow_check::CheckedProgram) -> Self {
         let mut by_catalog_id = HashMap::new();
         for entry in &program.catalog.accepted_entries {
-            by_catalog_id.insert(entry.stable_id.clone(), SourceTarget::new(&entry.path));
+            by_catalog_id.insert(
+                entry.stable_id.clone(),
+                SourceTarget::new(program, &entry.path),
+            );
         }
         if let Some(proposal) = &program.catalog.proposal {
             for entry in &proposal.entries {
                 by_catalog_id
                     .entry(entry.stable_id.clone())
-                    .or_insert_with(|| SourceTarget::new(&entry.path));
+                    .or_insert_with(|| SourceTarget::new(program, &entry.path));
             }
         }
         Self { by_catalog_id }
@@ -51,13 +59,24 @@ impl SourceLabels {
             .get(catalog_id)
             .map_or_else(|| catalog_id.to_string(), |target| target.scaffold.clone())
     }
+
+    /// The type-correct constant an `evolve default` scaffold for this target backfills.
+    /// `0` is the safe fallback when a target's leaf type cannot be resolved; a real `default`
+    /// or transform target always resolves in current source, so this is defensive only.
+    fn default_literal(&self, catalog_id: &str) -> &'static str {
+        self.by_catalog_id
+            .get(catalog_id)
+            .and_then(|target| target.default_literal)
+            .unwrap_or("0")
+    }
 }
 
 impl SourceTarget {
-    fn new(path: &str) -> Self {
+    fn new(program: &marrow_check::CheckedProgram, path: &str) -> Self {
         Self {
             display: source_label(path),
-            scaffold: scaffold_target(path),
+            scaffold: scaffold_target(program, path),
+            default_literal: member_default_literal(program, path),
         }
     }
 }
@@ -66,16 +85,79 @@ fn source_label(path: &str) -> String {
     path.replace("::", ".")
 }
 
-/// Source spelling for an evolve scaffold target, dropping the leading module segment so the
-/// target is the dotted member path the user writes. Store roots and indexes carry their caret
-/// inside the catalog path segment (`books::^books`, `books::^books::byShelf`), so joining the
-/// remaining segments already yields the correct `^books` / `^books.byShelf` spelling.
-fn scaffold_target(path: &str) -> String {
-    let local: Vec<&str> = path.split("::").skip(1).collect();
-    if local.is_empty() {
-        source_label(path)
-    } else {
-        local.join(".")
+/// Source spelling for an evolve scaffold target: the resource-qualified member path the
+/// checker resolves (`Book.pages`), with the owning module prefix dropped. The module can be
+/// several segments (`shop::books`), so the whole module name is stripped, not just its first
+/// segment. Store roots and indexes carry their caret inside the catalog path segment
+/// (`shop::books::^books`, `shop::books::^books::byShelf`), so joining the remaining segments
+/// with a dot yields the correct `^books` / `^books.byShelf` spelling. A path the program's
+/// modules do not own falls back to the full dotted path.
+fn scaffold_target(program: &marrow_check::CheckedProgram, path: &str) -> String {
+    match owned_path(program, path) {
+        Some((_, local)) if !local.is_empty() => local.join("."),
+        _ => source_label(path),
+    }
+}
+
+/// The module that owns a catalog path and the path segments below its module prefix:
+/// `[Resource, member...]` for a member, `[^store]` for a store root, `[^store, index]` for
+/// an index. The module whose name is the longest `::`-segment prefix wins, so a nested
+/// module (`shop::books`) is not mistaken for a shorter sibling (`shop`) whose name also
+/// prefixes the path text. `None` when no module owns the path.
+fn owned_path<'a>(
+    program: &'a marrow_check::CheckedProgram,
+    path: &'a str,
+) -> Option<(&'a CheckedModule, Vec<&'a str>)> {
+    let module = program
+        .modules
+        .iter()
+        .filter(|module| {
+            path == module.name
+                || path
+                    .strip_prefix(&module.name)
+                    .is_some_and(|rest| rest.starts_with("::"))
+        })
+        .max_by_key(|module| module.name.len())?;
+    let local = path.strip_prefix(&module.name)?.strip_prefix("::")?;
+    Some((module, local.split("::").collect()))
+}
+
+/// The type-correct `evolve default` constant for a scalar resource member, resolved from
+/// its leaf type. `None` for a store root, index, enum, or a non-scalar member, none of
+/// which a `default` scaffold targets with a constant.
+fn member_default_literal(
+    program: &marrow_check::CheckedProgram,
+    path: &str,
+) -> Option<&'static str> {
+    let (module, local) = owned_path(program, path)?;
+    let (resource_name, member_chain) = local.split_first()?;
+    if member_chain.is_empty() {
+        return None;
+    }
+    let resource = module
+        .resources
+        .iter()
+        .find(|resource: &&ResourceSchema| resource.name == *resource_name)?;
+    match resource.field_type(member_chain)? {
+        Type::Scalar(scalar) => Some(default_literal(*scalar)),
+        _ => None,
+    }
+}
+
+/// A valid `.mw` constant literal of each scalar type for a `default` scaffold. The temporal
+/// and bytes forms use the validating constructor over a canonical-form string, the only
+/// constant the const-default evaluator carries for those types; the placeholders are the
+/// canonical zero of each type a developer then edits to a real fill.
+fn default_literal(scalar: ScalarType) -> &'static str {
+    match scalar {
+        ScalarType::Int => "0",
+        ScalarType::Bool => "false",
+        ScalarType::Str => "\"\"",
+        ScalarType::Decimal => "0.0",
+        ScalarType::Bytes => "bytes(\"\")",
+        ScalarType::Date => "date(\"1970-01-01\")",
+        ScalarType::Instant => "instant(\"1970-01-01T00:00:00Z\")",
+        ScalarType::Duration => "duration(\"PT0S\")",
     }
 }
 
@@ -390,12 +472,14 @@ fn retire_scaffold(catalog_id: &str, populated: usize, labels: &SourceLabels) ->
 
 fn default_scaffold(catalog_id: &str, labels: &SourceLabels) -> String {
     let target = labels.scaffold_target(catalog_id);
-    format!("evolve\n    default {target} = 0\n")
+    let value = labels.default_literal(catalog_id);
+    format!("evolve\n    default {target} = {value}\n")
 }
 
 fn transform_scaffold(catalog_id: &str, labels: &SourceLabels) -> String {
     let target = labels.scaffold_target(catalog_id);
-    format!("evolve\n    transform {target}\n        return 0\n")
+    let value = labels.default_literal(catalog_id);
+    format!("evolve\n    transform {target}\n        return {value}\n")
 }
 
 fn generic_blocking_report() -> BlockingReport {
