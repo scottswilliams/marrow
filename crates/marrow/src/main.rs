@@ -31,8 +31,8 @@ Usage:
   marrow evolve apply [--maintenance] [--approve-retire <catalog-id>:<count>]
     [--backup <path> | --no-backup] [--format text|json|jsonl] <projectdir>
   marrow fmt [--check | --write] <file.mw | projectdir>
-  marrow run [--entry <entry>] [--maintenance] [--trace] [--dry-run] [--format text|json] <projectdir>
-  marrow test [--trace] [--format text|json|jsonl] <projectdir>
+  marrow run [--entry <entry>] [--arg name=value]... [--maintenance] [--trace] [--dry-run] [--format text|json] <projectdir>
+  marrow test [--trace] [--format text|json|jsonl] [--filter <substring>] <projectdir>
   marrow surface serve [--write] [--cors-origin <loopback-origin>] [--addr <loopback:port>] <projectdir>
   marrow data <roots|stats|dump|integrity> [--backup <artifact>] [--format text|json|jsonl] <projectdir>
   marrow data recover [--format text|json|jsonl] <projectdir>
@@ -652,6 +652,20 @@ pub(crate) fn take_single_target(
 ) -> Result<(), ExitCode> {
     if slot.replace(target.to_string()).is_some() {
         eprintln!("marrow {command} accepts one {target_label}");
+        return Err(ExitCode::from(2));
+    }
+    Ok(())
+}
+
+/// Reject a project target that names an existing non-directory (a bare `.mw`
+/// file). A missing path is left alone so the command's loader reports the
+/// accurate `io.read` failure, consistent with `run`/`test`/`data`.
+pub(crate) fn reject_bare_file_target(command: &str, target: &str) -> Result<(), ExitCode> {
+    let path = Path::new(target);
+    if path.exists() && !path.is_dir() {
+        eprintln!(
+            "marrow {command} accepts a project directory containing marrow.json, not a bare file"
+        );
         return Err(ExitCode::from(2));
     }
     Ok(())

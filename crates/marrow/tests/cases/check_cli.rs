@@ -77,6 +77,29 @@ fn check_rejects_file_targets_before_json_diagnostics() {
 }
 
 #[test]
+fn check_on_a_missing_directory_reports_the_io_read_failure() {
+    let missing = support::unique_temp_path("check-missing-dir");
+
+    let output = support::marrow_sub("check", &[missing.to_str().unwrap()]);
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert!(
+        output.stdout.is_empty(),
+        "unexpected stdout: {:?}",
+        output.stdout
+    );
+    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+    assert!(
+        stderr.contains("io.read") && stderr.contains("marrow.json"),
+        "a missing directory must read like run/test, not the bare-file guidance: {stderr}"
+    );
+    assert!(
+        !stderr.contains("not a bare file"),
+        "a missing directory is not a bare file: {stderr}"
+    );
+}
+
+#[test]
 fn check_accepts_valid_project_source() {
     let dir = project_with_source(
         "valid",

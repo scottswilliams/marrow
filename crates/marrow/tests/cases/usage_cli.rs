@@ -129,6 +129,30 @@ fn top_level_help_advertises_doctor() {
 }
 
 #[test]
+fn top_level_help_advertises_run_arg_and_test_filter() {
+    let output = marrow(&["--help"]);
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let stdout = String::from_utf8(output.stdout).expect("stdout utf8");
+    let run_line = stdout
+        .lines()
+        .find(|line| line.trim_start().starts_with("marrow run "))
+        .expect("a run usage line");
+    assert!(
+        run_line.contains("[--arg name=value]..."),
+        "run usage must advertise --arg: {stdout}"
+    );
+    let test_line = stdout
+        .lines()
+        .find(|line| line.trim_start().starts_with("marrow test "))
+        .expect("a test usage line");
+    assert!(
+        test_line.contains("[--filter <substring>]"),
+        "test usage must advertise --filter: {stdout}"
+    );
+}
+
+#[test]
 fn run_with_no_project_dir_is_a_usage_failure() {
     let output = marrow(&["run"]);
     assert_eq!(output.status.code(), Some(2), "{output:?}");

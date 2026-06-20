@@ -47,11 +47,8 @@ Check a project directory containing marrow.json and report diagnostics.
         eprintln!("missing project directory");
         return ExitCode::from(2);
     };
-    if !Path::new(&target).is_dir() {
-        eprintln!(
-            "marrow check accepts a project directory containing marrow.json, not a bare file"
-        );
-        return ExitCode::from(2);
+    if let Err(code) = crate::reject_bare_file_target("check", &target) {
+        return code;
     }
     check_project_dir(&target, format)
 }

@@ -19,9 +19,8 @@ pub(crate) fn doctor(args: &[String]) -> ExitCode {
         Ok(parsed) => parsed,
         Err(code) => return code,
     };
-    if !Path::new(&dir).is_dir() {
-        eprintln!("marrow doctor accepts a project directory containing marrow.json");
-        return ExitCode::from(2);
+    if let Err(code) = crate::reject_bare_file_target("doctor", &dir) {
+        return code;
     }
     run_doctor(&dir, format)
 }

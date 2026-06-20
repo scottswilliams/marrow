@@ -68,6 +68,53 @@ fn doctor_integrity_finding<'a>(value: &'a serde_json::Value, dir: &str) -> &'a 
 }
 
 #[test]
+fn doctor_on_a_missing_directory_reports_the_io_read_failure() {
+    let missing = support::unique_temp_path("doctor-missing-dir");
+
+    let output = marrow(&["doctor", "--format", "json", missing.to_str().unwrap()]);
+
+    // A missing directory is not a passed-a-file usage error: doctor probes it
+    // like run/test, surfacing the unreadable marrow.json as a finding and
+    // exiting 1, not short-circuiting with the bare-file guidance and exit 2.
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let value = json(output.stdout);
+    let config_finding = finding(&value, "doctor.config_invalid");
+    assert_eq!(
+        config_finding["data"]["underlying_code"],
+        serde_json::json!("io.read"),
+        "{value:#?}"
+    );
+    assert!(
+        config_finding["data"]["path"]
+            .as_str()
+            .expect("finding path")
+            .ends_with("marrow.json"),
+        "{value:#?}"
+    );
+}
+
+#[test]
+fn doctor_rejects_a_bare_file_target_as_a_usage_failure() {
+    let path = support::temp_source(
+        "doctor-file-target",
+        r#"module app
+pub fn main()
+    print("ok")
+"#,
+    );
+
+    let output = marrow(&["doctor", path.to_str().unwrap()]);
+
+    fs::remove_file(&path).ok();
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+    assert!(
+        stderr.contains("accepts a project directory") && stderr.contains("marrow.json"),
+        "{stderr}"
+    );
+}
+
+#[test]
 fn doctor_aggregates_locked_store_and_corrupt_catalog() {
     let (project, dir) = seeded_project("doctor-lock-catalog");
     corrupt_catalog_digest(&project);
