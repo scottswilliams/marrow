@@ -33,6 +33,7 @@ Usage:
   marrow fmt [--check | --write] <file.mw | projectdir>
   marrow run [--entry <entry>] [--arg name=value]... [--maintenance] [--trace] [--dry-run] [--format text|json] <projectdir>
   marrow test [--trace] [--format text|json|jsonl] [--filter <substring>] <projectdir>
+  marrow surface client typescript <projectdir>
   marrow surface serve [--write] [--cors-origin <loopback-origin>] [--addr <loopback:port>] <projectdir>
   marrow data <roots|stats|dump|integrity> [--backup <artifact>] [--format text|json|jsonl] <projectdir>
   marrow data recover [--format text|json|jsonl] <projectdir>

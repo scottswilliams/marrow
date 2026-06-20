@@ -39,6 +39,7 @@ pub enum SurfaceRouteBindingErrorKind {
     SurfaceModuleMismatch,
     SurfaceNameMismatch,
     AliasMismatch,
+    MissingOperationRoute,
 }
 
 impl SurfaceRouteBindings {
@@ -49,6 +50,29 @@ impl SurfaceRouteBindings {
         Ok(Self {
             routes: validate_routes(manifest, catalog)?,
         })
+    }
+
+    pub fn from_manifest_for_client(
+        manifest: &SurfaceRouteManifestJson,
+        catalog: &SurfaceOperationCatalog,
+    ) -> Result<Self, SurfaceRouteBindingError> {
+        let routes = validate_routes(manifest, catalog)?;
+        if routes.len() != catalog.len() {
+            let routed_tags = routes
+                .iter()
+                .map(|route| route.operation_tag.as_str())
+                .collect::<BTreeSet<_>>();
+            let missing = catalog
+                .iter()
+                .find(|operation| !routed_tags.contains(operation.operation_tag.as_str()))
+                .map(|operation| operation.operation_tag.as_str())
+                .unwrap_or("<unknown>");
+            return Err(error(
+                SurfaceRouteBindingErrorKind::MissingOperationRoute,
+                format!("surface route manifest is missing operation tag `{missing}`"),
+            ));
+        }
+        Ok(Self { routes })
     }
 
     pub fn iter(&self) -> impl Iterator<Item = &SurfaceRouteBinding> {

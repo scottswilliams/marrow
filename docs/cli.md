@@ -14,6 +14,7 @@ marrow fmt [--check | --write] <file.mw | projectdir>
 marrow run [--entry <entry>] [--arg name=value]... [--maintenance] \
   [--trace] [--dry-run] [--format text|json] <projectdir>
 marrow test [--trace] [--format text|json|jsonl] [--filter <substring>] <projectdir>
+marrow surface client typescript <projectdir>
 marrow surface serve [--write] [--cors-origin <loopback-origin>] [--addr <loopback:port>] <projectdir>
 marrow data <roots|stats|dump|integrity> [--backup <artifact>] [--format text|json|jsonl] <projectdir>
 marrow data recover [--format text|json|jsonl] <projectdir>
@@ -141,8 +142,9 @@ Check a project directory containing `marrow.json` and report diagnostics.
   the `surface.route.v1` manifest derived from exported surface descriptors:
   JSON `POST` operation-tag paths plus render aliases and request-body kinds.
   The manifest is data; `marrow surface serve` is the local serving profile that
-  consumes it. Generated clients, remote serving, and opaque cursor tokens
-  remain out of scope.
+  consumes it, and `marrow surface client typescript` is the generated-client
+  profile that renders a thin TypeScript operation-envelope client from it.
+  Remote serving and opaque cursor tokens remain out of scope.
 
 Exits `0` when there are no errors, `1` when there are diagnostics or
 `marrow.json` cannot be read, and `2` for usage errors such as a non-directory
@@ -164,6 +166,37 @@ $ marrow check ./proj
 $ echo $?
 1
 ```
+
+---
+
+## `marrow surface client typescript`
+
+```
+marrow surface client typescript <projectdir>
+```
+
+Generate a self-contained TypeScript client for the checked application surface
+operation envelope. The command runs the same read-only project analysis used by
+`marrow check`, binding only the committed `marrow.catalog.json` artifact; it
+does not open, create, repair, or mutate the saved-data store.
+
+- A successful check prints TypeScript to stdout and diagnostics nowhere.
+- A failed check reports the existing text diagnostics to stderr, exits `1`,
+  and prints no partial client.
+- Usage errors, including a missing project directory or unknown option, exit
+  `2`.
+- The generated client uses the exported `surface_abi` descriptors and
+  `surface.route.v1` manifest as inputs. It validates route/ABI agreement before
+  rendering, stores operation tags and route paths as constants in method bodies,
+  serializes `surface.operation.v1` request envelopes, rejects unsafe JavaScript
+  `number` inputs for Marrow `int` leaves, and validates only the response
+  envelope profile, operation tag, and result kind before returning the
+  server-owned JSON result payload.
+
+The generated TypeScript is convenience code, not an authority boundary. HTTP
+serving and linked-Rust execution still revalidate operation tags, request-body
+kinds, catalog IDs, identity brands, value shapes, and integer forms for callers
+that bypass the generated client.
 
 ---
 

@@ -70,6 +70,8 @@ mod run_cli_maintenance;
 mod scenario_evolve_write_run_cli;
 #[path = "cases/store_open_robustness_cli.rs"]
 mod store_open_robustness_cli;
+#[path = "cases/surface_client_cli.rs"]
+mod surface_client_cli;
 #[path = "cases/surface_serve_cli.rs"]
 mod surface_serve_cli;
 #[path = "cases/test_cli.rs"]

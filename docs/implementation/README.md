@@ -38,11 +38,13 @@ Nine crates stacked in dependency order, lowest first:
   decode, project create/update/delete/action execution wrappers,
   accepted-catalog surface action value rendering, read/action alias descriptor rendering, and
   context-aware cursor-boundary rendering. It also renders the descriptor-derived
-  `surface.route.v1` manifest for check JSON output; HTTP serving, opaque cursor
-  tokens, and generated clients are not owned here.
+  `surface.route.v1` manifest for check JSON output and the thin TypeScript
+  operation client over ABI plus routes; HTTP serving and opaque cursor tokens
+  are not owned here.
 - **project / cli** — `marrow.json`, discovery, and the operator binary that
-  wires the above together, renders results, and owns the local loopback
-  `marrow surface serve` HTTP process around checked surface DTOs.
+  wires the above together, renders results, owns `marrow surface client
+  typescript`, and owns the local loopback `marrow surface serve` HTTP process
+  around checked surface DTOs.
 
 `check` is the spine. It is the one owner of resolution, types, facts, identity,
 and lowering; `run`, the CLI, editor tooling, and backup/restore are all

@@ -12,8 +12,8 @@ stable `delete` surfaces, `SurfaceActionOperationAnalysis` exposes action
 descriptors over `entry.invoke.v1`, `marrow-run` executes admitted
 transport-neutral reads, creates, sparse updates, deletes, and actions, and
 `marrow-json` owns the current check-output descriptor DTOs, request/result
-DTOs, typed cursor-boundary DTOs, and a transport-neutral JSON operation
-envelope over those DTOs.
+DTOs, typed cursor-boundary DTOs, a transport-neutral JSON operation envelope
+over those DTOs, and the thin TypeScript client renderer over ABI plus routes.
 
 This page owns the active ABI and the explicitly deferred profiles that must
 build on it. Deferred profiles must not introduce a second saved-data access
@@ -99,9 +99,11 @@ The active surface foundation has these owners:
   descriptor-derived
   `/surface/v1/{read|create|update|delete|action}/<operation-tag>` routes and
   `surface.operation.v1` envelopes. It defaults to read-only serving and exposes
-  create/update/delete/action routes only with `--write`. Generated clients,
-  opaque cursor tokens, remote binding, and authentication remain separate
-  profiles. Serialized ABI export includes only callable
+  create/update/delete/action routes only with `--write`.
+  `marrow surface client typescript` is the first generated-client profile: a
+  self-contained TypeScript wrapper over the same route manifest and operation
+  envelope. Opaque cursor tokens, remote binding, and authentication remain
+  separate profiles. Serialized ABI export includes only callable
   read/create/update/delete/action operation tags and routes derived from those
   exported descriptors.
 
@@ -176,8 +178,7 @@ Actions are ordinary checked Marrow functions: their writes, transactions,
 host-effect checks, thrown errors, and return values come from the language
 runtime rather than a generated CRUD side channel.
 
-Future write work is still boundary-profile work, not HTTP or generated clients
-by default:
+Future write work is still boundary-profile work, not HTTP by default:
 
 - non-JSON transport body decoding for generated write requests, if a consumer
   needs it;
@@ -282,8 +283,32 @@ a local HTTP process:
 
 The serving profile intentionally reuses the active commit-bound typed cursor
 DTOs in read responses and page requests. A separate opaque cursor-token profile
-remains future work. Generated clients, remote serving, authn/authz, and an
-HTTP dependency also remain future architecture decisions.
+remains future work. Remote serving, authn/authz, and an HTTP dependency also
+remain future architecture decisions.
+
+## TypeScript Client Profile
+
+`marrow surface client typescript` maps the active serialized ABI and
+`surface.route.v1` manifest to a self-contained TypeScript operation client. It
+validates route/ABI agreement before rendering and requires a bijection: every
+exported operation descriptor must have exactly one route row. It does not read
+or open the saved-data store.
+
+The generated code exposes sanitized module/surface namespaces and sanitized
+operation-label methods. JavaScript reserved words and label collisions are
+resolved deterministically; these names are render compatibility only.
+Operation equality remains the operation tag, and method bodies store the
+operation tag and descriptor-derived route path explicitly.
+
+The client serializes `surface.operation.v1` request envelopes for read, create,
+sparse-update, delete, and action operations. It preserves Marrow `int` values
+as strings on the wire and rejects unsafe JavaScript `number` inputs before
+serialization. Response validation is intentionally envelope-only: active
+profile version, echoed operation tag, and expected result kind. The client
+returns the server-owned JSON DTO payload; it does not build model classes,
+prove catalog IDs, re-decode response values against descriptors, or become an
+authority boundary. `marrow-json`, `marrow-run`, and `marrow surface serve`
+continue to validate every request from clients that bypass generated code.
 
 ## Generated Clients And LSP
 

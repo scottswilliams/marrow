@@ -65,10 +65,10 @@ stability for the internal crates.
 
 ## Application Surfaces
 
-The `surface` foundation is active but not yet a stable transport or
-generated-client contract. Checked surface facts are compiler facts over stores,
-fields, indexes, read operations, footprints, projections, sparse update fields,
-create fields, delete operations, and declared public actions. Stable reads,
+The `surface` foundation is active but not yet a stable remote transport or
+stable generated-client contract. Checked surface facts are compiler facts over
+stores, fields, indexes, read operations, footprints, projections, sparse update
+fields, create fields, delete operations, and declared public actions. Stable reads,
 creates, sparse updates, deletes, and actions have accepted-catalog descriptors
 and operation tags; action tags reuse `entry.invoke.v1` identity over parameters
 and return shape. `marrow check --format json|jsonl` exports the current surface
@@ -87,7 +87,9 @@ current serving profile: loopback-bound, JSON-only, optional exact loopback CORS
 with `--cors-origin`, at most one processed request per connection, backed by
 `ProjectSurfaceReadSession` in default read-only mode, and backed by
 `ProjectSurfaceSession` for create/update/delete/action routes when `--write` is
-passed.
+passed. `marrow surface client typescript` is the current generated-client
+profile: it renders a self-contained TypeScript wrapper over the same ABI,
+route manifest, and operation envelope without opening the store.
 `marrow-run::ProjectSurfaceReadSession` is an unstable linked-Rust
 implementation profile for read serving over an already accepted native store:
 it opens the store read-only, fences drift, and exposes admitted surface reads
@@ -104,7 +106,7 @@ project surface slices, not a stable app-data contract. The default project
 operation envelope helper runs actions with a zero-capability host; callers that
 need host capabilities use the explicit-host helper. The only shipped HTTP
 profile is `marrow surface serve` for loopback operation envelopes. Opaque
-cursor tokens, generated clients, and remote serving remain future profiles.
+cursor tokens and remote serving remain future profiles.
 Linked-Rust surface
 helpers, route manifest rows, and typed entry invocation remain implementation
 profiles.

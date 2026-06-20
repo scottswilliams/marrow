@@ -6,12 +6,16 @@ use marrow_run::{
 use marrow_store::key::SavedKey;
 use serde::{Deserialize, Serialize};
 
+mod client_ts;
 mod execute;
 mod operation;
 mod operation_catalog;
 mod request;
 mod route;
 mod route_binding;
+pub use client_ts::{
+    SurfaceClientRenderError, SurfaceClientRenderErrorKind, render_typescript_client,
+};
 pub use execute::{
     execute_project_surface_page_by_tag, execute_project_surface_point_create_by_tag,
     execute_project_surface_point_delete_by_tag, execute_project_surface_point_read_by_tag,
@@ -1252,6 +1256,7 @@ impl From<&SurfaceEnumValue> for SurfaceValueJson {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -1285,9 +1290,9 @@ mod tests {
     use crate::surface::{
         SURFACE_OPERATION_PROFILE_VERSION, SurfaceAbiJson, SurfaceActionArgumentShapeJson,
         SurfaceActionRequestJson, SurfaceActionResultJson, SurfaceActionValueJson,
-        SurfaceArgumentJson, SurfaceCatalogStatusJson, SurfaceCreateFieldJson,
-        SurfaceCreateOperationKindJson, SurfaceCursorBoundaryJson, SurfaceCursorJson,
-        SurfaceDeleteOperationKindJson, SurfaceIdentityJson, SurfaceKeyJson,
+        SurfaceArgumentJson, SurfaceCatalogStatusJson, SurfaceClientRenderErrorKind,
+        SurfaceCreateFieldJson, SurfaceCreateOperationKindJson, SurfaceCursorBoundaryJson,
+        SurfaceCursorJson, SurfaceDeleteOperationKindJson, SurfaceIdentityJson, SurfaceKeyJson,
         SurfaceOperationCatalog, SurfaceOperationCatalogErrorKind, SurfaceOperationErrorJson,
         SurfaceOperationKind, SurfaceOperationRequestBodyJson, SurfaceOperationRequestJson,
         SurfaceOperationResultJson, SurfacePageJson, SurfacePageRequestJson,
@@ -1296,7 +1301,7 @@ mod tests {
         SurfaceRouteBindingErrorKind, SurfaceRouteBindings, SurfaceRouteManifestJson,
         SurfaceRouteMethodJson, SurfaceRouteRequestJson, SurfaceSingletonUpdateRequestJson,
         SurfaceUniqueLookupRequestJson, SurfaceUpdateFieldJson, SurfaceValueJson,
-        SurfaceWriteValueJson,
+        SurfaceWriteValueJson, render_typescript_client,
     };
 
     static TEMP_PROJECT_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -2824,6 +2829,114 @@ pub fn seed()
             assert_eq!(binding.surface_name, expected.surface_name);
             assert_eq!(binding.alias, expected.alias);
         }
+    }
+
+    #[test]
+    fn client_ts_validates_routes_and_renders_operation_methods() {
+        let (program, _runtime) = checked_surface_program(SURFACE_ACTION_UPDATE);
+        let abi = SurfaceAbiJson::from_program(&program);
+        let manifest = SurfaceRouteManifestJson::from_abi(&abi);
+
+        let client = render_typescript_client(&abi, &manifest).expect("typescript client renders");
+
+        assert!(
+            client.contains("export function createMarrowSurfaceClient"),
+            "{client}"
+        );
+        assert!(client.contains("Number.isSafeInteger"), "{client}");
+        assert!(
+            client.contains("profile_version: SURFACE_OPERATION_PROFILE_VERSION"),
+            "{client}"
+        );
+        assert!(
+            client.contains("result.kind !== expectedResultKind"),
+            "{client}"
+        );
+        assert!(
+            !client.contains("import "),
+            "thin generated client must not depend on imports: {client}"
+        );
+
+        let bindings = client_binding_constants(&client);
+        assert_eq!(client_binding_count(&bindings), manifest.routes.len());
+        for route in &manifest.routes {
+            let binding = client_binding_for_tag(&bindings, &route.operation_tag);
+            let kind = SurfaceOperationKind::from(&route.request);
+            assert_eq!(binding["path"], route.path);
+            assert_eq!(binding["request_kind"], kind.operation_request_kind());
+            assert_eq!(binding["result_kind"], kind.operation_result_kind());
+        }
+    }
+
+    #[test]
+    fn client_ts_sanitizes_reserved_words_and_label_collisions() {
+        let (program, _runtime) = checked_surface_program(SURFACE_WITH_ENUM_IDENTITY_INDEX);
+        let mut abi = SurfaceAbiJson::from_program(&program);
+        let mut manifest = SurfaceRouteManifestJson::from_abi(&abi);
+        let surface = abi
+            .surfaces
+            .iter_mut()
+            .find(|surface| surface.name == "Books")
+            .expect("Books surface");
+        surface.module = "default".into();
+        surface.name = "class".into();
+        for read in &mut surface.read {
+            read.alias = "delete".into();
+        }
+        let expected_read_tags = surface
+            .read
+            .iter()
+            .map(|read| read.operation_tag.clone())
+            .collect::<BTreeSet<_>>();
+        let expected_read_count = surface.read.len();
+        for route in manifest
+            .routes
+            .iter_mut()
+            .filter(|route| route.surface.name == "Books")
+        {
+            route.surface.module = "default".into();
+            route.surface.name = "class".into();
+            if matches!(
+                route.request,
+                SurfaceRouteRequestJson::PointRead
+                    | SurfaceRouteRequestJson::Page
+                    | SurfaceRouteRequestJson::UniqueLookup
+            ) {
+                route.alias = "delete".into();
+            }
+        }
+
+        let client = render_typescript_client(&abi, &manifest).expect("typescript client renders");
+
+        let bindings = client_binding_constants(&client);
+        let methods = bindings["default_"]["class_"]
+            .as_object()
+            .expect("sanitized surface methods");
+        let method_names = methods.keys().map(String::as_str).collect::<Vec<_>>();
+        assert_eq!(method_names.len(), expected_read_count);
+        assert!(methods.contains_key("delete_"), "{methods:#?}");
+        assert!(method_names.iter().all(|name| name.starts_with("delete_")));
+        assert!(method_names.iter().any(|name| name.contains("__")));
+        assert_eq!(
+            methods
+                .values()
+                .map(|binding| binding["operation_tag"].as_str().expect("operation tag"))
+                .map(str::to_string)
+                .collect::<BTreeSet<_>>(),
+            expected_read_tags
+        );
+    }
+
+    #[test]
+    fn client_ts_rejects_route_manifests_that_are_not_abi_bijections() {
+        let (program, _runtime) = checked_surface_program(SURFACE_ACTION_UPDATE);
+        let abi = SurfaceAbiJson::from_program(&program);
+        let mut manifest = SurfaceRouteManifestJson::from_abi(&abi);
+        manifest.routes.pop();
+
+        let error = render_typescript_client(&abi, &manifest)
+            .expect_err("client renderer rejects missing route rows");
+        assert_eq!(error.kind(), SurfaceClientRenderErrorKind::RouteBinding);
     }
 
     #[test]
@@ -4701,15 +4814,6 @@ pub fn seed()
     }
 
     #[test]
-    fn surface_route_bindings_do_not_expose_generated_client_api_before_client_lane() {
-        let source = include_str!("surface/route_binding.rs");
-        assert!(
-            !source.contains("from_routes_for_client"),
-            "generated-client route validation API belongs to the client lane"
-        );
-    }
-
-    #[test]
     fn surface_json_does_not_expose_shape_bypass_apis() {
         let source = include_str!("surface/request.rs");
         for forbidden in [
@@ -4722,6 +4826,52 @@ pub fn seed()
                 "shape bypass API must not be public: {forbidden}"
             );
         }
+    }
+
+    fn client_binding_constants(client: &str) -> serde_json::Value {
+        let prefix = "const SURFACE_OPERATION_BINDINGS = ";
+        let suffix = " as const;";
+        let start = client
+            .find(prefix)
+            .expect("generated client operation binding constants")
+            + prefix.len();
+        let rest = &client[start..];
+        let end = rest
+            .find(suffix)
+            .expect("generated client operation binding constants suffix");
+        serde_json::from_str(&rest[..end]).expect("operation binding constants JSON")
+    }
+
+    fn client_binding_count(constants: &serde_json::Value) -> usize {
+        constants
+            .as_object()
+            .expect("module map")
+            .values()
+            .map(|surfaces| {
+                surfaces
+                    .as_object()
+                    .expect("surface map")
+                    .values()
+                    .map(|operations| operations.as_object().expect("operation map").len())
+                    .sum::<usize>()
+            })
+            .sum()
+    }
+
+    fn client_binding_for_tag<'a>(
+        constants: &'a serde_json::Value,
+        operation_tag: &str,
+    ) -> &'a serde_json::Value {
+        for surfaces in constants.as_object().expect("module map").values() {
+            for operations in surfaces.as_object().expect("surface map").values() {
+                for binding in operations.as_object().expect("operation map").values() {
+                    if binding["operation_tag"] == operation_tag {
+                        return binding;
+                    }
+                }
+            }
+        }
+        panic!("client operation binding for tag {operation_tag}");
     }
 
     #[test]

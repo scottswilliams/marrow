@@ -10,8 +10,7 @@
 //! `marrow_run::ProjectSurfaceSession`, without exposing the backing store. The
 //! zero-capability project operation helper uses `Host::new()`; callers that
 //! need host capabilities use the explicit-host helper. It is not a general
-//! `Value` codec, and it does not define HTTP serving, generated clients,
-//! or opaque cursor tokens.
+//! `Value` codec, and it does not define HTTP serving or opaque cursor tokens.
 
 use marrow_check::tooling::{DataCommitStamp, DataSnapshotStamp};
 use marrow_run::Value;

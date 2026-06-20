@@ -100,10 +100,12 @@ arity, and key-scalar validation, record presence, and post-patch footprint
 validation. The linked-Rust `entry.invoke.v1` descriptor and `EntryInvocation`
 path is owned by `marrow-check` and `marrow-run`; this crate only embeds that
 argument JSON shape for surface action request bodies. HTTP listeners, opaque
-cursor tokens, and generated clients remain outside this crate's current
-profile. The route manifest is a descriptor over the
-operation envelope, not a listener, router implementation, generated client, or
-opaque-token codec.
+cursor tokens, and remote serving remain outside this crate's current profile.
+The route manifest is a descriptor over the operation envelope, not a listener,
+router implementation, or opaque-token codec. `surface/client_ts.rs` renders the
+thin TypeScript operation client from ABI plus routes; it validates route/ABI
+agreement before rendering and does not add a response value decoder or domain
+model.
 
 The operation-tag execution functions compose those DTOs with `marrow-run`
 admission. Reads admit stable read tags, decode the point/page/unique request
@@ -138,7 +140,7 @@ maintenance capabilities use
 response envelope with record, page, optional-record, created, updated, deleted,
 or action results. Error envelopes contain only a stable code and public
 message. The project helpers use the session's private store handle and do not
-add HTTP serving, generated clients, or opaque cursor token codecs.
+add HTTP serving or opaque cursor token codecs.
 Wrong profile versions fail before tag admission; unknown tags and duplicate
 tags fail through operation-kind preflight over checked facts; wrong
 read/create/update/delete/action shape requests are rejected by that same preflight as
@@ -153,8 +155,8 @@ read/create/update/delete/action shape requests are rejected by that same prefli
   surface ABI descriptor DTOs, operation catalog and route binding validation,
   surface read result DTOs, checked surface read request-parameter and generated
   write request DTOs, action DTOs, operation envelope DTOs, descriptor alias
-  rendering, route manifest rendering, and in-process operation-tag execution
-  helpers.
+  rendering, route manifest rendering, thin TypeScript client rendering, and
+  in-process operation-tag execution helpers.
 - `crates/marrow/src/cmd_run.rs` — the run JSON envelope and `run.entry_surface`
   mapping.
 - `crates/marrow/src/trace.rs` and `crates/marrow/src/cmd_data/integrity.rs` —

@@ -144,6 +144,34 @@ impl SurfaceOperationKind {
         }
     }
 
+    pub fn operation_request_kind(self) -> &'static str {
+        match self {
+            Self::SingletonRead => "singleton_read",
+            Self::PointRead => "point_read",
+            Self::Page => "page",
+            Self::UniqueLookup => "unique_lookup",
+            Self::SingletonUpdate => "singleton_update",
+            Self::PointUpdate => "point_update",
+            Self::SingletonCreate => "singleton_create",
+            Self::PointCreate => "point_create",
+            Self::SingletonDelete => "singleton_delete",
+            Self::PointDelete => "point_delete",
+            Self::Action => "action",
+        }
+    }
+
+    pub fn operation_result_kind(self) -> &'static str {
+        match self {
+            Self::SingletonRead | Self::PointRead => "record",
+            Self::Page => "page",
+            Self::UniqueLookup => "optional_record",
+            Self::SingletonUpdate | Self::PointUpdate => "updated",
+            Self::SingletonCreate | Self::PointCreate => "created",
+            Self::SingletonDelete | Self::PointDelete => "deleted",
+            Self::Action => "action",
+        }
+    }
+
     pub(crate) fn from_program_tag(
         program: &marrow_check::CheckedProgram,
         operation_tag: &str,
@@ -279,6 +307,10 @@ impl SurfaceOperationCatalog {
 
     pub fn binding(&self, operation_tag: &str) -> Option<&SurfaceOperationBinding> {
         self.by_tag.get(operation_tag)
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &SurfaceOperationBinding> {
+        self.by_tag.values()
     }
 
     pub fn kind(&self, operation_tag: &str) -> Option<SurfaceOperationKind> {
