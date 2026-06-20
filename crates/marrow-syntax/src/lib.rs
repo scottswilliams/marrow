@@ -7,6 +7,7 @@
 //! Everything else (the lexer and the expression/declaration parsers) is an
 //! internal carve of one pipeline.
 
+mod active_call;
 mod ast;
 mod diagnostic;
 mod format;
@@ -16,6 +17,7 @@ mod parse_decl;
 mod parse_expr;
 mod token;
 
+pub use active_call::{ActiveCallableContext, active_callable_context};
 pub use ast::{
     Argument, BinaryOp, Block, CatchClause, Comment, CommentMarker, CommentPlacement, ConstDecl,
     Declaration, ElseIf, EnumDecl, EnumMember, EvolveDecl, EvolveStep, Expression, FieldDecl,
@@ -35,7 +37,10 @@ pub use literal::{
     BytesLiteralError, StringLiteralError, decode_bytes_escapes, decode_bytes_literal,
     decode_string_escapes, decode_string_literal,
 };
-pub use token::{Keyword, LexedSource, Token, TokenKind, duration_unit_seconds};
+pub use token::{
+    Keyword, LexedSource, Token, TokenKind, duration_unit_seconds, is_expression_callable_keyword,
+    is_expression_path_segment_keyword,
+};
 
 use parse_decl::DeclParser;
 

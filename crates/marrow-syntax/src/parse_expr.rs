@@ -6,7 +6,8 @@ use crate::token::is_trivia;
 use crate::{
     Argument, BinaryOp, Diagnostic, DiagnosticReason, Expression, InterpolationPart, Keyword,
     LiteralKind, NESTING_DEPTH_LIMIT, NESTING_LIMIT, PARSE_SYNTAX, ParseDiagnosticReason, Severity,
-    SourceSpan, Token, TokenKind, UnaryOp, UnsupportedSyntax,
+    SourceSpan, Token, TokenKind, UnaryOp, UnsupportedSyntax, is_expression_callable_keyword,
+    is_expression_path_segment_keyword,
 };
 
 /// The remedy shared by the comparison and equality non-associative levels: the
@@ -641,9 +642,11 @@ impl<'a> ExprParser<'a> {
                 literal(LiteralKind::Bool)
             }
             TokenKind::Identifier => self.name_expr(),
-            // A type keyword leading `::` starts a name path (`bytes::length`).
+            // A path segment keyword leading `::` starts a name path
+            // (`bytes::length`). Keyword call recovery still treats keyword call
+            // heads as callable only for single-token calls.
             TokenKind::Keyword(keyword)
-                if is_callable_keyword(keyword)
+                if is_expression_path_segment_keyword(keyword)
                     && matches!(self.peek_at(1), Some(TokenKind::DoubleColon)) =>
             {
                 self.name_expr()
@@ -651,7 +654,7 @@ impl<'a> ExprParser<'a> {
             // A keyword constructor is only a value when called (`int(...)`,
             // `Error(...)`, `Id(^root, ...)`).
             TokenKind::Keyword(keyword)
-                if (is_callable_keyword(keyword) || keyword == Keyword::Id)
+                if is_expression_callable_keyword(keyword)
                     && matches!(self.peek_at(1), Some(TokenKind::LeftParen)) =>
             {
                 self.advance();
@@ -747,7 +750,7 @@ impl<'a> ExprParser<'a> {
             // name, such as the `bytes` in `std::bytes::length`.
             let is_segment = match segment.kind {
                 TokenKind::Identifier => true,
-                TokenKind::Keyword(keyword) => is_path_segment_keyword(keyword),
+                TokenKind::Keyword(keyword) => is_expression_path_segment_keyword(keyword),
                 _ => false,
             };
             if !is_segment {
@@ -771,28 +774,6 @@ struct ParsedArguments {
     trailing_comma: bool,
 }
 
-/// Type keywords and `Error` that can begin a value when immediately called as
-/// a conversion or resource constructor.
-fn is_callable_keyword(keyword: Keyword) -> bool {
-    matches!(
-        keyword,
-        Keyword::Int
-            | Keyword::Decimal
-            | Keyword::Bool
-            | Keyword::String
-            | Keyword::Bytes
-            | Keyword::Date
-            | Keyword::Instant
-            | Keyword::Duration
-            | Keyword::ErrorCode
-            | Keyword::Error
-    )
-}
-
-fn is_path_segment_keyword(keyword: Keyword) -> bool {
-    is_callable_keyword(keyword) || keyword == Keyword::Absent
-}
-
 fn starts_expression(kind: TokenKind) -> bool {
     match kind {
         TokenKind::Integer
@@ -808,7 +789,7 @@ fn starts_expression(kind: TokenKind) -> bool {
         | TokenKind::DotDot
         | TokenKind::DotDotEqual => true,
         TokenKind::Keyword(Keyword::True | Keyword::False | Keyword::Not) => true,
-        TokenKind::Keyword(keyword) => is_callable_keyword(keyword) || keyword == Keyword::Id,
+        TokenKind::Keyword(keyword) => is_expression_callable_keyword(keyword),
         _ => false,
     }
 }

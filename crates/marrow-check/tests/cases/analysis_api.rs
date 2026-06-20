@@ -6,10 +6,11 @@ use std::path::PathBuf;
 
 use marrow_check::program::MarrowType;
 use marrow_check::tooling::{
-    CallableArgumentStyle, CallableParameter, CallableSignature, CallableSignatureKind,
-    CallableValueShape, DataChild, DataPathError, DataPathSegment, DataPresence, DeclaredDataChild,
-    DeclaredDataChildKind, DeclaredDataKeyParam, MAX_VALUE_PREVIEW_LIMIT, ResourceConstructorField,
-    SourceDataPathSegment, ToolingError, declared_data_children, declared_source_data_children,
+    ActiveCallableContext, CallableArgumentStyle, CallableParameter, CallableSignature,
+    CallableSignatureKind, CallableValueShape, DataChild, DataPathError, DataPathSegment,
+    DataPresence, DeclaredDataChild, DeclaredDataChildKind, DeclaredDataKeyParam,
+    MAX_VALUE_PREVIEW_LIMIT, ResourceConstructorField, SourceDataPathSegment, ToolingError,
+    active_callable_context, declared_data_children, declared_source_data_children,
     declared_source_receiver_data_children, intrinsic_callable_signature,
     intrinsic_callable_signature_for_file, resolve_data_path, resource_constructor_signature,
     sample_integrity_problem_details, sample_integrity_problems, stamped_data_children,
@@ -109,6 +110,229 @@ fn declared_receiver_children(
 
 fn path_segments(segments: &[&str]) -> Vec<String> {
     segments.iter().map(|segment| segment.to_string()).collect()
+}
+
+fn active_context_at_marker(source: &str) -> Option<ActiveCallableContext> {
+    let offset = source.find('|').expect("cursor marker is present");
+    let source = source.replacen('|', "", 1);
+    let lexed = marrow_syntax::lex_source(&source);
+    let parsed = marrow_syntax::parse_source(&source);
+    active_callable_context(&source, &lexed, &parsed, offset)
+}
+
+#[test]
+fn active_callable_context_reports_positional_argument_index() {
+    let context = active_context_at_marker("module app\nfn run()\n    return add(1, |\n")
+        .expect("active call context");
+
+    assert_eq!(context.callee_path_segments, path_segments(&["add"]));
+    assert_eq!(context.active_argument, 1);
+    assert_eq!(context.named_argument, None);
+}
+
+#[test]
+fn active_callable_context_reports_named_argument() {
+    let context = active_context_at_marker("module app\nfn run()\n    return Book(title: |\n")
+        .expect("active call context");
+
+    assert_eq!(context.callee_path_segments, path_segments(&["Book"]));
+    assert_eq!(context.active_argument, 0);
+    assert_eq!(context.named_argument, Some("title".to_string()));
+}
+
+#[test]
+fn active_callable_context_recovers_multiline_named_argument() {
+    let context =
+        active_context_at_marker("module app\nfn run()\n    return Book(\n        title: |\n")
+            .expect("active call context");
+
+    assert_eq!(context.callee_path_segments, path_segments(&["Book"]));
+    assert_eq!(context.active_argument, 0);
+    assert_eq!(context.named_argument, Some("title".to_string()));
+}
+
+#[test]
+fn active_callable_context_recovers_named_argument_after_trivia() {
+    for source in [
+        "module app\nfn run()\n    return Book(\n        ; doc\n        title: |\n",
+        "module app\nfn run()\n    return Book(\n        ;; doc\n        title: |\n",
+    ] {
+        let context = active_context_at_marker(source).expect("active call context");
+
+        assert_eq!(context.callee_path_segments, path_segments(&["Book"]));
+        assert_eq!(context.active_argument, 0);
+        assert_eq!(
+            context.named_argument,
+            Some("title".to_string()),
+            "{source}"
+        );
+    }
+}
+
+#[test]
+fn active_callable_context_uses_innermost_nested_call() {
+    let context =
+        active_context_at_marker("module app\nfn run()\n    return outer(inner(1, |), 3)\n")
+            .expect("active call context");
+
+    assert_eq!(context.callee_path_segments, path_segments(&["inner"]));
+    assert_eq!(context.active_argument, 1);
+    assert_eq!(context.named_argument, None);
+}
+
+#[test]
+fn active_callable_context_recovers_keyword_headed_qualified_call() {
+    let positional = active_context_at_marker(
+        "module app\nuse std::bytes\nfn run(data: bytes)\n    return bytes::base64Encode(|\n",
+    )
+    .expect("active call context");
+    assert_eq!(
+        positional.callee_path_segments,
+        path_segments(&["bytes", "base64Encode"])
+    );
+    assert_eq!(positional.active_argument, 0);
+    assert_eq!(positional.named_argument, None);
+
+    let named = active_context_at_marker(
+        "module app\nuse std::bytes\nfn run(data: bytes)\n    return bytes::base64Encode(value: |\n",
+    )
+    .expect("active call context");
+    assert_eq!(
+        named.callee_path_segments,
+        path_segments(&["bytes", "base64Encode"])
+    );
+    assert_eq!(named.active_argument, 0);
+    assert_eq!(named.named_argument, Some("value".to_string()));
+
+    let nested = active_context_at_marker(
+        "module app\nuse std::bytes\nfn run(data: bytes)\n    return outer(bytes::base64Encode(|))\n",
+    )
+    .expect("active call context");
+    assert_eq!(
+        nested.callee_path_segments,
+        path_segments(&["bytes", "base64Encode"])
+    );
+    assert_eq!(nested.active_argument, 0);
+    assert_eq!(nested.named_argument, None);
+}
+
+#[test]
+fn active_callable_context_ignores_declarations_types_and_member_keys() {
+    for source in [
+        "resource Counter\n    count(|): string\n",
+        "fn run(value: int(|\n",
+        "fn run(|\n",
+        "resource Book(|\n",
+        "module app(|\n",
+        "module app\nuse library(|\n",
+        "module app\nuse library::books(|\n",
+        "surface app(|\n",
+        "resource Book\n    author: string\nstore ^books(id: int): Book\n    index by author::name(|\n",
+    ] {
+        assert_eq!(active_context_at_marker(source), None, "{source}");
+    }
+}
+
+#[test]
+fn active_callable_context_requires_adjacent_expression_callee() {
+    for source in [
+        "module app\nfn run()\n    return foo\n\n    (|\n",
+        "module app\nfn run()\n    return foo ;; trailing doc\n    (|\n",
+        "module app\nfn run()\n    return (|\n",
+        "module app\nfn run()\n    if (|\n",
+        "module app\nfn run()\n    return std::if::foo(|\n",
+    ] {
+        assert_eq!(active_context_at_marker(source), None, "{source}");
+    }
+}
+
+#[test]
+fn active_callable_context_rejects_postfix_member_calls() {
+    for source in [
+        "module app\nfn run(book: Book)\n    return book.title(|\n",
+        "module app\nfn run(book: Book)\n    return book?.title(|\n",
+        "module app\nfn run(book: Book)\n    return book.items(id: |\n",
+    ] {
+        assert_eq!(active_context_at_marker(source), None, "{source}");
+    }
+}
+
+#[test]
+fn active_callable_context_ignores_enum_member_declarations() {
+    for source in [
+        "enum Status\n    active(|\n",
+        "enum Status\n    category active(|\n",
+    ] {
+        assert_eq!(active_context_at_marker(source), None, "{source}");
+    }
+}
+
+#[test]
+fn active_callable_context_ignores_non_expression_path_prefixes_and_headers() {
+    for source in [
+        "module app\nfn run()\n    return ^books(id: |\n",
+        "surface app from ^books\n    action publish(| as publish\n",
+        "module app\nfn run(status: Status)\n    match status\n        active(|\n",
+        "module app\nevolve\n    rename Book(| to Volume\n",
+        "module app\nevolve\n    rename Book(|) -> Volume\n",
+        "module app\nevolve\n    rename Book -> Volume(|)\n",
+        "module app\nevolve\n    default Book(|) = 1\n",
+        "module app\nevolve\n    retire Book(|)\n",
+        "module app\nevolve\n    transform Book(|)\n        return old\n",
+        "module app\nevolve\n    transform Book(|\n        return old\n",
+        "module app\nfn run()\n    return @name(|\n",
+    ] {
+        assert_eq!(active_context_at_marker(source), None, "{source}");
+    }
+
+    let context = active_context_at_marker("module app\nfn run()\n    return add(|\n")
+        .expect("expression calls still report an active context");
+    assert_eq!(context.callee_path_segments, path_segments(&["add"]));
+}
+
+#[test]
+fn active_callable_context_reports_evolve_expression_calls() {
+    for source in [
+        "module app\nevolve\n    default Book.title = Book(|\n",
+        "module app\nevolve\n    transform Book.title\n        return Book(|\n",
+    ] {
+        let context = active_context_at_marker(source).expect("active call context");
+
+        assert_eq!(context.callee_path_segments, path_segments(&["Book"]));
+        assert_eq!(context.active_argument, 0);
+        assert_eq!(context.named_argument, None);
+    }
+}
+
+#[test]
+fn active_callable_context_ignores_surface_item_name_lists() {
+    for source in [
+        "module app\nsurface Books from ^books\n    fields title(|\n",
+        "module app\nsurface Books from ^books\n    create title(|\n",
+        "module app\nsurface Books from ^books\n    update title(|\n",
+    ] {
+        assert_eq!(active_context_at_marker(source), None, "{source}");
+    }
+}
+
+#[test]
+fn active_callable_context_ignores_surface_collection_alias_syntax() {
+    assert_eq!(
+        active_context_at_marker(
+            "module app\nsurface Books from ^books\n    collection ^books as books(|\n"
+        ),
+        None
+    );
+}
+
+#[test]
+fn active_callable_context_reports_const_initializer_call() {
+    let context = active_context_at_marker("module app\nconst DEFAULT = Book(|\n")
+        .expect("active call context");
+
+    assert_eq!(context.callee_path_segments, path_segments(&["Book"]));
+    assert_eq!(context.active_argument, 0);
+    assert_eq!(context.named_argument, None);
 }
 
 #[test]

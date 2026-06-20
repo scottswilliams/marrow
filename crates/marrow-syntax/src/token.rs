@@ -129,6 +129,42 @@ pub enum Keyword {
     Id,
 }
 
+/// Type and constructor keywords that may head a single-token call expression.
+pub fn is_expression_callable_keyword(keyword: Keyword) -> bool {
+    matches!(
+        keyword,
+        Keyword::Int
+            | Keyword::Decimal
+            | Keyword::Bool
+            | Keyword::String
+            | Keyword::Bytes
+            | Keyword::Date
+            | Keyword::Instant
+            | Keyword::Duration
+            | Keyword::ErrorCode
+            | Keyword::Error
+            | Keyword::Id
+    )
+}
+
+/// Keywords the expression parser accepts after `::` in a name path.
+pub fn is_expression_path_segment_keyword(keyword: Keyword) -> bool {
+    matches!(
+        keyword,
+        Keyword::Int
+            | Keyword::Decimal
+            | Keyword::Bool
+            | Keyword::String
+            | Keyword::Bytes
+            | Keyword::Date
+            | Keyword::Instant
+            | Keyword::Duration
+            | Keyword::ErrorCode
+            | Keyword::Error
+            | Keyword::Absent
+    )
+}
+
 /// The tokens whose spans fall entirely within `[start_byte, end_byte)`. Relies
 /// on tokens being sorted by start byte with monotonic end bytes (true in the
 /// value positions that call this; nested interpolation would break it).

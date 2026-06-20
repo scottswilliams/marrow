@@ -9,6 +9,8 @@ use crate::executable::{CheckedBuiltinCall, CheckedBuiltinReturnShape, CheckedBu
 use crate::program::{CheckedModule, CheckedProgram, MarrowType, TypeNames};
 use crate::resolve::{Def, DefItem, Resolution, ResolvableKind};
 
+pub use marrow_syntax::{ActiveCallableContext, active_callable_context};
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CallableSignature {
     pub path: Vec<String>,
