@@ -241,6 +241,7 @@ fn run_project_dir(
         dry_run::report(&[], report_style, session.runtime_program(), &actions);
         return ExitCode::SUCCESS;
     }
+    let auto_applied = auto_applied_transition(session.notices());
     let nondeterminism = SystemNondeterminism::new();
     execute(
         RunExecution {
@@ -252,6 +253,7 @@ fn run_project_dir(
             observe,
             output_format,
             actions,
+            auto_applied,
         },
         &nondeterminism,
     )
@@ -355,6 +357,7 @@ struct RunExecution<'a> {
     observe: RunObservation,
     output_format: CheckFormat,
     actions: dry_run::PreviewActions,
+    auto_applied: Option<(u64, u64)>,
 }
 
 fn execute(request: RunExecution<'_>, nondeterminism: &impl Nondeterminism) -> ExitCode {
@@ -367,6 +370,7 @@ fn execute(request: RunExecution<'_>, nondeterminism: &impl Nondeterminism) -> E
         observe,
         output_format,
         actions,
+        auto_applied,
     } = request;
     let program = session.runtime_program();
     let log = std::rc::Rc::new(RefCell::new(String::new()));
@@ -452,6 +456,7 @@ fn execute(request: RunExecution<'_>, nondeterminism: &impl Nondeterminism) -> E
                     &output,
                     after_stamp.as_ref(),
                     before_stamp.as_ref(),
+                    auto_applied,
                 ) {
                     Ok(()) => {}
                     Err(error) => {
@@ -535,10 +540,25 @@ fn preview_actions(notices: &[ProjectSessionNotice]) -> dry_run::PreviewActions 
                 actions.would_fence = true;
                 actions.messages.push(notice.message());
             }
+            // `AutoApplied` is a committed write-path event, not a dry-run preview action;
+            // it surfaces through the run's text stderr line and the JSON envelope.
             ProjectSessionNotice::AutoApplied { .. } => {}
         }
     }
     actions
+}
+
+/// The epoch transition of a committed auto-applied evolution, if a run discharged one. A run
+/// applies at most one evolution before its entry executes, so this carries the single
+/// `from -> to` advance into the JSON run envelope, mirroring the text stderr notice.
+fn auto_applied_transition(notices: &[ProjectSessionNotice]) -> Option<(u64, u64)> {
+    notices.iter().find_map(|notice| match notice {
+        ProjectSessionNotice::AutoApplied {
+            from_epoch,
+            to_epoch,
+        } => Some((*from_epoch, *to_epoch)),
+        _ => None,
+    })
 }
 
 fn render_run_json(
@@ -546,6 +566,7 @@ fn render_run_json(
     result: &RunOutput,
     stamp: Option<&StoreStamp>,
     before: Option<&StoreStamp>,
+    auto_applied: Option<(u64, u64)>,
 ) -> Result<(), RuntimeError> {
     let mut envelope = serde_json::Map::new();
     envelope.insert("output".to_string(), json!(output));
@@ -559,6 +580,12 @@ fn render_run_json(
     envelope.insert("signature_digest".to_string(), serde_json::Value::Null);
     envelope.insert("raises".to_string(), serde_json::Value::Null);
     insert_run_store_state(&mut envelope, stamp, before);
+    if let Some((from_epoch, to_epoch)) = auto_applied {
+        envelope.insert(
+            "auto_applied".to_string(),
+            json!({ "from_epoch": from_epoch, "to_epoch": to_epoch }),
+        );
+    }
     crate::write_json(serde_json::Value::Object(envelope));
     Ok(())
 }

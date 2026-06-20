@@ -48,6 +48,12 @@ fn commit_stamp(root: &TempProject) -> marrow_store::tree::CommitMetadata {
         .expect("store has a commit stamp")
 }
 
+fn committed_lock(root: &TempProject) -> marrow_catalog::CatalogLock {
+    marrow_check::read_committed_lock(root.path())
+        .expect("read committed lock")
+        .expect("project has a committed lock")
+}
+
 /// The baseline: a `Book` with only `title`, plus a `Log` the default `seed` writes so
 /// the store file is stamped. `seedBook` writes one `Book` so a test can populate the
 /// affected store; the default `seed` never touches `^books`.
@@ -304,6 +310,88 @@ fn an_auto_applied_binary_passes_its_own_fence_on_a_re_run() {
         accepted_epoch(&root),
         epoch_after_auto,
         "the re-run does not advance the epoch a second time",
+    );
+}
+
+#[test]
+fn an_auto_applying_run_reprojects_the_committed_lock_in_one_pass() {
+    // A single auto-applying run must converge the committed lock, not just the store. The
+    // first run projects marrow.lock at the baseline epoch and digest. An additive edit
+    // drifts the source from that lock, so the next run auto-applies the evolution and
+    // advances the store. The committed lock is the store's source-tree projection, so the
+    // same write path must re-project it: a single run leaves `check --locked` green and the
+    // committed lock's recorded source digest and high-water epoch matching the new source.
+    // Before the fix the auto-apply path re-ran the fence without re-projecting, so the lock
+    // kept the stale baseline digest and `check --locked` stayed fatal until a second run.
+    let root = books_and_log_project("run-autoapply-reprojects-lock", BASELINE);
+    let first = marrow_sub("run", &[dir(&root)]);
+    assert_eq!(first.status.code(), Some(0), "first run: {first:?}");
+    let lock_before = committed_lock(&root);
+    let epoch_before = accepted_epoch(&root);
+
+    write(&root, "src/app.mw", REQUIRED_ADD);
+    let auto = marrow_sub("run", &[dir(&root)]);
+    assert_eq!(auto.status.code(), Some(0), "auto-apply run: {auto:?}");
+    assert_eq!(
+        accepted_epoch(&root),
+        epoch_before + 1,
+        "the auto-apply advanced the accepted epoch by one",
+    );
+
+    let locked = marrow(&["check", "--locked", dir(&root)]);
+    assert_eq!(
+        locked.status.code(),
+        Some(0),
+        "a single auto-applying run converges the lock so --locked passes: {locked:?}",
+    );
+    assert!(
+        !String::from_utf8(locked.stderr)
+            .expect("stderr utf8")
+            .contains("check.stale_lock"),
+        "the converged lock raises no stale-lock condition",
+    );
+
+    let lock_after = committed_lock(&root);
+    assert_ne!(
+        lock_after.source_digest, lock_before.source_digest,
+        "the re-projected lock records the new source digest",
+    );
+    assert_eq!(
+        lock_after.epoch_high_water,
+        epoch_before + 1,
+        "the re-projected lock advances its high-water epoch to the new source",
+    );
+}
+
+#[test]
+fn an_auto_apply_surfaces_the_epoch_transition_in_the_json_envelope() {
+    // A JSON-mode run that auto-applies an evolution must report the schema change in the
+    // structured envelope so a tool consuming stdout — not just a human reading stderr —
+    // learns the store advanced. The envelope carries the `from -> to` epoch transition
+    // alongside the advanced store stamp; a run that applies nothing carries no such field.
+    let root = books_and_log_project("run-autoapply-json-notice", BASELINE);
+    let first = marrow_sub("run", &["--format", "json", dir(&root)]);
+    assert_eq!(first.status.code(), Some(0), "first run: {first:?}");
+    let epoch_before = accepted_epoch(&root);
+    let first_envelope: serde_json::Value =
+        serde_json::from_slice(&first.stdout).expect("first run json envelope");
+    assert!(
+        first_envelope.get("auto_applied").is_none(),
+        "a run that applies no evolution carries no auto_applied field: {first_envelope}",
+    );
+
+    write(&root, "src/app.mw", REQUIRED_ADD);
+    let auto = marrow_sub("run", &["--format", "json", dir(&root)]);
+    assert_eq!(auto.status.code(), Some(0), "auto-apply run: {auto:?}");
+    let envelope: serde_json::Value =
+        serde_json::from_slice(&auto.stdout).expect("auto-apply json envelope");
+    assert_eq!(
+        envelope.get("auto_applied"),
+        Some(&serde_json::json!({
+            "from_epoch": epoch_before,
+            "to_epoch": epoch_before + 1,
+        })),
+        "the JSON envelope names the auto-applied epoch transition: {envelope}",
     );
 }
 

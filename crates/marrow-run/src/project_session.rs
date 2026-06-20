@@ -1112,10 +1112,7 @@ fn open_run_store(
     match fence_run(checked.program(), &store.store) {
         Ok(()) => {
             validate_source_analysis_admission(&checked.snapshot, admission)?;
-            if !isolate_writes {
-                reproject_committed_lock(root, &store.store, checked.program())?;
-            }
-            finish_open(checked, store, isolate_writes)
+            reproject_and_finish_open(root, checked, store, isolate_writes)
         }
         Err(FenceError::SchemaDrift) => {
             validate_no_source_analysis_admission(admission)?;
@@ -1210,6 +1207,23 @@ fn finish_open(
     })
 }
 
+/// Finish a fence-cleared native open, re-projecting the committed lock first on the writable
+/// path. The store is the sole write authority and the lock is its committed source-tree
+/// projection, so every commit-path open that the fence agrees matches this binary converges the
+/// lock through this single owner — whether the store was already at this shape or an auto-apply
+/// just advanced it. A `isolate_writes` (dry-run) open never re-projects, since it does not commit.
+fn reproject_and_finish_open(
+    root: &Path,
+    checked: CheckedSourceProgram,
+    store: NativeRunStore,
+    isolate_writes: bool,
+) -> Result<OpenRunStore, ProjectSessionError> {
+    if !isolate_writes {
+        reproject_committed_lock(root, &store.store, checked.program())?;
+    }
+    finish_open(checked, store, isolate_writes)
+}
+
 fn auto_apply_then_reopen(
     root: &Path,
     config: &ProjectConfig,
@@ -1247,7 +1261,7 @@ fn auto_apply_then_reopen(
         return open_memory_store(checked);
     };
     fence_run(checked.program(), &store.store).map_err(ProjectSessionError::Fence)?;
-    finish_open(checked, store, isolate_writes)
+    reproject_and_finish_open(root, checked, store, isolate_writes)
 }
 
 fn classify_dry_run_drift(
