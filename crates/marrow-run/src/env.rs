@@ -11,7 +11,8 @@ use marrow_store::tree::{DataPathSegment, TreeStore};
 use marrow_syntax::SourceSpan;
 
 use crate::error::{
-    Located, RUN_CAPABILITY, RUN_TRAVERSAL, RuntimeError, raise_fault, write_fault,
+    Located, RUN_CAPABILITY, RUN_TRAVERSAL, RuntimeError, TRANSACTION_WRITE_BYTE_BUDGET,
+    TRANSACTION_WRITE_STEP_OVERHEAD, raise_fault, transaction_too_large, write_fault,
 };
 use crate::host::{Host, StepHook};
 use crate::store::{DataAddress, IndexAddress, LayerAddress, catalog_id};
@@ -119,6 +120,11 @@ pub(crate) struct TransactionState {
     pub(crate) created_required_paths: Vec<RequiredPath>,
     pub(crate) pending_root_catalog_ids: BTreeSet<CatalogId>,
     pub(crate) pending_index_catalog_ids: BTreeSet<CatalogId>,
+    /// Bytes of staged write payload buffered by the open transaction so far. A
+    /// transaction holds its whole write set in memory until commit, so this is
+    /// checked against [`TRANSACTION_WRITE_BYTE_BUDGET`] as each managed write is
+    /// applied, failing closed before the buffer can exhaust memory.
+    pub(crate) staged_write_bytes: usize,
 }
 
 /// A resource or keyed-group entry whose required fields must be checked before
@@ -325,6 +331,7 @@ impl<'p> Env<'p> {
         }
         let in_transaction = self.transaction_depth() > 0;
         if in_transaction {
+            self.charge_transaction_breadth(&plan, span)?;
             self.note_managed_write_metadata(&plan);
         } else {
             stamp_managed_write(
@@ -504,12 +511,35 @@ impl<'p> Env<'p> {
         let mut transaction = self.transaction.borrow_mut();
         transaction.pending_root_catalog_ids.clear();
         transaction.pending_index_catalog_ids.clear();
+        transaction.staged_write_bytes = 0;
     }
 
     pub(crate) fn discard_transaction_metadata(&mut self) {
         let mut transaction = self.transaction.borrow_mut();
         transaction.pending_root_catalog_ids.clear();
         transaction.pending_index_catalog_ids.clear();
+        transaction.staged_write_bytes = 0;
+    }
+
+    /// Add this plan's staged write payload to the open transaction's running
+    /// total and fail closed if it crosses the breadth budget. Charged before the
+    /// plan's steps reach the store buffer, so an oversized transaction aborts
+    /// while the buffer is still bounded rather than at commit, when it has already
+    /// grown. The metadata stamp is not counted: it is one small store-internal row
+    /// per transaction, not user write breadth.
+    fn charge_transaction_breadth(
+        &mut self,
+        plan: &WritePlan,
+        span: SourceSpan,
+    ) -> Result<(), RuntimeError> {
+        let added = plan_staged_bytes(plan);
+        let mut transaction = self.transaction.borrow_mut();
+        let total = transaction.staged_write_bytes.saturating_add(added);
+        if total > TRANSACTION_WRITE_BYTE_BUDGET {
+            return Err(transaction_too_large(total, span));
+        }
+        transaction.staged_write_bytes = total;
+        Ok(())
     }
 
     fn note_managed_write_metadata(&mut self, plan: &WritePlan) {
@@ -830,6 +860,28 @@ fn build_commit_metadata_stamp(
             changed_index_catalog_ids,
         },
     )))
+}
+
+/// Bytes a plan's steps add to the open transaction's in-memory write buffer.
+/// Value payloads dominate, but every step also pins keys and bookkeeping, so
+/// each carries a fixed overhead and a flood of tiny writes still counts. The
+/// metadata stamp is store-internal and excluded.
+fn plan_staged_bytes(plan: &WritePlan) -> usize {
+    plan.steps
+        .iter()
+        .map(|step| match step {
+            PlanStep::WriteData { value, .. } | PlanStep::WriteIndex { value, .. } => {
+                value.len().saturating_add(TRANSACTION_WRITE_STEP_OVERHEAD)
+            }
+            PlanStep::WriteRecordPresence { .. }
+            | PlanStep::WriteDataNode { .. }
+            | PlanStep::DeleteData { .. }
+            | PlanStep::DeleteRecordSubtree { .. }
+            | PlanStep::DeleteIndex { .. }
+            | PlanStep::DeleteIndexSubtree { .. } => TRANSACTION_WRITE_STEP_OVERHEAD,
+            PlanStep::StampMetadata { .. } => 0,
+        })
+        .sum()
 }
 
 fn changed_catalog_ids(steps: &[PlanStep]) -> (Vec<CatalogId>, Vec<CatalogId>) {

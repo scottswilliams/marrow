@@ -14,6 +14,8 @@ mod contract_read_only_closure;
 mod contract_saved_data;
 #[path = "cases/contract_store_isolation.rs"]
 mod contract_store_isolation;
+#[path = "cases/contract_transaction_breadth.rs"]
+mod contract_transaction_breadth;
 #[path = "cases/contract_transactions.rs"]
 mod contract_transactions;
 #[path = "cases/contract_txn_rollback_retry.rs"]

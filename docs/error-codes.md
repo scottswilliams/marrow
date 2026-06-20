@@ -320,6 +320,7 @@ one is reported under its own `write.*` code.
 | `write.next_id_unsupported` | `nextId` was asked for a root whose identity shape has no default integer allocation policy. The runtime backstop for `check.next_id_requires_single_int`. |
 | `write.required_field` | Deleting a `required` field on its own is rejected outside maintenance. |
 | `write.requires_maintenance` | A whole managed-root delete (`delete ^books`) was attempted without the maintenance capability. |
+| `write.transaction_too_large` | A `transaction` buffered more than 64 MiB of pending write payload. A transaction holds its whole write set in memory until commit, so this fails closed before the buffer exhausts memory. Located at the write that crossed the budget; the aborted transaction commits nothing. Split the atomic write into smaller transactions. See the [cost model](language/cost-model.md). |
 
 ### `store.*` — kind `storage`
 

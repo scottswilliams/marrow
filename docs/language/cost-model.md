@@ -104,11 +104,11 @@ To do less work, write different code — and every lever is in the language:
 These are ordinary modeling choices with visible cost. There is no lower level to
 drop to for cheaper storage work, because the program names the access path.
 
-## Depth Limits
+## Depth And Breadth Limits
 
-Two fixed ceilings keep pathological depth from exhausting the native stack.
-Both are fail-closed: the program stops with a located diagnostic, never a
-process crash.
+Fixed ceilings keep pathological depth from exhausting the native stack and a
+pathological transaction from exhausting memory. All are fail-closed: the program
+stops with a located diagnostic, never a process crash.
 
 - **Nesting limit (256).** Source may nest expressions (parentheses, operators)
   and statement blocks (`if`, `while`, `for`, …) up to 256 levels deep. Deeper
@@ -117,7 +117,15 @@ process crash.
   256 deep. Attempting depth 257 stops at its call site with
   `run.depth`, whose payload reports the callee name, `budget=256`, and the
   observed attempted depth.
+- **Transaction-breadth budget (64 MiB).** A `transaction` buffers its whole
+  pending write set in memory until it commits. Once that staged write payload
+  passes 64 MiB, the next write stops at its span with
+  `write.transaction_too_large`. This is generous — far above any ordinary atomic
+  seed or migration — and the cap trips while the buffer is still bounded, so a
+  large transaction fails closed instead of being OOM-killed. Like every fault, a
+  surrounding `catch` can bind it, and the aborted transaction commits nothing.
+  Split an oversized atomic write into smaller transactions.
 
-Both ceilings are fixed in v0.1 and not configurable. The diagnostic limit is
-the user-visible contract: deeply nested source or unbounded recursion fails
-with a typed diagnostic, not a process abort.
+These ceilings are fixed in v0.1 and not configurable. The user-visible contract
+is the diagnostic: deeply nested source, unbounded recursion, or an unbounded
+transaction fails with a typed diagnostic, not a process abort.

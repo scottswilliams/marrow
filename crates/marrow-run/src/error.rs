@@ -280,6 +280,25 @@ pub const RUN_DEPTH: &str = "run.depth";
 /// instead of recursing. Fixed in v0.1, not configurable.
 pub const CALL_DEPTH_BUDGET: usize = 256;
 
+/// A transaction's pending write set grew past [`TRANSACTION_WRITE_BYTE_BUDGET`].
+/// A transaction buffers every staged write until it commits, so an unbounded
+/// write set would exhaust memory; this caps breadth the way [`RUN_DEPTH`] caps
+/// nesting, failing closed before the process is OOM-killed.
+pub const WRITE_TRANSACTION_TOO_LARGE: &str = "write.transaction_too_large";
+
+/// The most staged write payload one transaction may buffer before raising
+/// [`WRITE_TRANSACTION_TOO_LARGE`]. A transaction holds its whole write set in
+/// memory until commit, so this ceiling bounds that buffer. It is generous — far
+/// above any ordinary atomic seed or migration — yet well below the point where
+/// the buffer would exhaust host memory. Fixed in v0.1, not configurable.
+pub const TRANSACTION_WRITE_BYTE_BUDGET: usize = 64 * 1024 * 1024;
+
+/// Each staged step also pins keys and bookkeeping the payload byte count alone
+/// misses, so every step counts at least this much toward the budget. It keeps a
+/// flood of tiny writes (record presence, deletes) from buffering without bound
+/// under the byte ceiling.
+pub(crate) const TRANSACTION_WRITE_STEP_OVERHEAD: usize = 64;
+
 fn reject_public_depth_code(code: &'static str) {
     assert_ne!(code, RUN_DEPTH, "use the runtime call-depth constructor");
 }
@@ -546,6 +565,22 @@ impl Located for ValueError {
 /// after dropping any `env.store` borrow held while planning.
 pub(crate) fn write_fault(error: WriteError, span: SourceSpan) -> RuntimeError {
     raise_fault(error.code, error.message, span)
+}
+
+/// A `write.transaction_too_large` fault: the open transaction's pending write
+/// set crossed [`TRANSACTION_WRITE_BYTE_BUDGET`]. Catchable, so a surrounding
+/// `try`/`catch` can bind it and the transaction rolls back nothing-committed
+/// rather than the process being OOM-killed.
+pub(crate) fn transaction_too_large(staged_bytes: usize, span: SourceSpan) -> RuntimeError {
+    raise_fault(
+        WRITE_TRANSACTION_TOO_LARGE,
+        format!(
+            "this transaction's pending write set reached {staged_bytes} bytes, past the \
+             {TRANSACTION_WRITE_BYTE_BUDGET}-byte transaction limit; split it into smaller \
+             transactions"
+        ),
+        span,
+    )
 }
 
 pub(crate) fn unsupported(what: &str, span: SourceSpan) -> RuntimeError {
