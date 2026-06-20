@@ -312,10 +312,8 @@ pub fn project_store_lock(
         .entries
         .iter()
         .filter(|entry| entry.lifecycle != marrow_catalog::CatalogLifecycle::Active)
-        .map(|entry| marrow_catalog::LockLedgerTombstone {
-            id: entry.stable_id.clone(),
-            lifecycle: entry.lifecycle,
-            high_water: snapshot.epoch,
+        .map(|entry| {
+            marrow_catalog::LockLedgerTombstone::from_reserved_entry(entry, snapshot.epoch)
         })
         .collect();
     let lock = marrow_catalog::CatalogLock::new(

@@ -1180,6 +1180,146 @@ fn a_retired_id_is_recovered_from_the_store_after_lock_loss_and_never_reissued()
     Ok(())
 }
 
+/// Durable never-reuse survives STORE loss when only the committed lock remains: re-seeding a
+/// fresh store from the surviving lock must materialize the lock's tombstoned identity as a
+/// reserved store entry, so the never-reuse defense is not silently lost across store loss.
+///
+/// Retire `subtitle` so a reserved store entry and a lock ledger tombstone exist, then capture
+/// the committed lock. WIPE the store, re-seed a fresh checkout that carries only source +
+/// the surviving lock through an ordinary `marrow run`. After the re-seed:
+/// (a) the regenerated lock STILL carries the tombstone (the ledger is not emptied);
+/// (b) re-declaring the retired `(kind, path)` in source FAILS CLOSED with the same typed
+///     `check.catalog_intent` reserved-path-reuse diagnostic the live store gives; and
+/// (c) the retired id is never handed back as a live active identity in the re-seeded store.
+#[test]
+fn a_retired_id_survives_store_loss_and_reseed_from_the_committed_lock()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = native_books_project("retire-store-loss-reseed", RETIRE_BASELINE_SOURCE);
+    let accepted = commit_catalog(&root);
+    let accepted_place = root_place(&accepted, "books")?;
+    let subtitle_id = member_catalog_id(&accepted_place, "subtitle")?;
+    {
+        let store = open_native_store(&root);
+        seed_title_only(&store, &accepted_place, 1, "Dune");
+        seed_member(
+            &store,
+            &accepted_place,
+            1,
+            "subtitle",
+            Scalar::Str("sub".into()),
+        );
+    }
+    write(&root, "src/books.mw", RETIRE_SOURCE);
+    let apply = marrow(&[
+        "evolve",
+        "apply",
+        "--maintenance",
+        "--approve-retire",
+        &format!("{subtitle_id}:1"),
+        "--no-backup",
+        root.to_str().expect("project path utf-8"),
+    ]);
+    assert_eq!(apply.status.code(), Some(0), "retire apply: {apply:?}");
+
+    // The committed lock now records the retired id as a ledger tombstone, never as an active
+    // entry. This is the surviving artifact a fresh checkout is seeded from.
+    let lock_after_retire =
+        fs::read_to_string(root.join("marrow.lock")).expect("committed lock after retire");
+    let parsed_after_retire =
+        support_evolve::committed_lock(&root).expect("lock after retire parses");
+    assert!(
+        parsed_after_retire
+            .ledger
+            .iter()
+            .any(|tombstone| tombstone.id == subtitle_id),
+        "precondition: the retired id is a ledger tombstone in the committed lock"
+    );
+
+    // A fresh checkout: only the post-retire source (subtitle gone, the consumed `evolve`
+    // block deleted) and the surviving committed lock, no store. Mimics cloning a repo whose
+    // store was never committed, then re-seeding it from the lock.
+    const RETIRED_NO_BLOCK_SOURCE: &str = "module books\n\
+         resource Book\n\
+         \x20   required title: string\n\
+         store ^books(id: int): Book\n\
+         pub fn add(title: string): Id(^books)\n\
+         \x20   return nextId(^books)\n";
+    let reseed_root =
+        native_books_project("retire-store-loss-reseed-fresh", RETIRED_NO_BLOCK_SOURCE);
+    write(&reseed_root, "marrow.lock", &lock_after_retire);
+
+    let run = marrow(&[
+        "run",
+        "--entry",
+        "books::add",
+        "--arg",
+        "title=Dune",
+        reseed_root.to_str().unwrap(),
+    ]);
+    assert_eq!(
+        run.status.code(),
+        Some(0),
+        "re-seed from the surviving lock runs: {run:?}"
+    );
+
+    // Oracle (a): the regenerated lock STILL carries the tombstone — the never-reuse defense
+    // survived the store loss rather than projecting an empty ledger.
+    let reseeded_lock =
+        support_evolve::committed_lock(&reseed_root).expect("lock after re-seed parses");
+    assert!(
+        reseeded_lock
+            .ledger
+            .iter()
+            .any(|tombstone| tombstone.id == subtitle_id),
+        "the retired id survives store loss in the re-projected ledger: {:#?}",
+        reseeded_lock.ledger
+    );
+    assert!(
+        reseeded_lock
+            .entries
+            .iter()
+            .all(|entry| entry.stable_id != subtitle_id),
+        "the retired id is never re-projected as an active lock entry"
+    );
+
+    // Oracle (c): the re-seeded store carries the retired id only as a Reserved entry, never as
+    // a live active identity handed back at the retired path.
+    let reseeded_catalog = accepted_catalog(&reseed_root);
+    let reserved = reseeded_catalog
+        .entries
+        .iter()
+        .find(|entry| entry.stable_id == subtitle_id)
+        .expect("the re-seeded store carries the retired id as a reserved entry");
+    assert_eq!(
+        reserved.lifecycle,
+        marrow_catalog::CatalogLifecycle::Reserved,
+        "the retired id rests reserved in the re-seeded store, never re-minted active"
+    );
+
+    // Oracle (b): re-declaring the retired `(kind, path)` over the re-seeded store FAILS CLOSED
+    // with the same typed `check.catalog_intent` reserved-path-reuse diagnostic the live store
+    // gives — the never-reuse contract holds against a store re-seeded from the lock.
+    write(&reseed_root, "src/books.mw", RETIRE_BASELINE_SOURCE);
+    let reuse = marrow(&["check", "--format", "json", reseed_root.to_str().unwrap()]);
+    assert_eq!(
+        reuse.status.code(),
+        Some(1),
+        "re-declaring a retired path over the re-seeded store must fail closed: {reuse:?}"
+    );
+    let report = support::json(reuse.stdout);
+    let diagnostics = report["diagnostics"]
+        .as_array()
+        .expect("check diagnostics array");
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic["code"] == serde_json::json!("check.catalog_intent")),
+        "re-declaring a reserved path surfaces the typed reserved-reuse code: {report:#?}"
+    );
+
+    Ok(())
+}
+
 // After a retire apply, the retire is recorded in the accepted catalog. The evolve
 // block is transient; keeping or deleting it must not break `marrow run`.
 #[test]

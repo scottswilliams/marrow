@@ -148,9 +148,12 @@ recording old spellings as aliases.
 accepted identity, kept in the project root and tracked in source control like
 `Cargo.lock`. Each entry projects a stable ID, lifecycle, canonical path, and a
 shape fingerprint; the lock also carries the append-only ledger of retired and
-reserved IDs and the producing source shape. It is not Marrow language data —
-there is no `^catalog` root, resource, standard-library, or data-CLI surface that
-can read, scan, or mutate it.
+reserved IDs and the producing source shape. Each ledger tombstone records the
+retired entity's `(kind, path)` alongside its ID, so the lock fully represents a
+reserved path: a fresh checkout that re-seeds a lost store from the lock alone
+reconstructs the reserved entries and still rejects re-declaring a retired path.
+It is not Marrow language data — there is no `^catalog` root, resource,
+standard-library, or data-CLI surface that can read, scan, or mutate it.
 
 The lock is always subordinate to a valid live store. It does two things, and only
 these two:

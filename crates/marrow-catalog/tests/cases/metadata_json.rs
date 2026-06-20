@@ -475,11 +475,15 @@ fn sample_lock() -> CatalogLock {
     ];
     let ledger = vec![
         LockLedgerTombstone {
+            kind: CatalogEntryKind::ResourceMember,
+            path: "books::Book::subtitle".to_string(),
             id: "cat_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
             lifecycle: CatalogLifecycle::Reserved,
             high_water: 4,
         },
         LockLedgerTombstone {
+            kind: CatalogEntryKind::ResourceMember,
+            path: "books::Book::blurb".to_string(),
             id: "cat_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string(),
             lifecycle: CatalogLifecycle::Reserved,
             high_water: 6,
@@ -726,6 +730,90 @@ fn lock_rejects_empty_and_duplicate_path_anchors() {
     );
 }
 
+/// A ledger tombstone carries the retired `(kind, path)` so the committed lock fully represents a
+/// reserved path, and projects to and from a Reserved catalog entry as mutual inverses — the round
+/// trip a fresh checkout relies on to reconstruct a reserved store row from the lock alone.
+#[test]
+fn ledger_tombstone_round_trips_a_reserved_entry_with_kind_and_path() {
+    let reserved = CatalogEntry {
+        lifecycle: CatalogLifecycle::Reserved,
+        ..literal_entry(
+            CatalogEntryKind::ResourceMember,
+            "books::Book::subtitle",
+            "cat_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            &[],
+        )
+    };
+    let tombstone = LockLedgerTombstone::from_reserved_entry(&reserved, 7);
+    assert_eq!(tombstone.kind, CatalogEntryKind::ResourceMember);
+    assert_eq!(tombstone.path, "books::Book::subtitle");
+    assert_eq!(tombstone.id, "cat_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    assert_eq!(tombstone.lifecycle, CatalogLifecycle::Reserved);
+    assert_eq!(tombstone.high_water, 7);
+    assert_eq!(
+        tombstone.reserved_catalog_entry(),
+        reserved,
+        "the tombstone reconstructs the reserved entry verbatim"
+    );
+
+    // The lock JSON round-trips the new `(kind, path)` fields.
+    let lock = CatalogLock::new(Vec::new(), vec![tombstone], 7, sample_source_digest())
+        .expect("lock with a kind/path tombstone builds");
+    let parsed = CatalogLock::from_lock_json(&lock.to_lock_json_pretty().expect("renders"))
+        .expect("lock parses");
+    assert_eq!(parsed.ledger, lock.ledger);
+}
+
+/// A reserved `(kind, path)` and a live active `(kind, path)` are mutually exclusive: the same
+/// path cannot be both a retired tombstone and an active entry, and one path cannot be reserved
+/// twice. Either collision fails closed, so adoption never reconstructs a reserved row that
+/// shadows or duplicates a live declaration.
+#[test]
+fn lock_rejects_a_reserved_path_that_collides_with_a_live_or_reserved_path() {
+    let active = LockEntry::from_catalog_entry(&literal_entry(
+        CatalogEntryKind::ResourceMember,
+        "books::Book::title",
+        "cat_11111111111111111111111111111111",
+        &[],
+    ));
+    let shadowing = LockLedgerTombstone {
+        kind: CatalogEntryKind::ResourceMember,
+        path: "books::Book::title".to_string(),
+        id: "cat_22222222222222222222222222222222".to_string(),
+        lifecycle: CatalogLifecycle::Reserved,
+        high_water: 1,
+    };
+    let shadow_error = CatalogLock::new(vec![active], vec![shadowing], 1, sample_source_digest())
+        .expect_err("a reserved path shadowing a live entry is rejected");
+    assert_eq!(shadow_error.code, LOCK_CORRUPT);
+    assert!(
+        shadow_error.message.contains("is also a live active entry"),
+        "expected the live-shadow guard message, got: {}",
+        shadow_error.message
+    );
+
+    let first = LockLedgerTombstone {
+        kind: CatalogEntryKind::ResourceMember,
+        path: "books::Book::subtitle".to_string(),
+        id: "cat_33333333333333333333333333333333".to_string(),
+        lifecycle: CatalogLifecycle::Reserved,
+        high_water: 1,
+    };
+    let second = LockLedgerTombstone {
+        id: "cat_44444444444444444444444444444444".to_string(),
+        ..first.clone()
+    };
+    let duplicate_error =
+        CatalogLock::new(Vec::new(), vec![first, second], 1, sample_source_digest())
+            .expect_err("a path reserved twice is rejected");
+    assert_eq!(duplicate_error.code, LOCK_CORRUPT);
+    assert!(
+        duplicate_error.message.contains("is reserved twice"),
+        "expected the reserved-twice guard message, got: {}",
+        duplicate_error.message
+    );
+}
+
 /// The id NUL guard fires at the [`CatalogLock::new`] boundary for a NUL embedded in either a
 /// stable id or a ledger id, pinning the guard rather than serde's control-char rejection. The
 /// message text proves the guard, not just the code, produced the failure.
@@ -753,6 +841,8 @@ fn lock_new_rejects_nul_in_ids() {
     );
 
     let nul_ledger = LockLedgerTombstone {
+        kind: CatalogEntryKind::ResourceMember,
+        path: "books::Book::subtitle".to_string(),
         id: "cat_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\u{0}".to_string(),
         lifecycle: CatalogLifecycle::Reserved,
         high_water: 1,

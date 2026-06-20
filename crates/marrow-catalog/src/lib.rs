@@ -302,13 +302,13 @@ impl CatalogLock {
     }
 
     fn validate(&self) -> Result<(), CatalogError> {
-        let active_ids = self.validate_entries()?;
-        self.validate_ledger(&active_ids)?;
+        let active = self.validate_entries()?;
+        self.validate_ledger(&active)?;
         validate_sha256("source digest", &self.source_digest)
     }
 
-    fn validate_entries(&self) -> Result<HashSet<&str>, CatalogError> {
-        let mut active_ids: HashSet<&str> = HashSet::new();
+    fn validate_entries(&self) -> Result<ActiveLockKeys<'_>, CatalogError> {
+        let mut ids: HashSet<&str> = HashSet::new();
         let mut keys: HashSet<(CatalogEntryKind, &str)> = HashSet::new();
         for entry in &self.entries {
             require_lock_stable_id("entry stable id", &entry.stable_id)?;
@@ -317,7 +317,7 @@ impl CatalogLock {
                 return Err(CatalogError::lock_corrupt("entry path must not be empty"));
             }
             reject_lock_nul("entry path", &entry.path)?;
-            if !active_ids.insert(entry.stable_id.as_str()) {
+            if !ids.insert(entry.stable_id.as_str()) {
                 return Err(CatalogError::lock_corrupt(format!(
                     "entry stable id `{}` appears twice",
                     entry.stable_id
@@ -333,20 +333,28 @@ impl CatalogLock {
                 )));
             }
         }
-        Ok(active_ids)
+        Ok(ActiveLockKeys { ids, keys })
     }
 
-    fn validate_ledger(&self, active_ids: &HashSet<&str>) -> Result<(), CatalogError> {
+    fn validate_ledger(&self, active: &ActiveLockKeys<'_>) -> Result<(), CatalogError> {
         let mut ledger_ids: HashSet<&str> = HashSet::new();
+        let mut reserved_keys: HashSet<(CatalogEntryKind, &str)> = HashSet::new();
         for tombstone in &self.ledger {
             require_lock_stable_id("ledger id", &tombstone.id)?;
+            if tombstone.path.is_empty() {
+                return Err(CatalogError::lock_corrupt(format!(
+                    "ledger id `{}` records an empty path",
+                    tombstone.id
+                )));
+            }
+            reject_lock_nul("ledger path", &tombstone.path)?;
             if tombstone.lifecycle == CatalogLifecycle::Active {
                 return Err(CatalogError::lock_corrupt(format!(
                     "ledger id `{}` records the active lifecycle",
                     tombstone.id
                 )));
             }
-            if active_ids.contains(tombstone.id.as_str()) {
+            if active.ids.contains(tombstone.id.as_str()) {
                 return Err(CatalogError::lock_corrupt(format!(
                     "ledger id `{}` is reissued by an active entry",
                     tombstone.id
@@ -358,6 +366,23 @@ impl CatalogLock {
                     tombstone.id
                 )));
             }
+            // A reserved `(kind, path)` and a live `(kind, path)` are mutually exclusive: the
+            // same path cannot be both a retired tombstone and an active entry, and one path
+            // cannot be reserved under two ids. Reject either collision so adoption never
+            // reconstructs a reserved row that shadows or duplicates an active declaration.
+            let key = (tombstone.kind, tombstone.path.as_str());
+            if active.keys.contains(&key) {
+                return Err(CatalogError::lock_corrupt(format!(
+                    "ledger path `{}` for `{:?}` is also a live active entry",
+                    tombstone.path, tombstone.kind
+                )));
+            }
+            if !reserved_keys.insert(key) {
+                return Err(CatalogError::lock_corrupt(format!(
+                    "ledger path `{}` for `{:?}` is reserved twice",
+                    tombstone.path, tombstone.kind
+                )));
+            }
             if tombstone.high_water > self.epoch_high_water {
                 return Err(CatalogError::lock_corrupt(format!(
                     "epoch high-water {} is below ledger high-water {} for id `{}`",
@@ -367,6 +392,14 @@ impl CatalogLock {
         }
         Ok(())
     }
+}
+
+/// The active entries' ids and `(kind, path)` keys, threaded from lock entry validation into
+/// ledger validation so a reserved tombstone can be rejected when it reuses a live id or shadows
+/// a live path.
+struct ActiveLockKeys<'a> {
+    ids: HashSet<&'a str>,
+    keys: HashSet<(CatalogEntryKind, &'a str)>,
 }
 
 /// One entry in the committed lock: the `(kind, path)` first-run adoption keys onto, a stable id,
@@ -409,14 +442,52 @@ impl LockEntry {
 }
 
 /// An append-only cross-lifecycle id tombstone: an id that was reserved or retired, the
-/// lifecycle it rests in, and the epoch high-water at which it was recorded. Tombstones make
-/// the ledger a complete history, so a retired id is never silently reissued.
+/// `(kind, path)` it was retired at, the lifecycle it rests in, and the epoch high-water at
+/// which it was recorded. Tombstones make the ledger a complete history, so a retired id is
+/// never silently reissued. Carrying the `(kind, path)` lets the committed lock represent a
+/// reserved path: a fresh checkout seeded from the lock alone reconstructs the reserved store
+/// entry, so re-declaring a retired path fails closed even when the store was lost.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LockLedgerTombstone {
+    pub kind: CatalogEntryKind,
+    pub path: String,
     pub id: String,
     pub lifecycle: CatalogLifecycle,
     pub high_water: u64,
+}
+
+impl LockLedgerTombstone {
+    /// Project a reserved catalog entry to its ledger tombstone, carrying the `(kind, path)`
+    /// it was retired at alongside its id, lifecycle, and the recorded high-water. The inverse
+    /// of [`reserved_catalog_entry`].
+    pub fn from_reserved_entry(entry: &CatalogEntry, high_water: u64) -> Self {
+        Self {
+            kind: entry.kind,
+            path: entry.path.clone(),
+            id: entry.stable_id.clone(),
+            lifecycle: entry.lifecycle,
+            high_water,
+        }
+    }
+
+    /// Reconstruct the reserved catalog entry this tombstone records: a Reserved entry at the
+    /// retired `(kind, path)` carrying the tombstoned id. A fresh checkout seeded from the lock
+    /// alone materializes these into its baseline proposal, so the re-seeded store carries the
+    /// reserved row a live store would and the never-reuse path-reuse defense survives store loss.
+    /// Shape signatures stay `None`: a reserved entry is identity-only and holds no live shape.
+    pub fn reserved_catalog_entry(&self) -> CatalogEntry {
+        CatalogEntry {
+            kind: self.kind,
+            path: self.path.clone(),
+            stable_id: self.id.clone(),
+            aliases: Vec::new(),
+            lifecycle: self.lifecycle,
+            accepted_key_shape: None,
+            accepted_index_shape: None,
+            accepted_struct: None,
+        }
+    }
 }
 
 /// The pre-image a [`shape fingerprint`](LockEntry::shape_fingerprint) folds: the entry kind tag

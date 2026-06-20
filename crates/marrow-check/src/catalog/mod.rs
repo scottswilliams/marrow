@@ -883,15 +883,24 @@ fn mint_first_run(
     Ok(CatalogMetadata::new(1, proposal_entries)?)
 }
 
-/// Build the first-run proposal entries for a present lock: carry a committed id forward onto
-/// each source entity whose `(kind, path)` the lock records, and mint a fresh id (seeded never to
-/// reuse a committed or tombstoned id) for an entity the lock does not record. Returns `None`,
-/// having pushed [`CHECK_LOCK_CORRUPT`], when an adopted id reissues a ledger tombstone: the
-/// binding fails closed before any id is bound rather than resurrect a retired identity. Adoption
-/// keys on the `(kind, path)` anchor, never the shape fingerprint: a first-run source pre-image
-/// records none of the accepted shape a committed entry was fingerprinted under, so a fingerprint
-/// match would silently miss every shaped entity, and distinct entities sharing a shape would
-/// collide. The fingerprint is a drift signal for later staleness detection, not an identity key.
+/// Build the first-run proposal entries for a present lock: materialize the lock's ledger
+/// tombstones as Reserved entries, carry a committed id forward onto each source entity whose
+/// `(kind, path)` the lock records, and mint a fresh id (seeded never to reuse a committed or
+/// tombstoned id) for an entity the lock does not record. Materializing the tombstones is what
+/// makes the never-reuse defense survive store loss: a fresh checkout seeded from the lock alone
+/// commits these reserved rows into its baseline store, so a later projection re-derives the same
+/// ledger and re-declaring a retired path still fails closed.
+///
+/// A source `(kind, path)` that re-declares a reserved tombstone fails closed with the same typed
+/// reserved-path-reuse diagnostic the live-store binding gives, and is not adopted as an active
+/// entry — only the reserved row survives, exactly as it would against a live store. Returns
+/// `None`, having pushed [`CHECK_LOCK_CORRUPT`], when an adopted id reissues a ledger tombstone:
+/// the binding fails closed before any id is bound rather than resurrect a retired identity.
+/// Adoption keys on the `(kind, path)` anchor, never the shape fingerprint: a first-run source
+/// pre-image records none of the accepted shape a committed entry was fingerprinted under, so a
+/// fingerprint match would silently miss every shaped entity, and distinct entities sharing a
+/// shape would collide. The fingerprint is a drift signal for later staleness detection, not an
+/// identity key.
 fn adopt_first_run_entries(
     source_entries: &[SourceCatalogEntry],
     lock: &CatalogLock,
@@ -903,14 +912,29 @@ fn adopt_first_run_entries(
         .iter()
         .map(|entry| ((entry.kind, entry.path.as_str()), entry.stable_id.as_str()))
         .collect();
+    let reserved: HashMap<(CatalogEntryKind, &str), CatalogEntry> = ledger
+        .iter()
+        .map(|tombstone| {
+            (
+                (tombstone.kind, tombstone.path.as_str()),
+                tombstone.reserved_catalog_entry(),
+            )
+        })
+        .collect();
     // Seed the never-reuse set, through the allocator's single never-reuse owner, with the ledger
     // tombstones and every committed lock id, so a fresh mint for an unrecorded entity re-rolls
     // past an id the lock already commits or has retired. The committed ids enter as entry stubs
     // because the allocator seeds from catalog entries.
     let committed_stubs = committed_id_stubs(&lock.entries);
     let mut allocator = StableIdAllocator::over(ledger, &committed_stubs);
-    let mut proposal_entries = Vec::with_capacity(source_entries.len());
+    let mut proposal_entries = Vec::with_capacity(source_entries.len() + reserved.len());
     for source in source_entries {
+        if let Some(reserved_entry) = reserved.get(&(source.kind, source.path.as_str())) {
+            // A source declaration at a reserved path cannot reclaim the retired identity; report
+            // the reuse and keep only the reserved row, exactly as the live-store binding does.
+            push_reserved_reuse(source, reserved_entry, diagnostics);
+            continue;
+        }
         let entry = match committed.get(&(source.kind, source.path.as_str())) {
             Some(stable_id) => proposed_catalog_entry_with_id(source, stable_id),
             None => proposed_catalog_entry(source, &mut allocator).ok()?,
@@ -921,6 +945,7 @@ fn adopt_first_run_entries(
         diagnostics.push(lock_corrupt_diagnostic(source_entries, reissued));
         return None;
     }
+    proposal_entries.extend(reserved.into_values());
     Some(proposal_entries)
 }
 
@@ -958,9 +983,11 @@ fn committed_id_stubs(committed: &[LockEntry]) -> Vec<CatalogEntry> {
         .collect()
 }
 
-/// The first adopted id that a ledger tombstone records, or `None` when adoption reissues no
-/// retired id. A valid lock keeps its committed ids off its own ledger, so this guards the
-/// adopted proposal independently of the lock's self-validation.
+/// The first ACTIVE adopted id that a ledger tombstone records, or `None` when adoption reissues
+/// no retired id as a live identity. A valid lock keeps its committed ids off its own ledger, so
+/// this guards the adopted proposal independently of the lock's self-validation. The reserved rows
+/// materialized from the ledger legitimately carry tombstoned ids, so only active entries are
+/// checked: a reserved row holding a tombstoned id is the recorded retirement, not a reissue.
 fn tombstone_reissue<'a>(
     proposal_entries: &'a [CatalogEntry],
     ledger: &[LockLedgerTombstone],
@@ -968,6 +995,7 @@ fn tombstone_reissue<'a>(
     let tombstoned: HashSet<&str> = ledger.iter().map(|stone| stone.id.as_str()).collect();
     proposal_entries
         .iter()
+        .filter(|entry| entry.lifecycle == CatalogLifecycle::Active)
         .find(|entry| tombstoned.contains(entry.stable_id.as_str()))
         .map(|entry| entry.stable_id.as_str())
 }
@@ -2271,8 +2299,13 @@ mod tests {
         .expect("lock builds")
     }
 
+    /// A reserved tombstone for `stable_id` at a retired member path distinct from any source
+    /// entity, so a reissue of the id surfaces as an active entry carrying a tombstoned id rather
+    /// than a reserved-path reuse at the same `(kind, path)`.
     fn tombstone(stable_id: &str, high_water: u64) -> LockLedgerTombstone {
         LockLedgerTombstone {
+            kind: CatalogEntryKind::ResourceMember,
+            path: "books::Book::retired".to_string(),
             id: stable_id.to_string(),
             lifecycle: CatalogLifecycle::Reserved,
             high_water,

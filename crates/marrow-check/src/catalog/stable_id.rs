@@ -180,6 +180,8 @@ mod tests {
 
     fn tombstone(bytes: [u8; 16], high_water: u64) -> LockLedgerTombstone {
         LockLedgerTombstone {
+            kind: marrow_catalog::CatalogEntryKind::ResourceMember,
+            path: "books::Book::retired".to_string(),
             id: catalog_id_from_bytes(bytes),
             lifecycle: CatalogLifecycle::Reserved,
             high_water,
