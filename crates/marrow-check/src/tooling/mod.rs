@@ -5,6 +5,7 @@ use marrow_store::StoreError;
 pub mod data;
 pub mod integrity;
 pub mod signatures;
+mod type_annotations;
 
 pub use data::{
     DEFAULT_VALUE_PREVIEW_LIMIT, DataChild, DataChildrenPage, DataCommitStamp, DataEntry,
@@ -33,6 +34,7 @@ pub use signatures::{
     intrinsic_callable_signature, intrinsic_callable_signature_for_file,
     resource_constructor_signature,
 };
+pub use type_annotations::{IdentityTypeAnnotation, identity_type_annotations};
 
 #[derive(Debug)]
 pub enum ToolingError {

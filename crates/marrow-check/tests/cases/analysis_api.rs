@@ -9,13 +9,13 @@ use marrow_check::tooling::{
     ActiveCallableContext, CallableArgumentStyle, CallableCalleeContext, CallableParameter,
     CallableSignature, CallableSignatureKind, CallableValueShape, DataChild, DataPathError,
     DataPathSegment, DataPresence, DeclaredDataChild, DeclaredDataChildKind, DeclaredDataKeyParam,
-    MAX_VALUE_PREVIEW_LIMIT, ResourceConstructorField, SourceDataPathSegment, ToolingError,
-    active_callable_context, callable_callee_contexts, declared_data_children,
-    declared_source_data_children, declared_source_receiver_data_children,
-    intrinsic_callable_signature, intrinsic_callable_signature_for_file, resolve_data_path,
-    resource_constructor_signature, sample_integrity_problem_details, sample_integrity_problems,
-    stamped_data_children, stamped_data_roots_in_store, stamped_integrity_problem_details,
-    stamped_preview_data_path, stamped_read_data_path,
+    IdentityTypeAnnotation, MAX_VALUE_PREVIEW_LIMIT, ResourceConstructorField,
+    SourceDataPathSegment, ToolingError, active_callable_context, callable_callee_contexts,
+    declared_data_children, declared_source_data_children, declared_source_receiver_data_children,
+    identity_type_annotations, intrinsic_callable_signature, intrinsic_callable_signature_for_file,
+    resolve_data_path, resource_constructor_signature, sample_integrity_problem_details,
+    sample_integrity_problems, stamped_data_children, stamped_data_roots_in_store,
+    stamped_integrity_problem_details, stamped_preview_data_path, stamped_read_data_path,
 };
 use marrow_check::{
     CHECK_READ_ONLY_EXPRESSION_HOST_EFFECT, CHECK_READ_ONLY_EXPRESSION_UNINDEXED_LOOKUP,
@@ -124,6 +124,12 @@ fn callable_callees(source: &str) -> Vec<CallableCalleeContext> {
     let lexed = marrow_syntax::lex_source(source);
     let parsed = marrow_syntax::parse_source(source);
     callable_callee_contexts(source, &lexed, &parsed)
+}
+
+fn identity_type_annotation_facts(test_name: &str, source: &str) -> Vec<IdentityTypeAnnotation> {
+    let (snapshot, paths) = analyze_overlay(test_name, &[("src/m.mw", source)]);
+    let path = paths.into_iter().next().expect("source path");
+    identity_type_annotations(&snapshot, &path)
 }
 
 #[test]
@@ -283,6 +289,141 @@ fn callable_callee_contexts_does_not_rescan_matching_parens() {
         !body.contains("key_list_has_type_suffix("),
         "batch callable callee collection must not rescan forward from each open paren"
     );
+}
+
+#[test]
+fn identity_type_annotations_report_checked_identity_type_spans() {
+    let source = "\
+module m
+
+resource Author
+    name: string
+
+store ^authors(id: int): Author
+
+pub fn f(
+    id: Id(^authors),
+    ids: sequence[Id(^authors)],
+): sequence[Id(^authors)]
+    const direct: Id(^authors) = id
+    var later: sequence[Id(^authors)]
+    return ids
+";
+    let facts = identity_type_annotation_facts("analysis-identity-type-annotations", source);
+    let observed = facts
+        .iter()
+        .map(|fact| {
+            (
+                span_text(source, fact.constructor_span),
+                span_text(source, fact.root_span),
+                fact.store_root.as_str(),
+            )
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        observed,
+        vec![
+            ("Id", "authors", "authors"),
+            ("Id", "authors", "authors"),
+            ("Id", "authors", "authors"),
+            ("Id", "authors", "authors"),
+            ("Id", "authors", "authors"),
+        ]
+    );
+}
+
+#[test]
+fn identity_type_annotations_report_source_spans_with_annotation_whitespace() {
+    let source = "\
+module m
+
+resource Author
+    name: string
+
+store ^authors(id: int): Author
+
+fn f(
+    id: Id( ^authors ),
+    ids: sequence[ Id( ^authors ) ],
+)
+    return
+";
+    let facts =
+        identity_type_annotation_facts("analysis-identity-type-annotations-whitespace", source);
+    let observed = facts
+        .iter()
+        .map(|fact| {
+            (
+                span_text(source, fact.constructor_span),
+                span_text(source, fact.root_span),
+                fact.store_root.as_str(),
+            )
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        observed,
+        vec![("Id", "authors", "authors"), ("Id", "authors", "authors"),]
+    );
+}
+
+#[test]
+fn identity_type_annotations_omit_unresolved_longer_and_expression_id_uses() {
+    let source = "\
+module m
+
+resource Author
+    name: string
+
+store ^authors(id: int): Author
+
+fn bad(
+    missing: Id(^missing),
+    longer: Id(^authors)::Extra,
+)
+    const expression = Id(^authors, 1)
+    return
+";
+    let facts = identity_type_annotation_facts("analysis-identity-type-annotations-omit", source);
+
+    assert!(facts.is_empty(), "{facts:?}");
+}
+
+#[test]
+fn identity_type_annotations_omit_files_without_checked_modules() {
+    let schema = "\
+module schema
+
+resource Author
+    name: string
+
+store ^authors(id: int): Author
+";
+    let broken = "\
+module broken
+
+fn f(id: Id(^authors))
+    return
+
+surface MissingBody from ^authors
+";
+    let (snapshot, paths) = analyze_overlay(
+        "analysis-identity-type-annotations-unchecked-file",
+        &[("src/schema.mw", schema), ("src/broken.mw", broken)],
+    );
+    assert!(
+        snapshot.report.has_errors(),
+        "fixture should leave the active file out of checked modules"
+    );
+    let broken_path = paths
+        .into_iter()
+        .find(|path| path.ends_with("broken.mw"))
+        .expect("broken file path");
+
+    let facts = identity_type_annotations(&snapshot, &broken_path);
+
+    assert!(facts.is_empty(), "{facts:?}");
 }
 
 #[test]

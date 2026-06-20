@@ -46,6 +46,12 @@ from the checked program or snapshot:
   and configured test files. Use sites are keyed by accepted or proposal catalog
   ids and typed as saved roots, resource members, store indexes, enums, or enum
   members.
+- `tooling::identity_type_annotations(snapshot, file)` returns token-tight
+  spans for checked `Id(^root)` type annotations in the requested analyzed
+  source file. It walks parsed type annotations, resolves them through the
+  checker, requires the store root to exist in the checked program, and recurses
+  through `sequence[...]` annotations, so editor callers do not classify
+  identity type constructors from token spelling alone.
 - `AnalysisSnapshot::catalog_declarations()` returns catalog-owned
   declarations keyed by catalog id. Each `CatalogDeclaration` carries the source
   file, exact declaration-name span, catalog id, `CatalogEntryKind`, and source
