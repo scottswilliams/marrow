@@ -88,6 +88,22 @@ impl Decimal {
         shape.to_decimal().ok()
     }
 
+    /// Parse a decimal from external data, accepting any well-formed spelling and
+    /// canonicalizing it: a trailing-zero fraction (`9.50`) and a leading zero
+    /// (`01`) parse to their one stored value (`9.5`, `1`). This is the ingestion
+    /// path for JSON and CSV numbers, which are valid decimals in those formats
+    /// even where Marrow source literals must already be canonical.
+    ///
+    /// It keeps the [`Overflow`](DecimalParseError::Overflow) vs
+    /// [`Malformed`](DecimalParseError::Malformed) distinction callers map to
+    /// distinct faults: a well-formed magnitude past the envelope overflows, while
+    /// structurally invalid text (or `-0`, which is no value) is malformed.
+    pub fn parse_relaxed(text: &str) -> Result<Decimal, DecimalParseError> {
+        DecimalShape::parse(text)
+            .ok_or(DecimalParseError::Malformed)?
+            .to_decimal()
+    }
+
     /// Parse a decimal whose spelling must already be canonical (no leading zeros,
     /// no trailing-zero fraction, no `-0`), distinguishing an envelope
     /// [`Overflow`](DecimalParseError::Overflow) from
@@ -637,6 +653,54 @@ mod tests {
         ] {
             assert_eq!(
                 Decimal::parse_canonical(text),
+                Err(DecimalParseError::Malformed),
+                "{text}",
+            );
+        }
+    }
+
+    #[test]
+    fn parse_relaxed_canonicalizes_non_canonical_spellings() {
+        use super::DecimalParseError;
+
+        // Non-canonical but well-formed spellings (trailing-zero fractions,
+        // leading zeros) parse to their canonical value, unlike `parse_canonical`.
+        for (text, canonical) in [
+            ("9.50", "9.5"),
+            ("9.0", "9"),
+            ("1.0", "1"),
+            ("01", "1"),
+            ("0.50", "0.5"),
+            ("-2.50", "-2.5"),
+            ("123.456", "123.456"),
+            ("0", "0"),
+        ] {
+            assert_eq!(
+                Decimal::parse_relaxed(text).map(Decimal::to_text),
+                Ok(canonical.to_string()),
+                "{text}",
+            );
+        }
+
+        // The overflow-vs-malformed distinction the runtime needs is preserved:
+        // a well-formed magnitude past the envelope overflows.
+        for text in [
+            "99999999999999999999999999999999999",
+            "0.11111111111111111111111111111111111",
+        ] {
+            assert_eq!(
+                Decimal::parse_relaxed(text),
+                Err(DecimalParseError::Overflow),
+                "{text}",
+            );
+        }
+
+        // Genuinely malformed input is still malformed: a non-decimal, a doubled
+        // point, a missing integer or fraction digit, `-0`, an explicit `+`, and
+        // an exponent spelling.
+        for text in ["", "abc", "1.2.3", "1.", ".5", "-0", "+1", "1e3", "9.5.0"] {
+            assert_eq!(
+                Decimal::parse_relaxed(text),
                 Err(DecimalParseError::Malformed),
                 "{text}",
             );

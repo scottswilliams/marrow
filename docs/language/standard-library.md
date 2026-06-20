@@ -255,9 +255,11 @@ scalar envelopes raise `run.type`.
 
 JSON text is bounded before and after parsing by fixed byte, depth, node, and
 string-size caps. Integers must fit `int` and be JSON integers. The negative
-zero integer spelling `-0` is rejected rather than normalized to `0`. Decimals
-must be canonical Marrow decimal text inside the decimal envelope; exponent
-spellings do not become decimal values.
+zero integer spelling `-0` is rejected rather than normalized to `0`. A decimal
+number is ingested leniently and canonicalized, so a trailing-zero fraction or
+leading zero (`9.50`, `9.0`) reads as its one stored value (`9.5`, `9`); it must
+still fit the decimal envelope, and exponent spellings do not become decimal
+values.
 
 ## `std::csv`
 
@@ -282,7 +284,8 @@ The first row is the required header. Data rows are zero-based after the header.
 Missing rows, missing columns, and empty cells are absent. Duplicate or empty
 headers, ragged rows, malformed quotes, CR not followed by LF, and oversized
 input raise `run.type`. Unquoted whitespace is preserved. Quoted fields may
-contain commas, newlines, and escaped quotes as `""`.
+contain commas, newlines, and escaped quotes as `""`. Like JSON, a decimal cell
+is ingested leniently and canonicalized, so `9.50` reads as `9.5`.
 
 ## `std::id` And `std::random`
 

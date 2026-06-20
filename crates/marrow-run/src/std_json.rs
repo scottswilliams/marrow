@@ -415,7 +415,10 @@ fn parse_json_number(value: &str, span: SourceSpan) -> Result<serde_json::Number
 }
 
 fn parse_json_decimal(value: &str, span: SourceSpan) -> Result<Value, RuntimeError> {
-    match Decimal::parse_canonical(value.trim()) {
+    // A JSON number is external data, so a non-canonical spelling such as `9.50`
+    // or `9.0` is a valid number that canonicalizes to its one stored value, not a
+    // malformed literal.
+    match Decimal::parse_relaxed(value.trim()) {
         Ok(decimal) => Ok(Value::Decimal(decimal)),
         Err(DecimalParseError::Overflow) => Err(decimal_overflow(span)),
         Err(DecimalParseError::Malformed) => Err(type_error("JSON number is not a decimal", span)),

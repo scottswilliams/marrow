@@ -238,7 +238,10 @@ fn parse_cell(op: CsvScalarOp, cell: &str, span: SourceSpan) -> Result<Value, Ru
             .parse::<i64>()
             .map(Value::Int)
             .map_err(|_| type_error("CSV cell is not an int", span)),
-        CsvScalarOp::Decimal => match Decimal::parse_canonical(cell) {
+        // A CSV cell is external data, so a non-canonical spelling such as `9.50`
+        // canonicalizes to its one stored value rather than being rejected as a
+        // Marrow source literal would be.
+        CsvScalarOp::Decimal => match Decimal::parse_relaxed(cell) {
             Ok(decimal) => Ok(Value::Decimal(decimal)),
             Err(DecimalParseError::Overflow) => Err(decimal_overflow(span)),
             Err(DecimalParseError::Malformed) => Err(type_error("CSV cell is not a decimal", span)),

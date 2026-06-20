@@ -3,7 +3,7 @@
 use crate::support;
 use support::*;
 
-use marrow_run::{RUN_DIVIDE_BY_ZERO, RUN_OVERFLOW, RUN_TYPE, Value};
+use marrow_run::{RUN_DECIMAL_OVERFLOW, RUN_DIVIDE_BY_ZERO, RUN_OVERFLOW, RUN_TYPE, Value};
 
 #[test]
 fn std_text_builtins_operate_on_strings() {
@@ -399,6 +399,80 @@ pub fn negative_zero_decimal(): string
         run(checked_entry!(&program, "test::negative_zero_decimal")),
         RUN_TYPE,
     );
+}
+
+#[test]
+fn std_json_decimal_canonicalizes_non_canonical_numbers() {
+    // Real-world JSON routinely carries trailing fractional zeros and integer
+    // forms; ingestion canonicalizes them to the one stored decimal value rather
+    // than rejecting them as Marrow source literals would be rejected.
+    let program = checked_program(
+        r#"pub fn trailing_zero(): string
+    return string(std::json::decimal("{\"v\":9.50}", "/v") ?? 0.0)
+
+pub fn whole_with_point(): string
+    return string(std::json::decimal("{\"v\":9.0}", "/v") ?? 0.0)
+
+pub fn one_point_zero(): string
+    return string(std::json::decimal("{\"v\":1.0}", "/v") ?? 0.0)
+
+pub fn overflow(): string
+    return string(std::json::decimal("{\"v\":99999999999999999999999999999999999}", "/v") ?? 0.0)
+
+pub fn malformed(): string
+    return string(std::json::decimal("{\"v\":\"9.5.0\"}", "/v") ?? 0.0)
+"#,
+    );
+
+    assert_eq!(
+        run(checked_entry!(&program, "test::trailing_zero")).unwrap(),
+        Some(Value::Str("9.5".into()))
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::whole_with_point")).unwrap(),
+        Some(Value::Str("9".into()))
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::one_point_zero")).unwrap(),
+        Some(Value::Str("1".into()))
+    );
+    assert_run_error(
+        run(checked_entry!(&program, "test::overflow")),
+        RUN_DECIMAL_OVERFLOW,
+    );
+    assert_run_error(run(checked_entry!(&program, "test::malformed")), RUN_TYPE);
+}
+
+#[test]
+fn std_csv_decimal_canonicalizes_non_canonical_cells() {
+    let program = checked_program(
+        r#"pub fn trailing_zero(): string
+    return string(std::csv::decimal("amount\n9.50\n", 0, "amount") ?? 0.0)
+
+pub fn whole_with_point(): string
+    return string(std::csv::decimal("amount\n9.0\n", 0, "amount") ?? 0.0)
+
+pub fn overflow(): string
+    return string(std::csv::decimal("amount\n99999999999999999999999999999999999\n", 0, "amount") ?? 0.0)
+
+pub fn malformed(): string
+    return string(std::csv::decimal("amount\n9.5.0\n", 0, "amount") ?? 0.0)
+"#,
+    );
+
+    assert_eq!(
+        run(checked_entry!(&program, "test::trailing_zero")).unwrap(),
+        Some(Value::Str("9.5".into()))
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::whole_with_point")).unwrap(),
+        Some(Value::Str("9".into()))
+    );
+    assert_run_error(
+        run(checked_entry!(&program, "test::overflow")),
+        RUN_DECIMAL_OVERFLOW,
+    );
+    assert_run_error(run(checked_entry!(&program, "test::malformed")), RUN_TYPE);
 }
 
 #[test]
