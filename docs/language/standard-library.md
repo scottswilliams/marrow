@@ -91,8 +91,13 @@ literals, local time zone or locale behavior, or `addMonths`/`addYears`.
 The host clock is captured once at the start of a run, so every `now()` call in
 one run returns the same instant and `today()` the same date.
 
-Saved `instant` values use a canonical UTC representation. The library surface
-uses canonical text. `today()` returns the current UTC calendar date, not a
+Saved `instant` values use a canonical UTC representation. `parseInstant` and the
+`instant(text)` constructor accept standard RFC-3339 input — trailing-zero
+fractional seconds and an explicit numeric offset (`Z`, `+00:00`, or any
+`±HH:MM`) — and normalize to the canonical UTC value, so a non-UTC offset is
+shifted to its equivalent UTC instant. `parseDuration` and `duration(text)`
+likewise accept trailing-zero fractional seconds. Output always uses the
+canonical trimmed text; `today()` returns the current UTC calendar date, not a
 host-local date. Local time zone presentation and localized formatting belong
 in host libraries, not in the language/database kernel.
 

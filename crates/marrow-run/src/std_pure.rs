@@ -13,7 +13,8 @@ use crate::error::{RuntimeError, overflow, std_arity, temporal_overflow, type_er
 use crate::expr::eval_int;
 use crate::stdlib::{
     eval_bytes_arg, eval_date_arg, eval_decimal_arg, eval_duration_arg, eval_instant_arg,
-    eval_string_sequence, eval_text, int_modulo, int_remainder,
+    eval_string_sequence, eval_text, int_modulo, int_remainder, parse_iso8601_duration_nanos,
+    parse_rfc3339_instant_nanos,
 };
 use crate::value::{Value, canonical_scalar_text, diagnostic_text_preview, saved_value_to_value};
 
@@ -827,9 +828,19 @@ fn parse_clock(
     invalid_message: &str,
     span: SourceSpan,
 ) -> Result<Value, RuntimeError> {
-    decode_value(text.as_bytes(), ty)
-        .map(saved_value_to_value)
-        .ok_or_else(|| type_error(invalid_message, span))
+    parse_temporal_input(text, ty).ok_or_else(|| type_error(invalid_message, span))
+}
+
+/// Parses user-supplied temporal text to its value. Instants and durations accept
+/// the wider standard input surface (trailing-zero fractions, and numeric offsets
+/// for instants) and normalize to canonical; dates are fixed-width with no such
+/// ambiguity, so they read through the canonical store decoder directly.
+fn parse_temporal_input(text: &str, ty: ScalarType) -> Option<Value> {
+    match ty {
+        ScalarType::Instant => parse_rfc3339_instant_nanos(text).map(Value::Instant),
+        ScalarType::Duration => parse_iso8601_duration_nanos(text).map(Value::Duration),
+        _ => decode_value(text.as_bytes(), ty).map(saved_value_to_value),
+    }
 }
 
 fn format_scalar(value: SavedValue, span: SourceSpan) -> Result<Value, RuntimeError> {

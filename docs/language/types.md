@@ -516,8 +516,12 @@ Any other statically known source type is rejected at check time
 At run time the value must actually convert: `bool(...)` accepts only the
 canonical boolean values `false`, `true`, `0`, and `1`; `int(...)` accepts a
 decimal only when it is integral; `string(...)` of `bytes` requires valid
-UTF-8; temporal and numeric text must be canonical Marrow spelling. A value
-that does not convert raises a catchable type error.
+UTF-8; numeric text and `date(...)` text must be canonical Marrow spelling.
+`instant(...)` and `duration(...)` accept standard RFC-3339/ISO-8601 spelling —
+including trailing-zero fractional seconds and explicit numeric instant offsets,
+which normalize to the canonical UTC value (see
+[Standard Library](standard-library.md)). A value that does not convert raises a
+catchable type error.
 
 ## `unknown`
 

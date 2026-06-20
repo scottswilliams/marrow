@@ -6,6 +6,7 @@ use marrow_syntax::SourceSpan;
 use crate::env::Env;
 use crate::error::{RuntimeError, conversion_error, decimal_overflow, type_error};
 use crate::expr::eval_expr;
+use crate::stdlib::{parse_iso8601_duration_nanos, parse_rfc3339_instant_nanos};
 use crate::value::{Value, canonical_scalar_text, diagnostic_value_preview, saved_value_to_value};
 
 /// The conversion a checked call resolves to: a scalar target or the `ErrorCode`
@@ -148,6 +149,14 @@ fn convert_to_canonical_scalar(
         Value::Date(_) if ty == ScalarType::Date => Ok(value),
         Value::Instant(_) if ty == ScalarType::Instant => Ok(value),
         Value::Duration(_) if ty == ScalarType::Duration => Ok(value),
+        // Instants and durations from text share the wider standard input surface;
+        // dates read through the canonical store decoder.
+        Value::Str(text) if ty == ScalarType::Instant => parse_rfc3339_instant_nanos(text)
+            .map(Value::Instant)
+            .ok_or_else(|| conversion_error_for_value(&value, ty.name(), span)),
+        Value::Str(text) if ty == ScalarType::Duration => parse_iso8601_duration_nanos(text)
+            .map(Value::Duration)
+            .ok_or_else(|| conversion_error_for_value(&value, ty.name(), span)),
         Value::Str(text) => decode_value(text.as_bytes(), ty)
             .map(saved_value_to_value)
             .ok_or_else(|| conversion_error_for_value(&value, ty.name(), span)),

@@ -41,6 +41,117 @@ fn parse_instant_rejects_invalid_text() {
 }
 
 #[test]
+fn instant_input_accepts_standard_rfc3339_and_normalizes_to_canonical() {
+    // The instant parsers accept standard RFC-3339 input — trailing-zero fractional
+    // seconds and an explicit numeric offset — and normalize to the canonical UTC
+    // `...Z` output form. Both the `std::clock::parseInstant` and `instant(...)`
+    // entry points share this acceptance.
+    let program = checked_program(
+        "pub fn parsed(t: string): string\n    return std::clock::formatInstant(std::clock::parseInstant(t))\n\
+         pub fn built(t: string): string\n    return std::clock::formatInstant(instant(t))\n",
+    );
+    let cases: &[(&str, &str)] = &[
+        // Trailing-zero fractions trim to the canonical form.
+        ("2024-01-01T00:00:00.500Z", "2024-01-01T00:00:00.5Z"),
+        ("2024-01-01T00:00:00.000Z", "2024-01-01T00:00:00Z"),
+        ("2024-01-01T00:00:00.100000000Z", "2024-01-01T00:00:00.1Z"),
+        // An explicit UTC offset is equivalent to `Z`.
+        ("2024-01-01T00:00:00+00:00", "2024-01-01T00:00:00Z"),
+        ("2024-01-01T00:00:00-00:00", "2024-01-01T00:00:00Z"),
+        // A non-UTC offset normalizes to the equivalent UTC instant.
+        ("2024-01-01T05:00:00+05:00", "2024-01-01T00:00:00Z"),
+        ("2024-01-01T00:00:00-05:00", "2024-01-01T05:00:00Z"),
+        // The canonical form itself still round-trips.
+        ("2024-01-01T00:00:00Z", "2024-01-01T00:00:00Z"),
+        ("2024-01-01T00:00:00.5Z", "2024-01-01T00:00:00.5Z"),
+    ];
+    for (input, expected) in cases {
+        for entry in ["test::parsed", "test::built"] {
+            assert_eq!(
+                run(checked_entry!(&program, entry, Value::Str((*input).into()))),
+                Ok(Some(Value::Str((*expected).into()))),
+                "{entry}({input})"
+            );
+        }
+    }
+}
+
+#[test]
+fn duration_input_accepts_trailing_zero_fractions_and_normalizes() {
+    // Durations share the instant's trailing-zero fractional-second input widening:
+    // a `PT1.500S` ingested from an ISO-8601 producer normalizes to canonical `PT1.5S`.
+    // Both `parseDuration` and `duration(...)` accept it; canonical output is unchanged.
+    let program = checked_program(
+        "pub fn parsed(t: string): string\n    return std::clock::formatDuration(std::clock::parseDuration(t))\n\
+         pub fn built(t: string): string\n    return std::clock::formatDuration(duration(t))\n",
+    );
+    let cases: &[(&str, &str)] = &[
+        ("PT1.500S", "PT1.5S"),
+        ("PT1.000S", "PT1S"),
+        ("PT0.100000000S", "PT0.1S"),
+        ("PT90S", "PT90S"),
+        ("-PT1.500S", "-PT1.5S"),
+    ];
+    for (input, expected) in cases {
+        for entry in ["test::parsed", "test::built"] {
+            assert_eq!(
+                run(checked_entry!(&program, entry, Value::Str((*input).into()))),
+                Ok(Some(Value::Str((*expected).into()))),
+                "{entry}({input})"
+            );
+        }
+    }
+}
+
+#[test]
+fn duration_input_still_rejects_non_canonical_non_fraction_forms() {
+    // Widening covers only trailing-zero fractions: leading-zero seconds, `-PT0S`,
+    // and a missing `PT`/`S` remain catchable type errors.
+    let program =
+        checked_program("pub fn f(t: string): duration\n    return std::clock::parseDuration(t)\n");
+    for input in ["PT01S", "-PT0S", "PT1", "1.5S", "PTS"] {
+        assert_eq!(
+            run(checked_entry!(
+                &program,
+                "test::f",
+                Value::Str(input.into())
+            ))
+            .unwrap_err()
+            .code(),
+            RUN_TYPE,
+            "{input}"
+        );
+    }
+}
+
+#[test]
+fn instant_input_still_rejects_malformed_text() {
+    // Widening input acceptance must not swallow genuinely malformed text: a bad
+    // offset, a lowercase zone marker, or a missing zone remain catchable type errors.
+    let program =
+        checked_program("pub fn f(t: string): instant\n    return std::clock::parseInstant(t)\n");
+    for input in [
+        "2024-01-01T00:00:00",       // no zone designator
+        "2024-01-01T00:00:00z",      // lowercase zone marker
+        "2024-01-01T00:00:00+5",     // malformed offset
+        "2024-01-01T00:00:00.Z",     // empty fraction
+        "2024-01-01T00:00:00+24:00", // offset hour out of range
+    ] {
+        assert_eq!(
+            run(checked_entry!(
+                &program,
+                "test::f",
+                Value::Str(input.into())
+            ))
+            .unwrap_err()
+            .code(),
+            RUN_TYPE,
+            "{input}"
+        );
+    }
+}
+
+#[test]
 fn formats_and_parses_dates() {
     // A date round-trips through its canonical YYYY-MM-DD text (leap day).
     let program = checked_program(

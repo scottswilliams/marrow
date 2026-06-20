@@ -8,6 +8,7 @@ mod error_constructor;
 mod index_lookup;
 mod math;
 mod output;
+mod temporal;
 
 #[cfg(test)]
 mod tests;
@@ -27,3 +28,4 @@ pub(crate) use index_lookup::{
 };
 pub(crate) use math::{int_modulo, int_remainder};
 pub(crate) use output::eval_output;
+pub(crate) use temporal::{parse_iso8601_duration_nanos, parse_rfc3339_instant_nanos};

@@ -33,6 +33,30 @@ fn protocol_invocation(
 }
 
 #[test]
+fn text_arg_instant_accepts_standard_rfc3339_and_normalizes() {
+    // A CLI `--arg t=instant("...")` shares the in-language constructor's wider
+    // standard RFC-3339 input surface: a trailing-zero fraction and a numeric
+    // offset are accepted and normalized to the canonical UTC value.
+    let program = checked_program(
+        "pub fn main(t: instant): string\n    return std::clock::formatInstant(t)\n",
+    );
+    let call = CheckedEntryCall::from_text_args(
+        &program,
+        "test::main",
+        &[("t", "instant(\"2024-01-01T05:00:00+05:00\")")],
+    )
+    .expect("entry args decode");
+    let store = TreeStore::memory();
+    let mut output = String::new();
+
+    let result = run_entry(&store, &call, &mut output).expect("run entry");
+    assert_eq!(
+        result.value,
+        Some(Value::Str("2024-01-01T00:00:00Z".into()))
+    );
+}
+
+#[test]
 fn text_args_decode_scalars_and_keep_string_remainder_raw() {
     let program = checked_program(
         "pub fn main(n: int, ok: bool, label: string): int\n\

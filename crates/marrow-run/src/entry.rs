@@ -28,6 +28,7 @@ use crate::error::{
 };
 use crate::expr::eval_expr;
 use crate::host::{Host, StepHook};
+use crate::stdlib::parse_rfc3339_instant_nanos;
 use crate::value::{
     RunOutput, RunOutputSink, Value, enum_value_from_member, value_scalar_type, value_to_key,
 };
@@ -1431,9 +1432,15 @@ fn eval_scalar_arg_expression(scalar: ScalarType, expression: &Expression) -> Op
             let Value::Str(text) = eval_scalar_arg_expression(ScalarType::Str, &arg.value)? else {
                 return None;
             };
-            match (scalar, decode_value(text.as_bytes(), scalar)?) {
-                (ScalarType::Date, SavedValue::Date(days)) => Some(Value::Date(days)),
-                (ScalarType::Instant, SavedValue::Instant(nanos)) => Some(Value::Instant(nanos)),
+            // An instant from text shares the `instant(...)` constructor's wider
+            // standard RFC-3339 input surface; date reads through the canonical
+            // store decoder.
+            match scalar {
+                ScalarType::Instant => parse_rfc3339_instant_nanos(&text).map(Value::Instant),
+                ScalarType::Date => match decode_value(text.as_bytes(), scalar)? {
+                    SavedValue::Date(days) => Some(Value::Date(days)),
+                    _ => None,
+                },
                 _ => None,
             }
         }

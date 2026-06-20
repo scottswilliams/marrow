@@ -200,15 +200,36 @@ fn an_else_if_chain_selects_the_matching_branch() {
 }
 
 #[test]
-fn detects_min_over_negative_one_overflow() {
-    // `i64::MIN % -1` overflows; `%` is the only integer-remainder operator
-    // subject to this, since `/` yields a decimal.
-    let result = eval_source(
-        "pub fn f(a: int, b: int): int\n    return a % b\n",
-        "f",
-        vec![Value::Int(i64::MIN), Value::Int(-1)],
-    );
-    assert_run_error(result, RUN_OVERFLOW);
+fn remainder_by_negative_one_is_zero_for_every_dividend() {
+    // `x % -1 == 0` mathematically for every `x`: the remainder always fits even
+    // though the quotient `i64::MIN / -1` would overflow. The `%` operator and the
+    // `std::math::remainder`/`modulo` functions share one integer-remainder path,
+    // so all three must yield 0 at `i64::MIN` rather than faulting `run.overflow`.
+    let op = checked_program("pub fn f(a: int, b: int): int\n    return a % b\n");
+    let remainder =
+        checked_program("pub fn f(a: int, b: int): int\n    return std::math::remainder(a, b)\n");
+    let modulo =
+        checked_program("pub fn f(a: int, b: int): int\n    return std::math::modulo(a, b)\n");
+    for program in [&op, &remainder, &modulo] {
+        assert_eq!(
+            run(checked_entry!(
+                program,
+                "test::f",
+                Value::Int(i64::MIN),
+                Value::Int(-1)
+            )),
+            Ok(Some(Value::Int(0)))
+        );
+        assert_eq!(
+            run(checked_entry!(
+                program,
+                "test::f",
+                Value::Int(-7),
+                Value::Int(-1)
+            )),
+            Ok(Some(Value::Int(0)))
+        );
+    }
 }
 
 #[test]
