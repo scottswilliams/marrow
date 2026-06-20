@@ -23,7 +23,7 @@ pub(super) fn data_integrity(args: &[String]) -> ExitCode {
         Ok(snapshot) => snapshot,
         Err(code) => return code,
     };
-    let (records, problems) = match &store {
+    let (cells, problems) = match &store {
         Some(store) => match count_integrity_problems(store, &program) {
             Ok(counts) => counts,
             Err(error) => return super::report_store_error(error, format),
@@ -32,7 +32,7 @@ pub(super) fn data_integrity(args: &[String]) -> ExitCode {
     };
 
     if let Some(store) = &store {
-        if let Err(error) = report_integrity(&dir, records, problems, store, &program, format) {
+        if let Err(error) = report_integrity(&dir, cells, problems, store, &program, format) {
             return super::report_data_output_error(error, format);
         }
     } else {
@@ -47,7 +47,7 @@ pub(super) fn data_integrity(args: &[String]) -> ExitCode {
 
 fn report_integrity(
     dir: &str,
-    records: usize,
+    cells: usize,
     problems: usize,
     store: &TreeStore,
     program: &marrow_check::CheckedProgram,
@@ -56,18 +56,18 @@ fn report_integrity(
     match format {
         CheckFormat::Text => {
             if problems == 0 {
-                println!("ok: {dir} integrity verified ({records} records)");
+                println!("ok: {dir} integrity verified ({cells} cells)");
             } else {
                 write_integrity_problems_text(store, program)
                     .map_err(super::DataOutputError::from)?;
             }
         }
-        CheckFormat::Json => write_integrity_json(dir, records, store, program)?,
+        CheckFormat::Json => write_integrity_json(dir, cells, store, program)?,
         CheckFormat::Jsonl => {
             write_integrity_problems_jsonl(store, program).map_err(super::DataOutputError::from)?;
             write_json(json!({
                 "kind": "summary",
-                "records": records,
+                "cells": cells,
                 "problems": problems,
             }));
         }
@@ -77,15 +77,15 @@ fn report_integrity(
 
 fn report_empty_integrity(dir: &str, format: CheckFormat) {
     match format {
-        CheckFormat::Text => println!("ok: {dir} integrity verified (0 records)"),
+        CheckFormat::Text => println!("ok: {dir} integrity verified (0 cells)"),
         CheckFormat::Json => write_json(json!({
             "project": crate::project_json_path(dir),
-            "records": 0,
+            "cells": 0,
             "problems": [],
         })),
         CheckFormat::Jsonl => write_json(json!({
             "kind": "summary",
-            "records": 0,
+            "cells": 0,
             "problems": 0,
         })),
     }
@@ -120,7 +120,7 @@ fn write_integrity_problems_jsonl(
 
 fn write_integrity_json(
     dir: &str,
-    records: usize,
+    cells: usize,
     store: &TreeStore,
     program: &marrow_check::CheckedProgram,
 ) -> Result<(), super::DataOutputError> {
@@ -132,7 +132,7 @@ fn write_integrity_json(
             write!(out, "\"project\":")?;
             serde_json::to_writer(&mut *out, &crate::project_json_path(dir))
                 .map_err(super::DataOutputError::from_json)?;
-            write!(out, ",\"records\":{records}")?;
+            write!(out, ",\"cells\":{cells}")?;
             Ok(())
         },
         "problems",

@@ -89,7 +89,17 @@ pub(crate) fn restore(args: &[String]) -> ExitCode {
         verify_restored_data,
     ) {
         Ok(report) => {
-            report_restore_text(&input, &report);
+            // The restored store now holds exactly the backup's entities, the
+            // user-facing record count that `data stats records:` and the backup line
+            // also report. The manifest's physical cell-frame count stays internal.
+            let records = match crate::backup::count_live_entities(&program, &store) {
+                Ok(records) => records,
+                Err(error) => {
+                    report_simple_error(error.code(), &error.to_string(), format);
+                    return ExitCode::FAILURE;
+                }
+            };
+            report_restore_text(&input, records, &report);
             ExitCode::SUCCESS
         }
         Err(error) => {
@@ -260,21 +270,17 @@ fn parse_count_value(value: &str) -> Result<u64, ExitCode> {
     })
 }
 
-fn report_restore_text(input: &str, report: &crate::backup::RestoreReport) {
+fn report_restore_text(input: &str, records: u64, report: &crate::backup::RestoreReport) {
     match report.receipt {
         RestoreReceipt::EmptyOnly => {
-            println!(
-                "ok: restored {} record(s) from {input}",
-                report.record_count
-            );
+            println!("ok: restored {records} record(s) from {input}");
         }
         RestoreReceipt::Replace {
             expected_live_records,
             replaced_live_records,
         } => {
             println!(
-                "ok: restored {} record(s) from {input}; receipt: mode=replace expected_live_records={expected_live_records} replaced_live_records={replaced_live_records}",
-                report.record_count
+                "ok: restored {records} record(s) from {input}; receipt: mode=replace expected_live_records={expected_live_records} replaced_live_records={replaced_live_records}"
             );
         }
     }

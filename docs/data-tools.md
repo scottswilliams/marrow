@@ -133,21 +133,23 @@ snapshot, store metadata fields such as `store_uid`, `catalog_digest`, and
 
 ## `marrow data stats`
 
-Counts saved roots and cells. One cell is one stored `(path, value)` pair.
-One entity is one identity tuple, such as `^counter(1)`, and can contain
-multiple cells.
+Counts saved roots, records, and cells. One record is one saved entity, an
+identity tuple such as `^counter(1)`, and can contain multiple cells; one cell
+is one stored `(path, value)` pair. The record count is the same number `marrow
+backup` reports and `restore --replace --count N` confirms.
 
 ```
 $ marrow data stats ./project
 roots: 1
+records: 1
 cells: 1
 ```
 
 ```json
-{"project":"/absolute/path/to/project","cells":1,"roots":1}
+{"project":"/absolute/path/to/project","records":1,"cells":1,"roots":1}
 ```
 
-The cell count is a full store scan; it is exact, not an estimate.
+Both counts are a full store scan; they are exact, not estimates.
 
 ## `marrow data dump`
 
@@ -170,14 +172,14 @@ text stay inside one TSV field. Bytes values always render as `0x<hex>`.
 References render as their referent path, for example `^authors(1)`. Enum values
 render as one member identity, for example `app::Status::archived`.
 
-`--format json` wraps all records in one object; each record carries the checked
+`--format json` wraps all field cells in one object; each cell carries the checked
 path plus base64 of the value bytes:
 
 ```json
-{"project":"/absolute/path/to/project","records":[{"path":"^counter(1).value","value_b64":"NDI="}]}
+{"project":"/absolute/path/to/project","cells":[{"path":"^counter(1).value","value_b64":"NDI="}]}
 ```
 
-`--format jsonl` streams one record object per line, then a summary line:
+`--format jsonl` streams one cell object per line, then a summary line:
 
 ```jsonl
 {"path":"^counter(1).value","value_b64":"NDI="}
@@ -273,7 +275,7 @@ It exits `0` on a clean store and `1` when it finds any problem.
 
 ```
 $ marrow data integrity ./project
-ok: ./project integrity verified (1 records)
+ok: ./project integrity verified (1 cells)
 ```
 
 It surfaces five data findings plus typed store corruption:
@@ -332,12 +334,12 @@ prints a single `ok:` line to stdout. `--format json` wraps the findings in an
 envelope; `--format jsonl` streams one envelope per finding plus a summary:
 
 ```json
-{"project":"/absolute/path/to/project","records":1,"problems":[{"code":"data.decode","help":null,"kind":"tooling","message":"stored value is not a canonical int form","source_span":{"path":"^counter(1).value"}}]}
+{"project":"/absolute/path/to/project","cells":1,"problems":[{"code":"data.decode","help":null,"kind":"tooling","message":"stored value is not a canonical int form","source_span":{"path":"^counter(1).value"}}]}
 ```
 
 ```jsonl
 {"code":"data.decode","help":null,"kind":"tooling","message":"stored value is not a canonical int form","source_span":{"path":"^counter(1).value"}}
-{"kind":"summary","problems":1,"records":1}
+{"kind":"summary","problems":1,"cells":1}
 ```
 
 These findings have no source line, so the location is a `path` field rather

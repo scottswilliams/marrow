@@ -154,17 +154,18 @@ marrow data roots .
 ^books
 ```
 
-Count roots and cells:
+Count roots, records, and cells:
 
 ```sh
 marrow data stats .
 ```
 
 After the two runs above, four books are saved, each with three populated
-fields:
+fields, so the store holds four records (entities) and twelve cells:
 
 ```text
 roots: 1
+records: 4
 cells: 12
 ```
 
@@ -189,8 +190,10 @@ marrow data dump .
 ^books(4).shelf	fiction
 ```
 
-One cell is one stored path/value pair; one entity is one identity tuple such as
-`^books(1)`, so each saved book above contributes three cells. `data dump`
+One record is one saved entity, an identity tuple such as `^books(1)`; one cell
+is one stored path/value pair, so each saved book above is one record with three
+cells. The record count is what `marrow backup` reports and `restore --replace
+--count N` confirms; the cell count matches the `data dump` lines. `data dump`
 reports stored field values, not the generated index entries, which are derived
 data. Read a single path:
 
@@ -209,7 +212,7 @@ marrow data integrity .
 ```
 
 ```text
-ok: . integrity verified (12 records)
+ok: . integrity verified (12 cells)
 ```
 
 Every `marrow data` subcommand also takes `--format text|json|jsonl` for
@@ -220,7 +223,7 @@ marrow data stats --format json .
 ```
 
 ```text
-{"project":"/absolute/path/to/shelf","cells":12,"roots":1}
+{"project":"/absolute/path/to/shelf","records":4,"cells":12,"roots":1}
 ```
 
 `marrow data` inspection commands are read-only; `marrow data recover` is the

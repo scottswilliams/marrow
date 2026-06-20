@@ -201,16 +201,16 @@ fn dry_run_leaves_saved_data_unchanged() {
         );
     }
 
-    // The saved data is unchanged: the dump after reads back the same records as the dump
-    // before, asserted on the parsed `records` array rather than the rendered dump text.
+    // The saved data is unchanged: the dump after reads back the same field cells as the
+    // dump before, asserted on the parsed `cells` array rather than the rendered dump text.
     let after = marrow(&["data", "dump", "--format", "json", &dir]);
     assert_eq!(after.status.code(), Some(0), "after: {after:?}");
     let after_json: serde_json::Value =
         serde_json::from_str(String::from_utf8(after.stdout).expect("utf8").trim())
             .expect("dump json");
     assert_eq!(
-        before_json["records"], after_json["records"],
-        "dry run must leave saved data unchanged: the same records read back"
+        before_json["cells"], after_json["cells"],
+        "dry run must leave saved data unchanged: the same field cells read back"
     );
 }
 
@@ -274,16 +274,16 @@ fn dry_run_does_not_persist_writes_after_a_caught_transaction_failure() {
     let dump_json: serde_json::Value =
         serde_json::from_str(String::from_utf8(dump.stdout).expect("utf8").trim())
             .expect("dump json");
-    let records = dump_json["records"].as_array().expect("records array");
+    let cells = dump_json["cells"].as_array().expect("cells array");
     assert_eq!(
-        records.len(),
+        cells.len(),
         1,
-        "dry-run isolation must preserve only the seeded saved record: {dump_json}"
+        "dry-run isolation must preserve only the seeded saved cell: {dump_json}"
     );
     assert!(
-        records
+        cells
             .iter()
-            .any(|record| record["path"] == "^books(1).title" && record["value_b64"] == "b2xk"),
+            .any(|cell| cell["path"] == "^books(1).title" && cell["value_b64"] == "b2xk"),
         "dry-run isolation must leave the seeded value unchanged: {dump_json}"
     );
 }
@@ -313,8 +313,8 @@ fn dry_run_plan_matches_a_real_run() {
         .collect();
 
     // A real run commits the writes; its dump holds those exact field paths. Read the
-    // committed records as the typed `data dump --format json` envelope and pin the
-    // plan-vs-real equivalence on the parsed `path` field of each record, never a
+    // committed cells as the typed `data dump --format json` envelope and pin the
+    // plan-vs-real equivalence on the parsed `path` field of each cell, never a
     // substring of the rendered dump.
     assert_eq!(
         marrow(&["run", &real_dir]).status.code(),
@@ -326,11 +326,11 @@ fn dry_run_plan_matches_a_real_run() {
     let real_json: serde_json::Value =
         serde_json::from_str(String::from_utf8(real_dump.stdout).expect("utf8").trim())
             .expect("dump json");
-    let real_paths: Vec<&str> = real_json["records"]
+    let real_paths: Vec<&str> = real_json["cells"]
         .as_array()
-        .expect("records array")
+        .expect("cells array")
         .iter()
-        .filter_map(|record| record["path"].as_str())
+        .filter_map(|cell| cell["path"].as_str())
         .collect();
 
     // Every planned field value the dry run reported is a committed leaf record in the real store.
@@ -594,12 +594,12 @@ fn dry_run_reports_maintenance_whole_root_deletes() {
         serde_json::from_str(String::from_utf8(dump.stdout).expect("utf8").trim())
             .expect("dump json");
     assert!(
-        dump_json["records"]
+        dump_json["cells"]
             .as_array()
-            .expect("records array")
+            .expect("cells array")
             .iter()
-            .any(|record| record["path"] == "^books(1).title"),
-        "dry run must leave the seeded record in place: {dump_json}"
+            .any(|cell| cell["path"] == "^books(1).title"),
+        "dry run must leave the seeded cell in place: {dump_json}"
     );
 }
 
@@ -667,11 +667,11 @@ fn dry_run_reports_non_root_deletes() {
         serde_json::from_str(String::from_utf8(dump.stdout).expect("utf8").trim())
             .expect("dump json");
     assert!(
-        dump_json["records"]
+        dump_json["cells"]
             .as_array()
-            .expect("records array")
+            .expect("cells array")
             .iter()
-            .any(|record| record["path"] == "^books(1).details.note"),
+            .any(|cell| cell["path"] == "^books(1).details.note"),
         "dry run must leave the seeded group data in place: {dump_json}"
     );
 }
@@ -788,7 +788,7 @@ fn dry_run_json_flushes_the_plan_when_the_run_faults() {
         serde_json::from_str(String::from_utf8(dump.stdout).expect("utf8").trim())
             .expect("dump json");
     assert_eq!(
-        dump_json["records"],
+        dump_json["cells"],
         serde_json::json!([]),
         "faulting dry run must leave saved data unchanged: {dump_json}"
     );
@@ -842,14 +842,14 @@ fn dry_run_composes_with_trace() {
     );
 
     // The store is still empty after the composed dry run: the typed dump envelope holds
-    // no records, asserted on the parsed `records` array rather than the empty-store text.
+    // no cells, asserted on the parsed `cells` array rather than the empty-store text.
     let dump = marrow(&["data", "dump", "--format", "json", &dir]);
     assert_eq!(dump.status.code(), Some(0), "dump: {dump:?}");
     let dump_json: serde_json::Value =
         serde_json::from_str(String::from_utf8(dump.stdout).expect("utf8").trim())
             .expect("dump json");
     assert_eq!(
-        dump_json["records"],
+        dump_json["cells"],
         serde_json::json!([]),
         "store must be empty: {dump_json}"
     );
@@ -1090,13 +1090,13 @@ fn dry_run_would_apply_executes_against_isolated_advanced_schema() {
         serde_json::from_str(String::from_utf8(dump.stdout).expect("stdout utf8").trim())
             .expect("dump json");
     assert!(
-        !dump_json["records"]
+        !dump_json["cells"]
             .as_array()
-            .expect("records array")
+            .expect("cells array")
             .iter()
-            .any(|record| {
-                record["path"] == "^books(1).subtitle"
-                    || record["path"]
+            .any(|cell| {
+                cell["path"] == "^books(1).subtitle"
+                    || cell["path"]
                         .as_str()
                         .is_some_and(|path| path.starts_with("^notes"))
             }),

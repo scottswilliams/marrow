@@ -612,16 +612,20 @@ snapshot, store metadata fields such as `store_uid`, `catalog_digest`, and
 
 ### `data stats`
 
-Count the saved roots and cells. One cell is one stored `(path, value)` pair;
-one entity is one identity tuple such as `^books(1)`.
+Count the saved roots, records, and cells. One record is one saved entity, an
+identity tuple such as `^books(1)`; one cell is one stored `(path, value)` pair.
+The record count is the same number `marrow backup` reports, `restore --replace
+--count N` confirms, and evolution counts; the cell count matches the `data dump`
+line count.
 
 ```console
 $ marrow data stats ./proj
 roots: 1
+records: 1
 cells: 2
 
 $ marrow data stats --format json ./proj
-{"project":"/absolute/path/to/proj","cells":2,"roots":1}
+{"project":"/absolute/path/to/proj","records":1,"cells":2,"roots":1}
 ```
 
 ### `data dump`
@@ -665,7 +669,7 @@ completeness obligation.
 
 ```console
 $ marrow data integrity ./proj
-ok: ./proj integrity verified (2 records)
+ok: ./proj integrity verified (2 cells)
 ```
 
 ### `data recover`
@@ -751,6 +755,9 @@ failed backup preserves any prior archive at that path and removes its temporary
 file. No overwrite flag is exposed: the path is replaced on success and preserved
 on failure.
 
+The reported count is the saved records (entities), the same number `data stats
+records:` reports and `restore --replace --count N` confirms.
+
 ```console
 $ marrow backup ./proj ./proj-backup.mwbackup
 ok: backed up 12 record(s) to ./proj-backup.mwbackup
@@ -773,9 +780,10 @@ it (`restore.source_mismatch`, `restore.catalog_mismatch`,
 already holds saved data, generated indexes, or an accepted catalog
 (`restore.not_empty`), so a normal restore writes into an empty store only.
 `--replace --count N` is the explicit destructive mode: restore counts the live
-target through the checked data tooling before mutation and proceeds only when
-that count equals `N`. A mismatch reports `restore.not_empty` with the expected
-and found counts and leaves the target data and catalog unchanged. `--replace`
+target's saved records (entities, the same count `data stats records:` reports)
+before mutation and proceeds only when that count equals `N`. A mismatch reports
+`restore.not_empty` with the expected and found record counts and leaves the
+target data and catalog unchanged. `--replace`
 without `--count`, `--count` without `--replace`, negative or non-integer counts,
 and duplicate restore flags are usage errors.
 

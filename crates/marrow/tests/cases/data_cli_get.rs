@@ -139,11 +139,11 @@ fn data_get_and_integrity_on_an_unseeded_project_write_no_records() {
     // Nothing to verify is healthy: no problems on the empty store.
     assert_eq!(integrity.status.code(), Some(0), "{integrity:?}");
     assert_eq!(json(integrity)["problems"], serde_json::json!([]));
-    // Inspection writes no cells: the store holds zero saved data cells.
+    // Inspection writes no cells: the store holds zero saved entities and cells.
     assert_eq!(stats.status.code(), Some(0), "{stats:?}");
     let stats_json = json(stats);
+    assert_eq!(stats_json["records"], serde_json::json!(0));
     assert_eq!(stats_json["cells"], serde_json::json!(0));
-    assert!(stats_json.get("records").is_none(), "{stats_json}");
 }
 
 #[test]

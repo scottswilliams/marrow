@@ -23,10 +23,11 @@ use super::{
     mint_store_uid,
 };
 
-/// What a completed restore replayed.
+/// What a completed restore replayed: the live-target receipt. The user-facing record
+/// count is the restored store's entity count, computed by the caller after commit, not
+/// the manifest's internal physical cell-frame count.
 #[derive(Debug)]
 pub(crate) struct RestoreReport {
-    pub(crate) record_count: u64,
     pub(crate) receipt: RestoreReceipt,
 }
 
@@ -215,7 +216,7 @@ fn prepare_replace_target(
             "replace target has {problems} data integrity problem(s); run `marrow data integrity` before restore --replace"
         )));
     }
-    let replaced_live_records = count_restore_target_records(store)?;
+    let replaced_live_records = super::count_live_entities(program, store)?;
     if replaced_live_records != expected_live_records {
         return Err(BackupError::replace_count_mismatch(
             expected_live_records,
@@ -226,19 +227,6 @@ fn prepare_replace_target(
         expected_live_records,
         replaced_live_records,
     })
-}
-
-fn count_restore_target_records(store: &TreeStore) -> Result<u64, BackupError> {
-    let mut records = 0u64;
-    store.visit_backup_cells(|_| {
-        records = records
-            .checked_add(1)
-            .ok_or(marrow_store::StoreError::LimitExceeded {
-                limit: "restore replace record count",
-            })?;
-        Ok(())
-    })?;
-    Ok(records)
 }
 
 impl PreparedRestoreTarget {
@@ -413,7 +401,6 @@ fn replay(
     verify(program, store)?;
 
     Ok(RestoreReport {
-        record_count: manifest.record_count,
         receipt: RestoreReceipt::EmptyOnly,
     })
 }

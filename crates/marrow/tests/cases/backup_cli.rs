@@ -246,7 +246,7 @@ fn add_pages_default_evolution(root: impl AsRef<Path>) {
 /// Every saved `(path, value_b64)` record the store holds, read through the typed
 /// `data dump --format json` envelope. Two dumps comparing equal proves a byte-exact
 /// round-trip of the saved data, asserted on parsed records rather than rendered text.
-fn dump_records(root: impl AsRef<Path>) -> Vec<serde_json::Value> {
+fn dump_cells(root: impl AsRef<Path>) -> Vec<serde_json::Value> {
     let out = marrow(&[
         "data",
         "dump",
@@ -255,9 +255,9 @@ fn dump_records(root: impl AsRef<Path>) -> Vec<serde_json::Value> {
         root.as_ref().to_str().unwrap(),
     ]);
     assert_eq!(out.status.code(), Some(0), "data dump: {out:?}");
-    support::json(out.stdout)["records"]
+    support::json(out.stdout)["cells"]
         .as_array()
-        .expect("dump records array")
+        .expect("dump cells array")
         .clone()
 }
 
@@ -383,7 +383,7 @@ fn restore_replace_replays_backup_after_confirmed_live_count() {
     let archive = root.join("books.mwbackup");
     let archive_arg = archive.to_str().unwrap().to_string();
 
-    let backup_state = dump_records(&root);
+    let backup_state = dump_cells(&root);
     let backup = marrow(&["backup", &dir, &archive_arg]);
     assert_eq!(backup.status.code(), Some(0), "backup: {backup:?}");
     let backup_stdout = String::from_utf8(backup.stdout).expect("backup stdout utf8");
@@ -397,7 +397,7 @@ fn restore_replace_replays_backup_after_confirmed_live_count() {
     let mutate = marrow(&["run", "--entry", "shelf::mutate_live", &dir]);
     assert_eq!(mutate.status.code(), Some(0), "mutate live: {mutate:?}");
     assert_ne!(
-        dump_records(&root),
+        dump_cells(&root),
         backup_state,
         "fixture changes the live target without changing source or catalog"
     );
@@ -423,7 +423,7 @@ fn restore_replace_replays_backup_after_confirmed_live_count() {
         "replace restore emits an audit receipt: {restore_stdout}"
     );
     assert_eq!(
-        dump_records(&root),
+        dump_cells(&root),
         backup_state,
         "replace clears the live target and restores the backup state"
     );
@@ -447,7 +447,7 @@ fn restore_replace_wrong_count_refuses_before_changing_target() {
     let wrong_count_arg = wrong_count.to_string();
     let mutate = marrow(&["run", "--entry", "shelf::mutate_live", &dir]);
     assert_eq!(mutate.status.code(), Some(0), "mutate live: {mutate:?}");
-    let live_records = dump_records(&root);
+    let live_cells = dump_cells(&root);
     let live_catalog = read_store_catalog(&data_dir).expect("live catalog before restore");
 
     let restore = marrow(&[
@@ -471,8 +471,8 @@ fn restore_replace_wrong_count_refuses_before_changing_target() {
         "{message}"
     );
     assert_eq!(
-        dump_records(&root),
-        live_records,
+        dump_cells(&root),
+        live_cells,
         "count mismatch leaves the live data unchanged"
     );
     assert_eq!(
@@ -480,6 +480,79 @@ fn restore_replace_wrong_count_refuses_before_changing_target() {
         Some(live_catalog),
         "count mismatch leaves the live catalog unchanged"
     );
+}
+
+/// One entity with two fields: `data stats records:` must equal the backup
+/// `record(s)` count must equal the `restore --replace --count N` that succeeds, and
+/// they are all the entity count (1), never the physical-cell count (a node plus two
+/// leaves). The off-by-one `--count` is refused with the entity count in the message.
+#[test]
+fn record_count_is_one_coherent_entity_count_across_stats_backup_and_restore() {
+    let root = temp_project("backup-record-count-coherence", |root| {
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".data" }, "run": { "defaultEntry": "shelf::seed" } }"#,
+        );
+        write(
+            root,
+            "src/shelf.mw",
+            "module shelf\n\
+             \n\
+             resource Book\n\
+             \x20\x20\x20\x20required title: string\n\
+             \x20\x20\x20\x20pages: int\n\
+             store ^books(id: int): Book\n\
+             \n\
+             pub fn seed()\n\
+             \x20\x20\x20\x20transaction\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20^books(1).title = \"Mort\"\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20^books(1).pages = 200\n",
+        );
+    });
+    let dir = root.to_str().unwrap().to_string();
+    let seed = marrow(&["run", &dir]);
+    assert_eq!(seed.status.code(), Some(0), "seed: {seed:?}");
+
+    // The store holds one entity with two field cells.
+    let stats = marrow(&["data", "stats", "--format", "json", &dir]);
+    assert_eq!(stats.status.code(), Some(0), "stats: {stats:?}");
+    let stats_json = support::json(stats.stdout);
+    assert_eq!(stats_json["records"], serde_json::json!(1), "{stats_json}");
+    assert_eq!(stats_json["cells"], serde_json::json!(2), "{stats_json}");
+
+    let archive = root.join("books.mwbackup");
+    let archive_arg = archive.to_str().unwrap().to_string();
+    let backup = marrow(&["backup", &dir, &archive_arg]);
+    assert_eq!(backup.status.code(), Some(0), "backup: {backup:?}");
+    let backup_stdout = String::from_utf8(backup.stdout).expect("backup stdout utf8");
+    let backup_records = text_record_count(&backup_stdout, "backed up");
+    assert_eq!(
+        backup_records, 1,
+        "backup reports the entity count, not physical cells: {backup_stdout}"
+    );
+
+    // The discoverable entity count is exactly the `--count` a replace restore accepts.
+    let restore = marrow(&["restore", "--replace", "--count", "1", &dir, &archive_arg]);
+    assert_eq!(restore.status.code(), Some(0), "restore: {restore:?}");
+    let restore_stdout = String::from_utf8(restore.stdout).expect("restore stdout utf8");
+    assert!(
+        restore_stdout.contains("restored 1 record(s)"),
+        "{restore_stdout}"
+    );
+    assert!(
+        restore_stdout.contains("mode=replace expected_live_records=1 replaced_live_records=1"),
+        "{restore_stdout}"
+    );
+
+    // The physical-cell count never satisfies the guard: `--count 2` is refused with
+    // the entity count in the found message.
+    let wrong = marrow(&["restore", "--replace", "--count", "2", &dir, &archive_arg]);
+    assert_eq!(wrong.status.code(), Some(1), "wrong count: {wrong:?}");
+    assert_eq!(text_code(&wrong), "restore.not_empty");
+    let message = text_message(&wrong);
+    assert!(message.contains("expected 2 live record(s)"), "{message}");
+    assert!(message.contains("found 1"), "{message}");
 }
 
 #[test]
@@ -674,7 +747,7 @@ fn backup_then_restore_round_trips_saved_data() {
     let archive = root.join("books.mwbackup");
     let archive_arg = archive.to_str().unwrap().to_string();
 
-    let before = dump_records(&root);
+    let before = dump_cells(&root);
     assert_eq!(
         data_get_value(&root, "^books(1).title"),
         Some(b"Mort".to_vec()),
@@ -697,7 +770,7 @@ fn backup_then_restore_round_trips_saved_data() {
     let restore = marrow(&["restore", &dir, &archive_arg]);
     assert_eq!(restore.status.code(), Some(0), "restore: {restore:?}");
 
-    let after = dump_records(&root);
+    let after = dump_cells(&root);
     assert_eq!(after, before, "restored data matches the original");
     assert_eq!(
         data_get_value(&root, "^books(1).title"),

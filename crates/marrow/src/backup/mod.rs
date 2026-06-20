@@ -39,12 +39,47 @@ pub(crate) use restore::{
     validate_backup_archive,
 };
 
+use marrow_check::CheckedProgram;
 use marrow_run::Nondeterminism;
+use marrow_store::cell::CatalogId;
 use marrow_store::tree::{CommitMetadata, EngineProfile, EngineProfileDigest, StoreUid, TreeStore};
 
 /// The on-disk format version. It advances only on an incompatible change to the
 /// header, manifest, or cell framing.
 pub(crate) const FORMAT_VERSION: u32 = marrow_store::tree::TREE_BACKUP_ARCHIVE_FORMAT_VERSION;
+
+/// The number of distinct saved entities (identity tuples such as `^books(1)`) a store
+/// holds under `program`, summed over its declared stores. This is the single
+/// user-facing "record" count: `data stats records:`, the backup `record(s)` line, the
+/// `restore --replace --count N` guard, and evolution all report it, so all those
+/// numbers agree. It descends each store at its declared identity arity, so a node-only
+/// record still counts as one entity, a malformed over- or under-length node is skipped
+/// exactly as the data inventory skips it, and the larger physical-cell count never
+/// leaks into user output.
+pub(crate) fn count_live_entities(
+    program: &CheckedProgram,
+    store: &TreeStore,
+) -> Result<u64, marrow_store::StoreError> {
+    let mut entities = 0u64;
+    for store_fact in program.facts.stores() {
+        let Some(catalog_id) = &store_fact.catalog_id else {
+            continue;
+        };
+        let Ok(store_id) = CatalogId::new(catalog_id.clone()) else {
+            continue;
+        };
+        let arity = store_fact.identity_keys.len();
+        store.for_each_record(&store_id, arity, &mut |_| {
+            entities = entities
+                .checked_add(1)
+                .ok_or(marrow_store::StoreError::LimitExceeded {
+                    limit: "live record count",
+                })?;
+            Ok(())
+        })?;
+    }
+    Ok(entities)
+}
 
 /// A short name identifying the engine family a backup was taken from. v0.1 has
 /// one; the layout, key-profile, and value-codec versions distinguish revisions.
@@ -100,7 +135,9 @@ pub(crate) struct BackupManifest {
     /// Replayed so the restored store fences exactly like the original. `None` for
     /// an unstamped store.
     pub(crate) commit: Option<CommitDescriptor>,
-    /// How many tree cells the data stream carries.
+    /// How many physical tree cells the data stream carries, the frame count restore
+    /// reads back to replay every cell. This is an internal archive count, not the
+    /// user-facing record (entity) count; one entity spans a node cell and its leaves.
     pub(crate) record_count: u64,
     /// One bounded streaming fold over the manifest bytes (with this field zeroed),
     /// the catalog section, and the data cells. A tampered manifest, catalog row, or

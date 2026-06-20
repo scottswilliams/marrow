@@ -419,7 +419,7 @@ store UID stamp.
 |---|---|
 | `restore.format_version` | The file is not a Marrow backup, or its format version is not the one this build restores. |
 | `restore.corrupt_chunk` | The backup's cell stream is truncated or its data checksum does not match the manifest. |
-| `restore.not_empty` | The target store already holds saved data, generated indexes, or an accepted catalog and the command did not provide a matching `--replace --count N` confirmation. Count mismatches also use this code and leave the target unchanged. |
+| `restore.not_empty` | The target store already holds saved data, generated indexes, or an accepted catalog and the command did not provide a matching `--replace --count N` confirmation. `N` is the live record (entity) count `data stats records:` reports; a count mismatch uses this code, reports the expected and found record counts, and leaves the target unchanged. |
 | `restore.engine_recompile_required` | The backup was written under a different engine, layout, or value codec. A cross-engine restore is a future engine recompile. |
 | `restore.source_mismatch` | The backup was written from a program whose schema does not match this project. The message prints backup source digest and project source digest. |
 | `restore.catalog_mismatch` | The backup's catalog does not match this project's accepted catalog. The message prints backup catalog epoch/digest and project catalog epoch/digest. |

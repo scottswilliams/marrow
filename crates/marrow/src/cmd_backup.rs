@@ -6,7 +6,7 @@ use std::process::ExitCode;
 use marrow_run::SystemNondeterminism;
 use marrow_store::tree::TreeStore;
 
-use crate::backup::{create_backup_artifact, ensure_store_uid};
+use crate::backup::{count_live_entities, create_backup_artifact, ensure_store_uid};
 use crate::{CheckFormat, load_checked_project, open_store_for_inspection, report_simple_error};
 
 pub(crate) fn backup(args: &[String]) -> ExitCode {
@@ -36,11 +36,18 @@ pub(crate) fn backup(args: &[String]) -> ExitCode {
 
     let output_path = Path::new(&output);
     match create_backup_artifact(&program, &store, output_path) {
-        Ok(report) => {
-            println!(
-                "ok: backed up {} record(s) to {output}",
-                report.record_count
-            );
+        Ok(()) => {
+            // The printed count is the saved entities, the user-facing record count that
+            // `data stats records:` and the restore `--count` guard also report. The
+            // artifact's own physical cell-frame count stays internal to the manifest.
+            let records = match count_live_entities(&program, &store) {
+                Ok(records) => records,
+                Err(error) => {
+                    report_simple_error(error.code(), &error.to_string(), format);
+                    return ExitCode::FAILURE;
+                }
+            };
+            println!("ok: backed up {records} record(s) to {output}");
             ExitCode::SUCCESS
         }
         Err(error) => {

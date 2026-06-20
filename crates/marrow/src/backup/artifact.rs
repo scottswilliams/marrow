@@ -9,15 +9,11 @@ use marrow_store::tree::TreeStore;
 
 use super::{BackupError, create_backup, validate_backup_archive};
 
-pub(crate) struct BackupArtifactReport {
-    pub(crate) record_count: u64,
-}
-
 pub(crate) fn create_backup_artifact(
     program: &CheckedProgram,
     store: &TreeStore,
     output_path: &Path,
-) -> Result<BackupArtifactReport, BackupError> {
+) -> Result<(), BackupError> {
     let (temp_path, file) = create_temp_artifact(output_path).map_err(|error| {
         backup_io(
             error.kind(),
@@ -28,7 +24,7 @@ pub(crate) fn create_backup_artifact(
         )
     })?;
     match write_and_validate_temp_backup(program, store, output_path, &temp_path, file) {
-        Ok(report) => {
+        Ok(()) => {
             if let Err(error) = fs::rename(&temp_path, output_path) {
                 cleanup_temp_artifact(&temp_path);
                 return Err(backup_io(
@@ -45,7 +41,7 @@ pub(crate) fn create_backup_artifact(
                     ),
                 )
             })?;
-            Ok(report)
+            Ok(())
         }
         Err(error) => {
             cleanup_temp_artifact(&temp_path);
@@ -60,9 +56,9 @@ fn write_and_validate_temp_backup(
     output_path: &Path,
     temp_path: &Path,
     file: File,
-) -> Result<BackupArtifactReport, BackupError> {
+) -> Result<(), BackupError> {
     let mut writer = BackupWriter::new(file);
-    let report = create_backup(program, store, &mut writer)?;
+    create_backup(program, store, &mut writer)?;
     if let Err(error) = writer.finish() {
         return Err(backup_io(
             error.kind(),
@@ -83,9 +79,7 @@ fn write_and_validate_temp_backup(
         )
     })?;
     validate_backup_archive(&mut BufReader::new(file))?;
-    Ok(BackupArtifactReport {
-        record_count: report.record_count,
-    })
+    Ok(())
 }
 
 fn backup_io(kind: io::ErrorKind, message: String) -> BackupError {

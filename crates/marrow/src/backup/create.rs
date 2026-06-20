@@ -19,11 +19,6 @@ use super::{
     FORMAT_VERSION, require_store_uid,
 };
 
-/// What a completed backup wrote.
-pub(crate) struct BackupReport {
-    pub(crate) record_count: u64,
-}
-
 /// Write a backup of `store` (read through one pinned snapshot) to `out`. The
 /// manifest binds the data to `program` and carries the accepted-catalog rows in a
 /// typed section, so a restored store is self-contained. The data cells are
@@ -34,7 +29,7 @@ pub(crate) fn create_backup(
     program: &CheckedProgram,
     store: &TreeStore,
     out: &mut impl Write,
-) -> Result<BackupReport, BackupError> {
+) -> Result<(), BackupError> {
     let store_uid = require_store_uid(store)?;
     let _snapshot = store.read_snapshot()?;
 
@@ -62,7 +57,7 @@ pub(crate) fn create_backup(
     write_data_cells(store, out)?;
     out.flush()?;
 
-    Ok(BackupReport { record_count })
+    Ok(())
 }
 
 fn scan_state(store: &TreeStore) -> Result<(u64, String), BackupError> {

@@ -547,11 +547,11 @@ fn json_run_surface_errors_after_commit_report_mutation_truth() {
         let dump_json: serde_json::Value =
             serde_json::from_slice(&dump.stdout).expect("dump JSON envelope");
         assert!(
-            dump_json["records"]
+            dump_json["cells"]
                 .as_array()
-                .expect("records array")
+                .expect("cells array")
                 .iter()
-                .any(|record| record["path"] == expected_path),
+                .any(|cell| cell["path"] == expected_path),
             "the durable write must have committed before return rendering failed: {dump_json}"
         );
     }
@@ -628,11 +628,11 @@ fn json_runtime_fault_after_commit_reports_mutation_truth() {
     let dump_json: serde_json::Value =
         serde_json::from_slice(&dump.stdout).expect("dump JSON envelope");
     assert!(
-        dump_json["records"]
+        dump_json["cells"]
             .as_array()
-            .expect("records array")
+            .expect("cells array")
             .iter()
-            .any(|record| record["path"] == "^books(1).title"),
+            .any(|cell| cell["path"] == "^books(1).title"),
         "the durable write must have committed before the runtime fault: {dump_json}"
     );
 }

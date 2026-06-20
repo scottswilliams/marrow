@@ -452,36 +452,42 @@ fn data_stats(args: &[String]) -> ExitCode {
         Ok(target) => target,
         Err(code) => return code,
     };
-    // One snapshot spans both passes, so the root count and the cell count describe
-    // the same coherent version of the store.
+    // One snapshot spans every pass, so the root, entity, and cell counts describe the
+    // same coherent version of the store.
     let _snapshot = match pin_snapshot(&store, format) {
         Ok(snapshot) => snapshot,
         Err(code) => return code,
     };
-    let (roots, records) = match &store {
+    let (roots, records, cells) = match &store {
         Some(store) => {
             let roots = match data_roots_in_store(&program, store) {
                 Ok(roots) => roots.len(),
                 Err(error) => return report_store_error(error, format),
             };
-            let records = match count_data_records(&program, store) {
+            let records = match crate::backup::count_live_entities(&program, store) {
                 Ok(records) => records,
                 Err(error) => return report_store_error(error, format),
             };
-            (roots, records)
+            let cells = match count_data_records(&program, store) {
+                Ok(cells) => cells,
+                Err(error) => return report_store_error(error, format),
+            };
+            (roots, records, cells)
         }
-        None => (0, 0),
+        None => (0, 0, 0),
     };
     match format {
         CheckFormat::Text => {
             println!("roots: {roots}");
-            println!("cells: {records}");
+            println!("records: {records}");
+            println!("cells: {cells}");
         }
         CheckFormat::Json | CheckFormat::Jsonl => {
             write_json(json!({
                 "project": crate::project_json_path(&dir),
                 "roots": roots,
-                "cells": records,
+                "records": records,
+                "cells": cells,
             }));
         }
     }
@@ -550,7 +556,7 @@ fn render_dump_json(
     match store {
         Some(store) => write_dump_json(dir, program, store),
         None => {
-            write_json(json!({ "project": crate::project_json_path(dir), "records": [] }));
+            write_json(json!({ "project": crate::project_json_path(dir), "cells": [] }));
             Ok(())
         }
     }
@@ -585,7 +591,7 @@ fn write_dump_json(
             serde_json::to_writer(out, &crate::project_json_path(dir))
                 .map_err(DataOutputError::from_json)
         },
-        "records",
+        "cells",
         |emit| {
             let mut output_error = None;
             let result = visit_data_records(program, store, |record| {

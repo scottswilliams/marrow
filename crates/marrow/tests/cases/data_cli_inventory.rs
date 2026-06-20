@@ -26,15 +26,16 @@ fn data_roots_lists_stored_roots() {
 }
 
 #[test]
-fn data_stats_counts_roots_and_cells() {
-    // Render contract: the text format prints `roots:`/`cells:` count lines; the
-    // typed counts are covered by the JSON-format test in this file.
+fn data_stats_counts_roots_records_and_cells() {
+    // Render contract: the text format prints `roots:`/`records:`/`cells:` count
+    // lines; the typed counts are covered by the JSON-format test in this file.
+    // The seeded fixture stores one entity (`^counter(1)`) with one field cell.
     let (_project, dir) = seeded_project("data-stats");
     let output = marrow(&["data", "stats", &dir]);
 
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let stdout = String::from_utf8(output.stdout).expect("utf8");
-    assert_eq!(stdout, "roots: 1\ncells: 1\n", "{stdout}");
+    assert_eq!(stdout, "roots: 1\nrecords: 1\ncells: 1\n", "{stdout}");
 }
 
 #[test]
@@ -49,8 +50,8 @@ fn data_inventory_does_not_treat_an_overlong_node_as_a_shorter_record() {
     assert_eq!(stats.status.code(), Some(0), "{stats:?}");
     let stats_json = json(stats);
     assert_eq!(stats_json["roots"], serde_json::json!(0));
+    assert_eq!(stats_json["records"], serde_json::json!(0));
     assert_eq!(stats_json["cells"], serde_json::json!(0));
-    assert!(stats_json.get("records").is_none(), "{stats_json}");
 
     assert_eq!(get.status.code(), Some(0), "{get:?}");
     let get_json = json(get);
@@ -88,8 +89,8 @@ fn data_inventory_ignores_overlong_nodes_under_composite_roots() {
     assert_eq!(stats.status.code(), Some(0), "{stats:?}");
     let stats_json = json(stats);
     assert_eq!(stats_json["roots"], serde_json::json!(0));
+    assert_eq!(stats_json["records"], serde_json::json!(0));
     assert_eq!(stats_json["cells"], serde_json::json!(0));
-    assert!(stats_json.get("records").is_none(), "{stats_json}");
 
     assert_eq!(get.status.code(), Some(0), "{get:?}");
     assert_eq!(json(get)["presence"], serde_json::json!("absent"));
@@ -115,8 +116,8 @@ fn inspecting_an_unseeded_project_reports_no_data_and_writes_no_records() {
     assert_store_snapshot(&roots_json);
     // Inspection writes no cells: the store holds zero saved data cells.
     let stats_json = json(stats);
+    assert_eq!(stats_json["records"], serde_json::json!(0));
     assert_eq!(stats_json["cells"], serde_json::json!(0));
-    assert!(stats_json.get("records").is_none(), "{stats_json}");
 }
 
 #[test]
@@ -321,8 +322,8 @@ fn data_dump_of_an_unseeded_project_prints_empty_and_writes_no_records() {
     assert_eq!(stdout, "(no saved data)\n", "{stdout}");
     // Inspection writes no cells: the store holds zero saved data cells.
     let stats_json = json(stats);
+    assert_eq!(stats_json["records"], serde_json::json!(0));
     assert_eq!(stats_json["cells"], serde_json::json!(0));
-    assert!(stats_json.get("records").is_none(), "{stats_json}");
 }
 
 #[test]
@@ -404,8 +405,37 @@ fn data_stats_format_json_emits_counts() {
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let value = json(output);
     assert_eq!(value["roots"], serde_json::json!(1));
+    assert_eq!(value["records"], serde_json::json!(1));
     assert_eq!(value["cells"], serde_json::json!(1));
-    assert!(value.get("records").is_none(), "{value}");
+}
+
+#[test]
+fn data_dump_format_json_keys_the_field_cell_array_as_cells() {
+    // The dump enumerates field cells `(path, value_b64)`, so the JSON envelope keys
+    // them under `cells`, matching the JSONL summary and `data integrity` rather than
+    // the entity-scoped `records` count.
+    let (_project, dir) = seeded_project("data-dump-json-cells");
+    let output = marrow(&["data", "dump", "--format", "json", &dir]);
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let dump = json(output);
+    assert!(dump.get("records").is_none(), "{dump}");
+    let cells = dump["cells"].as_array().expect("cells array");
+    assert_eq!(cells.len(), 1, "{dump}");
+    assert_eq!(cells[0]["path"], serde_json::json!("^counter(1).value"));
+    assert!(cells[0]["value_b64"].is_string(), "{dump}");
+}
+
+#[test]
+fn data_dump_format_json_of_an_empty_store_keys_an_empty_cells_array() {
+    let project = native_project("data-dump-json-empty");
+    let dir = project.to_str().unwrap().to_string();
+    let output = marrow(&["data", "dump", "--format", "json", &dir]);
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let dump = json(output);
+    assert!(dump.get("records").is_none(), "{dump}");
+    assert_eq!(dump["cells"], serde_json::json!([]));
 }
 
 #[test]
@@ -443,8 +473,8 @@ fn data_commands_page_through_large_native_store() {
 
     assert_eq!(stats.status.code(), Some(0), "{stats:?}");
     let stats_json: serde_json::Value = serde_json::from_slice(&stats.stdout).expect("stats json");
+    assert_eq!(stats_json["records"], serde_json::json!(RECORDS));
     assert_eq!(stats_json["cells"], serde_json::json!(RECORDS));
-    assert!(stats_json.get("records").is_none(), "{stats_json}");
 
     assert_eq!(dump.status.code(), Some(0), "{dump:?}");
     let dump_stdout = String::from_utf8(dump.stdout).expect("dump utf8");
@@ -454,11 +484,12 @@ fn data_commands_page_through_large_native_store() {
     assert_eq!(summary["cells"], serde_json::json!(RECORDS));
     assert!(summary.get("records").is_none(), "{summary}");
 
-    // Paging through every record finds no integrity problems, asserted as the typed
-    // empty problem list rather than the rendered record-count text.
+    // Paging through every cell finds no integrity problems, asserted as the typed
+    // empty problem list rather than the rendered cell-count text. Integrity verifies
+    // field cells, so its count is the stored `(path, value)` pairs.
     assert_eq!(integrity.status.code(), Some(0), "{integrity:?}");
     let integrity_json: serde_json::Value =
         serde_json::from_slice(&integrity.stdout).expect("integrity json");
-    assert_eq!(integrity_json["records"], serde_json::json!(RECORDS));
+    assert_eq!(integrity_json["cells"], serde_json::json!(RECORDS));
     assert_eq!(integrity_json["problems"], serde_json::json!([]));
 }
