@@ -297,8 +297,8 @@ referenced durable fact has an accepted catalog ID, the facts carry a
 source-only catalog status rather than a stable client contract. A pending
 catalog proposal for the checked source is reported as its own blocker, because
 accepted IDs alone do not prove the current store, member, or index shape is the
-committed shape. Deferred surface profiles are tracked in [Surface ABI Future
-Profiles](../future/surface-abi.md).
+committed shape. Deferred surface profiles are tracked in
+[Surface ABI](../surface-abi.md).
 
 ## Indexes
 

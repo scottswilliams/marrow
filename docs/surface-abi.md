@@ -1,6 +1,6 @@
-# Surface ABI Future Profiles
+# Surface ABI
 
-The active surface foundation is no longer a future proposal. The checker
+The surface foundation is an active local application boundary. The checker
 derives `SurfaceReadOperationFact`s from checked `surface` declarations,
 `SurfaceReadOperationAnalysis::stable_descriptor()` exposes the accepted-catalog
 read descriptor for stable surfaces, `SurfaceUpdateOperationAnalysis` exposes
@@ -12,11 +12,11 @@ descriptor DTOs, read request/result DTOs, typed cursor-boundary DTOs, sparse
 update request DTOs, action request/result DTOs, and a transport-neutral JSON
 operation envelope over those DTOs.
 
-This page tracks the profiles that are still intentionally deferred. They must
-build on the active checker facts and descriptors. They must not introduce a
-second saved-data access language, parse raw saved paths, use source labels as
-semantic identity, or duplicate scalar, enum, identity, index, or projection
-classification outside the checker-owned model.
+This page owns the active ABI and the explicitly deferred profiles that must
+build on it. Deferred profiles must not introduce a second saved-data access
+language, parse raw saved paths, use source labels as semantic identity, or
+duplicate scalar, enum, identity, index, or projection classification outside
+the checker-owned model.
 
 ## Active Foundation
 

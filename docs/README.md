@@ -41,6 +41,8 @@ point at the [language reference](language/) for the exact rules.
   backup/restore repack, branch stores, and security boundaries.
 - [Tooling Surfaces](tooling-surfaces.md) — support levels and boundaries for
   debug, admin, and production tool surfaces.
+- [Surface ABI](surface-abi.md) — checked application-surface descriptors,
+  operation envelopes, route manifests, local serving, and deferred profiles.
 - [Errors](error-codes.md) — CLI exit codes, the machine-readable error
   envelope, and the stable dotted error codes.
 

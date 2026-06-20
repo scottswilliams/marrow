@@ -145,7 +145,7 @@ executors plus the admitted sparse update and action executors, and
 `marrow-json` owns checked read request-parameter, sparse update request-body,
 and action argument/result DTOs plus read-result DTO rendering over those
 executor outputs, as described in
-[Surface ABI](../future/surface-abi.md).
+[Surface ABI](../surface-abi.md).
 
 Surface declarations in configured test files use the same parser and
 source-level name-collision checks, but they do not resolve into application
