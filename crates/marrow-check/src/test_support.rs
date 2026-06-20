@@ -39,11 +39,16 @@ pub fn test_config() -> ProjectConfig {
     }
 }
 
-/// Check the project already written under `root`, binding any accepted catalog the
-/// fixture wrote to `marrow.catalog.json`, asserting it is clean, and return the checked
-/// program. The file is the same committed source-tree artifact the CLI binds in
-/// production; reading it through the migration parser lets a suite pin a hand-built
-/// accepted catalog the source has moved away from. The caller owns the project
+/// The test-only accepted-catalog fixture file a suite writes to pin a hand-built accepted
+/// catalog the source has moved away from. This is harness state, not the production
+/// committed artifact: production binds accepted identity from the live store and seeds
+/// first-run adoption from `marrow.lock`, neither of which a full-shape fixture can stand in
+/// for. The name carries `.test.` so it is never mistaken for a project file.
+pub const ACCEPTED_CATALOG_FIXTURE: &str = "accepted-catalog.test.json";
+
+/// Check the project already written under `root`, binding any accepted catalog the fixture
+/// wrote, asserting it is clean, and return the checked program. The fixture lets a suite pin
+/// a hand-built accepted catalog the source has moved away from; the caller owns the project
 /// directory, so this helper carries no filesystem setup.
 pub fn checked(root: &Path) -> TestSupportResult<CheckedProgram> {
     let accepted = read_fixture_catalog(root)?;
@@ -52,13 +57,12 @@ pub fn checked(root: &Path) -> TestSupportResult<CheckedProgram> {
     Ok(program)
 }
 
-/// Check the source with no committed catalog, freeze the proposal it produced as the
-/// accepted catalog under `root`, then re-check binding it. The returned program's schema
-/// is fully committed, so its bound catalog ids address the store, exactly as a
-/// state-establishing run leaves them after freezing the baseline. The accepted catalog
-/// is also written to the fixture file so a later [`checked`] over a changed source binds
-/// it, mirroring the committed `marrow.catalog.json` artifact a real project would carry
-/// forward.
+/// Check the source with no accepted catalog, freeze the proposal it produced as the accepted
+/// catalog fixture under `root`, then re-check binding it. The returned program's schema is
+/// fully committed, so its bound catalog ids address the store, exactly as a state-establishing
+/// run leaves them after freezing the baseline. The proposal is also written to the fixture file
+/// so a later [`checked`] or `check_with_accepted` over a changed source binds the same frozen
+/// identity, standing in for the committed store baseline a real project carries forward.
 pub fn commit_then_check(root: &Path) -> TestSupportResult<CheckedProgram> {
     let (report, program) = check_project_with_catalog(root, &test_config(), None)?;
     ensure_clean_report(&report)?;
@@ -67,16 +71,19 @@ pub fn commit_then_check(root: &Path) -> TestSupportResult<CheckedProgram> {
         .proposal
         .clone()
         .ok_or_else(|| io::Error::other("a catalog proposal to commit"))?;
-    fs::write(root.join("marrow.catalog.json"), proposal.to_json_pretty()?)?;
+    fs::write(
+        root.join(ACCEPTED_CATALOG_FIXTURE),
+        proposal.to_json_pretty()?,
+    )?;
     let (report, committed) = check_project_with_catalog(root, &test_config(), Some(&proposal))?;
     ensure_clean_report(&report)?;
     Ok(committed)
 }
 
-/// Read the accepted-catalog fixture file under `root`, if a suite wrote one. A missing
-/// file is a first-run project with no accepted catalog.
+/// Read the accepted-catalog fixture file under `root`, if a suite wrote one. A missing file
+/// is a first-run project with no accepted catalog.
 fn read_fixture_catalog(root: &Path) -> TestSupportResult<Option<marrow_catalog::CatalogMetadata>> {
-    let path = root.join("marrow.catalog.json");
+    let path = root.join(ACCEPTED_CATALOG_FIXTURE);
     let json = match fs::read_to_string(&path) {
         Ok(json) => json,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),

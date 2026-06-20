@@ -172,13 +172,14 @@ pub mod catalog {
     use std::path::{Path, PathBuf};
 
     use marrow_catalog::{CatalogEntry, CatalogEntryKind, CatalogLifecycle, CatalogMetadata};
+    use marrow_check::test_support::ACCEPTED_CATALOG_FIXTURE;
 
-    /// The well-known accepted-catalog file under a project root.
+    /// The test-only accepted-catalog fixture file under a project root.
     pub fn catalog_path(root: &Path) -> PathBuf {
-        root.join("marrow.catalog.json")
+        root.join(ACCEPTED_CATALOG_FIXTURE)
     }
 
-    /// Write `metadata` to the accepted-catalog file at the project root.
+    /// Write `metadata` to the accepted-catalog fixture file at the project root.
     pub fn write_catalog(root: &Path, metadata: &CatalogMetadata) {
         std::fs::write(
             catalog_path(root),
@@ -188,9 +189,9 @@ pub mod catalog {
     }
 
     /// Read the accepted-catalog fixture file at the project root, if one was written. A
-    /// missing file is a first-run project. Suites bind this caller-supplied analysis
-    /// input through [`super::check_with_accepted`], matching the production CLI after it
-    /// has loaded the committed `marrow.catalog.json` artifact.
+    /// missing file is a first-run project. Suites bind this caller-supplied analysis input
+    /// through [`super::check_with_accepted`] to pin a hand-built accepted catalog the source
+    /// has moved away from.
     pub(super) fn read_catalog(root: &Path) -> Option<CatalogMetadata> {
         let json = std::fs::read_to_string(catalog_path(root)).ok()?;
         Some(CatalogMetadata::from_json(&json).expect("fixture catalog parses"))

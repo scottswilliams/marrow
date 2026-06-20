@@ -7,8 +7,8 @@
 use std::hash::{Hash, Hasher};
 
 use marrow_catalog::{
-    CATALOG_INVALID, CATALOG_MERGE_CONFLICT, CatalogEntry, CatalogEntryKind, CatalogLifecycle,
-    CatalogLock, CatalogMetadata, LOCK_CORRUPT, LockEntry, LockLedgerTombstone,
+    CATALOG_INVALID, CatalogEntry, CatalogEntryKind, CatalogLifecycle, CatalogLock,
+    CatalogMetadata, LOCK_CORRUPT, LockEntry, LockLedgerTombstone,
 };
 
 /// An `Active` catalog entry with a `cat_`-shaped stable id minted deterministically from
@@ -267,25 +267,6 @@ fn deprecated_lifecycle_is_rejected() {
 
     let error = CatalogMetadata::from_json(&deprecated).expect_err("deprecated lifecycle rejected");
     assert_eq!(error.code, CATALOG_INVALID);
-}
-
-#[test]
-fn git_conflict_markers_report_a_typed_merge_conflict() {
-    let metadata = catalog(vec![entry(
-        CatalogEntryKind::Resource,
-        "books::Book",
-        "res-book",
-        &[],
-    )]);
-    let conflicted = format!(
-        "<<<<<<< HEAD\n{}\n=======\n{}\n>>>>>>> branch\n",
-        metadata.to_json_pretty().expect("catalog renders"),
-        metadata.to_json_pretty().expect("catalog renders")
-    );
-
-    let error = CatalogMetadata::from_json(&conflicted).expect_err("conflict markers are rejected");
-
-    assert_eq!(error.code, CATALOG_MERGE_CONFLICT);
 }
 
 #[test]

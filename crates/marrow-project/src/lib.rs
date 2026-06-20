@@ -18,8 +18,10 @@ pub use digest::{Sha256Digest, sha256_digest};
 /// Stable error code for an invalid `marrow.json`.
 pub const CONFIG_INVALID: &str = "config.invalid";
 
-/// Fixed source-tree artifact for accepted catalog identity.
-pub const CATALOG_FILE_NAME: &str = "marrow.catalog.json";
+/// Fixed source-tree artifact name for the committed catalog lock: the generated,
+/// committed projection that seeds a fresh empty store and reports staleness. It is
+/// always subordinate to a valid live store and never repairs or overrides it.
+pub const CATALOG_FILE_NAME: &str = "marrow.lock";
 
 /// A validated Marrow project configuration.
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -127,10 +127,10 @@ pub use program::{
 };
 pub use project_io::{
     CONFIG_DATA_DIR, ProjectIoError, check_project_against, check_source_project_analysis_against,
-    load_config, native_store_path, read_accepted_catalog_artifact,
+    load_config, native_store_path, project_store_lock, read_accepted_catalog_artifact,
     read_accepted_catalog_with_store, read_accepted_catalog_with_store_read_only,
-    recheck_against_store_catalog, recheck_source_project_analysis_against_store_catalog,
-    render_accepted_catalog_file, resolve_store_path,
+    read_committed_lock, recheck_against_store_catalog,
+    recheck_source_project_analysis_against_store_catalog, resolve_store_path,
 };
 pub use resolve::{Def, DefItem, Resolution, ResolvableKind, resolve};
 pub use surface_abi::{

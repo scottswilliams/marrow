@@ -15,8 +15,6 @@ use sha2::{Digest, Sha256};
 
 /// Stable error code for an invalid accepted catalog metadata file.
 pub const CATALOG_INVALID: &str = "catalog.invalid";
-/// Stable error code for an accepted catalog metadata file with Git conflict markers.
-pub const CATALOG_MERGE_CONFLICT: &str = "catalog.merge_conflict";
 /// Stable error code for a corrupt committed catalog lock projection. This is the wire and
 /// documentation constant every consumer matches the lock's fail-closed rejection against.
 pub const LOCK_CORRUPT: &str = "catalog.lock_corrupt";
@@ -63,9 +61,6 @@ impl CatalogMetadata {
     }
 
     pub fn from_json(json: &str) -> Result<Self, CatalogError> {
-        if contains_conflict_marker(json) {
-            return Err(CatalogError::merge_conflict());
-        }
         let catalog: Self =
             serde_json::from_str(json).map_err(|error| CatalogError::new(error.to_string()))?;
         Self::from_stored_parts(catalog.epoch, catalog.digest, catalog.entries)
@@ -710,13 +705,6 @@ impl CatalogError {
         Self {
             code: CATALOG_INVALID,
             message: message.into(),
-        }
-    }
-
-    fn merge_conflict() -> Self {
-        Self {
-            code: CATALOG_MERGE_CONFLICT,
-            message: "catalog metadata contains Git conflict markers; resolve the conflict in marrow.catalog.json and rerun the command".to_string(),
         }
     }
 

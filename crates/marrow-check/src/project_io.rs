@@ -138,48 +138,70 @@ pub fn resolve_store_path(
     Ok(Some(path))
 }
 
+/// The committed lock, read from `marrow.lock` and decoded through its [`CatalogLock`]
+/// owner. A present-but-corrupt lock fails closed so a fresh checkout never mints over a
+/// committed identity; an absent lock is a true first run. This is read-only: reading a
+/// lock never writes the source tree.
+pub fn read_committed_lock(
+    root: &Path,
+) -> Result<Option<marrow_catalog::CatalogLock>, ProjectIoError> {
+    match read_lock_file(root) {
+        LockRead::Missing => Ok(None),
+        LockRead::Lock(lock) => Ok(Some(lock)),
+        LockRead::Corrupt(error) => Err(ProjectIoError::Catalog {
+            code: error.code,
+            message: error.message,
+        }),
+        LockRead::ReadError { path, error } => Err(ProjectIoError::Io { path, error }),
+    }
+}
+
+/// Read the accepted catalog with no saved-data store available: there is no accepted
+/// authority to bind, so the result is the first-run `None`, but a present-but-corrupt
+/// committed lock still fails closed rather than mint a fresh baseline over it.
 pub fn read_accepted_catalog_artifact(
     root: &Path,
 ) -> Result<Option<marrow_catalog::CatalogMetadata>, ProjectIoError> {
-    accepted_catalog_file_result(read_accepted_catalog_file(root), None)
+    read_committed_lock(root)?;
+    Ok(None)
 }
 
+/// Bind the accepted catalog from the live store, never from the committed lock. The live
+/// store is the sole write-time authority for accepted identity: a valid stamped store wins
+/// unconditionally, even against a committed lock that disagrees or claims a newer epoch. The
+/// lock only seeds first-run adoption (consumed at analyze time, not materialized here) and
+/// reports staleness, so when no store snapshot is present the accepted catalog is the
+/// first-run `None`. A present-but-corrupt lock fails closed. This never writes the source
+/// tree: a read never repairs or re-projects the lock.
 pub fn read_accepted_catalog_with_store(
     root: &Path,
     store: Option<&TreeStore>,
 ) -> Result<Option<marrow_catalog::CatalogMetadata>, ProjectIoError> {
-    let file_accepted = read_accepted_catalog_file(root);
-    if let AcceptedCatalogFile::Invalid(error) = &file_accepted
-        && error.code == marrow_catalog::CATALOG_MERGE_CONFLICT
-    {
-        return Err(ProjectIoError::Catalog {
-            code: error.code,
-            message: error.message.clone(),
-        });
-    }
-    let Some(store) = store else {
-        return accepted_catalog_file_result(file_accepted, None);
-    };
-    let accepted = store.read_catalog_snapshot()?;
-    if let Some(snapshot) = &accepted
-        && store_snapshot_repairs_file(&file_accepted, snapshot)
-    {
-        render_accepted_catalog_file(root, snapshot)?;
-        return Ok(accepted);
-    }
-    accepted_catalog_file_result(file_accepted, accepted)
+    bind_store_else_refuse_corrupt_lock(root, store)
 }
 
 pub fn read_accepted_catalog_with_store_read_only(
     root: &Path,
     store: Option<&TreeStore>,
 ) -> Result<Option<marrow_catalog::CatalogMetadata>, ProjectIoError> {
-    let file_accepted = read_accepted_catalog_file(root);
-    let fallback = match store {
-        Some(store) => store.read_catalog_snapshot()?,
-        None => None,
-    };
-    accepted_catalog_file_result(file_accepted, fallback)
+    bind_store_else_refuse_corrupt_lock(root, store)
+}
+
+/// The accepted-catalog binding both read entry points share: the live store snapshot when a
+/// valid stamped store is present; otherwise the first-run `None`, after failing closed on a
+/// present-but-corrupt committed lock so a fresh mint can never silently override a committed
+/// identity.
+fn bind_store_else_refuse_corrupt_lock(
+    root: &Path,
+    store: Option<&TreeStore>,
+) -> Result<Option<marrow_catalog::CatalogMetadata>, ProjectIoError> {
+    if let Some(store) = store
+        && let Some(snapshot) = store.read_catalog_snapshot()?
+    {
+        return Ok(Some(snapshot));
+    }
+    read_committed_lock(root)?;
+    Ok(None)
 }
 
 pub fn check_project_against(
@@ -241,23 +263,43 @@ pub fn recheck_source_project_analysis_against_store_catalog(
     store: &TreeStore,
 ) -> Result<crate::AnalysisSnapshot, ProjectIoError> {
     let accepted = store.read_catalog_snapshot()?;
-    if let Some(snapshot) = &accepted {
-        render_accepted_catalog_file(root, snapshot)?;
-    }
     check_source_project_analysis_against(root, config, accepted.as_ref())
 }
 
-pub fn render_accepted_catalog_file(
+/// Re-project the committed store baseline into `marrow.lock`. This is the single owner of the
+/// lock write: the post-commit re-projection runs only after a valid store write, never as a
+/// read side effect, so a read never repairs the lock and a valid live store is never overridden
+/// by a source-tree artifact. The shape, ledger, epoch high-water, and source digest are the
+/// committed inputs the caller supplies; this fingerprints each entry through the [`CatalogLock`]
+/// owner and writes the canonical projection, idempotent on the bytes a prior projection wrote.
+pub fn project_store_lock(
     root: &Path,
     snapshot: &marrow_catalog::CatalogMetadata,
+    ledger: &[marrow_catalog::LockLedgerTombstone],
+    source_digest: &str,
 ) -> Result<(), ProjectIoError> {
-    let path = root.join(marrow_project::CATALOG_FILE_NAME);
-    let desired = snapshot
-        .to_json_pretty()
+    let entries = snapshot
+        .entries
+        .iter()
+        .map(marrow_catalog::LockEntry::from_catalog_entry)
+        .collect();
+    let lock = marrow_catalog::CatalogLock::new(
+        entries,
+        ledger.to_vec(),
+        snapshot.epoch,
+        source_digest.to_string(),
+    )
+    .map_err(|error| ProjectIoError::Catalog {
+        code: error.code,
+        message: error.message,
+    })?;
+    let desired = lock
+        .to_lock_json_pretty()
         .map_err(|error| ProjectIoError::Catalog {
             code: error.code,
             message: error.message,
         })?;
+    let path = root.join(marrow_project::CATALOG_FILE_NAME);
     match fs::read_to_string(&path) {
         Ok(current) if current == desired => return Ok(()),
         Ok(_) => {}
@@ -272,58 +314,29 @@ pub fn render_accepted_catalog_file(
     fs::write(&path, desired).map_err(|error| ProjectIoError::Io { path, error })
 }
 
-enum AcceptedCatalogFile {
+/// The outcome of reading `marrow.lock` from a project root: absent, a valid decoded lock, a
+/// present-but-corrupt artifact carrying its typed refusal, or an I/O failure. Lock structure is
+/// decoded and validated by the [`CatalogLock`] owner; this only classifies the read.
+enum LockRead {
     Missing,
-    Snapshot(marrow_catalog::CatalogMetadata),
-    Invalid(marrow_catalog::CatalogError),
+    Lock(marrow_catalog::CatalogLock),
+    Corrupt(marrow_catalog::CatalogError),
     ReadError {
         path: PathBuf,
         error: std::io::Error,
     },
 }
 
-fn read_accepted_catalog_file(root: &Path) -> AcceptedCatalogFile {
+fn read_lock_file(root: &Path) -> LockRead {
     let path = root.join(marrow_project::CATALOG_FILE_NAME);
     let json = match fs::read_to_string(&path) {
         Ok(json) => json,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return AcceptedCatalogFile::Missing;
-        }
-        Err(error) => return AcceptedCatalogFile::ReadError { path, error },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return LockRead::Missing,
+        Err(error) => return LockRead::ReadError { path, error },
     };
-    match marrow_catalog::CatalogMetadata::from_json(&json) {
-        Ok(snapshot) => AcceptedCatalogFile::Snapshot(snapshot),
-        Err(error) => AcceptedCatalogFile::Invalid(error),
-    }
-}
-
-fn accepted_catalog_file_result(
-    file_accepted: AcceptedCatalogFile,
-    fallback: Option<marrow_catalog::CatalogMetadata>,
-) -> Result<Option<marrow_catalog::CatalogMetadata>, ProjectIoError> {
-    match file_accepted {
-        AcceptedCatalogFile::Missing => Ok(fallback),
-        AcceptedCatalogFile::Snapshot(snapshot) => Ok(Some(snapshot)),
-        AcceptedCatalogFile::Invalid(error) => Err(ProjectIoError::Catalog {
-            code: error.code,
-            message: error.message,
-        }),
-        AcceptedCatalogFile::ReadError { path, error } => Err(ProjectIoError::Io { path, error }),
-    }
-}
-
-fn store_snapshot_repairs_file(
-    file_accepted: &AcceptedCatalogFile,
-    store_snapshot: &marrow_catalog::CatalogMetadata,
-) -> bool {
-    match file_accepted {
-        AcceptedCatalogFile::Missing | AcceptedCatalogFile::Invalid(_) => true,
-        AcceptedCatalogFile::ReadError { error, .. } => {
-            error.kind() == std::io::ErrorKind::InvalidData
-        }
-        AcceptedCatalogFile::Snapshot(file) => {
-            file != store_snapshot && store_snapshot.epoch >= file.epoch
-        }
+    match marrow_catalog::CatalogLock::from_lock_json(&json) {
+        Ok(lock) => LockRead::Lock(lock),
+        Err(error) => LockRead::Corrupt(error),
     }
 }
 
@@ -416,5 +429,182 @@ mod tests {
             message.contains("create") && message.contains("dataDir"),
             "the message names the directory it could not create: {message}"
         );
+    }
+
+    mod store_vs_lock {
+        use std::fs;
+
+        use marrow_catalog::{
+            CatalogEntry, CatalogEntryKind, CatalogLifecycle, CatalogLock, CatalogMetadata,
+            LOCK_CORRUPT, LockEntry,
+        };
+        use marrow_store::tree::TreeStore;
+
+        use crate::{
+            project_store_lock, read_accepted_catalog_with_store,
+            read_accepted_catalog_with_store_read_only,
+        };
+        use marrow_project::CATALOG_FILE_NAME;
+
+        fn temp_root(name: &str) -> std::path::PathBuf {
+            let root = std::env::temp_dir().join(format!(
+                "marrow-store-vs-lock-{name}-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            fs::create_dir_all(&root).expect("create project root");
+            root
+        }
+
+        fn entry(kind: CatalogEntryKind, path: &str, suffix: u8) -> CatalogEntry {
+            CatalogEntry {
+                kind,
+                path: path.to_string(),
+                stable_id: format!("cat_{suffix:032x}"),
+                aliases: Vec::new(),
+                lifecycle: CatalogLifecycle::Active,
+                accepted_key_shape: None,
+                accepted_index_shape: None,
+                accepted_struct: None,
+            }
+        }
+
+        /// A real stamped store at `epoch`, holding a books resource + store entry. The
+        /// snapshot is committed through the production store catalog writer, so the read
+        /// path binds it exactly as it binds an on-disk store.
+        fn stamped_store(epoch: u64) -> (TreeStore, CatalogMetadata) {
+            let snapshot = CatalogMetadata::new(
+                epoch,
+                vec![
+                    entry(CatalogEntryKind::Resource, "app::Book", 1),
+                    entry(CatalogEntryKind::Store, "app::books", 2),
+                ],
+            )
+            .expect("store snapshot builds");
+            let store = TreeStore::memory();
+            store.begin().expect("begin");
+            store
+                .replace_catalog_snapshot(&snapshot)
+                .expect("commit catalog snapshot");
+            store.commit().expect("commit");
+            (store, snapshot)
+        }
+
+        /// A committed lock that DISAGREES with the stamped store: a higher epoch and a
+        /// different stable-id set, so a read path that preferred the lock would return the
+        /// lock's identity instead of the store's.
+        fn disagreeing_lock() -> CatalogLock {
+            CatalogLock::new(
+                vec![
+                    LockEntry::from_catalog_entry(&entry(
+                        CatalogEntryKind::Resource,
+                        "app::Book",
+                        9,
+                    )),
+                    LockEntry::from_catalog_entry(&entry(
+                        CatalogEntryKind::Store,
+                        "app::books",
+                        10,
+                    )),
+                ],
+                Vec::new(),
+                999,
+                "sha256:".to_string() + &"0".repeat(64),
+            )
+            .expect("disagreeing lock builds")
+        }
+
+        fn id_set(snapshot: &CatalogMetadata) -> Vec<String> {
+            let mut ids: Vec<String> = snapshot
+                .entries
+                .iter()
+                .map(|entry| entry.stable_id.clone())
+                .collect();
+            ids.sort();
+            ids
+        }
+
+        #[test]
+        fn a_stale_lock_never_overrides_a_valid_live_store_and_corrupt_lock_fails_closed() {
+            // Oracle (1): a valid stamped store AND a disagreeing on-disk lock bind from the
+            // STORE through BOTH read entrypoints — the returned epoch and stable-id set are
+            // the store snapshot's, never the lock's.
+            let root = temp_root("store-wins");
+            let (store, store_snapshot) = stamped_store(5);
+            let lock = disagreeing_lock();
+            let lock_path = root.join(CATALOG_FILE_NAME);
+            fs::write(
+                &lock_path,
+                lock.to_lock_json_pretty().expect("lock renders"),
+            )
+            .expect("write lock");
+
+            let read_only = read_accepted_catalog_with_store_read_only(&root, Some(&store))
+                .expect("read-only bind")
+                .expect("a bound snapshot");
+            assert_eq!(
+                read_only.epoch, store_snapshot.epoch,
+                "read-only path binds the store epoch, not the lock's"
+            );
+            assert_eq!(
+                id_set(&read_only),
+                id_set(&store_snapshot),
+                "read-only path binds the store id-set, not the lock's"
+            );
+
+            // Oracle (2): the binding read performs NO in-read write — the on-disk lock is
+            // byte-identical across the read (today this path repairs/renders the file).
+            let before = fs::read(&lock_path).expect("lock before");
+            let bound = read_accepted_catalog_with_store(&root, Some(&store))
+                .expect("bind")
+                .expect("a bound snapshot");
+            let after = fs::read(&lock_path).expect("lock after");
+            assert_eq!(
+                before, after,
+                "read_accepted_catalog_with_store must not rewrite the lock during a read"
+            );
+            assert_eq!(
+                bound.epoch, store_snapshot.epoch,
+                "the store-store path binds the store epoch, not the lock's"
+            );
+            assert_eq!(id_set(&bound), id_set(&store_snapshot));
+
+            // A SEPARATE post-commit re-projection path DOES rewrite the lock from the
+            // committed store baseline: it overwrites the disagreeing on-disk lock with a
+            // valid projection of the committed store snapshot, parseable as a CatalogLock
+            // (not catalog JSON).
+            project_store_lock(&root, &store_snapshot, &[], &store_snapshot.digest)
+                .expect("re-project the committed store lock");
+            let reprojected = fs::read_to_string(&lock_path).expect("lock after re-projection");
+            let projected = CatalogLock::from_lock_json(&reprojected)
+                .expect("re-projection writes a valid lock projection, not catalog JSON");
+            assert_eq!(
+                projected.epoch_high_water, store_snapshot.epoch,
+                "the re-projected lock carries the committed store epoch"
+            );
+
+            fs::remove_dir_all(&root).ok();
+
+            // Oracle (3): an EMPTY store and a CORRUPT on-disk lock FAIL CLOSED with the typed
+            // lock_corrupt code — never Ok(None), never silent fresh minting.
+            let corrupt_root = temp_root("corrupt-lock");
+            fs::write(
+                corrupt_root.join(CATALOG_FILE_NAME),
+                "{ this is not a valid lock",
+            )
+            .expect("write corrupt lock");
+            let empty_store = TreeStore::memory();
+            let error = read_accepted_catalog_with_store(&corrupt_root, Some(&empty_store))
+                .expect_err("a corrupt lock over an empty store fails closed");
+            assert_eq!(
+                error.code(),
+                LOCK_CORRUPT,
+                "a corrupt lock surfaces the typed lock_corrupt code"
+            );
+            fs::remove_dir_all(&corrupt_root).ok();
+        }
     }
 }

@@ -1,4 +1,4 @@
-use crate::support::catalog::{catalog, entry, write_catalog};
+use crate::support::catalog::{catalog, catalog_path, entry, write_catalog};
 use crate::support::{assert_clean, check_with_accepted, config, temp_project, write};
 
 use marrow_catalog::{CatalogEntry, CatalogEntryKind};
@@ -232,7 +232,7 @@ surface Books from ^books
         &ProjectSources::new(),
         Some(
             &marrow_catalog::CatalogMetadata::from_json(
-                &std::fs::read_to_string(root.join("marrow.catalog.json")).expect("read catalog"),
+                &std::fs::read_to_string(catalog_path(&root)).expect("read catalog"),
             )
             .expect("catalog parses"),
         ),
@@ -1601,7 +1601,7 @@ surface Library from ^books
 ",
     );
     let accepted = marrow_catalog::CatalogMetadata::from_json(
-        &std::fs::read_to_string(root.join("marrow.catalog.json")).expect("read catalog"),
+        &std::fs::read_to_string(catalog_path(&root)).expect("read catalog"),
     )
     .expect("catalog parses");
     let renamed = analyze_project(
