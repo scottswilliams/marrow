@@ -172,6 +172,10 @@ rules:
   component. Such a value would escape the project root, so it is rejected.
 - `tests` entries must not contain glob metacharacters (`*`, `?`, `[`, `]`,
   `{`, `}`).
+- A `tests` entry must not overlap a source root — it must not equal, sit under,
+  or contain one. Test files are scripts that live outside the source roots; an
+  overlap would load that root's library modules and run their `pub fn`s as
+  tests.
 - Unknown top-level keys, and unknown keys inside `run` or `store`, are
   rejected.
 - Malformed JSON is rejected.
@@ -204,6 +208,9 @@ config.invalid: `sourceRoots entry` `/etc` must be relative to the project root,
 
 $ marrow check ./proj          # dataDir: "../data"
 config.invalid: `dataDir` `../data` must not contain a `..` component
+
+$ marrow check ./proj          # sourceRoots: ["src"], tests: ["src"]
+config.invalid: `tests entry` `src` overlaps source root `src`; test files must live outside the source roots
 
 $ marrow check ./proj          # no marrow.json
 io.read: failed to read ./proj/marrow.json: No such file or directory (os error 2)

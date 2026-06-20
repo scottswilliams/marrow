@@ -287,6 +287,135 @@ fn fmt_write_refuses_to_destroy_statement_doc_comment_markers() {
     );
 }
 
+/// Default stdout `fmt` must agree with `--check`/`--write` on losslessness: a
+/// comment that the formatter cannot re-emit (one stranded on a continuation line
+/// inside an open delimiter) makes stdout mode refuse with `fmt.comment_loss` and
+/// exit non-zero rather than print the comment-stripped source. Otherwise
+/// `marrow fmt file > file` would silently destroy the comment. Every paren
+/// continuation position the formatter drops is covered so the guard fires for the
+/// whole family, not just one shape.
+fn assert_stdout_fmt_refuses_comment_loss(name: &str, source: &str) {
+    let path = temp_source(name, source);
+    let output = run_fmt(&[path.to_str().unwrap()]);
+    fs::remove_file(&path).ok();
+
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "default fmt must refuse lossy output for {name}: {output:?}"
+    );
+    assert!(
+        fmt_reports_code(&output.stderr, "fmt.comment_loss"),
+        "{name}: {:?}",
+        output.stderr
+    );
+    assert!(
+        output.stdout.is_empty(),
+        "{name}: a refused lossy format must print nothing to stdout, got {:?}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+}
+
+#[test]
+fn fmt_stdout_refuses_comment_loss_inside_call_arguments() {
+    assert_stdout_fmt_refuses_comment_loss(
+        "stdout-callarg",
+        "module app\n\
+         fn f(): string\n\
+         \x20   return concat(\n\
+         \x20       \"a\",  ; keep call\n\
+         \x20       \"b\",\n\
+         \x20   )\n",
+    );
+}
+
+#[test]
+fn fmt_stdout_refuses_comment_loss_inside_throw_error_arguments() {
+    assert_stdout_fmt_refuses_comment_loss(
+        "stdout-throwarg",
+        "module app\n\
+         fn f()\n\
+         \x20   throw Error(\n\
+         \x20       ; keep throw\n\
+         \x20       code: \"x.y\",\n\
+         \x20       message: \"m\",\n\
+         \x20   )\n",
+    );
+}
+
+#[test]
+fn fmt_stdout_refuses_comment_loss_inside_if_condition_parens() {
+    assert_stdout_fmt_refuses_comment_loss(
+        "stdout-ifcond",
+        "module app\n\
+         fn f(): int\n\
+         \x20   if (\n\
+         \x20       1 == 1  ; keep if\n\
+         \x20   )\n\
+         \x20       return 1\n\
+         \x20   return 0\n",
+    );
+}
+
+#[test]
+fn fmt_stdout_refuses_comment_loss_inside_bool_parens() {
+    assert_stdout_fmt_refuses_comment_loss(
+        "stdout-boolparen",
+        "module app\n\
+         fn f(): bool\n\
+         \x20   return (\n\
+         \x20       true  ; keep bool\n\
+         \x20       and false\n\
+         \x20   )\n",
+    );
+}
+
+#[test]
+fn fmt_stdout_refuses_comment_loss_between_arguments() {
+    assert_stdout_fmt_refuses_comment_loss(
+        "stdout-between",
+        "module app\n\
+         fn f(): string\n\
+         \x20   return concat(\n\
+         \x20       \"a\",\n\
+         \x20       ; keep between\n\
+         \x20       \"b\",\n\
+         \x20   )\n",
+    );
+}
+
+#[test]
+fn fmt_stdout_refuses_comment_loss_before_close_paren() {
+    assert_stdout_fmt_refuses_comment_loss(
+        "stdout-beforeclose",
+        "module app\n\
+         fn f(): string\n\
+         \x20   return concat(\n\
+         \x20       \"a\",\n\
+         \x20       \"b\",\n\
+         \x20       ; keep before close\n\
+         \x20   )\n",
+    );
+}
+
+#[test]
+fn fmt_stdout_prints_when_all_comments_are_preserved() {
+    // Own-line and trailing comments outside open delimiters round-trip, so the
+    // guard does not fire and stdout mode prints the formatted source at exit 0.
+    let source = "module app\n\
+         \n\
+         fn main(): int\n\
+         \x20   ; own line comment\n\
+         \x20   return 5 ; trailing comment\n";
+    let path = temp_source("stdout-preserved", source);
+    let output = run_fmt(&[path.to_str().unwrap()]);
+    fs::remove_file(&path).ok();
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let stdout = String::from_utf8(output.stdout).expect("stdout utf8");
+    assert_eq!(stdout, source);
+}
+
 #[cfg(unix)]
 #[test]
 fn fmt_write_follows_a_symlinked_source_file() {

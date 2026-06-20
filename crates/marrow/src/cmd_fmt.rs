@@ -155,6 +155,20 @@ fn fmt_one(file: &str, source: &str, mode: FmtMode) -> Result<FmtOutcome, ()> {
     let formatted = marrow_syntax::format_source(source);
     match mode {
         FmtMode::Print => {
+            // Stdout mode must agree with `--check`/`--write` on losslessness: a
+            // comment the formatter cannot re-emit (stranded on a continuation
+            // line inside an open delimiter) is refused here too, so piping a
+            // file through `fmt` never silently drops content.
+            if !marrow_syntax::format_preserves_comments(source, &formatted) {
+                report_simple_error(
+                    "fmt.comment_loss",
+                    &format!(
+                        "refusing to format {file}: formatting would discard retained comments"
+                    ),
+                    CheckFormat::Text,
+                );
+                return Err(());
+            }
             print!("{formatted}");
             Ok(FmtOutcome::Unchanged)
         }

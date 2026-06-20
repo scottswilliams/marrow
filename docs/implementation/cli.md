@@ -46,7 +46,7 @@ Structured reports that include a `project` field render the canonical absolute 
 | `run` | `cmd_run.rs` | Parses run flags and repeated `--arg name=value` pairs, opens a `ProjectSession`, emits session notices, invokes the selected entry under a plain/trace/dry-run hook, and renders text output, JSON envelopes, or dry-run reports. |
 | `test` | `cmd_test.rs` | Opens a test `ProjectSession`, filters its public zero-param test cases by qualified name substring, invokes each selected test, and renders pass/fail/error reports. |
 | `surface serve` | `cmd_surface.rs`, `cmd_surface/serve.rs`, `cmd_surface/serve/cors.rs` | Parses the loopback bind target, optional `--write` mode, and optional exact loopback `--cors-origin`, opens `ProjectSurfaceReadSession` or `ProjectSurfaceSession`, derives allowed routes from `surface.route.v1`, accepts one bounded JSON `POST` per connection plus matching CORS preflight when configured, validates route/body operation agreement, dispatches through the matching surface operation executor, and returns sanitized JSON success/error envelopes. |
-| `fmt` | `cmd_fmt.rs` | Formats one file to stdout, or `--check`/`--write` over source roots; refuses stdin, a bare dir with no mode, and `--write` rewrites that would reduce retained comments. |
+| `fmt` | `cmd_fmt.rs` | Formats one file to stdout, or `--check`/`--write` over source roots; refuses stdin, a bare dir with no mode, and any mode whose output would reduce retained comments (`fmt.comment_loss`), so stdout, `--check`, and `--write` agree on losslessness. |
 | `data <roots\|stats\|dump\|integrity\|recover\|get>` | `cmd_data.rs`, `cmd_data/` | Store inspection plus explicit recovery; read-only views either pin one live-store `ReadSnapshot` or mount `--backup` into memory, while `recover` performs only a write-capable store open. |
 | `evolve <preview\|apply>` | `cmd_evolve/` | Read-only preview vs managed-write apply; preview can render parseable evolve scaffolds or derive the witness from `--from-backup`, and apply gates Retire-bearing witnesses on a recovery point before committing data plus catalog rows atomically. |
 | `backup` / `restore` | `cmd_backup.rs`, `cmd_restore.rs`, `backup/` | Read-only archive write through a shared atomic artifact helper over a pinned snapshot, carrying the accepted-catalog rows in a typed section; transactional all-or-nothing replay of catalog rows and data into an empty native store, or an explicitly counted replace target, which then runs without re-running evolution. |
@@ -57,7 +57,7 @@ Structured reports that include a `project` field render the canonical absolute 
 
 | File | Responsibility |
 |---|---|
-| `crates/marrow-project/src/lib.rs` | `marrow.json` parse+validate, path-containment and plain-test-path checks, module-name derivation, `.mw` source/test discovery. |
+| `crates/marrow-project/src/lib.rs` | `marrow.json` parse+validate, path-containment, plain-test-path, and tests-disjoint-from-source-roots checks, module-name derivation, `.mw` source/test discovery. |
 | `crates/marrow-project/src/digest.rs` | `sha256_digest`: `sha256:<hex>` over bytes, used for catalog and analyzed-source integrity digests. |
 
 ### Project and catalog IO (`marrow-check`)

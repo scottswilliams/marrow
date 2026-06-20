@@ -174,6 +174,57 @@ fn rejects_test_entries_with_glob_metacharacters() {
 }
 
 #[test]
+fn rejects_a_tests_entry_overlapping_a_source_root() {
+    // Test files live outside the source roots — they are scripts, not library
+    // modules. A `tests` entry that equals, sits under, or contains a source
+    // root would otherwise load library modules and run their `pub fn`s as tests.
+    for (json, test_entry, source_root) in [
+        (
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" }, "tests": ["src"] }"#,
+            "src",
+            "src",
+        ),
+        (
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" }, "tests": ["src/cases"] }"#,
+            "src/cases",
+            "src",
+        ),
+        (
+            r#"{ "sourceRoots": ["src/lib"], "store": { "backend": "memory" }, "tests": ["src"] }"#,
+            "src",
+            "src/lib",
+        ),
+        (
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" }, "tests": ["./src/smoke.mw"] }"#,
+            "./src/smoke.mw",
+            "src",
+        ),
+    ] {
+        let error = parse_config(json).expect_err("should reject overlapping tests entry");
+        assert_eq!(error.code, "config.invalid", "{json}");
+        assert_eq!(
+            error.kind,
+            ConfigErrorKind::TestsOverlapSourceRoot {
+                test_entry: test_entry.to_string(),
+                source_root: source_root.to_string(),
+            },
+            "{json}"
+        );
+    }
+}
+
+#[test]
+fn accepts_tests_paths_disjoint_from_source_roots() {
+    // A `tests` entry that shares a prefix segment but is not a path-component
+    // ancestor of any source root (`source` vs `src`) is disjoint and valid.
+    let config = parse_config(
+        r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" }, "tests": ["tests", "source"] }"#,
+    )
+    .expect("disjoint tests paths are valid");
+    assert_eq!(config.tests, ["tests", "source"]);
+}
+
+#[test]
 fn rejects_unknown_top_level_keys() {
     let error = parse_config(r#"{ "sourceRoots": ["src"], "globals": ["^x"] }"#)
         .expect_err("should reject unknown keys");

@@ -338,6 +338,12 @@ Format Marrow source. `marrow fmt` does not read from stdin.
 - `--write` rewrites changed files in place. Each changed file is written to an
   adjacent temporary file and replaces the original only after the new content is
   written successfully; a parse or write failure leaves the original file intact.
+
+All three modes agree on losslessness. A comment the formatter cannot re-emit —
+one stranded on a continuation line inside an open delimiter — is refused
+(`fmt.comment_loss`, exit `1`) in every mode, including the default stdout mode,
+which prints nothing rather than emit comment-stripped source. `marrow fmt
+file > file` therefore never silently discards content.
 - A project directory formats every `.mw` file under its source roots, and
   requires `--check` or `--write`. Printing many files to stdout is meaningless,
   so a bare `marrow fmt <dir>` is a usage error (exit `2`).
@@ -353,9 +359,9 @@ $ marrow fmt --check ./proj        # exit 1 if anything is unformatted
 $ marrow fmt --write ./proj        # rewrite in place
 ```
 
-Exit codes: `0` formatted/already-formatted; `1` a `--check` file differs or a
-file failed to parse or write; `2` a directory with no `--check`/`--write`, an
-unknown flag, or a `-` stdin argument.
+Exit codes: `0` formatted/already-formatted; `1` a `--check` file differs, a
+format would discard retained comments, or a file failed to parse or write; `2` a
+directory with no `--check`/`--write`, an unknown flag, or a `-` stdin argument.
 
 ---
 

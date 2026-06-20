@@ -85,6 +85,13 @@ pub enum ConfigErrorKind {
         value: String,
         reason: ConfigPathViolation,
     },
+    /// A `tests` entry equals, sits under, or contains a source root. Test files
+    /// live outside the source roots — they are scripts, not library modules — so
+    /// an overlap would run library `pub fn`s as tests.
+    TestsOverlapSourceRoot {
+        test_entry: String,
+        source_root: String,
+    },
 }
 
 /// The config field that carried an invalid project-relative path.
@@ -179,6 +186,7 @@ pub fn parse_config(json: &str) -> Result<ProjectConfig, ConfigError> {
     for test_path in &raw.tests {
         check_under_root(ConfigPathField::TestsEntry, test_path)?;
         check_plain_test_path(test_path)?;
+        check_disjoint_from_source_roots(test_path, &raw.source_roots)?;
     }
 
     check_no_nul("store.backend", &raw_store.backend)?;
@@ -281,6 +289,50 @@ fn check_plain_test_path(value: &str) -> Result<(), ConfigError> {
         ));
     }
     Ok(())
+}
+
+/// Reject a `tests` entry that overlaps any source root. Test files are scripts
+/// that live outside the source roots; an entry that equals, descends from, or
+/// contains a source root would load that root's library modules and run their
+/// `pub fn`s as tests. Both paths are already validated as relative and
+/// `..`-free, so a shared component prefix in either direction is a real overlap.
+fn check_disjoint_from_source_roots(
+    test_path: &str,
+    source_roots: &[String],
+) -> Result<(), ConfigError> {
+    let test_components = path_components(test_path);
+    for source_root in source_roots {
+        let root_components = path_components(source_root);
+        let overlaps = test_components
+            .iter()
+            .zip(&root_components)
+            .all(|(test, root)| test == root);
+        if overlaps {
+            return Err(ConfigError::new(
+                ConfigErrorKind::TestsOverlapSourceRoot {
+                    test_entry: test_path.to_string(),
+                    source_root: source_root.to_string(),
+                },
+                format!(
+                    "`tests entry` `{test_path}` overlaps source root `{source_root}`; test files must live outside the source roots"
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// The normal path segments of a project-relative path, dropping `.` components
+/// so `./src/smoke.mw` and `src/smoke.mw` compare equal. The value is already
+/// validated as relative and free of `..`, so only `Normal` and `CurDir` appear.
+fn path_components(value: &str) -> Vec<&std::ffi::OsStr> {
+    Path::new(value)
+        .components()
+        .filter_map(|component| match component {
+            Component::Normal(name) => Some(name),
+            _ => None,
+        })
+        .collect()
 }
 
 fn invalid_config_path(
