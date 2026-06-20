@@ -1,4 +1,5 @@
 mod children;
+mod declared;
 mod path;
 mod path_error;
 mod read;
@@ -17,6 +18,10 @@ use crate::tooling::ToolingError;
 use crate::{CheckedProgram, ScalarType, StoreLeafKind};
 
 pub use children::{data_children, data_children_supports_paging};
+pub use declared::{
+    DeclaredDataChild, DeclaredDataChildKind, DeclaredDataKeyParam, SourceDataPathSegment,
+    declared_data_children, declared_source_data_children,
+};
 pub use path::{data_path_under_prefix, resolve_data_path, resolve_source_text_data_path};
 pub use path_error::{DataPathError, MemberFlavor};
 pub use read::{preview_data_path, read_data_path};

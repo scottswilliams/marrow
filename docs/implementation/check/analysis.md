@@ -8,7 +8,7 @@ and CLI views cannot drift from the checked program.
 Two halves live in `crates/marrow-check/src`:
 
 - **`analysis`** runs the IDE-grade pipeline (discover, overlay-or-disk read, parse, check source roots plus configured tests) into an `AnalysisSnapshot` that retains every parse, error files included, and answers cursor lookups (`type_at`/`scope_at`) by reconstructing the checker's lexical scope without emitting diagnostics.
-- **`tooling`** turns a `CheckedProgram` plus a `TreeStore` into typed saved-data facts: schema-validated path resolution, paged child/walk traversal, and integrity verdicts.
+- **`tooling`** turns a `CheckedProgram` plus, where live data is needed, a `TreeStore` into typed saved-data facts: schema-validated path resolution, schema-declared child facts, paged child/walk traversal, and integrity verdicts.
 
 `CheckedProgram` also exposes the static entry footprint surface built from
 checked facts: `effect_closure`, `entry_footprints`, `entry_cost_shapes`, and
@@ -124,7 +124,7 @@ layers, or broad declaration spans.
 
 ## Tooling facts
 
-Path resolution is the single chokepoint: `resolve_data_path_steps` validates source-text or wire segments against a checked place's identity keys and member tree into a `StorageDataPath` (physical store `CatalogId`, identity keys, data path), emitting typed `DataPathError` on malformity. `ToolingError` keeps request malformity (`Path`) distinct from store faults (`Store`); a missing or malformed checked catalog id stays `StoreError::Corruption` on purpose. Callers match variants, never prose.
+Path resolution is the single chokepoint: `resolve_data_path_steps` validates source-text or wire segments against a checked place's identity keys and member tree into a `StorageDataPath` (physical store `CatalogId`, identity keys, data path), emitting typed `DataPathError` on malformity. The schema-only declared-child surface reuses the same checked saved-place/member ownership and accepts either concrete saved-data segments or source-shape segments with key slots; complete record or layer-entry paths return declared field/layer facts, while partial key prefixes return no schema members because their next children are data keys. `ToolingError` keeps request malformity (`Path`) distinct from store faults (`Store`); a missing or malformed checked catalog id stays `StoreError::Corruption` on purpose. Callers match variants, never prose.
 
 `shape.rs::classify_data_path` is the one member-tree shape owner, so the walk cursor's value-position test and integrity orphan detection share a single definition of "declared value path." Every walk and child listing pages with explicit limits, resume cursors, and truncated flags; counts use `checked_add` into `StoreError::LimitExceeded`. Integrity separates declared values (decode, key-type, enum-membership, and canonical identity referent checks against schema and catalog), declared-shape completeness (accepted required fields on existing records and keyed entries), and orphan cells (data under a root/shape/member the schema no longer declares, or under a record identity with no node cell), each a typed `IntegrityProblem` with a stable code.
 
@@ -169,8 +169,9 @@ add only transport availability and request-envelope concerns around those DTOs.
 | `crates/marrow-check/src/analysis/cursor.rs` | Cursor `type_at`/`scope_at`: replay the checker's binding primitives to rebuild lexical scope, infer the tightest covering expression; records no diagnostics. |
 | `crates/marrow-check/src/evolution/preview.rs` | Schema-only and backup-backed `WitnessFactSet` preview facts for tooling. |
 | `crates/marrow-check/src/tooling/mod.rs` | Tooling facade: re-exports the data/integrity API; defines `ToolingError` (Path vs Store). |
-| `crates/marrow-check/src/tooling/data/mod.rs` | Data tooling root and shared value types (`ResolvedDataPath`, `DataChild`, `DataEntry`, `DataWalkPage`, `DataReadResult`, `DataRecord`, `StampedData`, `DataSnapshotStamp`, `DataCommitStamp`, `KeyMismatch`, `MAX_PREVIEW_ITEMS`, `DEFAULT_VALUE_PREVIEW_LIMIT`, `MAX_VALUE_PREVIEW_LIMIT`). |
-| `crates/marrow-check/src/tooling/data/path.rs` | Path resolution: walk wire/source segments into a `StorageDataPath` with typed `DataPathError`; `data_path_under_prefix` containment. |
+| `crates/marrow-check/src/tooling/data/mod.rs` | Data tooling root and shared value types (`ResolvedDataPath`, `DataChild`, `DeclaredDataChild`, `SourceDataPathSegment`, `DataEntry`, `DataWalkPage`, `DataReadResult`, `DataRecord`, `StampedData`, `DataSnapshotStamp`, `DataCommitStamp`, `KeyMismatch`, `MAX_PREVIEW_ITEMS`, `DEFAULT_VALUE_PREVIEW_LIMIT`, `MAX_VALUE_PREVIEW_LIMIT`). |
+| `crates/marrow-check/src/tooling/data/declared.rs` | Schema-only declared child lookup for saved source paths and concrete data paths through the shared checked path walk; opens no store. |
+| `crates/marrow-check/src/tooling/data/path.rs` | Shared checked saved-path walk plus `StorageDataPath` conversion for wire/source segments, with typed `DataPathError`; `data_path_under_prefix` containment. |
 | `crates/marrow-check/src/tooling/data/path_error.rs` | The `DataPathError` enum (client-facing request errors) and `MemberFlavor`, with render-only `Display`. |
 | `crates/marrow-check/src/tooling/data/shape.rs` | The single member-tree shape classifier `classify_data_path` and its consumers (walk-cursor value test, integrity orphan detection). |
 | `crates/marrow-check/src/tooling/data/record_nav.rs` | Arity-aware record-child navigation for tooling scans, so partial identity prefixes only surface when an exact declared-arity record exists below them. |

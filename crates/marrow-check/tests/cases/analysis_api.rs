@@ -6,7 +6,9 @@ use std::path::PathBuf;
 
 use marrow_check::program::MarrowType;
 use marrow_check::tooling::{
-    DataChild, DataPathSegment, DataPresence, MAX_VALUE_PREVIEW_LIMIT, resolve_data_path,
+    DataChild, DataPathError, DataPathSegment, DataPresence, DeclaredDataChild,
+    DeclaredDataChildKind, DeclaredDataKeyParam, MAX_VALUE_PREVIEW_LIMIT, SourceDataPathSegment,
+    ToolingError, declared_data_children, declared_source_data_children, resolve_data_path,
     sample_integrity_problem_details, sample_integrity_problems, stamped_data_children,
     stamped_data_roots_in_store, stamped_integrity_problem_details, stamped_preview_data_path,
     stamped_read_data_path,
@@ -14,8 +16,9 @@ use marrow_check::tooling::{
 use marrow_check::{
     CHECK_READ_ONLY_EXPRESSION_HOST_EFFECT, CHECK_READ_ONLY_EXPRESSION_UNINDEXED_LOOKUP,
     CHECK_READ_ONLY_EXPRESSION_WRITE, CatalogEntryKind, CheckedProgram, DiagnosticPayload,
-    ProjectSources, SurfaceCatalogBlocker, SurfaceCatalogStatus, SurfaceReadFootprint,
-    SurfaceReadOperationKind, UseSiteKind, analyze_project, check_project, scope_at, type_at,
+    ProjectSources, StoreLeafKind, SurfaceCatalogBlocker, SurfaceCatalogStatus,
+    SurfaceReadFootprint, SurfaceReadOperationKind, UseSiteKind, analyze_project, check_project,
+    scope_at, type_at,
 };
 use marrow_project::parse_config;
 use marrow_schema::{SCHEMA_DUPLICATE_MEMBER, ScalarType, Type};
@@ -25,7 +28,7 @@ use marrow_store::tree::{
     CommitMetadata, DataPathSegment as StoreDataPathSegment, EngineProfile, StoreUid, TreeStore,
     write_tree_backup_archive_chunk, write_tree_backup_archive_header,
 };
-use marrow_store::value::{SavedValue, encode_value};
+use marrow_store::value::{SavedValue, ScalarType as StoreScalarType, encode_value};
 use marrow_syntax::{ParsedSource, SourceSpan};
 
 use support::{analyze_overlay, config, temp_root, write};
@@ -2255,6 +2258,184 @@ fn evolution_preview_reads_counts_and_samples_from_backup() {
         ]
     );
     assert!(!backup.samples_truncated);
+}
+
+#[test]
+fn declared_source_data_children_returns_schema_members_after_expression_identity_key() {
+    let source = "module m\n\
+        resource Book\n    \
+        required title: string\n    \
+        shelf: string\n    \
+        tags(pos: int): string\n    \
+        notes(noteId: string)\n        \
+        required text: string\n\
+        store ^books(id: int): Book\n";
+    let (snapshot, _) = analyze_overlay(
+        "analysis-declared-source-children-expression-key",
+        &[("src/m.mw", source)],
+    );
+    assert!(
+        !snapshot.report.has_errors(),
+        "{:#?}",
+        snapshot.report.diagnostics
+    );
+
+    let children = declared_source_data_children(
+        &snapshot.program,
+        &[
+            SourceDataPathSegment::Root("books".to_string()),
+            SourceDataPathSegment::KeySlot,
+        ],
+    )
+    .expect("declared children for complete source-shaped identity");
+
+    assert_eq!(
+        children,
+        vec![
+            DeclaredDataChild {
+                name: "title".to_string(),
+                kind: DeclaredDataChildKind::Field { required: true },
+                key_params: Vec::new(),
+                leaf: Some(StoreLeafKind::Scalar(StoreScalarType::Str)),
+            },
+            DeclaredDataChild {
+                name: "shelf".to_string(),
+                kind: DeclaredDataChildKind::Field { required: false },
+                key_params: Vec::new(),
+                leaf: Some(StoreLeafKind::Scalar(StoreScalarType::Str)),
+            },
+            DeclaredDataChild {
+                name: "tags".to_string(),
+                kind: DeclaredDataChildKind::Field { required: false },
+                key_params: vec![DeclaredDataKeyParam {
+                    name: "pos".to_string(),
+                    scalar: Some(ScalarType::Int),
+                }],
+                leaf: Some(StoreLeafKind::Scalar(StoreScalarType::Str)),
+            },
+            DeclaredDataChild {
+                name: "notes".to_string(),
+                kind: DeclaredDataChildKind::Layer,
+                key_params: vec![DeclaredDataKeyParam {
+                    name: "noteId".to_string(),
+                    scalar: Some(ScalarType::Str),
+                }],
+                leaf: None,
+            },
+        ]
+    );
+}
+
+#[test]
+fn declared_source_data_children_returns_empty_for_partial_key_prefixes() {
+    let source = "module m\n\
+        resource Book\n    \
+        required title: string\n    \
+        notes(noteId: string)\n        \
+        required text: string\n\
+        store ^books(id: int): Book\n";
+    let (snapshot, _) = analyze_overlay(
+        "analysis-declared-source-children-partial-key",
+        &[("src/m.mw", source)],
+    );
+    assert!(
+        !snapshot.report.has_errors(),
+        "{:#?}",
+        snapshot.report.diagnostics
+    );
+
+    let root_children = declared_source_data_children(
+        &snapshot.program,
+        &[SourceDataPathSegment::Root("books".to_string())],
+    )
+    .expect("root prefix is a valid source-shaped path");
+    assert_eq!(root_children, Vec::<DeclaredDataChild>::new());
+
+    let layer_prefix_children = declared_source_data_children(
+        &snapshot.program,
+        &[
+            SourceDataPathSegment::Root("books".to_string()),
+            SourceDataPathSegment::KeySlot,
+            SourceDataPathSegment::Member("notes".to_string()),
+        ],
+    )
+    .expect("keyed layer prefix is a valid source-shaped path");
+    assert_eq!(layer_prefix_children, Vec::<DeclaredDataChild>::new());
+
+    let layer_entry_children = declared_source_data_children(
+        &snapshot.program,
+        &[
+            SourceDataPathSegment::Root("books".to_string()),
+            SourceDataPathSegment::KeySlot,
+            SourceDataPathSegment::Member("notes".to_string()),
+            SourceDataPathSegment::KeySlot,
+        ],
+    )
+    .expect("complete keyed layer entry has declared children");
+    assert_eq!(
+        layer_entry_children,
+        vec![DeclaredDataChild {
+            name: "text".to_string(),
+            kind: DeclaredDataChildKind::Field { required: true },
+            key_params: Vec::new(),
+            leaf: Some(StoreLeafKind::Scalar(StoreScalarType::Str)),
+        }]
+    );
+}
+
+#[test]
+fn declared_data_children_accepts_concrete_data_path_segments() {
+    let source = "module m\n\
+        resource Book\n    \
+        required title: string\n\
+        store ^books(id: int): Book\n";
+    let (snapshot, _) = analyze_overlay(
+        "analysis-declared-data-children-concrete-path",
+        &[("src/m.mw", source)],
+    );
+    assert!(
+        !snapshot.report.has_errors(),
+        "{:#?}",
+        snapshot.report.diagnostics
+    );
+
+    let children = declared_data_children(
+        &snapshot.program,
+        &[
+            DataPathSegment::Root("books".to_string()),
+            DataPathSegment::Key(SavedKey::Int(7)),
+        ],
+    )
+    .expect("declared children for complete concrete identity");
+    assert_eq!(
+        children,
+        vec![DeclaredDataChild {
+            name: "title".to_string(),
+            kind: DeclaredDataChildKind::Field { required: true },
+            key_params: Vec::new(),
+            leaf: Some(StoreLeafKind::Scalar(StoreScalarType::Str)),
+        }]
+    );
+
+    let error = declared_data_children(
+        &snapshot.program,
+        &[
+            DataPathSegment::Root("books".to_string()),
+            DataPathSegment::Key(SavedKey::Str("not-an-int".to_string())),
+        ],
+    )
+    .expect_err("concrete keys still validate declared key types");
+    let ToolingError::Path(DataPathError::IdentityKeyType {
+        root,
+        expected,
+        found,
+    }) = error
+    else {
+        panic!("expected identity key type error, got {error:?}");
+    };
+    assert_eq!(root, "books");
+    assert_eq!(expected, ScalarType::Int);
+    assert_eq!(found, ScalarType::Str);
 }
 
 #[test]
