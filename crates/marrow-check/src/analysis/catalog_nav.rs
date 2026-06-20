@@ -269,7 +269,7 @@ fn collect_place_use_sites(
         if let Some(catalog_id) = layer.catalog_id.as_deref().or_else(|| {
             layer
                 .id
-                .and_then(|id| resource_member_catalog_id(program, id))
+                .and_then(|id| program.resource_member_catalog_id(id))
         }) {
             push_use_site(
                 file,
@@ -291,7 +291,7 @@ fn collect_place_use_sites(
             if let Some(catalog_id) = catalog_id.as_deref().or_else(|| {
                 checked_member_by_name(&place.members, name)
                     .and_then(|member| member.id)
-                    .and_then(|id| resource_member_catalog_id(program, id))
+                    .and_then(|id| program.resource_member_catalog_id(id))
             }) {
                 push_use_site(file, *span, catalog_id, UseSiteKind::ResourceMember, sites);
             }
@@ -360,7 +360,7 @@ fn collect_resource_declarations(
         let Some(module) = modules.get(resource.module.0 as usize) else {
             continue;
         };
-        let Some(catalog_id) = resource_catalog_id(program, resource.id) else {
+        let Some(catalog_id) = program.resource_catalog_id(resource.id) else {
             continue;
         };
         let Some(span) = exact_span(resource.name_span) else {
@@ -369,7 +369,7 @@ fn collect_resource_declarations(
         declarations.push(CatalogDeclaration {
             file: module.source_file.clone(),
             span,
-            catalog_id,
+            catalog_id: catalog_id.to_string(),
             kind: CatalogEntryKind::Resource,
             name: resource.name.clone(),
         });
@@ -386,7 +386,7 @@ fn collect_resource_member_declarations(
         let Some(module) = modules.get(resource.module.0 as usize) else {
             continue;
         };
-        let Some(catalog_id) = resource_member_catalog_id(program, member.id) else {
+        let Some(catalog_id) = program.resource_member_catalog_id(member.id) else {
             continue;
         };
         let Some(span) = exact_span(member.name_span) else {
@@ -502,34 +502,6 @@ fn checked_member_by_name<'a>(
     members.iter().find(|member| member.name == name)
 }
 
-fn resource_catalog_id(program: &CheckedProgram, id: crate::ResourceId) -> Option<String> {
-    let resource = program.facts.resource(id);
-    if let Some(catalog_id) = resource.catalog_id.as_deref() {
-        return Some(catalog_id.to_string());
-    }
-    let module = program.facts.modules().get(resource.module.0 as usize)?;
-    let path = crate::catalog::resource_path(&module.name, &resource.name);
-    proposal_catalog_id(program, CatalogEntryKind::Resource, &path).map(ToString::to_string)
-}
-
-fn resource_member_catalog_id(
-    program: &CheckedProgram,
-    id: crate::ResourceMemberId,
-) -> Option<&str> {
-    let member = program.facts.resource_members().get(id.0 as usize)?;
-    if let Some(catalog_id) = member.catalog_id.as_deref() {
-        return Some(catalog_id);
-    }
-    let resource = program.facts.resource(member.resource);
-    let module = program.facts.modules().get(resource.module.0 as usize)?;
-    let path = crate::catalog::resource_member_path(
-        &module.name,
-        &resource.name,
-        &resource_member_path_names(program, id)?,
-    );
-    proposal_catalog_id(program, CatalogEntryKind::ResourceMember, &path)
-}
-
 fn enum_catalog_id(program: &CheckedProgram, id: crate::EnumId) -> Option<String> {
     let enum_fact = program.facts.enum_(id)?;
     if let Some(catalog_id) = enum_fact.catalog_id.as_deref() {
@@ -547,21 +519,6 @@ fn enum_member_catalog_id(program: &CheckedProgram, id: crate::EnumMemberId) -> 
     }
     let path = program.facts.enum_member_catalog_path(id)?;
     proposal_catalog_id(program, CatalogEntryKind::EnumMember, &path).map(ToString::to_string)
-}
-
-fn resource_member_path_names(
-    program: &CheckedProgram,
-    id: crate::ResourceMemberId,
-) -> Option<Vec<String>> {
-    let mut names = Vec::new();
-    let mut current = Some(id);
-    while let Some(id) = current {
-        let member = program.facts.resource_members().get(id.0 as usize)?;
-        names.push(member.name.clone());
-        current = member.parent;
-    }
-    names.reverse();
-    Some(names)
 }
 
 fn proposal_catalog_id<'a>(

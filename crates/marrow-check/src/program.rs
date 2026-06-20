@@ -30,7 +30,7 @@ use crate::executable::{
 };
 use crate::facts::{
     CheckedFacts, EffectClosureFacts, EntryCostShapeFact, EntryFootprintFact, EntryStoreOpenMode,
-    FunctionId, StoreId, StoreIndexId, WorkShapeClass,
+    FunctionId, ResourceId, ResourceMemberId, StoreId, StoreIndexId, WorkShapeClass,
 };
 
 /// Identifies one source file in a [`CheckedProgram`] by the index of the module
@@ -480,6 +480,25 @@ impl CheckedProgram {
         let module = self.facts.modules().get(store.module.0 as usize)?;
         let path = crate::catalog::store_index_path(&module.name, &store.root, &index.name);
         self.proposal_catalog_id(marrow_catalog::CatalogEntryKind::StoreIndex, &path)
+    }
+
+    pub fn resource_catalog_id(&self, resource_id: ResourceId) -> Option<&str> {
+        let resource = self.facts.resources().get(resource_id.0 as usize)?;
+        if let Some(catalog_id) = resource.catalog_id.as_deref() {
+            return Some(catalog_id);
+        }
+        let module = self.facts.modules().get(resource.module.0 as usize)?;
+        let path = crate::catalog::resource_path(&module.name, &resource.name);
+        self.proposal_catalog_id(marrow_catalog::CatalogEntryKind::Resource, &path)
+    }
+
+    pub fn resource_member_catalog_id(&self, member_id: ResourceMemberId) -> Option<&str> {
+        let member = self.facts.resource_members().get(member_id.0 as usize)?;
+        if let Some(catalog_id) = member.catalog_id.as_deref() {
+            return Some(catalog_id);
+        }
+        let path = self.facts.resource_member_catalog_path(member_id)?;
+        self.proposal_catalog_id(marrow_catalog::CatalogEntryKind::ResourceMember, &path)
     }
 
     fn proposal_catalog_id(

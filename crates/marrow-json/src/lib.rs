@@ -19,6 +19,7 @@ use marrow_store::key::SavedKey;
 use serde::Serialize;
 use serde_json::json;
 
+pub mod resource_schema;
 pub mod saved_data;
 pub mod surface;
 
