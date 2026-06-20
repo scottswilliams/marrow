@@ -781,6 +781,16 @@ pub(crate) fn analyze_source_project(
             .map(|(file, parsed)| (file.path.as_path(), parsed)),
     );
 
+    // Capture the durable shape renderings before binding, so the binding can compare the source
+    // shape digest against a committed lock's recorded digest. The renderings are a pure function
+    // of the parsed sources, so capturing them here (after the facts rebuild that would otherwise
+    // clear them) is independent of any later check pass.
+    program.rebuild_durable_digest_renderings(parsed_files.iter().filter_map(|(file, parsed)| {
+        parsed_sources
+            .get(&file.path)
+            .map(|source| (file.path.as_path(), source.as_str(), parsed))
+    }));
+
     let evolve_intents = crate::evolution::collect_evolve_intents(
         parsed_files
             .iter()
@@ -827,11 +837,6 @@ pub(crate) fn analyze_source_project(
     crate::presence::check_presence(&mut program, &mut report.diagnostics);
     crate::surface::check_computed_read_effects(&mut program, &mut report.diagnostics);
     check_default_entry(project_root, config, &program, &mut report.diagnostics);
-    program.rebuild_durable_digest_renderings(parsed_files.iter().filter_map(|(file, parsed)| {
-        parsed_sources
-            .get(&file.path)
-            .map(|source| (file.path.as_path(), source.as_str(), parsed))
-    }));
 
     // Move every parse — error files included — into the snapshot now that the
     // shared tail has finished borrowing them. The path and module name are

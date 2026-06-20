@@ -1766,6 +1766,174 @@ fn surface_read_operation_analysis_reflects_catalog_status_without_identity_clai
     assert_eq!(stable_status, SurfaceCatalogStatus::Stable);
 }
 
+/// Project a committed lock from a proposal catalog: every Active entry becomes a lock entry and
+/// `source_digest` records the shape the lock was produced under, exactly as the run path writes
+/// it. A test threads this lock through `analyze_project` with no accepted store to drive the
+/// store-less first-run adoption path.
+fn clean_lock_for(
+    catalog: &marrow_catalog::CatalogMetadata,
+    source_digest: &str,
+) -> marrow_catalog::CatalogLock {
+    let entries = catalog
+        .entries
+        .iter()
+        .filter(|entry| entry.lifecycle == marrow_catalog::CatalogLifecycle::Active)
+        .map(marrow_catalog::LockEntry::from_catalog_entry)
+        .collect();
+    marrow_catalog::CatalogLock::new(
+        entries,
+        Vec::new(),
+        catalog.epoch,
+        source_digest.to_string(),
+    )
+    .expect("lock builds from a valid proposal catalog")
+}
+
+#[test]
+fn store_less_clean_lock_adoption_binds_accepted_not_a_proposal() {
+    let source = "module m\n\
+        resource Book\n    \
+        required title: string\n\
+        store ^books(id: int): Book\n\
+        surface Books from ^books\n    \
+        fields title\n";
+    let root = temp_root("analysis-store-less-clean-lock-adoption");
+    write(&root, "src/m.mw", source);
+
+    // The first check with no store and no lock proposes catalog ids at epoch 1. The committed
+    // lock that the run path would project from that proposal carries those ids and the shape
+    // digest the source was checked under.
+    let (report, program) = check_project(&root, &config()).expect("baseline check");
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    let proposal = program
+        .catalog
+        .proposal
+        .clone()
+        .expect("first check proposes catalog ids");
+    let source_digest = program.source_digest();
+    let lock = clean_lock_for(&proposal, &source_digest);
+
+    // Re-analyzing the unchanged source with no accepted store but the clean committed lock must
+    // bind the lock as the accepted reference: the lock's epoch is the accepted epoch and there is
+    // no pending proposal, so the surface ABI is stable exactly as a live store would make it.
+    let snapshot = analyze_project(&root, &config(), &ProjectSources::new(), None, Some(&lock))
+        .expect("clean lock-only analysis");
+    assert!(
+        !snapshot.report.has_errors(),
+        "{:#?}",
+        snapshot.report.diagnostics
+    );
+    assert_eq!(
+        snapshot.program.catalog.accepted_epoch,
+        Some(lock.epoch_high_water),
+        "a clean lock-only bind adopts the lock epoch as accepted"
+    );
+    assert!(
+        snapshot.program.catalog.proposal.is_none(),
+        "a clean lock-only bind carries no pending proposal: {:#?}",
+        snapshot.program.catalog.proposal
+    );
+    let status = snapshot
+        .surface_read_operations()
+        .next()
+        .expect("a surface operation")
+        .surface
+        .catalog_status
+        .clone();
+    assert_eq!(
+        status,
+        SurfaceCatalogStatus::Stable,
+        "a clean lock-only bind yields a stable surface ABI"
+    );
+}
+
+#[test]
+fn store_less_drifted_source_against_lock_stays_a_proposal() {
+    let source = "module m\n\
+        resource Book\n    \
+        required title: string\n\
+        store ^books(id: int): Book\n\
+        surface Books from ^books\n    \
+        fields title\n";
+    let root = temp_root("analysis-store-less-drifted-lock");
+    write(&root, "src/m.mw", source);
+
+    let (report, program) = check_project(&root, &config()).expect("baseline check");
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    let proposal = program
+        .catalog
+        .proposal
+        .clone()
+        .expect("first check proposes catalog ids");
+    let source_digest = program.source_digest();
+    let lock = clean_lock_for(&proposal, &source_digest);
+
+    // Add a member the committed lock never recorded. The source now carries an entity with no
+    // committed identity, so the lock no longer adopts the source cleanly and the binding must
+    // stay a pending proposal rather than falsely report the drifted source as accepted.
+    let drifted = "module m\n\
+        resource Book\n    \
+        required title: string\n    \
+        author: string\n\
+        store ^books(id: int): Book\n\
+        surface Books from ^books\n    \
+        fields title\n";
+    write(&root, "src/m.mw", drifted);
+
+    let snapshot = analyze_project(&root, &config(), &ProjectSources::new(), None, Some(&lock))
+        .expect("drifted lock analysis");
+    assert!(
+        !snapshot.report.has_errors(),
+        "{:#?}",
+        snapshot.report.diagnostics
+    );
+    assert!(
+        snapshot.program.catalog.proposal.is_some(),
+        "a drifted source against the lock stays a proposal, not accepted"
+    );
+    assert_eq!(
+        snapshot.program.catalog.accepted_epoch, None,
+        "a drifted source binds no accepted epoch from the lock"
+    );
+}
+
+#[test]
+fn store_less_stale_lock_digest_stays_a_proposal() {
+    let source = "module m\n\
+        resource Book\n    \
+        required title: string\n\
+        store ^books(id: int): Book\n\
+        surface Books from ^books\n    \
+        fields title\n";
+    let root = temp_root("analysis-store-less-stale-lock");
+    write(&root, "src/m.mw", source);
+
+    let (report, program) = check_project(&root, &config()).expect("baseline check");
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    let proposal = program
+        .catalog
+        .proposal
+        .clone()
+        .expect("first check proposes catalog ids");
+
+    // A lock whose source digest does not match the current source shape is stale: even though
+    // every committed id still anchors a source entity, the lock was produced under a different
+    // shape, so adoption must stay a proposal until the lock is re-projected.
+    let stale_digest = "sha256:0000000000000000000000000000000000000000000000000000000000000000";
+    let lock = clean_lock_for(&proposal, stale_digest);
+
+    let snapshot = analyze_project(&root, &config(), &ProjectSources::new(), None, Some(&lock))
+        .expect("stale lock analysis");
+    assert!(
+        snapshot.program.catalog.proposal.is_some(),
+        "a stale-digest lock stays a proposal, not accepted"
+    );
+    assert_eq!(
+        snapshot.program.catalog.accepted_epoch, None,
+        "a stale-digest lock binds no accepted epoch"
+    );
+}
+
 #[test]
 fn surface_read_operation_analysis_excludes_configured_test_file_surfaces() {
     let root = temp_root("analysis-surface-test-file-isolation");

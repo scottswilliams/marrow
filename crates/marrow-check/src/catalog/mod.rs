@@ -33,6 +33,19 @@ enum CatalogProposalError {
     Catalog(marrow_catalog::CatalogError),
 }
 
+/// The result of first-run binding when no accepted store catalog is present. A committed lock
+/// that adopts the current source cleanly is the accepted reference itself (`Accepted`); a fresh
+/// mint or a lock the source has drifted from is a pending change (`Proposal`); a corrupt lock
+/// refuses adoption (`Refused`), having already pushed the typed [`CHECK_LOCK_CORRUPT`].
+enum FirstRunOutcome {
+    Accepted {
+        entries: Vec<CatalogEntry>,
+        epoch: u64,
+    },
+    Proposal(CatalogMetadata),
+    Refused,
+}
+
 impl From<io::Error> for CatalogProposalError {
     fn from(error: io::Error) -> Self {
         Self::Allocation(error)
@@ -63,6 +76,10 @@ impl CatalogKey {
 pub(crate) struct CatalogBinding {
     pub(crate) accepted_epoch: Option<u64>,
     pub(crate) accepted_digest: Option<String>,
+    /// The accepted catalog's entries the surface ABI binds operations against: the store
+    /// catalog's entries when bound, or a clean lock adoption's committed entries when no store is
+    /// present. Empty while a first-run proposal is pending, since a proposal has no accepted ABI.
+    pub(crate) accepted_entries: Vec<CatalogEntry>,
     pub(crate) ids: HashMap<CatalogKey, String>,
     /// Resolves a member's referent enum or store to its identity-aware leaf token. Covers
     /// proposal-only ids the accepted-only `ids` omits, and is never bound onto live facts.
@@ -90,9 +107,7 @@ pub(crate) fn bind_catalog<'a, I>(
         .bind_catalog_ids(&program.modules, &binding.ids);
     program.catalog.accepted_epoch = binding.accepted_epoch;
     program.catalog.accepted_digest = binding.accepted_digest;
-    program.catalog.accepted_entries = accepted
-        .map(|catalog| catalog.entries.clone())
-        .unwrap_or_default();
+    program.catalog.accepted_entries = binding.accepted_entries;
     // Defaults and transforms bind through the proposal id map, not the accepted-only ids:
     // a default or transform may target a brand-new member current source adds, whose stable
     // id lives only in the proposal until it is accepted. Discharge keys that member's
@@ -354,6 +369,7 @@ fn catalog_binding(
         return CatalogBinding {
             accepted_epoch: None,
             accepted_digest: None,
+            accepted_entries: Vec::new(),
             ids: HashMap::new(),
             leaf_token_ids: HashMap::new(),
             ambiguous_source_keys: source.duplicate_keys,
@@ -375,7 +391,17 @@ fn catalog_binding(
             &mut ids,
             diagnostics,
         ),
-        None => adopt_or_mint_first_run(program, evolve, &source.entries, lock, diagnostics),
+        None => match adopt_or_mint_first_run(program, evolve, &source, lock, diagnostics) {
+            // A clean lock adoption with no store is the accepted reference itself, exactly as
+            // the committed file once was: its committed identity binds onto facts at the lock's
+            // epoch with no pending change, so a store-less surface ABI is stable.
+            Ok(FirstRunOutcome::Accepted { entries, epoch }) => {
+                return accepted_lock_binding(entries, epoch, source.duplicate_keys);
+            }
+            Ok(FirstRunOutcome::Proposal(proposal)) => Ok(Some(proposal)),
+            Ok(FirstRunOutcome::Refused) => Ok(None),
+            Err(error) => Err(error),
+        },
     };
     let proposal = match proposal {
         Ok(proposal) => proposal,
@@ -425,6 +451,9 @@ fn catalog_binding(
     CatalogBinding {
         accepted_epoch: accepted.map(|catalog| catalog.epoch),
         accepted_digest: accepted.map(|catalog| catalog.digest.clone()),
+        accepted_entries: accepted
+            .map(|catalog| catalog.entries.clone())
+            .unwrap_or_default(),
         ids,
         leaf_token_ids,
         ambiguous_source_keys: source.duplicate_keys,
@@ -451,6 +480,31 @@ fn allocation_failure_binding(
     CatalogBinding {
         accepted_epoch: accepted.map(|catalog| catalog.epoch),
         accepted_digest: accepted.map(|catalog| catalog.digest.clone()),
+        accepted_entries: accepted
+            .map(|catalog| catalog.entries.clone())
+            .unwrap_or_default(),
+        leaf_token_ids: ids.clone(),
+        ids,
+        ambiguous_source_keys: duplicate_source_keys,
+        proposal: None,
+    }
+}
+
+/// The binding a clean lock adoption produces with no accepted store: the committed identity
+/// binds onto facts, the lock's epoch is the accepted epoch, the adopted entries are the accepted
+/// ABI the surface binds operations against, and there is no pending proposal — the same shape a
+/// live store would bind. The accepted digest stays absent: no accepted `CatalogMetadata` was
+/// read, and the lock's source digest already proves the shape unchanged.
+fn accepted_lock_binding(
+    entries: Vec<CatalogEntry>,
+    epoch: u64,
+    duplicate_source_keys: HashSet<CatalogKey>,
+) -> CatalogBinding {
+    let ids = proposal_id_map_without(&entries, &duplicate_source_keys);
+    CatalogBinding {
+        accepted_epoch: Some(epoch),
+        accepted_digest: None,
+        accepted_entries: entries,
         leaf_token_ids: ids.clone(),
         ids,
         ambiguous_source_keys: duplicate_source_keys,
@@ -738,15 +792,23 @@ fn lock_high_water(lock: Option<&CatalogLock>) -> u64 {
 /// Bind current source with no accepted catalog: a present committed lock drives first-run
 /// adoption of its identity and epoch high-water into the empty store, an absent lock mints a
 /// fresh baseline at epoch 1. Every rename or retire is an unresolved intent (nothing to carry
-/// forward). Returns `None` only when a present lock refuses adoption (a tombstone reissue),
-/// having pushed the typed [`CHECK_LOCK_CORRUPT`] refusal.
+/// forward). When the lock adopts the source CLEANLY — every source `(kind, path)` matches a
+/// committed lock entry with none left over, no rename or retire pending, and the source shape
+/// digest equals the lock's recorded digest — the lock IS the accepted reference, so the binding
+/// is [`FirstRunOutcome::Accepted`] at the lock's epoch with no pending change, restoring the
+/// store-less stable-ABI guarantee the committed file once gave. Any drift (a new or removed
+/// entity, a pending rename/retire, a stale digest) keeps the binding a proposal: a drifted
+/// source has no committed ABI and must not be falsely reported as accepted. Returns
+/// [`FirstRunOutcome::Refused`], having pushed the typed [`CHECK_LOCK_CORRUPT`], when a present
+/// lock refuses adoption (a tombstone reissue).
 fn adopt_or_mint_first_run(
     program: &CheckedProgram,
     evolve: &EvolveIntents,
-    source_entries: &[SourceCatalogEntry],
+    source: &CatalogSource,
     lock: Option<&CatalogLock>,
     diagnostics: &mut Vec<CheckDiagnostic>,
-) -> Result<Option<CatalogMetadata>, CatalogProposalError> {
+) -> Result<FirstRunOutcome, CatalogProposalError> {
+    let has_pending_intent = !evolve.renames.is_empty() || !evolve.retires.is_empty();
     for rename in &evolve.renames {
         report_unresolved_intent(&rename.file, rename.span, diagnostics);
     }
@@ -754,18 +816,55 @@ fn adopt_or_mint_first_run(
         report_unresolved_intent(&retire.file, retire.span, diagnostics);
     }
     let Some(lock) = lock else {
-        return mint_first_run(program, source_entries, &[]).map(Some);
+        return mint_first_run(program, &source.entries, &[]).map(FirstRunOutcome::Proposal);
     };
     let Some(mut proposal_entries) =
-        adopt_first_run_entries(source_entries, lock, &lock.ledger, diagnostics)
+        adopt_first_run_entries(&source.entries, lock, &lock.ledger, diagnostics)
     else {
-        return Ok(None);
+        return Ok(FirstRunOutcome::Refused);
     };
+    // Record the source shape signatures onto the adopted entries: clean or not, the accepted ABI
+    // and the proposal both carry the current shape under the committed identity.
     record_signatures_into(program, &mut proposal_entries, None);
-    Ok(Some(CatalogMetadata::new(
+    if !has_pending_intent && lock_adopts_source_cleanly(program, source, lock) {
+        return Ok(FirstRunOutcome::Accepted {
+            entries: proposal_entries,
+            epoch: lock.epoch_high_water,
+        });
+    }
+    Ok(FirstRunOutcome::Proposal(CatalogMetadata::new(
         lock.epoch_high_water,
         proposal_entries,
     )?))
+}
+
+/// Whether the committed lock adopts the current source as its exact accepted reference. The
+/// load-bearing cleanliness gate: the source `(kind, path)` set must equal the lock's committed
+/// entries one-for-one — no source entity the lock never recorded, no committed entry the source
+/// no longer declares (a removal or rename) — and the source shape digest must match the digest
+/// the lock was produced under, so a shape edit the lock predates is read as drift. An ambiguous
+/// source path (a duplicate `(kind, path)`) is never clean: its identity is unresolved. When this
+/// holds, the lock carries a complete, current accepted ABI and binds as accepted; otherwise the
+/// source has drifted from the lock and stays a proposal.
+fn lock_adopts_source_cleanly(
+    program: &CheckedProgram,
+    source: &CatalogSource,
+    lock: &CatalogLock,
+) -> bool {
+    if !source.duplicate_keys.is_empty() {
+        return false;
+    }
+    let source_keys: HashSet<(CatalogEntryKind, &str)> = source
+        .entries
+        .iter()
+        .map(|entry| (entry.kind, entry.path.as_str()))
+        .collect();
+    let lock_keys: HashSet<(CatalogEntryKind, &str)> = lock
+        .entries
+        .iter()
+        .map(|entry| (entry.kind, entry.path.as_str()))
+        .collect();
+    source_keys == lock_keys && analyzed_source_digest(program) == lock.source_digest
 }
 
 /// Mint a fresh first-run proposal at epoch 1: every source entity gets a newly allocated id,
@@ -2195,7 +2294,11 @@ mod tests {
         // adoption carries the id forward.
         let store_id = fixed_id(0xa1);
         let store_path = "books::^books";
-        let source = vec![source_entry(CatalogEntryKind::Store, store_path)];
+        let source_entries = vec![source_entry(CatalogEntryKind::Store, store_path)];
+        let source = CatalogSource {
+            duplicate_keys: duplicate_source_keys(&source_entries),
+            entries: source_entries,
+        };
         let high_water = 12;
         let committed = lock(
             vec![committed_lock_entry(
@@ -2208,10 +2311,12 @@ mod tests {
             high_water,
         );
 
-        // Oracle 1 + 2: the first-run proposal adopts the committed id and the lock's
-        // epoch high-water rather than minting fresh at epoch 1.
+        // Oracle 1 + 2: the first-run binding adopts the committed id and the lock's epoch
+        // high-water rather than minting fresh at epoch 1. The fixture program captures no source
+        // renderings, so its shape digest cannot match the lock's recorded digest: the lock does
+        // not adopt cleanly here, so the binding is a proposal carrying the adopted identity.
         let mut diagnostics = Vec::new();
-        let Ok(Some(proposal)) = adopt_or_mint_first_run(
+        let Ok(FirstRunOutcome::Proposal(proposal)) = adopt_or_mint_first_run(
             &program,
             &evolve,
             &source,
@@ -2239,7 +2344,7 @@ mod tests {
         let tombstoned = store_id.clone();
         let mut refusal_diagnostics = Vec::new();
         let refused = adopt_first_run(
-            &source,
+            &source.entries,
             &committed,
             &[tombstone(&tombstoned, high_water)],
             &mut refusal_diagnostics,
