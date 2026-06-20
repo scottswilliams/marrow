@@ -4,6 +4,7 @@ use marrow_store::StoreError;
 
 pub mod data;
 pub mod integrity;
+pub mod signatures;
 
 pub use data::{
     DEFAULT_VALUE_PREVIEW_LIMIT, DataChild, DataChildrenPage, DataCommitStamp, DataEntry,
@@ -24,6 +25,9 @@ pub use integrity::{
     count_activation_integrity_problems, count_integrity_problems,
     sample_integrity_problem_details, sample_integrity_problems, stamped_integrity_problem_details,
     visit_integrity_problems,
+};
+pub use signatures::{
+    ResourceConstructorField, ResourceConstructorSignature, resource_constructor_signature,
 };
 
 #[derive(Debug)]

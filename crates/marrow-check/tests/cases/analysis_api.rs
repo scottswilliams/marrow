@@ -7,11 +7,12 @@ use std::path::PathBuf;
 use marrow_check::program::MarrowType;
 use marrow_check::tooling::{
     DataChild, DataPathError, DataPathSegment, DataPresence, DeclaredDataChild,
-    DeclaredDataChildKind, DeclaredDataKeyParam, MAX_VALUE_PREVIEW_LIMIT, SourceDataPathSegment,
-    ToolingError, declared_data_children, declared_source_data_children,
-    declared_source_receiver_data_children, resolve_data_path, sample_integrity_problem_details,
-    sample_integrity_problems, stamped_data_children, stamped_data_roots_in_store,
-    stamped_integrity_problem_details, stamped_preview_data_path, stamped_read_data_path,
+    DeclaredDataChildKind, DeclaredDataKeyParam, MAX_VALUE_PREVIEW_LIMIT, ResourceConstructorField,
+    SourceDataPathSegment, ToolingError, declared_data_children, declared_source_data_children,
+    declared_source_receiver_data_children, resolve_data_path, resource_constructor_signature,
+    sample_integrity_problem_details, sample_integrity_problems, stamped_data_children,
+    stamped_data_roots_in_store, stamped_integrity_problem_details, stamped_preview_data_path,
+    stamped_read_data_path,
 };
 use marrow_check::{
     CHECK_READ_ONLY_EXPRESSION_HOST_EFFECT, CHECK_READ_ONLY_EXPRESSION_UNINDEXED_LOOKUP,
@@ -102,6 +103,129 @@ fn declared_receiver_children(
         receiver,
         stop_span(source, scope_marker),
     )
+}
+
+fn path_segments(segments: &[&str]) -> Vec<String> {
+    segments.iter().map(|segment| segment.to_string()).collect()
+}
+
+#[test]
+fn resource_constructor_signature_resolves_imported_qualified_resource_fields() {
+    let books = "module library::books\n\
+        enum Status\n    \
+        active\n\
+        ;; Book records.\n\
+        resource Book\n    \
+        ;; Display title.\n    \
+        required title: string\n    \
+        ;; Lifecycle state.\n    \
+        status: Status\n    \
+        tags(pos: int): string\n    \
+        editions(version: int)\n        \
+        required isbn: string\n\
+        store ^books(id: int): Book\n";
+    let app = "module app\nuse library::books\nfn make()\n    return\n";
+    let (snapshot, paths) = analyze_overlay(
+        "resource-constructor-signature-qualified",
+        &[("src/library/books.mw", books), ("src/app.mw", app)],
+    );
+    assert!(
+        !snapshot.report.has_errors(),
+        "{:#?}",
+        snapshot.report.diagnostics
+    );
+
+    let signature = resource_constructor_signature(
+        &snapshot.program,
+        &paths[1],
+        &path_segments(&["books", "Book"]),
+    )
+    .expect("imported resource constructor signature");
+
+    assert_eq!(signature.name, "Book");
+    assert_eq!(
+        signature.ty,
+        MarrowType::Resource("library::books::Book".to_string())
+    );
+    assert_eq!(signature.docs, ["Book records."]);
+    assert_eq!(
+        signature.fields,
+        [
+            ResourceConstructorField {
+                name: "title".to_string(),
+                required: true,
+                ty: MarrowType::Primitive(ScalarType::Str),
+                docs: vec!["Display title.".to_string()],
+            },
+            ResourceConstructorField {
+                name: "status".to_string(),
+                required: false,
+                ty: MarrowType::Enum {
+                    module: "library::books".to_string(),
+                    name: "Status".to_string(),
+                },
+                docs: vec!["Lifecycle state.".to_string()],
+            },
+        ]
+    );
+
+    let bare =
+        resource_constructor_signature(&snapshot.program, &paths[0], &path_segments(&["Book"]))
+            .expect("same-module bare resource constructor signature");
+    assert_eq!(bare, signature);
+
+    let fully_qualified = resource_constructor_signature(
+        &snapshot.program,
+        &paths[1],
+        &path_segments(&["library", "books", "Book"]),
+    )
+    .expect("fully qualified resource constructor signature");
+    assert_eq!(fully_qualified, signature);
+}
+
+#[test]
+fn resource_constructor_signature_returns_none_for_non_resource_or_unresolved_path() {
+    let source = "module app\npub fn make(): int\n    return 1\n";
+    let (snapshot, paths) = analyze_overlay(
+        "resource-constructor-signature-none",
+        &[("src/app.mw", source)],
+    );
+    assert!(
+        !snapshot.report.has_errors(),
+        "{:#?}",
+        snapshot.report.diagnostics
+    );
+
+    assert_eq!(
+        resource_constructor_signature(&snapshot.program, &paths[0], &path_segments(&["make"])),
+        None
+    );
+    assert_eq!(
+        resource_constructor_signature(&snapshot.program, &paths[0], &path_segments(&["Missing"])),
+        None
+    );
+}
+
+#[test]
+fn resource_constructor_signature_fails_closed_for_ambiguous_bare_foreign_resource() {
+    let (snapshot, paths) = analyze_overlay(
+        "resource-constructor-signature-ambiguous-bare",
+        &[
+            ("src/a.mw", "module a\nresource Book\n    title: string\n"),
+            ("src/b.mw", "module b\nresource Book\n    pages: int\n"),
+            ("src/app.mw", "module app\nfn make()\n    return\n"),
+        ],
+    );
+    assert!(
+        !snapshot.report.has_errors(),
+        "{:#?}",
+        snapshot.report.diagnostics
+    );
+
+    assert_eq!(
+        resource_constructor_signature(&snapshot.program, &paths[2], &path_segments(&["Book"])),
+        None
+    );
 }
 
 #[test]
