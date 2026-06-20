@@ -608,10 +608,42 @@ pub(crate) fn eval_bool(expr: &ExecExpr, env: &mut Env<'_>) -> Result<bool, Runt
 
 #[cfg(test)]
 mod tests {
+    use marrow_check::CheckedLiteralKind as LiteralKind;
     use marrow_syntax::SourceSpan;
 
     use crate::error::{RUN_OVERFLOW, RUN_TYPE};
-    use crate::expr::eval_duration_literal;
+    use crate::expr::{eval_duration_literal, eval_literal};
+    use crate::value::Value;
+
+    /// The checker folds a leading `-` over an integer literal into the literal
+    /// text, so the runtime sees the signed spelling. `-9223372036854775808` is
+    /// `i64::MIN`, in range even though its bare magnitude `i64::MAX + 1` is not.
+    /// A bare out-of-range magnitude still faults, matching the checker, which
+    /// rejects it before a run reaches here.
+    #[test]
+    fn integer_literal_boundaries_match_the_checker() {
+        let span = SourceSpan::default();
+        assert_eq!(
+            eval_literal(LiteralKind::Integer, "-9223372036854775808", span).unwrap(),
+            Value::Int(i64::MIN)
+        );
+        assert_eq!(
+            eval_literal(LiteralKind::Integer, "9223372036854775807", span).unwrap(),
+            Value::Int(i64::MAX)
+        );
+        assert_eq!(
+            eval_literal(LiteralKind::Integer, "9223372036854775808", span)
+                .unwrap_err()
+                .code(),
+            RUN_OVERFLOW
+        );
+        assert_eq!(
+            eval_literal(LiteralKind::Integer, "-9223372036854775809", span)
+                .unwrap_err()
+                .code(),
+            RUN_OVERFLOW
+        );
+    }
 
     #[test]
     fn malformed_checked_duration_literals_fault_without_panicking() {
