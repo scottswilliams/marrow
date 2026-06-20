@@ -127,7 +127,13 @@ impl EnumValue {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum LeafValue {
     Scalar(SavedValue),
-    Enum { bytes: Vec<u8>, index_key: SavedKey },
+    Enum {
+        bytes: Vec<u8>,
+        index_key: SavedKey,
+        /// The member's canonical catalog path, so an index diagnostic renders an
+        /// enum key by its member name rather than its opaque stored catalog id.
+        display_name: String,
+    },
 }
 
 impl LeafValue {
@@ -147,6 +153,15 @@ impl LeafValue {
 
     pub(crate) fn is_enum(&self) -> bool {
         matches!(self, Self::Enum { .. })
+    }
+
+    /// The member's canonical path when this leaf is an enum value, for rendering
+    /// an enum index key by name rather than its stored catalog id.
+    pub(crate) fn enum_display_name(&self) -> Option<&str> {
+        match self {
+            Self::Enum { display_name, .. } => Some(display_name),
+            Self::Scalar(_) => None,
+        }
     }
 }
 
@@ -238,12 +253,7 @@ pub(crate) fn diagnostic_value_preview(value: &Value) -> Option<String> {
     })
 }
 
-pub(crate) fn diagnostic_saved_key_tuple_preview(keys: &[SavedKey]) -> String {
-    let rendered: Vec<String> = keys.iter().map(diagnostic_saved_key_preview).collect();
-    format!("({})", rendered.join(", "))
-}
-
-fn diagnostic_saved_key_preview(key: &SavedKey) -> String {
+pub(crate) fn diagnostic_saved_key_preview(key: &SavedKey) -> String {
     match key {
         SavedKey::Str(text) => diagnostic_text_preview(text),
         _ => saved_key_preview(key),
@@ -601,6 +611,7 @@ fn enum_value_to_leaf(
             Ok(LeafValue::Enum {
                 index_key: SavedKey::Str(value.member_catalog_id),
                 bytes,
+                display_name: value.display_name,
             })
         }
         Value::Enum(_) => Err(type_error("this field takes a different enum", span)),
@@ -635,16 +646,48 @@ fn decode_enum(
     bytes: &[u8],
     enum_id: EnumId,
 ) -> Option<EnumValue> {
+    let member = stored_enum_member(program.facts(), enum_id, bytes)?;
+    enum_value_from_member(program.facts(), member)
+}
+
+/// The member a stored enum leaf decodes to, identified against its declared
+/// enum so a tampered or foreign member id yields `None`. The one place that maps
+/// durable enum bytes back to a checked member; both the runtime decode and the
+/// index-conflict diagnostic share it rather than re-matching catalog ids.
+pub(crate) fn stored_enum_member(
+    facts: &CheckedFacts,
+    enum_id: EnumId,
+    bytes: &[u8],
+) -> Option<EnumMemberId> {
     let stored = decode_tree_enum_member(bytes).ok()?;
-    let enum_fact = program.facts().enum_(enum_id)?;
+    let enum_fact = facts.enum_(enum_id)?;
     if enum_fact.catalog_id.as_deref() != Some(stored.enum_id().as_str()) {
         return None;
     }
-    let member = program.facts().enum_members().iter().find(|member| {
-        member.enum_id == enum_id
-            && member.catalog_id.as_deref() == Some(stored.member_id().as_str())
-    })?;
-    enum_value_from_member(program.facts(), member.id)
+    facts
+        .enum_members()
+        .iter()
+        .find(|member| {
+            member.enum_id == enum_id
+                && member.catalog_id.as_deref() == Some(stored.member_id().as_str())
+        })
+        .map(|member| member.id)
+}
+
+/// The canonical member path a stored enum leaf renders as (`module::Enum::member`),
+/// or `None` when the bytes do not decode to a selectable member of `enum_id`. Shared
+/// by every user-facing surface that names a stored enum, so the index-conflict
+/// diagnostic matches `data dump`.
+pub(crate) fn stored_enum_member_path(
+    facts: &CheckedFacts,
+    enum_id: EnumId,
+    bytes: &[u8],
+) -> Option<String> {
+    let member = stored_enum_member(facts, enum_id, bytes)?;
+    if !facts.enum_member_is_selectable(member) {
+        return None;
+    }
+    facts.enum_member_catalog_path(member)
 }
 
 pub(crate) fn enum_value_from_member(
@@ -716,7 +759,7 @@ fn render_identity(identity: &IdentityValue) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        Value, canonical_scalar_text, diagnostic_saved_key_tuple_preview, diagnostic_text_preview,
+        Value, canonical_scalar_text, diagnostic_saved_key_preview, diagnostic_text_preview,
         diagnostic_value_preview, saved_key_preview_with_text_limit, saved_key_to_value,
     };
     use crate::error::RUN_TYPE;
@@ -728,9 +771,6 @@ mod tests {
         "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!?";
     const LONG_TEXT_PREVIEW: &str =
         "\"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!?...\"";
-    const LONG_SAVED_KEY_TUPLE_PREVIEW: &str =
-        "(\"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!?...\")";
-
     fn long_diagnostic_text() -> String {
         format!("{SIXTY_FOUR_CHAR_PREFIX}-tail-marker")
     }
@@ -758,11 +798,11 @@ mod tests {
     }
 
     #[test]
-    fn diagnostic_saved_key_tuple_preview_uses_bounded_string_preview() {
+    fn diagnostic_saved_key_preview_uses_bounded_string_preview() {
         let text = long_diagnostic_text();
-        let preview = diagnostic_saved_key_tuple_preview(&[SavedKey::Str(text)]);
+        let preview = diagnostic_saved_key_preview(&SavedKey::Str(text));
 
-        assert_eq!(preview, LONG_SAVED_KEY_TUPLE_PREVIEW);
+        assert_eq!(preview, LONG_TEXT_PREVIEW);
         assert!(!preview.contains("tail-marker"), "{preview}");
     }
 

@@ -184,6 +184,147 @@ fn unique_index_conflict_message_includes_index_name_and_key_preview() {
 }
 
 #[test]
+fn unique_index_conflict_on_an_enum_key_renders_the_member_name() {
+    // An enum-keyed unique conflict must name the conflicting member by its
+    // canonical path, never the opaque catalog id, matching how `data dump`
+    // renders enums.
+    let program = checked_program(
+        "enum Status\n\
+         \x20   active\n\
+         \x20   archived\n\
+         \n\
+         resource Account\n\
+         \x20   required status: Status\n\
+         store ^accounts(id: int): Account\n\
+         \x20   index byStatus(status) unique\n\
+         \n\
+         pub fn register(id: int)\n\
+         \x20   ^accounts(id).status = Status::active\n",
+    );
+    let store = TreeStore::memory();
+    run_entry(
+        &store,
+        checked_entry!(&program, "test::register", Value::Int(1)),
+    )
+    .expect("register first account");
+
+    let error = run_entry(
+        &store,
+        checked_entry!(&program, "test::register", Value::Int(2)),
+    )
+    .unwrap_err();
+    assert_eq!(error.code(), "write.unique_conflict");
+    assert_eq!(
+        error.message,
+        "unique index `byStatus` already holds key(s) (test::Status::active) for another identity"
+    );
+    assert!(
+        !error.message.contains("cat_"),
+        "conflict must not leak the catalog id: {}",
+        error.message
+    );
+}
+
+/// A composite unique index over an enum plus another field. The two cases that
+/// draw the enum segment from the store, not the fresh write, are the magnets:
+/// a field-by-field write whose conflict fires on the non-enum field (the enum
+/// is read back through `stored_arg_key`), and a whole-resource write. Both must
+/// render the member path, never the opaque catalog id.
+const COMPOSITE_ENUM_INDEX: &str = "\
+enum Status
+    active
+    archived
+
+resource Account
+    required status: Status
+    region: string
+store ^accounts(id: int): Account
+
+    index byStatusRegion(status, region) unique
+
+pub fn registerFields(id: int, r: string)
+    ^accounts(id).status = Status::active
+    ^accounts(id).region = r
+
+pub fn registerWhole(id: int, r: string)
+    ^accounts(id) = Account(status: Status::active, region: r)
+";
+
+#[test]
+fn composite_enum_unique_conflict_on_the_nonenum_field_renders_the_member_name() {
+    let program = checked_program(COMPOSITE_ENUM_INDEX);
+    let store = TreeStore::memory();
+    run_entry(
+        &store,
+        checked_entry!(
+            &program,
+            "test::registerFields",
+            Value::Int(1),
+            Value::Str("us".into()),
+        ),
+    )
+    .expect("register first account");
+
+    let error = run_entry(
+        &store,
+        checked_entry!(
+            &program,
+            "test::registerFields",
+            Value::Int(2),
+            Value::Str("us".into()),
+        ),
+    )
+    .unwrap_err();
+    assert_eq!(error.code(), "write.unique_conflict");
+    assert_eq!(
+        error.message,
+        "unique index `byStatusRegion` already holds key(s) (test::Status::active, \"us\") for another identity"
+    );
+    assert!(
+        !error.message.contains("cat_"),
+        "conflict must not leak the catalog id: {}",
+        error.message
+    );
+}
+
+#[test]
+fn composite_enum_unique_conflict_on_a_whole_resource_write_renders_the_member_name() {
+    let program = checked_program(COMPOSITE_ENUM_INDEX);
+    let store = TreeStore::memory();
+    run_entry(
+        &store,
+        checked_entry!(
+            &program,
+            "test::registerWhole",
+            Value::Int(1),
+            Value::Str("us".into()),
+        ),
+    )
+    .expect("register first account");
+
+    let error = run_entry(
+        &store,
+        checked_entry!(
+            &program,
+            "test::registerWhole",
+            Value::Int(2),
+            Value::Str("us".into()),
+        ),
+    )
+    .unwrap_err();
+    assert_eq!(error.code(), "write.unique_conflict");
+    assert_eq!(
+        error.message,
+        "unique index `byStatusRegion` already holds key(s) (test::Status::active, \"us\") for another identity"
+    );
+    assert!(
+        !error.message.contains("cat_"),
+        "conflict must not leak the catalog id: {}",
+        error.message
+    );
+}
+
+#[test]
 fn unique_index_lookup_iteration_yields_the_stored_identity() {
     let program = checked_program(BOOK_ISBN);
     let store = TreeStore::memory();

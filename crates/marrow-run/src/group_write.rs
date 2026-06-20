@@ -10,6 +10,7 @@ use marrow_syntax::SourceSpan;
 use crate::env::{Env, TraversedLayer};
 use crate::error::{RuntimeError, unsupported};
 use crate::expr::eval_expr;
+use crate::index_maintenance::IndexWriteContext;
 use crate::path::{lower, lower_keys};
 use crate::store::{DataAddress, LayerAddress};
 use crate::value::{Value, identity_keys_of, value_to_leaf};
@@ -84,31 +85,28 @@ fn write_layer_leaf(
     let mut layers = target.parent_addresses.to_vec();
     layers.push(LayerAddress::from_checked(target.layer_facts, layer_keys));
 
+    let context = IndexWriteContext::new(
+        target.place,
+        target.identity,
+        env.store,
+        env.program.facts(),
+        target.span,
+    );
     let plan = match leaf {
         StoreLeafKind::Identity { store_root, arity } => {
             let keys = identity_keys_of(value, store_root, target.span)?;
             plan_layer_identity_leaf_write(
-                target.place,
-                target.identity,
+                context,
                 &layers,
                 ReferencedIdentity {
                     keys: &keys,
                     referenced_arity: *arity,
                 },
-                env.store,
-                target.span,
             )
         }
         StoreLeafKind::Scalar(_) | StoreLeafKind::Enum { .. } => {
             let saved = value_to_leaf(value, leaf, target.span)?;
-            plan_layer_leaf_write(
-                target.place,
-                target.identity,
-                &layers,
-                &saved,
-                env.store,
-                target.span,
-            )
+            plan_layer_leaf_write(context, &layers, &saved)
         }
     };
     env.apply_plan(plan, target.span)
@@ -141,14 +139,14 @@ fn write_direct_group_entry(
         target.span,
         env,
     )?;
-    let plan = plan_layer_group_write(
+    let context = IndexWriteContext::new(
         target.place,
         target.identity,
-        &layers,
-        &value,
         env.store,
+        env.program.facts(),
         target.span,
     );
+    let plan = plan_layer_group_write(context, &layers, &value);
     let plan = if env.transaction_depth() == 0 {
         plan.and_then(|plan| {
             validate_required_fields_after_group_write(

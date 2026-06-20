@@ -113,6 +113,47 @@ fn resolve_data_path_steps(
     )))
 }
 
+/// A copy of the source-checked root place whose leaf members are retyped to the
+/// catalog the data was accepted under. Inspection renders a stored value by the
+/// epoch it was written under, so a blocked populated-leaf retype shows the real
+/// stored type rather than the uncommitted proposal type. The runtime keeps the
+/// source place — it fences drift rather than reading under a mismatched leaf —
+/// so the override lives only on this inspection path.
+pub(crate) fn inspection_root_place(
+    program: &CheckedProgram,
+    root: &str,
+) -> Option<CheckedSavedPlace> {
+    let mut place = checked_saved_root_place(program, root, marrow_syntax::SourceSpan::default())?;
+    retype_members_to_accepted(program, &mut place.root_members);
+    retype_members_to_accepted(program, &mut place.members);
+    Some(place)
+}
+
+fn retype_members_to_accepted(program: &CheckedProgram, members: &mut [CheckedSavedMember]) {
+    for member in members {
+        if let (Some(catalog_id), Some(_)) = (member.catalog_id.as_deref(), &member.leaf)
+            && let Some(accepted) = accepted_member_leaf(program, catalog_id)
+        {
+            member.leaf = Some(accepted);
+        }
+        retype_members_to_accepted(program, &mut member.group_members);
+    }
+}
+
+/// The leaf kind a member's durable bytes were accepted under, when the accepted
+/// catalog records a leaf for it. `None` for a member with no accepted entry yet
+/// (a never-committed member, where no drift is possible) or an accepted token
+/// that names no decodable leaf.
+fn accepted_member_leaf(program: &CheckedProgram, catalog_id: &str) -> Option<StoreLeafKind> {
+    let token = program
+        .catalog
+        .accepted_entries
+        .iter()
+        .find(|entry| entry.stable_id == catalog_id)?
+        .accepted_leaf_token()?;
+    crate::evolution::leaf_type::accepted_leaf_kind(program, token)
+}
+
 #[derive(Clone, Copy)]
 pub(crate) enum DataPathStep<'a> {
     Root(&'a str),
@@ -198,10 +239,9 @@ fn checked_data_path_root<'a>(
     let Some((DataPathStep::Root(root), rest)) = segments.split_first() else {
         return Err(DataPathError::MissingRoot.into());
     };
-    let place = checked_saved_root_place(program, root, marrow_syntax::SourceSpan::default())
-        .ok_or_else(|| DataPathError::UnknownRoot {
-            root: (*root).to_string(),
-        })?;
+    let place = inspection_root_place(program, root).ok_or_else(|| DataPathError::UnknownRoot {
+        root: (*root).to_string(),
+    })?;
     Ok((root, place, rest))
 }
 

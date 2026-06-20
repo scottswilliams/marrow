@@ -72,6 +72,15 @@ key arity, and leaf types before the command reads tree-cell data. If the source
 does not check, the command fails with the check diagnostic and exits non-zero
 before reading any data cells.
 
+Inspection renders a stored value by the leaf type the **accepted catalog**
+recorded it under — the epoch the data was written under — not the current
+source spelling. When source has drifted from the committed store (a blocked
+populated-leaf retype, such as `int` to `string`), `dump` and `get` still show
+the real stored type, so an operator sees the data as it must be migrated rather
+than as the uncommitted proposal would mistype it. The override is render-only;
+the lossless `json`/`jsonl` `value_b64` carries the unchanged raw bytes either
+way.
+
 `recover` is different: it reads only `marrow.json` and the configured native
 store binding, then opens the existing store write-capably. It does not load or
 check source before opening the store.

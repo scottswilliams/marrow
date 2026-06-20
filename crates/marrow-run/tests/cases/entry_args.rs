@@ -935,6 +935,27 @@ fn text_args_reject_storage_encodings_and_hostile_scalar_literals() {
 }
 
 #[test]
+fn wrong_typed_arg_names_the_scalar_in_the_surface_convention() {
+    // The rejection names the expected scalar by its lowercase language spelling,
+    // backticked, with the grammatical indefinite article — never the internal
+    // capitalized identifier.
+    let program = checked_program("pub fn main(n: int): int\n    return n\n");
+    let error = CheckedEntryCall::from_text_args(&program, "test::main", &[("n", "xx")])
+        .expect_err("a non-integer int arg should reject");
+    assert_eq!(error.code(), RUN_ENTRY_ARGUMENT);
+    assert!(
+        error.message.contains("an `int`"),
+        "message should name the scalar in the surface convention: {}",
+        error.message
+    );
+    assert!(
+        !error.message.contains("Int"),
+        "message must not leak the capitalized identifier: {}",
+        error.message
+    );
+}
+
+#[test]
 fn text_args_reject_scalar_conversion_calls() {
     let program = checked_program(
         "resource Blob\n\

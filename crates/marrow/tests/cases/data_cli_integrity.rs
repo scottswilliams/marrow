@@ -1040,6 +1040,15 @@ fn data_integrity_reports_a_wrong_typed_identity_leaf_as_data_key_type() {
         problem["source_span"]["path"],
         serde_json::json!("^books(1).authorId")
     );
+    // The identity-reference key mismatch names both scalars in the same surface
+    // convention as every other type-naming diagnostic: lowercase, backticked, with
+    // the grammatical indefinite article, never the internal capitalized identifier.
+    assert_eq!(
+        problem["message"],
+        serde_json::json!(
+            "stored `Id(^authors)` reference has a `string` key where the schema declares an `int`"
+        )
+    );
 }
 
 #[test]
@@ -1175,6 +1184,13 @@ fn data_integrity_reports_a_wrong_typed_keyed_member_key_as_data_key_type() {
     assert_eq!(
         problem["source_span"]["path"],
         serde_json::json!("^hits.when(\"not-an-instant\")")
+    );
+    // The message names both scalars in the surface convention: lowercase,
+    // backticked, with the grammatical indefinite article, never the internal
+    // capitalized identifier.
+    assert_eq!(
+        problem["message"],
+        serde_json::json!("stored key is a `string` where the schema declares an `instant`")
     );
 }
 

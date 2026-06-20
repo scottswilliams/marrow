@@ -112,6 +112,49 @@ fn data_text_quotes_strings_and_hexes_bytes() {
 }
 
 #[test]
+fn data_text_renders_a_drifted_leaf_by_its_accepted_catalog_type() {
+    // Data was committed under `pages: int`. Drifting the source to `pages: string`
+    // is a blocked populated-leaf retype; the inspection tools must render the real
+    // stored value by the accepted catalog type (`int 0`), not the uncommitted
+    // proposal type (a quoted `"0"`).
+    let (project, dir) = seeded_project(
+        "data-value-render-drift",
+        "module app\n\
+         resource Book\n\
+         \x20   required pages: int\n\
+         store ^books(id: int): Book\n\
+         pub fn seed()\n\
+         \x20   ^books(1).pages = 0\n",
+    );
+
+    let before = stdout(marrow(&["data", "get", &dir, "^books(1).pages"]));
+    assert_eq!(before, "0\n");
+
+    write(
+        project.path(),
+        "src/app.mw",
+        "module app\n\
+         resource Book\n\
+         \x20   required pages: string\n\
+         store ^books(id: int): Book\n\
+         pub fn seed()\n\
+         \x20   ^books(1).pages = \"\"\n",
+    );
+
+    let drifted = stdout(marrow(&["data", "get", &dir, "^books(1).pages"]));
+    let dump = stdout(marrow(&["data", "dump", &dir]));
+
+    assert_eq!(
+        drifted, "0\n",
+        "a blocked int->string retype renders the accepted int, not a quoted string"
+    );
+    assert!(
+        dump.contains("^books(1).pages\t0\n"),
+        "dump renders the accepted int leaf: {dump}"
+    );
+}
+
+#[test]
 fn data_text_renders_identity_references_as_saved_paths() {
     let (_project, dir) = seeded_project(
         "data-value-render-identity",

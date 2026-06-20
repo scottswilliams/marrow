@@ -1387,8 +1387,15 @@ impl<'a> SurfaceUpdatePlan<'a> {
                 },
             });
         }
-        plan_field_patch_write(&self.place, identity, &patch, store, self.span)
-            .map_err(map_update_plan_error)
+        plan_field_patch_write(
+            &self.place,
+            identity,
+            &patch,
+            store,
+            self.record.facts,
+            self.span,
+        )
+        .map_err(map_update_plan_error)
     }
 
     fn commit_update(
@@ -2688,9 +2695,13 @@ fn lower_surface_enum_update(
         value.member_catalog_id.clone(),
     ))
     .map_err(|_| request_at("surface update enum value could not be encoded", span))?;
+    let display_name = facts
+        .enum_member_catalog_path(member.id)
+        .ok_or_else(|| abi_mismatch("enum member has no catalog path", span))?;
     Ok(PlannedSurfaceUpdateValue::Leaf(LeafValue::Enum {
         bytes,
         index_key: SavedKey::Str(value.member_catalog_id.as_str().to_string()),
+        display_name,
     }))
 }
 

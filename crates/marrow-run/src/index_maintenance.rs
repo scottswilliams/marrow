@@ -1,7 +1,7 @@
 //! Generated-index maintenance for managed resource writes.
 
 use marrow_check::{
-    CheckedSavedIndex, CheckedSavedIndexKey, CheckedSavedMember, CheckedSavedPlace,
+    CheckedFacts, CheckedSavedIndex, CheckedSavedIndexKey, CheckedSavedMember, CheckedSavedPlace,
     ResourceMemberId, StoreIndexKeySource, StoredValueMeaning,
 };
 use marrow_store::key::{SavedKey, encode_identity_payload};
@@ -9,7 +9,7 @@ use marrow_store::tree::TreeStore;
 use marrow_syntax::SourceSpan;
 
 use crate::store::{DataAddress, IndexAddress, read_data};
-use crate::value::{LeafValue, diagnostic_saved_key_tuple_preview};
+use crate::value::{LeafValue, diagnostic_saved_key_preview, stored_enum_member_path};
 use crate::write::{
     ResourceValue, WRITE_INVALID_DATA, WRITE_STORE, WRITE_UNIQUE_CONFLICT, WriteError,
 };
@@ -22,6 +22,9 @@ pub(crate) struct IndexWriteContext<'a> {
     place: &'a CheckedSavedPlace,
     identity: &'a [SavedKey],
     store: &'a TreeStore,
+    /// Checked facts for the run, used to name an enum key read back from the
+    /// store when a unique-conflict diagnostic renders the conflicting tuple.
+    facts: &'a CheckedFacts,
     span: SourceSpan,
 }
 
@@ -30,14 +33,28 @@ impl<'a> IndexWriteContext<'a> {
         place: &'a CheckedSavedPlace,
         identity: &'a [SavedKey],
         store: &'a TreeStore,
+        facts: &'a CheckedFacts,
         span: SourceSpan,
     ) -> Self {
         Self {
             place,
             identity,
             store,
+            facts,
             span,
         }
+    }
+
+    pub(crate) fn place(&self) -> &'a CheckedSavedPlace {
+        self.place
+    }
+
+    pub(crate) fn identity(&self) -> &'a [SavedKey] {
+        self.identity
+    }
+
+    pub(crate) fn span(&self) -> SourceSpan {
+        self.span
     }
 }
 
@@ -82,9 +99,10 @@ pub(crate) fn index_rebuild_entry(
     place: &CheckedSavedPlace,
     identity: &[SavedKey],
     store: &TreeStore,
+    facts: &CheckedFacts,
     span: SourceSpan,
 ) -> Result<Option<PlanStep>, WriteError> {
-    let context = IndexWriteContext::new(place, identity, store, span);
+    let context = IndexWriteContext::new(place, identity, store, facts, span);
     let Some(keys) = stored_index_keys(&index.keys, context)? else {
         return Ok(None);
     };
@@ -182,10 +200,14 @@ pub(crate) enum IndexFieldPatchValue {
 }
 
 impl IndexFieldPatchValue {
-    fn key_for(&self, key: &CheckedSavedIndexKey) -> Result<Option<SavedKey>, WriteError> {
+    fn key_for(&self, key: &CheckedSavedIndexKey) -> Result<Option<IndexKey>, WriteError> {
         match self {
-            Self::Leaf(value) => value.as_key().map_err(WriteError::from),
-            Self::IdentityBytes(bytes) => stored_index_key(&key.value_meaning, bytes).map(Some),
+            Self::Leaf(value) => Ok(value
+                .as_key()
+                .map_err(WriteError::from)?
+                .map(|saved| IndexKey::from_leaf(saved, value))),
+            Self::IdentityBytes(bytes) => stored_index_key(&key.value_meaning, bytes)
+                .map(|saved| Some(IndexKey::scalar(saved))),
         }
     }
 }
@@ -311,7 +333,7 @@ fn index_keys(
     place: &CheckedSavedPlace,
     identity: &[SavedKey],
     value: &ResourceValue,
-) -> Result<Option<Vec<SavedKey>>, WriteError> {
+) -> Result<Option<Vec<IndexKey>>, WriteError> {
     let mut result = Vec::with_capacity(keys.len());
     for key in keys {
         match key.source {
@@ -323,14 +345,14 @@ fn index_keys(
                 else {
                     return Ok(None);
                 };
-                result.push(identity[position].clone());
+                result.push(IndexKey::scalar(identity[position].clone()));
             }
             StoreIndexKeySource::ResourceMember(_) => {
                 if let Some((_, saved)) = value.fields.iter().find(|(name, _)| name == &key.name) {
-                    let Some(key) = saved.as_key()? else {
+                    let Some(saved_key) = saved.as_key()? else {
                         return Ok(None);
                     };
-                    result.push(key);
+                    result.push(IndexKey::from_leaf(saved_key, saved));
                 } else {
                     let Some(supplied) = value
                         .identities
@@ -340,10 +362,10 @@ fn index_keys(
                         return Ok(None);
                     };
                     let bytes = encode_identity_payload(&supplied.keys);
-                    let Some(key) = key.value_meaning.stored_key(&bytes) else {
+                    let Some(saved_key) = key.value_meaning.stored_key(&bytes) else {
                         return Ok(None);
                     };
-                    result.push(key);
+                    result.push(IndexKey::scalar(saved_key));
                 }
             }
         }
@@ -351,10 +373,54 @@ fn index_keys(
     Ok(Some(result))
 }
 
+/// One resolved index-entry key segment: the stored [`SavedKey`] the index entry
+/// is addressed by, plus the enum member's canonical path when the segment is an
+/// enum value. The name is carried so a unique-conflict diagnostic renders an
+/// enum key by its member name rather than its opaque catalog id, whether the
+/// value was freshly written or read back from the store.
+struct IndexKey {
+    saved: SavedKey,
+    enum_name: Option<String>,
+}
+
+impl IndexKey {
+    fn scalar(saved: SavedKey) -> Self {
+        Self {
+            saved,
+            enum_name: None,
+        }
+    }
+
+    fn from_leaf(saved: SavedKey, leaf: &LeafValue) -> Self {
+        Self {
+            saved,
+            enum_name: leaf.enum_display_name().map(str::to_string),
+        }
+    }
+
+    /// A segment read back from the store, recovering the enum member's canonical
+    /// path from `bytes` when the column is an enum so the conflict diagnostic
+    /// names the member rather than its stored catalog id.
+    fn from_stored(
+        saved: SavedKey,
+        meaning: &StoredValueMeaning,
+        bytes: &[u8],
+        facts: &CheckedFacts,
+    ) -> Self {
+        let enum_name = match meaning {
+            StoredValueMeaning::Enum { enum_id, .. } => {
+                stored_enum_member_path(facts, *enum_id, bytes)
+            }
+            StoredValueMeaning::Scalar(_) | StoredValueMeaning::Identity { .. } => None,
+        };
+        Self { saved, enum_name }
+    }
+}
+
 fn stored_arg_key(
     key: &CheckedSavedIndexKey,
     context: IndexWriteContext<'_>,
-) -> Result<Option<SavedKey>, WriteError> {
+) -> Result<Option<IndexKey>, WriteError> {
     match key.source {
         StoreIndexKeySource::IdentityKey => {
             let Some(position) = context
@@ -365,7 +431,7 @@ fn stored_arg_key(
             else {
                 return Ok(None);
             };
-            Ok(Some(context.identity[position].clone()))
+            Ok(Some(IndexKey::scalar(context.identity[position].clone())))
         }
         StoreIndexKeySource::ResourceMember(member_id) => {
             let Some(member) = checked_root_member(context.place, member_id) else {
@@ -384,7 +450,14 @@ fn stored_arg_key(
             else {
                 return Ok(None);
             };
-            stored_index_key(&key.value_meaning, &bytes).map(Some)
+            stored_index_key(&key.value_meaning, &bytes).map(|saved| {
+                Some(IndexKey::from_stored(
+                    saved,
+                    &key.value_meaning,
+                    &bytes,
+                    context.facts,
+                ))
+            })
         }
     }
 }
@@ -392,7 +465,7 @@ fn stored_arg_key(
 fn stored_index_keys(
     keys: &[CheckedSavedIndexKey],
     context: IndexWriteContext<'_>,
-) -> Result<Option<Vec<SavedKey>>, WriteError> {
+) -> Result<Option<Vec<IndexKey>>, WriteError> {
     keys.iter()
         .map(|key| stored_arg_key(key, context))
         .collect()
@@ -405,10 +478,14 @@ enum FieldIndexValue<'a> {
 }
 
 impl FieldIndexValue<'_> {
-    fn key_for(self, key: &CheckedSavedIndexKey) -> Result<Option<SavedKey>, WriteError> {
+    fn key_for(self, key: &CheckedSavedIndexKey) -> Result<Option<IndexKey>, WriteError> {
         match self {
-            Self::Leaf(value) => value.as_key().map_err(WriteError::from),
-            Self::IdentityBytes(bytes) => stored_index_key(&key.value_meaning, bytes).map(Some),
+            Self::Leaf(value) => Ok(value
+                .as_key()
+                .map_err(WriteError::from)?
+                .map(|saved| IndexKey::from_leaf(saved, value))),
+            Self::IdentityBytes(bytes) => stored_index_key(&key.value_meaning, bytes)
+                .map(|saved| Some(IndexKey::scalar(saved))),
         }
     }
 }
@@ -418,7 +495,7 @@ fn field_write_index_keys(
     context: IndexWriteContext<'_>,
     field: &str,
     value: FieldIndexValue<'_>,
-) -> Result<Option<Vec<SavedKey>>, WriteError> {
+) -> Result<Option<Vec<IndexKey>>, WriteError> {
     keys.iter()
         .map(|key| {
             if key.name == field {
@@ -443,7 +520,7 @@ fn field_patch_index_keys(
     keys: &[CheckedSavedIndexKey],
     context: IndexWriteContext<'_>,
     patch: &[IndexFieldPatch],
-) -> Result<Option<Vec<SavedKey>>, WriteError> {
+) -> Result<Option<Vec<IndexKey>>, WriteError> {
     keys.iter()
         .map(|key| {
             if let StoreIndexKeySource::ResourceMember(member) = key.source
@@ -475,9 +552,10 @@ fn stored_index_key(meaning: &StoredValueMeaning, bytes: &[u8]) -> Result<SavedK
 
 fn index_address(
     index: &CheckedSavedIndex,
-    keys: Vec<SavedKey>,
+    keys: Vec<IndexKey>,
     span: SourceSpan,
 ) -> Result<IndexAddress, WriteError> {
+    let keys = keys.into_iter().map(|key| key.saved).collect();
     IndexAddress::from_checked(&index.catalog_id, keys, span).map_err(runtime_store_error)
 }
 
@@ -492,12 +570,13 @@ fn index_entry_value(unique: bool, identity: &[SavedKey]) -> Vec<u8> {
 fn check_unique_conflict(
     index: &CheckedSavedIndex,
     context: IndexWriteContext<'_>,
-    new_keys: Option<&[SavedKey]>,
+    new_keys: Option<&[IndexKey]>,
 ) -> Result<(), WriteError> {
     let Some(new_keys) = new_keys else {
         return Ok(());
     };
-    let address = IndexAddress::from_checked(&index.catalog_id, new_keys.to_vec(), context.span)
+    let saved: Vec<SavedKey> = new_keys.iter().map(|key| key.saved.clone()).collect();
+    let address = IndexAddress::from_checked(&index.catalog_id, saved, context.span)
         .map_err(runtime_store_error)?;
     let page = context
         .store
@@ -513,11 +592,25 @@ fn check_unique_conflict(
             message: format!(
                 "unique index `{}` already holds key(s) {} for another identity",
                 index.name,
-                diagnostic_saved_key_tuple_preview(new_keys)
+                conflict_key_tuple_preview(new_keys)
             ),
         });
     }
     Ok(())
+}
+
+/// Render the conflicting key tuple for a unique-index diagnostic. An enum
+/// segment shows its member name; every other segment uses the saved-key
+/// preview, so a string is quoted and a scalar reads as itself.
+fn conflict_key_tuple_preview(keys: &[IndexKey]) -> String {
+    let rendered: Vec<String> = keys
+        .iter()
+        .map(|key| match &key.enum_name {
+            Some(name) => name.clone(),
+            None => diagnostic_saved_key_preview(&key.saved),
+        })
+        .collect();
+    format!("({})", rendered.join(", "))
 }
 
 fn runtime_store_error(error: crate::error::RuntimeError) -> WriteError {

@@ -47,7 +47,14 @@ pub(crate) fn write_resource(
         span,
         env,
     )?;
-    let plan = plan_resource_write(&path.place, identity, &value, env.store, span);
+    let plan = plan_resource_write(
+        &path.place,
+        identity,
+        &value,
+        env.store,
+        env.program.facts(),
+        span,
+    );
     env.apply_plan(plan, span)?;
     for path in created_required_paths {
         env.note_created_required_path(path);

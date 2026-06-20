@@ -22,9 +22,9 @@ use std::collections::HashMap;
 use marrow_catalog::CatalogEntryKind;
 use marrow_schema::{KeyDef, Type};
 
-use crate::CheckedProgram;
 use crate::catalog::{CatalogKey, enum_path, store_path};
 use crate::resolve::resolve_store_by_root;
+use crate::{CheckedProgram, StoreLeafKind};
 
 /// The value-type token recorded for a leaf-position member whose declared value type
 /// produces no identity token: an `unknown`, a `sequence`, or any future leaf type
@@ -94,6 +94,46 @@ fn leaf_type_token(
         }
         Type::Sequence(_) | Type::Unknown => None,
     }
+}
+
+/// The leaf kind a member's durable bytes are read as, decoded from the accepted
+/// leaf token [`member_leaf_token`] wrote. It inverts the encoder: a keyed leaf's
+/// `[<key-shape>]` prefix is stripped to reach the value token, a scalar names its
+/// type, `enum:<id>` and `id:<store>:<arity>` name their referent by stable catalog
+/// id and are resolved through `program`. `None` for a token naming an untokenizable
+/// value (a `sequence`/`unknown` leaf, recorded as [`UNTOKENIZABLE_VALUE`]) or a
+/// referent the current program no longer resolves.
+pub(crate) fn accepted_leaf_kind(program: &CheckedProgram, token: &str) -> Option<StoreLeafKind> {
+    let value = match token.strip_prefix('[') {
+        Some(rest) => rest.split_once(']')?.1,
+        None => token,
+    };
+    if let Some(scalar) = marrow_schema::scalar_type_from_name(value) {
+        return Some(StoreLeafKind::Scalar(scalar));
+    }
+    if let Some(enum_catalog_id) = value.strip_prefix("enum:") {
+        let enum_fact = program
+            .facts
+            .enums()
+            .iter()
+            .find(|fact| fact.catalog_id.as_deref() == Some(enum_catalog_id))?;
+        return Some(StoreLeafKind::Enum {
+            enum_id: enum_fact.id,
+        });
+    }
+    if let Some(rest) = value.strip_prefix("id:") {
+        let (store_catalog_id, arity) = rest.rsplit_once(':')?;
+        let store = program
+            .facts
+            .stores()
+            .iter()
+            .find(|fact| fact.catalog_id.as_deref() == Some(store_catalog_id))?;
+        return Some(StoreLeafKind::Identity {
+            store_root: store.root.clone(),
+            arity: arity.parse().ok()?,
+        });
+    }
+    None
 }
 
 /// The identity-key shape token of a store: the comma-joined canonical spellings of its

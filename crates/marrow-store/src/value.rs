@@ -125,6 +125,18 @@ impl ScalarType {
             ScalarType::Decimal => "decimal",
         }
     }
+
+    /// This scalar named with its indefinite article and backtick spelling
+    /// (`` an `int` ``), the convention every type-naming diagnostic shares so a
+    /// message reads naturally. `int` and `instant` are the vowel-initial
+    /// spellings.
+    pub fn indefinite(self) -> String {
+        let article = match self {
+            ScalarType::Int | ScalarType::Instant => "an",
+            _ => "a",
+        };
+        format!("{article} `{}`", self.name())
+    }
 }
 
 /// Encodes a value to its canonical saved bytes: `bool` as `0`/`1`, `int` as decimal

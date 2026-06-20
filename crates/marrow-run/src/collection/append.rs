@@ -7,6 +7,7 @@ use marrow_syntax::SourceSpan;
 use crate::env::{AssignError, Env, TraversedLayer};
 use crate::error::{RUN_TYPE, RuntimeError, assign_error, overflow, unsupported, write_fault};
 use crate::expr::eval_expr;
+use crate::index_maintenance::IndexWriteContext;
 use crate::path::{direct_root_place, lower};
 use crate::store::{DataAddress, LayerAddress};
 use crate::value::{Value, identity_value, value_to_leaf};
@@ -115,7 +116,8 @@ fn eval_saved_append(
         return Err(unsupported("appending to this layer", span));
     };
     entry_layer.keys = vec![SavedKey::Int(pos)];
-    let plan = plan_layer_leaf_write(place, &identity, &entry_layers, &saved, env.store, span);
+    let context = IndexWriteContext::new(place, &identity, env.store, env.program.facts(), span);
+    let plan = plan_layer_leaf_write(context, &entry_layers, &saved);
     env.apply_plan(plan, span)?;
     Ok(Value::Int(pos))
 }

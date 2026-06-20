@@ -8,7 +8,9 @@
 //! maintained — and executes the writes against the store inside the caller's open
 //! transaction, leaving the commit to the caller.
 
-use marrow_check::{CheckedProgram, CheckedSavedPlace, checked_activation_root_places};
+use marrow_check::{
+    CheckedFacts, CheckedProgram, CheckedSavedPlace, checked_activation_root_places,
+};
 use marrow_store::tree::TreeStore;
 
 use super::apply::ApplyError;
@@ -27,7 +29,7 @@ pub fn rebuild_store_indexes(
     store: &TreeStore,
 ) -> Result<(), ApplyError> {
     for place in indexed_places(program) {
-        stage_place_indexes(&place, store)?;
+        stage_place_indexes(&place, store, &program.facts)?;
     }
     Ok(())
 }
@@ -44,9 +46,13 @@ fn indexed_places(program: &CheckedProgram) -> Vec<CheckedSavedPlace> {
 /// Rebuild every index on `place`: clear the index subtree, then write the entry each
 /// record contributes. Restore replays committed data only, so no same-apply data overlay
 /// is needed here.
-fn stage_place_indexes(place: &CheckedSavedPlace, store: &TreeStore) -> Result<(), ApplyError> {
+fn stage_place_indexes(
+    place: &CheckedSavedPlace,
+    store: &TreeStore,
+    facts: &CheckedFacts,
+) -> Result<(), ApplyError> {
     for index in &place.indexes {
-        stage_index_subtree_rebuild(index, place, store)?;
+        stage_index_subtree_rebuild(index, place, store, facts)?;
     }
     Ok(())
 }

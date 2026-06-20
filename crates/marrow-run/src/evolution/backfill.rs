@@ -8,7 +8,7 @@
 //! records; fusing the scans is not worth the complexity at apply's maintenance cadence.
 
 use marrow_check::evolution::DefaultValue;
-use marrow_check::{CheckedSavedIndex, CheckedSavedPlace, for_each_place_record};
+use marrow_check::{CheckedFacts, CheckedSavedIndex, CheckedSavedPlace, for_each_place_record};
 use marrow_store::StoreError;
 use marrow_store::cell::CatalogId;
 use marrow_store::key::SavedKey;
@@ -126,14 +126,18 @@ pub(super) fn stage_index_subtree_rebuild(
     index: &CheckedSavedIndex,
     place: &CheckedSavedPlace,
     store: &TreeStore,
+    facts: &CheckedFacts,
 ) -> Result<(), ApplyError> {
     let index_id = index_catalog_id(index)?;
     store.delete_index_subtree(&index_id, &[])?;
     for_each_place_record(store, place, &mut |identity| {
-        if let Some(step) = index_rebuild_entry(index, place, identity, store, Default::default())
-            .map_err(|error| StoreError::Corruption {
-            message: error.message,
-        })? {
+        if let Some(step) =
+            index_rebuild_entry(index, place, identity, store, facts, Default::default()).map_err(
+                |error| StoreError::Corruption {
+                    message: error.message,
+                },
+            )?
+        {
             write_index_step(store, step)?;
         }
         Ok(())
@@ -180,6 +184,7 @@ pub(super) fn stage_index_rebuild(
     catalog_id: &CatalogId,
     places: &[CheckedSavedPlace],
     store: &TreeStore,
+    facts: &CheckedFacts,
     staged: &mut StagedWork,
 ) -> Result<(), ApplyError> {
     for place in places {
@@ -190,7 +195,7 @@ pub(super) fn stage_index_rebuild(
         else {
             continue;
         };
-        stage_index_subtree_rebuild(index, place, store)?;
+        stage_index_subtree_rebuild(index, place, store, facts)?;
         staged.indexes_rebuilt += 1;
         return Ok(());
     }

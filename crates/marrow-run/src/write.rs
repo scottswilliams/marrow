@@ -1,6 +1,8 @@
 //! Managed writes over checked saved-store facts.
 
-use marrow_check::{CheckedSavedMember, CheckedSavedPlace, ResourceMemberId, StoreLeafKind};
+use marrow_check::{
+    CheckedFacts, CheckedSavedMember, CheckedSavedPlace, ResourceMemberId, StoreLeafKind,
+};
 use marrow_store::key::{SavedKey, encode_identity_payload};
 use marrow_store::tree::TreeStore;
 use marrow_store::value::ValueError;
@@ -117,10 +119,11 @@ pub(crate) fn plan_resource_write(
     identity: &[SavedKey],
     value: &ResourceValue,
     store: &TreeStore,
+    facts: &CheckedFacts,
     span: SourceSpan,
 ) -> Result<WritePlan, WriteError> {
     resolve_store_identity(place, identity)?;
-    let index_context = IndexWriteContext::new(place, identity, store, span);
+    let index_context = IndexWriteContext::new(place, identity, store, facts, span);
     let to_write = collect_supplied_field_writes(&place.root_members, value)?;
 
     reject_resource_unique_conflicts(index_context, value)?;
@@ -143,10 +146,11 @@ pub(crate) fn plan_resource_delete(
     place: &CheckedSavedPlace,
     identity: &[SavedKey],
     store: &TreeStore,
+    facts: &CheckedFacts,
     span: SourceSpan,
 ) -> Result<WritePlan, WriteError> {
     resolve_store_identity(place, identity)?;
-    let index_context = IndexWriteContext::new(place, identity, store, span);
+    let index_context = IndexWriteContext::new(place, identity, store, facts, span);
     let mut steps = vec![PlanStep::DeleteData {
         address: data_address(place, identity, &[], &[], span)?,
     }];
@@ -203,17 +207,18 @@ pub(crate) fn plan_field_write(
     field: &str,
     value: &LeafValue,
     store: &TreeStore,
+    facts: &CheckedFacts,
     span: SourceSpan,
 ) -> Result<WritePlan, WriteError> {
     resolve_store_identity(place, identity)?;
-    let index_context = IndexWriteContext::new(place, identity, store, span);
+    let index_context = IndexWriteContext::new(place, identity, store, facts, span);
     let leaf = checked_field_leaf(&place.root_members, field).ok_or_else(|| WriteError {
         code: WRITE_UNKNOWN_FIELD,
         message: format!("resource `{}` has no field `{field}`", place.resource_name),
     })?;
     check_type(field, leaf, value)?;
     reject_field_unique_conflicts(index_context, field, value)?;
-    let mut steps = record_establishing_steps(place, identity, store, span)?;
+    let mut steps = record_establishing_steps(index_context)?;
     steps.push(PlanStep::WriteData {
         address: data_address(place, identity, &[], &[field.to_string()], span)?,
         value: value.bytes()?,
@@ -228,16 +233,17 @@ pub(crate) fn plan_identity_field_write(
     field: &str,
     value: ReferencedIdentity<'_>,
     store: &TreeStore,
+    facts: &CheckedFacts,
     span: SourceSpan,
 ) -> Result<WritePlan, WriteError> {
     resolve_store_identity(place, identity)?;
-    let index_context = IndexWriteContext::new(place, identity, store, span);
+    let index_context = IndexWriteContext::new(place, identity, store, facts, span);
     let leaf = checked_field_leaf(&place.root_members, field).ok_or_else(|| WriteError {
         code: WRITE_UNKNOWN_FIELD,
         message: format!("resource `{}` has no field `{field}`", place.resource_name),
     })?;
     reject_identity_field_unique_conflicts(index_context, field, value.keys)?;
-    let mut steps = record_establishing_steps(place, identity, store, span)?;
+    let mut steps = record_establishing_steps(index_context)?;
     steps.push(PlanStep::WriteData {
         address: data_address(place, identity, &[], &[field.to_string()], span)?,
         value: staged_identity_value(field, leaf, value.keys, value.referenced_arity)?,
@@ -251,6 +257,7 @@ pub(crate) fn plan_field_patch_write(
     identity: &[SavedKey],
     patch: &[FieldPatchValue],
     store: &TreeStore,
+    facts: &CheckedFacts,
     span: SourceSpan,
 ) -> Result<WritePlan, WriteError> {
     resolve_store_identity(place, identity)?;
@@ -291,9 +298,9 @@ pub(crate) fn plan_field_patch_write(
         }
     }
 
-    let index_context = IndexWriteContext::new(place, identity, store, span);
+    let index_context = IndexWriteContext::new(place, identity, store, facts, span);
     reject_field_patch_unique_conflicts(index_context, &index_patch)?;
-    let mut steps = record_establishing_steps(place, identity, store, span)?;
+    let mut steps = record_establishing_steps(index_context)?;
     for PatchFieldWrite {
         member_catalog_id,
         bytes,
@@ -454,10 +461,11 @@ pub(crate) fn plan_field_delete(
     identity: &[SavedKey],
     field: &str,
     store: &TreeStore,
+    facts: &CheckedFacts,
     span: SourceSpan,
 ) -> Result<WritePlan, WriteError> {
     resolve_store_identity(place, identity)?;
-    let index_context = IndexWriteContext::new(place, identity, store, span);
+    let index_context = IndexWriteContext::new(place, identity, store, facts, span);
     if checked_field_leaf(&place.root_members, field).is_none() {
         return Err(WriteError {
             code: WRITE_UNKNOWN_FIELD,
@@ -472,13 +480,11 @@ pub(crate) fn plan_field_delete(
 }
 
 pub(crate) fn plan_layer_leaf_write(
-    place: &CheckedSavedPlace,
-    identity: &[SavedKey],
+    context: IndexWriteContext<'_>,
     layers: &[LayerAddress],
     value: &LeafValue,
-    store: &TreeStore,
-    span: SourceSpan,
 ) -> Result<WritePlan, WriteError> {
+    let place = context.place();
     let layer = leaf_layer(place, layers)?;
     let Some((leaf, _)) = layer.field() else {
         return Err(WriteError {
@@ -487,22 +493,21 @@ pub(crate) fn plan_layer_leaf_write(
         });
     };
     check_type(&layer.name, leaf, value)?;
-    let mut steps = record_establishing_steps(place, identity, store, span)?;
+    let mut steps = record_establishing_steps(context)?;
     steps.push(PlanStep::WriteData {
-        address: DataAddress::layer_prefix(place, identity, layers, span).map_err(store_error)?,
+        address: DataAddress::layer_prefix(place, context.identity(), layers, context.span())
+            .map_err(store_error)?,
         value: value.bytes()?,
     });
     Ok(WritePlan { steps })
 }
 
 pub(crate) fn plan_layer_identity_leaf_write(
-    place: &CheckedSavedPlace,
-    identity: &[SavedKey],
+    context: IndexWriteContext<'_>,
     layers: &[LayerAddress],
     value: ReferencedIdentity<'_>,
-    store: &TreeStore,
-    span: SourceSpan,
 ) -> Result<WritePlan, WriteError> {
+    let place = context.place();
     let layer = leaf_layer(place, layers)?;
     let Some((leaf, _)) = layer.field() else {
         return Err(WriteError {
@@ -510,74 +515,83 @@ pub(crate) fn plan_layer_identity_leaf_write(
             message: format!("keyed layer `{}` is a group, not a leaf", layer.name),
         });
     };
-    let mut steps = record_establishing_steps(place, identity, store, span)?;
+    let mut steps = record_establishing_steps(context)?;
     steps.push(PlanStep::WriteData {
-        address: DataAddress::layer_prefix(place, identity, layers, span).map_err(store_error)?,
+        address: DataAddress::layer_prefix(place, context.identity(), layers, context.span())
+            .map_err(store_error)?,
         value: staged_identity_value(&layer.name, leaf, value.keys, value.referenced_arity)?,
     });
     Ok(WritePlan { steps })
 }
 
 pub(crate) fn plan_nested_field_write(
-    place: &CheckedSavedPlace,
-    identity: &[SavedKey],
+    context: IndexWriteContext<'_>,
     layers: &[LayerAddress],
     field: &str,
     value: &LeafValue,
-    store: &TreeStore,
-    span: SourceSpan,
 ) -> Result<WritePlan, WriteError> {
+    let place = context.place();
     let members = checked_members_for_layers(place, layers)?;
     let leaf = checked_field_leaf(members, field).ok_or_else(|| WriteError {
         code: WRITE_UNKNOWN_FIELD,
         message: format!("group layer has no field `{field}`"),
     })?;
     check_type(field, leaf, value)?;
-    let mut steps = record_establishing_steps(place, identity, store, span)?;
+    let mut steps = record_establishing_steps(context)?;
     steps.push(PlanStep::WriteData {
-        address: data_address(place, identity, layers, &[field.to_string()], span)?,
+        address: data_address(
+            place,
+            context.identity(),
+            layers,
+            &[field.to_string()],
+            context.span(),
+        )?,
         value: value.bytes()?,
     });
     Ok(WritePlan { steps })
 }
 
 pub(crate) fn plan_nested_identity_field_write(
-    place: &CheckedSavedPlace,
-    identity: &[SavedKey],
+    context: IndexWriteContext<'_>,
     layers: &[LayerAddress],
     field: &str,
     value: ReferencedIdentity<'_>,
-    store: &TreeStore,
-    span: SourceSpan,
 ) -> Result<WritePlan, WriteError> {
+    let place = context.place();
     let members = checked_members_for_layers(place, layers)?;
     let leaf = checked_field_leaf(members, field).ok_or_else(|| WriteError {
         code: WRITE_UNKNOWN_FIELD,
         message: format!("group layer has no field `{field}`"),
     })?;
-    let mut steps = record_establishing_steps(place, identity, store, span)?;
+    let mut steps = record_establishing_steps(context)?;
     steps.push(PlanStep::WriteData {
-        address: data_address(place, identity, layers, &[field.to_string()], span)?,
+        address: data_address(
+            place,
+            context.identity(),
+            layers,
+            &[field.to_string()],
+            context.span(),
+        )?,
         value: staged_identity_value(field, leaf, value.keys, value.referenced_arity)?,
     });
     Ok(WritePlan { steps })
 }
 
 pub(crate) fn plan_layer_group_write(
-    place: &CheckedSavedPlace,
-    identity: &[SavedKey],
+    context: IndexWriteContext<'_>,
     layers: &[LayerAddress],
     value: &ResourceValue,
-    store: &TreeStore,
-    span: SourceSpan,
 ) -> Result<WritePlan, WriteError> {
+    let place = context.place();
+    let identity = context.identity();
+    let span = context.span();
     let group = group_layer(place, layers)?;
     let to_write = collect_supplied_field_writes(&group.group_members, value)?;
     let entry = DataAddress::layer_prefix(place, identity, layers, span).map_err(store_error)?;
     let mut steps = vec![PlanStep::DeleteData {
         address: entry.clone(),
     }];
-    steps.extend(record_establishing_steps(place, identity, store, span)?);
+    steps.extend(record_establishing_steps(context)?);
     steps.push(PlanStep::WriteDataNode { address: entry });
     for FieldWrite { path, bytes } in to_write {
         steps.push(PlanStep::WriteData {
@@ -665,14 +679,12 @@ fn record_presence_step(
 /// through here, so an index keyed solely by identity components — which no field
 /// write would list — is populated incrementally exactly as a restore rebuild
 /// populates it from identity alone.
-fn record_establishing_steps(
-    place: &CheckedSavedPlace,
-    identity: &[SavedKey],
-    store: &TreeStore,
-    span: SourceSpan,
-) -> Result<Vec<PlanStep>, WriteError> {
-    let mut steps = vec![record_presence_step(place, identity, span)?];
-    let context = IndexWriteContext::new(place, identity, store, span);
+fn record_establishing_steps(context: IndexWriteContext<'_>) -> Result<Vec<PlanStep>, WriteError> {
+    let mut steps = vec![record_presence_step(
+        context.place(),
+        context.identity(),
+        context.span(),
+    )?];
     stage_identity_only_index_writes(&mut steps, context)?;
     Ok(steps)
 }

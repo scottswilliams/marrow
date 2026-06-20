@@ -209,9 +209,9 @@ Resource-schema rules. Reported during a project check alongside `check.*`.
 | `schema.duplicate_root_owner` | Two stores declare the same saved root (a cross-declaration rule the project checker reports). |
 | `schema.unknown_in_saved` | A managed saved field or key is typed `unknown`; saved schemas use concrete types. |
 | `schema.key_member_collision` | A top-level field or layer shares a name with an identity key. |
-| `schema.unknown_index_arg` | An index argument does not resolve to an identity key or a top-level field. |
+| `schema.unknown_index_arg` | An index argument names neither an identity key nor a top-level member. |
 | `schema.unorderable_key` | A saved key has a type with no order-preserving key encoding (currently `decimal`). |
-| `schema.nonscalar_key` | A saved key (an identity key or keyed-layer key parameter) is typed as an identity, a name, or a sequence; saved keys must be orderable scalars. Index arguments also reject sequences and resource-name fields, while top-level enum and `Id(^store)` fields are valid index components. |
+| `schema.nonscalar_key` | A saved key (an identity key or keyed-layer key parameter) is typed as an identity, a name, or a sequence; saved keys must be orderable scalars. Index arguments also reject sequences, keyed-layer members, and resource-name fields, while top-level enum and `Id(^store)` fields are valid index components. |
 | `schema.non_enum_named_field` | A saved field or explicit keyed leaf has a named value type that is not a declared enum; these members store scalars, identities, or declared enum values. Direct resource names on keyed fields are typed keyed entries instead. |
 | `schema.index_missing_identity_keys` | A non-unique index does not end with all identity keys in declaration order. |
 | `schema.index_requires_keyed_root` | An index is declared on a store with no keyed root. |

@@ -366,9 +366,9 @@ fn check_record(
             "data.key_type",
             record.path.clone(),
             format!(
-                "stored key is a {} where the schema declares {}",
-                mismatch.found.name(),
-                mismatch.expected.name()
+                "stored key is {} where the schema declares {}",
+                mismatch.found.indefinite(),
+                mismatch.expected.indefinite()
             ),
             None,
         )));
@@ -412,9 +412,9 @@ fn check_identity_leaf(
             "data.key_type",
             record.path.clone(),
             format!(
-                "stored `Id(^{store_root})` reference has a {} key where the schema declares {}",
-                found.name(),
-                expected.name()
+                "stored `Id(^{store_root})` reference has {} key where the schema declares {}",
+                found.indefinite(),
+                expected.indefinite()
             ),
             None,
         )));

@@ -5,11 +5,9 @@ use marrow_store::cell::CatalogId;
 use marrow_store::key::SavedKey;
 use marrow_store::tree::{DataPathSegment as StoreDataPathSegment, TreeStore};
 
-use crate::{
-    CheckedProgram, CheckedSavedMember, CheckedSavedMemberKind, CheckedSavedPlace,
-    checked_saved_root_place,
-};
+use crate::{CheckedProgram, CheckedSavedMember, CheckedSavedMemberKind, CheckedSavedPlace};
 
+use super::path::inspection_root_place;
 use super::record_nav;
 use super::render::{push_key, push_member};
 use super::shape::{stored_key_mismatch, tooling_catalog_id};
@@ -103,9 +101,7 @@ pub(crate) fn checked_places(program: &CheckedProgram) -> Vec<CheckedSavedPlace>
         .facts
         .stores()
         .iter()
-        .filter_map(|store| {
-            checked_saved_root_place(program, &store.root, marrow_syntax::SourceSpan::default())
-        })
+        .filter_map(|store| inspection_root_place(program, &store.root))
         .collect()
 }
 

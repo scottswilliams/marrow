@@ -5,6 +5,7 @@ use marrow_syntax::SourceSpan;
 use crate::env::Env;
 use crate::error::{RuntimeError, unsupported};
 use crate::expr::eval_expr;
+use crate::index_maintenance::IndexWriteContext;
 use crate::path::{SavedPath, Terminal, lower};
 use crate::store::{DataAddress, LayerAddress};
 use crate::value::{LeafValue, Value, identity_keys_of, value_to_leaf};
@@ -79,6 +80,7 @@ fn write_identity_saved_field(
             referenced_arity: arity,
         },
         env.store,
+        env.program.facts(),
         span,
     );
     let plan = validate_field_plan(path, &[], field, plan, env);
@@ -93,7 +95,15 @@ fn write_scalar_saved_field(
     env: &mut Env<'_>,
 ) -> Result<(), RuntimeError> {
     let saved = field_leaf_value(path, value, span)?;
-    let plan = plan_field_write(&path.place, &path.identity, field, &saved, env.store, span);
+    let plan = plan_field_write(
+        &path.place,
+        &path.identity,
+        field,
+        &saved,
+        env.store,
+        env.program.facts(),
+        span,
+    );
     let plan = validate_field_plan(path, &[], field, plan, env);
     env.apply_plan(plan, span)
 }
@@ -153,6 +163,8 @@ pub(crate) fn write_nested_field(
         span,
         env,
     )?;
+    let context =
+        IndexWriteContext::new(&path.place, identity, env.store, env.program.facts(), span);
     let plan = if let Terminal::Field {
         leaf: Some(StoreLeafKind::Identity { store_root, arity }),
         ..
@@ -160,28 +172,17 @@ pub(crate) fn write_nested_field(
     {
         let keys = identity_keys_of(value, store_root, span)?;
         plan_nested_identity_field_write(
-            &path.place,
-            identity,
+            context,
             &path.layer_addresses,
             field,
             ReferencedIdentity {
                 keys: &keys,
                 referenced_arity: *arity,
             },
-            env.store,
-            span,
         )
     } else {
         let saved = field_leaf_value(&path, value, span)?;
-        plan_nested_field_write(
-            &path.place,
-            identity,
-            &path.layer_addresses,
-            field,
-            &saved,
-            env.store,
-            span,
-        )
+        plan_nested_field_write(context, &path.layer_addresses, field, &saved)
     };
     let plan = validate_field_plan(&path, &path.layer_addresses, field, plan, env);
     finish_nested_field_write(&path, identity, created_required_path, plan, span, env)

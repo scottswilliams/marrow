@@ -1101,11 +1101,15 @@ fn decode_entry_protocol_value(
         EntryArgumentShape::Scalar(scalar) => {
             let EntryArgumentValue::Scalar(value) = value else {
                 return Err(entry_argument(format!(
-                    "entry argument `{name}` is not a {scalar:?}"
+                    "entry argument `{name}` is not {}",
+                    scalar.indefinite()
                 )));
             };
             protocol_scalar_value(*scalar, value).ok_or_else(|| {
-                entry_argument(format!("entry argument `{name}` is not a {scalar:?}"))
+                entry_argument(format!(
+                    "entry argument `{name}` is not {}",
+                    scalar.indefinite()
+                ))
             })
         }
         EntryArgumentShape::Enum {
@@ -1370,8 +1374,14 @@ fn decode_entry_value(
     text: &str,
 ) -> Result<Value, RuntimeError> {
     match ty {
-        CheckedRuntimeValueType::Primitive(scalar) => decode_scalar(*scalar, text)
-            .ok_or_else(|| entry_argument(format!("entry argument `{name}` is not a {scalar:?}"))),
+        CheckedRuntimeValueType::Primitive(scalar) => {
+            decode_scalar(*scalar, text).ok_or_else(|| {
+                entry_argument(format!(
+                    "entry argument `{name}` is not {}",
+                    scalar.indefinite()
+                ))
+            })
+        }
         CheckedRuntimeValueType::Enum {
             enum_id,
             allowed_members,

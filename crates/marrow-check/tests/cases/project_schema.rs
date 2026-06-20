@@ -769,8 +769,8 @@ fn rejects_a_cross_module_qualified_enum_identity_key() {
 
 #[test]
 fn rejects_a_sequence_index_argument() {
-    // A sequence member is a keyed layer, not a top-level scalar field, so an
-    // index cannot name it as an argument.
+    // A sequence member desugars to a keyed layer, not a top-level scalar field,
+    // so naming it as an index argument is a non-scalar-key rejection.
     let errors = check_module(
         "sequence-index-arg",
         "module m\n\
@@ -778,14 +778,17 @@ fn rejects_a_sequence_index_argument() {
          \x20   tags: sequence[string]\n\
          store ^orders(id: int): Order\n\
          \x20   index byTags(tags, id)\n",
-        "schema.unknown_index_arg",
+        "schema.nonscalar_key",
     );
     assert_eq!(errors.len(), 1, "{errors:#?}");
     assert_schema_payload(
         &errors[0],
-        SchemaErrorKind::UnknownIndexArg {
-            index: "byTags".to_string(),
-            arg: "tags".to_string(),
+        SchemaErrorKind::NonScalarKey {
+            target: SchemaKeyTarget::IndexArg {
+                index: "byTags".to_string(),
+                arg: "tags".to_string(),
+            },
+            ty: Type::Sequence(Box::new(Type::Scalar(ScalarType::Str))),
         },
     );
 }

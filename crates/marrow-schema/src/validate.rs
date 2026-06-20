@@ -251,19 +251,28 @@ fn check_store_index_args(
                     span: index.span,
                 });
             }
-            None => errors.push(SchemaError {
-                kind: SchemaErrorKind::UnknownIndexArg {
+            None => {
+                let target = SchemaKeyTarget::IndexArg {
                     index: index.name.clone(),
                     arg: arg.clone(),
-                },
-                code: SCHEMA_UNKNOWN_INDEX_ARG,
-                message: format!(
-                    "index `{}` argument `{arg}` does not name an identity \
-                     key or top-level field",
-                    index.name
-                ),
-                span: index.span,
-            }),
+                };
+                errors.push(match top_level_keyed_layer(arg, resource) {
+                    Some(layer) => index_arg_nonscalar_key_error(target, &layer, index.span),
+                    None => SchemaError {
+                        kind: SchemaErrorKind::UnknownIndexArg {
+                            index: index.name.clone(),
+                            arg: arg.clone(),
+                        },
+                        code: SCHEMA_UNKNOWN_INDEX_ARG,
+                        message: format!(
+                            "index `{}` argument `{arg}` does not name an identity \
+                             key or top-level field",
+                            index.name
+                        ),
+                        span: index.span,
+                    },
+                });
+            }
             Some(ty) => {
                 if let Some(error) = index_arg_type_key_error(&index.name, arg, &ty, index.span) {
                     errors.push(error);
@@ -452,19 +461,47 @@ fn index_arg_type_key_error(
             ),
             span,
         }),
-        KeyTypeVerdict::NonScalar => Some(SchemaError {
-            kind: SchemaErrorKind::NonScalarKey {
-                target,
-                ty: resolved.clone(),
-            },
-            code: SCHEMA_NONSCALAR_KEY,
-            message: format!(
-                "index `{index}` argument `{arg}` must be an orderable scalar type, \
-                 but found `{resolved}`"
-            ),
-            span,
-        }),
+        KeyTypeVerdict::NonScalar => Some(index_arg_nonscalar_key_error(target, resolved, span)),
     }
+}
+
+/// The `nonscalar_key` error an index argument earns. A keyed-layer member and a
+/// scalar field typed as a sequence, identity, or name all reduce to one fact:
+/// the argument names a value with no orderable-scalar projection.
+fn index_arg_nonscalar_key_error(
+    target: SchemaKeyTarget,
+    ty: &Type,
+    span: SourceSpan,
+) -> SchemaError {
+    let (index, arg) = match &target {
+        SchemaKeyTarget::IndexArg { index, arg } => (index.as_str(), arg.as_str()),
+        _ => unreachable!("index-argument key target"),
+    };
+    SchemaError {
+        message: format!(
+            "index `{index}` argument `{arg}` must be an orderable scalar type, \
+             but found `{ty}`"
+        ),
+        kind: SchemaErrorKind::NonScalarKey {
+            target,
+            ty: ty.clone(),
+        },
+        code: SCHEMA_NONSCALAR_KEY,
+        span,
+    }
+}
+
+/// The top-level keyed-layer member named `arg`, as the sequence-shaped type it
+/// projects to (its leaf value type wrapped in a `sequence`). A keyed leaf and a
+/// `sequence[T]` field — which desugars to one — are both layers, not a single
+/// orderable value, so neither addresses an index entry.
+fn top_level_keyed_layer(arg: &str, resource: &ResourceSchema) -> Option<Type> {
+    let layer = resource
+        .members
+        .iter()
+        .find(|node| node.name == arg && !node.key_params.is_empty())?;
+    let leaf = layer.leaf_value_type()?.clone();
+    Some(Type::Sequence(Box::new(leaf)))
 }
 
 /// Report a keyed layer's key parameters that repeat a name. Key params share a

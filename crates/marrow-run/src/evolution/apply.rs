@@ -529,7 +529,7 @@ fn stage_apply_work(
         stage_obligation(&ctx, &obligation.catalog_id, &obligation.verdict, staged)?;
     }
     for catalog_id in index_rebuilds {
-        stage_index_rebuild(&catalog_id, &places, store, staged)?;
+        stage_index_rebuild(&catalog_id, &places, store, &program.facts, staged)?;
     }
     stage_redundant_default_receipts(program, &places, store, staged)
 }

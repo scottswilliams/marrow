@@ -1,6 +1,7 @@
 //! Index resolution and uniqueness rules: an index argument must resolve to an
-//! identity key or a top-level scalar field (not a keyed leaf, sequence, or
-//! nested field), index names are distinct and may not collide with
+//! identity key or a top-level scalar field. A keyed leaf or sequence is a
+//! non-scalar key, a nested field is unmaintainable, and a name resolving to
+//! nothing is unknown. Index names are distinct and may not collide with
 //! identity keys, a non-unique index must end with all identity keys in order, a
 //! unique index may omit them, and an index requires a keyed root.
 
@@ -8,9 +9,9 @@ use crate::common;
 use common::{assert_kind, codes, resource_and_store};
 use marrow_schema::{
     SCHEMA_DUPLICATE_MEMBER, SCHEMA_INDEX_MISSING_IDENTITY_KEYS, SCHEMA_INDEX_REQUIRES_KEYED_ROOT,
-    SCHEMA_KEY_MEMBER_COLLISION, SCHEMA_NESTED_INDEX_ARG, SCHEMA_UNKNOWN_INDEX_ARG,
-    SchemaDuplicateTarget, SchemaError, SchemaErrorKind, SchemaNameCollision, compile_resource,
-    compile_store,
+    SCHEMA_KEY_MEMBER_COLLISION, SCHEMA_NESTED_INDEX_ARG, SCHEMA_NONSCALAR_KEY,
+    SCHEMA_UNKNOWN_INDEX_ARG, ScalarType, SchemaDuplicateTarget, SchemaError, SchemaErrorKind,
+    SchemaKeyTarget, SchemaNameCollision, Type, compile_resource, compile_store,
 };
 
 fn compile_store_errors(source: &str) -> Vec<SchemaError> {
@@ -106,8 +107,10 @@ store ^books(id: int): Book
 }
 
 #[test]
-fn index_arg_naming_keyed_leaf_is_an_error() {
-    // Index arguments do not walk keyed child layers; `tags` is a keyed leaf.
+fn index_arg_naming_keyed_leaf_is_a_nonscalar_key() {
+    // A keyed leaf is a resolved top-level layer, not an absent name, so indexing
+    // it is a non-scalar-key rejection. The layer is sequence-shaped over its leaf
+    // value type.
     let source = "\
 resource Book
     tags(pos: int): string
@@ -115,20 +118,23 @@ store ^books(id: int): Book
     index byTag(tags, id)
 ";
     let errors = compile_store_errors(source);
-    assert_eq!(codes(&errors), [SCHEMA_UNKNOWN_INDEX_ARG]);
+    assert_eq!(codes(&errors), [SCHEMA_NONSCALAR_KEY]);
     assert_kind(
         &errors[0],
-        SchemaErrorKind::UnknownIndexArg {
-            index: "byTag".to_string(),
-            arg: "tags".to_string(),
+        SchemaErrorKind::NonScalarKey {
+            target: SchemaKeyTarget::IndexArg {
+                index: "byTag".to_string(),
+                arg: "tags".to_string(),
+            },
+            ty: Type::Sequence(Box::new(Type::Scalar(ScalarType::Str))),
         },
     );
 }
 
 #[test]
-fn a_sequence_index_argument_is_an_error() {
-    // An index argument keys on its field's stored scalar. A `sequence` has no
-    // single scalar projection, so it cannot be an index key.
+fn a_sequence_index_argument_is_a_nonscalar_key() {
+    // An index argument keys on its field's stored scalar. A `sequence` desugars to
+    // a keyed leaf and has no single scalar projection, so it is a non-scalar key.
     let source = "\
 resource Order
     tags: sequence[string]
@@ -136,12 +142,15 @@ store ^orders(id: int): Order
     index byTags(tags, id)
 ";
     let errors = compile_store_errors(source);
-    assert_eq!(codes(&errors), [SCHEMA_UNKNOWN_INDEX_ARG]);
+    assert_eq!(codes(&errors), [SCHEMA_NONSCALAR_KEY]);
     assert_kind(
         &errors[0],
-        SchemaErrorKind::UnknownIndexArg {
-            index: "byTags".to_string(),
-            arg: "tags".to_string(),
+        SchemaErrorKind::NonScalarKey {
+            target: SchemaKeyTarget::IndexArg {
+                index: "byTags".to_string(),
+                arg: "tags".to_string(),
+            },
+            ty: Type::Sequence(Box::new(Type::Scalar(ScalarType::Str))),
         },
     );
 }

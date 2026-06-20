@@ -10,6 +10,28 @@ use marrow_schema::{
     SchemaKeyTarget, Type, compile_resource, compile_store,
 };
 
+#[test]
+fn index_arg_naming_a_keyed_layer_member_is_a_nonscalar_key() {
+    // A keyed-layer member is a resolved top-level member, not an absent name, so
+    // indexing it is a non-scalar-key rejection, not `unknown_index_arg`. The layer
+    // is sequence-shaped over its leaf value type.
+    let source = "\
+resource Book
+    tags(pos: int): string
+store ^books(id: int): Book
+    index byTags(tags, id)
+";
+    let errors = compile_store_errors(source);
+    assert_eq!(codes(&errors), [SCHEMA_NONSCALAR_KEY]);
+    assert_kind(
+        &errors[0],
+        SchemaErrorKind::NonScalarKey {
+            target: index_arg("byTags", "tags"),
+            ty: Type::Sequence(Box::new(Type::Scalar(ScalarType::Str))),
+        },
+    );
+}
+
 fn compile_store_errors(source: &str) -> Vec<SchemaError> {
     let (resource, store) = resource_and_store(source);
     let (schema, resource_errors) = compile_resource(&resource);

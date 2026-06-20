@@ -47,7 +47,13 @@ pub(crate) fn eval_delete(
         return Err(unsupported("this saved path", span));
     }
     env.guard_traversed_layer(&TraversedLayer::record(&path.place, span)?, span)?;
-    let plan = plan_resource_delete(&path.place, &path.identity, env.store, span);
+    let plan = plan_resource_delete(
+        &path.place,
+        &path.identity,
+        env.store,
+        env.program.facts(),
+        span,
+    );
     env.apply_plan(plan, span)?;
     Ok(())
 }
@@ -153,7 +159,14 @@ fn delete_top_level_field(
     env: &mut Env<'_>,
 ) -> Result<(), RuntimeError> {
     let identity = base_path.identity.as_slice();
-    let plan = plan_field_delete(&base_path.place, identity, field, env.store, span);
+    let plan = plan_field_delete(
+        &base_path.place,
+        identity,
+        field,
+        env.store,
+        env.program.facts(),
+        span,
+    );
     delete_field(base_path, &[], field, plan, span, env)
 }
 
