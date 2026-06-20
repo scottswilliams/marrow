@@ -702,10 +702,10 @@ fn scope_at_excludes_locals_declared_after_the_cursor() {
 }
 
 #[test]
-fn scope_at_includes_a_loop_binding_typed_to_the_element() {
-    // A `for` binding is in scope only within the loop body, typed to the
-    // sequence element — the same rule the checker applies. Reconstructing the
-    // cursor scope must push that frame.
+fn scope_at_includes_a_loop_binding_typed_to_the_position() {
+    // A `for` binding is in scope only within the loop body. A bare sequence loop
+    // binds the 1-based `int` position — the same rule the checker applies.
+    // Reconstructing the cursor scope must push that frame.
     let source = "module m\n\
         fn f(items: sequence[int])\n    \
         for it in items\n        \

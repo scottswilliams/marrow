@@ -247,17 +247,19 @@ fn is_builtin_name(name: &str) -> bool {
     crate::executable::CheckedBuiltinCall::from_name(name).is_some() || name == "Error"
 }
 
-/// The return type of a single-name data builtin: `exists(path): bool` and
-/// `append(layer, value): int`. `nextId` is handled in [`check_next_id`], which
-/// has the `^root` argument it needs to type the identity. The absence-default
-/// `??` is an operator, not a builtin, and is typed in [`check_coalesce`].
+/// The return type of a single-name data builtin: `exists(path): bool`,
+/// `append(layer, value): int`, and `count(collection): int` over any saved or
+/// local collection (an unusable argument is rejected before this point and types
+/// `invalid`). `nextId` is handled in [`check_next_id`], which has the `^root`
+/// argument it needs to type the identity. The absence-default `??` is an
+/// operator, not a builtin, and is typed in [`check_coalesce`].
 pub(crate) fn builtin_return_type(segments: &[String]) -> Option<MarrowType> {
     let [name] = segments else {
         return None;
     };
     match name.as_str() {
         "exists" => Some(MarrowType::Primitive(ScalarType::Bool)),
-        "append" => Some(MarrowType::Primitive(ScalarType::Int)),
+        "append" | "count" => Some(MarrowType::Primitive(ScalarType::Int)),
         _ => None,
     }
 }

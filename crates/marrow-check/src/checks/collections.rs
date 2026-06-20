@@ -54,14 +54,11 @@ pub(crate) fn for_frame(
         }
         return frame;
     }
+    // Any recognized collection (saved or local, sequence or keyed) bound above; a
+    // single variable here is a range, whose binding is its endpoint scalar.
     let first_type = match &binding.second {
-        None => match infer_type(program, iterable, scope, aliases, file, &mut Vec::new()) {
-            MarrowType::Sequence(element) => *element,
-            // A range binds its variable to its endpoint scalar; only a same-typed
-            // steppable-endpoint range types it, anything else stays unknown.
-            _ => range_endpoint_type(program, iterable, scope, aliases, file)
-                .unwrap_or(MarrowType::Unknown),
-        },
+        None => range_endpoint_type(program, iterable, scope, aliases, file)
+            .unwrap_or(MarrowType::Unknown),
         _ => MarrowType::Unknown,
     };
     let mut frame = HashMap::new();
@@ -169,7 +166,7 @@ fn local_collection_loop_binding_types(
             program, path, scope, aliases, file, false,
         ));
     }
-    local_tree_binding_types(
+    local_collection_binding_types(
         two_name,
         local_iterable_type(program, iterable, scope, aliases, file, false),
     )
@@ -206,16 +203,21 @@ fn local_value_binding_type(ty: MarrowType) -> Option<MarrowType> {
     }
 }
 
-fn local_tree_binding_types(
+/// A direct local-collection loop binds the key being streamed: a keyed tree's
+/// first key column, or a sequence's 1-based integer position. A two-name head
+/// also binds the value at that key. A sequence is a 1-based integer-keyed tree,
+/// so it follows the same shape as a keyed tree rather than yielding raw values.
+fn local_collection_binding_types(
     two_name: bool,
     ty: MarrowType,
 ) -> Option<(MarrowType, Option<MarrowType>)> {
-    let MarrowType::LocalTree { keys, value } = ty else {
-        return None;
+    let (key, value) = match ty {
+        MarrowType::LocalTree { keys, value } => (first_key_type(keys), *value),
+        MarrowType::Sequence(element) => (MarrowType::Primitive(ScalarType::Int), *element),
+        _ => return None,
     };
-    let key = first_key_type(keys);
     if two_name {
-        Some((key, Some(*value)))
+        Some((key, Some(value)))
     } else {
         Some((key, None))
     }

@@ -420,10 +420,10 @@ fn neighbors_on_a_keyed_child_layer_position() {
 
 #[test]
 fn reversed_over_an_in_memory_sequence_reverses_directly() {
-    // `reversed(std::text::split(...))` reverses the in-memory sequence — no store
-    // involved — so a `for` over it yields the elements back-to-front.
+    // `reversed(values(std::text::split(...)))` reverses the in-memory element
+    // values — no store involved — so a `for` over it yields them back-to-front.
     let program = checked_program(
-        "pub fn rev()\n    for word in reversed(std::text::split(\"a,b,c\", \",\"))\n        print(word)\n",
+        "pub fn rev()\n    for word in reversed(values(std::text::split(\"a,b,c\", \",\")))\n        print(word)\n",
     );
     let store = TreeStore::memory();
     let outcome = run_entry(&store, checked_entry!(&program, "test::rev")).expect("run");

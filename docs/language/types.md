@@ -299,6 +299,11 @@ not for the highest numeric key.
 Sequence helpers use positive integer positions. If zero or negative integer
 keys have meaning, use an integer-keyed tree rather than a sequence.
 
+Because a sequence is a keyed tree, a `for` loop over one binds its 1-based
+positions, with `values(...)` binding elements — the same loop shapes as any
+keyed collection, local or saved. See *Collection loops* in
+[Control Flow and Effects](control-flow-and-effects.md).
+
 ## Keyed Trees
 
 Keyed trees are sparse and ordered by key:

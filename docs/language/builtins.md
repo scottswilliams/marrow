@@ -82,7 +82,7 @@ the runtime reports a typed traversal error. Collect keys into a local
 sequence first when a rewrite needs to change the traversed layer. Generated
 index maintenance counts as a write to the affected index layer.
 
-`count(path)` returns:
+`count(path)` returns an `int`:
 
 - `0` when the path is not populated and has no children,
 - `1` when the path is a scalar value or record node,
@@ -90,6 +90,9 @@ index maintenance counts as a write to the affected index layer.
 
 If a path has both a value and children, `count` returns the number of
 immediate children. Use `exists(path)` for a direct presence check.
+`count(collection)` over a local sequence or keyed map likewise returns its
+`int` element count, so it is usable in a typed binding and in arithmetic
+exactly as over a saved path.
 
 `count(...)` is a one-layer tree scan, not a maintained counter. For hot
 paths, store an explicit counter or use a declared index.

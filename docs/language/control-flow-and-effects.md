@@ -177,6 +177,15 @@ preserves the selected shape in descending key order: direct local keyed-tree
 loops stay key-only or key/value by loop head, `reversed(values(scores))` yields
 values, and `reversed(entries(scores))` yields pairs.
 
+A local sequence is a 1-based integer-keyed tree, so it follows the same shapes
+as any other keyed collection — identical to a saved sequence. For
+`var xs: sequence[int]`, `for pos in xs` and `for pos in keys(xs)` bind the
+1-based `int` position, `for pos, x in xs` and `for pos, x in entries(xs)` bind
+position/value pairs, and `for x in values(xs)` binds element values. The same
+holds for any sequence-typed value, including one a function returns. `reversed`
+walks descending positions, with `reversed(values(xs))` yielding the values in
+reverse.
+
 `while` loops use a boolean condition:
 
 ```mw

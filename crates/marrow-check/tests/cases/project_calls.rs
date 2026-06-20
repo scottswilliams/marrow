@@ -736,17 +736,18 @@ fn two_name_keys_and_values_loops_do_not_bind_pair_types() {
 }
 
 #[test]
-fn two_name_sequence_loops_are_rejected_even_when_bindings_are_unused() {
+fn two_name_sequence_loops_bind_position_and_value() {
+    // A local sequence is a 1-based integer-keyed tree, so a two-name loop binds the
+    // `int` position and the element value — direct and reversed — without an error.
     for (name, iterable) in [("direct", "xs"), ("reversed", "reversed(xs)")] {
-        let found = check_module(
-            &format!("two-name-{name}-sequence-unused-bindings"),
+        let report = check_module_report(
+            &format!("two-name-{name}-sequence-bindings"),
             &format!(
                 "module m\n\
-                 fn f(): string\n    var xs: sequence[int]\n    xs(1) = 1\n    xs(2) = 2\n    var out: string = \"\"\n    for pos, x in {iterable}\n        out = $\"{{out}}row;\"\n    return out\n",
+                 fn f(): string\n    var xs: sequence[int]\n    xs(1) = 1\n    xs(2) = 2\n    var out: string = \"\"\n    for pos, value in {iterable}\n        const typedPos: int = pos\n        const typedValue: int = value\n        out = $\"{{out}}{{pos}}={{value}};\"\n    return out\n",
             ),
-            "check.collection_unsupported",
         );
-        assert_eq!(found.len(), 1, "{name}: {found:#?}");
+        assert_clean(&report);
     }
 }
 
@@ -1155,12 +1156,15 @@ fn index_branches_reject_value_materialization_wrappers() {
 
 #[test]
 fn reversed_saved_collection_expressions_type_element_sequences() {
+    // A materialized `reversed(...)` is a local sequence whose values are the
+    // captured keys/values; `values(...)` over it binds those elements, so the two
+    // value-element misuses (`book.title + 1`, `tag + 1`) are operator type errors.
     let found = check_module(
         "reversed-saved-expressions",
         "module m\n\
          resource Book\n    required title: string\n    tags: sequence[string]\n\
          store ^books(id: int): Book\n\n\
-         fn f(id: Id(^books))\n    const ids = reversed(^books)\n    for bookId in ids\n        var typed: Id(^books) = bookId\n    const positions = reversed(^books(id).tags)\n    for pos in positions\n        var numbered: int = pos\n    const books = reversed(values(^books))\n    for book in books\n        var bad = book.title + 1\n    const tags = reversed(values(^books(id).tags))\n    for tag in tags\n        var also_bad = tag + 1\n",
+         fn f(id: Id(^books))\n    const ids = reversed(^books)\n    for bookId in values(ids)\n        var typed: Id(^books) = bookId\n    const positions = reversed(^books(id).tags)\n    for pos in values(positions)\n        var numbered: int = pos\n    const books = reversed(values(^books))\n    for book in values(books)\n        var bad = book.title + 1\n    const tags = reversed(values(^books(id).tags))\n    for tag in values(tags)\n        var also_bad = tag + 1\n",
         "check.operator_type",
     );
     assert_eq!(found.len(), 2, "{found:#?}");

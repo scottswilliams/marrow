@@ -469,9 +469,7 @@ pub(crate) fn infer_type_with_read_scope(
             // A call-shaped saved read (keyed-leaf or whole-record) is not a function
             // call; type it through its saved shape once the call path comes back Unknown.
             if matches!(call_type, MarrowType::Unknown) {
-                count_builtin_type(program, callee, args, scope, file)
-                    .or_else(|| saved_expr_type(program, expr, scope, file))
-                    .unwrap_or(MarrowType::Unknown)
+                saved_expr_type(program, expr, scope, file).unwrap_or(MarrowType::Unknown)
             } else {
                 call_type
             }
@@ -1185,28 +1183,4 @@ fn literal_type(kind: marrow_syntax::LiteralKind) -> MarrowType {
         LiteralKind::Bytes => ScalarType::Bytes,
         LiteralKind::Bool => ScalarType::Bool,
     })
-}
-
-fn count_builtin_type(
-    program: &CheckedProgram,
-    callee: &marrow_syntax::Expression,
-    args: &[marrow_syntax::Argument],
-    scope: &[HashMap<String, MarrowType>],
-    file: &Path,
-) -> Option<MarrowType> {
-    let marrow_syntax::Expression::Name { segments, .. } = callee else {
-        return None;
-    };
-    let [arg] = args else {
-        return None;
-    };
-    if segments.as_slice() == ["count"]
-        && arg.name.is_none()
-        && checked_expr(program, &arg.value, scope, file)
-            .is_some_and(|expr| SavedPlaceResolver::new(program).is_saved_path(&expr))
-    {
-        Some(MarrowType::Primitive(ScalarType::Int))
-    } else {
-        None
-    }
 }

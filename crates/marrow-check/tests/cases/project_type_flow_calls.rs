@@ -149,15 +149,36 @@ fn a_module_constant_reference_is_not_unresolved() {
 }
 
 #[test]
-fn a_for_binding_over_a_sequence_types_the_element() {
-    // `std::text::split` yields `sequence[string]`, so `part` is `string` and
-    // `part + 1` is string-plus-int.
+fn a_for_binding_over_a_sequence_value_view_types_the_element() {
+    // `std::text::split` yields `sequence[string]`; `values(...)` binds `part` to
+    // the `string` element, so `part + 1` is string-plus-int. (The bare sequence
+    // binds `int` positions, typed by `single_name_loop_over_a_sequence_binds_positions`.)
     let found = check_module(
         "for-elem",
-        "module m\nfn f(s: string)\n    for part in std::text::split(s, \",\")\n        var x = part + 1\n",
+        "module m\nfn f(s: string)\n    for part in values(std::text::split(s, \",\"))\n        var x = part + 1\n",
         "check.operator_type",
     );
     assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn single_name_loop_over_a_sequence_binds_int_positions() {
+    // A local sequence is a 1-based integer-keyed tree, so a single loop variable
+    // binds its `int` position: assigning it into `int` is clean.
+    let clean = check_module(
+        "for-seq-position-clean",
+        "module m\nfn f(s: string)\n    for pos in std::text::split(s, \",\")\n        var x: int = pos\n",
+        "check.assignment_type",
+    );
+    assert!(clean.is_empty(), "{clean:#?}");
+
+    // Assigning the `int` position into a `string` place is a real mismatch.
+    let mismatch = check_module(
+        "for-seq-position-mismatch",
+        "module m\nfn f(s: string)\n    for pos in std::text::split(s, \",\")\n        var x: string = pos\n",
+        "check.assignment_type",
+    );
+    assert_eq!(mismatch.len(), 1, "{mismatch:#?}");
 }
 
 #[test]

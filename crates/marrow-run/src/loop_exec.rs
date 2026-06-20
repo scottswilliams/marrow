@@ -15,8 +15,8 @@ use crate::error::{RuntimeError, overflow, type_error, unsupported};
 use crate::exec::eval_block;
 use crate::expr::{eval_condition, eval_expr};
 use crate::local_collection::{
-    enumerate_local_collection_dir, enumerate_local_keys_call_arg,
-    enumerate_reversed_local_keys_call_arg, materialize_local_collection_dir,
+    enumerate_local_keys_call_arg, enumerate_reversed_local_keys_call_arg,
+    materialize_local_collection_dir,
 };
 use crate::range_expr::checked_range;
 use crate::read::{keys_argument, reversed_argument};
@@ -407,38 +407,43 @@ fn duration_whole_days(nanos: i128, span: SourceSpan) -> Result<i64, RuntimeErro
     i64::try_from(nanos / NANOS_PER_DAY).map_err(|_| overflow(span))
 }
 
+/// What a single-name local-collection loop binds. A local collection streams its
+/// keys: a local sequence is a 1-based integer-keyed tree, so `for x in xs` binds
+/// its positions exactly as a keyed tree binds its keys and a saved sequence binds
+/// its positions, with `reversed` walking those keys descending. `values(...)` is
+/// the explicit value view, materialized to its element sequence.
 pub(crate) fn eval_collection(
     iterable: &ExecExpr,
     env: &mut Env<'_>,
 ) -> Result<Vec<Value>, RuntimeError> {
-    if let Some(inner) = reversed_argument(iterable) {
-        if let Some(layer) = keys_argument(inner) {
-            if let Some(keys) = enumerate_reversed_local_keys_call_arg(layer, iterable.span(), env)?
-            {
-                return Ok(keys);
-            }
-            return Err(durable_collection_value(iterable.span()));
-        }
-        if inner.saved_place().is_some() {
-            return Err(durable_collection_value(iterable.span()));
-        }
+    if is_value_view(iterable) {
+        return match eval_expr(iterable, env)? {
+            Value::Sequence(items) => Ok(items),
+            _ => Err(unsupported("iterating this value", iterable.span())),
+        };
     }
-    if let Some(path) = keys_argument(iterable) {
-        if let Some(keys) = enumerate_local_keys_call_arg(path, iterable.span(), env)? {
+    if let Some(inner) = reversed_argument(iterable) {
+        let layer = keys_argument(inner).unwrap_or(inner);
+        if let Some(keys) = enumerate_reversed_local_keys_call_arg(layer, iterable.span(), env)? {
             return Ok(keys);
         }
         return Err(durable_collection_value(iterable.span()));
     }
-    if iterable.saved_place().is_some() {
-        return Err(durable_collection_value(iterable.span()));
+    let layer = keys_argument(iterable).unwrap_or(iterable);
+    if let Some(keys) = enumerate_local_keys_call_arg(layer, iterable.span(), env)? {
+        return Ok(keys);
     }
-    match eval_expr(iterable, env)? {
-        Value::Sequence(items) => Ok(items),
-        value @ Value::LocalTree(_) => {
-            enumerate_local_collection_dir(value, Direction::Ascending, iterable.span())
-        }
-        _ => Err(unsupported("iterating this value", iterable.span())),
-    }
+    Err(durable_collection_value(iterable.span()))
+}
+
+/// Whether `iterable` is an explicit value view — `values(...)` or
+/// `reversed(values(...))` — that materializes element values rather than keys.
+fn is_value_view(iterable: &ExecExpr) -> bool {
+    let subject = reversed_argument(iterable).unwrap_or(iterable);
+    matches!(
+        values_or_entries(subject),
+        Some(call) if matches!(call.kind, crate::collection::MaterializeKind::Values)
+    )
 }
 
 /// A two-name head materializes pair rows from a local keyed collection. A
@@ -464,15 +469,15 @@ fn eval_collection_entry_rows(
         return Err(durable_collection_value(iterable.span()));
     }
     match eval_expr(layer, env)? {
-        value @ Value::LocalTree(_) => {
+        value @ (Value::LocalTree(_) | Value::Sequence(_)) => {
             materialize_local_collection_dir(value, direction, iterable.span())
         }
         _ => Err(non_pair_iterable(span)),
     }
 }
 
-/// A two-name binding requires pair rows; a plain sequence or scalar iterable has no
-/// keys to bind, so the head must wrap it in `entries(...)`.
+/// A two-name binding requires pair rows; a scalar iterable has no keys to bind, so
+/// the head must wrap it in `entries(...)`.
 fn non_pair_iterable(span: SourceSpan) -> RuntimeError {
     unsupported(
         "a two-name binding over a non-pair iterable (use entries(...))",

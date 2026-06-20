@@ -117,12 +117,12 @@ fn next_id_over_a_singleton_root_is_flagged() {
 // --- Ordered navigation: reversed / next / prev ---
 
 /// `reversed`, `next`, and `prev` are builtins, so they never report
-/// `check.unresolved_call`. `reversed` is type-transparent: it yields the same
-/// element type as its argument, so `for w in reversed(std::text::split(...))`
-/// binds `w` to `string` just like `for w in std::text::split(...)` does — and
-/// misusing it (`w + 1`, a string plus an int) is flagged. If `reversed` regressed
-/// the element type to `Unknown`, this misuse would pass silently, so the
-/// diagnostic proves the element type survives the wrapper.
+/// `check.unresolved_call`. `reversed` is type-transparent over a value view: it
+/// yields the same element type as its argument, so `for w in
+/// reversed(values(std::text::split(...)))` binds `w` to `string` — and misusing
+/// it (`w + 1`, a string plus an int) is flagged. If `reversed` regressed the
+/// element type to `Unknown`, this misuse would pass silently, so the diagnostic
+/// proves the element type survives the wrapper.
 #[test]
 fn reversed_preserves_the_sequence_element_type() {
     let root = temp_project("program-reversed-transparent", |root| {
@@ -131,7 +131,7 @@ fn reversed_preserves_the_sequence_element_type() {
             "src/shelf/words.mw",
             "module shelf::words\n\
              fn shout()\n\
-             \x20   for w in reversed(std::text::split(\"a,b,c\", \",\"))\n\
+             \x20   for w in reversed(values(std::text::split(\"a,b,c\", \",\")))\n\
              \x20       var x = w + 1\n",
         );
     });

@@ -183,13 +183,13 @@ fn an_invalid_enum_member_scrutinee_does_not_create_arm_references() {
 #[test]
 fn a_match_arm_resolves_through_a_sequence_enum_loop_binding() {
     // Loop bindings use the checker-shared `for` frame, so iterating
-    // `sequence[Status]` makes `s` a `Status` value for relative match arms.
+    // `values(sequence[Status])` makes `s` a `Status` value for relative match arms.
     let source = "module m\n\
         enum Status\n    \
         active\n    \
         archived\n\
         fn classify(items: sequence[Status]): int\n    \
-        for s in items\n        \
+        for s in values(items)\n        \
         match s\n            \
         active\n                \
         return 1\n            \

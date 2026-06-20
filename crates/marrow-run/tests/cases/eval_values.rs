@@ -294,11 +294,12 @@ fn base64_decode_rejects_invalid_text() {
 
 #[test]
 fn splits_a_string_and_iterates_the_sequence() {
-    // `std::text::split` yields a sequence the `for` loop iterates in order.
+    // `std::text::split` yields a sequence; `values(...)` binds its element values
+    // in order, while the bare sequence binds positions.
     let program = checked_program(
         "pub fn f(): string\n\
          \x20   var result = \"\"\n\
-         \x20   for word in std::text::split(\"a,b,c\", \",\")\n\
+         \x20   for word in values(std::text::split(\"a,b,c\", \",\"))\n\
          \x20       result = result + word\n\
          \x20   return result\n",
     );
@@ -309,17 +310,19 @@ fn splits_a_string_and_iterates_the_sequence() {
 }
 
 #[test]
-fn iterates_a_sequence_counting_its_elements() {
+fn iterates_a_sequence_binding_its_positions() {
+    // A bare local sequence binds its 1-based positions, so summing the loop
+    // variable over a four-element sequence yields 1+2+3+4.
     let program = checked_program(
-        "pub fn split_count(): int\n\
-         \x20   var n = 0\n\
-         \x20   for word in std::text::split(\"a,b,c,d\", \",\")\n\
-         \x20       n = n + 1\n\
-         \x20   return n\n",
+        "pub fn split_positions(): int\n\
+         \x20   var total = 0\n\
+         \x20   for pos in std::text::split(\"a,b,c,d\", \",\")\n\
+         \x20       total = total + pos\n\
+         \x20   return total\n",
     );
     assert_eq!(
-        run(checked_entry!(&program, "test::split_count")).unwrap(),
-        Some(Value::Int(4))
+        run(checked_entry!(&program, "test::split_positions")).unwrap(),
+        Some(Value::Int(10))
     );
 }
 
@@ -334,17 +337,23 @@ fn two_name_loop_over_a_range_is_unsupported() {
 }
 
 #[test]
-fn append_on_a_local_sequence_is_checker_rejected() {
-    checker_rejects(
+fn append_and_count_over_a_local_sequence_are_typed_int() {
+    // `append` returns the appended position and `count` returns the element count,
+    // both `int`; the bare sequence loop then sums its 1-based positions.
+    let program = checked_program(
         "pub fn grow(): int\n\
          \x20   var order: sequence[int]\n\
          \x20   const first: int = append(order, 10)\n\
          \x20   const second: int = append(order, 20)\n\
          \x20   var total = first * 100 + second * 10 + count(order)\n\
-         \x20   for value in order\n\
-         \x20       total = total + value\n\
+         \x20   for pos in order\n\
+         \x20       total = total + pos\n\
          \x20   return total\n",
-        "check.untyped_value",
+    );
+    // first=1, second=2, count=2: 100 + 20 + 2 = 122; positions 1+2 add 3 → 125.
+    assert_eq!(
+        run(checked_entry!(&program, "test::grow")).unwrap(),
+        Some(Value::Int(125))
     );
 }
 
@@ -360,6 +369,114 @@ fn reads_and_writes_a_local_sequence_by_position() {
     assert_eq!(
         run(checked_entry!(&program, "test::seq_index")).unwrap(),
         Some(Value::Int(15))
+    );
+}
+
+#[test]
+fn single_name_loop_over_a_local_sequence_binds_one_based_positions() {
+    // A local sequence is a 1-based integer-keyed tree, so a single loop variable
+    // binds its position, mirroring a saved sequence and a local keyed tree.
+    let program = checked_program(
+        "pub fn seq(): string\n\
+         \x20   var xs: sequence[int]\n\
+         \x20   xs(1) = 10\n\
+         \x20   xs(2) = 20\n\
+         \x20   xs(3) = 30\n\
+         \x20   var out: string = \"\"\n\
+         \x20   for pos in xs\n\
+         \x20       const typed: int = pos\n\
+         \x20       out = $\"{out}{pos};\"\n\
+         \x20   return out\n",
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::seq")).unwrap(),
+        Some(Value::Str("1;2;3;".into()))
+    );
+}
+
+#[test]
+fn two_name_loop_over_a_local_sequence_binds_position_and_value() {
+    let program = checked_program(
+        "pub fn seq(): string\n\
+         \x20   var xs: sequence[int]\n\
+         \x20   xs(1) = 10\n\
+         \x20   xs(2) = 20\n\
+         \x20   xs(3) = 30\n\
+         \x20   var out: string = \"\"\n\
+         \x20   for pos, value in xs\n\
+         \x20       const typedPos: int = pos\n\
+         \x20       const typedValue: int = value\n\
+         \x20       out = $\"{out}{pos}={value};\"\n\
+         \x20   return out\n",
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::seq")).unwrap(),
+        Some(Value::Str("1=10;2=20;3=30;".into()))
+    );
+}
+
+#[test]
+fn local_sequence_value_and_entry_views_stay_value_based() {
+    let program = checked_program(
+        "pub fn seq(): string\n\
+         \x20   var xs: sequence[int]\n\
+         \x20   xs(1) = 10\n\
+         \x20   xs(2) = 20\n\
+         \x20   xs(3) = 30\n\
+         \x20   var out: string = \"\"\n\
+         \x20   for value in values(xs)\n\
+         \x20       const typed: int = value\n\
+         \x20       out = $\"{out}v{value};\"\n\
+         \x20   for pos in reversed(xs)\n\
+         \x20       const typedPos: int = pos\n\
+         \x20       out = $\"{out}r{pos};\"\n\
+         \x20   for value in reversed(values(xs))\n\
+         \x20       const typedValue: int = value\n\
+         \x20       out = $\"{out}rv{value};\"\n\
+         \x20   for pos, value in entries(xs)\n\
+         \x20       out = $\"{out}e{pos}={value};\"\n\
+         \x20   return out\n",
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::seq")).unwrap(),
+        Some(Value::Str(
+            "v10;v20;v30;r3;r2;r1;rv30;rv20;rv10;e1=10;e2=20;e3=30;".into()
+        ))
+    );
+}
+
+#[test]
+fn count_over_a_local_sequence_types_int() {
+    // `count` of a local collection returns `int`, usable in a typed binding and
+    // arithmetic, exactly as `count` of a saved path does.
+    let program = checked_program(
+        "pub fn seq(): int\n\
+         \x20   var xs: sequence[int]\n\
+         \x20   xs(1) = 10\n\
+         \x20   xs(2) = 20\n\
+         \x20   xs(3) = 30\n\
+         \x20   const n: int = count(xs)\n\
+         \x20   return n + 1\n",
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::seq")).unwrap(),
+        Some(Value::Int(4))
+    );
+}
+
+#[test]
+fn count_over_a_local_keyed_tree_types_int() {
+    let program = checked_program(
+        "pub fn keyed(): int\n\
+         \x20   var scores(playerId: string): int\n\
+         \x20   scores(\"p1\") = 10\n\
+         \x20   scores(\"p2\") = 20\n\
+         \x20   const n: int = count(scores)\n\
+         \x20   return n\n",
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::keyed")).unwrap(),
+        Some(Value::Int(2))
     );
 }
 
@@ -479,6 +596,9 @@ fn reversed_keys_over_reversed_local_keyed_tree_yields_ascending_keys() {
 
 #[test]
 fn materialized_reversed_keys_over_reversed_local_keyed_tree_yields_ascending_keys() {
+    // `reversed(keys(reversed(scores)))` materializes a sequence whose values are
+    // the keys; iterating that sequence binds positions, so the captured keys are
+    // its `values(...)` view.
     let program = checked_program(
         "pub fn keyed(): string\n\
          \x20   var scores(playerId: string): int\n\
@@ -486,7 +606,7 @@ fn materialized_reversed_keys_over_reversed_local_keyed_tree_yields_ascending_ke
          \x20   scores(\"p1\") = 10\n\
          \x20   const players = reversed(keys(reversed(scores)))\n\
          \x20   var out: string = \"\"\n\
-         \x20   for playerId in players\n\
+         \x20   for playerId in values(players)\n\
          \x20       out = $\"{out}{playerId};\"\n\
          \x20   return out\n",
     );
@@ -517,6 +637,8 @@ fn reversed_loop_over_a_local_keyed_tree_binds_descending_keys() {
 
 #[test]
 fn reversed_local_keyed_tree_materializes_a_key_sequence() {
+    // `reversed(scores)` materializes a sequence of the descending keys; iterating
+    // it binds positions, so the captured keys are its `values(...)` view.
     let program = checked_program(
         "pub fn keyed(): string\n\
          \x20   var scores(playerId: string): int\n\
@@ -524,7 +646,7 @@ fn reversed_local_keyed_tree_materializes_a_key_sequence() {
          \x20   scores(\"p1\") = 10\n\
          \x20   const players = reversed(scores)\n\
          \x20   var out: string = \"\"\n\
-         \x20   for playerId in players\n\
+         \x20   for playerId in values(players)\n\
          \x20       const typed: string = playerId\n\
          \x20       out = $\"{out}{playerId};\"\n\
          \x20   return out\n",

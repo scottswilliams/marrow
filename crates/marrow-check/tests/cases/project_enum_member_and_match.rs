@@ -294,7 +294,7 @@ fn a_duplicate_match_arm_is_a_check_error() {
 
 #[test]
 fn a_match_over_a_sequence_enum_element_enforces_its_identity() {
-    // A `sequence[Status]` element carries `Status`: iterating it binds the loop
+    // A `sequence[Status]` element carries `Status`: `values(...)` binds the loop
     // variable to that enum, so a `match` over it is dispatched against `Status`'s
     // members. Arms naming a *different* enum's members (`Color`'s `red`/`green`)
     // are then unknown `Status` members — a check error. Without recursing the
@@ -307,7 +307,7 @@ fn a_match_over_a_sequence_enum_element_enforces_its_identity() {
          enum Status\n    active\n    archived\n\n\
          enum Color\n    red\n    green\n\n\
          fn f(items: sequence[Status])\n    \
-         for s in items\n        \
+         for s in values(items)\n        \
          match s\n            red\n                return\n            green\n                return\n",
         "check.unknown_enum_member",
     );
