@@ -1013,6 +1013,158 @@ fn a_saved_field_read_feeds_operator_checks() {
 }
 
 #[test]
+fn a_binary_operator_over_a_saved_collection_is_a_check_error() {
+    // A saved store root is an in-place stream with no materialized value, so it can
+    // never be a binary operand. `count(^books + ^books)` once checked clean because a
+    // saved-collection operand infers `Unknown`, deferring the operator check; the
+    // operand rule now rejects it at the operator as a `check.operator_type` rather than
+    // letting it fault clean-then-runtime.
+    let found = check_module(
+        "saved-collection-operand",
+        "module m\n\
+         resource Book\n    required title: string\n\
+         store ^books(id: int): Book\n\n\
+         fn f(): int\n    return count(^books + ^books)\n",
+        "check.operator_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn binding_a_saved_collection_operator_result_is_a_check_error() {
+    // The same operand rule fires when the result is bound to a local: the saved
+    // collection is rejected at the operator, so no laundered value reaches the runtime.
+    let found = check_module(
+        "saved-collection-operand-bind",
+        "module m\n\
+         resource Book\n    required title: string\n\
+         store ^books(id: int): Book\n\n\
+         fn g()\n    var x = ^books + ^books\n    print($\"{count(x)}\")\n",
+        "check.operator_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn a_saved_collection_on_one_operator_side_is_a_check_error() {
+    // The rejection fires when either side is a saved collection, not only both: a saved
+    // root added to a local sequence is still a saved collection in operator position.
+    let found = check_module(
+        "saved-collection-operand-one-side",
+        "module m\n\
+         resource Book\n    required title: string\n\
+         store ^books(id: int): Book\n\n\
+         fn h(): int\n    var xs = std::text::split(\"a,b\", \",\")\n    return count(^books + xs)\n",
+        "check.operator_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn a_saved_keys_combinator_as_an_operator_operand_is_a_check_error() {
+    // `keys(^books)` is a saved stream laundered through a combinator; as an operator
+    // operand it is the same un-materializable saved collection the bare root is.
+    let found = check_module(
+        "saved-keys-operand",
+        "module m\n\
+         resource Book\n    required title: string\n\
+         store ^books(id: int): Book\n\n\
+         fn f(): int\n    return count(keys(^books) + keys(^books))\n",
+        "check.operator_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn a_saved_scalar_operand_stays_legal() {
+    // A saved scalar read is a single stored value, not a collection, so it is a valid
+    // operator operand: `^books(1).price + 1` must still check clean.
+    let report = check_module_report(
+        "saved-scalar-operand-ok",
+        "module m\n\
+         resource Book\n    price: int\n\
+         store ^books(id: int): Book\n\n\
+         fn f(): int\n    return (^books(1).price ?? 0) + 1\n",
+    );
+    assert_clean(&report);
+}
+
+#[test]
+fn a_saved_collection_as_a_comparison_operand_is_a_check_error() {
+    // A comparison is a binary operator like any other; a saved collection cannot be one
+    // of its operands. The operand rule rejects it before the comparison's own typing.
+    let found = check_module(
+        "saved-collection-comparison",
+        "module m\n\
+         resource Book\n    required title: string\n\
+         store ^books(id: int): Book\n\
+         store ^others(id: int): Book\n\n\
+         fn f(): bool\n    return ^books == ^others\n",
+        "check.operator_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn a_saved_collection_as_a_coalesce_operand_is_a_check_error() {
+    // `??` defaults an absent path read; a saved collection is a stream, not an absent
+    // scalar, so it is not a coalesce subject. It is rejected as an operator operand.
+    let found = check_module(
+        "saved-collection-coalesce",
+        "module m\n\
+         resource Book\n    required title: string\n\
+         store ^books(id: int): Book\n\n\
+         fn f(): int\n    return count(^books ?? ^books)\n",
+        "check.operator_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn printing_a_saved_collection_is_a_check_error() {
+    // A saved collection is an in-place stream with no text form, so it cannot be a
+    // print value. The render surface rejects it at check rather than faulting at run.
+    let found = check_module(
+        "print-saved-collection",
+        "module m\n\
+         resource Book\n    required title: string\n\
+         store ^books(id: int): Book\n\n\
+         fn f()\n    print(^books)\n",
+        "check.operator_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn interpolating_a_saved_collection_is_a_check_error() {
+    // String interpolation is the same render surface as `print`: a saved collection
+    // has no text form there either.
+    let found = check_module(
+        "interp-saved-collection",
+        "module m\n\
+         resource Book\n    required title: string\n\
+         store ^books(id: int): Book\n\n\
+         fn f(): string\n    return $\"{^books}\"\n",
+        "check.operator_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn interpolating_a_saved_scalar_is_not_flagged() {
+    // A saved scalar read is a single stored value with a text form, so interpolating
+    // it stays legal — the render rejection must not over-reach to saved scalars.
+    let report = check_module_report(
+        "interp-saved-scalar-ok",
+        "module m\n\
+         resource Book\n    pages: int\n\
+         store ^books(id: int): Book\n\n\
+         fn f(id: Id(^books)): string\n    return $\"{^books(id).pages ?? 0}\"\n",
+    );
+    assert_clean(&report);
+}
+
+#[test]
 fn an_unknown_saved_path_field_is_flagged() {
     let report = check_module_report(
         "saved-field-unknown",

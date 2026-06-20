@@ -4,7 +4,7 @@
 use crate::support;
 use support::*;
 
-use marrow_run::{RUN_UNSUPPORTED, Value};
+use marrow_run::Value;
 use marrow_store::tree::TreeStore;
 
 const NESTED_KEYED_LAYERS: &str = "\
@@ -187,16 +187,6 @@ pub fn tagValuesReversed(id: int)
 pub fn tagEntriesReversed(id: int)
     for pos, tag in reversed(entries(^books(id).tags))
         print($\"{pos}={tag}\")
-
-pub fn titlesValue()
-    const books = values(^books)
-    for book in books
-        print(book.title)
-
-pub fn tagValuesValue(id: int)
-    const tags = values(^books(id).tags)
-    for tag in tags
-        print(tag)
 ";
 
 #[test]
@@ -275,40 +265,17 @@ fn values_and_entries_materialize_entries_over_a_keyed_layer() {
 }
 
 #[test]
-fn saved_values_as_values_are_rejected() {
-    let program = checked_program(BOOK_VALUES);
-    let store = TreeStore::memory();
-    run_entry(
-        &store,
-        checked_entry!(
-            &program,
-            "test::add",
-            Value::Int(1),
-            Value::Str("Mort".into())
-        ),
-    )
-    .expect("add");
-    run_entry(
-        &store,
-        checked_entry!(
-            &program,
-            "test::tag",
-            Value::Int(1),
-            Value::Str("fiction".into())
-        ),
-    )
-    .expect("tag");
-
-    assert_run_error(
-        run_entry(&store, checked_entry!(&program, "test::titlesValue")),
-        RUN_UNSUPPORTED,
+fn saved_values_as_values_are_checker_rejected() {
+    // Binding `values(^books)` or `values(^books(id).tags)` to a local materializes a
+    // saved collection — an in-place stream with no local value. Both are check errors,
+    // not runtime faults.
+    checker_rejects(
+        "resource Book\n    required title: string\n    tags: sequence[string]\nstore ^books(id: int): Book\n\npub fn titlesValue()\n    const books = values(^books)\n    for book in books\n        print(book.title)\n",
+        "check.collection_unsupported",
     );
-    assert_run_error(
-        run_entry(
-            &store,
-            checked_entry!(&program, "test::tagValuesValue", Value::Int(1)),
-        ),
-        RUN_UNSUPPORTED,
+    checker_rejects(
+        "resource Book\n    required title: string\n    tags: sequence[string]\nstore ^books(id: int): Book\n\npub fn tagValuesValue(id: int)\n    const tags = values(^books(id).tags)\n    for tag in tags\n        print(tag)\n",
+        "check.collection_unsupported",
     );
 }
 

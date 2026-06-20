@@ -123,3 +123,49 @@ fn passing_a_wrong_key_type_to_a_keyed_parameter_is_a_check_error() {
         "check.call_argument",
     );
 }
+
+#[test]
+fn passing_a_bare_saved_root_to_a_keyed_tree_parameter_is_a_check_error() {
+    // A saved store root is iterated in place, never passed by value: filling a
+    // by-value keyed-tree parameter from it is a clean check error through the
+    // production pipeline, not the runtime fault it used to defer.
+    checker_rejects(
+        "resource Player\n    required name: string\n\
+         store ^players(id: int): Player\n\
+         pub fn total(scores(id: int): Player): int\n\
+         \x20   return count(scores)\n\
+         pub fn main(): int\n\
+         \x20   return total(^players)\n",
+        "check.call_argument",
+    );
+}
+
+#[test]
+fn passing_a_bare_saved_root_to_a_sequence_parameter_is_a_check_error() {
+    // The same rejection covers a `sequence[T]` parameter: a saved root cannot be
+    // passed by value into it.
+    checker_rejects(
+        "resource Player\n    required name: string\n\
+         store ^players(id: int): Player\n\
+         pub fn total(xs: sequence[Id(^players)]): int\n\
+         \x20   return count(xs)\n\
+         pub fn main(): int\n\
+         \x20   return total(^players)\n",
+        "check.call_argument",
+    );
+}
+
+#[test]
+fn a_local_sequence_parameter_still_runs() {
+    // The rejection must not over-reach: a local sequence passes by value and runs.
+    let program = checked_program(
+        "pub fn total(xs: sequence[string]): int\n\
+         \x20   return count(xs)\n\
+         pub fn main(): int\n\
+         \x20   return total(std::text::split(\"a,b,c\", \",\"))\n",
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::main")).unwrap(),
+        Some(Value::Int(3))
+    );
+}

@@ -733,6 +733,11 @@ pub enum DiagnosticPayload {
         expected: MarrowType,
         found: MarrowType,
     },
+    /// `check.call_argument`: a saved collection was passed to a by-value
+    /// local-collection parameter. A saved collection is iterated in place, never
+    /// materialized as a local value, so the parameter type it could not fill is the
+    /// fact a consumer needs.
+    SavedCollectionByValue { parameter: MarrowType },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

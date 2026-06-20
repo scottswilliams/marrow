@@ -23,11 +23,12 @@ use crate::{
     CheckedProgram, MarrowType,
 };
 
+use super::calls::is_by_value_collection_slot;
 use super::collections::{
     catch_frame, check_entries_value_position, check_for_collection_support,
-    check_for_entries_support, check_for_scalar_iterable, for_frame, is_partial_key_layer_path,
-    is_saved_index_branch_path, is_saved_index_range_path, is_saved_key_range_path,
-    is_saved_path_with_key_range_arg,
+    check_for_entries_support, check_for_scalar_iterable, for_frame, has_collection_unsupported,
+    is_partial_key_layer_path, is_saved_index_branch_path, is_saved_index_range_path,
+    is_saved_key_range_path, is_saved_path_with_key_range_arg,
 };
 use super::operators::{check_assignment, check_condition, check_return_type, check_throw_type};
 use super::ranges::{
@@ -344,6 +345,9 @@ impl StatementCheck<'_> {
             Some(value) => {
                 let value_type = self.infer(value);
                 self.check_range_value(value);
+                if self.value_is_saved_collection(value) {
+                    self.reject_saved_collection_materialization(value);
+                }
                 value_type
             }
             None => MarrowType::Unknown,
@@ -371,6 +375,46 @@ impl StatementCheck<'_> {
             }
         }
         self.bind_local(statement);
+    }
+
+    /// Whether `value` materializes a saved collection — a store root, saved keyed
+    /// sub-layer, or index branch, bare or laundered through `keys`/`values` — which
+    /// streams in place and has no local materialization. Such a value cannot fill a
+    /// local: binding it to a `const`/`var` or assigning it to a local collection would
+    /// materialize the un-materializable, and every downstream use of the laundered
+    /// local then checks clean and faults at runtime. A single saved value (a scalar
+    /// leaf, a whole record) is excluded, so a legitimate value copy is untouched. The
+    /// classifier is shared with the by-value-argument boundary.
+    fn value_is_saved_collection(&self, value: &marrow_syntax::Expression) -> bool {
+        super::calls::materializes_saved_collection_by_value(
+            self.program,
+            value,
+            self.scope,
+            self.file,
+        )
+    }
+
+    /// Whether `target` addresses a saved place. Assigning to one is a saved write, so
+    /// a saved-collection value on the right is a whole-root replacement, not a local
+    /// materialization.
+    fn target_is_saved_place(&self, target: &marrow_syntax::Expression) -> bool {
+        lower_expr_for_file(self.program, self.file, target, self.scope)
+            .is_some_and(|checked| checked.saved_place().is_some())
+    }
+
+    fn reject_saved_collection_materialization(&mut self, value: &marrow_syntax::Expression) {
+        // A combinator-wrapped saved traversal (`entries(^books)`) already carries a more
+        // precise `collection_unsupported` at this span from the combinator-position rule.
+        // Defer to it rather than push a second diagnostic at the same place.
+        if has_collection_unsupported(self.diagnostics, self.file, value.span()) {
+            return;
+        }
+        self.diagnostics.push(CheckDiagnostic::error(
+            CHECK_COLLECTION_UNSUPPORTED,
+            self.file,
+            value.span(),
+            "a saved collection is iterated in place, not materialized as a local; iterate it or build a local collection",
+        ));
     }
 
     fn bind_local(&mut self, statement: &marrow_syntax::Statement) {
@@ -405,6 +449,12 @@ impl StatementCheck<'_> {
         );
         let value_type = self.infer(value);
         self.check_range_value(value);
+        // Assigning a saved collection to a local target launders the same
+        // un-materializable stream the binding case does. Assigning to a saved target is
+        // a whole-root write, not a local materialization, so it is excluded.
+        if self.value_is_saved_collection(value) && !self.target_is_saved_place(target) {
+            self.reject_saved_collection_materialization(value);
+        }
         if is_saved_index_branch_path(self.program, target, self.scope, self.file) {
             self.diagnostics.push(CheckDiagnostic::error(
                 crate::rules::CHECK_INVALID_ASSIGN_TARGET,
@@ -543,6 +593,15 @@ impl StatementCheck<'_> {
         if let Some(value) = value {
             let value_type = self.infer(value);
             self.check_range_value(value);
+            // Returning a saved collection as a declared by-value collection (a
+            // `sequence[...]` return type) launders the same un-materializable stream a
+            // binding or assignment does, then hands it to every caller that iterates the
+            // result. Reject it at this boundary so no laundered value reaches the runtime.
+            if is_by_value_collection_slot(self.return_type)
+                && self.value_is_saved_collection(value)
+            {
+                self.reject_saved_collection_materialization(value);
+            }
             check_return_type(
                 self.file,
                 span,

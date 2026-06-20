@@ -211,6 +211,7 @@ fn check_builtin_call(
     }
     if let Some(params) = std_call_params(segments) {
         check_std_call_args(env, segments, args);
+        check_std_collection_args(env, &label, args, &params);
         check_args_against(
             &label,
             &params,
@@ -423,6 +424,17 @@ fn check_user_function_call(
                 continue;
             }
             supplied[param_index] = true;
+            if reject_saved_collection_by_value(
+                env.program,
+                &callee,
+                &arg.value,
+                &param.ty,
+                env.scope,
+                env.file,
+                env.diagnostics,
+            ) {
+                continue;
+            }
             check_one_arg(
                 &callee,
                 &param.ty,
@@ -470,6 +482,31 @@ fn check_std_call_args(
 ) {
     if segments == ["std", "assert", "absent"] {
         check_assert_absent_args(env, args);
+    }
+}
+
+/// Apply the saved-collection-by-value rejection to a std helper's positional
+/// arguments. Std helpers are positional-only, so the parameter at each index types
+/// the matching argument; a `sequence[T]` parameter (`text::join`, `csv::row`) is the
+/// same by-value collection a user function takes, so it shares the one rejecter.
+fn check_std_collection_args(
+    env: &mut CallEnv<'_>,
+    label: &str,
+    args: &[marrow_syntax::Argument],
+    params: &[Option<MarrowType>],
+) {
+    for (arg, parameter) in args.iter().zip(params) {
+        if let Some(parameter) = parameter {
+            reject_saved_collection_by_value(
+                env.program,
+                label,
+                &arg.value,
+                parameter,
+                env.scope,
+                env.file,
+                env.diagnostics,
+            );
+        }
     }
 }
 
@@ -1042,6 +1079,81 @@ pub(crate) fn check_one_arg(
         }
         None => {}
     }
+}
+
+/// Whether a slot holds a local collection by value (a local sequence or keyed map).
+/// A saved collection has no local materialization, so it can never fill such a slot —
+/// a by-value parameter or a declared return type alike; every other shape is
+/// irrelevant to that rejection.
+pub(crate) fn is_by_value_collection_slot(slot: &MarrowType) -> bool {
+    matches!(slot, MarrowType::Sequence(_) | MarrowType::LocalTree { .. })
+}
+
+/// Whether `expr` materializes a saved collection by value: either a bare saved
+/// collection — a store root, a saved keyed sub-layer, or an index branch, all
+/// iterated in place with no single value to copy — or one laundered through a
+/// value-materializing traversal combinator (`keys`/`values`/`entries`/`reversed`),
+/// which yields the same saved stream the runtime refuses to materialize. The bare
+/// case excludes a single saved value (a scalar leaf, a whole record) so a legitimate
+/// value copy stays valid; the wrapped case is recognized syntactically, since a
+/// combinator over a saved path is a saved stream regardless of scope. The one
+/// classifier shared by every by-value boundary — a `const`/`var` binding, a local
+/// assignment, a declared return, a by-value parameter, and a std-helper argument — so
+/// none lets the un-materializable stream check clean and fault at runtime.
+pub(crate) fn materializes_saved_collection_by_value(
+    program: &CheckedProgram,
+    expr: &marrow_syntax::Expression,
+    scope: &[HashMap<String, MarrowType>],
+    file: &Path,
+) -> bool {
+    if crate::rules::is_wrapped_saved_traversal(expr) {
+        return true;
+    }
+    lower_expr_for_file(program, file, expr, scope)
+        .is_some_and(|checked| SavedPlaceResolver::new(program).is_saved_collection(&checked))
+}
+
+/// Reject a saved collection passed to a by-value local-collection parameter. A store
+/// root, a saved keyed sub-layer, an index branch, or one laundered through
+/// `keys`/`values` is iterated in place, never materialized into a local value, so
+/// passing it by value would silently fault at runtime. The single owner of this
+/// argument rule, shared by the user-function and std argument loops: it fires only
+/// when the parameter is a by-value collection and the argument materializes a saved
+/// collection, leaving a local collection or a single saved value (a scalar leaf, a
+/// whole record) untouched. Returns whether the argument was rejected so the caller
+/// skips the plain compatibility check, whose `Unknown` saved-collection type would
+/// otherwise defer.
+fn reject_saved_collection_by_value(
+    program: &CheckedProgram,
+    label: &str,
+    arg: &marrow_syntax::Expression,
+    parameter: &MarrowType,
+    scope: &[HashMap<String, MarrowType>],
+    file: &Path,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) -> bool {
+    if !is_by_value_collection_slot(parameter) {
+        return false;
+    }
+    if !materializes_saved_collection_by_value(program, arg, scope, file) {
+        return false;
+    }
+    diagnostics.push(
+        CheckDiagnostic::error(
+            CHECK_CALL_ARGUMENT,
+            file,
+            arg.span(),
+            format!(
+                "argument to `{label}` is a saved collection, which is iterated in place, not \
+                 passed by value into `{}`; iterate it or build a local collection",
+                marrow_type_name(parameter),
+            ),
+        )
+        .with_payload(DiagnosticPayload::SavedCollectionByValue {
+            parameter: parameter.clone(),
+        }),
+    );
+    true
 }
 
 /// Check positional `args` against a fixed positional parameter list (the std

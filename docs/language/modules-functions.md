@@ -227,9 +227,13 @@ fn total(scores(player: string): int): int
     return sum
 ```
 
-The argument is a caller-local collection of the same shape. Because a parameter
-is read-only, a function reads its keyed parameter but cannot write through it;
-return a new collection to hand back a changed one.
+The argument is a caller-local collection of the same shape. A saved collection
+(a store root, a saved sub-layer, or an index branch) is iterated in place, not a
+local value, so it cannot fill a by-value collection slot — a parameter or a
+declared collection return type alike; iterate it or build a local collection
+instead. Because a parameter is read-only, a function
+reads its keyed parameter but cannot write through it; return a new collection to
+hand back a changed one.
 
 Return a replacement value when a helper needs to transform a caller-local
 value:

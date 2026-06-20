@@ -201,6 +201,19 @@ impl<'a> SavedPlaceResolver<'a> {
         self.value_type(expr).is_some() && self.key_type(expr).is_none()
     }
 
+    /// Whether the path names a saved collection — a saved place that streams more
+    /// than one element rather than addressing a single value: a store root, a saved
+    /// keyed sub-layer, or an index branch. Such a place is iterated in place and has
+    /// no local materialization, so it cannot be passed to a by-value parameter. A
+    /// single stored value (`value_type` set, no key) is excluded even when a fully
+    /// addressed unique index branch reports a key, so a saved scalar or whole record
+    /// read stays a valid by-value argument.
+    pub(crate) fn is_saved_collection(&self, expr: &CheckedExpr) -> bool {
+        expr.saved_place().is_some()
+            && self.value_type(expr).is_none()
+            && self.key_type(expr).is_some()
+    }
+
     /// Whether iterating this path would pair each streamed key with a sub-layer
     /// rather than a leaf value — a partial composite layer with more than one column
     /// still to fill. Its value position is itself a collection, so any value-reading

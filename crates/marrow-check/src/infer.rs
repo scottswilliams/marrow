@@ -293,6 +293,7 @@ fn infer_value(
                         check_interpolation_text_escapes(text, *span, file, diagnostics);
                     }
                     marrow_syntax::InterpolationPart::Expr(expr) => {
+                        let before = diagnostics.len();
                         let ty = infer_type_with_read_scope(
                             program,
                             expr,
@@ -302,7 +303,16 @@ fn infer_value(
                             diagnostics,
                             transform_old,
                         );
-                        if type_renderable_at_runtime(&ty) == Some(false) {
+                        if saved_collection_render_unowned(
+                            program,
+                            expr,
+                            scope,
+                            file,
+                            diagnostics,
+                            before,
+                        ) {
+                            diagnostics.push(saved_collection_render_diagnostic(file, expr.span()));
+                        } else if type_renderable_at_runtime(&ty) == Some(false) {
                             diagnostics.push(render_unsupported_source_diagnostic(
                                 file,
                                 expr.span(),
@@ -360,6 +370,22 @@ fn infer_value(
             right,
             span,
         } => {
+            // A saved collection is an in-place stream with no materialized value, so it
+            // is never an operator operand — arithmetic, comparison, `is`, or `??` alike.
+            // Such an operand infers `Unknown`, so the operator check would otherwise
+            // defer and the program would fault clean-then-runtime; reject it here at the
+            // operator. A saved scalar read is a single value and stays a legal operand.
+            if binary_operand_is_saved_collection(program, left, scope, file)
+                || binary_operand_is_saved_collection(program, right, scope, file)
+            {
+                diagnostics.push(CheckDiagnostic::error(
+                    CHECK_OPERATOR_TYPE,
+                    file,
+                    *span,
+                    "operator cannot be applied to a saved collection; iterate it instead",
+                ));
+                return MarrowType::Invalid;
+            }
             let left_type = infer_type_with_read_scope(
                 program,
                 left,
@@ -505,7 +531,15 @@ fn infer_value(
                     transform_old,
                 }));
             }
-            check_print_argument_renderable(callee, args, &arg_types, file, diagnostics);
+            check_print_argument_renderable(
+                program,
+                callee,
+                args,
+                &arg_types,
+                scope,
+                file,
+                diagnostics,
+            );
             if let Some(ty) = local_collection_access_type(
                 callee,
                 args,
@@ -929,9 +963,11 @@ fn infer_saved_key_range_arg_type(
 /// than at runtime. Only a single positional argument is examined; arity and other
 /// builtins are handled on the call path.
 fn check_print_argument_renderable(
+    program: &CheckedProgram,
     callee: &marrow_syntax::Expression,
     args: &[marrow_syntax::Argument],
     arg_types: &[MarrowType],
+    scope: &[HashMap<String, MarrowType>],
     file: &Path,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
@@ -944,6 +980,13 @@ fn check_print_argument_renderable(
     let ([arg], [ty]) = (args, arg_types) else {
         return;
     };
+    // The argument was already inferred, so a partially-keyed composite layer here
+    // already carries the more precise `check.layer_not_value` at this span; defer to it
+    // by treating `before` as the diagnostics already accumulated.
+    if saved_collection_render_unowned(program, &arg.value, scope, file, diagnostics, 0) {
+        diagnostics.push(saved_collection_render_diagnostic(file, arg.value.span()));
+        return;
+    }
     if type_renderable_at_runtime(ty) == Some(false) {
         diagnostics.push(render_unsupported_source_diagnostic(
             file,
@@ -951,6 +994,39 @@ fn check_print_argument_renderable(
             ty.clone(),
         ));
     }
+}
+
+/// Whether a render-surface value (`print` or interpolation) is a saved collection
+/// the render check itself must own. Such a value is an in-place stream with no text
+/// form and infers `Unknown`, so the type-based renderable check would otherwise defer
+/// and the program would fault clean-then-runtime. A saved scalar read is a single
+/// renderable value and is excluded by the shared classifier. `inferring` already
+/// rejected a partially-keyed composite layer here with the more precise
+/// `check.layer_not_value`, so a diagnostic produced for this span during inference
+/// (everything from `before` on) defers to that owner rather than stacking a second.
+fn saved_collection_render_unowned(
+    program: &CheckedProgram,
+    expr: &marrow_syntax::Expression,
+    scope: &[HashMap<String, MarrowType>],
+    file: &Path,
+    diagnostics: &[CheckDiagnostic],
+    before: usize,
+) -> bool {
+    binary_operand_is_saved_collection(program, expr, scope, file)
+        && !diagnostics[before..]
+            .iter()
+            .any(|diagnostic| diagnostic.file == file && diagnostic.span == expr.span())
+}
+
+/// The render rejection raised for a saved collection in `print` or interpolation: it
+/// has no text form, so it must be iterated rather than rendered as a value.
+fn saved_collection_render_diagnostic(file: &Path, span: SourceSpan) -> CheckDiagnostic {
+    CheckDiagnostic::error(
+        CHECK_OPERATOR_TYPE,
+        file,
+        span,
+        "cannot render a saved collection; iterate it instead",
+    )
 }
 
 /// The rejection both render surfaces — `print` and string interpolation — raise
@@ -1050,6 +1126,21 @@ fn reads_through_saved_place(
     file: &Path,
 ) -> bool {
     checked_expr(program, expr, scope, file).is_some_and(|expr| expr.saved_place().is_some())
+}
+
+/// Whether a binary operand is a saved collection — a store root, a saved keyed
+/// sub-layer, or an index branch, bare or laundered through a traversal combinator.
+/// Such an operand has no materialized value, so it can never feed an operator. This
+/// is the same place-based classifier every by-value boundary shares, so the operator
+/// rejection and the binding/argument/return rejections agree on what a saved
+/// collection is — a saved scalar read (a single stored value) is excluded.
+fn binary_operand_is_saved_collection(
+    program: &CheckedProgram,
+    expr: &marrow_syntax::Expression,
+    scope: &[HashMap<String, MarrowType>],
+    file: &Path,
+) -> bool {
+    crate::checks::materializes_saved_collection_by_value(program, expr, scope, file)
 }
 
 /// Whether `base` is a saved place whose innermost keyed layer is only partially

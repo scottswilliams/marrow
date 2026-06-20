@@ -4,7 +4,7 @@
 use crate::support;
 use support::*;
 
-use marrow_run::{RUN_UNSUPPORTED, Value};
+use marrow_run::Value;
 use marrow_store::key::SavedKey;
 use marrow_store::tree::TreeStore;
 use marrow_store::value::SavedValue;
@@ -29,16 +29,6 @@ pub fn idsAndElementTitles()
 pub fn reversedElementTitles()
     for id, book in reversed(^books)
         print(book.title)
-
-pub fn reversedIdsAsValue()
-    const ids = reversed(^books)
-    for id in ids
-        print($\"{{id}}\")
-
-pub fn ids()
-    const all = keys(^books)
-    for id in all
-        print($\"{{id}}\")
 "
     )
 }
@@ -146,57 +136,26 @@ fn reversed_two_name_primary_root_loop_yields_resources() {
 
 #[test]
 fn reversed_primary_root_as_a_value_is_rejected() {
-    let program = checked_program(&book_primary());
-    let store = TreeStore::memory();
-    let add = |id: i64, title: &str| {
-        run_entry(
-            &store,
-            checked_entry!(
-                &program,
-                "test::add",
-                Value::Int(id),
-                Value::Str(title.into())
-            ),
-        )
-        .expect("add");
-    };
-    add(2, "Sourcery");
-    add(1, "Mort");
-
-    assert_run_error(
-        run_entry(&store, checked_entry!(&program, "test::reversedIdsAsValue")),
-        RUN_UNSUPPORTED,
+    // Binding `reversed(^books)` to a local materializes a saved collection, which is
+    // an in-place stream with no local value. This is a check error, not a runtime
+    // fault, so it never reaches evaluation.
+    checker_rejects(
+        &format!(
+            "{BOOK_PRIMARY_SCHEMA}pub fn reversedIdsAsValue()\n    const ids = reversed(^books)\n    for id in ids\n        print($\"{{id}}\")\n"
+        ),
+        "check.collection_unsupported",
     );
 }
 
 #[test]
 fn keys_of_a_primary_root_as_a_value_is_rejected() {
-    let program = checked_program(&book_primary());
-    let store = TreeStore::memory();
-    run_entry(
-        &store,
-        checked_entry!(
-            &program,
-            "test::add",
-            Value::Int(1),
-            Value::Str("Mort".into())
+    // `keys(^books)` is the same un-materializable saved stream; binding it to a local
+    // is rejected at check.
+    checker_rejects(
+        &format!(
+            "{BOOK_PRIMARY_SCHEMA}pub fn ids()\n    const all = keys(^books)\n    for id in all\n        print($\"{{id}}\")\n"
         ),
-    )
-    .expect("add");
-    run_entry(
-        &store,
-        checked_entry!(
-            &program,
-            "test::add",
-            Value::Int(2),
-            Value::Str("Sourcery".into())
-        ),
-    )
-    .expect("add");
-
-    assert_run_error(
-        run_entry(&store, checked_entry!(&program, "test::ids")),
-        RUN_UNSUPPORTED,
+        "check.collection_unsupported",
     );
 }
 

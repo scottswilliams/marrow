@@ -21,7 +21,7 @@ mod returns;
 mod saved_keys;
 mod statements;
 
-pub(crate) use calls::{CallCheck, check_call};
+pub(crate) use calls::{CallCheck, check_call, materializes_saved_collection_by_value};
 pub(crate) use collections::{catch_frame, check_entries_value_position, for_frame};
 pub(crate) use diagnostics::key_type_diagnostic;
 pub(crate) use driver::{

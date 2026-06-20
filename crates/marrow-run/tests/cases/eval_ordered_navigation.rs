@@ -4,7 +4,7 @@
 use crate::support;
 use support::*;
 
-use marrow_run::{RUN_UNSUPPORTED, Value};
+use marrow_run::Value;
 use marrow_store::tree::TreeStore;
 
 /// A primary keyed root with a keyed child layer, used to exercise reverse
@@ -24,11 +24,6 @@ pub fn tag(id: int, t: string)
 
 pub fn idsDescending()
     for id in reversed(keys(^books))
-        print($\"{{id}}\")
-
-pub fn keysReversedValue()
-    const r = reversed(keys(^books))
-    for id in r
         print($\"{{id}}\")
 
 pub fn titlesDescending()
@@ -101,12 +96,6 @@ fn reversed_layer_iterates_descending_and_skips_a_hole() {
     let outcome = run_entry(&store, checked_entry!(&program, "test::idsDescending")).expect("run");
     assert_eq!(outcome.output, "3\n2\n1\n");
 
-    // Materializing the same durable reversed key collection as a value is rejected.
-    assert_run_error(
-        run_entry(&store, checked_entry!(&program, "test::keysReversedValue")),
-        RUN_UNSUPPORTED,
-    );
-
     // Bare reversed root iteration yields records in descending key order.
     let outcome =
         run_entry(&store, checked_entry!(&program, "test::titlesDescending")).expect("run");
@@ -121,6 +110,19 @@ fn reversed_layer_iterates_descending_and_skips_a_hole() {
     .expect("del");
     let outcome = run_entry(&store, checked_entry!(&program, "test::idsDescending")).expect("run");
     assert_eq!(outcome.output, "3\n1\n");
+}
+
+#[test]
+fn reversed_keys_as_a_value_is_rejected_at_check() {
+    // Binding `reversed(keys(^books))` to a local materializes a saved collection — an
+    // in-place reversed key stream the runtime refuses to materialize. It is a check
+    // error, not a runtime fault.
+    checker_rejects(
+        &format!(
+            "{BOOK_TAGS_SCHEMA}pub fn keysReversedValue()\n    const r = reversed(keys(^books))\n    for id in r\n        print($\"{{id}}\")\n"
+        ),
+        "check.collection_unsupported",
+    );
 }
 
 #[test]

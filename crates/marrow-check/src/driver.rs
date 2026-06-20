@@ -432,6 +432,7 @@ impl TestResolutionSuppression {
             | DiagnosticPayload::SuggestedIndex { .. }
             | DiagnosticPayload::RequiredAbsent { .. }
             | DiagnosticPayload::TypeMismatch { .. }
+            | DiagnosticPayload::SavedCollectionByValue { .. }
             | DiagnosticPayload::LayerNotValue { .. }
             | DiagnosticPayload::None => false,
         }
