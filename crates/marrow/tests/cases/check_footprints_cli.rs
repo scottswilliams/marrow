@@ -17,6 +17,19 @@ fn catalog_id(root: &support::TempProject, kind: CatalogEntryKind, path: &str) -
         .clone()
 }
 
+fn footprint_identities(report: &Value) -> Vec<&Value> {
+    report["entry_footprints"]
+        .as_array()
+        .expect("entry footprints array")
+        .iter()
+        .flat_map(|entry| {
+            ["stores_read", "stores_written", "indexes_touched"]
+                .into_iter()
+                .flat_map(move |field| entry[field].as_array().expect("identity array"))
+        })
+        .collect()
+}
+
 fn entry<'a>(report: &'a Value, name: &str) -> &'a Value {
     report["entry_footprints"]
         .as_array()
@@ -35,34 +48,34 @@ fn surface<'a>(report: &'a Value, name: &str) -> &'a Value {
         .unwrap_or_else(|| panic!("surface ABI descriptor {name} in {report:#?}"))
 }
 
+const FOOTPRINT_APP: &str = "module app\n\
+     resource Book\n\
+     \x20   required title: string\n\
+     \x20   shelf: string\n\
+     store ^books(id: int): Book\n\
+     \x20   index byTitle(title, id)\n\
+     \x20   index byShelf(shelf, id)\n\
+     fn writeShelf(id: int, shelf: string)\n\
+     \x20   ^books(id).shelf = shelf\n\
+     pub fn save(id: int, shelf: string)\n\
+     \x20   writeShelf(id, shelf)\n\
+     pub fn countOnShelf(shelf: string): int\n\
+     \x20   return count(^books.byShelf(shelf))\n";
+
+fn write_footprint_project(root: &std::path::Path) {
+    write(
+        root,
+        "marrow.json",
+        r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".data" } }"#,
+    );
+    write(root, "src/app.mw", FOOTPRINT_APP);
+}
+
 #[test]
-fn check_json_reports_entry_footprints_with_catalog_ids() {
-    let root = temp_project("check-json-entry-footprints", |root| {
-        write(
-            root,
-            "marrow.json",
-            r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".data" } }"#,
-        );
-        write(
-            root,
-            "src/app.mw",
-            "module app\n\
-             resource Book\n\
-             \x20   required title: string\n\
-             \x20   shelf: string\n\
-             store ^books(id: int): Book\n\
-             \x20   index byTitle(title, id)\n\
-             \x20   index byShelf(shelf, id)\n\
-             fn writeShelf(id: int, shelf: string)\n\
-             \x20   ^books(id).shelf = shelf\n\
-             pub fn save(id: int, shelf: string)\n\
-             \x20   writeShelf(id, shelf)\n\
-             pub fn countOnShelf(shelf: string): int\n\
-             \x20   return count(^books.byShelf(shelf))\n",
-        );
-    });
-    let store_id = catalog_id(&root, CatalogEntryKind::Store, "app::^books");
-    let index_id = catalog_id(&root, CatalogEntryKind::StoreIndex, "app::^books::byShelf");
+fn check_json_reports_entry_footprints_with_structural_paths() {
+    let root = temp_project("check-json-entry-footprints", write_footprint_project);
+    let store_path = "app::^books";
+    let index_path = "app::^books::byShelf";
 
     let output = marrow_sub("check", &["--format", "json", root.to_str().unwrap()]);
 
@@ -71,15 +84,15 @@ fn check_json_reports_entry_footprints_with_catalog_ids() {
     let save = entry(&report, "app::save");
     assert_eq!(save["write_effects_reachable"], true);
     assert_eq!(save["stores_read"], serde_json::json!([]));
-    assert_eq!(save["stores_written"], serde_json::json!([store_id]));
-    assert_eq!(save["indexes_touched"], serde_json::json!([index_id]));
+    assert_eq!(save["stores_written"], serde_json::json!([store_path]));
+    assert_eq!(save["indexes_touched"], serde_json::json!([index_path]));
     assert_eq!(save["work_shape"], "writes_saved_data");
 
     let read = entry(&report, "app::countOnShelf");
     assert_eq!(read["write_effects_reachable"], false);
-    assert_eq!(read["stores_read"], serde_json::json!([store_id]));
+    assert_eq!(read["stores_read"], serde_json::json!([store_path]));
     assert_eq!(read["stores_written"], serde_json::json!([]));
-    assert_eq!(read["indexes_touched"], serde_json::json!([index_id]));
+    assert_eq!(read["indexes_touched"], serde_json::json!([index_path]));
     assert_eq!(read["work_shape"], "read_only");
 
     assert!(
@@ -88,6 +101,79 @@ fn check_json_reports_entry_footprints_with_catalog_ids() {
             .expect("diagnostics")
             .is_empty(),
         "{report:#?}"
+    );
+}
+
+#[test]
+fn check_json_entry_footprint_identities_are_deterministic_when_unfrozen() {
+    let root = temp_project_uncommitted(
+        "check-json-entry-footprints-unfrozen-deterministic",
+        write_footprint_project,
+    );
+
+    let first = marrow_sub("check", &["--format", "json", root.to_str().unwrap()]);
+    assert_eq!(first.status.code(), Some(0), "{first:?}");
+    let second = marrow_sub("check", &["--format", "json", root.to_str().unwrap()]);
+    assert_eq!(second.status.code(), Some(0), "{second:?}");
+
+    let first_report = support::json(first.stdout);
+    let second_report = support::json(second.stdout);
+
+    assert_eq!(
+        footprint_identities(&first_report),
+        footprint_identities(&second_report),
+        "two identical unfrozen checks must emit byte-identical footprint identities"
+    );
+}
+
+#[test]
+fn check_json_unfrozen_footprint_identities_are_structural_paths() {
+    let root = temp_project_uncommitted(
+        "check-json-entry-footprints-unfrozen-paths",
+        write_footprint_project,
+    );
+
+    let output = marrow_sub("check", &["--format", "json", root.to_str().unwrap()]);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let report = support::json(output.stdout);
+
+    let save = entry(&report, "app::save");
+    assert_eq!(save["stores_written"], serde_json::json!(["app::^books"]));
+    assert_eq!(
+        save["indexes_touched"],
+        serde_json::json!(["app::^books::byShelf"])
+    );
+
+    let read = entry(&report, "app::countOnShelf");
+    assert_eq!(read["stores_read"], serde_json::json!(["app::^books"]));
+    assert_eq!(
+        read["indexes_touched"],
+        serde_json::json!(["app::^books::byShelf"])
+    );
+}
+
+#[test]
+fn check_json_footprint_access_graph_matches_across_frozen_and_unfrozen() {
+    let frozen = temp_project(
+        "check-json-entry-footprints-frozen-graph",
+        write_footprint_project,
+    );
+    let unfrozen = temp_project_uncommitted(
+        "check-json-entry-footprints-unfrozen-graph",
+        write_footprint_project,
+    );
+
+    let frozen_out = marrow_sub("check", &["--format", "json", frozen.to_str().unwrap()]);
+    assert_eq!(frozen_out.status.code(), Some(0), "{frozen_out:?}");
+    let unfrozen_out = marrow_sub("check", &["--format", "json", unfrozen.to_str().unwrap()]);
+    assert_eq!(unfrozen_out.status.code(), Some(0), "{unfrozen_out:?}");
+
+    let frozen_report = support::json(frozen_out.stdout);
+    let unfrozen_report = support::json(unfrozen_out.stdout);
+
+    assert_eq!(
+        frozen_report["entry_footprints"], unfrozen_report["entry_footprints"],
+        "structural-path footprints describe the same access graph before and after freeze"
     );
 }
 

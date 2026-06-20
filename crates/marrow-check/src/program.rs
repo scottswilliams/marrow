@@ -471,6 +471,29 @@ impl CheckedProgram {
         self.proposal_catalog_id(marrow_catalog::CatalogEntryKind::Store, &path)
     }
 
+    /// The store's canonical catalog path (`module::^root`). This identity is
+    /// deterministic at every check, before any catalog freeze assigns a stable
+    /// id, so tooling can correlate footprints across runs and join them to the
+    /// catalog by path.
+    pub fn store_structural_path(&self, store_id: StoreId) -> Option<String> {
+        let store = self.facts.stores().get(store_id.0 as usize)?;
+        let module = self.facts.modules().get(store.module.0 as usize)?;
+        Some(crate::catalog::store_path(&module.name, &store.root))
+    }
+
+    /// The store index's canonical catalog path (`module::^root::index`), with
+    /// the same freeze-independent determinism as [`store_structural_path`].
+    pub fn store_index_structural_path(&self, index_id: StoreIndexId) -> Option<String> {
+        let index = self.facts.store_indexes().get(index_id.0 as usize)?;
+        let store = self.facts.store(index.store);
+        let module = self.facts.modules().get(store.module.0 as usize)?;
+        Some(crate::catalog::store_index_path(
+            &module.name,
+            &store.root,
+            &index.name,
+        ))
+    }
+
     pub fn store_index_catalog_id(&self, index_id: StoreIndexId) -> Option<&str> {
         let index = self.facts.store_indexes().get(index_id.0 as usize)?;
         if let Some(catalog_id) = index.catalog_id.as_deref() {

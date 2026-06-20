@@ -102,7 +102,11 @@ from the checked program or snapshot:
 - `CheckedProgram::effect_closure`, `entry_footprints`,
   `entry_store_open_mode`, and `write_effects_reachable` provide the transitive
   checked-fact view for editor and tooling classification. They expand lowered
-  direct callees and report typed store/index ids, not source spellings.
+  direct callees and carry typed `StoreId`/`StoreIndexId`. The CLI JSON
+  projection of `entry_footprints` renders those ids as canonical structural
+  paths (`module::^root`, `module::^root::index`) via
+  `store_structural_path`/`store_index_structural_path`, so footprint identities
+  are freeze-independent and join to the catalog by path.
 - `BindingIndex::rename_action` returns source edits plus a canonical
   `evolve rename` fragment for saved-data-backed definitions, so editor callers
   do not synthesize catalog paths or formatter output themselves. Imported

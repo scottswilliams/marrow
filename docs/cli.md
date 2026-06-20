@@ -138,7 +138,23 @@ Check a project directory containing `marrow.json` and report diagnostics.
   default entry is a `check.default_entry` error rather than a run-time fault.
   `marrow doctor` inherits this check.
 - On successful `json` or `jsonl` checks, the report includes
-  `entry_footprints`, `surface_abi`, and `surface_routes`. `surface_routes` is
+  `entry_footprints`, `surface_abi`, and `surface_routes`. These appear only on
+  a successful check; a failing check omits them.
+- `entry_footprints` is an array with one record per public entry, each carrying:
+  - `entry`: the qualified entry name (`module::function`).
+  - `write_effects_reachable`: `true` when a saved write is reachable through the
+    entry's call graph.
+  - `stores_read`, `stores_written`: the stores the entry reads or writes,
+    identified by structural path `module::^root` (bare `^root` for an
+    empty-module script).
+  - `indexes_touched`: the store indexes the entry touches, identified by
+    structural path `module::^root::index`.
+  - `work_shape`: one of `compute_only`, `read_only`, or `writes_saved_data`.
+  Store and index identities are these structural paths, not physical catalog
+  ids: a path is deterministic at every check, even before a freeze assigns a
+  `cat_*` id, and joins to the committed `marrow.catalog.json` by its `path`
+  field for callers that need the physical key.
+- `surface_routes` is
   the `surface.route.v1` manifest derived from exported surface descriptors:
   JSON `POST` operation-tag paths plus render aliases and request-body kinds.
   The manifest is data; `marrow surface serve` is the local serving profile that

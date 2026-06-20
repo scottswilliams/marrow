@@ -283,32 +283,35 @@ fn entry_footprint_records(program: &marrow_check::CheckedProgram) -> Vec<serde_
             json!({
                 "entry": footprint.entry,
                 "write_effects_reachable": footprint.write_effects_reachable,
-                "stores_read": store_catalog_ids(program, &footprint.stores_read),
-                "stores_written": store_catalog_ids(program, &footprint.stores_written),
-                "indexes_touched": index_catalog_ids(program, &footprint.indexes_touched),
+                "stores_read": store_paths(program, &footprint.stores_read),
+                "stores_written": store_paths(program, &footprint.stores_written),
+                "indexes_touched": index_paths(program, &footprint.indexes_touched),
                 "work_shape": work_shape_name(footprint.work_shape),
             })
         })
         .collect()
 }
 
-fn store_catalog_ids(
+/// Footprints identify stores and indexes by their canonical catalog path rather
+/// than the physical `cat_*` id: the path is deterministic at every check, even
+/// before a freeze assigns a stable id, and joins to the catalog by path.
+fn store_paths(
     program: &marrow_check::CheckedProgram,
     stores: &[marrow_check::StoreId],
 ) -> Vec<String> {
     stores
         .iter()
-        .filter_map(|store| program.store_catalog_id(*store).map(str::to_string))
+        .filter_map(|store| program.store_structural_path(*store))
         .collect()
 }
 
-fn index_catalog_ids(
+fn index_paths(
     program: &marrow_check::CheckedProgram,
     indexes: &[marrow_check::StoreIndexId],
 ) -> Vec<String> {
     indexes
         .iter()
-        .filter_map(|index| program.store_index_catalog_id(*index).map(str::to_string))
+        .filter_map(|index| program.store_index_structural_path(*index))
         .collect()
 }
 
