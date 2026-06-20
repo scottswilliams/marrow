@@ -272,6 +272,86 @@ fn a_dynamic_valid_sequence_error_code_append_persists() {
     );
 }
 
+/// A program that seeds and then directly overwrites a position of a
+/// `sequence[ErrorCode]` through a dynamic value, the keyed-assignment sibling of
+/// the append path.
+const SEQUENCE_ERROR_CODE_ASSIGNER: &str = "\
+resource Log
+    codes: sequence[ErrorCode]
+store ^logs(id: int): Log
+
+pub fn seed(id: int)
+    append(^logs(id).codes, \"app.ok\")
+    append(^logs(id).codes, \"app.ok\")
+
+pub fn set_code(id: int, c: string)
+    ^logs(id).codes(2) = c
+
+pub fn code_at(id: int, k: int): string
+    return ^logs(id).codes(k) ?? \"\"
+";
+
+#[test]
+fn a_dynamic_invalid_sequence_error_code_assignment_faults_and_persists_nothing() {
+    let program = checked_program(SEQUENCE_ERROR_CODE_ASSIGNER);
+    let store = TreeStore::memory();
+    run_entry(
+        &store,
+        checked_entry!(&program, "test::seed", Value::Int(1)),
+    )
+    .expect("seed");
+    let result = run_entry(
+        &store,
+        checked_entry!(
+            &program,
+            "test::set_code",
+            Value::Int(1),
+            Value::Str("no good code".into())
+        ),
+    );
+    assert_run_error(result, "run.type");
+    assert_eq!(
+        run_entry(
+            &store,
+            checked_entry!(&program, "test::code_at", Value::Int(1), Value::Int(2))
+        )
+        .expect("read")
+        .value,
+        Some(Value::Str("app.ok".into())),
+        "an invalid error code must never overwrite a sequence position"
+    );
+}
+
+#[test]
+fn a_dynamic_valid_sequence_error_code_assignment_persists() {
+    let program = checked_program(SEQUENCE_ERROR_CODE_ASSIGNER);
+    let store = TreeStore::memory();
+    run_entry(
+        &store,
+        checked_entry!(&program, "test::seed", Value::Int(1)),
+    )
+    .expect("seed");
+    run_entry(
+        &store,
+        checked_entry!(
+            &program,
+            "test::set_code",
+            Value::Int(1),
+            Value::Str("app.replaced".into())
+        ),
+    )
+    .expect("assign");
+    assert_eq!(
+        run_entry(
+            &store,
+            checked_entry!(&program, "test::code_at", Value::Int(1), Value::Int(2))
+        )
+        .expect("read")
+        .value,
+        Some(Value::Str("app.replaced".into()))
+    );
+}
+
 #[test]
 fn out_of_transaction_field_write_rejects_partial_required_record() {
     let program = checked_program(

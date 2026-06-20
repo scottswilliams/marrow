@@ -637,6 +637,35 @@ fn a_valid_string_literal_appended_to_a_sequence_error_code_checks_clean() {
 }
 
 #[test]
+fn an_invalid_string_literal_assigned_to_a_sequence_error_code_position_is_rejected() {
+    let found = check_module(
+        "error-code-seq-assign-invalid",
+        "module m\n\
+         resource Log\n    codes: sequence[ErrorCode]\n\
+         store ^logs(id: int): Log\n\n\
+         fn f()\n    ^logs(1).codes(2) = \"no good code\"\n",
+        "check.call_argument",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn a_valid_string_literal_assigned_to_a_sequence_error_code_position_checks_clean() {
+    let report = check_module_report(
+        "error-code-seq-assign-valid",
+        "module m\n\
+         resource Log\n    codes: sequence[ErrorCode]\n\
+         store ^logs(id: int): Log\n\n\
+         fn f()\n    ^logs(1).codes(2) = \"app.ok\"\n",
+    );
+    assert!(
+        with_code(&report, "check.call_argument").is_empty(),
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
 fn invalid_error_code_literals_with_bad_conversion_shape_are_diagnosed() {
     let report = check_module_report(
         "conv-error-code-invalid-shape",
