@@ -32,32 +32,31 @@ fn branch_workflow_conflict_resolution_keeps_losing_store_fenced() {
     let apply = marrow(&["evolve", "apply", "--format", "json", dir]);
     assert_eq!(apply.status.code(), Some(0), "{apply:?}");
     assert_eq!(store_epoch(&root), Some(2));
-    let resolved_catalog =
-        fs::read_to_string(root.join("marrow.catalog.json")).expect("read resolved catalog");
+    let resolved_lock = fs::read_to_string(root.join("marrow.lock")).expect("read resolved lock");
 
     write(
         &root,
-        "marrow.catalog.json",
-        &format!("<<<<<<< HEAD\n{resolved_catalog}\n=======\n{{}}\n>>>>>>> branch\n"),
+        "marrow.lock",
+        &format!("<<<<<<< HEAD\n{resolved_lock}\n=======\n{{}}\n>>>>>>> branch\n"),
     );
     let conflicted = marrow(&["check", dir]);
     assert_eq!(
         conflicted.status.code(),
         Some(1),
-        "conflicted catalog must fail check: {conflicted:?}"
+        "conflicted lock must fail check: {conflicted:?}"
     );
     let stderr = String::from_utf8(conflicted.stderr).expect("stderr utf8");
     assert!(
-        stderr.contains("catalog.merge_conflict"),
-        "the conflict marker diagnostic is typed: {stderr}"
+        stderr.contains("catalog.lock_corrupt"),
+        "the conflict marker surfaces the typed lock-corrupt code: {stderr}"
     );
 
-    write(&root, "marrow.catalog.json", &resolved_catalog);
+    write(&root, "marrow.lock", &resolved_lock);
     let resolved = marrow(&["check", dir]);
     assert_eq!(
         resolved.status.code(),
         Some(0),
-        "resolving the catalog conflict makes source check green: {resolved:?}"
+        "resolving the lock conflict makes source check green: {resolved:?}"
     );
 
     fs::write(native_store_path(&root), losing_branch_store).expect("restore losing store");
@@ -74,9 +73,9 @@ fn branch_workflow_conflict_resolution_keeps_losing_store_fenced() {
         "the losing branch store hits the activation fence: {stderr}"
     );
     assert_eq!(
-        fs::read_to_string(root.join("marrow.catalog.json")).expect("read catalog after fence"),
-        resolved_catalog,
-        "the fence does not rewrite the resolved catalog"
+        fs::read_to_string(root.join("marrow.lock")).expect("read lock after fence"),
+        resolved_lock,
+        "the fence does not rewrite the resolved lock"
     );
 }
 

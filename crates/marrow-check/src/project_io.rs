@@ -204,36 +204,53 @@ fn bind_store_else_refuse_corrupt_lock(
     Ok(None)
 }
 
+/// Check the project against an optional accepted catalog and an optional committed lock,
+/// returning the runtime-lowered program. When no accepted store snapshot is present, the
+/// committed lock drives first-run adoption so a fresh checkout over an empty store re-establishes
+/// the lock's committed identity and accepted epoch rather than minting fresh ids. With an accepted
+/// snapshot present, the store wins and the lock is inert.
 pub fn check_project_against(
     root: &Path,
     config: &ProjectConfig,
     accepted: Option<&marrow_catalog::CatalogMetadata>,
+    lock: Option<&marrow_catalog::CatalogLock>,
 ) -> Result<CheckedProgram, ProjectIoError> {
-    let (report, program) =
-        crate::check_project_with_catalog(root, config, accepted).map_err(|error| {
-            ProjectIoError::CheckLoad {
-                code: error.code,
-                path: error.path,
-                message: error.message,
-            }
-        })?;
-    if report.has_errors() {
-        return Err(ProjectIoError::Check { report });
+    let snapshot = crate::analysis::analyze_project(
+        root,
+        config,
+        &crate::ProjectSources::new(),
+        accepted,
+        lock,
+    )
+    .map_err(|error| ProjectIoError::CheckLoad {
+        code: error.code,
+        path: error.path,
+        message: error.message,
+    })?;
+    if snapshot.report.has_errors() {
+        return Err(ProjectIoError::Check {
+            report: snapshot.report,
+        });
     }
-    Ok(program)
+    Ok(snapshot.program)
 }
 
+/// Check the source project against an optional accepted catalog and an optional committed lock.
+/// When no accepted store snapshot is present, the committed lock drives first-run adoption so a
+/// fresh checkout over an empty store re-establishes the lock's committed identity rather than
+/// minting fresh ids. With an accepted snapshot present, the store wins and the lock is inert.
 pub fn check_source_project_analysis_against(
     root: &Path,
     config: &ProjectConfig,
     accepted: Option<&marrow_catalog::CatalogMetadata>,
+    lock: Option<&marrow_catalog::CatalogLock>,
 ) -> Result<crate::AnalysisSnapshot, ProjectIoError> {
     let snapshot = crate::analysis::analyze_source_project(
         root,
         config,
         &crate::ProjectSources::new(),
         accepted,
-        None,
+        lock,
     )
     .map_err(|error| ProjectIoError::CheckLoad {
         code: error.code,
@@ -263,29 +280,47 @@ pub fn recheck_source_project_analysis_against_store_catalog(
     store: &TreeStore,
 ) -> Result<crate::AnalysisSnapshot, ProjectIoError> {
     let accepted = store.read_catalog_snapshot()?;
-    check_source_project_analysis_against(root, config, accepted.as_ref())
+    check_source_project_analysis_against(root, config, accepted.as_ref(), None)
 }
 
 /// Re-project the committed store baseline into `marrow.lock`. This is the single owner of the
 /// lock write: the post-commit re-projection runs only after a valid store write, never as a
 /// read side effect, so a read never repairs the lock and a valid live store is never overridden
-/// by a source-tree artifact. The shape, ledger, epoch high-water, and source digest are the
-/// committed inputs the caller supplies; this fingerprints each entry through the [`CatalogLock`]
-/// owner and writes the canonical projection, idempotent on the bytes a prior projection wrote.
+/// by a source-tree artifact.
+///
+/// The store snapshot is the durable authority for accepted identity, including retired ids: a
+/// retire reserves the entry in the store catalog, so the lock's append-only id ledger is derived
+/// from the snapshot's reserved entries rather than carried forward from a prior lock file. This
+/// makes the ledger re-derivable from the store alone, so a deleted lock is recovered with its
+/// retired ids and a retired id is never reissued even across lock loss. Active entries project as
+/// lock entries; reserved entries project as ledger tombstones, never both, so the same id never
+/// appears as an active entry and a tombstone. The projection fingerprints each entry through the
+/// [`CatalogLock`] owner and writes the canonical projection, idempotent on the bytes a prior
+/// projection wrote.
 pub fn project_store_lock(
     root: &Path,
     snapshot: &marrow_catalog::CatalogMetadata,
-    ledger: &[marrow_catalog::LockLedgerTombstone],
     source_digest: &str,
 ) -> Result<(), ProjectIoError> {
     let entries = snapshot
         .entries
         .iter()
+        .filter(|entry| entry.lifecycle == marrow_catalog::CatalogLifecycle::Active)
         .map(marrow_catalog::LockEntry::from_catalog_entry)
+        .collect();
+    let ledger = snapshot
+        .entries
+        .iter()
+        .filter(|entry| entry.lifecycle != marrow_catalog::CatalogLifecycle::Active)
+        .map(|entry| marrow_catalog::LockLedgerTombstone {
+            id: entry.stable_id.clone(),
+            lifecycle: entry.lifecycle,
+            high_water: snapshot.epoch,
+        })
         .collect();
     let lock = marrow_catalog::CatalogLock::new(
         entries,
-        ledger.to_vec(),
+        ledger,
         snapshot.epoch,
         source_digest.to_string(),
     )
@@ -576,7 +611,7 @@ mod tests {
             // committed store baseline: it overwrites the disagreeing on-disk lock with a
             // valid projection of the committed store snapshot, parseable as a CatalogLock
             // (not catalog JSON).
-            project_store_lock(&root, &store_snapshot, &[], &store_snapshot.digest)
+            project_store_lock(&root, &store_snapshot, &store_snapshot.digest)
                 .expect("re-project the committed store lock");
             let reprojected = fs::read_to_string(&lock_path).expect("lock after re-projection");
             let projected = CatalogLock::from_lock_json(&reprojected)

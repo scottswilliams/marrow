@@ -888,8 +888,8 @@ fn dry_run_reports_would_freeze_without_committing_catalog_identity() {
             .expect("dry-run json");
     assert_eq!(report["would_freeze"], true, "{report}");
     assert!(
-        !project.join("marrow.catalog.json").exists(),
-        "dry-run must not render the first-run catalog artifact"
+        !project.join("marrow.lock").exists(),
+        "dry-run must not project the first-run committed lock"
     );
     let store_path = support_evolve::native_store_path(&project);
     if store_path.exists() {

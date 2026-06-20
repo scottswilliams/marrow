@@ -138,8 +138,11 @@ fn apply_cmd(raw_args: &[String]) -> ExitCode {
         input.approval.as_ref(),
     ) {
         Ok(outcome) => {
+            // Apply is not done until the re-projected lock is committed: the store
+            // transaction has published the activated catalog, and the source-tree lock
+            // must converge to it before the command reports success.
             if let Err(code) =
-                crate::render_accepted_catalog_file_from_store(&input.dir, &store, input.format)
+                crate::reproject_committed_lock(&input.dir, &store, &program, input.format)
             {
                 return code;
             }
@@ -232,7 +235,7 @@ fn managed_recovery_backup_paths(
             path: project_root.join("marrow.json"),
         },
         ManagedRecoveryPath {
-            label: "committed catalog artifact",
+            label: "committed lock",
             path: project_root.join(marrow_project::CATALOG_FILE_NAME),
         },
     ];

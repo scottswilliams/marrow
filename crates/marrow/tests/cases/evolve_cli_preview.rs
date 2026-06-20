@@ -7,9 +7,9 @@ use marrow_store::tree::TreeStore;
 use marrow_store::value::Scalar;
 use support::{marrow, write};
 use support_evolve::{
-    REQUIRED_BASELINE_SOURCE, REQUIRED_DEFAULT_SOURCE, REQUIRED_NO_DEFAULT_SOURCE,
-    accepted_catalog, commit_catalog, member_catalog_id, native_books_project, native_store_path,
-    open_native_store, root_place, seed_member, seed_title_only, store_catalog_id,
+    REQUIRED_BASELINE_SOURCE, REQUIRED_DEFAULT_SOURCE, REQUIRED_NO_DEFAULT_SOURCE, commit_catalog,
+    member_catalog_id, native_books_project, native_store_path, open_native_store, root_place,
+    seed_member, seed_title_only, store_catalog_id,
 };
 
 #[test]
@@ -109,14 +109,25 @@ fn evolve_preview_from_backup_rejects_current_catalog_drift_with_restore_code()
     }
     let archive = support::backup_artifact(&root, "baseline.mwbackup");
     let archive_arg = archive.to_str().expect("backup path utf8");
-    let accepted = accepted_catalog(&root);
-    let drifted = marrow_catalog::CatalogMetadata::new(accepted.epoch + 1, accepted.entries)
-        .expect("catalog builds");
-    fs::write(
-        root.join("marrow.catalog.json"),
-        drifted.to_json_pretty().expect("catalog renders"),
+
+    // Drift the committed reference (the lock) so it disagrees with the backup's catalog
+    // section. The preview-from-backup mount reads the committed lock as the current
+    // reference and refuses a backup that does not match it.
+    let committed = marrow_check::read_committed_lock(&root)
+        .expect("read committed lock")
+        .expect("project has a committed lock");
+    let drifted = marrow_catalog::CatalogLock::new(
+        committed.entries.clone(),
+        committed.ledger.clone(),
+        committed.epoch_high_water + 1,
+        committed.source_digest.clone(),
     )
-    .expect("write drifted catalog artifact");
+    .expect("drifted lock builds");
+    fs::write(
+        root.join("marrow.lock"),
+        drifted.to_lock_json_pretty().expect("lock renders"),
+    )
+    .expect("write drifted committed lock");
 
     let output = marrow(&[
         "evolve",

@@ -1,13 +1,16 @@
 use crate::support;
 use marrow_catalog::CatalogEntryKind;
+use marrow_store::tree::TreeStore;
 use serde_json::{Value, json};
 use support::{marrow_sub, temp_project, temp_project_uncommitted, write};
 
 fn catalog_id(root: &support::TempProject, kind: CatalogEntryKind, path: &str) -> String {
-    let catalog = marrow_catalog::CatalogMetadata::from_json(
-        &std::fs::read_to_string(root.join("marrow.catalog.json")).expect("read catalog"),
-    )
-    .expect("catalog parses");
+    let store_path = root.join(".data").join("marrow.redb");
+    let store = TreeStore::open_read_only(&store_path).expect("open store read-only");
+    let catalog = store
+        .read_catalog_snapshot()
+        .expect("read store catalog snapshot")
+        .expect("project has an accepted catalog");
     catalog
         .entries
         .iter()

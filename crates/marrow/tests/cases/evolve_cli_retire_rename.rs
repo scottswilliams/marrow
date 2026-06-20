@@ -19,7 +19,7 @@ struct RetireBackupFixture {
     accepted_place: marrow_check::CheckedSavedPlace,
     subtitle_id: String,
     epoch_before: Option<u64>,
-    catalog_before: Option<String>,
+    lock_before: Option<String>,
     source_before: String,
 }
 
@@ -45,7 +45,7 @@ fn populated_retire_backup_fixture_with_config(name: &str, config: &str) -> Reti
         );
     }
     let epoch_before = store_epoch(&root);
-    let catalog_before = fs::read_to_string(root.join("marrow.catalog.json")).ok();
+    let lock_before = fs::read_to_string(root.join("marrow.lock")).ok();
     write(&root, "src/books.mw", RETIRE_SOURCE);
     let source_before = fs::read_to_string(root.join("src/books.mw")).expect("source before");
     RetireBackupFixture {
@@ -53,7 +53,7 @@ fn populated_retire_backup_fixture_with_config(name: &str, config: &str) -> Reti
         accepted_place,
         subtitle_id,
         epoch_before,
-        catalog_before,
+        lock_before,
         source_before,
     }
 }
@@ -93,11 +93,11 @@ fn assert_retire_fixture_unchanged(fixture: &RetireBackupFixture) {
         "managed-path refusal must not advance the store"
     );
     assert_eq!(
-        fs::read_to_string(fixture.root.join("marrow.catalog.json"))
+        fs::read_to_string(fixture.root.join("marrow.lock"))
             .ok()
             .as_ref(),
-        fixture.catalog_before.as_ref(),
-        "managed-path refusal must not advance the catalog file"
+        fixture.lock_before.as_ref(),
+        "managed-path refusal must not advance the committed lock"
     );
     assert_eq!(
         fs::read_to_string(fixture.root.join("src/books.mw")).expect("source after"),
@@ -306,8 +306,8 @@ fn retire_apply_requires_backup_or_explicit_opt_out_before_mutation()
         );
     }
     let epoch_before = store_epoch(&root);
-    let catalog_path = root.join("marrow.catalog.json");
-    let catalog_before = fs::read_to_string(&catalog_path).ok();
+    let lock_path = root.join("marrow.lock");
+    let lock_before = fs::read_to_string(&lock_path).ok();
     write(&root, "src/books.mw", RETIRE_SOURCE);
 
     let output = marrow(&[
@@ -330,9 +330,9 @@ fn retire_apply_requires_backup_or_explicit_opt_out_before_mutation()
         "backup refusal must not advance the store"
     );
     assert_eq!(
-        fs::read_to_string(&catalog_path).ok(),
-        catalog_before,
-        "backup refusal must not advance the catalog file"
+        fs::read_to_string(&lock_path).ok(),
+        lock_before,
+        "backup refusal must not advance the committed lock"
     );
     let store = TreeStore::open(&native_store_path(&root)).expect("reopen native store");
     assert_eq!(
@@ -359,8 +359,8 @@ fn retire_apply_requires_recovery_choice_for_zero_count_retire()
         seed_title_only(&store, &accepted_place, 1, "Dune");
     }
     let epoch_before = store_epoch(&root);
-    let catalog_path = root.join("marrow.catalog.json");
-    let catalog_before = fs::read_to_string(&catalog_path).ok();
+    let lock_path = root.join("marrow.lock");
+    let lock_before = fs::read_to_string(&lock_path).ok();
     write(&root, "src/books.mw", RETIRE_SOURCE);
 
     let output = marrow(&[
@@ -386,10 +386,10 @@ fn retire_apply_requires_recovery_choice_for_zero_count_retire()
         epoch_after_refusal, epoch_before,
         "zero-count retire backup refusal must not advance the store"
     );
-    let catalog_after_refusal = fs::read_to_string(&catalog_path).ok();
+    let lock_after_refusal = fs::read_to_string(&lock_path).ok();
     assert_eq!(
-        catalog_after_refusal, catalog_before,
-        "zero-count retire backup refusal must not advance the catalog file"
+        lock_after_refusal, lock_before,
+        "zero-count retire backup refusal must not advance the committed lock"
     );
 
     let apply = marrow(&[
@@ -488,8 +488,8 @@ fn retire_apply_refuses_backup_path_that_is_live_store_file_before_mutation()
         );
     }
     let epoch_before = store_epoch(&root);
-    let catalog_path = root.join("marrow.catalog.json");
-    let catalog_before = fs::read_to_string(&catalog_path).ok();
+    let lock_path = root.join("marrow.lock");
+    let lock_before = fs::read_to_string(&lock_path).ok();
     write(&root, "src/books.mw", RETIRE_SOURCE);
     let backup_path = native_store_path(&root);
 
@@ -523,9 +523,9 @@ fn retire_apply_refuses_backup_path_that_is_live_store_file_before_mutation()
         "managed-path refusal must not advance the store"
     );
     assert_eq!(
-        fs::read_to_string(&catalog_path).ok(),
-        catalog_before,
-        "managed-path refusal must not advance the catalog file"
+        fs::read_to_string(&lock_path).ok(),
+        lock_before,
+        "managed-path refusal must not advance the committed lock"
     );
     let store = TreeStore::open(&backup_path).expect("live store remains usable");
     assert_eq!(
@@ -538,10 +538,10 @@ fn retire_apply_refuses_backup_path_that_is_live_store_file_before_mutation()
 }
 
 #[test]
-fn retire_apply_refuses_backup_path_that_is_committed_catalog_artifact_before_mutation()
+fn retire_apply_refuses_backup_path_that_is_committed_lock_before_mutation()
 -> Result<(), Box<dyn std::error::Error>> {
     let root = native_books_project(
-        "evolve-apply-retire-backup-catalog-refused",
+        "evolve-apply-retire-backup-lock-refused",
         RETIRE_BASELINE_SOURCE,
     );
     let accepted = commit_catalog(&root);
@@ -559,8 +559,8 @@ fn retire_apply_refuses_backup_path_that_is_committed_catalog_artifact_before_mu
         );
     }
     let epoch_before = store_epoch(&root);
-    let catalog_path = root.join("marrow.catalog.json");
-    let catalog_before = fs::read_to_string(&catalog_path).expect("catalog artifact before");
+    let lock_path = root.join("marrow.lock");
+    let lock_before = fs::read_to_string(&lock_path).expect("committed lock before");
     write(&root, "src/books.mw", RETIRE_SOURCE);
 
     let output = marrow(&[
@@ -570,7 +570,7 @@ fn retire_apply_refuses_backup_path_that_is_committed_catalog_artifact_before_mu
         "--approve-retire",
         &format!("{subtitle_id}:1"),
         "--backup",
-        catalog_path.to_str().expect("backup path utf8"),
+        lock_path.to_str().expect("backup path utf8"),
         "--format",
         "json",
         root.to_str().expect("project path utf-8"),
@@ -585,12 +585,12 @@ fn retire_apply_refuses_backup_path_that_is_committed_catalog_artifact_before_mu
     assert_eq!(
         store_epoch(&root),
         epoch_before,
-        "catalog-path refusal must not advance the store"
+        "lock-path refusal must not advance the store"
     );
     assert_eq!(
-        fs::read_to_string(&catalog_path).expect("catalog artifact after"),
-        catalog_before,
-        "catalog-path refusal must not replace the committed catalog artifact"
+        fs::read_to_string(&lock_path).expect("committed lock after"),
+        lock_before,
+        "lock-path refusal must not replace the committed lock"
     );
     let store = TreeStore::open(&native_store_path(&root)).expect("live store remains usable");
     assert_eq!(
@@ -701,8 +701,8 @@ fn retire_apply_backup_writes_valid_archive_then_applies() -> Result<(), Box<dyn
             Scalar::Str("sub".into()),
         );
     }
-    let catalog_before =
-        fs::read_to_string(root.join("marrow.catalog.json")).expect("read catalog before");
+    let lock_before =
+        fs::read_to_string(root.join("marrow.lock")).expect("read committed lock before");
     write(&root, "src/books.mw", RETIRE_SOURCE);
     let backup_path = root.join("before-retire.mwbackup");
     let backup_arg = backup_path.to_str().expect("backup path utf8");
@@ -740,7 +740,7 @@ fn retire_apply_backup_writes_valid_archive_then_applies() -> Result<(), Box<dyn
         "evolve-apply-retire-backup-restores",
         RETIRE_BASELINE_SOURCE,
     );
-    write(&restore_root, "marrow.catalog.json", &catalog_before);
+    write(&restore_root, "marrow.lock", &lock_before);
 
     let restore = marrow(&[
         "restore",
@@ -920,7 +920,7 @@ fn evolve_apply_advances_accepted_catalog_in_lockstep_for_retire()
     ]);
     assert_eq!(output.status.code(), Some(0), "{output:?}");
 
-    let file_epoch = accepted_catalog(&root).epoch;
+    let snapshot_epoch = accepted_catalog(&root).epoch;
     let store_epoch = store_epoch(&root);
     assert_eq!(
         store_epoch,
@@ -928,14 +928,14 @@ fn evolve_apply_advances_accepted_catalog_in_lockstep_for_retire()
         "store advanced one epoch"
     );
     assert_eq!(
-        file_epoch,
+        snapshot_epoch,
         baseline_epoch + 1,
-        "accepted catalog file advanced in lockstep with the store"
+        "the accepted catalog snapshot advanced in lockstep with the store"
     );
 
-    // With the accepted file left behind the store epoch, the open fence rejects every
+    // With the accepted snapshot left behind the store epoch, the open fence rejects every
     // later run as `run.store_evolved` with no recovery; the lockstep advance keeps the
-    // file and store at one epoch, so the fence never reports the store as evolved.
+    // snapshot and store at one epoch, so the fence never reports the store as evolved.
     let run = marrow(&[
         "run",
         "--entry",
@@ -1085,6 +1085,96 @@ fn run_succeeds_after_rename_apply_with_block_present_or_deleted()
         deleted.status.code(),
         Some(0),
         "run after deleting the consumed rename block: {deleted:?}"
+    );
+
+    Ok(())
+}
+
+/// Durable never-reuse survives lock loss: a retired id lives in the store catalog as a
+/// reserved entry, so the committed lock's id ledger is re-derivable from the store alone.
+/// After a retire, deleting `marrow.lock` and re-opening on a write (commit) path recovers the
+/// retired id into the re-projected lock's ledger — recovered from the store, not the deleted
+/// lock — and it is never reissued as an active entry.
+#[test]
+fn a_retired_id_is_recovered_from_the_store_after_lock_loss_and_never_reissued()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = native_books_project("retire-lock-loss-converges", RETIRE_BASELINE_SOURCE);
+    let accepted = commit_catalog(&root);
+    let accepted_place = root_place(&accepted, "books")?;
+    let subtitle_id = member_catalog_id(&accepted_place, "subtitle")?;
+    {
+        let store = open_native_store(&root);
+        seed_title_only(&store, &accepted_place, 1, "Dune");
+        seed_member(
+            &store,
+            &accepted_place,
+            1,
+            "subtitle",
+            Scalar::Str("sub".into()),
+        );
+    }
+    write(&root, "src/books.mw", RETIRE_SOURCE);
+    let apply = marrow(&[
+        "evolve",
+        "apply",
+        "--maintenance",
+        "--approve-retire",
+        &format!("{subtitle_id}:1"),
+        "--no-backup",
+        root.to_str().expect("project path utf-8"),
+    ]);
+    assert_eq!(apply.status.code(), Some(0), "retire apply: {apply:?}");
+
+    // The retire reserved the id in the store catalog and projected it into the lock's
+    // append-only ledger, never as an active lock entry.
+    let lock_after_retire = support_evolve::committed_lock(&root).expect("lock after retire");
+    assert!(
+        lock_after_retire
+            .ledger
+            .iter()
+            .any(|tombstone| tombstone.id == subtitle_id),
+        "the retired id is a ledger tombstone in the projected lock"
+    );
+    assert!(
+        lock_after_retire
+            .entries
+            .iter()
+            .all(|entry| entry.stable_id != subtitle_id),
+        "the retired id is not an active lock entry"
+    );
+
+    // Lose the lock entirely, then re-open on a write path so the store re-projects it.
+    fs::remove_file(root.join("marrow.lock")).expect("delete the committed lock");
+    let run = marrow(&[
+        "run",
+        "--entry",
+        "books::add",
+        "--arg",
+        "title=Dune",
+        root.to_str().unwrap(),
+    ]);
+    assert_eq!(
+        run.status.code(),
+        Some(0),
+        "post-loss run re-projects: {run:?}"
+    );
+
+    // The re-projected lock recovered the retired id from the store catalog's reserved
+    // entry, even though the lock file that previously recorded it was deleted.
+    let recovered = support_evolve::committed_lock(&root).expect("lock re-projected after loss");
+    assert!(
+        recovered
+            .ledger
+            .iter()
+            .any(|tombstone| tombstone.id == subtitle_id),
+        "the retired id is recovered from the store into the re-projected ledger"
+    );
+    assert!(
+        recovered
+            .entries
+            .iter()
+            .all(|entry| entry.stable_id != subtitle_id),
+        "the recovered retired id is never reissued as an active entry"
     );
 
     Ok(())

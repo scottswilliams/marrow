@@ -188,21 +188,24 @@ fn evolve_apply_activates_a_local_store_behind_the_committed_catalog_file() {
     assert_eq!(first_apply.status.code(), Some(0), "{first_apply:?}");
     let first_record = support::json(first_apply.stdout);
     assert_eq!(first_record["status"], serde_json::json!("applied"));
-    let committed_file = fs::read_to_string(root.join("marrow.catalog.json"))
-        .expect("read committed epoch-2 catalog file");
-    let file_catalog = marrow_catalog::CatalogMetadata::from_json(&committed_file)
-        .expect("parse committed catalog file");
-    assert_eq!(file_catalog.epoch, 2);
+    let committed_lock_bytes =
+        fs::read_to_string(root.join("marrow.lock")).expect("read committed epoch-2 lock");
+    let lock = marrow_catalog::CatalogLock::from_lock_json(&committed_lock_bytes)
+        .expect("parse committed lock");
+    assert_eq!(lock.epoch_high_water, 2);
     assert_eq!(store_epoch(&root), Some(2));
 
     fs::write(native_store_path(&root), store_epoch_one_bytes).expect("restore epoch-1 store");
     assert_eq!(store_epoch(&root), Some(1));
 
+    // The committed lock records the accepted epoch (2). A local store left at the older epoch is
+    // behind that committed accepted state, so the run fences with store-behind and names the
+    // actionable apply command rather than rewinding the committed lock.
     let fenced_run = marrow(&["run", "--entry", "books::noop", dir]);
     assert_eq!(
         fenced_run.status.code(),
         Some(1),
-        "run should fence the local store behind the committed catalog file: {fenced_run:?}"
+        "run should fence the local store behind the committed accepted state: {fenced_run:?}"
     );
     let stderr = String::from_utf8(fenced_run.stderr).expect("stderr utf8");
     assert!(
@@ -210,16 +213,19 @@ fn evolve_apply_activates_a_local_store_behind_the_committed_catalog_file() {
         "store-behind fence must name the actionable apply command: {stderr}"
     );
     assert_eq!(
-        fs::read_to_string(root.join("marrow.catalog.json")).expect("read file after fence"),
-        committed_file,
-        "run.store_behind must not rewind the committed file artifact"
+        fs::read_to_string(root.join("marrow.lock")).expect("read lock after fence"),
+        committed_lock_bytes,
+        "the store-behind fence must not rewind the committed lock"
     );
 
     let preview = marrow(&["evolve", "preview", "--format", "json", dir]);
     assert_eq!(preview.status.code(), Some(0), "{preview:?}");
     let preview_record = support::json(preview.stdout);
     assert_eq!(preview_record["status"], serde_json::json!("activatable"));
-    assert_eq!(preview_record["accepted_epoch"], serde_json::json!(2));
+    // The store is the accepted authority, so the preview's current accepted epoch is the
+    // local store's epoch (1); applying advances it to the epoch the lock already records (2).
+    assert_eq!(preview_record["accepted_epoch"], serde_json::json!(1));
+    assert_eq!(preview_record["proposal_epoch"], serde_json::json!(2));
 
     let second_apply = marrow(&["evolve", "apply", "--format", "json", dir]);
     assert_eq!(
@@ -232,11 +238,9 @@ fn evolve_apply_activates_a_local_store_behind_the_committed_catalog_file() {
     assert_eq!(second_record["catalog_epoch"], serde_json::json!(2));
     assert_eq!(store_epoch(&root), Some(2));
     assert_eq!(
-        accepted_catalog(&root)
-            .to_json_pretty()
-            .expect("catalog renders"),
-        committed_file,
-        "apply republishes the committed file catalog into the local store"
+        accepted_catalog(&root).epoch,
+        2,
+        "apply republishes the epoch-2 catalog into the local store"
     );
 
     let run_after_apply = marrow(&["run", "--entry", "books::noop", dir]);
@@ -249,10 +253,21 @@ fn evolve_apply_activates_a_local_store_behind_the_committed_catalog_file() {
         String::from_utf8(run_after_apply.stdout).expect("stdout utf8"),
         "ok\n"
     );
+    // The apply re-projected the committed lock from the now-epoch-2 store. The store is the
+    // sole accepted authority, so applying over a manually rewound store binds its identity and
+    // re-projects a valid epoch-2 lock; the projection re-derives identity from the live store
+    // rather than preserving the prior lock bytes.
+    let reprojected = marrow_catalog::CatalogLock::from_lock_json(
+        &fs::read_to_string(root.join("marrow.lock")).expect("read lock after apply"),
+    )
+    .expect("re-projected lock parses");
     assert_eq!(
-        fs::read_to_string(root.join("marrow.catalog.json")).expect("read file after apply"),
-        committed_file,
-        "the successful apply does not rewrite the committed file artifact"
+        reprojected.epoch_high_water, 2,
+        "the apply re-projects a valid epoch-2 committed lock"
+    );
+    assert_eq!(
+        reprojected.source_digest, lock.source_digest,
+        "the re-projected lock records the activated source digest"
     );
 }
 

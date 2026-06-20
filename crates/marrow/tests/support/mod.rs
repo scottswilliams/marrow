@@ -321,9 +321,9 @@ pub(crate) fn temp_project_uncommitted(name: &str, build: impl FnOnce(&Path)) ->
 }
 
 /// Freeze a fixture project's pending durable identity through the store transaction,
-/// then render the committed catalog file the way a state-establishing run does. A
-/// project that does not check cleanly, proposes no catalog change, or configures no
-/// durable store is left untouched.
+/// then re-project the committed `marrow.lock` through the production projection the way a
+/// state-establishing run does. A project that does not check cleanly, proposes no catalog
+/// change, or configures no durable store is left untouched.
 pub(crate) fn commit_catalog_if_clean(root: impl AsRef<Path>) {
     let root = root.as_ref();
     let Ok(config_text) = fs::read_to_string(root.join("marrow.json")) else {
@@ -354,11 +354,8 @@ pub(crate) fn commit_catalog_if_clean(root: impl AsRef<Path>) {
     marrow_run::evolution::commit_catalog_baseline(&store, &program)
         .expect("commit fixture catalog baseline");
     if let Some(snapshot) = store.read_catalog_snapshot().expect("read fixture catalog") {
-        fs::write(
-            root.join("marrow.catalog.json"),
-            snapshot.to_json_pretty().expect("catalog renders"),
-        )
-        .expect("render fixture catalog");
+        marrow_check::project_store_lock(root, &snapshot, &program.source_digest())
+            .expect("project fixture committed lock");
     }
 }
 

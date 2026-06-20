@@ -21,8 +21,9 @@ fn config(root: impl AsRef<Path>) -> ProjectConfig {
 }
 
 /// Freeze a project's baseline durable identity into its store, the way a
-/// state-establishing run does, and return the program re-bound against the accepted
-/// store snapshot that mirrors the committed catalog artifact.
+/// state-establishing run does, then re-project the committed `marrow.lock` from the
+/// store baseline through the production projection, and return the program re-bound
+/// against the accepted store snapshot.
 pub(crate) fn commit_catalog(root: impl AsRef<Path>) -> CheckedProgram {
     let root = root.as_ref();
     let config = config(root);
@@ -39,11 +40,8 @@ pub(crate) fn commit_catalog(root: impl AsRef<Path>) -> CheckedProgram {
     marrow_run::evolution::commit_catalog_baseline(&store, &program)
         .expect("commit catalog baseline");
     if let Some(snapshot) = store.read_catalog_snapshot().expect("read store catalog") {
-        fs::write(
-            root.join("marrow.catalog.json"),
-            snapshot.to_json_pretty().expect("catalog renders"),
-        )
-        .expect("render catalog file");
+        marrow_check::project_store_lock(root, &snapshot, &program.source_digest())
+            .expect("project committed lock");
     }
 
     let accepted = store
@@ -54,6 +52,13 @@ pub(crate) fn commit_catalog(root: impl AsRef<Path>) -> CheckedProgram {
             .expect("re-check against accepted catalog");
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
     program
+}
+
+/// The committed `marrow.lock` read back as a typed [`CatalogLock`], the oracle CLI
+/// evolution cases assert the re-projection against. A missing lock is the structural
+/// "no projection committed" signal; a present lock decodes through its codec.
+pub(crate) fn committed_lock(root: impl AsRef<Path>) -> Option<marrow_catalog::CatalogLock> {
+    marrow_check::read_committed_lock(root.as_ref()).expect("read committed lock")
 }
 pub(crate) fn native_store_path(root: impl AsRef<Path>) -> PathBuf {
     root.as_ref().join(".data").join("marrow.redb")

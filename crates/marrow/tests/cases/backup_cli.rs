@@ -1036,13 +1036,13 @@ fn restore_of_epoch_n_backup_refuses_after_project_catalog_advances_to_n_plus_on
         "{message}"
     );
     assert_store_empty(&data_dir);
-    let catalog_file = fs::read_to_string(root.join("marrow.catalog.json"))
-        .expect("advanced catalog file remains");
-    let catalog_file =
-        marrow_catalog::CatalogMetadata::from_json(&catalog_file).expect("catalog file parses");
+    let committed_lock = marrow_catalog::CatalogLock::from_lock_json(
+        &fs::read_to_string(root.join("marrow.lock")).expect("advanced committed lock remains"),
+    )
+    .expect("committed lock parses");
     assert_eq!(
-        catalog_file.epoch, advanced_catalog.epoch,
-        "a refused restore must not rewrite the advanced source-tree catalog"
+        committed_lock.epoch_high_water, advanced_catalog.epoch,
+        "a refused restore must not rewrite the advanced committed lock"
     );
 }
 
@@ -1330,7 +1330,7 @@ fn restore_refuses_a_catalog_only_target() {
     let target_dir = target.to_str().unwrap().to_string();
     let target_data_dir = target.join(".data");
     let target_store_file = target_data_dir.join("marrow.redb");
-    fs::remove_file(target.join("marrow.catalog.json")).expect("leave only the store baseline");
+    fs::remove_file(target.join("marrow.lock")).expect("leave only the store baseline");
     let before_catalog = read_store_catalog(&target_data_dir).expect("catalog-only baseline");
     let target_is_empty = {
         let store = TreeStore::open_read_only(&target_store_file).expect("open target read-only");

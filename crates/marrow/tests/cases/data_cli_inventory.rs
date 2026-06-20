@@ -221,34 +221,40 @@ fn data_inventory_reads_backup_while_live_store_is_locked() {
 }
 
 #[test]
-fn data_backup_dump_ignores_live_catalog_artifact_while_live_store_is_locked() {
-    for catalog_state in ["corrupt", "drifted", "absent"] {
-        let (project, dir) = seeded_project(&format!("data-backup-live-catalog-{catalog_state}"));
+fn data_backup_dump_ignores_live_committed_lock_while_live_store_is_locked() {
+    for lock_state in ["corrupt", "drifted", "absent"] {
+        let (project, dir) = seeded_project(&format!("data-backup-live-lock-{lock_state}"));
         let live_dump = support::marrow(&["data", "dump", "--format", "json", &dir]);
         assert_eq!(live_dump.status.code(), Some(0), "{live_dump:?}");
         let live_dump = support::json(live_dump.stdout);
 
-        let archive = support::backup_artifact(&project, &format!("{catalog_state}.mwbackup"));
+        let archive = support::backup_artifact(&project, &format!("{lock_state}.mwbackup"));
         let archive_arg = archive.to_str().expect("backup path utf8");
-        let catalog_path = project.join("marrow.catalog.json");
-        match catalog_state {
-            "corrupt" => fs::write(&catalog_path, "{ not catalog json")
-                .expect("write corrupt catalog artifact"),
-            "drifted" => {
-                let accepted = fs::read_to_string(&catalog_path).expect("read catalog artifact");
-                let accepted = marrow_catalog::CatalogMetadata::from_json(&accepted)
-                    .expect("parse catalog artifact");
-                let drifted =
-                    marrow_catalog::CatalogMetadata::new(accepted.epoch + 1, accepted.entries)
-                        .expect("catalog builds");
-                fs::write(
-                    &catalog_path,
-                    drifted.to_json_pretty().expect("catalog renders"),
-                )
-                .expect("write drifted catalog artifact");
+        let lock_path = project.join("marrow.lock");
+        match lock_state {
+            "corrupt" => {
+                fs::write(&lock_path, "{ not lock json").expect("write corrupt committed lock")
             }
-            "absent" => fs::remove_file(&catalog_path).expect("remove catalog artifact"),
-            other => panic!("unknown catalog state {other}"),
+            "drifted" => {
+                let committed = marrow_catalog::CatalogLock::from_lock_json(
+                    &fs::read_to_string(&lock_path).expect("read committed lock"),
+                )
+                .expect("parse committed lock");
+                let drifted = marrow_catalog::CatalogLock::new(
+                    committed.entries.clone(),
+                    committed.ledger.clone(),
+                    committed.epoch_high_water + 1,
+                    committed.source_digest.clone(),
+                )
+                .expect("drifted lock builds");
+                fs::write(
+                    &lock_path,
+                    drifted.to_lock_json_pretty().expect("lock renders"),
+                )
+                .expect("write drifted committed lock");
+            }
+            "absent" => fs::remove_file(&lock_path).expect("remove committed lock"),
+            other => panic!("unknown lock state {other}"),
         }
 
         let _writer = TreeStore::open(&project.join(".data").join("marrow.redb"))
@@ -266,7 +272,7 @@ fn data_backup_dump_ignores_live_catalog_artifact_while_live_store_is_locked() {
         assert_eq!(
             backup_dump.status.code(),
             Some(0),
-            "{catalog_state}: {backup_dump:?}"
+            "{lock_state}: {backup_dump:?}"
         );
         assert_eq!(support::json(backup_dump.stdout), live_dump);
     }

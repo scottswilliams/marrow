@@ -143,7 +143,7 @@ fn checked_source_identity(root: &Path) -> marrow_check::AnalysisIdentity {
     let config = marrow_check::load_config(root).expect("load config");
     let accepted =
         marrow_check::read_accepted_catalog_artifact(root).expect("read accepted catalog");
-    marrow_check::check_source_project_analysis_against(root, &config, accepted.as_ref())
+    marrow_check::check_source_project_analysis_against(root, &config, accepted.as_ref(), None)
         .expect("check source analysis")
         .content_identity
 }

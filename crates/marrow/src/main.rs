@@ -509,8 +509,10 @@ pub(crate) fn load_config_with_format(
     marrow_check::load_config(Path::new(dir)).map_err(|error| project_io_exit(dir, error, format))
 }
 
-/// Read the project's accepted-catalog snapshot from its committed source-tree file
-/// or its store crash bridge.
+/// Bind the project's accepted catalog from the live store, failing closed on a corrupt
+/// committed lock. The store is the sole accepted authority: when no store snapshot is present
+/// this is the first-run `None`, never a lock-derived snapshot, and the read never writes the
+/// source tree.
 pub(crate) fn read_accepted_store_catalog(
     dir: &str,
     config: &marrow_project::ProjectConfig,
@@ -521,7 +523,9 @@ pub(crate) fn read_accepted_store_catalog(
         .map_err(|error| project_io_exit(dir, error, format))
 }
 
-/// Read the committed catalog artifact without consulting the saved-data store.
+/// Read the committed lock without consulting the saved-data store, failing closed on a corrupt
+/// lock. There is no store authority to bind here, so the accepted catalog is the first-run
+/// `None`; the lock is consumed for first-run adoption at analyze time, never materialized here.
 pub(crate) fn read_accepted_catalog_artifact(
     dir: &str,
     format: CheckFormat,
@@ -530,9 +534,49 @@ pub(crate) fn read_accepted_catalog_artifact(
         .map_err(|error| project_io_exit(dir, error, format))
 }
 
-pub(crate) fn render_accepted_catalog_file_from_store(
+/// Read the committed lock as a typed value, failing closed on a corrupt lock. `marrow check`
+/// uses it to report a stale lock by comparing the lock's source digest against the program's,
+/// reading the committed projection without opening or repairing the store.
+pub(crate) fn read_committed_lock(
+    dir: &str,
+    format: CheckFormat,
+) -> Result<Option<marrow_catalog::CatalogLock>, ExitCode> {
+    marrow_check::read_committed_lock(Path::new(dir))
+        .map_err(|error| project_io_exit(dir, error, format))
+}
+
+/// Bind the accepted catalog from a present, readable store for the read-only `check` surface,
+/// returning `None` when no store is present or it cannot be opened read-only. Unlike
+/// [`read_accepted_store_catalog`], a store that is absent or unreadable is not an error here:
+/// `check` is read-only and must neither create a store nor fail on a hostile store file, so it
+/// degrades to no accepted authority and binds first-run identity from the committed lock instead.
+/// The read never writes the source tree.
+pub(crate) fn read_accepted_store_catalog_lenient(
+    dir: &str,
+    config: &marrow_project::ProjectConfig,
+) -> Option<marrow_catalog::CatalogMetadata> {
+    let Ok(Some(path)) = marrow_check::native_store_path(Path::new(dir), config) else {
+        return None;
+    };
+    if !path.exists() {
+        return None;
+    }
+    let store = marrow_store::tree::TreeStore::open_read_only(&path).ok()?;
+    marrow_check::read_accepted_catalog_with_store_read_only(Path::new(dir), Some(&store))
+        .ok()
+        .flatten()
+}
+
+/// Re-project the committed `marrow.lock` from the store's accepted snapshot. The store is the
+/// sole write-time authority for accepted identity; the lock is its committed source-tree
+/// projection. An authorized write path (evolve apply, baseline freeze) runs this after the store
+/// transaction commits, so the command is not done until the re-projected lock is committed. The
+/// projection derives its id ledger from the snapshot's reserved entries, runs through the single
+/// lock-write owner, and is idempotent on the bytes a converged store already projected.
+pub(crate) fn reproject_committed_lock(
     dir: &str,
     store: &marrow_store::tree::TreeStore,
+    program: &marrow_check::CheckedProgram,
     format: CheckFormat,
 ) -> Result<(), ExitCode> {
     let Some(snapshot) = store.read_catalog_snapshot().map_err(|error| {
@@ -542,7 +586,7 @@ pub(crate) fn render_accepted_catalog_file_from_store(
     else {
         return Ok(());
     };
-    marrow_check::render_accepted_catalog_file(Path::new(dir), &snapshot)
+    marrow_check::project_store_lock(Path::new(dir), &snapshot, &program.source_digest())
         .map_err(|error| project_io_exit(dir, error, format))
 }
 
@@ -560,8 +604,22 @@ pub(crate) fn load_checked_project_with_format(
 ) -> Result<(marrow_project::ProjectConfig, marrow_check::CheckedProgram), ExitCode> {
     let config = load_config_with_format(dir, format)?;
     let accepted = read_accepted_store_catalog(dir, &config, format)?;
-    let program = marrow_check::check_project_against(Path::new(dir), &config, accepted.as_ref())
-        .map_err(|error| project_io_exit(dir, error, format))?;
+    // When no store snapshot is bound, the committed lock drives first-run adoption so the evolve
+    // path binds the lock's accepted epoch and identity rather than minting fresh ids: a store
+    // behind the committed lock then fences as store-behind, and a fresh checkout adopts. A valid
+    // store is the sole authority, so the lock is read only when no snapshot is present.
+    let lock = if accepted.is_some() {
+        None
+    } else {
+        read_committed_lock(dir, format)?
+    };
+    let program = marrow_check::check_project_against(
+        Path::new(dir),
+        &config,
+        accepted.as_ref(),
+        lock.as_ref(),
+    )
+    .map_err(|error| project_io_exit(dir, error, format))?;
     Ok((config, program))
 }
 
@@ -583,7 +641,9 @@ pub(crate) fn establish_store_baseline(
     if !wrote {
         return Ok(program);
     }
-    recheck_against_store_catalog(dir, config, store, format)
+    let program = recheck_against_store_catalog(dir, config, store, format)?;
+    reproject_committed_lock(dir, store, &program, format)?;
+    Ok(program)
 }
 
 /// Re-check the project binding durable identity against the store's accepted catalog

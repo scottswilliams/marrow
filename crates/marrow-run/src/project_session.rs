@@ -1006,6 +1006,9 @@ fn open_run_store(
     } else {
         establish_store_baseline(root, config, &store.store, checked)?
     };
+    if let Some(behind) = store_behind_committed_lock(root, &store.store)? {
+        return Err(ProjectSessionError::Fence(behind));
+    }
     match fence_run(&checked.program, &store.store) {
         Ok(()) => {
             if !isolate_writes {
@@ -1229,8 +1232,13 @@ fn load_checked_for_config(
         let store = open_store_for_inspection(root, config)?;
         marrow_check::read_accepted_catalog_with_store(root, store.as_ref())?
     };
-    let snapshot =
-        marrow_check::check_source_project_analysis_against(root, config, accepted.as_ref())?;
+    let lock = lock_for_adoption(root, accepted.as_ref())?;
+    let snapshot = marrow_check::check_source_project_analysis_against(
+        root,
+        config,
+        accepted.as_ref(),
+        lock.as_ref(),
+    )?;
     Ok(CheckedSourceProgram::from_snapshot(snapshot))
 }
 
@@ -1242,8 +1250,24 @@ fn load_checked_for_surface_session(
         let store = open_store_for_inspection(root, &config)?;
         marrow_check::read_accepted_catalog_with_store_read_only(root, store.as_ref())?
     };
-    let program = marrow_check::check_project_against(root, &config, accepted.as_ref())?;
+    let lock = lock_for_adoption(root, accepted.as_ref())?;
+    let program =
+        marrow_check::check_project_against(root, &config, accepted.as_ref(), lock.as_ref())?;
     Ok((config, program))
+}
+
+/// The committed lock to drive first-run adoption, read only when no accepted store snapshot is
+/// present. A valid store is the sole accepted authority, so when one is bound the lock is inert
+/// and never read; on an empty store the committed lock seeds the fresh checkout with its
+/// committed identity. A corrupt lock fails closed through the reader.
+fn lock_for_adoption(
+    root: &Path,
+    accepted: Option<&marrow_catalog::CatalogMetadata>,
+) -> Result<Option<marrow_catalog::CatalogLock>, ProjectSessionError> {
+    if accepted.is_some() {
+        return Ok(None);
+    }
+    marrow_check::read_committed_lock(root).map_err(ProjectSessionError::from)
 }
 
 fn load_checked_for_fresh_memory_session(
@@ -1251,8 +1275,12 @@ fn load_checked_for_fresh_memory_session(
 ) -> Result<(ProjectConfig, CheckedSourceProgram), ProjectSessionError> {
     let config = marrow_check::load_config(root)?;
     let accepted = marrow_check::read_accepted_catalog_artifact(root)?;
-    let snapshot =
-        marrow_check::check_source_project_analysis_against(root, &config, accepted.as_ref())?;
+    let snapshot = marrow_check::check_source_project_analysis_against(
+        root,
+        &config,
+        accepted.as_ref(),
+        None,
+    )?;
     Ok((config, CheckedSourceProgram::from_snapshot(snapshot)))
 }
 
@@ -1285,7 +1313,7 @@ fn bind_proposed_catalog_identity(
     if proposal.entries.is_empty() {
         return Ok(checked);
     }
-    marrow_check::check_source_project_analysis_against(root, config, Some(&proposal))
+    marrow_check::check_source_project_analysis_against(root, config, Some(&proposal), None)
         .map(CheckedSourceProgram::from_snapshot)
         .map_err(ProjectSessionError::from)
 }
@@ -1315,11 +1343,11 @@ fn establish_store_baseline(
 /// authority; the lock is its committed source-tree projection. A writable commit-path open
 /// re-projects after the fence agrees the store matches this binary, so a baseline this open just
 /// established — or one a prior open committed before it could project the lock — converges to a
-/// fresh lock. Re-projection rebuilds the accepted identity and shape from the committed store
-/// snapshot; the id ledger is carried forward from the existing lock when one is present. The
-/// projection is idempotent on the bytes it would write, so a converged store re-projects nothing.
-/// It runs only on the writable open path through the single lock-write owner, never as a read
-/// side effect.
+/// fresh lock. Re-projection rebuilds the accepted identity, shape, and the append-only id ledger
+/// from the committed store snapshot alone (a retired id reserves its store entry), so a deleted
+/// lock is recovered with its retired ids rather than re-projected empty. The projection is
+/// idempotent on the bytes it would write, so a converged store re-projects nothing. It runs only
+/// on the writable open path through the single lock-write owner, never as a read side effect.
 fn reproject_committed_lock(
     root: &Path,
     store: &TreeStore,
@@ -1328,10 +1356,7 @@ fn reproject_committed_lock(
     let Some(snapshot) = store.read_catalog_snapshot()? else {
         return Ok(());
     };
-    let ledger = marrow_check::read_committed_lock(root)?
-        .map(|lock| lock.ledger)
-        .unwrap_or_default();
-    marrow_check::project_store_lock(root, &snapshot, &ledger, &program.source_digest())
+    marrow_check::project_store_lock(root, &snapshot, &program.source_digest())
         .map_err(ProjectSessionError::from)
 }
 
@@ -1341,6 +1366,33 @@ fn fence_run(program: &CheckedProgram, store: &TreeStore) -> Result<(), FenceErr
         &program.source_digest(),
         store,
     )
+}
+
+/// Whether the local store lags the committed lock. The committed lock records the epoch a write
+/// path last activated against the shared source tree, so a stamped store whose epoch is below the
+/// lock's high-water is a local checkout that has not caught up to an activation a teammate already
+/// committed. This is reported as a store-behind fence (the operator runs `marrow evolve apply` to
+/// advance the local store), distinct from same-epoch schema drift, which auto-applies a fresh
+/// activation. The store remains the sole authority: the lock never rewinds or overrides it, it only
+/// signals that the local store is behind a committed advance.
+fn store_behind_committed_lock(
+    root: &Path,
+    store: &TreeStore,
+) -> Result<Option<FenceError>, ProjectSessionError> {
+    let Some(commit) = store.read_commit_metadata()? else {
+        return Ok(None);
+    };
+    let Some(lock) = marrow_check::read_committed_lock(root)? else {
+        return Ok(None);
+    };
+    if lock.epoch_high_water > commit.catalog_epoch {
+        Ok(Some(FenceError::StoreBehind {
+            stored: commit.catalog_epoch,
+            accepted: lock.epoch_high_water,
+        }))
+    } else {
+        Ok(None)
+    }
 }
 
 fn pending_baseline(program: &CheckedProgram) -> bool {

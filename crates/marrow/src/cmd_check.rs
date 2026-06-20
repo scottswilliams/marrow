@@ -53,23 +53,38 @@ Check a project directory containing marrow.json and report diagnostics.
     check_project_dir(&target, format)
 }
 
+/// A committed `marrow.lock` whose recorded source digest no longer matches the digest of the
+/// current checked source. `marrow check` is read-only: it cannot re-project the lock, so it
+/// surfaces staleness as a non-fatal advisory rather than failing. Editing source ahead of the
+/// next write path is the ordinary case, so a stale lock does not block a clean check; a later
+/// `run` or `evolve apply` re-projects the lock to converge it.
+const CHECK_STALE_LOCK: &str = "check.stale_lock";
+
 /// Check a whole project: load `<dir>/marrow.json`, then run the project
-/// checker over its source roots and configured test files.
+/// checker over its source roots and configured test files. The committed lock binds first-run
+/// identity and, when it disagrees with the current source digest, surfaces a non-fatal
+/// stale-lock advisory; check never opens or repairs the store.
 fn check_project_dir(dir: &str, format: CheckFormat) -> ExitCode {
     let config = match crate::load_config_with_format(dir, format) {
         Ok(config) => config,
         Err(code) => return code,
     };
-    let accepted = match crate::read_accepted_catalog_artifact(dir, format) {
-        Ok(accepted) => accepted,
+    let lock = match crate::read_committed_lock(dir, format) {
+        Ok(lock) => lock,
         Err(code) => return code,
     };
+    // Bind from the store when one is present and readable, falling back to the committed lock
+    // otherwise. The store is the accepted authority — binding its snapshot gives the checked
+    // program its frozen shapes — and the read is read-only, so check never opens an unreadable
+    // store for repair, creates one, or writes the source tree. A store that cannot be opened
+    // read-only is treated as no accepted authority, leaving the lock as the first-run anchor.
+    let accepted = crate::read_accepted_store_catalog_lenient(dir, &config);
     let snapshot = match marrow_check::analyze_project(
         Path::new(dir),
         &config,
         &marrow_check::ProjectSources::new(),
         accepted.as_ref(),
-        None,
+        lock.as_ref(),
     ) {
         Ok(snapshot) => snapshot,
         Err(error) => {
@@ -84,10 +99,34 @@ fn check_project_dir(dir: &str, format: CheckFormat) -> ExitCode {
 
     if snapshot.report.has_errors() {
         crate::report_project(dir, &snapshot.report, format);
-        ExitCode::FAILURE
-    } else {
-        crate::report_project_with_program(dir, &snapshot.report, &snapshot.program, format);
-        ExitCode::SUCCESS
+        return ExitCode::FAILURE;
+    }
+    crate::report_project_with_program(dir, &snapshot.report, &snapshot.program, format);
+    if let Some(lock) = &lock
+        && lock.source_digest != snapshot.program.source_digest()
+    {
+        report_stale_lock_advisory(format);
+    }
+    ExitCode::SUCCESS
+}
+
+/// Emit the non-fatal stale-lock advisory on stderr in the requested format. It is written to
+/// stderr in every format so it never joins the primary check result on stdout, keeping the
+/// structured envelope a single parseable value.
+fn report_stale_lock_advisory(format: CheckFormat) {
+    const MESSAGE: &str =
+        "marrow.lock is behind the current source; a run or evolve apply re-projects it";
+    match format {
+        CheckFormat::Text => eprintln!("{CHECK_STALE_LOCK}: {MESSAGE}"),
+        CheckFormat::Json | CheckFormat::Jsonl => {
+            write_json_err(serde_json::json!({
+                "code": CHECK_STALE_LOCK,
+                "kind": marrow_syntax::kind_for_code(CHECK_STALE_LOCK),
+                "message": MESSAGE,
+                "data": {},
+                "source_span": null,
+            }));
+        }
     }
 }
 

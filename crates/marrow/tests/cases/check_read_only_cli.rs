@@ -1,7 +1,8 @@
 //! `marrow check` is read-only over durable state: it neither freezes durable identity
 //! nor creates, opens, repairs, or mutates the saved-data store. The durable write
 //! paths — `marrow run` over a persistent store and `marrow evolve apply` — are the
-//! contrast: each commits, so each leaves the catalog artifact and store changed.
+//! contrast: each commits, so each re-projects the committed `marrow.lock` and advances
+//! the store.
 
 use std::fs;
 use std::path::Path;
@@ -16,46 +17,40 @@ use support_evolve::{
     seed_title_only, store_epoch,
 };
 
-fn catalog_path(root: &Path) -> std::path::PathBuf {
-    root.join("marrow.catalog.json")
+fn lock_path(root: &Path) -> std::path::PathBuf {
+    root.join("marrow.lock")
 }
 
 fn store_path(root: &Path) -> std::path::PathBuf {
     root.join(".data").join("marrow.redb")
 }
 
-fn store_snapshot(root: &Path) -> marrow_catalog::CatalogMetadata {
-    let store = TreeStore::open_read_only(&store_path(root)).expect("open store read-only");
-    store
-        .read_catalog_snapshot()
-        .expect("read store catalog snapshot")
-        .expect("project has an accepted catalog")
-}
-
-fn rendered_catalog(root: &Path) -> String {
-    fs::read_to_string(catalog_path(root)).expect("read rendered catalog")
+fn committed_lock(root: &Path) -> marrow_catalog::CatalogLock {
+    marrow_check::read_committed_lock(root)
+        .expect("read committed lock")
+        .expect("project has a committed lock")
 }
 
 #[test]
-fn check_on_an_uncommitted_project_writes_no_catalog_and_no_store() {
+fn check_on_an_uncommitted_project_writes_no_lock_and_no_store() {
     // A project whose durable identity is not yet frozen checks cleanly and reports
     // informationally, but `check` must not be the command that establishes durable
-    // state: it leaves the catalog file and the store absent.
+    // state: it leaves the committed lock and the store absent.
     let project = temp_project_uncommitted("check-ro-uncommitted", |root| {
         write(root, "marrow.json", native_config());
         write(root, "src/app.mw", counter_source());
     });
     let dir = project.to_str().expect("project path utf-8");
 
-    assert!(!catalog_path(&project).exists(), "no catalog before check");
+    assert!(!lock_path(&project).exists(), "no lock before check");
     assert!(!store_path(&project).exists(), "no store before check");
 
     let check = marrow(&["check", dir]);
     assert_eq!(check.status.code(), Some(0), "{check:?}");
 
     assert!(
-        !catalog_path(&project).exists(),
-        "check must not freeze durable identity into the catalog file"
+        !lock_path(&project).exists(),
+        "check must not freeze durable identity into the committed lock"
     );
     assert!(
         !store_path(&project).exists(),
@@ -82,16 +77,16 @@ fn check_does_not_open_a_hostile_native_store_file() {
         "ordinary check must not open or rewrite the configured store"
     );
     assert!(
-        !catalog_path(&project).exists(),
-        "ordinary check must not repair catalog state from the store"
+        !lock_path(&project).exists(),
+        "ordinary check must not repair lock state from the store"
     );
 }
 
 #[test]
-fn run_freezes_the_catalog_into_the_store_and_renders_the_file() {
+fn run_freezes_the_catalog_into_the_store_and_reprojects_the_lock() {
     // The contrast for the uncommitted case: `run` over a persistent store is a durable
     // write path, so the same project that `check` left untouched gains a store snapshot,
-    // a created store, and a rendered catalog file the first time it runs.
+    // a created store, and a re-projected committed lock the first time it runs.
     let project = temp_project_uncommitted("check-ro-run-commits", |root| {
         write(root, "marrow.json", native_config());
         write(root, "src/app.mw", counter_source());
@@ -110,10 +105,10 @@ fn run_freezes_the_catalog_into_the_store_and_renders_the_file() {
         .read_catalog_snapshot()
         .expect("read store catalog snapshot")
         .expect("run publishes the accepted catalog into the store");
+    let lock = committed_lock(&project);
     assert_eq!(
-        rendered_catalog(&project),
-        snapshot.to_json_pretty().expect("catalog renders"),
-        "run renders marrow.catalog.json from the committed store snapshot"
+        lock.epoch_high_water, snapshot.epoch,
+        "run re-projects marrow.lock from the committed store snapshot"
     );
 }
 
@@ -133,8 +128,8 @@ fn hostile_config_rejection_creates_no_native_store() {
     assert_eq!(run.status.code(), Some(1), "{run:?}");
 
     assert!(
-        !catalog_path(&project).exists(),
-        "a hostile config must not create a catalog file"
+        !lock_path(&project).exists(),
+        "a hostile config must not create a committed lock"
     );
     assert!(
         !store_path(&project).exists(),
@@ -143,13 +138,13 @@ fn hostile_config_rejection_creates_no_native_store() {
 }
 
 #[test]
-fn check_rejects_catalog_file_conflict_markers_without_creating_a_store() {
-    let project = temp_project_uncommitted("check-ro-conflicted-catalog", |root| {
+fn check_rejects_lock_conflict_markers_without_creating_a_store() {
+    let project = temp_project_uncommitted("check-ro-conflicted-lock", |root| {
         write(root, "marrow.json", native_config());
         write(root, "src/app.mw", counter_source());
         write(
             root,
-            "marrow.catalog.json",
+            "marrow.lock",
             "<<<<<<< HEAD\n{}\n=======\n{}\n>>>>>>> branch\n",
         );
     });
@@ -159,24 +154,22 @@ fn check_rejects_catalog_file_conflict_markers_without_creating_a_store() {
     assert_eq!(
         check.status.code(),
         Some(1),
-        "conflicted catalog file must fail: {check:?}"
+        "conflicted lock must fail: {check:?}"
     );
     let stderr = String::from_utf8(check.stderr).expect("stderr utf8");
     assert!(
-        stderr.contains("catalog.merge_conflict")
-            && stderr.contains("resolve the conflict")
-            && stderr.contains("rerun the command"),
-        "the error is typed and actionable: {stderr}"
+        stderr.contains("catalog.lock_corrupt"),
+        "the error is the typed lock-corrupt code: {stderr}"
     );
     assert!(
         !store_path(&project).exists(),
-        "rejecting a conflicted catalog file must not create a store"
+        "rejecting a conflicted lock must not create a store"
     );
 }
 
 #[test]
-fn check_rejects_a_torn_catalog_file_without_opening_the_store_snapshot() {
-    let project = temp_project_uncommitted("check-ro-torn-catalog-repair", |root| {
+fn check_rejects_a_torn_lock_without_opening_the_store_snapshot() {
+    let project = temp_project_uncommitted("check-ro-torn-lock-repair", |root| {
         write(root, "marrow.json", native_config());
         write(root, "src/app.mw", counter_source());
     });
@@ -186,30 +179,34 @@ fn check_rejects_a_torn_catalog_file_without_opening_the_store_snapshot() {
         Some(0)
     );
     let store_before = fs::read(store_path(&project)).expect("read store before check");
-    fs::write(catalog_path(&project), "{\"epoch\":").expect("write torn catalog render");
+    fs::write(lock_path(&project), "{\"epoch\":").expect("write torn lock");
 
     let check = marrow(&["check", dir]);
     assert_eq!(
         check.status.code(),
         Some(1),
-        "check rejects the torn catalog file without store repair: {check:?}"
+        "check rejects the torn lock without store repair: {check:?}"
     );
-
+    let stderr = String::from_utf8(check.stderr).expect("stderr utf8");
+    assert!(
+        stderr.contains("catalog.lock_corrupt"),
+        "the torn lock surfaces the typed lock-corrupt code: {stderr}"
+    );
     assert_eq!(
         fs::read(store_path(&project)).expect("read store after check"),
         store_before,
-        "rejecting a torn catalog file must not open the store for repair"
+        "rejecting a torn lock must not open the store for repair"
     );
     assert_eq!(
-        fs::read_to_string(catalog_path(&project)).expect("read torn catalog"),
+        fs::read_to_string(lock_path(&project)).expect("read torn lock"),
         "{\"epoch\":",
-        "ordinary check leaves invalid catalog bytes for the user to fix"
+        "ordinary check leaves invalid lock bytes for the user to fix"
     );
 }
 
 #[test]
-fn check_rejects_catalog_file_conflict_markers_even_when_a_store_snapshot_exists() {
-    let project = temp_project_uncommitted("check-ro-conflicted-catalog-with-store", |root| {
+fn check_rejects_lock_conflict_markers_even_when_a_store_snapshot_exists() {
+    let project = temp_project_uncommitted("check-ro-conflicted-lock-with-store", |root| {
         write(root, "marrow.json", native_config());
         write(root, "src/app.mw", counter_source());
     });
@@ -219,28 +216,26 @@ fn check_rejects_catalog_file_conflict_markers_even_when_a_store_snapshot_exists
         Some(0)
     );
     fs::write(
-        catalog_path(&project),
+        lock_path(&project),
         "<<<<<<< HEAD\n{}\n=======\n{}\n>>>>>>> branch\n",
     )
-    .expect("write conflicted catalog file");
+    .expect("write conflicted lock");
 
     let check = marrow(&["check", dir]);
     assert_eq!(
         check.status.code(),
         Some(1),
-        "conflicted catalog file must fail: {check:?}"
+        "conflicted lock must fail: {check:?}"
     );
     let stderr = String::from_utf8(check.stderr).expect("stderr utf8");
     assert!(
-        stderr.contains("catalog.merge_conflict")
-            && stderr.contains("resolve the conflict")
-            && stderr.contains("rerun the command"),
-        "the error is typed and actionable: {stderr}"
+        stderr.contains("catalog.lock_corrupt"),
+        "the error is the typed lock-corrupt code: {stderr}"
     );
 }
 
 #[test]
-fn check_on_a_committed_project_does_not_repair_a_missing_catalog_file() {
+fn check_on_a_committed_project_does_not_repair_a_missing_lock() {
     let project = temp_project_uncommitted("check-ro-committed", |root| {
         write(root, "marrow.json", native_config());
         write(root, "src/app.mw", counter_source());
@@ -253,8 +248,8 @@ fn check_on_a_committed_project_does_not_repair_a_missing_catalog_file() {
 
     let store = store_path(&project);
     let store_before = fs::read(&store).expect("read store");
-    if catalog_path(&project).exists() {
-        fs::remove_file(catalog_path(&project)).expect("remove rendered catalog");
+    if lock_path(&project).exists() {
+        fs::remove_file(lock_path(&project)).expect("remove committed lock");
     }
 
     let check = marrow(&["check", dir]);
@@ -266,128 +261,59 @@ fn check_on_a_committed_project_does_not_repair_a_missing_catalog_file() {
         "check left the store file bytes unchanged"
     );
     assert!(
-        !catalog_path(&project).exists(),
-        "ordinary check does not reconstruct a missing catalog file from the store"
+        !lock_path(&project).exists(),
+        "ordinary check does not reconstruct a missing lock from the store"
     );
 }
 
 #[test]
-fn check_preserves_a_valid_catalog_file_without_store_repair() {
-    let project_a = temp_project_uncommitted("check-ro-same-epoch-drift-a", |root| {
-        write(root, "marrow.json", native_config());
-        write(root, "src/app.mw", counter_source());
-    });
-    let project_b = temp_project_uncommitted("check-ro-same-epoch-drift-b", |root| {
-        write(root, "marrow.json", native_config());
-        write(root, "src/app.mw", counter_source());
-    });
+fn check_reports_a_stale_lock_when_the_source_digest_drifts() {
+    // A valid committed lock whose recorded source digest no longer matches the current
+    // source is stale: check is read-only, so it reports the typed stale-lock rather than
+    // re-projecting, and it never opens or rewrites the store.
+    let root = native_books_project("check-ro-stale-lock", REQUIRED_BASELINE_SOURCE);
+    let accepted = commit_catalog(&root);
+    let accepted_place = root_place(&accepted, "books").expect("books root place");
+    {
+        let store = open_native_store(&root);
+        seed_title_only(&store, &accepted_place, 1, "Dune");
+    }
+    let lock_before = committed_lock(&root);
+    let store_before = fs::read(native_store_path(&root)).expect("read store before check");
 
-    let dir_a = project_a.to_str().expect("project path utf-8");
-    let dir_b = project_b.to_str().expect("project path utf-8");
-    assert_eq!(
-        marrow(&["run", "--entry", "app::seed", dir_a])
-            .status
-            .code(),
-        Some(0)
-    );
-    assert_eq!(
-        marrow(&["run", "--entry", "app::seed", dir_b])
-            .status
-            .code(),
-        Some(0)
-    );
+    // Edit the source so its shape digest drifts from the lock's recorded digest.
+    write(&root, "src/books.mw", OPTIONAL_PAGES_DEFAULT_INDEX_SOURCE);
 
-    let store_a_before = fs::read(store_path(&project_a)).expect("read project A store");
-    let snapshot_a = store_snapshot(&project_a);
-    let snapshot_b = store_snapshot(&project_b);
-    assert_eq!(snapshot_a.epoch, snapshot_b.epoch);
-    assert_ne!(
-        snapshot_a.digest, snapshot_b.digest,
-        "independent baseline catalogs must carry distinct identity"
-    );
-    fs::copy(catalog_path(&project_b), catalog_path(&project_a))
-        .expect("copy project B catalog over project A");
-
-    let check = marrow(&["check", dir_a]);
+    let check = marrow(&["check", root.to_str().unwrap()]);
     assert_eq!(
         check.status.code(),
         Some(0),
-        "check binds the valid catalog artifact and proceeds: {check:?}"
+        "a stale lock is a non-fatal advisory: check still succeeds: {check:?}"
     );
-
-    assert_eq!(
-        rendered_catalog(&project_a),
-        snapshot_b.to_json_pretty().expect("catalog renders"),
-        "ordinary check preserves the source-tree catalog artifact"
-    );
-    assert_eq!(
-        fs::read(store_path(&project_a)).expect("read project A store after check"),
-        store_a_before,
-        "ordinary check does not inspect the store to repair same-epoch drift"
-    );
-}
-
-#[test]
-fn check_preserves_a_valid_catalog_file_ahead_of_the_local_store() {
-    let project = temp_project_uncommitted("check-ro-file-ahead-store-behind", |root| {
-        write(root, "marrow.json", native_config());
-        write(root, "src/app.mw", counter_source());
-    });
-    let dir = project.to_str().expect("project path utf-8");
-    assert_eq!(
-        marrow(&["run", "--entry", "app::seed", dir]).status.code(),
-        Some(0)
-    );
-
-    let store_epoch_one = store_snapshot(&project);
-    assert_eq!(store_epoch_one.epoch, 1);
-    let file_epoch_two = marrow_catalog::CatalogMetadata::new(
-        store_epoch_one.epoch + 1,
-        store_epoch_one.entries.clone(),
-    )
-    .expect("catalog builds");
-    fs::write(
-        catalog_path(&project),
-        file_epoch_two.to_json_pretty().expect("catalog renders"),
-    )
-    .expect("write later committed catalog artifact");
-
-    let check = marrow(&["check", dir]);
-    assert_eq!(
-        check.status.code(),
-        Some(0),
-        "check binds against the file artifact without rewinding it: {check:?}"
-    );
-    assert_eq!(
-        rendered_catalog(&project),
-        file_epoch_two.to_json_pretty().expect("catalog renders"),
-        "a valid file artifact ahead of the local store is not repaired backward"
-    );
-
-    let run = marrow(&["run", "--entry", "app::seed", dir]);
-    assert_eq!(
-        run.status.code(),
-        Some(1),
-        "a write path must fence the older local store: {run:?}"
-    );
-    let stderr = String::from_utf8(run.stderr).expect("stderr utf8");
+    let stderr = String::from_utf8(check.stderr).expect("stderr utf8");
     assert!(
-        stderr.contains("run.store_behind") && stderr.contains("marrow evolve apply"),
-        "store-behind guidance is typed and actionable: {stderr}"
+        stderr.contains("check.stale_lock"),
+        "check surfaces the typed stale-lock advisory: {stderr}"
+    );
+
+    // Read-only: the store bytes are untouched and the committed lock is not re-projected.
+    assert_eq!(
+        fs::read(native_store_path(&root)).expect("read store after check"),
+        store_before,
+        "a stale-lock check must not open or rewrite the store"
     );
     assert_eq!(
-        rendered_catalog(&project),
-        file_epoch_two.to_json_pretty().expect("catalog renders"),
-        "the store-behind fence does not rewind the committed file artifact"
+        committed_lock(&root),
+        lock_before,
+        "a stale-lock check must not re-project the committed lock"
     );
 }
 
 #[test]
-fn evolve_apply_advances_the_committed_catalog_and_store() -> Result<(), Box<dyn std::error::Error>>
-{
+fn evolve_apply_advances_the_committed_lock_and_store() -> Result<(), Box<dyn std::error::Error>> {
     // The contrast for the committed case: `evolve apply` is the durable write path that
-    // a check must not be. It advances the accepted catalog epoch and stamps the store,
-    // so the two surfaces are not interchangeable.
+    // a check must not be. It advances the accepted catalog epoch, stamps the store, and
+    // re-projects the committed lock, so the two surfaces are not interchangeable.
     let root = native_books_project("check-ro-evolve-apply", REQUIRED_BASELINE_SOURCE);
     let accepted = commit_catalog(&root);
     let place = root_place(&accepted, "books")?;
@@ -398,12 +324,16 @@ fn evolve_apply_advances_the_committed_catalog_and_store() -> Result<(), Box<dyn
     let baseline_epoch = accepted.catalog.accepted_epoch.expect("baseline epoch");
     write(&root, "src/books.mw", OPTIONAL_PAGES_DEFAULT_INDEX_SOURCE);
 
-    // The seeded store sits at its baseline epoch. A plain source-only check over the
-    // changed source passes and leaves the store epoch where the baseline put it: check
+    // A plain source-only check over the changed source binds the source against the lock.
+    // Because the source shape changed, the committed lock is now stale, so check reports the
+    // non-fatal advisory and leaves the store where the baseline put it: check is read-only and
     // is not the surface that advances a store.
-    assert_eq!(
-        marrow(&["check", root.to_str().unwrap()]).status.code(),
-        Some(0)
+    let check = marrow(&["check", root.to_str().unwrap()]);
+    assert_eq!(check.status.code(), Some(0), "{check:?}");
+    assert!(
+        String::from_utf8(check.stderr)
+            .expect("stderr utf8")
+            .contains("check.stale_lock"),
     );
     assert_eq!(
         store_epoch(&root),
@@ -427,6 +357,11 @@ fn evolve_apply_advances_the_committed_catalog_and_store() -> Result<(), Box<dyn
             .map(|commit| commit.catalog_epoch),
         Some(baseline_epoch + 1),
         "apply stamped the store with the new epoch"
+    );
+    assert_eq!(
+        committed_lock(&root).epoch_high_water,
+        baseline_epoch + 1,
+        "apply re-projected the committed lock to the new epoch"
     );
 
     Ok(())
