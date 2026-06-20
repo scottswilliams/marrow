@@ -1029,7 +1029,13 @@ fn checked_function(
             .iter()
             .map(|param| CheckedParam {
                 name: param.name.clone(),
-                ty: MarrowType::resolve(&param.ty, names),
+                ty: MarrowType::keyed(
+                    param
+                        .keys
+                        .iter()
+                        .map(|key| MarrowType::resolve(&key.ty, names)),
+                    MarrowType::resolve(&param.ty, names),
+                ),
             })
             .collect(),
         return_presence: match function.return_presence {

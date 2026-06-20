@@ -55,7 +55,13 @@ pub(crate) fn check_function_types(
     for param in &function.params {
         base.insert(
             param.name.clone(),
-            resolve_diagnosed_annotation_type(&param.ty, program, aliases, file),
+            MarrowType::keyed(
+                param
+                    .keys
+                    .iter()
+                    .map(|key| resolve_diagnosed_annotation_type(&key.ty, program, aliases, file)),
+                resolve_diagnosed_annotation_type(&param.ty, program, aliases, file),
+            ),
         );
     }
     let mut scope: Vec<HashMap<String, MarrowType>> = vec![base];

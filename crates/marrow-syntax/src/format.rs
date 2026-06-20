@@ -610,7 +610,12 @@ fn format_params(params: &[ParamDecl]) -> String {
 }
 
 fn format_param(param: &ParamDecl) -> String {
-    format!("{}: {}", param.name, param.ty)
+    format!(
+        "{}{}: {}",
+        param.name,
+        format_key_params(&param.keys),
+        param.ty
+    )
 }
 
 fn format_docs(docs: &[String], level: usize) -> String {

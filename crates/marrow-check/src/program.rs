@@ -1373,6 +1373,21 @@ impl MarrowType {
         Self::from_resolved(Type::resolve(ty), names)
     }
 
+    /// Build a keyed local-collection type from its resolved key column types and
+    /// leaf value, or the bare value when there are no keys. The single owner of
+    /// the keyed-shape wrap, shared by keyed `var` locals and keyed parameters.
+    pub(crate) fn keyed(keys: impl IntoIterator<Item = Self>, value: Self) -> Self {
+        let keys: Vec<Self> = keys.into_iter().collect();
+        if keys.is_empty() {
+            value
+        } else {
+            Self::LocalTree {
+                keys,
+                value: Box::new(value),
+            }
+        }
+    }
+
     /// Promote a schema-resolved [`Type`] to the checker's lattice using the
     /// module's enum names. The structure (scalar, sequence, identity, `unknown`)
     /// is already decided; this layer only places a bare [`Type::Named`] as an enum

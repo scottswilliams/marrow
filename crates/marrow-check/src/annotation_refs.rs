@@ -30,6 +30,7 @@ pub(crate) fn walk_declaration_type_refs(
         }
         Declaration::Function(function) => {
             for param in &function.params {
+                walk_key_type_refs(&param.keys, visit);
                 visit(&param.ty);
             }
             if let Some(ty) = &function.return_type {

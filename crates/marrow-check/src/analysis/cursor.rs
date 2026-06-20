@@ -196,7 +196,13 @@ fn function_base_scope(
     for param in &function.params {
         base.insert(
             param.name.clone(),
-            resolve_type(&param.ty, program, aliases, file),
+            MarrowType::keyed(
+                param
+                    .keys
+                    .iter()
+                    .map(|key| resolve_type(&key.ty, program, aliases, file)),
+                resolve_type(&param.ty, program, aliases, file),
+            ),
         );
     }
     vec![base]

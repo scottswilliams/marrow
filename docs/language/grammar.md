@@ -217,7 +217,7 @@ function_decl   =
 visibility      = "pub" ;
 
 param_list      = param_decl ("," param_decl)* ","? ;
-param_decl      = doc_comment* identifier type_annotation ;
+param_decl      = doc_comment* identifier key_params? type_annotation ;
 
 return_type     = ":" maybe_return? type ;
 maybe_return    = "maybe" ;
@@ -228,6 +228,12 @@ block           = INDENT statement+ DEDENT ;
 In a multi-line parameter list, a line break separates parameters the same way
 a comma does, and a run of `;;` documentation comments directly above a
 parameter documents that parameter.
+
+A parameter is a local keyed collection when its name carries `key_params`,
+spelled like the keyed local declaration head (`scores(player: string): int`).
+The annotation after the key list is the leaf value type, and the keys are the
+key columns, reusing the same `key_params` rule as a keyed `var`, field, or store
+root.
 
 ## Evolution
 
@@ -285,8 +291,8 @@ identity_type   = "Id" "(" saved_root ")" ;
 ```
 
 Keyed tree shapes are not written as type annotations; they arise from
-`key_params` on the declaration itself — a keyed `var`, field, group, or
-store root.
+`key_params` on the declaration itself — a keyed `var`, parameter, field, group,
+or store root.
 
 `qualified_name` includes normal imported types. Store identity types use the
 source form `Id(^root)`, for example `Id(^books)`. In expression position,

@@ -2,11 +2,12 @@
 //! the multi-line parameter grouping that lets a line break separate parameters
 //! the way a comma does.
 
+use super::head::parse_key_params_tokens;
 use super::tokens::{
     doc_comment_text, find_top_level_equal, reject_structural_type_tokens, type_ref_from_tokens,
 };
 use super::{FunctionHead, ParseError, ParseResult};
-use crate::ast::{FunctionReturnPresence, ParamDecl};
+use crate::ast::{FunctionReturnPresence, KeyParam, ParamDecl};
 use crate::diagnostic::{ExpectedSyntax, ParseDiagnosticReason, UnsupportedSyntax};
 use crate::token::{Keyword, Token, TokenKind};
 
@@ -167,13 +168,19 @@ fn parse_params_tokens(source: &str, inner: &[Token]) -> ParseResult<Vec<ParamDe
                 ));
             }
         };
-        if rest.get(1).map(|token| token.kind) != Some(TokenKind::Colon) || rest.len() < 3 {
+        // A keyed-collection parameter spells its key columns like the local
+        // declaration head — `scores(player: string): int` — reusing the same
+        // key-parameter parse as a keyed `var`, field, or store root.
+        let (keys, after_keys) = parse_param_keys(source, rest)?;
+        if rest.get(after_keys).map(|token| token.kind) != Some(TokenKind::Colon)
+            || rest.len() < after_keys + 2
+        {
             return Err(ParseError::new(
                 ParseDiagnosticReason::Expected(ExpectedSyntax::ParameterType),
                 "expected parameter type annotation",
             ));
         }
-        let ty_tokens = &rest[2..];
+        let ty_tokens = &rest[after_keys + 1..];
         if let Some(equal) = find_top_level_equal(ty_tokens) {
             let ty_before_default = &ty_tokens[..equal];
             if ty_before_default.is_empty() {
@@ -198,9 +205,32 @@ fn parse_params_tokens(source: &str, inner: &[Token]) -> ParseResult<Vec<ParamDe
             "expected parameter type annotation",
         )?;
         let ty = type_ref_from_tokens(source, ty_tokens);
-        params.push(ParamDecl { docs, name, ty });
+        params.push(ParamDecl {
+            docs,
+            name,
+            keys,
+            ty,
+        });
     }
     Ok(params)
+}
+
+/// Parse an optional `(key: type, ...)` key-parameter list that follows a
+/// parameter name, marking it a local keyed collection. Returns the parsed keys
+/// (empty when no `(` follows the name) and the index in `rest` of the first
+/// token past the key list, where the `: value-type` annotation begins.
+fn parse_param_keys(source: &str, rest: &[Token]) -> ParseResult<(Vec<KeyParam>, usize)> {
+    if rest.get(1).map(|token| token.kind) != Some(TokenKind::LeftParen) {
+        return Ok((Vec::new(), 1));
+    }
+    let close = match_paren(&rest[1..])
+        .map(|close| close + 1)
+        .ok_or(ParseError::new(
+            ParseDiagnosticReason::Expected(ExpectedSyntax::KeyParameterList),
+            "expected key parameter list",
+        ))?;
+    let keys = parse_key_params_tokens(source, &rest[2..close])?;
+    Ok((keys, close + 1))
 }
 
 fn reject_removed_parameter_mode(source: &str, tokens: &[Token]) -> ParseResult<()> {

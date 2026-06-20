@@ -215,6 +215,22 @@ fn format(book: Book): string
     return $"{book.title} by {book.author}"
 ```
 
+A local collection is a parameter like any other value. A `sequence[T]` and a
+keyed tree both pass by value; a keyed-collection parameter is spelled like its
+local declaration head, with key columns before the leaf value type:
+
+```mw
+fn total(scores(player: string): int): int
+    var sum = 0
+    for player in scores
+        sum = sum + (scores(player) ?? 0)
+    return sum
+```
+
+The argument is a caller-local collection of the same shape. Because a parameter
+is read-only, a function reads its keyed parameter but cannot write through it;
+return a new collection to hand back a changed one.
+
 Return a replacement value when a helper needs to transform a caller-local
 value:
 

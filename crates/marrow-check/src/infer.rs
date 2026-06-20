@@ -130,17 +130,11 @@ pub(crate) fn local_binding_with_read_scope(
         _ => return None,
     };
     let value = binding_type(annotation.as_ref(), value_type, program, aliases, file);
-    let ty = if keys.is_empty() {
-        value
-    } else {
-        MarrowType::LocalTree {
-            keys: keys
-                .iter()
-                .map(|key| resolve_diagnosed_annotation_type(&key.ty, program, aliases, file))
-                .collect(),
-            value: Box::new(value),
-        }
-    };
+    let ty = MarrowType::keyed(
+        keys.iter()
+            .map(|key| resolve_diagnosed_annotation_type(&key.ty, program, aliases, file)),
+        value,
+    );
     Some((name.clone(), ty))
 }
 

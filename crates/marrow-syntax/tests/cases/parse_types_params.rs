@@ -248,6 +248,46 @@ fn parser_preserves_type_spellings_for_downstream_resolution() {
 }
 
 #[test]
+fn keyed_collection_parameter_carries_key_and_value_types() {
+    let parsed = parse_source(
+        "module app\n\
+         fn total(scores(player: string): int): int\n\
+         \x20   return 0\n",
+    );
+    assert!(!parsed.has_errors(), "{:#?}", parsed.diagnostics);
+
+    let function = parsed.file.function("total").expect("function total");
+    let param = &function.params[0];
+    assert_eq!(param.name, "scores");
+    assert_eq!(param.ty.text, "int");
+    assert_eq!(param.keys.len(), 1);
+    assert_eq!(param.keys[0].name, "player");
+    assert_eq!(param.keys[0].ty.text, "string");
+}
+
+#[test]
+fn composite_keyed_collection_parameter_carries_each_key() {
+    let parsed = parse_source(
+        "module app\n\
+         fn count(grid(row: int, col: int): bool): int\n\
+         \x20   return 0\n",
+    );
+    assert!(!parsed.has_errors(), "{:#?}", parsed.diagnostics);
+
+    let function = parsed.file.function("count").expect("function count");
+    let keys = &function.params[0].keys;
+    assert_eq!(keys.len(), 2);
+    assert_eq!(
+        (keys[0].name.as_str(), keys[0].ty.text.as_str()),
+        ("row", "int")
+    );
+    assert_eq!(
+        (keys[1].name.as_str(), keys[1].ty.text.as_str()),
+        ("col", "int")
+    );
+}
+
+#[test]
 fn reserved_word_as_parameter_name_is_rejected() {
     let parsed = parse_source("fn f(while: int)\n    return\n");
     assert_eq!(parsed.diagnostics.len(), 1, "{:#?}", parsed.diagnostics);

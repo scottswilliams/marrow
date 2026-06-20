@@ -42,7 +42,17 @@ pub(crate) fn check_function_body(
         .iter()
         .map(|param| (param.name.clone(), ImmutableKind::Parameter))
         .collect();
-    walk_block(file, &function.body, &immutable, &HashSet::new(), out);
+    // A keyed-collection parameter is a local collection place, so a write through
+    // it reads as a keyed assignment rather than an unknown target. The parameter
+    // is read-only, so the immutability rule then rejects the write with a precise
+    // message, exactly as it would for any read-only binding.
+    let local_collections: HashSet<String> = function
+        .params
+        .iter()
+        .filter(|param| !param.keys.is_empty())
+        .map(|param| param.name.clone())
+        .collect();
+    walk_block(file, &function.body, &immutable, &local_collections, out);
     walk_loop_control_flow(file, &function.body, 0, out);
     walk_loop_layer_mutations(file, &function.body, &mut Vec::new(), out);
     walk_commit_amplification(file, &function.body, false, false, out);

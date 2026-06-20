@@ -728,6 +728,11 @@ pub struct ParamDecl {
     /// parameter docs are not written.
     pub docs: Vec<String>,
     pub name: String,
+    /// Key parameters when the parameter is a local keyed collection
+    /// (`scores(player: string): int`), spelled like the local declaration head.
+    /// Empty for an ordinary scalar, resource, sequence, or identity parameter,
+    /// where `ty` alone is the parameter type.
+    pub keys: Vec<KeyParam>,
     pub ty: TypeRef,
 }
 

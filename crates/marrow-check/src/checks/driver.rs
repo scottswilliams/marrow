@@ -325,6 +325,14 @@ pub(crate) fn check_file_types(
         match declaration {
             marrow_syntax::Declaration::Function(function) => {
                 for param in &function.params {
+                    for key in &param.keys {
+                        check_type_annotation(
+                            &key.ty,
+                            function.span,
+                            &annotation_context,
+                            diagnostics,
+                        );
+                    }
                     check_type_annotation(
                         &param.ty,
                         function.span,

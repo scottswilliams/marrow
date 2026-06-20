@@ -600,9 +600,13 @@ impl CheckedFacts {
             .iter()
             .enumerate()
             .map(|(index, param)| {
-                let annotation = declaration
-                    .and_then(|declaration| declaration.params.get(index))
-                    .map(|param| &param.ty);
+                let declared = declaration.and_then(|declaration| declaration.params.get(index));
+                // A keyed parameter's annotation text names only the leaf value
+                // type, so the keyed shape lives in the resolved `MarrowType`; the
+                // unkeyed annotation drives the type only for an ordinary parameter.
+                let annotation = declared
+                    .filter(|declared| declared.keys.is_empty())
+                    .map(|declared| &declared.ty);
                 let ty =
                     self.checked_type_for_signature(module_id, &param.ty, annotation, &aliases)?;
                 Some((param.name.clone(), ty))

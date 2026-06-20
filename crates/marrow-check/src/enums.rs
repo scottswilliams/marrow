@@ -136,7 +136,19 @@ fn plan_normalized_named_types(
                 .iter()
                 .zip(&decl.params)
                 .map(|(_, param_decl)| {
-                    resolve_diagnosed_annotation_type(&param_decl.ty, program, &aliases, &file.path)
+                    MarrowType::keyed(
+                        param_decl.keys.iter().map(|key| {
+                            resolve_diagnosed_annotation_type(
+                                &key.ty, program, &aliases, &file.path,
+                            )
+                        }),
+                        resolve_diagnosed_annotation_type(
+                            &param_decl.ty,
+                            program,
+                            &aliases,
+                            &file.path,
+                        ),
+                    )
                 })
                 .collect();
             let return_type = match (function.return_type.as_ref(), decl.return_type.as_ref()) {

@@ -732,7 +732,12 @@ impl<'p> IndexBuilder<'p> {
                     scope[0].insert(param.name.clone(), id);
                     type_scope[0].insert(
                         param.name.clone(),
-                        resolve_type(&param.ty, self.program, &prelude.aliases, file),
+                        MarrowType::keyed(
+                            param.keys.iter().map(|key| {
+                                resolve_type(&key.ty, self.program, &prelude.aliases, file)
+                            }),
+                            resolve_type(&param.ty, self.program, &prelude.aliases, file),
+                        ),
                     );
                 }
                 let mut walker = UseWalker {

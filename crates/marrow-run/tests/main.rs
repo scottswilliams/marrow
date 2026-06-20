@@ -48,6 +48,8 @@ mod eval_index_identity;
 mod eval_index_iteration;
 #[path = "cases/eval_keyed_leaves.rs"]
 mod eval_keyed_leaves;
+#[path = "cases/eval_keyed_params.rs"]
+mod eval_keyed_params;
 #[path = "cases/eval_layer_enumeration.rs"]
 mod eval_layer_enumeration;
 #[path = "cases/eval_maintenance.rs"]
