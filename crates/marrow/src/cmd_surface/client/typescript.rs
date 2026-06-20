@@ -58,6 +58,7 @@ fn render_client(dir: &str) -> ExitCode {
         &config,
         &marrow_check::ProjectSources::new(),
         accepted.as_ref(),
+        None,
     ) {
         Ok(snapshot) => snapshot,
         Err(error) => {

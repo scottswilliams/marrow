@@ -23,11 +23,13 @@ One invariant organizes the whole subsystem: **durable saved data is never mater
   `SurfaceFact.create` fields, sparse updates over checked `SurfaceFact.update`
   fields, and deletes over checked `SurfaceFact.delete`, committing each
   generated write through managed write plans. Actions run ordinary public
-  functions through `entry.invoke.v1`.
+  functions through `entry.invoke.v1`. Computed reads run ordinary public
+  read-only functions through the same checked entry invocation path.
   Project-level linked-Rust surfaces enter through `ProjectSurfaceReadSession`
   or `ProjectSurfaceSession` in `project_session.rs`; both require an already
   accepted and stamped native store before admitting operation tags, with the
-  write session exposing create/update/delete/action execution without exposing
+  read session exposing reads and computed reads, and the write session exposing
+  reads, computed reads, create/update/delete/action execution without exposing
   the store handle. The write session is a single-owner, sequential native
   writer; while it is open, another writer or read-only inspection handle cannot
   own the same native store.
@@ -42,8 +44,8 @@ One invariant organizes the whole subsystem: **durable saved data is never mater
 |---|---|
 | `crates/marrow-run/src/read.rs` | Layer/index address resolution (`iterable_layer`, `iterable_index_branch`), record/index/data child-cursor primitives, identity/branch counting and presence, local field reads. |
 | `crates/marrow-run/src/durable_read.rs` | Durable point reads: scalar field, optional field, layer-entry decode, exact unique-index lookup, whole-resource member materialization. |
-| `crates/marrow-run/src/project_session.rs` | Project surface admission: `ProjectSurfaceReadSession` checks the project and opens the configured native store read-only for admitted reads; `ProjectSurfaceSession` opens an existing configured native store writable for admitted reads, generated writes, and actions. Both require accepted catalog and store stamps and fence drift before admitting stable operation tags. |
-| `crates/marrow-run/src/surface.rs` | Transport-neutral surface operations: store/catalog admission, stable operation-tag admission, fact-compiled projection and generated write plans, action admission over `entry.invoke.v1`, `surface.*` error mapping, snapshot-pinned singleton/point execution, collection pages, typed cursors, unique-index lookups, and managed create/update/delete execution. |
+| `crates/marrow-run/src/project_session.rs` | Project surface admission: `ProjectSurfaceReadSession` checks the project and opens the configured native store read-only for admitted reads and computed reads; `ProjectSurfaceSession` opens an existing configured native store writable for admitted reads, computed reads, generated writes, and actions. Both require accepted catalog and store stamps and fence drift before admitting stable operation tags. |
+| `crates/marrow-run/src/surface.rs` | Transport-neutral surface operations: store/catalog admission, stable operation-tag admission, fact-compiled projection and generated write plans, computed-read and action admission over checked entry invocation descriptors, `surface.*` error mapping, snapshot-pinned singleton/point execution, collection pages, typed cursors, unique-index lookups, and managed create/update/delete execution. |
 | `crates/marrow-run/src/saved_iter.rs` | Streaming loop driver: `ChildCursor`, `walk_keyed_children`/`count_keyed_children`, `LoopShape`/`shape_row`, `SavedLoopSpec`/`SavedLoopPlan`. |
 | `crates/marrow-run/src/saved_iter/root.rs` | `RootScan` + `RecordCursor`: streams every record identity under a keyed root, reading the whole resource per shape. |
 | `crates/marrow-run/src/saved_iter/index.rs` | `IndexScan` + `IndexCursor`: streams a non-unique index branch by delegating to `read.rs` `stream_index_branch`; every yield is a store identity. |

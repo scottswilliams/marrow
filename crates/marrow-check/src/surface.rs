@@ -7,20 +7,23 @@ use marrow_syntax::{
 
 use crate::backing_validity::BackingValidity;
 use crate::diagnostics::{
-    CHECK_SURFACE_ACTION, CHECK_SURFACE_FIELD, CHECK_SURFACE_TARGET, SurfaceActionDiagnostic,
-    SurfaceFieldDiagnostic, SurfaceFieldList, SurfaceFieldProblem, SurfaceTargetDiagnostic,
+    CHECK_SURFACE_ACTION, CHECK_SURFACE_COMPUTED_READ, CHECK_SURFACE_FIELD, CHECK_SURFACE_TARGET,
+    SurfaceActionDiagnostic, SurfaceComputedReadDiagnostic, SurfaceFieldDiagnostic,
+    SurfaceFieldList, SurfaceFieldProblem, SurfaceTargetDiagnostic,
 };
 use crate::entry_abi::{
-    EntrySignatureUnsupported, function_ref_has_accepted_entry_catalog_ids,
-    function_ref_has_supported_entry_signature,
+    ComputedReadSignatureUnsupported, EntrySignatureUnsupported,
+    function_ref_has_accepted_computed_read_catalog_ids,
+    function_ref_has_accepted_entry_catalog_ids,
+    function_ref_has_supported_computed_read_signature, function_ref_has_supported_entry_signature,
 };
 use crate::executable::CheckedFunctionRef;
 use crate::facts::{
     ModuleId, ResourceMemberFact, ResourceMemberId, ResourceMemberKind, StoreFact, StoreIndexFact,
     StoreIndexId, StoreIndexKeyFact, StoreIndexKeySource, StoredValueMeaning, SurfaceActionFact,
     SurfaceCatalogBlocker, SurfaceCatalogStatus, SurfaceCollectionFact, SurfaceCollectionTarget,
-    SurfaceDeleteFact, SurfaceFact, SurfaceFieldFact, SurfaceId, SurfaceReadFootprint,
-    SurfaceReadOperationFact, SurfaceReadOperationKind,
+    SurfaceComputedReadFact, SurfaceDeleteFact, SurfaceFact, SurfaceFieldFact, SurfaceId,
+    SurfaceReadFootprint, SurfaceReadOperationFact, SurfaceReadOperationKind,
 };
 use crate::surface_abi::surface_read_operation_tag;
 use crate::{
@@ -90,6 +93,45 @@ pub(crate) fn check_surfaces<'a, I>(
     program.facts.set_surfaces(surface_facts);
 }
 
+pub(crate) fn check_computed_read_effects(
+    program: &mut CheckedProgram,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    let mut retained = Vec::new();
+    for surface in program.facts.surfaces().to_vec() {
+        let file = program
+            .facts
+            .modules()
+            .get(surface.module.0 as usize)
+            .map(|module| module.source_file.clone());
+        let mut rejected = false;
+        for read in &surface.computed_reads {
+            if let Some(payload) =
+                computed_read_effect_diagnostic(program, read.function, &read.path)
+            {
+                rejected = true;
+                if let Some(file) = file.as_deref() {
+                    let message = computed_read_effect_message(&payload);
+                    push_surface_computed_read_diagnostic(
+                        file,
+                        read.span,
+                        payload,
+                        message,
+                        diagnostics,
+                    );
+                }
+            }
+        }
+        if !rejected {
+            retained.push(surface);
+        }
+    }
+    for (index, surface) in retained.iter_mut().enumerate() {
+        surface.id = SurfaceId(index as u32);
+    }
+    program.facts.set_surfaces(retained);
+}
+
 struct SurfaceChecker<'a> {
     program: &'a CheckedProgram,
     rejected_surfaces: &'a RejectedSurfaceDeclarations,
@@ -143,36 +185,46 @@ impl<'a> SurfaceChecker<'a> {
             self.backing_validity,
             self.diagnostics,
         );
-        let mut suppressed_action_target = false;
+        let mut suppressed_function_target = false;
         let Some(action_module) = checked_module_for_id(self.program, module) else {
             return;
         };
+        let function_context = SurfaceFunctionContext {
+            program: self.program,
+            file,
+            module_name: &action_module.name,
+            imports: &action_module.imports,
+            incomplete_modules: self.incomplete_modules,
+        };
         let actions = resolve_actions(
-            SurfaceActionContext {
-                program: self.program,
-                file,
-                module_name: &action_module.name,
-                imports: &action_module.imports,
-                incomplete_modules: self.incomplete_modules,
-            },
+            function_context,
             surface,
-            &mut suppressed_action_target,
+            &mut suppressed_function_target,
+            self.diagnostics,
+        );
+        let computed_reads = resolve_computed_reads(
+            function_context,
+            surface,
+            &mut suppressed_function_target,
             self.diagnostics,
         );
         self.reject_invalid_backing_resource(file, surface, store, diagnostic_start);
-        if suppressed_action_target || self.diagnostics.len() != diagnostic_start {
+        if suppressed_function_target || self.diagnostics.len() != diagnostic_start {
             return;
         }
 
         let id = SurfaceId(self.surface_facts.len() as u32);
         let catalog_status = catalog_status(
             self.program,
-            store,
-            &fields,
-            &create,
-            &update,
-            &collections,
-            &actions,
+            SurfaceCatalogInputs {
+                store,
+                fields: &fields,
+                create: &create,
+                update: &update,
+                collections: &collections,
+                actions: &actions,
+                computed_reads: &computed_reads,
+            },
         );
         let read_operations = read_operations(
             self.program,
@@ -193,6 +245,7 @@ impl<'a> SurfaceChecker<'a> {
             delete,
             collections,
             actions,
+            computed_reads,
             read_operations,
             catalog_status,
             span: surface.span,
@@ -277,7 +330,7 @@ fn checked_module_for_id(
 }
 
 fn resolve_actions(
-    context: SurfaceActionContext<'_>,
+    context: SurfaceFunctionContext<'_>,
     surface: &SurfaceDecl,
     suppressed_target: &mut bool,
     diagnostics: &mut Vec<CheckDiagnostic>,
@@ -303,8 +356,35 @@ fn resolve_actions(
         .collect()
 }
 
+fn resolve_computed_reads(
+    context: SurfaceFunctionContext<'_>,
+    surface: &SurfaceDecl,
+    suppressed_target: &mut bool,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) -> Vec<SurfaceComputedReadFact> {
+    surface
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            SurfaceItem::Read {
+                function,
+                alias,
+                span,
+            } => resolve_computed_read(
+                context,
+                function,
+                alias,
+                *span,
+                suppressed_target,
+                diagnostics,
+            ),
+            _ => None,
+        })
+        .collect()
+}
+
 #[derive(Clone, Copy)]
-struct SurfaceActionContext<'a> {
+struct SurfaceFunctionContext<'a> {
     program: &'a CheckedProgram,
     file: &'a Path,
     module_name: &'a str,
@@ -312,17 +392,132 @@ struct SurfaceActionContext<'a> {
     incomplete_modules: &'a HashSet<String>,
 }
 
+#[derive(Clone, Copy)]
+enum SurfaceFunctionProfile {
+    Action,
+    ComputedRead,
+}
+
+struct ResolvedSurfaceFunction {
+    path: String,
+    function: CheckedFunctionRef,
+}
+
 fn resolve_action(
-    context: SurfaceActionContext<'_>,
+    context: SurfaceFunctionContext<'_>,
     function_path: &[String],
     alias: &str,
     span: SourceSpan,
     suppressed_target: &mut bool,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) -> Option<SurfaceActionFact> {
-    let expanded_path = expand_action_path(context, function_path);
+    let target = resolve_surface_function(
+        context,
+        SurfaceFunctionProfile::Action,
+        function_path,
+        span,
+        suppressed_target,
+        diagnostics,
+    )?;
+
+    if let Err(issue) = function_ref_has_supported_entry_signature(context.program, target.function)
+    {
+        let (payload, message) = match issue {
+            EntrySignatureUnsupported::Parameter { name } => (
+                SurfaceActionDiagnostic::UnsupportedParameter {
+                    path: target.path.clone(),
+                    parameter: name.clone(),
+                },
+                format!(
+                    "surface action `{}` parameter `{name}` has a type outside the action JSON surface",
+                    target.path
+                ),
+            ),
+            EntrySignatureUnsupported::ReturnValue => (
+                SurfaceActionDiagnostic::UnsupportedReturn {
+                    path: target.path.clone(),
+                },
+                format!(
+                    "surface action `{}` return type is outside the action JSON surface",
+                    target.path
+                ),
+            ),
+        };
+        push_surface_action_diagnostic(context.file, span, payload, message, diagnostics);
+        return None;
+    }
+
+    Some(SurfaceActionFact {
+        alias: alias.to_string(),
+        function: target.function,
+        span,
+    })
+}
+
+fn resolve_computed_read(
+    context: SurfaceFunctionContext<'_>,
+    function_path: &[String],
+    alias: &str,
+    span: SourceSpan,
+    suppressed_target: &mut bool,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) -> Option<SurfaceComputedReadFact> {
+    let target = resolve_surface_function(
+        context,
+        SurfaceFunctionProfile::ComputedRead,
+        function_path,
+        span,
+        suppressed_target,
+        diagnostics,
+    )?;
+
+    if let Err(issue) =
+        function_ref_has_supported_computed_read_signature(context.program, target.function)
+    {
+        let (payload, message) = match issue {
+            ComputedReadSignatureUnsupported::Parameter { name } => (
+                SurfaceComputedReadDiagnostic::UnsupportedParameter {
+                    path: target.path.clone(),
+                    parameter: name.clone(),
+                },
+                format!(
+                    "surface computed read `{}` parameter `{name}` has a type outside the computed-read JSON surface",
+                    target.path
+                ),
+            ),
+            ComputedReadSignatureUnsupported::ReturnValue => (
+                SurfaceComputedReadDiagnostic::UnsupportedReturn {
+                    path: target.path.clone(),
+                },
+                format!(
+                    "surface computed read `{}` return type is outside the computed-read JSON surface",
+                    target.path
+                ),
+            ),
+        };
+        push_surface_computed_read_diagnostic(context.file, span, payload, message, diagnostics);
+        return None;
+    }
+
+    Some(SurfaceComputedReadFact {
+        alias: alias.to_string(),
+        path: target.path,
+        function: target.function,
+        span,
+    })
+}
+
+fn resolve_surface_function(
+    context: SurfaceFunctionContext<'_>,
+    profile: SurfaceFunctionProfile,
+    function_path: &[String],
+    span: SourceSpan,
+    suppressed_target: &mut bool,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) -> Option<ResolvedSurfaceFunction> {
+    let expanded_path = expand_surface_function_path(context.imports, function_path);
     let path = expanded_path.join("::");
-    let function = match resolve(
+    match resolve(
         context.program,
         context.module_name,
         function_path,
@@ -334,88 +529,173 @@ fn resolve_action(
             ..
         }) => {
             if !function.public {
-                push_surface_action_diagnostic(
+                push_surface_function_diagnostic(
+                    profile,
                     context.file,
                     span,
-                    SurfaceActionDiagnostic::PrivateFunction { path },
-                    format!(
-                        "surface action targets private function `{}`",
-                        expanded_path.join("::")
-                    ),
+                    SurfaceFunctionTargetDiagnostic::Private { path: path.clone() },
                     diagnostics,
                 );
                 return None;
             }
-            function_ref_from_resolved(context.program, module, function).or_else(|| {
-                *suppressed_target = true;
-                None
-            })?
+            let function =
+                function_ref_from_resolved(context.program, module, function).or_else(|| {
+                    *suppressed_target = true;
+                    None
+                })?;
+            Some(ResolvedSurfaceFunction { path, function })
         }
         Resolution::NotVisible(name) => {
-            push_surface_action_diagnostic(
+            push_surface_function_diagnostic(
+                profile,
                 context.file,
                 span,
-                SurfaceActionDiagnostic::PrivateFunction { path: name.clone() },
-                format!("surface action targets private function `{name}`"),
+                SurfaceFunctionTargetDiagnostic::Private { path: name.clone() },
                 diagnostics,
             );
-            return None;
+            None
         }
         Resolution::Ambiguous(_) => {
-            push_surface_action_diagnostic(
+            push_surface_function_diagnostic(
+                profile,
                 context.file,
                 span,
-                SurfaceActionDiagnostic::AmbiguousFunction { path: path.clone() },
-                format!("surface action targets ambiguous function `{path}`"),
+                SurfaceFunctionTargetDiagnostic::Ambiguous { path },
                 diagnostics,
             );
-            return None;
+            None
         }
         Resolution::Found(_) | Resolution::Unresolved => {
-            if references_incomplete_action_module(&expanded_path, context.incomplete_modules) {
+            if references_incomplete_function_module(&expanded_path, context.incomplete_modules) {
                 *suppressed_target = true;
                 return None;
             }
-            push_surface_action_diagnostic(
+            push_surface_function_diagnostic(
+                profile,
                 context.file,
                 span,
-                SurfaceActionDiagnostic::UnknownFunction { path: path.clone() },
-                format!("surface action targets unknown function `{path}`"),
+                SurfaceFunctionTargetDiagnostic::Unknown { path },
                 diagnostics,
             );
-            return None;
+            None
         }
-    };
-
-    if let Err(issue) = function_ref_has_supported_entry_signature(context.program, function) {
-        let (payload, message) = match issue {
-            EntrySignatureUnsupported::Parameter { name } => (
-                SurfaceActionDiagnostic::UnsupportedParameter {
-                    path: path.clone(),
-                    parameter: name.clone(),
-                },
-                format!(
-                    "surface action `{path}` parameter `{name}` has a type outside the action JSON surface"
-                ),
-            ),
-            EntrySignatureUnsupported::ReturnValue => (
-                SurfaceActionDiagnostic::UnsupportedReturn { path: path.clone() },
-                format!("surface action `{path}` return type is outside the action JSON surface"),
-            ),
-        };
-        push_surface_action_diagnostic(context.file, span, payload, message, diagnostics);
-        return None;
     }
-
-    Some(SurfaceActionFact {
-        alias: alias.to_string(),
-        function,
-        span,
-    })
 }
 
-fn expand_action_path(context: SurfaceActionContext<'_>, function_path: &[String]) -> Vec<String> {
-    let aliases = build_alias_map(context.imports);
+enum SurfaceFunctionTargetDiagnostic {
+    Private { path: String },
+    Ambiguous { path: String },
+    Unknown { path: String },
+}
+
+fn push_surface_function_diagnostic(
+    profile: SurfaceFunctionProfile,
+    file: &Path,
+    span: SourceSpan,
+    issue: SurfaceFunctionTargetDiagnostic,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    match profile {
+        SurfaceFunctionProfile::Action => {
+            let (payload, message) = match issue {
+                SurfaceFunctionTargetDiagnostic::Private { path } => (
+                    SurfaceActionDiagnostic::PrivateFunction { path: path.clone() },
+                    format!("surface action targets private function `{path}`"),
+                ),
+                SurfaceFunctionTargetDiagnostic::Ambiguous { path } => (
+                    SurfaceActionDiagnostic::AmbiguousFunction { path: path.clone() },
+                    format!("surface action targets ambiguous function `{path}`"),
+                ),
+                SurfaceFunctionTargetDiagnostic::Unknown { path } => (
+                    SurfaceActionDiagnostic::UnknownFunction { path: path.clone() },
+                    format!("surface action targets unknown function `{path}`"),
+                ),
+            };
+            push_surface_action_diagnostic(file, span, payload, message, diagnostics);
+        }
+        SurfaceFunctionProfile::ComputedRead => {
+            let (payload, message) = match issue {
+                SurfaceFunctionTargetDiagnostic::Private { path } => (
+                    SurfaceComputedReadDiagnostic::PrivateFunction { path: path.clone() },
+                    format!("surface computed read targets private function `{path}`"),
+                ),
+                SurfaceFunctionTargetDiagnostic::Ambiguous { path } => (
+                    SurfaceComputedReadDiagnostic::AmbiguousFunction { path: path.clone() },
+                    format!("surface computed read targets ambiguous function `{path}`"),
+                ),
+                SurfaceFunctionTargetDiagnostic::Unknown { path } => (
+                    SurfaceComputedReadDiagnostic::UnknownFunction { path: path.clone() },
+                    format!("surface computed read targets unknown function `{path}`"),
+                ),
+            };
+            push_surface_computed_read_diagnostic(file, span, payload, message, diagnostics);
+        }
+    }
+}
+
+fn computed_read_effect_diagnostic(
+    program: &CheckedProgram,
+    function: CheckedFunctionRef,
+    path: &str,
+) -> Option<SurfaceComputedReadDiagnostic> {
+    let closure = program.effect_closure(function)?;
+    if closure.write_effects_reachable {
+        return Some(SurfaceComputedReadDiagnostic::Writes {
+            path: path.to_string(),
+        });
+    }
+    if closure.transactions {
+        return Some(SurfaceComputedReadDiagnostic::Transactions {
+            path: path.to_string(),
+        });
+    }
+    if !closure.host_calls.is_empty() {
+        return Some(SurfaceComputedReadDiagnostic::HostEffects {
+            path: path.to_string(),
+        });
+    }
+    if closure.throws {
+        return Some(SurfaceComputedReadDiagnostic::Throws {
+            path: path.to_string(),
+        });
+    }
+    if closure.unindexed_collection_reads {
+        return Some(SurfaceComputedReadDiagnostic::UnindexedCollectionRead {
+            path: path.to_string(),
+        });
+    }
+    None
+}
+
+fn computed_read_effect_message(payload: &SurfaceComputedReadDiagnostic) -> String {
+    match payload {
+        SurfaceComputedReadDiagnostic::Writes { path } => {
+            format!("surface computed read `{path}` may write saved data")
+        }
+        SurfaceComputedReadDiagnostic::Transactions { path } => {
+            format!("surface computed read `{path}` may open a transaction")
+        }
+        SurfaceComputedReadDiagnostic::HostEffects { path } => {
+            format!("surface computed read `{path}` may call host effects")
+        }
+        SurfaceComputedReadDiagnostic::Throws { path } => {
+            format!("surface computed read `{path}` may throw")
+        }
+        SurfaceComputedReadDiagnostic::UnindexedCollectionRead { path } => {
+            format!("surface computed read `{path}` may read an unindexed collection")
+        }
+        SurfaceComputedReadDiagnostic::UnknownFunction { .. }
+        | SurfaceComputedReadDiagnostic::PrivateFunction { .. }
+        | SurfaceComputedReadDiagnostic::AmbiguousFunction { .. }
+        | SurfaceComputedReadDiagnostic::UnsupportedParameter { .. }
+        | SurfaceComputedReadDiagnostic::UnsupportedReturn { .. } => {
+            "surface computed read target is invalid".to_string()
+        }
+    }
+}
+
+fn expand_surface_function_path(imports: &[String], function_path: &[String]) -> Vec<String> {
+    let aliases = build_alias_map(imports);
     expand_alias(function_path, &aliases)
 }
 
@@ -443,7 +723,7 @@ fn function_ref_from_resolved(
     })
 }
 
-fn references_incomplete_action_module(
+fn references_incomplete_function_module(
     function_path: &[String],
     incomplete_modules: &HashSet<String>,
 ) -> bool {
@@ -467,6 +747,19 @@ fn push_surface_action_diagnostic(
     diagnostics.push(
         CheckDiagnostic::error(CHECK_SURFACE_ACTION, file, span, message)
             .with_payload(DiagnosticPayload::SurfaceAction(payload)),
+    );
+}
+
+fn push_surface_computed_read_diagnostic(
+    file: &Path,
+    span: SourceSpan,
+    payload: SurfaceComputedReadDiagnostic,
+    message: String,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    diagnostics.push(
+        CheckDiagnostic::error(CHECK_SURFACE_COMPUTED_READ, file, span, message)
+            .with_payload(DiagnosticPayload::SurfaceComputedRead(payload)),
     );
 }
 
@@ -1452,20 +1745,26 @@ fn push_field_diagnostic(
     );
 }
 
+#[derive(Clone, Copy)]
+struct SurfaceCatalogInputs<'a> {
+    store: &'a StoreFact,
+    fields: &'a [SurfaceFieldFact],
+    create: &'a [SurfaceFieldFact],
+    update: &'a [SurfaceFieldFact],
+    collections: &'a [SurfaceCollectionFact],
+    actions: &'a [SurfaceActionFact],
+    computed_reads: &'a [SurfaceComputedReadFact],
+}
+
 fn catalog_status(
     program: &CheckedProgram,
-    store: &StoreFact,
-    fields: &[SurfaceFieldFact],
-    create: &[SurfaceFieldFact],
-    update: &[SurfaceFieldFact],
-    collections: &[SurfaceCollectionFact],
-    actions: &[SurfaceActionFact],
+    inputs: SurfaceCatalogInputs<'_>,
 ) -> SurfaceCatalogStatus {
     let mut blockers = Vec::new();
     if program.catalog.proposal.is_some() {
         blockers.push(SurfaceCatalogBlocker::PendingCatalogProposal);
     }
-    if !surface_has_catalog_ids(program, store, fields, create, update, collections, actions) {
+    if !surface_has_catalog_ids(program, inputs) {
         blockers.push(SurfaceCatalogBlocker::MissingAcceptedCatalogIds);
     }
     if blockers.is_empty() {
@@ -1475,28 +1774,34 @@ fn catalog_status(
     }
 }
 
-fn surface_has_catalog_ids(
-    program: &CheckedProgram,
-    store: &StoreFact,
-    fields: &[SurfaceFieldFact],
-    create: &[SurfaceFieldFact],
-    update: &[SurfaceFieldFact],
-    collections: &[SurfaceCollectionFact],
-    actions: &[SurfaceActionFact],
-) -> bool {
-    store.catalog_id.is_some()
-        && program.facts.resource(store.resource).catalog_id.is_some()
-        && fields_have_catalog_ids(program, fields)
-        && fields_have_catalog_ids(program, create)
-        && fields_have_catalog_ids(program, update)
-        && collections_have_catalog_ids(program, collections)
-        && actions_have_catalog_ids(program, actions)
+fn surface_has_catalog_ids(program: &CheckedProgram, inputs: SurfaceCatalogInputs<'_>) -> bool {
+    inputs.store.catalog_id.is_some()
+        && program
+            .facts
+            .resource(inputs.store.resource)
+            .catalog_id
+            .is_some()
+        && fields_have_catalog_ids(program, inputs.fields)
+        && fields_have_catalog_ids(program, inputs.create)
+        && fields_have_catalog_ids(program, inputs.update)
+        && collections_have_catalog_ids(program, inputs.collections)
+        && actions_have_catalog_ids(program, inputs.actions)
+        && computed_reads_have_catalog_ids(program, inputs.computed_reads)
 }
 
 fn actions_have_catalog_ids(program: &CheckedProgram, actions: &[SurfaceActionFact]) -> bool {
     actions
         .iter()
         .all(|action| function_ref_has_accepted_entry_catalog_ids(program, action.function))
+}
+
+fn computed_reads_have_catalog_ids(
+    program: &CheckedProgram,
+    computed_reads: &[SurfaceComputedReadFact],
+) -> bool {
+    computed_reads
+        .iter()
+        .all(|read| function_ref_has_accepted_computed_read_catalog_ids(program, read.function))
 }
 
 fn collections_have_catalog_ids(

@@ -14,8 +14,8 @@ use marrow_json::surface::{
 };
 use marrow_run::{
     ProjectSessionError, ProjectSurfaceReadSession, ProjectSurfaceSession, SURFACE_ABI_MISMATCH,
-    SURFACE_ABSENT, SURFACE_ACTION, SURFACE_CONFLICT, SURFACE_INVALID_DATA, SURFACE_LIMIT,
-    SURFACE_REQUEST, SURFACE_STALE_CURSOR, SURFACE_STORE, SURFACE_WRITE,
+    SURFACE_ABSENT, SURFACE_ACTION, SURFACE_COMPUTED, SURFACE_CONFLICT, SURFACE_INVALID_DATA,
+    SURFACE_LIMIT, SURFACE_REQUEST, SURFACE_STALE_CURSOR, SURFACE_STORE, SURFACE_WRITE,
 };
 
 use crate::cmd_run::report_session_open_error;
@@ -38,7 +38,7 @@ connection and closes the response on descriptor-derived
 /surface/v1/{read|create|update|delete|action}/<operation-tag> routes.
 
   --write  Expose create/update/delete/action routes and open a writable surface session.
-           Defaults to read-only mode, serving read routes only.
+           Defaults to read-only mode, serving read routes including computed reads.
   --cors-origin
            Allow one exact browser Origin such as http://localhost:5173.
            No CORS headers are emitted unless this option is present.
@@ -444,9 +444,8 @@ fn status_for_surface_error(code: &str) -> HttpStatus {
         SURFACE_ABSENT => HttpStatus::NotFound,
         SURFACE_CONFLICT | SURFACE_STALE_CURSOR => HttpStatus::Conflict,
         SURFACE_LIMIT => HttpStatus::PayloadTooLarge,
-        SURFACE_ACTION | SURFACE_INVALID_DATA | SURFACE_STORE | SURFACE_WRITE => {
-            HttpStatus::InternalServerError
-        }
+        SURFACE_ACTION | SURFACE_COMPUTED | SURFACE_INVALID_DATA | SURFACE_STORE
+        | SURFACE_WRITE => HttpStatus::InternalServerError,
         SURFACE_ABI_MISMATCH | SURFACE_REQUEST => HttpStatus::BadRequest,
         _ => HttpStatus::BadRequest,
     }
@@ -829,5 +828,16 @@ fn surface_error(code: &str, message: &str) -> SurfaceOperationErrorJson {
     SurfaceOperationErrorJson {
         code: code.to_string(),
         message: message.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn computed_read_execution_faults_are_server_faults() {
+        assert_eq!(status_for_surface_error(SURFACE_COMPUTED).code(), 500);
+        assert_eq!(status_for_surface_error(SURFACE_REQUEST).code(), 400);
     }
 }

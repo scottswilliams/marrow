@@ -117,6 +117,12 @@ pub(crate) enum EntrySignatureUnsupported {
     ReturnValue,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ComputedReadSignatureUnsupported {
+    Parameter { name: String },
+    ReturnValue,
+}
+
 pub(crate) fn surface_value_as_action_argument(
     shape: EntrySurfaceValueShape,
 ) -> Option<EntryArgumentShape> {
@@ -215,7 +221,7 @@ impl EntryFunctionSurfaceDescriptor {
         if !entry
             .parameters
             .iter()
-            .all(|parameter| action_shape_supported(&parameter.shape))
+            .all(|parameter| callable_argument_shape_supported(&parameter.shape))
         {
             return None;
         }
@@ -323,6 +329,25 @@ pub(crate) fn function_ref_has_accepted_entry_catalog_ids(
         .is_none_or(|ty| runtime_type_has_accepted_catalog_ids(program, &ty))
 }
 
+pub(crate) fn function_ref_has_accepted_computed_read_catalog_ids(
+    program: &CheckedProgram,
+    target: CheckedFunctionRef,
+) -> bool {
+    let Some(module) = program.modules.get(target.module as usize) else {
+        return false;
+    };
+    let Some(function) = module.functions.get(target.function as usize) else {
+        return false;
+    };
+    function.params.iter().all(|param| {
+        let ty = checked_runtime_value_type(program, param.ty.clone());
+        runtime_type_has_accepted_catalog_ids(program, &ty)
+    }) && function
+        .return_type
+        .as_ref()
+        .is_some_and(|ty| computed_read_type_has_accepted_catalog_ids(program, ty))
+}
+
 pub(crate) fn function_ref_has_supported_entry_signature(
     program: &CheckedProgram,
     target: CheckedFunctionRef,
@@ -348,6 +373,34 @@ pub(crate) fn function_ref_has_supported_entry_signature(
         }
     }
     Ok(())
+}
+
+pub(crate) fn function_ref_has_supported_computed_read_signature(
+    program: &CheckedProgram,
+    target: CheckedFunctionRef,
+) -> Result<(), ComputedReadSignatureUnsupported> {
+    let Some(module) = program.modules.get(target.module as usize) else {
+        return Err(ComputedReadSignatureUnsupported::ReturnValue);
+    };
+    let Some(function) = module.functions.get(target.function as usize) else {
+        return Err(ComputedReadSignatureUnsupported::ReturnValue);
+    };
+    for param in &function.params {
+        let ty = checked_runtime_value_type(program, param.ty.clone());
+        if !runtime_type_has_entry_shape(&ty) {
+            return Err(ComputedReadSignatureUnsupported::Parameter {
+                name: param.name.clone(),
+            });
+        }
+    }
+    let Some(return_type) = function.return_type.as_ref() else {
+        return Err(ComputedReadSignatureUnsupported::ReturnValue);
+    };
+    if computed_read_type_has_surface_shape(program, return_type) {
+        Ok(())
+    } else {
+        Err(ComputedReadSignatureUnsupported::ReturnValue)
+    }
 }
 
 fn argument_shape(
@@ -537,20 +590,7 @@ fn resource_result_shape(
     program: &CheckedProgram,
     resource_name: &str,
 ) -> Option<EntrySurfaceValueShape> {
-    let resource = program.facts.resources().iter().find(|resource| {
-        let module = program.facts.modules().get(resource.module.0 as usize);
-        let qualified = module.map_or_else(
-            || resource.name.clone(),
-            |module| {
-                if module.name.is_empty() {
-                    resource.name.clone()
-                } else {
-                    format!("{}::{}", module.name, resource.name)
-                }
-            },
-        );
-        qualified == resource_name
-    })?;
+    let resource = resource_by_type_name(program, resource_name)?;
     let resource_catalog_id =
         checked_accepted_catalog_id_value(program, resource.catalog_id.as_deref())?;
     let mut fields = program
@@ -578,6 +618,143 @@ fn resource_result_shape(
         render_label: resource_name.to_string(),
         resource_catalog_id,
         fields,
+    })
+}
+
+fn computed_read_type_has_accepted_catalog_ids(program: &CheckedProgram, ty: &MarrowType) -> bool {
+    match ty {
+        MarrowType::Resource(resource) => {
+            computed_read_resource_type_has_accepted_catalog_ids(program, resource)
+        }
+        _ => {
+            let runtime_ty = checked_runtime_value_type(program, ty.clone());
+            runtime_type_has_accepted_catalog_ids(program, &runtime_ty)
+        }
+    }
+}
+
+fn computed_read_resource_type_has_accepted_catalog_ids(
+    program: &CheckedProgram,
+    resource_name: &str,
+) -> bool {
+    let Some(resource) = resource_by_type_name(program, resource_name) else {
+        return false;
+    };
+    checked_accepted_catalog_id(program, resource.catalog_id.as_deref()).is_some()
+        && program
+            .facts
+            .resource_members()
+            .iter()
+            .filter(|member| member.resource == resource.id && member.parent.is_none())
+            .all(|member| {
+                checked_accepted_catalog_id(program, member.catalog_id.as_deref()).is_some()
+                    && stored_value_meaning_has_accepted_catalog_ids(
+                        program,
+                        member.value_meaning.as_ref(),
+                    )
+            })
+}
+
+fn computed_read_type_has_surface_shape(program: &CheckedProgram, ty: &MarrowType) -> bool {
+    match ty {
+        MarrowType::Resource(resource) => {
+            computed_read_resource_type_has_surface_shape(program, resource)
+        }
+        _ => {
+            let runtime_ty = checked_runtime_value_type(program, ty.clone());
+            runtime_type_has_entry_shape(&runtime_ty)
+        }
+    }
+}
+
+fn computed_read_resource_type_has_surface_shape(
+    program: &CheckedProgram,
+    resource_name: &str,
+) -> bool {
+    let Some(resource) = resource_by_type_name(program, resource_name) else {
+        return false;
+    };
+    program
+        .facts
+        .resource_members()
+        .iter()
+        .filter(|member| member.resource == resource.id && member.parent.is_none())
+        .all(|member| {
+            member.kind == ResourceMemberKind::Field
+                && member.key_count == 0
+                && member.plain_field_required.is_some()
+                && stored_value_meaning_has_surface_shape(program, member.value_meaning.as_ref())
+        })
+}
+
+fn stored_value_meaning_has_surface_shape(
+    program: &CheckedProgram,
+    meaning: Option<&StoredValueMeaning>,
+) -> bool {
+    match meaning {
+        Some(StoredValueMeaning::Scalar(_)) => true,
+        Some(StoredValueMeaning::Identity { store, .. }) => {
+            program.facts.stores().get(store.0 as usize).is_some()
+        }
+        Some(StoredValueMeaning::Enum { enum_id, members }) => {
+            program.facts.enum_(*enum_id).is_some()
+                && members
+                    .iter()
+                    .all(|member| program.facts.enum_member(*member).is_some())
+        }
+        None => false,
+    }
+}
+
+fn stored_value_meaning_has_accepted_catalog_ids(
+    program: &CheckedProgram,
+    meaning: Option<&StoredValueMeaning>,
+) -> bool {
+    match meaning {
+        None | Some(StoredValueMeaning::Scalar(_)) => true,
+        Some(StoredValueMeaning::Identity {
+            store,
+            store_catalog_id,
+            ..
+        }) => {
+            checked_accepted_catalog_id(program, store_catalog_id.as_deref()).is_some()
+                && checked_accepted_catalog_id(
+                    program,
+                    program.facts.store(*store).catalog_id.as_deref(),
+                )
+                .is_some()
+        }
+        Some(StoredValueMeaning::Enum { enum_id, members }) => {
+            let Some(enum_fact) = program.facts.enum_(*enum_id) else {
+                return false;
+            };
+            checked_accepted_catalog_id(program, enum_fact.catalog_id.as_deref()).is_some()
+                && members.iter().all(|member| {
+                    program.facts.enum_member(*member).is_some_and(|member| {
+                        checked_accepted_catalog_id(program, member.catalog_id.as_deref()).is_some()
+                    })
+                })
+        }
+    }
+}
+
+fn resource_by_type_name<'a>(
+    program: &'a CheckedProgram,
+    resource_name: &str,
+) -> Option<&'a crate::ResourceFact> {
+    program.facts.resources().iter().find(|resource| {
+        let module = program.facts.modules().get(resource.module.0 as usize);
+        let qualified = module.map_or_else(
+            || resource.name.clone(),
+            |module| {
+                if module.name.is_empty() {
+                    resource.name.clone()
+                } else {
+                    format!("{}::{}", module.name, resource.name)
+                }
+            },
+        );
+        qualified == resource_name
     })
 }
 
@@ -648,12 +825,14 @@ fn stored_value_shape(
     }
 }
 
-fn action_shape_supported(shape: &EntryArgumentShape) -> bool {
+fn callable_argument_shape_supported(shape: &EntryArgumentShape) -> bool {
     match shape {
         EntryArgumentShape::Scalar(_)
         | EntryArgumentShape::Enum { .. }
         | EntryArgumentShape::Identity { .. } => true,
-        EntryArgumentShape::Sequence(element) => sequence_argument_shape_supported(element),
+        EntryArgumentShape::Sequence(element) => {
+            callable_sequence_argument_shape_supported(element)
+        }
         EntryArgumentShape::Unsupported => false,
     }
 }
@@ -715,7 +894,7 @@ fn runtime_sequence_element_has_entry_shape(ty: &CheckedRuntimeValueType) -> boo
     }
 }
 
-fn sequence_argument_shape_supported(shape: &EntryArgumentShape) -> bool {
+fn callable_sequence_argument_shape_supported(shape: &EntryArgumentShape) -> bool {
     matches!(
         shape,
         EntryArgumentShape::Scalar(_) | EntryArgumentShape::Enum { .. }

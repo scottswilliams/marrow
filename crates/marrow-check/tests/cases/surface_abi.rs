@@ -6,11 +6,12 @@ use marrow_check::{
     AnalysisSnapshot, CheckedProgram, ENTRY_PROTOCOL_TAG_VERSION, EntryDescriptor,
     EntryFunctionSurfaceDescriptor, EntrySurfaceProfile, EntrySurfaceValueShape, ProjectSources,
     SurfaceActionOperationDescriptor, SurfaceCatalogBlocker, SurfaceCatalogStatus,
-    SurfaceCreateBodySemantics, SurfaceCreateExistenceSemantics, SurfaceCreateIdentityPolicy,
+    SurfaceComputedReadOperationDescriptor, SurfaceCreateBodySemantics,
+    SurfaceCreateExistenceSemantics, SurfaceCreateIdentityPolicy,
     SurfaceCreateOperationDescriptorKind, SurfaceDeleteOperationDescriptorKind,
     SurfaceDeleteSemantics, SurfaceOperationValueShape, SurfaceReadOperationDescriptor,
     SurfaceReadOperationDescriptorKind, SurfaceUpdateOperationDescriptor,
-    SurfaceUpdateOperationDescriptorKind, analyze_project, check_project,
+    SurfaceUpdateOperationDescriptorKind, WorkShapeClass, analyze_project, check_project,
 };
 use marrow_schema::ReturnPresence;
 use marrow_schema::ScalarType;
@@ -76,6 +77,15 @@ fn delete_tag(snapshot: &AnalysisSnapshot) -> String {
         .and_then(|operation| operation.stable_descriptor())
         .map(|descriptor| descriptor.operation_tag)
         .expect("stable delete operation tag")
+}
+
+fn computed_read_tag(snapshot: &AnalysisSnapshot) -> String {
+    snapshot
+        .surface_computed_read_operations()
+        .next()
+        .and_then(|operation| operation.stable_descriptor())
+        .map(|descriptor| descriptor.operation_tag)
+        .expect("stable computed-read operation tag")
 }
 
 fn update_tags_by_surface(snapshot: &AnalysisSnapshot) -> Vec<(String, String)> {
@@ -504,6 +514,159 @@ surface Books from ^books
     assert_eq!(descriptor.identity, entry.identity);
     assert_eq!(descriptor.parameters, entry.parameters);
     assert_eq!(descriptor.return_value, entry.return_value);
+}
+
+#[test]
+fn stable_computed_read_descriptor_wraps_callable_result_and_cost_shape() {
+    let source = "\
+module app
+resource BookPage
+    required title: string
+resource Book
+    title: string
+store ^books(id: int): Book
+pub fn bookPage(id: Id(^books)): maybe BookPage
+    return BookPage(title: ^books(id)?.title ?? \"\")
+surface Books from ^books
+    fields title
+    read bookPage as page
+";
+    let (_root, snapshot) = stable_snapshot("surface-computed-read-abi-shape", source);
+    let descriptors = snapshot
+        .surface_computed_read_operations()
+        .map(|operation| {
+            operation
+                .stable_descriptor()
+                .expect("stable computed-read descriptor")
+        })
+        .collect::<Vec<_>>();
+
+    let [descriptor] = descriptors.as_slice() else {
+        panic!("expected one computed-read descriptor, got {descriptors:#?}");
+    };
+    assert_eq!(descriptor.profile_version, "surface.computed_read.v1");
+    assert_eq!(descriptor.alias, "page");
+    assert!(descriptor.operation_tag.starts_with("sha256:"));
+    assert_eq!(descriptor.callable.identity.requested_name, "app::bookPage");
+    assert_eq!(descriptor.callable.identity.canonical_name, "app::bookPage");
+    assert_eq!(descriptor.callable.parameters.len(), 1);
+    assert_eq!(
+        descriptor.callable.result.presence,
+        ReturnPresence::MaybePresent
+    );
+    assert!(matches!(
+        descriptor.callable.result.value,
+        Some(EntrySurfaceValueShape::Resource { .. })
+    ));
+    assert_eq!(descriptor.cost_shape.work_shape, WorkShapeClass::ReadOnly);
+    assert_eq!(descriptor.cost_shape.point_reads, 1);
+    assert_eq!(descriptor.cost_shape.range_scans, 0);
+    assert_eq!(descriptor.cost_shape.writes, 0);
+    assert_eq!(descriptor.cost_shape.commit_points, 0);
+
+    let surface = &snapshot.program.facts.surfaces()[0];
+    let computed = &surface.computed_reads[0];
+    let rebuilt = SurfaceComputedReadOperationDescriptor::from_computed_read(
+        &snapshot.program,
+        surface,
+        computed,
+    )
+    .expect("descriptor from fact");
+    assert_eq!(rebuilt.operation_tag, descriptor.operation_tag);
+}
+
+#[test]
+fn stable_computed_read_operation_tag_changes_with_result_shape_and_cost_shape() {
+    let string_source = "\
+module app
+resource Book
+    title: string
+store ^books(id: int): Book
+pub fn page(id: Id(^books)): string
+    return ^books(id)?.title ?? \"\"
+surface Books from ^books
+    fields title
+    read page
+";
+    let resource_source = "\
+module app
+resource BookPage
+    required title: string
+resource Book
+    title: string
+store ^books(id: int): Book
+pub fn page(id: Id(^books)): BookPage
+    return BookPage(title: ^books(id)?.title ?? \"\")
+surface Books from ^books
+    fields title
+    read page
+";
+    let indexed_source = "\
+module app
+resource Book
+    title: string
+    shelf: string
+store ^books(id: int): Book
+    index byShelf(shelf, id)
+pub fn page(shelf: string): int
+    return count(^books.byShelf(shelf))
+surface Books from ^books
+    fields title
+    read page
+";
+    let (_root, string_snapshot) =
+        stable_snapshot("surface-computed-read-abi-tag-string", string_source);
+    let (_root, resource_snapshot) =
+        stable_snapshot("surface-computed-read-abi-tag-resource", resource_source);
+    let (_root, indexed_snapshot) =
+        stable_snapshot("surface-computed-read-abi-tag-indexed", indexed_source);
+
+    assert_ne!(
+        computed_read_tag(&string_snapshot),
+        computed_read_tag(&resource_snapshot),
+        "computed-read tags include the result descriptor"
+    );
+    assert_ne!(
+        computed_read_tag(&string_snapshot),
+        computed_read_tag(&indexed_snapshot),
+        "computed-read tags include the cost-shape summary"
+    );
+}
+
+#[test]
+fn stable_computed_read_operation_tag_changes_with_read_only_implementation() {
+    let first_source = "\
+module app
+resource Book
+    title: string
+store ^books(id: int): Book
+pub fn page(): string
+    return \"first\"
+surface Books from ^books
+    fields title
+    read page
+";
+    let second_source = "\
+module app
+resource Book
+    title: string
+store ^books(id: int): Book
+pub fn page(): string
+    return \"second\"
+surface Books from ^books
+    fields title
+    read page
+";
+    let (_root, first_snapshot) =
+        stable_snapshot("surface-computed-read-tag-body-first", first_source);
+    let (_root, second_snapshot) =
+        stable_snapshot("surface-computed-read-tag-body-second", second_source);
+
+    assert_ne!(
+        computed_read_tag(&first_snapshot),
+        computed_read_tag(&second_snapshot),
+        "computed-read tags include the read-only implementation identity"
+    );
 }
 
 #[test]

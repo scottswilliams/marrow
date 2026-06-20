@@ -30,6 +30,7 @@ pub use execute::{
 };
 pub use operation::{
     SURFACE_OPERATION_PROFILE_VERSION, SurfaceActionRequestJson, SurfaceActionResultJson,
+    SurfaceComputedReadInvocationResultJson, SurfaceComputedReadRequestJson,
     SurfaceOperationErrorJson, SurfaceOperationRequestBodyJson, SurfaceOperationRequestJson,
     SurfaceOperationResponseJson, SurfaceOperationResultJson, execute_project_surface_operation,
     execute_project_surface_operation_read_only, execute_project_surface_operation_with_host,
@@ -68,6 +69,7 @@ pub struct SurfaceDescriptorJson {
     pub name: String,
     pub catalog_status: SurfaceCatalogStatusJson,
     pub read: Vec<SurfaceReadOperationDescriptorJson>,
+    pub computed_reads: Vec<SurfaceComputedReadOperationDescriptorJson>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub update: Option<SurfaceUpdateOperationDescriptorJson>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -269,14 +271,96 @@ pub struct SurfaceActionOperationDescriptorJson {
     pub profile_version: String,
     pub operation_tag: String,
     pub alias: String,
-    pub identity: SurfaceActionIdentityJson,
-    pub parameters: Vec<SurfaceActionParameterJson>,
+    pub identity: SurfaceCallableIdentityJson,
+    pub parameters: Vec<SurfaceCallableParameterJson>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub return_value: Option<SurfaceActionArgumentShapeJson>,
+    pub return_value: Option<SurfaceCallableArgumentShapeJson>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct SurfaceActionIdentityJson {
+pub struct SurfaceComputedReadOperationDescriptorJson {
+    pub profile_version: String,
+    pub operation_tag: String,
+    pub alias: String,
+    pub callable: SurfaceComputedReadCallableJson,
+    pub cost_shape: SurfaceComputedReadCostShapeJson,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SurfaceComputedReadCallableJson {
+    pub identity: SurfaceCallableIdentityJson,
+    pub parameters: Vec<SurfaceCallableParameterJson>,
+    pub result: SurfaceComputedReadResultJson,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SurfaceComputedReadResultJson {
+    pub presence: SurfaceComputedReadPresenceJson,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub value: Option<SurfaceComputedReadValueShapeJson>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SurfaceComputedReadPresenceJson {
+    Always,
+    MaybePresent,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SurfaceComputedReadValueShapeJson {
+    Scalar {
+        scalar: String,
+    },
+    Enum {
+        render_label: String,
+        enum_catalog_id: String,
+        members: Vec<SurfaceCallableEnumMemberJson>,
+    },
+    Identity {
+        render_label: String,
+        store_catalog_id: String,
+        keys: Vec<SurfaceCallableIdentityKeyJson>,
+    },
+    Sequence {
+        element: Box<SurfaceComputedReadValueShapeJson>,
+    },
+    Resource {
+        render_label: String,
+        resource_catalog_id: String,
+        fields: Vec<SurfaceComputedReadResourceFieldJson>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SurfaceComputedReadResourceFieldJson {
+    pub render_label: String,
+    pub member_catalog_id: String,
+    pub required: bool,
+    pub value: SurfaceComputedReadValueShapeJson,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SurfaceComputedReadCostShapeJson {
+    pub work_shape: SurfaceComputedReadWorkShapeJson,
+    pub point_reads: usize,
+    pub range_scans: usize,
+    pub writes: usize,
+    pub index_entry_touches: usize,
+    pub commit_points: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SurfaceComputedReadWorkShapeJson {
+    ComputeOnly,
+    ReadOnly,
+    WritesSavedData,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SurfaceCallableIdentityJson {
     pub requested_name: String,
     pub canonical_name: String,
     pub entry_tag: String,
@@ -286,41 +370,41 @@ pub struct SurfaceActionIdentityJson {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct SurfaceActionParameterJson {
+pub struct SurfaceCallableParameterJson {
     pub name: String,
-    pub shape: SurfaceActionArgumentShapeJson,
+    pub shape: SurfaceCallableArgumentShapeJson,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-pub enum SurfaceActionArgumentShapeJson {
+pub enum SurfaceCallableArgumentShapeJson {
     Scalar {
         scalar: String,
     },
     Enum {
         render_label: String,
         enum_catalog_id: String,
-        members: Vec<SurfaceActionEnumMemberJson>,
+        members: Vec<SurfaceCallableEnumMemberJson>,
     },
     Identity {
         render_label: String,
         store_catalog_id: String,
-        keys: Vec<SurfaceActionIdentityKeyJson>,
+        keys: Vec<SurfaceCallableIdentityKeyJson>,
     },
     Sequence {
-        element: Box<SurfaceActionArgumentShapeJson>,
+        element: Box<SurfaceCallableArgumentShapeJson>,
     },
     Unsupported,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct SurfaceActionEnumMemberJson {
+pub struct SurfaceCallableEnumMemberJson {
     pub render_label: String,
     pub catalog_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct SurfaceActionIdentityKeyJson {
+pub struct SurfaceCallableIdentityKeyJson {
     pub render_label: String,
     pub scalar: String,
 }
@@ -399,6 +483,22 @@ impl SurfaceDescriptorJson {
             } else {
                 Vec::new()
             },
+            computed_reads: if stable {
+                surface
+                    .computed_reads
+                    .iter()
+                    .filter_map(|computed_read| {
+                        marrow_check::SurfaceComputedReadOperationDescriptor::from_computed_read(
+                            program,
+                            surface,
+                            computed_read,
+                        )
+                        .map(SurfaceComputedReadOperationDescriptorJson::from)
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            },
             update: if stable {
                 marrow_check::SurfaceUpdateOperationDescriptor::from_surface(program, surface)
                     .map(SurfaceUpdateOperationDescriptorJson::from)
@@ -468,6 +568,9 @@ fn omit_uncallable_operation_tags(surfaces: &mut [SurfaceDescriptorJson]) {
         surface
             .actions
             .retain(|action| !duplicate_tags.contains(&action.operation_tag));
+        surface
+            .computed_reads
+            .retain(|computed_read| !duplicate_tags.contains(&computed_read.operation_tag));
     }
 }
 
@@ -489,6 +592,12 @@ fn all_operation_tags(surfaces: &[SurfaceDescriptorJson]) -> Vec<&str> {
                 .actions
                 .iter()
                 .map(|action| action.operation_tag.as_str()),
+        );
+        tags.extend(
+            surface
+                .computed_reads
+                .iter()
+                .map(|computed_read| computed_read.operation_tag.as_str()),
         );
     }
     tags
@@ -841,20 +950,149 @@ impl From<marrow_check::SurfaceActionOperationDescriptor> for SurfaceActionOpera
             profile_version: descriptor.profile_version.to_string(),
             operation_tag: descriptor.operation_tag,
             alias: descriptor.alias,
-            identity: SurfaceActionIdentityJson::from(descriptor.identity),
+            identity: SurfaceCallableIdentityJson::from(descriptor.identity),
             parameters: descriptor
                 .parameters
                 .into_iter()
-                .map(SurfaceActionParameterJson::from)
+                .map(SurfaceCallableParameterJson::from)
                 .collect(),
             return_value: descriptor
                 .return_value
-                .map(SurfaceActionArgumentShapeJson::from),
+                .map(SurfaceCallableArgumentShapeJson::from),
         }
     }
 }
 
-impl From<marrow_check::EntryIdentity> for SurfaceActionIdentityJson {
+impl From<marrow_check::SurfaceComputedReadOperationDescriptor>
+    for SurfaceComputedReadOperationDescriptorJson
+{
+    fn from(descriptor: marrow_check::SurfaceComputedReadOperationDescriptor) -> Self {
+        Self {
+            profile_version: descriptor.profile_version.to_string(),
+            operation_tag: descriptor.operation_tag,
+            alias: descriptor.alias,
+            callable: SurfaceComputedReadCallableJson::from(descriptor.callable),
+            cost_shape: SurfaceComputedReadCostShapeJson::from(descriptor.cost_shape),
+        }
+    }
+}
+
+impl From<marrow_check::EntryFunctionSurfaceDescriptor> for SurfaceComputedReadCallableJson {
+    fn from(descriptor: marrow_check::EntryFunctionSurfaceDescriptor) -> Self {
+        Self {
+            identity: SurfaceCallableIdentityJson::from(descriptor.identity),
+            parameters: descriptor
+                .parameters
+                .into_iter()
+                .map(SurfaceCallableParameterJson::from)
+                .collect(),
+            result: SurfaceComputedReadResultJson::from(descriptor.result),
+        }
+    }
+}
+
+impl From<marrow_check::EntryResultDescriptor> for SurfaceComputedReadResultJson {
+    fn from(result: marrow_check::EntryResultDescriptor) -> Self {
+        Self {
+            presence: SurfaceComputedReadPresenceJson::from(result.presence),
+            value: result.value.map(SurfaceComputedReadValueShapeJson::from),
+        }
+    }
+}
+
+impl From<marrow_check::ReturnPresence> for SurfaceComputedReadPresenceJson {
+    fn from(presence: marrow_check::ReturnPresence) -> Self {
+        match presence {
+            marrow_check::ReturnPresence::Always => Self::Always,
+            marrow_check::ReturnPresence::MaybePresent => Self::MaybePresent,
+        }
+    }
+}
+
+impl From<marrow_check::EntrySurfaceValueShape> for SurfaceComputedReadValueShapeJson {
+    fn from(shape: marrow_check::EntrySurfaceValueShape) -> Self {
+        match shape {
+            marrow_check::EntrySurfaceValueShape::Scalar(scalar) => Self::Scalar {
+                scalar: scalar.name().to_string(),
+            },
+            marrow_check::EntrySurfaceValueShape::Enum {
+                render_label,
+                catalog_id,
+                members,
+            } => Self::Enum {
+                render_label,
+                enum_catalog_id: catalog_id.as_str().to_string(),
+                members: members
+                    .into_iter()
+                    .map(SurfaceCallableEnumMemberJson::from)
+                    .collect(),
+            },
+            marrow_check::EntrySurfaceValueShape::Identity {
+                render_label,
+                store_catalog_id,
+                keys,
+            } => Self::Identity {
+                render_label,
+                store_catalog_id: store_catalog_id.as_str().to_string(),
+                keys: keys
+                    .into_iter()
+                    .map(SurfaceCallableIdentityKeyJson::from)
+                    .collect(),
+            },
+            marrow_check::EntrySurfaceValueShape::Sequence(element) => Self::Sequence {
+                element: Box::new(SurfaceComputedReadValueShapeJson::from(*element)),
+            },
+            marrow_check::EntrySurfaceValueShape::Resource {
+                render_label,
+                resource_catalog_id,
+                fields,
+            } => Self::Resource {
+                render_label,
+                resource_catalog_id: resource_catalog_id.as_str().to_string(),
+                fields: fields
+                    .into_iter()
+                    .map(SurfaceComputedReadResourceFieldJson::from)
+                    .collect(),
+            },
+        }
+    }
+}
+
+impl From<marrow_check::EntryResourceResultField> for SurfaceComputedReadResourceFieldJson {
+    fn from(field: marrow_check::EntryResourceResultField) -> Self {
+        Self {
+            render_label: field.render_label,
+            member_catalog_id: field.member_catalog_id.as_str().to_string(),
+            required: field.required,
+            value: SurfaceComputedReadValueShapeJson::from(field.shape),
+        }
+    }
+}
+
+impl From<marrow_check::SurfaceComputedReadCostShape> for SurfaceComputedReadCostShapeJson {
+    fn from(shape: marrow_check::SurfaceComputedReadCostShape) -> Self {
+        Self {
+            work_shape: SurfaceComputedReadWorkShapeJson::from(shape.work_shape),
+            point_reads: shape.point_reads,
+            range_scans: shape.range_scans,
+            writes: shape.writes,
+            index_entry_touches: shape.index_entry_touches,
+            commit_points: shape.commit_points,
+        }
+    }
+}
+
+impl From<marrow_check::WorkShapeClass> for SurfaceComputedReadWorkShapeJson {
+    fn from(shape: marrow_check::WorkShapeClass) -> Self {
+        match shape {
+            marrow_check::WorkShapeClass::ComputeOnly => Self::ComputeOnly,
+            marrow_check::WorkShapeClass::ReadOnly => Self::ReadOnly,
+            marrow_check::WorkShapeClass::WritesSavedData => Self::WritesSavedData,
+        }
+    }
+}
+
+impl From<marrow_check::EntryIdentity> for SurfaceCallableIdentityJson {
     fn from(identity: marrow_check::EntryIdentity) -> Self {
         Self {
             requested_name: identity.requested_name,
@@ -867,16 +1105,16 @@ impl From<marrow_check::EntryIdentity> for SurfaceActionIdentityJson {
     }
 }
 
-impl From<marrow_check::EntryParameter> for SurfaceActionParameterJson {
+impl From<marrow_check::EntryParameter> for SurfaceCallableParameterJson {
     fn from(parameter: marrow_check::EntryParameter) -> Self {
         Self {
             name: parameter.name,
-            shape: SurfaceActionArgumentShapeJson::from(parameter.shape),
+            shape: SurfaceCallableArgumentShapeJson::from(parameter.shape),
         }
     }
 }
 
-impl From<marrow_check::EntryArgumentShape> for SurfaceActionArgumentShapeJson {
+impl From<marrow_check::EntryArgumentShape> for SurfaceCallableArgumentShapeJson {
     fn from(shape: marrow_check::EntryArgumentShape) -> Self {
         match shape {
             marrow_check::EntryArgumentShape::Scalar(scalar) => Self::Scalar {
@@ -891,7 +1129,7 @@ impl From<marrow_check::EntryArgumentShape> for SurfaceActionArgumentShapeJson {
                 enum_catalog_id: catalog_id.as_str().to_string(),
                 members: members
                     .into_iter()
-                    .map(SurfaceActionEnumMemberJson::from)
+                    .map(SurfaceCallableEnumMemberJson::from)
                     .collect(),
             },
             marrow_check::EntryArgumentShape::Identity {
@@ -903,18 +1141,18 @@ impl From<marrow_check::EntryArgumentShape> for SurfaceActionArgumentShapeJson {
                 store_catalog_id: store_catalog_id.as_str().to_string(),
                 keys: keys
                     .into_iter()
-                    .map(SurfaceActionIdentityKeyJson::from)
+                    .map(SurfaceCallableIdentityKeyJson::from)
                     .collect(),
             },
             marrow_check::EntryArgumentShape::Sequence(element) => Self::Sequence {
-                element: Box::new(SurfaceActionArgumentShapeJson::from(*element)),
+                element: Box::new(SurfaceCallableArgumentShapeJson::from(*element)),
             },
             marrow_check::EntryArgumentShape::Unsupported => Self::Unsupported,
         }
     }
 }
 
-impl From<marrow_check::EntryEnumMember> for SurfaceActionEnumMemberJson {
+impl From<marrow_check::EntryEnumMember> for SurfaceCallableEnumMemberJson {
     fn from(member: marrow_check::EntryEnumMember) -> Self {
         Self {
             render_label: member.render_label,
@@ -923,7 +1161,7 @@ impl From<marrow_check::EntryEnumMember> for SurfaceActionEnumMemberJson {
     }
 }
 
-impl From<marrow_check::EntryIdentityKey> for SurfaceActionIdentityKeyJson {
+impl From<marrow_check::EntryIdentityKey> for SurfaceCallableIdentityKeyJson {
     fn from(key: marrow_check::EntryIdentityKey) -> Self {
         Self {
             render_label: key.render_label,
@@ -1082,14 +1320,14 @@ pub enum SurfaceActionValueJson {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SurfaceActionValueJsonError {
+pub(crate) enum SurfaceValueJsonError {
     UnsupportedValue,
 }
 
 pub(crate) fn surface_action_value_to_json(
     program: &marrow_check::CheckedProgram,
     value: &Value,
-) -> Result<SurfaceActionValueJson, SurfaceActionValueJsonError> {
+) -> Result<SurfaceActionValueJson, SurfaceValueJsonError> {
     Ok(match value {
         Value::Int(value) => SurfaceActionValueJson::Int {
             value: value.to_string(),
@@ -1129,20 +1367,183 @@ pub(crate) fn surface_action_value_to_json(
                 .collect::<Result<Vec<_>, _>>()?,
         },
         Value::Resource(_) | Value::LocalTree(_) => {
-            return Err(SurfaceActionValueJsonError::UnsupportedValue);
+            return Err(SurfaceValueJsonError::UnsupportedValue);
         }
+    })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SurfaceComputedReadValueJson {
+    Int {
+        value: String,
+    },
+    Bool {
+        value: bool,
+    },
+    String {
+        value: String,
+    },
+    Date {
+        days_since_epoch: i32,
+    },
+    Duration {
+        nanos: String,
+    },
+    Instant {
+        nanos_since_epoch: String,
+    },
+    Decimal {
+        value: String,
+    },
+    Bytes {
+        value_b64: String,
+    },
+    Enum {
+        enum_catalog_id: String,
+        member_catalog_id: String,
+        render_label: String,
+    },
+    Identity {
+        store_catalog_id: String,
+        keys: Vec<SurfaceKeyJson>,
+    },
+    Sequence {
+        values: Vec<SurfaceComputedReadValueJson>,
+    },
+    Resource {
+        resource_catalog_id: String,
+        fields: Vec<SurfaceComputedReadFieldValueJson>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SurfaceComputedReadFieldValueJson {
+    pub render_label: String,
+    pub member_catalog_id: String,
+    pub required: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub value: Option<SurfaceComputedReadValueJson>,
+}
+
+pub(crate) fn surface_computed_read_value_to_json(
+    program: &marrow_check::CheckedProgram,
+    shape: Option<&marrow_check::EntrySurfaceValueShape>,
+    value: &Value,
+) -> Result<SurfaceComputedReadValueJson, SurfaceValueJsonError> {
+    let Some(shape) = shape else {
+        return Err(SurfaceValueJsonError::UnsupportedValue);
+    };
+    match (shape, value) {
+        (marrow_check::EntrySurfaceValueShape::Scalar(_), value) => {
+            computed_read_scalar_value_to_json(value)
+        }
+        (marrow_check::EntrySurfaceValueShape::Enum { .. }, Value::Enum(value)) => {
+            Ok(SurfaceComputedReadValueJson::Enum {
+                enum_catalog_id: value.enum_catalog_id().to_string(),
+                member_catalog_id: value.member_catalog_id().to_string(),
+                render_label: value.render_label().to_string(),
+            })
+        }
+        (marrow_check::EntrySurfaceValueShape::Identity { .. }, Value::Identity(identity)) => {
+            Ok(SurfaceComputedReadValueJson::Identity {
+                store_catalog_id: accepted_store_catalog_id(program, identity.root())?,
+                keys: identity.keys().iter().map(SurfaceKeyJson::from).collect(),
+            })
+        }
+        (marrow_check::EntrySurfaceValueShape::Sequence(element), Value::Sequence(items)) => {
+            Ok(SurfaceComputedReadValueJson::Sequence {
+                values: items
+                    .iter()
+                    .map(|item| surface_computed_read_value_to_json(program, Some(element), item))
+                    .collect::<Result<Vec<_>, _>>()?,
+            })
+        }
+        (
+            marrow_check::EntrySurfaceValueShape::Resource {
+                resource_catalog_id,
+                fields,
+                ..
+            },
+            Value::Resource(values),
+        ) => Ok(SurfaceComputedReadValueJson::Resource {
+            resource_catalog_id: resource_catalog_id.as_str().to_string(),
+            fields: fields
+                .iter()
+                .map(|field| computed_read_resource_field_to_json(program, field, values))
+                .collect::<Result<Vec<_>, _>>()?,
+        }),
+        _ => Err(SurfaceValueJsonError::UnsupportedValue),
+    }
+}
+
+fn computed_read_scalar_value_to_json(
+    value: &Value,
+) -> Result<SurfaceComputedReadValueJson, SurfaceValueJsonError> {
+    Ok(match value {
+        Value::Int(value) => SurfaceComputedReadValueJson::Int {
+            value: value.to_string(),
+        },
+        Value::Bool(value) => SurfaceComputedReadValueJson::Bool { value: *value },
+        Value::Str(value) => SurfaceComputedReadValueJson::String {
+            value: value.clone(),
+        },
+        Value::Date(value) => SurfaceComputedReadValueJson::Date {
+            days_since_epoch: *value,
+        },
+        Value::Duration(value) => SurfaceComputedReadValueJson::Duration {
+            nanos: value.to_string(),
+        },
+        Value::Instant(value) => SurfaceComputedReadValueJson::Instant {
+            nanos_since_epoch: value.to_string(),
+        },
+        Value::Decimal(value) => SurfaceComputedReadValueJson::Decimal {
+            value: value.to_text(),
+        },
+        Value::Bytes(value) => SurfaceComputedReadValueJson::Bytes {
+            value_b64: marrow_run::base64::encode(value),
+        },
+        Value::Enum(_)
+        | Value::Identity(_)
+        | Value::Sequence(_)
+        | Value::Resource(_)
+        | Value::LocalTree(_) => {
+            return Err(SurfaceValueJsonError::UnsupportedValue);
+        }
+    })
+}
+
+fn computed_read_resource_field_to_json(
+    program: &marrow_check::CheckedProgram,
+    field: &marrow_check::EntryResourceResultField,
+    values: &[(String, Value)],
+) -> Result<SurfaceComputedReadFieldValueJson, SurfaceValueJsonError> {
+    let value = values
+        .iter()
+        .find(|(name, _)| name == &field.render_label)
+        .map(|(_, value)| value);
+    if field.required && value.is_none() {
+        return Err(SurfaceValueJsonError::UnsupportedValue);
+    }
+    Ok(SurfaceComputedReadFieldValueJson {
+        render_label: field.render_label.clone(),
+        member_catalog_id: field.member_catalog_id.as_str().to_string(),
+        required: field.required,
+        value: value
+            .map(|value| surface_computed_read_value_to_json(program, Some(&field.shape), value))
+            .transpose()?,
     })
 }
 
 fn accepted_store_catalog_id(
     program: &marrow_check::CheckedProgram,
     root: &str,
-) -> Result<String, SurfaceActionValueJsonError> {
+) -> Result<String, SurfaceValueJsonError> {
     let Some(store) = program.facts.store_by_root(root) else {
-        return Err(SurfaceActionValueJsonError::UnsupportedValue);
+        return Err(SurfaceValueJsonError::UnsupportedValue);
     };
     let Some(catalog_id) = store.catalog_id.as_deref() else {
-        return Err(SurfaceActionValueJsonError::UnsupportedValue);
+        return Err(SurfaceValueJsonError::UnsupportedValue);
     };
     let accepted = program
         .catalog
@@ -1152,7 +1553,7 @@ fn accepted_store_catalog_id(
     if accepted {
         Ok(catalog_id.to_string())
     } else {
-        Err(SurfaceActionValueJsonError::UnsupportedValue)
+        Err(SurfaceValueJsonError::UnsupportedValue)
     }
 }
 
@@ -1264,8 +1665,9 @@ mod tests {
 
     use marrow_check::{
         CheckedProgram, CheckedRuntimeProgram, ENTRY_PROTOCOL_TAG_VERSION, EntryDescriptor,
-        ProjectConfig, StoreBackend, StoreConfig, SurfaceActionOperationDescriptor, SurfaceId,
-        SurfaceReadOperationKind, SurfaceUpdateOperationDescriptor, check_project,
+        ProjectConfig, StoreBackend, StoreConfig, SurfaceActionOperationDescriptor,
+        SurfaceComputedReadOperationDescriptor, SurfaceId, SurfaceReadOperationKind,
+        SurfaceUpdateOperationDescriptor, check_project,
     };
     use marrow_run::{
         Host, ProjectOpen, ProjectSession, ProjectSurfaceReadSession, ProjectSurfaceSession,
@@ -1288,20 +1690,22 @@ mod tests {
     use serde_json::json;
 
     use crate::surface::{
-        SURFACE_OPERATION_PROFILE_VERSION, SurfaceAbiJson, SurfaceActionArgumentShapeJson,
-        SurfaceActionRequestJson, SurfaceActionResultJson, SurfaceActionValueJson,
-        SurfaceArgumentJson, SurfaceCatalogStatusJson, SurfaceClientRenderErrorKind,
-        SurfaceCreateFieldJson, SurfaceCreateOperationKindJson, SurfaceCursorBoundaryJson,
-        SurfaceCursorJson, SurfaceDeleteOperationKindJson, SurfaceIdentityJson, SurfaceKeyJson,
-        SurfaceOperationCatalog, SurfaceOperationCatalogErrorKind, SurfaceOperationErrorJson,
-        SurfaceOperationKind, SurfaceOperationRequestBodyJson, SurfaceOperationRequestJson,
-        SurfaceOperationResultJson, SurfacePageJson, SurfacePageRequestJson,
-        SurfacePointCreateRequestJson, SurfacePointDeleteRequestJson, SurfacePointRequestJson,
-        SurfacePointUpdateRequestJson, SurfaceReadOperationKindJson, SurfaceRecordJson,
-        SurfaceRouteBindingErrorKind, SurfaceRouteBindings, SurfaceRouteManifestJson,
-        SurfaceRouteMethodJson, SurfaceRouteRequestJson, SurfaceSingletonUpdateRequestJson,
-        SurfaceUniqueLookupRequestJson, SurfaceUpdateFieldJson, SurfaceValueJson,
-        SurfaceWriteValueJson, render_typescript_client,
+        SURFACE_OPERATION_PROFILE_VERSION, SurfaceAbiJson, SurfaceActionRequestJson,
+        SurfaceActionResultJson, SurfaceActionValueJson, SurfaceArgumentJson,
+        SurfaceCallableArgumentShapeJson, SurfaceCatalogStatusJson, SurfaceClientRenderErrorKind,
+        SurfaceComputedReadFieldValueJson, SurfaceComputedReadPresenceJson,
+        SurfaceComputedReadRequestJson, SurfaceComputedReadValueJson,
+        SurfaceComputedReadValueShapeJson, SurfaceCreateFieldJson, SurfaceCreateOperationKindJson,
+        SurfaceCursorBoundaryJson, SurfaceCursorJson, SurfaceDeleteOperationKindJson,
+        SurfaceIdentityJson, SurfaceKeyJson, SurfaceOperationCatalog,
+        SurfaceOperationCatalogErrorKind, SurfaceOperationErrorJson, SurfaceOperationKind,
+        SurfaceOperationRequestBodyJson, SurfaceOperationRequestJson, SurfaceOperationResultJson,
+        SurfacePageJson, SurfacePageRequestJson, SurfacePointCreateRequestJson,
+        SurfacePointDeleteRequestJson, SurfacePointRequestJson, SurfacePointUpdateRequestJson,
+        SurfaceReadOperationKindJson, SurfaceRecordJson, SurfaceRouteBindingErrorKind,
+        SurfaceRouteBindings, SurfaceRouteManifestJson, SurfaceRouteMethodJson,
+        SurfaceRouteRequestJson, SurfaceSingletonUpdateRequestJson, SurfaceUniqueLookupRequestJson,
+        SurfaceUpdateFieldJson, SurfaceValueJson, SurfaceWriteValueJson, render_typescript_client,
     };
 
     static TEMP_PROJECT_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -1464,6 +1868,21 @@ surface Books from ^books
     fields title
     update title
     action addBook
+";
+
+    const SURFACE_COMPUTED_READ: &str = "\
+resource BookPage
+    required title: string
+resource Book
+    required title: string
+store ^books(id: int): Book
+
+pub fn bookPage(id: Id(^books)): maybe BookPage
+    return BookPage(title: ^books(id).title ?? \"\")
+
+surface Books from ^books
+    fields title
+    read bookPage as page
 ";
 
     const SURFACE_CREATE_DELETE: &str = "\
@@ -1630,6 +2049,30 @@ pub fn currentBook(): Id(^books)
 
 pub fn failRename()
     throw Error(code: \"test.fail\", message: \"boom\")
+";
+
+    const PROJECT_COMPUTED_READ_SURFACE: &str = "\
+module shelf
+
+resource BookPage
+    required title: string
+
+resource Book
+    required title: string
+store ^books(id: int): Book
+
+surface Books from ^books
+    fields title
+    read bookPage as page
+
+pub fn seed()
+    var first: Book
+    first.title = \"Dune\"
+    transaction
+        ^books(1) = first
+
+pub fn bookPage(id: int): maybe BookPage
+    return BookPage(title: ^books(id).title ?? \"\")
 ";
 
     const PROJECT_HOST_ACTION_SURFACE: &str = "\
@@ -1992,6 +2435,29 @@ pub fn seed()
             .map(|action| action.operation_tag)
             .unwrap_or_else(|| {
                 panic!("surface `{surface_name}` exposes action `{alias}` operation tag")
+            })
+    }
+
+    fn checker_computed_read_operation_tag(
+        program: &CheckedProgram,
+        surface_name: &str,
+        alias: &str,
+    ) -> String {
+        let surface = program
+            .facts
+            .surfaces()
+            .iter()
+            .find(|surface| surface.name == surface_name)
+            .unwrap_or_else(|| panic!("surface `{surface_name}` is present"));
+        let computed_read = surface
+            .computed_reads
+            .iter()
+            .find(|computed_read| computed_read.alias == alias)
+            .unwrap_or_else(|| panic!("surface `{surface_name}` has computed read `{alias}`"));
+        SurfaceComputedReadOperationDescriptor::from_computed_read(program, surface, computed_read)
+            .map(|computed_read| computed_read.operation_tag)
+            .unwrap_or_else(|| {
+                panic!("surface `{surface_name}` exposes computed read `{alias}` operation tag")
             })
     }
 
@@ -2564,13 +3030,13 @@ pub fn seed()
         assert_eq!(parameter.name, "title");
         assert_eq!(
             parameter.shape,
-            SurfaceActionArgumentShapeJson::Scalar {
+            SurfaceCallableArgumentShapeJson::Scalar {
                 scalar: "string".into()
             }
         );
         assert_eq!(
             action.return_value,
-            Some(SurfaceActionArgumentShapeJson::Scalar {
+            Some(SurfaceCallableArgumentShapeJson::Scalar {
                 scalar: "string".into()
             })
         );
@@ -2735,6 +3201,71 @@ pub fn seed()
     }
 
     #[test]
+    fn surface_abi_json_includes_computed_read_descriptors() {
+        let (program, _runtime) = checked_surface_program(SURFACE_COMPUTED_READ);
+        let abi = SurfaceAbiJson::from_program(&program);
+        let books = abi
+            .surfaces
+            .iter()
+            .find(|surface| surface.name == "Books")
+            .expect("Books surface");
+        let [computed] = books.computed_reads.as_slice() else {
+            panic!(
+                "expected one computed read, got {:#?}",
+                books.computed_reads
+            );
+        };
+
+        assert_eq!(computed.profile_version, "surface.computed_read.v1");
+        assert_eq!(computed.alias, "page");
+        assert!(computed.operation_tag.starts_with("sha256:"));
+        assert_eq!(computed.callable.identity.canonical_name, "test::bookPage");
+        assert_eq!(
+            computed.callable.result.presence,
+            SurfaceComputedReadPresenceJson::MaybePresent
+        );
+        let Some(SurfaceComputedReadValueShapeJson::Resource {
+            resource_catalog_id,
+            fields,
+            ..
+        }) = &computed.callable.result.value
+        else {
+            panic!("expected resource result: {computed:#?}");
+        };
+        assert!(resource_catalog_id.starts_with("cat_"));
+        assert_eq!(fields.len(), 1);
+        assert_eq!(fields[0].render_label, "title");
+        assert!(computed.cost_shape.point_reads > 0);
+    }
+
+    #[test]
+    fn surface_route_manifest_and_catalog_include_computed_read_routes() {
+        let (program, _runtime) = checked_surface_program(SURFACE_COMPUTED_READ);
+        let abi = SurfaceAbiJson::from_program(&program);
+        let catalog = SurfaceOperationCatalog::from_abi(&abi).expect("operation catalog");
+        let manifest = SurfaceRouteManifestJson::from_abi(&abi);
+        let books = abi
+            .surfaces
+            .iter()
+            .find(|surface| surface.name == "Books")
+            .expect("Books surface");
+        let computed = books.computed_reads.first().expect("computed read");
+
+        assert_eq!(
+            catalog.kind(&computed.operation_tag),
+            Some(SurfaceOperationKind::ComputedRead)
+        );
+        let route = manifest
+            .routes
+            .iter()
+            .find(|route| route.operation_tag == computed.operation_tag)
+            .expect("computed-read route");
+        assert_eq!(route.alias, "page");
+        assert_eq!(route.request, SurfaceRouteRequestJson::ComputedRead);
+        assert!(route.path.starts_with("/surface/v1/read/"));
+    }
+
+    #[test]
     fn surface_route_manifest_uses_curated_stable_abi() {
         let (program, _runtime) = checked_surface_program(DUPLICATE_READ_TAG_SURFACES);
         let abi = SurfaceAbiJson::from_program(&program);
@@ -2866,6 +3397,33 @@ pub fn seed()
             assert_eq!(binding["request_kind"], kind.operation_request_kind());
             assert_eq!(binding["result_kind"], kind.operation_result_kind());
         }
+    }
+
+    #[test]
+    fn client_ts_renders_computed_read_methods() {
+        let (program, _runtime) = checked_surface_program(SURFACE_COMPUTED_READ);
+        let abi = SurfaceAbiJson::from_program(&program);
+        let manifest = SurfaceRouteManifestJson::from_abi(&abi);
+
+        let client = render_typescript_client(&abi, &manifest).expect("typescript client renders");
+
+        assert!(
+            client.contains("type SurfaceComputedReadRequestJson = { arguments: unknown[] };"),
+            "{client}"
+        );
+        assert!(
+            client.contains("\"page\": (request: SurfaceComputedReadRequestJson)"),
+            "{client}"
+        );
+        let computed_route = manifest
+            .routes
+            .iter()
+            .find(|route| route.request == SurfaceRouteRequestJson::ComputedRead)
+            .expect("computed-read route");
+        let bindings = client_binding_constants(&client);
+        let binding = client_binding_for_tag(&bindings, &computed_route.operation_tag);
+        assert_eq!(binding["request_kind"], "computed_read");
+        assert_eq!(binding["result_kind"], "computed_read");
     }
 
     #[test]
@@ -3026,6 +3584,11 @@ pub fn seed()
             "request": { "arguments": [] }
         }))
         .expect("action body parses");
+        let computed_read = serde_json::from_value::<SurfaceOperationRequestBodyJson>(json!({
+            "kind": "computed_read",
+            "request": { "arguments": [] }
+        }))
+        .expect("computed read body parses");
 
         let cases = [
             (
@@ -3038,6 +3601,7 @@ pub fn seed()
             (SurfaceOperationKind::SingletonUpdate, singleton_update),
             (SurfaceOperationKind::PointUpdate, point_update),
             (SurfaceOperationKind::Action, action),
+            (SurfaceOperationKind::ComputedRead, computed_read),
         ];
         for (kind, body) in cases {
             assert!(
@@ -3675,6 +4239,55 @@ pub fn seed()
     }
 
     #[test]
+    fn surface_operation_envelope_dispatches_computed_read_on_read_only_session() {
+        let root = TempProject::new("marrow-json-project-surface-computed-read");
+        write_native_project(&root, PROJECT_COMPUTED_READ_SURFACE);
+        seed_project(&root, "shelf::seed");
+
+        let session =
+            ProjectSurfaceReadSession::open(root.path()).expect("open read-only surface session");
+        let computed_tag = checker_computed_read_operation_tag(session.program(), "Books", "page");
+
+        let response = crate::surface::execute_project_surface_operation_read_only(
+            &session,
+            &SurfaceOperationRequestJson {
+                profile_version: SURFACE_OPERATION_PROFILE_VERSION.into(),
+                operation_tag: computed_tag.clone(),
+                request: SurfaceOperationRequestBodyJson::ComputedRead {
+                    request: SurfaceComputedReadRequestJson {
+                        arguments: vec![json!({
+                            "name": "id",
+                            "value": { "kind": "int", "value": "1" }
+                        })],
+                    },
+                },
+            },
+        )
+        .expect("operation envelope executes computed read");
+
+        assert_eq!(response.operation_tag, computed_tag);
+        let SurfaceOperationResultJson::ComputedRead { result } = response.result else {
+            panic!("expected computed-read result: {response:?}");
+        };
+        assert_eq!(result.output, "");
+        let Some(SurfaceComputedReadValueJson::Resource { fields, .. }) = result.value else {
+            panic!("expected resource value: {result:?}");
+        };
+        let title = fields
+            .iter()
+            .find(|field| field.render_label == "title")
+            .expect("title field");
+        assert_eq!(title.render_label, "title");
+        assert!(title.member_catalog_id.starts_with("cat_"));
+        assert_eq!(
+            title.value,
+            Some(SurfaceComputedReadValueJson::String {
+                value: "Dune".into(),
+            })
+        );
+    }
+
+    #[test]
     fn surface_operation_envelope_can_execute_actions_with_explicit_host_capabilities() {
         let root = TempProject::new("marrow-json-project-surface-action-host");
         write_native_project(&root, PROJECT_HOST_ACTION_SURFACE);
@@ -4036,6 +4649,29 @@ pub fn seed()
             action_wire
         );
 
+        let computed_read_wire = json!({
+            "profile_version": SURFACE_OPERATION_PROFILE_VERSION,
+            "operation_tag": "tag-computed",
+            "request": {
+                "kind": "computed_read",
+                "request": {
+                    "arguments": [
+                        {
+                            "name": "id",
+                            "value": { "kind": "int", "value": "1" }
+                        }
+                    ]
+                }
+            }
+        });
+        let computed_read_request =
+            serde_json::from_value::<SurfaceOperationRequestJson>(computed_read_wire.clone())
+                .expect("computed-read operation request wire shape decodes");
+        assert_eq!(
+            serde_json::to_value(&computed_read_request).expect("computed-read request encodes"),
+            computed_read_wire
+        );
+
         let response = crate::surface::SurfaceOperationResponseJson {
             profile_version: SURFACE_OPERATION_PROFILE_VERSION.into(),
             operation_tag: "tag-2".into(),
@@ -4072,6 +4708,50 @@ pub fn seed()
                     "result": {
                         "output": "",
                         "value": { "kind": "string", "value": "Dune" }
+                    }
+                }
+            })
+        );
+
+        let computed_response = crate::surface::SurfaceOperationResponseJson {
+            profile_version: SURFACE_OPERATION_PROFILE_VERSION.into(),
+            operation_tag: "tag-computed".into(),
+            result: SurfaceOperationResultJson::ComputedRead {
+                result: crate::surface::SurfaceComputedReadInvocationResultJson {
+                    output: String::new(),
+                    value: Some(SurfaceComputedReadValueJson::Resource {
+                        resource_catalog_id: "cat_00000000000000000000000000000002".into(),
+                        fields: vec![SurfaceComputedReadFieldValueJson {
+                            render_label: "title".into(),
+                            member_catalog_id: "cat_00000000000000000000000000000003".into(),
+                            required: true,
+                            value: Some(SurfaceComputedReadValueJson::String {
+                                value: "Dune".into(),
+                            }),
+                        }],
+                    }),
+                },
+            },
+        };
+        assert_eq!(
+            serde_json::to_value(computed_response).expect("computed-read response encodes"),
+            json!({
+                "profile_version": SURFACE_OPERATION_PROFILE_VERSION,
+                "operation_tag": "tag-computed",
+                "result": {
+                    "kind": "computed_read",
+                    "result": {
+                        "output": "",
+                        "value": {
+                            "kind": "resource",
+                            "resource_catalog_id": "cat_00000000000000000000000000000002",
+                            "fields": [{
+                                "render_label": "title",
+                                "member_catalog_id": "cat_00000000000000000000000000000003",
+                                "required": true,
+                                "value": { "kind": "string", "value": "Dune" }
+                            }]
+                        }
                     }
                 }
             })

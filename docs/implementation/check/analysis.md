@@ -79,6 +79,12 @@ from the checked program or snapshot:
   descriptor is checker-owned, reuses `entry.invoke.v1` identity, parameter
   shapes, and return shape from the resolved public function, and is suppressed
   for source-only surfaces.
+- `AnalysisSnapshot::surface_computed_read_operations()` iterates
+  snapshot-bound `SurfaceComputedReadOperationAnalysis` views for declared
+  computed reads. The descriptor is checker-owned, uses
+  `surface.computed_read.v1`, reuses shared entry parameter/result shapes,
+  carries the computed read's checked cost shape, and is suppressed for
+  source-only surfaces.
 - `CheckedFacts::store_indices` carries `StoreIndexFact::usage` as a
   `StoreIndexUsageBitmap`; every current index fact reports no observed
   read/write use.
@@ -203,9 +209,10 @@ add only transport availability and request-envelope concerns around those DTOs.
 - `CatalogDeclaration` (`analysis/catalog_nav.rs`, re-exported from
   `analysis.rs`) — catalog-id declarations for editor navigation, keyed with
   `CatalogEntryKind` and exact declaration-name spans.
-- `SurfaceReadOperationAnalysis` / `SurfaceUpdateOperationAnalysis`
-  (`analysis.rs`) — snapshot-bound views over checked surface operations plus
-  their source files, with `stable_descriptor()` for accepted-catalog read and
+- `SurfaceReadOperationAnalysis` / `SurfaceComputedReadOperationAnalysis` /
+  `SurfaceUpdateOperationAnalysis` (`analysis.rs`) — snapshot-bound views over
+  checked surface operations plus their source files, with
+  `stable_descriptor()` for accepted-catalog read, computed-read, and
   sparse-update descriptors when the surface is stable.
 - `CheckedReadOnlyExpression` (`program.rs`) — a source-digest-bound checked
   expression handle for runtime point evaluation.

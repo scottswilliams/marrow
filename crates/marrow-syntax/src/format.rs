@@ -527,6 +527,16 @@ fn format_surface_item(item: &SurfaceItem, level: usize) -> String {
                 format!("{pad}action {function} as {alias}")
             }
         }
+        SurfaceItem::Read {
+            function, alias, ..
+        } => {
+            let function = function.join("::");
+            if function.rsplit("::").next() == Some(alias.as_str()) {
+                format!("{pad}read {function}")
+            } else {
+                format!("{pad}read {function} as {alias}")
+            }
+        }
         SurfaceItem::Create { names, .. } => {
             format!("{pad}create {}", format_surface_name_list(names))
         }

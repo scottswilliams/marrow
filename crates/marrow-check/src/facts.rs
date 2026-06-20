@@ -1333,6 +1333,7 @@ pub struct SurfaceFact {
     pub delete: Option<SurfaceDeleteFact>,
     pub collections: Vec<SurfaceCollectionFact>,
     pub actions: Vec<SurfaceActionFact>,
+    pub computed_reads: Vec<SurfaceComputedReadFact>,
     pub read_operations: Vec<SurfaceReadOperationFact>,
     pub catalog_status: SurfaceCatalogStatus,
     pub span: SourceSpan,
@@ -1369,6 +1370,14 @@ pub struct SurfaceCollectionFact {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SurfaceActionFact {
     pub alias: String,
+    pub function: CheckedFunctionRef,
+    pub span: SourceSpan,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SurfaceComputedReadFact {
+    pub alias: String,
+    pub path: String,
     pub function: CheckedFunctionRef,
     pub span: SourceSpan,
 }

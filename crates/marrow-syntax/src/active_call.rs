@@ -443,6 +443,7 @@ fn declaration_syntax_diagnostic_contains(parsed: &ParsedSource, byte: usize) ->
                             | ExpectedSyntax::SurfaceHeader
                             | ExpectedSyntax::SurfaceItem
                             | ExpectedSyntax::SurfaceName
+                            | ExpectedSyntax::SurfaceRead
                             | ExpectedSyntax::SurfaceStore
                             | ExpectedSyntax::TransformBody,
                     ))

@@ -2,13 +2,14 @@ use marrow_store::cell::CatalogId;
 
 use crate::entry_abi::{
     ENTRY_PROTOCOL_TAG_VERSION, EntryArgumentShape, EntryFunctionSurfaceDescriptor, EntryIdentity,
-    EntryParameter, EntrySurfaceProfile, surface_value_as_action_argument,
+    EntryParameter, EntryResourceResultField, EntryResultDescriptor, EntrySurfaceProfile,
+    EntrySurfaceValueShape, surface_value_as_action_argument,
 };
 use crate::facts::{
-    ResourceMemberFact, ResourceMemberId, ResourceMemberKind, StoreFact, StoreIndexFact,
-    StoreIndexId, StoreIndexKeySource, StoredValueMeaning, SurfaceActionFact, SurfaceCatalogStatus,
-    SurfaceFact, SurfaceFieldFact, SurfaceReadFootprint, SurfaceReadOperationFact,
-    SurfaceReadOperationKind,
+    EntryCostShapeFact, ResourceMemberFact, ResourceMemberId, ResourceMemberKind, StoreFact,
+    StoreIndexFact, StoreIndexId, StoreIndexKeySource, StoredValueMeaning, SurfaceActionFact,
+    SurfaceCatalogStatus, SurfaceComputedReadFact, SurfaceFact, SurfaceFieldFact,
+    SurfaceReadFootprint, SurfaceReadOperationFact, SurfaceReadOperationKind, WorkShapeClass,
 };
 use crate::program::CheckedProgram;
 
@@ -16,6 +17,7 @@ pub const SURFACE_READ_OPERATION_TAG_VERSION: &str = "surface.read.v1";
 pub const SURFACE_UPDATE_OPERATION_TAG_VERSION: &str = "surface.update.v1";
 pub const SURFACE_CREATE_OPERATION_TAG_VERSION: &str = "surface.create.v1";
 pub const SURFACE_DELETE_OPERATION_TAG_VERSION: &str = "surface.delete.v1";
+pub const SURFACE_COMPUTED_READ_OPERATION_TAG_VERSION: &str = "surface.computed_read.v1";
 
 #[derive(Debug, Clone)]
 pub struct SurfaceActionOperationDescriptor {
@@ -25,6 +27,25 @@ pub struct SurfaceActionOperationDescriptor {
     pub identity: EntryIdentity,
     pub parameters: Vec<EntryParameter>,
     pub return_value: Option<EntryArgumentShape>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SurfaceComputedReadOperationDescriptor {
+    pub profile_version: &'static str,
+    pub operation_tag: String,
+    pub alias: String,
+    pub callable: EntryFunctionSurfaceDescriptor,
+    pub cost_shape: SurfaceComputedReadCostShape,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SurfaceComputedReadCostShape {
+    pub work_shape: WorkShapeClass,
+    pub point_reads: usize,
+    pub range_scans: usize,
+    pub writes: usize,
+    pub index_entry_touches: usize,
+    pub commit_points: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -339,14 +360,72 @@ impl SurfaceActionOperationDescriptor {
     }
 }
 
+impl SurfaceComputedReadOperationDescriptor {
+    pub fn from_computed_read(
+        program: &CheckedProgram,
+        surface: &SurfaceFact,
+        computed_read: &SurfaceComputedReadFact,
+    ) -> Option<Self> {
+        require_stable_surface(surface)?;
+        let requested_name = canonical_function_name(program, computed_read.function)?;
+        let callable = EntryFunctionSurfaceDescriptor::from_function_ref(
+            program,
+            &requested_name,
+            computed_read.function,
+            EntrySurfaceProfile::ComputedRead,
+        )?;
+        let cost_shape = computed_read_cost_shape(program, computed_read.function)?;
+        let operation_tag = surface_computed_read_operation_tag(&callable, &cost_shape);
+        Some(Self {
+            profile_version: SURFACE_COMPUTED_READ_OPERATION_TAG_VERSION,
+            operation_tag,
+            alias: computed_read.alias.clone(),
+            callable,
+            cost_shape,
+        })
+    }
+}
+
+impl From<EntryCostShapeFact> for SurfaceComputedReadCostShape {
+    fn from(shape: EntryCostShapeFact) -> Self {
+        Self {
+            work_shape: shape.work_shape,
+            point_reads: shape.point_reads,
+            range_scans: shape.range_scans,
+            writes: shape.writes,
+            index_entry_touches: shape.index_entry_touches,
+            commit_points: shape.commit_points,
+        }
+    }
+}
+
 fn canonical_action_name(program: &CheckedProgram, action: &SurfaceActionFact) -> Option<String> {
-    let function = program.facts.function_for_ref(action.function)?;
+    canonical_function_name(program, action.function)
+}
+
+fn canonical_function_name(
+    program: &CheckedProgram,
+    function_ref: crate::CheckedFunctionRef,
+) -> Option<String> {
+    let function = program.facts.function_for_ref(function_ref)?;
     let module = program.facts.modules().get(function.module.0 as usize)?;
     if module.name.is_empty() {
         Some(function.name.clone())
     } else {
         Some(format!("{}::{}", module.name, function.name))
     }
+}
+
+fn computed_read_cost_shape(
+    program: &CheckedProgram,
+    function_ref: crate::CheckedFunctionRef,
+) -> Option<SurfaceComputedReadCostShape> {
+    let function = program.facts.function_id_for_ref(function_ref)?;
+    program
+        .entry_cost_shapes()
+        .into_iter()
+        .find(|shape| shape.function == function)
+        .map(SurfaceComputedReadCostShape::from)
 }
 
 pub(crate) fn surface_read_operation_tag(
@@ -389,6 +468,15 @@ pub(crate) fn surface_delete_operation_tag(
     let mut payload = String::new();
     push_delete_operation_payload(program, &mut payload, store)?;
     Some(marrow_project::sha256_digest(payload.as_bytes()))
+}
+
+fn surface_computed_read_operation_tag(
+    callable: &EntryFunctionSurfaceDescriptor,
+    cost_shape: &SurfaceComputedReadCostShape,
+) -> String {
+    let mut payload = String::new();
+    push_computed_read_operation_payload(&mut payload, callable, cost_shape);
+    marrow_project::sha256_digest(payload.as_bytes())
 }
 
 fn descriptor_kind(
@@ -836,6 +924,155 @@ fn push_delete_operation_payload(
         },
     );
     Some(())
+}
+
+fn push_computed_read_operation_payload(
+    payload: &mut String,
+    callable: &EntryFunctionSurfaceDescriptor,
+    cost_shape: &SurfaceComputedReadCostShape,
+) {
+    push_tag_part(
+        payload,
+        "version",
+        SURFACE_COMPUTED_READ_OPERATION_TAG_VERSION,
+    );
+    push_tag_part(payload, "callable.entry_tag", &callable.identity.entry_tag);
+    push_tag_part(
+        payload,
+        "callable.canonical_name",
+        &callable.identity.canonical_name,
+    );
+    push_tag_part(
+        payload,
+        "callable.source_digest",
+        &callable.identity.source_digest,
+    );
+    push_tag_part(
+        payload,
+        "callable.read_only_context_digest",
+        &callable.identity.read_only_context_digest,
+    );
+    push_result_tag_parts(payload, &callable.result);
+    push_cost_shape_tag_parts(payload, cost_shape);
+}
+
+fn push_result_tag_parts(payload: &mut String, result: &EntryResultDescriptor) {
+    push_tag_part(
+        payload,
+        "result.presence",
+        match result.presence {
+            marrow_schema::ReturnPresence::Always => "always",
+            marrow_schema::ReturnPresence::MaybePresent => "maybe_present",
+        },
+    );
+    match &result.value {
+        Some(shape) => {
+            push_tag_part(payload, "result.value", "some");
+            push_entry_surface_value_tag_parts(payload, "result.value.shape", shape);
+        }
+        None => push_tag_part(payload, "result.value", "none"),
+    }
+}
+
+fn push_entry_surface_value_tag_parts(
+    payload: &mut String,
+    prefix: &str,
+    shape: &EntrySurfaceValueShape,
+) {
+    match shape {
+        EntrySurfaceValueShape::Scalar(scalar) => {
+            push_prefixed_tag_part(payload, prefix, "kind", "scalar");
+            push_prefixed_tag_part(payload, prefix, "scalar", scalar.name());
+        }
+        EntrySurfaceValueShape::Enum {
+            catalog_id,
+            members,
+            ..
+        } => {
+            push_prefixed_tag_part(payload, prefix, "kind", "enum");
+            push_prefixed_tag_part(payload, prefix, "catalog_id", catalog_id.as_str());
+            push_prefixed_tag_part(payload, prefix, "members.len", &members.len().to_string());
+            for member in members {
+                push_prefixed_tag_part(payload, prefix, "member", member.catalog_id.as_str());
+            }
+        }
+        EntrySurfaceValueShape::Identity {
+            store_catalog_id,
+            keys,
+            ..
+        } => {
+            push_prefixed_tag_part(payload, prefix, "kind", "identity");
+            push_prefixed_tag_part(payload, prefix, "store", store_catalog_id.as_str());
+            push_prefixed_tag_part(payload, prefix, "keys.len", &keys.len().to_string());
+            for key in keys {
+                push_prefixed_tag_part(payload, prefix, "key.scalar", key.scalar.name());
+            }
+        }
+        EntrySurfaceValueShape::Sequence(element) => {
+            push_prefixed_tag_part(payload, prefix, "kind", "sequence");
+            push_entry_surface_value_tag_parts(payload, &format!("{prefix}.element"), element);
+        }
+        EntrySurfaceValueShape::Resource {
+            resource_catalog_id,
+            fields,
+            ..
+        } => {
+            push_prefixed_tag_part(payload, prefix, "kind", "resource");
+            push_prefixed_tag_part(payload, prefix, "resource", resource_catalog_id.as_str());
+            push_prefixed_tag_part(payload, prefix, "fields.len", &fields.len().to_string());
+            for field in fields {
+                push_resource_result_field_tag_parts(payload, prefix, field);
+            }
+        }
+    }
+}
+
+fn push_resource_result_field_tag_parts(
+    payload: &mut String,
+    prefix: &str,
+    field: &EntryResourceResultField,
+) {
+    push_prefixed_tag_part(payload, prefix, "field", field.member_catalog_id.as_str());
+    push_prefixed_tag_part(
+        payload,
+        prefix,
+        "field.required",
+        if field.required { "true" } else { "false" },
+    );
+    push_entry_surface_value_tag_parts(payload, &format!("{prefix}.field.shape"), &field.shape);
+}
+
+fn push_cost_shape_tag_parts(payload: &mut String, cost_shape: &SurfaceComputedReadCostShape) {
+    push_tag_part(
+        payload,
+        "cost.work_shape",
+        match cost_shape.work_shape {
+            WorkShapeClass::ComputeOnly => "compute_only",
+            WorkShapeClass::ReadOnly => "read_only",
+            WorkShapeClass::WritesSavedData => "writes_saved_data",
+        },
+    );
+    push_tag_part(
+        payload,
+        "cost.point_reads",
+        &cost_shape.point_reads.to_string(),
+    );
+    push_tag_part(
+        payload,
+        "cost.range_scans",
+        &cost_shape.range_scans.to_string(),
+    );
+    push_tag_part(payload, "cost.writes", &cost_shape.writes.to_string());
+    push_tag_part(
+        payload,
+        "cost.index_entry_touches",
+        &cost_shape.index_entry_touches.to_string(),
+    );
+    push_tag_part(
+        payload,
+        "cost.commit_points",
+        &cost_shape.commit_points.to_string(),
+    );
 }
 
 fn push_index_tag_parts(

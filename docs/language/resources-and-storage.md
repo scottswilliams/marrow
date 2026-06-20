@@ -212,9 +212,11 @@ A `surface Name from ^root` declaration is a checked application contract over a
 existing store. It does not declare saved data, mint catalog identity, change the
 source digest for durable data, or alter backup, restore, or evolution
 obligations. The backing store, projected fields, generated write inputs,
-collection aliases, and action aliases resolve to existing checked facts.
+collection aliases, action aliases, and computed-read aliases resolve to
+existing checked facts.
 
-The initial checker contract admits only direct store-backed shapes:
+The initial checker contract admits direct store-backed shapes plus declared
+public-function reads:
 
 - `from ^root` resolves to one declared store root.
 - `fields` resolves each name to a top-level unkeyed field on the backing
@@ -244,11 +246,22 @@ The initial checker contract admits only direct store-backed shapes:
   sequences of scalars or enums. Resource trees, local trees, errors, unknown
   values, and unsupported sequence elements are ordinary function types but are
   not exported as surface action parameters or returns yet.
+- `read functionName` or `read module::functionName as alias` exposes a public
+  read-only Marrow function through the surface operation namespace. A bare read
+  target resolves only in the declaring module; cross-module targets must be
+  qualified, with ordinary import-alias expansion. Omitting `as` uses the
+  function leaf as the alias. Computed reads reuse the entry argument JSON shape,
+  require an explicit result value, and may return scalars, enums, identities,
+  scalar/enum sequences, or a plain resource result whose top-level fields are
+  scalar, enum, or identity leaves. A computed read is rejected if its effect
+  closure writes saved data, opens a transaction, calls a host-effecting
+  operation, throws, or performs an unindexed collection read.
 
-Generated operation names, collection aliases, and action aliases share one
-surface operation namespace. An alias such as `get`, `update`, or a duplicate
-collection/action alias rejects the surface before facts are minted. Field,
-create, and update payload names keep their existing payload namespaces.
+Generated operation names, collection aliases, action aliases, and computed-read
+aliases share one surface operation namespace. An alias such as `get`, `update`,
+or a duplicate collection/action/read alias rejects the surface before facts are
+minted. Field, create, and update payload names keep their existing payload
+namespaces.
 
 The checker records typed surface facts over store, member, and index identities
 and derives read-operation facts over the checked backing-record footprint and
@@ -263,26 +276,30 @@ application surface facts.
 
 Those facts are transport-neutral: opaque cursor-token codecs, TypeScript
 names, generated clients, and remote serving are boundary profiles layered
-later. Stable surface reads, creates, sparse updates, deletes, and actions have
+later. Stable surface reads, computed reads, creates, sparse updates, deletes,
+and actions have
 checker-owned descriptors and operation tags. `marrow-json` can render a
 `surface.route.v1` manifest from those descriptors, using operation-tag paths
 and aliases as labels. `marrow surface serve` is the local loopback serving
 profile over manifest routes and `surface.operation.v1` envelopes: default mode
-serves read routes only, while `--write` also serves create, sparse-update,
-delete, and action routes through the writable project surface session. The
+serves read routes, including computed reads, while `--write` also serves
+create, sparse-update, delete, and action routes through the writable project
+surface session. The
 manifest is still not a generated-client contract by itself. Read descriptors
 carry the generated `get` alias or declared collection alias as render metadata;
-action descriptors carry their declared action alias. Create, update, and delete
-descriptors use generated operation labels. A surface remains source-only until
+computed-read and action descriptors carry their declared aliases. Create,
+update, and delete descriptors use generated operation labels. A surface remains
+source-only until
 its backing store, projected fields, create fields, update fields, collection
-indexes, and every action parameter and return durable type have accepted
-catalog IDs.
+indexes, and every action/computed-read parameter and return durable type have
+accepted catalog IDs.
 `marrow-run` exposes admitted transport-neutral node and collection read
 executors over stable surface facts, plus an unstable read-only project session
 that opens an already accepted native store and admits those reads by operation
 tag without creating, freezing, migrating, or repairing data. It also exposes a
-writable project surface session that admits reads, creates, sparse updates,
-deletes, and actions by operation tag without exposing the store handle. Creates
+writable project surface session that admits reads, computed reads, creates,
+sparse updates, deletes, and actions by operation tag without exposing the store
+handle. Creates
 require an exact declared field body, use caller-supplied identity for keyed
 stores, reject existing records instead of replacing them, commit through managed
 write/index maintenance, and return the public projection. Sparse updates
@@ -295,11 +312,17 @@ and return values are language semantics, not a generated CRUD side channel.
 Surface action JSON results use the surface value DTO with accepted catalog IDs
 for enums and identities rather than checker-local runtime IDs or source root
 labels.
+Computed reads execute through the same checked entry invocation machinery in a
+read-only effect profile. Their JSON results carry captured output plus an
+optional computed-read value DTO; resource results carry the accepted resource
+catalog ID and accepted resource-member catalog IDs for each declared result
+field.
 
 `marrow-json` renders check-output surface ABI descriptors, decodes checked read
 request-parameter DTOs, create request-body DTOs, sparse update request-body
-DTOs, delete request DTOs, and action argument DTOs, and renders
-already-executed read/create/action results as DTOs with accepted catalog IDs
+DTOs, delete request DTOs, action argument DTOs, and computed-read argument
+DTOs, and renders already-executed read, create, action, and computed-read
+results as DTOs with accepted catalog IDs
 and typed values. Runtime output uses accepted store and resource-member catalog
 IDs as semantic identity; enum and identity field values use accepted catalog
 IDs as well. Source names remain render labels. A stable exported surface

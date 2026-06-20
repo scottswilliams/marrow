@@ -387,6 +387,11 @@ pub enum SurfaceItem {
         alias: String,
         span: SourceSpan,
     },
+    Read {
+        function: Vec<String>,
+        alias: String,
+        span: SourceSpan,
+    },
     Create {
         names: Vec<String>,
         span: SourceSpan,
@@ -406,6 +411,7 @@ impl SurfaceItem {
             Self::Fields { span, .. }
             | Self::Collection { span, .. }
             | Self::Action { span, .. }
+            | Self::Read { span, .. }
             | Self::Create { span, .. }
             | Self::Update { span, .. }
             | Self::Delete { span } => *span,

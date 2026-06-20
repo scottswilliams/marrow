@@ -208,10 +208,10 @@ marrow surface serve [--write] [--cors-origin <loopback-origin>] [--addr <loopba
 
 Run the local HTTP serving profile for checked application surfaces. By
 default the command opens the project through `ProjectSurfaceReadSession` and
-serves read routes only. With `--write`, it opens `ProjectSurfaceSession` and
-also exposes create, sparse-update, delete, and action routes. Both modes require an already
-accepted native store and never create, freeze, migrate, repair, or auto-apply
-saved data.
+serves read routes, including computed reads. With `--write`, it opens
+`ProjectSurfaceSession` and also exposes create, sparse-update, delete, and
+action routes. Both modes require an already accepted native store and never
+create, freeze, migrate, repair, or auto-apply saved data.
 
 - The listener binds only loopback addresses. The default is
   `127.0.0.1:8080`; tests and tooling can pass `--addr 127.0.0.1:0` to let the
@@ -225,7 +225,8 @@ saved data.
   until the process exits.
 - The active route set is derived from the same `surface.route.v1` manifest
   exported by `marrow check --format json|jsonl`. Default mode serves only
-  `/surface/v1/read/<operation-tag>` rows; `--write` additionally serves
+  `/surface/v1/read/<operation-tag>` rows, including computed reads; `--write`
+  additionally serves
   `/surface/v1/create/<operation-tag>`,
   `/surface/v1/update/<operation-tag>` and
   `/surface/v1/delete/<operation-tag>`, and
@@ -237,6 +238,10 @@ saved data.
   environment, logging, filesystem, or other host capabilities fail closed as
   `surface.action`; explicit-host action execution is a linked-Rust embedding
   API, not this HTTP profile.
+- Served computed reads are public read-only functions checked to have no writes,
+  transactions, host effects, throws, or unindexed collection reads. Argument
+  decode failures use `surface.request`; execution or result-rendering failures
+  use `surface.computed`.
 - Operation requests must be HTTP/1.0 or HTTP/1.1 `POST` with
   `Content-Type: application/json`, exactly one `Content-Length`, no
   `Transfer-Encoding`, bounded headers/body, no query string, and an exact

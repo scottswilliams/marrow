@@ -24,8 +24,8 @@ use crate::evolution::{
 };
 use crate::host::{Host, Nondeterminism, StepHook, SystemNondeterminism};
 use crate::surface::{
-    SurfaceActionInvocation, SurfaceCreate, SurfaceDelete, SurfaceReadError, SurfaceReadOperation,
-    SurfaceUpdate,
+    SurfaceActionInvocation, SurfaceComputedReadInvocation, SurfaceCreate, SurfaceDelete,
+    SurfaceReadError, SurfaceReadOperation, SurfaceUpdate,
 };
 use crate::value::{RunOutput, RunOutputSink};
 
@@ -646,6 +646,22 @@ impl ProjectSurfaceReadSession {
     ) -> Result<SurfaceReadOperation<'_>, SurfaceReadError> {
         SurfaceReadOperation::admit_by_operation_tag(&self.program, &self.store, operation_tag)
     }
+
+    pub fn admit_computed_read_by_operation_tag(
+        &self,
+        operation_tag: &str,
+    ) -> Result<SurfaceComputedReadInvocation, SurfaceReadError> {
+        SurfaceComputedReadInvocation::admit_by_operation_tag(&self.program, operation_tag)
+    }
+
+    pub fn invoke_computed_read(
+        &self,
+        computed_read: &SurfaceComputedReadInvocation,
+        arguments: Vec<EntryArgument>,
+        output: &mut dyn RunOutputSink,
+    ) -> Result<RunOutput, ProjectInvokeError> {
+        invoke_computed_read(&self.program, &self.store, computed_read, arguments, output)
+    }
 }
 
 impl ProjectSurfaceSession {
@@ -704,6 +720,13 @@ impl ProjectSurfaceSession {
         SurfaceActionInvocation::admit_by_operation_tag(&self.program, operation_tag)
     }
 
+    pub fn admit_computed_read_by_operation_tag(
+        &self,
+        operation_tag: &str,
+    ) -> Result<SurfaceComputedReadInvocation, SurfaceReadError> {
+        SurfaceComputedReadInvocation::admit_by_operation_tag(&self.program, operation_tag)
+    }
+
     pub fn invoke_action(
         &self,
         action: &SurfaceActionInvocation,
@@ -719,6 +742,33 @@ impl ProjectSurfaceSession {
         let call = CheckedEntryCall::from_protocol_invocation(&runtime, &invocation)?;
         Ok(run_entry_with_host(&self.store, host, &call, output)?)
     }
+
+    pub fn invoke_computed_read(
+        &self,
+        computed_read: &SurfaceComputedReadInvocation,
+        arguments: Vec<EntryArgument>,
+        output: &mut dyn RunOutputSink,
+    ) -> Result<RunOutput, ProjectInvokeError> {
+        invoke_computed_read(&self.program, &self.store, computed_read, arguments, output)
+    }
+}
+
+fn invoke_computed_read(
+    program: &CheckedProgram,
+    store: &TreeStore,
+    computed_read: &SurfaceComputedReadInvocation,
+    arguments: Vec<EntryArgument>,
+    output: &mut dyn RunOutputSink,
+) -> Result<RunOutput, ProjectInvokeError> {
+    let computed_read = SurfaceComputedReadInvocation::admit_by_operation_tag(
+        program,
+        computed_read.operation_tag(),
+    )
+    .map_err(|error| ProjectInvokeError::Runtime(error.into_runtime_error()))?;
+    let invocation = computed_read.invocation(arguments);
+    let runtime = program.runtime();
+    let call = CheckedEntryCall::from_protocol_invocation(&runtime, &invocation)?;
+    Ok(run_entry_with_host(store, &Host::new(), &call, output)?)
 }
 
 fn invoke_store(

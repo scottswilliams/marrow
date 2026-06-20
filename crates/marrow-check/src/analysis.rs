@@ -16,10 +16,11 @@ use crate::{
     CHECK_READ_ONLY_EXPRESSION_CONTEXT, CheckDiagnostic, CheckReport, CheckedDebugExpression,
     CheckedFile, CheckedModule, CheckedProgram, DebugSourceIdentity, DefaultEntryProblem,
     DiagnosticPayload, IO_READ, ProjectSources, SCHEMA_DUPLICATE_ROOT_OWNER, SurfaceActionFact,
-    SurfaceActionOperationDescriptor, SurfaceCatalogStatus, SurfaceCreateOperationDescriptor,
-    SurfaceDeleteFact, SurfaceDeleteOperationDescriptor, SurfaceFact,
-    SurfaceReadOperationDescriptor, SurfaceReadOperationFact, SurfaceUpdateOperationDescriptor,
-    TestResolutionSuppression, check_file_source, enum_visibility, module_path_error, read_source,
+    SurfaceActionOperationDescriptor, SurfaceCatalogStatus, SurfaceComputedReadFact,
+    SurfaceComputedReadOperationDescriptor, SurfaceCreateOperationDescriptor, SurfaceDeleteFact,
+    SurfaceDeleteOperationDescriptor, SurfaceFact, SurfaceReadOperationDescriptor,
+    SurfaceReadOperationFact, SurfaceUpdateOperationDescriptor, TestResolutionSuppression,
+    check_file_source, enum_visibility, module_path_error, read_source,
 };
 
 mod catalog_nav;
@@ -194,6 +195,36 @@ impl AnalysisSnapshot {
             })
     }
 
+    pub fn surface_computed_read_operations(
+        &self,
+    ) -> impl Iterator<Item = SurfaceComputedReadOperationAnalysis<'_>> {
+        let modules = self.program.facts.modules();
+        self.program
+            .facts
+            .surfaces()
+            .iter()
+            .flat_map(move |surface| {
+                let file = modules
+                    .get(surface.module.0 as usize)
+                    .map(|module| module.source_file.as_path());
+                debug_assert!(
+                    file.is_some(),
+                    "checked surface module id belongs to the analyzed facts"
+                );
+                surface
+                    .computed_reads
+                    .iter()
+                    .filter_map(move |computed_read| {
+                        file.map(|file| SurfaceComputedReadOperationAnalysis {
+                            program: &self.program,
+                            file,
+                            surface,
+                            computed_read,
+                        })
+                    })
+            })
+    }
+
     pub fn use_sites(&self) -> &[UseSite] {
         &self.use_sites
     }
@@ -346,6 +377,29 @@ impl SurfaceActionOperationAnalysis<'_> {
                 self.surface,
                 self.action,
             ),
+            SurfaceCatalogStatus::SourceOnly(_) => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct SurfaceComputedReadOperationAnalysis<'a> {
+    program: &'a CheckedProgram,
+    pub file: &'a Path,
+    pub surface: &'a SurfaceFact,
+    pub computed_read: &'a SurfaceComputedReadFact,
+}
+
+impl SurfaceComputedReadOperationAnalysis<'_> {
+    pub fn stable_descriptor(&self) -> Option<SurfaceComputedReadOperationDescriptor> {
+        match self.surface.catalog_status {
+            SurfaceCatalogStatus::Stable => {
+                SurfaceComputedReadOperationDescriptor::from_computed_read(
+                    self.program,
+                    self.surface,
+                    self.computed_read,
+                )
+            }
             SurfaceCatalogStatus::SourceOnly(_) => None,
         }
     }
@@ -771,6 +825,7 @@ pub(crate) fn analyze_source_project(
     );
     crate::evolution::check_transform_effects(&program, &mut report.diagnostics);
     crate::presence::check_presence(&mut program, &mut report.diagnostics);
+    crate::surface::check_computed_read_effects(&mut program, &mut report.diagnostics);
     check_default_entry(project_root, config, &program, &mut report.diagnostics);
     program.rebuild_durable_digest_renderings(parsed_files.iter().filter_map(|(file, parsed)| {
         parsed_sources

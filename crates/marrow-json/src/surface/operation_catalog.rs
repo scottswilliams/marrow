@@ -25,6 +25,7 @@ pub enum SurfaceOperationKind {
     SingletonDelete,
     PointDelete,
     Action,
+    ComputedRead,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -57,7 +58,11 @@ impl SurfaceOperationKind {
     pub fn is_read(self) -> bool {
         matches!(
             self,
-            Self::SingletonRead | Self::PointRead | Self::Page | Self::UniqueLookup
+            Self::SingletonRead
+                | Self::PointRead
+                | Self::Page
+                | Self::UniqueLookup
+                | Self::ComputedRead
         )
     }
 
@@ -113,14 +118,20 @@ impl SurfaceOperationKind {
                     SurfaceOperationRequestBodyJson::PointDelete { .. }
                 )
                 | (Self::Action, SurfaceOperationRequestBodyJson::Action { .. })
+                | (
+                    Self::ComputedRead,
+                    SurfaceOperationRequestBodyJson::ComputedRead { .. }
+                )
         )
     }
 
     pub fn route_prefix(self) -> &'static str {
         match self {
-            Self::SingletonRead | Self::PointRead | Self::Page | Self::UniqueLookup => {
-                SURFACE_READ_ROUTE_PREFIX
-            }
+            Self::SingletonRead
+            | Self::PointRead
+            | Self::Page
+            | Self::UniqueLookup
+            | Self::ComputedRead => SURFACE_READ_ROUTE_PREFIX,
             Self::SingletonUpdate | Self::PointUpdate => SURFACE_UPDATE_ROUTE_PREFIX,
             Self::SingletonCreate | Self::PointCreate => SURFACE_CREATE_ROUTE_PREFIX,
             Self::SingletonDelete | Self::PointDelete => SURFACE_DELETE_ROUTE_PREFIX,
@@ -141,6 +152,7 @@ impl SurfaceOperationKind {
             Self::SingletonDelete => SurfaceRouteRequestJson::SingletonDelete,
             Self::PointDelete => SurfaceRouteRequestJson::PointDelete,
             Self::Action => SurfaceRouteRequestJson::Action,
+            Self::ComputedRead => SurfaceRouteRequestJson::ComputedRead,
         }
     }
 
@@ -157,6 +169,7 @@ impl SurfaceOperationKind {
             Self::SingletonDelete => "singleton_delete",
             Self::PointDelete => "point_delete",
             Self::Action => "action",
+            Self::ComputedRead => "computed_read",
         }
     }
 
@@ -169,6 +182,7 @@ impl SurfaceOperationKind {
             Self::SingletonCreate | Self::PointCreate => "created",
             Self::SingletonDelete | Self::PointDelete => "deleted",
             Self::Action => "action",
+            Self::ComputedRead => "computed_read",
         }
     }
 
@@ -220,6 +234,18 @@ impl SurfaceOperationKind {
                     .filter(|descriptor| descriptor.operation_tag == operation_tag)
                 {
                     record_kind_match(&mut matched, Self::Action, operation_tag)?;
+                }
+            }
+            for computed_read in &surface.computed_reads {
+                if let Some(_descriptor) =
+                    marrow_check::SurfaceComputedReadOperationDescriptor::from_computed_read(
+                        program,
+                        surface,
+                        computed_read,
+                    )
+                    .filter(|descriptor| descriptor.operation_tag == operation_tag)
+                {
+                    record_kind_match(&mut matched, Self::ComputedRead, operation_tag)?;
                 }
             }
         }
@@ -298,6 +324,20 @@ impl SurfaceOperationCatalog {
                         surface_module: surface.module.clone(),
                         surface_name: surface.name.clone(),
                         alias: action.alias.clone(),
+                    },
+                )?;
+            }
+            for computed_read in &surface.computed_reads {
+                let kind = SurfaceOperationKind::ComputedRead;
+                insert_binding(
+                    &mut by_tag,
+                    SurfaceOperationBinding {
+                        operation_tag: computed_read.operation_tag.clone(),
+                        kind,
+                        path: operation_path(kind, &computed_read.operation_tag),
+                        surface_module: surface.module.clone(),
+                        surface_name: surface.name.clone(),
+                        alias: computed_read.alias.clone(),
                     },
                 )?;
             }
@@ -428,6 +468,7 @@ impl From<&SurfaceRouteRequestJson> for SurfaceOperationKind {
             SurfaceRouteRequestJson::SingletonDelete => Self::SingletonDelete,
             SurfaceRouteRequestJson::PointDelete => Self::PointDelete,
             SurfaceRouteRequestJson::Action => Self::Action,
+            SurfaceRouteRequestJson::ComputedRead => Self::ComputedRead,
         }
     }
 }

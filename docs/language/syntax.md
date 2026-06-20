@@ -113,6 +113,7 @@ surface Books from ^books
     collection ^books as list
     collection ^books.byAuthor as byAuthor
     action addBook
+    read bookPage as page
     create title, author, blurb
     update title, blurb
     delete
@@ -122,16 +123,17 @@ surface Books from ^books
 takes no fields. `collection` targets either the root (`^books`) or one index
 path (`^books.byAuthor`) and then names the alias after `as`. `action` exposes a
 public function by bare same-module name or qualified module path; omitting `as`
-uses the function leaf as the alias. If the index itself is named `as`, the
-target keeps that source shape:
+uses the function leaf as the alias. `read` exposes a public read-only function
+as a computed read through the same alias form. If the index itself is named
+`as`, the target keeps that source shape:
 
 ```mw
 collection ^books.as as byAs
 ```
 
-The words `from`, `fields`, `collection`, `action`, `as`, `create`, `update`,
-and `delete` are contextual to this syntax. Documentation comments do not attach
-to `surface` declarations in v0.1.
+The words `from`, `fields`, `collection`, `action`, `read`, `as`, `create`,
+`update`, and `delete` are contextual to this syntax. Documentation comments do
+not attach to `surface` declarations in v0.1.
 
 The checked v0.1 surface shape is intentionally narrow. `from ^root` must name
 one declared store root. `fields` names top-level unkeyed fields on that store's
@@ -141,14 +143,17 @@ an exact-body create operation and must cover required top-level backing fields
 that have no default. A stable non-empty `update` declares a sparse-update
 operation. `delete` declares a reject-absent full-subtree delete operation.
 `collection` names either the same backing root or one index declared on that
-backing store. Nested projections, keyed-child reads and writes, custom read
-selection, opaque cursor-token codecs, remote serving, and generated clients are
-later boundary-profile work over the checked surface facts and operation facts.
-`marrow-run` owns the admitted transport-neutral node and collection read
-executors plus the admitted create, sparse update, delete, and action
-executors, and `marrow-json` owns checked read request-parameter, generated
-write request-body, and action argument/result DTOs plus result DTO rendering
-over those executor outputs, as described in
+backing store. `read` names a public read-only function; it is rejected if its
+checked effect closure writes saved data, opens a transaction, performs host
+effects, throws, or uses an unindexed collection read. Nested projections,
+keyed-child reads and writes, opaque cursor-token codecs, and remote serving
+are later boundary-profile work over the checked surface facts and operation
+facts. `marrow-run` owns the admitted transport-neutral node and collection
+read executors plus admitted computed-read, create, sparse update, delete, and
+action executors, and `marrow-json` owns checked read/computed-read
+request-parameter, generated write request-body, action argument/result, and
+computed-read result DTOs plus result DTO rendering over those executor outputs,
+as described in
 [Surface ABI](../surface-abi.md).
 
 Surface declarations in configured test files use the same parser and

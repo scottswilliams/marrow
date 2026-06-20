@@ -133,10 +133,11 @@ over every configured source and test file.
 | `check.duplicate_module` | Two library files declare the same module name. |
 | `check.multiple_scripts` | A project holds more than one file without a `module` declaration. A project may have at most one single-file script (its entrypoint); every other file must declare a `module`. |
 | `check.duplicate_declaration` | A name is declared more than once within one scope: a top-level name declared or imported twice in a file, or a local `const`/`var` redeclared in the same block. Shadowing the name in an inner block is allowed. |
-| `check.surface_collision` | A surface declaration name collides with a module-level or builtin name; a collection alias or action alias collides with another operation alias or generated `id`, `get`, `create`, `update`, or `delete`; a surface repeats `delete`; or a `fields`, `create`, or `update` payload list repeats a name. |
+| `check.surface_collision` | A surface declaration name collides with a module-level or builtin name; a collection, action, or computed-read alias collides with another operation alias or generated `id`, `get`, `create`, `update`, or `delete`; a surface repeats `delete`; or a `fields`, `create`, or `update` payload list repeats a name. |
 | `check.surface_target` | A surface declaration targets an unknown, ambiguous, or invalid store root; a store whose normalized resource shape is ambiguous or invalid; a foreign store root; a keyless singleton root as a collection; or an unknown, ambiguous, or schema-invalid index on the surface's backing store. |
 | `check.surface_field` | A surface `fields`, `create`, or `update` item names an unknown, ambiguous, or schema-invalid field, a non-top-level/non-plain member, or a generated write field that is not part of the declared read projection. |
 | `check.surface_action` | A surface `action` item targets an unknown, ambiguous, or non-public function, or the target function has a parameter or return type outside the active action JSON surface. Bare action targets resolve only in the declaring module; cross-module targets must be qualified and use ordinary import-alias expansion. |
+| `check.surface_computed_read` | A surface `read` item targets an unknown, ambiguous, or non-public function, has a parameter or return type outside the active computed-read JSON surface, or its checked effect closure writes saved data, opens a transaction, performs host effects, throws, or uses an unindexed collection read. Bare read targets resolve only in the declaring module; cross-module targets must be qualified and use ordinary import-alias expansion. |
 | `check.unresolved_import` | A `use` names a module that is neither a project module nor a standard-library module. |
 | `check.unknown_type` | A type annotation names a type the checker does not recognize. |
 | `check.recursive_keyed_entry` | A typed keyed-entry layer names a resource whose typed keyed-entry layers recursively name the original resource. v0.1 expands typed entries to a finite saved member shape, so recursive entry shapes fail closed. |
@@ -461,14 +462,16 @@ until that surface ships.
 The `surface.*` family belongs to the application surface runtime and its
 [Surface ABI](surface-abi.md). The transport-neutral `marrow-run`
 node-read, collection-read, generated create/update/delete, and action APIs can
-emit the active codes below. `marrow surface serve` emits sanitized code/message
-envelopes for HTTP serving in both default read-only mode and `--write` mode.
+node-read, collection-read, computed-read, generated create/update/delete, and
+action APIs can emit the active codes below. `marrow surface serve` emits
+sanitized code/message envelopes for HTTP serving in both default read-only mode
+and `--write` mode.
 Cursor strings remain future transport work; the active runtime cursor is a
 typed continuation value.
 
 | Code | Meaning |
 |---|---|
-| `surface.request` | A request parameter, identity, index argument, generated write field catalog ID, generated write value, empty update patch, action argument, or limit cannot decode to the checked surface operation input shape; cursor tokens use `surface.cursor`. |
+| `surface.request` | A request parameter, identity, index argument, generated write field catalog ID, generated write value, empty update patch, action/computed-read argument, or limit cannot decode to the checked surface operation input shape; cursor tokens use `surface.cursor`. |
 | `surface.absent` | A requested record identity is well-formed but no record node exists, or a requested singleton node is absent. |
 | `surface.cursor` | A typed cursor boundary or future cursor token is malformed, does not decode under its codec, or is well-formed but bound to normalized parameters that do not match the current request. |
 | `surface.stale_cursor` | A typed cursor boundary or future cursor token is well-formed, but its operation equality tag, profile tag, or store lineage no longer matches the active surface operation facts. |
@@ -478,6 +481,7 @@ typed continuation value.
 | `surface.conflict` | A generated write conflicts with existing saved data, such as a create targeting an existing record or a unique-index conflict. |
 | `surface.write` | A generated write could not be applied after successful request decoding and before commit, excluding conflicts and store/backend faults. |
 | `surface.action` | A surface action was admitted by operation tag, but entry execution or return rendering failed after request decoding. Public envelopes intentionally hide the underlying `run.*`, source, and store details. Action argument decode failures use `surface.request`. |
+| `surface.computed` | A surface computed read was admitted by operation tag, but entry execution or result rendering failed after request decoding. Public envelopes intentionally hide the underlying `run.*`, source, and store details. Computed-read argument decode failures use `surface.request`. |
 | `surface.integrity` | A future renderer profile that actively dereferences identity links or relations found a missing referent. Projection-only reads use `surface.invalid_data` for dangling index rows. |
 | `surface.store` | The store reported a fault while executing a surface operation. |
 

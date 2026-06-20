@@ -5,9 +5,10 @@ use marrow_check::{
     CheckedFacts, CheckedProgram, EntryIdentity, EnumId, EnumMemberId, ResourceId,
     ResourceMemberFact, ResourceMemberId, ResourceMemberKind, StoreFact, StoreIndexFact,
     StoredValueMeaning, SurfaceActionOperationDescriptor, SurfaceCatalogStatus,
-    SurfaceCreateOperationDescriptor, SurfaceDeleteOperationDescriptor, SurfaceFact, SurfaceId,
-    SurfaceReadFootprint, SurfaceReadOperationFact, SurfaceReadOperationKind,
-    SurfaceUpdateOperationDescriptor, checked_saved_root_place,
+    SurfaceComputedReadOperationDescriptor, SurfaceCreateOperationDescriptor,
+    SurfaceDeleteOperationDescriptor, SurfaceFact, SurfaceId, SurfaceReadFootprint,
+    SurfaceReadOperationFact, SurfaceReadOperationKind, SurfaceUpdateOperationDescriptor,
+    checked_saved_root_place,
 };
 use marrow_store::Decimal;
 use marrow_store::StoreError;
@@ -49,6 +50,7 @@ pub const SURFACE_STALE_CURSOR: &str = "surface.stale_cursor";
 pub const SURFACE_LIMIT: &str = "surface.limit";
 pub const SURFACE_ABI_MISMATCH: &str = "surface.abi_mismatch";
 pub const SURFACE_ACTION: &str = "surface.action";
+pub const SURFACE_COMPUTED: &str = "surface.computed";
 pub const SURFACE_STORE: &str = "surface.store";
 pub const SURFACE_MAX_PAGE_LIMIT: usize = 128;
 pub const SURFACE_MAX_VALUE_BYTES: usize = 1024 * 1024;
@@ -66,6 +68,12 @@ pub type SurfaceReadError = SurfaceError;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SurfaceActionInvocation {
     identity: EntryIdentity,
+}
+
+#[derive(Debug, Clone)]
+pub struct SurfaceComputedReadInvocation {
+    operation_tag: String,
+    descriptor: SurfaceComputedReadOperationDescriptor,
 }
 
 impl SurfaceActionInvocation {
@@ -106,6 +114,60 @@ impl SurfaceActionInvocation {
 
     pub(crate) fn operation_tag(&self) -> &str {
         &self.identity.entry_tag
+    }
+}
+
+impl SurfaceComputedReadInvocation {
+    pub fn admit_by_operation_tag(
+        program: &CheckedProgram,
+        operation_tag: &str,
+    ) -> Result<Self, SurfaceReadError> {
+        require_unique_surface_operation_tag(program, operation_tag)?;
+        let mut matches = program.facts.surfaces().iter().flat_map(|surface| {
+            surface
+                .computed_reads
+                .iter()
+                .filter_map(move |computed_read| {
+                    let descriptor = SurfaceComputedReadOperationDescriptor::from_computed_read(
+                        program,
+                        surface,
+                        computed_read,
+                    )?;
+                    (descriptor.operation_tag == operation_tag)
+                        .then_some((descriptor, computed_read.span))
+                })
+        });
+        let Some((descriptor, span)) = matches.next() else {
+            return Err(abi_mismatch(
+                "surface computed read operation tag is not active",
+                SourceSpan::default(),
+            ));
+        };
+        if matches.next().is_some() {
+            return Err(abi_mismatch(
+                "surface computed read operation tag is ambiguous",
+                span,
+            ));
+        }
+        Ok(Self {
+            operation_tag: operation_tag.to_string(),
+            descriptor,
+        })
+    }
+
+    pub(crate) fn invocation(&self, arguments: Vec<EntryArgument>) -> EntryInvocation {
+        EntryInvocation {
+            identity: self.descriptor.callable.identity.clone(),
+            arguments,
+        }
+    }
+
+    pub fn descriptor(&self) -> &SurfaceComputedReadOperationDescriptor {
+        &self.descriptor
+    }
+
+    pub(crate) fn operation_tag(&self) -> &str {
+        &self.operation_tag
     }
 }
 
@@ -2333,6 +2395,18 @@ fn surface_operation_tag_count(program: &CheckedProgram, operation_tag: &str) ->
             .filter(|action| {
                 SurfaceActionOperationDescriptor::from_action(program, surface, action)
                     .is_some_and(|descriptor| descriptor.operation_tag == operation_tag)
+            })
+            .count();
+        count += surface
+            .computed_reads
+            .iter()
+            .filter(|computed_read| {
+                SurfaceComputedReadOperationDescriptor::from_computed_read(
+                    program,
+                    surface,
+                    computed_read,
+                )
+                .is_some_and(|descriptor| descriptor.operation_tag == operation_tag)
             })
             .count();
     }

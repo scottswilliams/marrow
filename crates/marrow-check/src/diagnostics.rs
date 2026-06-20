@@ -36,6 +36,8 @@ pub const CHECK_SURFACE_TARGET: &str = "check.surface_target";
 pub const CHECK_SURFACE_FIELD: &str = "check.surface_field";
 /// A surface action does not resolve to a public declared function.
 pub const CHECK_SURFACE_ACTION: &str = "check.surface_action";
+/// A surface computed read does not resolve to an admitted public read function.
+pub const CHECK_SURFACE_COMPUTED_READ: &str = "check.surface_computed_read";
 /// A `use` names a module that is neither a project module nor a standard
 /// library module.
 pub const CHECK_UNRESOLVED_IMPORT: &str = "check.unresolved_import";
@@ -457,6 +459,7 @@ pub enum SurfaceCollisionNameKind {
     FieldItem,
     CollectionAlias,
     ActionAlias,
+    ComputedReadAlias,
     CreateItem,
     UpdateItem,
     DeleteItem,
@@ -476,6 +479,7 @@ impl SurfaceCollisionNameKind {
             Self::FieldItem => "surface field",
             Self::CollectionAlias => "surface collection alias",
             Self::ActionAlias => "surface action alias",
+            Self::ComputedReadAlias => "surface computed read alias",
             Self::CreateItem => "surface create item",
             Self::UpdateItem => "surface update item",
             Self::DeleteItem => "surface delete item",
@@ -491,6 +495,21 @@ pub enum SurfaceActionDiagnostic {
     AmbiguousFunction { path: String },
     UnsupportedParameter { path: String, parameter: String },
     UnsupportedReturn { path: String },
+}
+
+/// Structured facts for a `check.surface_computed_read` diagnostic.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SurfaceComputedReadDiagnostic {
+    UnknownFunction { path: String },
+    PrivateFunction { path: String },
+    AmbiguousFunction { path: String },
+    UnsupportedParameter { path: String, parameter: String },
+    UnsupportedReturn { path: String },
+    Writes { path: String },
+    Transactions { path: String },
+    HostEffects { path: String },
+    Throws { path: String },
+    UnindexedCollectionRead { path: String },
 }
 
 /// Structured facts for a `check.surface_target` diagnostic.
@@ -639,6 +658,8 @@ pub enum DiagnosticPayload {
     SurfaceField(SurfaceFieldDiagnostic),
     /// `check.surface_action`: rejected surface action target.
     SurfaceAction(SurfaceActionDiagnostic),
+    /// `check.surface_computed_read`: rejected surface computed read target.
+    SurfaceComputedRead(SurfaceComputedReadDiagnostic),
     /// `check.duplicate_module`: duplicated module name and first source file.
     DuplicateModule { name: String, first_file: PathBuf },
     /// `check.module_path`: declared name and expected path-derived name.

@@ -109,6 +109,7 @@ pub enum ExpectedSyntax {
     StoreResourceName,
     SurfaceBody,
     SurfaceAction,
+    SurfaceRead,
     SurfaceCollection,
     SurfaceCollectionTarget,
     SurfaceFieldList,

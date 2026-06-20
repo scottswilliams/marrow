@@ -50,6 +50,7 @@ pub enum SurfaceRouteRequestJson {
     SingletonDelete,
     PointDelete,
     Action,
+    ComputedRead,
 }
 
 impl SurfaceRouteManifestJson {
@@ -90,6 +91,12 @@ impl SurfaceRouteManifestJson {
                 let binding = catalog
                     .binding(&action.operation_tag)
                     .expect("action descriptor has catalog binding");
+                route_from_binding(binding, route_surface.clone())
+            }));
+            routes.extend(surface.computed_reads.iter().map(|computed_read| {
+                let binding = catalog
+                    .binding(&computed_read.operation_tag)
+                    .expect("computed-read descriptor has catalog binding");
                 route_from_binding(binding, route_surface.clone())
             }));
         }

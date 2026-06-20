@@ -1,9 +1,9 @@
 use marrow_check::{
-    CHECK_SURFACE_ACTION, CHECK_SURFACE_FIELD, CHECK_SURFACE_TARGET, DiagnosticPayload,
-    SurfaceActionDiagnostic, SurfaceCatalogBlocker, SurfaceCatalogStatus, SurfaceCollectionTarget,
-    SurfaceCollisionNameKind, SurfaceFieldDiagnostic, SurfaceFieldList, SurfaceFieldProblem,
-    SurfaceReadFootprint, SurfaceReadOperationKind, SurfaceTargetDiagnostic, check_project,
-    check_tests_program,
+    CHECK_SURFACE_ACTION, CHECK_SURFACE_COMPUTED_READ, CHECK_SURFACE_FIELD, CHECK_SURFACE_TARGET,
+    DiagnosticPayload, SurfaceActionDiagnostic, SurfaceCatalogBlocker, SurfaceCatalogStatus,
+    SurfaceCollectionTarget, SurfaceCollisionNameKind, SurfaceComputedReadDiagnostic,
+    SurfaceFieldDiagnostic, SurfaceFieldList, SurfaceFieldProblem, SurfaceReadFootprint,
+    SurfaceReadOperationKind, SurfaceTargetDiagnostic, check_project, check_tests_program,
 };
 use marrow_syntax::SourceSpan;
 
@@ -53,6 +53,12 @@ fn surface_fields(report: &marrow_check::CheckReport) -> Vec<&marrow_check::Chec
 
 fn surface_actions(report: &marrow_check::CheckReport) -> Vec<&marrow_check::CheckDiagnostic> {
     with_code(report, CHECK_SURFACE_ACTION)
+}
+
+fn surface_computed_reads(
+    report: &marrow_check::CheckReport,
+) -> Vec<&marrow_check::CheckDiagnostic> {
+    with_code(report, CHECK_SURFACE_COMPUTED_READ)
 }
 
 fn assert_surface_collision_payload(
@@ -1110,6 +1116,266 @@ surface Books from ^books
     assert!(
         program.facts.surfaces().is_empty(),
         "a surface with unsupported action signatures must not become a fact"
+    );
+}
+
+#[test]
+fn surface_facts_resolve_computed_read_targets() {
+    let source = "\
+module app
+resource BookPage
+    required title: string
+    author: string
+resource Book
+    title: string
+store ^books(id: int): Book
+pub fn bookPage(id: Id(^books)): maybe BookPage
+    return absent
+surface Books from ^books
+    fields title
+    read bookPage as page
+";
+    let root = temp_project("surface-computed-read-facts", |root| {
+        write(root, "src/app.mw", source);
+    });
+    let (report, program) = check_project(&root, &config()).expect("check");
+
+    assert_clean(&report);
+    let facts = &program.facts;
+    let app = facts.module_id("app").expect("app module");
+    let book_page = facts.function_id(app, "bookPage").expect("bookPage");
+    let [surface] = facts.surfaces() else {
+        panic!("expected one surface, got {:#?}", facts.surfaces());
+    };
+    let [computed] = surface.computed_reads.as_slice() else {
+        panic!(
+            "expected one computed read, got {:#?}",
+            surface.computed_reads
+        );
+    };
+    assert_eq!(computed.alias, "page");
+    assert_eq!(
+        facts
+            .function_id_for_ref(computed.function)
+            .expect("computed read function"),
+        book_page
+    );
+}
+
+#[test]
+fn surface_computed_read_catalog_dependent_shapes_are_source_only_not_signature_errors() {
+    let source = "\
+module app
+resource BookPage
+    required title: string
+resource Book
+    title: string
+store ^books(id: int): Book
+pub fn page(id: Id(^books)): BookPage
+    return BookPage(title: \"\")
+surface Books from ^books
+    fields title
+    read page
+";
+    let root = temp_project("surface-computed-read-catalog-dependent-shapes", |root| {
+        write(root, "src/app.mw", source);
+    });
+    let (report, program) = check_project(&root, &config()).expect("check");
+
+    assert_clean(&report);
+    assert!(
+        surface_computed_reads(&report).is_empty(),
+        "catalog-dependent shapes should not be signature errors: {:#?}",
+        report.diagnostics
+    );
+    let [surface] = program.facts.surfaces() else {
+        panic!("expected one surface, got {:#?}", program.facts.surfaces());
+    };
+    assert_eq!(
+        surface.catalog_status,
+        SurfaceCatalogStatus::SourceOnly(vec![
+            SurfaceCatalogBlocker::PendingCatalogProposal,
+            SurfaceCatalogBlocker::MissingAcceptedCatalogIds,
+        ])
+    );
+    assert_eq!(surface.computed_reads.len(), 1);
+}
+
+#[test]
+fn surface_computed_read_diagnostics_reject_unknown_and_private_targets() {
+    let source = "\
+module app
+resource Book
+    title: string
+store ^books(id: int): Book
+fn hidden(): maybe string
+    return absent
+surface Books from ^books
+    fields title
+    read missing
+    read hidden
+";
+    let root = temp_project("surface-computed-read-target-diagnostics", |root| {
+        write(root, "src/app.mw", source);
+    });
+    let (report, program) = check_project(&root, &config()).expect("check");
+
+    let diagnostics = surface_computed_reads(&report);
+    assert_eq!(diagnostics.len(), 2, "{:#?}", report.diagnostics);
+    assert_eq!(
+        diagnostics[0].payload,
+        DiagnosticPayload::SurfaceComputedRead(SurfaceComputedReadDiagnostic::UnknownFunction {
+            path: "missing".into(),
+        })
+    );
+    assert_eq!(
+        diagnostics[1].payload,
+        DiagnosticPayload::SurfaceComputedRead(SurfaceComputedReadDiagnostic::PrivateFunction {
+            path: "hidden".into(),
+        })
+    );
+    assert!(
+        program.facts.surfaces().is_empty(),
+        "a surface with invalid computed reads must not become a fact"
+    );
+}
+
+#[test]
+fn surface_computed_read_diagnostics_reject_unsupported_signature_shapes() {
+    let source = "\
+module app
+resource Book
+    title: string
+store ^books(id: int): Book
+pub fn noResult()
+    return
+pub fn takesResource(book: Book): string
+    return \"\"
+pub fn returnsError(): Error
+    return Error(code: \"app.error\", message: \"hidden\")
+surface Books from ^books
+    fields title
+    read noResult
+    read takesResource
+    read returnsError
+";
+    let root = temp_project("surface-computed-read-signature-diagnostics", |root| {
+        write(root, "src/app.mw", source);
+    });
+    let (report, program) = check_project(&root, &config()).expect("check");
+
+    let diagnostics = surface_computed_reads(&report);
+    assert_eq!(diagnostics.len(), 3, "{:#?}", report.diagnostics);
+    assert_eq!(
+        diagnostics[0].payload,
+        DiagnosticPayload::SurfaceComputedRead(SurfaceComputedReadDiagnostic::UnsupportedReturn {
+            path: "noResult".into(),
+        })
+    );
+    assert_eq!(
+        diagnostics[1].payload,
+        DiagnosticPayload::SurfaceComputedRead(
+            SurfaceComputedReadDiagnostic::UnsupportedParameter {
+                path: "takesResource".into(),
+                parameter: "book".into(),
+            },
+        )
+    );
+    assert_eq!(
+        diagnostics[2].payload,
+        DiagnosticPayload::SurfaceComputedRead(SurfaceComputedReadDiagnostic::UnsupportedReturn {
+            path: "returnsError".into(),
+        })
+    );
+    assert!(
+        program.facts.surfaces().is_empty(),
+        "a surface with unsupported computed-read signatures must not become a fact"
+    );
+}
+
+#[test]
+fn surface_computed_read_diagnostics_reject_effects() {
+    let source = "\
+module app
+resource Book
+    title: string
+store ^books(id: int): Book
+pub fn writes(): string
+    ^books(1).title = \"x\"
+    return \"x\"
+pub fn logs(): string
+    print(\"x\")
+    return \"x\"
+pub fn fails(): string
+    throw Error(code: \"app.error\", message: \"hidden\")
+surface Books from ^books
+    fields title
+    read writes as writePreview
+    read logs
+    read fails
+";
+    let root = temp_project("surface-computed-read-effect-diagnostics", |root| {
+        write(root, "src/app.mw", source);
+    });
+    let (report, program) = check_project(&root, &config()).expect("check");
+
+    let diagnostics = surface_computed_reads(&report);
+    assert_eq!(diagnostics.len(), 3, "{:#?}", report.diagnostics);
+    assert_eq!(
+        diagnostics[0].payload,
+        DiagnosticPayload::SurfaceComputedRead(SurfaceComputedReadDiagnostic::Writes {
+            path: "writes".into(),
+        })
+    );
+    assert_eq!(
+        diagnostics[1].payload,
+        DiagnosticPayload::SurfaceComputedRead(SurfaceComputedReadDiagnostic::HostEffects {
+            path: "logs".into(),
+        })
+    );
+    assert_eq!(
+        diagnostics[2].payload,
+        DiagnosticPayload::SurfaceComputedRead(SurfaceComputedReadDiagnostic::Throws {
+            path: "fails".into(),
+        })
+    );
+    assert!(
+        program.facts.surfaces().is_empty(),
+        "a surface with effectful computed reads must not become a fact"
+    );
+}
+
+#[test]
+fn surface_computed_read_alias_collides_with_generated_operations() {
+    let source = "\
+module app
+resource Book
+    title: string
+store ^books(id: int): Book
+pub fn page(): maybe string
+    return absent
+surface Books from ^books
+    fields title
+    read page as create
+";
+    let root = temp_project("surface-computed-read-alias-collision", |root| {
+        write(root, "src/app.mw", source);
+    });
+    let (report, program) = check_project(&root, &config()).expect("check");
+
+    let collisions = surface_collisions(&report);
+    assert_eq!(collisions.len(), 1, "{:#?}", report.diagnostics);
+    assert_surface_collision_payload(
+        collisions[0],
+        "create",
+        SurfaceCollisionNameKind::GeneratedOperation,
+        SurfaceCollisionNameKind::ComputedReadAlias,
+        source,
+        7,
+    );
+    assert!(
+        program.facts.surfaces().is_empty(),
+        "a rejected computed-read alias collision must not mint a surface fact"
     );
 }
 

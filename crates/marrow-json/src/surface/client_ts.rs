@@ -298,6 +298,7 @@ fn request_type(kind: SurfaceOperationKind) -> Option<&'static str> {
         SurfaceOperationKind::PointCreate => Some("SurfacePointCreateRequestJson"),
         SurfaceOperationKind::PointDelete => Some("SurfacePointDeleteRequestJson"),
         SurfaceOperationKind::Action => Some("SurfaceActionRequestJson"),
+        SurfaceOperationKind::ComputedRead => Some("SurfaceComputedReadRequestJson"),
     }
 }
 
@@ -456,6 +457,7 @@ type SurfacePointCreateRequestJson = { identity: SurfaceIdentityJson; fields: Su
 type SurfaceSingletonCreateRequestJson = { fields: SurfaceCreateFieldJson[] };
 type SurfacePointDeleteRequestJson = { identity: SurfaceIdentityJson };
 type SurfaceActionRequestJson = { arguments: unknown[] };
+type SurfaceComputedReadRequestJson = { arguments: unknown[] };
 type SurfaceOperationRequestKind =
   | "singleton_read"
   | "point_read"
@@ -467,7 +469,8 @@ type SurfaceOperationRequestKind =
   | "point_create"
   | "singleton_delete"
   | "point_delete"
-  | "action";
+  | "action"
+  | "computed_read";
 type SurfaceOperationResultKind =
   | "record"
   | "page"
@@ -475,7 +478,8 @@ type SurfaceOperationResultKind =
   | "updated"
   | "created"
   | "deleted"
-  | "action";
+  | "action"
+  | "computed_read";
 type SurfaceOperationRequestJson = {
   profile_version: typeof SURFACE_OPERATION_PROFILE_VERSION;
   operation_tag: string;

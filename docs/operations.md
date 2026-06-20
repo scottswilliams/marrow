@@ -4,10 +4,11 @@ This page covers the v0.1 local CLI and native store. Marrow does not ship a
 background service manager or remote transport in v0.1; operator procedures are
 ordinary CLI commands over a project directory and its configured store.
 `marrow surface serve` is a foreground, loopback-only local serving profile over
-checked application-surface routes. Default mode serves read routes only;
-`--write` explicitly opens sparse-update and action routes. `--cors-origin`
-is an explicit local browser-development allow-list for one loopback origin; it
-is not remote serving or authentication.
+checked application-surface routes. Default mode serves read routes, including
+computed reads under the read route prefix. `--write` explicitly opens create,
+sparse-update, delete, and action routes. `--cors-origin` is an explicit local
+browser-development allow-list for one loopback origin; it is not remote serving
+or authentication.
 
 ## Writer Model
 

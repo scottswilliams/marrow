@@ -65,14 +65,14 @@ pub use diagnostics::{
     CHECK_READ_ONLY_EXPRESSION_UNINDEXED_LOOKUP, CHECK_READ_ONLY_EXPRESSION_WRITE,
     CHECK_RECURSIVE_KEYED_ENTRY, CHECK_REJECTED_SURFACE, CHECK_REQUIRED_ABSENT, CHECK_RETURN_TYPE,
     CHECK_RETURN_VALUE, CHECK_STRING_ESCAPE, CHECK_SURFACE_ACTION, CHECK_SURFACE_COLLISION,
-    CHECK_SURFACE_FIELD, CHECK_SURFACE_TARGET, CHECK_THROW_TYPE, CHECK_UNKNOWN_ENUM_MEMBER,
-    CHECK_UNKNOWN_FIELD, CHECK_UNKNOWN_TYPE, CHECK_UNRESOLVED_CALL, CHECK_UNRESOLVED_IMPORT,
-    CHECK_UNRESOLVED_NAME, CHECK_UNTYPED_VALUE, CatalogIntentDiagnostic, CatalogIntentKind,
-    CatalogPathCandidate, CheckDiagnostic, CheckReport, ConversionTarget,
+    CHECK_SURFACE_COMPUTED_READ, CHECK_SURFACE_FIELD, CHECK_SURFACE_TARGET, CHECK_THROW_TYPE,
+    CHECK_UNKNOWN_ENUM_MEMBER, CHECK_UNKNOWN_FIELD, CHECK_UNKNOWN_TYPE, CHECK_UNRESOLVED_CALL,
+    CHECK_UNRESOLVED_IMPORT, CHECK_UNRESOLVED_NAME, CHECK_UNTYPED_VALUE, CatalogIntentDiagnostic,
+    CatalogIntentKind, CatalogPathCandidate, CheckDiagnostic, CheckReport, ConversionTarget,
     ConversionUnsupportedSourceDiagnostic, DefaultEntryProblem, DiagnosticPayload, EnumDiagnostic,
     IO_READ, RejectedSurface, SCHEMA_DUPLICATE_ROOT_OWNER, SurfaceActionDiagnostic,
-    SurfaceCollisionNameKind, SurfaceFieldDiagnostic, SurfaceFieldList, SurfaceFieldProblem,
-    SurfaceTargetDiagnostic,
+    SurfaceCollisionNameKind, SurfaceComputedReadDiagnostic, SurfaceFieldDiagnostic,
+    SurfaceFieldList, SurfaceFieldProblem, SurfaceTargetDiagnostic,
 };
 pub use driver::{
     ProjectSources, check_project, check_project_with_catalog, check_tests, check_tests_program,
@@ -106,9 +106,9 @@ pub use facts::{
     ResourceId, ResourceMemberFact, ResourceMemberId, ResourceMemberKind, SavedPlaceEffect,
     StoreFact, StoreId, StoreIdentityKeyFact, StoreIndexFact, StoreIndexId, StoreIndexKeyFact,
     StoreIndexKeySource, StoredValueMeaning, SurfaceActionFact, SurfaceCatalogBlocker,
-    SurfaceCatalogStatus, SurfaceCollectionFact, SurfaceCollectionTarget, SurfaceDeleteFact,
-    SurfaceFact, SurfaceFieldFact, SurfaceId, SurfaceReadFootprint, SurfaceReadOperationFact,
-    SurfaceReadOperationKind, WorkShapeClass,
+    SurfaceCatalogStatus, SurfaceCollectionFact, SurfaceCollectionTarget, SurfaceComputedReadFact,
+    SurfaceDeleteFact, SurfaceFact, SurfaceFieldFact, SurfaceId, SurfaceReadFootprint,
+    SurfaceReadOperationFact, SurfaceReadOperationKind, WorkShapeClass,
 };
 pub use facts::{
     PresenceProofFact, PresenceProofId, PresenceProofPlace, PresenceProofSource,
@@ -116,7 +116,9 @@ pub use facts::{
 };
 pub use marrow_catalog::{CatalogEntryKind, CatalogLifecycle};
 pub use marrow_project::{ProjectConfig, StoreBackend, StoreConfig};
-pub use marrow_schema::{IndexSchema, KeyDef, Node, NodeKind, ResourceSchema, StoreSchema, Type};
+pub use marrow_schema::{
+    IndexSchema, KeyDef, Node, NodeKind, ResourceSchema, ReturnPresence, StoreSchema, Type,
+};
 pub use program::{
     CheckedConst, CheckedDebugExpression, CheckedEntryFunction, CheckedFunction, CheckedModule,
     CheckedParam, CheckedProgram, CheckedReadOnlyExpression, CheckedRuntimeConst,
@@ -132,17 +134,18 @@ pub use project_io::{
 };
 pub use resolve::{Def, DefItem, Resolution, ResolvableKind, resolve};
 pub use surface_abi::{
-    SURFACE_CREATE_OPERATION_TAG_VERSION, SURFACE_DELETE_OPERATION_TAG_VERSION,
-    SURFACE_READ_OPERATION_TAG_VERSION, SURFACE_UPDATE_OPERATION_TAG_VERSION,
-    SurfaceActionOperationDescriptor, SurfaceCreateBodySemantics, SurfaceCreateExistenceSemantics,
-    SurfaceCreateIdentityPolicy, SurfaceCreateOperationDescriptor,
-    SurfaceCreateOperationDescriptorKind, SurfaceCreateOperationField,
-    SurfaceDeleteOperationDescriptor, SurfaceDeleteOperationDescriptorKind, SurfaceDeleteSemantics,
-    SurfaceOperationIdentityKey, SurfaceOperationValueShape, SurfaceReadOperationDescriptor,
-    SurfaceReadOperationDescriptorKind, SurfaceReadOperationIndexKey,
-    SurfaceReadOperationIndexKeySource, SurfaceReadOperationProjectionField,
-    SurfaceUpdateOperationDescriptor, SurfaceUpdateOperationDescriptorKind,
-    SurfaceUpdateOperationField, SurfaceUpdatePatchSemantics,
+    SURFACE_COMPUTED_READ_OPERATION_TAG_VERSION, SURFACE_CREATE_OPERATION_TAG_VERSION,
+    SURFACE_DELETE_OPERATION_TAG_VERSION, SURFACE_READ_OPERATION_TAG_VERSION,
+    SURFACE_UPDATE_OPERATION_TAG_VERSION, SurfaceActionOperationDescriptor,
+    SurfaceComputedReadCostShape, SurfaceComputedReadOperationDescriptor,
+    SurfaceCreateBodySemantics, SurfaceCreateExistenceSemantics, SurfaceCreateIdentityPolicy,
+    SurfaceCreateOperationDescriptor, SurfaceCreateOperationDescriptorKind,
+    SurfaceCreateOperationField, SurfaceDeleteOperationDescriptor,
+    SurfaceDeleteOperationDescriptorKind, SurfaceDeleteSemantics, SurfaceOperationIdentityKey,
+    SurfaceOperationValueShape, SurfaceReadOperationDescriptor, SurfaceReadOperationDescriptorKind,
+    SurfaceReadOperationIndexKey, SurfaceReadOperationIndexKeySource,
+    SurfaceReadOperationProjectionField, SurfaceUpdateOperationDescriptor,
+    SurfaceUpdateOperationDescriptorKind, SurfaceUpdateOperationField, SurfaceUpdatePatchSemantics,
 };
 
 pub(crate) use driver::{

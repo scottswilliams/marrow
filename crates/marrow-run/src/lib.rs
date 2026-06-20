@@ -100,18 +100,18 @@ pub use project_session::{
     SessionEntry, StoreStamp,
 };
 pub use surface::{
-    SURFACE_ABI_MISMATCH, SURFACE_ABSENT, SURFACE_ACTION, SURFACE_CONFLICT, SURFACE_CURSOR,
-    SURFACE_INVALID_DATA, SURFACE_LIMIT, SURFACE_MAX_MATERIALIZED_BYTES, SURFACE_MAX_PAGE_LIMIT,
-    SURFACE_MAX_VALUE_BYTES, SURFACE_REQUEST, SURFACE_STALE_CURSOR, SURFACE_STORE, SURFACE_WRITE,
-    SurfaceActionInvocation, SurfaceCollectionPage, SurfaceCollectionPageRequest,
-    SurfaceCollectionRead, SurfaceCollectionReadShape, SurfaceCreate, SurfaceCreateField,
-    SurfaceCreateInput, SurfaceCursorBoundaryInputShape, SurfaceDelete, SurfaceDeleteInput,
-    SurfaceEnumValue, SurfaceError, SurfaceIdentityInputShape, SurfaceInputKeyShape,
-    SurfaceNodeRead, SurfaceNodeReadShape, SurfacePageBoundary, SurfacePageCursor,
-    SurfaceReadError, SurfaceReadField, SurfaceReadIdentity, SurfaceReadInput,
-    SurfaceReadOperation, SurfaceReadOperationRef, SurfaceReadRecord, SurfaceUpdate,
-    SurfaceUpdateField, SurfaceUpdateInput, SurfaceValue, read_surface_point,
-    read_surface_singleton,
+    SURFACE_ABI_MISMATCH, SURFACE_ABSENT, SURFACE_ACTION, SURFACE_COMPUTED, SURFACE_CONFLICT,
+    SURFACE_CURSOR, SURFACE_INVALID_DATA, SURFACE_LIMIT, SURFACE_MAX_MATERIALIZED_BYTES,
+    SURFACE_MAX_PAGE_LIMIT, SURFACE_MAX_VALUE_BYTES, SURFACE_REQUEST, SURFACE_STALE_CURSOR,
+    SURFACE_STORE, SURFACE_WRITE, SurfaceActionInvocation, SurfaceCollectionPage,
+    SurfaceCollectionPageRequest, SurfaceCollectionRead, SurfaceCollectionReadShape,
+    SurfaceComputedReadInvocation, SurfaceCreate, SurfaceCreateField, SurfaceCreateInput,
+    SurfaceCursorBoundaryInputShape, SurfaceDelete, SurfaceDeleteInput, SurfaceEnumValue,
+    SurfaceError, SurfaceIdentityInputShape, SurfaceInputKeyShape, SurfaceNodeRead,
+    SurfaceNodeReadShape, SurfacePageBoundary, SurfacePageCursor, SurfaceReadError,
+    SurfaceReadField, SurfaceReadIdentity, SurfaceReadInput, SurfaceReadOperation,
+    SurfaceReadOperationRef, SurfaceReadRecord, SurfaceUpdate, SurfaceUpdateField,
+    SurfaceUpdateInput, SurfaceValue, read_surface_point, read_surface_singleton,
 };
 pub use value::{IdentityValue, RunOutput, RunOutputSink, Value};
 pub use write_plan::{WriteDataSegment, WriteOp, WriteTarget};

@@ -145,7 +145,8 @@ surface_decl    =
 surface_item    =
       "fields" surface_name_list NEWLINE
     | "collection" surface_collection_target "as" identifier NEWLINE
-    | "action" surface_action_target ("as" identifier)? NEWLINE
+    | "action" surface_function_target ("as" identifier)? NEWLINE
+    | "read" surface_function_target ("as" identifier)? NEWLINE
     | "create" surface_name_list NEWLINE
     | "update" surface_name_list NEWLINE
     | "delete" NEWLINE
@@ -154,7 +155,7 @@ surface_item    =
 surface_name_list =
     identifier ("," identifier)* ","? ;
 
-surface_action_target =
+surface_function_target =
     identifier ("::" identifier)* ;
 
 surface_collection_target =
@@ -164,15 +165,15 @@ surface_collection_target =
 ```
 
 A `surface` declaration names an application-facing source form over a saved
-root. The body accepts `fields`, `collection`, `action`, `create`, `update`,
-and `delete` item lines. A collection target is either the root itself
-(`^books`) or one store index path (`^books.byAuthor`). An action target is a
-same-module public function name or an explicitly qualified public function name
-such as `shelf::loanBook`; omitting `as` uses the function leaf as the alias.
-The contextual words `from`, `fields`, `collection`, `action`, `as`, `create`,
-`update`, and `delete` are recognized only in this declaration shape and remain
-valid identifiers elsewhere. Documentation comments do not attach to `surface`
-declarations in v0.1.
+root. The body accepts `fields`, `collection`, `action`, `read`, `create`,
+`update`, and `delete` item lines. A collection target is either the root itself
+(`^books`) or one store index path (`^books.byAuthor`). An action or computed
+read target is a same-module public function name or an explicitly qualified
+public function name such as `shelf::loanBook`; omitting `as` uses the function
+leaf as the alias. The contextual words `from`, `fields`, `collection`,
+`action`, `read`, `as`, `create`, `update`, and `delete` are recognized only in
+this declaration shape and remain valid identifiers elsewhere. Documentation
+comments do not attach to `surface` declarations in v0.1.
 
 ## Enums
 

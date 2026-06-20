@@ -100,6 +100,7 @@ pub(crate) fn check_resolved_files(
                 | DiagnosticPayload::SurfaceTarget(_)
                 | DiagnosticPayload::SurfaceField(_)
                 | DiagnosticPayload::SurfaceAction(_)
+                | DiagnosticPayload::SurfaceComputedRead(_)
                 | DiagnosticPayload::DuplicateModule { .. }
                 | DiagnosticPayload::ModulePath { .. }
                 | DiagnosticPayload::DefaultEntry { .. }
