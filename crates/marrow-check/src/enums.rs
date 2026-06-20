@@ -982,6 +982,38 @@ fn visible_enum_annotation(
     EnumAnnotationResolution::Visible(ResolvedEnumAnnotation { module, name, ty })
 }
 
+/// The fully-qualified name of the enum `ty` names when it resolves to a non-`pub`
+/// enum owned by the same module as `file`. A same-module reference always sees a
+/// private enum (visibility gates only foreign modules), so a `Visible` resolution
+/// to a non-`pub` owner is precisely the case a public signature would leak. A
+/// foreign private enum resolves to `Private` and is reported elsewhere.
+pub(crate) fn same_module_private_enum(
+    ty: &marrow_syntax::TypeRef,
+    program: &CheckedProgram,
+    aliases: &HashMap<String, Vec<String>>,
+    file: &Path,
+) -> Option<String> {
+    let EnumAnnotationResolution::Visible(resolved) =
+        resolve_enum_annotation(ty, program, aliases, file)
+    else {
+        return None;
+    };
+    let owner = program
+        .modules
+        .iter()
+        .find(|module| module.name == resolved.module)?;
+    (module_of_file(program, file) == Some(resolved.module.as_str())
+        && !enum_is_public(owner, &resolved.name))
+    .then(|| qualified_enum_name(&resolved.module, &resolved.name))
+}
+
+fn qualified_enum_name(module: &str, name: &str) -> String {
+    if module.is_empty() {
+        return name.to_string();
+    }
+    format!("{module}::{name}")
+}
+
 struct ResolvedEnumOwner<'p> {
     module: String,
     name: String,

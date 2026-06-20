@@ -12,6 +12,11 @@ use crate::{CatalogEntryKind, CatalogLifecycle};
 
 /// A library file declares a module name that does not match its path.
 pub const CHECK_MODULE_PATH: &str = "check.module_path";
+/// The project's `run.defaultEntry` does not name a runnable zero-argument entry:
+/// it is missing, private, ambiguous, or declares parameters. A default entry runs
+/// with no arguments, so any of these can only fail at run time; the check rejects
+/// them up front.
+pub const CHECK_DEFAULT_ENTRY: &str = "check.default_entry";
 /// Two library files declare the same module name.
 pub const CHECK_DUPLICATE_MODULE: &str = "check.duplicate_module";
 /// A project holds more than one module-less file. A project may have at most one
@@ -91,6 +96,12 @@ pub const CHECK_PRIVATE_FUNCTION: &str = "check.private_function";
 /// Distinct from [`CHECK_UNKNOWN_TYPE`] and [`CHECK_UNKNOWN_ENUM_MEMBER`]: the
 /// enum resolves, the visibility does not.
 pub const CHECK_PRIVATE_ENUM: &str = "check.private_enum";
+/// A `pub fn` names a non-`pub` enum from its own module in a parameter or return
+/// type. The enum's values escape through a public signature even though other
+/// modules cannot name the type. A warning, not an error: the program is sound,
+/// but the API leaks an unnameable type. Distinct from [`CHECK_PRIVATE_ENUM`],
+/// which rejects a foreign reference to a private enum.
+pub const CHECK_EXPOSED_PRIVATE_ENUM: &str = "check.exposed_private_enum";
 /// A bare call names a `pub` function reachable in two or more modules, so the
 /// bare name cannot pick one — it must be qualified (`module::fn`). Distinct from
 /// [`CHECK_UNRESOLVED_CALL`]: candidates exist, the bare spelling is ambiguous.
@@ -610,6 +621,12 @@ pub enum DiagnosticPayload {
         declared: String,
         expected: Option<String>,
     },
+    /// `check.default_entry`: the configured `run.defaultEntry` and why it cannot
+    /// run with no arguments.
+    DefaultEntry {
+        entry: String,
+        problem: DefaultEntryProblem,
+    },
     /// `check.module_path`: a path-derived test module name contains a reserved segment.
     ReservedTestModulePathSegment {
         module_name: String,
@@ -623,6 +640,9 @@ pub enum DiagnosticPayload {
     Enum(EnumDiagnostic),
     /// `check.private_enum`: the private enum's fully-qualified name.
     PrivateEnum(String),
+    /// `check.exposed_private_enum`: the leaked enum's fully-qualified name and the
+    /// public function whose signature exposes it.
+    ExposedPrivateEnum { enum_name: String, function: String },
     /// `check.call_argument`: a named argument or constructor field repeated.
     DuplicateNamedArgument(String),
     /// `check.call_argument`: an `append` target is not an int-keyed leaf layer.
@@ -661,6 +681,19 @@ pub enum CatalogIntentKind {
     RetireTarget,
     RenameSource,
     RenameTarget,
+}
+
+/// Why a configured `run.defaultEntry` cannot run with no arguments.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DefaultEntryProblem {
+    /// The name resolves to no public entry (including an empty entry name).
+    Missing,
+    /// The name resolves only to a non-`pub` function.
+    Private,
+    /// A bare name names a `pub` entry in two or more modules.
+    Ambiguous,
+    /// The entry resolves but declares parameters, so it cannot run argument-free.
+    HasParameters,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

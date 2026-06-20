@@ -243,6 +243,35 @@ fn doctor_reports_no_findings_for_healthy_project() {
 }
 
 #[test]
+fn doctor_surfaces_a_private_default_entry_check_failure() {
+    // The default-entry check runs in `analyze_project`, so `doctor` inherits it:
+    // a private `run.defaultEntry` surfaces as `check.default_entry` among the
+    // failed check's underlying codes.
+    let project = support::temp_project_uncommitted("doctor-default-entry", |root| {
+        support::write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" }, "run": { "defaultEntry": "app::main" } }"#,
+        );
+        support::write(root, "src/app.mw", "module app\n\nfn main()\n    return\n");
+    });
+    let dir = project.path().to_str().expect("project path utf8");
+
+    let output = marrow(&["doctor", "--format", "json", dir]);
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let value = json(output.stdout);
+    let check_finding = finding(&value, "doctor.check_failed");
+    let codes = check_finding["data"]["underlying_codes"]
+        .as_array()
+        .expect("underlying codes array");
+    assert!(
+        codes.contains(&serde_json::json!("check.default_entry")),
+        "{value:#?}"
+    );
+}
+
+#[test]
 fn doctor_integrity_sample_is_bounded() {
     let (project, dir) = seeded_project("doctor-integrity-cap");
     let place = checked_place(&project, "counter");

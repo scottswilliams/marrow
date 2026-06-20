@@ -20,6 +20,7 @@ names and types against this artifact, never against source spelling.
 8. **evolve-intent type check** — `check_evolve_types` types every `evolve` block's `default` and `transform` steps against current source.
 9. **lower and transform effects** — `lower_runtime_bodies` turns checked bodies into the syntax-free `Checked*` IR the runtime evaluates, filling each function's and transform's `runtime_body`; `check_transform_effects` then proves transform bodies stay inside their allowed pure read surface.
 10. **presence** — `check_presence`, a flow-sensitive pass over the lowered IR, proves every read of maybe-present saved data is justified before runtime.
+11. **default entry** — `check_default_entry` rejects a configured `run.defaultEntry` that names no runnable zero-argument entry (missing, private, ambiguous, or parameterized), reusing the runtime entry namespace so check and run agree.
 
 Evolution discharge and the analysis/tooling surface sit beside this spine, consuming the finished `CheckedProgram` read-only.
 

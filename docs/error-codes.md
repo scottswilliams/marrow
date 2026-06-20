@@ -128,7 +128,8 @@ over every configured source and test file.
 | Code | Meaning |
 |---|---|
 | `check.failed` | A project check completed with one or more parse, schema, or check diagnostics. Command boundaries may use this summary code while the detailed diagnostics carry their own codes. |
-| `check.module_path` | A library file declares a module name that does not match its path. |
+| `check.module_path` | A library or test file declares a module name that does not match its path-derived name. A test file may omit the `module` declaration. |
+| `check.default_entry` | The project's `run.defaultEntry` does not name a runnable zero-argument entry: it is missing, private, ambiguous (a bare name in two modules), or declares parameters. A default entry runs with no arguments, so the check rejects it rather than letting it fault at run time. |
 | `check.duplicate_module` | Two library files declare the same module name. |
 | `check.multiple_scripts` | A project holds more than one file without a `module` declaration. A project may have at most one single-file script (its entrypoint); every other file must declare a `module`. |
 | `check.duplicate_declaration` | A name is declared more than once within one scope: a top-level name declared or imported twice in a file, or a local `const`/`var` redeclared in the same block. Shadowing the name in an inner block is allowed. |
@@ -189,6 +190,7 @@ over every configured source and test file.
 | `check.read_only_expression_host_effect` | A checked read-only expression would call a host-effecting operation. |
 | `check.read_only_expression_unindexed_lookup` | A checked read-only expression would traverse a saved collection without a declared index. |
 | `check.private_enum` | A cross-module enum reference names an enum that exists but is not `pub`; the enum resolves, the visibility does not. |
+| `check.exposed_private_enum` | A warning: a `pub fn` names a non-`pub` enum from its own module in a parameter or return type, so the enum's values escape through a public signature even though other modules cannot name the type. Mark the enum `pub`. |
 | `check.nesting_limit` | Source nests expressions or statement blocks deeper than the fixed parser limit (256). Raised by the parser at the offending span so pathologically nested source fails closed rather than overflowing the stack; see the [cost model](language/cost-model.md). |
 | `check.evolve_target` | An `evolve` intent names an entity — a resource member, saved root, store index, enum, or enum member — that the current source does not declare (or, for a rename's source side, that the accepted catalog does not record). |
 | `check.evolve_type` | An `evolve default` value does not match its target member's type, or an `evolve transform` body does not type-check. |

@@ -684,6 +684,25 @@ fn refuses_to_run_tests_when_the_project_does_not_check() {
 }
 
 #[test]
+fn refuses_to_run_tests_when_a_test_file_declares_a_mismatched_module() {
+    let root = temp_project("test-bad-test-module", |root| {
+        write(root, "marrow.json", CONFIG);
+        write(root, "src/app.mw", "module app\n");
+        // The path implies test module `tests::app_test`; declaring another name
+        // is rejected, just as a source file's mismatched module is.
+        write(
+            root,
+            "tests/app_test.mw",
+            "module app\npub fn smoke()\n    std::assert::isTrue(true)\n",
+        );
+    });
+    let output = run_test(&root);
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert_eq!(stderr_code(&output.stderr), "check.module_path");
+}
+
+#[test]
 fn format_json_reports_project_check_errors_on_stdout() {
     let root = temp_project("test-badcheck-json", |root| {
         write(root, "marrow.json", CONFIG);

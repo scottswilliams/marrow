@@ -20,7 +20,7 @@ use marrow_syntax::{Declaration, Diagnostic, Expression, ParsedSource, SourceSpa
 use crate::diagnostics::{
     CHECK_READ_ONLY_EXPRESSION_CONTEXT, CHECK_READ_ONLY_EXPRESSION_HOST_EFFECT,
     CHECK_READ_ONLY_EXPRESSION_UNINDEXED_LOOKUP, CHECK_READ_ONLY_EXPRESSION_WRITE, CheckDiagnostic,
-    DiagnosticPayload,
+    DefaultEntryProblem, DiagnosticPayload,
 };
 use crate::executable::CheckedBodyVisitor;
 use crate::executable::{
@@ -915,7 +915,7 @@ impl CheckedRuntimeProgram {
                 CheckedRuntimeModule::from_checked(program, module_index, module)
             })
             .collect();
-        let (entry_functions, private_entry_functions) = runtime_entry_functions(&modules);
+        let (entry_functions, private_entry_functions) = runtime_entry_functions(&program.modules);
         Self {
             modules,
             entry_functions,
@@ -1028,8 +1028,12 @@ pub enum CheckedEntryFunction {
     Missing,
 }
 
+/// Classify each function into the entry namespace shared by the runtime program
+/// and the default-entry check. The module/function indices in a [`CheckedFunctionRef`]
+/// match positions in [`CheckedProgram::modules`], which the runtime program preserves,
+/// so this is the single owner of bare-versus-qualified entry resolution.
 fn runtime_entry_functions(
-    modules: &[CheckedRuntimeModule],
+    modules: &[CheckedModule],
 ) -> (HashMap<String, CheckedEntryFunction>, HashSet<String>) {
     let mut entries = HashMap::new();
     let mut private_entries = HashSet::new();
@@ -1079,6 +1083,35 @@ struct PublicEntryRef {
 }
 
 impl CheckedProgram {
+    /// Why the configured `run.defaultEntry` cannot run argument-free, or `None`
+    /// when it names a runnable zero-argument entry. A default entry runs with no
+    /// arguments, so a missing, private, ambiguous, or parameterized target can
+    /// only fail at run time; the check rejects it up front. Entry resolution reuses
+    /// the runtime entry namespace so the two agree exactly.
+    pub fn default_entry_verdict(&self, entry: &str) -> Option<DefaultEntryProblem> {
+        let (entries, private) = runtime_entry_functions(&self.modules);
+        let resolved = entries
+            .get(entry)
+            .copied()
+            .or_else(|| {
+                private
+                    .contains(entry)
+                    .then_some(CheckedEntryFunction::Private)
+            })
+            .unwrap_or(CheckedEntryFunction::Missing);
+        match resolved {
+            CheckedEntryFunction::Found(function_ref) => self
+                .modules
+                .get(function_ref.module as usize)
+                .and_then(|module| module.functions.get(function_ref.function as usize))
+                .filter(|function| !function.params.is_empty())
+                .map(|_| DefaultEntryProblem::HasParameters),
+            CheckedEntryFunction::Ambiguous => Some(DefaultEntryProblem::Ambiguous),
+            CheckedEntryFunction::Private => Some(DefaultEntryProblem::Private),
+            CheckedEntryFunction::Missing => Some(DefaultEntryProblem::Missing),
+        }
+    }
+
     fn public_entry_refs(&self) -> Vec<PublicEntryRef> {
         self.facts
             .functions()

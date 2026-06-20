@@ -442,19 +442,62 @@ fn reports_a_parse_error_in_a_test_file() {
 }
 
 #[test]
-fn a_test_file_is_named_from_its_path_not_a_declared_module() {
-    let root = temp_project("test-name-path", |root| {
+fn a_test_file_module_must_match_its_path_derived_name() {
+    let root = temp_project("test-module-mismatch", |root| {
         write(
             root,
             "src/app.mw",
             "module app\n\npub fn add(): int\n    return 1\n",
         );
-        // Even though this test file declares `module app`, it must be named from
-        // its path so it cannot shadow the project's `app` module.
+        // A test file is named from its path (`tests::app_test`). A declared module
+        // that does not match that name is rejected, mirroring the source rule, so
+        // it cannot masquerade under another module's name.
         write(
             root,
             "tests/app_test.mw",
             "module app\n\npub fn calls_app()\n    std::assert::isTrue(app::add() == 1)\n",
+        );
+    });
+    let cfg = parse_config(
+        r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" }, "tests": ["tests"] }"#,
+    )
+    .expect("config");
+    let (_src_report, src_program) = check_project(&root, &cfg).expect("check src");
+    let (test_report, _modules) = check_tests(&root, &cfg, src_program).expect("check tests");
+
+    let diagnostic = test_report
+        .diagnostics
+        .iter()
+        .find(|d| d.code == "check.module_path")
+        .expect("module-path diagnostic");
+    assert!(
+        diagnostic.file.ends_with("app_test.mw"),
+        "{:?}",
+        diagnostic.file
+    );
+    assert_eq!(
+        diagnostic.payload,
+        DiagnosticPayload::ModulePath {
+            declared: "app".into(),
+            expected: Some("tests::app_test".into()),
+        }
+    );
+    // The declaration span, not the start of file.
+    assert_eq!(diagnostic.span.line, 1, "{diagnostic:#?}");
+}
+
+#[test]
+fn a_test_file_with_no_declared_module_is_clean() {
+    let root = temp_project("test-module-absent", |root| {
+        write(
+            root,
+            "src/app.mw",
+            "module app\n\npub fn add(): int\n    return 1\n",
+        );
+        write(
+            root,
+            "tests/app_test.mw",
+            "pub fn calls_app()\n    std::assert::isTrue(app::add() == 1)\n",
         );
     });
     let cfg = parse_config(
@@ -467,6 +510,375 @@ fn a_test_file_is_named_from_its_path_not_a_declared_module() {
     assert!(!test_report.has_errors(), "{:#?}", test_report.diagnostics);
     assert_eq!(test_modules.len(), 1, "{test_modules:#?}");
     assert_eq!(test_modules[0].name, "tests::app_test");
+}
+
+#[test]
+fn warns_when_a_public_function_exposes_a_private_enum() {
+    // A non-`pub` enum named in a `pub fn` signature escapes its module through a
+    // public API even though callers cannot name the type. The author gets a
+    // warning, not a hard error, to add `pub` to the enum.
+    let source = "module a\n\nenum Color\n    red\n    green\n\npub fn pick(): Color\n    return Color::red\n";
+    let root = temp_project("exposed-private-enum-return", |root| {
+        write(root, "src/a.mw", source);
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+
+    let exposed = with_code(&report, "check.exposed_private_enum");
+    assert_eq!(exposed.len(), 1, "{:#?}", report.diagnostics);
+    assert_eq!(exposed[0].severity, marrow_syntax::Severity::Warning);
+    assert_eq!(
+        exposed[0].payload,
+        DiagnosticPayload::ExposedPrivateEnum {
+            enum_name: "a::Color".into(),
+            function: "pick".into(),
+        }
+    );
+    // The cross-module `check.private_enum` error must not also fire: this is a
+    // same-module signature, not a foreign reference.
+    assert!(
+        with_code(&report, "check.private_enum").is_empty(),
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
+fn warns_when_a_public_function_takes_a_private_enum_parameter() {
+    let source = "module a\n\nenum Color\n    red\n    green\n\npub fn isRed(c: Color): bool\n    return c is Color::red\n";
+    let root = temp_project("exposed-private-enum-param", |root| {
+        write(root, "src/a.mw", source);
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+
+    let exposed = with_code(&report, "check.exposed_private_enum");
+    assert_eq!(exposed.len(), 1, "{:#?}", report.diagnostics);
+    assert_eq!(exposed[0].severity, marrow_syntax::Severity::Warning);
+    assert_eq!(
+        exposed[0].payload,
+        DiagnosticPayload::ExposedPrivateEnum {
+            enum_name: "a::Color".into(),
+            function: "isRed".into(),
+        }
+    );
+}
+
+#[test]
+fn a_private_enum_in_both_a_parameter_and_the_return_warns_per_occurrence() {
+    let source = "module a\n\nenum Color\n    red\n    green\n\npub fn echo(c: Color): Color\n    return c\n";
+    let root = temp_project("exposed-private-enum-both", |root| {
+        write(root, "src/a.mw", source);
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+
+    let exposed = with_code(&report, "check.exposed_private_enum");
+    assert_eq!(exposed.len(), 2, "{:#?}", report.diagnostics);
+    assert!(
+        exposed.iter().all(|d| d.payload
+            == DiagnosticPayload::ExposedPrivateEnum {
+                enum_name: "a::Color".into(),
+                function: "echo".into(),
+            }),
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
+fn a_public_enum_in_a_public_signature_does_not_warn() {
+    let source = "module a\n\npub enum Color\n    red\n    green\n\npub fn pick(): Color\n    return Color::red\n";
+    let root = temp_project("public-enum-public-fn", |root| {
+        write(root, "src/a.mw", source);
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+
+    assert!(
+        with_code(&report, "check.exposed_private_enum").is_empty(),
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
+fn a_private_function_with_a_private_enum_does_not_warn() {
+    let source =
+        "module a\n\nenum Color\n    red\n    green\n\nfn pick(): Color\n    return Color::red\n";
+    let root = temp_project("private-enum-private-fn", |root| {
+        write(root, "src/a.mw", source);
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+
+    assert!(
+        with_code(&report, "check.exposed_private_enum").is_empty(),
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
+fn a_cross_module_private_enum_is_a_hard_error_not_an_exposure_warning() {
+    // Module `b` names module `a`'s non-`pub` enum: a foreign reference to a
+    // private type is the hard `check.private_enum` error, not the same-module
+    // exposure warning. The two diagnostics must not both fire.
+    let root = temp_project("cross-module-private-enum", |root| {
+        write(
+            root,
+            "src/a.mw",
+            "module a\n\nenum Color\n    red\n    green\n",
+        );
+        write(
+            root,
+            "src/b.mw",
+            "module b\n\nuse a\n\npub fn pick(): a::Color\n    return a::Color::red\n",
+        );
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+
+    assert!(
+        !with_code(&report, "check.private_enum").is_empty(),
+        "{:#?}",
+        report.diagnostics
+    );
+    assert!(
+        with_code(&report, "check.exposed_private_enum").is_empty(),
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
+fn a_public_function_exposing_a_foreign_public_enum_does_not_warn() {
+    let root = temp_project("foreign-public-enum", |root| {
+        write(
+            root,
+            "src/a.mw",
+            "module a\n\npub enum Color\n    red\n    green\n",
+        );
+        write(
+            root,
+            "src/b.mw",
+            "module b\n\nuse a\n\npub fn pick(): a::Color\n    return a::Color::red\n",
+        );
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    assert!(
+        with_code(&report, "check.exposed_private_enum").is_empty(),
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
+fn config_with_default_entry(entry: &str) -> marrow_project::ProjectConfig {
+    parse_config(&format!(
+        r#"{{ "sourceRoots": ["src"], "store": {{ "backend": "memory" }}, "run": {{ "defaultEntry": "{entry}" }} }}"#
+    ))
+    .expect("config")
+}
+
+#[test]
+fn rejects_a_missing_default_entry() {
+    let root = temp_project("default-entry-missing", |root| {
+        write(
+            root,
+            "src/app.mw",
+            "module app\n\npub fn main()\n    return\n",
+        );
+    });
+    let (report, _program) =
+        check_project(&root, &config_with_default_entry("app::nope")).expect("check");
+
+    let diagnostic = report
+        .diagnostics
+        .iter()
+        .find(|d| d.code == "check.default_entry")
+        .expect("default-entry diagnostic");
+    assert_eq!(
+        diagnostic.payload,
+        DiagnosticPayload::DefaultEntry {
+            entry: "app::nope".into(),
+            problem: marrow_check::DefaultEntryProblem::Missing,
+        }
+    );
+    assert!(
+        diagnostic.file.ends_with("marrow.json"),
+        "{:?}",
+        diagnostic.file
+    );
+}
+
+#[test]
+fn rejects_a_private_default_entry() {
+    let root = temp_project("default-entry-private", |root| {
+        write(root, "src/app.mw", "module app\n\nfn main()\n    return\n");
+    });
+    let (report, _program) =
+        check_project(&root, &config_with_default_entry("app::main")).expect("check");
+
+    let diagnostic = with_code(&report, "check.default_entry");
+    assert_eq!(diagnostic.len(), 1, "{:#?}", report.diagnostics);
+    assert_eq!(
+        diagnostic[0].payload,
+        DiagnosticPayload::DefaultEntry {
+            entry: "app::main".into(),
+            problem: marrow_check::DefaultEntryProblem::Private,
+        }
+    );
+}
+
+#[test]
+fn rejects_an_empty_string_default_entry() {
+    let root = temp_project("default-entry-empty", |root| {
+        write(
+            root,
+            "src/app.mw",
+            "module app\n\npub fn main()\n    return\n",
+        );
+    });
+    let (report, _program) = check_project(&root, &config_with_default_entry("")).expect("check");
+
+    let diagnostic = with_code(&report, "check.default_entry");
+    assert_eq!(diagnostic.len(), 1, "{:#?}", report.diagnostics);
+    assert_eq!(
+        diagnostic[0].payload,
+        DiagnosticPayload::DefaultEntry {
+            entry: "".into(),
+            problem: marrow_check::DefaultEntryProblem::Missing,
+        }
+    );
+}
+
+#[test]
+fn rejects_an_ambiguous_default_entry() {
+    let root = temp_project("default-entry-ambiguous", |root| {
+        write(
+            root,
+            "src/app.mw",
+            "module app\n\npub fn main()\n    return\n",
+        );
+        write(
+            root,
+            "src/admin.mw",
+            "module admin\n\npub fn main()\n    return\n",
+        );
+    });
+    // A bare `main` names a `pub fn main` in two modules.
+    let (report, _program) =
+        check_project(&root, &config_with_default_entry("main")).expect("check");
+
+    let diagnostic = with_code(&report, "check.default_entry");
+    assert_eq!(diagnostic.len(), 1, "{:#?}", report.diagnostics);
+    assert_eq!(
+        diagnostic[0].payload,
+        DiagnosticPayload::DefaultEntry {
+            entry: "main".into(),
+            problem: marrow_check::DefaultEntryProblem::Ambiguous,
+        }
+    );
+}
+
+#[test]
+fn rejects_a_default_entry_with_parameters() {
+    let root = temp_project("default-entry-params", |root| {
+        write(
+            root,
+            "src/app.mw",
+            "module app\n\npub fn main(name: string)\n    print(name)\n",
+        );
+    });
+    // A default entry runs with no arguments; a parameter makes it unrunnable.
+    let (report, _program) =
+        check_project(&root, &config_with_default_entry("app::main")).expect("check");
+
+    let diagnostic = with_code(&report, "check.default_entry");
+    assert_eq!(diagnostic.len(), 1, "{:#?}", report.diagnostics);
+    assert_eq!(
+        diagnostic[0].payload,
+        DiagnosticPayload::DefaultEntry {
+            entry: "app::main".into(),
+            problem: marrow_check::DefaultEntryProblem::HasParameters,
+        }
+    );
+}
+
+#[test]
+fn a_clean_zero_argument_default_entry_is_accepted() {
+    let root = temp_project("default-entry-ok", |root| {
+        write(
+            root,
+            "src/app.mw",
+            "module app\n\npub fn main()\n    return\n",
+        );
+    });
+    let (report, _program) =
+        check_project(&root, &config_with_default_entry("app::main")).expect("check");
+
+    assert!(
+        with_code(&report, "check.default_entry").is_empty(),
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
+fn a_bare_default_entry_into_a_module_less_script_is_accepted() {
+    // A single module-less script joins the program under the empty module name; a
+    // bare `main` resolves to its `pub fn main`, so the default entry is runnable.
+    let root = temp_project("default-entry-script", |root| {
+        write(root, "src/app.mw", "pub fn main()\n    return\n");
+    });
+    let (report, _program) =
+        check_project(&root, &config_with_default_entry("main")).expect("check");
+
+    assert!(
+        with_code(&report, "check.default_entry").is_empty(),
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
+fn a_qualified_default_entry_resolves_unambiguously_across_modules() {
+    // Two modules each declare `pub fn main`; the bare name is ambiguous, but a
+    // qualified `admin::main` names exactly one, so it is accepted.
+    let root = temp_project("default-entry-qualified", |root| {
+        write(
+            root,
+            "src/app.mw",
+            "module app\n\npub fn main()\n    return\n",
+        );
+        write(
+            root,
+            "src/admin.mw",
+            "module admin\n\npub fn main()\n    return\n",
+        );
+    });
+    let (report, _program) =
+        check_project(&root, &config_with_default_entry("admin::main")).expect("check");
+
+    assert!(
+        with_code(&report, "check.default_entry").is_empty(),
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
+fn no_default_entry_configured_is_clean() {
+    let root = temp_project("default-entry-none", |root| {
+        write(
+            root,
+            "src/app.mw",
+            "module app\n\npub fn main()\n    return\n",
+        );
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+
+    assert!(
+        with_code(&report, "check.default_entry").is_empty(),
+        "{:#?}",
+        report.diagnostics
+    );
 }
 
 #[test]

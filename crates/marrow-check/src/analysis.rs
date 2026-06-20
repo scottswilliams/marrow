@@ -12,13 +12,13 @@ use marrow_syntax::SourceSpan;
 use crate::checks::{ModuleNamePolicy, ResolvedFileCheck, check_resolved_files};
 use crate::enums::normalize_program_named_types;
 use crate::{
-    CHECK_DUPLICATE_MODULE, CHECK_MULTIPLE_SCRIPTS, CHECK_READ_ONLY_EXPRESSION_CONTEXT,
-    CheckDiagnostic, CheckReport, CheckedDebugExpression, CheckedFile, CheckedModule,
-    CheckedProgram, DebugSourceIdentity, DiagnosticPayload, IO_READ, ProjectSources,
-    SCHEMA_DUPLICATE_ROOT_OWNER, SurfaceActionFact, SurfaceActionOperationDescriptor,
-    SurfaceCatalogStatus, SurfaceFact, SurfaceReadOperationDescriptor, SurfaceReadOperationFact,
-    SurfaceUpdateOperationDescriptor, TestResolutionSuppression, check_file_source,
-    enum_visibility, module_path_error, read_source,
+    CHECK_DEFAULT_ENTRY, CHECK_DUPLICATE_MODULE, CHECK_MULTIPLE_SCRIPTS,
+    CHECK_READ_ONLY_EXPRESSION_CONTEXT, CheckDiagnostic, CheckReport, CheckedDebugExpression,
+    CheckedFile, CheckedModule, CheckedProgram, DebugSourceIdentity, DefaultEntryProblem,
+    DiagnosticPayload, IO_READ, ProjectSources, SCHEMA_DUPLICATE_ROOT_OWNER, SurfaceActionFact,
+    SurfaceActionOperationDescriptor, SurfaceCatalogStatus, SurfaceFact,
+    SurfaceReadOperationDescriptor, SurfaceReadOperationFact, SurfaceUpdateOperationDescriptor,
+    TestResolutionSuppression, check_file_source, enum_visibility, module_path_error, read_source,
 };
 
 mod catalog_nav;
@@ -676,6 +676,7 @@ pub(crate) fn analyze_source_project(
     );
     crate::evolution::check_transform_effects(&program, &mut report.diagnostics);
     crate::presence::check_presence(&mut program, &mut report.diagnostics);
+    check_default_entry(project_root, config, &program, &mut report.diagnostics);
     program.rebuild_durable_digest_renderings(parsed_files.iter().filter_map(|(file, parsed)| {
         parsed_sources
             .get(&file.path)
@@ -712,6 +713,44 @@ pub(crate) fn analyze_source_project(
         use_sites,
         catalog_declarations,
     })
+}
+
+/// Reject a `run.defaultEntry` that cannot run argument-free. A default entry runs
+/// with no arguments, so a missing, private, ambiguous, or parameterized target can
+/// only fault at run time; the check fails it up front, spanned at `marrow.json`
+/// where the entry is configured.
+fn check_default_entry(
+    project_root: &Path,
+    config: &ProjectConfig,
+    program: &CheckedProgram,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    let Some(entry) = config.default_entry.as_deref() else {
+        return;
+    };
+    let Some(problem) = program.default_entry_verdict(entry) else {
+        return;
+    };
+    let reason = match problem {
+        DefaultEntryProblem::Missing => "names no public entry",
+        DefaultEntryProblem::Private => "names a private function; mark it `pub`",
+        DefaultEntryProblem::Ambiguous => "is ambiguous; qualify it as `module::function`",
+        DefaultEntryProblem::HasParameters => {
+            "declares parameters, but a default entry runs with no arguments"
+        }
+    };
+    diagnostics.push(
+        CheckDiagnostic::error(
+            CHECK_DEFAULT_ENTRY,
+            &project_root.join("marrow.json"),
+            crate::source_spans::start_of_file(),
+            format!("`run.defaultEntry` `{entry}` {reason}"),
+        )
+        .with_payload(DiagnosticPayload::DefaultEntry {
+            entry: entry.to_string(),
+            problem,
+        }),
+    );
 }
 
 fn overlay_module_file(
@@ -909,8 +948,16 @@ mod tests {
         let snapshot =
             analyze_project(root.path(), &config, &ProjectSources::new(), None).expect("analyze");
 
+        // Overlapping `src` into `tests` re-scans each source module as a test,
+        // where its test-path name differs from its declared source module, so the
+        // only diagnostics here are those expected module-path mismatches. The
+        // caching invariant is the disk read count below.
         assert!(
-            !snapshot.report.has_errors(),
+            snapshot
+                .report
+                .diagnostics
+                .iter()
+                .all(|diagnostic| diagnostic.code == "check.module_path"),
             "{:#?}",
             snapshot.report.diagnostics
         );

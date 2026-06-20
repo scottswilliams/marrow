@@ -699,3 +699,105 @@ fn a_simple_config_error_carries_the_documented_kind_envelope_field() {
     assert_eq!(record["code"], "config.invalid");
     assert_eq!(record["kind"], "tooling", "{record}");
 }
+
+#[test]
+fn rejects_a_private_default_entry() {
+    let root = temp_project("proj-default-entry-private", |root| {
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" }, "run": { "defaultEntry": "app::main" } }"#,
+        );
+        write(root, "src/app.mw", "module app\n\nfn main()\n    return\n");
+    });
+    let output = run_check(&["--format", "jsonl", root.to_str().unwrap()]);
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let records = support::diagnostic_records(output.stdout);
+    assert_has_code(&records, "check.default_entry");
+    assert_has_file(&records, "marrow.json");
+}
+
+#[test]
+fn rejects_a_nonexistent_default_entry() {
+    let root = temp_project("proj-default-entry-missing", |root| {
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" }, "run": { "defaultEntry": "app::nope" } }"#,
+        );
+        write(
+            root,
+            "src/app.mw",
+            "module app\n\npub fn main()\n    return\n",
+        );
+    });
+    let output = run_check(&["--format", "jsonl", root.to_str().unwrap()]);
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let records = support::diagnostic_records(output.stdout);
+    assert_has_code(&records, "check.default_entry");
+}
+
+#[test]
+fn rejects_an_empty_string_default_entry() {
+    let root = temp_project("proj-default-entry-empty", |root| {
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" }, "run": { "defaultEntry": "" } }"#,
+        );
+        write(
+            root,
+            "src/app.mw",
+            "module app\n\npub fn main()\n    return\n",
+        );
+    });
+    let output = run_check(&["--format", "jsonl", root.to_str().unwrap()]);
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let records = support::diagnostic_records(output.stdout);
+    assert_has_code(&records, "check.default_entry");
+}
+
+#[test]
+fn rejects_a_default_entry_that_takes_arguments() {
+    let root = temp_project("proj-default-entry-args", |root| {
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" }, "run": { "defaultEntry": "app::main" } }"#,
+        );
+        write(
+            root,
+            "src/app.mw",
+            "module app\n\npub fn main(name: string)\n    print(name)\n",
+        );
+    });
+    let output = run_check(&["--format", "jsonl", root.to_str().unwrap()]);
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let records = support::diagnostic_records(output.stdout);
+    assert_has_code(&records, "check.default_entry");
+}
+
+#[test]
+fn accepts_a_clean_zero_argument_default_entry() {
+    let root = temp_project("proj-default-entry-ok", |root| {
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" }, "run": { "defaultEntry": "app::main" } }"#,
+        );
+        write(
+            root,
+            "src/app.mw",
+            "module app\n\npub fn main()\n    return\n",
+        );
+    });
+    let output = run_check(&["--format", "jsonl", root.to_str().unwrap()]);
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let records = support::diagnostic_records(output.stdout);
+    assert_lacks_code(&records, "check.default_entry");
+}

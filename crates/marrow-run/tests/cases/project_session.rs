@@ -37,6 +37,16 @@ fn write_native_config(root: &Path) {
     .expect("write marrow.json");
 }
 
+/// A native config with no `run.defaultEntry`, for fixtures that drive a
+/// parameterized entry through an explicit override rather than the default.
+fn write_native_config_no_default(root: &Path) {
+    fs::write(
+        root.join("marrow.json"),
+        r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".data" } }"#,
+    )
+    .expect("write marrow.json");
+}
+
 fn baseline_source() -> &'static str {
     "module shelf\n\
      resource Counter\n\
@@ -584,7 +594,7 @@ fn surface_read_session_fences_drift_without_auto_apply() {
 #[test]
 fn project_session_invokes_protocol_arguments() {
     let root = TempDir::new("marrow-run-session-protocol-args").expect("create project");
-    write_native_config(root.path());
+    write_native_config_no_default(root.path());
     write_temp_source(
         root.path(),
         Path::new("src/shelf.mw"),
@@ -643,7 +653,7 @@ fn project_session_rejects_stale_protocol_invocation_identity() {
         }],
     };
     let root = TempDir::new("marrow-run-session-stale-protocol-args").expect("create project");
-    write_native_config(root.path());
+    write_native_config_no_default(root.path());
     write_temp_source(
         root.path(),
         Path::new("src/shelf.mw"),

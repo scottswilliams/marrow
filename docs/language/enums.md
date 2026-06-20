@@ -181,4 +181,8 @@ A set whose members are managed at runtime is not an enum — it is a saved
 resource referenced by a field. An enum is fixed in source, which is what lets a
 `match` over it be exhaustive.
 
-`enum` takes `pub` the same way `fn` does.
+`enum` takes `pub` the same way `fn` does. A non-`pub` enum is nameable only
+within its own module. Naming a non-`pub` enum in a `pub fn` parameter or return
+type warns (`check.exposed_private_enum`): the enum's values flow across the
+module boundary through that public signature even though callers cannot name the
+type. Mark the enum `pub` to make it nameable, or keep the function private.

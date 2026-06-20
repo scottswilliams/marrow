@@ -132,6 +132,10 @@ Check a project directory containing `marrow.json` and report diagnostics.
   freezes identity.
 - Passing a bare `.mw` file is a usage error. Run `marrow check` on the project
   directory that contains `marrow.json`.
+- When `marrow.json` sets `run.defaultEntry`, the check verifies it names a
+  runnable zero-argument entry. A missing, private, ambiguous, or parameterized
+  default entry is a `check.default_entry` error rather than a run-time fault.
+  `marrow doctor` inherits this check.
 - On successful `json` or `jsonl` checks, the report includes
   `entry_footprints`, `surface_abi`, and `surface_routes`. `surface_routes` is
   the `surface.route.v1` manifest derived from exported surface descriptors:

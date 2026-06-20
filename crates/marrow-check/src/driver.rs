@@ -413,11 +413,13 @@ impl TestResolutionSuppression {
             | DiagnosticPayload::SurfaceAction(_)
             | DiagnosticPayload::DuplicateModule { .. }
             | DiagnosticPayload::ModulePath { .. }
+            | DiagnosticPayload::DefaultEntry { .. }
             | DiagnosticPayload::ReservedTestModulePathSegment { .. }
             | DiagnosticPayload::DuplicateRootOwner { .. }
             | DiagnosticPayload::RejectedSurface(_)
             | DiagnosticPayload::Enum(_)
             | DiagnosticPayload::PrivateEnum(_)
+            | DiagnosticPayload::ExposedPrivateEnum { .. }
             | DiagnosticPayload::DuplicateNamedArgument(_)
             | DiagnosticPayload::AppendTarget(_)
             | DiagnosticPayload::ConversionUnsupportedSource(_)
@@ -508,6 +510,22 @@ pub(crate) fn check_tests_with_sources_analysis(
                 .push(test_module_path_error(file, module_name, segment));
             resolution_suppression.hide_module(module_name.to_string());
             resolution_suppression.hide_declared_types(&parsed, &[module_name.to_string()]);
+        } else if let Some(declared) = &parsed.file.module {
+            // A test file is named from its path. A declared `module` is optional,
+            // but when present it must spell that path-derived name, mirroring the
+            // source-file rule, so a test cannot masquerade under another name.
+            if file.module_name.as_deref() != Some(declared.name.as_str()) {
+                report.diagnostics.push(module_path_error(
+                    file,
+                    declared,
+                    format!(
+                        "module `{}` does not match its path; expected `{}`",
+                        declared.name,
+                        file.module_name.as_deref().unwrap_or_default()
+                    ),
+                    file.module_name.clone(),
+                ));
+            }
         }
 
         // A test file is a script: it is named from its path, never from a

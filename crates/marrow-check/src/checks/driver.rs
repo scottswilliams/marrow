@@ -11,13 +11,14 @@ use marrow_syntax::SourceSpan;
 use crate::enums::{
     EnumAnnotationResolution, ambiguous_enum_annotation_diagnostic, annotation_type_known,
     annotation_unknown_identity_name, resolve_diagnosed_annotation_type, resolve_enum_annotation,
-    resolve_type,
+    resolve_type, same_module_private_enum,
 };
 use crate::infer::infer_type;
 use crate::{
-    CHECK_MISSING_RETURN, CHECK_PRIVATE_ENUM, CHECK_UNKNOWN_TYPE, CHECK_UNRESOLVED_IMPORT,
-    CheckDiagnostic, CheckReport, CheckedProgram, DiagnosticPayload, MarrowType, build_alias_map,
-    check_rejected_surface, has_duplicate_error, is_resolved_import, push_schema_error,
+    CHECK_EXPOSED_PRIVATE_ENUM, CHECK_MISSING_RETURN, CHECK_PRIVATE_ENUM, CHECK_UNKNOWN_TYPE,
+    CHECK_UNRESOLVED_IMPORT, CheckDiagnostic, CheckReport, CheckedProgram, DiagnosticPayload,
+    MarrowType, build_alias_map, check_rejected_surface, has_duplicate_error, is_resolved_import,
+    push_schema_error,
 };
 
 use super::operators::check_assignment;
@@ -101,11 +102,13 @@ pub(crate) fn check_resolved_files(
                 | DiagnosticPayload::SurfaceAction(_)
                 | DiagnosticPayload::DuplicateModule { .. }
                 | DiagnosticPayload::ModulePath { .. }
+                | DiagnosticPayload::DefaultEntry { .. }
                 | DiagnosticPayload::ReservedTestModulePathSegment { .. }
                 | DiagnosticPayload::DuplicateRootOwner { .. }
                 | DiagnosticPayload::RejectedSurface(_)
                 | DiagnosticPayload::Enum(_)
                 | DiagnosticPayload::PrivateEnum(_)
+                | DiagnosticPayload::ExposedPrivateEnum { .. }
                 | DiagnosticPayload::DuplicateNamedArgument(_)
                 | DiagnosticPayload::AppendTarget(_)
                 | DiagnosticPayload::ConversionUnsupportedSource(_)
@@ -335,6 +338,7 @@ pub(crate) fn check_file_types(
                         diagnostics,
                     );
                 }
+                check_exposed_private_enums(function, &annotation_context, diagnostics);
                 if has_parse_errors {
                     continue;
                 }
@@ -529,6 +533,47 @@ fn check_type_annotation(
                 format!("unknown type `{name}`"),
             )
             .with_payload(DiagnosticPayload::UnknownType(schema_type)),
+        );
+    }
+}
+
+/// Warn when a `pub fn` names a non-`pub` enum from its own module in a parameter
+/// or return type: the enum's values escape through a public API even though other
+/// modules cannot name the type. Private functions encapsulate the enum, and a
+/// foreign private enum is already a hard `check.private_enum` error.
+fn check_exposed_private_enums(
+    function: &marrow_syntax::FunctionDecl,
+    context: &TypeAnnotationContext<'_>,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    if !function.public {
+        return;
+    }
+    let signature_types = function
+        .params
+        .iter()
+        .map(|param| &param.ty)
+        .chain(function.return_type.as_ref());
+    for ty in signature_types {
+        let Some(enum_name) =
+            same_module_private_enum(ty, context.program, context.aliases, context.file)
+        else {
+            continue;
+        };
+        diagnostics.push(
+            CheckDiagnostic::warning(
+                CHECK_EXPOSED_PRIVATE_ENUM,
+                context.file,
+                function.span,
+                format!(
+                    "public function `{}` exposes private enum `{enum_name}`; mark the enum `pub` to make it nameable",
+                    function.name
+                ),
+            )
+            .with_payload(DiagnosticPayload::ExposedPrivateEnum {
+                enum_name,
+                function: function.name.clone(),
+            }),
         );
     }
 }
