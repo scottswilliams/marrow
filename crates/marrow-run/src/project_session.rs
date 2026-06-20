@@ -40,6 +40,14 @@ pub struct ProjectOpen {
     mode: ProjectMode,
     entry_override: Option<String>,
     run_store_policy: RunStorePolicy,
+    source_analysis_admission: Option<SourceAnalysisAdmission>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceAnalysisAdmission {
+    source_analysis_identity: AnalysisIdentity,
+    read_only_context_digest: String,
+    accepted_catalog: marrow_catalog::CatalogMetadata,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -55,6 +63,7 @@ impl ProjectOpen {
             mode: ProjectMode::Run,
             entry_override: None,
             run_store_policy: RunStorePolicy::Commit,
+            source_analysis_admission: None,
         }
     }
 
@@ -63,6 +72,7 @@ impl ProjectOpen {
             mode: ProjectMode::Test,
             entry_override: None,
             run_store_policy: RunStorePolicy::Commit,
+            source_analysis_admission: None,
         }
     }
 
@@ -78,6 +88,11 @@ impl ProjectOpen {
 
     pub fn with_fresh_memory_store(mut self) -> Self {
         self.run_store_policy = RunStorePolicy::FreshMemory;
+        self
+    }
+
+    pub fn with_source_analysis_admission(mut self, admission: SourceAnalysisAdmission) -> Self {
+        self.source_analysis_admission = Some(admission);
         self
     }
 }
@@ -555,6 +570,21 @@ impl ProjectSession {
         &self.analysis_snapshot
     }
 
+    pub fn source_analysis_admission(
+        &self,
+    ) -> Result<Option<SourceAnalysisAdmission>, ProjectSessionError> {
+        let Some(accepted_catalog) =
+            accepted_catalog_for_admission(&self.analysis_snapshot.program)?
+        else {
+            return Ok(None);
+        };
+        Ok(Some(SourceAnalysisAdmission {
+            source_analysis_identity: self.source_analysis_identity().clone(),
+            read_only_context_digest: self.analysis_snapshot.program.read_only_context_digest(),
+            accepted_catalog,
+        }))
+    }
+
     pub fn program(&self) -> &CheckedProgram {
         self.session_program.checked(&self.analysis_snapshot)
     }
@@ -827,10 +857,24 @@ fn open_run_session(
         .or_else(|| config.default_entry.clone())
         .ok_or(ProjectSessionError::NoEntry)?;
     let mut notices = Vec::new();
+    let admission = open.source_analysis_admission.as_ref();
+    if matches!(open.run_store_policy, RunStorePolicy::Commit) && admission.is_some() {
+        return Err(ProjectSessionError::SchemaDrift {
+            message:
+                "source analysis admission is only valid for isolated or fresh-memory run sessions"
+                    .to_string(),
+        });
+    }
     let store = match open.run_store_policy {
-        RunStorePolicy::Commit => open_run_store(&root, &config, checked, false, &mut notices),
-        RunStorePolicy::Isolated => open_run_store(&root, &config, checked, true, &mut notices),
-        RunStorePolicy::FreshMemory => open_fresh_memory_run_store(&root, &config, checked),
+        RunStorePolicy::Commit => {
+            open_run_store(&root, &config, checked, false, admission, &mut notices)
+        }
+        RunStorePolicy::Isolated => {
+            open_run_store(&root, &config, checked, true, admission, &mut notices)
+        }
+        RunStorePolicy::FreshMemory => {
+            open_fresh_memory_run_store(&root, &config, checked, admission)
+        }
     }?;
     let analysis_snapshot = store.checked.into_snapshot();
     let runtime = analysis_snapshot.program.runtime();
@@ -853,7 +897,7 @@ fn open_test_session(
     config: ProjectConfig,
     checked: CheckedSourceProgram,
 ) -> Result<ProjectSession, ProjectSessionError> {
-    let checked = bind_proposed_catalog_identity(&root, &config, checked)?;
+    let checked = bind_proposed_catalog_identity(&root, &config, checked, None)?;
     let analysis_snapshot = checked.into_snapshot();
     let source_module_count = analysis_snapshot.program.modules.len();
     let (test_report, program) =
@@ -1002,21 +1046,24 @@ fn open_run_store(
     config: &ProjectConfig,
     checked: CheckedSourceProgram,
     isolate_writes: bool,
+    admission: Option<&SourceAnalysisAdmission>,
     notices: &mut Vec<ProjectSessionNotice>,
 ) -> Result<OpenRunStore, ProjectSessionError> {
     let Some(store) = open_store_file(root, config, !isolate_writes)? else {
         if isolate_writes && pending_baseline(checked.program()) {
             notices.push(ProjectSessionNotice::DryRunWouldFreeze);
-            return open_memory_preview_store(root, config, checked);
+            return open_memory_preview_store(root, config, checked, admission);
         }
-        return open_memory_store(checked);
+        return open_memory_store(validate_checked_source_analysis_admission(
+            checked, admission,
+        )?);
     };
     if isolate_writes && pending_baseline(checked.program()) {
         if populated_unstamped_store(checked.program(), &store.store)? {
             return Err(ProjectSessionError::UnstampedStore);
         }
         notices.push(ProjectSessionNotice::DryRunWouldFreeze);
-        let checked = bind_proposed_catalog_identity(root, config, checked)?;
+        let checked = bind_proposed_catalog_identity(root, config, checked, admission)?;
         return finish_open(checked, store, true);
     }
     let checked = if isolate_writes {
@@ -1029,12 +1076,14 @@ fn open_run_store(
     }
     match fence_run(checked.program(), &store.store) {
         Ok(()) => {
+            validate_source_analysis_admission(&checked.snapshot, admission)?;
             if !isolate_writes {
                 reproject_committed_lock(root, &store.store, checked.program())?;
             }
             finish_open(checked, store, isolate_writes)
         }
         Err(FenceError::SchemaDrift) => {
+            validate_no_source_analysis_admission(admission)?;
             if isolate_writes {
                 return classify_dry_run_drift(root, config, checked, store, notices);
             }
@@ -1048,8 +1097,11 @@ fn open_memory_preview_store(
     root: &Path,
     config: &ProjectConfig,
     checked: CheckedSourceProgram,
+    admission: Option<&SourceAnalysisAdmission>,
 ) -> Result<OpenRunStore, ProjectSessionError> {
-    open_bound_memory_store(bind_proposed_catalog_identity(root, config, checked)?)
+    open_bound_memory_store(bind_proposed_catalog_identity(
+        root, config, checked, admission,
+    )?)
 }
 
 fn open_memory_store(checked: CheckedSourceProgram) -> Result<OpenRunStore, ProjectSessionError> {
@@ -1063,8 +1115,11 @@ fn open_fresh_memory_run_store(
     root: &Path,
     config: &ProjectConfig,
     checked: CheckedSourceProgram,
+    admission: Option<&SourceAnalysisAdmission>,
 ) -> Result<OpenRunStore, ProjectSessionError> {
-    open_bound_memory_store(bind_proposed_catalog_identity(root, config, checked)?)
+    open_bound_memory_store(bind_proposed_catalog_identity(
+        root, config, checked, admission,
+    )?)
 }
 
 fn open_bound_memory_store(
@@ -1260,6 +1315,30 @@ fn load_checked_for_config(
     Ok(CheckedSourceProgram::from_snapshot(snapshot))
 }
 
+fn accepted_catalog_for_admission(
+    program: &CheckedProgram,
+) -> Result<Option<marrow_catalog::CatalogMetadata>, ProjectSessionError> {
+    let Some(epoch) = program.catalog.accepted_epoch else {
+        return Ok(None);
+    };
+    let Some(digest) = program.catalog.accepted_digest.clone() else {
+        return Err(ProjectSessionError::Catalog {
+            code: marrow_catalog::CATALOG_INVALID,
+            message: "accepted catalog digest is missing from the checked program".to_string(),
+        });
+    };
+    let catalog = marrow_catalog::CatalogMetadata::from_stored_parts(
+        epoch,
+        digest,
+        program.catalog.accepted_entries.clone(),
+    )
+    .map_err(|error| ProjectSessionError::Catalog {
+        code: error.code,
+        message: error.message,
+    })?;
+    Ok(Some(catalog))
+}
+
 fn load_checked_for_surface_session(
     root: &Path,
 ) -> Result<(ProjectConfig, CheckedProgram), ProjectSessionError> {
@@ -1302,6 +1381,43 @@ fn load_checked_for_fresh_memory_session(
     Ok((config, CheckedSourceProgram::from_snapshot(snapshot)))
 }
 
+fn validate_source_analysis_admission(
+    snapshot: &AnalysisSnapshot,
+    admission: Option<&SourceAnalysisAdmission>,
+) -> Result<(), ProjectSessionError> {
+    let Some(admission) = admission else {
+        return Ok(());
+    };
+    if snapshot.content_identity() == &admission.source_analysis_identity {
+        let digest = snapshot.program.read_only_context_digest();
+        if digest == admission.read_only_context_digest {
+            return Ok(());
+        }
+    }
+    Err(ProjectSessionError::SchemaDrift {
+        message: "source analysis changed while opening the admitted project session".to_string(),
+    })
+}
+
+fn validate_checked_source_analysis_admission(
+    checked: CheckedSourceProgram,
+    admission: Option<&SourceAnalysisAdmission>,
+) -> Result<CheckedSourceProgram, ProjectSessionError> {
+    validate_source_analysis_admission(&checked.snapshot, admission)?;
+    Ok(checked)
+}
+
+fn validate_no_source_analysis_admission(
+    admission: Option<&SourceAnalysisAdmission>,
+) -> Result<(), ProjectSessionError> {
+    if admission.is_none() {
+        return Ok(());
+    }
+    Err(ProjectSessionError::SchemaDrift {
+        message: "source analysis admission does not apply after schema drift".to_string(),
+    })
+}
+
 fn open_store_for_inspection(
     root: &Path,
     config: &ProjectConfig,
@@ -1321,19 +1437,32 @@ fn bind_proposed_catalog_identity(
     root: &Path,
     config: &ProjectConfig,
     checked: CheckedSourceProgram,
+    admission: Option<&SourceAnalysisAdmission>,
 ) -> Result<CheckedSourceProgram, ProjectSessionError> {
     if checked.program().catalog.accepted_epoch.is_some() {
+        validate_source_analysis_admission(&checked.snapshot, admission)?;
         return Ok(checked);
     }
-    let Some(proposal) = checked.program().catalog.proposal.clone() else {
-        return Ok(checked);
+    let admitted = admission.map(|admission| &admission.accepted_catalog);
+    let proposal = match admitted {
+        Some(catalog) => catalog,
+        None => {
+            let Some(proposal) = checked.program().catalog.proposal.as_ref() else {
+                validate_source_analysis_admission(&checked.snapshot, admission)?;
+                return Ok(checked);
+            };
+            if proposal.entries.is_empty() {
+                validate_source_analysis_admission(&checked.snapshot, admission)?;
+                return Ok(checked);
+            }
+            proposal
+        }
     };
-    if proposal.entries.is_empty() {
-        return Ok(checked);
-    }
-    marrow_check::check_source_project_analysis_against(root, config, Some(&proposal), None)
-        .map(CheckedSourceProgram::from_snapshot)
-        .map_err(ProjectSessionError::from)
+    let snapshot =
+        marrow_check::check_source_project_analysis_against(root, config, Some(proposal), None)
+            .map_err(ProjectSessionError::from)?;
+    validate_source_analysis_admission(&snapshot, admission)?;
+    Ok(CheckedSourceProgram::from_snapshot(snapshot))
 }
 
 fn resolve_store_path(

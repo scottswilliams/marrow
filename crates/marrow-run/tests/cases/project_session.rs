@@ -787,6 +787,223 @@ fn run_session_exposes_the_source_analysis_snapshot_used_by_its_runtime_program(
 }
 
 #[test]
+fn isolated_run_reuses_source_analysis_admission() {
+    let root = TempDir::new("marrow-run-session-analysis-admission").expect("create project");
+    write_native_config(root.path());
+    write_temp_source(root.path(), Path::new("src/shelf.mw"), baseline_source());
+
+    let launch = ProjectSession::open(root.path(), ProjectOpen::run().with_isolated_writes())
+        .expect("open launch session");
+    let admission: marrow_run::SourceAnalysisAdmission = launch
+        .source_analysis_admission()
+        .expect("build admission")
+        .expect("durable run session has source admission");
+    let reopened = ProjectSession::open(
+        root.path(),
+        ProjectOpen::run()
+            .with_isolated_writes()
+            .with_source_analysis_admission(admission),
+    )
+    .expect("open admitted session");
+
+    assert_eq!(
+        reopened
+            .source_analysis_snapshot()
+            .program
+            .read_only_context_digest(),
+        launch
+            .source_analysis_snapshot()
+            .program
+            .read_only_context_digest()
+    );
+    assert_eq!(
+        reopened.runtime_program().read_only_context_digest(),
+        launch.runtime_program().read_only_context_digest()
+    );
+}
+
+#[test]
+fn source_analysis_admission_rejects_source_changes() {
+    let root =
+        TempDir::new("marrow-run-session-analysis-admission-change").expect("create project");
+    write_native_config(root.path());
+    write_temp_source(root.path(), Path::new("src/shelf.mw"), baseline_source());
+
+    let launch = ProjectSession::open(root.path(), ProjectOpen::run().with_isolated_writes())
+        .expect("open launch session");
+    let admission = launch
+        .source_analysis_admission()
+        .expect("build admission")
+        .expect("durable run session has source admission");
+
+    write_temp_source(root.path(), Path::new("src/shelf.mw"), advanced_source());
+
+    let error = ProjectSession::open(
+        root.path(),
+        ProjectOpen::run()
+            .with_isolated_writes()
+            .with_source_analysis_admission(admission),
+    )
+    .expect_err("admission belongs to the original source analysis");
+
+    assert_eq!(error.code(), "run.schema_drift");
+}
+
+#[test]
+fn source_analysis_admission_rejects_changed_store_authority() {
+    let root = TempDir::new("marrow-run-session-analysis-admission-store").expect("create project");
+    write_native_config(root.path());
+    write_temp_source(root.path(), Path::new("src/shelf.mw"), baseline_source());
+
+    let launch = ProjectSession::open(root.path(), ProjectOpen::run().with_isolated_writes())
+        .expect("open launch session");
+    let admission = launch
+        .source_analysis_admission()
+        .expect("build admission")
+        .expect("durable run session has source admission");
+    drop(launch);
+
+    let baseline = ProjectSession::open(root.path(), ProjectMode::Run).expect("open baseline");
+    assert_eq!(invoke(&baseline, "shelf::show"), "baseline\n");
+    drop(baseline);
+
+    let error = ProjectSession::open(
+        root.path(),
+        ProjectOpen::run()
+            .with_isolated_writes()
+            .with_source_analysis_admission(admission),
+    )
+    .expect_err("admission must not override store-bound accepted identity");
+
+    assert_eq!(error.code(), "run.schema_drift");
+}
+
+#[test]
+fn source_analysis_admission_rejects_changed_lock_authority_without_store() {
+    let root = TempDir::new("marrow-run-session-analysis-admission-lock").expect("create project");
+    write_native_config(root.path());
+    write_temp_source(root.path(), Path::new("src/shelf.mw"), baseline_source());
+
+    let launch = ProjectSession::open(root.path(), ProjectOpen::run().with_isolated_writes())
+        .expect("open launch session");
+    let admission = launch
+        .source_analysis_admission()
+        .expect("build admission")
+        .expect("durable run session has source admission");
+    drop(launch);
+
+    let baseline = ProjectSession::open(root.path(), ProjectMode::Run).expect("open baseline");
+    assert_eq!(invoke(&baseline, "shelf::show"), "baseline\n");
+    drop(baseline);
+    fs::remove_dir_all(root.path().join(".data")).expect("remove native store");
+
+    let error = ProjectSession::open(
+        root.path(),
+        ProjectOpen::run()
+            .with_isolated_writes()
+            .with_source_analysis_admission(admission),
+    )
+    .expect_err("admission must not override committed lock identity");
+
+    assert_eq!(error.code(), "run.schema_drift");
+}
+
+#[test]
+fn source_analysis_admission_rejects_commit_mode_without_writes() {
+    let root =
+        TempDir::new("marrow-run-session-analysis-admission-commit").expect("create project");
+    write_native_config(root.path());
+    write_temp_source(root.path(), Path::new("src/shelf.mw"), baseline_source());
+
+    let launch = ProjectSession::open(root.path(), ProjectOpen::run().with_isolated_writes())
+        .expect("open launch session");
+    let admission = launch
+        .source_analysis_admission()
+        .expect("build admission")
+        .expect("durable run session has source admission");
+    drop(launch);
+
+    let error = ProjectSession::open(
+        root.path(),
+        ProjectOpen::run().with_source_analysis_admission(admission),
+    )
+    .expect_err("admission is not a write-mode authority");
+
+    assert_eq!(error.code(), "run.schema_drift");
+    assert!(
+        !root.path().join(".data").exists(),
+        "commit-mode rejection must not create the native store"
+    );
+    assert!(
+        !lock_path(root.path()).exists(),
+        "commit-mode rejection must not project a committed lock"
+    );
+}
+
+#[test]
+fn source_analysis_admission_preserves_unstamped_store_guard() {
+    let root =
+        TempDir::new("marrow-run-session-analysis-admission-unstamped").expect("create project");
+    write_native_config(root.path());
+    write_temp_source(root.path(), Path::new("src/shelf.mw"), baseline_source());
+
+    let launch = ProjectSession::open(root.path(), ProjectOpen::run().with_isolated_writes())
+        .expect("open launch session");
+    let admission = launch
+        .source_analysis_admission()
+        .expect("build admission")
+        .expect("durable run session has source admission");
+    drop(launch);
+
+    let store_path = root.path().join(".data").join("marrow.redb");
+    fs::create_dir_all(store_path.parent().expect("store parent")).expect("create store dir");
+    let store = TreeStore::open(&store_path).expect("open native store");
+    store
+        .write_record_presence(
+            &CatalogId::new("cat_00000000000000000000000000000001").expect("store id"),
+            &[SavedKey::Int(1)],
+        )
+        .expect("write unstamped record");
+    drop(store);
+
+    let error = ProjectSession::open(
+        root.path(),
+        ProjectOpen::run()
+            .with_isolated_writes()
+            .with_source_analysis_admission(admission),
+    )
+    .expect_err("admission must not bypass unstamped store rejection");
+
+    assert_eq!(error.code(), "run.store_unstamped");
+}
+
+#[test]
+fn fresh_memory_run_reuses_source_analysis_admission() {
+    let root = TempDir::new("marrow-run-session-analysis-admission-fresh").expect("create project");
+    write_native_config(root.path());
+    write_temp_source(root.path(), Path::new("src/shelf.mw"), baseline_source());
+
+    let launch = ProjectSession::open(root.path(), ProjectOpen::run().with_isolated_writes())
+        .expect("open launch session");
+    let admission = launch
+        .source_analysis_admission()
+        .expect("build admission")
+        .expect("durable run session has source admission");
+    let fresh = ProjectSession::open(
+        root.path(),
+        ProjectOpen::run()
+            .with_fresh_memory_store()
+            .with_source_analysis_admission(admission),
+    )
+    .expect("open admitted fresh-memory session");
+
+    assert_eq!(
+        fresh.runtime_program().read_only_context_digest(),
+        launch.runtime_program().read_only_context_digest()
+    );
+}
+
+#[test]
 fn test_session_keeps_source_analysis_snapshot_separate_from_test_program() {
     let root = TempDir::new("marrow-run-session-test-source-snapshot").expect("create project");
     write_memory_config_with_tests(root.path());
