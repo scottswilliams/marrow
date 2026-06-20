@@ -5,7 +5,8 @@ use marrow_store::value::ScalarType;
 use crate::executable::checked_runtime_value_type;
 use crate::{
     CheckedEntryFunction, CheckedFunctionRef, CheckedProgram, CheckedRuntimeFunction,
-    CheckedRuntimeModule, CheckedRuntimeProgram, CheckedRuntimeValueType, StoredValueMeaning,
+    CheckedRuntimeModule, CheckedRuntimeProgram, CheckedRuntimeValueType, MarrowType,
+    ResourceMemberKind, StoredValueMeaning,
 };
 
 pub const ENTRY_PROTOCOL_TAG_VERSION: &str = "entry.invoke.v1";
@@ -25,6 +26,25 @@ pub struct EntryDescriptor {
     pub identity: EntryIdentity,
     pub parameters: Vec<EntryParameter>,
     pub return_value: Option<EntryArgumentShape>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EntryFunctionSurfaceDescriptor {
+    pub identity: EntryIdentity,
+    pub parameters: Vec<EntryParameter>,
+    pub result: EntryResultDescriptor,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EntrySurfaceProfile {
+    Action,
+    ComputedRead,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EntryResultDescriptor {
+    pub presence: ReturnPresence,
+    pub value: Option<EntrySurfaceValueShape>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -51,6 +71,27 @@ pub enum EntryArgumentShape {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EntrySurfaceValueShape {
+    Scalar(ScalarType),
+    Enum {
+        render_label: String,
+        catalog_id: CatalogId,
+        members: Vec<EntryEnumMember>,
+    },
+    Identity {
+        render_label: String,
+        store_catalog_id: CatalogId,
+        keys: Vec<EntryIdentityKey>,
+    },
+    Sequence(Box<EntrySurfaceValueShape>),
+    Resource {
+        render_label: String,
+        resource_catalog_id: CatalogId,
+        fields: Vec<EntryResourceResultField>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EntryEnumMember {
     pub render_label: String,
     pub catalog_id: CatalogId,
@@ -63,9 +104,48 @@ pub struct EntryIdentityKey {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EntryResourceResultField {
+    pub render_label: String,
+    pub member_catalog_id: CatalogId,
+    pub required: bool,
+    pub shape: EntrySurfaceValueShape,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum EntrySignatureUnsupported {
     Parameter { name: String },
     ReturnValue,
+}
+
+pub(crate) fn surface_value_as_action_argument(
+    shape: EntrySurfaceValueShape,
+) -> Option<EntryArgumentShape> {
+    match shape {
+        EntrySurfaceValueShape::Scalar(scalar) => Some(EntryArgumentShape::Scalar(scalar)),
+        EntrySurfaceValueShape::Enum {
+            render_label,
+            catalog_id,
+            members,
+        } => Some(EntryArgumentShape::Enum {
+            render_label,
+            catalog_id,
+            members,
+        }),
+        EntrySurfaceValueShape::Identity {
+            render_label,
+            store_catalog_id,
+            keys,
+        } => Some(EntryArgumentShape::Identity {
+            render_label,
+            store_catalog_id,
+            keys,
+        }),
+        EntrySurfaceValueShape::Sequence(element) => {
+            let element = surface_value_as_action_argument(*element)?;
+            Some(EntryArgumentShape::Sequence(Box::new(element)))
+        }
+        EntrySurfaceValueShape::Resource { .. } => None,
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -119,6 +199,57 @@ impl EntryDescriptor {
             },
             parameters,
             return_value,
+        })
+    }
+}
+
+impl EntryFunctionSurfaceDescriptor {
+    pub fn from_function_ref(
+        program: &CheckedProgram,
+        requested_name: &str,
+        target: CheckedFunctionRef,
+        profile: EntrySurfaceProfile,
+    ) -> Option<Self> {
+        let runtime = program.runtime();
+        let entry = EntryDescriptor::from_function_ref(&runtime, requested_name, target)?;
+        if !entry
+            .parameters
+            .iter()
+            .all(|parameter| action_shape_supported(&parameter.shape))
+        {
+            return None;
+        }
+
+        let module = program.modules.get(target.module as usize)?;
+        let function = module.functions.get(target.function as usize)?;
+        if !function.public {
+            return None;
+        }
+        let value = match function.return_type.as_ref() {
+            Some(ty) => Some(surface_value_shape(program, ty, profile)?),
+            None if profile == EntrySurfaceProfile::ComputedRead => return None,
+            None => None,
+        };
+        if profile == EntrySurfaceProfile::ComputedRead
+            && !value.as_ref().is_some_and(computed_read_shape_supported)
+        {
+            return None;
+        }
+        if profile == EntrySurfaceProfile::Action
+            && value
+                .clone()
+                .is_some_and(|shape| surface_value_as_action_argument(shape).is_none())
+        {
+            return None;
+        }
+
+        Some(Self {
+            identity: entry.identity,
+            parameters: entry.parameters,
+            result: EntryResultDescriptor {
+                presence: function.return_presence,
+                value,
+            },
         })
     }
 }
@@ -212,22 +343,11 @@ pub(crate) fn function_ref_has_supported_entry_signature(
     }
     if let Some(ty) = function.return_type.as_ref() {
         let ty = checked_runtime_value_type(program, ty.clone());
-        if !runtime_type_has_action_result_shape(&ty) {
+        if !runtime_type_has_entry_shape(&ty) {
             return Err(EntrySignatureUnsupported::ReturnValue);
         }
     }
     Ok(())
-}
-
-pub(crate) fn entry_descriptor_has_supported_shapes(descriptor: &EntryDescriptor) -> bool {
-    descriptor
-        .parameters
-        .iter()
-        .all(|parameter| argument_shape_supported(&parameter.shape))
-        && descriptor
-            .return_value
-            .as_ref()
-            .is_none_or(argument_shape_supported)
 }
 
 fn argument_shape(
@@ -335,6 +455,239 @@ fn entry_sequence_element_supported(ty: &CheckedRuntimeValueType) -> bool {
     )
 }
 
+fn surface_value_shape(
+    program: &CheckedProgram,
+    ty: &MarrowType,
+    profile: EntrySurfaceProfile,
+) -> Option<EntrySurfaceValueShape> {
+    match ty {
+        MarrowType::Resource(resource) if profile == EntrySurfaceProfile::ComputedRead => {
+            resource_result_shape(program, resource)
+        }
+        MarrowType::Resource(_) => None,
+        _ => {
+            let runtime = program.runtime();
+            let runtime_ty = checked_runtime_value_type(program, ty.clone());
+            surface_value_shape_from_runtime(&runtime, &runtime_ty)
+        }
+    }
+}
+
+fn surface_value_shape_from_runtime(
+    program: &CheckedRuntimeProgram,
+    ty: &CheckedRuntimeValueType,
+) -> Option<EntrySurfaceValueShape> {
+    match argument_shape(program, ty) {
+        EntryArgumentShape::Scalar(scalar) => Some(EntrySurfaceValueShape::Scalar(scalar)),
+        EntryArgumentShape::Enum {
+            render_label,
+            catalog_id,
+            members,
+        } => Some(EntrySurfaceValueShape::Enum {
+            render_label,
+            catalog_id,
+            members,
+        }),
+        EntryArgumentShape::Identity {
+            render_label,
+            store_catalog_id,
+            keys,
+        } => Some(EntrySurfaceValueShape::Identity {
+            render_label,
+            store_catalog_id,
+            keys,
+        }),
+        EntryArgumentShape::Sequence(element) => {
+            let element = argument_shape_to_surface_value(*element)?;
+            Some(EntrySurfaceValueShape::Sequence(Box::new(element)))
+        }
+        EntryArgumentShape::Unsupported => None,
+    }
+}
+
+fn argument_shape_to_surface_value(shape: EntryArgumentShape) -> Option<EntrySurfaceValueShape> {
+    match shape {
+        EntryArgumentShape::Scalar(scalar) => Some(EntrySurfaceValueShape::Scalar(scalar)),
+        EntryArgumentShape::Enum {
+            render_label,
+            catalog_id,
+            members,
+        } => Some(EntrySurfaceValueShape::Enum {
+            render_label,
+            catalog_id,
+            members,
+        }),
+        EntryArgumentShape::Identity {
+            render_label,
+            store_catalog_id,
+            keys,
+        } => Some(EntrySurfaceValueShape::Identity {
+            render_label,
+            store_catalog_id,
+            keys,
+        }),
+        EntryArgumentShape::Sequence(element) => Some(EntrySurfaceValueShape::Sequence(Box::new(
+            argument_shape_to_surface_value(*element)?,
+        ))),
+        EntryArgumentShape::Unsupported => None,
+    }
+}
+
+fn resource_result_shape(
+    program: &CheckedProgram,
+    resource_name: &str,
+) -> Option<EntrySurfaceValueShape> {
+    let resource = program.facts.resources().iter().find(|resource| {
+        let module = program.facts.modules().get(resource.module.0 as usize);
+        let qualified = module.map_or_else(
+            || resource.name.clone(),
+            |module| {
+                if module.name.is_empty() {
+                    resource.name.clone()
+                } else {
+                    format!("{}::{}", module.name, resource.name)
+                }
+            },
+        );
+        qualified == resource_name
+    })?;
+    let resource_catalog_id =
+        checked_accepted_catalog_id_value(program, resource.catalog_id.as_deref())?;
+    let mut fields = program
+        .facts
+        .resource_members()
+        .iter()
+        .filter(|member| member.resource == resource.id && member.parent.is_none())
+        .map(|member| {
+            if member.kind != ResourceMemberKind::Field || member.key_count != 0 {
+                return None;
+            }
+            let member_catalog_id =
+                checked_accepted_catalog_id_value(program, member.catalog_id.as_deref())?;
+            let shape = stored_value_shape(program, member.value_meaning.as_ref()?)?;
+            Some(EntryResourceResultField {
+                render_label: member.name.clone(),
+                member_catalog_id,
+                required: member.plain_field_required?,
+                shape,
+            })
+        })
+        .collect::<Option<Vec<_>>>()?;
+    fields.sort_by(|left, right| left.member_catalog_id.cmp(&right.member_catalog_id));
+    Some(EntrySurfaceValueShape::Resource {
+        render_label: resource_name.to_string(),
+        resource_catalog_id,
+        fields,
+    })
+}
+
+fn stored_value_shape(
+    program: &CheckedProgram,
+    meaning: &StoredValueMeaning,
+) -> Option<EntrySurfaceValueShape> {
+    match meaning {
+        StoredValueMeaning::Scalar(scalar) => Some(EntrySurfaceValueShape::Scalar(*scalar)),
+        StoredValueMeaning::Identity {
+            root,
+            store_catalog_id,
+            key_scalars,
+            ..
+        } => {
+            let store_catalog_id =
+                checked_accepted_catalog_id_value(program, store_catalog_id.as_deref())?;
+            let store = program.facts.store_by_root(root)?;
+            let keys = store
+                .identity_keys
+                .iter()
+                .zip(key_scalars)
+                .map(|(key, scalar)| EntryIdentityKey {
+                    render_label: key.name.clone(),
+                    scalar: *scalar,
+                })
+                .collect();
+            Some(EntrySurfaceValueShape::Identity {
+                render_label: root.clone(),
+                store_catalog_id,
+                keys,
+            })
+        }
+        StoredValueMeaning::Enum { enum_id, members } => {
+            let enum_fact = program.facts.enum_(*enum_id)?;
+            let catalog_id =
+                checked_accepted_catalog_id_value(program, enum_fact.catalog_id.as_deref())?;
+            let module_name = program
+                .facts
+                .modules()
+                .get(enum_fact.module.0 as usize)
+                .map(|module| module.name.as_str())
+                .unwrap_or_default();
+            let render_label = if module_name.is_empty() {
+                enum_fact.name.clone()
+            } else {
+                format!("{}::{}", module_name, enum_fact.name)
+            };
+            let members = members
+                .iter()
+                .map(|member_id| {
+                    let member = program.facts.enum_member(*member_id)?;
+                    Some(EntryEnumMember {
+                        render_label: member.name.clone(),
+                        catalog_id: checked_accepted_catalog_id_value(
+                            program,
+                            member.catalog_id.as_deref(),
+                        )?,
+                    })
+                })
+                .collect::<Option<Vec<_>>>()?;
+            Some(EntrySurfaceValueShape::Enum {
+                render_label,
+                catalog_id,
+                members,
+            })
+        }
+    }
+}
+
+fn action_shape_supported(shape: &EntryArgumentShape) -> bool {
+    match shape {
+        EntryArgumentShape::Scalar(_)
+        | EntryArgumentShape::Enum { .. }
+        | EntryArgumentShape::Identity { .. } => true,
+        EntryArgumentShape::Sequence(element) => sequence_argument_shape_supported(element),
+        EntryArgumentShape::Unsupported => false,
+    }
+}
+
+fn computed_read_shape_supported(shape: &EntrySurfaceValueShape) -> bool {
+    match shape {
+        EntrySurfaceValueShape::Scalar(_)
+        | EntrySurfaceValueShape::Enum { .. }
+        | EntrySurfaceValueShape::Identity { .. } => true,
+        EntrySurfaceValueShape::Sequence(element) => {
+            computed_read_sequence_shape_supported(element)
+        }
+        EntrySurfaceValueShape::Resource { fields, .. } => fields
+            .iter()
+            .all(|field| computed_read_resource_field_shape_supported(&field.shape)),
+    }
+}
+
+fn computed_read_sequence_shape_supported(shape: &EntrySurfaceValueShape) -> bool {
+    matches!(
+        shape,
+        EntrySurfaceValueShape::Scalar(_) | EntrySurfaceValueShape::Enum { .. }
+    )
+}
+
+fn computed_read_resource_field_shape_supported(shape: &EntrySurfaceValueShape) -> bool {
+    matches!(
+        shape,
+        EntrySurfaceValueShape::Scalar(_)
+            | EntrySurfaceValueShape::Enum { .. }
+            | EntrySurfaceValueShape::Identity { .. }
+    )
+}
+
 fn runtime_type_has_entry_shape(ty: &CheckedRuntimeValueType) -> bool {
     match ty {
         CheckedRuntimeValueType::Primitive(_) => true,
@@ -354,25 +707,11 @@ fn runtime_type_has_entry_shape(ty: &CheckedRuntimeValueType) -> bool {
     }
 }
 
-fn runtime_type_has_action_result_shape(ty: &CheckedRuntimeValueType) -> bool {
-    runtime_type_has_entry_shape(ty)
-}
-
 fn runtime_sequence_element_has_entry_shape(ty: &CheckedRuntimeValueType) -> bool {
     match ty {
         CheckedRuntimeValueType::Primitive(_) => true,
         CheckedRuntimeValueType::Enum { enum_id, .. } => enum_id.is_some(),
         _ => false,
-    }
-}
-
-fn argument_shape_supported(shape: &EntryArgumentShape) -> bool {
-    match shape {
-        EntryArgumentShape::Scalar(_)
-        | EntryArgumentShape::Enum { .. }
-        | EntryArgumentShape::Identity { .. } => true,
-        EntryArgumentShape::Sequence(element) => sequence_argument_shape_supported(element),
-        EntryArgumentShape::Unsupported => false,
     }
 }
 
@@ -441,6 +780,15 @@ fn checked_accepted_catalog_id(program: &CheckedProgram, catalog_id: Option<&str
         .iter()
         .any(|entry| entry.stable_id == catalog_id)
         .then_some(())
+}
+
+fn checked_accepted_catalog_id_value(
+    program: &CheckedProgram,
+    catalog_id: Option<&str>,
+) -> Option<CatalogId> {
+    let catalog_id = catalog_id?;
+    checked_accepted_catalog_id(program, Some(catalog_id))?;
+    CatalogId::new(catalog_id.to_string()).ok()
 }
 
 fn accepted_catalog_id(

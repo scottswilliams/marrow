@@ -1,8 +1,8 @@
 use marrow_store::cell::CatalogId;
 
 use crate::entry_abi::{
-    ENTRY_PROTOCOL_TAG_VERSION, EntryArgumentShape, EntryDescriptor, EntryIdentity, EntryParameter,
-    entry_descriptor_has_supported_shapes,
+    ENTRY_PROTOCOL_TAG_VERSION, EntryArgumentShape, EntryFunctionSurfaceDescriptor, EntryIdentity,
+    EntryParameter, EntrySurfaceProfile, surface_value_as_action_argument,
 };
 use crate::facts::{
     ResourceMemberFact, ResourceMemberId, ResourceMemberKind, StoreFact, StoreIndexFact,
@@ -318,20 +318,23 @@ impl SurfaceActionOperationDescriptor {
         action: &SurfaceActionFact,
     ) -> Option<Self> {
         require_stable_surface(surface)?;
-        let runtime = program.runtime();
         let requested_name = canonical_action_name(program, action)?;
-        let descriptor =
-            EntryDescriptor::from_function_ref(&runtime, &requested_name, action.function)?;
-        if !entry_descriptor_has_supported_shapes(&descriptor) {
-            return None;
-        }
+        let descriptor = EntryFunctionSurfaceDescriptor::from_function_ref(
+            program,
+            &requested_name,
+            action.function,
+            EntrySurfaceProfile::Action,
+        )?;
         Some(Self {
             profile_version: ENTRY_PROTOCOL_TAG_VERSION,
             operation_tag: descriptor.identity.entry_tag.clone(),
             alias: action.alias.clone(),
             identity: descriptor.identity,
             parameters: descriptor.parameters,
-            return_value: descriptor.return_value,
+            return_value: descriptor
+                .result
+                .value
+                .and_then(surface_value_as_action_argument),
         })
     }
 }

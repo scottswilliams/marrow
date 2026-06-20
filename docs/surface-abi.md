@@ -33,11 +33,15 @@ The active surface foundation has these owners:
   declared collection alias as render metadata. Non-empty `create` lists,
   non-empty `update` lists, and `delete` declarations are active generated
   operation facts over checked top-level projection fields.
+- `crates/marrow-check/src/entry_abi.rs` owns public-function surface value
+  shapes: `entry.invoke.v1` identity, parameter shapes, explicit result
+  presence, scalar/enum/identity/sequence result shapes, and computed-read
+  resource result fields with accepted catalog ids.
 - `crates/marrow-check/src/surface_abi.rs` owns the shared length-prefixed
   digest framing and typed descriptors for `surface.read.v1`,
   `surface.create.v1`, `surface.update.v1`, and `surface.delete.v1`, plus
-  action descriptors that reuse `entry.invoke.v1` identity, parameter shapes,
-  and return shape.
+  action descriptors that reuse `entry_abi` callable identity, parameter
+  shapes, and return shape.
 - `AnalysisSnapshot::surface_read_operations()` returns snapshot-bound
   `SurfaceReadOperationAnalysis` values. A stable surface can produce a
   `SurfaceReadOperationDescriptor`; a source-only surface cannot.
@@ -193,7 +197,8 @@ The active serialized ABI profile lives in `marrow check --format json|jsonl`
 under `surface_abi` and `surface_routes` and is rendered by `marrow-json` DTOs
 from checker-owned facts. The `surface_abi` object serializes accepted catalog
 IDs, callable canonical read/create/update/delete/action operation descriptors,
-value shapes, entry parameter shapes, operation tags, read/action aliases, and render labels
+store-operation value shapes, shared entry parameter/result shapes, operation tags,
+read/action aliases, and render labels
 as labels. It must not serialize checker-local IDs, source spans, raw saved
 paths, backend cursor bytes, physical store keys, or unowned request syntax.
 

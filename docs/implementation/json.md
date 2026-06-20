@@ -42,7 +42,7 @@ exact-body create descriptors for stable surfaces with a non-empty create set,
 optional sparse update descriptors for stable surfaces with a non-empty update
 set, optional full-subtree delete descriptors for stable surfaces with a
 `delete` declaration, and action descriptors that reuse `entry.invoke.v1`
-identity, parameter shapes, and return shape, but only when their operation tags
+identity, parameter shapes, and result shape, but only when their operation tags
 are callable through runtime tag admission. `SurfaceOperationCatalog` derives
 the operation tag, request
 kind, path, surface labels, and alias from that already-curated descriptor

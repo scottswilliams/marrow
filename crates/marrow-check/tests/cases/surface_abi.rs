@@ -3,7 +3,8 @@ use crate::support::{assert_clean, check_with_accepted, config, temp_project, wr
 
 use marrow_catalog::{CatalogEntry, CatalogEntryKind};
 use marrow_check::{
-    AnalysisSnapshot, CheckedProgram, ENTRY_PROTOCOL_TAG_VERSION, EntryDescriptor, ProjectSources,
+    AnalysisSnapshot, CheckedProgram, ENTRY_PROTOCOL_TAG_VERSION, EntryDescriptor,
+    EntryFunctionSurfaceDescriptor, EntrySurfaceProfile, EntrySurfaceValueShape, ProjectSources,
     SurfaceActionOperationDescriptor, SurfaceCatalogBlocker, SurfaceCatalogStatus,
     SurfaceCreateBodySemantics, SurfaceCreateExistenceSemantics, SurfaceCreateIdentityPolicy,
     SurfaceCreateOperationDescriptorKind, SurfaceDeleteOperationDescriptorKind,
@@ -11,6 +12,7 @@ use marrow_check::{
     SurfaceReadOperationDescriptorKind, SurfaceUpdateOperationDescriptor,
     SurfaceUpdateOperationDescriptorKind, analyze_project, check_project,
 };
+use marrow_schema::ReturnPresence;
 use marrow_schema::ScalarType;
 use marrow_store::cell::CatalogId;
 
@@ -93,6 +95,21 @@ fn update_tags_by_surface(snapshot: &AnalysisSnapshot) -> Vec<(String, String)> 
 
 fn catalog_id(raw: &str) -> CatalogId {
     CatalogId::new(raw.to_string()).expect("valid catalog id")
+}
+
+fn function_ref(snapshot: &AnalysisSnapshot, name: &str) -> marrow_check::CheckedFunctionRef {
+    let module = snapshot.program.facts.modules()[0].id;
+    let function_id = snapshot
+        .program
+        .facts
+        .function_id(module, name)
+        .expect("function fact");
+    let function = snapshot.program.facts.function(function_id);
+    marrow_check::CheckedFunctionRef {
+        module: function.module.0,
+        function: function.source_index,
+        presence: function.return_presence,
+    }
 }
 
 #[test]
@@ -487,6 +504,165 @@ surface Books from ^books
     assert_eq!(descriptor.identity, entry.identity);
     assert_eq!(descriptor.parameters, entry.parameters);
     assert_eq!(descriptor.return_value, entry.return_value);
+}
+
+#[test]
+fn shared_function_surface_descriptor_preserves_maybe_presence() {
+    let source = "\
+module app
+resource Book
+    title: string
+store ^books(id: int): Book
+pub fn titleFor(id: Id(^books)): maybe string
+    return absent
+surface Books from ^books
+    fields title
+    action titleFor
+";
+    let (_root, snapshot) = stable_snapshot("surface-shared-abi-maybe-presence", source);
+    let descriptor = EntryFunctionSurfaceDescriptor::from_function_ref(
+        &snapshot.program,
+        "app::titleFor",
+        function_ref(&snapshot, "titleFor"),
+        EntrySurfaceProfile::ComputedRead,
+    )
+    .expect("shared descriptor");
+
+    assert_eq!(descriptor.result.presence, ReturnPresence::MaybePresent);
+    assert!(matches!(
+        descriptor.result.value,
+        Some(EntrySurfaceValueShape::Scalar(ScalarType::Str))
+    ));
+}
+
+#[test]
+fn shared_function_surface_descriptor_renders_resource_results() {
+    let source = "\
+module app
+resource BookPage
+    required title: string
+    author: string
+resource Book
+    title: string
+store ^books(id: int): Book
+pub fn bookPage(id: Id(^books)): maybe BookPage
+    return absent
+surface Books from ^books
+    fields title
+";
+    let (_root, snapshot) = stable_snapshot("surface-shared-abi-resource-result", source);
+    let descriptor = EntryFunctionSurfaceDescriptor::from_function_ref(
+        &snapshot.program,
+        "app::bookPage",
+        function_ref(&snapshot, "bookPage"),
+        EntrySurfaceProfile::ComputedRead,
+    )
+    .expect("shared descriptor");
+
+    let Some(EntrySurfaceValueShape::Resource {
+        render_label,
+        resource_catalog_id,
+        fields,
+    }) = descriptor.result.value
+    else {
+        panic!("expected resource result descriptor: {descriptor:#?}");
+    };
+    assert_eq!(render_label, "app::BookPage");
+    assert!(resource_catalog_id.as_str().starts_with("cat_"));
+    assert_eq!(fields.len(), 2);
+    let title = fields
+        .iter()
+        .find(|field| field.render_label == "title")
+        .expect("title field");
+    assert!(title.required);
+    assert!(matches!(
+        title.shape,
+        EntrySurfaceValueShape::Scalar(ScalarType::Str)
+    ));
+    let author = fields
+        .iter()
+        .find(|field| field.render_label == "author")
+        .expect("author field");
+    assert!(!author.required);
+}
+
+#[test]
+fn computed_read_shared_descriptor_rejects_no_result_function() {
+    let source = "\
+module app
+resource Book
+    title: string
+store ^books(id: int): Book
+pub fn logBook()
+    return
+surface Books from ^books
+    fields title
+    action logBook
+";
+    let (_root, snapshot) = stable_snapshot("surface-shared-abi-no-result", source);
+
+    assert!(
+        EntryFunctionSurfaceDescriptor::from_function_ref(
+            &snapshot.program,
+            "app::logBook",
+            function_ref(&snapshot, "logBook"),
+            EntrySurfaceProfile::ComputedRead,
+        )
+        .is_none(),
+        "computed-read descriptors require an explicit result value"
+    );
+}
+
+#[test]
+fn computed_read_shared_descriptor_rejects_unsupported_result_shape() {
+    let source = "\
+module app
+resource Book
+    title: string
+store ^books(id: int): Book
+pub fn lastError(): Error
+    return Error(code: \"app.error\", message: \"hidden\")
+surface Books from ^books
+    fields title
+";
+    let (_root, snapshot) = stable_snapshot("surface-shared-abi-unsupported-result", source);
+
+    assert!(
+        EntryFunctionSurfaceDescriptor::from_function_ref(
+            &snapshot.program,
+            "app::lastError",
+            function_ref(&snapshot, "lastError"),
+            EntrySurfaceProfile::ComputedRead,
+        )
+        .is_none(),
+        "computed-read descriptors must reject unsupported result shapes"
+    );
+}
+
+#[test]
+fn shared_function_surface_descriptor_rejects_private_function_refs() {
+    let source = "\
+module app
+resource Book
+    title: string
+store ^books(id: int): Book
+fn hidden(): maybe string
+    return absent
+surface Books from ^books
+    fields title
+";
+    let (_root, snapshot) = stable_snapshot("surface-shared-abi-private-ref", source);
+
+    assert!(
+        EntryFunctionSurfaceDescriptor::from_function_ref(
+            &snapshot.program,
+            "app::hidden",
+            function_ref(&snapshot, "hidden"),
+            EntrySurfaceProfile::ComputedRead,
+        )
+        .is_none(),
+        "raw checked function refs must not bypass public surface admission"
+    );
 }
 
 #[test]
