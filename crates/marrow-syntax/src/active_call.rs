@@ -1,8 +1,8 @@
 use crate::{
-    ConstDecl, Declaration, DiagnosticReason, EnumMember, EvolveStep, ExpectedSyntax, Keyword,
-    LexedSource, ParseDiagnosticReason, ParsedSource, ResourceMember, SourceSpan, SurfaceItem,
-    Token, TokenKind, is_expression_callable_keyword, is_expression_path_segment_keyword,
-    token::is_trivia,
+    Block, ConstDecl, Declaration, DiagnosticReason, EnumMember, EvolveStep, ExpectedSyntax,
+    KeyParam, Keyword, LexedSource, ParseDiagnosticReason, ParsedSource, ResourceMember,
+    SourceSpan, Statement, SurfaceItem, Token, TokenKind, TypeRef, is_expression_callable_keyword,
+    is_expression_path_segment_keyword, token::is_trivia,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -162,6 +162,9 @@ fn looks_like_type_annotation(
     parsed: &ParsedSource,
     root: usize,
 ) -> bool {
+    if parsed_type_ref_contains(parsed, tokens[root].span.start_byte) {
+        return true;
+    }
     let Some(colon_index) = root.checked_sub(1) else {
         return false;
     };
@@ -169,6 +172,141 @@ fn looks_like_type_annotation(
     colon.kind == TokenKind::Colon
         && same_line_between(source, colon, &tokens[root])
         && !colon_is_named_argument_value(source, tokens, parsed, colon_index)
+}
+
+fn parsed_type_ref_contains(parsed: &ParsedSource, byte: usize) -> bool {
+    parsed
+        .file
+        .declarations
+        .iter()
+        .any(|declaration| declaration_type_ref_contains(declaration, byte))
+}
+
+fn declaration_type_ref_contains(declaration: &Declaration, byte: usize) -> bool {
+    match declaration {
+        Declaration::Const(decl) => optional_type_ref_contains(decl.ty.as_ref(), byte),
+        Declaration::Resource(resource) => resource
+            .members
+            .iter()
+            .any(|member| resource_member_type_ref_contains(member, byte)),
+        Declaration::Store(store) => key_params_type_ref_contains(&store.root.keys, byte),
+        Declaration::Surface(surface) => key_params_type_ref_contains(&surface.store.keys, byte),
+        Declaration::Function(function) => {
+            function
+                .params
+                .iter()
+                .any(|param| type_ref_contains(&param.ty, byte))
+                || optional_type_ref_contains(function.return_type.as_ref(), byte)
+                || block_type_ref_contains(&function.body, byte)
+        }
+        Declaration::Enum(_) => false,
+        Declaration::Evolve(evolve) => evolve
+            .steps
+            .iter()
+            .any(|step| evolve_step_type_ref_contains(step, byte)),
+    }
+}
+
+fn resource_member_type_ref_contains(member: &ResourceMember, byte: usize) -> bool {
+    match member {
+        ResourceMember::Field(field) => {
+            key_params_type_ref_contains(&field.keys, byte) || type_ref_contains(&field.ty, byte)
+        }
+        ResourceMember::Group(group) => {
+            key_params_type_ref_contains(&group.keys, byte)
+                || group
+                    .members
+                    .iter()
+                    .any(|member| resource_member_type_ref_contains(member, byte))
+        }
+    }
+}
+
+fn evolve_step_type_ref_contains(step: &EvolveStep, byte: usize) -> bool {
+    match step {
+        EvolveStep::Transform { body, .. } => block_type_ref_contains(body, byte),
+        EvolveStep::Rename { .. } | EvolveStep::Default { .. } | EvolveStep::Retire { .. } => false,
+    }
+}
+
+fn block_type_ref_contains(block: &Block, byte: usize) -> bool {
+    block
+        .statements
+        .iter()
+        .any(|statement| statement_type_ref_contains(statement, byte))
+}
+
+fn statement_type_ref_contains(statement: &Statement, byte: usize) -> bool {
+    match statement {
+        Statement::Const { ty, .. } => optional_type_ref_contains(ty.as_ref(), byte),
+        Statement::Var { keys, ty, .. } => {
+            key_params_type_ref_contains(keys, byte)
+                || optional_type_ref_contains(ty.as_ref(), byte)
+        }
+        Statement::IfConst {
+            ty,
+            then_block,
+            else_ifs,
+            else_block,
+            ..
+        } => {
+            optional_type_ref_contains(ty.as_ref(), byte)
+                || block_type_ref_contains(then_block, byte)
+                || else_ifs
+                    .iter()
+                    .any(|else_if| block_type_ref_contains(&else_if.block, byte))
+                || else_block
+                    .as_ref()
+                    .is_some_and(|block| block_type_ref_contains(block, byte))
+        }
+        Statement::If {
+            then_block,
+            else_ifs,
+            else_block,
+            ..
+        } => {
+            block_type_ref_contains(then_block, byte)
+                || else_ifs
+                    .iter()
+                    .any(|else_if| block_type_ref_contains(&else_if.block, byte))
+                || else_block
+                    .as_ref()
+                    .is_some_and(|block| block_type_ref_contains(block, byte))
+        }
+        Statement::While { body, .. }
+        | Statement::For { body, .. }
+        | Statement::Transaction { body, .. } => block_type_ref_contains(body, byte),
+        Statement::Try { body, catch, .. } => {
+            block_type_ref_contains(body, byte)
+                || catch.as_ref().is_some_and(|catch| {
+                    optional_type_ref_contains(catch.ty.as_ref(), byte)
+                        || block_type_ref_contains(&catch.block, byte)
+                })
+        }
+        Statement::Match { arms, .. } => arms
+            .iter()
+            .any(|arm| block_type_ref_contains(&arm.block, byte)),
+        Statement::Assign { .. }
+        | Statement::Delete { .. }
+        | Statement::Return { .. }
+        | Statement::ReturnAbsent { .. }
+        | Statement::Break { .. }
+        | Statement::Continue { .. }
+        | Statement::Throw { .. }
+        | Statement::Expr { .. } => false,
+    }
+}
+
+fn key_params_type_ref_contains(keys: &[KeyParam], byte: usize) -> bool {
+    keys.iter().any(|key| type_ref_contains(&key.ty, byte))
+}
+
+fn optional_type_ref_contains(ty: Option<&TypeRef>, byte: usize) -> bool {
+    ty.is_some_and(|ty| type_ref_contains(ty, byte))
+}
+
+fn type_ref_contains(ty: &TypeRef, byte: usize) -> bool {
+    span_contains(ty.span, byte)
 }
 
 fn colon_is_named_argument_value(
