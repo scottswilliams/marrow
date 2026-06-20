@@ -1369,10 +1369,16 @@ fn surface_read_operation_analysis_reflects_catalog_status_without_identity_clai
         .clone()
         .expect("first check proposes catalog ids");
 
-    let source_only = analyze_project(&root, &config(), &ProjectSources::new(), None)
+    let source_only = analyze_project(&root, &config(), &ProjectSources::new(), None, None)
         .expect("source-only analysis");
-    let stable = analyze_project(&root, &config(), &ProjectSources::new(), Some(&accepted))
-        .expect("stable analysis");
+    let stable = analyze_project(
+        &root,
+        &config(),
+        &ProjectSources::new(),
+        Some(&accepted),
+        None,
+    )
+    .expect("stable analysis");
     assert_eq!(source_only.content_identity(), stable.content_identity());
 
     let source_only_status = source_only
@@ -1426,7 +1432,8 @@ fn surface_read_operation_analysis_excludes_configured_test_file_surfaces() {
     )
     .expect("config");
 
-    let snapshot = analyze_project(&root, &cfg, &ProjectSources::new(), None).expect("analyze");
+    let snapshot =
+        analyze_project(&root, &cfg, &ProjectSources::new(), None, None).expect("analyze");
     assert!(
         !snapshot.report.has_errors(),
         "{:#?}",
@@ -1624,8 +1631,14 @@ fn sites_for_reports_accepted_saved_layer_uses_from_lowered_bodies() {
         .stable_id
         .clone();
 
-    let snapshot = analyze_project(&root, &config(), &ProjectSources::new(), Some(&accepted))
-        .expect("analyze accepted source");
+    let snapshot = analyze_project(
+        &root,
+        &config(),
+        &ProjectSources::new(),
+        Some(&accepted),
+        None,
+    )
+    .expect("analyze accepted source");
     assert!(
         !snapshot.report.has_errors(),
         "{:#?}",
@@ -1817,7 +1830,8 @@ fn sites_for_reports_enum_uses_from_configured_tests() {
     )
     .expect("config");
 
-    let snapshot = analyze_project(&root, &cfg, &ProjectSources::new(), None).expect("analyze");
+    let snapshot =
+        analyze_project(&root, &cfg, &ProjectSources::new(), None, None).expect("analyze");
     assert!(
         !snapshot.report.has_errors(),
         "{:#?}",
@@ -1876,7 +1890,8 @@ fn sites_for_ignores_test_local_enum_catalog_uses() {
     )
     .expect("config");
 
-    let snapshot = analyze_project(&root, &cfg, &ProjectSources::new(), None).expect("analyze");
+    let snapshot =
+        analyze_project(&root, &cfg, &ProjectSources::new(), None, None).expect("analyze");
     assert!(
         !snapshot.report.has_errors(),
         "{:#?}",
@@ -2156,7 +2171,8 @@ fn sites_for_source_enum_annotations_ignore_test_local_public_enums() {
     )
     .expect("config");
 
-    let snapshot = analyze_project(&root, &cfg, &ProjectSources::new(), None).expect("analyze");
+    let snapshot =
+        analyze_project(&root, &cfg, &ProjectSources::new(), None, None).expect("analyze");
     assert!(
         !snapshot.report.has_errors(),
         "{:#?}",
@@ -2392,8 +2408,14 @@ fn sites_for_reports_catalog_uses_from_evolve_transform_bodies() {
         .clone()
         .expect("baseline proposal");
     write(&root, "src/m.mw", evolved);
-    let snapshot = analyze_project(&root, &config(), &ProjectSources::new(), Some(&accepted))
-        .expect("analyze evolved source");
+    let snapshot = analyze_project(
+        &root,
+        &config(),
+        &ProjectSources::new(),
+        Some(&accepted),
+        None,
+    )
+    .expect("analyze evolved source");
     assert!(
         !snapshot.report.has_errors(),
         "{:#?}",
@@ -2706,8 +2728,14 @@ fn accepted_catalog_use_sites_fail_closed_for_duplicate_current_source_enum_memb
         .clone();
 
     write(&root, "src/m.mw", evolved);
-    let snapshot = analyze_project(&root, &config(), &ProjectSources::new(), Some(&accepted))
-        .expect("analyze evolved source");
+    let snapshot = analyze_project(
+        &root,
+        &config(),
+        &ProjectSources::new(),
+        Some(&accepted),
+        None,
+    )
+    .expect("analyze evolved source");
     assert!(
         snapshot.report.has_errors(),
         "duplicate current-source enum members should still be diagnosed"
@@ -2782,8 +2810,14 @@ fn accepted_catalog_use_sites_fail_closed_for_duplicate_current_source_member_pa
         .clone();
 
     write(&root, "src/m.mw", evolved);
-    let snapshot = analyze_project(&root, &config(), &ProjectSources::new(), Some(&accepted))
-        .expect("analyze evolved source");
+    let snapshot = analyze_project(
+        &root,
+        &config(),
+        &ProjectSources::new(),
+        Some(&accepted),
+        None,
+    )
+    .expect("analyze evolved source");
     assert!(
         snapshot.report.has_errors(),
         "duplicate current-source members should still be diagnosed"
@@ -2847,8 +2881,14 @@ fn accepted_catalog_fallbacks_fail_closed_for_duplicate_changed_current_source_m
         .clone();
 
     write(&root, "src/m.mw", evolved);
-    let snapshot = analyze_project(&root, &config(), &ProjectSources::new(), Some(&accepted))
-        .expect("analyze evolved source");
+    let snapshot = analyze_project(
+        &root,
+        &config(),
+        &ProjectSources::new(),
+        Some(&accepted),
+        None,
+    )
+    .expect("analyze evolved source");
     assert!(
         snapshot.report.has_errors(),
         "duplicate current-source members should still be diagnosed"
@@ -3400,8 +3440,14 @@ fn stamped_data_readers_carry_store_and_checked_snapshot_identity() {
         .proposal
         .clone()
         .expect("first check proposes a catalog");
-    let snapshot = analyze_project(&root, &config(), &ProjectSources::new(), Some(&accepted))
-        .expect("analyze accepted source");
+    let snapshot = analyze_project(
+        &root,
+        &config(),
+        &ProjectSources::new(),
+        Some(&accepted),
+        None,
+    )
+    .expect("analyze accepted source");
     assert!(
         !snapshot.report.has_errors(),
         "{:#?}",
@@ -3566,8 +3612,14 @@ fn stamped_data_preview_is_bounded_and_marks_truncation() {
         .proposal
         .clone()
         .expect("first check proposes a catalog");
-    let snapshot = analyze_project(&root, &config(), &ProjectSources::new(), Some(&accepted))
-        .expect("analyze accepted source");
+    let snapshot = analyze_project(
+        &root,
+        &config(),
+        &ProjectSources::new(),
+        Some(&accepted),
+        None,
+    )
+    .expect("analyze accepted source");
     assert!(
         !snapshot.report.has_errors(),
         "{:#?}",
@@ -3670,8 +3722,14 @@ fn integrity_problem_samples_share_budget_and_carry_snapshot_identity() {
         .proposal
         .clone()
         .expect("first check proposes a catalog");
-    let snapshot = analyze_project(&root, &config(), &ProjectSources::new(), Some(&accepted))
-        .expect("analyze accepted source");
+    let snapshot = analyze_project(
+        &root,
+        &config(),
+        &ProjectSources::new(),
+        Some(&accepted),
+        None,
+    )
+    .expect("analyze accepted source");
     assert!(
         !snapshot.report.has_errors(),
         "{:#?}",

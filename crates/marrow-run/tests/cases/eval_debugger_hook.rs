@@ -47,7 +47,7 @@ fn analyzed_runtime_program_at(
     let config = test_project_config();
     let mut sources = ProjectSources::new();
     sources.insert(&path, text.clone());
-    let snapshot = analyze_project(root, &config, &sources, None).expect("analyze project");
+    let snapshot = analyze_project(root, &config, &sources, None, None).expect("analyze project");
     assert!(
         !snapshot.report.has_errors(),
         "{:#?}",
@@ -72,7 +72,7 @@ fn analyzed_runtime_program_with_configured_test_at(
     let mut sources = ProjectSources::new();
     sources.insert(&path, text.clone());
     sources.insert(root.join(&test_relative), test_source.to_string());
-    let snapshot = analyze_project(root, &config, &sources, None).expect("analyze project");
+    let snapshot = analyze_project(root, &config, &sources, None, None).expect("analyze project");
     assert!(
         !snapshot.report.has_errors(),
         "{:#?}",

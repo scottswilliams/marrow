@@ -69,6 +69,7 @@ fn check_project_dir(dir: &str, format: CheckFormat) -> ExitCode {
         &config,
         &marrow_check::ProjectSources::new(),
         accepted.as_ref(),
+        None,
     ) {
         Ok(snapshot) => snapshot,
         Err(error) => {

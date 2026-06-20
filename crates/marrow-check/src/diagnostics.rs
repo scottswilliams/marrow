@@ -140,6 +140,14 @@ pub const CHECK_REJECTED_SURFACE: &str = "check.rejected_surface";
 /// Accepted catalog metadata is missing, invalid, or lacks an accepted durable
 /// identity binding for a source declaration.
 pub const CHECK_CATALOG_INTENT: &str = "check.catalog_intent";
+/// A committed `marrow.lock` cannot be adopted as first-run durable identity: a
+/// source declaration would adopt a stable id the lock's append-only ledger has
+/// tombstoned. Adoption fails closed — the binding records no adopting proposal — so
+/// a retired id is never reissued over a fresh empty store. This is the check-layer
+/// surface of the lock-corruption contract; the wire/codec constant
+/// [`marrow_catalog::LOCK_CORRUPT`] names the same condition at the projection
+/// boundary, coordinated by name across the two layers rather than shared.
+pub const CHECK_LOCK_CORRUPT: &str = "check.lock_corrupt";
 /// The program declares a durable surface — a store, enum, or resource that needs
 /// committed catalog identity — but the configured store backend is `memory`, which
 /// has no durable identity. The runtime would reject the program as

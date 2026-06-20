@@ -278,14 +278,17 @@ pub struct AnalyzedFile {
 /// diagnostics and best-effort source program plus every parsed source file
 /// (error files included). The accepted catalog is a caller-supplied input —
 /// `None` checks the source as a first run — against which durable identity binds.
-/// Fails only when a configured source or test directory cannot be walked.
+/// The committed lock is the caller-supplied source-tree projection a first run with
+/// no accepted catalog adopts its identity and epoch high-water from; `None` mints a
+/// fresh baseline. Fails only when a configured source or test directory cannot be walked.
 pub fn analyze_project(
     project_root: &Path,
     config: &ProjectConfig,
     sources: &ProjectSources,
     accepted: Option<&marrow_catalog::CatalogMetadata>,
+    lock: Option<&marrow_catalog::CatalogLock>,
 ) -> Result<AnalysisSnapshot, DiscoverError> {
-    let mut snapshot = analyze_source_project(project_root, config, sources, accepted)?;
+    let mut snapshot = analyze_source_project(project_root, config, sources, accepted, lock)?;
     let resolution_suppression = source_resolution_suppression(&snapshot, project_root, config);
     let test_sources = cached_project_sources(&snapshot, sources);
     let source_modules = snapshot.program.modules.clone();
@@ -379,12 +382,14 @@ fn source_resolution_suppression(
 
 /// Source-root-only analysis shared by [`check_project`]. Runtime entry points use
 /// this so configured test files do not block running the checked source program. The
-/// accepted catalog is the caller-supplied snapshot durable identity binds against.
+/// accepted catalog is the caller-supplied snapshot durable identity binds against; the
+/// committed lock is the first-run adoption source when no accepted catalog is present.
 pub(crate) fn analyze_source_project(
     project_root: &Path,
     config: &ProjectConfig,
     sources: &ProjectSources,
     accepted: Option<&marrow_catalog::CatalogMetadata>,
+    lock: Option<&marrow_catalog::CatalogLock>,
 ) -> Result<AnalysisSnapshot, DiscoverError> {
     let mut files = discover_modules(project_root, config)?;
     for path in sources.paths() {
@@ -641,6 +646,7 @@ pub(crate) fn analyze_source_project(
     );
     crate::catalog::bind_catalog(
         accepted,
+        lock,
         &mut program,
         &evolve_intents,
         parsed_files
@@ -945,8 +951,8 @@ mod tests {
         };
 
         crate::driver::reset_source_read_count();
-        let snapshot =
-            analyze_project(root.path(), &config, &ProjectSources::new(), None).expect("analyze");
+        let snapshot = analyze_project(root.path(), &config, &ProjectSources::new(), None, None)
+            .expect("analyze");
 
         // Overlapping `src` into `tests` re-scans each source module as a test,
         // where its test-path name differs from its declared source module, so the

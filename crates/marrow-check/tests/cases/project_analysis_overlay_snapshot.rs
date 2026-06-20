@@ -22,7 +22,7 @@ fn analyze_project_uses_overlay_source_instead_of_disk() {
     let path = root.join("src/m.mw");
     let sources = ProjectSources::new().with(&path, "module m\nfn f()\n    var x = 1 + true\n");
 
-    let overlaid = analyze_project(&root, &config(), &sources, None).expect("analyze");
+    let overlaid = analyze_project(&root, &config(), &sources, None, None).expect("analyze");
     let (clean, _program) = check_project(&root, &config()).expect("check");
 
     assert!(
@@ -66,6 +66,7 @@ fn source_digest_binds_overlay_source_instead_of_disk() {
         &config(),
         &ProjectSources::new().with(&path, overlay_source),
         None,
+        None,
     )
     .expect("overlay analyze")
     .program
@@ -93,7 +94,7 @@ fn analyze_project_includes_unsaved_source_root_files() {
     let sources =
         ProjectSources::new().with(&path, "module new_file\nfn f()\n    var x: int = \"str\"\n");
 
-    let snapshot = analyze_project(&root, &config(), &sources, None).expect("analyze");
+    let snapshot = analyze_project(&root, &config(), &sources, None, None).expect("analyze");
 
     assert!(
         snapshot
@@ -124,7 +125,8 @@ fn analyze_project_reports_configured_test_file_parse_errors() {
     )
     .expect("config");
 
-    let snapshot = analyze_project(&root, &cfg, &ProjectSources::new(), None).expect("analyze");
+    let snapshot =
+        analyze_project(&root, &cfg, &ProjectSources::new(), None, None).expect("analyze");
 
     assert!(
         snapshot.report.diagnostics.iter().any(|d| {
@@ -147,7 +149,7 @@ fn analyze_project_reports_unsaved_configured_test_file_parse_errors() {
     let path = root.join("tests/new_test.mw");
     let sources = ProjectSources::new().with(&path, "pub fn t()\n\tapp::noop()\n");
 
-    let snapshot = analyze_project(&root, &cfg, &sources, None).expect("analyze");
+    let snapshot = analyze_project(&root, &cfg, &sources, None, None).expect("analyze");
 
     assert!(
         snapshot
@@ -172,7 +174,8 @@ fn analyze_project_retains_configured_test_files_in_snapshot() {
     .expect("config");
     let path = root.join("tests/smoke_test.mw");
 
-    let snapshot = analyze_project(&root, &cfg, &ProjectSources::new(), None).expect("analyze");
+    let snapshot =
+        analyze_project(&root, &cfg, &ProjectSources::new(), None, None).expect("analyze");
 
     let analyzed = snapshot
         .files
@@ -210,7 +213,8 @@ fn analyze_project_keeps_configured_test_modules_out_of_program_facts() {
     .expect("config");
     let test_path = root.join("tests/smoke_test.mw");
 
-    let snapshot = analyze_project(&root, &cfg, &ProjectSources::new(), None).expect("analyze");
+    let snapshot =
+        analyze_project(&root, &cfg, &ProjectSources::new(), None, None).expect("analyze");
 
     assert!(
         snapshot
@@ -264,7 +268,7 @@ fn analyze_project_retains_unsaved_configured_test_files_in_snapshot() {
     let source = "fn smoke()\n    var x = 1\n";
     let sources = ProjectSources::new().with(&path, source);
 
-    let snapshot = analyze_project(&root, &cfg, &sources, None).expect("analyze");
+    let snapshot = analyze_project(&root, &cfg, &sources, None, None).expect("analyze");
 
     let analyzed = snapshot
         .files
@@ -286,7 +290,7 @@ fn analysis_snapshot_retains_files_with_parse_errors() {
     let path = root.join("src/bad.mw");
 
     let snapshot =
-        analyze_project(&root, &config(), &ProjectSources::new(), None).expect("analyze");
+        analyze_project(&root, &config(), &ProjectSources::new(), None, None).expect("analyze");
 
     let analyzed = snapshot
         .files
@@ -334,15 +338,15 @@ fn analysis_content_identity_tracks_analyzed_sources_and_config() {
     .expect("config");
 
     let baseline =
-        analyze_project(&root, &cfg, &ProjectSources::new(), None).expect("baseline analyze");
+        analyze_project(&root, &cfg, &ProjectSources::new(), None, None).expect("baseline analyze");
     let repeated =
-        analyze_project(&root, &cfg, &ProjectSources::new(), None).expect("repeat analyze");
+        analyze_project(&root, &cfg, &ProjectSources::new(), None, None).expect("repeat analyze");
     let baseline_identity = content_identity(&baseline);
     assert_eq!(baseline_identity, content_identity(&repeated));
     assert!(baseline_identity.starts_with("sha256:"));
 
     let accepted = marrow_catalog::CatalogMetadata::new(99, Vec::new()).expect("catalog builds");
-    let with_accepted = analyze_project(&root, &cfg, &ProjectSources::new(), Some(&accepted))
+    let with_accepted = analyze_project(&root, &cfg, &ProjectSources::new(), Some(&accepted), None)
         .expect("accepted analyze");
     assert_eq!(baseline_identity, content_identity(&with_accepted));
 
@@ -350,21 +354,22 @@ fn analysis_content_identity_tracks_analyzed_sources_and_config() {
     let edited_source =
         ProjectSources::new().with(&source_path, "module app\npub fn main()\n    print(2)\n");
     let source_edit =
-        analyze_project(&root, &cfg, &edited_source, None).expect("source edit analyze");
+        analyze_project(&root, &cfg, &edited_source, None, None).expect("source edit analyze");
     assert_ne!(baseline_identity, content_identity(&source_edit));
 
     let test_path = root.join("tests/smoke.mw");
     let edited_test =
         ProjectSources::new().with(&test_path, "fn smoke()\n    const n = 2\n    app::main()\n");
-    let test_edit = analyze_project(&root, &cfg, &edited_test, None).expect("test edit analyze");
+    let test_edit =
+        analyze_project(&root, &cfg, &edited_test, None, None).expect("test edit analyze");
     assert_ne!(baseline_identity, content_identity(&test_edit));
 
     let config_edit = parse_config(
         r#"{ "sourceRoots": ["src", "empty"], "tests": ["tests"], "store": { "backend": "memory" } }"#,
     )
     .expect("config edit");
-    let config_edit =
-        analyze_project(&root, &config_edit, &ProjectSources::new(), None).expect("config analyze");
+    let config_edit = analyze_project(&root, &config_edit, &ProjectSources::new(), None, None)
+        .expect("config analyze");
     assert_ne!(baseline_identity, content_identity(&config_edit));
 
     let moved_root = temp_project("analysis-content-identity-moved", |root| {
@@ -375,7 +380,7 @@ fn analysis_content_identity_tracks_analyzed_sources_and_config() {
         );
         write(root, "tests/smoke.mw", "fn smoke()\n    app::main()\n");
     });
-    let moved =
-        analyze_project(&moved_root, &cfg, &ProjectSources::new(), None).expect("moved analyze");
+    let moved = analyze_project(&moved_root, &cfg, &ProjectSources::new(), None, None)
+        .expect("moved analyze");
     assert_eq!(baseline_identity, content_identity(&moved));
 }

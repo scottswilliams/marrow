@@ -211,6 +211,7 @@ pub fn check_source_project_analysis_against(
         config,
         &crate::ProjectSources::new(),
         accepted,
+        None,
     )
     .map_err(|error| ProjectIoError::CheckLoad {
         code: error.code,

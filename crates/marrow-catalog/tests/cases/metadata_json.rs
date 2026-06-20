@@ -533,16 +533,29 @@ fn lock_round_trips_fingerprints_ledger_epoch_high_water_and_source_digest() {
         );
     }
 
-    for forbidden in [
-        "leaf:",
-        "keyed-group:",
-        "unique=",
-        "books::^books",
-        "byTitle",
-    ] {
+    // The `(kind, path)` adoption anchor round-trips verbatim — it is committed text, not folded
+    // into the fingerprint — so a fresh checkout can match a source declaration to its committed id.
+    let store = parsed
+        .entries
+        .iter()
+        .find(|entry| entry.path == "books::^books")
+        .expect("store entry round-trips its path");
+    assert_eq!(store.kind, CatalogEntryKind::Store);
+    assert_eq!(store.stable_id, "cat_11111111111111111111111111111111");
+    let member = parsed
+        .entries
+        .iter()
+        .find(|entry| entry.path == "books::Book::title")
+        .expect("member entry round-trips its path");
+    assert_eq!(member.kind, CatalogEntryKind::ResourceMember);
+
+    // The path text IS committed (it is the adoption anchor), but the FULL accepted SHAPE text is
+    // still folded into the opaque fingerprint, never spelled out: a reader of the lock learns
+    // identity and a shape-change signal, not the shape grammar itself.
+    for forbidden in ["leaf:", "keyed-group:", "unique="] {
         assert!(
             !json.contains(forbidden),
-            "lock projection leaked shape text `{forbidden}`: {json}"
+            "lock projection leaked full-shape text `{forbidden}`: {json}"
         );
     }
 }
@@ -686,6 +699,50 @@ fn from_lock_json_rejects_hostile_families() {
         let error = CatalogLock::from_lock_json(&hostile).expect_err(label);
         assert_eq!(error.code, LOCK_CORRUPT, "{label}");
     }
+}
+
+/// The `(kind, path)` adoption anchor is the lock's identity key, so the codec fails closed on an
+/// empty path and on a duplicate `(kind, path)` — either would leave first-run adoption unable to
+/// resolve a source declaration to exactly one committed id.
+#[test]
+fn lock_rejects_empty_and_duplicate_path_anchors() {
+    let empty_path = LockEntry::from_catalog_entry(&literal_entry(
+        CatalogEntryKind::Resource,
+        "",
+        "cat_11111111111111111111111111111111",
+        &[],
+    ));
+    let empty_error = CatalogLock::new(vec![empty_path], Vec::new(), 1, sample_source_digest())
+        .expect_err("an empty entry path is rejected");
+    assert_eq!(empty_error.code, LOCK_CORRUPT);
+    assert!(
+        empty_error.message.contains("path must not be empty"),
+        "expected the path guard message, got: {}",
+        empty_error.message
+    );
+
+    let duplicate = vec![
+        LockEntry::from_catalog_entry(&literal_entry(
+            CatalogEntryKind::Resource,
+            "books::Book",
+            "cat_22222222222222222222222222222222",
+            &[],
+        )),
+        LockEntry::from_catalog_entry(&literal_entry(
+            CatalogEntryKind::Resource,
+            "books::Book",
+            "cat_33333333333333333333333333333333",
+            &[],
+        )),
+    ];
+    let duplicate_error = CatalogLock::new(duplicate, Vec::new(), 1, sample_source_digest())
+        .expect_err("a duplicate (kind, path) anchor is rejected");
+    assert_eq!(duplicate_error.code, LOCK_CORRUPT);
+    assert!(
+        duplicate_error.message.contains("appears twice"),
+        "expected the anchor uniqueness message, got: {}",
+        duplicate_error.message
+    );
 }
 
 /// The id NUL guard fires at the [`CatalogLock::new`] boundary for a NUL embedded in either a

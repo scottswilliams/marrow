@@ -22,8 +22,14 @@ fn stable_snapshot(name: &str, source: &str) -> (crate::support::TempProject, An
         .proposal
         .expect("first run proposes catalog ids");
     write_catalog(&root, &baseline);
-    let snapshot = analyze_project(&root, &config(), &ProjectSources::new(), Some(&baseline))
-        .expect("stable analysis");
+    let snapshot = analyze_project(
+        &root,
+        &config(),
+        &ProjectSources::new(),
+        Some(&baseline),
+        None,
+    )
+    .expect("stable analysis");
     assert_clean(&snapshot.report);
     (root, snapshot)
 }
@@ -183,6 +189,7 @@ surface Books from ^books
             )
             .expect("catalog parses"),
         ),
+        None,
     )
     .expect("stable analysis");
     assert_clean(&snapshot.report);
@@ -396,7 +403,7 @@ surface Books from ^books
         );
     });
     let snapshot =
-        analyze_project(&root, &config(), &ProjectSources::new(), None).expect("analyze");
+        analyze_project(&root, &config(), &ProjectSources::new(), None, None).expect("analyze");
     assert_clean(&snapshot.report);
 
     let operations = snapshot.surface_read_operations().collect::<Vec<_>>();
@@ -528,7 +535,7 @@ surface Books from ^books
         );
     });
     let snapshot =
-        analyze_project(&root, &config(), &ProjectSources::new(), None).expect("analyze");
+        analyze_project(&root, &config(), &ProjectSources::new(), None, None).expect("analyze");
     assert_clean(&snapshot.report);
 
     let actions = snapshot.surface_action_operations().collect::<Vec<_>>();
@@ -589,8 +596,14 @@ surface Books from ^books
     action currentStatus
 ",
     );
-    let snapshot = analyze_project(&root, &config(), &ProjectSources::new(), Some(&baseline))
-        .expect("analyze changed action");
+    let snapshot = analyze_project(
+        &root,
+        &config(),
+        &ProjectSources::new(),
+        Some(&baseline),
+        None,
+    )
+    .expect("analyze changed action");
     assert_clean(&snapshot.report);
 
     let actions = snapshot.surface_action_operations().collect::<Vec<_>>();
@@ -643,8 +656,14 @@ surface Books from ^books
     fields title
 ",
     );
-    let snapshot = analyze_project(&root, &config(), &ProjectSources::new(), Some(&baseline))
-        .expect("analyze pending proposal");
+    let snapshot = analyze_project(
+        &root,
+        &config(),
+        &ProjectSources::new(),
+        Some(&baseline),
+        None,
+    )
+    .expect("analyze pending proposal");
     assert_clean(&snapshot.report);
 
     let operations = snapshot.surface_read_operations().collect::<Vec<_>>();
@@ -706,8 +725,14 @@ surface Books from ^books
     update title
 ",
     );
-    let snapshot = analyze_project(&root, &config(), &ProjectSources::new(), Some(&baseline))
-        .expect("analyze pending proposal");
+    let snapshot = analyze_project(
+        &root,
+        &config(),
+        &ProjectSources::new(),
+        Some(&baseline),
+        None,
+    )
+    .expect("analyze pending proposal");
     assert_clean(&snapshot.report);
 
     let updates = snapshot.surface_update_operations().collect::<Vec<_>>();
@@ -1004,7 +1029,7 @@ surface Books from ^books
         );
     });
     let snapshot =
-        analyze_project(&root, &config(), &ProjectSources::new(), None).expect("analyze");
+        analyze_project(&root, &config(), &ProjectSources::new(), None, None).expect("analyze");
     assert_clean(&snapshot.report);
 
     let updates = snapshot.surface_update_operations().collect::<Vec<_>>();
@@ -1079,8 +1104,14 @@ surface Library from ^books
         &std::fs::read_to_string(root.join("marrow.catalog.json")).expect("read catalog"),
     )
     .expect("catalog parses");
-    let renamed = analyze_project(&root, &config(), &ProjectSources::new(), Some(&accepted))
-        .expect("analyze renamed");
+    let renamed = analyze_project(
+        &root,
+        &config(),
+        &ProjectSources::new(),
+        Some(&accepted),
+        None,
+    )
+    .expect("analyze renamed");
     assert_clean(&renamed.report);
 
     let renamed_descriptor = renamed

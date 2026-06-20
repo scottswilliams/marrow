@@ -177,6 +177,7 @@ fn probe_check(
         config,
         &marrow_check::ProjectSources::new(),
         accepted,
+        None,
     ) {
         Ok(snapshot) => snapshot,
         Err(error) => {

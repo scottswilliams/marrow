@@ -24,7 +24,7 @@ fn analyze_project_includes_configured_tests_when_sources_have_errors() {
     let path = root.join("tests/new_test.mw");
     let sources = ProjectSources::new().with(&path, "fn smoke()\n    var y: int = \"str\"\n");
 
-    let snapshot = analyze_project(&root, &cfg, &sources, None).expect("analyze");
+    let snapshot = analyze_project(&root, &cfg, &sources, None, None).expect("analyze");
 
     assert!(
         snapshot.files.iter().any(|file| file.path == path),
@@ -70,7 +70,7 @@ fn analyze_project_suppresses_test_resolution_noise_when_source_modules_are_inco
         "use app\nfn smoke()\n    app::f()\n    var b: Book\n    var y: int = \"str\"\n",
     );
 
-    let snapshot = analyze_project(&root, &cfg, &sources, None).expect("analyze");
+    let snapshot = analyze_project(&root, &cfg, &sources, None, None).expect("analyze");
 
     assert!(
         snapshot
@@ -110,7 +110,7 @@ fn analyze_project_keeps_test_local_resolution_diagnostics_when_source_modules_a
         "use std::definitely_missing\nfn smoke()\n    tests::helper::missing()\n    missing_local()\n    var n: NotAType\n    var y: int = \"str\"\n",
     );
 
-    let snapshot = analyze_project(&root, &cfg, &sources, None).expect("analyze");
+    let snapshot = analyze_project(&root, &cfg, &sources, None, None).expect("analyze");
 
     for code in [
         "check.unresolved_import",
@@ -148,7 +148,7 @@ fn analyze_project_keeps_test_local_bare_call_matching_hidden_source_module() {
     let sources =
         ProjectSources::new().with(&path, "fn smoke()\n    app()\n    var y: int = \"str\"\n");
 
-    let snapshot = analyze_project(&root, &cfg, &sources, None).expect("analyze");
+    let snapshot = analyze_project(&root, &cfg, &sources, None, None).expect("analyze");
 
     assert!(
         snapshot
@@ -190,7 +190,7 @@ fn analyze_project_keeps_test_local_submodule_import_matching_hidden_source_pref
         "use app::missing\nfn smoke()\n    var y: int = \"str\"\n",
     );
 
-    let snapshot = analyze_project(&root, &cfg, &sources, None).expect("analyze");
+    let snapshot = analyze_project(&root, &cfg, &sources, None, None).expect("analyze");
 
     assert!(
         snapshot
@@ -234,7 +234,7 @@ fn analyze_project_keeps_test_local_unresolved_call_when_another_test_has_parse_
         "fn smoke()\n    missing_local()\n    var n: NotAType\n    var y: int = \"str\"\n",
     );
 
-    let snapshot = analyze_project(&root, &cfg, &sources, None).expect("analyze");
+    let snapshot = analyze_project(&root, &cfg, &sources, None, None).expect("analyze");
 
     for code in [
         "check.unresolved_call",
@@ -275,7 +275,7 @@ fn analyze_project_suppresses_unresolved_import_when_broken_configured_test_is_i
         "use tests::helper\nfn smoke()\n    var y: int = \"str\"\n",
     );
 
-    let snapshot = analyze_project(&root, &cfg, &sources, None).expect("analyze");
+    let snapshot = analyze_project(&root, &cfg, &sources, None, None).expect("analyze");
 
     assert!(
         !snapshot
@@ -326,7 +326,7 @@ fn analyze_project_ignores_declared_modules_in_broken_configured_tests_for_call_
         "fn smoke()\n    app::missing()\n    var y: int = \"str\"\n",
     );
 
-    let snapshot = analyze_project(&root, &cfg, &sources, None).expect("analyze");
+    let snapshot = analyze_project(&root, &cfg, &sources, None, None).expect("analyze");
 
     assert!(
         snapshot
@@ -370,7 +370,7 @@ fn analyze_project_keeps_source_module_calls_when_broken_test_path_collides() {
         "fn smoke()\n    tests::app::missing()\n    var y: int = \"str\"\n",
     );
 
-    let snapshot = analyze_project(&root, &cfg, &sources, None).expect("analyze");
+    let snapshot = analyze_project(&root, &cfg, &sources, None, None).expect("analyze");
 
     assert!(
         snapshot
@@ -410,7 +410,7 @@ fn analyze_project_keeps_test_module_calls_when_broken_source_path_collides() {
         "fn smoke()\n    tests::app::missing()\n    var y: int = \"str\"\n",
     );
 
-    let snapshot = analyze_project(&root, &cfg, &sources, None).expect("analyze");
+    let snapshot = analyze_project(&root, &cfg, &sources, None, None).expect("analyze");
 
     assert!(
         snapshot
@@ -454,7 +454,7 @@ fn analyze_project_reports_duplicate_when_test_module_collides_with_source_modul
         "fn smoke()\n    tests::app::testOnly()\n    var y: int = \"str\"\n",
     );
 
-    let snapshot = analyze_project(&root, &cfg, &sources, None).expect("analyze");
+    let snapshot = analyze_project(&root, &cfg, &sources, None, None).expect("analyze");
 
     let duplicate = snapshot
         .report
@@ -520,7 +520,7 @@ fn analyze_project_suppresses_unknown_types_from_broken_configured_test_declarat
         "fn smoke()\n    var f: Fixture\n    var y: int = \"str\"\n",
     );
 
-    let snapshot = analyze_project(&root, &cfg, &sources, None).expect("analyze");
+    let snapshot = analyze_project(&root, &cfg, &sources, None, None).expect("analyze");
 
     assert!(
         !snapshot
@@ -570,7 +570,7 @@ fn analyze_project_keeps_test_local_unknown_type_diagnostics_when_hidden_type_na
         "fn smoke()\n    var n: Nope\n    var y: int = \"str\"\n",
     );
 
-    let snapshot = analyze_project(&root, &cfg, &sources, None).expect("analyze");
+    let snapshot = analyze_project(&root, &cfg, &sources, None, None).expect("analyze");
 
     assert!(
         snapshot

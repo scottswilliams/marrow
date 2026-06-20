@@ -3,8 +3,8 @@
 //! prove that identity binds against it: the accepted ids carry forward onto live facts, and
 //! a source-only check proposes a first epoch while writing nothing.
 use crate::support;
-use marrow_catalog::{CatalogEntryKind, CatalogMetadata};
-use marrow_check::{ProjectSources, analyze_project};
+use marrow_catalog::{CatalogEntryKind, CatalogLock, CatalogMetadata, LockEntry};
+use marrow_check::{CHECK_LOCK_CORRUPT, ProjectSources, analyze_project};
 
 use support::catalog::{catalog, derived_id, entry_for_label as entry};
 use support::{config, temp_root, write};
@@ -32,13 +32,52 @@ fn books_accepted() -> CatalogMetadata {
     ])
 }
 
+/// A committed lock projecting `entries` at epoch high-water `high_water`, with no ledger
+/// tombstones. Each committed entry records the `(kind, path)` first-run adoption keys on,
+/// so a fresh source entity at the same path adopts its committed id regardless of shape.
+fn books_lock(entries: Vec<LockEntry>, high_water: u64) -> CatalogLock {
+    CatalogLock::new(
+        entries,
+        Vec::new(),
+        high_water,
+        "sha256:0000000000000000000000000000000000000000000000000000000000000000".to_string(),
+    )
+    .expect("lock builds")
+}
+
+/// The committed lock for `books_source`, projecting every entity the source declares at its
+/// real accepted shape so adoption is exercised against SHAPED entries — a store carrying an
+/// `int` key shape and a member carrying a `leaf:string` signature — not only the shapeless
+/// resource. Path-keyed adoption must carry each committed id forward even though a freshly
+/// built source pre-image records none of these shapes yet.
+fn books_committed_lock(high_water: u64) -> CatalogLock {
+    let resource = LockEntry::from_catalog_entry(&entry(
+        CatalogEntryKind::Resource,
+        "books::Book",
+        "res-book",
+        &[],
+    ));
+    let mut store_entry = entry(CatalogEntryKind::Store, "books::^books", "store-books", &[]);
+    store_entry.accepted_key_shape = Some("int".to_string());
+    let store = LockEntry::from_catalog_entry(&store_entry);
+    let mut member_entry = entry(
+        CatalogEntryKind::ResourceMember,
+        "books::Book::title",
+        "member-title",
+        &[],
+    );
+    member_entry.accepted_struct = Some("leaf:string".to_string());
+    let member = LockEntry::from_catalog_entry(&member_entry);
+    books_lock(vec![resource, store, member], high_water)
+}
+
 #[test]
 fn source_only_check_proposes_epoch_one_and_writes_nothing() {
     let root = temp_root("provider-source-only");
     books_source(&root);
 
     let snapshot =
-        analyze_project(&root, &config(), &ProjectSources::new(), None).expect("analyze");
+        analyze_project(&root, &config(), &ProjectSources::new(), None, None).expect("analyze");
 
     assert!(
         !snapshot.report.has_errors(),
@@ -65,14 +104,197 @@ fn source_only_check_proposes_epoch_one_and_writes_nothing() {
     );
 }
 
+/// The committed id of the proposal entry at `(kind, path)`, or a panic naming the entry the
+/// proposal should carry.
+fn adopted_id(proposal: &CatalogMetadata, kind: CatalogEntryKind, path: &str) -> String {
+    proposal
+        .entries
+        .iter()
+        .find(|entry| entry.kind == kind && entry.path == path)
+        .unwrap_or_else(|| panic!("proposal carries {kind:?} `{path}`"))
+        .stable_id
+        .clone()
+}
+
+#[test]
+fn first_run_with_present_lock_adopts_committed_identity_and_epoch_high_water() {
+    // A wiped store with no accepted catalog, but the source tree still carries the committed
+    // lock. First-run binding adopts the lock's epoch high-water and the committed id for every
+    // entity by its `(kind, path)` — including the SHAPED store and member, whose freshly built
+    // source pre-image records none of the accepted shapes the committed entries fingerprint
+    // under. Shape-fingerprint adoption silently mints fresh ids for these, diverging identity on
+    // an ordinary fresh checkout; path-keyed adoption carries them forward. This proves the
+    // adoption reaches the production pipeline through `analyze_project`, not only the in-module
+    // binding test.
+    let root = temp_root("provider-lock-adoption");
+    books_source(&root);
+    let high_water = 12;
+    let lock = books_committed_lock(high_water);
+
+    let snapshot = analyze_project(&root, &config(), &ProjectSources::new(), None, Some(&lock))
+        .expect("analyze");
+
+    assert!(
+        !snapshot.report.has_errors(),
+        "{:#?}",
+        snapshot.report.diagnostics
+    );
+    let proposal = snapshot
+        .program
+        .catalog
+        .proposal
+        .expect("first-run proposal");
+    assert_eq!(
+        proposal.epoch, high_water,
+        "first-run adoption seeds the proposal epoch from the lock high-water, not epoch 1"
+    );
+    assert_eq!(snapshot.program.catalog.accepted_epoch, None);
+
+    assert_eq!(
+        adopted_id(&proposal, CatalogEntryKind::Resource, "books::Book"),
+        derived_id("res-book"),
+        "the resource adopts the committed lock id"
+    );
+    assert_eq!(
+        adopted_id(&proposal, CatalogEntryKind::Store, "books::^books"),
+        derived_id("store-books"),
+        "the SHAPED store adopts its committed lock id by path, not minting fresh"
+    );
+    assert_eq!(
+        adopted_id(
+            &proposal,
+            CatalogEntryKind::ResourceMember,
+            "books::Book::title"
+        ),
+        derived_id("member-title"),
+        "the SHAPED member adopts its committed lock id by path, not minting fresh"
+    );
+}
+
+/// Two resources sharing the same shape but distinct paths each adopt their OWN committed id by
+/// path: a shape fingerprint cannot disambiguate them, but `(kind, path)` does, so no two entities
+/// collide onto one committed identity.
+#[test]
+fn same_shape_resources_adopt_their_own_committed_ids_by_path() {
+    let root = temp_root("provider-lock-same-shape");
+    write(
+        &root,
+        "src/books.mw",
+        "module books\nresource Book\n    title: string\nresource Note\n    title: string\n",
+    );
+    let book = LockEntry::from_catalog_entry(&entry(
+        CatalogEntryKind::Resource,
+        "books::Book",
+        "res-book",
+        &[],
+    ));
+    let note = LockEntry::from_catalog_entry(&entry(
+        CatalogEntryKind::Resource,
+        "books::Note",
+        "res-note",
+        &[],
+    ));
+    let lock = books_lock(vec![book, note], 5);
+
+    let snapshot = analyze_project(&root, &config(), &ProjectSources::new(), None, Some(&lock))
+        .expect("analyze");
+
+    assert!(
+        !snapshot.report.has_errors(),
+        "{:#?}",
+        snapshot.report.diagnostics
+    );
+    let proposal = snapshot
+        .program
+        .catalog
+        .proposal
+        .expect("first-run proposal");
+    let book_id = adopted_id(&proposal, CatalogEntryKind::Resource, "books::Book");
+    let note_id = adopted_id(&proposal, CatalogEntryKind::Resource, "books::Note");
+    assert_eq!(
+        book_id,
+        derived_id("res-book"),
+        "Book adopts its own committed id"
+    );
+    assert_eq!(
+        note_id,
+        derived_id("res-note"),
+        "Note adopts its own committed id, not Book's same-shape one"
+    );
+    assert_ne!(book_id, note_id, "same-shape entities never share an id");
+}
+
+/// First-run adoption is deterministic: binding the same source against the same lock twice
+/// yields identical ids and epoch, with no OS entropy on the adoption path.
+#[test]
+fn first_run_lock_adoption_is_deterministic() {
+    let lock = books_committed_lock(8);
+    let bind_once = || {
+        let root = temp_root("provider-lock-determinism");
+        books_source(&root);
+        let snapshot = analyze_project(&root, &config(), &ProjectSources::new(), None, Some(&lock))
+            .expect("analyze");
+        snapshot
+            .program
+            .catalog
+            .proposal
+            .expect("first-run proposal")
+    };
+
+    let first = bind_once();
+    let second = bind_once();
+    assert_eq!(first.epoch, second.epoch, "epoch is deterministic");
+    assert_eq!(
+        first.entries, second.entries,
+        "adopted ids and entries are byte-identical across re-binds"
+    );
+}
+
+#[test]
+fn first_run_lock_adoption_refuses_a_tombstoned_committed_id() {
+    // A committed entry whose id the lock's own ledger has retired cannot be constructed by the
+    // lock codec, so adoption's tombstone-reissue refusal is its independent fail-closed gate.
+    // The check-layer rendering is proven directly in the binding pass; here we prove a clean
+    // present-lock first run reports no lock corruption, fencing the refusal off from the happy
+    // adoption path so a passing test cannot conflate corrupt-lock with absent-lock.
+    let root = temp_root("provider-lock-clean");
+    books_source(&root);
+    let committed_resource = LockEntry::from_catalog_entry(&entry(
+        CatalogEntryKind::Resource,
+        "books::Book",
+        "res-book",
+        &[],
+    ));
+    let lock = books_lock(vec![committed_resource], 7);
+
+    let snapshot = analyze_project(&root, &config(), &ProjectSources::new(), None, Some(&lock))
+        .expect("analyze");
+
+    assert!(
+        !snapshot
+            .report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == CHECK_LOCK_CORRUPT),
+        "a valid present lock reports no lock corruption: {:#?}",
+        snapshot.report.diagnostics
+    );
+}
+
 #[test]
 fn injected_snapshot_binds_identity_exactly_as_the_accepted_catalog_did() {
     let root = temp_root("provider-identity-preserved");
     books_source(&root);
     let accepted = books_accepted();
 
-    let snapshot = analyze_project(&root, &config(), &ProjectSources::new(), Some(&accepted))
-        .expect("analyze");
+    let snapshot = analyze_project(
+        &root,
+        &config(),
+        &ProjectSources::new(),
+        Some(&accepted),
+        None,
+    )
+    .expect("analyze");
 
     assert!(
         !snapshot.report.has_errors(),
@@ -123,8 +345,14 @@ fn proposal_only_member_binds_activation_default_not_ordinary_facts() {
     );
     let accepted = books_accepted();
 
-    let snapshot = analyze_project(&root, &config(), &ProjectSources::new(), Some(&accepted))
-        .expect("analyze");
+    let snapshot = analyze_project(
+        &root,
+        &config(),
+        &ProjectSources::new(),
+        Some(&accepted),
+        None,
+    )
+    .expect("analyze");
 
     let program = &snapshot.program;
     let proposal = program

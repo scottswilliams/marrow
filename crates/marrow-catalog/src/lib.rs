@@ -1,8 +1,9 @@
 //! The Marrow accepted catalog semantic model. Two committed projections share this owner:
 //! the full-shape [`CatalogMetadata`] the backup path persists, and the thin, inert
-//! [`CatalogLock`] the source tree commits — a per-entry stable id, lifecycle, and shape
-//! fingerprint, the append-only cross-lifecycle id ledger, a monotonic epoch high-water, and
-//! the producing source digest. The lock is data only: it carries no field or method that
+//! [`CatalogLock`] the source tree commits — a per-entry `(kind, path)` adoption anchor, stable
+//! id, lifecycle, and shape fingerprint, the append-only cross-lifecycle id ledger, a monotonic
+//! epoch high-water, and the producing source digest. The lock is data only: it carries no field
+//! or method that
 //! could write to, repair, or override a store. The identity-aware structural-signature decode
 //! every catalog consumer reads shape through lives here too.
 
@@ -235,10 +236,11 @@ pub fn structural_signature_leaf_token(signature: &str) -> Option<&str> {
 
 /// The thin committed source-tree projection of catalog state. Unlike [`CatalogMetadata`], it
 /// records each entry's shape as an opaque [`shape fingerprint`](LockEntry::shape_fingerprint)
-/// rather than its full text, and adds the complete append-only cross-lifecycle id ledger, a
-/// monotonic epoch high-water, and the producing source digest. It is inert: it owns no path to
-/// a store and self-validates only, so a checked-in lock can be read and compared but never
-/// repairs, overrides, or writes durable state.
+/// rather than its full text, while still carrying the entry's `(kind, path)` as the first-run
+/// adoption anchor, and adds the complete append-only cross-lifecycle id ledger, a monotonic
+/// epoch high-water, and the producing source digest. It is inert: it owns no path to a store and
+/// self-validates only, so a checked-in lock can be read and compared but never repairs,
+/// overrides, or writes durable state.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CatalogLock {
@@ -278,9 +280,10 @@ impl CatalogLock {
 
     /// Parse a committed lock projection, failing closed with [`LOCK_CORRUPT`] on any corruption:
     /// Git conflict markers, an unknown field, a malformed fingerprint or source digest, a NUL
-    /// byte in any id, a ledger id reused by an active entry, a ledger tombstone recording the
-    /// active lifecycle, a duplicate ledger id, or an epoch high-water below a tombstone's
-    /// recorded high-water. It never panics and is never lenient.
+    /// byte in any id or path, an empty entry path, a duplicate `(kind, path)` adoption anchor, a
+    /// ledger id reused by an active entry, a ledger tombstone recording the active lifecycle, a
+    /// duplicate ledger id, or an epoch high-water below a tombstone's recorded high-water. It
+    /// never panics and is never lenient.
     pub fn from_lock_json(json: &str) -> Result<Self, CatalogError> {
         if contains_conflict_marker(json) {
             return Err(CatalogError::lock_corrupt("contains Git conflict markers"));
@@ -311,13 +314,27 @@ impl CatalogLock {
 
     fn validate_entries(&self) -> Result<HashSet<&str>, CatalogError> {
         let mut active_ids: HashSet<&str> = HashSet::new();
+        let mut keys: HashSet<(CatalogEntryKind, &str)> = HashSet::new();
         for entry in &self.entries {
             require_lock_stable_id("entry stable id", &entry.stable_id)?;
             validate_sha256("shape fingerprint", &entry.shape_fingerprint)?;
+            if entry.path.is_empty() {
+                return Err(CatalogError::lock_corrupt("entry path must not be empty"));
+            }
+            reject_lock_nul("entry path", &entry.path)?;
             if !active_ids.insert(entry.stable_id.as_str()) {
                 return Err(CatalogError::lock_corrupt(format!(
                     "entry stable id `{}` appears twice",
                     entry.stable_id
+                )));
+            }
+            // First-run adoption resolves a source declaration to its committed id by
+            // `(kind, path)`, so a duplicate anchor would bind two committed ids to one
+            // declaration. Reject it here rather than silently adopt an arbitrary one.
+            if !keys.insert((entry.kind, entry.path.as_str())) {
+                return Err(CatalogError::lock_corrupt(format!(
+                    "entry path `{}` for `{:?}` appears twice",
+                    entry.path, entry.kind
                 )));
             }
         }
@@ -357,14 +374,19 @@ impl CatalogLock {
     }
 }
 
-/// One fingerprinted entry in the committed lock: a stable id, its lifecycle, and an opaque
-/// shape fingerprint. The fingerprint stands in for the full accepted shape so the lock records
-/// a fingerprint of the shape each identity was last accepted under without committing the shape
-/// text. The lock does not cryptographically bind a fingerprint to its identity or to the source
-/// digest, so it detects an accidental shape change, not a hostile re-pairing of valid parts.
+/// One entry in the committed lock: the `(kind, path)` first-run adoption keys onto, a stable id,
+/// its lifecycle, and an opaque shape fingerprint. The `(kind, path)` is the identity anchor — a
+/// fresh checkout binds a source declaration to its committed stable id by matching this pair, so
+/// the same program over a wiped store mints no new identity. The fingerprint stands in for the
+/// full accepted shape so the lock records a fingerprint of the shape each identity was last
+/// accepted under without committing the shape text; it is a drift signal, not an identity key.
+/// The lock does not cryptographically bind a fingerprint to its identity or to the source digest,
+/// so it detects an accidental shape change, not a hostile re-pairing of valid parts.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LockEntry {
+    pub kind: CatalogEntryKind,
+    pub path: String,
     pub stable_id: String,
     pub lifecycle: CatalogLifecycle,
     /// A `sha256:`-prefixed fold of the entry kind and its accepted shape fields, so two entries
@@ -375,12 +397,15 @@ pub struct LockEntry {
 }
 
 impl LockEntry {
-    /// Fingerprint a catalog entry into a lock entry, reusing the shape fields
-    /// [`CatalogEntry`] already owns. The accepted key shape, index shape, and structural
-    /// signature are folded as their canonical wire text alongside the entry kind, so the lock
-    /// site never re-parses the structural-signature grammar.
+    /// Fingerprint a catalog entry into a lock entry, reusing the kind, path, and shape fields
+    /// [`CatalogEntry`] already owns. The `(kind, path)` is carried verbatim as the adoption
+    /// anchor; the accepted key shape, index shape, and structural signature are folded into the
+    /// fingerprint as their canonical wire text alongside the kind, so the lock site never
+    /// re-parses the structural-signature grammar.
     pub fn from_catalog_entry(entry: &CatalogEntry) -> Self {
         Self {
+            kind: entry.kind,
+            path: entry.path.clone(),
             stable_id: entry.stable_id.clone(),
             lifecycle: entry.lifecycle,
             shape_fingerprint: shape_fingerprint(entry),

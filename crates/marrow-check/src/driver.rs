@@ -97,7 +97,7 @@ pub fn check_project_with_catalog(
     config: &ProjectConfig,
     accepted: Option<&marrow_catalog::CatalogMetadata>,
 ) -> Result<(CheckReport, CheckedProgram), DiscoverError> {
-    analysis::analyze_source_project(project_root, config, &ProjectSources::new(), accepted)
+    analysis::analyze_source_project(project_root, config, &ProjectSources::new(), accepted, None)
         .map(|snapshot| (snapshot.report, snapshot.program))
 }
 

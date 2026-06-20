@@ -2,7 +2,10 @@ use std::collections::{HashMap, HashSet};
 use std::io;
 use std::path::Path;
 
-use marrow_catalog::{CatalogEntry, CatalogEntryKind, CatalogLifecycle, CatalogMetadata};
+use marrow_catalog::{
+    CatalogEntry, CatalogEntryKind, CatalogLifecycle, CatalogLock, CatalogMetadata, LockEntry,
+    LockLedgerTombstone,
+};
 use marrow_store::cell::CatalogId;
 use marrow_syntax::{Declaration, EnumMember, ParsedSource, SourceSpan};
 
@@ -11,7 +14,7 @@ use crate::evolution::{DefaultIntent, EvolveIntents, RenameIntent, RetireIntent,
 use crate::facts::{StoreIndexFact, StoreIndexKeySource, StoredValueMeaning};
 use crate::program::{EvolveDefault, EvolveTransform};
 use crate::{
-    CHECK_CATALOG_INTENT, CHECK_DURABLE_STORE_REQUIRED, CHECK_EVOLVE_TARGET,
+    CHECK_CATALOG_INTENT, CHECK_DURABLE_STORE_REQUIRED, CHECK_EVOLVE_TARGET, CHECK_LOCK_CORRUPT,
     CatalogIntentDiagnostic, CatalogIntentKind, CatalogPathCandidate, CheckDiagnostic,
     CheckedProgram, DiagnosticPayload,
 };
@@ -70,6 +73,7 @@ pub(crate) struct CatalogBinding {
 
 pub(crate) fn bind_catalog<'a, I>(
     accepted: Option<&CatalogMetadata>,
+    lock: Option<&CatalogLock>,
     program: &mut CheckedProgram,
     evolve: &EvolveIntents,
     parsed_files: I,
@@ -78,7 +82,7 @@ pub(crate) fn bind_catalog<'a, I>(
     I: IntoIterator<Item = (&'a Path, &'a ParsedSource)>,
 {
     let source = catalog_source(program, parsed_files);
-    let binding = catalog_binding(program, accepted, evolve, source, diagnostics);
+    let binding = catalog_binding(program, accepted, lock, evolve, source, diagnostics);
     let declared_store_key_shapes = declared_store_key_shapes(program, &binding.leaf_token_ids);
     let declared_member_structs = declared_member_structs(program, &binding.leaf_token_ids);
     program
@@ -335,6 +339,7 @@ where
 fn catalog_binding(
     program: &CheckedProgram,
     accepted: Option<&CatalogMetadata>,
+    lock: Option<&CatalogLock>,
     evolve: &EvolveIntents,
     source: CatalogSource,
     diagnostics: &mut Vec<CheckDiagnostic>,
@@ -356,11 +361,21 @@ fn catalog_binding(
         };
     }
     let mut ids = HashMap::new();
+    // A live accepted store catalog is the sole identity authority: its ids bind onto
+    // facts and the lock only raises the epoch floor for the advanced proposal. With no
+    // accepted catalog the lock drives first-run binding — adopting committed identity
+    // and the epoch high-water into the empty store, or minting fresh when absent.
     let proposal = match accepted {
-        Some(catalog) => {
-            bind_against_accepted(program, catalog, evolve, &source, &mut ids, diagnostics)
-        }
-        None => bind_first_run(program, evolve, &source.entries, diagnostics).map(Some),
+        Some(catalog) => bind_against_accepted(
+            program,
+            catalog,
+            lock,
+            evolve,
+            &source,
+            &mut ids,
+            diagnostics,
+        ),
+        None => adopt_or_mint_first_run(program, evolve, &source.entries, lock, diagnostics),
     };
     let proposal = match proposal {
         Ok(proposal) => proposal,
@@ -566,6 +581,7 @@ fn bind_source_id(
 fn bind_against_accepted(
     program: &CheckedProgram,
     catalog: &CatalogMetadata,
+    lock: Option<&CatalogLock>,
     evolve: &EvolveIntents,
     source: &CatalogSource,
     ids: &mut HashMap<CatalogKey, String>,
@@ -580,7 +596,7 @@ fn bind_against_accepted(
         diagnostics,
     );
     let mut proposal_entries = catalog.entries.clone();
-    let mut allocator = StableIdAllocator::over(&[], &proposal_entries);
+    let mut allocator = StableIdAllocator::over(lock_ledger(lock), &proposal_entries);
     let mut changed = bind_source_entries(
         &accepted_index,
         source,
@@ -608,7 +624,7 @@ fn bind_against_accepted(
     }
     if changed {
         Ok(Some(CatalogMetadata::new(
-            catalog.epoch + 1,
+            advance_epoch(catalog.epoch, lock_high_water(lock)),
             proposal_entries,
         )?))
     } else {
@@ -699,28 +715,193 @@ fn record_signatures_into(
     key_shapes_changed || index_shapes_changed || structs_changed
 }
 
-/// Bind current source with no accepted catalog: every entity mints fresh identity, and every
-/// rename or retire is an unresolved intent (nothing to carry forward). The first-run proposal
-/// is always real, so this returns it directly rather than as an `Option`.
-fn bind_first_run(
+/// The next epoch a real change advances to: strictly above both the accepted epoch and the
+/// lock's epoch high-water. Folding the high-water in keeps the version line monotone across
+/// store loss — a wiped store whose committed lock reached epoch N cannot mint a new proposal
+/// at or below N and silently reuse a witnessed epoch for different identity. The single owner
+/// of the advance rule, consumed by both bind paths and by the run baseline.
+fn advance_epoch(accepted_epoch: u64, lock_high_water: u64) -> u64 {
+    accepted_epoch.max(lock_high_water) + 1
+}
+
+/// The lock's append-only id ledger, or an empty slice when no lock is present. The
+/// never-reuse authority a fresh mint is seeded against and an adopted id is checked against.
+fn lock_ledger(lock: Option<&CatalogLock>) -> &[LockLedgerTombstone] {
+    lock.map(|lock| lock.ledger.as_slice()).unwrap_or_default()
+}
+
+/// The lock's epoch high-water, or zero when no lock is present.
+fn lock_high_water(lock: Option<&CatalogLock>) -> u64 {
+    lock.map(|lock| lock.epoch_high_water).unwrap_or(0)
+}
+
+/// Bind current source with no accepted catalog: a present committed lock drives first-run
+/// adoption of its identity and epoch high-water into the empty store, an absent lock mints a
+/// fresh baseline at epoch 1. Every rename or retire is an unresolved intent (nothing to carry
+/// forward). Returns `None` only when a present lock refuses adoption (a tombstone reissue),
+/// having pushed the typed [`CHECK_LOCK_CORRUPT`] refusal.
+fn adopt_or_mint_first_run(
     program: &CheckedProgram,
     evolve: &EvolveIntents,
     source_entries: &[SourceCatalogEntry],
+    lock: Option<&CatalogLock>,
     diagnostics: &mut Vec<CheckDiagnostic>,
-) -> Result<CatalogMetadata, CatalogProposalError> {
+) -> Result<Option<CatalogMetadata>, CatalogProposalError> {
     for rename in &evolve.renames {
         report_unresolved_intent(&rename.file, rename.span, diagnostics);
     }
     for retire in &evolve.retires {
         report_unresolved_intent(&retire.file, retire.span, diagnostics);
     }
-    let mut allocator = StableIdAllocator::empty(&[]);
+    let Some(lock) = lock else {
+        return mint_first_run(program, source_entries, &[]).map(Some);
+    };
+    let Some(mut proposal_entries) =
+        adopt_first_run_entries(source_entries, lock, &lock.ledger, diagnostics)
+    else {
+        return Ok(None);
+    };
+    record_signatures_into(program, &mut proposal_entries, None);
+    Ok(Some(CatalogMetadata::new(
+        lock.epoch_high_water,
+        proposal_entries,
+    )?))
+}
+
+/// Mint a fresh first-run proposal at epoch 1: every source entity gets a newly allocated id,
+/// re-rolled past every id the ledger has tombstoned so a retired id is never reissued.
+fn mint_first_run(
+    program: &CheckedProgram,
+    source_entries: &[SourceCatalogEntry],
+    ledger: &[LockLedgerTombstone],
+) -> Result<CatalogMetadata, CatalogProposalError> {
+    let mut allocator = StableIdAllocator::empty(ledger);
     let mut proposal_entries: Vec<CatalogEntry> = source_entries
         .iter()
         .map(|source| proposed_catalog_entry(source, &mut allocator))
         .collect::<io::Result<_>>()?;
     record_signatures_into(program, &mut proposal_entries, None);
     Ok(CatalogMetadata::new(1, proposal_entries)?)
+}
+
+/// Build the first-run proposal entries for a present lock: carry a committed id forward onto
+/// each source entity whose `(kind, path)` the lock records, and mint a fresh id (seeded never to
+/// reuse a committed or tombstoned id) for an entity the lock does not record. Returns `None`,
+/// having pushed [`CHECK_LOCK_CORRUPT`], when an adopted id reissues a ledger tombstone: the
+/// binding fails closed before any id is bound rather than resurrect a retired identity. Adoption
+/// keys on the `(kind, path)` anchor, never the shape fingerprint: a first-run source pre-image
+/// records none of the accepted shape a committed entry was fingerprinted under, so a fingerprint
+/// match would silently miss every shaped entity, and distinct entities sharing a shape would
+/// collide. The fingerprint is a drift signal for later staleness detection, not an identity key.
+fn adopt_first_run_entries(
+    source_entries: &[SourceCatalogEntry],
+    lock: &CatalogLock,
+    ledger: &[LockLedgerTombstone],
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) -> Option<Vec<CatalogEntry>> {
+    let committed: HashMap<(CatalogEntryKind, &str), &str> = lock
+        .entries
+        .iter()
+        .map(|entry| ((entry.kind, entry.path.as_str()), entry.stable_id.as_str()))
+        .collect();
+    // Seed the never-reuse set, through the allocator's single never-reuse owner, with the ledger
+    // tombstones and every committed lock id, so a fresh mint for an unrecorded entity re-rolls
+    // past an id the lock already commits or has retired. The committed ids enter as entry stubs
+    // because the allocator seeds from catalog entries.
+    let committed_stubs = committed_id_stubs(&lock.entries);
+    let mut allocator = StableIdAllocator::over(ledger, &committed_stubs);
+    let mut proposal_entries = Vec::with_capacity(source_entries.len());
+    for source in source_entries {
+        let entry = match committed.get(&(source.kind, source.path.as_str())) {
+            Some(stable_id) => proposed_catalog_entry_with_id(source, stable_id),
+            None => proposed_catalog_entry(source, &mut allocator).ok()?,
+        };
+        proposal_entries.push(entry);
+    }
+    if let Some(reissued) = tombstone_reissue(&proposal_entries, ledger) {
+        diagnostics.push(lock_corrupt_diagnostic(source_entries, reissued));
+        return None;
+    }
+    Some(proposal_entries)
+}
+
+/// Adopt a committed lock id onto an unkeyed source view directly, for the binding's
+/// fail-closed guard tests. Production binding reaches the same path through
+/// [`adopt_or_mint_first_run`]; this exposes the adopting builder with the ledger threaded
+/// explicitly so the tombstone-reissue refusal is exercised without a structurally invalid lock.
+#[cfg(test)]
+fn adopt_first_run(
+    source_entries: &[SourceCatalogEntry],
+    lock: &CatalogLock,
+    ledger: &[LockLedgerTombstone],
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) -> Option<CatalogMetadata> {
+    let entries = adopt_first_run_entries(source_entries, lock, ledger, diagnostics)?;
+    CatalogMetadata::new(lock.epoch_high_water, entries).ok()
+}
+
+/// Catalog-entry stubs carrying each committed lock id, so the allocator's never-reuse seed
+/// (its single owner) includes the committed ids without a second never-reuse set in this module.
+/// The stubs are seed-only: their kind and path are placeholders never published into a proposal.
+fn committed_id_stubs(committed: &[LockEntry]) -> Vec<CatalogEntry> {
+    committed
+        .iter()
+        .map(|entry| CatalogEntry {
+            kind: CatalogEntryKind::Resource,
+            path: String::from("lock-committed-id-seed"),
+            stable_id: entry.stable_id.clone(),
+            aliases: Vec::new(),
+            lifecycle: CatalogLifecycle::Reserved,
+            accepted_key_shape: None,
+            accepted_index_shape: None,
+            accepted_struct: None,
+        })
+        .collect()
+}
+
+/// The first adopted id that a ledger tombstone records, or `None` when adoption reissues no
+/// retired id. A valid lock keeps its committed ids off its own ledger, so this guards the
+/// adopted proposal independently of the lock's self-validation.
+fn tombstone_reissue<'a>(
+    proposal_entries: &'a [CatalogEntry],
+    ledger: &[LockLedgerTombstone],
+) -> Option<&'a str> {
+    let tombstoned: HashSet<&str> = ledger.iter().map(|stone| stone.id.as_str()).collect();
+    proposal_entries
+        .iter()
+        .find(|entry| tombstoned.contains(entry.stable_id.as_str()))
+        .map(|entry| entry.stable_id.as_str())
+}
+
+fn lock_corrupt_diagnostic(
+    source_entries: &[SourceCatalogEntry],
+    reissued_id: &str,
+) -> CheckDiagnostic {
+    CheckDiagnostic::error(
+        CHECK_LOCK_CORRUPT,
+        &first_source_file(source_entries),
+        crate::source_spans::start_of_file(),
+        format!(
+            "marrow.lock is corrupt: adopting catalog id `{reissued_id}` would reissue an id its \
+             ledger has retired"
+        ),
+    )
+}
+
+/// A proposed first-run catalog entry carrying a specific stable id, whether adopted from the
+/// committed lock by `(kind, path)` or freshly minted. Shares the lifecycle and empty-signature
+/// shape [`proposed_catalog_entry`] mints.
+fn proposed_catalog_entry_with_id(source: &SourceCatalogEntry, stable_id: &str) -> CatalogEntry {
+    CatalogEntry {
+        kind: source.kind,
+        path: source.path.clone(),
+        stable_id: stable_id.to_string(),
+        aliases: Vec::new(),
+        lifecycle: CatalogLifecycle::Active,
+        accepted_key_shape: None,
+        accepted_index_shape: None,
+        accepted_struct: None,
+    }
 }
 
 /// The `(kind, path) -> stable id` map of a proposal's active entries. Unlike the accepted-only
@@ -1884,18 +2065,12 @@ fn proposed_catalog_entry<E: CatalogIdEntropy>(
     source: &SourceCatalogEntry,
     allocator: &mut StableIdAllocator<E>,
 ) -> io::Result<CatalogEntry> {
-    Ok(CatalogEntry {
-        kind: source.kind,
-        path: source.path.clone(),
-        stable_id: allocator.allocate()?,
-        aliases: Vec::new(),
-        lifecycle: CatalogLifecycle::Active,
-        // Source-derived shape signatures are recorded in post-passes once every referent's id
-        // is bound; freshly minted entries start without them.
-        accepted_key_shape: None,
-        accepted_index_shape: None,
-        accepted_struct: None,
-    })
+    // Source-derived shape signatures are recorded in post-passes once every referent's id is
+    // bound; freshly minted entries start without them.
+    Ok(proposed_catalog_entry_with_id(
+        source,
+        &allocator.allocate()?,
+    ))
 }
 
 #[cfg(test)]
@@ -1958,6 +2133,140 @@ mod tests {
             file: std::path::PathBuf::from("src/books.mw"),
             span: SourceSpan::default(),
         }
+    }
+
+    /// A `cat_<32 hex>` id from a single distinguishing byte, for fixtures that pin a
+    /// specific committed or tombstoned id.
+    fn fixed_id(byte: u8) -> String {
+        format!("cat_{byte:032x}")
+    }
+
+    /// A committed lock entry carrying `stable_id` for `(kind, path)` — the adoption anchor a
+    /// fresh source entity at the same `(kind, path)` carries the id forward by. `key_shape`
+    /// records a real accepted shape so the entry is fingerprinted as a SHAPED entity, proving
+    /// adoption keys on the path rather than a fingerprint a first-run pre-image cannot match.
+    fn committed_lock_entry(
+        kind: CatalogEntryKind,
+        path: &str,
+        stable_id: &str,
+        key_shape: Option<&str>,
+    ) -> marrow_catalog::LockEntry {
+        let entry = CatalogEntry {
+            accepted_key_shape: key_shape.map(|shape| shape.to_string()),
+            ..active_entry(kind, path, stable_id)
+        };
+        marrow_catalog::LockEntry::from_catalog_entry(&entry)
+    }
+
+    fn lock(
+        entries: Vec<marrow_catalog::LockEntry>,
+        ledger: Vec<LockLedgerTombstone>,
+        epoch_high_water: u64,
+    ) -> CatalogLock {
+        CatalogLock::new(
+            entries,
+            ledger,
+            epoch_high_water,
+            "sha256:0000000000000000000000000000000000000000000000000000000000000000".to_string(),
+        )
+        .expect("lock builds")
+    }
+
+    fn tombstone(stable_id: &str, high_water: u64) -> LockLedgerTombstone {
+        LockLedgerTombstone {
+            id: stable_id.to_string(),
+            lifecycle: CatalogLifecycle::Reserved,
+            high_water,
+        }
+    }
+
+    /// First-run binding with a present committed lock adopts the lock's identity by `(kind,
+    /// path)` and its epoch high-water instead of minting fresh ids at epoch 1, even for a SHAPED
+    /// entity whose committed fingerprint a fresh source pre-image cannot reproduce; it refuses an
+    /// adopted id that would reissue a tombstone, and advances re-bind from the high-water.
+    #[test]
+    fn first_run_with_present_lock_adopts_lock_identity_and_epoch_high_water() {
+        let program = CheckedProgram::default();
+        let evolve = EvolveIntents::default();
+
+        // A single SHAPED store source entity, and a lock that committed it under `store_id` at
+        // epoch high-water 12. The committed entry was fingerprinted with a real `int` key shape
+        // the fresh source pre-image (no accepted shape) cannot match, so only path-keyed
+        // adoption carries the id forward.
+        let store_id = fixed_id(0xa1);
+        let store_path = "books::^books";
+        let source = vec![source_entry(CatalogEntryKind::Store, store_path)];
+        let high_water = 12;
+        let committed = lock(
+            vec![committed_lock_entry(
+                CatalogEntryKind::Store,
+                store_path,
+                &store_id,
+                Some("int"),
+            )],
+            Vec::new(),
+            high_water,
+        );
+
+        // Oracle 1 + 2: the first-run proposal adopts the committed id and the lock's
+        // epoch high-water rather than minting fresh at epoch 1.
+        let mut diagnostics = Vec::new();
+        let Ok(Some(proposal)) = adopt_or_mint_first_run(
+            &program,
+            &evolve,
+            &source,
+            Some(&committed),
+            &mut diagnostics,
+        ) else {
+            panic!("a present lock carries an adopting first-run proposal");
+        };
+        assert_eq!(
+            proposal.epoch, high_water,
+            "adopts the lock epoch high-water"
+        );
+        let adopted = proposal
+            .entries
+            .iter()
+            .find(|entry| entry.kind == CatalogEntryKind::Store && entry.path == store_path)
+            .expect("proposal carries the store");
+        assert_eq!(adopted.stable_id, store_id, "adopts the committed lock id");
+
+        // Oracle 3: a committed id adoption would carry forward that the ledger also
+        // tombstones makes the binding push the typed check.lock_corrupt code and carry no
+        // adopting proposal (assert no Active entry binds the tombstoned id). The lock's own
+        // codec keeps a committed id off its ledger, so the refusal is the binding's
+        // independent fail-closed gate over the adopted result, exercised here directly.
+        let tombstoned = store_id.clone();
+        let mut refusal_diagnostics = Vec::new();
+        let refused = adopt_first_run(
+            &source,
+            &committed,
+            &[tombstone(&tombstoned, high_water)],
+            &mut refusal_diagnostics,
+        );
+        assert!(
+            refused.is_none(),
+            "a tombstone-reissuing adoption carries no proposal"
+        );
+        assert!(
+            refusal_diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == crate::CHECK_LOCK_CORRUPT),
+            "the refusal pushes the typed check.lock_corrupt code: {refusal_diagnostics:#?}"
+        );
+
+        // Oracle 4: re-binding against an accepted catalog whose epoch is below the lock's
+        // high-water advances from the high-water, not from accepted.epoch.
+        assert_eq!(
+            advance_epoch(5, high_water),
+            13,
+            "max(accepted, high_water) + 1"
+        );
+        assert_eq!(
+            advance_epoch(9, 3),
+            10,
+            "max favors the larger accepted epoch"
+        );
     }
 
     #[test]
