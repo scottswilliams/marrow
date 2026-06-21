@@ -13,9 +13,10 @@ use marrow_check::tooling::{
     SourceDataPathSegment, ToolingError, active_callable_context, callable_callee_contexts,
     declared_data_children, declared_source_data_children, declared_source_receiver_data_children,
     identity_type_annotations, intrinsic_callable_signature, intrinsic_callable_signature_for_file,
-    resolve_data_path, resource_constructor_signature, sample_integrity_problem_details,
-    sample_integrity_problems, stamped_data_children, stamped_data_roots_in_store,
-    stamped_integrity_problem_details, stamped_preview_data_path, stamped_read_data_path,
+    intrinsic_completion_callables, resolve_data_path, resource_constructor_signature,
+    sample_integrity_problem_details, sample_integrity_problems, stamped_data_children,
+    stamped_data_roots_in_store, stamped_integrity_problem_details, stamped_preview_data_path,
+    stamped_read_data_path,
 };
 use marrow_check::{
     CHECK_READ_ONLY_EXPRESSION_HOST_EFFECT, CHECK_READ_ONLY_EXPRESSION_UNINDEXED_LOOKUP,
@@ -824,6 +825,68 @@ fn intrinsic_callable_signature_returns_builtin_shapes_without_stale_removed_bui
         intrinsic_callable_signature(&path_segments(&["write"])),
         None
     );
+}
+
+#[test]
+fn intrinsic_completion_callables_enumerate_bare_callable_facts() {
+    let callables = intrinsic_completion_callables();
+    let labels = callables
+        .iter()
+        .map(|signature| signature.path.join("::"))
+        .collect::<Vec<_>>();
+    let expected_labels = [
+        "print",
+        "exists",
+        "nextId",
+        "append",
+        "keys",
+        "count",
+        "values",
+        "entries",
+        "reversed",
+        "next",
+        "prev",
+        "key",
+        "bool",
+        "int",
+        "string",
+        "ErrorCode",
+        "bytes",
+        "date",
+        "instant",
+        "duration",
+        "decimal",
+        "Id",
+        "Error",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect::<Vec<_>>();
+
+    assert_eq!(labels, expected_labels);
+    assert_eq!(
+        labels
+            .iter()
+            .collect::<std::collections::BTreeSet<_>>()
+            .len(),
+        labels.len(),
+        "completion callable labels must be unique: {labels:?}"
+    );
+    assert!(
+        !labels.contains(&"write".to_string()),
+        "completion callables must not resurrect removed builtins: {labels:?}"
+    );
+    assert!(
+        !labels.iter().any(|label| label.starts_with("std::")),
+        "bare completion callables must not enumerate namespace-qualified std operations: {labels:?}"
+    );
+    for signature in callables {
+        assert_eq!(
+            intrinsic_callable_signature(&signature.path),
+            Some(signature.clone()),
+            "enumerated callable must round-trip through lookup"
+        );
+    }
 }
 
 #[test]

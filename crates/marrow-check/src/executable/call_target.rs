@@ -190,6 +190,10 @@ impl CheckedBuiltinCall {
             .find(|descriptor| descriptor.spelling == name)
     }
 
+    pub(crate) fn descriptors() -> &'static [CheckedBuiltinCallDescriptor] {
+        BUILTIN_CALLS
+    }
+
     pub(crate) fn from_name(name: &str) -> Option<Self> {
         if let Some(descriptor) = Self::descriptor_for_name(name) {
             return Some(descriptor.call);

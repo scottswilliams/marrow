@@ -305,6 +305,10 @@ const CONVERSION_SPELLINGS: &[(&str, ConversionTarget)] = &[
 ];
 
 impl ConversionTarget {
+    pub(crate) fn all() -> impl Iterator<Item = Self> {
+        CONVERSION_SPELLINGS.iter().map(|(_, target)| *target)
+    }
+
     pub(crate) fn from_name(name: &str) -> Option<Self> {
         CONVERSION_SPELLINGS
             .iter()

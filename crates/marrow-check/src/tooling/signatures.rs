@@ -88,6 +88,16 @@ pub fn intrinsic_callable_signature(segments: &[String]) -> Option<CallableSigna
     }
 }
 
+pub fn intrinsic_completion_callables() -> Vec<CallableSignature> {
+    CheckedBuiltinCall::descriptors()
+        .iter()
+        .map(builtin_signature_from_descriptor)
+        .chain(ConversionTarget::all().map(conversion_signature_for_target))
+        .chain(identity_signature("Id"))
+        .chain(error_signature("Error"))
+        .collect()
+}
+
 pub fn intrinsic_callable_signature_for_file(
     snapshot: &AnalysisSnapshot,
     file: &Path,
@@ -152,7 +162,13 @@ fn constructor_field(
 
 fn builtin_signature(name: &str) -> Option<CallableSignature> {
     let descriptor = CheckedBuiltinCall::descriptor_for_name(name)?;
-    Some(CallableSignature {
+    Some(builtin_signature_from_descriptor(descriptor))
+}
+
+fn builtin_signature_from_descriptor(
+    descriptor: &crate::executable::CheckedBuiltinCallDescriptor,
+) -> CallableSignature {
+    CallableSignature {
         path: vec![descriptor.spelling.to_string()],
         kind: CallableSignatureKind::Builtin,
         argument_style: CallableArgumentStyle::Positional,
@@ -169,12 +185,17 @@ fn builtin_signature(name: &str) -> Option<CallableSignature> {
             })
             .collect(),
         return_shape: builtin_return_shape(descriptor.return_shape),
-    })
+    }
 }
 
 fn conversion_signature(name: &str) -> Option<CallableSignature> {
-    let target = ConversionTarget::from_name(name)?;
-    Some(CallableSignature {
+    Some(conversion_signature_for_target(
+        ConversionTarget::from_name(name)?,
+    ))
+}
+
+fn conversion_signature_for_target(target: ConversionTarget) -> CallableSignature {
+    CallableSignature {
         path: vec![target.spelling().to_string()],
         kind: CallableSignatureKind::ScalarConversion,
         argument_style: CallableArgumentStyle::Positional,
@@ -184,7 +205,7 @@ fn conversion_signature(name: &str) -> Option<CallableSignature> {
             ConversionTarget::ErrorCode => CallableValueShape::ErrorCode,
             _ => CallableValueShape::Type(target.return_type()),
         }),
-    })
+    }
 }
 
 fn error_signature(name: &str) -> Option<CallableSignature> {

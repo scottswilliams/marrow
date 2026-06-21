@@ -116,6 +116,10 @@ from the checked program or snapshot:
   to its checked `FunctionFact`, `LocalFact`, and parameter ordinal. Editor
   callers use that identity to join token-tight source spans to signature facts
   without re-parsing parameter declarations.
+- `tooling::intrinsic_completion_callables()` returns the bare editor-callable
+  intrinsic signatures from the checker-owned builtin and scalar-conversion
+  vocabularies plus `Id` and `Error`. It excludes namespace-qualified standard
+  library operations and removed builtins.
 - `CheckedProgram::checked_read_only_expression` parses and checks an injected
   expression against one checked module, rejects writes, host effects, and
   unindexed saved collection lookups with source-level diagnostic codes, and
