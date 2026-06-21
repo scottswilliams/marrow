@@ -10,8 +10,9 @@ use crate::support;
 use crate::support_data;
 use crate::support_evolve;
 use marrow_check::tooling::{
-    DataChild, DataPathError, DataPathSegment, ToolingError, count_activation_integrity_problems,
-    count_integrity_problems, data_children, read_data_path, resolve_data_path, walk_data,
+    DataChild, DataPathError, DataPathSegment, DataPresence, ToolingError,
+    count_activation_integrity_problems, count_integrity_problems, data_children, read_data_path,
+    resolve_data_path, walk_data,
 };
 use marrow_store::key::SavedKey;
 use marrow_store::tree::{DataPathSegment as StoreDataPathSegment, TreeStore};
@@ -240,10 +241,6 @@ fn assert_store_corruption(error: ToolingError) {
     }
 }
 
-fn assert_store_error_corruption(error: marrow_store::StoreError) {
-    assert_eq!(error.code(), "store.corruption", "{error:?}");
-}
-
 #[test]
 fn tooling_rejects_malformed_temporal_root_keys() {
     let project = temporal_key_project("data-tooling-malformed-temporal-root");
@@ -265,9 +262,9 @@ fn tooling_rejects_malformed_temporal_root_keys() {
     let path = resolve_data_path(&program, &root)
         .expect("resolve root path")
         .expect("root path");
-    assert_store_error_corruption(
-        read_data_path(&store, &path).expect_err("read rejects malformed root key"),
-    );
+    let read = read_data_path(&store, &path).expect("read uses bounded root child presence");
+    assert_eq!(read.presence, DataPresence::ChildrenOnly);
+    assert!(read.payload.is_none(), "{read:?}");
     assert_store_corruption(
         walk_data(&program, &store, &path, None, 10).expect_err("walk rejects malformed root key"),
     );
@@ -314,9 +311,9 @@ fn tooling_rejects_malformed_temporal_layer_keys() {
     let path = resolve_data_path(&program, &layer)
         .expect("resolve layer path")
         .expect("layer path");
-    assert_store_error_corruption(
-        read_data_path(&store, &path).expect_err("read rejects malformed layer key"),
-    );
+    let read = read_data_path(&store, &path).expect("read uses bounded layer child presence");
+    assert_eq!(read.presence, DataPresence::ChildrenOnly);
+    assert!(read.payload.is_none(), "{read:?}");
     assert_store_corruption(
         walk_data(&program, &store, &path, None, 10).expect_err("walk rejects malformed layer key"),
     );

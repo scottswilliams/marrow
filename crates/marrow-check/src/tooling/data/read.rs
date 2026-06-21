@@ -126,14 +126,13 @@ fn children_presence<T>(has_children: bool) -> Result<ResolvedDataPathRead<T>, S
 }
 
 fn record_children_present(store: &TreeStore, path: &ResolvedDataPath) -> Result<bool, StoreError> {
-    let mut child = record_nav::first_record_child(
+    let child = record_nav::first_record_child(
         store,
         &path.storage.store,
         &path.storage.identity,
         path.storage.identity_arity,
     )?;
-    let mut present = false;
-    while let Some(key) = child {
+    if let Some(key) = child {
         let expected = path
             .storage
             .identity_key_scalars
@@ -141,16 +140,9 @@ fn record_children_present(store: &TreeStore, path: &ResolvedDataPath) -> Result
             .copied()
             .flatten();
         stored_key_mismatch(expected, &key)?;
-        present = true;
-        child = record_nav::next_record_child(
-            store,
-            &path.storage.store,
-            &path.storage.identity,
-            path.storage.identity_arity,
-            &key,
-        )?;
+        return Ok(true);
     }
-    Ok(present)
+    Ok(false)
 }
 
 fn data_children_present(store: &TreeStore, path: &ResolvedDataPath) -> Result<bool, StoreError> {
@@ -168,23 +160,16 @@ fn keyed_data_children_present(
     store: &TreeStore,
     path: &ResolvedDataPath,
 ) -> Result<bool, StoreError> {
-    let mut child = store.data_first_child(
+    let child = store.data_first_child(
         &path.storage.store,
         &path.storage.identity,
         &path.storage.data_path,
     )?;
-    let mut present = false;
-    while let Some(key) = child {
+    if let Some(key) = child {
         validate_data_child_key(path, &key)?;
-        present = true;
-        child = store.data_next_child(
-            &path.storage.store,
-            &path.storage.identity,
-            &path.storage.data_path,
-            &key,
-        )?;
+        return Ok(true);
     }
-    Ok(present)
+    Ok(false)
 }
 
 fn validate_data_child_key(path: &ResolvedDataPath, key: &SavedKey) -> Result<(), StoreError> {
