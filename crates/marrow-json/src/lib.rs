@@ -66,8 +66,7 @@ pub fn entry_return_to_json(value: &Value) -> Result<serde_json::Value, EntryRet
         }
         Value::Enum(value) => json!({
             "kind": "enum",
-            "enum_id": value.enum_id().0,
-            "member_id": value.member_id().0,
+            "member": value.render_name(),
         }),
         Value::Identity(identity) => json!({
             "kind": "identity",

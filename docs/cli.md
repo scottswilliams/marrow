@@ -146,9 +146,12 @@ Check a project directory containing `marrow.json` and report diagnostics.
   falling back to the committed `marrow.lock` projection otherwise; the read is
   read-only, so check never opens the store for repair, creates one, or writes
   the source tree. With `--locked`, a `marrow.lock` whose recorded source shape is
-  behind the current source is a fatal `check.stale_lock` error for CI; by default
-  it is a non-fatal advisory, since a later `run` or `evolve apply` regenerates the
-  lock.
+  behind the current source is a fatal `check.stale_lock` error for CI; the
+  structured envelope reports `status: "failed"` with the `check.stale_lock`
+  diagnostic and omits the success-only sections, so the envelope agrees with the
+  exit code. By default a stale lock is a non-fatal advisory on stderr — the
+  envelope stays `status: "ok"` — since a later `run` or `evolve apply`
+  regenerates the lock.
 - Passing a bare `.mw` file is a usage error. Run `marrow check` on the project
   directory that contains `marrow.json`.
 - When `marrow.json` sets `run.defaultEntry`, the check verifies it names a
@@ -534,8 +537,11 @@ entry's return value has a JSON surface, `signature_digest: null`,
 `raises: null`, and `store_stamp` with `store_uid`, `catalog_epoch`, and
 `commit_id`. A sibling `committed: true` appears only when this invocation
 committed a write; read-only runs omit `committed`. Identity returns use the
-same JSON identity form as `marrow data` JSON surfaces. Resource-shaped returns
-are outside the run surface and fail with `run.entry_surface` (exit `1`). If
+same JSON identity form as `marrow data` JSON surfaces. An enum return renders as
+`{"kind":"enum","member":"Enum::member"}`, the stable, reorder-invariant member
+spelling `print`/`string`/interpolation produce, not a positional index.
+Resource-shaped returns are outside the run surface and fail with
+`run.entry_surface` (exit `1`). If
 return rendering or a later runtime fault fails after a durable write has
 committed, stderr carries the runtime fault JSON with `store_stamp` and
 `committed: true`; stdout does not carry a successful result envelope. If an

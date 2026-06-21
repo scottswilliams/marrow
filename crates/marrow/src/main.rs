@@ -201,6 +201,39 @@ pub(crate) fn report_project_with_program(
     report_project_with_footprints(target, report, Some(program), format);
 }
 
+/// Report a project as failed because of a CLI-level condition the checker itself does not raise,
+/// such as a fatal `--locked` stale lock. The structured envelope reports `failed`, carries the
+/// project's own diagnostics plus the supplied `diagnostic` record, and omits the success-only
+/// footprints and surface descriptors so the envelope status always agrees with the nonzero exit.
+pub(crate) fn report_project_failed_with_diagnostic(
+    target: &str,
+    report: &marrow_check::CheckReport,
+    diagnostic: serde_json::Value,
+    format: CheckFormat,
+) {
+    match format {
+        CheckFormat::Text => {
+            for line in project_diagnostic_lines(report) {
+                eprintln!("{line}");
+            }
+            eprintln!(
+                "{}: {}",
+                diagnostic["code"].as_str().unwrap_or_default(),
+                diagnostic["message"].as_str().unwrap_or_default()
+            );
+        }
+        CheckFormat::Json | CheckFormat::Jsonl => report_diagnostic_records(
+            format,
+            report
+                .diagnostics
+                .iter()
+                .map(check_diagnostic_record)
+                .chain(std::iter::once(diagnostic)),
+            project_envelope(target, "failed", None),
+        ),
+    }
+}
+
 fn report_project_with_footprints(
     target: &str,
     report: &marrow_check::CheckReport,
@@ -213,19 +246,8 @@ fn report_project_with_footprints(
             if report.diagnostics.is_empty() {
                 println!("ok: {target} checked");
             } else {
-                for diagnostic in &report.diagnostics {
-                    eprintln!(
-                        "{}:{}:{}: {}: {}: {}",
-                        diagnostic.file.display(),
-                        diagnostic.span.line,
-                        diagnostic.span.column,
-                        diagnostic.severity.as_str(),
-                        diagnostic.code,
-                        diagnostic.message
-                    );
-                    if let Some(line) = check_diagnostic_payload_text(diagnostic) {
-                        eprintln!("{line}");
-                    }
+                for line in project_diagnostic_lines(report) {
+                    eprintln!("{line}");
                 }
                 if !report.has_errors() {
                     let warnings = report
@@ -375,6 +397,28 @@ pub(crate) fn envelope(
         record.insert("help".into(), json!(help));
     }
     record
+}
+
+/// The stderr lines for a project's diagnostics: one located `file:line:col: severity: code:
+/// message` line each, plus any suggested-index payload line. Shared by the success path and the
+/// failed-with-extra-diagnostic path so both render diagnostics identically.
+fn project_diagnostic_lines(report: &marrow_check::CheckReport) -> Vec<String> {
+    let mut lines = Vec::new();
+    for diagnostic in &report.diagnostics {
+        lines.push(format!(
+            "{}:{}:{}: {}: {}: {}",
+            diagnostic.file.display(),
+            diagnostic.span.line,
+            diagnostic.span.column,
+            diagnostic.severity.as_str(),
+            diagnostic.code,
+            diagnostic.message
+        ));
+        if let Some(line) = check_diagnostic_payload_text(diagnostic) {
+            lines.push(line);
+        }
+    }
+    lines
 }
 
 /// Project diagnostics carry no `help` or byte offsets: they are reported at a

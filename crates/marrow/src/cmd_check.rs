@@ -125,33 +125,58 @@ fn check_project_dir(dir: &str, format: CheckFormat, locked: bool) -> ExitCode {
         crate::report_project(dir, &snapshot.report, format);
         return ExitCode::FAILURE;
     }
-    crate::report_project_with_program(dir, &snapshot.report, &snapshot.program, format);
     let stale = lock
         .as_ref()
         .is_some_and(|lock| lock.source_digest != snapshot.program.source_digest());
+
+    // A fatal stale lock is a check failure, so its report must mirror any other failing check:
+    // the structured envelope reports `failed`, carries the stale-lock diagnostic, and omits the
+    // success-only entry footprints and surface descriptors. The advisory case keeps the clean
+    // success envelope and surfaces the stale lock as a separate stderr note.
+    if stale && strictness == LockStrictness::Fatal {
+        crate::report_project_failed_with_diagnostic(
+            dir,
+            &snapshot.report,
+            stale_lock_diagnostic(),
+            format,
+        );
+        return ExitCode::FAILURE;
+    }
+
+    crate::report_project_with_program(dir, &snapshot.report, &snapshot.program, format);
     if stale {
-        report_stale_lock(format);
-        if strictness == LockStrictness::Fatal {
-            return ExitCode::FAILURE;
-        }
+        report_stale_lock_advisory(format);
     }
     ExitCode::SUCCESS
 }
 
-/// Emit the stale-lock condition on stderr in the requested format. It is written to stderr in
-/// every format so it never joins the primary check result on stdout, keeping the structured
-/// envelope a single parseable value. The same typed code reports it whether the run treats it as
-/// a non-fatal advisory or, under `--locked`, fails on it.
-fn report_stale_lock(format: CheckFormat) {
-    const MESSAGE: &str =
-        "marrow.lock is behind the current source; a run or evolve apply re-projects it";
+const STALE_LOCK_MESSAGE: &str =
+    "marrow.lock is behind the current source; a run or evolve apply re-projects it";
+
+/// The stale-lock condition as a structured diagnostic for the failed-check envelope. It carries
+/// no source span: it compares the committed lock against the whole checked source rather than
+/// faulting at a single declaration.
+fn stale_lock_diagnostic() -> serde_json::Value {
+    serde_json::json!({
+        "code": CHECK_STALE_LOCK,
+        "kind": marrow_syntax::kind_for_code(CHECK_STALE_LOCK),
+        "message": STALE_LOCK_MESSAGE,
+        "severity": "error",
+        "source_span": null,
+    })
+}
+
+/// Note the non-fatal stale-lock advisory on stderr, off the success envelope on stdout, so the
+/// structured result stays a single parseable value. A later `run` or `evolve apply` re-projects
+/// the lock to converge it.
+fn report_stale_lock_advisory(format: CheckFormat) {
     match format {
-        CheckFormat::Text => eprintln!("{CHECK_STALE_LOCK}: {MESSAGE}"),
+        CheckFormat::Text => eprintln!("{CHECK_STALE_LOCK}: {STALE_LOCK_MESSAGE}"),
         CheckFormat::Json | CheckFormat::Jsonl => {
             write_json_err(serde_json::json!({
                 "code": CHECK_STALE_LOCK,
                 "kind": marrow_syntax::kind_for_code(CHECK_STALE_LOCK),
-                "message": MESSAGE,
+                "message": STALE_LOCK_MESSAGE,
                 "data": {},
                 "source_span": null,
             }));

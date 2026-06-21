@@ -368,6 +368,50 @@ fn check_locked_fails_on_a_stale_lock_that_plain_check_only_advises() {
 }
 
 #[test]
+fn check_locked_json_envelope_reports_a_stale_lock_as_failed() {
+    // A CI tool parses the stdout JSON envelope, never stderr. A fatal `--locked` stale lock
+    // exits 1, so the envelope status must agree: `failed`, carrying the `check.stale_lock`
+    // diagnostic, and dropping the success-only `entry_footprints`/`surface_abi`/`surface_routes`.
+    let root = native_books_project("check-ro-locked-json", REQUIRED_BASELINE_SOURCE);
+    commit_catalog(&root);
+    write(&root, "src/books.mw", OPTIONAL_PAGES_DEFAULT_INDEX_SOURCE);
+
+    let strict = marrow(&[
+        "check",
+        "--locked",
+        "--format",
+        "json",
+        root.to_str().unwrap(),
+    ]);
+    assert_eq!(
+        strict.status.code(),
+        Some(1),
+        "--locked makes a stale lock fatal: {strict:?}"
+    );
+    let envelope: serde_json::Value =
+        serde_json::from_slice(&strict.stdout).expect("stdout is one JSON envelope");
+    assert_eq!(
+        envelope["status"], "failed",
+        "the envelope status must agree with the nonzero exit: {envelope:#?}"
+    );
+    let diagnostics = envelope["diagnostics"]
+        .as_array()
+        .expect("a failed check envelope carries diagnostics");
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic["code"] == "check.stale_lock"),
+        "the fatal stale-lock diagnostic is in the envelope, not only on stderr: {envelope:#?}"
+    );
+    assert!(
+        envelope.get("entry_footprints").is_none()
+            && envelope.get("surface_abi").is_none()
+            && envelope.get("surface_routes").is_none(),
+        "footprints and surface descriptors are success-only: {envelope:#?}"
+    );
+}
+
+#[test]
 fn check_locked_passes_a_fresh_lock() {
     // `--locked` only fails on staleness: a project whose committed lock matches the current
     // source checks cleanly with exit 0 and emits no stale-lock advisory.

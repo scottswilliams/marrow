@@ -20,9 +20,10 @@ own HTTP serving or process lifetime policy.
 The crate deliberately does not define a general `Value` JSON ABI. Its entry
 return renderer preserves the current CLI-compatible result surface: scalars,
 enums, identities, and sequences render; whole resources and local trees fault
-at the CLI boundary as `run.entry_surface`. The enum form remains the existing
-CLI numeric `enum_id` / `member_id` profile, and `int` values remain JSON
-numbers for compatibility with current CLI consumers. Its data-snapshot DTO
+at the CLI boundary as `run.entry_surface`. The enum form renders its stable
+`Enum::member` spelling — the reorder-invariant `render_name` form that
+print/string/interpolation produce — and `int` values remain JSON numbers for
+compatibility with current CLI consumers. Its data-snapshot DTO
 renders the shared `store_snapshot` object for `marrow data roots|get`, including
 the store UID, catalog digest, optional commit stamp, and checked source digest.
 Its surface DTOs render `marrow-run` surface records, pages, values,

@@ -706,8 +706,7 @@ fn json_run_envelope_renders_identity_return_and_rejects_resource_return() {
         envelope["return"],
         serde_json::json!({
             "kind": "enum",
-            "enum_id": 0,
-            "member_id": 1,
+            "member": "Status::archived",
         }),
         "{envelope}"
     );

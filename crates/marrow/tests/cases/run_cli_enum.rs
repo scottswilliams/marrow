@@ -57,6 +57,39 @@ fn a_same_named_enum_in_another_module_does_not_alias() {
 }
 
 #[test]
+fn an_enum_return_renders_by_member_name_in_the_run_json_envelope() {
+    // The run JSON envelope must name an enum return by its stable `Enum::member` spelling, the
+    // same form `print`/`string(enum)`/interpolation render, not by positional internal
+    // `enum_id`/`member_id` indices. Reordering members changes those indices but not the name, so
+    // the name is the reorder-invariant identifier a client can rely on.
+    let root = temp_project("run-enum-return-json", |root| {
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".data" } }"#,
+        );
+        write(
+            root,
+            "src/app.mw",
+            "module app\n\
+             pub enum Status\n    active\n    archived\n    banned\n\n\
+             pub fn pick(): Status\n    return Status::archived\n",
+        );
+    });
+    let dir = root.to_str().unwrap().to_string();
+
+    let got = marrow_sub("run", &["--entry", "app::pick", "--format", "json", &dir]);
+    assert_eq!(got.status.code(), Some(0), "pick: {got:?}");
+    let envelope: Value =
+        serde_json::from_slice(&got.stdout).expect("stdout is one JSON run envelope");
+    assert_eq!(
+        envelope["return"],
+        serde_json::json!({ "kind": "enum", "member": "Status::archived" }),
+        "an enum return names its member, not positional ids: {envelope:#?}"
+    );
+}
+
+#[test]
 fn a_match_over_a_saved_enum_field_dispatches_through_the_real_pipeline() {
     // A `match` whose scrutinee is bound from a saved enum-field read must type as
     // `Status` so the checker records the scrutinee's enum on the match and the
