@@ -47,17 +47,18 @@ fn render_client(dir: &str) -> ExitCode {
         Ok(config) => config,
         Err(code) => return code,
     };
-    // The client is a source-plus-lock projection that never opens the store: the committed lock
-    // drives first-run adoption so the generated surfaces carry their accepted identity.
     let lock = match crate::read_committed_lock(dir, CheckFormat::Text) {
         Ok(lock) => lock,
         Err(code) => return code,
     };
+    // Match `check`'s accepted-authority binding: a readable live store owns the accepted
+    // surface contract, while the committed lock drives first-run or unreadable-store projection.
+    let authority = crate::read_accepted_store_catalog_lenient(dir, &config);
     let snapshot = match marrow_check::analyze_project(
         Path::new(dir),
         &config,
         &marrow_check::ProjectSources::new(),
-        None,
+        authority.snapshot(),
         lock.as_ref(),
     ) {
         Ok(snapshot) => snapshot,

@@ -4,6 +4,7 @@ use crate::support_surface::{
 };
 
 use serde_json::Value;
+use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -42,10 +43,11 @@ surface Books from ^books\n\
 \x20\x20\x20\x20update author\n\
 \x20\x20\x20\x20delete\n\
 \x20\x20\x20\x20collection ^books.byAuthor as byAuthor\n\
-\x20\x20\x20\x20action retitle\n";
+\x20\x20\x20\x20action retitle\n\
+\x20\x20\x20\x20read describe\n";
 
 #[test]
-fn client_typescript_prints_generated_client_without_opening_store() {
+fn client_typescript_uses_lock_projection_when_store_is_absent() {
     let root = temp_project("surface-client-typescript", |root| {
         write(root, "marrow.json", support::native_config());
         write(root, "src/app.mw", CLIENT_SURFACE_SOURCE);
@@ -54,7 +56,7 @@ fn client_typescript_prints_generated_client_without_opening_store() {
     assert_eq!(seed.status.code(), Some(0), "seed: {seed:?}");
     let store_path = root.join(".data/marrow.redb");
     assert!(store_path.exists(), "fixture should have seeded a store");
-    std::fs::remove_file(&store_path).expect("remove store file");
+    fs::remove_file(&store_path).expect("remove store file");
 
     let output = marrow(&[
         "client",
@@ -76,7 +78,41 @@ fn client_typescript_prints_generated_client_without_opening_store() {
     assert!(stdout.contains("Number.isSafeInteger"), "{stdout}");
     assert!(
         !store_path.exists(),
-        "client generation must not recreate or open the native store"
+        "client generation must not recreate the native store"
+    );
+}
+
+#[test]
+fn client_typescript_uses_active_computed_read_route_tags() {
+    let root = temp_project("surface-client-typescript-computed-read-tag", |root| {
+        write(root, "marrow.json", support::native_config());
+        write(root, "src/app.mw", CLIENT_SURFACE_SOURCE);
+    });
+    let seed = marrow(&["run", "--entry", "app::seed", root.to_str().unwrap()]);
+    assert_eq!(seed.status.code(), Some(0), "seed: {seed:?}");
+
+    let check = marrow(&["check", "--format", "json", root.to_str().unwrap()]);
+    assert_eq!(check.status.code(), Some(0), "check: {check:?}");
+    let report = support::json(check.stdout);
+    let route = route_by_alias(&report, "describe");
+    fs::remove_file(root.join("marrow.lock")).expect("remove committed lock");
+
+    let client = marrow(&[
+        "client",
+        "typescript",
+        root.to_str().expect("project path utf8"),
+    ]);
+    assert_eq!(client.status.code(), Some(0), "client: {client:?}");
+    let stdout = String::from_utf8(client.stdout).expect("client stdout utf8");
+    assert!(
+        stdout.contains(&format!("\"operation_tag\": {:?}", route.operation_tag)),
+        "generated client must use active computed-read operation tag {}; client:\n{stdout}",
+        route.operation_tag
+    );
+    assert!(
+        stdout.contains(&format!("\"path\": {:?}", route.path)),
+        "generated client must use active computed-read path {}; client:\n{stdout}",
+        route.path
     );
 }
 
@@ -393,6 +429,14 @@ const retitledRead = await get(1);
 assert.deepEqual(field(retitledRead.result.record, "title"), {{
   kind: "string",
   value: "The Dispossessed",
+}});
+const described = await client.app.Books.describe({{
+  arguments: [{{ name: "id", value: {{ kind: "int", value: "1" }} }}],
+}});
+assert.equal(described.result.kind, "computed_read");
+assert.deepEqual(described.result.result.value, {{
+  kind: "string",
+  value: "The Dispossessed|Ursula Le Guin",
 }});
 await assert.rejects(
   () =>
