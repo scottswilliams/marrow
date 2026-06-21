@@ -2,6 +2,8 @@
 //! statement parsers: line and span bounds, top-level delimiter scanning, comment
 //! construction, and the bridge into the expression parser.
 
+use std::borrow::Cow;
+
 use super::{ParseError, ParseResult};
 use crate::PARSE_SYNTAX;
 use crate::ast::{Comment, CommentMarker, CommentPlacement, Expression, TypeRef};
@@ -84,6 +86,25 @@ pub(super) fn push_parse_error(
         help: None,
         span,
     });
+}
+/// Drop comment tokens from a token slice. A `;` or `;;` line inside an open
+/// delimiter lexes to a `Comment`/`DocComment` token with no newline; like a
+/// blank line, it does not separate or close anything, so a declaration list
+/// that spans several physical lines reads it as absent. Returns the slice
+/// unchanged when it holds no comments, so the common single-line list keeps its
+/// borrow.
+pub(super) fn strip_comment_tokens(tokens: &[Token]) -> Cow<'_, [Token]> {
+    if tokens.iter().any(|token| is_line_comment(token.kind)) {
+        Cow::Owned(
+            tokens
+                .iter()
+                .copied()
+                .filter(|token| !is_line_comment(token.kind))
+                .collect(),
+        )
+    } else {
+        Cow::Borrowed(tokens)
+    }
 }
 /// Split tokens on top-level commas (depth 0), dropping a trailing empty group
 /// from a trailing comma.

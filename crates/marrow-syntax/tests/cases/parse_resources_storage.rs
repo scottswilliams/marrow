@@ -318,3 +318,77 @@ fn reserved_word_as_key_parameter_name_is_rejected() {
         parsed.diagnostics
     );
 }
+
+#[test]
+fn comment_lines_inside_a_multi_line_store_key_list_are_skipped() {
+    let parsed = parse_source(
+        "module app\n\
+         resource Book\n\
+         \x20   required title: string\n\
+         store ^books(\n\
+         \x20   id: int, ; the identity\n\
+         \x20   ; the shelf this book lives on\n\
+         \x20   shelf: string,\n\
+         ): Book\n",
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let store = parsed.file.store("books").expect("books store");
+    assert_eq!(
+        store
+            .root
+            .keys
+            .iter()
+            .map(|key| (key.name.clone(), key.ty.text.clone()))
+            .collect::<Vec<_>>(),
+        vec![
+            ("id".to_string(), "int".to_string()),
+            ("shelf".to_string(), "string".to_string()),
+        ]
+    );
+}
+
+#[test]
+fn comment_lines_inside_a_multi_line_index_argument_list_are_skipped() {
+    let parsed = parse_source(
+        "module app\n\
+         resource Book\n\
+         \x20   required title: string\n\
+         \x20   shelf: int\n\
+         store ^books(id: int): Book\n\
+         \x20   index byShelf(\n\
+         \x20       shelf, ; primary order\n\
+         \x20       ; the identity breaks ties\n\
+         \x20       id)\n",
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let store = parsed.file.store("books").expect("books store");
+    assert!(
+        store
+            .indexes
+            .iter()
+            .any(|index| index.name == "byShelf" && index.args == ["shelf", "id"]),
+        "{:#?}",
+        store.indexes
+    );
+}
+
+#[test]
+fn a_genuinely_missing_key_name_still_reports_a_key_name_error() {
+    let parsed = parse_source(
+        "module app\n\
+         resource Book\n\
+         \x20   required title: string\n\
+         store ^books(\n\
+         \x20   id: int,\n\
+         \x20   : string,\n\
+         ): Book\n",
+    );
+    assert!(
+        has_reason(
+            &parsed.diagnostics,
+            parse_reason(ParseDiagnosticReason::Expected(ExpectedSyntax::KeyName))
+        ),
+        "expected a key-name parse error for the nameless key: {:#?}",
+        parsed.diagnostics
+    );
+}

@@ -230,6 +230,35 @@ fn keyed_var_preserves_key_type_spelling_for_downstream_resolution() {
 }
 
 #[test]
+fn comment_lines_inside_a_multi_line_keyed_var_key_list_are_skipped() {
+    let parsed = parse_source(
+        "module app\n\
+         fn tally()\n\
+         \x20   var scores(\n\
+         \x20       player: string, ; who is scoring\n\
+         \x20       ; the round being recorded\n\
+         \x20       round: int,\n\
+         \x20   ): int\n",
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let tally = parsed.file.function("tally").expect("tally function");
+    let Statement::Var { name, keys, ty, .. } = &tally.body.statements[0] else {
+        panic!("expected var, got {:?}", tally.body.statements[0]);
+    };
+    assert_eq!(name, "scores");
+    assert_eq!(
+        keys.iter()
+            .map(|key| (key.name.clone(), key.ty.text.clone()))
+            .collect::<Vec<_>>(),
+        vec![
+            ("player".to_string(), "string".to_string()),
+            ("round".to_string(), "int".to_string()),
+        ]
+    );
+    assert_eq!(ty.as_ref().map(|ty| ty.text.as_str()), Some("int"));
+}
+
+#[test]
 fn keyed_var_key_list_errors_keep_key_specific_reasons() {
     let source = "fn f()\n    var counts(): int\n";
     let parsed = parse_source(source);

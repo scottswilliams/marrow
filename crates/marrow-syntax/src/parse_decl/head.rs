@@ -3,7 +3,10 @@
 //! resource field-or-group member head.
 
 use super::params::match_paren;
-use super::tokens::{reject_structural_type_tokens, split_top_level_commas, type_ref_from_tokens};
+use super::tokens::{
+    reject_structural_type_tokens, split_top_level_commas, strip_comment_tokens,
+    type_ref_from_tokens,
+};
 use super::{MemberHead, ParseError, ParseResult};
 use crate::ast::{IndexDecl, KeyParam, SavedRoot};
 use crate::diagnostic::{ExpectedSyntax, ParseDiagnosticReason, SourceSpan};
@@ -242,6 +245,7 @@ fn parse_paren_key_params(source: &str, tokens: &[Token]) -> ParseResult<Vec<Key
 
 /// Parse a comma-separated `name: type` key list. Requires at least one key.
 pub(super) fn parse_key_params_tokens(source: &str, inner: &[Token]) -> ParseResult<Vec<KeyParam>> {
+    let inner = strip_comment_tokens(inner);
     if inner.is_empty() {
         return Err(ParseError::new(
             ParseDiagnosticReason::EmptyKeyParameters,
@@ -249,7 +253,7 @@ pub(super) fn parse_key_params_tokens(source: &str, inner: &[Token]) -> ParseRes
         ));
     }
     let mut params = Vec::new();
-    for part in split_top_level_commas(inner) {
+    for part in split_top_level_commas(&inner) {
         let name = match part.first() {
             Some(token) if token.kind == TokenKind::Identifier => token.text(source).to_string(),
             _ => {
@@ -304,7 +308,7 @@ pub(super) fn parse_index_tokens(source: &str, tokens: &[Token]) -> ParseResult<
         ParseDiagnosticReason::Expected(ExpectedSyntax::IndexArgumentList),
         "expected index argument list",
     ))?;
-    let inner = &rest[1..close];
+    let inner = strip_comment_tokens(&rest[1..close]);
     if inner.is_empty() {
         return Err(ParseError::new(
             ParseDiagnosticReason::EmptyIndexArguments,
@@ -312,7 +316,7 @@ pub(super) fn parse_index_tokens(source: &str, tokens: &[Token]) -> ParseResult<
         ));
     }
     let mut args = Vec::new();
-    for part in split_top_level_commas(inner) {
+    for part in split_top_level_commas(&inner) {
         args.push(field_path_text(source, part).ok_or(ParseError::new(
             ParseDiagnosticReason::Expected(ExpectedSyntax::IndexFieldPath),
             "expected index field path",

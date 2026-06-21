@@ -304,6 +304,14 @@ fn split_param_groups(inner: &[Token]) -> Vec<ParamGroup<'_>> {
             continue;
         }
 
+        if token.kind == TokenKind::Comment {
+            // A `;` comment inside the parentheses documents nothing and, like a
+            // blank line, neither separates nor closes a parameter; the line break
+            // to the next parameter is read from the following token's span.
+            index += 1;
+            continue;
+        }
+
         match body_start {
             None => body_start = Some(index),
             // A body token on a later source line than the parameter in progress

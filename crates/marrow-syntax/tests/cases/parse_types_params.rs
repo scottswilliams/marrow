@@ -468,3 +468,50 @@ fn trailing_doc_with_no_following_parameter_is_reported() {
         .expect("a diagnostic for the orphaned doc comment");
     assert_eq!(diagnostic.code, "parse.syntax");
 }
+
+#[test]
+fn own_line_comment_inside_a_multi_line_parameter_list_is_skipped() {
+    // A `;` comment inside open delimiters does not close the list; it is skipped
+    // like a blank line, so the parameters around it parse normally.
+    let source = "module app\nfn f(\n    a: int,\n    ; explaining the next one\n    b: string,\n)\n    return\n";
+    assert_eq!(
+        param_shape(source),
+        vec![
+            ("a".to_string(), "int".to_string(), Vec::new()),
+            ("b".to_string(), "string".to_string(), Vec::new()),
+        ]
+    );
+}
+
+#[test]
+fn trailing_comment_after_a_parameter_is_skipped() {
+    let source = "module app\nfn f(\n    a: int, ; first\n    b: string, ; second\n)\n    return\n";
+    assert_eq!(
+        param_shape(source),
+        vec![
+            ("a".to_string(), "int".to_string(), Vec::new()),
+            ("b".to_string(), "string".to_string(), Vec::new()),
+        ]
+    );
+}
+
+#[test]
+fn comment_lines_do_not_disturb_parameter_docs() {
+    // A `;` comment carries no documentation, while a `;;` run above a parameter
+    // still attaches; the two must not interfere when interleaved.
+    let source = concat!(
+        "module app\nfn f(\n",
+        "    ; an ordinary note\n",
+        "    ;; the book to file\n",
+        "    book: int,\n",
+        ")\n    return\n",
+    );
+    assert_eq!(
+        param_shape(source),
+        vec![(
+            "book".to_string(),
+            "int".to_string(),
+            vec!["the book to file".to_string()],
+        )]
+    );
+}
