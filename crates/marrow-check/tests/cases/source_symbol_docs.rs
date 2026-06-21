@@ -62,6 +62,41 @@ pub fn run(): int
 }
 
 #[test]
+fn source_symbol_docs_for_functions_require_function_hover_targets() {
+    let math = "\
+module shelf::math
+
+;; Adds two numbers.
+pub fn add(left: int, right: int): int
+    return left + right
+";
+    let app = "\
+module shelf::app
+
+use shelf::math
+
+pub fn run(): int
+    return math::add(1, 2)
+";
+    let (snapshot, index, paths) = analyze(
+        "source-symbol-docs-function-hover-targets",
+        &[("src/shelf/math.mw", math), ("src/shelf/app.mw", app)],
+    );
+    let app_file = &paths[1];
+    let call = offset(app, "math::add(1, 2)");
+
+    assert_eq!(docs_at(&snapshot, &index, app_file, call + 1), None);
+    assert_eq!(
+        docs_at(&snapshot, &index, app_file, call + "math::".len() + 1),
+        Some(vec!["Adds two numbers.".to_string()])
+    );
+    assert_eq!(
+        docs_at(&snapshot, &index, app_file, call + "math::add".len()),
+        None
+    );
+}
+
+#[test]
 fn source_symbol_docs_cover_declaration_symbol_kinds() {
     let source = "\
 module a

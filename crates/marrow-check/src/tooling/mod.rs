@@ -33,9 +33,10 @@ pub use data::{
     walk_data,
 };
 pub use hover::{
-    SavedPlaceHoverFact, SavedPlaceHoverKeyParam, SourceSymbolDocs, StoreRootHoverFact,
+    SavedPlaceHoverFact, SavedPlaceHoverKeyParam, SourceCallableFunctionFact,
+    SourceCallableHoverFact, SourceCallableParamFact, SourceSymbolDocs, StoreRootHoverFact,
     StoreRootHoverMember, StoreRootHoverPathSegment, saved_place_hover_fact_at,
-    source_symbol_docs_at, store_root_hover_fact_at,
+    source_callable_hover_fact_at, source_symbol_docs_at, store_root_hover_fact_at,
 };
 pub use integrity::{
     IntegrityOutcome, IntegrityProblem, IntegrityProblemSample, IntegritySample,

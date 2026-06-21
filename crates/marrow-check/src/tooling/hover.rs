@@ -2,18 +2,45 @@ use std::path::Path;
 
 use marrow_schema::{IndexSchema, Node, NodeKind, ResourceSchema, StoreSchema};
 use marrow_syntax::{
-    Declaration, EnumMember, IndexDecl, KeyParam, ResourceMember, SourceFile, SourceSpan,
-    StoreDecl, TokenKind, lex_source,
+    Declaration, EnumMember, FunctionDecl, IndexDecl, KeyParam, ResourceMember, SourceFile,
+    SourceSpan, StoreDecl, TokenKind, lex_source,
 };
 
 use crate::{
-    AnalysisSnapshot, BindingIndex, ModuleId, ResourceMemberKind, StoreFact, SymbolKind,
-    SymbolOccurrence, SymbolRef,
+    AnalysisSnapshot, BindingIndex, CheckedConst, CheckedFunction, DirectEffectFacts, FunctionFact,
+    MarrowType, ModuleId, ResourceMemberKind, StoreFact, SymbolKind, SymbolOccurrence, SymbolRef,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceSymbolDocs {
     pub lines: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SourceCallableHoverFact {
+    Function(Box<SourceCallableFunctionFact>),
+    Parameter(SourceCallableParamFact),
+    ModuleConst {
+        name: String,
+        ty: Option<MarrowType>,
+        docs: Vec<String>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceCallableFunctionFact {
+    pub name: String,
+    pub params: Vec<SourceCallableParamFact>,
+    pub return_type: Option<MarrowType>,
+    pub docs: Vec<String>,
+    pub direct_effects: Option<DirectEffectFacts>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceCallableParamFact {
+    pub name: String,
+    pub ty: MarrowType,
+    pub docs: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -83,6 +110,14 @@ pub fn source_symbol_docs_at(
     offset: usize,
 ) -> Option<SourceSymbolDocs> {
     let symbol = index.definition(file, offset)?;
+    if symbol.kind == SymbolKind::Function
+        && !matches!(
+            source_callable_hover_fact_at(snapshot, index, file, offset),
+            Some(SourceCallableHoverFact::Function(_))
+        )
+    {
+        return None;
+    }
     let analyzed = snapshot
         .files
         .iter()
@@ -90,6 +125,107 @@ pub fn source_symbol_docs_at(
     let lines = declaration_docs(&analyzed.parsed.file, &symbol)?;
     (!lines.is_empty()).then(|| SourceSymbolDocs {
         lines: lines.to_vec(),
+    })
+}
+
+pub fn source_callable_hover_fact_at(
+    snapshot: &AnalysisSnapshot,
+    index: &BindingIndex,
+    file: &Path,
+    offset: usize,
+) -> Option<SourceCallableHoverFact> {
+    let occurrence = index.occurrence(file, offset)?;
+    match occurrence.definition.kind {
+        SymbolKind::Function => function_source_callable_hover_fact(
+            snapshot,
+            index,
+            file,
+            offset,
+            &occurrence.definition,
+        ),
+        SymbolKind::Param => {
+            parameter_source_callable_hover_fact(snapshot, index, file, offset, &occurrence)
+        }
+        SymbolKind::ModuleConst => {
+            module_const_source_callable_hover_fact(snapshot, file, offset, &occurrence.definition)
+        }
+        _ => None,
+    }
+}
+
+fn function_source_callable_hover_fact(
+    snapshot: &AnalysisSnapshot,
+    index: &BindingIndex,
+    file: &Path,
+    offset: usize,
+    symbol: &SymbolRef,
+) -> Option<SourceCallableHoverFact> {
+    if !is_function_hover_target(snapshot, index, file, offset, symbol) {
+        return None;
+    }
+    let parsed_file = snapshot.files.iter().find(|f| f.path == symbol.file)?;
+    let parsed = parsed_function_at(&parsed_file.parsed.file, symbol.span)?;
+    let checked = checked_function_for_parsed(snapshot, symbol, &parsed_file.parsed.file, parsed)?;
+    Some(SourceCallableHoverFact::Function(Box::new(
+        function_hover_fact(snapshot, symbol, parsed, checked),
+    )))
+}
+
+fn parameter_source_callable_hover_fact(
+    snapshot: &AnalysisSnapshot,
+    index: &BindingIndex,
+    file: &Path,
+    offset: usize,
+    occurrence: &SymbolOccurrence,
+) -> Option<SourceCallableHoverFact> {
+    let symbol = &occurrence.definition;
+    if occurrence.reference == *symbol {
+        return None;
+    }
+    let parameter = index.parameter_definition(symbol)?;
+    let function_fact = snapshot.program.facts.function(parameter.function);
+    let parsed_file = snapshot.files.iter().find(|f| f.path == symbol.file)?;
+    let parsed_function = parsed_function_at(&parsed_file.parsed.file, function_fact.span)?;
+    let name = parameter_use_name(snapshot, file, offset, parsed_function)?;
+    let checked_function = checked_function_for_fact(snapshot, function_fact)?;
+    let checked = checked_function.params.get(parameter.index)?;
+    if checked.name != name {
+        return None;
+    }
+    let parsed_param = parsed_function.params.get(parameter.index)?;
+    Some(SourceCallableHoverFact::Parameter(
+        SourceCallableParamFact {
+            name: checked.name.clone(),
+            ty: checked.ty.clone(),
+            docs: parsed_param.docs.clone(),
+        },
+    ))
+}
+
+fn module_const_source_callable_hover_fact(
+    snapshot: &AnalysisSnapshot,
+    file: &Path,
+    offset: usize,
+    symbol: &SymbolRef,
+) -> Option<SourceCallableHoverFact> {
+    if symbol.file != file {
+        return None;
+    }
+    let parsed_file = snapshot.files.iter().find(|f| f.path == symbol.file)?;
+    let parsed_const = parsed_const_at(&parsed_file.parsed.file, symbol.span)?;
+    if !offset_is_on_declaration_identifier(
+        &parsed_file.source,
+        parsed_const.span,
+        &parsed_const.name,
+        offset,
+    ) {
+        return None;
+    }
+    let checked = checked_const_at(snapshot, symbol)?;
+    Some(SourceCallableHoverFact::ModuleConst {
+        name: checked.name.clone(),
+        ty: checked.ty.clone(),
+        docs: parsed_const.docs.clone(),
     })
 }
 
@@ -367,6 +503,260 @@ fn hover_key_params(keys: &[KeyParam]) -> Vec<SavedPlaceHoverKeyParam> {
         .collect()
 }
 
+fn function_hover_fact(
+    snapshot: &AnalysisSnapshot,
+    symbol: &SymbolRef,
+    parsed: &FunctionDecl,
+    checked: &CheckedFunction,
+) -> SourceCallableFunctionFact {
+    SourceCallableFunctionFact {
+        name: checked.name.clone(),
+        params: checked
+            .params
+            .iter()
+            .zip(parsed.params.iter())
+            .map(|(checked, parsed)| SourceCallableParamFact {
+                name: checked.name.clone(),
+                ty: checked.ty.clone(),
+                docs: parsed.docs.clone(),
+            })
+            .collect(),
+        return_type: checked.return_type.clone(),
+        docs: parsed.docs.clone(),
+        direct_effects: function_fact_for_symbol(snapshot, symbol, checked)
+            .map(|fact| fact.direct_effects.clone()),
+    }
+}
+
+fn is_function_hover_target(
+    snapshot: &AnalysisSnapshot,
+    index: &BindingIndex,
+    file: &Path,
+    offset: usize,
+    symbol: &SymbolRef,
+) -> bool {
+    index.references(symbol).iter().any(|reference| {
+        reference.kind == SymbolKind::Function
+            && reference.file == file
+            && (reference.file != symbol.file || reference.span != symbol.span)
+            && span_covers(reference.span, offset)
+            && offset_is_on_last_identifier_half_open(snapshot, file, reference.span, offset)
+    }) || is_function_declaration_name(snapshot, file, offset, symbol)
+}
+
+fn is_function_declaration_name(
+    snapshot: &AnalysisSnapshot,
+    file: &Path,
+    offset: usize,
+    symbol: &SymbolRef,
+) -> bool {
+    if symbol.file != file {
+        return false;
+    }
+    let Some(analyzed) = snapshot.files.iter().find(|f| f.path == symbol.file) else {
+        return false;
+    };
+    let Some(function) = parsed_function_at(&analyzed.parsed.file, symbol.span) else {
+        return false;
+    };
+    offset_is_on_declaration_identifier(&analyzed.source, function.span, &function.name, offset)
+}
+
+fn parsed_function_at(source: &SourceFile, span: SourceSpan) -> Option<&FunctionDecl> {
+    source
+        .declarations
+        .iter()
+        .find_map(|declaration| match declaration {
+            Declaration::Function(function) if span_contains_span(function.span, span) => {
+                Some(function)
+            }
+            _ => None,
+        })
+}
+
+fn parsed_const_at(source: &SourceFile, span: SourceSpan) -> Option<&marrow_syntax::ConstDecl> {
+    source
+        .declarations
+        .iter()
+        .find_map(|declaration| match declaration {
+            Declaration::Const(constant) if span_contains_span(constant.span, span) => {
+                Some(constant)
+            }
+            _ => None,
+        })
+}
+
+fn checked_function_for_parsed<'a>(
+    snapshot: &'a AnalysisSnapshot,
+    symbol: &SymbolRef,
+    source_file: &SourceFile,
+    parsed_function: &FunctionDecl,
+) -> Option<&'a CheckedFunction> {
+    let function_index = source_file
+        .declarations
+        .iter()
+        .filter_map(|declaration| match declaration {
+            Declaration::Function(function) => Some(function),
+            _ => None,
+        })
+        .position(|function| function.span == parsed_function.span)?;
+    snapshot
+        .program
+        .modules
+        .iter()
+        .find(|module| module.source_file == symbol.file)?
+        .functions
+        .get(function_index)
+}
+
+fn checked_function_for_fact<'a>(
+    snapshot: &'a AnalysisSnapshot,
+    fact: &FunctionFact,
+) -> Option<&'a CheckedFunction> {
+    let module_fact = snapshot
+        .program
+        .facts
+        .modules()
+        .iter()
+        .find(|module| module.id == fact.module)?;
+    snapshot
+        .program
+        .modules
+        .iter()
+        .find(|module| module.source_file == module_fact.source_file)?
+        .functions
+        .get(fact.source_index as usize)
+}
+
+fn checked_const_at<'a>(
+    snapshot: &'a AnalysisSnapshot,
+    symbol: &SymbolRef,
+) -> Option<&'a CheckedConst> {
+    snapshot
+        .program
+        .modules
+        .iter()
+        .find(|module| module.source_file == symbol.file)?
+        .constants
+        .iter()
+        .find(|constant| span_contains_span(constant.span, symbol.span))
+}
+
+fn function_fact_for_symbol<'a>(
+    snapshot: &'a AnalysisSnapshot,
+    symbol: &SymbolRef,
+    checked_function: &CheckedFunction,
+) -> Option<&'a FunctionFact> {
+    let module = snapshot
+        .program
+        .modules
+        .iter()
+        .find(|module| module.source_file == symbol.file)?;
+    let module_fact = snapshot
+        .program
+        .facts
+        .modules()
+        .iter()
+        .find(|fact| fact.name == module.name && fact.source_file == module.source_file)?;
+    snapshot.program.facts.functions().iter().find(|fact| {
+        fact.module == module_fact.id
+            && fact.name == checked_function.name
+            && fact.span == checked_function.span
+    })
+}
+
+fn parameter_use_name<'a>(
+    snapshot: &'a AnalysisSnapshot,
+    file: &Path,
+    offset: usize,
+    function: &FunctionDecl,
+) -> Option<&'a str> {
+    if !span_covers(function.body.span, offset) {
+        return None;
+    }
+    let analyzed = snapshot.files.iter().find(|f| f.path == file)?;
+    let tokens = lex_source(&analyzed.source).tokens;
+    let (index, token) = tokens.iter().enumerate().find(|(_, token)| {
+        token.kind == TokenKind::Identifier
+            && offset_in_name(token.span.start_byte, token.span.end_byte, offset)
+    })?;
+    let (previous, next) = significant_neighbors(&tokens, index);
+    if previous.is_some_and(|kind| {
+        matches!(
+            kind,
+            TokenKind::DoubleColon | TokenKind::Dot | TokenKind::QuestionDot
+        )
+    }) || next.is_some_and(|kind| kind == TokenKind::Colon)
+    {
+        return None;
+    }
+    Some(token.text(&analyzed.source))
+}
+
+fn significant_neighbors(
+    tokens: &[marrow_syntax::Token],
+    index: usize,
+) -> (Option<TokenKind>, Option<TokenKind>) {
+    (
+        previous_significant_kind(tokens, index),
+        next_significant_kind(tokens, index),
+    )
+}
+
+fn previous_significant_kind(tokens: &[marrow_syntax::Token], index: usize) -> Option<TokenKind> {
+    tokens[..index]
+        .iter()
+        .rev()
+        .find(|token| !is_trivia(token.kind))
+        .map(|token| token.kind)
+}
+
+fn next_significant_kind(tokens: &[marrow_syntax::Token], index: usize) -> Option<TokenKind> {
+    tokens
+        .get(index + 1..)?
+        .iter()
+        .find(|token| !is_trivia(token.kind))
+        .map(|token| token.kind)
+}
+
+fn is_trivia(kind: TokenKind) -> bool {
+    matches!(
+        kind,
+        TokenKind::Newline | TokenKind::Comment | TokenKind::DocComment
+    )
+}
+
+fn offset_is_on_declaration_identifier(
+    source: &str,
+    span: SourceSpan,
+    name: &str,
+    offset: usize,
+) -> bool {
+    let Some((start, end)) = declaration_identifier_span(source, span, name) else {
+        return false;
+    };
+    offset_in_name(start, end, offset)
+}
+
+fn offset_is_on_last_identifier_half_open(
+    snapshot: &AnalysisSnapshot,
+    file: &Path,
+    span: SourceSpan,
+    offset: usize,
+) -> bool {
+    let Some(analyzed) = snapshot.files.iter().find(|f| f.path == file) else {
+        return false;
+    };
+    let Some((start, end)) = last_identifier_span(span, &analyzed.source) else {
+        return false;
+    };
+    offset_in_name(start, end, offset)
+}
+
+fn offset_in_name(start: usize, end: usize, offset: usize) -> bool {
+    start <= offset && offset < end
+}
+
 fn declaration_docs<'a>(source: &'a SourceFile, symbol: &SymbolRef) -> Option<&'a [String]> {
     match symbol.kind {
         SymbolKind::Function => {
@@ -556,6 +946,23 @@ fn last_identifier_span(span: SourceSpan, source: &str) -> Option<(usize, usize)
         }
     }
     found
+}
+
+fn declaration_identifier_span(
+    source: &str,
+    span: SourceSpan,
+    name: &str,
+) -> Option<(usize, usize)> {
+    lex_source(source)
+        .tokens
+        .into_iter()
+        .find(|token| {
+            token.kind == TokenKind::Identifier
+                && span_covers(span, token.span.start_byte)
+                && span_covers(span, token.span.end_byte)
+                && token.text(source) == name
+        })
+        .map(|token| (token.span.start_byte, token.span.end_byte))
 }
 
 fn span_covers(span: SourceSpan, offset: usize) -> bool {
