@@ -5,7 +5,6 @@ use std::path::{Component, Path, PathBuf};
 use std::process::ExitCode;
 
 use marrow_check::evolution::{EvolutionWitness, Verdict, preview};
-use marrow_run::SystemNondeterminism;
 use marrow_run::evolution::{ApplyError, apply};
 
 use crate::{
@@ -127,9 +126,6 @@ fn apply_cmd(raw_args: &[String]) -> ExitCode {
         Ok(recovery) => recovery,
         Err(code) => return code,
     };
-    if let Err(code) = ensure_store_uid(&store, input.format) {
-        return code;
-    }
     match apply(
         &witness,
         &program,
@@ -325,19 +321,6 @@ fn requires_recovery_point(witness: &EvolutionWitness) -> bool {
             Verdict::DestructiveDecisionRequired { .. }
         )
     })
-}
-
-fn ensure_store_uid(
-    store: &marrow_store::tree::TreeStore,
-    format: crate::CheckFormat,
-) -> Result<(), ExitCode> {
-    let mut nondeterminism = SystemNondeterminism::new();
-    crate::backup::ensure_store_uid(store, &mut nondeterminism)
-        .map(|_| ())
-        .map_err(|error| {
-            report_simple_error(error.code(), &error.to_string(), format);
-            ExitCode::FAILURE
-        })
 }
 
 fn print_help() {
