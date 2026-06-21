@@ -26,7 +26,7 @@ Marrow
 
 Usage:
   marrow init <projectdir>
-  marrow check [--format text|json|jsonl] <projectdir>
+  marrow check [--format text|json|jsonl] [--locked] <projectdir>
   marrow doctor [--format text|json|jsonl] <projectdir>
   marrow evolve preview [--from-backup <artifact>] [--scaffold] [--format text|json|jsonl] <projectdir>
   marrow evolve apply [--maintenance] [--approve-retire <catalog-id>:<count>]
@@ -230,6 +230,36 @@ pub(crate) fn report_project_failed_with_diagnostic(
                 .map(check_diagnostic_record)
                 .chain(std::iter::once(diagnostic)),
             project_envelope(target, "failed", None),
+        ),
+    }
+}
+
+/// Report a clean (no errors) project check that also surfaces a CLI-level advisory the checker
+/// itself does not raise, such as a non-fatal stale `marrow.lock`. The text path keeps the
+/// success line on stdout and the advisory note on stderr; the JSON envelope keeps its `ok`
+/// status and footprints while carrying the advisory as a structured diagnostic, so a machine
+/// consumer parsing the stdout envelope sees it without reading stderr.
+pub(crate) fn report_project_ok_with_advisory(
+    target: &str,
+    report: &marrow_check::CheckReport,
+    program: &marrow_check::CheckedProgram,
+    advisory: serde_json::Value,
+    advisory_note: &str,
+    format: CheckFormat,
+) {
+    match format {
+        CheckFormat::Text => {
+            report_project_with_program(target, report, program, format);
+            eprintln!("{advisory_note}");
+        }
+        CheckFormat::Json | CheckFormat::Jsonl => report_diagnostic_records(
+            format,
+            report
+                .diagnostics
+                .iter()
+                .map(check_diagnostic_record)
+                .chain(std::iter::once(advisory)),
+            project_envelope(target, "ok", Some(program)),
         ),
     }
 }

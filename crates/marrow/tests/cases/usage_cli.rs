@@ -137,6 +137,25 @@ fn top_level_help_advertises_doctor() {
 }
 
 #[test]
+fn top_level_help_advertises_check_locked() {
+    // The top-level usage must list `--locked` for check, the CI lockfile gate, just as the
+    // `check --help` subcommand help does; otherwise the flag is discoverable only by reading
+    // the subcommand help.
+    let output = marrow(&["--help"]);
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let stdout = String::from_utf8(output.stdout).expect("stdout utf8");
+    let check_line = stdout
+        .lines()
+        .find(|line| line.trim_start().starts_with("marrow check "))
+        .expect("a check usage line");
+    assert!(
+        check_line.contains("[--locked]"),
+        "the top-level check usage must advertise --locked: {stdout}"
+    );
+}
+
+#[test]
 fn top_level_help_advertises_run_arg_and_test_filter() {
     let output = marrow(&["--help"]);
 

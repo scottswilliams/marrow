@@ -546,10 +546,18 @@ fn evolve_preview_scaffold_emits_parseable_formatted_evolve_blocks()
         scaffold.contains("evolve\n    default Book.pages = 0"),
         "missing required member should get a parseable default skeleton: {scaffold}"
     );
+    // A populated in-place leaf retype (`price` int -> string) must never scaffold a runnable
+    // in-place transform that overwrites the existing cells with a constant: that silently
+    // drops data. The contract path is a wholly commented skeleton pointing at add-new-member
+    // + transform-from-old + retire-old, which the author completes.
     assert!(
-        scaffold.contains("evolve\n    transform Book.price\n        return \"\""),
-        "type-change repair should get a type-correct transform skeleton for the new \
-         string member: {scaffold}"
+        !scaffold.contains("transform Book.price"),
+        "an in-place leaf retype must not scaffold a data-dropping runnable transform: {scaffold}"
+    );
+    assert!(
+        scaffold.contains("; Book.price changed type in place")
+            && scaffold.contains("; retire Book.price"),
+        "type-change repair should get a safe commented migration skeleton: {scaffold}"
     );
     assert_eq!(
         fs::read_to_string(root.join("src/books.mw")).expect("read source"),
@@ -591,7 +599,7 @@ fn evolve_preview_scaffold_round_trips_through_the_checker()
          resource Book\n\
          \x20   required title: string\n\
          \x20   required cost: int\n\
-         \x20   subtitle: string\n\
+         \x20   legacyFlag: bool\n\
          store ^books(id: int): Book\n";
     let root = nested_books_project("evolve-preview-scaffold-roundtrip", baseline);
     let program = commit_catalog(&root);
@@ -600,25 +608,20 @@ fn evolve_preview_scaffold_round_trips_through_the_checker()
         let store = open_native_store(&root);
         seed_title_only(&store, &place, 1, "Dune");
         seed_member(&store, &place, 1, "cost", Scalar::Int(7));
-        seed_member(
-            &store,
-            &place,
-            1,
-            "subtitle",
-            Scalar::Str("Appendix".into()),
-        );
+        seed_member(&store, &place, 1, "legacyFlag", Scalar::Bool(true));
     }
 
     // Add required leaves across int and several non-int types (default family), retype the
-    // populated `cost` from int to decimal (transform family), and drop the populated
-    // `subtitle` (retire family), so the scaffold emits all three across non-int leaf types.
+    // populated `cost` from int to decimal (the in-place retype family, which scaffolds a
+    // commented migration), and drop the populated `legacyFlag` (retire family). No added
+    // member shares `legacyFlag`'s bool leaf, so its drop is an unambiguous retire, not a
+    // rename candidate.
     let evolved = "module shop::books\n\
          resource Book\n\
          \x20   required title: string\n\
          \x20   required cost: decimal\n\
          \x20   required pages: int\n\
          \x20   required edition: string\n\
-         \x20   required hardcover: bool\n\
          \x20   required price: decimal\n\
          \x20   required published: date\n\
          store ^books(id: int): Book\n";
@@ -628,14 +631,20 @@ fn evolve_preview_scaffold_round_trips_through_the_checker()
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let scaffold = String::from_utf8(output.stdout).expect("scaffold utf8");
     assert!(
-        scaffold.contains("default ")
-            && scaffold.contains("transform ")
-            && scaffold.contains("retire "),
-        "round-trip must exercise the default, transform, and retire families: {scaffold}"
+        scaffold.contains("evolve\n    default ") && scaffold.contains("evolve\n    retire "),
+        "round-trip must exercise the runnable default and retire families: {scaffold}"
+    );
+    // The in-place retype contributes a commented skeleton, never a runnable in-place transform.
+    assert!(
+        scaffold.contains("; Book.cost changed type in place")
+            && !scaffold.contains("transform Book.cost"),
+        "an in-place retype must scaffold a commented migration, not a runnable transform: \
+         {scaffold}"
     );
 
     // Splice every emitted evolve block into the source, the way a developer pastes the
-    // scaffold, then re-check through the production pipeline.
+    // scaffold, then re-check through the production pipeline. The runnable default/retire
+    // blocks must check clean; the commented retype skeleton is inert.
     write(&root, "src/shop/books.mw", &format!("{evolved}{scaffold}"));
     let check = marrow(&["check", root.to_str().unwrap()]);
     let stderr = String::from_utf8(check.stderr).expect("check stderr utf8");
@@ -650,6 +659,160 @@ fn evolve_preview_scaffold_round_trips_through_the_checker()
             "pasted scaffold must check clean, found {code}: {stderr}\n--- pasted ---\n{evolved}{scaffold}"
         );
     }
+
+    Ok(())
+}
+
+/// A bare in-place leaf retype — `pages: int` becomes `pages: string` with no new member —
+/// must never scaffold a runnable in-place `transform Book.pages` that overwrites every
+/// stored value with a constant placeholder. That silently drops the existing data, which the
+/// data-evolution contract forbids ("a transform may not read the member it replaces, so an
+/// in-place reinterpret is never the resolution"). The safe scaffold is a non-runnable,
+/// commented skeleton that points the author at add-new-member + transform-from-old +
+/// retire-old and requires them to supply the conversion.
+#[test]
+fn evolve_preview_scaffold_for_a_bare_leaf_retype_is_a_safe_commented_skeleton()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = native_books_project(
+        "evolve-preview-scaffold-bare-retype",
+        "module books\n\
+         resource Book\n\
+         \x20   required title: string\n\
+         \x20   required pages: int\n\
+         store ^books(id: int): Book\n\
+         pub fn add(title: string): Id(^books)\n\
+         \x20   return nextId(^books)\n",
+    );
+    let accepted = commit_catalog(&root);
+    let accepted_place = root_place(&accepted, "books")?;
+    {
+        let store = open_native_store(&root);
+        seed_title_only(&store, &accepted_place, 1, "Dune");
+        seed_member(&store, &accepted_place, 1, "pages", Scalar::Int(412));
+    }
+    // Retype `pages` in place from int to string with no new member. The old int cells stay.
+    write(
+        &root,
+        "src/books.mw",
+        "module books\n\
+         resource Book\n\
+         \x20   required title: string\n\
+         \x20   required pages: string\n\
+         store ^books(id: int): Book\n\
+         pub fn add(title: string): Id(^books)\n\
+         \x20   return nextId(^books)\n",
+    );
+
+    let output = marrow(&["evolve", "preview", "--scaffold", root.to_str().unwrap()]);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let scaffold = String::from_utf8(output.stdout).expect("scaffold utf8");
+
+    // It still parses through the production parser (comments are valid source).
+    let parsed = marrow_syntax::parse_source(&scaffold);
+    assert!(
+        !parsed.has_errors(),
+        "bare-retype scaffold must parse through the production parser: {:#?}\n{scaffold}",
+        parsed.diagnostics
+    );
+    // The data-destroying default: a runnable in-place transform that overwrites the member
+    // with a constant. The scaffold must not emit it.
+    assert!(
+        !scaffold.contains("transform Book.pages"),
+        "a bare leaf retype must not scaffold a runnable in-place transform that drops the \
+         existing data: {scaffold}"
+    );
+    // The safe skeleton names the supported migration explicitly, as commented guidance the
+    // author must complete rather than an executable default: add a member of the new type,
+    // transform it from the old member, then retire the old member.
+    assert!(
+        scaffold.contains("transform")
+            && scaffold.contains("retire")
+            && scaffold.contains("Book.pages"),
+        "the scaffold must point at the add-new-member + transform-from-old + retire-old path: \
+         {scaffold}"
+    );
+    // Every line of the skeleton is a comment, so pasting it never silently runs a destructive
+    // migration; the author must replace it with the real new-member transform.
+    for line in scaffold.lines().filter(|line| !line.trim().is_empty()) {
+        assert!(
+            line.trim_start().starts_with(';'),
+            "the leaf-retype skeleton must be entirely commented so it never runs as-is: \
+             {scaffold}"
+        );
+    }
+
+    Ok(())
+}
+
+/// A bare same-type field rename — drop `subtitle`, add same-resource `tagline` of the same
+/// leaf type, with no `evolve rename` intent declared — must scaffold the explicit `rename`
+/// block, not a drop+add (retire). A drop+add would lose the populated data and churn the
+/// stable identity; the rename preserves both. The check-time repair guidance already names
+/// `evolve rename` first for this single-candidate case, so the scaffold must mirror it.
+#[test]
+fn evolve_preview_scaffold_for_a_bare_rename_emits_a_rename_block()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = native_books_project(
+        "evolve-preview-scaffold-bare-rename",
+        "module books\n\
+         resource Book\n\
+         \x20   required title: string\n\
+         \x20   subtitle: string\n\
+         store ^books(id: int): Book\n\
+         pub fn add(title: string): Id(^books)\n\
+         \x20   return nextId(^books)\n",
+    );
+    let accepted = commit_catalog(&root);
+    let accepted_place = root_place(&accepted, "books")?;
+    {
+        let store = open_native_store(&root);
+        seed_title_only(&store, &accepted_place, 1, "Dune");
+        seed_member(
+            &store,
+            &accepted_place,
+            1,
+            "subtitle",
+            Scalar::Str("Appendix".into()),
+        );
+    }
+    // Drop `subtitle`, add a same-type `tagline`: a bare rename the checker resolves as a
+    // single plausible rename candidate.
+    write(
+        &root,
+        "src/books.mw",
+        "module books\n\
+         resource Book\n\
+         \x20   required title: string\n\
+         \x20   tagline: string\n\
+         store ^books(id: int): Book\n\
+         pub fn add(title: string): Id(^books)\n\
+         \x20   return nextId(^books)\n",
+    );
+
+    let output = marrow(&["evolve", "preview", "--scaffold", root.to_str().unwrap()]);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let scaffold = String::from_utf8(output.stdout).expect("scaffold utf8");
+
+    let parsed = marrow_syntax::parse_source(&scaffold);
+    assert!(
+        !parsed.has_errors(),
+        "bare-rename scaffold must parse through the production parser: {:#?}\n{scaffold}",
+        parsed.diagnostics
+    );
+    assert_eq!(
+        scaffold,
+        marrow_syntax::format_source(&scaffold),
+        "scaffold should already be in production formatter shape"
+    );
+    assert!(
+        scaffold.contains("rename Book.subtitle -> Book.tagline"),
+        "a bare rename must scaffold the explicit rename, preserving identity: {scaffold}"
+    );
+    assert!(
+        !scaffold.contains("retire Book.subtitle"),
+        "a bare rename must not scaffold a destructive retire of the renamed-away field: \
+         {scaffold}"
+    );
 
     Ok(())
 }

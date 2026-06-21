@@ -41,7 +41,7 @@ be a valid Marrow module identifier.
     };
     let path = PathBuf::from(&target);
     let Some(name) = target_module_name(&path) else {
-        report_invalid_target_name();
+        report_invalid_target_name(&path);
         return ExitCode::FAILURE;
     };
     if path.exists() {
@@ -97,10 +97,18 @@ fn valid_module_name(name: &str) -> bool {
             .is_some_and(|module| module.name == name && !module.name.contains("::"))
 }
 
-fn report_invalid_target_name() {
+fn report_invalid_target_name(path: &Path) {
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("");
     report_simple_error(
         "config.invalid",
-        "target directory name must be a valid Marrow module identifier",
+        &format!(
+            "project name `{name}` is not a valid Marrow module identifier: it must start with a \
+             letter or underscore, then contain only letters, digits, and underscores, and may \
+             not contain `::` (for example, `my_app`)"
+        ),
         CheckFormat::Text,
     );
 }

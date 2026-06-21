@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use marrow_check::evolution::{
-    EvolutionWitness, RejectedDefault, RepairDiagnostic, RepairReason, Verdict,
+    EvolutionWitness, RejectedDefault, RepairDiagnostic, RepairGuidance, RepairReason, Verdict,
 };
 use marrow_check::{CheckedModule, ResourceSchema, ScalarType, Type};
 use marrow_run::evolution::{ApplyError, ApplyOutcome};
@@ -17,6 +17,9 @@ pub(super) enum RecoveryPoint {
 
 pub(super) struct SourceLabels {
     by_catalog_id: HashMap<String, SourceTarget>,
+    /// Source-spelling keyed by catalog path, for targets a renderer holds as a path rather
+    /// than a catalog id — the `from`/`to` of a rename guidance carry catalog paths, not ids.
+    by_source_path: HashMap<String, String>,
 }
 
 struct SourceTarget {
@@ -31,20 +34,39 @@ struct SourceTarget {
 impl SourceLabels {
     pub(super) fn from_program(program: &marrow_check::CheckedProgram) -> Self {
         let mut by_catalog_id = HashMap::new();
+        let mut by_source_path = HashMap::new();
         for entry in &program.catalog.accepted_entries {
             by_catalog_id.insert(
                 entry.stable_id.clone(),
                 SourceTarget::new(program, &entry.path),
             );
+            by_source_path
+                .entry(entry.path.clone())
+                .or_insert_with(|| scaffold_target(program, &entry.path));
         }
         if let Some(proposal) = &program.catalog.proposal {
             for entry in &proposal.entries {
                 by_catalog_id
                     .entry(entry.stable_id.clone())
                     .or_insert_with(|| SourceTarget::new(program, &entry.path));
+                by_source_path
+                    .entry(entry.path.clone())
+                    .or_insert_with(|| scaffold_target(program, &entry.path));
             }
         }
-        Self { by_catalog_id }
+        Self {
+            by_catalog_id,
+            by_source_path,
+        }
+    }
+
+    /// The source spelling of a catalog path (`books::Book::tagline` -> `Book.tagline`), or the
+    /// dotted catalog path when the program declares no such target.
+    fn source_path_spelling(&self, path: &str) -> String {
+        self.by_source_path
+            .get(path)
+            .cloned()
+            .unwrap_or_else(|| source_label(path))
     }
 
     fn catalog_id(&self, catalog_id: &str) -> String {
@@ -186,7 +208,7 @@ pub(super) fn preview(
 ) {
     match format {
         CheckFormat::Text if scaffold => {
-            print!("{}", scaffold_source(witness, labels));
+            print!("{}", scaffold_source(witness, diagnostics, labels));
             if !witness.is_activatable() {
                 render_blocking_text(witness, diagnostics, labels);
             }
@@ -283,7 +305,7 @@ pub(super) fn preview(
             if scaffold {
                 object.insert(
                     "scaffold".to_string(),
-                    serde_json::json!(scaffold_source(witness, labels)),
+                    serde_json::json!(scaffold_source(witness, diagnostics, labels)),
                 );
             }
             write_json(serde_json::Value::Object(object));
@@ -411,12 +433,26 @@ fn blocking_reports(
     reports
 }
 
-fn scaffold_source(witness: &EvolutionWitness, labels: &SourceLabels) -> String {
+fn scaffold_source(
+    witness: &EvolutionWitness,
+    diagnostics: &[RepairDiagnostic],
+    labels: &SourceLabels,
+) -> String {
+    let guidance: HashMap<&str, &RepairGuidance> = diagnostics
+        .iter()
+        .map(|diagnostic| (diagnostic.catalog_id.as_str(), &diagnostic.guidance))
+        .collect();
     let blocks: Vec<String> = witness
         .verdicts
         .iter()
         .filter_map(|obligation| {
-            scaffold_block(obligation.catalog_id.as_str(), &obligation.verdict, labels)
+            let catalog_id = obligation.catalog_id.as_str();
+            scaffold_block(
+                catalog_id,
+                &obligation.verdict,
+                guidance.get(catalog_id).copied(),
+                labels,
+            )
         })
         .collect();
     if blocks.is_empty() {
@@ -431,12 +467,17 @@ fn scaffold_source(witness: &EvolutionWitness, labels: &SourceLabels) -> String 
     formatted
 }
 
-fn scaffold_block(catalog_id: &str, verdict: &Verdict, labels: &SourceLabels) -> Option<String> {
+fn scaffold_block(
+    catalog_id: &str,
+    verdict: &Verdict,
+    guidance: Option<&RepairGuidance>,
+    labels: &SourceLabels,
+) -> Option<String> {
     match verdict {
         Verdict::DestructiveDecisionRequired { populated } => {
             Some(retire_scaffold(catalog_id, *populated, labels))
         }
-        Verdict::RepairRequired { reason } => repair_scaffold(catalog_id, reason, labels),
+        Verdict::RepairRequired { reason } => repair_scaffold(catalog_id, reason, guidance, labels),
         _ => None,
     }
 }
@@ -444,6 +485,7 @@ fn scaffold_block(catalog_id: &str, verdict: &Verdict, labels: &SourceLabels) ->
 fn repair_scaffold(
     catalog_id: &str,
     reason: &RepairReason,
+    guidance: Option<&RepairGuidance>,
     labels: &SourceLabels,
 ) -> Option<String> {
     match reason {
@@ -451,13 +493,26 @@ fn repair_scaffold(
         | RepairReason::DefaultRejected {
             reason: RejectedDefault::TypeMismatch | RejectedDefault::NotEncodable,
         } => Some(default_scaffold(catalog_id, labels)),
+        // A populated leaf retype can never be discharged in place: reading the member's old
+        // bytes as the new type would silently reinterpret or drop them, so the supported path
+        // is to add a member of the new type, populate it with a transform from this one, then
+        // retire this one. A runnable in-place `transform` skeleton would invite exactly the
+        // silent data loss the contract forbids, so the scaffold emits a commented migration
+        // the author must complete instead.
+        RepairReason::TypeChangeRequiresTransform => Some(leaf_retype_skeleton(catalog_id, labels)),
         RepairReason::DefaultRejected {
             reason: RejectedDefault::NotConstant,
         }
-        | RepairReason::TypeChangeRequiresTransform
         | RepairReason::UndecodableTransformInput => Some(transform_scaffold(catalog_id, labels)),
+        // A bare drop whose check-time guidance found a single plausible same-shape rename
+        // target scaffolds the identity-preserving rename rather than a destructive retire.
         RepairReason::PopulatedDropRequiresRetire | RepairReason::RetireRequired { .. } => {
-            Some(retire_scaffold(catalog_id, 0, labels))
+            match guidance {
+                Some(RepairGuidance::RenameOrRetire { from, to }) => {
+                    Some(rename_scaffold(from, to, labels))
+                }
+                _ => Some(retire_scaffold(catalog_id, 0, labels)),
+            }
         }
         _ => None,
     }
@@ -480,6 +535,41 @@ fn transform_scaffold(catalog_id: &str, labels: &SourceLabels) -> String {
     let target = labels.scaffold_target(catalog_id);
     let value = labels.default_literal(catalog_id);
     format!("evolve\n    transform {target}\n        return {value}\n")
+}
+
+/// The safe scaffold for a populated leaf retype. An in-place transform would overwrite every
+/// stored value, silently dropping the data the old type held, so the skeleton is wholly
+/// commented guidance the author must complete: add a member of the new type, populate it with
+/// a transform from the old member, then retire the old member. Emitting a runnable in-place
+/// block here is the data-loss this finding fixes, so every line stays a comment.
+fn leaf_retype_skeleton(catalog_id: &str, labels: &SourceLabels) -> String {
+    let target = labels.scaffold_target(catalog_id);
+    format!(
+        "; {target} changed type in place over populated data, which cannot be reinterpreted safely.\n\
+         ; Add a member of the new type, populate it with a transform from the old member, then retire the old member:\n\
+         ;\n\
+         ;     evolve\n\
+         ;         transform <newMember>\n\
+         ;             return <conversion of old.{leaf}>\n\
+         ;         retire {target}\n",
+        leaf = leaf_name(&target),
+    )
+}
+
+/// The bare member name (`pages`) of a resource-qualified scaffold target (`Book.pages`), for
+/// spelling the `old.<member>` a transform reads. Falls back to the whole target when it has
+/// no trailing member segment, which a leaf retype always does.
+fn leaf_name(target: &str) -> &str {
+    target.rsplit('.').next().unwrap_or(target)
+}
+
+/// The identity-preserving rename scaffold a bare same-shape rename gets in place of a
+/// destructive retire: the explicit `evolve rename` that moves the stable id and keeps the
+/// stored cells attached. Both sides are spelled in source form (`Book.subtitle`).
+fn rename_scaffold(from: &str, to: &str, labels: &SourceLabels) -> String {
+    let from = labels.source_path_spelling(from);
+    let to = labels.source_path_spelling(to);
+    format!("evolve\n    rename {from} -> {to}\n")
 }
 
 fn generic_blocking_report() -> BlockingReport {

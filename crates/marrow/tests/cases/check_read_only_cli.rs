@@ -310,6 +310,44 @@ fn check_reports_a_stale_lock_when_the_source_digest_drifts() {
 }
 
 #[test]
+fn check_json_envelope_carries_the_stale_lock_advisory() {
+    // A machine consumer parses the stdout JSON envelope, never stderr. A plain `check` passes
+    // with a stale lock (status ok), but the advisory must still appear as a structured
+    // diagnostic in the envelope, with its typed code, not only as a stderr note.
+    let root = native_books_project("check-ro-stale-lock-json", REQUIRED_BASELINE_SOURCE);
+    let accepted = commit_catalog(&root);
+    let accepted_place = root_place(&accepted, "books").expect("books root place");
+    {
+        let store = open_native_store(&root);
+        seed_title_only(&store, &accepted_place, 1, "Dune");
+    }
+    write(&root, "src/books.mw", OPTIONAL_PAGES_DEFAULT_INDEX_SOURCE);
+
+    let check = marrow(&["check", "--format", "json", root.to_str().unwrap()]);
+    assert_eq!(
+        check.status.code(),
+        Some(0),
+        "a stale lock is a non-fatal advisory: plain check still succeeds: {check:?}"
+    );
+    let envelope: serde_json::Value =
+        serde_json::from_slice(&check.stdout).expect("stdout is one JSON envelope");
+    assert_eq!(
+        envelope["status"], "ok",
+        "the advisory keeps the success envelope: {envelope:#?}"
+    );
+    let diagnostics = envelope["diagnostics"]
+        .as_array()
+        .expect("the envelope carries a diagnostics array");
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic["code"] == "check.stale_lock"),
+        "the stale-lock advisory must be a structured diagnostic in the stdout envelope, not \
+         only on stderr: {envelope:#?}"
+    );
+}
+
+#[test]
 fn check_locked_fails_on_a_stale_lock_that_plain_check_only_advises() {
     // The lockfile-ecosystem convention: `--locked` (cf. cargo --locked) turns the stale-lock
     // advisory into a fatal CI gate. Plain `check` keeps the non-fatal advisory so the ordinary

@@ -143,9 +143,17 @@ fn check_project_dir(dir: &str, format: CheckFormat, locked: bool) -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    crate::report_project_with_program(dir, &snapshot.report, &snapshot.program, format);
     if stale {
-        report_stale_lock_advisory(format);
+        crate::report_project_ok_with_advisory(
+            dir,
+            &snapshot.report,
+            &snapshot.program,
+            stale_lock_advisory_diagnostic(),
+            &format!("{CHECK_STALE_LOCK}: {STALE_LOCK_MESSAGE}"),
+            format,
+        );
+    } else {
+        crate::report_project_with_program(dir, &snapshot.report, &snapshot.program, format);
     }
     ExitCode::SUCCESS
 }
@@ -166,22 +174,18 @@ fn stale_lock_diagnostic() -> serde_json::Value {
     })
 }
 
-/// Note the non-fatal stale-lock advisory on stderr, off the success envelope on stdout, so the
-/// structured result stays a single parseable value. A later `run` or `evolve apply` re-projects
-/// the lock to converge it.
-fn report_stale_lock_advisory(format: CheckFormat) {
-    match format {
-        CheckFormat::Text => eprintln!("{CHECK_STALE_LOCK}: {STALE_LOCK_MESSAGE}"),
-        CheckFormat::Json | CheckFormat::Jsonl => {
-            write_json_err(serde_json::json!({
-                "code": CHECK_STALE_LOCK,
-                "kind": marrow_syntax::kind_for_code(CHECK_STALE_LOCK),
-                "message": STALE_LOCK_MESSAGE,
-                "data": {},
-                "source_span": null,
-            }));
-        }
-    }
+/// The non-fatal stale-lock advisory as a structured diagnostic for the success envelope. It is
+/// a warning, not an error, so a clean check still passes; carrying it in the stdout envelope
+/// lets a machine consumer see the advisory without parsing stderr. A later `run` or
+/// `evolve apply` re-projects the lock to converge it.
+fn stale_lock_advisory_diagnostic() -> serde_json::Value {
+    serde_json::json!({
+        "code": CHECK_STALE_LOCK,
+        "kind": marrow_syntax::kind_for_code(CHECK_STALE_LOCK),
+        "message": STALE_LOCK_MESSAGE,
+        "severity": "warning",
+        "source_span": null,
+    })
 }
 
 /// Report an uncaught runtime fault on stderr. When the fault carries an origin

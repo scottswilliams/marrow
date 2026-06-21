@@ -182,3 +182,36 @@ fn apply_publishes_snapshot_epoch_and_data_together_then_run_fences_clean()
 
     Ok(())
 }
+
+/// A fresh checkout whose committed `marrow.lock` is corrupt must fail `evolve apply` closed:
+/// the lock seeds first-run identity, so a torn lock cannot be minted around. The command
+/// surfaces exactly one lock-integrity diagnostic (`catalog.lock_corrupt`), exits 1, and never
+/// creates or writes a store.
+#[test]
+fn evolve_apply_fails_closed_on_a_corrupt_committed_lock() {
+    let root = native_books_project("evolve-apply-corrupt-lock", REQUIRED_BASELINE_SOURCE);
+    // No store yet: a fresh checkout where the committed lock is the first-run identity anchor.
+    std::fs::write(root.join("marrow.lock"), "{\"epoch\":").expect("write torn lock");
+
+    let output = marrow(&["evolve", "apply", root.to_str().unwrap()]);
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "a corrupt lock must fail evolve apply closed, not panic or proceed: {output:?}"
+    );
+    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+    assert!(
+        stderr.contains("catalog.lock_corrupt"),
+        "the integrity gate surfaces the typed lock-corrupt code: {stderr}"
+    );
+    // Exactly one lock-integrity report: the gate must not double-report.
+    assert_eq!(
+        stderr.matches("catalog.lock_corrupt").count(),
+        1,
+        "the lock-integrity failure is reported once, not doubled: {stderr}"
+    );
+    assert!(
+        !native_store_path(&root).exists(),
+        "failing closed on a corrupt lock must not create a store"
+    );
+}

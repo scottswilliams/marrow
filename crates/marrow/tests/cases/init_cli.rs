@@ -144,6 +144,23 @@ fn init_rejects_invalid_target_module_name_without_writing() {
     );
     let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
     assert!(stderr.contains("config.invalid"), "{stderr}");
+    // The message must teach the naming rule, not just reject: it names the offending name, the
+    // identifier rule, and a concrete valid example a user can copy.
+    assert!(
+        stderr.contains("bad-name"),
+        "the message should name the rejected directory name: {stderr}"
+    );
+    assert!(
+        stderr.contains("letter")
+            && stderr.contains("underscore")
+            && (stderr.contains("digit") || stderr.contains("number")),
+        "the message should state the identifier rule (letter/underscore start, then letters, \
+         digits, underscores): {stderr}"
+    );
+    assert!(
+        stderr.contains("example") || stderr.contains("e.g.") || stderr.contains("for example"),
+        "the message should give a valid-name example: {stderr}"
+    );
     assert!(
         !target.exists(),
         "invalid target name should be rejected before creating files"
