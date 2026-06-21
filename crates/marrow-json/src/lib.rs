@@ -26,7 +26,8 @@ pub mod surface;
 
 pub use run::{
     EntryRunFactsJson, RunAutoAppliedJson, RunEnvelopeJson, RunStoreStateJson,
-    entry_run_facts_to_json, run_error_to_json, run_output_to_json, run_session_error_to_json,
+    entry_run_facts_to_json, execution_boundary_to_json, run_error_to_json, run_output_to_json,
+    run_session_error_to_json,
 };
 
 const LOWER_HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
@@ -313,8 +314,8 @@ pub(crate) fn lower_hex(bytes: &[u8]) -> String {
 mod tests {
     use super::{
         DATA_GENERATION_PROFILE_VERSION, DataGenerationJson, data_generation_stamp_to_json,
-        entry_run_facts_to_json, run_error_to_json, run_output_to_json, run_session_error_to_json,
-        saved_key_to_json,
+        entry_run_facts_to_json, execution_boundary_to_json, run_error_to_json, run_output_to_json,
+        run_session_error_to_json, saved_key_to_json,
     };
     use std::fs;
     use std::num::NonZeroUsize;
@@ -762,11 +763,12 @@ mod tests {
         let rendered = run_facts_json_from_session(&session).expect("run facts render");
 
         assert!(
-            rendered["analysis"]["sourceIdentity"]
+            rendered["executionBoundary"]["sourceAnalysisGeneration"]["sourceIdentity"]
                 .as_str()
                 .is_some_and(|digest| digest.starts_with("sha256:")),
             "{rendered}"
         );
+        assert_eq!(rendered.get("analysis"), None, "{rendered}");
         assert_eq!(rendered["entry"]["canonicalName"], "m::title", "{rendered}");
         assert_eq!(rendered["storeOpenMode"], "read_only", "{rendered}");
         assert_eq!(
@@ -781,7 +783,7 @@ mod tests {
     }
 
     #[test]
-    fn project_run_facts_json_renders_analysis_generation() {
+    fn project_run_facts_json_renders_execution_boundary_generation() {
         let root = temp_project(
             "run-facts-generation-json",
             "module m\n\
@@ -801,49 +803,156 @@ mod tests {
         .expect("fresh-memory session opens");
 
         let rendered = run_facts_json_from_session(&session).expect("run facts render");
+        let boundary = &rendered["executionBoundary"];
+        let generation_json = &boundary["sourceAnalysisGeneration"];
         let generation = session.source_analysis_snapshot().generation();
         let accepted = generation
             .accepted_catalog
             .as_ref()
             .expect("fresh-memory run binds proposed catalog identity");
 
+        assert_eq!(rendered.get("analysis"), None, "{rendered}");
+        assert_eq!(boundary["sessionKind"], "run", "{rendered}");
         assert_eq!(
-            rendered["analysis"]["profileVersion"], "analysis.generation.v1",
+            generation_json["profileVersion"], "analysis.generation.v1",
             "{rendered}"
         );
         assert_eq!(
-            rendered["analysis"]["sourceIdentity"],
+            generation_json["sourceIdentity"],
             generation.content_identity.as_str(),
             "{rendered}"
         );
         assert_eq!(
-            rendered["analysis"]["configDigest"],
+            generation_json["configDigest"],
             generation.config_digest.as_str(),
             "{rendered}"
         );
         assert_eq!(
-            rendered["analysis"]["checkedSourceDigest"], generation.checked_source_digest,
+            generation_json["checkedSourceDigest"], generation.checked_source_digest,
             "{rendered}"
         );
         assert_eq!(
-            rendered["analysis"]["readOnlyContextDigest"], generation.read_only_context_digest,
+            generation_json["readOnlyContextDigest"], generation.read_only_context_digest,
             "{rendered}"
         );
         assert_eq!(
-            rendered["analysis"]["acceptedCatalog"],
+            generation_json["acceptedCatalog"],
             json!({
                 "epoch": accepted.epoch,
                 "digest": accepted.digest.as_deref().expect("accepted catalog digest"),
             }),
             "{rendered}"
         );
-        assert_eq!(rendered["analysis"]["proposalCatalog"], json!(null));
+        assert_eq!(generation_json["proposalCatalog"], json!(null));
         assert!(
-            rendered["analysis"]
+            generation_json
                 .as_object()
                 .is_some_and(|analysis| analysis.len() > 1),
             "{rendered}"
         );
+        fs::remove_dir_all(&root).expect("remove temp project");
+    }
+
+    #[test]
+    fn entry_run_facts_json_includes_execution_boundary() {
+        let root = temp_project(
+            "run-facts-boundary-json",
+            "module m\n\
+            resource Book\n    \
+            required title: string\n\
+            store ^books(id: int): Book\n\
+            pub fn seed()\n    \
+            transaction\n        \
+            ^books(1).title = \"Dune\"\n\n\
+            pub fn read(): string\n    \
+            return ^books(1).title ?? \"\"\n",
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".data" } }"#,
+        );
+        let seed = ProjectSession::open(&root, ProjectOpen::run().with_entry_override("m::seed"))
+            .expect("seed session opens");
+        let mut output = String::new();
+        seed.invoke(SessionEntry::new("m::seed", &Host::new(), &mut output))
+            .expect("seed native store");
+        drop(seed);
+
+        let session = ProjectSession::open(
+            &root,
+            ProjectOpen::run()
+                .with_isolated_writes()
+                .with_entry_override("m::read"),
+        )
+        .expect("isolated session opens");
+        let rendered = run_facts_json_from_session(&session).expect("run facts render");
+        let boundary = &rendered["executionBoundary"];
+
+        assert_eq!(boundary["sessionKind"], "run", "{rendered}");
+        assert_eq!(rendered.get("analysis"), None, "{rendered}");
+        assert_eq!(
+            boundary["sourceAnalysisGeneration"]["sourceIdentity"],
+            session.source_analysis_identity().as_str(),
+            "{rendered}"
+        );
+        assert_eq!(boundary["store"]["kind"], "isolated", "{rendered}");
+        assert!(
+            boundary["store"]["stamp"]["store_uid"]
+                .as_str()
+                .is_some_and(|stamp| stamp.starts_with("store_")),
+            "{rendered}"
+        );
+        assert_eq!(boundary["store"]["stamp"]["catalog_epoch"], 1, "{rendered}");
+        assert!(
+            boundary["store"]["stamp"]["commit_id"]
+                .as_u64()
+                .is_some_and(|commit| commit > 0),
+            "{rendered}"
+        );
+        fs::remove_dir_all(&root).expect("remove temp project");
+    }
+
+    #[test]
+    fn execution_boundary_json_projects_test_session_boundary() {
+        let root = temp_project(
+            "test-boundary-json",
+            "module m\npub fn helper(): int\n    return 1\n",
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" }, "tests": ["tests"] }"#,
+        );
+        fs::create_dir_all(root.join("tests")).expect("create tests root");
+        fs::write(
+            root.join("tests/smoke_test.mw"),
+            "pub fn smoke()\n    std::assert::isTrue(m::helper() == 1)\n",
+        )
+        .expect("write test source");
+
+        let session = ProjectSession::open(&root, ProjectOpen::test()).expect("test session opens");
+        let rendered = dto_json(execution_boundary_to_json(&session));
+        let generation = session.source_analysis_snapshot().generation();
+        let generation_json = &rendered["sourceAnalysisGeneration"];
+
+        assert_eq!(rendered["sessionKind"], "test", "{rendered}");
+        assert_eq!(
+            generation_json["profileVersion"], "analysis.generation.v1",
+            "{rendered}"
+        );
+        assert_eq!(
+            generation_json["sourceIdentity"],
+            generation.content_identity.as_str(),
+            "{rendered}"
+        );
+        assert_eq!(
+            generation_json["configDigest"],
+            generation.config_digest.as_str(),
+            "{rendered}"
+        );
+        assert_eq!(
+            generation_json["checkedSourceDigest"], generation.checked_source_digest,
+            "{rendered}"
+        );
+        assert_eq!(
+            generation_json["readOnlyContextDigest"], generation.read_only_context_digest,
+            "{rendered}"
+        );
+        assert_eq!(rendered["store"]["kind"], "test_memory", "{rendered}");
+        assert_eq!(rendered["store"]["stamp"], json!(null), "{rendered}");
         fs::remove_dir_all(&root).expect("remove temp project");
     }
 
@@ -914,19 +1023,21 @@ mod tests {
         let rendered_b =
             dto_json(entry_run_facts_to_json(&session_b).expect("second session facts render"));
         assert_eq!(
-            rendered_a["analysis"]["sourceIdentity"],
+            rendered_a["executionBoundary"]["sourceAnalysisGeneration"]["sourceIdentity"],
             session_a.source_analysis_identity().as_str(),
             "{rendered_a}"
         );
         assert_eq!(
-            rendered_b["analysis"]["sourceIdentity"],
+            rendered_b["executionBoundary"]["sourceAnalysisGeneration"]["sourceIdentity"],
             session_b.source_analysis_identity().as_str(),
             "{rendered_b}"
         );
         assert_ne!(
-            rendered_a["analysis"]["sourceIdentity"],
-            rendered_b["analysis"]["sourceIdentity"]
+            rendered_a["executionBoundary"]["sourceAnalysisGeneration"]["sourceIdentity"],
+            rendered_b["executionBoundary"]["sourceAnalysisGeneration"]["sourceIdentity"]
         );
+        assert_eq!(rendered_a.get("analysis"), None, "{rendered_a}");
+        assert_eq!(rendered_b.get("analysis"), None, "{rendered_b}");
         assert_eq!(rendered_a["entry"], rendered_b["entry"]);
         fs::remove_dir_all(&root_a).expect("remove first temp project");
         fs::remove_dir_all(&root_b).expect("remove second temp project");

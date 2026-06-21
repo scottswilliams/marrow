@@ -6,8 +6,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use marrow_check::evolution::preview;
 use marrow_check::tooling;
 use marrow_check::{
-    AnalysisIdentity, AnalysisSnapshot, CheckReport, CheckedProgram, CheckedRuntimeProgram,
-    CheckedSavedPlace, ProjectConfig,
+    AnalysisGeneration, AnalysisIdentity, AnalysisSnapshot, CheckReport, CheckedProgram,
+    CheckedRuntimeProgram, CheckedSavedPlace, ProjectConfig,
 };
 use marrow_store::StoreError;
 use marrow_store::cell::CatalogId;
@@ -111,6 +111,7 @@ pub struct ProjectSession {
     root: PathBuf,
     config: ProjectConfig,
     analysis_snapshot: AnalysisSnapshot,
+    execution_boundary: ExecutionBoundary,
     session_program: SessionProgram,
     runtime: CheckedRuntimeProgram,
     kind: SessionKind,
@@ -213,10 +214,7 @@ enum SessionKind {
 
 enum RunStore {
     Memory(TreeStore),
-    Native {
-        path: PathBuf,
-        store: Option<TreeStore>,
-    },
+    Native { path: PathBuf, store: TreeStore },
     Isolated(IsolatedStore),
 }
 
@@ -224,10 +222,9 @@ impl fmt::Debug for RunStore {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Memory(_) => formatter.write_str("Memory"),
-            Self::Native { path, store } => formatter
+            Self::Native { path, .. } => formatter
                 .debug_struct("Native")
                 .field("path", path)
-                .field("open", &store.is_some())
                 .finish(),
             Self::Isolated(_) => formatter.write_str("Isolated"),
         }
@@ -420,6 +417,34 @@ pub struct StoreStamp {
     pub store_uid: String,
     pub catalog_epoch: u64,
     pub commit_id: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExecutionBoundary {
+    pub session_kind: ExecutionSessionKind,
+    pub source_analysis_generation: AnalysisGeneration,
+    pub store: ExecutionStoreBoundary,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExecutionSessionKind {
+    Run,
+    Test,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExecutionStoreBoundary {
+    pub kind: ExecutionBoundaryStoreKind,
+    pub stamp: Option<StoreStamp>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExecutionBoundaryStoreKind {
+    FreshMemory,
+    Isolated,
+    NativeCommit,
+    TestMemory,
+    PlainMemory,
 }
 
 impl ProjectInvokeError {
@@ -616,25 +641,16 @@ impl ProjectSession {
     pub fn store_stamp(&self) -> Result<Option<StoreStamp>, ProjectSessionError> {
         let store = match &self.kind {
             SessionKind::Run {
-                store:
-                    RunStore::Native {
-                        store: Some(store), ..
-                    },
+                store: RunStore::Native { store, .. },
                 ..
             } => store,
             _ => return Ok(None),
         };
-        let Some(uid) = store.read_store_uid()? else {
-            return Ok(None);
-        };
-        let Some(commit) = store.read_commit_metadata()? else {
-            return Ok(None);
-        };
-        Ok(Some(StoreStamp {
-            store_uid: uid.as_str().to_string(),
-            catalog_epoch: commit.catalog_epoch,
-            commit_id: commit.commit_id,
-        }))
+        optional_store_stamp(store)
+    }
+
+    pub fn execution_boundary(&self) -> ExecutionBoundary {
+        self.execution_boundary.clone()
     }
 
     pub fn invoke(&self, invocation: SessionEntry<'_>) -> Result<RunOutput, ProjectInvokeError> {
@@ -652,14 +668,10 @@ impl ProjectSession {
                 (RunStore::Isolated(isolated), _) => {
                     invoke_store(&isolated.store, &call, invocation)
                 }
-                (
-                    RunStore::Native {
-                        store: Some(store), ..
-                    },
-                    SessionWrites::Commit,
-                ) => invoke_store(store, &call, invocation),
-                (RunStore::Native { path, .. }, SessionWrites::Isolate)
-                | (RunStore::Native { path, store: None }, SessionWrites::Commit) => {
+                (RunStore::Native { store, .. }, SessionWrites::Commit) => {
+                    invoke_store(store, &call, invocation)
+                }
+                (RunStore::Native { path, .. }, SessionWrites::Isolate) => {
                     let isolated = isolated_store(path)?;
                     invoke_store(&isolated.store, &call, invocation)
                 }
@@ -972,11 +984,17 @@ fn open_run_session(
         }
     }?;
     let analysis_snapshot = store.checked.into_snapshot();
+    let execution_boundary = ExecutionBoundary {
+        session_kind: ExecutionSessionKind::Run,
+        source_analysis_generation: analysis_snapshot.generation(),
+        store: store.store_boundary,
+    };
     let runtime = analysis_snapshot.program.runtime();
     Ok(ProjectSession {
         root,
         config,
         analysis_snapshot,
+        execution_boundary,
         session_program: SessionProgram::Source,
         runtime,
         kind: SessionKind::Run {
@@ -1022,10 +1040,19 @@ fn open_test_session(
         })
         .collect();
     let runtime = program.runtime();
+    let execution_boundary = ExecutionBoundary {
+        session_kind: ExecutionSessionKind::Test,
+        source_analysis_generation: analysis_snapshot.generation(),
+        store: ExecutionStoreBoundary {
+            kind: ExecutionBoundaryStoreKind::TestMemory,
+            stamp: None,
+        },
+    };
     Ok(ProjectSession {
         root,
         config,
         analysis_snapshot,
+        execution_boundary,
         session_program: SessionProgram::WithTests(Box::new(program)),
         runtime,
         kind: SessionKind::Test { cases },
@@ -1113,22 +1140,27 @@ fn surface_store_open_error(path: &Path, error: StoreError) -> ProjectSessionErr
 }
 
 fn store_stamp(store: &TreeStore) -> Result<StoreStamp, ProjectSessionError> {
-    let uid = store
-        .read_store_uid()?
-        .ok_or(ProjectSessionError::DurableStoreRequired)?;
-    let commit = store
-        .read_commit_metadata()?
-        .ok_or(ProjectSessionError::DurableStoreRequired)?;
-    Ok(StoreStamp {
+    optional_store_stamp(store)?.ok_or(ProjectSessionError::DurableStoreRequired)
+}
+
+fn optional_store_stamp(store: &TreeStore) -> Result<Option<StoreStamp>, ProjectSessionError> {
+    let Some(uid) = store.read_store_uid()? else {
+        return Ok(None);
+    };
+    let Some(commit) = store.read_commit_metadata()? else {
+        return Ok(None);
+    };
+    Ok(Some(StoreStamp {
         store_uid: uid.as_str().to_string(),
         catalog_epoch: commit.catalog_epoch,
         commit_id: commit.commit_id,
-    })
+    }))
 }
 
 struct OpenRunStore {
     checked: CheckedSourceProgram,
     store: RunStore,
+    store_boundary: ExecutionStoreBoundary,
 }
 
 struct NativeRunStore {
@@ -1191,16 +1223,17 @@ fn open_memory_preview_store(
     checked: CheckedSourceProgram,
     admission: Option<&SourceAnalysisAdmission>,
 ) -> Result<OpenRunStore, ProjectSessionError> {
-    open_bound_memory_store(bind_proposed_catalog_identity(
-        root, config, checked, admission,
-    )?)
+    open_bound_memory_store(
+        bind_proposed_catalog_identity(root, config, checked, admission)?,
+        ExecutionBoundaryStoreKind::PlainMemory,
+    )
 }
 
 fn open_memory_store(checked: CheckedSourceProgram) -> Result<OpenRunStore, ProjectSessionError> {
     if pending_baseline(checked.program()) {
         return Err(ProjectSessionError::DurableStoreRequired);
     }
-    open_bound_memory_store(checked)
+    open_bound_memory_store(checked, ExecutionBoundaryStoreKind::PlainMemory)
 }
 
 fn open_fresh_memory_run_store(
@@ -1209,17 +1242,20 @@ fn open_fresh_memory_run_store(
     checked: CheckedSourceProgram,
     admission: Option<&SourceAnalysisAdmission>,
 ) -> Result<OpenRunStore, ProjectSessionError> {
-    open_bound_memory_store(bind_proposed_catalog_identity(
-        root, config, checked, admission,
-    )?)
+    open_bound_memory_store(
+        bind_proposed_catalog_identity(root, config, checked, admission)?,
+        ExecutionBoundaryStoreKind::FreshMemory,
+    )
 }
 
 fn open_bound_memory_store(
     checked: CheckedSourceProgram,
+    kind: ExecutionBoundaryStoreKind,
 ) -> Result<OpenRunStore, ProjectSessionError> {
     Ok(OpenRunStore {
         checked,
         store: RunStore::Memory(TreeStore::memory()),
+        store_boundary: ExecutionStoreBoundary { kind, stamp: None },
     })
 }
 
@@ -1258,12 +1294,26 @@ fn finish_open(
         return Err(ProjectSessionError::UnstampedStore);
     }
     let NativeRunStore { path, store } = store;
+    if isolate_writes {
+        let isolated = isolated_store(&path)?;
+        let store_boundary = ExecutionStoreBoundary {
+            kind: ExecutionBoundaryStoreKind::Isolated,
+            stamp: optional_store_stamp(&isolated.store)?,
+        };
+        return Ok(OpenRunStore {
+            checked,
+            store: RunStore::Isolated(isolated),
+            store_boundary,
+        });
+    }
+    let store_boundary = ExecutionStoreBoundary {
+        kind: ExecutionBoundaryStoreKind::NativeCommit,
+        stamp: optional_store_stamp(&store)?,
+    };
     Ok(OpenRunStore {
         checked,
-        store: RunStore::Native {
-            path,
-            store: (!isolate_writes).then_some(store),
-        },
+        store: RunStore::Native { path, store },
+        store_boundary,
     })
 }
 
@@ -1366,9 +1416,14 @@ fn classify_dry_run_drift(
                 .map_err(ProjectSessionError::from)?,
             );
             fence_run(checked.program(), &isolated.store).map_err(ProjectSessionError::Fence)?;
+            let store_boundary = ExecutionStoreBoundary {
+                kind: ExecutionBoundaryStoreKind::Isolated,
+                stamp: optional_store_stamp(&isolated.store)?,
+            };
             return Ok(OpenRunStore {
                 checked,
                 store: RunStore::Isolated(isolated),
+                store_boundary,
             });
         }
         obligation => {

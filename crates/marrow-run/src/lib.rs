@@ -95,6 +95,7 @@ pub use marrow_check::{
     EntryEnumMember, EntryIdentity, EntryIdentityKey, EntryParameter,
 };
 pub use project_session::{
+    ExecutionBoundary, ExecutionBoundaryStoreKind, ExecutionSessionKind, ExecutionStoreBoundary,
     ProjectInvokeError, ProjectMode, ProjectOpen, ProjectSession, ProjectSessionError,
     ProjectSessionNotice, ProjectSurfaceReadSession, ProjectSurfaceSession, ProjectTestCase,
     SessionEntry, SourceAnalysisAdmission, StoreStamp,

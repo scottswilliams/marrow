@@ -9,10 +9,11 @@ use marrow_check::{
 };
 use marrow_run::evolution::{Approval, apply};
 use marrow_run::{
-    EntryArgument, EntryArgumentValue, EntryDescriptor, EntryInvocation, EntryScalarArgument, Host,
-    ProjectMode, ProjectOpen, ProjectSession, ProjectSurfaceReadSession, ProjectSurfaceSession,
-    RUN_ENTRY_ARGUMENT, SURFACE_ABI_MISMATCH, SessionEntry, SurfaceCollectionPageRequest,
-    SurfaceReadInput, SurfaceUpdateField, SurfaceValue,
+    EntryArgument, EntryArgumentValue, EntryDescriptor, EntryInvocation, EntryScalarArgument,
+    ExecutionBoundaryStoreKind, ExecutionSessionKind, Host, ProjectMode, ProjectOpen,
+    ProjectSession, ProjectSurfaceReadSession, ProjectSurfaceSession, RUN_ENTRY_ARGUMENT,
+    SURFACE_ABI_MISMATCH, SessionEntry, SurfaceCollectionPageRequest, SurfaceReadInput,
+    SurfaceUpdateField, SurfaceValue,
 };
 use marrow_store::cell::CatalogId;
 use marrow_store::key::SavedKey;
@@ -105,6 +106,27 @@ fn persistent_counter_source() -> &'static str {
      \x20\x20\x20\x20\x20\x20\x20\x20return\n\
      \x20\x20\x20\x20if const value = ^counter(1).value\n\
      \x20\x20\x20\x20\x20\x20\x20\x20print($\"value={value}\")\n"
+}
+
+fn mutable_counter_source() -> &'static str {
+    "module shelf\n\
+     resource Counter\n\
+     \x20\x20\x20\x20required value: int\n\
+     store ^counter(id: int): Counter\n\
+     pub fn setOne()\n\
+     \x20\x20\x20\x20transaction\n\
+     \x20\x20\x20\x20\x20\x20\x20\x20^counter(1).value = 1\n\
+     pub fn setTwo()\n\
+     \x20\x20\x20\x20transaction\n\
+     \x20\x20\x20\x20\x20\x20\x20\x20^counter(1).value = 2\n\
+     pub fn setThree()\n\
+     \x20\x20\x20\x20transaction\n\
+     \x20\x20\x20\x20\x20\x20\x20\x20^counter(1).value = 3\n\
+     pub fn show()\n\
+     \x20\x20\x20\x20if const value = ^counter(1).value\n\
+     \x20\x20\x20\x20\x20\x20\x20\x20print($\"value={value}\")\n\
+     \x20\x20\x20\x20\x20\x20\x20\x20return\n\
+     \x20\x20\x20\x20print(\"absent\")\n"
 }
 
 fn surface_counter_source() -> &'static str {
@@ -1076,6 +1098,72 @@ fn fresh_memory_run_does_not_create_native_store_or_catalog_artifact() {
 }
 
 #[test]
+fn fresh_memory_run_execution_boundary_reports_explicit_fresh_memory() {
+    let root = TempDir::new("marrow-run-session-fresh-memory-boundary").expect("create project");
+    write_native_config(root.path());
+    write_temp_source(root.path(), Path::new("src/shelf.mw"), baseline_source());
+
+    let session = ProjectSession::open(root.path(), ProjectOpen::run().with_fresh_memory_store())
+        .expect("open fresh-memory session");
+    let boundary = session.execution_boundary();
+
+    assert_eq!(boundary.session_kind, ExecutionSessionKind::Run);
+    assert_eq!(
+        boundary.source_analysis_generation,
+        session.source_analysis_snapshot().generation()
+    );
+    assert_eq!(boundary.store.kind, ExecutionBoundaryStoreKind::FreshMemory);
+    assert!(boundary.store.stamp.is_none());
+}
+
+#[test]
+fn plain_memory_run_execution_boundary_is_not_fresh_memory() {
+    let root = TempDir::new("marrow-run-session-plain-memory-boundary").expect("create project");
+    fs::write(
+        root.path().join("marrow.json"),
+        r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" }, "run": { "defaultEntry": "shelf::show" } }"#,
+    )
+    .expect("write marrow.json");
+    write_temp_source(
+        root.path(),
+        Path::new("src/shelf.mw"),
+        "module shelf\n\npub fn show()\n    print(\"memory\")\n",
+    );
+
+    let session = ProjectSession::open(root.path(), ProjectMode::Run).expect("open session");
+    let boundary = session.execution_boundary();
+
+    assert_eq!(boundary.store.kind, ExecutionBoundaryStoreKind::PlainMemory);
+    assert!(boundary.store.stamp.is_none());
+}
+
+#[test]
+fn isolated_policy_over_memory_reports_plain_memory_boundary() {
+    let root = TempDir::new("marrow-run-session-isolated-memory-boundary").expect("create project");
+    fs::write(
+        root.path().join("marrow.json"),
+        r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" }, "run": { "defaultEntry": "shelf::show" } }"#,
+    )
+    .expect("write marrow.json");
+    write_temp_source(
+        root.path(),
+        Path::new("src/shelf.mw"),
+        "module shelf\n\npub fn show()\n    print(\"memory\")\n",
+    );
+
+    let session = ProjectSession::open(root.path(), ProjectOpen::run().with_isolated_writes())
+        .expect("open isolated memory session");
+    let boundary = session.execution_boundary();
+
+    assert_eq!(
+        boundary.store.kind,
+        ExecutionBoundaryStoreKind::PlainMemory,
+        "isolated policy over a memory store must not claim an isolated native boundary"
+    );
+    assert!(boundary.store.stamp.is_none());
+}
+
+#[test]
 fn run_session_source_analysis_identity_changes_for_body_edits() {
     let root = TempDir::new("marrow-run-session-analysis-identity").expect("create project");
     write_native_config(root.path());
@@ -1130,6 +1218,284 @@ fn run_session_exposes_the_source_analysis_snapshot_used_by_its_runtime_program(
     assert_eq!(
         snapshot.program.read_only_context_digest(),
         session.runtime_program().read_only_context_digest()
+    );
+}
+
+#[test]
+fn isolated_run_execution_boundary_reports_generation_and_store_stamp() {
+    let root = TempDir::new("marrow-run-session-isolated-boundary").expect("create project");
+    write_native_config(root.path());
+    write_temp_source(
+        root.path(),
+        Path::new("src/shelf.mw"),
+        persistent_counter_source(),
+    );
+
+    let seed = ProjectSession::open(
+        root.path(),
+        ProjectOpen::run().with_entry_override("shelf::bump"),
+    )
+    .expect("open seed session");
+    assert_eq!(invoke(&seed, "shelf::bump"), "");
+    drop(seed);
+
+    let session = ProjectSession::open(root.path(), ProjectOpen::run().with_isolated_writes())
+        .expect("open isolated session");
+    let boundary = session.execution_boundary();
+
+    assert_eq!(boundary.session_kind, ExecutionSessionKind::Run);
+    assert_eq!(
+        boundary.source_analysis_generation,
+        session.source_analysis_snapshot().generation()
+    );
+    assert_eq!(boundary.store.kind, ExecutionBoundaryStoreKind::Isolated);
+    let stamp = boundary
+        .store
+        .stamp
+        .expect("isolated native boundary exposes the opened store stamp");
+    assert!(stamp.store_uid.starts_with("store_"));
+    assert_eq!(stamp.catalog_epoch, 1);
+    assert!(stamp.commit_id > 0);
+}
+
+#[test]
+fn isolated_native_execution_boundary_does_not_reopen_store_path() {
+    let root =
+        TempDir::new("marrow-run-session-isolated-boundary-captured").expect("create project");
+    write_native_config(root.path());
+    write_temp_source(
+        root.path(),
+        Path::new("src/shelf.mw"),
+        persistent_counter_source(),
+    );
+
+    let seed = ProjectSession::open(
+        root.path(),
+        ProjectOpen::run().with_entry_override("shelf::bump"),
+    )
+    .expect("open seed session");
+    assert_eq!(invoke(&seed, "shelf::bump"), "");
+    let seed_stamp = seed
+        .store_stamp()
+        .expect("read seed store stamp")
+        .expect("seed stamps the native store");
+    drop(seed);
+
+    let session = ProjectSession::open(root.path(), ProjectOpen::run().with_isolated_writes())
+        .expect("open isolated session");
+    fs::remove_dir_all(root.path().join(".data")).expect("remove original native store path");
+
+    let boundary = session.execution_boundary();
+
+    assert_eq!(boundary.store.kind, ExecutionBoundaryStoreKind::Isolated);
+    assert_eq!(boundary.store.stamp, Some(seed_stamp));
+}
+
+#[test]
+fn native_commit_run_execution_boundary_reports_opened_store_stamp() {
+    let root = TempDir::new("marrow-run-session-native-boundary").expect("create project");
+    write_native_config(root.path());
+    write_temp_source(
+        root.path(),
+        Path::new("src/shelf.mw"),
+        persistent_counter_source(),
+    );
+
+    let session = ProjectSession::open(
+        root.path(),
+        ProjectOpen::run().with_entry_override("shelf::bump"),
+    )
+    .expect("open native commit session");
+    let opened_stamp = session
+        .store_stamp()
+        .expect("read opened store stamp")
+        .expect("native commit session exposes the opened store stamp");
+    let boundary = session.execution_boundary();
+
+    assert_eq!(boundary.session_kind, ExecutionSessionKind::Run);
+    assert_eq!(
+        boundary.store.kind,
+        ExecutionBoundaryStoreKind::NativeCommit
+    );
+    let stamp = boundary
+        .store
+        .stamp
+        .expect("native commit boundary exposes the committed store stamp");
+    assert!(stamp.store_uid.starts_with("store_"));
+    assert_eq!(stamp.catalog_epoch, 1);
+    assert_eq!(stamp, opened_stamp);
+}
+
+#[test]
+fn native_commit_execution_boundary_keeps_open_stamp_after_invocation() {
+    let root = TempDir::new("marrow-run-session-native-boundary-captured").expect("create project");
+    write_native_config(root.path());
+    write_temp_source(
+        root.path(),
+        Path::new("src/shelf.mw"),
+        "module shelf\n\
+         resource Counter\n\
+         \x20\x20\x20\x20required value: int\n\
+         store ^counter(id: int): Counter\n\
+         pub fn seed()\n\
+         \x20\x20\x20\x20transaction\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20^counter(1).value = 1\n\
+         pub fn bump()\n\
+         \x20\x20\x20\x20transaction\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20^counter(1).value = 2\n\
+         pub fn show()\n\
+         \x20\x20\x20\x20print(\"ok\")\n",
+    );
+
+    let seed = ProjectSession::open(
+        root.path(),
+        ProjectOpen::run().with_entry_override("shelf::seed"),
+    )
+    .expect("open seed session");
+    assert_eq!(invoke(&seed, "shelf::seed"), "");
+    drop(seed);
+
+    let session = ProjectSession::open(
+        root.path(),
+        ProjectOpen::run().with_entry_override("shelf::bump"),
+    )
+    .expect("open native commit session");
+    let opened_boundary = session.execution_boundary();
+    let opened_stamp = opened_boundary
+        .store
+        .stamp
+        .clone()
+        .expect("native boundary has an opened stamp");
+
+    assert_eq!(invoke(&session, "shelf::bump"), "");
+    let live_stamp = session
+        .store_stamp()
+        .expect("read live store stamp")
+        .expect("native store remains stamped");
+    assert!(
+        live_stamp.commit_id > opened_stamp.commit_id,
+        "the write should advance the live store commit"
+    );
+
+    let after_invoke = session.execution_boundary();
+
+    assert_eq!(
+        after_invoke.store.kind,
+        ExecutionBoundaryStoreKind::NativeCommit
+    );
+    assert_eq!(
+        after_invoke.store.stamp,
+        Some(opened_stamp),
+        "execution boundary must describe the opened session, not the live post-invocation store"
+    );
+}
+
+#[test]
+fn isolated_native_session_invokes_against_opened_store_snapshot() {
+    let root =
+        TempDir::new("marrow-run-session-isolated-boundary-pins-store").expect("create project");
+    write_native_config(root.path());
+    write_temp_source(
+        root.path(),
+        Path::new("src/shelf.mw"),
+        mutable_counter_source(),
+    );
+
+    let seed = ProjectSession::open(
+        root.path(),
+        ProjectOpen::run().with_entry_override("shelf::setOne"),
+    )
+    .expect("open seed session");
+    assert_eq!(invoke(&seed, "shelf::setOne"), "");
+    let seed_stamp = seed
+        .store_stamp()
+        .expect("read seed store stamp")
+        .expect("seed stamps the native store");
+    drop(seed);
+
+    let isolated = ProjectSession::open(
+        root.path(),
+        ProjectOpen::run()
+            .with_isolated_writes()
+            .with_entry_override("shelf::show"),
+    )
+    .expect("open isolated session");
+    assert_eq!(isolated.execution_boundary().store.stamp, Some(seed_stamp));
+
+    let advance = ProjectSession::open(
+        root.path(),
+        ProjectOpen::run().with_entry_override("shelf::setTwo"),
+    )
+    .expect("open advancing session");
+    assert_eq!(invoke(&advance, "shelf::setTwo"), "");
+    let advanced_stamp = advance
+        .store_stamp()
+        .expect("read advanced store stamp")
+        .expect("advance stamps the native store");
+    assert!(
+        advanced_stamp.commit_id > isolated.execution_boundary().store.stamp.unwrap().commit_id,
+        "advancing session should move the real store past the isolated boundary"
+    );
+    drop(advance);
+
+    assert_eq!(invoke(&isolated, "shelf::show"), "value=1\n");
+}
+
+#[test]
+fn native_commit_session_entry_isolated_writes_are_invocation_scoped() {
+    let root = TempDir::new("marrow-run-session-entry-isolated-writes").expect("create project");
+    write_native_config(root.path());
+    write_temp_source(
+        root.path(),
+        Path::new("src/shelf.mw"),
+        mutable_counter_source(),
+    );
+
+    let seed = ProjectSession::open(
+        root.path(),
+        ProjectOpen::run().with_entry_override("shelf::setOne"),
+    )
+    .expect("open seed session");
+    assert_eq!(invoke(&seed, "shelf::setOne"), "");
+    drop(seed);
+
+    let session = ProjectSession::open(
+        root.path(),
+        ProjectOpen::run().with_entry_override("shelf::show"),
+    )
+    .expect("open native commit session");
+    let opened_boundary = session.execution_boundary();
+    assert_eq!(
+        opened_boundary.store.kind,
+        ExecutionBoundaryStoreKind::NativeCommit
+    );
+    let opened_stamp = opened_boundary
+        .store
+        .stamp
+        .expect("native commit boundary has a stamp");
+
+    assert_eq!(invoke(&session, "shelf::setTwo"), "");
+    let committed_stamp = session
+        .store_stamp()
+        .expect("read committed store stamp")
+        .expect("native commit session remains stamped");
+    assert!(committed_stamp.commit_id > opened_stamp.commit_id);
+
+    let host = Host::new();
+    let mut isolated_output = String::new();
+    session
+        .invoke(
+            SessionEntry::new("shelf::setThree", &host, &mut isolated_output)
+                .with_isolated_writes(),
+        )
+        .expect("invoke entry with isolated writes");
+    assert_eq!(isolated_output, "");
+
+    assert_eq!(invoke(&session, "shelf::show"), "value=2\n");
+    assert_eq!(
+        session.execution_boundary().store.stamp,
+        Some(opened_stamp),
+        "per-invocation isolated writes do not change the native-commit session boundary"
     );
 }
 
@@ -1383,6 +1749,33 @@ fn test_session_keeps_source_analysis_snapshot_separate_from_test_program() {
     assert_eq!(source_modules, ["shelf"]);
     assert!(session_modules.contains(&"tests::smoke_test"));
     assert_eq!(session.test_cases()[0].name, "tests::smoke_test::smoke");
+}
+
+#[test]
+fn test_session_execution_boundary_reports_test_memory() {
+    let root = TempDir::new("marrow-run-session-test-boundary").expect("create project");
+    write_memory_config_with_tests(root.path());
+    write_temp_source(
+        root.path(),
+        Path::new("src/shelf.mw"),
+        "module shelf\n\npub fn helper(): int\n    return 1\n",
+    );
+    write_temp_source(
+        root.path(),
+        Path::new("tests/smoke_test.mw"),
+        "pub fn smoke()\n    std::assert::isTrue(shelf::helper() == 1)\n",
+    );
+
+    let session = ProjectSession::open(root.path(), ProjectOpen::test()).expect("open tests");
+    let boundary = session.execution_boundary();
+
+    assert_eq!(boundary.session_kind, ExecutionSessionKind::Test);
+    assert_eq!(
+        boundary.source_analysis_generation,
+        session.source_analysis_snapshot().generation()
+    );
+    assert_eq!(boundary.store.kind, ExecutionBoundaryStoreKind::TestMemory);
+    assert!(boundary.store.stamp.is_none());
 }
 
 #[cfg(unix)]

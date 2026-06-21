@@ -21,9 +21,12 @@ own HTTP serving or process lifetime policy.
 The crate deliberately does not define a general `Value` JSON ABI. Its run DTOs
 own the `result`/`output`/`diagnostics` envelope, bounded return-value surface,
 runtime diagnostic payloads, optional store state, auto-applied transition, and
-run-fact projection. Run-fact projection is session-bound: versioned analysis
-generation, entry admission, and checked facts come from the same
-`ProjectSession`, not from caller text. Scalars, enums, identities, and
+execution-boundary/run-fact projection. Run-fact projection is session-bound:
+the boundary, boundary-carried analysis generation, entry admission, and
+checked facts come from the same `ProjectSession`, not from caller text. The
+standalone execution-boundary projector covers run and test sessions, with
+`sourceAnalysisGeneration` as the single generation carrier. Scalars, enums,
+identities, and
 sequences render; whole resources and local trees fault at the CLI boundary as
 `run.entry_surface`. The enum form
 renders its stable `Enum::member` spelling — the reorder-invariant

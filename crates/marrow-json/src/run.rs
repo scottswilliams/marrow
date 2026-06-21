@@ -4,8 +4,8 @@ use marrow_check::{
     WorkShapeClass,
 };
 use marrow_run::{
-    EntryIdentity, ProjectInvokeError, ProjectSession, ProjectSessionError, RunOutput,
-    RuntimeError, StoreStamp,
+    EntryIdentity, ExecutionBoundary, ExecutionBoundaryStoreKind, ExecutionSessionKind,
+    ProjectInvokeError, ProjectSession, ProjectSessionError, RunOutput, RuntimeError, StoreStamp,
 };
 use serde::Serialize;
 
@@ -214,8 +214,9 @@ impl From<(u64, u64)> for RunAutoAppliedJson {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct EntryRunFactsJson {
-    pub analysis: EntryRunAnalysisJson,
     pub entry: EntryIdentityJson,
+    #[serde(rename = "executionBoundary")]
+    pub execution_boundary: ExecutionBoundaryJson,
     #[serde(rename = "storeOpenMode")]
     pub store_open_mode: &'static str,
     pub footprint: EntryFootprintJson,
@@ -245,6 +246,21 @@ pub struct EntryRunAnalysisJson {
 pub struct EntryRunAnalysisCatalogJson {
     pub epoch: u64,
     pub digest: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ExecutionBoundaryJson {
+    #[serde(rename = "sessionKind")]
+    pub session_kind: &'static str,
+    #[serde(rename = "sourceAnalysisGeneration")]
+    pub source_analysis_generation: EntryRunAnalysisJson,
+    pub store: ExecutionStoreBoundaryJson,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ExecutionStoreBoundaryJson {
+    pub kind: &'static str,
+    pub stamp: Option<RunStoreStampJson>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -352,18 +368,51 @@ pub fn entry_run_facts_to_json(session: &ProjectSession) -> Option<EntryRunFacts
     let descriptor = EntryDescriptor::resolve(runtime, entry).ok()?;
     let identity = &descriptor.identity;
     let facts = program.entry_run_facts(&identity.canonical_name)?;
+    let boundary = session.execution_boundary();
     if identity.canonical_name != facts.footprint.entry
         || facts.footprint.entry != facts.cost_shape.entry
     {
         return None;
     }
     Some(EntryRunFactsJson {
-        analysis: EntryRunAnalysisJson::from(session.source_analysis_snapshot().generation()),
         entry: entry_identity_to_json(identity),
+        execution_boundary: execution_boundary_facts_to_json(boundary),
         store_open_mode: store_open_mode_name(facts.store_open_mode),
         footprint: entry_footprint_to_json(program, &facts.footprint)?,
         cost_shape: entry_cost_shape_to_json(&facts.cost_shape),
     })
+}
+
+pub fn execution_boundary_to_json(session: &ProjectSession) -> ExecutionBoundaryJson {
+    execution_boundary_facts_to_json(session.execution_boundary())
+}
+
+fn execution_boundary_facts_to_json(boundary: ExecutionBoundary) -> ExecutionBoundaryJson {
+    ExecutionBoundaryJson {
+        session_kind: execution_session_kind_name(boundary.session_kind),
+        source_analysis_generation: EntryRunAnalysisJson::from(boundary.source_analysis_generation),
+        store: ExecutionStoreBoundaryJson {
+            kind: execution_store_kind_name(boundary.store.kind),
+            stamp: boundary.store.stamp.as_ref().map(RunStoreStampJson::from),
+        },
+    }
+}
+
+fn execution_session_kind_name(kind: ExecutionSessionKind) -> &'static str {
+    match kind {
+        ExecutionSessionKind::Run => "run",
+        ExecutionSessionKind::Test => "test",
+    }
+}
+
+fn execution_store_kind_name(kind: ExecutionBoundaryStoreKind) -> &'static str {
+    match kind {
+        ExecutionBoundaryStoreKind::FreshMemory => "fresh_memory",
+        ExecutionBoundaryStoreKind::Isolated => "isolated",
+        ExecutionBoundaryStoreKind::NativeCommit => "native_commit",
+        ExecutionBoundaryStoreKind::TestMemory => "test_memory",
+        ExecutionBoundaryStoreKind::PlainMemory => "plain_memory",
+    }
 }
 
 impl From<AnalysisGeneration> for EntryRunAnalysisJson {
