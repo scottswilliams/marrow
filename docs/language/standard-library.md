@@ -18,10 +18,6 @@ runtime platform:
 - Functions have concrete signatures; Marrow does not use overloading to make
   library calls work.
 
-The v0.1 standard library does not include HTTP clients, process execution,
-directory walking, regular expressions, localized formatting, JSON object
-mapping, or backend-specific storage APIs.
-
 The Marrow language does not require every host module. Pure helpers are
 available in normal CLI runs. Host functions in `std::clock`, `std::context`,
 `std::io`, `std::env`, and `std::log` depend on the command or embedding host;

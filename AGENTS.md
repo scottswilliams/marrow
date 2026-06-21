@@ -62,8 +62,8 @@ Avoid agentic slop and documentation sediment at all costs, including in code.
 ## Worktrees
 
 Use an isolated worktree for multi-file changes, Rust changes, or cleanup
-batches. Keep feature worktrees under `/Users/scottwilliams/Dev` next to the
-main checkout, using names such as `/Users/scottwilliams/Dev/marrow-<topic>`.
+batches. Keep feature worktrees beside the main checkout in the workspace
+directory, named `marrow-<topic>` (i.e. a sibling `../marrow-<topic>`).
 
 Keep harness files, throwaway worktrees, cargo targets, trial artifacts,
 patches, reviews, logs, and leases outside the repository. The tracked repo
@@ -81,16 +81,18 @@ Use focused checks before broad ones:
    for broad rename, runtime, or release-surface changes.
 
 Do not run broad Cargo gates in parallel against the same target directory.
-Spell `CARGO_TARGET_DIR` explicitly in every Cargo command, using an external
-target path:
+Spell `CARGO_TARGET_DIR` explicitly in every Cargo command, pointing at an
+out-of-tree build root (a sibling `.build/marrow-targets/<topic>`, never the
+in-repo `./target`):
 
 ```sh
-CARGO_TARGET_DIR=/Users/scottwilliams/Dev/.build/marrow-targets/<topic> \
-    cargo test --manifest-path /Users/scottwilliams/Dev/marrow-<topic>/Cargo.toml ...
+CARGO_TARGET_DIR=../.build/marrow-targets/<topic> \
+    cargo test --manifest-path ../marrow-<topic>/Cargo.toml ...
 ```
 
-Use `/Users/scottwilliams/Dev/.build/marrow-targets/integration` for broad
-integration gates, one at a time.
+Use a dedicated `../.build/marrow-targets/integration` for broad integration
+gates, one at a time. Delete a worktree's target dir when you retire the
+worktree, so abandoned build outputs do not accumulate.
 
 ## Review And Integration
 
@@ -106,13 +108,13 @@ simplicity, minimality, and whether every changed line belongs. Treat
 docs/language/ as the source of truth for language behavior.
 ```
 
-Integrate only from the live main checkout at `/Users/scottwilliams/Dev/marrow`.
+Integrate only from the primary `main` checkout, never a feature worktree.
 Prefer `git cherry-pick -x <reviewed-sha>` over merging a whole branch. If a
 conflict is not an obvious mechanical rename/import conflict, abort and send the
 branch back to the owner.
 
 Before pushing `main`, run the verification ladder through the workspace checks
-using `/Users/scottwilliams/Dev/.build/marrow-targets/integration`, then ask for
+using the dedicated `../.build/marrow-targets/integration`, then ask for
 a final read-only review of the assembled diff:
 
 ```text
@@ -178,7 +180,7 @@ making it truer, cut instead. Each crate's `AGENTS.md` names its page.
 - Look for opportunities to dogfood with `.mw` where it makes sense.
 
 Before committing substantial code changes, spawn a high-reasoning read-only
-review of the staged and unstaged changes:
+review of the staged and unstaged changes with a prompt like:
 
 ```text
 Review the staged and unstaged changes. Findings first with file and line
