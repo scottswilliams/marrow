@@ -138,6 +138,8 @@ mod resource_store_contract;
 mod saved_place_hover_facts;
 #[path = "cases/saved_place_owner_architecture.rs"]
 mod saved_place_owner_architecture;
+#[path = "cases/saved_root_hover_facts.rs"]
+mod saved_root_hover_facts;
 #[path = "cases/source_symbol_docs.rs"]
 mod source_symbol_docs;
 #[path = "cases/source_symbols.rs"]

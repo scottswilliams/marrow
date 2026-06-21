@@ -1,13 +1,14 @@
 use std::path::Path;
 
+use marrow_schema::{IndexSchema, Node, NodeKind, ResourceSchema, StoreSchema};
 use marrow_syntax::{
     Declaration, EnumMember, IndexDecl, KeyParam, ResourceMember, SourceFile, SourceSpan,
-    TokenKind, lex_source,
+    StoreDecl, TokenKind, lex_source,
 };
 
 use crate::{
-    AnalysisSnapshot, BindingIndex, ModuleId, ResourceMemberKind, SymbolKind, SymbolOccurrence,
-    SymbolRef,
+    AnalysisSnapshot, BindingIndex, ModuleId, ResourceMemberKind, StoreFact, SymbolKind,
+    SymbolOccurrence, SymbolRef,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -43,6 +44,38 @@ pub struct SavedPlaceHoverKeyParam {
     pub ty: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoreRootHoverFact {
+    pub root: String,
+    pub identity_keys: Vec<SavedPlaceHoverKeyParam>,
+    pub resource: String,
+    pub store_docs: Vec<String>,
+    pub members: Vec<StoreRootHoverMember>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoreRootHoverPathSegment {
+    pub name: String,
+    pub key_params: Vec<SavedPlaceHoverKeyParam>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StoreRootHoverMember {
+    Field {
+        path: Vec<StoreRootHoverPathSegment>,
+        required: bool,
+        ty: String,
+    },
+    Layer {
+        path: Vec<StoreRootHoverPathSegment>,
+    },
+    Index {
+        name: String,
+        args: Vec<String>,
+        unique: bool,
+    },
+}
+
 pub fn source_symbol_docs_at(
     snapshot: &AnalysisSnapshot,
     index: &BindingIndex,
@@ -58,6 +91,21 @@ pub fn source_symbol_docs_at(
     (!lines.is_empty()).then(|| SourceSymbolDocs {
         lines: lines.to_vec(),
     })
+}
+
+pub fn store_root_hover_fact_at(
+    snapshot: &AnalysisSnapshot,
+    file: &Path,
+    offset: usize,
+) -> Option<StoreRootHoverFact> {
+    let analyzed = snapshot.files.iter().find(|f| f.path == file)?;
+    let declaration = store_root_declaration_at(&analyzed.parsed.file, &analyzed.source, offset)?;
+    let store = snapshot.program.facts.stores().iter().find(|store| {
+        store.root == declaration.root.root
+            && store.name_span == declaration.root.span
+            && fact_file(snapshot, store.module) == Some(file)
+    })?;
+    store_root_hover_fact(snapshot, store)
 }
 
 pub fn saved_place_hover_fact_at(
@@ -84,6 +132,129 @@ pub fn saved_place_hover_fact_at(
         SymbolKind::Field | SymbolKind::Layer => member_hover_fact(snapshot, analyzed, symbol),
         SymbolKind::Index => index_hover_fact(snapshot, analyzed, symbol),
         _ => None,
+    }
+}
+
+fn store_root_declaration_at<'a>(
+    source: &'a SourceFile,
+    text: &str,
+    offset: usize,
+) -> Option<&'a StoreDecl> {
+    source
+        .declarations
+        .iter()
+        .find_map(|declaration| match declaration {
+            Declaration::Store(store) => {
+                let (start, end) = root_token_span(text, store)?;
+                (start <= offset && offset < end).then_some(store)
+            }
+            _ => None,
+        })
+}
+
+fn root_token_span(source: &str, store: &StoreDecl) -> Option<(usize, usize)> {
+    lex_source(source).tokens.windows(2).find_map(|tokens| {
+        let [caret, name] = tokens else {
+            return None;
+        };
+        if caret.kind == TokenKind::Caret
+            && name.kind == TokenKind::Identifier
+            && span_covers(store.span, caret.span.start_byte)
+            && span_covers(store.span, name.span.end_byte)
+            && name.text(source) == store.root.root
+        {
+            Some((caret.span.start_byte, name.span.end_byte))
+        } else {
+            None
+        }
+    })
+}
+
+fn store_root_hover_fact(
+    snapshot: &AnalysisSnapshot,
+    store: &StoreFact,
+) -> Option<StoreRootHoverFact> {
+    let (schema, resource) = store_root_schemas(snapshot, store)?;
+    Some(StoreRootHoverFact {
+        root: schema.root.clone(),
+        identity_keys: schema.identity_keys.iter().map(schema_key_param).collect(),
+        resource: schema.resource.clone(),
+        store_docs: schema.docs.clone(),
+        members: store_root_members(resource, &schema.indexes),
+    })
+}
+
+fn store_root_schemas<'a>(
+    snapshot: &'a AnalysisSnapshot,
+    store: &StoreFact,
+) -> Option<(&'a StoreSchema, &'a ResourceSchema)> {
+    let module = snapshot.program.modules.get(store.module.0 as usize)?;
+    let schema = module
+        .stores
+        .iter()
+        .find(|schema| schema.root == store.root)?;
+    let resource = module
+        .resources
+        .iter()
+        .find(|resource| resource.name == schema.resource)?;
+    Some((schema, resource))
+}
+
+fn store_root_members(
+    resource: &ResourceSchema,
+    indexes: &[IndexSchema],
+) -> Vec<StoreRootHoverMember> {
+    let mut members = Vec::new();
+    for member in &resource.members {
+        resource_hover_members(member, &mut Vec::new(), &mut members);
+    }
+    members.extend(indexes.iter().map(|index| StoreRootHoverMember::Index {
+        name: index.name.clone(),
+        args: index.args.clone(),
+        unique: index.unique,
+    }));
+    members
+}
+
+fn resource_hover_members(
+    member: &Node,
+    path: &mut Vec<StoreRootHoverPathSegment>,
+    members: &mut Vec<StoreRootHoverMember>,
+) {
+    path.push(StoreRootHoverPathSegment {
+        name: member.name.clone(),
+        key_params: member.key_params.iter().map(schema_key_param).collect(),
+    });
+    match &member.kind {
+        NodeKind::Slot { ty, required, .. } => {
+            members.push(StoreRootHoverMember::Field {
+                path: path.clone(),
+                required: *required,
+                ty: render_schema_leaf_type(member, ty),
+            });
+        }
+        NodeKind::Group => {
+            members.push(StoreRootHoverMember::Layer { path: path.clone() });
+            for child in &member.members {
+                resource_hover_members(child, path, members);
+            }
+        }
+    }
+    path.pop();
+}
+
+fn schema_key_param(key: &marrow_schema::KeyDef) -> SavedPlaceHoverKeyParam {
+    SavedPlaceHoverKeyParam {
+        name: key.name.clone(),
+        ty: key.ty.to_string(),
+    }
+}
+
+fn render_schema_leaf_type(member: &Node, ty: &marrow_schema::Type) -> String {
+    if member.is_error_code() {
+        "ErrorCode".to_string()
+    } else {
+        ty.to_string()
     }
 }
 
