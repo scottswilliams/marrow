@@ -168,7 +168,10 @@ engine metadata are excluded. This is an explicit operator/admin dump, so it is
 allowed to walk the whole store. Any future production preview must use bounded
 pages. Text renders each value through its checked leaf type: strings are quoted
 and escaped, bytes are `0x<hex>`, `Id(^store)` references are saved paths, and
-enum values are module-qualified member identities.
+enum values are module-qualified member identities. A `string` leaf whose stored
+bytes are not valid UTF-8 is corruption, not bytes, and renders as
+`<undecodable string: 0x<hex>>` so it is never mistaken for a `0x<hex>` bytes
+value; `data integrity` is the authority that reports it as `data.decode`.
 
 ```
 $ marrow data dump ./project

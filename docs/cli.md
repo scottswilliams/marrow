@@ -742,7 +742,10 @@ Print every stored `(path, value)` for inspection: records in identity-key
 order, each record's fields in declaration order. Text renders values through
 their checked leaf type: strings are quoted and escaped, bytes are `0x<hex>`,
 `Id(^store)` references are saved paths, and enum values are module-qualified
-member identities. JSON/JSONL carry the checked path plus base64 of the value
+member identities. A `string` leaf whose stored bytes are not valid UTF-8 is
+corruption, not bytes, and renders as `<undecodable string: 0x<hex>>` so it is
+never mistaken for a `0x<hex>` bytes value; `data integrity` is the authority
+that reports it. JSON/JSONL carry the checked path plus base64 of the value
 bytes. This is not a production backup format.
 
 ```console

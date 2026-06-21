@@ -205,6 +205,12 @@ fn render_data_value_prefix_preview_inner(
 }
 
 fn render_scalar_value(ty: marrow_store::value::ScalarType, bytes: &[u8]) -> Option<String> {
+    // A declared string whose stored bytes are not valid UTF-8 is corruption, not a
+    // bytes value. Mark it distinctly so a reader cannot mistake it for a legitimate
+    // `0x<hex>` bytes field; `data integrity` stays the authority that flags it.
+    if ty == marrow_store::value::ScalarType::Str && std::str::from_utf8(bytes).is_err() {
+        return Some(render_undecodable_string_value(bytes));
+    }
     match decode_value(bytes, ty)? {
         SavedValue::Str(value) => Some(format!("{value:?}")),
         SavedValue::Bytes(value) => Some(render_hex_value(&value)),
@@ -223,7 +229,7 @@ fn render_scalar_value_preview(
         marrow_store::value::ScalarType::Str => {
             match render_string_value_preview(bytes, bytes_truncated, limit) {
                 Some(preview) => preview,
-                None => render_hex_value_preview(bytes, limit),
+                None => render_undecodable_string_preview(bytes, limit),
             }
         }
         marrow_store::value::ScalarType::Bytes => render_hex_value_preview(bytes, limit),
@@ -321,6 +327,16 @@ fn render_hex_value(bytes: &[u8]) -> String {
     text
 }
 
+const UNDECODABLE_STRING_PREFIX: &str = "<undecodable string: ";
+const UNDECODABLE_STRING_SUFFIX: &str = ">";
+
+fn render_undecodable_string_value(bytes: &[u8]) -> String {
+    let mut text = String::from(UNDECODABLE_STRING_PREFIX);
+    text.push_str(&render_hex_value(bytes));
+    text.push_str(UNDECODABLE_STRING_SUFFIX);
+    text
+}
+
 fn render_string_value_preview(
     bytes: &[u8],
     bytes_truncated: bool,
@@ -335,6 +351,23 @@ fn render_string_value_preview(
         })
     } else {
         Some(truncated_preview(text))
+    }
+}
+
+fn render_undecodable_string_preview(bytes: &[u8], limit: usize) -> DataValuePreview {
+    let mut text = String::new();
+    if !push_str_atomic_with_limit(&mut text, UNDECODABLE_STRING_PREFIX, limit) {
+        return truncated_preview(text);
+    }
+    if !push_hex_preview(&mut text, bytes, limit) {
+        return truncated_preview(text);
+    }
+    if !push_str_atomic_with_limit(&mut text, UNDECODABLE_STRING_SUFFIX, limit) {
+        return truncated_preview(text);
+    }
+    DataValuePreview {
+        text,
+        truncated: false,
     }
 }
 
@@ -656,6 +689,44 @@ mod tests {
 
         assert_eq!(preview.text, "\"short\"...");
         assert!(preview.truncated, "{preview:?}");
+    }
+
+    #[test]
+    fn undecodable_string_leaf_renders_distinctly_from_bytes() {
+        let str_leaf = StoreLeafKind::Scalar(marrow_store::value::ScalarType::Str);
+        let bytes_leaf = StoreLeafKind::Scalar(marrow_store::value::ScalarType::Bytes);
+        let corrupt = [0xffu8, b'e', b'l', b'l', b'o'];
+
+        let string_render = render_data_value(&CheckedProgram::default(), &str_leaf, &corrupt);
+        let bytes_render = render_data_value(&CheckedProgram::default(), &bytes_leaf, &corrupt);
+
+        assert_eq!(string_render, "<undecodable string: 0xff656c6c6f>");
+        assert_eq!(bytes_render, "0xff656c6c6f");
+        assert_ne!(string_render, bytes_render);
+        assert!(!string_render.starts_with("0x"), "{string_render}");
+    }
+
+    #[test]
+    fn undecodable_string_preview_marks_corruption_and_bounds_hex() {
+        let leaf = StoreLeafKind::Scalar(marrow_store::value::ScalarType::Str);
+        let corrupt = [0xffu8; 64];
+
+        let full = render_data_value_preview(&CheckedProgram::default(), &leaf, &corrupt, 256);
+        assert!(!full.truncated, "{full:?}");
+        assert!(
+            full.text.starts_with("<undecodable string: 0xffff"),
+            "{full:?}"
+        );
+        assert!(full.text.ends_with('>'), "{full:?}");
+
+        let bounded = render_data_value_preview(&CheckedProgram::default(), &leaf, &corrupt, 28);
+        assert!(bounded.truncated, "{bounded:?}");
+        assert!(bounded.text.len() <= 28 + "...".len(), "{bounded:?}");
+        assert!(
+            bounded.text.starts_with("<undecodable string: 0x"),
+            "{bounded:?}"
+        );
+        assert!(bounded.text.ends_with("..."), "{bounded:?}");
     }
 
     #[test]
