@@ -27,7 +27,7 @@ pub use data::{
 };
 pub use integrity::{
     IntegrityOutcome, IntegrityProblem, IntegrityProblemSample, IntegritySample,
-    count_activation_integrity_problems, count_integrity_problems,
+    count_activation_integrity_problems, count_integrity_problems, count_orphan_cells,
     sample_integrity_problem_details, sample_integrity_problems, stamped_integrity_problem_details,
     visit_integrity_problems,
 };

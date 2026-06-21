@@ -758,6 +758,23 @@ fn render_problem_path(
     text
 }
 
+/// Count the stored cells the current source-derived schema no longer declares — the same
+/// `data.orphan` cells `data integrity` reports. The source-driven inspection commands
+/// (`data stats`, `data dump`) walk only declared places, so these cells are invisible to them;
+/// the count lets those commands warn that their reduced output omits intact data rather than
+/// under-reporting silently.
+pub fn count_orphan_cells(
+    store: &TreeStore,
+    program: &CheckedProgram,
+) -> Result<usize, StoreError> {
+    let places = checked_places(program);
+    let mut orphans = 0usize;
+    visit_orphans_in_places(store, &places, |_orphan| {
+        increment_problem_count(&mut orphans)
+    })?;
+    Ok(orphans)
+}
+
 fn visit_orphans_in_places(
     store: &TreeStore,
     places: &[CheckedSavedPlace],

@@ -471,6 +471,97 @@ fn check_locked_passes_a_fresh_lock() {
 }
 
 #[test]
+fn check_locked_fails_when_the_lock_is_absent_over_a_durable_store() {
+    // `--locked` is a CI gate whose purpose is to fail when the committed lock is not current.
+    // An entirely absent lock over a project that has durable shape to lock (a stamped store /
+    // accepted catalog) is not current — it is missing — so the gate must fail closed with a
+    // distinct typed code rather than passing green. A developer who forgets to commit, or
+    // deletes, `marrow.lock` must not get a false green in CI.
+    let root = native_books_project("check-ro-locked-missing", REQUIRED_BASELINE_SOURCE);
+    commit_catalog(&root);
+    assert!(
+        store_path(&root).exists(),
+        "commit established the durable store shape"
+    );
+    fs::remove_file(lock_path(&root)).expect("remove committed lock");
+
+    let strict = marrow(&["check", "--locked", root.to_str().unwrap()]);
+    assert_eq!(
+        strict.status.code(),
+        Some(1),
+        "--locked over a durable store with no committed lock is fatal: {strict:?}"
+    );
+    assert!(
+        String::from_utf8(strict.stderr)
+            .expect("stderr utf8")
+            .contains("check.lock_missing"),
+        "the missing committed lock surfaces the distinct typed code"
+    );
+    assert!(
+        !lock_path(&root).exists(),
+        "a fatal --locked check does not reconstruct the missing lock"
+    );
+}
+
+#[test]
+fn check_locked_passes_a_legitimate_first_run_with_no_durable_shape() {
+    // The carve-out: a legitimate first run has no durable shape to lock yet — no stamped store,
+    // no accepted catalog — so an absent lock is the expected first-run state, not a missing
+    // commit. `--locked` stays clean and exits 0, and the advisory mode is silent on absence too.
+    let project = temp_project_uncommitted("check-ro-locked-firstrun", |root| {
+        write(root, "marrow.json", native_config());
+        write(root, "src/app.mw", counter_source());
+    });
+    let dir = project.to_str().expect("project path utf-8");
+    assert!(!lock_path(&project).exists(), "no lock on a first run");
+    assert!(!store_path(&project).exists(), "no store on a first run");
+
+    let strict = marrow(&["check", "--locked", dir]);
+    assert_eq!(
+        strict.status.code(),
+        Some(0),
+        "--locked is clean on a first run with no durable shape to lock: {strict:?}"
+    );
+    assert!(
+        !String::from_utf8(strict.stderr)
+            .expect("stderr utf8")
+            .contains("check.lock_missing"),
+        "absence is silent when there is no durable shape to lock"
+    );
+}
+
+#[test]
+fn check_locked_still_fails_on_a_present_stale_lock() {
+    // The missing-lock fix does not weaken the stale-lock gate: a present-but-stale committed lock
+    // over a durable store is still fatal under `--locked`, reported as `check.stale_lock`, not as
+    // a missing lock.
+    let root = native_books_project("check-ro-locked-stale-distinct", REQUIRED_BASELINE_SOURCE);
+    let accepted = commit_catalog(&root);
+    let accepted_place = root_place(&accepted, "books").expect("books root place");
+    {
+        let store = open_native_store(&root);
+        seed_title_only(&store, &accepted_place, 1, "Dune");
+    }
+    write(&root, "src/books.mw", OPTIONAL_PAGES_DEFAULT_INDEX_SOURCE);
+
+    let strict = marrow(&["check", "--locked", root.to_str().unwrap()]);
+    assert_eq!(
+        strict.status.code(),
+        Some(1),
+        "--locked over a present stale lock is fatal: {strict:?}"
+    );
+    let stderr = String::from_utf8(strict.stderr).expect("stderr utf8");
+    assert!(
+        stderr.contains("check.stale_lock"),
+        "a present stale lock is reported as stale, not missing: {stderr}"
+    );
+    assert!(
+        !stderr.contains("check.lock_missing"),
+        "a present lock is never a missing-lock condition: {stderr}"
+    );
+}
+
+#[test]
 fn evolve_apply_advances_the_committed_lock_and_store() -> Result<(), Box<dyn std::error::Error>> {
     // The contrast for the committed case: `evolve apply` is the durable write path that
     // a check must not be. It advances the accepted catalog epoch, stamps the store, and

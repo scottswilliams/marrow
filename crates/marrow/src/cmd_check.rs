@@ -35,7 +35,7 @@ Usage:
   marrow check [--format text|json|jsonl] [--locked] <projectdir>
 
 Check a project directory containing marrow.json and report diagnostics.
-With --locked, a stale marrow.lock is a fatal error for CI rather than an advisory.
+With --locked, a stale or missing marrow.lock is a fatal error for CI rather than an advisory.
 "
                 );
                 return ExitCode::SUCCESS;
@@ -77,6 +77,17 @@ enum LockStrictness {
 /// next write path is the ordinary case, so a stale lock does not block a clean check; a later
 /// `run` or `evolve apply` re-projects the lock to converge it.
 const CHECK_STALE_LOCK: &str = "check.stale_lock";
+
+/// `--locked` over a project that has durable shape to lock — a stamped store / accepted catalog —
+/// but no committed `marrow.lock` at all. The gate's contract is that the committed lock is current;
+/// an absent lock over durable shape is not current, it is missing, and a CI gate that passed it
+/// would give a false green to a developer who forgot to commit or deleted the lock. The advisory
+/// (non-`--locked`) mode stays silent on absence so a legitimate first run, which has no durable
+/// shape to lock yet, checks cleanly.
+const CHECK_LOCK_MISSING: &str = "check.lock_missing";
+
+const MISSING_LOCK_MESSAGE: &str =
+    "marrow.lock is absent but the store carries durable shape; commit the projected lock";
 
 /// Check a whole project: load `<dir>/marrow.json`, then run the project
 /// checker over its source roots and configured test files. The committed lock binds first-run
@@ -125,6 +136,20 @@ fn check_project_dir(dir: &str, format: CheckFormat, locked: bool) -> ExitCode {
         crate::report_project(dir, &snapshot.report, format);
         return ExitCode::FAILURE;
     }
+
+    // A `--locked` gate over a project that has durable shape to lock but no committed lock at all
+    // is a distinct fatal condition: the committed lock is missing, not merely stale. The advisory
+    // mode stays silent on absence, so a legitimate first run (no accepted authority yet) is clean.
+    if strictness == LockStrictness::Fatal && lock.is_none() && accepted.is_some() {
+        crate::report_project_failed_with_diagnostic(
+            dir,
+            &snapshot.report,
+            missing_lock_diagnostic(),
+            format,
+        );
+        return ExitCode::FAILURE;
+    }
+
     let stale = lock
         .as_ref()
         .is_some_and(|lock| lock.source_digest != snapshot.program.source_digest());
@@ -169,6 +194,19 @@ fn stale_lock_diagnostic() -> serde_json::Value {
         "code": CHECK_STALE_LOCK,
         "kind": marrow_syntax::kind_for_code(CHECK_STALE_LOCK),
         "message": STALE_LOCK_MESSAGE,
+        "severity": "error",
+        "source_span": null,
+    })
+}
+
+/// The missing-lock condition as a structured diagnostic for the failed-check envelope. Like the
+/// stale-lock diagnostic it carries no source span: it reports that the whole committed projection
+/// is absent rather than faulting at a single declaration.
+fn missing_lock_diagnostic() -> serde_json::Value {
+    serde_json::json!({
+        "code": CHECK_LOCK_MISSING,
+        "kind": marrow_syntax::kind_for_code(CHECK_LOCK_MISSING),
+        "message": MISSING_LOCK_MESSAGE,
         "severity": "error",
         "source_span": null,
     })

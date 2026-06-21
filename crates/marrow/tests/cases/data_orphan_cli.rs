@@ -147,6 +147,67 @@ fn data_integrity_reports_a_dropped_member_orphan() {
 }
 
 #[test]
+fn data_stats_warns_when_a_drifted_source_hides_orphan_cells() {
+    // `marrow data stats` renders the store through the current source-derived schema view, so a
+    // cell under a member current source no longer declares is not counted. Counting it silently
+    // would under-report intact data with no signal, so stats emits the same orphan advisory
+    // `data integrity` reports — a count of cells under undeclared members — on stderr while still
+    // exiting 0, because the data is physically intact and stats is a read-only inspection.
+    let (root, _place, _subtitle_id) = project_with_orphaned_subtitle("orphan-stats-advisory");
+
+    let output = marrow(&["data", "stats", root.to_str().expect("project path utf-8")]);
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+    assert!(
+        stderr.contains("data.orphan"),
+        "stats surfaces the hidden orphan cell as an advisory: {stderr}"
+    );
+    assert!(
+        stderr.contains('1'),
+        "the advisory names the count of hidden cells: {stderr}"
+    );
+}
+
+#[test]
+fn data_dump_warns_when_a_drifted_source_hides_orphan_cells() {
+    // `marrow data dump` walks only the source-declared places, so a dropped member's cell is
+    // omitted from the dump. The same orphan advisory keeps the reduced output from being silent.
+    let (root, _place, _subtitle_id) = project_with_orphaned_subtitle("orphan-dump-advisory");
+
+    let output = marrow(&["data", "dump", root.to_str().expect("project path utf-8")]);
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+    assert!(
+        stderr.contains("data.orphan"),
+        "dump surfaces the hidden orphan cell as an advisory: {stderr}"
+    );
+}
+
+#[test]
+fn data_stats_is_silent_when_no_orphan_cells_exist() {
+    // The advisory fires only when source has drifted over intact data. A project whose source
+    // still declares every stored member has nothing hidden, so stats stays clean on stderr.
+    let root = native_books_project("orphan-stats-clean", RETIRE_BASELINE_SOURCE);
+    let program = commit_catalog(&root);
+    let place = root_place(&program, "books").expect("books root place");
+    {
+        let store = open_native_store(&root);
+        seed_title_only(&store, &place, 1, "Dune");
+    }
+
+    let output = marrow(&["data", "stats", root.to_str().expect("project path utf-8")]);
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+    assert!(
+        !stderr.contains("data.orphan"),
+        "no orphan advisory when source declares every stored member: {stderr}"
+    );
+}
+
+#[test]
 fn evolve_preview_fences_a_populated_bare_drop() {
     // A bare member drop with no retire intent whose cells are populated would orphan that
     // data on a bare activation, so the source-attached preview fails closed and

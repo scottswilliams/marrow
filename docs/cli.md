@@ -146,12 +146,15 @@ Check a project directory containing `marrow.json` and report diagnostics.
   falling back to the committed `marrow.lock` projection otherwise; the read is
   read-only, so check never opens the store for repair, creates one, or writes
   the source tree. With `--locked`, a `marrow.lock` whose recorded source shape is
-  behind the current source is a fatal `check.stale_lock` error for CI; the
-  structured envelope reports `status: "failed"` with the `check.stale_lock`
-  diagnostic and omits the success-only sections, so the envelope agrees with the
-  exit code. By default a stale lock is a non-fatal advisory on stderr — the
-  envelope stays `status: "ok"` — since a later `run` or `evolve apply`
-  regenerates the lock.
+  behind the current source is a fatal `check.stale_lock` error for CI, and an
+  entirely absent `marrow.lock` over a project that has durable shape to lock (a
+  stamped store / accepted catalog) is a fatal `check.lock_missing` error so a
+  forgotten or deleted lock cannot pass the gate; the structured envelope reports
+  `status: "failed"` with the diagnostic and omits the success-only sections, so
+  the envelope agrees with the exit code. By default a stale lock is a non-fatal
+  advisory on stderr — the envelope stays `status: "ok"` — since a later `run` or
+  `evolve apply` regenerates the lock; an absent lock on a legitimate first run,
+  which has no durable shape to lock yet, raises no condition under `--locked`.
 - Passing a bare `.mw` file is a usage error. Run `marrow check` on the project
   directory that contains `marrow.json`.
 - When `marrow.json` sets `run.defaultEntry`, the check verifies it names a

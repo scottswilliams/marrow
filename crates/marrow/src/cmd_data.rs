@@ -5,7 +5,7 @@ use std::process::ExitCode;
 
 use marrow_check::CheckedProgram;
 use marrow_check::tooling::{
-    StampedData, count_data_records, data_roots_in_store, render_data_value,
+    StampedData, count_data_records, count_orphan_cells, data_roots_in_store, render_data_value,
     stamped_data_roots_in_store, visit_data_records,
 };
 use marrow_store::StoreError;
@@ -210,6 +210,28 @@ fn load_data_read_target(
         program,
         store,
     })
+}
+
+/// The `data.orphan` code shared with `data integrity`. `data stats` and `data dump` render the
+/// store through the current source-derived schema view, so cells under members the new source no
+/// longer declares are not traversed. Surfacing this advisory keeps the reduced output from being
+/// silent without changing the exit status: the data is physically intact, and the count of hidden
+/// cells points the developer at `data integrity` for the full picture.
+const DATA_ORPHAN_CODE: &str = "data.orphan";
+
+/// When a drifted source is bound over a store, warn on stderr that the source-driven inspection
+/// could not see the cells under undeclared members. Counting them silently would under-report
+/// intact data; the exit status stays unchanged because the cells are durable and the inspection
+/// is read-only. A store the schema fully declares has no orphans and stays silent.
+fn warn_on_hidden_orphans(program: &CheckedProgram, store: &Option<TreeStore>) {
+    let Some(store) = store else {
+        return;
+    };
+    if let Ok(orphans @ 1..) = count_orphan_cells(store, program) {
+        eprintln!(
+            "{DATA_ORPHAN_CODE}: {orphans} stored cell(s) under members the current source no longer declares are hidden from this view; run `marrow data integrity` to see them"
+        );
+    }
 }
 
 fn report_store_error(error: StoreError, format: CheckFormat) -> ExitCode {
@@ -476,6 +498,7 @@ fn data_stats(args: &[String]) -> ExitCode {
         }
         None => (0, 0, 0),
     };
+    warn_on_hidden_orphans(&program, &store);
     match format {
         CheckFormat::Text => {
             println!("roots: {roots}");
@@ -517,6 +540,7 @@ fn data_dump(args: &[String]) -> ExitCode {
         },
         None => 0,
     };
+    warn_on_hidden_orphans(&program, &store);
     let result = match format {
         CheckFormat::Text => render_dump_text(&program, &store, records).map_err(Into::into),
         CheckFormat::Json => render_dump_json(&dir, &program, &store),
