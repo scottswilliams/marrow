@@ -34,7 +34,7 @@ The runtime never re-resolves names or re-parses op strings: the checker stamps 
 
 ## Read next
 
-- `project_session.rs` — `ProjectSession::open` / `ProjectSession::execution_boundary` / `ProjectSession::invoke` / `ProjectSurfaceReadSession::open` / `ProjectSurfaceSession::open`: the project admission, execution, invocation, and surface boundaries.
+- `project_session.rs` — `ProjectSession::open` / `ProjectSession::execution_boundary` / `ProjectSession::invoke` / `ProjectSurfaceReadSession::open` / `ProjectSurfaceReadSession::data_view_boundary` / `ProjectSurfaceSession::open`: the project admission, execution, invocation, data-view, and surface boundaries.
 - `entry.rs` — `run_entry` / `CheckedEntryCall::new`: how one admitted entry starts.
 - `activation.rs` — `invoke`: the body-execution kernel and `Completion` classification.
 - `call.rs` — `eval_call`: the central dispatcher every call routes through.

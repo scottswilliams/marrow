@@ -7,7 +7,7 @@ use marrow_check::evolution::preview;
 use marrow_check::tooling;
 use marrow_check::{
     AnalysisGeneration, AnalysisIdentity, AnalysisSnapshot, CheckReport, CheckedProgram,
-    CheckedRuntimeProgram, CheckedSavedPlace, ProjectConfig,
+    CheckedRuntimeProgram, CheckedSavedPlace, ProjectConfig, StoreBackend,
 };
 use marrow_store::StoreError;
 use marrow_store::cell::CatalogId;
@@ -29,6 +29,8 @@ use crate::surface::{
     SurfaceReadError, SurfaceReadOperation, SurfaceUpdate,
 };
 use crate::value::{RunOutput, RunOutputSink};
+
+const COMMITTED_CATALOG_LOCK_FILE: &str = "marrow.lock";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProjectMode {
@@ -126,6 +128,7 @@ pub struct ProjectSession {
 pub struct ProjectSurfaceReadSession {
     root: PathBuf,
     program: CheckedProgram,
+    data_view_boundary: DataViewBoundary,
     store_path: PathBuf,
     store: TreeStore,
 }
@@ -417,6 +420,32 @@ pub struct StoreStamp {
     pub store_uid: String,
     pub catalog_epoch: u64,
     pub commit_id: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DataViewBoundary {
+    pub source_analysis_generation: AnalysisGeneration,
+    pub store_snapshot: tooling::DataSnapshotStamp,
+    pub watch_targets: Vec<DataViewWatchTarget>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DataViewUnavailableReason {
+    MemoryStore,
+    NativeStoreUnavailable,
+    NativeStoreMissing,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DataViewWatchTarget {
+    pub kind: DataViewWatchTargetKind,
+    pub path: PathBuf,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DataViewWatchTargetKind {
+    StoreFile,
+    CatalogLock,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -740,11 +769,25 @@ fn proposal_context(program: &CheckedProgram) -> (u64, Option<&str>) {
 impl ProjectSurfaceReadSession {
     pub fn open(root: impl AsRef<Path>) -> Result<Self, ProjectSessionError> {
         let root = root.as_ref().to_path_buf();
-        let (config, program) = load_checked_for_surface_session(&root)?;
-        let opened = open_surface_session(root, config, program, SurfaceStoreAccess::ReadOnly)?;
+        let (config, snapshot) = load_checked_for_surface_session(&root)?;
+        let source_analysis_generation = snapshot.generation();
+        let opened = open_surface_session(
+            root,
+            &config,
+            snapshot.program,
+            SurfaceStoreAccess::ReadOnly,
+        )?;
+        let data_view_boundary = data_view_boundary_for_opened_session(
+            &opened.root,
+            &config,
+            &opened.program,
+            &opened.store,
+            source_analysis_generation,
+        )?;
         Ok(Self {
             root: opened.root,
             program: opened.program,
+            data_view_boundary,
             store_path: opened.store_path,
             store: opened.store,
         })
@@ -756,6 +799,10 @@ impl ProjectSurfaceReadSession {
 
     pub fn admits_checked_program(&self, program: &CheckedProgram) -> bool {
         surface_session_admits_checked_program(&self.program, program)
+    }
+
+    pub fn data_view_boundary(&self) -> &DataViewBoundary {
+        &self.data_view_boundary
     }
 
     pub fn store_stamp(&self) -> Result<StoreStamp, ProjectSessionError> {
@@ -825,8 +872,9 @@ impl ProjectSurfaceReadSession {
 impl ProjectSurfaceSession {
     pub fn open(root: impl AsRef<Path>) -> Result<Self, ProjectSessionError> {
         let root = root.as_ref().to_path_buf();
-        let (config, program) = load_checked_for_surface_session(&root)?;
-        let opened = open_surface_session(root, config, program, SurfaceStoreAccess::Write)?;
+        let (config, snapshot) = load_checked_for_surface_session(&root)?;
+        let opened =
+            open_surface_session(root, &config, snapshot.program, SurfaceStoreAccess::Write)?;
         Ok(Self {
             root: opened.root,
             program: opened.program,
@@ -1075,11 +1123,11 @@ enum SurfaceStoreAccess {
 
 fn open_surface_session(
     root: PathBuf,
-    config: ProjectConfig,
+    config: &ProjectConfig,
     program: CheckedProgram,
     access: SurfaceStoreAccess,
 ) -> Result<OpenSurfaceSession, ProjectSessionError> {
-    let store = open_existing_surface_store(&root, &config, access)?;
+    let store = open_existing_surface_store(&root, config, access)?;
     if populated_unstamped_store(&program, &store.store)? {
         return Err(ProjectSessionError::UnstampedStore);
     }
@@ -1111,6 +1159,62 @@ fn open_surface_session(
         store_path: store.path,
         store: store.store,
     })
+}
+
+pub fn data_view_watch_targets(
+    root: impl AsRef<Path>,
+    config: &ProjectConfig,
+) -> Result<Vec<DataViewWatchTarget>, ProjectSessionError> {
+    data_view_watch_targets_for_config(root.as_ref(), config)
+}
+
+pub fn data_view_unavailable_reason_for_config(
+    root: impl AsRef<Path>,
+    config: &ProjectConfig,
+) -> Result<Option<DataViewUnavailableReason>, ProjectSessionError> {
+    if matches!(config.store.backend, StoreBackend::Memory) {
+        return Ok(Some(DataViewUnavailableReason::MemoryStore));
+    }
+    let Some(store_path) = marrow_check::native_store_path(root.as_ref(), config)? else {
+        return Ok(Some(DataViewUnavailableReason::NativeStoreUnavailable));
+    };
+    if !store_path.exists() {
+        return Ok(Some(DataViewUnavailableReason::NativeStoreMissing));
+    }
+    Ok(None)
+}
+
+fn data_view_boundary_for_opened_session(
+    root: &Path,
+    config: &ProjectConfig,
+    program: &CheckedProgram,
+    store: &TreeStore,
+    source_analysis_generation: AnalysisGeneration,
+) -> Result<DataViewBoundary, ProjectSessionError> {
+    Ok(DataViewBoundary {
+        source_analysis_generation,
+        store_snapshot: tooling::data_snapshot_stamp(program, store)?,
+        watch_targets: data_view_watch_targets_for_config(root, config)?,
+    })
+}
+
+fn data_view_watch_targets_for_config(
+    root: &Path,
+    config: &ProjectConfig,
+) -> Result<Vec<DataViewWatchTarget>, ProjectSessionError> {
+    let Some(store_path) = marrow_check::native_store_path(root, config)? else {
+        return Ok(Vec::new());
+    };
+    Ok(vec![
+        DataViewWatchTarget {
+            kind: DataViewWatchTargetKind::StoreFile,
+            path: store_path,
+        },
+        DataViewWatchTarget {
+            kind: DataViewWatchTargetKind::CatalogLock,
+            path: root.join(COMMITTED_CATALOG_LOCK_FILE),
+        },
+    ])
 }
 
 fn open_existing_surface_store(
@@ -1505,16 +1609,20 @@ fn accepted_catalog_for_admission(
 
 fn load_checked_for_surface_session(
     root: &Path,
-) -> Result<(ProjectConfig, CheckedProgram), ProjectSessionError> {
+) -> Result<(ProjectConfig, AnalysisSnapshot), ProjectSessionError> {
     let config = marrow_check::load_config(root)?;
     let accepted = {
         let store = open_store_for_inspection(root, &config)?;
         marrow_check::read_accepted_catalog_with_store_read_only(root, store.as_ref())?
     };
     let lock = lock_for_adoption(root, accepted.as_ref())?;
-    let program =
-        marrow_check::check_project_against(root, &config, accepted.as_ref(), lock.as_ref())?;
-    Ok((config, program))
+    let snapshot = marrow_check::check_source_project_analysis_against(
+        root,
+        &config,
+        accepted.as_ref(),
+        lock.as_ref(),
+    )?;
+    Ok((config, snapshot))
 }
 
 /// The committed lock to drive first-run adoption, read only when no accepted store snapshot is

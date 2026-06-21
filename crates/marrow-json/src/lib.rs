@@ -29,6 +29,7 @@ pub use run::{
     entry_run_facts_to_json, execution_boundary_to_json, run_error_to_json, run_output_to_json,
     run_session_error_to_json,
 };
+pub use saved_data::data_view_boundary_to_json;
 
 const LOWER_HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
 const ENTRY_RETURN_JSON_NODE_CAP: usize = 256;
@@ -314,8 +315,8 @@ pub(crate) fn lower_hex(bytes: &[u8]) -> String {
 mod tests {
     use super::{
         DATA_GENERATION_PROFILE_VERSION, DataGenerationJson, data_generation_stamp_to_json,
-        entry_run_facts_to_json, execution_boundary_to_json, run_error_to_json, run_output_to_json,
-        run_session_error_to_json, saved_key_to_json,
+        data_view_boundary_to_json, entry_run_facts_to_json, execution_boundary_to_json,
+        run_error_to_json, run_output_to_json, run_session_error_to_json, saved_key_to_json,
     };
     use std::fs;
     use std::num::NonZeroUsize;
@@ -324,8 +325,8 @@ mod tests {
 
     use marrow_check::tooling::{DataCommitStamp, DataSnapshotStamp, DataTransactionStamp};
     use marrow_run::{
-        Host, ProjectInvokeError, ProjectOpen, ProjectSession, ProjectSessionError, RunOutput,
-        RuntimeError, Sequence, SessionEntry, Value,
+        Host, ProjectInvokeError, ProjectOpen, ProjectSession, ProjectSessionError,
+        ProjectSurfaceReadSession, RunOutput, RuntimeError, Sequence, SessionEntry, Value,
     };
     use marrow_store::Decimal;
     use marrow_store::key::SavedKey;
@@ -904,6 +905,59 @@ mod tests {
             boundary["store"]["stamp"]["commit_id"]
                 .as_u64()
                 .is_some_and(|commit| commit > 0),
+            "{rendered}"
+        );
+        fs::remove_dir_all(&root).expect("remove temp project");
+    }
+
+    #[test]
+    fn data_view_boundary_json_projects_admitted_surface_read_session() {
+        let root = temp_project(
+            "data-view-boundary-json",
+            "module m\n\
+            resource Book\n    \
+            required title: string\n\
+            store ^books(id: int): Book\n\
+            pub fn seed()\n    \
+            transaction\n        \
+            ^books(1).title = \"Dune\"\n",
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".data" } }"#,
+        );
+        let seed = ProjectSession::open(&root, ProjectOpen::run().with_entry_override("m::seed"))
+            .expect("seed session opens");
+        let mut output = String::new();
+        seed.invoke(SessionEntry::new("m::seed", &Host::new(), &mut output))
+            .expect("seed native store");
+        drop(seed);
+
+        let session = ProjectSurfaceReadSession::open(&root).expect("surface read session opens");
+        let rendered = dto_json(data_view_boundary_to_json(&session));
+
+        assert_eq!(
+            rendered["sourceAnalysisGeneration"]["profileVersion"], "analysis.generation.v1",
+            "{rendered}"
+        );
+        assert_eq!(
+            rendered["storeSnapshot"]["profile_version"], DATA_GENERATION_PROFILE_VERSION,
+            "{rendered}"
+        );
+        assert_eq!(
+            rendered["compatibility"],
+            json!({ "verdict": "admitted" }),
+            "{rendered}"
+        );
+        assert_eq!(
+            rendered["watchTargets"],
+            json!([
+                {
+                    "kind": "store_file",
+                    "path": root.join(".data").join("marrow.redb").to_string_lossy()
+                },
+                {
+                    "kind": "catalog_lock",
+                    "path": root.join("marrow.lock").to_string_lossy()
+                }
+            ]),
             "{rendered}"
         );
         fs::remove_dir_all(&root).expect("remove temp project");

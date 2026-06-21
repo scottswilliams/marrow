@@ -95,10 +95,12 @@ pub use marrow_check::{
     EntryEnumMember, EntryIdentity, EntryIdentityKey, EntryParameter,
 };
 pub use project_session::{
+    DataViewBoundary, DataViewUnavailableReason, DataViewWatchTarget, DataViewWatchTargetKind,
     ExecutionBoundary, ExecutionBoundaryStoreKind, ExecutionSessionKind, ExecutionStoreBoundary,
     ProjectInvokeError, ProjectMode, ProjectOpen, ProjectSession, ProjectSessionError,
     ProjectSessionNotice, ProjectSurfaceReadSession, ProjectSurfaceSession, ProjectTestCase,
-    SessionEntry, SourceAnalysisAdmission, StoreStamp,
+    SessionEntry, SourceAnalysisAdmission, StoreStamp, data_view_unavailable_reason_for_config,
+    data_view_watch_targets,
 };
 pub use surface::{
     SURFACE_ABI_MISMATCH, SURFACE_ABSENT, SURFACE_ACTION, SURFACE_COMPUTED, SURFACE_CONFLICT,

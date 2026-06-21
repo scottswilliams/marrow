@@ -3,11 +3,15 @@ use marrow_check::tooling::{
     DataChildView, DataChildViewsPage, DataPathError, DataPresence, DataPreviewReadResult,
     MemberFlavor, SavedDataPathSegment, StampedData,
 };
+use marrow_run::{
+    DataViewBoundary, DataViewWatchTarget, DataViewWatchTargetKind, ProjectSurfaceReadSession,
+};
 use marrow_store::StoreError;
 use marrow_store::key::SavedKey;
 use serde::{Deserialize, Serialize};
 
 use crate::DataGenerationJson;
+use crate::run::EntryRunAnalysisJson;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -56,6 +60,8 @@ pub struct DataChildViewsPageJson {
     pub truncated: bool,
     pub cursor: Option<DataKeyJson>,
     pub store_snapshot: Option<DataGenerationJson>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data_view_boundary: Option<DataViewBoundaryJson>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -65,6 +71,30 @@ pub struct DataReadResultJson {
     pub value: Option<String>,
     pub value_truncated: bool,
     pub store_snapshot: Option<DataGenerationJson>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data_view_boundary: Option<DataViewBoundaryJson>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DataViewBoundaryJson {
+    #[serde(rename = "sourceAnalysisGeneration")]
+    pub source_analysis_generation: EntryRunAnalysisJson,
+    #[serde(rename = "storeSnapshot")]
+    pub store_snapshot: DataGenerationJson,
+    pub compatibility: DataViewAdmissionJson,
+    #[serde(rename = "watchTargets")]
+    pub watch_targets: Vec<DataViewWatchTargetJson>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DataViewAdmissionJson {
+    pub verdict: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DataViewWatchTargetJson {
+    pub kind: &'static str,
+    pub path: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -254,6 +284,10 @@ impl From<DataChildView> for DataChildViewJson {
     }
 }
 
+pub fn data_view_boundary_to_json(session: &ProjectSurfaceReadSession) -> DataViewBoundaryJson {
+    DataViewBoundaryJson::from(session.data_view_boundary())
+}
+
 impl From<StampedData<DataChildViewsPage>> for DataChildViewsPageJson {
     fn from(stamped: StampedData<DataChildViewsPage>) -> Self {
         let page = stamped.data;
@@ -266,7 +300,15 @@ impl From<StampedData<DataChildViewsPage>> for DataChildViewsPageJson {
             truncated: page.truncated,
             cursor: page.cursor.map(DataKeyJson::from),
             store_snapshot: Some(DataGenerationJson::from(&stamped.stamp)),
+            data_view_boundary: None,
         }
+    }
+}
+
+impl DataChildViewsPageJson {
+    pub fn with_data_view_boundary(mut self, boundary: &DataViewBoundary) -> Self {
+        self.data_view_boundary = Some(DataViewBoundaryJson::from(boundary));
+        self
     }
 }
 
@@ -282,6 +324,51 @@ impl From<StampedData<DataPreviewReadResult>> for DataReadResultJson {
             value,
             value_truncated,
             store_snapshot: Some(DataGenerationJson::from(&stamped.stamp)),
+            data_view_boundary: None,
+        }
+    }
+}
+
+impl DataReadResultJson {
+    pub fn with_data_view_boundary(mut self, boundary: &DataViewBoundary) -> Self {
+        self.data_view_boundary = Some(DataViewBoundaryJson::from(boundary));
+        self
+    }
+}
+
+impl From<&DataViewBoundary> for DataViewBoundaryJson {
+    fn from(boundary: &DataViewBoundary) -> Self {
+        Self {
+            source_analysis_generation: EntryRunAnalysisJson::from(
+                boundary.source_analysis_generation.clone(),
+            ),
+            store_snapshot: DataGenerationJson::from(&boundary.store_snapshot),
+            compatibility: DataViewAdmissionJson::admitted(),
+            watch_targets: boundary
+                .watch_targets
+                .iter()
+                .map(DataViewWatchTargetJson::from)
+                .collect(),
+        }
+    }
+}
+
+impl DataViewAdmissionJson {
+    fn admitted() -> Self {
+        Self {
+            verdict: "admitted",
+        }
+    }
+}
+
+impl From<&DataViewWatchTarget> for DataViewWatchTargetJson {
+    fn from(target: &DataViewWatchTarget) -> Self {
+        Self {
+            kind: match target.kind {
+                DataViewWatchTargetKind::StoreFile => "store_file",
+                DataViewWatchTargetKind::CatalogLock => "catalog_lock",
+            },
+            path: target.path.to_string_lossy().into_owned(),
         }
     }
 }
@@ -569,6 +656,7 @@ mod tests {
                 },
             })
         );
+        assert_eq!(children.data_view_boundary, None);
 
         let read = DataReadResultJson::from(StampedData {
             data: DataPreviewReadResult {
@@ -596,5 +684,6 @@ mod tests {
                 },
             })
         );
+        assert_eq!(read.data_view_boundary, None);
     }
 }

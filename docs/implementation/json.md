@@ -178,6 +178,8 @@ cursor error path.
   run-fact DTOs.
 - `crates/marrow-json/src/lib.rs` — `saved_key_to_json`,
   `data_generation_stamp_to_json`, `DataGenerationJson`, and `DataCommitJson`.
+- `crates/marrow-json/src/saved_data.rs` — saved-data request/result DTOs and
+  `data_view_boundary` rendering for admitted read-only project data views.
 - `crates/marrow-json/src/surface.rs` and `crates/marrow-json/src/surface/` —
   surface ABI descriptor DTOs, operation catalog and route binding validation,
   surface read and computed-read result DTOs, checked surface read/computed-read

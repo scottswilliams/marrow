@@ -226,15 +226,19 @@ fn run_server(
 }
 
 enum SurfaceServeSession {
-    ReadOnly(ProjectSurfaceReadSession),
-    Write(ProjectSurfaceSession),
+    ReadOnly(Box<ProjectSurfaceReadSession>),
+    Write(Box<ProjectSurfaceSession>),
 }
 
 impl SurfaceServeSession {
     fn open(root: impl AsRef<Path>, mode: ServeMode) -> Result<Self, ProjectSessionError> {
         match mode {
-            ServeMode::ReadOnly => ProjectSurfaceReadSession::open(root).map(Self::ReadOnly),
-            ServeMode::Write => ProjectSurfaceSession::open(root).map(Self::Write),
+            ServeMode::ReadOnly => ProjectSurfaceReadSession::open(root)
+                .map(Box::new)
+                .map(Self::ReadOnly),
+            ServeMode::Write => ProjectSurfaceSession::open(root)
+                .map(Box::new)
+                .map(Self::Write),
         }
     }
 

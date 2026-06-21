@@ -9,11 +9,12 @@ use marrow_check::{
 };
 use marrow_run::evolution::{Approval, apply};
 use marrow_run::{
-    EntryArgument, EntryArgumentValue, EntryDescriptor, EntryInvocation, EntryScalarArgument,
-    ExecutionBoundaryStoreKind, ExecutionSessionKind, Host, ProjectMode, ProjectOpen,
-    ProjectSession, ProjectSurfaceReadSession, ProjectSurfaceSession, RUN_ENTRY_ARGUMENT,
-    SURFACE_ABI_MISMATCH, SessionEntry, SurfaceCollectionPageRequest, SurfaceReadInput,
-    SurfaceUpdateField, SurfaceValue,
+    DataViewUnavailableReason, DataViewWatchTargetKind, EntryArgument, EntryArgumentValue,
+    EntryDescriptor, EntryInvocation, EntryScalarArgument, ExecutionBoundaryStoreKind,
+    ExecutionSessionKind, Host, ProjectMode, ProjectOpen, ProjectSession,
+    ProjectSurfaceReadSession, ProjectSurfaceSession, RUN_ENTRY_ARGUMENT, SURFACE_ABI_MISMATCH,
+    SessionEntry, SurfaceCollectionPageRequest, SurfaceReadInput, SurfaceUpdateField, SurfaceValue,
+    data_view_unavailable_reason_for_config,
 };
 use marrow_store::cell::CatalogId;
 use marrow_store::key::SavedKey;
@@ -425,6 +426,79 @@ fn surface_read_session_serves_existing_native_store_without_advancing_it() {
         lock_before,
         fs::read(&lock_path).expect("read committed lock after surface read"),
         "surface reads must not rewrite the committed lock"
+    );
+}
+
+#[test]
+fn surface_read_session_boundary_reports_generation_store_and_watch_targets() {
+    let root = TempDir::new("marrow-run-surface-data-view-boundary").expect("create project");
+    write_native_config(root.path());
+    write_temp_source(
+        root.path(),
+        Path::new("src/shelf.mw"),
+        surface_counter_source(),
+    );
+    let seed = ProjectSession::open(
+        root.path(),
+        ProjectOpen::run().with_entry_override("shelf::seed"),
+    )
+    .expect("open seed session");
+    assert_eq!(invoke(&seed, "shelf::seed"), "");
+    drop(seed);
+
+    let session = ProjectSurfaceReadSession::open(root.path()).expect("open surface read session");
+    let boundary = session.data_view_boundary();
+
+    assert_eq!(
+        boundary.source_analysis_generation.checked_source_digest,
+        session.program().source_digest()
+    );
+    assert_eq!(
+        boundary.store_snapshot.checked_source_digest,
+        session.program().source_digest()
+    );
+    assert!(
+        boundary.store_snapshot.store_uid.is_some(),
+        "admitted native data view should carry a store uid"
+    );
+    assert!(
+        boundary.store_snapshot.store_commit.is_some(),
+        "admitted native data view should carry committed store metadata"
+    );
+    assert_eq!(
+        boundary
+            .watch_targets
+            .iter()
+            .map(|target| (target.kind, target.path.clone()))
+            .collect::<Vec<_>>(),
+        vec![
+            (
+                DataViewWatchTargetKind::StoreFile,
+                root.path().join(".data").join("marrow.redb"),
+            ),
+            (DataViewWatchTargetKind::CatalogLock, lock_path(root.path())),
+        ]
+    );
+}
+
+#[test]
+fn data_view_unavailable_reason_follows_project_store_config() {
+    let root = TempDir::new("marrow-run-data-view-unavailable-reason").expect("create project");
+    write_memory_config_with_tests(root.path());
+    let config = marrow_check::load_config(root.path()).expect("load memory config");
+
+    assert_eq!(
+        data_view_unavailable_reason_for_config(root.path(), &config)
+            .expect("classify memory config"),
+        Some(DataViewUnavailableReason::MemoryStore)
+    );
+
+    write_native_config(root.path());
+    let config = marrow_check::load_config(root.path()).expect("load native config");
+    assert_eq!(
+        data_view_unavailable_reason_for_config(root.path(), &config)
+            .expect("classify missing native store"),
+        Some(DataViewUnavailableReason::NativeStoreMissing)
     );
 }
 
