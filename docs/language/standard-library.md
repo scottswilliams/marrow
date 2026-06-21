@@ -221,15 +221,28 @@ std::math::ceiling(value: decimal): int
 std::math::powInt(base: int, exp: int): int
 std::math::modulo(a: int, b: int): int
 std::math::remainder(a: int, b: int): int
+std::math::quotient(a: int, b: int): int
+std::math::divFloor(a: int, b: int): int
 std::math::clampInt(value: int, min: int, max: int): int
 std::math::clampDecimal(value: decimal, min: decimal, max: decimal): decimal
 ```
 
-The `%` operator is remainder. Named functions make negative-number behavior
-explicit in code that needs clarity. Separate integer and decimal names avoid a
-numeric overloading rule in the language. `round` uses half-to-even. `powInt`
-requires a non-negative exponent and raises the existing integer overflow fault
-when the result does not fit in `int`.
+The `%` operator is remainder, and `/` always yields a decimal, so integer
+division is a named helper rather than an operator. `quotient` truncates toward
+zero and pairs with `remainder` (and `%`): for nonzero `b`,
+`a == quotient(a, b) * b + remainder(a, b)`. `divFloor` floors toward minus
+infinity and pairs with `modulo`: `a == divFloor(a, b) * b + modulo(a, b)`. The
+two diverge only on operands of opposite sign that do not divide evenly, where
+`divFloor` rounds one further toward minus infinity (for example
+`quotient(-7, 2)` is `-3` while `divFloor(-7, 2)` is `-4`). Both raise
+`run.divide_by_zero` when `b` is zero and the existing integer overflow fault
+for the lone non-representable result `quotient(-9223372036854775808, -1)`.
+
+Named functions make negative-number behavior explicit in code that needs
+clarity. Separate integer and decimal names avoid a numeric overloading rule in
+the language. `round` uses half-to-even. `powInt` requires a non-negative
+exponent and raises the existing integer overflow fault when the result does not
+fit in `int`.
 
 `roundDecimal(value, scale)` uses half-to-even rounding to the requested
 fractional precision, then returns the canonical decimal value. `scale` must be

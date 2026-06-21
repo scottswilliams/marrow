@@ -41,16 +41,3 @@ std::text::split("", "")      ; empty sequence
 This form returns one piece per Unicode scalar value in `value`. It does not
 add leading or trailing empty boundary elements, and it does not segment by
 grapheme cluster or display column.
-
-## `std::math`
-
-Integer quotient is a named helper, not an operator:
-
-```mw
-std::math::quotient(a: int, b: int): int
-```
-
-`quotient(a, b)` returns the integer quotient paired with
-`std::math::remainder(a, b)`: for nonzero `b`, `a == quotient(a, b) * b +
-remainder(a, b)`. Division by zero raises the same catchable numeric fault as
-other deterministic evaluator numeric failures.

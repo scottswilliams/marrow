@@ -12,7 +12,8 @@ use support_evolve::{
     BRANCH_WORKFLOW_BASELINE_SOURCE, BRANCH_WORKFLOW_EVOLVED_SOURCE, LEAF_RETYPE_BASELINE_SOURCE,
     LEAF_RETYPE_RETIRE_OLD_SOURCE, LEAF_RETYPE_TRANSFORM_SOURCE, ORPHAN_REPAIR_SOURCE,
     ORPHAN_REPAIRED_TARGET_SOURCE, STORE_REKEY_BASELINE_SOURCE, STORE_REKEY_STRING_TARGET_SOURCE,
-    accepted_catalog_entry_id, native_books_project, native_store_path, store_epoch,
+    TRANSFORM_FAULT_BASELINE_SOURCE, TRANSFORM_FAULT_OVERFLOW_SOURCE, accepted_catalog_entry_id,
+    native_books_project, native_store_path, store_epoch,
 };
 
 #[test]
@@ -136,6 +137,39 @@ fn worked_leaf_retype_migrates_then_retires_old_leaf_bytes() {
         read_member_bytes(&root, "books::^books", &[SavedKey::Int(1)], &page_label_id),
         Some(expected_label_bytes),
         "retiring the old leaf does not rewrite the evolved bytes"
+    );
+}
+
+/// A transform body that faults over a real record (here an integer overflow) blocks the
+/// migration. The `evolve.transform_faulted` JSON diagnostic must name the offending
+/// record identity and the underlying runtime fault code, not an opaque empty payload, so
+/// an operator knows which record and which fault to fix.
+#[test]
+fn a_faulting_transform_reports_the_record_and_underlying_fault_code() {
+    let root = native_books_project(
+        "evolve-unhappy-transform-fault",
+        TRANSFORM_FAULT_BASELINE_SOURCE,
+    );
+    let dir = root.to_str().unwrap();
+
+    let seed = marrow(&["run", "--entry", "books::seed", dir]);
+    assert_eq!(seed.status.code(), Some(0), "{seed:?}");
+
+    // The transform multiplies a nine-billion price by 1e12, overflowing `int` for the
+    // seeded record. Apply must fail closed with the enriched diagnostic.
+    write(&root, "src/books.mw", TRANSFORM_FAULT_OVERFLOW_SOURCE);
+    let apply = marrow(&["evolve", "apply", "--format", "json", dir]);
+    assert_eq!(apply.status.code(), Some(1), "{apply:?}");
+
+    let diagnostic = support::json(apply.stdout);
+    assert_eq!(
+        diagnostic["code"], "evolve.transform_faulted",
+        "{diagnostic}"
+    );
+    assert_eq!(diagnostic["data"]["record"], "^books(2)", "{diagnostic}");
+    assert_eq!(
+        diagnostic["data"]["inner_code"], "run.overflow",
+        "{diagnostic}"
     );
 }
 

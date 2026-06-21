@@ -910,8 +910,9 @@ writes before leaving. That includes exit by `return`, `break`, or `continue`.
 If an error escapes the block, saved writes from that transaction roll back,
 including generated index writes. Local variable mutation is ordinary program
 state and is not rewound by a transaction rollback. Rollback-sensitive host
-effects are rejected inside a transaction before they run. The language builtin
-output sink on this page is `print`, which must happen outside the transaction;
+effects are rejected inside a transaction before they run, with the uncatchable
+`run.transaction_host_effect` fault. The language builtin output sink on this
+page is `print`, which must happen outside the transaction;
 the standard-library host sinks `std::log::*`, `std::io::writeText`, and
 `std::io::writeBytes` follow the same rule. Host capability reads, such as
 clock, environment, and filesystem reads, do not change saved state and may run

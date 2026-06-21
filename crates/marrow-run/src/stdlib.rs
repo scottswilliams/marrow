@@ -26,6 +26,6 @@ pub(crate) use index_lookup::{
     read_exact_unique_index_lookup_if_present, read_exact_unique_index_lookup_value,
     read_unique_index_identity, unique_index_lookup,
 };
-pub(crate) use math::{int_modulo, int_remainder};
+pub(crate) use math::{int_div_floor, int_modulo, int_quotient, int_remainder};
 pub(crate) use output::eval_output;
 pub(crate) use temporal::{parse_iso8601_duration_nanos, parse_rfc3339_instant_nanos};

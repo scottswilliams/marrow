@@ -257,6 +257,12 @@ pub const RUN_ENTRY_SURFACE: &str = "run.entry_surface";
 /// not provided to this run.
 pub const RUN_CAPABILITY: &str = "run.capability";
 
+/// A rollback-sensitive host effect (`print`, `std::log::*`, `std::io::write*`)
+/// was attempted inside a transaction. Host effects cannot be rolled back, so the
+/// author must move the effect outside the transaction; this is a structural
+/// program error and stays uncatchable.
+pub const RUN_TRANSACTION_HOST_EFFECT: &str = "run.transaction_host_effect";
+
 /// A `std::assert::*` testing assertion did not hold. `marrow test` reports these
 /// as located test failures.
 pub const RUN_ASSERT: &str = "run.assertion";

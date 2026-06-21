@@ -127,6 +127,8 @@ const TABLE: &[StdOp] = &[
     row("math", "powInt", &[Scalar(Int), Scalar(Int)], scalar(Int), Always, None),
     row("math", "modulo", &[Scalar(Int), Scalar(Int)], scalar(Int), Always, None),
     row("math", "remainder", &[Scalar(Int), Scalar(Int)], scalar(Int), Always, None),
+    row("math", "quotient", &[Scalar(Int), Scalar(Int)], scalar(Int), Always, None),
+    row("math", "divFloor", &[Scalar(Int), Scalar(Int)], scalar(Int), Always, None),
     row("math", "clampInt", &[Scalar(Int), Scalar(Int), Scalar(Int)], scalar(Int), Always, None),
     row("math", "clampDecimal", &[Scalar(Decimal), Scalar(Decimal), Scalar(Decimal)], scalar(Decimal), Always, None),
     row("json", "valid", &[Scalar(Str)], scalar(Bool), Always, None),

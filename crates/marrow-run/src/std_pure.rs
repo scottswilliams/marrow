@@ -13,8 +13,8 @@ use crate::error::{RuntimeError, overflow, std_arity, temporal_overflow, type_er
 use crate::expr::eval_int;
 use crate::stdlib::{
     eval_bytes_arg, eval_date_arg, eval_decimal_arg, eval_duration_arg, eval_instant_arg,
-    eval_string_sequence, eval_text, int_modulo, int_remainder, parse_iso8601_duration_nanos,
-    parse_rfc3339_instant_nanos,
+    eval_string_sequence, eval_text, int_div_floor, int_modulo, int_quotient, int_remainder,
+    parse_iso8601_duration_nanos, parse_rfc3339_instant_nanos,
 };
 use crate::value::{Value, canonical_scalar_text, diagnostic_text_preview, saved_value_to_value};
 
@@ -326,6 +326,8 @@ fn eval_math_std(
         "absInt" => eval_math_abs_int(args, span, env),
         "remainder" => eval_math_remainder(args, span, env),
         "modulo" => eval_math_modulo(args, span, env),
+        "quotient" => eval_math_quotient(args, span, env),
+        "divFloor" => eval_math_div_floor(args, span, env),
         "absDecimal" => eval_math_abs_decimal(args, span, env),
         "floor" => eval_math_floor(args, span, env),
         "minInt" => eval_math_min_int(args, span, env),
@@ -379,6 +381,30 @@ fn eval_math_modulo(
     };
     let modulo = int_modulo(eval_int(&a.value, env)?, eval_int(&b.value, env)?, span)?;
     Ok(Value::Int(modulo))
+}
+
+fn eval_math_quotient(
+    args: &[ExecArg],
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Value, RuntimeError> {
+    let [a, b] = args else {
+        return Err(std_arity("math", "quotient", span));
+    };
+    let quotient = int_quotient(eval_int(&a.value, env)?, eval_int(&b.value, env)?, span)?;
+    Ok(Value::Int(quotient))
+}
+
+fn eval_math_div_floor(
+    args: &[ExecArg],
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Value, RuntimeError> {
+    let [a, b] = args else {
+        return Err(std_arity("math", "divFloor", span));
+    };
+    let quotient = int_div_floor(eval_int(&a.value, env)?, eval_int(&b.value, env)?, span)?;
+    Ok(Value::Int(quotient))
 }
 
 fn eval_math_abs_decimal(

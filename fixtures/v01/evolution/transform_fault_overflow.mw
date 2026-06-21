@@ -1,0 +1,11 @@
+module books
+resource Book
+    required price: int
+    required priceCents: int
+store ^books(id: int): Book
+evolve
+    transform Book.priceCents
+        return old.price * 1000000000000
+pub fn seed()
+    ^books(2).price = 9000000000
+    ^books(2).priceCents = 0

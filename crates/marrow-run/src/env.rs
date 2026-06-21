@@ -11,8 +11,9 @@ use marrow_store::tree::{DataPathSegment, TreeStore};
 use marrow_syntax::SourceSpan;
 
 use crate::error::{
-    Located, RUN_CAPABILITY, RUN_TRAVERSAL, RuntimeError, TRANSACTION_WRITE_BYTE_BUDGET,
-    TRANSACTION_WRITE_STEP_OVERHEAD, raise_fault, transaction_too_large, write_fault,
+    Located, RUN_TRANSACTION_HOST_EFFECT, RUN_TRAVERSAL, RuntimeError,
+    TRANSACTION_WRITE_BYTE_BUDGET, TRANSACTION_WRITE_STEP_OVERHEAD, raise_fault,
+    transaction_too_large, write_fault,
 };
 use crate::host::{Host, StepHook};
 use crate::store::{DataAddress, IndexAddress, LayerAddress, catalog_id};
@@ -358,7 +359,7 @@ impl<'p> Env<'p> {
             return Ok(());
         }
         Err(RuntimeError::fault(
-            RUN_CAPABILITY,
+            RUN_TRANSACTION_HOST_EFFECT,
             format!(
                 "`{effect}` cannot run inside a transaction because host effects cannot be rolled back"
             ),

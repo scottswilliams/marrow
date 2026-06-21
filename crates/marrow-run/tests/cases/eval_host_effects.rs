@@ -5,7 +5,7 @@
 use crate::support;
 use support::*;
 
-use marrow_run::{Host, RUN_CAPABILITY, RunContext, Value};
+use marrow_run::{Host, RUN_CAPABILITY, RUN_TRANSACTION_HOST_EFFECT, RunContext, Value};
 use marrow_store::tree::TreeStore;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -78,7 +78,7 @@ fn irreversible_host_effects_inside_a_transaction_are_rejected_before_the_effect
                 Value::Str(path.to_string_lossy().into_owned())
             ),
         ),
-        RUN_CAPABILITY,
+        RUN_TRANSACTION_HOST_EFFECT,
     );
     assert!(
         !path.exists(),
@@ -93,7 +93,28 @@ fn output_inside_a_transaction_is_rejected_before_the_effect() {
     let store = TreeStore::memory();
     assert_run_error(
         run_entry(&store, checked_entry!(&program, "test::print_in_txn")),
-        RUN_CAPABILITY,
+        RUN_TRANSACTION_HOST_EFFECT,
+    );
+}
+
+#[test]
+fn a_transaction_host_effect_fault_is_uncatchable() {
+    // The fault is a structural program error: the author must move the effect outside
+    // the transaction. A surrounding `try`/`catch` must not bind or swallow it, so it
+    // escapes the entry with its own code rather than being caught as an `Error`.
+    let program = checked_program(
+        "pub fn guarded(): string\n    \
+         try\n        \
+         transaction\n            \
+         print(\"leaked\")\n    \
+         catch err: Error\n        \
+         return err.code\n    \
+         return \"none\"\n",
+    );
+    let store = TreeStore::memory();
+    assert_run_error(
+        run_entry(&store, checked_entry!(&program, "test::guarded")),
+        RUN_TRANSACTION_HOST_EFFECT,
     );
 }
 
@@ -107,7 +128,7 @@ fn log_inside_a_transaction_is_rejected_before_the_effect() {
     let host = Host::new().with_log_sink(Rc::clone(&log));
     assert_run_error(
         run_entry_with_host(&store, &host, checked_entry!(&program, "test::log_in_txn")),
-        RUN_CAPABILITY,
+        RUN_TRANSACTION_HOST_EFFECT,
     );
     assert_eq!(log.borrow().as_str(), "");
 }

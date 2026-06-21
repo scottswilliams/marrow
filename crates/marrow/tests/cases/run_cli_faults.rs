@@ -392,6 +392,43 @@ fn unbounded_recursion_surfaces_a_json_call_depth_payload() {
 }
 
 #[test]
+fn a_host_effect_inside_a_transaction_is_its_own_typed_fault() {
+    // A rollback-sensitive host effect (here `print`) attempted inside a transaction is a
+    // distinct structural fault, `run.transaction_host_effect`, not the missing-capability
+    // `run.capability`. It carries the runtime kind and is located at the offending call.
+    let root = temp_project("run-host-effect-in-txn", |root| {
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".data" }, "run": { "defaultEntry": "app::main" } }"#,
+        );
+        write(
+            root,
+            "src/app.mw",
+            "module app\n\n\
+             resource Counter\n    required value: int\n\
+             store ^counter(id: int): Counter\n\n\
+             pub fn main()\n    \
+             var c: Counter\n    c.value = 1\n    \
+             transaction\n        ^counter(1) = c\n        print(\"leaked\")\n",
+        );
+    });
+    let output = marrow_sub("run", &["--format", "json", root.to_str().unwrap()]);
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let records = support::json_records_in_stderr(output.stderr);
+    let fault = records.last().expect("json fault");
+    assert_eq!(fault["code"], "run.transaction_host_effect", "{fault}");
+    assert_eq!(fault["kind"], "runtime", "{fault}");
+    assert!(
+        fault["source_span"]["file"]
+            .as_str()
+            .is_some_and(|file| file.ends_with("src/app.mw")),
+        "{fault}"
+    );
+}
+
+#[test]
 fn recursion_within_the_limit_runs_normally() {
     // A recursion that stays inside the 256-frame limit runs to completion and
     // prints its result, so the bound rejects only runaway recursion.

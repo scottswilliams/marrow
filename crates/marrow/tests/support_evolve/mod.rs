@@ -278,6 +278,14 @@ pub(crate) const LEAF_RETYPE_RETIRE_OLD_SOURCE: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../fixtures/v01/evolution/leaf_retype_retire_old.mw"
 ));
+pub(crate) const TRANSFORM_FAULT_BASELINE_SOURCE: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/v01/evolution/transform_fault_baseline.mw"
+));
+pub(crate) const TRANSFORM_FAULT_OVERFLOW_SOURCE: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/v01/evolution/transform_fault_overflow.mw"
+));
 pub(crate) const STORE_REKEY_BASELINE_SOURCE: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../fixtures/v01/evolution/store_rekey_baseline.mw"

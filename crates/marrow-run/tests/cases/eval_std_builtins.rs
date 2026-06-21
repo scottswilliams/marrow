@@ -128,6 +128,57 @@ fn std_math_builtins_compute_over_integers() {
     );
 }
 
+/// `quotient` truncates toward zero and pairs with `remainder`/`%`:
+/// `a == quotient(a, b) * b + remainder(a, b)`. `divFloor` floors toward minus
+/// infinity and pairs with `modulo`: `a == divFloor(a, b) * b + modulo(a, b)`.
+/// The two laws diverge on negative operands, so they are checked there.
+#[test]
+fn std_math_integer_division_obeys_its_pairing_law() {
+    fn eval(call: &str) -> i64 {
+        let program = checked_program(&format!("pub fn f(): int\n    return {call}\n"));
+        match run(checked_entry!(&program, "test::f")) {
+            Ok(Some(Value::Int(value))) => value,
+            other => panic!("expected an int from `{call}`, got {other:?}"),
+        }
+    }
+
+    // quotient truncates toward zero: -7 / 2 = -3 (with remainder -1).
+    assert_eq!(eval("std::math::quotient(0 - 7, 2)"), -3);
+    assert_eq!(eval("std::math::remainder(0 - 7, 2)"), -1);
+    assert_eq!(
+        eval("std::math::quotient(0 - 7, 2) * 2 + std::math::remainder(0 - 7, 2)"),
+        -7,
+        "quotient pairs with remainder"
+    );
+
+    // divFloor floors toward minus infinity: -7 / 2 = -4 (with modulo 1).
+    assert_eq!(eval("std::math::divFloor(0 - 7, 2)"), -4);
+    assert_eq!(eval("std::math::modulo(0 - 7, 2)"), 1);
+    assert_eq!(
+        eval("std::math::divFloor(0 - 7, 2) * 2 + std::math::modulo(0 - 7, 2)"),
+        -7,
+        "divFloor pairs with modulo"
+    );
+
+    // Both agree on operands that divide evenly and on positive operands.
+    assert_eq!(eval("std::math::quotient(7, 2)"), 3);
+    assert_eq!(eval("std::math::divFloor(7, 2)"), 3);
+    assert_eq!(eval("std::math::quotient(0 - 6, 2)"), -3);
+    assert_eq!(eval("std::math::divFloor(0 - 6, 2)"), -3);
+}
+
+#[test]
+fn std_math_quotient_by_zero_is_a_runtime_error() {
+    let program = checked_program("pub fn f(): int\n    return std::math::quotient(7, 0)\n");
+    assert_run_error(run(checked_entry!(&program, "test::f")), RUN_DIVIDE_BY_ZERO);
+}
+
+#[test]
+fn std_math_div_floor_by_zero_is_a_runtime_error() {
+    let program = checked_program("pub fn f(): int\n    return std::math::divFloor(7, 0)\n");
+    assert_run_error(run(checked_entry!(&program, "test::f")), RUN_DIVIDE_BY_ZERO);
+}
+
 #[test]
 fn std_math_gate16_builtins_round_and_bound_values() {
     let program = checked_program(

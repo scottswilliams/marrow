@@ -650,12 +650,22 @@ pub(super) fn apply_error(error: ApplyError, labels: &SourceLabels, format: Chec
             &format!("staged {staged} item(s), but the witness expected {expected}"),
             format,
         ),
-        ApplyError::TransformBodyFaulted { target, reason } => report_simple_error(
+        ApplyError::TransformBodyFaulted {
+            target,
+            record,
+            inner_code,
+            reason,
+        } => report_simple_error_with_data(
             "evolve.transform_faulted",
             &format!(
-                "transform for catalog id {} failed: {reason}",
-                target.as_str()
+                "transform for {} faulted on record {record} ({inner_code}): {reason}",
+                labels.catalog_id(target.as_str())
             ),
+            serde_json::Map::from_iter([
+                ("target".to_string(), serde_json::json!(target.as_str())),
+                ("record".to_string(), serde_json::json!(record)),
+                ("inner_code".to_string(), serde_json::json!(inner_code)),
+            ]),
             format,
         ),
         ApplyError::Fenced(error) => report_simple_error(error.code(), &error.message(), format),

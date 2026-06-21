@@ -284,6 +284,7 @@ code, except `run.uncaught_error` — see "Typed Errors In Running Programs".
 | `run.store` | The store reported an error (e.g. corrupt tree-cell payload) during a read. Fatal storage/backend failure while evaluating a read. |
 | `run.unsupported` | A construct the runtime does not evaluate. Fatal runtime backstop. |
 | `run.capability` | A host capability a builtin needs (e.g. the clock for `std::clock::now`) was not provided to this run. Fatal host/tooling failure. |
+| `run.transaction_host_effect` | A rollback-sensitive host effect (`print`, `std::log::*`, `std::io::writeText`, `std::io::writeBytes`) was attempted inside a `transaction`. Host effects cannot be rolled back, so the effect is rejected before it runs; move it outside the transaction. A structural program error: uncatchable. |
 | `run.assertion` | A `std::assert::*` assertion did not hold. `marrow test` reports these as located test failures. |
 | `run.uncaught_error` | An `Error` raised by `throw` reached the top of a function with no `catch`. The original code travels in text messages (e.g. `[io.read]`) and in JSON envelopes as `data.code`. |
 | `run.traversal` | A write, delete, or append changed the saved layer a loop was actively traversing. Fatal dynamic counterpart of `check.loop_mutates_traversed_layer`. |

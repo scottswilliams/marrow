@@ -31,10 +31,13 @@ use marrow_syntax::SourceSpan;
 
 use crate::activation::{Completion, Invocation, invoke};
 use crate::env::{Context, TransactionState};
+use crate::error::{RUN_NO_VALUE, RUN_STORE, RUN_UNCAUGHT_THROW, error_field};
 use crate::host::Host;
 use crate::statement::coerce_error_code_value;
 use crate::store::DataAddress;
-use crate::value::{RunOutputSink, Value, decode_leaf, value_to_leaf};
+use crate::value::{
+    RunOutputSink, Value, decode_leaf, diagnostic_saved_key_preview, value_to_leaf,
+};
 
 use super::apply::ApplyError;
 use super::locate::store_id;
@@ -122,10 +125,12 @@ pub(super) fn visit_transform_writes(ctx: TransformVisit<'_>) -> Result<(), Appl
                         body_fault = Some(error);
                     }
                 }
-                Err(reason) => {
+                Err(fault) => {
                     body_fault = Some(ApplyError::TransformBodyFaulted {
                         target: ctx.target_id.clone(),
-                        reason,
+                        record: render_record(&place.root, identity),
+                        inner_code: fault.code,
+                        reason: fault.reason,
                     });
                 }
             }
@@ -141,8 +146,24 @@ pub(super) fn visit_transform_writes(ctx: TransformVisit<'_>) -> Result<(), Appl
     Ok(())
 }
 
+/// Why a transform body faulted over one record: the underlying runtime fault code and
+/// a human reason. Apply threads both into [`ApplyError::TransformBodyFaulted`] so an
+/// operator sees which fault (overflow, divide-by-zero, an escaping throw) blocked the
+/// record rather than an opaque "the transform faulted".
+pub(super) struct TransformFault {
+    pub(super) code: &'static str,
+    pub(super) reason: String,
+}
+
+/// Render a record's identity as a saved path (e.g. `^books(2)`) for diagnostics, so a
+/// faulting record names the place and keys an operator reads in source and tooling.
+fn render_record(root: &str, identity: &[SavedKey]) -> String {
+    let keys: Vec<String> = identity.iter().map(diagnostic_saved_key_preview).collect();
+    format!("^{root}({})", keys.join(", "))
+}
+
 /// Run the body over one record's `old` binding and encode the result to the target
-/// leaf, returning the bytes to stage or the reason the body faulted on this record.
+/// leaf, returning the bytes to stage or the fault the body raised on this record.
 fn recompute(
     runtime: &CheckedRuntimeProgram,
     store: &TreeStore,
@@ -150,7 +171,7 @@ fn recompute(
     body: &marrow_check::CheckedBody,
     old: Value,
     target: &TargetLeaf,
-) -> Result<Vec<u8>, String> {
+) -> Result<Vec<u8>, TransformFault> {
     let value = run_transform(runtime, store, module, body, old)?;
     encode_target(value, target)
 }
@@ -188,8 +209,8 @@ fn bind_old(
     Ok(Value::Resource(fields))
 }
 
-/// Run the transform body with `old` bound, returning the value it computes or a reason
-/// the body faulted. The body is checker-proven pure, so it makes no saved reads against
+/// Run the transform body with `old` bound, returning the value it computes or the fault
+/// the body raised. The body is checker-proven pure, so it makes no saved reads against
 /// the store the evaluator carries and stages no writes. A body that throws, faults, or
 /// returns no value is a per-record body fault: the body is total and value-returning by
 /// type, so reaching one of these means the developer's logic faulted over real data.
@@ -199,7 +220,7 @@ fn run_transform(
     module: &CheckedRuntimeModule,
     body: &marrow_check::CheckedBody,
     old: Value,
-) -> Result<Value, String> {
+) -> Result<Value, TransformFault> {
     let output = Rc::new(RefCell::new(DiscardTransformOutput));
     let host = Host::new();
     let ctx = Context {
@@ -220,15 +241,29 @@ fn run_transform(
         hook: None,
         depth: 1,
     })
-    .map_err(|error| error.message)?;
+    .map_err(|error| TransformFault {
+        code: error.code(),
+        reason: error.message,
+    })?;
     match completion.0 {
         Completion::Returned(Some(value)) => Ok(value),
-        Completion::Returned(None) | Completion::ReturnedAbsent => {
-            Err("the transform body returned no value".to_string())
-        }
-        Completion::Threw { .. } | Completion::Faulted { .. } => {
-            Err("the transform body raised an error".to_string())
-        }
+        Completion::Returned(None) | Completion::ReturnedAbsent => Err(TransformFault {
+            code: RUN_NO_VALUE,
+            reason: "the transform body returned no value".to_string(),
+        }),
+        Completion::Faulted { code, message, .. } => Err(TransformFault {
+            code,
+            reason: message,
+        }),
+        // An escaping `throw` is the structural `run.uncaught_error`; the developer's own
+        // dotted code rides in the reason so the operator still sees the thrown identity.
+        Completion::Threw { error, .. } => Err(TransformFault {
+            code: RUN_UNCAUGHT_THROW,
+            reason: match error_field(&error, marrow_schema::error::CODE) {
+                Some(code) => format!("the transform body raised `{code}`"),
+                None => "the transform body raised an error".to_string(),
+            },
+        }),
     }
 }
 
@@ -241,16 +276,27 @@ fn run_transform(
 /// an arbitrary string. The dotted-lowercase grammar is enforced here through the one
 /// grammar owner the constructor and field-write paths use, so a non-conforming code is a
 /// per-record body fault that fails the apply closed rather than persisting to the place.
-fn encode_target(value: Value, target: &TargetLeaf) -> Result<Vec<u8>, String> {
+fn encode_target(value: Value, target: &TargetLeaf) -> Result<Vec<u8>, TransformFault> {
     let value = if target.error_code {
-        coerce_error_code_value(value, true, SourceSpan::default())
-            .map_err(|error| error.message)?
+        coerce_error_code_value(value, true, SourceSpan::default()).map_err(runtime_fault)?
     } else {
         value
     };
     let leaf_value =
-        value_to_leaf(value, &target.leaf, SourceSpan::default()).map_err(|error| error.message)?;
-    leaf_value.bytes().map_err(|error| error.to_string())
+        value_to_leaf(value, &target.leaf, SourceSpan::default()).map_err(runtime_fault)?;
+    leaf_value.bytes().map_err(|error| TransformFault {
+        code: RUN_STORE,
+        reason: error.to_string(),
+    })
+}
+
+/// Carry a runtime fault's code and message into a [`TransformFault`], so an encode-time
+/// type or grammar failure keeps the underlying code an operator can act on.
+fn runtime_fault(error: crate::error::RuntimeError) -> TransformFault {
+    TransformFault {
+        code: error.code(),
+        reason: error.message,
+    }
 }
 
 /// The encode target a transform recomputes into: the member's leaf kind and whether it

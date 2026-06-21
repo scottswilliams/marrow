@@ -214,13 +214,27 @@ fn transform_body_fault_aborts_byte_identical() -> Result<(), Box<dyn std::error
     assert!(w.is_activatable(), "{w:#?}");
     let result = apply(&w, &program, &store, false, None);
 
-    let Err(ApplyError::TransformBodyFaulted { target, .. }) = &result else {
+    let Err(ApplyError::TransformBodyFaulted {
+        target,
+        record,
+        inner_code,
+        ..
+    }) = &result
+    else {
         panic!("expected TransformBodyFaulted, got {result:#?}");
     };
     assert_eq!(
         target.as_str(),
         cents_id,
         "the fault names the transform target"
+    );
+    assert_eq!(
+        record, "^books(1)",
+        "the fault names the offending record identity"
+    );
+    assert_eq!(
+        *inner_code, "run.overflow",
+        "the fault carries the underlying runtime fault code"
     );
     assert_eq!(
         read_scalar(&store, &store_id, 1, &cents_id, INT),
@@ -284,13 +298,17 @@ fn transform_body_fault_midscan_discards_earlier_staged_write()
     assert!(w.is_activatable(), "{w:#?}");
     let result = apply(&w, &program, &store, false, None);
 
-    let Err(ApplyError::TransformBodyFaulted { target, .. }) = &result else {
+    let Err(ApplyError::TransformBodyFaulted { target, record, .. }) = &result else {
         panic!("expected TransformBodyFaulted, got {result:#?}");
     };
     assert_eq!(
         target.as_str(),
         cents_id,
         "the fault names the transform target"
+    );
+    assert_eq!(
+        record, "^books(2)",
+        "the fault names the second record, where the body faulted, not the first"
     );
     assert_eq!(
         read_scalar(&store, &store_id, 1, &cents_id, INT),

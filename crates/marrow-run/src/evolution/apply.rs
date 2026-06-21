@@ -99,6 +99,12 @@ pub enum ApplyError {
     },
     TransformBodyFaulted {
         target: CatalogId,
+        /// The offending record's identity, rendered as a saved path (e.g. `^books(2)`),
+        /// so an operator can locate which record blocked the migration.
+        record: String,
+        /// The underlying runtime fault code the transform body raised over this record
+        /// (e.g. `run.overflow`, `run.divide_by_zero`).
+        inner_code: &'static str,
         reason: String,
     },
     Fenced(FenceError),
