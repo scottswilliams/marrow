@@ -1426,6 +1426,33 @@ fn eval_scalar_arg_expression(scalar: ScalarType, expression: &Expression) -> Op
             let value = crate::expr::eval_literal(lower_literal_kind(*kind), text, *span).ok()?;
             (value_scalar_type(&value) == Some(scalar)).then_some(value)
         }
+        // A negative numeric literal is a single minus directly prefixing a
+        // numeric literal token, as the grammar spells it. The operand must be a
+        // bare numeric literal whose span begins immediately after the minus, so
+        // a nested sign (`--5`), a gap (`- 5`), or a parenthesized operand
+        // (`-(5)`) is not a literal spelling and falls through to rejection.
+        Expression::Unary {
+            op: marrow_syntax::UnaryOp::Neg,
+            operand,
+            span,
+        } => {
+            let Expression::Literal {
+                span: operand_span, ..
+            } = operand.as_ref()
+            else {
+                return None;
+            };
+            if operand_span.start_byte != span.start_byte + 1 {
+                return None;
+            }
+            match eval_scalar_arg_expression(scalar, operand)? {
+                Value::Int(n) => n.checked_neg().map(Value::Int),
+                Value::Decimal(d) => {
+                    Decimal::from_parts(-d.coefficient(), d.scale()).map(Value::Decimal)
+                }
+                _ => None,
+            }
+        }
         Expression::Call { callee, args, .. } => {
             let Expression::Name { segments, .. } = callee.as_ref() else {
                 return None;

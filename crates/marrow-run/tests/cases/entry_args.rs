@@ -81,6 +81,104 @@ fn text_args_decode_scalars_and_keep_string_remainder_raw() {
 }
 
 #[test]
+fn text_args_accept_negative_numeric_spellings() {
+    // CLI `--arg` scalars use the same textual spellings runtime literals accept,
+    // which include a leading unary minus. A negative int and a negative decimal
+    // must decode to their signed values.
+    let program =
+        checked_program("pub fn main(n: int, d: decimal): string\n    return $\"{n} {d}\"\n");
+    let call =
+        CheckedEntryCall::from_text_args(&program, "test::main", &[("n", "-5"), ("d", "-1.5")])
+            .expect("negative entry args decode");
+    let store = TreeStore::memory();
+    let mut output = String::new();
+    let result = run_entry(&store, &call, &mut output).expect("run entry");
+    assert_eq!(result.value, Some(Value::Str("-5 -1.5".into())));
+}
+
+#[test]
+fn text_args_accept_a_negative_int_identity_key() {
+    // An identity key shares the scalar literal grammar, so a negative int key
+    // spelling decodes through the same unary-minus path.
+    let program = checked_program(
+        "resource Reading\n\
+         \x20   note: string\n\
+         store ^readings(temp: int): Reading\n\
+         \n\
+         pub fn accept(reading: Id(^readings)): int\n\
+         \x20   return 1\n",
+    );
+    let call = CheckedEntryCall::from_text_args(&program, "test::accept", &[("reading", "-5")])
+        .expect("a negative int identity key decodes");
+    let store = TreeStore::memory();
+    let mut output = String::new();
+    let result = run_entry(&store, &call, &mut output).expect("run entry");
+    assert_eq!(result.value, Some(Value::Int(1)));
+}
+
+#[test]
+fn text_args_keep_positive_numeric_spellings() {
+    let program = checked_program("pub fn main(n: int): int\n    return n\n");
+    let call = CheckedEntryCall::from_text_args(&program, "test::main", &[("n", "5")])
+        .expect("positive entry arg decodes");
+    let store = TreeStore::memory();
+    let mut output = String::new();
+    let result = run_entry(&store, &call, &mut output).expect("run entry");
+    assert_eq!(result.value, Some(Value::Int(5)));
+}
+
+#[test]
+fn text_args_reject_non_numeric_spellings() {
+    // A genuinely invalid spelling is still rejected; widening to accept a unary
+    // minus does not open the decoder to arbitrary text.
+    let program = checked_program("pub fn main(n: int): int\n    return n\n");
+    let error = CheckedEntryCall::from_text_args(&program, "test::main", &[("n", "abc")])
+        .expect_err("a non-numeric int spelling is rejected");
+    assert_eq!(error.code(), RUN_ENTRY_ARGUMENT);
+}
+
+#[test]
+fn text_args_reject_malformed_negative_spellings() {
+    // A negative literal is a single sign directly prefixing a numeric literal.
+    // Double negation, a space between the sign and the digits, and a mixed
+    // sign prefix are not valid literal spellings, so they must be rejected at
+    // the entry-argument boundary rather than silently decoding to a value.
+    let program = checked_program("pub fn main(n: int): int\n    return n\n");
+    for spelling in ["--5", "- 5", "-+5", "-(5)", "-  5"] {
+        let error = CheckedEntryCall::from_text_args(&program, "test::main", &[("n", spelling)])
+            .map(|_| ())
+            .expect_err(&format!(
+                "malformed negative spelling `{spelling}` must be rejected"
+            ));
+        assert_eq!(error.code(), RUN_ENTRY_ARGUMENT, "spelling `{spelling}`");
+    }
+}
+
+#[test]
+fn text_args_reject_malformed_negative_identity_keys() {
+    // An identity key shares the scalar literal grammar, so a malformed negative
+    // key spelling must be rejected rather than mis-decoded into a different,
+    // wrong-but-successful identity.
+    let program = checked_program(
+        "resource Reading\n\
+         \x20   note: string\n\
+         store ^readings(temp: int): Reading\n\
+         \n\
+         pub fn accept(reading: Id(^readings)): int\n\
+         \x20   return 1\n",
+    );
+    for spelling in ["--5", "- 5", "-+5"] {
+        let error =
+            CheckedEntryCall::from_text_args(&program, "test::accept", &[("reading", spelling)])
+                .map(|_| ())
+                .expect_err(&format!(
+                    "malformed negative key `{spelling}` must be rejected"
+                ));
+        assert_eq!(error.code(), RUN_ENTRY_ARGUMENT, "key `{spelling}`");
+    }
+}
+
+#[test]
 fn protocol_args_admit_canonical_entry_identity_and_typed_values() {
     let program = checked_program(
         "resource Author\n\

@@ -43,6 +43,9 @@ pub enum ObsoleteOperator {
 pub enum ParseDiagnosticReason {
     ConstRequiresValue,
     DocCommentBeforeParameter,
+    /// A `;;` doc comment in a statement position, where it has no declaration,
+    /// member, or parameter to attach to.
+    DocCommentWithoutTarget,
     EmptyIndexArguments,
     EmptyKeyParameters,
     EnumMemberMustBeBareName,

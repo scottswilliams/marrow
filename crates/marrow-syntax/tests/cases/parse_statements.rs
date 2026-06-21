@@ -474,6 +474,76 @@ fn reports_malformed_body_statements_with_a_diagnostic() {
 }
 
 #[test]
+fn a_doc_comment_in_statement_position_is_a_parse_error() {
+    // A `;;` doc comment attaches only to a declaration, member, or parameter.
+    // In a statement position it has no target, so the parser must reject it
+    // rather than silently swallow it — a program that passes check and runs must
+    // be formattable, and a swallowed doc comment breaks that round trip.
+    let cases = [
+        // own line, before a statement
+        ("module app\nfn main()\n    ;; orphan doc\n    return\n", 3),
+        // trailing a statement
+        ("module app\nfn main()\n    return ;; orphan doc\n", 3),
+        // end of body
+        ("module app\nfn main()\n    return\n    ;; orphan doc\n", 4),
+        // inside an unexpected over-indented block, where the only content is the
+        // doc comment, so the block carries no statement token to anchor the
+        // unexpected-indentation error
+        (
+            "module app\nfn main()\n    print(\"a\")\n        ;; orphan doc\n",
+            4,
+        ),
+    ];
+    for (source, line) in cases {
+        let parsed = parse_source(source);
+        assert!(
+            parsed.has_errors(),
+            "a statement-position doc comment must not parse cleanly: {source:?}: {:#?}",
+            parsed.diagnostics
+        );
+        let diagnostic = parsed
+            .diagnostics
+            .iter()
+            .find(|diagnostic| {
+                diagnostic.reason == parse_reason(ParseDiagnosticReason::DocCommentWithoutTarget)
+            })
+            .unwrap_or_else(|| panic!("expected a doc-comment diagnostic for {source:?}"));
+        assert_eq!(diagnostic.code, "parse.syntax", "{source:?}");
+        assert_eq!(diagnostic.span.line, line, "{source:?}");
+    }
+}
+
+#[test]
+fn an_ordinary_comment_in_statement_position_parses_cleanly() {
+    // A single-`;` line comment in statement position is fine; only `;;` doc
+    // comments require an attachment target.
+    for source in [
+        "module app\nfn main()\n    ; ordinary\n    return\n",
+        "module app\nfn main()\n    return ; ordinary\n",
+        "module app\nfn main()\n    return\n    ; ordinary\n",
+    ] {
+        let parsed = parse_source(source);
+        assert!(
+            !parsed.has_errors(),
+            "an ordinary statement comment must parse cleanly: {source:?}: {:#?}",
+            parsed.diagnostics
+        );
+    }
+}
+
+#[test]
+fn a_doc_comment_on_a_declaration_still_attaches() {
+    // The doc-comment rejection is scoped to statement position; a `;;` doc
+    // comment on a declaration attaches as before.
+    let parsed = parse_source("module app\n;; documents the function\nfn main()\n    return\n");
+    assert!(
+        !parsed.has_errors(),
+        "a doc comment on a declaration must still attach: {:#?}",
+        parsed.diagnostics
+    );
+}
+
+#[test]
 fn reports_unexpected_indentation_after_simple_statements() {
     let parsed = parse_source(
         "module app\n\

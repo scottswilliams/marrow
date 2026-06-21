@@ -85,9 +85,22 @@ pub(super) fn check_range_iterable_value_parts(
     iterable: &marrow_syntax::Expression,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
-    if range_endpoints(iterable).is_none() {
-        check_range_value(file, iterable, diagnostics);
+    if range_endpoints(iterable).is_some() {
+        return;
     }
+    // A for-iterable that is itself a range but is missing an endpoint is an
+    // ill-formed range header, not a range used outside a `for`. Report the
+    // missing endpoint here so the range-value rule does not claim a range is
+    // forbidden where it is exactly what is expected.
+    if let Some(range) = marrow_syntax::range_expr(iterable) {
+        diagnostics.push(range_diagnostic(
+            file,
+            range.span,
+            "a `for` range needs both endpoints (lo..hi or lo..=hi)".to_string(),
+        ));
+        return;
+    }
+    check_range_value(file, iterable, diagnostics);
 }
 
 /// Validate a range-for header's step and direction rules: the `by` step must

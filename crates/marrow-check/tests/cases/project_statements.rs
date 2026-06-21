@@ -585,16 +585,18 @@ fn accepts_if_const_over_a_fully_addressed_layer_entry() {
 }
 
 #[test]
-fn rejects_if_const_over_a_neighbor_read() {
-    let found = check_module(
+fn accepts_if_const_over_a_neighbor_read() {
+    // A `next`/`prev` neighbor result is maybe-present and resolves at the read
+    // site like any maybe-present value, so it binds under `if const`. The bound
+    // record identity types like any saved identity and reads a field.
+    let report = check_module_report(
         "if-const-neighbor-read",
         "module m\n\
-         resource Book\n    title: string\n    tags(pos: int): string\n\
+         resource Book\n    title: string\n\
          store ^books(id: int): Book\n\n\
-         fn f(): int\n    ^books(1).title = \"one\"\n    const p: int = append(^books(1).tags, \"a\")\n    const q: int = append(^books(1).tags, \"b\")\n    if const n = next(^books(1).tags(p))\n        return n\n    return 0\n",
-        "check.condition_type",
+         fn f(id: Id(^books)): string\n    if const n = next(^books(id))\n        return ^books(n).title ?? \"\"\n    return \"\"\n",
     );
-    assert_eq!(found.len(), 1, "{found:#?}");
+    assert_clean(&report);
 }
 
 #[test]

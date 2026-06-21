@@ -197,70 +197,83 @@ fn distinct_identity_bindings_may_alias_saved_write_target() {
     );
 }
 
+/// A guard whose saved-path key calls a function that may write saved data is
+/// rejected at the guard boundary: an effectful key may not ride into `exists` or
+/// `if const`, because resolving the read at the read site would run the
+/// allocation/write on every evaluation. `keyOf` conditionally deletes a record,
+/// so the call is opaque before per-function closures exist and disqualifies the
+/// read as a guardable target — the boundary refuses the smuggled write rather
+/// than admitting a check-clean guard whose repeated read would fault at runtime.
+fn assert_code(name: &str, src: &str, code: &str) {
+    let root = temp_project(name, |root| write(root, "src/books.mw", src));
+    let (report, _program) = check_project(&root, &config()).expect("check");
+    assert!(
+        report.diagnostics.iter().any(|d| d.code == code),
+        "expected {code}: {:#?}",
+        report.diagnostics
+    );
+}
+
+const SAVED_WRITER_KEY_PRELUDE: &str = "module books\n\
+     resource Book\n\
+     \x20   subtitle: string\n\
+     resource Flag\n\
+     \x20   seen: bool\n\
+     store ^books(id: int): Book\n\
+     store ^flags(id: int): Flag\n\
+     fn keyOf(id: int): int\n\
+     \x20   if exists(^flags(0).seen)\n\
+     \x20       delete ^books(id).subtitle\n\
+     \x20   else\n\
+     \x20       ^flags(0).seen = true\n\
+     \x20   return id\n";
+
 #[test]
-fn saved_write_in_exists_key_expression_blocks_repeated_path_narrowing() {
-    assert_bare_present_read(
+fn exists_rejects_a_saved_read_keyed_by_a_saved_writing_function() {
+    assert_code(
         "presence-exists-key-expression-saved-write",
-        "module books\n\
-             resource Book\n\
-             \x20   subtitle: string\n\
-             resource Flag\n\
-             \x20   seen: bool\n\
-             store ^books(id: int): Book\n\
-             store ^flags(id: int): Flag\n\
-             fn keyOf(id: int): int\n\
-             \x20   if exists(^flags(0).seen)\n\
-             \x20       delete ^books(id).subtitle\n\
-             \x20   else\n\
-             \x20       ^flags(0).seen = true\n\
-             \x20   return id\n\
-             fn stale(): string\n\
-             \x20   ^books(1).subtitle = \"present\"\n\
+        &format!(
+            "{SAVED_WRITER_KEY_PRELUDE}fn stale(): string\n\
              \x20   if exists(^books(keyOf(1)).subtitle)\n\
              \x20       return ^books(keyOf(1)).subtitle\n\
-             \x20   return \"missing\"\n",
+             \x20   return \"missing\"\n"
+        ),
+        "check.call_argument",
     );
 }
 
 #[test]
-fn saved_write_in_if_const_key_expression_blocks_repeated_path_narrowing() {
-    assert_bare_present_read(
+fn if_const_rejects_a_saved_read_keyed_by_a_saved_writing_function() {
+    assert_code(
         "presence-if-const-key-expression-saved-write",
-        "module books\n\
-             resource Book\n\
-             \x20   subtitle: string\n\
-             resource Flag\n\
-             \x20   seen: bool\n\
-             store ^books(id: int): Book\n\
-             store ^flags(id: int): Flag\n\
-             fn keyOf(id: int): int\n\
-             \x20   if exists(^flags(0).seen)\n\
-             \x20       delete ^books(id).subtitle\n\
-             \x20   else\n\
-             \x20       ^flags(0).seen = true\n\
-             \x20   return id\n\
-             fn stale(): string\n\
-             \x20   ^books(1).subtitle = \"present\"\n\
+        &format!(
+            "{SAVED_WRITER_KEY_PRELUDE}fn stale(): string\n\
              \x20   if const value = ^books(keyOf(1)).subtitle\n\
-             \x20       return ^books(keyOf(1)).subtitle\n\
-             \x20   return \"missing\"\n",
+             \x20       return value\n\
+             \x20   return \"missing\"\n"
+        ),
+        "check.condition_type",
     );
 }
 
 #[test]
-fn saved_write_in_neighbor_path_key_expression_blocks_repeated_path_narrowing() {
+fn a_write_through_a_called_function_expires_an_exists_narrowing() {
+    // A function whose body deletes a saved path expires an `if exists` narrowing
+    // over that path when it is called inside the guarded block, so the repeated
+    // read after the call is no longer proven present. The call is a plain
+    // statement, not a guard key, so it reaches the write-invalidation rule rather
+    // than the guard-key effect screen.
     assert_bare_present_read(
-        "presence-neighbor-key-expression-saved-write",
+        "presence-called-write-expires-narrowing",
         "module books\n\
              resource Book\n\
              \x20   title: string\n\
              store ^books(id: int): Book\n\
-             fn keyOf(id: int): int\n\
+             fn wipe(id: int)\n\
              \x20   delete ^books(id).title\n\
-             \x20   return id\n\
-             fn stale(id: int, fallback: Id(^books)): string\n\
+             fn stale(id: int): string\n\
              \x20   if exists(^books(id).title)\n\
-             \x20       const neighbor: Id(^books) = next(^books(keyOf(id))) ?? fallback\n\
+             \x20       wipe(id)\n\
              \x20       return ^books(id).title\n\
              \x20   return \"missing\"\n",
     );

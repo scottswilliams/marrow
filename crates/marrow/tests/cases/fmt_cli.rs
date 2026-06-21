@@ -265,7 +265,13 @@ fn fmt_write_preserves_multiline_top_level_header_comments() {
 }
 
 #[test]
-fn fmt_write_refuses_to_destroy_statement_doc_comment_markers() {
+fn fmt_write_rejects_a_statement_position_doc_comment() {
+    // A `;;` doc comment in a statement position has no attachment target and is
+    // a parse error, so the source never reaches the formatter. `fmt` refuses
+    // with `parse.syntax` and leaves the file byte-for-byte: a program that
+    // passes check and runs is always formattable, and an unattachable doc
+    // comment is rejected before it can strand a comment the formatter cannot
+    // re-emit.
     let source = "module app\n\
          fn main()\n\
          \x20   ;; keep doc marker\n\
@@ -277,13 +283,47 @@ fn fmt_write_refuses_to_destroy_statement_doc_comment_markers() {
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     assert!(
-        fmt_reports_code(&output.stderr, "fmt.comment_loss"),
+        fmt_reports_code(&output.stderr, "parse.syntax"),
         "{:?}",
         output.stderr
     );
     assert_eq!(
         written, source,
-        "fmt --write must leave the original source byte-for-byte"
+        "fmt --write must leave a malformed source byte-for-byte"
+    );
+}
+
+#[test]
+fn fmt_write_rejects_a_doc_comment_in_an_unexpected_indented_block() {
+    // An over-indented block whose only content is a `;;` doc comment must still
+    // be a parse error: the doc comment has no attachment target, and the
+    // statement parser's indented-block recovery rejects it rather than silently
+    // retaining it. Without the rejection the program would pass check yet `fmt`
+    // would refuse with `fmt.comment_loss`, breaking the check-then-format round
+    // trip. The file is left byte-for-byte.
+    let source = "module app\n\
+         fn main()\n\
+         \x20   print(\"a\")\n\
+         \x20       ;; keep doc marker\n";
+    let path = temp_source("write-indented-block-doc-comment-guard", source);
+    let output = run_fmt(&["--write", path.to_str().unwrap()]);
+    let written = fs::read_to_string(&path).expect("read back");
+    fs::remove_file(&path).ok();
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert!(
+        fmt_reports_code(&output.stderr, "parse.syntax"),
+        "{:?}",
+        output.stderr
+    );
+    assert!(
+        !fmt_reports_code(&output.stderr, "fmt.comment_loss"),
+        "a parse-rejected source must not reach the comment-loss guard: {:?}",
+        output.stderr
+    );
+    assert_eq!(
+        written, source,
+        "fmt --write must leave a malformed source byte-for-byte"
     );
 }
 

@@ -68,6 +68,34 @@ fn a_bare_range_expression_statement_is_rejected() {
 }
 
 #[test]
+fn an_open_ended_range_for_header_is_an_ill_formed_range() {
+    // A range used as a `for` iterable that is missing an endpoint is an
+    // ill-formed range header (`check.range`), not a range-outside-`for`
+    // misuse (`check.range_value`).
+    for body in [
+        "    for i in 0..\n        var x = i\n",
+        "    for i in ..10\n        var x = i\n",
+        "    for i in 0..=\n        var x = i\n",
+        "    for i in ..=10\n        var x = i\n",
+        "    for i in ..\n        var x = i\n",
+    ] {
+        let diagnostics = diagnostics(&module(body));
+        let codes: Vec<_> = diagnostics.iter().map(|d| d.code.to_string()).collect();
+        assert!(codes.iter().any(|c| c == "check.range"), "{codes:?}");
+        assert!(!codes.iter().any(|c| c == "check.range_value"), "{codes:?}");
+        let range = diagnostics
+            .iter()
+            .find(|d| d.code == "check.range")
+            .expect("a check.range diagnostic");
+        assert!(
+            range.message.contains("both endpoints"),
+            "{}",
+            range.message
+        );
+    }
+}
+
+#[test]
 fn misusing_the_loop_variable_as_a_wrong_type_is_a_check_error() {
     // `i` is an int; adding it as a string is an operator error, which only
     // fires because the loop variable carries its endpoint type.

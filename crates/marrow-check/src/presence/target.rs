@@ -68,7 +68,36 @@ fn resolve_read_target(
     if local_maybe_present_read(program, expr, &scope) {
         return Some(ReadResolution::LocalValue);
     }
+    if !guard_saved_keys_admissible(program, expr) {
+        return None;
+    }
     read_target_with_scope(program, expr, &scope).map(ReadResolution::Saved)
+}
+
+/// Whether the saved place a guard reads carries no effect in any of its key
+/// arguments. A guard resolves a maybe-present saved read by catching the absent
+/// fault at the read site, so an effect smuggled into an identity, layer, or index
+/// key — `nextId(^s)`, `append(...)`, a transaction, a host call, a throw, or an
+/// opaque user-function call — would run on every evaluation. A `next`/`prev`
+/// neighbor seek is screened by its subject's place, unwrapping nested neighbor
+/// seeks down to the base saved place. This guards only the guard-acceptance
+/// predicates; the bare-read diagnostic and write-invalidation still resolve the
+/// read so an unguarded or written effectful-key read is not lost.
+fn guard_saved_keys_admissible(program: &CheckedProgram, expr: &CheckedExpr) -> bool {
+    let mut read = expr;
+    while let CheckedExpr::Call { args, target, .. } = read {
+        if neighbor_read(target).is_none() {
+            break;
+        }
+        match args.first() {
+            Some(arg) => read = &arg.value,
+            None => return true,
+        }
+    }
+    match accepted_saved_place(read) {
+        Some(place) => saved_key_args_admissible(program, place),
+        None => true,
+    }
 }
 
 /// Whether `expr` resolves to a maybe-present *value* read — what `??` defaults.
@@ -87,11 +116,7 @@ pub(crate) fn read_value_resolves_in_type_scope(
         // maybe-present neighbor value, so it defaults regardless of whether its
         // underlying subject is itself an addressable value.
         Some(ReadResolution::Saved(target)) => {
-            target.value == ReadTargetValue::Value
-                || matches!(
-                    target.read,
-                    PresenceProofRead::Next | PresenceProofRead::Prev
-                )
+            target.value == ReadTargetValue::Value || neighbor_read_kind(target.read)
         }
         None => false,
     }
@@ -104,7 +129,7 @@ pub(crate) fn exists_target_in_type_scope(
     transform_old: Option<super::TransformOldReadScope<'_>>,
 ) -> bool {
     read_resolution_in_type_scope(program, expr, type_scope, transform_old)
-        .is_some_and(|read| read == PresenceProofRead::Direct)
+        .is_some_and(neighbor_or_direct_read)
 }
 
 pub(crate) fn bindable_saved_value_read_in_type_scope(
@@ -115,11 +140,30 @@ pub(crate) fn bindable_saved_value_read_in_type_scope(
 ) -> bool {
     match resolve_read_target(program, expr, type_scope, transform_old) {
         Some(ReadResolution::LocalValue) => true,
+        // A `next`/`prev` neighbor read resolves to a single maybe-present value
+        // and binds under `if const` like any maybe-present read, regardless of
+        // whether its underlying subject is itself an addressable value.
         Some(ReadResolution::Saved(target)) => {
-            target.read == PresenceProofRead::Direct && target.value == ReadTargetValue::Value
+            neighbor_read_kind(target.read)
+                || (target.read == PresenceProofRead::Direct
+                    && target.value == ReadTargetValue::Value)
         }
         None => false,
     }
+}
+
+/// A maybe-present read that any guard accepts: a plain direct read or a
+/// `next`/`prev` neighbor seek. The neighbor result is maybe-present and resolves
+/// at the read site like any maybe-present value, so `??`, `if const`, and
+/// `exists` accept it alike. The guard predicates screen the read's subject place
+/// through `guard_saved_keys_admissible` before resolving it, so an effectful key
+/// never rides into the guard whichever guard widened to it.
+fn neighbor_or_direct_read(read: PresenceProofRead) -> bool {
+    read == PresenceProofRead::Direct || neighbor_read_kind(read)
+}
+
+fn neighbor_read_kind(read: PresenceProofRead) -> bool {
+    matches!(read, PresenceProofRead::Next | PresenceProofRead::Prev)
 }
 
 fn read_resolution_in_type_scope(
@@ -311,6 +355,22 @@ fn saved_place_target(
         read: PresenceProofRead::Direct,
         value,
     })
+}
+
+/// Whether every identity, layer, and index key argument of a saved place is an
+/// admissible guard sub-expression.
+fn saved_key_args_admissible(program: &CheckedProgram, place: &crate::CheckedSavedPlace) -> bool {
+    let layer_args = place.layers.iter().flat_map(|layer| &layer.args);
+    let terminal_args = match &place.terminal {
+        crate::CheckedSavedTerminal::Index { args, .. } => args.as_slice(),
+        _ => &[],
+    };
+    place
+        .identity_args
+        .iter()
+        .chain(layer_args)
+        .chain(terminal_args)
+        .all(|arg| guard_subexpr_admissible(program, &arg.value))
 }
 
 fn saved_target_value(place: &crate::CheckedSavedPlace) -> ReadTargetValue {

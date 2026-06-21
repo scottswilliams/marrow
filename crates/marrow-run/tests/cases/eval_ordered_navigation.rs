@@ -227,6 +227,11 @@ fn next_of_bare_layer_is_first_and_prev_is_last() {
 
 #[test]
 fn maybe_return_propagates_empty_neighbor_absence() {
+    // A `maybe`-returning function whose neighbor seek is empty propagates absence
+    // through a `??` fallback. The fallback identity is bound to a name before it
+    // keys a saved read, because a user-function call may not ride into a guard
+    // key — pure or not, its body is opaque before per-function effect closures
+    // exist, so the result is bound first and the guard keyed off the bound name.
     let program = checked_program(
         "resource Book\n\
          \x20   required title: string\n\
@@ -236,9 +241,11 @@ fn maybe_return_propagates_empty_neighbor_absence() {
          fn maybePrev(): maybe Id(^books)\n\
          \x20   return prev(^books)\n\n\
          pub fn nextFallback(): bool\n\
-         \x20   return exists(^books(maybeNext() ?? Id(^books, 1)))\n\n\
+         \x20   const id: Id(^books) = maybeNext() ?? Id(^books, 1)\n\
+         \x20   return exists(^books(id))\n\n\
          pub fn prevFallback(): bool\n\
-         \x20   return exists(^books(maybePrev() ?? Id(^books, 1)))\n",
+         \x20   const id: Id(^books) = maybePrev() ?? Id(^books, 1)\n\
+         \x20   return exists(^books(id))\n",
     );
     let store = TreeStore::memory();
 
@@ -882,4 +889,184 @@ fn neighbor_at_an_indexed_root_edge_skips_the_index_on_both_backends() {
             Some(Value::Str("4".into()))
         );
     }
+}
+
+/// A primary keyed root with `next`/`prev` neighbor reads resolved by every
+/// maybe-present guard: `??`, `if const`, and `exists`. A neighbor result is
+/// maybe-present and resolves at the read site like any maybe-present value, so
+/// each guard form must accept it.
+fn neighbor_guards() -> String {
+    format!(
+        "{BOOK_TAGS_SCHEMA}pub fn add(id: int, t: string)
+    ^books(id).title = t
+
+pub fn nextWithCoalesce(id: int, fallback: int): string
+    const nb: Id(^books) = next(^books(id)) ?? Id(^books, fallback)
+    return ^books(nb).title ?? \"missing\"
+
+pub fn nextWithIfConst(id: int): string
+    if const nb = next(^books(id))
+        return ^books(nb).title ?? \"missing\"
+    return \"none\"
+
+pub fn nextExists(id: int): bool
+    return exists(next(^books(id)))
+
+pub fn prevExists(id: int): bool
+    return exists(prev(^books(id)))
+"
+    )
+}
+
+#[test]
+fn next_neighbor_result_resolves_under_if_const() {
+    let program = checked_program(&neighbor_guards());
+    let store = TreeStore::memory();
+    let add = |id: i64| {
+        run_entry(
+            &store,
+            checked_entry!(
+                &program,
+                "test::add",
+                Value::Int(id),
+                Value::Str(id.to_string())
+            ),
+        )
+        .expect("add");
+    };
+    add(1);
+    add(2);
+
+    // `if const nb = next(^books(1))` binds the present neighbor (id 2, title "2").
+    assert_eq!(
+        run_entry(
+            &store,
+            checked_entry!(&program, "test::nextWithIfConst", Value::Int(1))
+        )
+        .expect("if const present")
+        .value,
+        Some(Value::Str("2".into()))
+    );
+    // `next` off the last record is absent, so the `if const` else branch runs.
+    assert_eq!(
+        run_entry(
+            &store,
+            checked_entry!(&program, "test::nextWithIfConst", Value::Int(2))
+        )
+        .expect("if const absent")
+        .value,
+        Some(Value::Str("none".into()))
+    );
+}
+
+#[test]
+fn next_and_prev_neighbor_results_resolve_under_exists() {
+    let program = checked_program(&neighbor_guards());
+    let store = TreeStore::memory();
+    let add = |id: i64| {
+        run_entry(
+            &store,
+            checked_entry!(
+                &program,
+                "test::add",
+                Value::Int(id),
+                Value::Str(id.to_string())
+            ),
+        )
+        .expect("add");
+    };
+    add(1);
+    add(2);
+
+    // `exists(next(^books(1)))` is true: a successor record exists.
+    assert_eq!(
+        run_entry(
+            &store,
+            checked_entry!(&program, "test::nextExists", Value::Int(1))
+        )
+        .expect("next exists")
+        .value,
+        Some(Value::Bool(true))
+    );
+    // `exists(next(^books(2)))` is false: 2 is the last record.
+    assert_eq!(
+        run_entry(
+            &store,
+            checked_entry!(&program, "test::nextExists", Value::Int(2))
+        )
+        .expect("next missing")
+        .value,
+        Some(Value::Bool(false))
+    );
+    // `exists(prev(^books(1)))` is false: 1 is the first record.
+    assert_eq!(
+        run_entry(
+            &store,
+            checked_entry!(&program, "test::prevExists", Value::Int(1))
+        )
+        .expect("prev missing")
+        .value,
+        Some(Value::Bool(false))
+    );
+}
+
+#[test]
+fn next_neighbor_result_still_resolves_under_coalesce() {
+    let program = checked_program(&neighbor_guards());
+    let store = TreeStore::memory();
+    let add = |id: i64| {
+        run_entry(
+            &store,
+            checked_entry!(
+                &program,
+                "test::add",
+                Value::Int(id),
+                Value::Str(id.to_string())
+            ),
+        )
+        .expect("add");
+    };
+    add(1);
+    add(2);
+
+    // `next(^books(2)) ?? Id(^books, 1)` recovers the edge with the fallback id,
+    // whose title is "1".
+    assert_eq!(
+        run_entry(
+            &store,
+            checked_entry!(
+                &program,
+                "test::nextWithCoalesce",
+                Value::Int(2),
+                Value::Int(1)
+            )
+        )
+        .expect("coalesce")
+        .value,
+        Some(Value::Str("1".into()))
+    );
+}
+
+#[test]
+fn an_effectful_neighbor_base_stays_rejected_under_a_guard() {
+    // Widening the guards to accept a `next`/`prev` result must not admit an
+    // effectful expression. `next` of a function-call base (which could write,
+    // open a transaction, call a host capability, or throw) is not a saved place,
+    // so it stays rejected under `if const` exactly as under `??`.
+    checker_rejects(
+        &format!(
+            "{BOOK_TAGS_SCHEMA}fn allocate(): Id(^books)\n    ^books(99).title = \"x\"\n    return Id(^books, 99)\n\npub fn smuggle()\n    if const nb = next(allocate())\n        print(\"reached\")\n"
+        ),
+        "check.condition_type",
+    );
+}
+
+#[test]
+fn an_effectful_neighbor_base_stays_rejected_under_exists() {
+    checker_rejects(
+        &format!(
+            "{BOOK_TAGS_SCHEMA}fn allocate(): Id(^books)\n    ^books(99).title = \"x\"\n    return Id(^books, 99)\n\npub fn smuggle(): bool\n    return exists(next(allocate()))\n"
+        ),
+        "check.call_argument",
+    );
 }

@@ -83,18 +83,55 @@ impl<'a> StmtParser<'a> {
     }
 
     /// Record an own-line comment token (a leading or standalone comment) for
-    /// the current block and consume its trailing `NEWLINE`.
+    /// the current block and consume its trailing `NEWLINE`. The doc-comment
+    /// decision is owned by `classify_line_comment`.
     fn take_own_line_comment(&mut self) {
         let token = self.advance();
-        self.comments.push(comment_from_token(
-            self.source,
-            token,
-            CommentPlacement::OwnLine,
-            CommentMarker::Line,
-        ));
+        self.record_line_comment(token, CommentPlacement::OwnLine);
         if matches!(self.peek(), Some(TokenKind::Newline)) {
             self.advance();
         }
+    }
+
+    /// Sole owner of the line-comment decision: a `;;` doc comment in statement
+    /// position has no declaration to attach to, so it is reported rather than
+    /// retained — a swallowed doc comment is one the formatter cannot place,
+    /// breaking the check-run-format round trip — while an ordinary `;` comment
+    /// becomes trivia for the current block at the given placement. Returns the
+    /// retained comment for callers that place it conditionally; `None` when the
+    /// token was a doc comment that has been reported.
+    fn classify_line_comment(
+        &mut self,
+        token: Token,
+        placement: CommentPlacement,
+    ) -> Option<Comment> {
+        if token.kind == TokenKind::DocComment {
+            self.report_doc_comment_without_target(token.span);
+            None
+        } else {
+            Some(comment_from_token(
+                self.source,
+                token,
+                placement,
+                CommentMarker::Line,
+            ))
+        }
+    }
+
+    /// Classify a line-comment token and, when it is ordinary trivia, append it
+    /// to the current block's comments at `placement`.
+    fn record_line_comment(&mut self, token: Token, placement: CommentPlacement) {
+        if let Some(comment) = self.classify_line_comment(token, placement) {
+            self.comments.push(comment);
+        }
+    }
+
+    fn report_doc_comment_without_target(&mut self, span: SourceSpan) {
+        self.error_span_reason(
+            span,
+            ParseDiagnosticReason::DocCommentWithoutTarget,
+            "a `;;` doc comment must precede a declaration, member, or parameter",
+        );
     }
 
     fn statements(&mut self) -> Vec<Statement> {
@@ -175,13 +212,7 @@ impl<'a> StmtParser<'a> {
     /// index of the `NEWLINE`/`INDENT`/`DEDENT` that ends the current line.
     fn split_trailing_comment(&mut self, line_end: usize) -> usize {
         if line_end > self.pos && is_line_comment(self.tokens[line_end - 1].kind) {
-            let token = self.tokens[line_end - 1];
-            self.comments.push(comment_from_token(
-                self.source,
-                token,
-                CommentPlacement::Trailing,
-                CommentMarker::Line,
-            ));
+            self.record_line_comment(self.tokens[line_end - 1], CommentPlacement::Trailing);
             line_end - 1
         } else {
             line_end
@@ -555,12 +586,7 @@ impl<'a> StmtParser<'a> {
                 TokenKind::Indent | TokenKind::Dedent => break,
                 kind if is_line_comment(kind) => {
                     let token = self.advance();
-                    self.comments.push(comment_from_token(
-                        self.source,
-                        token,
-                        CommentPlacement::Trailing,
-                        CommentMarker::Line,
-                    ));
+                    self.record_line_comment(token, CommentPlacement::Trailing);
                 }
                 _ => {
                     self.advance();
@@ -782,13 +808,11 @@ impl<'a> StmtParser<'a> {
                 kind if is_line_comment(kind) => {
                     let token = self.advance();
                     end = token.span;
-                    if !line_has_content {
-                        comments.push(comment_from_token(
-                            self.source,
-                            token,
-                            CommentPlacement::OwnLine,
-                            CommentMarker::Line,
-                        ));
+                    if let Some(comment) =
+                        self.classify_line_comment(token, CommentPlacement::OwnLine)
+                        && !line_has_content
+                    {
+                        comments.push(comment);
                     }
                 }
                 _ => {

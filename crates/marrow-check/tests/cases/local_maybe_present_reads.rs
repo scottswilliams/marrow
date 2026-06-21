@@ -808,3 +808,97 @@ fn coalesce_rejects_a_local_tree_keyed_by_a_host_calling_function() {
         "check.operator_type",
     );
 }
+
+/// A saved-path read is guardable, but an identity-key argument that carries an
+/// effect must never ride into the guard. `nextId(^books)` allocates a saved
+/// identity; a guard keyed by it would run the allocation on every evaluation, so
+/// `??`, `if const`, and `exists` must all reject the saved read rather than admit
+/// a check-clean read whose key faults. The same screening governs a `next`/`prev`
+/// neighbor guard, whose subject resolves through this saved-path machinery.
+const SAVED_KEY_EFFECT_PRELUDE: &str = "module m\n\
+     resource Book\n\
+     \x20   title: string\n\
+     store ^books(id: int): Book\n\
+     fn f()\n";
+
+#[test]
+fn coalesce_rejects_a_saved_read_keyed_by_next_id() {
+    assert_code(
+        "coalesce-saved-nextid-key-rejected",
+        &format!("{SAVED_KEY_EFFECT_PRELUDE}\x20   print(^books(nextId(^books)).title ?? \"\")\n"),
+        "check.operator_type",
+    );
+}
+
+#[test]
+fn coalesce_rejects_a_neighbor_read_keyed_by_next_id() {
+    assert_code(
+        "coalesce-neighbor-nextid-key-rejected",
+        &format!(
+            "{SAVED_KEY_EFFECT_PRELUDE}\x20   const id = next(^books(nextId(^books))) ?? Id(^books, 1)\n"
+        ),
+        "check.operator_type",
+    );
+}
+
+#[test]
+fn if_const_rejects_a_neighbor_read_keyed_by_next_id() {
+    assert_code(
+        "if-const-neighbor-nextid-key-rejected",
+        &format!(
+            "{SAVED_KEY_EFFECT_PRELUDE}\x20   if const n = next(^books(nextId(^books)))\n\
+             \x20       print(1)\n"
+        ),
+        "check.condition_type",
+    );
+}
+
+#[test]
+fn exists_rejects_a_neighbor_read_keyed_by_next_id() {
+    assert_code(
+        "exists-neighbor-nextid-key-rejected",
+        &format!(
+            "{SAVED_KEY_EFFECT_PRELUDE}\x20   if exists(next(^books(nextId(^books))))\n\
+             \x20       print(1)\n"
+        ),
+        "check.call_argument",
+    );
+}
+
+/// A pure key argument leaves the saved read and the neighbor seek guardable, so
+/// the effect screening rejects only the effectful key, not the read shape.
+#[test]
+fn guards_resolve_a_neighbor_read_keyed_by_a_pure_argument() {
+    assert_clean(
+        "neighbor-pure-key-guards",
+        &format!(
+            "{SAVED_KEY_EFFECT_PRELUDE}\x20   if const n = next(^books(1))\n\
+             \x20       print(^books(n).title ?? \"\")\n"
+        ),
+    );
+}
+
+#[test]
+fn exists_rejects_a_nested_neighbor_read_keyed_by_next_id() {
+    // A nested `next(next(...))` seek is screened down to its base saved place, so
+    // an effect in the innermost key cannot escape the guard.
+    assert_code(
+        "exists-nested-neighbor-nextid-key-rejected",
+        &format!(
+            "{SAVED_KEY_EFFECT_PRELUDE}\x20   if exists(next(next(^books(nextId(^books)))))\n\
+             \x20       print(1)\n"
+        ),
+        "check.call_argument",
+    );
+}
+
+#[test]
+fn guards_resolve_a_nested_neighbor_read_keyed_by_a_pure_argument() {
+    assert_clean(
+        "nested-neighbor-pure-key-guards",
+        &format!(
+            "{SAVED_KEY_EFFECT_PRELUDE}\x20   if exists(next(next(^books(1))))\n\
+             \x20       print(1)\n"
+        ),
+    );
+}

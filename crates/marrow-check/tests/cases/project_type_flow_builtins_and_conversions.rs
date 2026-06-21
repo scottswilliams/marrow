@@ -418,9 +418,11 @@ fn print_and_interpolation_reject_the_same_non_renderable_set() {
 }
 
 #[test]
-fn exists_rejects_neighbor_values() {
+fn exists_accepts_neighbor_values() {
+    // A `next`/`prev` neighbor result is maybe-present and resolves at the read
+    // site like any maybe-present value, so `exists` accepts it.
     for neighbor in ["next", "prev"] {
-        let found = check_module(
+        let report = check_module_report(
             &format!("exists-{neighbor}"),
             &format!(
                 "module m\n\
@@ -428,9 +430,8 @@ fn exists_rejects_neighbor_values() {
                  store ^books(id: int): Book\n\n\
                  fn f(): bool\n    return exists({neighbor}(^books(1)))\n",
             ),
-            "check.call_argument",
         );
-        assert_eq!(found.len(), 1, "{neighbor}: {found:#?}");
+        assert_clean(&report);
     }
 }
 

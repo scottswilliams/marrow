@@ -637,35 +637,26 @@ fn drops_overindented_comments_that_belong_to_invalid_statement_blocks() {
 }
 
 #[test]
-fn normalizes_body_doc_comments_to_ordinary_comments() {
+fn rejects_body_doc_comments_at_parse() {
     // A `;;` documents the next declaration or member; inside a function body
-    // there is nothing to document, so both the own-line and the trailing path
-    // normalize it to an ordinary `;` comment. After formatting, the re-parsed
-    // trivia therefore carries the `Line` marker, never `Doc`.
-    let source = "module app\n\
-         fn run()\n\
-         \x20   ;; first comment\n\
-         \x20   print(\"a\")\n\
-         \x20   const x: int = 1 ;; trailing doc\n";
-    let expected = [
-        (
-            "first comment",
-            CommentPlacement::OwnLine,
-            CommentMarker::Line,
-        ),
-        (
-            "trailing doc",
-            CommentPlacement::Trailing,
-            CommentMarker::Line,
-        ),
-    ];
-
-    let body = reparsed_run_body(source);
-    assert_eq!(comment_facts(&body.comments), expected);
-
-    let recanonicalized = format_source(&format_source(source));
-    let again = reparsed_run_body(&recanonicalized);
-    assert_eq!(comment_facts(&again.comments), expected);
+    // there is nothing to document. Such a doc comment is a parse error, not
+    // silently retained trivia: a swallowed doc comment is one the formatter
+    // cannot place, which would break the check-run-format round trip. Both the
+    // own-line and the trailing position are rejected.
+    for source in [
+        "module app\nfn run()\n    ;; orphan doc\n    print(\"a\")\n",
+        "module app\nfn run()\n    const x: int = 1 ;; trailing doc\n",
+    ] {
+        let parsed = parse_source(source);
+        assert!(
+            parsed
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "parse.syntax"),
+            "a body doc comment must be a parse error: {source:?}: {:#?}",
+            parsed.diagnostics
+        );
+    }
 }
 
 #[test]
