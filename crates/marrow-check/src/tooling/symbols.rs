@@ -116,6 +116,55 @@ pub fn source_symbols(snapshot: &AnalysisSnapshot) -> Vec<SourceSymbol> {
     symbols
 }
 
+pub fn source_symbols_matching(
+    snapshot: &AnalysisSnapshot,
+    search_text: &str,
+) -> Vec<SourceSymbol> {
+    let mut symbols = source_symbols(snapshot);
+    let search_text = search_text.trim().to_lowercase();
+    if search_text.is_empty() {
+        return symbols;
+    }
+
+    symbols.retain(|symbol| source_symbol_match_rank(symbol, &search_text).is_some());
+    symbols.sort_by_key(|symbol| source_symbol_match_rank(symbol, &search_text));
+    symbols
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum SourceSymbolMatchRank {
+    NameExact,
+    NamePrefix,
+    NameContains,
+    QualifiedPrefix,
+    QualifiedContains,
+}
+
+fn source_symbol_match_rank(
+    symbol: &SourceSymbol,
+    search_text: &str,
+) -> Option<SourceSymbolMatchRank> {
+    let name = symbol.name.to_lowercase();
+    if name == search_text {
+        return Some(SourceSymbolMatchRank::NameExact);
+    }
+    if name.starts_with(search_text) {
+        return Some(SourceSymbolMatchRank::NamePrefix);
+    }
+    if name.contains(search_text) {
+        return Some(SourceSymbolMatchRank::NameContains);
+    }
+
+    let container = symbol.container.as_ref()?;
+    let qualified = format!("{container}::{}", symbol.name).to_lowercase();
+    if qualified.starts_with(search_text) {
+        return Some(SourceSymbolMatchRank::QualifiedPrefix);
+    }
+    qualified
+        .contains(search_text)
+        .then_some(SourceSymbolMatchRank::QualifiedContains)
+}
+
 fn document_symbol(declaration: &Declaration, source: &str) -> DocumentSymbol {
     match declaration {
         Declaration::Const(constant) => outline_symbol(

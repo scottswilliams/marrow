@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use crate::support;
 use marrow_check::tooling::{
-    DocumentSymbolKind, SourceSymbolKind, document_symbols, source_symbols,
+    DocumentSymbolKind, SourceSymbolKind, document_symbols, source_symbols, source_symbols_matching,
 };
 use marrow_syntax::{SourceSpan, parse_source};
 
@@ -133,6 +133,128 @@ fn f(a: Booook): Alsobad
         &path,
         "fn f",
         source,
+    );
+}
+
+#[test]
+fn source_symbols_matching_empty_search_returns_all_symbols() {
+    let source = "\
+module a
+
+const LIMIT: int = 10
+
+resource Book
+    required title: string
+
+store ^books(id: int): Book
+";
+    let (snapshot, _) =
+        support::analyze_overlay("source-symbols-empty-search", &[("src/a.mw", source)]);
+    support::assert_clean(&snapshot.report);
+
+    assert_eq!(
+        source_symbols_matching(&snapshot, " \t\n"),
+        source_symbols(&snapshot)
+    );
+}
+
+#[test]
+fn source_symbols_matching_name_is_case_insensitive() {
+    let source = "\
+module a
+
+const LIMIT: int = 10
+
+resource Book
+    required title: string
+";
+    let (snapshot, _) =
+        support::analyze_overlay("source-symbols-case-search", &[("src/a.mw", source)]);
+    support::assert_clean(&snapshot.report);
+
+    assert_eq!(
+        symbol_names(source_symbols_matching(&snapshot, "limit")),
+        ["LIMIT"]
+    );
+}
+
+#[test]
+fn source_symbols_matching_uses_container_qualified_paths() {
+    let source = "\
+module a
+
+resource Book
+    required title: string
+";
+    let (snapshot, _) =
+        support::analyze_overlay("source-symbols-qualified-search", &[("src/a.mw", source)]);
+    support::assert_clean(&snapshot.report);
+
+    assert_eq!(
+        symbol_names(source_symbols_matching(&snapshot, "a::Book")),
+        ["Book", "title"]
+    );
+}
+
+#[test]
+fn source_symbols_matching_ranks_name_matches_before_qualified_matches() {
+    let source = "\
+module a
+
+const bookValue: int = 1
+
+resource Book
+    required title: string
+";
+    let (snapshot, _) =
+        support::analyze_overlay("source-symbols-rank-search", &[("src/a.mw", source)]);
+    support::assert_clean(&snapshot.report);
+
+    assert_eq!(
+        symbol_names(source_symbols_matching(&snapshot, "book")),
+        ["Book", "bookValue", "title"]
+    );
+    let symbols = source_symbols_matching(&snapshot, "book");
+    assert_eq!(symbols[0].container.as_deref(), Some("a"));
+    assert_eq!(symbols[1].container.as_deref(), Some("a"));
+    assert_eq!(symbols[2].container.as_deref(), Some("a::Book"));
+}
+
+#[test]
+fn source_symbols_matching_preserves_source_order_within_equal_ranks() {
+    let source = "\
+module a
+
+const apple: int = 1
+const apply: int = 2
+";
+    let (snapshot, _) =
+        support::analyze_overlay("source-symbols-tie-search", &[("src/a.mw", source)]);
+    support::assert_clean(&snapshot.report);
+
+    assert_eq!(
+        symbol_names(source_symbols_matching(&snapshot, "app")),
+        ["apple", "apply"]
+    );
+}
+
+#[test]
+fn source_symbols_matching_finds_store_roots_without_the_caret() {
+    let source = "\
+module a
+
+resource Book
+    required title: string
+
+store ^books(id: int): Book
+";
+    let (snapshot, _) =
+        support::analyze_overlay("source-symbols-store-root-search", &[("src/a.mw", source)]);
+    support::assert_clean(&snapshot.report);
+
+    assert_eq!(
+        symbol_names(source_symbols_matching(&snapshot, "books")),
+        ["^books"]
     );
 }
 
@@ -357,6 +479,10 @@ fn only<'a>(
         "expected one `{name}` symbol: {symbols:#?}"
     );
     symbols[0]
+}
+
+fn symbol_names(symbols: Vec<marrow_check::tooling::SourceSymbol>) -> Vec<String> {
+    symbols.into_iter().map(|symbol| symbol.name).collect()
 }
 
 fn assert_symbol(

@@ -64,6 +64,9 @@ from the checked program or snapshot:
   checked functions and constants with catalog-backed resources, stores, indexes,
   members, enums, and enum members so editor callers only translate the typed
   kind to their transport's symbol enum.
+- `tooling::source_symbols_matching(snapshot, search_text)` applies
+  checker-owned workspace symbol search over those facts, matching names and
+  qualified container paths with deterministic ranking.
 - `tooling::document_symbols(file, source)` returns parsed document-outline
   facts with Marrow-owned kind, detail, full span, selection span, and nested
   children. It accepts a parsed `SourceFile` plus source text, so editor callers
