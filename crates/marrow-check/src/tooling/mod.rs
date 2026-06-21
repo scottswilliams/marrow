@@ -63,9 +63,10 @@ pub use integrity::{
 pub use signatures::{
     ActiveCallableContext, CallableArgumentStyle, CallableCalleeContext, CallableParameter,
     CallableSignature, CallableSignatureKind, CallableValueShape, ResourceConstructorField,
-    ResourceConstructorSignature, active_callable_context, callable_callee_contexts,
+    ResourceConstructorSignature, SourceSignatureHelpCallable, SourceSignatureHelpFact,
+    SourceSignatureHelpParameter, active_callable_context, callable_callee_contexts,
     intrinsic_callable_signature, intrinsic_callable_signature_for_file,
-    intrinsic_completion_callables, resource_constructor_signature,
+    intrinsic_completion_callables, resource_constructor_signature, source_signature_help_fact_at,
 };
 pub use symbols::{
     DocumentSymbol, DocumentSymbolKind, SourceSymbol, SourceSymbolKind, document_symbols,

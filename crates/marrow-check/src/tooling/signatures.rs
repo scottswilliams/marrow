@@ -6,8 +6,9 @@ use stdlib::{ParamType, ReturnType};
 use crate::analysis::AnalysisSnapshot;
 use crate::diagnostics::ConversionTarget;
 use crate::executable::{CheckedBuiltinCall, CheckedBuiltinReturnShape, CheckedBuiltinValueShape};
-use crate::program::{CheckedModule, CheckedProgram, MarrowType, TypeNames};
+use crate::program::{CheckedFunction, CheckedModule, CheckedProgram, MarrowType, TypeNames};
 use crate::resolve::{Def, DefItem, Resolution, ResolvableKind};
+use marrow_syntax::{Declaration, FunctionDecl, LexedSource, SourceFile, SourceSpan};
 
 pub use marrow_syntax::{
     ActiveCallableContext, CallableCalleeContext, active_callable_context, callable_callee_contexts,
@@ -77,6 +78,71 @@ pub struct ResourceConstructorField {
     pub docs: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceSignatureHelpFact {
+    pub callable: SourceSignatureHelpCallable,
+    pub active_argument: usize,
+    pub named_argument: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SourceSignatureHelpCallable {
+    Intrinsic {
+        path: Vec<String>,
+        argument_style: CallableArgumentStyle,
+        docs: Vec<String>,
+        params: Vec<SourceSignatureHelpParameter>,
+        return_shape: Option<CallableValueShape>,
+    },
+    ResourceConstructor {
+        name: String,
+        docs: Vec<String>,
+        params: Vec<SourceSignatureHelpParameter>,
+        return_type: MarrowType,
+    },
+    Function {
+        name: String,
+        docs: Vec<String>,
+        params: Vec<SourceSignatureHelpParameter>,
+        return_type: Option<MarrowType>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceSignatureHelpParameter {
+    pub name: Option<String>,
+    pub label: String,
+    pub required: bool,
+    pub repeat: bool,
+    pub ty: Option<MarrowType>,
+    pub shape: Option<CallableValueShape>,
+    pub docs: Vec<String>,
+}
+
+pub fn source_signature_help_fact_at(
+    program: &CheckedProgram,
+    snapshot: Option<&AnalysisSnapshot>,
+    file: &Path,
+    source: &str,
+    lexed: &LexedSource,
+    offset: usize,
+) -> Option<SourceSignatureHelpFact> {
+    let parsed = marrow_syntax::parse_source(source);
+    let context = active_callable_context(source, lexed, &parsed, offset)?;
+    let callable = source_signature_help_callable(
+        program,
+        snapshot,
+        file,
+        &parsed.file,
+        &context.callee_path_segments,
+    )?;
+    Some(SourceSignatureHelpFact {
+        callable,
+        active_argument: context.active_argument,
+        named_argument: context.named_argument,
+    })
+}
+
 pub fn intrinsic_callable_signature(segments: &[String]) -> Option<CallableSignature> {
     match segments {
         [first, module, op] if first == "std" => std_signature(module, op),
@@ -107,8 +173,7 @@ pub fn intrinsic_callable_signature_for_file(
         .files
         .iter()
         .find(|analyzed| analyzed.path == file)?;
-    let expanded = crate::expand_unique_import_alias(&analyzed.parsed.file, segments).ok()?;
-    intrinsic_callable_signature(&expanded)
+    intrinsic_callable_signature_for_source_file(&analyzed.parsed.file, segments)
 }
 
 pub fn resource_constructor_signature(
@@ -117,6 +182,14 @@ pub fn resource_constructor_signature(
     segments: &[String],
 ) -> Option<ResourceConstructorSignature> {
     let from_module = crate::module_of_file(program, file)?;
+    resource_constructor_signature_from_module(program, from_module, segments)
+}
+
+fn resource_constructor_signature_from_module(
+    program: &CheckedProgram,
+    from_module: &str,
+    segments: &[String],
+) -> Option<ResourceConstructorSignature> {
     let Resolution::Found(Def {
         module,
         item: DefItem::Resource(resource),
@@ -158,6 +231,173 @@ fn constructor_field(
         ty: crate::enums::resolve_schema_type_for_module(ty, program, module),
         docs: member.docs.clone(),
     })
+}
+
+fn source_signature_help_callable(
+    program: &CheckedProgram,
+    snapshot: Option<&AnalysisSnapshot>,
+    file: &Path,
+    source_file: &SourceFile,
+    segments: &[String],
+) -> Option<SourceSignatureHelpCallable> {
+    let from_module = crate::module_of_file(program, file)?;
+    let segments = signature_help_segments(source_file, segments)?;
+    if let Some(callable) = intrinsic_callable_signature(&segments) {
+        return Some(source_intrinsic_signature(callable));
+    }
+    if let Some(resource) =
+        resource_constructor_signature_from_module(program, from_module, &segments)
+    {
+        return Some(source_resource_constructor_signature(resource));
+    }
+    source_function_signature(program, snapshot, from_module, &segments)
+}
+
+fn intrinsic_callable_signature_for_source_file(
+    source_file: &SourceFile,
+    segments: &[String],
+) -> Option<CallableSignature> {
+    let expanded = signature_help_segments(source_file, segments)?;
+    intrinsic_callable_signature(&expanded)
+}
+
+fn signature_help_segments(source_file: &SourceFile, segments: &[String]) -> Option<Vec<String>> {
+    crate::expand_unique_import_alias(source_file, segments).ok()
+}
+
+fn source_intrinsic_signature(callable: CallableSignature) -> SourceSignatureHelpCallable {
+    SourceSignatureHelpCallable::Intrinsic {
+        path: callable.path,
+        argument_style: callable.argument_style,
+        docs: callable.docs,
+        params: callable
+            .params
+            .into_iter()
+            .map(|param| source_intrinsic_parameter(param, callable.argument_style))
+            .collect(),
+        return_shape: callable.return_shape,
+    }
+}
+
+fn source_intrinsic_parameter(
+    param: CallableParameter,
+    style: CallableArgumentStyle,
+) -> SourceSignatureHelpParameter {
+    SourceSignatureHelpParameter {
+        name: match style {
+            CallableArgumentStyle::Positional => None,
+            CallableArgumentStyle::NamedFields => Some(param.label.clone()),
+        },
+        label: param.label,
+        required: param.required,
+        repeat: param.repeat,
+        ty: shape_type(&param.shape).cloned(),
+        shape: Some(param.shape),
+        docs: param.docs,
+    }
+}
+
+fn source_resource_constructor_signature(
+    resource: ResourceConstructorSignature,
+) -> SourceSignatureHelpCallable {
+    SourceSignatureHelpCallable::ResourceConstructor {
+        name: resource.name,
+        docs: resource.docs,
+        params: resource
+            .fields
+            .into_iter()
+            .map(|field| SourceSignatureHelpParameter {
+                name: Some(field.name.clone()),
+                label: field.name,
+                required: field.required,
+                repeat: false,
+                ty: Some(field.ty),
+                shape: None,
+                docs: field.docs,
+            })
+            .collect(),
+        return_type: resource.ty,
+    }
+}
+
+fn source_function_signature(
+    program: &CheckedProgram,
+    snapshot: Option<&AnalysisSnapshot>,
+    from_module: &str,
+    segments: &[String],
+) -> Option<SourceSignatureHelpCallable> {
+    let Resolution::Found(Def {
+        module,
+        item: DefItem::Function(function),
+        ..
+    }) = crate::resolve(program, from_module, segments, ResolvableKind::Function)
+    else {
+        return None;
+    };
+    let parsed = snapshot
+        .and_then(|snapshot| parsed_function_decl(snapshot, &module.source_file, function.span));
+    Some(source_checked_function_signature(function, parsed))
+}
+
+fn source_checked_function_signature(
+    function: &CheckedFunction,
+    parsed: Option<&FunctionDecl>,
+) -> SourceSignatureHelpCallable {
+    SourceSignatureHelpCallable::Function {
+        name: function.name.clone(),
+        docs: parsed
+            .map(|function| function.docs.clone())
+            .unwrap_or_default(),
+        params: function
+            .params
+            .iter()
+            .enumerate()
+            .map(|(index, param)| {
+                let docs = parsed
+                    .and_then(|function| function.params.get(index))
+                    .filter(|decl| decl.name == param.name)
+                    .map(|decl| decl.docs.clone())
+                    .unwrap_or_default();
+                SourceSignatureHelpParameter {
+                    name: Some(param.name.clone()),
+                    label: param.name.clone(),
+                    required: true,
+                    repeat: false,
+                    ty: Some(param.ty.clone()),
+                    shape: None,
+                    docs,
+                }
+            })
+            .collect(),
+        return_type: function.return_type.clone(),
+    }
+}
+
+fn parsed_function_decl<'a>(
+    snapshot: &'a AnalysisSnapshot,
+    file: &Path,
+    span: SourceSpan,
+) -> Option<&'a FunctionDecl> {
+    let analyzed = snapshot
+        .files
+        .iter()
+        .find(|file_info| file_info.path == file)?;
+    analyzed
+        .parsed
+        .file
+        .declarations
+        .iter()
+        .find_map(|declaration| match declaration {
+            Declaration::Function(function) if function.span == span => Some(function),
+            _ => None,
+        })
+}
+
+fn shape_type(shape: &CallableValueShape) -> Option<&MarrowType> {
+    match shape {
+        CallableValueShape::Type(ty) => Some(ty),
+        _ => None,
+    }
 }
 
 fn builtin_signature(name: &str) -> Option<CallableSignature> {
