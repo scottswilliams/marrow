@@ -212,12 +212,20 @@ fn data_inventory_reads_backup_while_live_store_is_locked() {
     assert_eq!(backup_dump.status.code(), Some(0), "{backup_dump:?}");
     assert_eq!(backup_roots.status.code(), Some(0), "{backup_roots:?}");
     assert_eq!(backup_stats.status.code(), Some(0), "{backup_stats:?}");
-    assert_eq!(support::json(backup_dump.stdout), live_dump);
+    let backup_dump = support::json(backup_dump.stdout);
+    assert_eq!(backup_dump["project"], live_dump["project"]);
+    assert_eq!(backup_dump["cells"], live_dump["cells"]);
+    assert_stable_store_snapshot_eq(&backup_dump, &live_dump);
     let backup_roots = support::json(backup_roots.stdout);
     assert_eq!(backup_roots["project"], live_roots["project"]);
     assert_eq!(backup_roots["roots"], live_roots["roots"]);
     assert_stable_store_snapshot_eq(&backup_roots, &live_roots);
-    assert_eq!(support::json(backup_stats.stdout), live_stats);
+    let backup_stats = support::json(backup_stats.stdout);
+    assert_eq!(backup_stats["project"], live_stats["project"]);
+    assert_eq!(backup_stats["roots"], live_stats["roots"]);
+    assert_eq!(backup_stats["records"], live_stats["records"]);
+    assert_eq!(backup_stats["cells"], live_stats["cells"]);
+    assert_stable_store_snapshot_eq(&backup_stats, &live_stats);
 }
 
 #[test]
@@ -274,7 +282,10 @@ fn data_backup_dump_ignores_live_committed_lock_while_live_store_is_locked() {
             Some(0),
             "{lock_state}: {backup_dump:?}"
         );
-        assert_eq!(support::json(backup_dump.stdout), live_dump);
+        let backup_dump = support::json(backup_dump.stdout);
+        assert_eq!(backup_dump["project"], live_dump["project"]);
+        assert_eq!(backup_dump["cells"], live_dump["cells"]);
+        assert_stable_store_snapshot_eq(&backup_dump, &live_dump);
     }
 }
 
@@ -419,6 +430,7 @@ fn data_stats_format_json_emits_counts() {
     assert_eq!(value["roots"], serde_json::json!(1));
     assert_eq!(value["records"], serde_json::json!(1));
     assert_eq!(value["cells"], serde_json::json!(1));
+    assert_store_snapshot(&value);
 }
 
 #[test]
@@ -432,6 +444,7 @@ fn data_dump_format_json_keys_the_field_cell_array_as_cells() {
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let dump = json(output);
     assert!(dump.get("records").is_none(), "{dump}");
+    assert_store_snapshot(&dump);
     let cells = dump["cells"].as_array().expect("cells array");
     assert_eq!(cells.len(), 1, "{dump}");
     assert_eq!(cells[0]["path"], serde_json::json!("^counter(1).value"));
@@ -448,6 +461,7 @@ fn data_dump_format_json_of_an_empty_store_keys_an_empty_cells_array() {
     let dump = json(output);
     assert!(dump.get("records").is_none(), "{dump}");
     assert_eq!(dump["cells"], serde_json::json!([]));
+    assert_store_snapshot(&dump);
 }
 
 #[test]
@@ -466,6 +480,7 @@ fn data_dump_format_jsonl_emits_a_record_then_a_summary() {
     assert_eq!(summary["kind"], serde_json::json!("summary"));
     assert_eq!(summary["cells"], serde_json::json!(1));
     assert!(summary.get("records").is_none(), "{summary}");
+    assert_store_snapshot(&summary);
 }
 
 #[test]

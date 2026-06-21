@@ -249,6 +249,13 @@ pub fn stamped_runtime_open_transaction_data_children(
     })
 }
 
+pub fn data_snapshot_stamp(
+    program: &CheckedProgram,
+    store: &TreeStore,
+) -> Result<DataSnapshotStamp, StoreError> {
+    DataSnapshotStamp::read(program, store)
+}
+
 pub(crate) fn with_stamped_read<T, E>(
     program: &(impl DataProgram + ?Sized),
     store: &TreeStore,

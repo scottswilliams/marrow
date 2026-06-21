@@ -85,7 +85,7 @@ pub(super) fn data_get(args: &[String]) -> ExitCode {
                     .map(|payload| marrow_run::base64::encode(payload.as_bytes())),
                 "store_snapshot": store_snapshot
                     .as_ref()
-                    .map(marrow_json::data_snapshot_stamp_to_json),
+                    .map(marrow_json::data_generation_stamp_to_json),
             }));
         }
     }

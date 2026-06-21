@@ -119,6 +119,7 @@ the same single object):
   "project": "/absolute/path/to/project",
   "roots": ["counter"],
   "store_snapshot": {
+    "profile_version": "data.generation.v1",
     "store_uid": "store_00000000000000000000000000000001",
     "catalog_digest": "sha256:...",
     "commit": {
@@ -128,6 +129,7 @@ the same single object):
       "layout_epoch": 0,
       "engine_profile_digest": "77944eb86c08b665"
     },
+    "open_transaction": null,
     "checked_source_digest": "sha256:..."
   }
 }
@@ -155,7 +157,7 @@ cells: 1
 ```
 
 ```json
-{"project":"/absolute/path/to/project","records":1,"cells":1,"roots":1}
+{"project":"/absolute/path/to/project","records":1,"cells":1,"roots":1,"store_snapshot":{"profile_version":"data.generation.v1","store_uid":"store_00000000000000000000000000000001","catalog_digest":"sha256:...","commit":{"commit_id":1,"catalog_epoch":1,"source_digest":"sha256:...","layout_epoch":0,"engine_profile_digest":"77944eb86c08b665"},"open_transaction":null,"checked_source_digest":"sha256:..."}}
 ```
 
 Both counts are a full store scan; they are exact, not estimates.
@@ -188,15 +190,18 @@ render as one member identity, for example `app::Status::archived`.
 path plus base64 of the value bytes:
 
 ```json
-{"project":"/absolute/path/to/project","cells":[{"path":"^counter(1).value","value_b64":"NDI="}]}
+{"project":"/absolute/path/to/project","store_snapshot":{"profile_version":"data.generation.v1","store_uid":"store_00000000000000000000000000000001","catalog_digest":"sha256:...","commit":{"commit_id":1,"catalog_epoch":1,"source_digest":"sha256:...","layout_epoch":0,"engine_profile_digest":"77944eb86c08b665"},"open_transaction":null,"checked_source_digest":"sha256:..."},"cells":[{"path":"^counter(1).value","value_b64":"NDI="}]}
 ```
 
 `--format jsonl` streams one cell object per line, then a summary line:
 
 ```jsonl
 {"path":"^counter(1).value","value_b64":"NDI="}
-{"kind":"summary","cells":1}
+{"kind":"summary","cells":1,"store_snapshot":{"profile_version":"data.generation.v1","store_uid":"store_00000000000000000000000000000001","catalog_digest":"sha256:...","commit":{"commit_id":1,"catalog_epoch":1,"source_digest":"sha256:...","layout_epoch":0,"engine_profile_digest":"77944eb86c08b665"},"open_transaction":null,"checked_source_digest":"sha256:..."}}
 ```
+
+The JSON envelope and JSONL summary include `store_snapshot`, the versioned
+Marrow data generation DTO for the store read.
 
 Paths in text use Marrow path syntax: `^root` for a root, `.name` for a field
 or layer, and `(key)` for a record identity or keyed-layer key. A composite
@@ -246,6 +251,7 @@ store and exits `2`.
   "presence": "value_only",
   "value_b64": "NDI=",
   "store_snapshot": {
+    "profile_version": "data.generation.v1",
     "store_uid": "store_00000000000000000000000000000001",
     "catalog_digest": "sha256:...",
     "commit": {
@@ -255,6 +261,7 @@ store and exits `2`.
       "layout_epoch": 0,
       "engine_profile_digest": "77944eb86c08b665"
     },
+    "open_transaction": null,
     "checked_source_digest": "sha256:..."
   }
 }
@@ -349,12 +356,12 @@ prints a single `ok:` line to stdout. `--format json` wraps the findings in an
 envelope; `--format jsonl` streams one envelope per finding plus a summary:
 
 ```json
-{"project":"/absolute/path/to/project","cells":1,"problems":[{"code":"data.decode","help":null,"kind":"tooling","message":"stored value is not a canonical int form","source_span":{"path":"^counter(1).value"}}]}
+{"project":"/absolute/path/to/project","cells":1,"store_snapshot":{"profile_version":"data.generation.v1","store_uid":"store_00000000000000000000000000000001","catalog_digest":"sha256:...","commit":{"commit_id":1,"catalog_epoch":1,"source_digest":"sha256:...","layout_epoch":0,"engine_profile_digest":"77944eb86c08b665"},"open_transaction":null,"checked_source_digest":"sha256:..."},"problems":[{"code":"data.decode","help":null,"kind":"tooling","message":"stored value is not a canonical int form","source_span":{"path":"^counter(1).value"}}]}
 ```
 
 ```jsonl
 {"code":"data.decode","help":null,"kind":"tooling","message":"stored value is not a canonical int form","source_span":{"path":"^counter(1).value"}}
-{"kind":"summary","problems":1,"cells":1}
+{"kind":"summary","problems":1,"cells":1,"store_snapshot":{"profile_version":"data.generation.v1","store_uid":"store_00000000000000000000000000000001","catalog_digest":"sha256:...","commit":{"commit_id":1,"catalog_epoch":1,"source_digest":"sha256:...","layout_epoch":0,"engine_profile_digest":"77944eb86c08b665"},"open_transaction":null,"checked_source_digest":"sha256:..."}}
 ```
 
 These findings have no source line, so the location is a `path` field rather

@@ -25,18 +25,35 @@ pub(super) fn data_integrity(args: &[String]) -> ExitCode {
     };
     let (cells, problems) = match &store {
         Some(store) => match count_integrity_problems(store, &program) {
-            Ok(counts) => counts,
+            Ok((cells, problems)) => (cells, problems),
             Err(error) => return super::report_store_error(error, format),
         },
         None => (0, 0),
     };
+    let store_snapshot = match (&store, format) {
+        (Some(store), CheckFormat::Json | CheckFormat::Jsonl) => {
+            match super::data_snapshot_stamp(&program, store) {
+                Ok(stamp) => Some(stamp),
+                Err(error) => return super::report_store_error(error, format),
+            }
+        }
+        _ => None,
+    };
 
     if let Some(store) = &store {
-        if let Err(error) = report_integrity(&dir, cells, problems, store, &program, format) {
+        if let Err(error) = report_integrity(
+            &dir,
+            cells,
+            problems,
+            store,
+            &program,
+            format,
+            store_snapshot.as_ref(),
+        ) {
             return super::report_data_output_error(error, format);
         }
     } else {
-        report_empty_integrity(&dir, format);
+        report_empty_integrity(&dir, format, None);
     }
     if problems == 0 {
         ExitCode::SUCCESS
@@ -52,6 +69,7 @@ fn report_integrity(
     store: &TreeStore,
     program: &marrow_check::CheckedProgram,
     format: CheckFormat,
+    store_snapshot: Option<&marrow_check::tooling::DataSnapshotStamp>,
 ) -> Result<(), super::DataOutputError> {
     match format {
         CheckFormat::Text => {
@@ -62,31 +80,41 @@ fn report_integrity(
                     .map_err(super::DataOutputError::from)?;
             }
         }
-        CheckFormat::Json => write_integrity_json(dir, cells, store, program)?,
+        CheckFormat::Json => write_integrity_json(dir, cells, store, program, store_snapshot)?,
         CheckFormat::Jsonl => {
             write_integrity_problems_jsonl(store, program).map_err(super::DataOutputError::from)?;
             write_json(json!({
                 "kind": "summary",
                 "cells": cells,
                 "problems": problems,
+                "store_snapshot": store_snapshot
+                    .map(marrow_json::data_generation_stamp_to_json),
             }));
         }
     }
     Ok(())
 }
 
-fn report_empty_integrity(dir: &str, format: CheckFormat) {
+fn report_empty_integrity(
+    dir: &str,
+    format: CheckFormat,
+    store_snapshot: Option<&marrow_check::tooling::DataSnapshotStamp>,
+) {
     match format {
         CheckFormat::Text => println!("ok: {dir} integrity verified (0 cells)"),
         CheckFormat::Json => write_json(json!({
             "project": crate::project_json_path(dir),
             "cells": 0,
             "problems": [],
+            "store_snapshot": store_snapshot
+                .map(marrow_json::data_generation_stamp_to_json),
         })),
         CheckFormat::Jsonl => write_json(json!({
             "kind": "summary",
             "cells": 0,
             "problems": 0,
+            "store_snapshot": store_snapshot
+                .map(marrow_json::data_generation_stamp_to_json),
         })),
     }
 }
@@ -123,6 +151,7 @@ fn write_integrity_json(
     cells: usize,
     store: &TreeStore,
     program: &marrow_check::CheckedProgram,
+    store_snapshot: Option<&marrow_check::tooling::DataSnapshotStamp>,
 ) -> Result<(), super::DataOutputError> {
     let stdout = io::stdout();
     let mut out = stdout.lock();
@@ -133,6 +162,12 @@ fn write_integrity_json(
             serde_json::to_writer(&mut *out, &crate::project_json_path(dir))
                 .map_err(super::DataOutputError::from_json)?;
             write!(out, ",\"cells\":{cells}")?;
+            write!(out, ",\"store_snapshot\":")?;
+            serde_json::to_writer(
+                &mut *out,
+                &store_snapshot.map(marrow_json::data_generation_stamp_to_json),
+            )
+            .map_err(super::DataOutputError::from_json)?;
             Ok(())
         },
         "problems",

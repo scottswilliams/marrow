@@ -5,7 +5,7 @@ boundary needs. It exists to keep `marrow run --format json`, trace, data
 integrity, store-backed data inspection, surface reads, computed reads,
 generated writes, actions, operation envelopes, and descriptor export from
 copying run envelopes, run diagnostics, run result rendering, saved-key,
-data-snapshot, surface descriptor/result rendering, checked surface
+data-generation, surface descriptor/result rendering, checked surface
 read/computed-read request decode, generated write request-body decode, and
 action argument/result rendering. Surface descriptors
 include checked read/computed-read/action aliases as labels for later route or
@@ -28,9 +28,12 @@ and local trees fault at the CLI boundary as `run.entry_surface`. The enum form
 renders its stable `Enum::member` spelling — the reorder-invariant
 `render_name` form that print/string/interpolation produce — and `int` values
 remain JSON numbers for compatibility with current CLI consumers. Its
-data-snapshot DTO
-renders the shared `store_snapshot` object for `marrow data roots|get`, including
-the store UID, catalog digest, optional commit stamp, and checked source digest.
+data-generation DTO
+renders the shared `store_snapshot` object for `marrow data roots|get|stats`,
+`marrow data dump --format json`, dump JSONL summaries, `marrow data integrity
+--format json`, and integrity JSONL summaries, including the profile version,
+store UID, catalog digest, optional commit stamp, open transaction stamp, and
+checked source digest.
 Its surface DTOs render `marrow-run` surface records, pages, values,
 identities, and commit-bound typed cursors with accepted catalog IDs, store
 commit IDs, typed keys, base64 bytes, and lossless strings for integers,
@@ -170,7 +173,7 @@ cursor error path.
 - `crates/marrow-json/src/run.rs` — bounded run result, run diagnostic, and
   run-fact DTOs.
 - `crates/marrow-json/src/lib.rs` — `saved_key_to_json`,
-  `data_snapshot_stamp_to_json`, `DataSnapshotJson`, and `DataCommitJson`.
+  `data_generation_stamp_to_json`, `DataGenerationJson`, and `DataCommitJson`.
 - `crates/marrow-json/src/surface.rs` and `crates/marrow-json/src/surface/` —
   surface ABI descriptor DTOs, operation catalog and route binding validation,
   surface read and computed-read result DTOs, checked surface read/computed-read

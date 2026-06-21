@@ -5,8 +5,8 @@ use std::process::ExitCode;
 
 use marrow_check::CheckedProgram;
 use marrow_check::tooling::{
-    StampedData, count_data_records, count_orphan_cells, data_roots_in_store, render_data_value,
-    stamped_data_roots_in_store, visit_data_records,
+    StampedData, count_data_records, count_orphan_cells, data_roots_in_store, data_snapshot_stamp,
+    render_data_value, stamped_data_roots_in_store, visit_data_records,
 };
 use marrow_store::StoreError;
 use marrow_store::tree::TreeStore;
@@ -457,7 +457,7 @@ fn data_roots(args: &[String]) -> ExitCode {
                 "roots": roots,
                 "store_snapshot": store_snapshot
                     .as_ref()
-                    .map(marrow_json::data_snapshot_stamp_to_json),
+                    .map(marrow_json::data_generation_stamp_to_json),
             }));
         }
     }
@@ -499,6 +499,15 @@ fn data_stats(args: &[String]) -> ExitCode {
         None => (0, 0, 0),
     };
     warn_on_hidden_orphans(&program, &store);
+    let store_snapshot = match (&store, format) {
+        (Some(store), CheckFormat::Json | CheckFormat::Jsonl) => {
+            match data_snapshot_stamp(&program, store) {
+                Ok(stamp) => Some(stamp),
+                Err(error) => return report_store_error(error, format),
+            }
+        }
+        _ => None,
+    };
     match format {
         CheckFormat::Text => {
             println!("roots: {roots}");
@@ -511,6 +520,9 @@ fn data_stats(args: &[String]) -> ExitCode {
                 "roots": roots,
                 "records": records,
                 "cells": cells,
+                "store_snapshot": store_snapshot
+                    .as_ref()
+                    .map(marrow_json::data_generation_stamp_to_json),
             }));
         }
     }
@@ -541,10 +553,20 @@ fn data_dump(args: &[String]) -> ExitCode {
         None => 0,
     };
     warn_on_hidden_orphans(&program, &store);
+    let store_snapshot = match (&store, format) {
+        (Some(store), CheckFormat::Json | CheckFormat::Jsonl) => {
+            match data_snapshot_stamp(&program, store) {
+                Ok(stamp) => Some(stamp),
+                Err(error) => return report_store_error(error, format),
+            }
+        }
+        _ => None,
+    };
     let result = match format {
         CheckFormat::Text => render_dump_text(&program, &store, records).map_err(Into::into),
-        CheckFormat::Json => render_dump_json(&dir, &program, &store),
-        CheckFormat::Jsonl => render_dump_jsonl(&program, &store, records).map_err(Into::into),
+        CheckFormat::Json => render_dump_json(&dir, &program, &store, store_snapshot.as_ref()),
+        CheckFormat::Jsonl => render_dump_jsonl(&program, &store, records, store_snapshot.as_ref())
+            .map_err(Into::into),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -576,11 +598,16 @@ fn render_dump_json(
     dir: &str,
     program: &CheckedProgram,
     store: &Option<TreeStore>,
+    store_snapshot: Option<&marrow_check::tooling::DataSnapshotStamp>,
 ) -> Result<(), DataOutputError> {
     match store {
-        Some(store) => write_dump_json(dir, program, store),
+        Some(store) => write_dump_json(dir, program, store, store_snapshot),
         None => {
-            write_json(json!({ "project": crate::project_json_path(dir), "cells": [] }));
+            write_json(json!({
+                "project": crate::project_json_path(dir),
+                "cells": [],
+                "store_snapshot": serde_json::Value::Null,
+            }));
             Ok(())
         }
     }
@@ -590,6 +617,7 @@ fn render_dump_jsonl(
     program: &CheckedProgram,
     store: &Option<TreeStore>,
     records: usize,
+    store_snapshot: Option<&marrow_check::tooling::DataSnapshotStamp>,
 ) -> Result<(), StoreError> {
     if let Some(store) = store {
         visit_data_records(program, store, |record| {
@@ -597,7 +625,12 @@ fn render_dump_jsonl(
             Ok(())
         })?;
     }
-    write_json(json!({ "kind": "summary", "cells": records }));
+    write_json(json!({
+        "kind": "summary",
+        "cells": records,
+        "store_snapshot": store_snapshot
+            .map(marrow_json::data_generation_stamp_to_json),
+    }));
     Ok(())
 }
 
@@ -605,6 +638,7 @@ fn write_dump_json(
     dir: &str,
     program: &CheckedProgram,
     store: &TreeStore,
+    store_snapshot: Option<&marrow_check::tooling::DataSnapshotStamp>,
 ) -> Result<(), DataOutputError> {
     let stdout = io::stdout();
     let mut out = stdout.lock();
@@ -612,8 +646,14 @@ fn write_dump_json(
         &mut out,
         |out| {
             write!(out, "\"project\":")?;
-            serde_json::to_writer(out, &crate::project_json_path(dir))
-                .map_err(DataOutputError::from_json)
+            serde_json::to_writer(&mut *out, &crate::project_json_path(dir))
+                .map_err(DataOutputError::from_json)?;
+            write!(out, ",\"store_snapshot\":")?;
+            serde_json::to_writer(
+                &mut *out,
+                &store_snapshot.map(marrow_json::data_generation_stamp_to_json),
+            )
+            .map_err(DataOutputError::from_json)
         },
         "cells",
         |emit| {

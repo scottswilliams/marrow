@@ -7,7 +7,7 @@ use marrow_store::StoreError;
 use marrow_store::key::SavedKey;
 use serde::{Deserialize, Serialize};
 
-use crate::DataSnapshotJson;
+use crate::DataGenerationJson;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "value", rename_all = "snake_case")]
@@ -64,7 +64,7 @@ pub struct DataChildrenPageJson {
     pub children: Vec<DataChildJson>,
     pub truncated: bool,
     pub cursor: Option<DataKeyJson>,
-    pub store_snapshot: Option<DataSnapshotJson>,
+    pub store_snapshot: Option<DataGenerationJson>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -72,7 +72,7 @@ pub struct DataChildViewsPageJson {
     pub children: Vec<DataChildViewJson>,
     pub truncated: bool,
     pub cursor: Option<DataKeyJson>,
-    pub store_snapshot: Option<DataSnapshotJson>,
+    pub store_snapshot: Option<DataGenerationJson>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -81,7 +81,7 @@ pub struct DataReadResultJson {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub value: Option<String>,
     pub value_truncated: bool,
-    pub store_snapshot: Option<DataSnapshotJson>,
+    pub store_snapshot: Option<DataGenerationJson>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -297,7 +297,7 @@ impl From<StampedData<DataChildrenPage>> for DataChildrenPageJson {
             children: page.children.into_iter().map(DataChildJson::from).collect(),
             truncated: page.truncated,
             cursor: page.cursor.map(DataKeyJson::from),
-            store_snapshot: Some(DataSnapshotJson::from(&stamped.stamp)),
+            store_snapshot: Some(DataGenerationJson::from(&stamped.stamp)),
         }
     }
 }
@@ -313,7 +313,7 @@ impl From<StampedData<DataChildrenPage>> for DataChildViewsPageJson {
                 .collect(),
             truncated: page.truncated,
             cursor: page.cursor.map(DataKeyJson::from),
-            store_snapshot: Some(DataSnapshotJson::from(&stamped.stamp)),
+            store_snapshot: Some(DataGenerationJson::from(&stamped.stamp)),
         }
     }
 }
@@ -329,7 +329,7 @@ impl From<StampedData<DataPreviewReadResult>> for DataReadResultJson {
             presence: DataPresenceJson::from(data.presence),
             value,
             value_truncated,
-            store_snapshot: Some(DataSnapshotJson::from(&stamped.stamp)),
+            store_snapshot: Some(DataGenerationJson::from(&stamped.stamp)),
         }
     }
 }
@@ -459,6 +459,8 @@ mod tests {
     use marrow_store::key::SavedKey;
     use serde_json::json;
 
+    use crate::DATA_GENERATION_PROFILE_VERSION;
+
     use super::*;
 
     #[test]
@@ -568,6 +570,7 @@ mod tests {
                 "truncated": true,
                 "cursor": { "kind": "int", "value": 1 },
                 "store_snapshot": {
+                    "profile_version": DATA_GENERATION_PROFILE_VERSION,
                     "store_uid": null,
                     "catalog_digest": null,
                     "commit": null,
@@ -594,6 +597,7 @@ mod tests {
                 "value": "\"aaaaaaaa\"",
                 "value_truncated": true,
                 "store_snapshot": {
+                    "profile_version": DATA_GENERATION_PROFILE_VERSION,
                     "store_uid": null,
                     "catalog_digest": null,
                     "commit": null,

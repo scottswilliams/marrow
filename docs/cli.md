@@ -713,7 +713,7 @@ $ marrow data roots ./proj
 ^books
 
 $ marrow data roots --format json ./proj
-{"project":"/absolute/path/to/proj","roots":["books"],"store_snapshot":{"store_uid":"store_00000000000000000000000000000001","catalog_digest":"sha256:...","commit":{"commit_id":1,"catalog_epoch":1,"source_digest":"sha256:...","layout_epoch":0,"engine_profile_digest":"77944eb86c08b665"},"checked_source_digest":"sha256:..."}}
+{"project":"/absolute/path/to/proj","roots":["books"],"store_snapshot":{"profile_version":"data.generation.v1","store_uid":"store_00000000000000000000000000000001","catalog_digest":"sha256:...","commit":{"commit_id":1,"catalog_epoch":1,"source_digest":"sha256:...","layout_epoch":0,"engine_profile_digest":"77944eb86c08b665"},"open_transaction":null,"checked_source_digest":"sha256:..."}}
 ```
 
 `store_snapshot` is `null` when no store-backed read occurs. Inside a present
@@ -735,7 +735,7 @@ records: 1
 cells: 2
 
 $ marrow data stats --format json ./proj
-{"project":"/absolute/path/to/proj","records":1,"cells":2,"roots":1}
+{"project":"/absolute/path/to/proj","records":1,"cells":2,"roots":1,"store_snapshot":{"profile_version":"data.generation.v1","store_uid":"store_00000000000000000000000000000001","catalog_digest":"sha256:...","commit":{"commit_id":1,"catalog_epoch":1,"source_digest":"sha256:...","layout_epoch":0,"engine_profile_digest":"77944eb86c08b665"},"open_transaction":null,"checked_source_digest":"sha256:..."}}
 ```
 
 ### `data dump`
@@ -762,7 +762,7 @@ $ marrow data dump --format jsonl ./proj
 {"path":"^books(1).author","value_b64":"…"}
 {"path":"^books(1).loanedTo","value_b64":"…"}
 {"path":"^books(1).state","value_b64":"…"}
-{"kind":"summary","cells":4}
+{"kind":"summary","cells":4,"store_snapshot":{"profile_version":"data.generation.v1","store_uid":"store_00000000000000000000000000000001","catalog_digest":"sha256:...","commit":{"commit_id":1,"catalog_epoch":1,"source_digest":"sha256:...","layout_epoch":0,"engine_profile_digest":"77944eb86c08b665"},"open_transaction":null,"checked_source_digest":"sha256:..."}}
 ```
 
 ### `data integrity`
@@ -817,7 +817,7 @@ $ marrow data get ./proj '^books(1).loanedTo'
 ^authors(1)
 
 $ marrow data get --format json ./proj '^books(1).title'
-{"path":"^books(1).title","presence":"value_only","value_b64":"U21hbGwgR29kcw==","store_snapshot":{"store_uid":"store_00000000000000000000000000000001","catalog_digest":"sha256:...","commit":{"commit_id":1,"catalog_epoch":1,"source_digest":"sha256:...","layout_epoch":0,"engine_profile_digest":"77944eb86c08b665"},"checked_source_digest":"sha256:..."}}
+{"path":"^books(1).title","presence":"value_only","value_b64":"U21hbGwgR29kcw==","store_snapshot":{"profile_version":"data.generation.v1","store_uid":"store_00000000000000000000000000000001","catalog_digest":"sha256:...","commit":{"commit_id":1,"catalog_epoch":1,"source_digest":"sha256:...","layout_epoch":0,"engine_profile_digest":"77944eb86c08b665"},"open_transaction":null,"checked_source_digest":"sha256:..."}}
 
 $ marrow data get ./proj '^books(99).title'
 (absent)

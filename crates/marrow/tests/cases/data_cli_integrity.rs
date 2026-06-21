@@ -18,10 +18,11 @@ use marrow_store::tree::{DataPathSegment as StoreDataPathSegment, TreeStore};
 use marrow_store::value::SUPPORTED_DATE_MAX_DAYS;
 use support::write;
 use support_data::{
-    checked_place, checked_program, delete_tree_path, encode_identity_keys, field_path,
-    integrity_problem, json, keyed_field_path, marrow, member_path_catalog_id, native_project,
-    seeded_project, write_orphan_cell, write_record_presence, write_tree_node, write_tree_value,
-    write_tree_value_without_node, write_tree_values,
+    assert_stable_store_snapshot_eq, assert_store_snapshot, checked_place, checked_program,
+    delete_tree_path, encode_identity_keys, field_path, integrity_problem, json, keyed_field_path,
+    marrow, member_path_catalog_id, native_project, seeded_project, write_orphan_cell,
+    write_record_presence, write_tree_node, write_tree_value, write_tree_value_without_node,
+    write_tree_values,
 };
 use support_evolve::{
     REQUIRED_BASELINE_SOURCE, REQUIRED_DEFAULT_SOURCE, commit_catalog, native_books_project,
@@ -335,6 +336,7 @@ fn data_integrity_passes_on_a_healthy_seeded_project() {
     let (_project, dir) = seeded_project("data-integrity-ok");
     let output = marrow(&["data", "integrity", &dir]);
     let json_output = marrow(&["data", "integrity", "--format", "json", &dir]);
+    let jsonl_output = marrow(&["data", "integrity", "--format", "jsonl", &dir]);
 
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let stdout = String::from_utf8(output.stdout).expect("utf8");
@@ -344,6 +346,16 @@ fn data_integrity_passes_on_a_healthy_seeded_project() {
     let value = support::json(json_output.stdout);
     assert_eq!(value["cells"], serde_json::json!(1));
     assert!(value.get("records").is_none(), "{value}");
+    assert_store_snapshot(&value);
+
+    assert_eq!(jsonl_output.status.code(), Some(0), "{jsonl_output:?}");
+    let stdout = String::from_utf8(jsonl_output.stdout).expect("utf8");
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines.len(), 1, "{stdout}");
+    let summary: serde_json::Value = serde_json::from_str(lines[0]).expect("summary json");
+    assert_eq!(summary["kind"], serde_json::json!("summary"));
+    assert_eq!(summary["cells"], serde_json::json!(1));
+    assert_store_snapshot(&summary);
 }
 
 #[test]
@@ -369,7 +381,11 @@ fn data_integrity_reads_backup_while_live_store_is_locked() {
     ]);
 
     assert_eq!(backup.status.code(), Some(0), "{backup:?}");
-    assert_eq!(support::json(backup.stdout), live);
+    let backup = support::json(backup.stdout);
+    assert_eq!(backup["project"], live["project"]);
+    assert_eq!(backup["cells"], live["cells"]);
+    assert_eq!(backup["problems"], live["problems"]);
+    assert_stable_store_snapshot_eq(&backup, &live);
 }
 
 #[test]

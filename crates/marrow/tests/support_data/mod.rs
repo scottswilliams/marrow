@@ -38,6 +38,11 @@ pub(crate) fn integrity_problem(value: &serde_json::Value, code: &str) -> serde_
 
 pub(crate) fn assert_store_snapshot(value: &serde_json::Value) {
     let snapshot = &value["store_snapshot"];
+    assert_eq!(
+        snapshot["profile_version"],
+        serde_json::json!("data.generation.v1"),
+        "{snapshot}"
+    );
     assert!(snapshot["store_uid"].is_string(), "{snapshot}");
     assert!(snapshot["catalog_digest"].is_string(), "{snapshot}");
     assert!(snapshot["checked_source_digest"].is_string(), "{snapshot}");

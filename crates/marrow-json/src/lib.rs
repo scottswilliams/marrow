@@ -1,7 +1,7 @@
 //! JSON DTOs for Marrow's current machine-readable surfaces.
 //!
 //! This crate owns the bounded run result/error DTOs, run facts, saved-key
-//! shape, and data snapshot shape used in tooling reports, plus checked surface
+//! shape, and data generation shape used in tooling reports, plus checked surface
 //! ABI descriptor DTOs, read request/result DTOs, generated write
 //! request/result DTOs, surface action request/result DTOs, operation
 //! envelopes, and descriptor-derived surface route manifests. Surface read DTOs
@@ -34,6 +34,7 @@ const ENTRY_RETURN_JSON_NODE_CAP: usize = 256;
 const ENTRY_RETURN_JSON_STRING_CAP: usize = 8 * 1024;
 const ENTRY_RETURN_JSON_BYTES_CAP: usize = (ENTRY_RETURN_JSON_STRING_CAP / 4) * 3;
 const ENTRY_RETURN_JSON_KEY_COUNT_CAP: usize = 32;
+pub const DATA_GENERATION_PROFILE_VERSION: &str = "data.generation.v1";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum EntryReturnJsonError {
@@ -41,7 +42,8 @@ enum EntryReturnJsonError {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct DataSnapshotJson {
+pub struct DataGenerationJson {
+    pub profile_version: String,
     pub store_uid: Option<String>,
     pub catalog_digest: Option<String>,
     pub commit: Option<DataCommitJson>,
@@ -258,13 +260,14 @@ fn bounded_saved_key_to_json(key: &SavedKey) -> run::EntryReturnSavedKeyJson {
     }
 }
 
-pub fn data_snapshot_stamp_to_json(stamp: &DataSnapshotStamp) -> serde_json::Value {
-    serde_json::to_value(DataSnapshotJson::from(stamp)).expect("data snapshot DTO serializes")
+pub fn data_generation_stamp_to_json(stamp: &DataSnapshotStamp) -> serde_json::Value {
+    serde_json::to_value(DataGenerationJson::from(stamp)).expect("data generation DTO serializes")
 }
 
-impl From<&DataSnapshotStamp> for DataSnapshotJson {
+impl From<&DataSnapshotStamp> for DataGenerationJson {
     fn from(stamp: &DataSnapshotStamp) -> Self {
         Self {
+            profile_version: DATA_GENERATION_PROFILE_VERSION.to_string(),
             store_uid: stamp.store_uid.as_ref().map(|uid| uid.as_str().to_string()),
             catalog_digest: stamp.store_catalog_digest.clone(),
             commit: stamp.store_commit.as_ref().map(DataCommitJson::from),
@@ -309,8 +312,9 @@ pub(crate) fn lower_hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        DataSnapshotJson, data_snapshot_stamp_to_json, entry_run_facts_to_json, run_error_to_json,
-        run_output_to_json, run_session_error_to_json, saved_key_to_json,
+        DATA_GENERATION_PROFILE_VERSION, DataGenerationJson, data_generation_stamp_to_json,
+        entry_run_facts_to_json, run_error_to_json, run_output_to_json, run_session_error_to_json,
+        saved_key_to_json,
     };
     use std::fs;
     use std::num::NonZeroUsize;
@@ -371,7 +375,7 @@ mod tests {
     }
 
     #[test]
-    fn data_snapshot_stamp_json_matches_cli_shape() {
+    fn data_generation_json_matches_cli_shape() {
         let stamp = DataSnapshotStamp {
             store_uid: Some(StoreUid::from_entropy_bytes([1; 16])),
             store_catalog_digest: Some("sha256:catalog".to_string()),
@@ -387,8 +391,9 @@ mod tests {
         };
 
         assert_eq!(
-            serde_json::to_value(DataSnapshotJson::from(&stamp)).unwrap(),
+            serde_json::to_value(DataGenerationJson::from(&stamp)).unwrap(),
             json!({
+                "profile_version": DATA_GENERATION_PROFILE_VERSION,
                 "store_uid": "store_01010101010101010101010101010101",
                 "catalog_digest": "sha256:catalog",
                 "commit": {
@@ -405,7 +410,7 @@ mod tests {
     }
 
     #[test]
-    fn data_snapshot_stamp_json_preserves_null_metadata_fields() {
+    fn data_generation_json_preserves_null_metadata_fields() {
         let stamp = DataSnapshotStamp {
             store_uid: None,
             store_catalog_digest: None,
@@ -415,8 +420,9 @@ mod tests {
         };
 
         assert_eq!(
-            data_snapshot_stamp_to_json(&stamp),
+            data_generation_stamp_to_json(&stamp),
             json!({
+                "profile_version": DATA_GENERATION_PROFILE_VERSION,
                 "store_uid": null,
                 "catalog_digest": null,
                 "commit": null,
@@ -427,7 +433,7 @@ mod tests {
     }
 
     #[test]
-    fn data_snapshot_stamp_json_renders_open_transaction() {
+    fn data_generation_json_renders_open_transaction() {
         let stamp = DataSnapshotStamp {
             store_uid: None,
             store_catalog_digest: None,
@@ -439,8 +445,9 @@ mod tests {
         };
 
         assert_eq!(
-            data_snapshot_stamp_to_json(&stamp),
+            data_generation_stamp_to_json(&stamp),
             json!({
+                "profile_version": DATA_GENERATION_PROFILE_VERSION,
                 "store_uid": null,
                 "catalog_digest": null,
                 "commit": null,
