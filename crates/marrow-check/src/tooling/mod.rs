@@ -5,6 +5,7 @@ use marrow_store::StoreError;
 pub mod data;
 pub mod integrity;
 pub mod signatures;
+pub mod symbols;
 mod type_annotations;
 
 pub use data::{
@@ -43,6 +44,7 @@ pub use signatures::{
     intrinsic_callable_signature, intrinsic_callable_signature_for_file,
     intrinsic_completion_callables, resource_constructor_signature,
 };
+pub use symbols::{SourceSymbol, SourceSymbolKind, source_symbols};
 pub use type_annotations::{IdentityTypeAnnotation, identity_type_annotations};
 
 #[derive(Debug)]
