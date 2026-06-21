@@ -86,6 +86,13 @@ pub struct SourceProjectModuleHoverFact {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceModulePathDefinitionFact {
+    pub module: String,
+    pub source_file: PathBuf,
+    pub span: SourceSpan,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SourceSchemaHoverFact {
     Resource(SourceResourceHoverFact),
     Enum(SourceEnumHoverFact),
@@ -273,6 +280,20 @@ pub fn source_module_path_hover_fact_at(
         return Some(fact);
     }
     project_module_path_hover_fact(snapshot, index, file, offset, &path)
+}
+
+pub fn source_module_path_definition_fact_at(
+    snapshot: &AnalysisSnapshot,
+    index: &BindingIndex,
+    file: &Path,
+    offset: usize,
+) -> Option<SourceModulePathDefinitionFact> {
+    let analyzed = snapshot.files.iter().find(|f| f.path == file)?;
+    let path = module_path_at(&analyzed.source, offset)?;
+    if standard_library_module_path_hover_fact(snapshot, file, &path).is_some() {
+        return None;
+    }
+    project_module_path_definition_fact(snapshot, index, file, offset, &path)
 }
 
 pub fn source_schema_hover_fact_at(
@@ -619,10 +640,71 @@ fn project_module_path_hover_fact(
     ))
 }
 
+fn project_module_path_definition_fact(
+    snapshot: &AnalysisSnapshot,
+    index: &BindingIndex,
+    file: &Path,
+    offset: usize,
+    path: &ModulePathAt,
+) -> Option<SourceModulePathDefinitionFact> {
+    if index.definition(file, offset).is_some() {
+        return None;
+    }
+
+    if !path.context.is_declaration() && path.cursor_segment + 1 >= path.segments.len() {
+        return None;
+    }
+
+    let analyzed = snapshot
+        .files
+        .iter()
+        .find(|analyzed| analyzed.path == file)?;
+    let expanded = crate::expand_unique_import_alias(&analyzed.parsed.file, &path.segments).ok()?;
+    let cursor_segment_count = expanded_cursor_segment_count(path, &expanded)?;
+    let module =
+        project_module_prefix_at_cursor(snapshot, &expanded, path.context, cursor_segment_count)?;
+
+    Some(SourceModulePathDefinitionFact {
+        module: module.name.clone(),
+        source_file: module.source_file.clone(),
+        span: module.span,
+    })
+}
+
+fn expanded_cursor_segment_count(path: &ModulePathAt, expanded: &[String]) -> Option<usize> {
+    if expanded.len() < path.segments.len() {
+        return None;
+    }
+    let leading_segment_count = expanded.len() - path.segments.len() + 1;
+    if path.cursor_segment == 0 {
+        Some(leading_segment_count)
+    } else {
+        Some(leading_segment_count + path.cursor_segment)
+    }
+}
+
 fn best_project_module_prefix<'a>(
     snapshot: &'a AnalysisSnapshot,
     expanded: &[String],
     context: ModulePathContext,
+) -> Option<&'a ModuleFact> {
+    project_module_prefix(snapshot, expanded, context, None)
+}
+
+fn project_module_prefix_at_cursor<'a>(
+    snapshot: &'a AnalysisSnapshot,
+    expanded: &[String],
+    context: ModulePathContext,
+    cursor_segment_count: usize,
+) -> Option<&'a ModuleFact> {
+    project_module_prefix(snapshot, expanded, context, Some(cursor_segment_count))
+}
+
+fn project_module_prefix<'a>(
+    snapshot: &'a AnalysisSnapshot,
+    expanded: &[String],
+    context: ModulePathContext,
+    segment_count: Option<usize>,
 ) -> Option<&'a ModuleFact> {
     let max_len = if context.is_declaration() {
         expanded.len()
@@ -637,6 +719,7 @@ fn best_project_module_prefix<'a>(
         .filter(|module| {
             let count = module.name.split("::").count();
             count <= max_len
+                && segment_count.is_none_or(|segment_count| count == segment_count)
                 && module
                     .name
                     .split("::")
