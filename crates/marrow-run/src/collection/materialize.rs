@@ -8,7 +8,7 @@ use crate::local_collection::{
     enumerate_reversed_local_keys_call_arg, materialize_local_collection_dir,
 };
 use crate::stdlib::check_key_collection;
-use crate::value::Value;
+use crate::value::{Sequence, Value};
 
 use super::{Direction, durable_collection_value};
 
@@ -59,9 +59,9 @@ pub(crate) fn reversed_materialized(
             span,
         ));
     };
-    Ok(Value::Sequence(
+    Ok(Value::Sequence(Sequence::dense(
         rows.into_iter().map(|(_, value)| value).collect(),
-    ))
+    )))
 }
 
 pub(crate) fn reversed_keys(
@@ -70,7 +70,7 @@ pub(crate) fn reversed_keys(
     env: &mut Env<'_>,
 ) -> Result<Value, RuntimeError> {
     if let Some(keys) = enumerate_reversed_local_keys_call_arg(layer, span, env)? {
-        return Ok(Value::Sequence(keys));
+        return Ok(Value::Sequence(Sequence::dense(keys)));
     }
     check_key_collection(layer, span)?;
     Err(durable_collection_value(span))

@@ -95,6 +95,7 @@ pub(crate) fn eval_string_sequence(
         return Err(type_error("expected a string sequence", span));
     };
     items
+        .into_values()
         .into_iter()
         .map(|value| match value {
             Value::Str(text) => Ok(text),

@@ -1364,7 +1364,7 @@ pub(crate) fn surface_action_value_to_json(
         },
         Value::Sequence(items) => SurfaceActionValueJson::Sequence {
             values: items
-                .iter()
+                .values()
                 .map(|item| surface_action_value_to_json(program, item))
                 .collect::<Result<Vec<_>, _>>()?,
         },
@@ -1456,7 +1456,7 @@ pub(crate) fn surface_computed_read_value_to_json(
         (marrow_check::EntrySurfaceValueShape::Sequence(element), Value::Sequence(items)) => {
             Ok(SurfaceComputedReadValueJson::Sequence {
                 values: items
-                    .iter()
+                    .values()
                     .map(|item| surface_computed_read_value_to_json(program, Some(element), item))
                     .collect::<Result<Vec<_>, _>>()?,
             })

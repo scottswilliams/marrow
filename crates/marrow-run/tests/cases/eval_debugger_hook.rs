@@ -14,7 +14,7 @@ use marrow_check::{
 use marrow_run::{
     CheckedEntryCall, DEBUG_VALUE_DEFAULT_PAGE_LIMIT, DEBUG_VALUE_MAX_PAGE_LIMIT,
     DebugFrameSnapshot, DebugValue, DebugValueFilter, DebugValuePage, Frame, Host, RunOutput,
-    RuntimeError, StepHook, Value, WriteTarget,
+    RuntimeError, Sequence, StepHook, Value, WriteTarget,
 };
 use marrow_store::key::SavedKey;
 use marrow_store::tree::TreeStore;
@@ -737,11 +737,11 @@ fn frame_rejects_debug_expression_at_wrong_stop_with_shadowed_live_locals() {
 
 #[test]
 fn debug_value_pages_and_filters_use_marrow_labels() {
-    let sequence = DebugValue::from_value(Value::Sequence(vec![
+    let sequence = DebugValue::from_value(Value::Sequence(Sequence::dense(vec![
         Value::Int(10),
         Value::Int(20),
         Value::Int(30),
-    ]));
+    ])));
     assert_eq!(sequence.preview(), "sequence[3]");
     assert_eq!(sequence.child_counts().unwrap().indexed, Some(3));
     let first_page = sequence.children(DebugValuePage::new(0, 1), DebugValueFilter::Indexed);
@@ -763,11 +763,11 @@ fn debug_value_pages_and_filters_use_marrow_labels() {
             .is_empty()
     );
 
-    let large_sequence = DebugValue::from_value(Value::Sequence(
+    let large_sequence = DebugValue::from_value(Value::Sequence(Sequence::dense(
         (0..DEBUG_VALUE_DEFAULT_PAGE_LIMIT + 1)
             .map(|value| Value::Int(value as i64))
             .collect(),
-    ));
+    )));
     let debug_text = format!("{large_sequence:?}");
     assert!(debug_text.contains("sequence[101]"), "{debug_text}");
     assert!(!debug_text.contains("Runtime"), "{debug_text}");
@@ -818,12 +818,12 @@ fn debug_value_pages_and_filters_use_marrow_labels() {
 
 #[test]
 fn debug_value_snapshots_bound_nested_child_materialization() {
-    let nested = Value::Sequence(
+    let nested = Value::Sequence(Sequence::dense(
         (0..DEBUG_VALUE_MAX_PAGE_LIMIT + 1)
             .map(|value| Value::Int(value as i64))
             .collect(),
-    );
-    let root = DebugValue::from_value(Value::Sequence(vec![nested]));
+    ));
+    let root = DebugValue::from_value(Value::Sequence(Sequence::dense(vec![nested])));
     let children = root.children(DebugValuePage::new(0, 1), DebugValueFilter::Indexed);
 
     assert_eq!(children.len(), 1);
@@ -1690,7 +1690,7 @@ fn display_debug_renders_scalars_and_structured_previews() {
     // renderer refuses these).
     assert_eq!(Value::Bytes(vec![1, 2, 3]).display_debug(), "bytes[3]");
     assert_eq!(
-        Value::Sequence(vec![Value::Int(1), Value::Int(2)]).display_debug(),
+        Value::Sequence(Sequence::dense(vec![Value::Int(1), Value::Int(2)])).display_debug(),
         "sequence[2]"
     );
 

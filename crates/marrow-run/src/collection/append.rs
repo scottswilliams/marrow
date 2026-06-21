@@ -5,14 +5,14 @@ use marrow_store::key::SavedKey;
 use marrow_syntax::SourceSpan;
 
 use crate::env::{AssignError, Env, TraversedLayer};
-use crate::error::{RUN_TYPE, RuntimeError, assign_error, overflow, unsupported, write_fault};
+use crate::error::{RUN_TYPE, RuntimeError, assign_error, unsupported, write_fault};
 use crate::expr::eval_expr;
 use crate::index_maintenance::IndexWriteContext;
 use crate::path::{direct_root_place, lower};
 use crate::statement::coerce_error_code_value;
 use crate::store::{DataAddress, LayerAddress};
 use crate::value::{Value, identity_value, value_to_leaf};
-use crate::write::{next_id, next_layer_pos, plan_layer_leaf_write};
+use crate::write::{next_after, next_id, next_layer_pos, plan_layer_leaf_write};
 
 pub(crate) fn eval_next_id(
     args: &[ExecArg],
@@ -76,8 +76,9 @@ fn eval_local_append(
     let Some(Value::Sequence(mut items)) = env.lookup(name).cloned() else {
         return Err(unsupported("appending to this path", span));
     };
-    items.push(appended);
-    let pos = i64::try_from(items.len()).map_err(|_| overflow(span))?;
+    let highest = items.highest_position().unwrap_or(0);
+    let pos = next_after(highest).map_err(|error| write_fault(error, span))?;
+    items.append(pos, appended);
     env.assign(name, Value::Sequence(items))
         .map_err(|error| assign_error(name, error, *target_span))?;
     Ok(Some(Value::Int(pos)))

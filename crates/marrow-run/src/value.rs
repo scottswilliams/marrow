@@ -44,9 +44,12 @@ pub enum Value {
     /// form (use `std::bytes::base64Encode`).
     Bytes(Vec<u8>),
     Enum(EnumValue),
-    /// An ordered, in-memory `sequence[T]` value, e.g. from `std::text::split`.
-    /// Iterated by a `for` loop; not itself a scalar saved value.
-    Sequence(Vec<Value>),
+    /// An in-memory `sequence[T]` value: a 1-based integer-keyed local tree, the same
+    /// shape `^`-saved sequences carry. A materializing producer (`std::text::split`,
+    /// `values`/`keys`) builds a dense `1..n`, while a bound `var xs: sequence` may
+    /// grow holes through a positional write past the dense range or a delete, exactly
+    /// as the saved side does. Iterated by a `for` loop; not itself a scalar saved value.
+    Sequence(Sequence),
     LocalTree(Vec<LocalTreeEntry>),
     /// A materialized resource tree: its present top-level fields, in schema
     /// order. Produced by a whole-resource read and consumed by a whole-resource
@@ -54,6 +57,104 @@ pub enum Value {
     Resource(Vec<(String, Value)>),
     /// A store identity: its checked root plus lowered key segments in declared order.
     Identity(IdentityValue),
+}
+
+/// A 1-based integer-keyed local sequence held as its populated positions in
+/// ascending key order. Holes are absent positions, not stored entries, so a
+/// positional write past the dense range or a delete leaves a gap that iteration,
+/// `count`, and a positional read all skip — the same stored-only, gap-skipping,
+/// key-ordered contract a saved sequence guarantees, with no in-memory-versus-saved
+/// distinction. The invariant — positions strictly ascending and at least `1` — is
+/// owned here, so every producer and consumer goes through these methods.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Sequence(Vec<(i64, Value)>);
+
+impl Sequence {
+    /// A dense `1..n` sequence from values in order, the shape every materializing
+    /// producer builds.
+    pub fn dense(values: Vec<Value>) -> Self {
+        Self(
+            values
+                .into_iter()
+                .enumerate()
+                .map(|(index, value)| (index as i64 + 1, value))
+                .collect(),
+        )
+    }
+
+    /// The number of populated positions, skipping holes.
+    pub(crate) fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// The value at `position`, or `None` when the position is a hole or non-positive.
+    pub(crate) fn get(&self, position: i64) -> Option<&Value> {
+        self.find(position).map(|index| &self.0[index].1)
+    }
+
+    /// Write `value` at `position`, replacing any existing entry or inserting a new one
+    /// in key order. A non-positive position addresses no node and is rejected by the
+    /// caller before reaching here.
+    pub(crate) fn set(&mut self, position: i64, value: Value) {
+        match self.0.binary_search_by_key(&position, |(key, _)| *key) {
+            Ok(index) => self.0[index].1 = value,
+            Err(index) => self.0.insert(index, (position, value)),
+        }
+    }
+
+    /// Remove the entry at `position`, returning whether one was present. Deleting a
+    /// hole removes nothing.
+    pub(crate) fn remove(&mut self, position: i64) -> bool {
+        match self.find(position) {
+            Some(index) => {
+                self.0.remove(index);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// The highest populated position, or `None` when empty. Callers allocate the
+    /// next append position one past this through the shared key-space allocator, so
+    /// the strictly-ascending, exhaustion-faulting contract has a single owner.
+    pub(crate) fn highest_position(&self) -> Option<i64> {
+        self.0.last().map(|(key, _)| *key)
+    }
+
+    /// Store `value` at `position`, which the caller has allocated strictly above
+    /// every existing key. Append never fills a hole, so this only ever extends the
+    /// tail and the ascending invariant holds without re-sorting.
+    pub(crate) fn append(&mut self, position: i64, value: Value) {
+        debug_assert!(
+            self.0.last().is_none_or(|(last, _)| position > *last),
+            "append position must exceed every existing key"
+        );
+        self.0.push((position, value));
+    }
+
+    /// The populated positions in ascending key order.
+    pub(crate) fn positions(&self) -> impl Iterator<Item = i64> + '_ {
+        self.0.iter().map(|(key, _)| *key)
+    }
+
+    /// The stored values in ascending position order.
+    pub fn values(&self) -> impl Iterator<Item = &Value> {
+        self.0.iter().map(|(_, value)| value)
+    }
+
+    /// The `(position, value)` rows in ascending position order.
+    pub(crate) fn rows(&self) -> &[(i64, Value)] {
+        &self.0
+    }
+
+    /// Consume the sequence into its stored values in ascending position order.
+    pub(crate) fn into_values(self) -> Vec<Value> {
+        self.0.into_iter().map(|(_, value)| value).collect()
+    }
+
+    fn find(&self, position: i64) -> Option<usize> {
+        self.0.binary_search_by_key(&position, |(key, _)| *key).ok()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

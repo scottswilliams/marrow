@@ -12,8 +12,8 @@ use crate::error::{RuntimeError, type_error};
 use crate::expr::eval_expr;
 use crate::path::{KeyRole, lower_keys};
 use crate::statement::coerce_error_code_value;
-use crate::value::Value;
 use crate::value::identity_value;
+use crate::value::{Sequence, Value};
 
 pub(crate) fn bind_arguments(
     params: &[CheckedParam],
@@ -170,7 +170,7 @@ pub(crate) fn eval_identity_constructor(
 
 pub(crate) fn default_value(ty: &Type) -> Option<Value> {
     Some(match ty {
-        Type::Sequence(_) => Value::Sequence(Vec::new()),
+        Type::Sequence(_) => Value::Sequence(Sequence::default()),
         Type::Scalar(ScalarType::Int) => Value::Int(0),
         Type::Scalar(ScalarType::Bool) => Value::Bool(false),
         Type::Scalar(ScalarType::Str) => Value::Str(String::new()),
@@ -228,7 +228,7 @@ mod default_value_tests {
         );
         assert_eq!(
             default_value(&Type::Sequence(Box::new(Type::Scalar(ScalarType::Int)))),
-            Some(Value::Sequence(Vec::new()))
+            Some(Value::Sequence(crate::value::Sequence::default()))
         );
         assert_eq!(default_value(&Type::Identity("books".into())), None);
         assert_eq!(default_value(&Type::Named("Book".into())), None);

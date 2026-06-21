@@ -179,10 +179,12 @@ impl DebugValue {
                 runtime_value_preview(value),
                 DebugCapturedChildKind::Indexed,
                 items.len(),
+                // A sequence holds its populated 1-based positions; the preview labels
+                // each child by its stored position so a hole is visible as a gap.
                 items
+                    .rows()
                     .iter()
-                    .enumerate()
-                    .map(|(index, item)| (DebugChildName::Index(index), item)),
+                    .map(|(position, item)| (DebugChildName::Index((position - 1) as usize), item)),
                 depth,
                 budget,
             ),

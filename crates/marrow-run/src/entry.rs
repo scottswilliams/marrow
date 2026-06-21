@@ -30,7 +30,8 @@ use crate::expr::eval_expr;
 use crate::host::{Host, StepHook};
 use crate::stdlib::parse_rfc3339_instant_nanos;
 use crate::value::{
-    RunOutput, RunOutputSink, Value, enum_value_from_member, value_scalar_type, value_to_key,
+    RunOutput, RunOutputSink, Sequence, Value, enum_value_from_member, value_scalar_type,
+    value_to_key,
 };
 
 struct ForwardOutput<'a> {
@@ -1010,11 +1011,14 @@ fn canonical_entry_value_impl(
             enum_value_from_member(program.facts(), value.member_id).map(Value::Enum)
         }
         CheckedRuntimeValueType::Sequence(element) => match value {
+            // The entry boundary marshals a sequence as its stored values in position
+            // order, skipping holes, so canonicalization densifies to those values.
             Value::Sequence(items) => items
+                .into_values()
                 .into_iter()
                 .map(|item| canonical_entry_value_impl(program, element, item))
                 .collect::<Option<Vec<_>>>()
-                .map(Value::Sequence),
+                .map(|values| Value::Sequence(Sequence::dense(values))),
             _ => None,
         },
         CheckedRuntimeValueType::Identity { root, .. } => match value {
@@ -1171,7 +1175,7 @@ fn decode_protocol_sequence(
         .iter()
         .map(|value| decode_entry_protocol_value(program, element, name, value))
         .collect::<Result<Vec<_>, _>>()
-        .map(Value::Sequence)
+        .map(|values| Value::Sequence(Sequence::dense(values)))
 }
 
 fn decode_protocol_identity_arg(
@@ -1301,7 +1305,7 @@ fn decode_entry_sequence(
         )));
     }
     if values == ["[]"] {
-        return Ok(Value::Sequence(Vec::new()));
+        return Ok(Value::Sequence(Sequence::default()));
     }
     if values.contains(&"[]") {
         return Err(entry_argument(format!(
@@ -1312,7 +1316,7 @@ fn decode_entry_sequence(
         .into_iter()
         .map(|value| decode_entry_value(program, element, name, value))
         .collect::<Result<Vec<_>, _>>()
-        .map(Value::Sequence)
+        .map(|values| Value::Sequence(Sequence::dense(values)))
 }
 
 fn entry_sequence_element_supported(ty: &CheckedRuntimeValueType) -> bool {

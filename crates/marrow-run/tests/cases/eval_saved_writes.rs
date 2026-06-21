@@ -44,6 +44,60 @@ fn a_field_write_updates_saved_data() {
     assert_eq!(outcome.value, Some(Value::Str("Mort".into())));
 }
 
+/// A program exercising sparse positional write and delete over a saved sequence,
+/// the operations a local sequence must mirror.
+const SAVED_SEQUENCE: &str = "\
+resource Doc
+    title: string
+    tags: sequence[string]
+store ^docs(id: int): Doc
+
+pub fn sparse(id: int): string
+    ^docs(id).title = \"t\"
+    append(^docs(id).tags, \"a\")
+    ^docs(id).tags(5) = \"sparse\"
+    const at5: string = ^docs(id).tags(5) ?? \"none\"
+    const at3: string = ^docs(id).tags(3) ?? \"hole\"
+    const n: int = count(^docs(id).tags)
+    return $\"{at5};{at3};{n}\"
+
+pub fn drop(id: int): string
+    ^docs(id).title = \"t\"
+    append(^docs(id).tags, \"x\")
+    append(^docs(id).tags, \"y\")
+    append(^docs(id).tags, \"z\")
+    delete ^docs(id).tags(2)
+    const gone: string = ^docs(id).tags(2) ?? \"absent\"
+    const n: int = count(^docs(id).tags)
+    const at: int = append(^docs(id).tags, \"w\")
+    var positions: string = \"\"
+    for pos in ^docs(id).tags
+        positions = $\"{positions}{pos};\"
+    return $\"{gone};{n};{at};{positions}\"
+";
+
+#[test]
+fn saved_sequence_sparse_write_and_delete_match_the_local_contract() {
+    let program = checked_program(SAVED_SEQUENCE);
+    let store = TreeStore::memory();
+    // The saved sparse write yields the same `value;hole;count` a local sequence does.
+    let sparse = run_entry(
+        &store,
+        checked_entry!(&program, "test::sparse", Value::Int(1)),
+    )
+    .expect("sparse write");
+    assert_eq!(sparse.value, Some(Value::Str("sparse;hole;2".into())));
+    // The saved delete leaves a hole, count drops to the stored entries, append lands
+    // past the highest position, and iteration skips the deleted position — identical
+    // to the local-sequence delete test.
+    let drop = run_entry(
+        &store,
+        checked_entry!(&program, "test::drop", Value::Int(2)),
+    )
+    .expect("delete");
+    assert_eq!(drop.value, Some(Value::Str("absent;2;4;1;3;4;".into())));
+}
+
 /// A program that writes and reads a `Log` error code through a dynamic value.
 const ERROR_CODE_WRITER: &str = "\
 resource Log

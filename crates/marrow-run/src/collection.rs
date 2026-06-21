@@ -11,7 +11,7 @@ use crate::local_collection::{
 };
 use crate::read::keys_argument;
 use crate::stdlib::check_key_collection;
-use crate::value::Value;
+use crate::value::{Sequence, Value};
 
 mod append;
 mod materialize;
@@ -67,7 +67,7 @@ pub(crate) fn eval_keys(
 ) -> Result<Value, RuntimeError> {
     let path = single_path_arg(args, "keys", span)?;
     if let Some(keys) = enumerate_local_keys_call_arg(path, span, env)? {
-        return Ok(Value::Sequence(keys));
+        return Ok(Value::Sequence(Sequence::dense(keys)));
     }
     check_key_collection(path, span)?;
     Err(durable_collection_value(span))
@@ -104,9 +104,9 @@ fn eval_values_materialized(
         return Err(durable_collection_value(span));
     }
     let rows = materialize_local_collection_dir(eval_expr(path, env)?, Direction::Ascending, span)?;
-    Ok(Value::Sequence(
+    Ok(Value::Sequence(Sequence::dense(
         rows.into_iter().map(|(_, value)| value).collect(),
-    ))
+    )))
 }
 
 pub(crate) fn eval_reversed(
@@ -139,15 +139,14 @@ fn reversed_in_memory(
     env: &mut Env<'_>,
 ) -> Result<Value, RuntimeError> {
     match eval_expr(expr, env)? {
-        Value::Sequence(mut items) => {
-            items.reverse();
-            Ok(Value::Sequence(items))
+        Value::Sequence(items) => {
+            let mut values = items.into_values();
+            values.reverse();
+            Ok(Value::Sequence(Sequence::dense(values)))
         }
-        Value::LocalTree(entries) => Ok(Value::Sequence(enumerate_local_collection_dir(
-            Value::LocalTree(entries),
-            Direction::Descending,
-            span,
-        )?)),
+        Value::LocalTree(entries) => Ok(Value::Sequence(Sequence::dense(
+            enumerate_local_collection_dir(Value::LocalTree(entries), Direction::Descending, span)?,
+        ))),
         _ => Err(unsupported(
             "reversing this value (expected an iterable)",
             span,

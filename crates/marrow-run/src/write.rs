@@ -657,7 +657,11 @@ fn resolve_store_identity(
     Ok(())
 }
 
-fn next_after(highest: i64) -> Result<i64, WriteError> {
+/// Allocate the position one past `highest`, the single owner of the 1-based
+/// key-space-exhaustion contract. `nextId`, saved `append`, and local sequence
+/// `append` all route here, so a position past `i64::MAX` raises the same
+/// catchable `write.id_overflow` fault rather than wrapping.
+pub(crate) fn next_after(highest: i64) -> Result<i64, WriteError> {
     highest.checked_add(1).ok_or_else(|| WriteError {
         code: WRITE_ID_OVERFLOW,
         message: "the integer key space is exhausted; the highest key is i64::MAX".into(),

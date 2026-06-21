@@ -418,7 +418,7 @@ pub(crate) fn eval_collection(
 ) -> Result<Vec<Value>, RuntimeError> {
     if is_value_view(iterable) {
         return match eval_expr(iterable, env)? {
-            Value::Sequence(items) => Ok(items),
+            Value::Sequence(items) => Ok(items.into_values()),
             _ => Err(unsupported("iterating this value", iterable.span())),
         };
     }

@@ -4,10 +4,10 @@ use marrow_syntax::SourceSpan;
 
 use crate::collection::{Direction, absent_read};
 use crate::env::Env;
-use crate::error::{RuntimeError, assign_error, overflow, type_error, unsupported};
+use crate::error::{RUN_ABSENT, RuntimeError, assign_error, overflow, type_error, unsupported};
 use crate::expr::eval_expr;
 use crate::read::reversed_argument;
-use crate::value::{LocalTreeEntry, Value, saved_key_to_value, value_to_key};
+use crate::value::{LocalTreeEntry, Sequence, Value, saved_key_to_value, value_to_key};
 
 pub(crate) fn eval_local_collection_read(
     name: &str,
@@ -16,7 +16,7 @@ pub(crate) fn eval_local_collection_read(
     env: &mut Env<'_>,
 ) -> Result<Option<Value>, RuntimeError> {
     match env.lookup(name).cloned() {
-        Some(Value::Sequence(items)) => read_local_sequence(items, args, span, env).map(Some),
+        Some(Value::Sequence(items)) => read_local_sequence(&items, args, span, env).map(Some),
         Some(Value::LocalTree(entries)) => {
             let keys = eval_local_keys(args, span, env)?;
             entries
@@ -39,18 +39,9 @@ pub(crate) fn eval_local_collection_write(
 ) -> Result<bool, RuntimeError> {
     match env.lookup(name).cloned() {
         Some(Value::Sequence(mut items)) => {
-            let index = eval_local_sequence_index(args, span, env)?;
+            let position = eval_local_sequence_position(args, span, env)?;
             let value = eval_expr(value, env)?;
-            if index == items.len() {
-                items.push(value);
-            } else if let Some(slot) = items.get_mut(index) {
-                *slot = value;
-            } else {
-                return Err(unsupported(
-                    "writing a sparse local sequence position",
-                    span,
-                ));
-            }
+            items.set(position, value);
             env.assign(name, Value::Sequence(items))
                 .map_err(|error| assign_error(name, error, span))?;
             Ok(true)
@@ -69,6 +60,39 @@ pub(crate) fn eval_local_collection_write(
             Ok(true)
         }
         _ => Ok(false),
+    }
+}
+
+/// Delete an entry from a local collection by position or key. A delete names a node
+/// to remove, so a hole, an out-of-range position, or a non-positive position
+/// addresses no node and is a tolerant no-op, the same as deleting any absent saved
+/// position. A sequence delete leaves a hole; append never reuses it.
+pub(crate) fn eval_local_collection_delete(
+    name: &str,
+    args: &[ExecArg],
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<(), RuntimeError> {
+    match env.lookup(name).cloned() {
+        Some(Value::Sequence(mut items)) => {
+            match eval_local_sequence_position(args, span, env) {
+                Ok(position) => {
+                    items.remove(position);
+                }
+                // A non-positive position addresses no node, so its delete is a no-op.
+                Err(error) if error.code() == RUN_ABSENT && error.is_catchable() => {}
+                Err(error) => return Err(error),
+            }
+            env.assign(name, Value::Sequence(items))
+                .map_err(|error| assign_error(name, error, span))
+        }
+        Some(Value::LocalTree(mut entries)) => {
+            let keys = eval_local_keys(args, span, env)?;
+            entries.retain(|entry| entry.keys != keys);
+            env.assign(name, Value::LocalTree(entries))
+                .map_err(|error| assign_error(name, error, span))
+        }
+        _ => Err(unsupported("deleting from this local value", span)),
     }
 }
 
@@ -92,8 +116,8 @@ pub(crate) fn enumerate_local_collection_dir(
     dir: Direction,
     span: SourceSpan,
 ) -> Result<Vec<Value>, RuntimeError> {
-    let mut keys = match value {
-        Value::Sequence(items) => sequence_positions(items.len(), span)?,
+    let mut keys: Vec<Value> = match value {
+        Value::Sequence(items) => items.positions().map(Value::Int).collect(),
         Value::LocalTree(entries) => {
             let mut seen = Vec::<SavedKey>::new();
             for entry in entries {
@@ -166,9 +190,10 @@ pub(crate) fn materialize_local_collection_dir(
     span: SourceSpan,
 ) -> Result<Vec<(Value, Value)>, RuntimeError> {
     let mut rows = match value {
-        Value::Sequence(items) => sequence_positions(items.len(), span)?
-            .into_iter()
-            .zip(items)
+        Value::Sequence(items) => items
+            .rows()
+            .iter()
+            .map(|(position, value)| (Value::Int(*position), value.clone()))
             .collect(),
         Value::LocalTree(entries) => entries
             .into_iter()
@@ -185,17 +210,6 @@ pub(crate) fn materialize_local_collection_dir(
     Ok(rows)
 }
 
-/// The implicit one-based positions of a local sequence as int keys.
-fn sequence_positions(len: usize, span: SourceSpan) -> Result<Vec<Value>, RuntimeError> {
-    (1..=len)
-        .map(|pos| {
-            i64::try_from(pos)
-                .map(Value::Int)
-                .map_err(|_| overflow(span))
-        })
-        .collect()
-}
-
 /// Reverse the rows for a descending walk. The whole row reverses as one, so keyed
 /// entries stay paired with their values.
 fn apply_direction<T>(rows: &mut [T], dir: Direction) {
@@ -205,40 +219,40 @@ fn apply_direction<T>(rows: &mut [T], dir: Direction) {
 }
 
 fn read_local_sequence(
-    items: Vec<Value>,
+    items: &Sequence,
     args: &[ExecArg],
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<Value, RuntimeError> {
-    let index = eval_local_sequence_index(args, span, env)?;
+    let position = eval_local_sequence_position(args, span, env)?;
     items
-        .get(index)
+        .get(position)
         .cloned()
         .ok_or_else(|| absent_read("`local sequence` is absent".into(), span))
 }
 
-/// A sequence is a 1-based integer-keyed tree. A position outside that domain —
-/// zero or negative — addresses no node, so it reads as absent like any
-/// out-of-range position, resolvable at the read site by `??`/`if const`/
-/// `exists`/`catch`. Returning the absent fault keeps the spec's promise that
-/// every positional read is maybe-present, rather than aborting an otherwise
-/// guarded read with an uncatchable type fault.
-fn eval_local_sequence_index(
+/// The 1-based integer position a local-sequence lookup addresses. A non-int key is
+/// a type fault; a zero or negative position addresses no node, so it raises the
+/// catchable absent fault — a guarded read resolves it through `??`/`if const`/
+/// `exists`/`catch`, and a write aborts before mutating the binding, keeping the
+/// spec's "resolved at the read site" promise for every int position and matching
+/// the saved side's non-positive rule.
+fn eval_local_sequence_position(
     args: &[ExecArg],
     span: SourceSpan,
     env: &mut Env<'_>,
-) -> Result<usize, RuntimeError> {
+) -> Result<i64, RuntimeError> {
     let [arg] = args else {
         return Err(type_error("a local sequence lookup takes one key", span));
     };
     reject_named_lookup_arg(arg, span)?;
-    let Value::Int(pos) = eval_expr(&arg.value, env)? else {
+    let Value::Int(position) = eval_expr(&arg.value, env)? else {
         return Err(type_error("a local sequence key must be an int", span));
     };
-    if pos < 1 {
+    if position < 1 {
         return Err(absent_read("`local sequence` is absent".into(), span));
     }
-    usize::try_from(pos - 1).map_err(|_| overflow(span))
+    Ok(position)
 }
 
 fn eval_local_keys(

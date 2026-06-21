@@ -1,8 +1,9 @@
-use marrow_check::{CheckedExpr as ExecExpr, CheckedSavedMember};
+use marrow_check::{CheckedCallTarget, CheckedExpr as ExecExpr, CheckedSavedMember};
 use marrow_syntax::SourceSpan;
 
 use crate::env::{Env, TraversedLayer};
 use crate::error::{RUN_ABSENT, RuntimeError, raise_fault, unsupported};
+use crate::local_collection::eval_local_collection_delete;
 use crate::path::{KeyRole, SavedPath, Terminal, direct_root_place, lower, lower_keys};
 use crate::store::{DataAddress, LayerAddress};
 use crate::write::{
@@ -46,6 +47,14 @@ fn dispatch_delete(
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<(), RuntimeError> {
+    if let ExecExpr::Call {
+        target: CheckedCallTarget::LocalCollection { name },
+        args,
+        ..
+    } = path
+    {
+        return eval_local_collection_delete(name, args, span, env);
+    }
     if let ExecExpr::Field { base, name, .. } = path
         && base.saved_place().is_some()
     {

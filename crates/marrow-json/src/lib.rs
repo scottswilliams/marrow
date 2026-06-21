@@ -79,7 +79,7 @@ pub fn entry_return_to_json(value: &Value) -> Result<serde_json::Value, EntryRet
         }),
         Value::Sequence(items) => {
             let values = items
-                .iter()
+                .values()
                 .map(entry_return_to_json)
                 .collect::<Result<Vec<_>, _>>()?;
             json!({ "kind": "sequence", "values": values })
@@ -163,7 +163,7 @@ mod tests {
     use std::num::NonZeroUsize;
 
     use marrow_check::tooling::{DataCommitStamp, DataSnapshotStamp, DataTransactionStamp};
-    use marrow_run::Value;
+    use marrow_run::{Sequence, Value};
     use marrow_store::Decimal;
     use marrow_store::key::SavedKey;
     use marrow_store::tree::StoreUid;
@@ -289,7 +289,7 @@ mod tests {
 
     #[test]
     fn values_render_the_run_json_surface() {
-        let value = Value::Sequence(vec![
+        let value = Value::Sequence(Sequence::dense(vec![
             Value::Int(i64::MAX),
             Value::Bool(false),
             Value::Str("title".into()),
@@ -298,8 +298,8 @@ mod tests {
             Value::Duration(1_000_000_000_000_000_002),
             Value::Instant(-1_000_000_000_000_000_002),
             Value::Bytes(vec![1, 2, 3]),
-            Value::Sequence(vec![Value::Str("nested".into())]),
-        ]);
+            Value::Sequence(Sequence::dense(vec![Value::Str("nested".into())])),
+        ]));
 
         assert_eq!(
             entry_return_to_json(&value),

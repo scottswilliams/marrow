@@ -16,7 +16,9 @@ use crate::stdlib::{
     eval_string_sequence, eval_text, int_div_floor, int_modulo, int_quotient, int_remainder,
     parse_iso8601_duration_nanos, parse_rfc3339_instant_nanos,
 };
-use crate::value::{Value, canonical_scalar_text, diagnostic_text_preview, saved_value_to_value};
+use crate::value::{
+    Sequence, Value, canonical_scalar_text, diagnostic_text_preview, saved_value_to_value,
+};
 
 pub(crate) fn eval_std(
     module: &str,
@@ -117,11 +119,11 @@ fn eval_text_split(
     };
     let text = eval_text(text, env, span)?;
     let separator = eval_text(separator, env, span)?;
-    Ok(Value::Sequence(
+    Ok(Value::Sequence(Sequence::dense(
         text.split(separator.as_str())
             .map(|part| Value::Str(part.to_string()))
             .collect(),
-    ))
+    )))
 }
 
 fn eval_text_slice(

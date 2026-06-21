@@ -3,7 +3,9 @@
 use crate::support;
 use support::*;
 
-use marrow_run::{RUN_DECIMAL_OVERFLOW, RUN_DIVIDE_BY_ZERO, RUN_OVERFLOW, RUN_TYPE, Value};
+use marrow_run::{
+    RUN_DECIMAL_OVERFLOW, RUN_DIVIDE_BY_ZERO, RUN_OVERFLOW, RUN_TYPE, Sequence, Value,
+};
 
 #[test]
 fn std_text_builtins_operate_on_strings() {
@@ -1058,7 +1060,7 @@ pub fn empty_array(items: sequence[string]): string
         run(checked_entry!(
             &program,
             "test::empty_array",
-            Value::Sequence(Vec::new())
+            Value::Sequence(Sequence::default())
         ))
         .unwrap(),
         Some(Value::Str("[]".into()))
@@ -1103,7 +1105,7 @@ pub fn empty_row(cells: sequence[string]): string
         run(checked_entry!(
             &program,
             "test::empty_row",
-            Value::Sequence(Vec::new())
+            Value::Sequence(Sequence::default())
         ))
         .unwrap(),
         Some(Value::Str(String::new()))

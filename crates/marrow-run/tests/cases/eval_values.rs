@@ -430,6 +430,123 @@ fn guards_resolve_a_non_positive_sequence_position() {
 }
 
 #[test]
+fn local_sequence_writes_a_sparse_position_past_the_end() {
+    // A local sequence is a 1-based integer-keyed tree, so writing past the dense
+    // range leaves a hole rather than faulting. `xs(5)` after one element fills
+    // position 5; positions 2..4 stay holes that read absent, exactly as a saved
+    // sequence does.
+    let program = checked_program(
+        "pub fn sparse(): string\n\
+         \x20   var xs: sequence[string]\n\
+         \x20   append(xs, \"a\")\n\
+         \x20   xs(5) = \"sparse\"\n\
+         \x20   const at5: string = xs(5) ?? \"none\"\n\
+         \x20   const at3: string = xs(3) ?? \"hole\"\n\
+         \x20   const n: int = count(xs)\n\
+         \x20   return $\"{at5};{at3};{n}\"\n",
+    );
+    // position 5 reads "sparse", the hole at 3 reads the fallback, and count is the
+    // two stored entries (1 and 5), not the highest key.
+    assert_eq!(
+        run(checked_entry!(&program, "test::sparse")).unwrap(),
+        Some(Value::Str("sparse;hole;2".into()))
+    );
+}
+
+#[test]
+fn local_sequence_iteration_visits_only_stored_positions() {
+    // After a sparse write the positions are 1 and 5; the bare loop binds those
+    // stored positions in key order and skips the holes, `values` binds their
+    // elements, and `reversed` walks them descending — the stored-only, gap-skipping
+    // walk a saved sequence guarantees.
+    let program = checked_program(
+        "pub fn walk(): string\n\
+         \x20   var xs: sequence[string]\n\
+         \x20   append(xs, \"a\")\n\
+         \x20   xs(5) = \"e\"\n\
+         \x20   var out: string = \"\"\n\
+         \x20   for pos in xs\n\
+         \x20       out = $\"{out}{pos};\"\n\
+         \x20   for value in values(xs)\n\
+         \x20       out = $\"{out}v{value};\"\n\
+         \x20   for pos in reversed(xs)\n\
+         \x20       out = $\"{out}r{pos};\"\n\
+         \x20   for pos, value in entries(xs)\n\
+         \x20       out = $\"{out}e{pos}={value};\"\n\
+         \x20   return out\n",
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::walk")).unwrap(),
+        Some(Value::Str("1;5;va;ve;r5;r1;e1=a;e5=e;".into()))
+    );
+}
+
+#[test]
+fn local_sequence_append_skips_holes_choosing_after_the_highest_position() {
+    // Append chooses one past the highest populated position, never filling a hole,
+    // matching the saved-sequence append contract. After a hole at 5, append lands
+    // at 6.
+    let program = checked_program(
+        "pub fn grow(): int\n\
+         \x20   var xs: sequence[int]\n\
+         \x20   append(xs, 1)\n\
+         \x20   xs(5) = 50\n\
+         \x20   const at: int = append(xs, 6)\n\
+         \x20   return at\n",
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::grow")).unwrap(),
+        Some(Value::Int(6))
+    );
+}
+
+#[test]
+fn local_sequence_delete_leaves_a_hole() {
+    // Deleting a position removes that entry and leaves a hole, exactly as deleting a
+    // saved sequence position does. Append after a delete does not reuse the hole,
+    // and iteration skips the deleted position.
+    let program = checked_program(
+        "pub fn drop(): string\n\
+         \x20   var xs: sequence[int]\n\
+         \x20   append(xs, 10)\n\
+         \x20   append(xs, 20)\n\
+         \x20   append(xs, 30)\n\
+         \x20   delete xs(2)\n\
+         \x20   const gone: int = xs(2) ?? -1\n\
+         \x20   const n: int = count(xs)\n\
+         \x20   const at: int = append(xs, 40)\n\
+         \x20   var positions: string = \"\"\n\
+         \x20   for pos in xs\n\
+         \x20       positions = $\"{positions}{pos};\"\n\
+         \x20   return $\"{gone};{n};{at};{positions}\"\n",
+    );
+    // position 2 reads absent, count is the two remaining stored entries, append lands
+    // at 4 (past the highest 3, not reusing the hole at 2), and iteration visits 1,3,4.
+    assert_eq!(
+        run(checked_entry!(&program, "test::drop")).unwrap(),
+        Some(Value::Str("-1;2;4;1;3;4;".into()))
+    );
+}
+
+#[test]
+fn local_sequence_delete_of_an_absent_position_is_a_no_op() {
+    // Deleting a hole or an out-of-range position removes nothing and is tolerant,
+    // the same no-op as deleting any absent saved position.
+    let program = checked_program(
+        "pub fn drop(): int\n\
+         \x20   var xs: sequence[int]\n\
+         \x20   append(xs, 10)\n\
+         \x20   delete xs(9)\n\
+         \x20   delete xs(0)\n\
+         \x20   return count(xs)\n",
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::drop")).unwrap(),
+        Some(Value::Int(1))
+    );
+}
+
+#[test]
 fn single_name_loop_over_a_local_sequence_binds_one_based_positions() {
     // A local sequence is a 1-based integer-keyed tree, so a single loop variable
     // binds its position, mirroring a saved sequence and a local keyed tree.

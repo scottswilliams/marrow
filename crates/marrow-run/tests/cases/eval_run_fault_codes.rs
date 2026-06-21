@@ -93,6 +93,56 @@ fn append_past_the_max_int_position_overflows() {
     );
 }
 
+/// A check-clean program that seeds a local `sequence` at the highest `int`
+/// position and then `append`s. A local sequence carries the same 1-based,
+/// strictly-ascending key space a saved sequence does, so allocating one past
+/// `i64::MAX` must exhaust the position space exactly as the saved side does.
+const LOCAL_APPEND_OVERFLOW_SOURCE: &str = "\
+pub fn local_append(): int
+    var xs: sequence[string]
+    xs(9223372036854775807) = \"max\"
+    return append(xs, \"next\")
+
+pub fn local_append_caught(): string
+    try
+        var xs: sequence[string]
+        xs(9223372036854775807) = \"max\"
+        const pos = append(xs, \"next\")
+        return \"uncaught\"
+    catch e: Error
+        return e.code
+";
+
+#[test]
+fn local_append_past_the_max_int_position_overflows() {
+    // A local `append` over a sequence already populated at `i64::MAX` has no
+    // successor position. It must raise the same `write.id_overflow` fault the
+    // saved append raises rather than wrapping to `i64::MIN` and corrupting the
+    // strictly-ascending key order. There is no local-versus-saved distinction.
+    let program = checked_program(LOCAL_APPEND_OVERFLOW_SOURCE);
+    let store = TreeStore::memory();
+    assert_run_error(
+        run_entry(&store, checked_entry!(&program, "test::local_append")),
+        "write.id_overflow",
+    );
+}
+
+#[test]
+fn a_local_append_overflow_is_catchable_with_the_same_dotted_code() {
+    // The local exhaustion fault is the same recoverable write fault the saved side
+    // raises: a surrounding `try`/`catch` binds the `Error`, whose `code` is the
+    // dotted `write.id_overflow`, identical to the saved-append handler's view.
+    let program = checked_program(LOCAL_APPEND_OVERFLOW_SOURCE);
+    let store = TreeStore::memory();
+    let value = run_entry(
+        &store,
+        checked_entry!(&program, "test::local_append_caught"),
+    )
+    .expect("the fault is caught")
+    .value;
+    assert_eq!(value, Some(Value::Str("write.id_overflow".into())));
+}
+
 #[test]
 fn an_id_overflow_fault_is_catchable_with_its_dotted_code() {
     // The exhaustion fault is a recoverable write fault: a surrounding `try`/`catch`
