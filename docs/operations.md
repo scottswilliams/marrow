@@ -72,7 +72,10 @@ committed `marrow.lock` is stale or collides with the live store, `doctor` names
 the regenerate step (`doctor.stale_lock`, `doctor.catalog_collision`,
 `doctor.store_lock_epoch_mismatch`): the store is authoritative, so run the
 program or `marrow evolve apply` to regenerate `marrow.lock`, then commit it. A
-corrupt lock is reported as `doctor.lock_corrupt`; restore or regenerate the file.
+corrupt lock is reported as `doctor.lock_corrupt`; delete the corrupt
+`marrow.lock` so the next run or `evolve apply` re-projects it from the
+authoritative store (a run over a corrupt lock fails closed without regenerating
+it).
 `doctor` samples saved-data integrity within a bounded cap and names the full
 `marrow data integrity` command when more is needed. See
 [cli.md](cli.md#marrow-doctor) for the finding envelope.

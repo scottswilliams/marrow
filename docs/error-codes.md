@@ -242,7 +242,7 @@ the lock — `doctor` repairs nothing.
 | Code | Meaning |
 |---|---|
 | `doctor.config_invalid` | `doctor` could not load `marrow.json`. `data.underlying_code` is usually `io.read` or `config.invalid`; fix the config and rerun the printed `marrow doctor` command. |
-| `doctor.lock_corrupt` | The committed `marrow.lock` projection exists but is malformed. `data.underlying_code` carries `catalog.lock_corrupt`; regenerate `marrow.lock` from a valid live store or restore the committed file, then run the printed `marrow check` command. |
+| `doctor.lock_corrupt` | The committed `marrow.lock` projection exists but is malformed. `data.underlying_code` carries `catalog.lock_corrupt`; delete the corrupt `marrow.lock` so the next run or `evolve apply` re-projects it from the authoritative store (a run over a corrupt lock fails closed without regenerating it), then run the printed `marrow check` command. |
 | `doctor.check_failed` | The project check summary reported diagnostics or could not load source. Run the printed `marrow check` command for the full diagnostic report. |
 | `doctor.store_locked` | The configured native store exists but a read-only open reported `store.locked`. Close the process holding the store, then rerun the printed `marrow doctor` command. |
 | `doctor.store_recovery_required` | The configured native store needs a write-capable recovery open before read-only inspection. Run the printed `marrow data recover` command. |

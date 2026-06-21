@@ -41,6 +41,8 @@ mod evolve_cli_default_backfill;
 mod evolve_cli_preview;
 #[path = "cases/evolve_cli_retire_rename.rs"]
 mod evolve_cli_retire_rename;
+#[path = "cases/evolve_cli_store_behind_lock.rs"]
+mod evolve_cli_store_behind_lock;
 #[path = "cases/evolve_unhappy_path_guide.rs"]
 mod evolve_unhappy_path_guide;
 #[path = "cases/fmt_cli.rs"]

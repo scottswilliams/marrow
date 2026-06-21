@@ -5,10 +5,11 @@ use std::path::{Component, Path, PathBuf};
 use std::process::ExitCode;
 
 use marrow_check::evolution::{EvolutionWitness, Verdict, preview};
-use marrow_run::evolution::{ApplyError, apply};
+use marrow_run::evolution::{ApplyError, FenceError, apply};
 
 use crate::{
-    load_checked_project_with_format, load_config_with_format, project_io_exit, report_simple_error,
+    CheckFormat, load_checked_project_with_format, load_config_with_format, project_io_exit,
+    report_simple_error,
 };
 
 mod args;
@@ -122,6 +123,9 @@ fn apply_cmd(raw_args: &[String]) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    if let Err(code) = guard_store_behind_committed_lock(&input.dir, &witness, input.format) {
+        return code;
+    }
     let recovery = match prepare_recovery_point(&input, &witness, &program, &store) {
         Ok(recovery) => recovery,
         Err(code) => return code,
@@ -212,6 +216,35 @@ fn guard_recovery_backup_path(
                 return Err(ExitCode::FAILURE);
             }
         }
+    }
+    Ok(())
+}
+
+/// Refuse a desynced apply: a local store behind a committed lock whose epoch high-water this
+/// single activation cannot reach. The committed lock records the accepted epoch a teammate already
+/// activated and committed; when its high-water exceeds the epoch this apply would land the store
+/// at, the intervening activations (and any retire that minted a tombstone) cannot be reconstructed
+/// locally, and minting a fresh activation below the high-water would both collide with the
+/// teammate's already-committed identity and force the lock projection to either regress or skip
+/// reserved history. The operator must catch the local store up first (re-run to seed from the lock,
+/// or restore the store) before applying. An exact catch-up to the lock's high-water is allowed, so
+/// the single-step advance a stale checkout performs against an ahead committed catalog still works.
+fn guard_store_behind_committed_lock(
+    dir: &str,
+    witness: &EvolutionWitness,
+    format: CheckFormat,
+) -> Result<(), ExitCode> {
+    let Some(lock) = crate::read_committed_lock(dir, format)? else {
+        return Ok(());
+    };
+    let (_, target_epoch) = witness.epoch_range();
+    if lock.epoch_high_water > target_epoch {
+        let fence = FenceError::StoreBehind {
+            stored: target_epoch,
+            accepted: lock.epoch_high_water,
+        };
+        report_simple_error(fence.code(), &fence.message(), format);
+        return Err(ExitCode::FAILURE);
     }
     Ok(())
 }

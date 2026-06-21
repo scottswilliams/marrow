@@ -185,6 +185,19 @@ fn doctor_aggregates_locked_store_and_corrupt_lock() {
         marrow_catalog::LOCK_CORRUPT,
         "{value:#?}"
     );
+    // A run over a corrupt lock fails closed and does NOT regenerate it, so the remedy must
+    // advise deleting the corrupt lock — the only action that unblocks the next run to re-project
+    // it from the authoritative store. It must not loop the operator back through a run that
+    // cannot succeed against the corrupt lock.
+    let remedy = corrupt["remedy"].as_str().expect("remedy is a string");
+    assert!(
+        remedy.contains("delete") && remedy.contains("marrow.lock"),
+        "the lock_corrupt remedy must advise deleting the corrupt lock: {remedy}"
+    );
+    assert!(
+        !remedy.contains("regenerate marrow.lock with a run"),
+        "the remedy must not advise a run that fails closed over the corrupt lock: {remedy}"
+    );
 }
 
 #[test]

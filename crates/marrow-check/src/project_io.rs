@@ -294,32 +294,38 @@ pub fn recheck_source_project_analysis_against_store_catalog(
 /// makes the ledger re-derivable from the store alone, so a deleted lock is recovered with its
 /// retired ids and a retired id is never reissued even across lock loss. Active entries project as
 /// lock entries; reserved entries project as ledger tombstones, never both, so the same id never
-/// appears as an active entry and a tombstone. The projection fingerprints each entry through the
-/// [`CatalogLock`] owner and writes the canonical projection, idempotent on the bytes a prior
-/// projection wrote.
+/// appears as an active entry and a tombstone.
+///
+/// The epoch high-water and the retired-id ledger are monotonic and append-only by contract, so
+/// the projection never regresses an ahead committed lock from a behind local store: it reads the
+/// existing committed lock, takes the higher of the lock's high-water and the snapshot's epoch, and
+/// unions the lock's previously-committed tombstones with the snapshot-derived ones. Without this a
+/// local store behind an ahead lock (a teammate's already-committed activation, replayed from a
+/// fresh checkout's seed) would rewind the high-water and erase a tombstone, letting a later
+/// checkout reissue a retired id to a different entity. A tombstone the snapshot has since promoted
+/// back to an active id is not re-added, so the union never resurrects an id the store now holds
+/// live. The projection writes the canonical lock atomically (temp file, fsync, rename) so a torn
+/// write can never leave a corrupt lock, and is idempotent on the bytes a converged lock holds.
 pub fn project_store_lock(
     root: &Path,
     snapshot: &marrow_catalog::CatalogMetadata,
     source_digest: &str,
 ) -> Result<(), ProjectIoError> {
-    let entries = snapshot
+    let existing = read_committed_lock(root)?;
+    let entries: Vec<marrow_catalog::LockEntry> = snapshot
         .entries
         .iter()
         .filter(|entry| entry.lifecycle == marrow_catalog::CatalogLifecycle::Active)
         .map(marrow_catalog::LockEntry::from_catalog_entry)
         .collect();
-    let ledger = snapshot
-        .entries
-        .iter()
-        .filter(|entry| entry.lifecycle != marrow_catalog::CatalogLifecycle::Active)
-        .map(|entry| {
-            marrow_catalog::LockLedgerTombstone::from_reserved_entry(entry, snapshot.epoch)
-        })
-        .collect();
+    let ledger = union_committed_ledger(existing.as_ref(), snapshot, &entries);
+    let epoch_high_water = existing.as_ref().map_or(snapshot.epoch, |lock| {
+        lock.epoch_high_water.max(snapshot.epoch)
+    });
     let lock = marrow_catalog::CatalogLock::new(
         entries,
         ledger,
-        snapshot.epoch,
+        epoch_high_water,
         source_digest.to_string(),
     )
     .map_err(|error| ProjectIoError::Catalog {
@@ -344,7 +350,84 @@ pub fn project_store_lock(
             });
         }
     }
-    fs::write(&path, desired).map_err(|error| ProjectIoError::Io { path, error })
+    write_lock_atomically(&path, &desired)
+}
+
+/// Union the snapshot's reserved tombstones with the committed lock's, so an append-only ledger
+/// never drops an id a prior projection recorded. A snapshot-derived tombstone wins on its id so a
+/// re-projection records the snapshot's authoritative high-water for an id both hold; a committed
+/// tombstone is carried forward only when the snapshot neither reserves it nor promotes it back to
+/// an active entry, keeping a retired id reserved across store loss without resurrecting one the
+/// store now holds live.
+fn union_committed_ledger(
+    existing: Option<&marrow_catalog::CatalogLock>,
+    snapshot: &marrow_catalog::CatalogMetadata,
+    active: &[marrow_catalog::LockEntry],
+) -> Vec<marrow_catalog::LockLedgerTombstone> {
+    let mut ledger: Vec<marrow_catalog::LockLedgerTombstone> = snapshot
+        .entries
+        .iter()
+        .filter(|entry| entry.lifecycle != marrow_catalog::CatalogLifecycle::Active)
+        .map(|entry| {
+            marrow_catalog::LockLedgerTombstone::from_reserved_entry(entry, snapshot.epoch)
+        })
+        .collect();
+    let snapshot_ids: std::collections::HashSet<String> =
+        ledger.iter().map(|stone| stone.id.clone()).collect();
+    let active_ids: std::collections::HashSet<&str> = active
+        .iter()
+        .map(|entry| entry.stable_id.as_str())
+        .collect();
+    if let Some(existing) = existing {
+        for stone in &existing.ledger {
+            if !snapshot_ids.contains(&stone.id) && !active_ids.contains(stone.id.as_str()) {
+                ledger.push(stone.clone());
+            }
+        }
+    }
+    ledger
+}
+
+/// Write the committed lock atomically: render to a sibling temp file in the same directory, fsync
+/// its contents, then rename it over the target. A rename within a directory is atomic on the
+/// target filesystems, so a crash mid-write leaves either the prior lock or the new one, never a
+/// torn projection a reader would reject as corrupt.
+fn write_lock_atomically(path: &Path, contents: &str) -> Result<(), ProjectIoError> {
+    let dir = path.parent().unwrap_or_else(|| Path::new("."));
+    let file_name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| marrow_project::CATALOG_FILE_NAME.to_string());
+    let temp = dir.join(format!(
+        ".{file_name}.{}.{}.tmp",
+        std::process::id(),
+        next_lock_temp_nonce()
+    ));
+    let io_error = |error: std::io::Error| ProjectIoError::Io {
+        path: temp.clone(),
+        error,
+    };
+    let mut file = fs::File::create(&temp).map_err(io_error)?;
+    use std::io::Write;
+    file.write_all(contents.as_bytes()).map_err(io_error)?;
+    file.sync_all().map_err(io_error)?;
+    drop(file);
+    if let Err(error) = fs::rename(&temp, path) {
+        fs::remove_file(&temp).ok();
+        return Err(ProjectIoError::Io {
+            path: path.to_path_buf(),
+            error,
+        });
+    }
+    Ok(())
+}
+
+/// A per-write nonce that, with the process id, keeps concurrent or rapid successive lock writes
+/// from colliding on the same temp path before the atomic rename.
+fn next_lock_temp_nonce() -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    COUNTER.fetch_add(1, Ordering::Relaxed)
 }
 
 /// The outcome of reading `marrow.lock` from a project root: absent, a valid decoded lock, a
@@ -469,7 +552,7 @@ mod tests {
 
         use marrow_catalog::{
             CatalogEntry, CatalogEntryKind, CatalogLifecycle, CatalogLock, CatalogMetadata,
-            LOCK_CORRUPT, LockEntry,
+            LOCK_CORRUPT, LockEntry, LockLedgerTombstone,
         };
         use marrow_store::tree::TreeStore;
 
@@ -608,15 +691,31 @@ mod tests {
             // A SEPARATE post-commit re-projection path DOES rewrite the lock from the
             // committed store baseline: it overwrites the disagreeing on-disk lock with a
             // valid projection of the committed store snapshot, parseable as a CatalogLock
-            // (not catalog JSON).
+            // (not catalog JSON). The store is the identity authority, so the projected active
+            // entries are the store's id-set, not the disagreeing lock's.
             project_store_lock(&root, &store_snapshot, &store_snapshot.digest)
                 .expect("re-project the committed store lock");
             let reprojected = fs::read_to_string(&lock_path).expect("lock after re-projection");
             let projected = CatalogLock::from_lock_json(&reprojected)
                 .expect("re-projection writes a valid lock projection, not catalog JSON");
+            let mut projected_ids: Vec<String> = projected
+                .entries
+                .iter()
+                .map(|entry| entry.stable_id.clone())
+                .collect();
+            projected_ids.sort();
             assert_eq!(
-                projected.epoch_high_water, store_snapshot.epoch,
-                "the re-projected lock carries the committed store epoch"
+                projected_ids,
+                id_set(&store_snapshot),
+                "the re-projected active entries bind the store id-set, not the disagreeing lock's"
+            );
+            // The high-water is monotonic: the disagreeing lock claimed epoch 999, above the
+            // store's 5, so the projection holds the higher value rather than rewinding it. A
+            // store ahead of the lock advances the high-water; a store behind it never rewinds it.
+            assert_eq!(
+                projected.epoch_high_water,
+                store_snapshot.epoch.max(999),
+                "re-projection takes the max of the committed lock's high-water and the store epoch, never regresses"
             );
 
             fs::remove_dir_all(&root).ok();
@@ -638,6 +737,177 @@ mod tests {
                 "a corrupt lock surfaces the typed lock_corrupt code"
             );
             fs::remove_dir_all(&corrupt_root).ok();
+        }
+
+        /// A retired id committed as a ledger tombstone at a high epoch. A fresh checkout seeded
+        /// from this lock reserves the id so it is never reissued.
+        fn tombstone(suffix: u8, high_water: u64) -> LockLedgerTombstone {
+            let reserved = CatalogEntry {
+                kind: CatalogEntryKind::Resource,
+                path: format!("app::Retired{suffix}"),
+                stable_id: format!("cat_{suffix:032x}"),
+                aliases: Vec::new(),
+                lifecycle: CatalogLifecycle::Reserved,
+                accepted_key_shape: None,
+                accepted_index_shape: None,
+                accepted_struct: None,
+            };
+            LockLedgerTombstone::from_reserved_entry(&reserved, high_water)
+        }
+
+        #[test]
+        fn re_projecting_an_older_snapshot_never_regresses_an_ahead_committed_lock() {
+            // A committed lock ahead of the local store: high-water epoch 9 with a retired-id
+            // tombstone. This is what a teammate already activated and committed.
+            let root = temp_root("ahead-lock-no-regress");
+            let ahead = CatalogLock::new(
+                vec![LockEntry::from_catalog_entry(&entry(
+                    CatalogEntryKind::Resource,
+                    "app::Book",
+                    1,
+                ))],
+                vec![tombstone(7, 9)],
+                9,
+                "sha256:".to_string() + &"0".repeat(64),
+            )
+            .expect("ahead lock builds");
+            let lock_path = root.join(CATALOG_FILE_NAME);
+            fs::write(
+                &lock_path,
+                ahead.to_lock_json_pretty().expect("ahead lock renders"),
+            )
+            .expect("write ahead lock");
+
+            // The local store snapshot is BEHIND: epoch 2, and it has never seen the retired id,
+            // so a projection built purely from the snapshot would carry epoch 2 and an empty
+            // ledger.
+            let behind =
+                CatalogMetadata::new(2, vec![entry(CatalogEntryKind::Resource, "app::Book", 1)])
+                    .expect("behind snapshot builds");
+
+            project_store_lock(&root, &behind, &behind.digest)
+                .expect("re-project over the ahead lock");
+
+            let written = fs::read_to_string(&lock_path).expect("lock after re-projection");
+            let result =
+                CatalogLock::from_lock_json(&written).expect("re-projection writes a valid lock");
+
+            // The high-water is monotonic: it must never rewind below the committed lock's.
+            assert_eq!(
+                result.epoch_high_water, 9,
+                "epoch_high_water must take the max of the committed lock and the snapshot, \
+                 never regress to the older snapshot's epoch"
+            );
+            // The retired-id ledger is append-only: a previously-committed tombstone must survive
+            // even though the older snapshot never reserved it, or a fresh checkout could reissue
+            // the retired id to a different entity.
+            assert!(
+                result
+                    .ledger
+                    .iter()
+                    .any(|stone| stone.id == format!("cat_{:032x}", 7)),
+                "a previously-committed retired-id tombstone must never be dropped by re-projection"
+            );
+        }
+
+        #[test]
+        fn lock_is_written_atomically_and_leaves_no_temp_artifact() {
+            // The projection writes through a sibling temp file and an atomic rename, so a torn
+            // write can never leave a corrupt lock. After a successful projection the directory
+            // holds the canonical lock and no leftover temp file: the rename consumed it.
+            let root = temp_root("atomic-write");
+            let snapshot =
+                CatalogMetadata::new(3, vec![entry(CatalogEntryKind::Resource, "app::Book", 1)])
+                    .expect("snapshot builds");
+
+            project_store_lock(&root, &snapshot, &snapshot.digest).expect("project lock");
+
+            let lock_path = root.join(CATALOG_FILE_NAME);
+            let written = fs::read_to_string(&lock_path).expect("lock present after write");
+            CatalogLock::from_lock_json(&written).expect("a complete, valid lock was written");
+
+            let leftover: Vec<String> = fs::read_dir(&root)
+                .expect("read project dir")
+                .filter_map(Result::ok)
+                .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                .filter(|name| name != CATALOG_FILE_NAME)
+                .collect();
+            assert!(
+                leftover.is_empty(),
+                "the atomic rename must leave no temp artifact behind: {leftover:?}"
+            );
+
+            // A second projection of identical bytes is idempotent: it short-circuits on the
+            // matching on-disk bytes and still leaves no temp file.
+            project_store_lock(&root, &snapshot, &snapshot.digest).expect("re-project lock");
+            let leftover_again: Vec<String> = fs::read_dir(&root)
+                .expect("read project dir")
+                .filter_map(Result::ok)
+                .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                .filter(|name| name != CATALOG_FILE_NAME)
+                .collect();
+            assert!(
+                leftover_again.is_empty(),
+                "an idempotent re-projection leaves no temp artifact: {leftover_again:?}"
+            );
+
+            fs::remove_dir_all(&root).ok();
+        }
+
+        #[test]
+        fn re_projection_unions_tombstones_and_takes_the_higher_epoch() {
+            // The committed lock carries one retired id at high-water 9; the snapshot carries a
+            // different, newer reserved id at its own epoch 4. The union must keep both, and the
+            // high-water must be the max of the two.
+            let root = temp_root("union-tombstones");
+            let committed = CatalogLock::new(
+                Vec::new(),
+                vec![tombstone(7, 9)],
+                9,
+                "sha256:".to_string() + &"0".repeat(64),
+            )
+            .expect("committed lock builds");
+            let lock_path = root.join(CATALOG_FILE_NAME);
+            fs::write(
+                &lock_path,
+                committed
+                    .to_lock_json_pretty()
+                    .expect("committed lock renders"),
+            )
+            .expect("write committed lock");
+
+            let snapshot = CatalogMetadata::new(
+                4,
+                vec![CatalogEntry {
+                    kind: CatalogEntryKind::Resource,
+                    path: "app::Dropped8".to_string(),
+                    stable_id: format!("cat_{:032x}", 8),
+                    aliases: Vec::new(),
+                    lifecycle: CatalogLifecycle::Reserved,
+                    accepted_key_shape: None,
+                    accepted_index_shape: None,
+                    accepted_struct: None,
+                }],
+            )
+            .expect("snapshot builds");
+
+            project_store_lock(&root, &snapshot, &snapshot.digest)
+                .expect("re-project unions the ledger");
+
+            let written = fs::read_to_string(&lock_path).expect("lock after re-projection");
+            let result = CatalogLock::from_lock_json(&written).expect("valid lock");
+
+            assert_eq!(result.epoch_high_water, 9, "high-water is the max of both");
+            let ids: Vec<&str> = result
+                .ledger
+                .iter()
+                .map(|stone| stone.id.as_str())
+                .collect();
+            assert!(
+                ids.contains(&format!("cat_{:032x}", 7).as_str())
+                    && ids.contains(&format!("cat_{:032x}", 8).as_str()),
+                "the union keeps both the committed and snapshot-derived tombstones: {ids:?}"
+            );
         }
     }
 }

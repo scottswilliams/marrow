@@ -164,7 +164,7 @@ fn probe_lock(root: &Path, dir: &str, findings: &mut Vec<Finding>) -> Option<Cat
             findings.push(project_error_finding(
                 "doctor.lock_corrupt",
                 "committed marrow.lock could not be read",
-                "regenerate marrow.lock with a run or evolve apply, then rerun the next command",
+                "delete the corrupt marrow.lock so the next run or evolve apply re-projects it from the authoritative store",
                 check_command(dir),
                 error,
             ));
