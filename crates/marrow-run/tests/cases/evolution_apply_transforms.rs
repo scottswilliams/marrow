@@ -355,6 +355,72 @@ fn transform_computes_new_member_per_record_and_stamps() -> Result<(), Box<dyn s
     Ok(())
 }
 
+/// A shape-neutral in-place transform of an already-accepted member, over a store
+/// already stamped at the accepted epoch under the accepted source digest, must still
+/// rewrite the data. The transform proposes no new catalog entry, so its target epoch
+/// equals the accepted epoch the store already carries, and its source digest equals the
+/// stamped one; only the transform witness distinguishes the activation from a settled
+/// store. Apply must discharge the transform — preview promises `records_to_transform`,
+/// so apply must report the same count and overwrite the target cell — not treat the
+/// matching stamp as a finished activation and silently no-op the checked migration.
+#[test]
+fn in_place_transform_over_stamped_store_rewrites_data() -> Result<(), Box<dyn std::error::Error>> {
+    let root = temp_project("apply-in-place-transform-stamped", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Book\n\
+             \x20   required title: string\n\
+             \x20   required code: int\n\
+             store ^books(id: int): Book\n\
+             evolve\n\
+             \x20   transform Book.code\n\
+             \x20       return std::text::length(old.title)\n\
+             pub fn add(title: string, code: int): Id(^books)\n\
+             \x20   return nextId(^books)\n",
+        );
+    });
+    // Commit the full schema with the evolve block, so `code` is an accepted member and
+    // the accepted source digest is the transform-variant digest. The transform recomputes
+    // an existing leaf in place: no new catalog entry, so the witness carries no proposal.
+    let program = commit_then_check(&root).expect("committed fixture");
+    let place = root_place(&program, "books")?;
+    let store = TreeStore::memory();
+    let seed = Seed {
+        store: &store,
+        place: &place,
+    };
+    seed.record(1);
+    seed.member(1, "title", Scalar::Str("encyclopedia".into()));
+    seed.member(1, "code", Scalar::Int(5));
+
+    // Stamp the store at the accepted epoch under the accepted source digest, the steady
+    // state a prior `marrow run` leaves behind. The transform's target epoch and source
+    // digest now match the stamp exactly, so a target-stamp short-circuit would skip it.
+    stamp_clean_commit(&store, &program);
+
+    let w = witness(&program, &store);
+    assert!(w.is_activatable(), "{w:#?}");
+    assert_eq!(w.counts.records_to_transform, 1);
+
+    let outcome = apply(&w, &program, &store, false, None).expect("apply succeeds");
+    assert_eq!(
+        outcome.receipt.records_transformed, 1,
+        "apply discharges the transform the preview promised"
+    );
+
+    let store_id = store_id_of(&place)?;
+    let code_id = member_catalog_id(&place, "code")?;
+    assert_eq!(
+        read_scalar(&store, &store_id, 1, &code_id, ScalarType::Int),
+        Some(Scalar::Int(12)),
+        "the transform overwrites the existing leaf with the recomputed value"
+    );
+
+    Ok(())
+}
+
 /// A transform composes with a default and a retire in one evolve block: apply
 /// computes the transform target, backfills the defaulted member, drops the retired
 /// member, and stamps once. The transform reads a sibling the retire does not touch.

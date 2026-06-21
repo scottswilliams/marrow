@@ -345,9 +345,13 @@ fn evolve_apply_noop_when_store_already_at_target() -> Result<(), Box<dyn std::e
     Ok(())
 }
 
+/// Once a transform has been applied, its `evolve` block is consumed: deleting it is the
+/// expected lifecycle, and re-applying the now-blockless source is a true no-op that
+/// preserves a later operator write the transform would otherwise overwrite. A transform
+/// kept in source is not consumed — it is a live, authoritative intent — so this asserts
+/// the deleted-block path, the one that suppresses re-running.
 #[test]
-fn evolve_apply_does_not_rerun_an_already_applied_transform()
--> Result<(), Box<dyn std::error::Error>> {
+fn evolve_apply_does_not_rerun_a_consumed_transform() -> Result<(), Box<dyn std::error::Error>> {
     let root = native_books_project(
         "evolve-apply-transform-stamped-noop",
         "module books\n\
@@ -437,6 +441,21 @@ fn evolve_apply_does_not_rerun_an_already_applied_transform()
             "the current target-state data is the value a stale apply must preserve",
         );
     }
+    // The transform is consumed: drop its evolve block, the expected lifecycle once an
+    // apply has synced the change to saved data. The durable shape is unchanged, so the
+    // blockless source checks clean and the second apply has no transform to discharge.
+    write(
+        &root,
+        "src/books.mw",
+        "module books\n\
+         resource Book\n\
+         \x20   required price: int\n\
+         \x20   required priceCents: int\n\
+         store ^books(id: int): Book\n\
+         pub fn overrideCents()\n\
+         \x20   transaction\n\
+         \x20       ^books(1).priceCents = 999\n",
+    );
     let before_second_commit = commit_metadata(&root);
 
     let second = marrow(&["evolve", "apply", root.to_str().unwrap()]);
@@ -453,7 +472,7 @@ fn evolve_apply_does_not_rerun_an_already_applied_transform()
                 ScalarType::Int
             ),
             Some(Scalar::Int(999)),
-            "a stale apply must not re-run the transform over already-activated data",
+            "re-applying a consumed transform must not overwrite the later operator write",
         );
     }
     assert_eq!(
@@ -465,6 +484,97 @@ fn evolve_apply_does_not_rerun_an_already_applied_transform()
         before_second_commit,
         commit_metadata(&root),
         "the stale no-op preserves the slim commit stamp without re-running",
+    );
+
+    Ok(())
+}
+
+/// A shape-neutral in-place transform of an already-accepted leaf, over a store a plain
+/// `marrow run` stamped at the accepted epoch, must be discharged by `evolve apply`: the
+/// transform changes no durable shape, so the store's stamp matches the target by epoch
+/// and source digest, but the transform was never run. Preview promises the transform and
+/// apply must commit it — rewriting the leaf — not read the matching stamp as a finished
+/// activation and silently drop the migration.
+#[test]
+fn evolve_apply_runs_a_shape_neutral_in_place_transform_over_a_run_stamped_store()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = native_books_project(
+        "evolve-apply-in-place-transform",
+        "module books\n\
+         resource Book\n\
+         \x20   required title: string\n\
+         \x20   required code: int\n\
+         store ^books(id: int): Book\n\
+         pub fn main()\n\
+         \x20   var b: Book\n\
+         \x20   b.title = \"encyclopedia\"\n\
+         \x20   b.code = 5\n\
+         \x20   const id: Id(^books) = nextId(^books)\n\
+         \x20   ^books(id) = b\n",
+    );
+    write(
+        &root,
+        "marrow.json",
+        r#"{ "sourceRoots": ["src"], "run": { "defaultEntry": "books::main" }, "store": { "backend": "native", "dataDir": ".data" } }"#,
+    );
+
+    // A plain run seeds one record and stamps the store at the accepted epoch under the
+    // shape digest — the steady state the in-place transform activates against.
+    let seed = marrow(&["run", root.to_str().expect("project path utf-8")]);
+    assert_eq!(seed.status.code(), Some(0), "seed run: {seed:?}");
+
+    // Swap to a shape-neutral in-place transform of the existing `code` leaf. The durable
+    // shape (resource and store) is unchanged, so the stamp still matches by source digest.
+    write(
+        &root,
+        "src/books.mw",
+        "module books\n\
+         resource Book\n\
+         \x20   required title: string\n\
+         \x20   required code: int\n\
+         store ^books(id: int): Book\n\
+         pub fn main()\n\
+         \x20   print(\"ok\")\n\
+         \n\
+         evolve\n\
+         \x20   transform Book.code\n\
+         \x20       return std::text::length(old.title)\n",
+    );
+
+    let preview = marrow(&[
+        "evolve",
+        "preview",
+        "--format",
+        "json",
+        root.to_str().expect("project path utf-8"),
+    ]);
+    assert_eq!(preview.status.code(), Some(0), "preview: {preview:?}");
+    assert_eq!(
+        support::json(preview.stdout)["records_to_transform"],
+        serde_json::json!(1),
+        "preview promises the in-place transform",
+    );
+
+    let apply = marrow(&[
+        "evolve",
+        "apply",
+        "--format",
+        "json",
+        root.to_str().expect("project path utf-8"),
+    ]);
+    assert_eq!(apply.status.code(), Some(0), "apply: {apply:?}");
+    assert_eq!(
+        support::json(apply.stdout)["records_transformed"],
+        serde_json::json!(1),
+        "apply discharges the transform the preview promised, not a silent no-op",
+    );
+
+    let dump = marrow(&["data", "dump", root.to_str().expect("project path utf-8")]);
+    assert_eq!(dump.status.code(), Some(0), "dump: {dump:?}");
+    let dumped = String::from_utf8(dump.stdout).expect("dump stdout utf8");
+    assert!(
+        dumped.contains("^books(1).code\t12"),
+        "the transform overwrites the existing leaf with the recomputed length: {dumped}",
     );
 
     Ok(())

@@ -186,17 +186,17 @@ pub fn apply(
 
 /// Whether the store already carries the exact target activation stamp this apply would
 /// publish. A matching target stamp suppresses stale transition text, but only when the
-/// recomputed witness has no default backfill left to do; a baseline stamp records
-/// identity, not defaulted data. A same-epoch store with an older source digest is not a
-/// target match, so apply still writes a metadata-only restamp for identity-preserving
-/// source reorders.
+/// witness carries no record-mutating work left to do; a baseline stamp records identity,
+/// not the data a backfill, transform, or destructive retire must write. A same-epoch
+/// store with an older source digest is not a target match, so apply still writes a
+/// metadata-only restamp for identity-preserving source reorders.
 fn store_stamped_at_target(
     witness: &EvolutionWitness,
     target_epoch: u64,
     current_epoch: Option<u64>,
     store: &TreeStore,
 ) -> Result<bool, ApplyError> {
-    if witness.counts.records_to_backfill > 0 {
+    if witness_mutates_records(witness) {
         return Ok(false);
     }
     if current_epoch != Some(target_epoch) {
@@ -219,6 +219,20 @@ fn store_stamped_at_target(
         }
         None => Ok(witness.proposal_catalog.is_none()),
     }
+}
+
+/// Whether the witness carries record-mutating work apply still owes the store. A matching
+/// target stamp records only that the catalog reached the target epoch; it never proves the
+/// per-record writes ran. A backfill, an in-place transform, or a destructive retire each
+/// rewrite or delete stored cells, so any outstanding count means the no-op short-circuit
+/// would silently drop a checked migration. Only a stamp with none of these is a settled
+/// activation apply may report without restaging.
+fn witness_mutates_records(witness: &EvolutionWitness) -> bool {
+    witness.counts.records_to_backfill > 0
+        || witness.counts.records_to_transform > 0
+        || expected_retire_counts(witness)
+            .iter()
+            .any(|(_id, count)| *count > 0)
 }
 
 /// Confirm the staged work matches the counts the witness proved, failing closed before any
