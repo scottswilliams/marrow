@@ -1,3 +1,4 @@
+use marrow_catalog::CatalogLifecycle;
 use marrow_syntax::SourceSpan;
 
 use crate::evolution::leaf_type::accepted_leaf_kind_in_facts;
@@ -9,6 +10,7 @@ use crate::{
 pub(crate) trait DataProgram {
     fn facts(&self) -> &CheckedFacts;
     fn source_digest(&self) -> String;
+    fn has_accepted_catalog_id(&self, catalog_id: &str) -> bool;
     fn root_place(&self, root: &str) -> Option<CheckedSavedPlace>;
     fn accepted_leaf_kind(&self, catalog_id: &str) -> Option<StoreLeafKind>;
 }
@@ -20,6 +22,12 @@ impl DataProgram for CheckedProgram {
 
     fn source_digest(&self) -> String {
         self.source_digest()
+    }
+
+    fn has_accepted_catalog_id(&self, catalog_id: &str) -> bool {
+        self.catalog.accepted_entries.iter().any(|entry| {
+            entry.stable_id == catalog_id && entry.lifecycle == CatalogLifecycle::Active
+        })
     }
 
     fn root_place(&self, root: &str) -> Option<CheckedSavedPlace> {
@@ -43,6 +51,10 @@ impl DataProgram for CheckedRuntimeProgram {
 
     fn source_digest(&self) -> String {
         self.source_digest().to_string()
+    }
+
+    fn has_accepted_catalog_id(&self, catalog_id: &str) -> bool {
+        CheckedRuntimeProgram::has_accepted_catalog_id(self, catalog_id)
     }
 
     fn root_place(&self, root: &str) -> Option<CheckedSavedPlace> {
@@ -70,6 +82,18 @@ pub(crate) fn inspection_root_place(
     retype_members_to_accepted(program, &mut place.root_members);
     retype_members_to_accepted(program, &mut place.members);
     Some(place)
+}
+
+pub(crate) fn inspection_root_place_by_catalog_id(
+    program: &(impl DataProgram + ?Sized),
+    store_catalog_id: &str,
+) -> Option<CheckedSavedPlace> {
+    if !program.has_accepted_catalog_id(store_catalog_id) {
+        return None;
+    }
+    checked_places(program)
+        .into_iter()
+        .find(|place| place.store_catalog_id.as_deref() == Some(store_catalog_id))
 }
 
 pub(crate) fn checked_places(program: &(impl DataProgram + ?Sized)) -> Vec<CheckedSavedPlace> {

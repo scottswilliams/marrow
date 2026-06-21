@@ -14,7 +14,7 @@ use super::program::{DataProgram, checked_places};
 use super::record_nav;
 use super::render::{pop_key, push_key, push_member};
 use super::shape::{stored_key_mismatch, tooling_catalog_id};
-use super::{DataRecord, DebugDataPayload, KeyMismatch};
+use super::{DataChildView, DataRecord, DebugDataPayload, KeyMismatch, SavedDataPathSegment};
 
 fn fold_records(running: usize, count: usize) -> Result<usize, StoreError> {
     running.checked_add(count).ok_or(StoreError::LimitExceeded {
@@ -36,6 +36,20 @@ pub fn runtime_data_roots_in_store(
     data_roots_in_store_for(program, store)
 }
 
+pub fn saved_data_root_views_in_store(
+    program: &CheckedProgram,
+    store: &TreeStore,
+) -> Result<Vec<DataChildView>, StoreError> {
+    data_root_views_in_store_for(program, store)
+}
+
+pub fn runtime_saved_data_root_views_in_store(
+    program: &CheckedRuntimeProgram,
+    store: &TreeStore,
+) -> Result<Vec<DataChildView>, StoreError> {
+    data_root_views_in_store_for(program, store)
+}
+
 fn data_roots_in_store_for(
     program: &(impl DataProgram + ?Sized),
     store: &TreeStore,
@@ -44,6 +58,28 @@ fn data_roots_in_store_for(
     for place in checked_places(program) {
         if place_has_data(&place, store)? {
             roots.push(place.root);
+        }
+    }
+    Ok(roots)
+}
+
+fn data_root_views_in_store_for(
+    program: &(impl DataProgram + ?Sized),
+    store: &TreeStore,
+) -> Result<Vec<DataChildView>, StoreError> {
+    let mut roots = Vec::new();
+    for place in checked_places(program) {
+        let Some(store_catalog_id) = place.store_catalog_id.clone() else {
+            continue;
+        };
+        if !program.has_accepted_catalog_id(&store_catalog_id) {
+            continue;
+        }
+        if place_has_data(&place, store)? {
+            roots.push(DataChildView {
+                segment: SavedDataPathSegment::Root { store_catalog_id },
+                label: place.root,
+            });
         }
     }
     Ok(roots)

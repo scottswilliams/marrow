@@ -5,14 +5,24 @@ use marrow_store::tree::{DataPathSegment as StoreDataPathSegment, TreeStore};
 use crate::tooling::ToolingError;
 use crate::{CheckedProgram, CheckedRuntimeProgram, CheckedSavedMember};
 
-use super::path::{resolve_data_path, resolve_runtime_data_path};
+use super::path::{
+    resolve_data_path, resolve_runtime_data_path, resolve_runtime_saved_data_path,
+    resolve_saved_data_path,
+};
 use super::path_error::DataPathError;
 use super::program::{DataProgram, inspection_root_place};
 use super::record_nav;
+use super::render::render_data_path_segments;
 use super::shape::stored_key_mismatch;
 use super::shape::{data_path_segment_for_member, declared_members_below_path, tooling_catalog_id};
-use super::traversal::{data_roots_in_store, runtime_data_roots_in_store};
-use super::{DataChild, DataChildrenPage, DataPathSegment, ResolvedDataPath};
+use super::traversal::{
+    data_roots_in_store, runtime_data_roots_in_store, runtime_saved_data_root_views_in_store,
+    saved_data_root_views_in_store,
+};
+use super::{
+    DataChild, DataChildView, DataChildViewsPage, DataChildrenPage, DataPathSegment,
+    ResolvedDataPath, SavedDataPathSegment,
+};
 
 /// How a resolved path's children are scanned, decided once so that both the
 /// child listing and its paging predicate read the classification the same way.
@@ -50,10 +60,24 @@ fn classify_runtime_child_scan(
     classify_child_scan_in(program, segments, resolve_runtime_data_path)
 }
 
-fn classify_child_scan_in<P>(
+fn classify_saved_child_scan(
+    program: &CheckedProgram,
+    segments: &[SavedDataPathSegment],
+) -> Result<ChildScanKind, ToolingError> {
+    classify_child_scan_in(program, segments, resolve_saved_data_path)
+}
+
+fn classify_runtime_saved_child_scan(
+    program: &CheckedRuntimeProgram,
+    segments: &[SavedDataPathSegment],
+) -> Result<ChildScanKind, ToolingError> {
+    classify_child_scan_in(program, segments, resolve_runtime_saved_data_path)
+}
+
+fn classify_child_scan_in<P, S>(
     program: &P,
-    segments: &[DataPathSegment],
-    resolve: fn(&P, &[DataPathSegment]) -> Result<Option<ResolvedDataPath>, ToolingError>,
+    segments: &[S],
+    resolve: fn(&P, &[S]) -> Result<Option<ResolvedDataPath>, ToolingError>,
 ) -> Result<ChildScanKind, ToolingError>
 where
     P: DataProgram + ?Sized,
@@ -67,11 +91,10 @@ where
     if path.storage.identity.len() < path.storage.identity_arity {
         return Ok(ChildScanKind::RecordChildren(path));
     }
-    let Some((DataPathSegment::Root(root), _)) = segments.split_first() else {
-        return Err(DataPathError::MissingRoot.into());
-    };
-    let place = inspection_root_place(program, root)
-        .ok_or_else(|| DataPathError::UnknownRoot { root: root.clone() })?;
+    let place =
+        inspection_root_place(program, path.root()).ok_or_else(|| DataPathError::UnknownRoot {
+            root: path.root().to_string(),
+        })?;
     if let Some(members) = declared_members_below_path(&place.root_members, &path.storage.data_path)
     {
         let members = members.to_vec();
@@ -119,6 +142,42 @@ pub fn runtime_data_children(
     )
 }
 
+pub fn saved_data_child_views(
+    program: &CheckedProgram,
+    store: &TreeStore,
+    segments: &[SavedDataPathSegment],
+    limit: usize,
+    resume: Option<&SavedKey>,
+) -> Result<DataChildViewsPage, ToolingError> {
+    data_child_views_in(
+        program,
+        store,
+        segments,
+        limit,
+        resume,
+        classify_saved_child_scan,
+        saved_data_root_views_in_store,
+    )
+}
+
+pub fn runtime_saved_data_child_views(
+    program: &CheckedRuntimeProgram,
+    store: &TreeStore,
+    segments: &[SavedDataPathSegment],
+    limit: usize,
+    resume: Option<&SavedKey>,
+) -> Result<DataChildViewsPage, ToolingError> {
+    data_child_views_in(
+        program,
+        store,
+        segments,
+        limit,
+        resume,
+        classify_runtime_saved_child_scan,
+        runtime_saved_data_root_views_in_store,
+    )
+}
+
 fn data_children_in<P>(
     program: &P,
     store: &TreeStore,
@@ -156,6 +215,48 @@ where
         ChildScanKind::Leaf => Err(DataPathError::NoChildScan.into()),
         ChildScanKind::KeyChildren(path) => data_key_children(store, &path, limit, resume),
         ChildScanKind::Empty => Ok(DataChildrenPage {
+            children: Vec::new(),
+            truncated: false,
+            cursor: None,
+        }),
+    }
+}
+
+fn data_child_views_in<P>(
+    program: &P,
+    store: &TreeStore,
+    segments: &[SavedDataPathSegment],
+    limit: usize,
+    resume: Option<&SavedKey>,
+    classify: fn(&P, &[SavedDataPathSegment]) -> Result<ChildScanKind, ToolingError>,
+    roots: fn(&P, &TreeStore) -> Result<Vec<DataChildView>, StoreError>,
+) -> Result<DataChildViewsPage, ToolingError>
+where
+    P: DataProgram + ?Sized,
+{
+    if limit == 0 {
+        return Err(DataPathError::ZeroLimit.into());
+    }
+    match classify(program, segments)? {
+        ChildScanKind::Roots => Ok(DataChildViewsPage {
+            children: roots(program, store)?,
+            truncated: false,
+            cursor: None,
+        }),
+        ChildScanKind::RecordChildren(path) => {
+            key_child_views(record_children(store, &path, limit, resume)?)
+        }
+        ChildScanKind::Members { path, members } => {
+            if resume.is_some() {
+                return Err(DataPathError::MembersTakeNoCursor.into());
+            }
+            member_child_views(program, store, &path, &members)
+        }
+        ChildScanKind::Leaf => Err(DataPathError::NoChildScan.into()),
+        ChildScanKind::KeyChildren(path) => {
+            key_child_views(data_key_children(store, &path, limit, resume)?)
+        }
+        ChildScanKind::Empty => Ok(DataChildViewsPage {
             children: Vec::new(),
             truncated: false,
             cursor: None,
@@ -246,6 +347,51 @@ fn member_children(
     })
 }
 
+fn member_child_views(
+    program: &(impl DataProgram + ?Sized),
+    store: &TreeStore,
+    path: &ResolvedDataPath,
+    members: &[CheckedSavedMember],
+) -> Result<DataChildViewsPage, ToolingError> {
+    let mut children = Vec::new();
+    for member in members {
+        let Some(member_catalog_id) = member.catalog_id.clone() else {
+            continue;
+        };
+        if !program.has_accepted_catalog_id(&member_catalog_id) {
+            continue;
+        }
+        let Some(catalog) = tooling_catalog_id(&member.catalog_id, "resource member")? else {
+            continue;
+        };
+        let mut data_path = path.storage.data_path.clone();
+        data_path.push(StoreDataPathSegment::Member(catalog));
+        let present = if member.is_plain_field() {
+            store
+                .read_data_value(&path.storage.store, &path.storage.identity, &data_path)?
+                .is_some()
+        } else {
+            store.data_subtree_exists(&path.storage.store, &path.storage.identity, &data_path)?
+        };
+        if present {
+            let segment = if member.is_plain_field() {
+                SavedDataPathSegment::Field { member_catalog_id }
+            } else {
+                SavedDataPathSegment::Layer { member_catalog_id }
+            };
+            children.push(DataChildView {
+                segment,
+                label: member.name.clone(),
+            });
+        }
+    }
+    Ok(DataChildViewsPage {
+        children,
+        truncated: false,
+        cursor: None,
+    })
+}
+
 fn data_key_children(
     store: &TreeStore,
     path: &ResolvedDataPath,
@@ -309,5 +455,29 @@ fn page_key_children(
         children,
         truncated: false,
         cursor: None,
+    })
+}
+
+fn key_child_views(page: DataChildrenPage) -> Result<DataChildViewsPage, ToolingError> {
+    let children = page
+        .children
+        .into_iter()
+        .map(|child| match child {
+            DataChild::Key(key) => {
+                let label = render_data_path_segments(&[DataPathSegment::Key(key.clone())]);
+                Ok(DataChildView {
+                    segment: SavedDataPathSegment::Key(key),
+                    label,
+                })
+            }
+            DataChild::Root(_) | DataChild::Field(_) | DataChild::Layer(_) => {
+                Err(DataPathError::NoChildScan.into())
+            }
+        })
+        .collect::<Result<Vec<_>, ToolingError>>()?;
+    Ok(DataChildViewsPage {
+        children,
+        truncated: page.truncated,
+        cursor: page.cursor,
     })
 }

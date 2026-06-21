@@ -750,26 +750,28 @@ impl ProjectSurfaceReadSession {
         store_stamp(&self.store)
     }
 
-    pub fn saved_data_roots(&self) -> Result<tooling::StampedData<Vec<String>>, StoreError> {
-        tooling::stamped_data_roots_in_store(&self.program, &self.store)
+    pub fn saved_data_roots(
+        &self,
+    ) -> Result<tooling::StampedData<Vec<tooling::DataChildView>>, StoreError> {
+        tooling::stamped_saved_data_root_views_in_store(&self.program, &self.store)
     }
 
     pub fn saved_data_children(
         &self,
-        segments: &[tooling::DataPathSegment],
+        segments: &[tooling::SavedDataPathSegment],
         limit: usize,
         resume: Option<&SavedKey>,
-    ) -> Result<tooling::StampedData<tooling::DataChildrenPage>, tooling::ToolingError> {
-        tooling::stamped_data_children(&self.program, &self.store, segments, limit, resume)
+    ) -> Result<tooling::StampedData<tooling::DataChildViewsPage>, tooling::ToolingError> {
+        tooling::stamped_saved_data_child_views(&self.program, &self.store, segments, limit, resume)
     }
 
     pub fn saved_data_preview(
         &self,
-        segments: &[tooling::DataPathSegment],
+        segments: &[tooling::SavedDataPathSegment],
         limit: usize,
     ) -> Result<Option<tooling::StampedData<tooling::DataPreviewReadResult>>, tooling::ToolingError>
     {
-        let Some(path) = tooling::resolve_data_path(&self.program, segments)? else {
+        let Some(path) = tooling::resolve_saved_data_path(&self.program, segments)? else {
             return Ok(None);
         };
         tooling::stamped_preview_data_path(&self.program, &self.store, &path, limit)

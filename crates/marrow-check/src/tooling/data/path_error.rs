@@ -19,6 +19,8 @@ pub enum DataPathError {
     MissingRoot,
     /// No saved root named `^{root}` is declared.
     UnknownRoot { root: String },
+    /// No accepted saved root carries this store catalog id in the checked saved tree.
+    UnknownRootCatalogId { store_catalog_id: String },
     /// More identity keys were supplied than `^{root}` declares.
     TooManyIdentityKeys { root: String },
     /// An identity key has the wrong scalar type for `^{root}`.
@@ -33,6 +35,11 @@ pub enum DataPathError {
     UnexpectedKey,
     /// No member of the named flavor exists at this point in the path.
     UnknownMember { flavor: MemberFlavor, name: String },
+    /// No accepted member of the requested flavor carries this catalog id at this point in the path.
+    UnknownMemberCatalogId {
+        flavor: MemberFlavor,
+        member_catalog_id: String,
+    },
     /// More keys were supplied than the keyed member declares.
     TooManyMemberKeys { member: String },
     /// A member key has the wrong scalar type for its declaration.
@@ -83,6 +90,9 @@ impl fmt::Display for DataPathError {
                 write!(f, "path must start with a saved root, such as `^books`")
             }
             Self::UnknownRoot { root } => write!(f, "unknown saved root `^{root}`"),
+            Self::UnknownRootCatalogId { store_catalog_id } => {
+                write!(f, "unknown saved root catalog id `{store_catalog_id}`")
+            }
             Self::TooManyIdentityKeys { root } => {
                 write!(f, "`^{root}` has too many identity keys")
             }
@@ -106,6 +116,14 @@ impl fmt::Display for DataPathError {
             Self::UnknownMember { flavor, name } => {
                 write!(f, "unknown saved {} `{name}`", flavor.noun())
             }
+            Self::UnknownMemberCatalogId {
+                flavor,
+                member_catalog_id,
+            } => write!(
+                f,
+                "unknown saved {} catalog id `{member_catalog_id}`",
+                flavor.noun()
+            ),
             Self::TooManyMemberKeys { member } => {
                 write!(f, "member `{member}` has too many keys")
             }

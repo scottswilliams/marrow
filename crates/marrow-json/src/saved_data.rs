@@ -1,7 +1,7 @@
 use marrow_check::ScalarType;
 use marrow_check::tooling::{
-    DataChild, DataChildrenPage, DataPathError, DataPathSegment, DataPresence,
-    DataPreviewReadResult, MemberFlavor, StampedData, render_data_path_segments,
+    DataChildView, DataChildViewsPage, DataPathError, DataPresence, DataPreviewReadResult,
+    MemberFlavor, SavedDataPathSegment, StampedData,
 };
 use marrow_store::StoreError;
 use marrow_store::key::SavedKey;
@@ -10,12 +10,12 @@ use serde::{Deserialize, Serialize};
 use crate::DataGenerationJson;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub enum DataPathSegmentJson {
-    Root(String),
-    Field(String),
-    Layer(String),
-    Key(DataKeyJson),
+    Root { store_catalog_id: String },
+    Field { member_catalog_id: String },
+    Layer { member_catalog_id: String },
+    Key { value: DataKeyJson },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -45,26 +45,9 @@ pub struct DataReadRequestJson {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
-pub enum DataChildJson {
-    Root(String),
-    Key(DataKeyJson),
-    Field(String),
-    Layer(String),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DataChildViewJson {
     pub segment: DataPathSegmentJson,
     pub label: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct DataChildrenPageJson {
-    pub children: Vec<DataChildJson>,
-    pub truncated: bool,
-    pub cursor: Option<DataKeyJson>,
-    pub store_snapshot: Option<DataGenerationJson>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -119,6 +102,9 @@ pub enum DataPathErrorJson {
     UnknownRoot {
         root: String,
     },
+    UnknownRootCatalogId {
+        store_catalog_id: String,
+    },
     TooManyIdentityKeys {
         root: String,
     },
@@ -135,6 +121,10 @@ pub enum DataPathErrorJson {
     UnknownMember {
         flavor: MemberFlavorJson,
         name: String,
+    },
+    UnknownMemberCatalogId {
+        flavor: MemberFlavorJson,
+        member_catalog_id: String,
     },
     TooManyMemberKeys {
         member: String,
@@ -177,11 +167,11 @@ pub enum MemberFlavorJson {
 }
 
 impl DataChildrenRequestJson {
-    pub fn into_path_parts(self) -> (Vec<DataPathSegment>, usize, Option<SavedKey>) {
+    pub fn into_path_parts(self) -> (Vec<SavedDataPathSegment>, usize, Option<SavedKey>) {
         let segments = self
             .segments
             .into_iter()
-            .map(DataPathSegment::from)
+            .map(SavedDataPathSegment::from)
             .collect();
         let cursor = self.cursor.map(SavedKey::from);
         (segments, self.limit, cursor)
@@ -195,32 +185,34 @@ impl DataReadRequestJson {
             .min(marrow_check::tooling::MAX_VALUE_PREVIEW_LIMIT)
     }
 
-    pub fn into_path_segments(self) -> Vec<DataPathSegment> {
+    pub fn into_path_segments(self) -> Vec<SavedDataPathSegment> {
         self.segments
             .into_iter()
-            .map(DataPathSegment::from)
+            .map(SavedDataPathSegment::from)
             .collect()
     }
 }
 
-impl From<DataPathSegmentJson> for DataPathSegment {
+impl From<DataPathSegmentJson> for SavedDataPathSegment {
     fn from(segment: DataPathSegmentJson) -> Self {
         match segment {
-            DataPathSegmentJson::Root(root) => Self::Root(root),
-            DataPathSegmentJson::Field(field) => Self::Field(field),
-            DataPathSegmentJson::Layer(layer) => Self::Layer(layer),
-            DataPathSegmentJson::Key(key) => Self::Key(SavedKey::from(key)),
+            DataPathSegmentJson::Root { store_catalog_id } => Self::Root { store_catalog_id },
+            DataPathSegmentJson::Field { member_catalog_id } => Self::Field { member_catalog_id },
+            DataPathSegmentJson::Layer { member_catalog_id } => Self::Layer { member_catalog_id },
+            DataPathSegmentJson::Key { value } => Self::Key(SavedKey::from(value)),
         }
     }
 }
 
-impl From<DataPathSegment> for DataPathSegmentJson {
-    fn from(segment: DataPathSegment) -> Self {
+impl From<SavedDataPathSegment> for DataPathSegmentJson {
+    fn from(segment: SavedDataPathSegment) -> Self {
         match segment {
-            DataPathSegment::Root(root) => Self::Root(root),
-            DataPathSegment::Field(field) => Self::Field(field),
-            DataPathSegment::Layer(layer) => Self::Layer(layer),
-            DataPathSegment::Key(key) => Self::Key(DataKeyJson::from(key)),
+            SavedDataPathSegment::Root { store_catalog_id } => Self::Root { store_catalog_id },
+            SavedDataPathSegment::Field { member_catalog_id } => Self::Field { member_catalog_id },
+            SavedDataPathSegment::Layer { member_catalog_id } => Self::Layer { member_catalog_id },
+            SavedDataPathSegment::Key(key) => Self::Key {
+                value: DataKeyJson::from(key),
+            },
         }
     }
 }
@@ -253,57 +245,17 @@ impl From<SavedKey> for DataKeyJson {
     }
 }
 
-impl From<DataChild> for DataChildJson {
-    fn from(child: DataChild) -> Self {
-        match child {
-            DataChild::Root(root) => Self::Root(root),
-            DataChild::Key(key) => Self::Key(DataKeyJson::from(key)),
-            DataChild::Field(field) => Self::Field(field),
-            DataChild::Layer(layer) => Self::Layer(layer),
-        }
-    }
-}
-
-impl From<DataChild> for DataChildViewJson {
-    fn from(child: DataChild) -> Self {
-        match child {
-            DataChild::Root(root) => Self {
-                segment: DataPathSegmentJson::Root(root.clone()),
-                label: root,
-            },
-            DataChild::Key(key) => {
-                let label = render_data_path_segments(&[DataPathSegment::Key(key.clone())]);
-                Self {
-                    segment: DataPathSegmentJson::Key(DataKeyJson::from(key)),
-                    label,
-                }
-            }
-            DataChild::Field(field) => Self {
-                segment: DataPathSegmentJson::Field(field.clone()),
-                label: field,
-            },
-            DataChild::Layer(layer) => Self {
-                segment: DataPathSegmentJson::Layer(layer.clone()),
-                label: layer,
-            },
-        }
-    }
-}
-
-impl From<StampedData<DataChildrenPage>> for DataChildrenPageJson {
-    fn from(stamped: StampedData<DataChildrenPage>) -> Self {
-        let page = stamped.data;
+impl From<DataChildView> for DataChildViewJson {
+    fn from(child: DataChildView) -> Self {
         Self {
-            children: page.children.into_iter().map(DataChildJson::from).collect(),
-            truncated: page.truncated,
-            cursor: page.cursor.map(DataKeyJson::from),
-            store_snapshot: Some(DataGenerationJson::from(&stamped.stamp)),
+            segment: DataPathSegmentJson::from(child.segment),
+            label: child.label,
         }
     }
 }
 
-impl From<StampedData<DataChildrenPage>> for DataChildViewsPageJson {
-    fn from(stamped: StampedData<DataChildrenPage>) -> Self {
+impl From<StampedData<DataChildViewsPage>> for DataChildViewsPageJson {
+    fn from(stamped: StampedData<DataChildViewsPage>) -> Self {
         let page = stamped.data;
         Self {
             children: page
@@ -369,6 +321,9 @@ impl From<DataPathError> for DataPathErrorJson {
         match error {
             DataPathError::MissingRoot => Self::MissingRoot,
             DataPathError::UnknownRoot { root } => Self::UnknownRoot { root },
+            DataPathError::UnknownRootCatalogId { store_catalog_id } => {
+                Self::UnknownRootCatalogId { store_catalog_id }
+            }
             DataPathError::TooManyIdentityKeys { root } => Self::TooManyIdentityKeys { root },
             DataPathError::IdentityKeyType {
                 root,
@@ -386,6 +341,13 @@ impl From<DataPathError> for DataPathErrorJson {
             DataPathError::UnknownMember { flavor, name } => Self::UnknownMember {
                 flavor: MemberFlavorJson::from(flavor),
                 name,
+            },
+            DataPathError::UnknownMemberCatalogId {
+                flavor,
+                member_catalog_id,
+            } => Self::UnknownMemberCatalogId {
+                flavor: MemberFlavorJson::from(flavor),
+                member_catalog_id,
             },
             DataPathError::TooManyMemberKeys { member } => Self::TooManyMemberKeys { member },
             DataPathError::MemberKeyType {
@@ -453,8 +415,8 @@ mod i128_string {
 #[cfg(test)]
 mod tests {
     use marrow_check::tooling::{
-        DataChild, DataChildrenPage, DataPathSegment, DataPresence, DataPreviewReadResult,
-        DataSnapshotStamp, DataValuePreview, MAX_VALUE_PREVIEW_LIMIT, StampedData,
+        DataChildView, DataChildViewsPage, DataPresence, DataPreviewReadResult, DataSnapshotStamp,
+        DataValuePreview, MAX_VALUE_PREVIEW_LIMIT, SavedDataPathSegment, StampedData,
     };
     use marrow_store::key::SavedKey;
     use serde_json::json;
@@ -464,51 +426,69 @@ mod tests {
     use super::*;
 
     #[test]
-    fn saved_data_dtos_serialize_current_wire_shape() {
-        let request = DataChildrenRequestJson {
-            segments: vec![
-                DataPathSegmentJson::Root("counter".into()),
-                DataPathSegmentJson::Key(DataKeyJson::Int(1)),
-                DataPathSegmentJson::Field("value".into()),
+    fn saved_data_dtos_serialize_catalog_bound_wire_shape() {
+        let request_json = json!({
+            "segments": [
+                {
+                    "kind": "root",
+                    "store_catalog_id": "cat_00000000000000000000000000000001",
+                },
+                { "kind": "key", "value": { "kind": "int", "value": 1 } },
+                {
+                    "kind": "field",
+                    "member_catalog_id": "cat_00000000000000000000000000000002",
+                },
             ],
-            limit: 200,
-            cursor: Some(DataKeyJson::Duration(i128::MIN)),
-        };
+            "limit": 200,
+            "cursor": { "kind": "duration", "value": i128::MIN.to_string() },
+        });
+        let request: DataChildrenRequestJson =
+            serde_json::from_value(request_json.clone()).expect("catalog-bound request DTO");
+        assert_eq!(serde_json::to_value(&request).unwrap(), request_json);
         assert_eq!(
-            serde_json::to_value(&request).unwrap(),
-            json!({
+            SavedDataPathSegment::from(DataPathSegmentJson::Key {
+                value: DataKeyJson::String("alpha".into())
+            }),
+            SavedDataPathSegment::Key(SavedKey::Str("alpha".into()))
+        );
+
+        assert!(
+            serde_json::from_value::<DataChildrenRequestJson>(json!({
                 "segments": [
                     { "kind": "root", "value": "counter" },
-                    { "kind": "key", "value": { "kind": "int", "value": 1 } },
                     { "kind": "field", "value": "value" },
                 ],
                 "limit": 200,
-                "cursor": { "kind": "duration", "value": i128::MIN.to_string() },
-            })
-        );
-        assert_eq!(
-            DataPathSegment::from(DataPathSegmentJson::Key(DataKeyJson::String(
-                "alpha".into()
-            ))),
-            DataPathSegment::Key(SavedKey::Str("alpha".into()))
+                "cursor": null,
+            }))
+            .is_err(),
+            "production saved-data DTOs must not accept source-spelling path authority"
         );
 
         let omitted_limit = DataReadRequestJson {
-            segments: vec![DataPathSegmentJson::Root("counter".into())],
+            segments: vec![DataPathSegmentJson::Root {
+                store_catalog_id: "cat_00000000000000000000000000000001".into(),
+            }],
             preview_limit: None,
         };
         assert_eq!(
             serde_json::to_value(&omitted_limit).unwrap(),
             json!({
                 "segments": [
-                    { "kind": "root", "value": "counter" },
+                    {
+                        "kind": "root",
+                        "store_catalog_id": "cat_00000000000000000000000000000001",
+                    },
                 ],
             })
         );
         assert_eq!(
             serde_json::from_value::<DataReadRequestJson>(json!({
                 "segments": [
-                    { "kind": "root", "value": "counter" },
+                    {
+                        "kind": "root",
+                        "store_catalog_id": "cat_00000000000000000000000000000001",
+                    },
                 ],
             }))
             .unwrap()
@@ -517,14 +497,19 @@ mod tests {
         );
 
         let present_limit = DataReadRequestJson {
-            segments: vec![DataPathSegmentJson::Root("counter".into())],
+            segments: vec![DataPathSegmentJson::Root {
+                store_catalog_id: "cat_00000000000000000000000000000001".into(),
+            }],
             preview_limit: Some(32),
         };
         assert_eq!(
             serde_json::to_value(&present_limit).unwrap(),
             json!({
                 "segments": [
-                    { "kind": "root", "value": "counter" },
+                    {
+                        "kind": "root",
+                        "store_catalog_id": "cat_00000000000000000000000000000001",
+                    },
                 ],
                 "preview_limit": 32,
             })
@@ -532,7 +517,9 @@ mod tests {
         assert_eq!(present_limit.preview_limit_or_default(), 32);
 
         let oversized_limit = DataReadRequestJson {
-            segments: vec![DataPathSegmentJson::Root("counter".into())],
+            segments: vec![DataPathSegmentJson::Root {
+                store_catalog_id: "cat_00000000000000000000000000000001".into(),
+            }],
             preview_limit: Some(usize::MAX),
         };
         assert_eq!(
@@ -548,8 +535,11 @@ mod tests {
             checked_source_digest: "sha256:checked".into(),
         };
         let children = DataChildViewsPageJson::from(StampedData {
-            data: DataChildrenPage {
-                children: vec![DataChild::Key(SavedKey::Int(1))],
+            data: DataChildViewsPage {
+                children: vec![DataChildView {
+                    segment: SavedDataPathSegment::Key(SavedKey::Int(1)),
+                    label: "(1)".into(),
+                }],
                 truncated: true,
                 cursor: Some(SavedKey::Int(1)),
             },

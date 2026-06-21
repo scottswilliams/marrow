@@ -9,12 +9,12 @@ use crate::{
 };
 
 use super::path_error::DataPathError;
-use super::program::{DataProgram, inspection_root_place};
+use super::program::{DataProgram, inspection_root_place, inspection_root_place_by_catalog_id};
 use super::render::render_data_path_segments;
 use super::shape::{
     PathMemberKind, data_path_segment_for_member, key_mismatch, tooling_catalog_id,
 };
-use super::{DataPathSegment, ResolvedDataPath};
+use super::{DataPathSegment, ResolvedDataPath, SavedDataPathSegment};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct StorageDataPath {
@@ -41,12 +41,34 @@ pub fn resolve_runtime_data_path(
     resolve_data_path_in(program, segments)
 }
 
+pub fn resolve_saved_data_path(
+    program: &CheckedProgram,
+    segments: &[SavedDataPathSegment],
+) -> Result<Option<ResolvedDataPath>, ToolingError> {
+    resolve_saved_data_path_in(program, segments)
+}
+
+pub fn resolve_runtime_saved_data_path(
+    program: &CheckedRuntimeProgram,
+    segments: &[SavedDataPathSegment],
+) -> Result<Option<ResolvedDataPath>, ToolingError> {
+    resolve_saved_data_path_in(program, segments)
+}
+
 fn resolve_data_path_in(
     program: &(impl DataProgram + ?Sized),
     segments: &[DataPathSegment],
 ) -> Result<Option<ResolvedDataPath>, ToolingError> {
     let steps: Vec<DataPathStep<'_>> = segments.iter().map(DataPathStep::from_data).collect();
-    resolve_data_path_steps(program, render_data_path_segments(segments), &steps)
+    resolve_data_path_steps(program, Some(render_data_path_segments(segments)), &steps)
+}
+
+fn resolve_saved_data_path_in(
+    program: &(impl DataProgram + ?Sized),
+    segments: &[SavedDataPathSegment],
+) -> Result<Option<ResolvedDataPath>, ToolingError> {
+    let steps: Vec<DataPathStep<'_>> = segments.iter().map(DataPathStep::from_saved_data).collect();
+    resolve_data_path_steps(program, None, &steps)
 }
 
 pub fn resolve_source_text_data_path(
@@ -57,19 +79,19 @@ pub fn resolve_source_text_data_path(
         .iter()
         .map(DataPathStep::from_source_text)
         .collect();
-    resolve_data_path_steps(program, crate::display_path(segments), &steps)
+    resolve_data_path_steps(program, Some(crate::display_path(segments)), &steps)
 }
 
 fn resolve_data_path_steps(
     program: &(impl DataProgram + ?Sized),
-    path: String,
+    path: Option<String>,
     segments: &[DataPathStep<'_>],
 ) -> Result<Option<ResolvedDataPath>, ToolingError> {
-    let (_, place, rest) = checked_data_path_root(program, segments)?;
+    let (place, rest) = checked_data_path_root(program, segments)?;
     let Some(store) = tooling_catalog_id(&place.store_catalog_id, "store")? else {
         return Ok(None);
     };
-    let walk = walk_data_path_rest(place, rest)?;
+    let walk = walk_data_path_rest(program, place, rest)?;
 
     let mut data_path = Vec::new();
     let mut rendered_segments = vec![DataPathSegment::Root(walk.root.clone())];
@@ -111,6 +133,7 @@ fn resolve_data_path_steps(
         }
     }
 
+    let path = path.unwrap_or_else(|| render_data_path_segments(&rendered_segments));
     Ok(Some(ResolvedDataPath::new(
         path,
         walk.root.clone(),
@@ -130,26 +153,60 @@ fn resolve_data_path_steps(
 
 #[derive(Clone, Copy)]
 pub(crate) enum DataPathStep<'a> {
-    Root(&'a str),
-    Member(&'a str, PathMemberKind),
+    Root(DataPathRootStep<'a>),
+    Member(DataPathMemberStep<'a>),
     Key(&'a SavedKey),
     KeySlot,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum DataPathRootStep<'a> {
+    SourceName(&'a str),
+    CatalogId(&'a str),
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum DataPathMemberStep<'a> {
+    SourceName(&'a str, PathMemberKind),
+    CatalogId(&'a str, PathMemberKind),
 }
 
 impl<'a> DataPathStep<'a> {
     pub(crate) fn from_data(segment: &'a DataPathSegment) -> Self {
         match segment {
-            DataPathSegment::Root(name) => Self::Root(name),
-            DataPathSegment::Field(name) => Self::Member(name, PathMemberKind::Field),
-            DataPathSegment::Layer(name) => Self::Member(name, PathMemberKind::Layer),
+            DataPathSegment::Root(name) => Self::Root(DataPathRootStep::SourceName(name)),
+            DataPathSegment::Field(name) => {
+                Self::Member(DataPathMemberStep::SourceName(name, PathMemberKind::Field))
+            }
+            DataPathSegment::Layer(name) => {
+                Self::Member(DataPathMemberStep::SourceName(name, PathMemberKind::Layer))
+            }
             DataPathSegment::Key(key) => Self::Key(key),
+        }
+    }
+
+    pub(crate) fn from_saved_data(segment: &'a SavedDataPathSegment) -> Self {
+        match segment {
+            SavedDataPathSegment::Root { store_catalog_id } => {
+                Self::Root(DataPathRootStep::CatalogId(store_catalog_id))
+            }
+            SavedDataPathSegment::Field { member_catalog_id } => Self::Member(
+                DataPathMemberStep::CatalogId(member_catalog_id, PathMemberKind::Field),
+            ),
+            SavedDataPathSegment::Layer { member_catalog_id } => Self::Member(
+                DataPathMemberStep::CatalogId(member_catalog_id, PathMemberKind::Layer),
+            ),
+            SavedDataPathSegment::Key(key) => Self::Key(key),
         }
     }
 
     pub(crate) fn from_source_text(segment: &'a crate::PathSegment) -> Self {
         match segment {
-            crate::PathSegment::Root(name) => Self::Root(name),
-            crate::PathSegment::Field(name) => Self::Member(name, PathMemberKind::SourceText),
+            crate::PathSegment::Root(name) => Self::Root(DataPathRootStep::SourceName(name)),
+            crate::PathSegment::Field(name) => Self::Member(DataPathMemberStep::SourceName(
+                name,
+                PathMemberKind::SourceText,
+            )),
             crate::PathSegment::RecordKey(key) | crate::PathSegment::IndexKey(key) => {
                 Self::Key(key)
             }
@@ -157,11 +214,14 @@ impl<'a> DataPathStep<'a> {
     }
 
     pub(crate) fn source_root(name: &'a str) -> Self {
-        Self::Root(name)
+        Self::Root(DataPathRootStep::SourceName(name))
     }
 
     pub(crate) fn source_member(name: &'a str) -> Self {
-        Self::Member(name, PathMemberKind::SourceText)
+        Self::Member(DataPathMemberStep::SourceName(
+            name,
+            PathMemberKind::SourceText,
+        ))
     }
 
     pub(crate) fn key_slot() -> Self {
@@ -172,14 +232,52 @@ impl<'a> DataPathStep<'a> {
 fn data_path_key<'a>(segment: &DataPathStep<'a>) -> Option<&'a SavedKey> {
     match segment {
         DataPathStep::Key(key) => Some(key),
-        DataPathStep::Root(_) | DataPathStep::Member(_, _) | DataPathStep::KeySlot => None,
+        DataPathStep::Root(_) | DataPathStep::Member(_) | DataPathStep::KeySlot => None,
     }
 }
 
-fn data_path_member<'a>(segment: &DataPathStep<'a>) -> Option<(&'a str, PathMemberKind)> {
+fn data_path_member<'a>(segment: &DataPathStep<'a>) -> Option<DataPathMemberStep<'a>> {
     match segment {
-        DataPathStep::Member(name, kind) => Some((name, *kind)),
+        DataPathStep::Member(member) => Some(*member),
         DataPathStep::Root(_) | DataPathStep::Key(_) | DataPathStep::KeySlot => None,
+    }
+}
+
+impl DataPathMemberStep<'_> {
+    fn resolve(
+        &self,
+        program: &(impl DataProgram + ?Sized),
+        members: &[CheckedSavedMember],
+    ) -> Result<CheckedSavedMember, DataPathError> {
+        match self {
+            Self::SourceName(name, kind) => members
+                .iter()
+                .find(|member| member.name == **name && kind.matches(member))
+                .cloned()
+                .ok_or_else(|| DataPathError::UnknownMember {
+                    flavor: kind.flavor(),
+                    name: (*name).to_string(),
+                }),
+            Self::CatalogId(member_catalog_id, kind) => {
+                if !program.has_accepted_catalog_id(member_catalog_id) {
+                    return Err(DataPathError::UnknownMemberCatalogId {
+                        flavor: kind.flavor(),
+                        member_catalog_id: (*member_catalog_id).to_string(),
+                    });
+                }
+                members
+                    .iter()
+                    .find(|member| {
+                        member.catalog_id.as_deref() == Some(*member_catalog_id)
+                            && kind.matches(member)
+                    })
+                    .cloned()
+                    .ok_or_else(|| DataPathError::UnknownMemberCatalogId {
+                        flavor: kind.flavor(),
+                        member_catalog_id: (*member_catalog_id).to_string(),
+                    })
+            }
+        }
     }
 }
 
@@ -202,24 +300,36 @@ pub(crate) fn walk_data_path_steps(
     program: &(impl DataProgram + ?Sized),
     segments: &[DataPathStep<'_>],
 ) -> Result<CheckedDataPathWalk, ToolingError> {
-    let (_, place, rest) = checked_data_path_root(program, segments)?;
-    walk_data_path_rest(place, rest)
+    let (place, rest) = checked_data_path_root(program, segments)?;
+    walk_data_path_rest(program, place, rest)
 }
 
 fn checked_data_path_root<'a>(
     program: &(impl DataProgram + ?Sized),
     segments: &'a [DataPathStep<'a>],
-) -> Result<(&'a str, CheckedSavedPlace, &'a [DataPathStep<'a>]), ToolingError> {
+) -> Result<(CheckedSavedPlace, &'a [DataPathStep<'a>]), ToolingError> {
     let Some((DataPathStep::Root(root), rest)) = segments.split_first() else {
         return Err(DataPathError::MissingRoot.into());
     };
-    let place = inspection_root_place(program, root).ok_or_else(|| DataPathError::UnknownRoot {
-        root: (*root).to_string(),
-    })?;
-    Ok((root, place, rest))
+    let place = match root {
+        DataPathRootStep::SourceName(root) => {
+            inspection_root_place(program, root).ok_or_else(|| DataPathError::UnknownRoot {
+                root: (*root).to_string(),
+            })?
+        }
+        DataPathRootStep::CatalogId(store_catalog_id) => {
+            inspection_root_place_by_catalog_id(program, store_catalog_id).ok_or_else(|| {
+                DataPathError::UnknownRootCatalogId {
+                    store_catalog_id: (*store_catalog_id).to_string(),
+                }
+            })?
+        }
+    };
+    Ok((place, rest))
 }
 
 fn walk_data_path_rest(
+    program: &(impl DataProgram + ?Sized),
     place: CheckedSavedPlace,
     rest: &[DataPathStep<'_>],
 ) -> Result<CheckedDataPathWalk, ToolingError> {
@@ -273,17 +383,11 @@ fn walk_data_path_rest(
     let mut walked_members = Vec::new();
     let mut leaf = None;
     while let Some(segment) = rest.get(index) {
-        let Some((name, kind)) = data_path_member(segment) else {
+        let Some(member_step) = data_path_member(segment) else {
             return Err(DataPathError::UnexpectedKey.into());
         };
-        let member = members
-            .iter()
-            .find(|member| member.name == *name && kind.matches(member))
-            .cloned()
-            .ok_or_else(|| DataPathError::UnknownMember {
-                flavor: kind.flavor(),
-                name: name.to_string(),
-            })?;
+        let member = member_step.resolve(program, &members)?;
+        let member_name = member.name.clone();
         index += 1;
 
         let mut key_count = 0usize;
@@ -294,14 +398,14 @@ fn walk_data_path_rest(
             }
             if key_count == member.key_params.len() {
                 return Err(DataPathError::TooManyMemberKeys {
-                    member: name.to_string(),
+                    member: member_name.clone(),
                 }
                 .into());
             }
             if let Some(key) = data_path_key(segment) {
                 if let Some(mismatch) = key_mismatch(member.key_params[key_count].scalar, key) {
                     return Err(DataPathError::MemberKeyType {
-                        member: name.to_string(),
+                        member: member_name.clone(),
                         expected: mismatch.expected,
                         found: mismatch.found,
                     }
@@ -322,7 +426,7 @@ fn walk_data_path_rest(
         if !keys_complete {
             if index < rest.len() {
                 return Err(DataPathError::IncompleteMemberKeys {
-                    member: name.to_string(),
+                    member: member_name,
                 }
                 .into());
             }

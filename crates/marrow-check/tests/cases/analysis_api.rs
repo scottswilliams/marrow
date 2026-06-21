@@ -5,25 +5,29 @@ use crate::support;
 use std::{fs, path::PathBuf};
 
 use marrow_check::program::MarrowType;
+use marrow_check::test_support::{member_catalog_id, root_place, store_id_of};
 use marrow_check::tooling::{
     ActiveCallableContext, CallableArgumentStyle, CallableCalleeContext, CallableParameter,
-    CallableSignature, CallableSignatureKind, CallableValueShape, DataChild, DataPathError,
-    DataPathSegment, DataPresence, DeclaredDataChild, DeclaredDataChildKind, DeclaredDataKeyParam,
-    IdentityTypeAnnotation, MAX_VALUE_PREVIEW_LIMIT, ResourceConstructorField,
-    SourceDataPathSegment, ToolingError, active_callable_context, callable_callee_contexts,
-    declared_data_children, declared_source_data_children, declared_source_receiver_data_children,
+    CallableSignature, CallableSignatureKind, CallableValueShape, DataChild, DataChildView,
+    DataPathError, DataPathSegment, DataPresence, DeclaredDataChild, DeclaredDataChildKind,
+    DeclaredDataKeyParam, IdentityTypeAnnotation, MAX_VALUE_PREVIEW_LIMIT, MemberFlavor,
+    ResourceConstructorField, SavedDataPathSegment, SourceDataPathSegment, ToolingError,
+    active_callable_context, callable_callee_contexts, declared_data_children,
+    declared_source_data_children, declared_source_receiver_data_children,
     identity_type_annotations, intrinsic_callable_signature, intrinsic_callable_signature_for_file,
-    intrinsic_completion_callables, resolve_data_path, resource_constructor_signature,
-    sample_integrity_problem_details, sample_integrity_problems, stamped_data_children,
-    stamped_data_roots_in_store, stamped_integrity_problem_details, stamped_preview_data_path,
-    stamped_read_data_path,
+    intrinsic_completion_callables, resolve_data_path, resolve_saved_data_path,
+    resource_constructor_signature, sample_integrity_problem_details, sample_integrity_problems,
+    stamped_data_children, stamped_data_roots_in_store, stamped_integrity_problem_details,
+    stamped_preview_data_path, stamped_read_data_path, stamped_saved_data_child_views,
+    stamped_saved_data_root_views_in_store,
 };
 use marrow_check::{
     CHECK_READ_ONLY_EXPRESSION_HOST_EFFECT, CHECK_READ_ONLY_EXPRESSION_UNINDEXED_LOOKUP,
-    CHECK_READ_ONLY_EXPRESSION_WRITE, CatalogEntryKind, CheckedProgram, DebugExpressionDataAccess,
-    DiagnosticPayload, EntryStoreOpenMode, ProjectSources, StoreLeafKind, SurfaceCatalogBlocker,
-    SurfaceCatalogStatus, SurfaceReadFootprint, SurfaceReadOperationKind, UseSiteKind,
-    WorkShapeClass, analyze_project, check_project, scope_at, type_at,
+    CHECK_READ_ONLY_EXPRESSION_WRITE, CatalogEntryKind, CatalogLifecycle, CheckedProgram,
+    DebugExpressionDataAccess, DiagnosticPayload, EntryStoreOpenMode, ProjectSources,
+    StoreLeafKind, SurfaceCatalogBlocker, SurfaceCatalogStatus, SurfaceReadFootprint,
+    SurfaceReadOperationKind, UseSiteKind, WorkShapeClass, analyze_project, check_project,
+    scope_at, type_at,
 };
 use marrow_project::parse_config;
 use marrow_schema::{SCHEMA_DUPLICATE_MEMBER, ScalarType, Type};
@@ -4073,6 +4077,242 @@ fn declared_data_children_accepts_concrete_data_path_segments() {
     assert_eq!(root, "books");
     assert_eq!(expected, ScalarType::Int);
     assert_eq!(found, ScalarType::Str);
+}
+
+#[test]
+fn catalog_bound_saved_data_segments_issue_and_resolve_accepted_identity() {
+    let source = "module m\n\
+        resource Book\n    \
+        required title: string\n\
+        store ^books(id: int): Book\n";
+    let root = temp_root("analysis-catalog-bound-saved-data-segments");
+    write(&root, "src/m.mw", source);
+    let (checked, program) = check_project(&root, &config()).expect("check source");
+    assert!(!checked.has_errors(), "{:#?}", checked.diagnostics);
+    let accepted = program
+        .catalog
+        .proposal
+        .clone()
+        .expect("first check proposes a catalog");
+    let proposal_store_catalog_id = accepted
+        .entries
+        .iter()
+        .find(|entry| entry.kind == CatalogEntryKind::Store && entry.path == "m::^books")
+        .expect("proposal store catalog id")
+        .stable_id
+        .clone();
+
+    let proposal_only = resolve_saved_data_path(
+        &program,
+        &[SavedDataPathSegment::Root {
+            store_catalog_id: proposal_store_catalog_id.clone(),
+        }],
+    )
+    .expect_err("proposal-only ids are not accepted saved-data authority");
+    let ToolingError::Path(DataPathError::UnknownRootCatalogId {
+        store_catalog_id: rejected_proposal_root,
+    }) = proposal_only
+    else {
+        panic!("expected unknown root catalog id, got {proposal_only:?}");
+    };
+    assert_eq!(rejected_proposal_root, proposal_store_catalog_id);
+
+    let snapshot = analyze_project(
+        &root,
+        &config(),
+        &ProjectSources::new(),
+        Some(&accepted),
+        None,
+    )
+    .expect("analyze accepted source");
+    assert!(
+        !snapshot.report.has_errors(),
+        "{:#?}",
+        snapshot.report.diagnostics
+    );
+    let place = root_place(&snapshot.program, "books").expect("books place");
+    let store_id = store_id_of(&place).expect("books store id");
+    let store_catalog_id = store_id.as_str().to_string();
+    let title_member_catalog_id = member_catalog_id(&place, "title").expect("title id");
+    let title_id = CatalogId::new(title_member_catalog_id.clone()).expect("valid title id");
+    let root_segment = SavedDataPathSegment::Root {
+        store_catalog_id: store_catalog_id.clone(),
+    };
+    let title_segment = SavedDataPathSegment::Field {
+        member_catalog_id: title_member_catalog_id.clone(),
+    };
+
+    let store = TreeStore::memory();
+    store
+        .replace_catalog_snapshot(&accepted)
+        .expect("write catalog snapshot");
+    store
+        .write_record_presence(&store_id, &[SavedKey::Int(7)])
+        .expect("seed record presence");
+    store
+        .write_data_value(
+            &store_id,
+            &[SavedKey::Int(7)],
+            &[StoreDataPathSegment::Member(title_id)],
+            encode_value(&SavedValue::Str("Dune".to_string())).expect("encode title"),
+        )
+        .expect("seed title");
+
+    let roots = stamped_saved_data_root_views_in_store(&snapshot.program, &store)
+        .expect("catalog-bound root views");
+    assert_eq!(
+        roots.data,
+        vec![DataChildView {
+            segment: root_segment.clone(),
+            label: "books".to_string(),
+        }]
+    );
+
+    let keys = stamped_saved_data_child_views(
+        &snapshot.program,
+        &store,
+        std::slice::from_ref(&root_segment),
+        10,
+        None,
+    )
+    .expect("catalog-bound key views");
+    assert_eq!(
+        keys.data.children,
+        vec![DataChildView {
+            segment: SavedDataPathSegment::Key(SavedKey::Int(7)),
+            label: "(7)".to_string(),
+        }]
+    );
+
+    let members = stamped_saved_data_child_views(
+        &snapshot.program,
+        &store,
+        &[
+            root_segment.clone(),
+            SavedDataPathSegment::Key(SavedKey::Int(7)),
+        ],
+        10,
+        None,
+    )
+    .expect("catalog-bound member views");
+    assert_eq!(
+        members.data.children,
+        vec![DataChildView {
+            segment: title_segment.clone(),
+            label: "title".to_string(),
+        }]
+    );
+
+    let resolved = resolve_saved_data_path(
+        &snapshot.program,
+        &[
+            root_segment.clone(),
+            SavedDataPathSegment::Key(SavedKey::Int(7)),
+            title_segment,
+        ],
+    )
+    .expect("accepted ids resolve")
+    .expect("accepted saved path");
+    assert_eq!(resolved.path(), "^books(7).title");
+    assert_eq!(
+        resolved.segments(),
+        &[
+            DataPathSegment::Root("books".to_string()),
+            DataPathSegment::Key(SavedKey::Int(7)),
+            DataPathSegment::Field("title".to_string()),
+        ]
+    );
+
+    let display_root = resolve_saved_data_path(
+        &snapshot.program,
+        &[SavedDataPathSegment::Root {
+            store_catalog_id: "books".to_string(),
+        }],
+    )
+    .expect_err("display root text is not catalog-bound authority");
+    let ToolingError::Path(DataPathError::UnknownRootCatalogId {
+        store_catalog_id: rejected_display_root,
+    }) = display_root
+    else {
+        panic!("expected unknown root catalog id, got {display_root:?}");
+    };
+    assert_eq!(rejected_display_root, "books");
+
+    let display_field = resolve_saved_data_path(
+        &snapshot.program,
+        &[
+            root_segment,
+            SavedDataPathSegment::Key(SavedKey::Int(7)),
+            SavedDataPathSegment::Field {
+                member_catalog_id: "title".to_string(),
+            },
+        ],
+    )
+    .expect_err("display field text is not catalog-bound authority");
+    let ToolingError::Path(DataPathError::UnknownMemberCatalogId {
+        flavor,
+        member_catalog_id: rejected_display_member,
+    }) = display_field
+    else {
+        panic!("expected unknown member catalog id, got {display_field:?}");
+    };
+    assert_eq!(flavor, MemberFlavor::Field);
+    assert_eq!(rejected_display_member, "title");
+}
+
+#[test]
+fn checked_runtime_program_accepts_only_active_catalog_ids() {
+    let source = "module m\n\
+        resource Book\n    \
+        required title: string\n\
+        store ^books(id: int): Book\n";
+    let root = temp_root("analysis-runtime-active-catalog-ids");
+    write(&root, "src/m.mw", source);
+    let (checked, program) = check_project(&root, &config()).expect("check source");
+    assert!(!checked.has_errors(), "{:#?}", checked.diagnostics);
+    let accepted = program
+        .catalog
+        .proposal
+        .clone()
+        .expect("first check proposes a catalog");
+    let snapshot = analyze_project(
+        &root,
+        &config(),
+        &ProjectSources::new(),
+        Some(&accepted),
+        None,
+    )
+    .expect("analyze accepted source");
+    assert!(
+        !snapshot.report.has_errors(),
+        "{:#?}",
+        snapshot.report.diagnostics
+    );
+    let mut program = snapshot.program;
+    let active_title = program
+        .catalog
+        .accepted_entries
+        .iter()
+        .find(|entry| {
+            entry.kind == CatalogEntryKind::ResourceMember && entry.path == "m::Book::title"
+        })
+        .expect("accepted title entry")
+        .clone();
+    let active_title_id = active_title.stable_id.clone();
+    let mut reserved_title = active_title;
+    reserved_title.stable_id = "cat_fffffffffffffffffffffffffffffffe".to_string();
+    reserved_title.path = "m::Book::retired".to_string();
+    reserved_title.lifecycle = CatalogLifecycle::Reserved;
+    let reserved_title_id = reserved_title.stable_id.clone();
+    program.catalog.accepted_entries.push(reserved_title);
+
+    let runtime = program.runtime();
+
+    assert!(runtime.has_accepted_catalog_id(&active_title_id));
+    assert!(
+        !runtime.has_accepted_catalog_id(&reserved_title_id),
+        "runtime saved-data identity must not admit reserved accepted catalog ids"
+    );
 }
 
 #[test]

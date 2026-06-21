@@ -2,6 +2,7 @@ use crate::support;
 use std::fs;
 use std::path::Path;
 
+use marrow_check::tooling::SavedDataPathSegment;
 use marrow_check::{
     ProjectConfig, StoreBackend, StoreConfig, SurfaceId, SurfaceReadOperationKind,
     SurfaceUpdateOperationDescriptor,
@@ -326,26 +327,44 @@ fn surface_read_session_serves_existing_native_store_without_advancing_it() {
     assert_eq!(page.rows.len(), 1);
 
     let roots = session.saved_data_roots().expect("read saved data roots");
-    assert_eq!(roots.data, vec!["counter"]);
+    assert_eq!(roots.data.len(), 1);
+    assert_eq!(roots.data[0].label, "counter");
+    let counter_root = roots.data[0].segment.clone();
     let children = session
-        .saved_data_children(
-            &[marrow_check::tooling::DataPathSegment::Root(
-                "counter".into(),
-            )],
-            10,
-            None,
-        )
+        .saved_data_children(std::slice::from_ref(&counter_root), 10, None)
         .expect("read saved data children");
     assert_eq!(
         children.data.children,
-        vec![marrow_check::tooling::DataChild::Key(SavedKey::Int(1))]
+        vec![marrow_check::tooling::DataChildView {
+            segment: marrow_check::tooling::SavedDataPathSegment::Key(SavedKey::Int(1)),
+            label: "(1)".into(),
+        }]
     );
+    let record_key = children.data.children[0].segment.clone();
+    let value_children = session
+        .saved_data_children(&[counter_root.clone(), record_key], 10, None)
+        .expect("read saved data member children");
+    let member_labels = value_children
+        .data
+        .children
+        .iter()
+        .map(|child| child.label.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(member_labels, vec!["value", "note"]);
+    let value_field = value_children
+        .data
+        .children
+        .iter()
+        .find(|child| child.label == "value")
+        .expect("value member child")
+        .segment
+        .clone();
     let preview = session
         .saved_data_preview(
             &[
-                marrow_check::tooling::DataPathSegment::Root("counter".into()),
-                marrow_check::tooling::DataPathSegment::Key(SavedKey::Int(1)),
-                marrow_check::tooling::DataPathSegment::Field("value".into()),
+                counter_root,
+                SavedDataPathSegment::Key(SavedKey::Int(1)),
+                value_field,
             ],
             16,
         )

@@ -22,7 +22,7 @@ use crate::{CheckedProgram, CheckedRuntimeProgram, ScalarType, StoreLeafKind};
 
 pub use children::{
     data_children, data_children_supports_paging, runtime_data_children,
-    runtime_data_children_supports_paging,
+    runtime_data_children_supports_paging, runtime_saved_data_child_views, saved_data_child_views,
 };
 pub use declared::{
     DeclaredDataChild, DeclaredDataChildKind, DeclaredDataKeyParam, SourceDataPathSegment,
@@ -30,13 +30,14 @@ pub use declared::{
 };
 pub use path::{
     data_path_under_prefix, resolve_data_path, resolve_runtime_data_path,
-    resolve_source_text_data_path,
+    resolve_runtime_saved_data_path, resolve_saved_data_path, resolve_source_text_data_path,
 };
 pub use path_error::{DataPathError, MemberFlavor};
 pub use read::{preview_data_path, preview_runtime_data_path, read_data_path};
 pub use render::{render_data_path_segments, render_data_path_value, render_data_value};
 pub use traversal::{
-    count_data_records, data_roots_in_store, runtime_data_roots_in_store, visit_data_records,
+    count_data_records, data_roots_in_store, runtime_data_roots_in_store,
+    runtime_saved_data_root_views_in_store, saved_data_root_views_in_store, visit_data_records,
 };
 pub use walk::walk_data;
 
@@ -161,12 +162,30 @@ pub fn stamped_data_roots_in_store(
     with_stamped_read(program, store, |store| data_roots_in_store(program, store))
 }
 
+pub fn stamped_saved_data_root_views_in_store(
+    program: &CheckedProgram,
+    store: &TreeStore,
+) -> Result<StampedData<Vec<DataChildView>>, StoreError> {
+    with_stamped_read(program, store, |store| {
+        saved_data_root_views_in_store(program, store)
+    })
+}
+
 pub fn stamped_runtime_data_roots_in_store(
     program: &CheckedRuntimeProgram,
     store: &TreeStore,
 ) -> Result<StampedData<Vec<String>>, StoreError> {
     with_stamped_read(program, store, |store| {
         runtime_data_roots_in_store(program, store)
+    })
+}
+
+pub fn stamped_runtime_saved_data_root_views_in_store(
+    program: &CheckedRuntimeProgram,
+    store: &TreeStore,
+) -> Result<StampedData<Vec<DataChildView>>, StoreError> {
+    with_stamped_read(program, store, |store| {
+        runtime_saved_data_root_views_in_store(program, store)
     })
 }
 
@@ -224,6 +243,18 @@ pub fn stamped_data_children(
     })
 }
 
+pub fn stamped_saved_data_child_views(
+    program: &CheckedProgram,
+    store: &TreeStore,
+    segments: &[SavedDataPathSegment],
+    limit: usize,
+    resume: Option<&SavedKey>,
+) -> Result<StampedData<DataChildViewsPage>, ToolingError> {
+    with_stamped_read(program, store, |store| {
+        saved_data_child_views(program, store, segments, limit, resume)
+    })
+}
+
 pub fn stamped_runtime_data_children(
     program: &CheckedRuntimeProgram,
     store: &TreeStore,
@@ -233,6 +264,18 @@ pub fn stamped_runtime_data_children(
 ) -> Result<StampedData<DataChildrenPage>, ToolingError> {
     with_stamped_read(program, store, |store| {
         runtime_data_children(program, store, segments, limit, resume)
+    })
+}
+
+pub fn stamped_runtime_saved_data_child_views(
+    program: &CheckedRuntimeProgram,
+    store: &TreeStore,
+    segments: &[SavedDataPathSegment],
+    limit: usize,
+    resume: Option<&SavedKey>,
+) -> Result<StampedData<DataChildViewsPage>, ToolingError> {
+    with_stamped_read(program, store, |store| {
+        runtime_saved_data_child_views(program, store, segments, limit, resume)
     })
 }
 
@@ -342,6 +385,14 @@ pub enum DataPathSegment {
     Key(SavedKey),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SavedDataPathSegment {
+    Root { store_catalog_id: String },
+    Field { member_catalog_id: String },
+    Layer { member_catalog_id: String },
+    Key(SavedKey),
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DataPresence {
     Absent,
@@ -368,6 +419,12 @@ pub enum DataChild {
     Layer(String),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DataChildView {
+    pub segment: SavedDataPathSegment,
+    pub label: String,
+}
+
 impl From<DataPathSegment> for DataChild {
     fn from(segment: DataPathSegment) -> Self {
         match segment {
@@ -382,6 +439,13 @@ impl From<DataPathSegment> for DataChild {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DataChildrenPage {
     pub children: Vec<DataChild>,
+    pub truncated: bool,
+    pub cursor: Option<SavedKey>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DataChildViewsPage {
+    pub children: Vec<DataChildView>,
     pub truncated: bool,
     pub cursor: Option<SavedKey>,
 }
@@ -487,6 +551,10 @@ mod tests {
 
         fn source_digest(&self) -> String {
             unreachable!("store-state rejection must not inspect source digest")
+        }
+
+        fn has_accepted_catalog_id(&self, _catalog_id: &str) -> bool {
+            unreachable!("store-state rejection must not inspect catalog ids")
         }
 
         fn root_place(&self, _root: &str) -> Option<CheckedSavedPlace> {

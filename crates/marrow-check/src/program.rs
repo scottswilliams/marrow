@@ -1013,12 +1013,14 @@ impl CheckedRuntimeProgram {
                 .catalog
                 .accepted_entries
                 .iter()
+                .filter(|entry| entry.lifecycle == marrow_catalog::CatalogLifecycle::Active)
                 .map(|entry| entry.stable_id.clone())
                 .collect(),
             accepted_leaf_tokens: program
                 .catalog
                 .accepted_entries
                 .iter()
+                .filter(|entry| entry.lifecycle == marrow_catalog::CatalogLifecycle::Active)
                 .filter_map(|entry| {
                     entry
                         .accepted_leaf_token()
