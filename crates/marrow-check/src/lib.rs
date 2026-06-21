@@ -40,7 +40,8 @@ mod typerules;
 mod walk;
 
 pub use analysis::{
-    AnalysisIdentity, AnalysisSnapshot, AnalyzedFile, CatalogDeclaration,
+    ANALYSIS_GENERATION_PROFILE_VERSION, AnalysisCatalogGeneration, AnalysisConfigDigest,
+    AnalysisGeneration, AnalysisIdentity, AnalysisSnapshot, AnalyzedFile, CatalogDeclaration,
     SurfaceActionOperationAnalysis, SurfaceCreateOperationAnalysis, SurfaceDeleteOperationAnalysis,
     SurfaceReadOperationAnalysis, SurfaceUpdateOperationAnalysis, UseSite, UseSiteKind,
     analyze_project, scope_at, type_at,

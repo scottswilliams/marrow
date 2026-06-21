@@ -30,6 +30,8 @@ pub use catalog_nav::{CatalogDeclaration, UseSite, UseSiteKind};
 pub(crate) use cursor::{debug_expression_scope_before, span_covers};
 pub use cursor::{scope_at, type_at};
 
+pub const ANALYSIS_GENERATION_PROFILE_VERSION: &str = "analysis.generation.v1";
+
 /// Stable content identity for an analyzed source/config set.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct AnalysisIdentity(String);
@@ -46,6 +48,39 @@ impl fmt::Display for AnalysisIdentity {
     }
 }
 
+/// Stable digest of the project configuration fields the analysis pipeline reads.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct AnalysisConfigDigest(String);
+
+impl AnalysisConfigDigest {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for AnalysisConfigDigest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AnalysisCatalogGeneration {
+    pub epoch: u64,
+    pub digest: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AnalysisGeneration {
+    pub profile_version: &'static str,
+    pub content_identity: AnalysisIdentity,
+    pub config_digest: AnalysisConfigDigest,
+    pub checked_source_digest: String,
+    pub read_only_context_digest: String,
+    pub accepted_catalog: Option<AnalysisCatalogGeneration>,
+    pub proposal_catalog: Option<AnalysisCatalogGeneration>,
+}
+
 /// An IDE-grade view of a checked project: the diagnostics and best-effort
 /// program [`check_project`] produces, plus every parsed file — including files
 /// with parse errors, which contribute no [`CheckedModule`] but are retained
@@ -53,6 +88,7 @@ impl fmt::Display for AnalysisIdentity {
 #[derive(Debug, Clone)]
 pub struct AnalysisSnapshot {
     pub content_identity: AnalysisIdentity,
+    config_digest: AnalysisConfigDigest,
     pub report: CheckReport,
     pub program: CheckedProgram,
     pub files: Vec<AnalyzedFile>,
@@ -63,6 +99,28 @@ pub struct AnalysisSnapshot {
 impl AnalysisSnapshot {
     pub fn content_identity(&self) -> &AnalysisIdentity {
         &self.content_identity
+    }
+
+    pub fn generation(&self) -> AnalysisGeneration {
+        AnalysisGeneration {
+            profile_version: ANALYSIS_GENERATION_PROFILE_VERSION,
+            content_identity: self.content_identity.clone(),
+            config_digest: self.config_digest.clone(),
+            checked_source_digest: self.program.source_digest(),
+            read_only_context_digest: self.program.read_only_context_digest(),
+            accepted_catalog: self.program.catalog.accepted_epoch.map(|epoch| {
+                AnalysisCatalogGeneration {
+                    epoch,
+                    digest: self.program.catalog.accepted_digest.clone(),
+                }
+            }),
+            proposal_catalog: self.program.catalog.proposal.as_ref().map(|proposal| {
+                AnalysisCatalogGeneration {
+                    epoch: proposal.epoch,
+                    digest: Some(proposal.digest.clone()),
+                }
+            }),
+        }
     }
 
     pub fn surface_read_operations(
@@ -455,6 +513,7 @@ pub fn analyze_project(
     snapshot.program.modules = source_modules;
     snapshot.program.facts = source_facts;
     snapshot.content_identity = analysis_content_identity(project_root, config, &snapshot.files);
+    snapshot.config_digest = analysis_config_digest(config);
     Ok(snapshot)
 }
 
@@ -852,6 +911,7 @@ pub(crate) fn analyze_source_project(
         .collect();
 
     let content_identity = analysis_content_identity(project_root, config, &analyzed);
+    let config_digest = analysis_config_digest(config);
     program.set_debug_source_identity(source_program_debug_identity(
         project_root,
         config,
@@ -862,6 +922,7 @@ pub(crate) fn analyze_source_project(
 
     Ok(AnalysisSnapshot {
         content_identity,
+        config_digest,
         report,
         program,
         files: analyzed,
@@ -941,6 +1002,13 @@ fn analysis_content_identity(
     hash_config(&mut digest, config);
     hash_analyzed_files(&mut digest, project_root, files);
     AnalysisIdentity(digest.finish())
+}
+
+fn analysis_config_digest(config: &ProjectConfig) -> AnalysisConfigDigest {
+    let mut digest = Sha256Digest::new();
+    digest.update(b"marrow.analysis.config.v1\0");
+    hash_config(&mut digest, config);
+    AnalysisConfigDigest(digest.finish())
 }
 
 fn source_program_debug_identity(
@@ -1069,6 +1137,142 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.path);
         }
+    }
+
+    fn native_config(data_dir: &str) -> ProjectConfig {
+        ProjectConfig {
+            source_roots: vec!["src".to_string()],
+            default_entry: None,
+            store: StoreConfig {
+                backend: StoreBackend::Native,
+                data_dir: Some(data_dir.to_string()),
+            },
+            tests: Vec::new(),
+        }
+    }
+
+    const DURABLE_PROJECT_SOURCE: &str = "module m\n\
+        resource Book\n    \
+        required title: string\n\
+        store ^books(id: int): Book\n\
+        pub fn title(id: int): string\n    \
+        return ^books(id).title ?? \"\"\n";
+
+    fn write_durable_project(root: &TempDir) -> ProjectSources {
+        let src = root.path().join("src");
+        fs::create_dir_all(&src).expect("create src");
+        let path = src.join("m.mw");
+        fs::write(&path, DURABLE_PROJECT_SOURCE).expect("write source");
+        ProjectSources::new().with(path, DURABLE_PROJECT_SOURCE)
+    }
+
+    #[test]
+    fn analysis_generation_reports_source_config_catalog_and_context_identity() {
+        let root = TempDir::new("generation-simple");
+        let sources = write_durable_project(&root);
+        let config = native_config(".data");
+
+        let snapshot =
+            analyze_project(root.path(), &config, &sources, None, None).expect("analyze");
+        assert!(
+            !snapshot.report.has_errors(),
+            "{:#?}",
+            snapshot.report.diagnostics
+        );
+        let generation = snapshot.generation();
+        let proposal = snapshot
+            .program
+            .catalog
+            .proposal
+            .as_ref()
+            .expect("first run proposes durable catalog identity");
+
+        assert_eq!(generation.profile_version, "analysis.generation.v1");
+        assert_eq!(
+            generation.content_identity,
+            snapshot.content_identity().clone()
+        );
+        assert!(
+            generation.config_digest.as_str().starts_with("sha256:"),
+            "{generation:#?}"
+        );
+        assert_eq!(
+            generation.checked_source_digest,
+            snapshot.program.source_digest()
+        );
+        assert_eq!(
+            generation.read_only_context_digest,
+            snapshot.program.read_only_context_digest()
+        );
+        assert_eq!(generation.accepted_catalog, None);
+        assert_eq!(
+            generation
+                .proposal_catalog
+                .as_ref()
+                .map(|catalog| catalog.epoch),
+            Some(proposal.epoch)
+        );
+        assert_eq!(
+            generation
+                .proposal_catalog
+                .as_ref()
+                .and_then(|catalog| catalog.digest.as_deref()),
+            Some(proposal.digest.as_str())
+        );
+    }
+
+    #[test]
+    fn analysis_generation_config_digest_changes_without_changing_checked_source_digest() {
+        let root = TempDir::new("generation-config");
+        let sources = write_durable_project(&root);
+        let first = analyze_project(root.path(), &native_config(".data-a"), &sources, None, None)
+            .expect("analyze first config");
+        let second = analyze_project(root.path(), &native_config(".data-b"), &sources, None, None)
+            .expect("analyze second config");
+
+        assert_ne!(
+            first.generation().config_digest,
+            second.generation().config_digest
+        );
+        assert_eq!(
+            first.generation().checked_source_digest,
+            second.generation().checked_source_digest
+        );
+    }
+
+    #[test]
+    fn analysis_generation_reflects_accepted_and_proposal_catalog_facts() {
+        let root = TempDir::new("generation-catalog");
+        let sources = write_durable_project(&root);
+        let config = native_config(".data");
+        let first =
+            analyze_project(root.path(), &config, &sources, None, None).expect("analyze first run");
+        let proposal = first
+            .program
+            .catalog
+            .proposal
+            .clone()
+            .expect("first run proposal");
+
+        let accepted = analyze_project(root.path(), &config, &sources, Some(&proposal), None)
+            .expect("analyze against accepted catalog");
+        let generation = accepted.generation();
+
+        assert_eq!(generation.proposal_catalog, None);
+        assert_eq!(
+            generation
+                .accepted_catalog
+                .as_ref()
+                .map(|catalog| catalog.epoch),
+            Some(proposal.epoch)
+        );
+        assert_eq!(
+            generation
+                .accepted_catalog
+                .as_ref()
+                .and_then(|catalog| catalog.digest.as_deref()),
+            Some(proposal.digest.as_str())
+        );
     }
 
     #[test]

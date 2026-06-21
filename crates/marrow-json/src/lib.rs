@@ -781,6 +781,73 @@ mod tests {
     }
 
     #[test]
+    fn project_run_facts_json_renders_analysis_generation() {
+        let root = temp_project(
+            "run-facts-generation-json",
+            "module m\n\
+            resource Book\n    \
+            required title: string\n\
+            store ^books(id: int): Book\n\
+            pub fn title(id: int): string\n    \
+            return ^books(id).title ?? \"\"\n",
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".data" } }"#,
+        );
+        let session = ProjectSession::open(
+            &root,
+            ProjectOpen::run()
+                .with_fresh_memory_store()
+                .with_entry_override("m::title"),
+        )
+        .expect("fresh-memory session opens");
+
+        let rendered = run_facts_json_from_session(&session).expect("run facts render");
+        let generation = session.source_analysis_snapshot().generation();
+        let accepted = generation
+            .accepted_catalog
+            .as_ref()
+            .expect("fresh-memory run binds proposed catalog identity");
+
+        assert_eq!(
+            rendered["analysis"]["profileVersion"], "analysis.generation.v1",
+            "{rendered}"
+        );
+        assert_eq!(
+            rendered["analysis"]["sourceIdentity"],
+            generation.content_identity.as_str(),
+            "{rendered}"
+        );
+        assert_eq!(
+            rendered["analysis"]["configDigest"],
+            generation.config_digest.as_str(),
+            "{rendered}"
+        );
+        assert_eq!(
+            rendered["analysis"]["checkedSourceDigest"], generation.checked_source_digest,
+            "{rendered}"
+        );
+        assert_eq!(
+            rendered["analysis"]["readOnlyContextDigest"], generation.read_only_context_digest,
+            "{rendered}"
+        );
+        assert_eq!(
+            rendered["analysis"]["acceptedCatalog"],
+            json!({
+                "epoch": accepted.epoch,
+                "digest": accepted.digest.as_deref().expect("accepted catalog digest"),
+            }),
+            "{rendered}"
+        );
+        assert_eq!(rendered["analysis"]["proposalCatalog"], json!(null));
+        assert!(
+            rendered["analysis"]
+                .as_object()
+                .is_some_and(|analysis| analysis.len() > 1),
+            "{rendered}"
+        );
+        fs::remove_dir_all(&root).expect("remove temp project");
+    }
+
+    #[test]
     fn project_run_facts_json_is_bound_to_run_sessions() {
         let root = temp_project(
             "run-facts-json-test-session",

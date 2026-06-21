@@ -1,6 +1,7 @@
 use marrow_check::{
-    CheckedProgram, CheckedRuntimeProgram, EntryCostShapeFact, EntryDescriptor, EntryFootprintFact,
-    EntryStoreOpenMode, Severity, WorkShapeClass,
+    AnalysisCatalogGeneration, AnalysisGeneration, CheckedProgram, CheckedRuntimeProgram,
+    EntryCostShapeFact, EntryDescriptor, EntryFootprintFact, EntryStoreOpenMode, Severity,
+    WorkShapeClass,
 };
 use marrow_run::{
     EntryIdentity, ProjectInvokeError, ProjectSession, ProjectSessionError, RunOutput,
@@ -224,8 +225,26 @@ pub struct EntryRunFactsJson {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct EntryRunAnalysisJson {
+    #[serde(rename = "profileVersion")]
+    pub profile_version: &'static str,
     #[serde(rename = "sourceIdentity")]
     pub source_identity: String,
+    #[serde(rename = "configDigest")]
+    pub config_digest: String,
+    #[serde(rename = "checkedSourceDigest")]
+    pub checked_source_digest: String,
+    #[serde(rename = "readOnlyContextDigest")]
+    pub read_only_context_digest: String,
+    #[serde(rename = "acceptedCatalog")]
+    pub accepted_catalog: Option<EntryRunAnalysisCatalogJson>,
+    #[serde(rename = "proposalCatalog")]
+    pub proposal_catalog: Option<EntryRunAnalysisCatalogJson>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct EntryRunAnalysisCatalogJson {
+    pub epoch: u64,
+    pub digest: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -339,14 +358,39 @@ pub fn entry_run_facts_to_json(session: &ProjectSession) -> Option<EntryRunFacts
         return None;
     }
     Some(EntryRunFactsJson {
-        analysis: EntryRunAnalysisJson {
-            source_identity: session.source_analysis_identity().as_str().to_string(),
-        },
+        analysis: EntryRunAnalysisJson::from(session.source_analysis_snapshot().generation()),
         entry: entry_identity_to_json(identity),
         store_open_mode: store_open_mode_name(facts.store_open_mode),
         footprint: entry_footprint_to_json(program, &facts.footprint)?,
         cost_shape: entry_cost_shape_to_json(&facts.cost_shape),
     })
+}
+
+impl From<AnalysisGeneration> for EntryRunAnalysisJson {
+    fn from(generation: AnalysisGeneration) -> Self {
+        Self {
+            profile_version: generation.profile_version,
+            source_identity: generation.content_identity.as_str().to_string(),
+            config_digest: generation.config_digest.as_str().to_string(),
+            checked_source_digest: generation.checked_source_digest,
+            read_only_context_digest: generation.read_only_context_digest,
+            accepted_catalog: generation
+                .accepted_catalog
+                .map(EntryRunAnalysisCatalogJson::from),
+            proposal_catalog: generation
+                .proposal_catalog
+                .map(EntryRunAnalysisCatalogJson::from),
+        }
+    }
+}
+
+impl From<AnalysisCatalogGeneration> for EntryRunAnalysisCatalogJson {
+    fn from(catalog: AnalysisCatalogGeneration) -> Self {
+        Self {
+            epoch: catalog.epoch,
+            digest: catalog.digest,
+        }
+    }
 }
 
 fn runtime_error_to_json(
