@@ -60,6 +60,14 @@ fn write_memory_config_with_tests(root: &Path) {
     .expect("write marrow.json");
 }
 
+fn write_native_config_with_tests(root: &Path) {
+    fs::write(
+        root.join("marrow.json"),
+        r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".data" }, "tests": ["tests"] }"#,
+    )
+    .expect("write marrow.json");
+}
+
 fn baseline_source() -> &'static str {
     "module shelf\n\
      resource Counter\n\
@@ -1068,6 +1076,59 @@ fn test_session_keeps_source_analysis_snapshot_separate_from_test_program() {
     assert_eq!(source_modules, ["shelf"]);
     assert!(session_modules.contains(&"tests::smoke_test"));
     assert_eq!(session.test_cases()[0].name, "tests::smoke_test::smoke");
+}
+
+#[cfg(unix)]
+#[test]
+fn test_session_does_not_read_an_existing_native_store() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = TempDir::new("marrow-run-session-test-existing-store").expect("create project");
+    write_native_config_with_tests(root.path());
+    write_temp_source(
+        root.path(),
+        Path::new("src/shelf.mw"),
+        "module shelf\n\
+         resource Counter\n\
+         \x20\x20\x20\x20required value: int\n\
+         store ^counter(id: int): Counter\n\
+         pub fn seed()\n\
+         \x20\x20\x20\x20transaction\n\
+         \x20\x20\x20\x20    ^counter(1).value = 1\n",
+    );
+    write_temp_source(
+        root.path(),
+        Path::new("tests/smoke_test.mw"),
+        "pub fn smoke()\n    std::assert::isTrue(true)\n",
+    );
+    let seed = ProjectSession::open(
+        root.path(),
+        ProjectOpen::run().with_entry_override("shelf::seed"),
+    )
+    .expect("open seed session");
+    assert_eq!(invoke(&seed, "shelf::seed"), "");
+    drop(seed);
+
+    let store_path = root.path().join(".data").join("marrow.redb");
+    let mut unreadable = fs::metadata(&store_path)
+        .expect("seed run creates a native store")
+        .permissions();
+    unreadable.set_mode(0);
+    fs::set_permissions(&store_path, unreadable).expect("make native store unreadable");
+
+    let session = ProjectSession::open(root.path(), ProjectOpen::test())
+        .expect("test sessions run over fresh memory without inspecting the native store");
+    assert_eq!(session.test_cases()[0].name, "tests::smoke_test::smoke");
+
+    let host = Host::new();
+    let mut output = String::new();
+    session
+        .invoke(SessionEntry::new(
+            &session.test_cases()[0].name,
+            &host,
+            &mut output,
+        ))
+        .expect("invoke discovered test over a fresh store");
 }
 
 #[test]

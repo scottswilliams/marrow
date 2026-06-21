@@ -548,10 +548,11 @@ impl ProjectSession {
         let open = mode.into();
         let root = root.as_ref().to_path_buf();
         let (config, checked) = match open.mode {
+            ProjectMode::Test => load_checked_for_fresh_memory_session(&root)?,
             ProjectMode::Run if open.run_store_policy == RunStorePolicy::FreshMemory => {
                 load_checked_for_fresh_memory_session(&root)?
             }
-            ProjectMode::Run | ProjectMode::Test => load_checked_for_session(&root)?,
+            ProjectMode::Run => load_checked_for_session(&root)?,
         };
         match open.mode {
             ProjectMode::Run => open_run_session(root, config, checked, open),
