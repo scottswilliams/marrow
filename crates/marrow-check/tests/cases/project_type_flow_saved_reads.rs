@@ -556,6 +556,118 @@ fn an_in_range_local_sequence_and_tree_write_stays_clean() {
 }
 
 #[test]
+fn a_const_folded_non_positive_sequence_write_is_rejected_at_check() {
+    // A statically-known position is not only a syntactic literal: integer arithmetic
+    // over literals (`1 - 1`, `1 - 4`) and a `const` binding whose value folds to a
+    // non-positive integer (`const z = 0`, `const z = 5 - 5`) are all known at check.
+    // Each addresses no node in a 1-based sequence and is rejected as the literal form
+    // is, on the whole write-target span. Covers local sequence, local int-keyed tree,
+    // and a saved sequence layer.
+    for (name, prelude, target) in [
+        (
+            "seq-arith-zero",
+            "    var tags: sequence[string]\n",
+            "tags(1 - 1)",
+        ),
+        (
+            "seq-arith-neg",
+            "    var tags: sequence[string]\n",
+            "tags(1 - 4)",
+        ),
+        (
+            "seq-const-zero",
+            "    const z: int = 0\n    var tags: sequence[string]\n",
+            "tags(z)",
+        ),
+        (
+            "seq-const-arith",
+            "    const z: int = 5 - 5\n    var tags: sequence[string]\n",
+            "tags(z)",
+        ),
+        (
+            "seq-const-neg",
+            "    const z: int = -3\n    var tags: sequence[string]\n",
+            "tags(z)",
+        ),
+        (
+            "tree-const-zero",
+            "    const z: int = 0\n    var t(k: int): string\n",
+            "t(z)",
+        ),
+        (
+            "saved-seq-const-neg",
+            "    const z: int = -3\n",
+            "^docs(1).tags(z)",
+        ),
+        ("saved-seq-arith-zero", "", "^docs(1).tags(2 - 2)"),
+    ] {
+        let src = format!(
+            "module m\n\
+             resource Doc\n    tags: sequence[string]\n\
+             store ^docs(id: int): Doc\n\n\
+             fn f()\n{prelude}    {target} = \"x\"\n"
+        );
+        let report = check_module_report(name, &src);
+        let found = with_code(&report, "check.sequence_position");
+        assert_eq!(found.len(), 1, "{name}: {:#?}", report.diagnostics);
+        let span = found[0].span;
+        assert_eq!(&src[span.start_byte..span.end_byte], target, "{name}");
+    }
+}
+
+#[test]
+fn a_module_const_non_positive_sequence_write_is_rejected_at_check() {
+    // A module-level `const` is a compile-time constant the same as a local one. A
+    // non-positive module const used as a sequence position addresses no node and is a
+    // check error.
+    let src = "module m\n\
+         const z: int = 0\n\n\
+         fn f()\n    var tags: sequence[string]\n    tags(z) = \"x\"\n";
+    let report = check_module_report("module-const-seq", src);
+    let found = with_code(&report, "check.sequence_position");
+    assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
+    let span = found[0].span;
+    assert_eq!(&src[span.start_byte..span.end_byte], "tags(z)");
+}
+
+#[test]
+fn a_const_folded_positive_sequence_write_stays_clean() {
+    // The static fold must not over-reach. A positive const or positive arithmetic
+    // folds to an in-range 1-based position and is a legitimate write target.
+    let src = "module m\n\
+         fn f()\n    const p: int = 2\n    var tags: sequence[string]\n\
+         \x20   tags(2 - 1) = \"a\"\n    tags(p) = \"b\"\n";
+    assert!(
+        with_code(
+            &check_module_report("const-positive-clean", src),
+            "check.sequence_position"
+        )
+        .is_empty(),
+        "a positive const or arithmetic position must stay clean",
+    );
+}
+
+#[test]
+fn a_dynamic_non_positive_sequence_write_stays_clean_at_check() {
+    // The boundary is "statically determinable at check" vs "only known at run". A
+    // function result and a non-constant variable are not known at check, so a
+    // non-positive value through one is not a check error; it stays a catchable run
+    // fault that persists nothing. The fold must not reach into runtime values.
+    let src = "module m\n\
+         fn zero(): int\n    return 0\n\n\
+         fn f(p: int)\n    var tags: sequence[string]\n\
+         \x20   tags(zero()) = \"a\"\n    tags(p) = \"b\"\n";
+    assert!(
+        with_code(
+            &check_module_report("dynamic-position-clean", src),
+            "check.sequence_position"
+        )
+        .is_empty(),
+        "a dynamic non-positive position must stay clean at check (run fault)",
+    );
+}
+
+#[test]
 fn a_non_positive_local_composite_keyed_tree_write_is_clean() {
     // A multi-column local keyed tree is not a 1-based sequence, so a zero or
     // negative key carries meaning in its own right and is a legitimate write target.

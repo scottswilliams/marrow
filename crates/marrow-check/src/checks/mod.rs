@@ -7,11 +7,13 @@
 //! (`collections`), range-for rules (`ranges`), the operator/condition/
 //! assign/return/throw checks (`operators`), saved-access key typing
 //! (`saved_keys`), straight-line required-field assignment (`required_fields`),
-//! call checking (`calls`), and the shared diagnostic constructors
+//! call checking (`calls`), the statically-known integer fold for sequence
+//! positions (`const_int`), and the shared diagnostic constructors
 //! (`diagnostics`).
 
 mod calls;
 mod collections;
+mod const_int;
 mod diagnostics;
 mod driver;
 mod operators;

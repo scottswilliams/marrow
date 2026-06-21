@@ -11,8 +11,7 @@ use marrow_syntax::{Argument, SourceSpan};
 
 use crate::diagnostics::CHECK_SEQUENCE_POSITION;
 use crate::executable::{
-    CheckedArg, CheckedExpr, CheckedLiteralKind, CheckedSavedLayer, SavedKeyParamTarget,
-    SavedPlaceResolver, lower_expr_for_file,
+    CheckedSavedLayer, SavedKeyParamTarget, SavedPlaceResolver, lower_expr_for_file,
 };
 use crate::typerules::{is_ordered, marrow_type_name, type_compatible};
 use crate::{
@@ -20,36 +19,45 @@ use crate::{
     CheckedSavedTerminal, MarrowType, TypeNames, identity_type_for_store,
 };
 
+use super::const_int::fold_const_int;
 use super::diagnostics::{call_diagnostic, key_type_diagnostic};
+
+/// A sequence-position write target and the environment its position folds in.
+pub(crate) struct SequencePositionWrite<'a, 'd> {
+    pub(crate) program: &'a CheckedProgram,
+    pub(crate) target: &'a marrow_syntax::Expression,
+    pub(crate) scope: &'a [HashMap<String, MarrowType>],
+    pub(crate) const_ints: &'a [HashMap<String, Option<i64>>],
+    pub(crate) aliases: &'a HashMap<String, Vec<String>>,
+    pub(crate) span: SourceSpan,
+    pub(crate) file: &'a Path,
+    pub(crate) diagnostics: &'d mut Vec<CheckDiagnostic>,
+}
 
 /// Reject a write to a sequence position the spec proves addresses no node. Every
 /// single int-keyed layer is the canonical 1-based sequence shape — saved or local,
 /// spelled `sequence[T]` or `name(k: int): V` — so a statically-known zero or
-/// negative position can never be written to any of them. This is the static
-/// counterpart of the absent fault a dynamic non-positive position raises at run
-/// time, and it is a write-target rule only: a guarded read of such a position
-/// resolves to absent at run time.
-pub(crate) fn check_sequence_position_write(
-    program: &CheckedProgram,
-    target: &marrow_syntax::Expression,
-    scope: &[HashMap<String, MarrowType>],
-    aliases: &HashMap<String, Vec<String>>,
-    span: SourceSpan,
-    file: &Path,
-    diagnostics: &mut Vec<CheckDiagnostic>,
-) {
-    let Some(checked) = lower_expr_for_file(program, file, target, scope) else {
+/// negative position can never be written to any of them. The position is folded
+/// statically: a literal, a `const` binding, or integer arithmetic over either all
+/// resolve at check, while a dynamic position folds to nothing and stays a run
+/// fault. This is the static counterpart of the absent fault a dynamic non-positive
+/// position raises at run time, and it is a write-target rule only: a guarded read
+/// of such a position resolves to absent at run time.
+pub(crate) fn check_sequence_position_write(check: SequencePositionWrite<'_, '_>) {
+    let Some(position) = static_non_positive_target_position(
+        check.program,
+        check.target,
+        check.scope,
+        check.const_ints,
+        check.aliases,
+        check.file,
+    ) else {
         return;
     };
-    let Some(position) =
-        static_non_positive_target_position(program, target, &checked, scope, aliases, file)
-    else {
-        return;
-    };
-    diagnostics.push(CheckDiagnostic::error(
+    check.diagnostics.push(CheckDiagnostic::error(
         CHECK_SEQUENCE_POSITION,
-        file,
-        span,
+        check.file,
+        check.span,
         format!(
             "sequence positions are 1-based, so position `{position}` addresses no node and cannot be written",
         ),
@@ -58,27 +66,50 @@ pub(crate) fn check_sequence_position_write(
 
 /// The statically-known non-positive position a write target addresses, whether the
 /// target is a saved single int-keyed layer or a local single int-keyed collection.
-/// `None` for any other shape, an in-range position, or a non-literal position.
+/// `None` for any other shape, an in-range position, or a position that does not
+/// fold to a constant.
 fn static_non_positive_target_position(
     program: &CheckedProgram,
     target: &marrow_syntax::Expression,
-    checked: &CheckedExpr,
     scope: &[HashMap<String, MarrowType>],
+    const_ints: &[HashMap<String, Option<i64>>],
     aliases: &HashMap<String, Vec<String>>,
     file: &Path,
 ) -> Option<i64> {
-    if let Some(layer) = checked.saved_place().and_then(|place| place.layers.last())
-        && single_int_key_layer(layer)
+    if !target_is_single_int_sequence(program, target, scope, aliases, file) {
+        return None;
+    }
+    let [position] = sequence_position_args(target)? else {
+        return None;
+    };
+    fold_const_int(&position.value, const_ints).filter(|position| *position < 1)
+}
+
+/// Whether a write target addresses a single int-keyed sequence position, saved or
+/// local. A saved target's final layer must be single int-keyed; a local target's
+/// callee must be a `sequence[T]` or a single int-keyed tree.
+fn target_is_single_int_sequence(
+    program: &CheckedProgram,
+    target: &marrow_syntax::Expression,
+    scope: &[HashMap<String, MarrowType>],
+    aliases: &HashMap<String, Vec<String>>,
+    file: &Path,
+) -> bool {
+    if let Some(checked) = lower_expr_for_file(program, file, target, scope)
+        && let Some(layer) = checked.saved_place().and_then(|place| place.layers.last())
     {
-        return static_non_positive_position(layer.args.as_slice());
+        return single_int_key_layer(layer);
     }
-    if local_single_int_key_target(program, target, scope, aliases, file) {
-        let CheckedExpr::Call { args, .. } = checked else {
-            return None;
-        };
-        return static_non_positive_position(args.as_slice());
-    }
-    None
+    local_single_int_key_target(program, target, scope, aliases, file)
+}
+
+/// The arguments of the outermost call of a write target — its sequence position.
+/// `None` when the target is not a call.
+fn sequence_position_args(target: &marrow_syntax::Expression) -> Option<&[Argument]> {
+    let marrow_syntax::Expression::Call { args, .. } = target else {
+        return None;
+    };
+    Some(args.as_slice())
 }
 
 /// Whether a saved layer is a single int-keyed sequence position. A composite or
@@ -108,25 +139,6 @@ fn local_single_int_key_target(
         }
         _ => false,
     }
-}
-
-/// The statically-known non-positive value of a single position argument, or `None`
-/// when the layer takes other than one argument, the argument is not an integer
-/// literal, or the position is in range. A negated integer literal is folded to a
-/// signed literal at lowering, so it is covered here too.
-fn static_non_positive_position(args: &[CheckedArg]) -> Option<i64> {
-    let [arg] = args else {
-        return None;
-    };
-    let CheckedExpr::Literal {
-        kind: CheckedLiteralKind::Integer,
-        text,
-        ..
-    } = &arg.value
-    else {
-        return None;
-    };
-    text.parse::<i64>().ok().filter(|position| *position < 1)
 }
 
 /// Type-check the key arguments of a saved access against the keys it addresses.

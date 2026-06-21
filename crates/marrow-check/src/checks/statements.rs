@@ -30,13 +30,16 @@ use super::collections::{
     is_partial_key_layer_path, is_saved_collection_path, is_saved_index_branch_path,
     is_saved_index_range_path, is_saved_key_range_path, is_saved_path_with_key_range_arg,
 };
+use super::const_int::{ConstIntScope, fold_const_int};
 use super::operators::{check_assignment, check_condition, check_return_type, check_throw_type};
 use super::ranges::{
     check_range_header, check_range_iterable_value_parts, check_range_value_guarded,
 };
 use super::required_fields::RequiredFieldAssignments;
 use super::returns::check_return_values;
-use super::saved_keys::{check_sequence_position_write, saved_root_args_address_record};
+use super::saved_keys::{
+    SequencePositionWrite, check_sequence_position_write, saved_root_args_address_record,
+};
 
 /// Type-check a function body, tracking the type of each in-scope binding and
 /// inferring each expression. A check fires only when a type or signature is known
@@ -66,6 +69,14 @@ pub(crate) fn check_function_types(
         );
     }
     let mut scope: Vec<HashMap<String, MarrowType>> = vec![base];
+    // A statically-known integer environment mirroring the type scope, seeded with
+    // the module's integer constants. A parameter shadows a like-named constant, so
+    // its name is masked as dynamic in this function.
+    let mut const_base = module_const_ints(program, file);
+    for param in &function.params {
+        const_base.insert(param.name.clone(), None);
+    }
+    let mut const_ints: ConstIntScope = vec![const_base];
     let mut required_fields = RequiredFieldAssignments::new();
     let return_type = function
         .return_type
@@ -84,10 +95,34 @@ pub(crate) fn check_function_types(
         },
         &function.body,
         &mut scope,
+        &mut const_ints,
         diagnostics,
         &mut required_fields,
     );
     collapse_repeated_unresolved_names(diagnostics, body_start);
+}
+
+/// The module's integer constants folded to their values. A constant whose value is
+/// not a statically-known integer is omitted, so the environment holds only what the
+/// sequence-position fold can use. Constants are folded in declaration order, so a
+/// later constant defined over an earlier one resolves.
+fn module_const_ints(program: &CheckedProgram, file: &Path) -> HashMap<String, Option<i64>> {
+    let mut const_ints = HashMap::new();
+    let Some(module) = program
+        .modules
+        .iter()
+        .find(|module| module.source_file == file)
+    else {
+        return const_ints;
+    };
+    for constant in &module.constants {
+        if let Some(value) = &constant.value
+            && let Some(folded) = fold_const_int(value, std::slice::from_ref(&const_ints))
+        {
+            const_ints.insert(constant.name.clone(), Some(folded));
+        }
+    }
+    const_ints
 }
 
 /// One undeclared name is one root cause however many times the function uses it. A
@@ -120,6 +155,7 @@ pub(crate) fn check_block_types(
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
     let mut required_fields = RequiredFieldAssignments::inactive();
+    let mut const_ints: ConstIntScope = vec![module_const_ints(program, file)];
     check_block_types_with_read_scope(
         BlockTypeContext {
             program,
@@ -130,6 +166,7 @@ pub(crate) fn check_block_types(
         },
         block,
         scope,
+        &mut const_ints,
         diagnostics,
         &mut required_fields,
     );
@@ -167,6 +204,7 @@ pub(crate) fn check_transform_block_types(check: TransformBlockTypeCheck<'_>) {
             });
     check_return_values(file, block, true, ReturnPresence::Always, diagnostics);
     let mut required_fields = RequiredFieldAssignments::inactive();
+    let mut const_ints: ConstIntScope = vec![module_const_ints(program, file)];
     check_block_types_with_read_scope(
         BlockTypeContext {
             program,
@@ -177,6 +215,7 @@ pub(crate) fn check_transform_block_types(check: TransformBlockTypeCheck<'_>) {
         },
         block,
         scope,
+        &mut const_ints,
         diagnostics,
         &mut required_fields,
     );
@@ -195,15 +234,25 @@ fn check_block_types_with_read_scope(
     context: BlockTypeContext<'_>,
     block: &marrow_syntax::Block,
     scope: &mut Vec<HashMap<String, MarrowType>>,
+    const_ints: &mut ConstIntScope,
     diagnostics: &mut Vec<CheckDiagnostic>,
     required_fields: &mut RequiredFieldAssignments,
 ) {
     scope.push(HashMap::new());
+    const_ints.push(HashMap::new());
     required_fields.push_frame();
     for statement in &block.statements {
-        check_statement_types(context, statement, scope, diagnostics, required_fields);
+        check_statement_types(
+            context,
+            statement,
+            scope,
+            const_ints,
+            diagnostics,
+            required_fields,
+        );
     }
     required_fields.pop_frame();
+    const_ints.pop();
     scope.pop();
 }
 
@@ -213,6 +262,7 @@ fn check_statement_types(
     context: BlockTypeContext<'_>,
     statement: &marrow_syntax::Statement,
     scope: &mut Vec<HashMap<String, MarrowType>>,
+    const_ints: &mut ConstIntScope,
     diagnostics: &mut Vec<CheckDiagnostic>,
     required_fields: &mut RequiredFieldAssignments,
 ) {
@@ -221,6 +271,7 @@ fn check_statement_types(
         file: context.file,
         return_type: context.return_type,
         scope,
+        const_ints,
         aliases: context.aliases,
         transform_old: context.transform_old,
         diagnostics,
@@ -234,6 +285,7 @@ struct StatementCheck<'a> {
     file: &'a Path,
     return_type: &'a MarrowType,
     scope: &'a mut Vec<HashMap<String, MarrowType>>,
+    const_ints: &'a mut ConstIntScope,
     aliases: &'a HashMap<String, Vec<String>>,
     transform_old: Option<crate::presence::TransformOldReadScope<'a>>,
     diagnostics: &'a mut Vec<CheckDiagnostic>,
@@ -333,6 +385,7 @@ impl StatementCheck<'_> {
             },
             block,
             self.scope,
+            self.const_ints,
             self.diagnostics,
             self.required_fields,
         );
@@ -350,6 +403,7 @@ impl StatementCheck<'_> {
             },
             block,
             self.scope,
+            self.const_ints,
             self.diagnostics,
             &mut required_fields,
         );
@@ -490,8 +544,40 @@ impl StatementCheck<'_> {
         ) {
             self.required_fields
                 .bind_statement(self.program, statement, &name, &ty);
+            self.record_const_int(statement, &name);
             bind(self.scope, &name, ty);
         }
+    }
+
+    /// Record a binding in the const-int environment. A `const` whose value folds to a
+    /// known integer maps to that value; every other binding masks any like-named outer
+    /// constant as dynamic, so a shadowing `var` or non-constant `const` does not fold
+    /// to the shadowed value.
+    fn record_const_int(&mut self, statement: &marrow_syntax::Statement, name: &str) {
+        let value = match statement {
+            marrow_syntax::Statement::Const { value, .. } => fold_const_int(value, self.const_ints),
+            _ => None,
+        };
+        if let Some(frame) = self.const_ints.last_mut() {
+            frame.insert(name.to_string(), value);
+        }
+    }
+
+    /// Check `body` under a scope frame that binds the loop or catch variables in
+    /// `frame`. The const-int environment masks every bound name as dynamic, so a loop
+    /// or catch variable shadowing an outer constant does not fold to the shadowed
+    /// value.
+    fn check_block_under_frame(
+        &mut self,
+        frame: HashMap<String, MarrowType>,
+        body: &marrow_syntax::Block,
+    ) {
+        let masked = frame.keys().map(|name| (name.clone(), None)).collect();
+        self.scope.push(frame);
+        self.const_ints.push(masked);
+        self.check_inconclusive_block(body);
+        self.const_ints.pop();
+        self.scope.pop();
     }
 
     fn check_assignment_statement(
@@ -568,15 +654,16 @@ impl StatementCheck<'_> {
             self.required_fields
                 .check_whole_root_write(self.file, value, store, self.diagnostics);
         }
-        check_sequence_position_write(
-            self.program,
+        check_sequence_position_write(SequencePositionWrite {
+            program: self.program,
             target,
-            self.scope,
-            self.aliases,
-            target.span(),
-            self.file,
-            self.diagnostics,
-        );
+            scope: self.scope,
+            const_ints: self.const_ints,
+            aliases: self.aliases,
+            span: target.span(),
+            file: self.file,
+            diagnostics: self.diagnostics,
+        });
         self.check_lossy_round_trip_warning(target);
         check_assignment(self.file, span, &target_type, &value_type, self.diagnostics);
         if assignment_target_is_error_code(
@@ -871,9 +958,7 @@ impl StatementCheck<'_> {
                 self.aliases,
                 self.file,
             );
-            self.scope.push(frame);
-            self.check_inconclusive_block(body);
-            self.scope.pop();
+            self.check_block_under_frame(frame, body);
             self.required_fields.invalidate_all();
             return;
         }
@@ -938,9 +1023,7 @@ impl StatementCheck<'_> {
             self.aliases,
             self.file,
         );
-        self.scope.push(frame);
-        self.check_inconclusive_block(body);
-        self.scope.pop();
+        self.check_block_under_frame(frame, body);
         self.required_fields.invalidate_all();
     }
 
@@ -951,9 +1034,7 @@ impl StatementCheck<'_> {
     ) {
         self.check_inconclusive_block(body);
         if let Some(clause) = catch {
-            self.scope.push(catch_frame(clause));
-            self.check_inconclusive_block(&clause.block);
-            self.scope.pop();
+            self.check_block_under_frame(catch_frame(clause), &clause.block);
         }
         self.required_fields.invalidate_all();
     }
