@@ -780,6 +780,46 @@ fn backup_then_restore_round_trips_saved_data() {
 }
 
 #[test]
+fn restore_reprojects_the_committed_lock_so_check_locked_passes_immediately() {
+    // Losing both the store and the committed lock and restoring from a backup must leave the
+    // tree exactly as a run or evolve apply would: store re-established and `marrow.lock`
+    // re-projected from the restored snapshot. Without the re-projection an immediate
+    // `check --locked` would false-fail `check.lock_missing` until the next run, even though the
+    // restored shape is current.
+    let (root, data_dir) = seeded_project("restore-reprojects-lock");
+    let dir = root.to_str().unwrap().to_string();
+    let archive = root.join("books.mwbackup");
+    let archive_arg = archive.to_str().unwrap().to_string();
+
+    let backup = marrow(&["backup", &dir, &archive_arg]);
+    assert_eq!(backup.status.code(), Some(0), "backup: {backup:?}");
+
+    // Lose BOTH the store and the committed lock, the genuine post-loss state.
+    fs::remove_dir_all(&data_dir).expect("remove store data");
+    fs::remove_file(root.join("marrow.lock")).expect("remove committed lock");
+
+    let restore = marrow(&["restore", &dir, &archive_arg]);
+    assert_eq!(restore.status.code(), Some(0), "restore: {restore:?}");
+    assert!(
+        root.join("marrow.lock").exists(),
+        "restore re-projects the committed lock from the restored snapshot"
+    );
+
+    let strict = marrow(&["check", "--locked", &dir]);
+    assert_eq!(
+        strict.status.code(),
+        Some(0),
+        "an immediate --locked check passes after restore: {strict:?}"
+    );
+    assert!(
+        !String::from_utf8(strict.stderr)
+            .expect("stderr utf8")
+            .contains("check.lock_missing"),
+        "restore leaves no missing-lock condition for the gate"
+    );
+}
+
+#[test]
 fn backup_failure_preserves_prior_archive_and_removes_temp_file() {
     let (root, _data_dir) = seeded_project("backup-atomic-failure");
     let dir = root.to_str().unwrap().to_string();

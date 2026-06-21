@@ -635,11 +635,15 @@ impl AcceptedAuthority {
         }
     }
 
-    /// Whether a durable store is present on disk, readable or not. The `--locked` gate keys its
-    /// missing-lock failure on this: any present store has durable shape that a committed lock
-    /// must project, so an absent lock over a present store is a missing commit, not a first run.
+    /// Whether the store carries durable shape a committed lock must project. The `--locked` gate
+    /// keys its missing-lock failure on this. A store opened read-only that carried a committed
+    /// catalog (`Readable(Some(_))`) and an unopenable store that may carry one
+    /// (`ExistsButUnreadable`) both demand a lock, so an absent lock over them is a missing commit.
+    /// A uid-only store (`Readable(None)`) is the crash-window remnant between stamping the store
+    /// uid and publishing a baseline: it has no committed catalog, so like an absent store there is
+    /// nothing to lock and the gate treats it as a first run.
     pub(crate) fn store_present(&self) -> bool {
-        matches!(self, Self::Readable(_) | Self::ExistsButUnreadable)
+        matches!(self, Self::Readable(Some(_)) | Self::ExistsButUnreadable)
     }
 }
 

@@ -99,6 +99,13 @@ pub(crate) fn restore(args: &[String]) -> ExitCode {
                     return ExitCode::FAILURE;
                 }
             };
+            // Restore re-establishes the store and its accepted identity from the backup, so it
+            // is a durable write path like run and evolve apply: re-project the committed lock
+            // from the restored snapshot so an immediate `check --locked` is clean rather than
+            // false-failing on a missing lock until the next run.
+            if let Err(code) = crate::reproject_committed_lock(&dir, &store, &program, format) {
+                return code;
+            }
             report_restore_text(&input, records, &report);
             ExitCode::SUCCESS
         }

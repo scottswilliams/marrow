@@ -223,7 +223,7 @@ const DATA_ORPHAN_CODE: &str = "data.orphan";
 /// could not see the cells under undeclared members. Counting them silently would under-report
 /// intact data; the exit status stays unchanged because the cells are durable and the inspection
 /// is read-only. A store the schema fully declares has no orphans and stays silent.
-fn warn_on_hidden_orphans(program: &CheckedProgram, store: &Option<TreeStore>) {
+pub(super) fn warn_on_hidden_orphans(program: &CheckedProgram, store: &Option<TreeStore>) {
     let Some(store) = store else {
         return;
     };
@@ -439,6 +439,7 @@ fn data_roots(args: &[String]) -> ExitCode {
         },
         None => (Vec::new(), None),
     };
+    warn_on_hidden_orphans(&program, &store);
     match format {
         CheckFormat::Text => {
             if roots.is_empty() {

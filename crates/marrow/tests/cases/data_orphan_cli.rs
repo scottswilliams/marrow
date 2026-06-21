@@ -114,6 +114,31 @@ fn project_with_empty_book_resource_drop(name: &str) -> support::TempProject {
     root
 }
 
+/// The baseline with its whole store renamed from `^books` to `^archive`. The `Book` resource and
+/// its members stay, but every cell written under `^books` is now under a store the current source
+/// no longer declares, so the source-driven inspection sees no saved roots at all.
+const STORE_RENAMED_SOURCE: &str = "module books\n\
+resource Book\n\
+\x20   required title: string\n\
+store ^archive(id: int): Book\n\
+pub fn add(title: string): Id(^archive)\n\
+\x20   return nextId(^archive)\n";
+
+/// Commit the baseline, seed one populated record under `^books`, then rename the whole store to
+/// `^archive` in source. Every seeded cell is now orphaned under the gone store id, and the current
+/// source declares only the empty `^archive`. Returns the project root.
+fn project_with_renamed_store(name: &str) -> support::TempProject {
+    let root = native_books_project(name, RETIRE_BASELINE_SOURCE);
+    let program = commit_catalog(&root);
+    let place = root_place(&program, "books").expect("books root place");
+    {
+        let store = open_native_store(&root);
+        seed_title_only(&store, &place, 1, "Dune");
+    }
+    support::write(&root, "src/books.mw", STORE_RENAMED_SOURCE);
+    root
+}
+
 fn integrity_codes(value: &serde_json::Value) -> Vec<&str> {
     value["problems"]
         .as_array()
@@ -182,6 +207,109 @@ fn data_dump_warns_when_a_drifted_source_hides_orphan_cells() {
     assert!(
         stderr.contains("data.orphan"),
         "dump surfaces the hidden orphan cell as an advisory: {stderr}"
+    );
+}
+
+#[test]
+fn data_roots_warns_when_a_whole_store_rename_hides_orphan_cells() {
+    // After a whole-store rename, `marrow data roots` walks only the source-declared stores, so the
+    // renamed-away store's records vanish and roots prints `(no saved data)`. Without the advisory a
+    // developer would read that as an empty store and not as drifted source hiding intact records.
+    // The same orphan advisory `data integrity` reports keeps the empty listing from being silent.
+    let root = project_with_renamed_store("orphan-roots-rename-text");
+
+    let output = marrow(&["data", "roots", root.to_str().expect("project path utf-8")]);
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert!(
+        String::from_utf8(output.stdout)
+            .expect("stdout utf8")
+            .contains("(no saved data)"),
+        "the renamed-away store leaves no source-visible roots"
+    );
+    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+    assert!(
+        stderr.contains("data.orphan"),
+        "roots surfaces the hidden orphan cells as an advisory: {stderr}"
+    );
+    assert!(
+        stderr.contains("data integrity"),
+        "the advisory points at marrow data integrity: {stderr}"
+    );
+}
+
+#[test]
+fn data_roots_json_warns_when_a_whole_store_rename_hides_orphan_cells() {
+    // The advisory is a stderr note, so the stdout JSON stays the clean roots envelope while the
+    // orphan signal still reaches a machine reader on stderr.
+    let root = project_with_renamed_store("orphan-roots-rename-json");
+
+    let output = marrow(&[
+        "data",
+        "roots",
+        "--format",
+        "json",
+        root.to_str().expect("project path utf-8"),
+    ]);
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert_eq!(
+        support::json(output.stdout)["roots"],
+        serde_json::json!([]),
+        "the renamed-away store leaves no source-visible roots"
+    );
+    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+    assert!(
+        stderr.contains("data.orphan"),
+        "roots --format json surfaces the hidden orphan cells as an advisory: {stderr}"
+    );
+}
+
+#[test]
+fn data_get_warns_when_a_whole_store_rename_hides_orphan_cells() {
+    // `marrow data get` over a path whose store the source still declares is unaffected, but after a
+    // whole-store rename a read against the empty renamed store is silently absent while populated
+    // cells linger under the gone store id. The orphan advisory keeps that absence from misleading.
+    let root = project_with_renamed_store("orphan-get-rename-text");
+
+    let output = marrow(&[
+        "data",
+        "get",
+        root.to_str().expect("project path utf-8"),
+        "^archive(1).title",
+    ]);
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+    assert!(
+        stderr.contains("data.orphan"),
+        "get surfaces the hidden orphan cells as an advisory: {stderr}"
+    );
+    assert!(
+        stderr.contains("data integrity"),
+        "the advisory points at marrow data integrity: {stderr}"
+    );
+}
+
+#[test]
+fn data_get_json_warns_when_a_whole_store_rename_hides_orphan_cells() {
+    // The advisory reaches a machine reader on stderr while stdout stays the clean get envelope.
+    let root = project_with_renamed_store("orphan-get-rename-json");
+
+    let output = marrow(&[
+        "data",
+        "get",
+        "--format",
+        "json",
+        root.to_str().expect("project path utf-8"),
+        "^archive(1).title",
+    ]);
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+    assert!(
+        stderr.contains("data.orphan"),
+        "get --format json surfaces the hidden orphan cells as an advisory: {stderr}"
     );
 }
 

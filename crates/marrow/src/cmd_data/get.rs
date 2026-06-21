@@ -27,6 +27,7 @@ pub(super) fn data_get(args: &[String]) -> ExitCode {
             Ok(target) => target,
             Err(code) => return code,
         };
+    super::warn_on_hidden_orphans(&program, &store);
     let path = match resolve_source_text_data_path(&program, &parsed_segments) {
         Ok(Some(path)) => path,
         // Durable identity that was never committed — a never-run project or a

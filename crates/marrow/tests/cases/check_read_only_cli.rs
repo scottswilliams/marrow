@@ -9,7 +9,7 @@ use std::path::Path;
 
 use crate::support;
 use crate::support_evolve;
-use marrow_store::tree::TreeStore;
+use marrow_store::tree::{StoreUid, TreeStore};
 use support::{
     corrupt_primary_slot_selector, counter_source, marrow, native_config, temp_project_uncommitted,
     write,
@@ -530,6 +530,50 @@ fn check_locked_passes_a_legitimate_first_run_with_no_durable_shape() {
             .expect("stderr utf8")
             .contains("check.lock_missing"),
         "absence is silent when there is no durable shape to lock"
+    );
+}
+
+#[test]
+fn check_locked_passes_a_uid_only_store_with_no_committed_catalog() {
+    // The crash-window remnant: `ensure_store_uid` stamped the store uid, but the process died
+    // before `establish_store_baseline` published any accepted catalog (the same uid-only state
+    // `data recover` can leave). A read-only open succeeds and yields no catalog snapshot, so the
+    // store carries no durable shape to lock yet. `--locked` must treat that like a first run and
+    // pass green, not falsely demand a committed lock for shape that does not exist.
+    let project = temp_project_uncommitted("check-ro-locked-uid-only", |root| {
+        write(root, "marrow.json", native_config());
+        write(root, "src/app.mw", counter_source());
+    });
+    let dir = project.to_str().expect("project path utf-8");
+    {
+        let store = open_native_store(&project);
+        store
+            .write_store_uid(
+                &StoreUid::new("store_00000000000000000000000000000099".to_string())
+                    .expect("valid fixture store uid"),
+            )
+            .expect("write fixture store uid");
+        assert!(
+            store
+                .read_catalog_snapshot()
+                .expect("read store catalog snapshot")
+                .is_none(),
+            "the uid-only store carries no committed catalog"
+        );
+    }
+    assert!(!lock_path(&project).exists(), "no committed lock yet");
+
+    let strict = marrow(&["check", "--locked", dir]);
+    assert_eq!(
+        strict.status.code(),
+        Some(0),
+        "--locked passes a uid-only store with no committed catalog to lock: {strict:?}"
+    );
+    assert!(
+        !String::from_utf8(strict.stderr)
+            .expect("stderr utf8")
+            .contains("check.lock_missing"),
+        "a uid-only store has no durable shape, so an absent lock is not missing"
     );
 }
 
