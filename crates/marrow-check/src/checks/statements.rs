@@ -531,6 +531,7 @@ impl StatementCheck<'_> {
             self.program,
             target,
             self.scope,
+            self.aliases,
             target.span(),
             self.file,
             self.diagnostics,

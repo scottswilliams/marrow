@@ -502,6 +502,92 @@ fn an_in_range_sequence_write_stays_clean() {
 }
 
 #[test]
+fn a_static_non_positive_local_sequence_write_is_rejected_at_check() {
+    // A local sequence is identical to a saved sequence: 1-based, so a statically
+    // known position below 1 addresses no node and can never be written. The literal
+    // `0` and the negated `-2` are both caught at check, on the whole write-target
+    // span, exactly as the saved sequence form is.
+    for (name, target) in [
+        ("local-seq-write-zero", "tags(0)"),
+        ("local-seq-write-neg", "tags(-2)"),
+    ] {
+        let src = format!(
+            "module m\n\
+             fn f()\n    var tags: sequence[string]\n    {target} = \"x\"\n"
+        );
+        let report = check_module_report(name, &src);
+        let found = with_code(&report, "check.sequence_position");
+        assert_eq!(found.len(), 1, "{name}: {:#?}", report.diagnostics);
+        let span = found[0].span;
+        assert_eq!(&src[span.start_byte..span.end_byte], target, "{name}");
+    }
+}
+
+#[test]
+fn a_static_non_positive_local_int_keyed_tree_write_is_rejected_at_check() {
+    // A local single int-keyed tree is the canonical 1-based sequence shape, so it
+    // follows the same non-positive rule as `sequence[T]`. A literal zero or negative
+    // position addresses no node and is a check error, never an accepted write.
+    for (name, target) in [
+        ("local-tree-write-zero", "t(0)"),
+        ("local-tree-write-neg", "t(-2)"),
+    ] {
+        let src = format!(
+            "module m\n\
+             fn f()\n    var t(k: int): string\n    {target} = \"x\"\n"
+        );
+        let report = check_module_report(name, &src);
+        let found = with_code(&report, "check.sequence_position");
+        assert_eq!(found.len(), 1, "{name}: {:#?}", report.diagnostics);
+        let span = found[0].span;
+        assert_eq!(&src[span.start_byte..span.end_byte], target, "{name}");
+    }
+}
+
+#[test]
+fn an_in_range_local_sequence_and_tree_write_stays_clean() {
+    // A 1-based position is a legitimate local write target, including a sparse
+    // position past the dense range. The non-positive guard must not sweep up
+    // positions at or above 1, on a local sequence or a single int-keyed tree.
+    let src = "module m\n\
+         fn f()\n    var tags: sequence[string]\n    tags(1) = \"one\"\n    tags(5) = \"five\"\n\
+         \x20   var t(k: int): string\n    t(1) = \"a\"\n    t(9) = \"b\"\n";
+    assert_clean(&check_module_report("local-write-in-range", src));
+}
+
+#[test]
+fn a_non_positive_local_composite_keyed_tree_write_is_clean() {
+    // A multi-column local keyed tree is not a 1-based sequence, so a zero or
+    // negative key carries meaning in its own right and is a legitimate write target.
+    let src = "module m\n\
+         fn f()\n    var cells(row: int, col: int): string\n    cells(0, -2) = \"ok\"\n";
+    assert!(
+        with_code(
+            &check_module_report("local-composite-non-positive-clean", src),
+            "check.sequence_position"
+        )
+        .is_empty(),
+        "a composite local keyed tree is not a sequence and must stay clean",
+    );
+}
+
+#[test]
+fn a_non_positive_local_string_keyed_tree_write_is_clean() {
+    // A string-keyed local tree is not a 1-based sequence; only a single int-keyed
+    // layer is. The guard must not touch a non-int key column.
+    let src = "module m\n\
+         fn f()\n    var scores(player: string): int\n    scores(\"amy\") = 0\n";
+    assert!(
+        with_code(
+            &check_module_report("local-string-keyed-clean", src),
+            "check.sequence_position"
+        )
+        .is_empty(),
+        "a string-keyed local tree is not a sequence and must stay clean",
+    );
+}
+
+#[test]
 fn a_non_positive_composite_keyed_leaf_write_is_clean() {
     // A multi-column keyed layer is not a 1-based sequence, so a zero or negative
     // key carries meaning in its own right and is a legitimate write target. The

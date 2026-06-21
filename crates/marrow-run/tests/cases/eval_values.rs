@@ -430,6 +430,78 @@ fn guards_resolve_a_non_positive_sequence_position() {
 }
 
 #[test]
+fn a_dynamic_non_positive_local_sequence_write_faults_persists_nothing_and_names_the_position() {
+    // A local sequence is identical to a saved sequence: a position below 1 addresses
+    // no node, so a dynamic write to one raises the catchable absent fault, mutates
+    // nothing, and names the position rather than claiming the whole collection is
+    // absent. After catching it, the binding still holds only its one stored element.
+    let program = checked_program(
+        "pub fn probe(pos: int): string\n\
+         \x20   var xs: sequence[string]\n\
+         \x20   append(xs, \"a\")\n\
+         \x20   var caught: string = \"none\"\n\
+         \x20   try\n\
+         \x20       xs(pos) = \"bad\"\n\
+         \x20   catch err: Error\n\
+         \x20       caught = err.message\n\
+         \x20   return $\"{caught}|{count(xs)}|{xs(1) ?? \"gone\"}\"\n",
+    );
+    for pos in [0, -5] {
+        assert_eq!(
+            run(checked_entry!(&program, "test::probe", Value::Int(pos))).unwrap(),
+            Some(Value::Str(
+                "a sequence position below 1 is absent|1|a".into()
+            )),
+            "pos {pos}: the dynamic write must fault, persist nothing, and name the position",
+        );
+    }
+}
+
+#[test]
+fn a_dynamic_non_positive_local_int_keyed_tree_write_faults_and_persists_nothing() {
+    // A local single int-keyed tree is a 1-based sequence too, so a dynamic write to a
+    // position below 1 faults and persists nothing — it must never accept, store, or
+    // count a zero or negative key. A positive key written alongside it survives.
+    let program = checked_program(
+        "pub fn probe(pos: int): string\n\
+         \x20   var t(k: int): string\n\
+         \x20   t(1) = \"one\"\n\
+         \x20   var caught: string = \"none\"\n\
+         \x20   try\n\
+         \x20       t(pos) = \"bad\"\n\
+         \x20   catch err: Error\n\
+         \x20       caught = err.message\n\
+         \x20   return $\"{caught}|{count(t)}|{t(1) ?? \"gone\"}|{t(pos) ?? \"absent\"}\"\n",
+    );
+    for pos in [0, -3] {
+        assert_eq!(
+            run(checked_entry!(&program, "test::probe", Value::Int(pos))).unwrap(),
+            Some(Value::Str(
+                "a sequence position below 1 is absent|1|one|absent".into()
+            )),
+            "pos {pos}: the keyed-tree write must fault, persist nothing, and stay readable as absent",
+        );
+    }
+}
+
+#[test]
+fn a_non_positive_string_keyed_tree_write_still_persists() {
+    // A string-keyed local tree is not a sequence, so a key that happens to be "0"
+    // carries meaning in its own right and is a legitimate, persisted write. The
+    // 1-based guard fires only on a single int key column.
+    let program = checked_program(
+        "pub fn probe(): string\n\
+         \x20   var scores(player: string): int\n\
+         \x20   scores(\"0\") = 5\n\
+         \x20   return $\"{count(scores)}|{scores(\"0\") ?? -1}\"\n",
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::probe")).unwrap(),
+        Some(Value::Str("1|5".into()))
+    );
+}
+
+#[test]
 fn local_sequence_writes_a_sparse_position_past_the_end() {
     // A local sequence is a 1-based integer-keyed tree, so writing past the dense
     // range leaves a hole rather than faulting. `xs(5)` after one element fills
@@ -859,6 +931,63 @@ fn local_keyed_tree_value_and_entry_views_stay_value_based() {
         run(checked_entry!(&program, "test::keyed")).unwrap(),
         Some(Value::Str(
             "v10;v20;rv20;rv10;ep1=10;ep2=20;rep2=20;rep1=10;".into()
+        ))
+    );
+}
+
+#[test]
+fn double_reversed_local_keyed_map_is_the_identity() {
+    // `reversed(reversed(x)) == x`: re-reversing restores ascending order and keeps
+    // every key paired with its own value. A single reverse stays descending pairs.
+    let program = checked_program(
+        "pub fn keyed(): string\n\
+         \x20   var scores(player: string): int\n\
+         \x20   scores(\"amy\") = 10\n\
+         \x20   scores(\"bob\") = 20\n\
+         \x20   var one: string = \"\"\n\
+         \x20   for k, v in reversed(scores)\n\
+         \x20       one = $\"{one}{k}={v};\"\n\
+         \x20   var two: string = \"\"\n\
+         \x20   for k, v in reversed(reversed(scores))\n\
+         \x20       two = $\"{two}{k}={v};\"\n\
+         \x20   var twoKeys: string = \"\"\n\
+         \x20   for k in reversed(reversed(scores))\n\
+         \x20       twoKeys = $\"{twoKeys}{k};\"\n\
+         \x20   return $\"one:{one}two:{two}keys:{twoKeys}\"\n",
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::keyed")).unwrap(),
+        Some(Value::Str(
+            "one:bob=20;amy=10;two:amy=10;bob=20;keys:amy;bob;".into()
+        ))
+    );
+}
+
+#[test]
+fn double_reversed_local_sequence_is_the_identity() {
+    // A sequence re-reversed restores ascending positions and elements. The single
+    // reverse stays descending; the value view reverses elements directly.
+    let program = checked_program(
+        "pub fn seq(): string\n\
+         \x20   var xs: sequence[int]\n\
+         \x20   append(xs, 100)\n\
+         \x20   append(xs, 200)\n\
+         \x20   append(xs, 300)\n\
+         \x20   var one: string = \"\"\n\
+         \x20   for p in reversed(xs)\n\
+         \x20       one = $\"{one}{p};\"\n\
+         \x20   var twoPos: string = \"\"\n\
+         \x20   for p in reversed(reversed(xs))\n\
+         \x20       twoPos = $\"{twoPos}{p};\"\n\
+         \x20   var twoPairs: string = \"\"\n\
+         \x20   for p, v in reversed(reversed(xs))\n\
+         \x20       twoPairs = $\"{twoPairs}{p}={v};\"\n\
+         \x20   return $\"one:{one}pos:{twoPos}pairs:{twoPairs}\"\n",
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::seq")).unwrap(),
+        Some(Value::Str(
+            "one:3;2;1;pos:1;2;3;pairs:1=100;2=200;3=300;".into()
         ))
     );
 }

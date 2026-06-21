@@ -11,8 +11,8 @@ use marrow_syntax::{Argument, SourceSpan};
 
 use crate::diagnostics::CHECK_SEQUENCE_POSITION;
 use crate::executable::{
-    CheckedExpr, CheckedLiteralKind, CheckedSavedLayer, SavedKeyParamTarget, SavedPlaceResolver,
-    lower_expr_for_file,
+    CheckedArg, CheckedExpr, CheckedLiteralKind, CheckedSavedLayer, SavedKeyParamTarget,
+    SavedPlaceResolver, lower_expr_for_file,
 };
 use crate::typerules::{is_ordered, marrow_type_name, type_compatible};
 use crate::{
@@ -22,16 +22,18 @@ use crate::{
 
 use super::diagnostics::{call_diagnostic, key_type_diagnostic};
 
-/// Reject a write to a sequence position the spec proves addresses no node. A
-/// single int-keyed layer is the canonical 1-based sequence shape, so a
-/// statically-known zero or negative position can never be written. This is the
-/// static counterpart of the absent fault a dynamic non-positive position raises
-/// at lowering, and it is a write-target rule only: a guarded read of such a
-/// position resolves to absent at run time.
+/// Reject a write to a sequence position the spec proves addresses no node. Every
+/// single int-keyed layer is the canonical 1-based sequence shape — saved or local,
+/// spelled `sequence[T]` or `name(k: int): V` — so a statically-known zero or
+/// negative position can never be written to any of them. This is the static
+/// counterpart of the absent fault a dynamic non-positive position raises at run
+/// time, and it is a write-target rule only: a guarded read of such a position
+/// resolves to absent at run time.
 pub(crate) fn check_sequence_position_write(
     program: &CheckedProgram,
     target: &marrow_syntax::Expression,
     scope: &[HashMap<String, MarrowType>],
+    aliases: &HashMap<String, Vec<String>>,
     span: SourceSpan,
     file: &Path,
     diagnostics: &mut Vec<CheckDiagnostic>,
@@ -39,34 +41,81 @@ pub(crate) fn check_sequence_position_write(
     let Some(checked) = lower_expr_for_file(program, file, target, scope) else {
         return;
     };
-    let Some(layer) = checked.saved_place().and_then(|place| place.layers.last()) else {
+    let Some(position) =
+        static_non_positive_target_position(program, target, &checked, scope, aliases, file)
+    else {
         return;
     };
-    if let Some(position) = static_non_positive_sequence_position(layer) {
-        diagnostics.push(CheckDiagnostic::error(
-            CHECK_SEQUENCE_POSITION,
-            file,
-            span,
-            format!(
-                "sequence positions are 1-based, so position `{position}` addresses no node and cannot be written",
-            ),
-        ));
+    diagnostics.push(CheckDiagnostic::error(
+        CHECK_SEQUENCE_POSITION,
+        file,
+        span,
+        format!(
+            "sequence positions are 1-based, so position `{position}` addresses no node and cannot be written",
+        ),
+    ));
+}
+
+/// The statically-known non-positive position a write target addresses, whether the
+/// target is a saved single int-keyed layer or a local single int-keyed collection.
+/// `None` for any other shape, an in-range position, or a non-literal position.
+fn static_non_positive_target_position(
+    program: &CheckedProgram,
+    target: &marrow_syntax::Expression,
+    checked: &CheckedExpr,
+    scope: &[HashMap<String, MarrowType>],
+    aliases: &HashMap<String, Vec<String>>,
+    file: &Path,
+) -> Option<i64> {
+    if let Some(layer) = checked.saved_place().and_then(|place| place.layers.last())
+        && single_int_key_layer(layer)
+    {
+        return static_non_positive_position(layer.args.as_slice());
+    }
+    if local_single_int_key_target(program, target, scope, aliases, file) {
+        let CheckedExpr::Call { args, .. } = checked else {
+            return None;
+        };
+        return static_non_positive_position(args.as_slice());
+    }
+    None
+}
+
+/// Whether a saved layer is a single int-keyed sequence position. A composite or
+/// non-int layer is not a 1-based sequence, so a zero or negative key there carries
+/// meaning in its own right.
+fn single_int_key_layer(layer: &CheckedSavedLayer) -> bool {
+    matches!(layer.key_params.as_slice(), [param] if param.scalar == Some(ScalarType::Int))
+}
+
+/// Whether a write target is a local single int-keyed collection — a `sequence[T]`
+/// or a `name(k: int): V` tree. Both are 1-based sequences; a composite, string, or
+/// other non-int key column is not.
+fn local_single_int_key_target(
+    program: &CheckedProgram,
+    target: &marrow_syntax::Expression,
+    scope: &[HashMap<String, MarrowType>],
+    aliases: &HashMap<String, Vec<String>>,
+    file: &Path,
+) -> bool {
+    let marrow_syntax::Expression::Call { callee, .. } = target else {
+        return false;
+    };
+    match crate::infer::infer_type(program, callee, scope, aliases, file, &mut Vec::new()) {
+        MarrowType::Sequence(_) => true,
+        MarrowType::LocalTree { keys, .. } => {
+            matches!(keys.as_slice(), [MarrowType::Primitive(ScalarType::Int)])
+        }
+        _ => false,
     }
 }
 
-/// The statically-known non-positive position written to a single int-keyed
-/// sequence layer, or `None` when the layer is not a sequence position or the
-/// position is in range or not a literal. A composite or non-int layer is not a
-/// 1-based sequence, so a zero or negative key there carries meaning in its own
-/// right and is left alone.
-fn static_non_positive_sequence_position(layer: &CheckedSavedLayer) -> Option<i64> {
-    let [param] = layer.key_params.as_slice() else {
-        return None;
-    };
-    if param.scalar != Some(ScalarType::Int) {
-        return None;
-    }
-    let [arg] = layer.args.as_slice() else {
+/// The statically-known non-positive value of a single position argument, or `None`
+/// when the layer takes other than one argument, the argument is not an integer
+/// literal, or the position is in range. A negated integer literal is folded to a
+/// signed literal at lowering, so it is covered here too.
+fn static_non_positive_position(args: &[CheckedArg]) -> Option<i64> {
+    let [arg] = args else {
         return None;
     };
     let CheckedExpr::Literal {

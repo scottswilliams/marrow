@@ -30,6 +30,30 @@ pub(crate) enum Direction {
     Descending,
 }
 
+impl Direction {
+    pub(crate) fn flip(self) -> Self {
+        match self {
+            Direction::Ascending => Direction::Descending,
+            Direction::Descending => Direction::Ascending,
+        }
+    }
+}
+
+/// Peel every `reversed(...)` wrapper off an iterable, composing their directions by
+/// parity so the metamorphic identity `reversed(reversed(x)) == x` holds for any
+/// nesting depth. Returns the innermost non-reversed expression and the net walk
+/// direction. A `reversed` over a keyed collection must not be evaluated down to a
+/// collapsed value here; peeling to the base preserves its key/value pairing.
+pub(crate) fn peel_reversed(expr: &ExecExpr) -> (&ExecExpr, Direction) {
+    let mut current = expr;
+    let mut direction = Direction::Ascending;
+    while let Some(inner) = crate::read::reversed_argument(current) {
+        current = inner;
+        direction = direction.flip();
+    }
+    (current, direction)
+}
+
 /// The absent-element fault for a fixed read address. It is catchable so a
 /// maybe-present read at the read site — a positional sequence element, a keyed
 /// tree entry, or a stdlib cell selection — resolves through `??`/`if const`/

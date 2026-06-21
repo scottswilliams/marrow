@@ -9,7 +9,7 @@ use marrow_check::{
 use marrow_store::value::NANOS_PER_DAY;
 use marrow_syntax::SourceSpan;
 
-use crate::collection::{Direction, durable_collection_value, values_or_entries};
+use crate::collection::{Direction, durable_collection_value, peel_reversed, values_or_entries};
 use crate::env::{Env, Flow};
 use crate::error::{RuntimeError, overflow, type_error, unsupported};
 use crate::exec::eval_block;
@@ -19,7 +19,7 @@ use crate::local_collection::{
     materialize_local_collection_dir,
 };
 use crate::range_expr::checked_range;
-use crate::read::{keys_argument, reversed_argument};
+use crate::read::keys_argument;
 use crate::saved_iter::{SavedLoopRow, SavedLoopSpec};
 use crate::value::Value;
 
@@ -416,48 +416,48 @@ pub(crate) fn eval_collection(
     iterable: &ExecExpr,
     env: &mut Env<'_>,
 ) -> Result<Vec<Value>, RuntimeError> {
-    if is_value_view(iterable) {
-        return match eval_expr(iterable, env)? {
-            Value::Sequence(items) => Ok(items.into_values()),
+    let (inner, direction) = peel_reversed(iterable);
+    if is_value_view(inner) {
+        return match eval_expr(inner, env)? {
+            Value::Sequence(items) => {
+                let mut values = items.into_values();
+                if direction == Direction::Descending {
+                    values.reverse();
+                }
+                Ok(values)
+            }
             _ => Err(unsupported("iterating this value", iterable.span())),
         };
     }
-    if let Some(inner) = reversed_argument(iterable) {
-        let layer = keys_argument(inner).unwrap_or(inner);
-        if let Some(keys) = enumerate_reversed_local_keys_call_arg(layer, iterable.span(), env)? {
-            return Ok(keys);
+    let layer = keys_argument(inner).unwrap_or(inner);
+    let keys = match direction {
+        Direction::Ascending => enumerate_local_keys_call_arg(layer, iterable.span(), env)?,
+        Direction::Descending => {
+            enumerate_reversed_local_keys_call_arg(layer, iterable.span(), env)?
         }
-        return Err(durable_collection_value(iterable.span()));
-    }
-    let layer = keys_argument(iterable).unwrap_or(iterable);
-    if let Some(keys) = enumerate_local_keys_call_arg(layer, iterable.span(), env)? {
-        return Ok(keys);
-    }
-    Err(durable_collection_value(iterable.span()))
+    };
+    keys.ok_or_else(|| durable_collection_value(iterable.span()))
 }
 
-/// Whether `iterable` is an explicit value view — `values(...)` or
-/// `reversed(values(...))` — that materializes element values rather than keys.
+/// Whether `iterable` is an explicit value view — `values(...)` — that materializes
+/// element values rather than keys. The caller peels any `reversed` wrapper first.
 fn is_value_view(iterable: &ExecExpr) -> bool {
-    let subject = reversed_argument(iterable).unwrap_or(iterable);
     matches!(
-        values_or_entries(subject),
+        values_or_entries(iterable),
         Some(call) if matches!(call.kind, crate::collection::MaterializeKind::Values)
     )
 }
 
-/// A two-name head materializes pair rows from a local keyed collection. A
-/// `reversed(...)` wrapper flips the walk direction; everything else is classified
-/// by its innermost iterable.
+/// A two-name head materializes pair rows from a local keyed collection. Every
+/// `reversed(...)` wrapper composes by parity into the walk direction, so the base
+/// keyed collection is resolved directly rather than through a collapsed value —
+/// keeping `reversed(reversed(x)) == x` and every key paired with its own value.
 fn eval_collection_entry_rows(
     iterable: &ExecExpr,
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<Vec<(Value, Value)>, RuntimeError> {
-    let (inner, direction) = match reversed_argument(iterable) {
-        Some(inner) => (inner, Direction::Descending),
-        None => (iterable, Direction::Ascending),
-    };
+    let (inner, direction) = peel_reversed(iterable);
     let layer = match values_or_entries(inner) {
         Some(call) if matches!(call.kind, crate::collection::MaterializeKind::Entries) => {
             call.layer

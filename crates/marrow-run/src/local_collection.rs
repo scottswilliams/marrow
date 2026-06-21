@@ -2,11 +2,10 @@ use marrow_check::{CheckedArg as ExecArg, CheckedExpr as ExecExpr};
 use marrow_store::key::SavedKey;
 use marrow_syntax::SourceSpan;
 
-use crate::collection::{Direction, absent_read};
+use crate::collection::{Direction, absent_read, peel_reversed};
 use crate::env::Env;
 use crate::error::{RUN_ABSENT, RuntimeError, assign_error, overflow, type_error, unsupported};
 use crate::expr::eval_expr;
-use crate::read::reversed_argument;
 use crate::value::{LocalTreeEntry, Sequence, Value, saved_key_to_value, value_to_key};
 
 pub(crate) fn eval_local_collection_read(
@@ -48,6 +47,7 @@ pub(crate) fn eval_local_collection_write(
         }
         Some(Value::LocalTree(mut entries)) => {
             let keys = eval_local_keys(args, span, env)?;
+            reject_non_positive_sequence_key(&keys, span)?;
             let value = eval_expr(value, env)?;
             if let Some(entry) = entries.iter_mut().find(|entry| entry.keys == keys) {
                 entry.value = value;
@@ -61,6 +61,29 @@ pub(crate) fn eval_local_collection_write(
         }
         _ => Ok(false),
     }
+}
+
+/// The catchable absent fault a write or read to a non-positive sequence position
+/// raises, naming the position rather than the collection. A local sequence is
+/// identical to a saved sequence, so this matches the saved guard's message.
+fn non_positive_sequence_position(span: SourceSpan) -> RuntimeError {
+    absent_read("a sequence position below 1 is absent".into(), span)
+}
+
+/// Reject a write to a single int-keyed tree at a position below 1. A single
+/// int-keyed layer is a 1-based sequence, so a zero or negative position addresses
+/// no node and must persist nothing; a composite or non-int key column carries
+/// meaning in its own right and is left alone.
+fn reject_non_positive_sequence_key(
+    keys: &[SavedKey],
+    span: SourceSpan,
+) -> Result<(), RuntimeError> {
+    if let [SavedKey::Int(position)] = keys
+        && *position < 1
+    {
+        return Err(non_positive_sequence_position(span));
+    }
+    Ok(())
 }
 
 /// Delete an entry from a local collection by position or key. A delete names a node
@@ -138,50 +161,43 @@ pub(crate) fn enumerate_local_collection_dir(
     Ok(keys)
 }
 
+/// Enumerate the keys of a local collection in ascending key order, peeling any
+/// `reversed(...)` wrappers by parity so a nested reversal composes correctly. A
+/// saved place is not a local value and yields `None` for the caller to handle.
 pub(crate) fn enumerate_local_keys_call_arg(
     arg: &ExecExpr,
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<Option<Vec<Value>>, RuntimeError> {
-    if let Some(inner) = reversed_argument(arg) {
-        if inner.saved_place().is_some() {
-            return Ok(None);
-        }
-        return enumerate_keys_over_reversed(eval_expr(inner, env)?, span).map(Some);
-    }
-    if arg.saved_place().is_some() {
-        return Ok(None);
-    }
-    enumerate_local_collection_dir(eval_expr(arg, env)?, Direction::Ascending, span).map(Some)
+    enumerate_local_keys_in_dir(arg, Direction::Ascending, span, env)
 }
 
+/// Enumerate the keys of a local collection in descending key order, composing with
+/// any `reversed(...)` wrappers so `reversed(reversed(x))` walks ascending again.
 pub(crate) fn enumerate_reversed_local_keys_call_arg(
     arg: &ExecExpr,
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<Option<Vec<Value>>, RuntimeError> {
-    let Some(mut keys) = enumerate_local_keys_call_arg(arg, span, env)? else {
-        return Ok(None);
-    };
-    keys.reverse();
-    Ok(Some(keys))
+    enumerate_local_keys_in_dir(arg, Direction::Descending, span, env)
 }
 
-fn enumerate_keys_over_reversed(
-    value: Value,
+fn enumerate_local_keys_in_dir(
+    arg: &ExecExpr,
+    base_dir: Direction,
     span: SourceSpan,
-) -> Result<Vec<Value>, RuntimeError> {
-    let dir = match &value {
-        Value::LocalTree(_) => Direction::Descending,
-        Value::Sequence(_) => Direction::Ascending,
-        _ => {
-            return Err(unsupported(
-                "reversing this value (expected an iterable)",
-                span,
-            ));
-        }
+    env: &mut Env<'_>,
+) -> Result<Option<Vec<Value>>, RuntimeError> {
+    let (inner, peeled) = peel_reversed(arg);
+    if inner.saved_place().is_some() {
+        return Ok(None);
+    }
+    // A descending base flips the parity the wrappers already composed.
+    let dir = match base_dir {
+        Direction::Ascending => peeled,
+        Direction::Descending => peeled.flip(),
     };
-    enumerate_local_collection_dir(value, dir, span)
+    enumerate_local_collection_dir(eval_expr(inner, env)?, dir, span).map(Some)
 }
 
 pub(crate) fn materialize_local_collection_dir(
@@ -250,7 +266,7 @@ fn eval_local_sequence_position(
         return Err(type_error("a local sequence key must be an int", span));
     };
     if position < 1 {
-        return Err(absent_read("`local sequence` is absent".into(), span));
+        return Err(non_positive_sequence_position(span));
     }
     Ok(position)
 }
