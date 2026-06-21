@@ -18,7 +18,7 @@ use crate::error::{
     Located, RUN_ABSENT, RuntimeError, overflow, raise_fault, type_error, unsupported,
 };
 use crate::expr::eval_expr;
-use crate::path::{direct_root_place, guard_key_type, lower, lower_keys};
+use crate::path::{KeyRole, direct_root_place, guard_key_type, lower, lower_keys};
 use crate::range_expr::checked_range;
 use crate::saved_iter::{
     ChildCursor, IndexCursor, KeyedChildrenWalk, RecordCursor, count_keyed_children,
@@ -164,7 +164,7 @@ fn iterable_root_key_range(
     let exact_prefix = lower_keys(
         &place.identity_args[..range_position],
         span,
-        false,
+        KeyRole::IdentityKeys,
         None,
         &place.identity_keys,
         env,
@@ -857,7 +857,14 @@ fn child_layer_prefix_address(
     let Some(layer_facts) = place.layers.last() else {
         return Err(unsupported("iterating this saved path", path.span()));
     };
-    let exact_prefix = lower_keys(exact_args, span, false, None, &layer_facts.key_params, env)?;
+    let exact_prefix = lower_keys(
+        exact_args,
+        span,
+        KeyRole::Layer,
+        None,
+        &layer_facts.key_params,
+        env,
+    )?;
     let exact_key_count = exact_prefix.len();
     let mut layers = base_path.layer_addresses;
     layers.push(LayerAddress::from_checked(layer_facts, exact_prefix));

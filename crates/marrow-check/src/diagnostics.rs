@@ -79,6 +79,11 @@ pub const CHECK_UNTYPED_VALUE: &str = "check.untyped_value";
 /// key-compatible foreign identity is still rejected. The static counterpart of a
 /// key-type fault at lowering.
 pub const CHECK_KEY_TYPE: &str = "check.key_type";
+/// A write to a sequence position the spec proves addresses no node: a
+/// statically-known zero or negative position in a 1-based single int-keyed layer.
+/// The static counterpart of the absent fault a dynamic non-positive position
+/// raises at lowering.
+pub const CHECK_SEQUENCE_POSITION: &str = "check.sequence_position";
 /// A bare name used as a value does not resolve to any binding in scope (a
 /// parameter, local, loop or catch binding, or module constant). Under strict
 /// typing every value name must be defined.

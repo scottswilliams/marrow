@@ -585,7 +585,7 @@ fn an_invalid_string_literal_assigned_to_a_keyed_leaf_error_code_is_rejected() {
         "module m\n\
          resource Log\n    tags(k: int): ErrorCode\n\
          store ^logs(id: int): Log\n\n\
-         fn f()\n    ^logs(1).tags(0) = \"no good code\"\n",
+         fn f()\n    ^logs(1).tags(1) = \"no good code\"\n",
         "check.call_argument",
     );
     assert_eq!(found.len(), 1, "{found:#?}");
@@ -598,7 +598,7 @@ fn a_valid_string_literal_assigned_to_a_keyed_leaf_error_code_checks_clean() {
         "module m\n\
          resource Log\n    tags(k: int): ErrorCode\n\
          store ^logs(id: int): Log\n\n\
-         fn f()\n    ^logs(1).tags(0) = \"app.ok\"\n",
+         fn f()\n    ^logs(1).tags(1) = \"app.ok\"\n",
     );
     assert!(
         with_code(&report, "check.call_argument").is_empty(),

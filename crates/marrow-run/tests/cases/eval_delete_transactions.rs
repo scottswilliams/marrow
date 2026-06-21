@@ -266,6 +266,41 @@ fn deleting_a_keyed_leaf_entry_leaves_other_entries() {
 }
 
 #[test]
+fn deleting_an_absent_sequence_position_is_a_no_op() {
+    // A delete addresses no node and succeeds as a no-op whether the position is a
+    // positive hole past the dense range or a non-positive position below the
+    // 1-based range. Both name no node, so both delete cleanly and leave the live
+    // entries untouched. A non-positive position must not fault here the way a
+    // value-persisting write does; delete persists nothing.
+    let program = checked_program(&format!(
+        "{BOOK_TAGS_SCHEMA}pub fn seed(id: int)\n    ^books(id).tags(1) = \"fiction\"\n    ^books(id).tags(2) = \"funny\"\n\npub fn drop_tag(id: int, pos: int)\n    delete ^books(id).tags(pos)\n\npub fn tag_count(id: int): int\n    return count(^books(id).tags)\n"
+    ));
+    for pos in [999, 0, -3] {
+        let store = TreeStore::memory();
+        run_entry(
+            &store,
+            checked_entry!(&program, "test::seed", Value::Int(1)),
+        )
+        .expect("seed");
+        run_entry(
+            &store,
+            checked_entry!(&program, "test::drop_tag", Value::Int(1), Value::Int(pos)),
+        )
+        .unwrap_or_else(|_| panic!("delete of absent position {pos} is a no-op"));
+        assert_eq!(
+            run_entry(
+                &store,
+                checked_entry!(&program, "test::tag_count", Value::Int(1))
+            )
+            .expect("count")
+            .value,
+            Some(Value::Int(2)),
+            "deleting absent position {pos} leaves both live tags",
+        );
+    }
+}
+
+#[test]
 fn a_transaction_commits_on_normal_exit() {
     let program = checked_program(&format!(
         "{BOOK_PRIMARY_SCHEMA}pub fn save(id: int)\n    transaction\n        ^books(id).title = \"kept\"\n\npub fn title_of(id: int): string\n    return ^books(id).title ?? \"\"\n"

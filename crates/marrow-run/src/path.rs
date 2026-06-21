@@ -10,7 +10,7 @@ use marrow_syntax::SourceSpan;
 use crate::collection::absent_read;
 use crate::durable_read::{LayerEntryAddress, read_layer_entry_at, read_resource};
 use crate::env::Env;
-use crate::error::{RUN_TYPE, RuntimeError, key_type_fault, type_error, unsupported};
+use crate::error::{RUN_ABSENT, RUN_TYPE, RuntimeError, key_type_fault, type_error, unsupported};
 use crate::expr::eval_expr;
 use crate::read::{
     iterable_index_branch_present, root_identity_present, validated_data_layer_present,
@@ -194,6 +194,23 @@ pub(crate) fn lower(expr: &ExecExpr, env: &mut Env<'_>) -> Result<SavedPath, Run
     lower_checked(place, env)
 }
 
+/// Lower a saved path for a read or presence probe, folding a position that
+/// addresses no node into `None`. A non-positive sequence position anywhere on the
+/// spine lowers to the catchable absent fault; lowering is pure address
+/// resolution, so that fault means the whole address names no node. A write
+/// surfaces it, but a probe resolves it: the `??`/`if const`/`exists` site treats
+/// it as absence rather than propagating it.
+pub(crate) fn lower_for_probe(
+    expr: &ExecExpr,
+    env: &mut Env<'_>,
+) -> Result<Option<SavedPath>, RuntimeError> {
+    match lower(expr, env) {
+        Ok(path) => Ok(Some(path)),
+        Err(error) if error.code() == RUN_ABSENT && error.is_catchable() => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
 fn lower_checked(place: &CheckedSavedPlace, env: &mut Env<'_>) -> Result<SavedPath, RuntimeError> {
     let identity = if matches!(place.terminal, CheckedSavedTerminal::Index { .. }) {
         Vec::new()
@@ -211,7 +228,7 @@ fn lower_checked(place: &CheckedSavedPlace, env: &mut Env<'_>) -> Result<SavedPa
         lower_keys(
             &place.identity_args,
             place.span,
-            true,
+            KeyRole::IdentityRead,
             Some(&place.root),
             &place.identity_keys,
             env,
@@ -220,7 +237,14 @@ fn lower_checked(place: &CheckedSavedPlace, env: &mut Env<'_>) -> Result<SavedPa
     let mut layers = Vec::with_capacity(place.layers.len());
     let mut layer_addresses = Vec::with_capacity(place.layers.len());
     for layer in &place.layers {
-        let keys = lower_keys(&layer.args, layer.span, false, None, &layer.key_params, env)?;
+        let keys = lower_keys(
+            &layer.args,
+            layer.span,
+            KeyRole::Layer,
+            None,
+            &layer.key_params,
+            env,
+        )?;
         layer_addresses.push(LayerAddress::from_checked(layer, keys.clone()));
         layers.push((layer.name.clone(), keys));
     }
@@ -273,17 +297,36 @@ pub(crate) fn saved_path_present(
     if let Some(present) = iterable_index_branch_present(expr, env)? {
         return Ok(present);
     }
-    lower(expr, env)?.is_present(span, env)
+    match lower_for_probe(expr, env)? {
+        Some(path) => path.is_present(span, env),
+        None => Ok(false),
+    }
+}
+
+/// Which keyspace a [`lower_keys`] call addresses. The role decides two
+/// independent things: whether a sole identity-valued argument may splice its
+/// keys in (only a record-identity read carries an identity to splice), and
+/// whether the 1-based sequence-position rule applies (only a saved layer is a
+/// sequence; record identity is keyed independently and may hold any int).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum KeyRole {
+    /// A record-identity read, whose sole identity argument may splice.
+    IdentityRead,
+    /// Raw record-identity key components: the `Id(^store, …)` constructor and
+    /// identity-range prefixes. No splice and no sequence guard.
+    IdentityKeys,
+    /// A saved layer position, subject to the 1-based sequence rule.
+    Layer,
 }
 
 /// Evaluate a keyed lookup's arguments to saved key segments, rejecting named
-/// arguments. In the record-identity position (`allow_identity_splice`), a sole
-/// identity-valued argument splices its lowered keys in as the full key vector;
-/// otherwise each argument is one raw key.
+/// arguments. Each argument is one raw key, except that an [`KeyRole::IdentityRead`]
+/// with a sole identity-valued argument splices that identity's lowered keys in as
+/// the full key vector.
 pub(crate) fn lower_keys(
     args: &[ExecArg],
     span: SourceSpan,
-    allow_identity_splice: bool,
+    role: KeyRole,
     expected_root: Option<&str>,
     expected: &[CheckedSavedKeyParam],
     env: &mut Env<'_>,
@@ -297,7 +340,7 @@ pub(crate) fn lower_keys(
             // An identity is the whole lookup key only as the sole argument of a
             // record lookup; it cannot be one component among raw keys. Its root
             // provenance must match the checked root before its keys are spliced.
-            Value::Identity(identity) if allow_identity_splice && args.len() == 1 => {
+            Value::Identity(identity) if role == KeyRole::IdentityRead && args.len() == 1 => {
                 let Some(expected_root) = expected_root else {
                     return Err(unsupported("an identity splice without a saved root", span));
                 };
@@ -305,7 +348,7 @@ pub(crate) fn lower_keys(
                 check_spliced_identity(&keys, expected, span)?;
                 return Ok(keys);
             }
-            Value::Identity(_) if allow_identity_splice => {
+            Value::Identity(_) if role == KeyRole::IdentityRead => {
                 return Err(unsupported("an identity mixed with other keys", span));
             }
             value => {
@@ -317,6 +360,12 @@ pub(crate) fn lower_keys(
                 // and arity faults still fire downstream.
                 if let Some(def) = expected.get(position) {
                     guard_key_type(def, &key, span)?;
+                }
+                // The 1-based sequence rule is a property of a saved layer, never
+                // of record identity: a non-positive single-int record key is a
+                // valid identity, so the guard fires only for a layer position.
+                if role == KeyRole::Layer {
+                    guard_sequence_position(expected, &key, span)?;
                 }
                 keys.push(key);
             }
@@ -347,6 +396,29 @@ pub(crate) fn check_spliced_identity(
     }
     for (key, def) in identity.iter().zip(expected) {
         guard_key_type(def, key, span)?;
+    }
+    Ok(())
+}
+
+/// A single int-keyed layer is the canonical sequence shape, whose positions are
+/// 1-based: a position below 1 addresses no node. Reject it as absent so a read
+/// resolves it through `??`/`if const`/`exists`/`catch` and a write raises before
+/// any store mutation, never persisting an unreachable element. Only a
+/// [`KeyRole::Layer`] reaches this guard; record identity is keyed independently,
+/// so a non-positive record id stays a valid key.
+fn guard_sequence_position(
+    expected: &[CheckedSavedKeyParam],
+    key: &SavedKey,
+    span: SourceSpan,
+) -> Result<(), RuntimeError> {
+    if let ([param], SavedKey::Int(pos)) = (expected, key)
+        && param.scalar == Some(marrow_schema::ScalarType::Int)
+        && *pos < 1
+    {
+        return Err(absent_read(
+            "a sequence position below 1 is absent".into(),
+            span,
+        ));
     }
     Ok(())
 }

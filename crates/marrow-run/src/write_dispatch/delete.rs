@@ -2,8 +2,8 @@ use marrow_check::{CheckedExpr as ExecExpr, CheckedSavedMember};
 use marrow_syntax::SourceSpan;
 
 use crate::env::{Env, TraversedLayer};
-use crate::error::{RuntimeError, raise_fault, unsupported};
-use crate::path::{SavedPath, Terminal, direct_root_place, lower, lower_keys};
+use crate::error::{RUN_ABSENT, RuntimeError, raise_fault, unsupported};
+use crate::path::{KeyRole, SavedPath, Terminal, direct_root_place, lower, lower_keys};
 use crate::store::{DataAddress, LayerAddress};
 use crate::write::{
     WriteError, plan_data_delete, plan_field_delete, plan_member_delete, plan_resource_delete,
@@ -23,7 +23,25 @@ const WRITE_REQUIRED_FIELD: &str = "write.required_field";
 /// maintenance capability is refused.
 const WRITE_REQUIRES_MAINTENANCE: &str = "write.requires_maintenance";
 
+/// A delete names a node to remove, so an address that resolves to no node is a
+/// no-op, not an error: deleting an absent position past the dense range, or a
+/// non-positive position below the 1-based sequence range, both clean to nothing.
+/// Address resolution is the only delete step that raises the catchable absent
+/// fault, so folding it here turns "this delete addresses no node" into the
+/// tolerant no-op every absent delete already is. A value-persisting write
+/// surfaces the same fault because it would otherwise store an unreachable node.
 pub(crate) fn eval_delete(
+    path: &ExecExpr,
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<(), RuntimeError> {
+    match dispatch_delete(path, span, env) {
+        Err(error) if error.code() == RUN_ABSENT && error.is_catchable() => Ok(()),
+        result => result,
+    }
+}
+
+fn dispatch_delete(
     path: &ExecExpr,
     span: SourceSpan,
     env: &mut Env<'_>,
@@ -252,7 +270,7 @@ fn eval_layer_entry_delete(
     let record_path = lower(record, env)?;
     let identity = record_path.identity.clone();
     let expected = layer_facts.key_params.as_slice();
-    let entry_keys = lower_keys(keys, span, false, None, expected, env)?;
+    let entry_keys = lower_keys(keys, span, KeyRole::Layer, None, expected, env)?;
     let mut layer_addresses = record_path.layer_addresses;
     layer_addresses.push(LayerAddress::from_checked(layer_facts, Vec::new()));
     let traversed = DataAddress::layer_prefix(place, &identity, &layer_addresses, span)?;

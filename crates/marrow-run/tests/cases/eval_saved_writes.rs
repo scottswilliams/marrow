@@ -165,7 +165,7 @@ fn a_dynamic_invalid_keyed_leaf_error_code_write_faults_and_persists_nothing() {
             &program,
             "test::set_tag",
             Value::Int(1),
-            Value::Int(0),
+            Value::Int(1),
             Value::Str("no good code".into())
         ),
     );
@@ -173,7 +173,7 @@ fn a_dynamic_invalid_keyed_leaf_error_code_write_faults_and_persists_nothing() {
     assert_eq!(
         run_entry(
             &store,
-            checked_entry!(&program, "test::tag_of", Value::Int(1), Value::Int(0))
+            checked_entry!(&program, "test::tag_of", Value::Int(1), Value::Int(1))
         )
         .expect("read")
         .value,
@@ -192,7 +192,7 @@ fn a_dynamic_valid_keyed_leaf_error_code_write_persists() {
             &program,
             "test::set_tag",
             Value::Int(1),
-            Value::Int(0),
+            Value::Int(1),
             Value::Str("app.ok".into())
         ),
     )
@@ -200,7 +200,7 @@ fn a_dynamic_valid_keyed_leaf_error_code_write_persists() {
     assert_eq!(
         run_entry(
             &store,
-            checked_entry!(&program, "test::tag_of", Value::Int(1), Value::Int(0))
+            checked_entry!(&program, "test::tag_of", Value::Int(1), Value::Int(1))
         )
         .expect("read")
         .value,

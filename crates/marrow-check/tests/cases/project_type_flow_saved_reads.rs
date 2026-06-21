@@ -427,6 +427,97 @@ fn a_write_to_a_partial_key_layer_is_rejected_at_check() {
 }
 
 #[test]
+fn a_static_non_positive_sequence_write_is_rejected_at_check() {
+    // A sequence is 1-based, so a statically-known position below 1 addresses no
+    // node and can never be written. The literal `0` and the negated `-2` are both
+    // caught at check as `check.sequence_position`, on the whole write-target span.
+    for (name, target) in [
+        ("seq-write-zero", "^docs(1).tags(0)"),
+        ("seq-write-neg", "^docs(1).tags(-2)"),
+    ] {
+        let src = format!(
+            "module m\n\
+             resource Doc\n    tags: sequence[string]\n\
+             store ^docs(id: int): Doc\n\n\
+             fn f()\n    {target} = \"x\"\n"
+        );
+        let report = check_module_report(name, &src);
+        let found = with_code(&report, "check.sequence_position");
+        assert_eq!(found.len(), 1, "{name}: {:#?}", report.diagnostics);
+        let span = found[0].span;
+        assert_eq!(&src[span.start_byte..span.end_byte], target, "{name}");
+    }
+}
+
+#[test]
+fn a_static_non_positive_sequence_position_in_a_guarded_read_is_clean() {
+    // The non-positive guard is a write-target rule. A guarded read of a below-1
+    // position resolves to absent at run time through `??`, so it is not a check
+    // error; only the write form is rejected.
+    let src = "module m\n\
+         resource Doc\n    tags: sequence[string]\n\
+         store ^docs(id: int): Doc\n\n\
+         fn f(): string\n    return ^docs(1).tags(0) ?? \"absent\"\n";
+    let report = check_module_report("seq-read-zero-clean", src);
+    assert!(
+        with_code(&report, "check.sequence_position").is_empty(),
+        "a guarded non-positive read must stay clean: {:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
+fn a_static_non_positive_sequence_delete_is_clean() {
+    // The non-positive guard is a value-persisting-write rule. A delete names a node
+    // to remove, and a below-1 position names no node, so the delete is a tolerant
+    // no-op at run time, never a check error. Only the write form is rejected.
+    for (name, target) in [
+        ("seq-delete-zero", "^docs(1).tags(0)"),
+        ("seq-delete-neg", "^docs(1).tags(-2)"),
+    ] {
+        let src = format!(
+            "module m\n\
+             resource Doc\n    tags: sequence[string]\n\
+             store ^docs(id: int): Doc\n\n\
+             fn f()\n    delete {target}\n"
+        );
+        let report = check_module_report(name, &src);
+        assert!(
+            with_code(&report, "check.sequence_position").is_empty(),
+            "{name}: a non-positive delete must stay clean: {:#?}",
+            report.diagnostics
+        );
+    }
+}
+
+#[test]
+fn an_in_range_sequence_write_stays_clean() {
+    // A 1-based position is a legitimate write target; the non-positive guard must
+    // not sweep up positions at or above 1.
+    let src = "module m\n\
+         resource Doc\n    tags: sequence[string]\n\
+         store ^docs(id: int): Doc\n\n\
+         fn f()\n    ^docs(1).tags(1) = \"one\"\n    ^docs(1).tags(2) = \"two\"\n";
+    assert_clean(&check_module_report("seq-write-in-range", src));
+}
+
+#[test]
+fn a_non_positive_composite_keyed_leaf_write_is_clean() {
+    // A multi-column keyed layer is not a 1-based sequence, so a zero or negative
+    // key carries meaning in its own right and is a legitimate write target. The
+    // guard fires only on a single int-keyed sequence position, never a composite.
+    let src = format!("{GRID_CELLS}fn f()\n    ^grids(1).cells(0, -2) = \"ok\"\n");
+    assert!(
+        with_code(
+            &check_module_report("composite-non-positive-clean", &src),
+            "check.sequence_position"
+        )
+        .is_empty(),
+        "a composite keyed leaf is not a sequence and must stay clean",
+    );
+}
+
+#[test]
 fn a_delete_of_a_partial_key_layer_is_rejected_at_check() {
     // `delete ^grids(1).cells(1)` supplies only the outer `row` column, so the
     // address names an iterable inner sub-layer, not a deletable entry. Accepting it

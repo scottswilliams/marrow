@@ -11,7 +11,7 @@ use crate::env::{Env, TraversedLayer};
 use crate::error::{RuntimeError, unsupported};
 use crate::expr::eval_expr;
 use crate::index_maintenance::IndexWriteContext;
-use crate::path::{lower, lower_keys};
+use crate::path::{KeyRole, lower, lower_keys};
 use crate::statement::coerce_error_code_value;
 use crate::store::{DataAddress, LayerAddress};
 use crate::value::{Value, identity_keys_of, value_to_leaf};
@@ -86,7 +86,7 @@ fn write_layer_leaf(
         target.span,
     )?;
     let expected = target.layer_facts.key_params.as_slice();
-    let layer_keys = lower_keys(keys, target.span, false, None, expected, env)?;
+    let layer_keys = lower_keys(keys, target.span, KeyRole::Layer, None, expected, env)?;
     let mut layers = target.parent_addresses.to_vec();
     layers.push(LayerAddress::from_checked(target.layer_facts, layer_keys));
 
@@ -130,7 +130,7 @@ fn write_direct_group_entry(
         ));
     };
     let expected = target.layer_facts.key_params.as_slice();
-    let layer_keys = lower_keys(keys, target.span, false, None, expected, env)?;
+    let layer_keys = lower_keys(keys, target.span, KeyRole::Layer, None, expected, env)?;
     let value = resource_value_of(&target.layer_facts.members, fields, target.span)?;
     let layer_address = LayerAddress::from_checked(target.layer_facts, layer_keys);
     let mut layers = target.parent_addresses.to_vec();

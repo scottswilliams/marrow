@@ -9,7 +9,7 @@ use marrow_syntax::SourceSpan;
 use crate::durable_read::{LayerEntryAddress, read_layer_entry, read_layer_entry_at};
 use crate::env::{Env, Flow, TraversedLayer};
 use crate::error::{RuntimeError, unsupported};
-use crate::path::{lower, lower_keys};
+use crate::path::{KeyRole, lower, lower_keys};
 use crate::read::{
     first_data_child, first_data_child_in_range, is_key_range_expr, key_range_bounds,
     next_data_child, next_data_child_in_range, validate_scanned_child_key,
@@ -179,7 +179,7 @@ fn layer_key_range(
         let exact_prefix = lower_keys(
             &layer.args[..range_position],
             span,
-            false,
+            KeyRole::Layer,
             None,
             &layer.key_params,
             env,
@@ -195,6 +195,13 @@ fn layer_key_range(
     if layer.args.len() >= layer.key_params.len() {
         return Err(unsupported("iterating this saved path", span));
     }
-    let exact_prefix = lower_keys(&layer.args, span, false, None, &layer.key_params, env)?;
+    let exact_prefix = lower_keys(
+        &layer.args,
+        span,
+        KeyRole::Layer,
+        None,
+        &layer.key_params,
+        env,
+    )?;
     Ok((exact_prefix, None))
 }

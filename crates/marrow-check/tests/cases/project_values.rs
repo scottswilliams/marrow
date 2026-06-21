@@ -381,7 +381,7 @@ fn an_unknown_value_into_a_whole_resource_is_an_untyped_value() {
 
 #[test]
 fn an_unknown_value_into_a_whole_group_entry_is_an_untyped_value() {
-    // `^books(1).chapters(0) = x` writes a whole group entry. Like a whole
+    // `^books(1).chapters(1) = x` writes a whole group entry. Like a whole
     // resource, the entry is a concrete typed record place, so a dynamic `unknown`
     // value (which could land a raw scalar or foreign identity in a typed field)
     // must be converted first.
@@ -393,7 +393,7 @@ fn an_unknown_value_into_a_whole_group_entry_is_an_untyped_value() {
          \x20\x20\x20\x20chapters(pos: int)\n\
          \x20\x20\x20\x20\x20\x20\x20\x20title: string\n\
          store ^books(id: int): Book\n\n\
-         fn put(x: unknown)\n    ^books(1).chapters(0) = x\n",
+         fn put(x: unknown)\n    ^books(1).chapters(1) = x\n",
         "check.untyped_value",
     );
     assert_eq!(found.len(), 1, "{found:#?}");
@@ -427,8 +427,8 @@ fn a_whole_group_entry_copy_read_requires_read_site_resolution() {
          \x20\x20\x20\x20chapters(pos: int)\n\
          \x20\x20\x20\x20\x20\x20\x20\x20required title: string\n\
          store ^books(id: int): Book\n\n\
-         fn local()\n    var b: Book\n    b.title = \"v1\"\n    ^books(1).chapters(0) = b\n\n\
-         fn copy()\n    ^books(1).chapters(1) = ^books(1).chapters(0)\n",
+         fn local()\n    var b: Book\n    b.title = \"v1\"\n    ^books(1).chapters(1) = b\n\n\
+         fn copy()\n    ^books(1).chapters(2) = ^books(1).chapters(1)\n",
     );
     let found = with_code(&report, "check.bare_maybe_present_read");
     assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);

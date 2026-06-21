@@ -636,10 +636,14 @@ key. It does not fill holes left by delete, failed work, or explicit keyed
 writes. Sequence keys are stable storage positions; use an ordered local value
 when code needs dense, gap-free positions.
 
-Sequence positions are 1-based. A zero, negative, or out-of-range position
-addresses no node and reads as absent, resolved at the read site with `??`,
-`if const`, or `exists`. Use an integer-keyed tree only when zero or negative
-keys carry meaning in their own right.
+Every single integer-keyed layer is a 1-based sequence. A zero, negative, or
+out-of-range position addresses no node: it reads as absent, resolved at the read
+site with `??`, `if const`, or `exists`, and a write to it addresses no node, so
+a statically-known non-positive position is a check error and a dynamic one is a
+catchable run fault that persists nothing. Deleting such a position removes
+nothing and is a no-op, the same as deleting any absent position. A layer that
+needs zero or negative keys to carry meaning in their own right must key on a
+string or a composite key, not a single integer.
 
 Keyed trees are for named or sparse layers:
 

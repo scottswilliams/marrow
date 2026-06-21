@@ -36,7 +36,7 @@ use super::ranges::{
 };
 use super::required_fields::RequiredFieldAssignments;
 use super::returns::check_return_values;
-use super::saved_keys::saved_root_args_address_record;
+use super::saved_keys::{check_sequence_position_write, saved_root_args_address_record};
 
 /// Type-check a function body, tracking the type of each in-scope binding and
 /// inferring each expression. A check fires only when a type or signature is known
@@ -527,6 +527,14 @@ impl StatementCheck<'_> {
             self.required_fields
                 .check_whole_root_write(self.file, value, store, self.diagnostics);
         }
+        check_sequence_position_write(
+            self.program,
+            target,
+            self.scope,
+            target.span(),
+            self.file,
+            self.diagnostics,
+        );
         self.check_lossy_round_trip_warning(target);
         check_assignment(self.file, span, &target_type, &value_type, self.diagnostics);
         if assignment_target_is_error_code(

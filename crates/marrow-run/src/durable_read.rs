@@ -10,7 +10,7 @@ use marrow_syntax::SourceSpan;
 use crate::collection::absent_read;
 use crate::env::Env;
 use crate::error::{RUN_ABSENT, RUN_TYPE, RuntimeError, type_error, unsupported};
-use crate::path::{lower, lower_keys};
+use crate::path::{KeyRole, lower, lower_for_probe, lower_keys};
 use crate::read::eval_local_field_get;
 use crate::stdlib::{
     read_exact_unique_index_lookup_if_present, read_exact_unique_index_lookup_value,
@@ -70,7 +70,9 @@ pub(crate) fn read_saved_value_if_present(
     if let Some(value) = read_exact_unique_index_lookup_if_present(expr, span, env)? {
         return Ok(Some(value));
     }
-    let path = lower(expr, env)?;
+    let Some(path) = lower_for_probe(expr, env)? else {
+        return Ok(None);
+    };
     if !path.is_present(span, env)? {
         return Ok(None);
     }
@@ -182,7 +184,7 @@ pub(crate) fn eval_resource_read(
     let identity = lower_keys(
         &place.identity_args,
         span,
-        true,
+        KeyRole::IdentityRead,
         Some(&place.root),
         &place.identity_keys,
         env,

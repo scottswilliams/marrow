@@ -10,7 +10,7 @@ use marrow_syntax::SourceSpan;
 use crate::env::Env;
 use crate::error::{RuntimeError, type_error};
 use crate::expr::eval_expr;
-use crate::path::lower_keys;
+use crate::path::{KeyRole, lower_keys};
 use crate::statement::coerce_error_code_value;
 use crate::value::Value;
 use crate::value::identity_value;
@@ -157,7 +157,14 @@ pub(crate) fn eval_identity_constructor(
             && key_args.len() == constructor.keys.len(),
         "checked identity constructor matches its declared root and key arity",
     );
-    let keys = lower_keys(key_args, span, false, None, &constructor.keys, env)?;
+    let keys = lower_keys(
+        key_args,
+        span,
+        KeyRole::IdentityKeys,
+        None,
+        &constructor.keys,
+        env,
+    )?;
     Ok(identity_value(&constructor.root, keys))
 }
 

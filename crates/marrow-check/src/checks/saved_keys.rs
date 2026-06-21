@@ -9,7 +9,11 @@ use std::path::Path;
 use marrow_schema::{ScalarType, StoreSchema};
 use marrow_syntax::{Argument, SourceSpan};
 
-use crate::executable::{SavedKeyParamTarget, SavedPlaceResolver, lower_expr_for_file};
+use crate::diagnostics::CHECK_SEQUENCE_POSITION;
+use crate::executable::{
+    CheckedExpr, CheckedLiteralKind, CheckedSavedLayer, SavedKeyParamTarget, SavedPlaceResolver,
+    lower_expr_for_file,
+};
 use crate::typerules::{is_ordered, marrow_type_name, type_compatible};
 use crate::{
     CheckDiagnostic, CheckedProgram, CheckedSavedIndexKey, CheckedSavedKeyParam, CheckedSavedPlace,
@@ -17,6 +21,64 @@ use crate::{
 };
 
 use super::diagnostics::{call_diagnostic, key_type_diagnostic};
+
+/// Reject a write to a sequence position the spec proves addresses no node. A
+/// single int-keyed layer is the canonical 1-based sequence shape, so a
+/// statically-known zero or negative position can never be written. This is the
+/// static counterpart of the absent fault a dynamic non-positive position raises
+/// at lowering, and it is a write-target rule only: a guarded read of such a
+/// position resolves to absent at run time.
+pub(crate) fn check_sequence_position_write(
+    program: &CheckedProgram,
+    target: &marrow_syntax::Expression,
+    scope: &[HashMap<String, MarrowType>],
+    span: SourceSpan,
+    file: &Path,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    let Some(checked) = lower_expr_for_file(program, file, target, scope) else {
+        return;
+    };
+    let Some(layer) = checked.saved_place().and_then(|place| place.layers.last()) else {
+        return;
+    };
+    if let Some(position) = static_non_positive_sequence_position(layer) {
+        diagnostics.push(CheckDiagnostic::error(
+            CHECK_SEQUENCE_POSITION,
+            file,
+            span,
+            format!(
+                "sequence positions are 1-based, so position `{position}` addresses no node and cannot be written",
+            ),
+        ));
+    }
+}
+
+/// The statically-known non-positive position written to a single int-keyed
+/// sequence layer, or `None` when the layer is not a sequence position or the
+/// position is in range or not a literal. A composite or non-int layer is not a
+/// 1-based sequence, so a zero or negative key there carries meaning in its own
+/// right and is left alone.
+fn static_non_positive_sequence_position(layer: &CheckedSavedLayer) -> Option<i64> {
+    let [param] = layer.key_params.as_slice() else {
+        return None;
+    };
+    if param.scalar != Some(ScalarType::Int) {
+        return None;
+    }
+    let [arg] = layer.args.as_slice() else {
+        return None;
+    };
+    let CheckedExpr::Literal {
+        kind: CheckedLiteralKind::Integer,
+        text,
+        ..
+    } = &arg.value
+    else {
+        return None;
+    };
+    text.parse::<i64>().ok().filter(|position| *position < 1)
+}
 
 /// Type-check the key arguments of a saved access against the keys it addresses.
 /// A foreign identity spliced into a keyspace, or a scalar of the wrong type, is a

@@ -235,6 +235,124 @@ fn if_const_reads_a_keyed_group_entry_value() {
 }
 
 #[test]
+fn a_dynamic_non_positive_sequence_write_faults_and_persists_nothing() {
+    // A sequence is 1-based, so a position below 1 addresses no node. A dynamic
+    // write to such a position must raise the catchable absent fault and leave the
+    // store untouched, never persisting an unreachable node.
+    let program = checked_program(&format!(
+        "{BOOK_TAGS_SCHEMA}pub fn set_tag(id: int, pos: int, t: string)\n    ^books(id).tags(pos) = t\n"
+    ));
+    for pos in [0, -5] {
+        let store = TreeStore::memory();
+        assert_run_error(
+            run_entry(
+                &store,
+                checked_entry!(
+                    &program,
+                    "test::set_tag",
+                    Value::Int(7),
+                    Value::Int(pos),
+                    Value::Str("x".into())
+                ),
+            ),
+            "run.absent_element",
+        );
+        // Nothing is persisted at the non-positive position.
+        assert_eq!(
+            read_data_value(
+                &program,
+                &store,
+                "books",
+                &[SavedKey::Int(7)],
+                &keyed_data_path(
+                    &program,
+                    "books",
+                    &[("tags", vec![SavedKey::Int(pos)])],
+                    &[]
+                ),
+                ScalarType::Str,
+            ),
+            None,
+        );
+    }
+}
+
+#[test]
+fn a_read_of_a_non_positive_sequence_position_is_absent() {
+    // The read side resolves a below-1 position to absent, the same contract the
+    // write side enforces: `??` recovers it rather than faulting fatally.
+    let program = checked_program(&format!(
+        "{BOOK_TAGS_SCHEMA}pub fn seed(id: int)\n    ^books(id).tags(1) = \"one\"\n\npub fn tag_at(id: int, pos: int): string\n    return ^books(id).tags(pos) ?? \"absent\"\n"
+    ));
+    let store = TreeStore::memory();
+    run_entry(
+        &store,
+        checked_entry!(&program, "test::seed", Value::Int(7)),
+    )
+    .expect("seed");
+    let tag = |pos: i64| {
+        run_entry(
+            &store,
+            checked_entry!(&program, "test::tag_at", Value::Int(7), Value::Int(pos)),
+        )
+        .expect("read")
+        .value
+    };
+    assert_eq!(tag(0), Some(Value::Str("absent".into())));
+    assert_eq!(tag(-2), Some(Value::Str("absent".into())));
+    // The legitimate 1-based position is unaffected.
+    assert_eq!(tag(1), Some(Value::Str("one".into())));
+}
+
+#[test]
+fn a_non_positive_sequence_group_entry_read_is_absent_through_the_whole_spine() {
+    // A sequence of groups raises the absent fault at the position segment, not the
+    // trailing field. A guarded read of `^books(id).versions(pos).title`,
+    // `if const`, and `exists` over a below-1 position must still resolve to absence
+    // rather than letting the position fault escape past the read-site form.
+    let program = checked_program(
+        "resource Book\n    required title: string\n    versions(version: int)\n        required title: string\nstore ^books(id: int): Book\n\npub fn seed(id: int)\n    ^books(id).title = \"Mort\"\n    ^books(id).versions(1).title = \"first\"\n\npub fn version_title(id: int, version: int): string\n    return ^books(id).versions(version).title ?? \"absent\"\n\npub fn version_exists(id: int, version: int): bool\n    return exists(^books(id).versions(version))\n",
+    );
+    let store = TreeStore::memory();
+    run_entry(
+        &store,
+        checked_entry!(&program, "test::seed", Value::Int(1)),
+    )
+    .expect("seed");
+    let title = |version: i64| {
+        run_entry(
+            &store,
+            checked_entry!(
+                &program,
+                "test::version_title",
+                Value::Int(1),
+                Value::Int(version)
+            ),
+        )
+        .expect("read")
+        .value
+    };
+    assert_eq!(title(0), Some(Value::Str("absent".into())));
+    assert_eq!(title(-4), Some(Value::Str("absent".into())));
+    assert_eq!(title(1), Some(Value::Str("first".into())));
+    let exists = |version: i64| {
+        run_entry(
+            &store,
+            checked_entry!(
+                &program,
+                "test::version_exists",
+                Value::Int(1),
+                Value::Int(version)
+            ),
+        )
+        .expect("exists")
+        .value
+    };
+    assert_eq!(exists(0), Some(Value::Bool(false)));
+    assert_eq!(exists(1), Some(Value::Bool(true)));
+}
+
+#[test]
 fn explicit_keyed_leaf_write_creates_a_hole_that_append_skips() {
     // An explicit write past the dense range leaves a hole; append chooses one
     // past the highest positive key, not the first gap.
