@@ -181,6 +181,20 @@ pub(crate) fn write_tree_value(
         .expect("write tree-cell value");
 }
 
+pub(crate) fn read_tree_value(
+    project: &Path,
+    root: &str,
+    identity: &[SavedKey],
+    path: &[DataPathSegment],
+) -> Vec<u8> {
+    let place = checked_place(project, root);
+    let store = open_native_store(project);
+    store
+        .read_data_value(&checked_catalog_id(&place.store_catalog_id), identity, path)
+        .expect("read tree-cell value")
+        .expect("tree-cell value present")
+}
+
 pub(crate) fn write_tree_values(
     project: &Path,
     place: &CheckedSavedPlace,

@@ -132,7 +132,8 @@ concrete member or a category); the result is `bool`. The right operand is a mem
 path like any other, so a duplicated leaf is reached by its full path (`pet is
 Cat::tiger::paw`) and a bare duplicated name is rejected the same way as in value
 position. `is` is a reserved word, so it cannot be used as an identifier. It does
-not chain: `a is X is Y` is a syntax error.
+not chain: `a is X is Y` is a syntax error. Each `is` yields a `bool`, so join
+several subtree tests with `and`/`or` (`a is X and a is Y`).
 
 ## Matching
 

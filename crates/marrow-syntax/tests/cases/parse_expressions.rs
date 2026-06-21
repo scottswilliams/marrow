@@ -178,11 +178,15 @@ fn const_chained_equality_is_not_associative() {
     // non-associative level: a second same-class operator is a grammar error
     // spanned at that operator, mirroring the `??` diagnostic, rather than a
     // generic "expected a statement" at the line start.
-    for (source, operator) in [
-        ("const Bad: bool = a == b == c\n", "=="),
-        ("const Bad: bool = a != b != c\n", "!="),
-        ("const Bad: bool = a < b < c\n", "<"),
-        ("const Bad: bool = a is X is Y\n", "is"),
+    // Each remedy must name a rewrite that actually compiles: comparisons of
+    // boolean results can be parenthesized, but a chained `is` cannot — `(a is X)`
+    // is a bool, so a second `is` over it fails the enum-operand check. The `is`
+    // remedy instead points at joining the subtree tests with `and`/`or`.
+    for (source, operator, remedy) in [
+        ("const Bad: bool = a == b == c\n", "==", "parentheses"),
+        ("const Bad: bool = a != b != c\n", "!=", "parentheses"),
+        ("const Bad: bool = a < b < c\n", "<", "parentheses"),
+        ("const Bad: bool = a is X is Y\n", "is", "`and`/`or`"),
     ] {
         let parsed = parse_source(source);
         let diagnostic = parsed
@@ -206,9 +210,8 @@ fn const_chained_equality_is_not_associative() {
         // The remedy rides in the message so it survives the checker's
         // parse-diagnostic lowering and renders in `marrow check`.
         assert!(
-            diagnostic.message.contains("does not chain")
-                && diagnostic.message.contains("parentheses"),
-            "expected the parenthesize remedy in the message: {diagnostic:#?}"
+            diagnostic.message.contains("does not chain") && diagnostic.message.contains(remedy),
+            "expected the `{remedy}` remedy in the message: {diagnostic:#?}"
         );
         let Declaration::Const(decl) = &parsed.file.declarations[0] else {
             panic!("expected const declaration for {source:?}");

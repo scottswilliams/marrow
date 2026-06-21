@@ -120,9 +120,11 @@ fn render_data_value_with(
             render_identity_value(program, store_root, *arity, bytes)
                 .unwrap_or_else(|| render_hex_value(bytes))
         }
-        StoreLeafKind::Enum { enum_id } => {
-            render_enum_value(program, *enum_id, bytes).unwrap_or_else(|| render_hex_value(bytes))
-        }
+        StoreLeafKind::Enum { enum_id } => match classify_enum_value(program, *enum_id, bytes) {
+            EnumLeaf::Resolved(path) => path,
+            EnumLeaf::Undecodable(member_id) => render_undecodable_enum_value(&member_id),
+            EnumLeaf::Malformed => render_hex_value(bytes),
+        },
     }
 }
 
@@ -197,9 +199,12 @@ fn render_data_value_prefix_preview_inner(
             render_identity_value_preview(program, store_root, *arity, bytes, limit)
                 .unwrap_or_else(|| render_hex_value_preview(bytes, limit))
         }
-        StoreLeafKind::Enum { enum_id } => match render_enum_value(program, *enum_id, bytes) {
-            Some(text) => bounded_rendered_text(text, limit),
-            None => render_hex_value_preview(bytes, limit),
+        StoreLeafKind::Enum { enum_id } => match classify_enum_value(program, *enum_id, bytes) {
+            EnumLeaf::Resolved(path) => bounded_rendered_text(path, limit),
+            EnumLeaf::Undecodable(member_id) => {
+                bounded_rendered_text(render_undecodable_enum_value(&member_id), limit)
+            }
+            EnumLeaf::Malformed => render_hex_value_preview(bytes, limit),
         },
     }
 }
@@ -289,24 +294,51 @@ fn render_identity_value_preview(
     })
 }
 
-fn render_enum_value(
+/// How an enum leaf's stored bytes relate to the current schema. A value that
+/// decodes to a member id the current enum no longer names is corruption, not a
+/// healthy bytes value — `Undecodable` carries that member id so the render can
+/// mark it distinctly, the enum analog of an undecodable string. `Malformed`
+/// means the bytes are not even a catalog-backed member and fall back to hex.
+enum EnumLeaf {
+    Resolved(String),
+    Undecodable(String),
+    Malformed,
+}
+
+fn classify_enum_value(
     program: &(impl DataProgram + ?Sized),
     enum_id: EnumId,
     bytes: &[u8],
-) -> Option<String> {
-    let stored = decode_tree_enum_member(bytes).ok()?;
-    let enum_fact = program.facts().enum_(enum_id)?;
-    if enum_fact.catalog_id.as_deref() != Some(stored.enum_id().as_str()) {
-        return None;
+) -> EnumLeaf {
+    let Ok(stored) = decode_tree_enum_member(bytes) else {
+        return EnumLeaf::Malformed;
+    };
+    let resolved = program
+        .facts()
+        .enum_(enum_id)
+        .filter(|enum_fact| enum_fact.catalog_id.as_deref() == Some(stored.enum_id().as_str()))
+        .and_then(|_| {
+            program.facts().enum_members().iter().find(|member| {
+                member.enum_id == enum_id
+                    && member.catalog_id.as_deref() == Some(stored.member_id().as_str())
+            })
+        })
+        .filter(|member| program.facts().enum_member_is_selectable(member.id))
+        .and_then(|member| program.facts().enum_member_catalog_path(member.id));
+    match resolved {
+        Some(path) => EnumLeaf::Resolved(path),
+        None => EnumLeaf::Undecodable(stored.member_id().as_str().to_string()),
     }
-    let member = program.facts().enum_members().iter().find(|member| {
-        member.enum_id == enum_id
-            && member.catalog_id.as_deref() == Some(stored.member_id().as_str())
-    })?;
-    if !program.facts().enum_member_is_selectable(member.id) {
-        return None;
-    }
-    program.facts().enum_member_catalog_path(member.id)
+}
+
+const UNDECODABLE_ENUM_PREFIX: &str = "<undecodable enum: ";
+const UNDECODABLE_ENUM_SUFFIX: &str = ">";
+
+/// A stored enum member the current schema no longer names, marked distinctly so a
+/// reader cannot mistake it for a healthy value; the stored member catalog id names
+/// the offending value. `data integrity` stays the authority that flags it.
+fn render_undecodable_enum_value(member_id: &str) -> String {
+    format!("{UNDECODABLE_ENUM_PREFIX}{member_id}{UNDECODABLE_ENUM_SUFFIX}")
 }
 
 fn render_key(key: &SavedKey) -> String {

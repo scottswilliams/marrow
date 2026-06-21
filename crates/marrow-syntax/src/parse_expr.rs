@@ -238,8 +238,10 @@ impl<'a> ExprParser<'a> {
         self.advance();
         let right = self.equality_expr()?;
         if matches!(self.peek(), Some(TokenKind::Keyword(Keyword::Is))) {
-            return self
-                .reject_chained_operator("is", "use parentheses to group the subtree tests");
+            return self.reject_chained_operator(
+                "is",
+                "each `is` yields a bool, so join the subtree tests with `and`/`or`",
+            );
         }
         Some(binary_expr(BinaryOp::Is, left, right))
     }

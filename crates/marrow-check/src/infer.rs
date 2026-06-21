@@ -12,8 +12,8 @@ use crate::checks::{
     check_saved_key_args, check_unary, key_type_diagnostic,
 };
 use crate::enums::{
-    EnumMemberPathResolution, IsCheck, check_is, join_or, resolve_diagnosed_annotation_type,
-    resolve_enum_member_path,
+    EnumMemberPathResolution, IsCheck, ambiguous_member_value_diagnostic, check_is,
+    resolve_diagnosed_annotation_type, resolve_enum_member_path,
 };
 use crate::executable::{
     CheckedBuiltinCall, CheckedBuiltinValueShape, CheckedLiteralKind, SavedAccessRejection,
@@ -25,10 +25,10 @@ use crate::typerules::{
     type_renderable_at_runtime,
 };
 use crate::{
-    CHECK_AMBIGUOUS_MEMBER, CHECK_CATEGORY_NOT_SELECTABLE, CHECK_COLLECTION_UNSUPPORTED,
-    CHECK_LAYER_NOT_VALUE, CHECK_OPERATOR_TYPE, CHECK_PRIVATE_ENUM, CHECK_UNKNOWN_FIELD,
-    CHECK_UNRESOLVED_NAME, CheckDiagnostic, CheckedProgram, DiagnosticPayload, EnumDiagnostic,
-    MarrowType, resolve_resource_type,
+    CHECK_CATEGORY_NOT_SELECTABLE, CHECK_COLLECTION_UNSUPPORTED, CHECK_LAYER_NOT_VALUE,
+    CHECK_OPERATOR_TYPE, CHECK_PRIVATE_ENUM, CHECK_UNKNOWN_FIELD, CHECK_UNRESOLVED_NAME,
+    CheckDiagnostic, CheckedProgram, DiagnosticPayload, EnumDiagnostic, MarrowType,
+    resolve_resource_type,
 };
 
 /// Infer a type during post-check resolution, discarding diagnostics the checking
@@ -1264,25 +1264,13 @@ fn enum_member_value_type(
             name: enum_name.clone(),
         },
         MemberPathResolution::Ambiguous(paths) => {
-            diagnostics.push(
-                CheckDiagnostic::error(
-                    CHECK_AMBIGUOUS_MEMBER,
-                    file,
-                    span,
-                    format!(
-                        "`{}` names more than one member of `{enum_name}`; qualify as {}",
-                        segments.join("::"),
-                        join_or(&paths)
-                    ),
-                )
-                .with_payload(DiagnosticPayload::Enum(
-                    EnumDiagnostic::AmbiguousMember {
-                        enum_name: enum_name.clone(),
-                        label: resolved.member_label,
-                        candidates: paths,
-                    },
-                )),
-            );
+            diagnostics.push(ambiguous_member_value_diagnostic(
+                file,
+                span,
+                enum_name,
+                resolved.member_label,
+                &paths,
+            ));
             MarrowType::Invalid
         }
         MemberPathResolution::NotFound => {

@@ -4,9 +4,12 @@
 use crate::support;
 use crate::support_data;
 use support::{temp_project_uncommitted, write};
-use support_data::{checked_place, encode_identity_keys, field_path, marrow, write_tree_value};
+use support_data::{
+    checked_place, encode_identity_keys, field_path, marrow, read_tree_value, write_tree_value,
+};
 
 use marrow_store::key::SavedKey;
+use marrow_store::tree::{TreeEnumMember, decode_tree_enum_member, encode_tree_enum_member};
 
 const VALUE_RENDER_CONFIG: &str =
     r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".data" } }"#;
@@ -270,4 +273,87 @@ fn data_text_renders_enum_values_as_member_identities() {
         !dump.contains("cat_"),
         "catalog ids leaked into output: {dump}"
     );
+}
+
+#[test]
+fn data_text_marks_an_undecodable_enum_leaf_distinctly_from_bytes() {
+    // An enum leaf whose stored member the current schema no longer names (a member
+    // removed by a supported evolution) is corruption, not a healthy bytes value. The
+    // text renderer must mark it as such — the enum analog of an undecodable string —
+    // so a reader cannot mistake the raw `0x<hex>` for a legitimate value, while
+    // `data integrity` stays the authority that flags it and the lossless JSON form
+    // keeps the raw bytes.
+    let (project, dir) = seeded_project(
+        "data-value-render-undecodable-enum",
+        "module app\n\
+         enum Status\n\
+         \x20   active\n\
+         \x20   archived\n\
+         resource Order\n\
+         \x20   required state: Status\n\
+         store ^orders(id: int): Order\n\
+         pub fn seed()\n\
+         \x20   transaction\n\
+         \x20       ^orders(1).state = Status::active\n",
+    );
+    let place = checked_place(&project, "orders");
+    let state_path = field_path(&place, "state");
+
+    // The stored value names a real `Status` member; keep its enum id but point the
+    // member id at a catalog id the schema never declares, as a removed member leaves
+    // behind. The hex still decodes as bytes, so without the marker it would render
+    // indistinguishably from a healthy bytes field.
+    let stored = decode_tree_enum_member(&read_tree_value(
+        &project,
+        "orders",
+        &[SavedKey::Int(1)],
+        &state_path,
+    ))
+    .expect("seeded enum member decodes");
+    let removed_member = marrow_store::cell::CatalogId::new("cat_".to_string() + &"0".repeat(32))
+        .expect("fabricated member catalog id");
+    let corrupt = encode_tree_enum_member(&TreeEnumMember::new(
+        stored.enum_id().clone(),
+        removed_member.clone(),
+    ))
+    .expect("encode corrupt enum member");
+    write_tree_value(
+        &project,
+        "orders",
+        &[SavedKey::Int(1)],
+        &state_path,
+        corrupt.clone(),
+    );
+
+    let reference = stdout(marrow(&["data", "get", &dir, "^orders(1).state"]));
+    let dump = stdout(marrow(&["data", "dump", &dir]));
+    let expected = format!("<undecodable enum: {}>", removed_member.as_str());
+    let bare_hex = hex_text(&corrupt);
+
+    assert_eq!(reference, format!("{expected}\n"));
+    assert!(
+        dump.contains(&format!("^orders(1).state\t{expected}\n")),
+        "{dump}"
+    );
+    assert!(
+        !reference.starts_with("0x") && !dump.contains(&format!("^orders(1).state\t{bare_hex}\n")),
+        "a corrupt enum must not render as a bare bytes value: get={reference:?} dump={dump:?}"
+    );
+
+    // `data integrity` remains the authority and still flags the corruption.
+    let integrity = marrow(&["data", "integrity", "--format", "json", &dir]);
+    assert_eq!(integrity.status.code(), Some(1), "{integrity:?}");
+
+    // The lossless JSON form carries the unchanged raw bytes regardless of the marker.
+    let value_json = support_data::json(marrow(&[
+        "data",
+        "get",
+        "--format",
+        "json",
+        &dir,
+        "^orders(1).state",
+    ]));
+    let raw = marrow_run::base64::decode(value_json["value_b64"].as_str().expect("b64"))
+        .expect("decode value");
+    assert_eq!(raw, corrupt);
 }

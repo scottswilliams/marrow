@@ -367,7 +367,9 @@ fn a_full_member_path_to_a_duplicated_leaf_resolves_in_value_position() {
 #[test]
 fn a_bare_duplicated_member_in_value_position_is_ambiguous() {
     // Bare `Cat::paw` names `paw` under both `tiger` and `lion`; the value cannot
-    // pick one. The diagnostic payload records the qualifying paths.
+    // pick one. In value position the disambiguating spelling carries the enum
+    // prefix (`Cat::tiger::paw`), the form the checker confirms — not the bare
+    // `tiger::paw`, which only resolves in a `match` arm.
     let errors = check_module(
         "dup-value-bare",
         &format!(
@@ -383,7 +385,7 @@ fn a_bare_duplicated_member_in_value_position_is_ambiguous() {
         EnumDiagnostic::AmbiguousMember {
             enum_name: "Cat".into(),
             label: "paw".into(),
-            candidates: vec!["tiger::paw".into(), "lion::paw".into()],
+            candidates: vec!["Cat::tiger::paw".into(), "Cat::lion::paw".into()],
         },
     );
 }
@@ -663,7 +665,8 @@ fn is_with_a_full_member_path_is_exact_and_a_category_is_a_subtree_test() {
 #[test]
 fn is_with_a_bare_duplicated_member_is_ambiguous() {
     // A bare `Cat::paw` as an `is` operand is the symmetric footgun; reject it with
-    // the same qualifying-path payload as value position.
+    // the same enum-prefixed qualifying-path payload as value position, since the
+    // `is` RHS resolves a member by its full enum path just like a value.
     let errors = check_module(
         "dup-is-bare",
         &format!(
@@ -679,7 +682,7 @@ fn is_with_a_bare_duplicated_member_is_ambiguous() {
         EnumDiagnostic::AmbiguousMember {
             enum_name: "Cat".into(),
             label: "paw".into(),
-            candidates: vec!["tiger::paw".into(), "lion::paw".into()],
+            candidates: vec!["Cat::tiger::paw".into(), "Cat::lion::paw".into()],
         },
     );
 }

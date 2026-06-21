@@ -761,6 +761,39 @@ pub(crate) fn join_or(paths: &[String]) -> String {
     }
 }
 
+/// Build the `check.ambiguous_member` diagnostic for a bare duplicated leaf reached
+/// in a value or `is`-RHS position. There the leaf is named by its full enum-qualified
+/// path, so the candidates carry the enum prefix (`Cat::tiger::paw`) — the spelling the
+/// checker confirms, unlike the scrutinee-relative `tiger::paw` that only resolves in a
+/// `match` arm. `relative_paths` are the disambiguating member paths the schema walk
+/// returns (`tiger::paw`, `lion::paw`); each gains the prefix here.
+pub(crate) fn ambiguous_member_value_diagnostic(
+    file: &Path,
+    span: SourceSpan,
+    enum_name: &str,
+    label: String,
+    relative_paths: &[String],
+) -> CheckDiagnostic {
+    let candidates: Vec<String> = relative_paths
+        .iter()
+        .map(|path| format!("{enum_name}::{path}"))
+        .collect();
+    CheckDiagnostic::error(
+        CHECK_AMBIGUOUS_MEMBER,
+        file,
+        span,
+        format!(
+            "`{enum_name}::{label}` names more than one member of `{enum_name}`; qualify as {}",
+            join_or(&candidates)
+        ),
+    )
+    .with_payload(DiagnosticPayload::Enum(EnumDiagnostic::AmbiguousMember {
+        enum_name: enum_name.to_string(),
+        label,
+        candidates,
+    }))
+}
+
 pub(crate) fn ambiguous_enum_annotation_diagnostic(
     file: &Path,
     span: SourceSpan,
@@ -871,23 +904,15 @@ pub(crate) fn check_is(input: IsCheck<'_>) -> MarrowType {
     // rejected with the qualifying paths — the symmetric fix to the value footgun.
     match resolved.member {
         MemberPathResolution::Found(_) => {}
-        MemberPathResolution::Ambiguous(paths) => diagnostics.push(
-            CheckDiagnostic::error(
-                CHECK_AMBIGUOUS_MEMBER,
+        MemberPathResolution::Ambiguous(paths) => {
+            diagnostics.push(ambiguous_member_value_diagnostic(
                 file,
                 right_span,
-                format!(
-                    "`{}` names more than one member of `{left_name}`; qualify as {}",
-                    member_path_label(right),
-                    join_or(&paths)
-                ),
-            )
-            .with_payload(DiagnosticPayload::Enum(EnumDiagnostic::AmbiguousMember {
-                enum_name: left_name.clone(),
-                label: resolved.member_label,
-                candidates: paths,
-            })),
-        ),
+                left_name,
+                resolved.member_label,
+                &paths,
+            ))
+        }
         MemberPathResolution::NotFound => diagnostics.push(CheckDiagnostic::error(
             CHECK_IS_TYPE,
             file,
@@ -896,15 +921,6 @@ pub(crate) fn check_is(input: IsCheck<'_>) -> MarrowType {
         )),
     }
     bool_type
-}
-
-/// The member-path segments of a `Name` expression rendered as written, for a
-/// diagnostic that quotes the offending path. A non-name expression renders empty.
-fn member_path_label(expr: &marrow_syntax::Expression) -> String {
-    match expr {
-        marrow_syntax::Expression::Name { segments, .. } => segments.join("::"),
-        _ => String::new(),
-    }
 }
 
 fn enum_visible_from_modules(
