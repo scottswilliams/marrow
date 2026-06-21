@@ -323,3 +323,32 @@ fn error_codes_doc_documents_exactly_the_typed_lock_and_catalog_code_constants()
         "catalog.merge_conflict was deleted from the code and must not be documented"
     );
 }
+
+#[test]
+fn error_codes_doc_documents_formatter_tooling_codes() {
+    let documented = documented_codes_in_family("`fmt.*`");
+    let expected = ["fmt.comment_loss".to_string()].into_iter().collect();
+
+    assert_eq!(
+        documented, expected,
+        "error-codes.md fmt.* family must list exactly the formatter tooling codes"
+    );
+}
+
+#[test]
+fn error_codes_doc_documents_backup_tooling_codes() {
+    let documented = documented_codes_in_family("`backup.*`");
+    let expected = [
+        "backup.catalog_serialization".to_string(),
+        "backup.cell_too_large".to_string(),
+        "backup.manifest_serialization".to_string(),
+        "backup.store_uid_missing".to_string(),
+    ]
+    .into_iter()
+    .collect();
+
+    assert_eq!(
+        documented, expected,
+        "error-codes.md backup.* family must list exactly the backup tooling codes"
+    );
+}

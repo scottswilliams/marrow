@@ -101,7 +101,7 @@ code is stable and predictable:
 | `store` | `storage` |
 | `surface` | `surface` |
 | `io` | `io` |
-| everything else (`config`, `project`, `catalog`, `data`, `doctor`, `evolve`, `write`, `test`, `restore`) | `tooling` |
+| everything else (`backup`, `config`, `project`, `catalog`, `data`, `doctor`, `evolve`, `fmt`, `write`, `test`, `restore`) | `tooling` |
 
 ## Code Reference
 
@@ -120,6 +120,14 @@ command that parses sources before running.
 | Code | Meaning |
 |---|---|
 | `parse.syntax` | The source is not well-formed Marrow: a bad token, a missing piece of a declaration, or an unexpected construct. The only `parse.*` code; the `message` says what was expected. |
+
+### `fmt.*` — kind `tooling`
+
+Formatter refusals.
+
+| Code | Meaning |
+|---|---|
+| `fmt.comment_loss` | `marrow fmt` would drop a retained comment while rewriting the source, so the command refuses instead of publishing lossy formatted output. |
 
 ### `check.*` — kind `check`
 
@@ -426,6 +434,9 @@ Source-native data-evolution preview/apply faults.
 
 | Code | Meaning |
 | --- | --- |
+| `backup.catalog_serialization` | The accepted catalog section could not be serialized into the backup artifact. |
+| `backup.cell_too_large` | A data cell frame exceeded the backup format's per-cell size bound. |
+| `backup.manifest_serialization` | The backup manifest could not be serialized. |
 | `backup.store_uid_missing` | The existing store predates the physical store UID stamp. Run or evolve apply with this build to stamp the store before backup. |
 
 ### `restore.*` — kind `tooling`
@@ -433,9 +444,8 @@ Source-native data-evolution preview/apply faults.
 Faults from `marrow restore` when a backup cannot be replayed into the project's
 store, and from backup-backed data inspection or evolution preview when the
 artifact cannot be mounted as the selected read target. `marrow backup` reports
-`io.write` for a file it cannot write, a `store.*` code for a read fault, or
-`backup.store_uid_missing` when an existing store predates the required physical
-store UID stamp.
+`io.write` for a file it cannot write, a `store.*` code for a read fault, or a
+`backup.*` code for backup-specific faults.
 
 | Code | Meaning |
 |---|---|
