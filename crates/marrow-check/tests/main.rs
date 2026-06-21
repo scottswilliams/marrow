@@ -146,6 +146,8 @@ mod source_callable_hover_facts;
 mod source_module_path_definition_facts;
 #[path = "cases/source_module_path_hover_facts.rs"]
 mod source_module_path_hover_facts;
+#[path = "cases/source_namespace_completion_facts.rs"]
+mod source_namespace_completion_facts;
 #[path = "cases/source_schema_hover_facts.rs"]
 mod source_schema_hover_facts;
 #[path = "cases/source_symbol_docs.rs"]

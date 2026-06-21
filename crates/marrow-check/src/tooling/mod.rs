@@ -2,6 +2,7 @@
 
 use marrow_store::StoreError;
 
+mod completion;
 pub mod data;
 mod hover;
 pub mod integrity;
@@ -9,6 +10,13 @@ pub mod signatures;
 pub mod symbols;
 mod type_annotations;
 
+pub use completion::{
+    SourceEnumNamespaceCompletionFact, SourceModuleNamespaceCompletionFact,
+    SourceNamespaceCompletionFact, SourceNamespaceEnumCompletion,
+    SourceNamespaceEnumMemberCompletion, SourceNamespaceEnumMemberStatus,
+    SourceNamespaceFunctionCompletion, SourceNamespaceFunctionParamCompletion,
+    SourceNamespaceResourceCompletion, source_namespace_completion_fact,
+};
 pub use data::{
     DEFAULT_VALUE_PREVIEW_LIMIT, DataChild, DataChildView, DataChildViewsPage, DataChildrenPage,
     DataCommitStamp, DataEntry, DataPathError, DataPathSegment, DataPresence,
