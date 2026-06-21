@@ -1,16 +1,16 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use marrow_catalog::CatalogEntryKind;
-use marrow_schema::{EnumSchema, IndexSchema, Node, NodeKind, ResourceSchema, StoreSchema};
+use marrow_schema::{EnumSchema, IndexSchema, Node, NodeKind, ResourceSchema, StoreSchema, stdlib};
 use marrow_syntax::{
-    Declaration, EnumMember, FunctionDecl, IndexDecl, KeyParam, ResourceMember, SourceFile,
-    SourceSpan, StoreDecl, TokenKind, lex_source,
+    Declaration, EnumMember, FunctionDecl, IndexDecl, KeyParam, Keyword, ResourceMember,
+    SourceFile, SourceSpan, StoreDecl, TokenKind, lex_source,
 };
 
 use crate::{
     AnalysisSnapshot, BindingIndex, CheckedConst, CheckedFunction, DirectEffectFacts, FunctionFact,
-    MarrowType, ModuleId, ResourceMemberKind, StoreFact, SymbolKind, SymbolOccurrence, SymbolRef,
-    UseSiteKind,
+    MarrowType, ModuleFact, ModuleId, ResourceMemberKind, StoreFact, SymbolKind, SymbolOccurrence,
+    SymbolRef, UseSiteKind,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -43,6 +43,46 @@ pub struct SourceCallableParamFact {
     pub name: String,
     pub ty: MarrowType,
     pub docs: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SourceModulePathHoverFact {
+    StandardLibraryNamespace(SourceStandardLibraryNamespaceHoverFact),
+    StandardLibraryModule(SourceStandardLibraryModuleHoverFact),
+    ProjectModule(SourceProjectModuleHoverFact),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceStandardLibraryNamespaceHoverFact {
+    pub modules: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceStandardLibraryModuleHoverFact {
+    pub module: String,
+    pub operations: Vec<SourceStandardLibraryOperationHoverFact>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceStandardLibraryOperationHoverFact {
+    pub name: String,
+    pub required_capability: Option<SourceStandardLibraryCapability>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SourceStandardLibraryCapability {
+    Clock,
+    Context,
+    Environment,
+    Log,
+    Filesystem,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceProjectModuleHoverFact {
+    pub module: String,
+    pub source_file: PathBuf,
+    pub span: SourceSpan,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -221,6 +261,20 @@ pub fn source_callable_hover_fact_at(
     }
 }
 
+pub fn source_module_path_hover_fact_at(
+    snapshot: &AnalysisSnapshot,
+    index: &BindingIndex,
+    file: &Path,
+    offset: usize,
+) -> Option<SourceModulePathHoverFact> {
+    let analyzed = snapshot.files.iter().find(|f| f.path == file)?;
+    let path = module_path_at(&analyzed.source, offset)?;
+    if let Some(fact) = standard_library_module_path_hover_fact(snapshot, file, &path) {
+        return Some(fact);
+    }
+    project_module_path_hover_fact(snapshot, index, file, offset, &path)
+}
+
 pub fn source_schema_hover_fact_at(
     snapshot: &AnalysisSnapshot,
     index: &BindingIndex,
@@ -333,6 +387,262 @@ fn module_const_source_callable_hover_fact(
         ty: checked.ty.clone(),
         docs: parsed_const.docs.clone(),
     })
+}
+
+struct ModulePathAt {
+    segments: Vec<String>,
+    cursor_segment: usize,
+    context: ModulePathContext,
+    call_leaf: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ModulePathContext {
+    ModuleDeclaration,
+    UseDeclaration,
+    Expression,
+}
+
+impl ModulePathContext {
+    fn is_declaration(self) -> bool {
+        matches!(
+            self,
+            ModulePathContext::ModuleDeclaration | ModulePathContext::UseDeclaration
+        )
+    }
+}
+
+fn module_path_at(source: &str, offset: usize) -> Option<ModulePathAt> {
+    let tokens = lex_source(source).tokens;
+    let index = tokens.iter().position(|token| {
+        is_module_path_segment(token.kind)
+            && offset_in_name(token.span.start_byte, token.span.end_byte, offset)
+    })?;
+
+    let mut start = index;
+    while start >= 2
+        && tokens[start - 1].kind == TokenKind::DoubleColon
+        && is_module_path_segment(tokens[start - 2].kind)
+    {
+        start -= 2;
+    }
+
+    let mut end = index;
+    while end + 2 < tokens.len()
+        && tokens[end + 1].kind == TokenKind::DoubleColon
+        && is_module_path_segment(tokens[end + 2].kind)
+    {
+        end += 2;
+    }
+
+    let mut segments = Vec::new();
+    let mut cursor_segment = None;
+    let mut token_index = start;
+    loop {
+        if !is_module_path_segment(tokens[token_index].kind) {
+            return None;
+        }
+        if token_index == index {
+            cursor_segment = Some(segments.len());
+        }
+        segments.push(tokens[token_index].text(source).to_string());
+        if token_index == end {
+            break;
+        }
+        token_index += 2;
+    }
+
+    let previous = previous_significant_kind(&tokens, start);
+    Some(ModulePathAt {
+        segments,
+        cursor_segment: cursor_segment?,
+        context: module_path_context(previous),
+        call_leaf: next_significant_kind(&tokens, end)
+            .is_some_and(|kind| kind == TokenKind::LeftParen)
+            && !previous.is_some_and(|kind| {
+                matches!(
+                    kind,
+                    TokenKind::DoubleColon
+                        | TokenKind::Dot
+                        | TokenKind::QuestionDot
+                        | TokenKind::Keyword(Keyword::Fn)
+                )
+            }),
+    })
+}
+
+fn module_path_context(previous: Option<TokenKind>) -> ModulePathContext {
+    match previous {
+        Some(TokenKind::Keyword(Keyword::Module)) => ModulePathContext::ModuleDeclaration,
+        Some(TokenKind::Keyword(Keyword::Use)) => ModulePathContext::UseDeclaration,
+        _ => ModulePathContext::Expression,
+    }
+}
+
+fn is_module_path_segment(kind: TokenKind) -> bool {
+    matches!(kind, TokenKind::Identifier | TokenKind::Keyword(_))
+}
+
+fn standard_library_module_path_hover_fact(
+    snapshot: &AnalysisSnapshot,
+    file: &Path,
+    path: &ModulePathAt,
+) -> Option<SourceModulePathHoverFact> {
+    let expanded = crate::expand_unique_import_alias(
+        &snapshot
+            .files
+            .iter()
+            .find(|analyzed| analyzed.path == file)?
+            .parsed
+            .file,
+        &path.segments,
+    )
+    .ok()?;
+
+    match expanded.as_slice() {
+        [std, module]
+            if path.context == ModulePathContext::UseDeclaration
+                && std == "std"
+                && standard_library_module(module) =>
+        {
+            standard_library_prefix_hover_fact(path, module)
+        }
+        [std, module, op]
+            if path.call_leaf && std == "std" && stdlib::lookup(module, op).is_some() =>
+        {
+            standard_library_prefix_hover_fact(path, module)
+        }
+        _ => None,
+    }
+}
+
+fn standard_library_prefix_hover_fact(
+    path: &ModulePathAt,
+    module: &str,
+) -> Option<SourceModulePathHoverFact> {
+    if path
+        .segments
+        .first()
+        .is_some_and(|segment| segment == "std")
+        && path.cursor_segment == 0
+    {
+        return Some(SourceModulePathHoverFact::StandardLibraryNamespace(
+            SourceStandardLibraryNamespaceHoverFact {
+                modules: standard_library_modules(),
+            },
+        ));
+    }
+    if path.cursor_segment + 1 < path.segments.len() || path.context.is_declaration() {
+        return Some(SourceModulePathHoverFact::StandardLibraryModule(
+            standard_library_module_fact(module)?,
+        ));
+    }
+    None
+}
+
+fn standard_library_modules() -> Vec<String> {
+    let mut modules = stdlib::all()
+        .iter()
+        .map(|op| op.module.to_string())
+        .collect::<Vec<_>>();
+    modules.sort();
+    modules.dedup();
+    modules
+}
+
+fn standard_library_module(module: &str) -> bool {
+    stdlib::all().iter().any(|op| op.module == module)
+}
+
+fn standard_library_module_fact(module: &str) -> Option<SourceStandardLibraryModuleHoverFact> {
+    let mut operations = stdlib::all()
+        .iter()
+        .filter(|op| op.module == module)
+        .map(|op| SourceStandardLibraryOperationHoverFact {
+            name: op.op.to_string(),
+            required_capability: op.requires_capability.map(standard_library_capability),
+        })
+        .collect::<Vec<_>>();
+    if operations.is_empty() {
+        return None;
+    }
+    operations.sort_by(|left, right| left.name.cmp(&right.name));
+    Some(SourceStandardLibraryModuleHoverFact {
+        module: module.to_string(),
+        operations,
+    })
+}
+
+fn standard_library_capability(capability: stdlib::Capability) -> SourceStandardLibraryCapability {
+    match capability {
+        stdlib::Capability::Clock => SourceStandardLibraryCapability::Clock,
+        stdlib::Capability::Context => SourceStandardLibraryCapability::Context,
+        stdlib::Capability::Environment => SourceStandardLibraryCapability::Environment,
+        stdlib::Capability::Log => SourceStandardLibraryCapability::Log,
+        stdlib::Capability::Filesystem => SourceStandardLibraryCapability::Filesystem,
+    }
+}
+
+fn project_module_path_hover_fact(
+    snapshot: &AnalysisSnapshot,
+    index: &BindingIndex,
+    file: &Path,
+    offset: usize,
+    path: &ModulePathAt,
+) -> Option<SourceModulePathHoverFact> {
+    if index.definition(file, offset).is_some_and(|symbol| {
+        matches!(
+            symbol.kind,
+            SymbolKind::Resource | SymbolKind::Enum | SymbolKind::EnumMember
+        )
+    }) {
+        return None;
+    }
+
+    if !path.context.is_declaration() && path.cursor_segment + 1 >= path.segments.len() {
+        return None;
+    }
+
+    let analyzed = snapshot
+        .files
+        .iter()
+        .find(|analyzed| analyzed.path == file)?;
+    let expanded = crate::expand_unique_import_alias(&analyzed.parsed.file, &path.segments).ok()?;
+    let module = best_project_module_prefix(snapshot, &expanded, path.context)?;
+
+    Some(SourceModulePathHoverFact::ProjectModule(
+        SourceProjectModuleHoverFact {
+            module: module.name.clone(),
+            source_file: module.source_file.clone(),
+            span: module.span,
+        },
+    ))
+}
+
+fn best_project_module_prefix<'a>(
+    snapshot: &'a AnalysisSnapshot,
+    expanded: &[String],
+    context: ModulePathContext,
+) -> Option<&'a ModuleFact> {
+    let max_len = if context.is_declaration() {
+        expanded.len()
+    } else {
+        expanded.len().saturating_sub(1)
+    };
+    snapshot
+        .program
+        .facts
+        .modules()
+        .iter()
+        .filter(|module| {
+            let count = module.name.split("::").count();
+            count <= max_len
+                && module
+                    .name
+                    .split("::")
+                    .eq(expanded.iter().take(count).map(String::as_str))
+        })
+        .max_by_key(|module| module.name.split("::").count())
 }
 
 fn enum_annotation_source_schema_hover_fact(

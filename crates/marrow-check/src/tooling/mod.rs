@@ -36,10 +36,13 @@ pub use hover::{
     SavedPlaceHoverFact, SavedPlaceHoverKeyParam, SourceCallableFunctionFact,
     SourceCallableHoverFact, SourceCallableParamFact, SourceEnumHoverFact,
     SourceEnumMemberHoverFact, SourceEnumMemberStatus, SourceEnumMemberSummary,
-    SourceResourceHoverFact, SourceResourceHoverMember, SourceResourceHoverMemberKind,
-    SourceResourceHoverPathSegment, SourceSchemaHoverFact, SourceSchemaHoverKeyParam,
-    SourceSymbolDocs, StoreRootHoverFact, StoreRootHoverMember, StoreRootHoverPathSegment,
-    saved_place_hover_fact_at, source_callable_hover_fact_at, source_schema_hover_fact_at,
+    SourceModulePathHoverFact, SourceProjectModuleHoverFact, SourceResourceHoverFact,
+    SourceResourceHoverMember, SourceResourceHoverMemberKind, SourceResourceHoverPathSegment,
+    SourceSchemaHoverFact, SourceSchemaHoverKeyParam, SourceStandardLibraryCapability,
+    SourceStandardLibraryModuleHoverFact, SourceStandardLibraryNamespaceHoverFact,
+    SourceStandardLibraryOperationHoverFact, SourceSymbolDocs, StoreRootHoverFact,
+    StoreRootHoverMember, StoreRootHoverPathSegment, saved_place_hover_fact_at,
+    source_callable_hover_fact_at, source_module_path_hover_fact_at, source_schema_hover_fact_at,
     source_symbol_docs_at, store_root_hover_fact_at,
 };
 pub use integrity::{
