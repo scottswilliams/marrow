@@ -796,6 +796,77 @@ fn surface_serve_write_mode_executes_create_and_delete_over_http() {
 }
 
 #[test]
+fn surface_serve_write_mode_idle_kill_leaves_store_clean() {
+    let fixture = seeded_surface_fixture("surface-serve-write-idle-kill");
+    let create_route = route_by_alias(&fixture.report, "create");
+    let create = create_descriptor(&fixture.report, &create_route.operation_tag);
+    let store_catalog_id = create["store_catalog_id"]
+        .as_str()
+        .expect("create store catalog id")
+        .to_string();
+    let title_catalog_id = create_field_catalog_id(create, "title");
+    let author_catalog_id = create_field_catalog_id(create, "author");
+    let (server, addr) = spawn_surface_server_with_args(fixture.root(), &["--write"]);
+
+    let create_response = post_json(
+        addr,
+        &create_route.path,
+        json!({
+            "profile_version": "surface.operation.v1",
+            "operation_tag": create_route.operation_tag,
+            "request": {
+                "kind": "point_create",
+                "request": {
+                    "identity": {
+                        "store_catalog_id": store_catalog_id,
+                        "keys": [{ "kind": "int", "value": "3" }]
+                    },
+                    "fields": [
+                        {
+                            "catalog_id": title_catalog_id,
+                            "value": { "kind": "string", "value": "Children of Dune" }
+                        },
+                        {
+                            "catalog_id": author_catalog_id,
+                            "value": { "kind": "string", "value": "Frank Herbert" }
+                        }
+                    ]
+                }
+            }
+        }),
+        &[("Content-Type", "application/json")],
+    );
+    assert_eq!(create_response.status, 200, "{:#?}", create_response.body);
+
+    drop(server);
+
+    let dump = marrow_sub(
+        "data",
+        &["dump", "--format", "json", fixture.root().to_str().unwrap()],
+    );
+    assert_eq!(
+        dump.status.code(),
+        Some(0),
+        "data dump must open the store cleanly after idle serve shutdown: stdout={} stderr={}",
+        String::from_utf8_lossy(&dump.stdout),
+        String::from_utf8_lossy(&dump.stderr)
+    );
+    let dumped: Value = support::json(dump.stdout);
+    let titles: Vec<&str> = dumped["cells"]
+        .as_array()
+        .expect("dump cells")
+        .iter()
+        .filter(|cell| cell["path"] == "^books(3).title")
+        .filter_map(|cell| cell["value_b64"].as_str())
+        .collect();
+    assert_eq!(
+        titles,
+        ["Q2hpbGRyZW4gb2YgRHVuZQ=="],
+        "committed record must survive idle serve shutdown: {dumped:#?}"
+    );
+}
+
+#[test]
 fn surface_serve_write_mode_executes_action_over_http() {
     let fixture = seeded_surface_fixture("surface-serve-write-action");
     let point_route = route_by_alias(&fixture.report, "get");
@@ -846,6 +917,64 @@ fn surface_serve_write_mode_executes_action_over_http() {
     assert_eq!(
         field_value(&read_response.body["result"]["record"], "title"),
         json!({ "kind": "string", "value": "Dune HTTP" })
+    );
+}
+
+#[test]
+fn surface_serve_write_mode_executes_startup_source_snapshot() {
+    let fixture = seeded_surface_fixture("surface-serve-write-startup-snapshot");
+    let point_route = route_by_alias(&fixture.report, "get");
+    let action_route = route_by_alias(&fixture.report, "retitle");
+    let (_server, addr) = spawn_surface_server_with_args(fixture.root(), &["--write"]);
+    let edited_source = SURFACE_SOURCE.replace(
+        "        ^books(id).title = title\n    return title\n",
+        "        ^books(id).title = \"Edited Source\"\n    return \"Edited Source\"\n",
+    );
+    assert_ne!(edited_source, SURFACE_SOURCE);
+    write(fixture.root(), "src/app.mw", &edited_source);
+
+    let action_response = post_json(
+        addr,
+        &action_route.path,
+        json!({
+            "profile_version": "surface.operation.v1",
+            "operation_tag": action_route.operation_tag,
+            "request": {
+                "kind": "action",
+                "request": {
+                    "arguments": [
+                        {
+                            "name": "id",
+                            "value": { "kind": "int", "value": "1" }
+                        },
+                        {
+                            "name": "title",
+                            "value": { "kind": "string", "value": "Dune Startup" }
+                        }
+                    ]
+                }
+            }
+        }),
+        &[("Content-Type", "application/json")],
+    );
+
+    assert_eq!(action_response.status, 200, "{:#?}", action_response.body);
+    assert_eq!(
+        action_response.body["result"]["result"]["value"],
+        json!({ "kind": "string", "value": "Dune Startup" })
+    );
+
+    let read_response = post_json(
+        addr,
+        &point_route.path,
+        point_read_request(&fixture.report, &point_route.operation_tag, 1),
+        &[("Content-Type", "application/json")],
+    );
+
+    assert_eq!(read_response.status, 200, "{:#?}", read_response.body);
+    assert_eq!(
+        field_value(&read_response.body["result"]["record"], "title"),
+        json!({ "kind": "string", "value": "Dune Startup" })
     );
 }
 

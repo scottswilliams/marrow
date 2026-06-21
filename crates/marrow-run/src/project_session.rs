@@ -133,6 +133,17 @@ pub struct ProjectSurfaceReadSession {
     store: TreeStore,
 }
 
+/// Checked project surface state captured from one source-analysis pass.
+///
+/// Opening sessions from this value reuses the captured program and config
+/// while acquiring a fresh store handle for the operation.
+pub struct ProjectSurfaceSnapshot {
+    root: PathBuf,
+    config: ProjectConfig,
+    program: CheckedProgram,
+    source_analysis_generation: AnalysisGeneration,
+}
+
 /// Single-owner linked-Rust read/write session over a checked project surface.
 ///
 /// The session owns one private writable native-store handle. While it is open,
@@ -195,6 +206,15 @@ impl fmt::Debug for ProjectSurfaceReadSession {
             .debug_struct("ProjectSurfaceReadSession")
             .field("root", &self.root)
             .field("store_path", &self.store_path)
+            .finish_non_exhaustive()
+    }
+}
+
+impl fmt::Debug for ProjectSurfaceSnapshot {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ProjectSurfaceSnapshot")
+            .field("root", &self.root)
             .finish_non_exhaustive()
     }
 }
@@ -770,27 +790,7 @@ impl ProjectSurfaceReadSession {
     pub fn open(root: impl AsRef<Path>) -> Result<Self, ProjectSessionError> {
         let root = root.as_ref().to_path_buf();
         let (config, snapshot) = load_checked_for_surface_session(&root)?;
-        let source_analysis_generation = snapshot.generation();
-        let opened = open_surface_session(
-            root,
-            &config,
-            snapshot.program,
-            SurfaceStoreAccess::ReadOnly,
-        )?;
-        let data_view_boundary = data_view_boundary_for_opened_session(
-            &opened.root,
-            &config,
-            &opened.program,
-            &opened.store,
-            source_analysis_generation,
-        )?;
-        Ok(Self {
-            root: opened.root,
-            program: opened.program,
-            data_view_boundary,
-            store_path: opened.store_path,
-            store: opened.store,
-        })
+        ProjectSurfaceSnapshot::from_checked(root, config, snapshot).open_read_only()
     }
 
     pub fn program(&self) -> &CheckedProgram {
@@ -869,18 +869,71 @@ impl ProjectSurfaceReadSession {
     }
 }
 
-impl ProjectSurfaceSession {
+impl ProjectSurfaceSnapshot {
     pub fn open(root: impl AsRef<Path>) -> Result<Self, ProjectSessionError> {
         let root = root.as_ref().to_path_buf();
         let (config, snapshot) = load_checked_for_surface_session(&root)?;
-        let opened =
-            open_surface_session(root, &config, snapshot.program, SurfaceStoreAccess::Write)?;
-        Ok(Self {
+        Ok(Self::from_checked(root, config, snapshot))
+    }
+
+    fn from_checked(root: PathBuf, config: ProjectConfig, snapshot: AnalysisSnapshot) -> Self {
+        let source_analysis_generation = snapshot.generation();
+        Self {
+            root,
+            config,
+            program: snapshot.program,
+            source_analysis_generation,
+        }
+    }
+
+    pub fn program(&self) -> &CheckedProgram {
+        &self.program
+    }
+
+    pub fn open_read_only(&self) -> Result<ProjectSurfaceReadSession, ProjectSessionError> {
+        let opened = open_surface_session(
+            self.root.clone(),
+            &self.config,
+            self.program.clone(),
+            SurfaceStoreAccess::ReadOnly,
+        )?;
+        let data_view_boundary = data_view_boundary_for_opened_session(
+            &opened.root,
+            &self.config,
+            &opened.program,
+            &opened.store,
+            self.source_analysis_generation.clone(),
+        )?;
+        Ok(ProjectSurfaceReadSession {
+            root: opened.root,
+            program: opened.program,
+            data_view_boundary,
+            store_path: opened.store_path,
+            store: opened.store,
+        })
+    }
+
+    pub fn open_write(&self) -> Result<ProjectSurfaceSession, ProjectSessionError> {
+        let opened = open_surface_session(
+            self.root.clone(),
+            &self.config,
+            self.program.clone(),
+            SurfaceStoreAccess::Write,
+        )?;
+        Ok(ProjectSurfaceSession {
             root: opened.root,
             program: opened.program,
             store_path: opened.store_path,
             store: opened.store,
         })
+    }
+}
+
+impl ProjectSurfaceSession {
+    pub fn open(root: impl AsRef<Path>) -> Result<Self, ProjectSessionError> {
+        let root = root.as_ref().to_path_buf();
+        let (config, snapshot) = load_checked_for_surface_session(&root)?;
+        ProjectSurfaceSnapshot::from_checked(root, config, snapshot).open_write()
     }
 
     pub fn program(&self) -> &CheckedProgram {

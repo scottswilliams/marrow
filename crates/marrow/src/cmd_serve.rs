@@ -1,7 +1,6 @@
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
-use std::path::Path;
 use std::process::ExitCode;
 use std::time::Duration;
 
@@ -13,9 +12,10 @@ use marrow_json::surface::{
     execute_project_surface_operation_read_only,
 };
 use marrow_run::{
-    ProjectSessionError, ProjectSurfaceReadSession, ProjectSurfaceSession, SURFACE_ABI_MISMATCH,
-    SURFACE_ABSENT, SURFACE_ACTION, SURFACE_COMPUTED, SURFACE_CONFLICT, SURFACE_INVALID_DATA,
-    SURFACE_LIMIT, SURFACE_REQUEST, SURFACE_STALE_CURSOR, SURFACE_STORE, SURFACE_WRITE,
+    ProjectSessionError, ProjectSurfaceReadSession, ProjectSurfaceSession, ProjectSurfaceSnapshot,
+    SURFACE_ABI_MISMATCH, SURFACE_ABSENT, SURFACE_ACTION, SURFACE_COMPUTED, SURFACE_CONFLICT,
+    SURFACE_INVALID_DATA, SURFACE_LIMIT, SURFACE_REQUEST, SURFACE_STALE_CURSOR, SURFACE_STORE,
+    SURFACE_WRITE,
 };
 
 use crate::cmd_run::report_session_open_error;
@@ -145,7 +145,11 @@ pub(crate) fn serve(args: &[String]) -> ExitCode {
         return ExitCode::from(2);
     }
 
-    let session = match SurfaceServeSession::open(&dir, mode) {
+    let snapshot = match ProjectSurfaceSnapshot::open(&dir) {
+        Ok(snapshot) => snapshot,
+        Err(error) => return report_session_open_error(&dir, error, CheckFormat::Text),
+    };
+    let session = match SurfaceServeSession::open(&snapshot, mode) {
         Ok(session) => session,
         Err(error) => return report_session_open_error(&dir, error, CheckFormat::Text),
     };
@@ -156,6 +160,8 @@ pub(crate) fn serve(args: &[String]) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    drop(session);
+    let executor = SurfaceServeExecutor::new(snapshot, mode);
     let listener = match TcpListener::bind(addr) {
         Ok(listener) => listener,
         Err(error) => {
@@ -188,7 +194,7 @@ pub(crate) fn serve(args: &[String]) -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    run_server(listener, &session, &routes, cors.as_ref())
+    run_server(listener, &executor, &routes, cors.as_ref())
 }
 
 fn default_addr() -> SocketAddr {
@@ -197,7 +203,7 @@ fn default_addr() -> SocketAddr {
 
 fn run_server(
     listener: TcpListener,
-    session: &SurfaceServeSession,
+    executor: &SurfaceServeExecutor,
     routes: &SurfaceRoutes,
     cors: Option<&CorsPolicy>,
 ) -> ExitCode {
@@ -217,7 +223,7 @@ fn run_server(
             eprintln!("io.write: failed to set surface write timeout: {error}");
             continue;
         }
-        let response = handle_connection(&mut stream, session, routes, cors);
+        let response = handle_connection(&mut stream, executor, routes, cors);
         if let Err(error) = write_response(&mut stream, &response) {
             eprintln!("io.write: failed to write surface response: {error}");
         }
@@ -230,15 +236,42 @@ enum SurfaceServeSession {
     Write(Box<ProjectSurfaceSession>),
 }
 
+struct SurfaceServeExecutor {
+    snapshot: ProjectSurfaceSnapshot,
+    mode: ServeMode,
+}
+
+impl SurfaceServeExecutor {
+    fn new(snapshot: ProjectSurfaceSnapshot, mode: ServeMode) -> Self {
+        Self { snapshot, mode }
+    }
+
+    fn execute(
+        &self,
+        operation: &SurfaceOperationRequestJson,
+    ) -> Result<SurfaceOperationResponseJson, SurfaceOperationErrorJson> {
+        let session = SurfaceServeSession::open(&self.snapshot, self.mode).map_err(|error| {
+            surface_error(
+                SURFACE_STORE,
+                &format!(
+                    "surface session could not open: {}: {}",
+                    error.code(),
+                    error.message()
+                ),
+            )
+        })?;
+        session.execute(operation)
+    }
+}
+
 impl SurfaceServeSession {
-    fn open(root: impl AsRef<Path>, mode: ServeMode) -> Result<Self, ProjectSessionError> {
+    fn open(
+        snapshot: &ProjectSurfaceSnapshot,
+        mode: ServeMode,
+    ) -> Result<Self, ProjectSessionError> {
         match mode {
-            ServeMode::ReadOnly => ProjectSurfaceReadSession::open(root)
-                .map(Box::new)
-                .map(Self::ReadOnly),
-            ServeMode::Write => ProjectSurfaceSession::open(root)
-                .map(Box::new)
-                .map(Self::Write),
+            ServeMode::ReadOnly => snapshot.open_read_only().map(Box::new).map(Self::ReadOnly),
+            ServeMode::Write => snapshot.open_write().map(Box::new).map(Self::Write),
         }
     }
 
@@ -288,19 +321,19 @@ impl SurfaceRoutes {
 
 fn handle_connection(
     stream: &mut TcpStream,
-    session: &SurfaceServeSession,
+    executor: &SurfaceServeExecutor,
     routes: &SurfaceRoutes,
     cors: Option<&CorsPolicy>,
 ) -> SurfaceHttpResponse {
     match read_http_request(stream) {
-        Ok(request) => execute_http_request(request, session, routes, cors),
+        Ok(request) => execute_http_request(request, executor, routes, cors),
         Err(failure) => SurfaceHttpResponse::error(failure.status, failure.error),
     }
 }
 
 fn execute_http_request(
     request: HttpRequest,
-    session: &SurfaceServeSession,
+    executor: &SurfaceServeExecutor,
     routes: &SurfaceRoutes,
     cors: Option<&CorsPolicy>,
 ) -> SurfaceHttpResponse {
@@ -372,7 +405,7 @@ fn execute_http_request(
         )
         .with_cors(cors_origin);
     }
-    match session.execute(&operation) {
+    match executor.execute(&operation) {
         Ok(response) => SurfaceHttpResponse::json(HttpStatus::Ok, response_value(response))
             .with_cors(cors_origin),
         Err(error) => SurfaceHttpResponse::error(status_for_surface_error(&error.code), error)
