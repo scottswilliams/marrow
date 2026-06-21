@@ -3,6 +3,7 @@
 use marrow_store::StoreError;
 
 pub mod data;
+mod hover;
 pub mod integrity;
 pub mod signatures;
 pub mod symbols;
@@ -31,6 +32,7 @@ pub use data::{
     stamped_saved_data_child_views, stamped_saved_data_root_views_in_store, visit_data_records,
     walk_data,
 };
+pub use hover::{SourceSymbolDocs, source_symbol_docs_at};
 pub use integrity::{
     IntegrityOutcome, IntegrityProblem, IntegrityProblemSample, IntegritySample,
     count_activation_integrity_problems, count_integrity_problems, count_orphan_cells,

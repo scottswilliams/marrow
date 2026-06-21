@@ -136,6 +136,8 @@ mod required_field_assignment;
 mod resource_store_contract;
 #[path = "cases/saved_place_owner_architecture.rs"]
 mod saved_place_owner_architecture;
+#[path = "cases/source_symbol_docs.rs"]
+mod source_symbol_docs;
 #[path = "cases/source_symbols.rs"]
 mod source_symbols;
 #[path = "cases/surface_abi.rs"]

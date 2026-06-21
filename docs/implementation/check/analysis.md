@@ -67,6 +67,8 @@ from the checked program or snapshot:
 - `tooling::source_symbols_matching(snapshot, search_text)` applies
   checker-owned workspace symbol search over those facts, matching names and
   qualified container paths with deterministic ranking.
+- `tooling::source_symbol_docs_at(snapshot, binding_index, file, offset)`
+  returns docs attached to the source symbol resolved by the binding index.
 - `tooling::document_symbols(file, source)` returns parsed document-outline
   facts with Marrow-owned kind, detail, full span, selection span, and nested
   children. It accepts a parsed `SourceFile` plus source text, so editor callers
