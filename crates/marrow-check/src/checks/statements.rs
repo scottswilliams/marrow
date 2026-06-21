@@ -241,6 +241,7 @@ fn check_block_types_with_read_scope(
     scope.push(HashMap::new());
     const_ints.push(HashMap::new());
     required_fields.push_frame();
+    let mut fresh_next_id = None;
     for statement in &block.statements {
         check_statement_types(
             context,
@@ -249,7 +250,9 @@ fn check_block_types_with_read_scope(
             const_ints,
             diagnostics,
             required_fields,
+            fresh_next_id.as_ref(),
         );
+        fresh_next_id = adjacent_fresh_next_id_binding(context.program, statement);
     }
     required_fields.pop_frame();
     const_ints.pop();
@@ -265,6 +268,7 @@ fn check_statement_types(
     const_ints: &mut ConstIntScope,
     diagnostics: &mut Vec<CheckDiagnostic>,
     required_fields: &mut RequiredFieldAssignments,
+    fresh_next_id: Option<&FreshNextId>,
 ) {
     StatementCheck {
         program: context.program,
@@ -276,8 +280,14 @@ fn check_statement_types(
         transform_old: context.transform_old,
         diagnostics,
         required_fields,
+        fresh_next_id,
     }
     .check(statement);
+}
+
+struct FreshNextId {
+    binding: String,
+    root: String,
 }
 
 struct StatementCheck<'a> {
@@ -290,6 +300,7 @@ struct StatementCheck<'a> {
     transform_old: Option<crate::presence::TransformOldReadScope<'a>>,
     diagnostics: &'a mut Vec<CheckDiagnostic>,
     required_fields: &'a mut RequiredFieldAssignments,
+    fresh_next_id: Option<&'a FreshNextId>,
 }
 
 impl StatementCheck<'_> {
@@ -664,7 +675,7 @@ impl StatementCheck<'_> {
             file: self.file,
             diagnostics: self.diagnostics,
         });
-        self.check_lossy_round_trip_warning(target);
+        self.check_lossy_round_trip_warning(target, value);
         check_assignment(self.file, span, &target_type, &value_type, self.diagnostics);
         if assignment_target_is_error_code(
             self.program,
@@ -684,7 +695,11 @@ impl StatementCheck<'_> {
         self.required_fields.assign_target(target);
     }
 
-    fn check_lossy_round_trip_warning(&mut self, target: &marrow_syntax::Expression) {
+    fn check_lossy_round_trip_warning(
+        &mut self,
+        target: &marrow_syntax::Expression,
+        value: &marrow_syntax::Expression,
+    ) {
         if !saved_record_replacement_has_keyed_layer(TargetCheck {
             program: self.program,
             target,
@@ -696,12 +711,33 @@ impl StatementCheck<'_> {
         }) {
             return;
         }
+        if self
+            .fresh_next_id
+            .is_some_and(|fresh| target_is_adjacent_fresh_next_id_insert(target, fresh))
+            && self.value_is_local_resource_name(value)
+        {
+            return;
+        }
         self.diagnostics.push(CheckDiagnostic::warning(
             CHECK_LOSSY_ROUND_TRIP,
             self.file,
             target.span(),
             "whole saved-record replacement clears keyed child layers omitted from the value",
         ));
+    }
+
+    fn value_is_local_resource_name(&self, value: &marrow_syntax::Expression) -> bool {
+        let marrow_syntax::Expression::Name { segments, .. } = value else {
+            return false;
+        };
+        let [name] = segments.as_slice() else {
+            return false;
+        };
+        self.scope
+            .iter()
+            .rev()
+            .find_map(|frame| frame.get(name))
+            .is_some_and(|ty| matches!(ty, MarrowType::Resource(_)))
     }
 
     /// Whether `target` writes a nested field of a local resource through a path that
@@ -1176,6 +1212,80 @@ fn descent_leaves_local_resource(
         }
     }
     false
+}
+
+fn adjacent_fresh_next_id_binding(
+    program: &CheckedProgram,
+    statement: &marrow_syntax::Statement,
+) -> Option<FreshNextId> {
+    let (binding, value) = match statement {
+        marrow_syntax::Statement::Const { name, value, .. } => (name, value),
+        marrow_syntax::Statement::Var {
+            name,
+            keys,
+            value: Some(value),
+            ..
+        } if keys.is_empty() => (name, value),
+        _ => return None,
+    };
+    let root = fresh_next_id_root(program, value)?;
+    Some(FreshNextId {
+        binding: binding.clone(),
+        root: root.to_string(),
+    })
+}
+
+fn fresh_next_id_root<'a>(
+    program: &CheckedProgram,
+    value: &'a marrow_syntax::Expression,
+) -> Option<&'a str> {
+    let marrow_syntax::Expression::Call { callee, args, .. } = value else {
+        return None;
+    };
+    let marrow_syntax::Expression::Name { segments, .. } = callee.as_ref() else {
+        return None;
+    };
+    if !matches!(segments.as_slice(), [name] if name == "nextId") {
+        return None;
+    }
+    let [arg] = args.as_slice() else {
+        return None;
+    };
+    if arg.name.is_some() {
+        return None;
+    }
+    let marrow_syntax::Expression::SavedRoot { name, .. } = &arg.value else {
+        return None;
+    };
+    resolve_store_by_root(program, name)
+        .filter(|store| store.store.single_int_root())
+        .map(|_| name.as_str())
+}
+
+fn target_is_adjacent_fresh_next_id_insert(
+    target: &marrow_syntax::Expression,
+    fresh: &FreshNextId,
+) -> bool {
+    let marrow_syntax::Expression::Call { callee, args, .. } = target else {
+        return false;
+    };
+    let marrow_syntax::Expression::SavedRoot { name, .. } = callee.as_ref() else {
+        return false;
+    };
+    if name != &fresh.root {
+        return false;
+    }
+    let [arg] = args.as_slice() else {
+        return false;
+    };
+    if arg.name.is_some() {
+        return false;
+    }
+    matches!(
+        &arg.value,
+        marrow_syntax::Expression::Name { segments, .. }
+            if matches!(segments.as_slice(), [binding] if binding == &fresh.binding)
+    )
 }
 
 struct TargetCheck<'p, 'a> {

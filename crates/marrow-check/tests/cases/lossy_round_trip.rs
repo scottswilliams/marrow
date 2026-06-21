@@ -78,6 +78,85 @@ fn keyed_group_child_layer_warns() {
 }
 
 #[test]
+fn fresh_next_id_whole_saved_root_assignment_does_not_warn() {
+    let report = check_source(
+        "fresh-next-id-root-insert",
+        "module m\n\
+         resource Book\n    required title: string\n    tags(pos: int): string\n\
+         store ^books(id: int): Book\n\n\
+         fn add()\n    var book: Book\n    book.title = \"Small Gods\"\n    const id: Id(^books) = nextId(^books)\n    ^books(id) = book\n",
+    );
+
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    let found = with_code(&report, CHECK_LOSSY_ROUND_TRIP);
+    assert!(found.is_empty(), "{:#?}", report.diagnostics);
+}
+
+#[test]
+fn fresh_next_id_var_whole_saved_root_assignment_does_not_warn() {
+    let report = check_source(
+        "fresh-next-id-var-root-insert",
+        "module m\n\
+         resource Book\n    required title: string\n    tags(pos: int): string\n\
+         store ^books(id: int): Book\n\n\
+         fn add()\n    var book: Book\n    book.title = \"Small Gods\"\n    var id: Id(^books) = nextId(^books)\n    ^books(id) = book\n",
+    );
+
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    let found = with_code(&report, CHECK_LOSSY_ROUND_TRIP);
+    assert!(found.is_empty(), "{:#?}", report.diagnostics);
+}
+
+#[test]
+fn fresh_next_id_assignment_from_call_still_warns() {
+    let report = check_source(
+        "fresh-next-id-call-value",
+        "module m\n\
+         resource Book\n    required title: string\n    tags(pos: int): string\n\
+         store ^books(id: int): Book\n\n\
+         fn writeAndReturn(book: Book): Book\n    const inner: Id(^books) = nextId(^books)\n    ^books(inner) = book\n    append(^books(inner).tags, \"tag\")\n    return book\n\n\
+         fn add(book: Book)\n    const id: Id(^books) = nextId(^books)\n    ^books(id) = writeAndReturn(book)\n",
+    );
+
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    let found = with_code(&report, CHECK_LOSSY_ROUND_TRIP);
+    assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
+    assert_eq!(found[0].severity, Severity::Warning);
+}
+
+#[test]
+fn fresh_next_id_with_intervening_statement_still_warns() {
+    let report = check_source(
+        "fresh-next-id-intervening-statement",
+        "module m\n\
+         resource Book\n    required title: string\n    tags(pos: int): string\n\
+         store ^books(id: int): Book\n\n\
+         fn add()\n    var book: Book\n    book.title = \"Small Gods\"\n    const id: Id(^books) = nextId(^books)\n    print(\"allocated\")\n    ^books(id) = book\n",
+    );
+
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    let found = with_code(&report, CHECK_LOSSY_ROUND_TRIP);
+    assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
+    assert_eq!(found[0].severity, Severity::Warning);
+}
+
+#[test]
+fn fresh_next_id_mutated_before_assignment_still_warns() {
+    let report = check_source(
+        "fresh-next-id-mutated-before-assignment",
+        "module m\n\
+         resource Book\n    required title: string\n    tags(pos: int): string\n\
+         store ^books(id: int): Book\n\n\
+         fn add()\n    var book: Book\n    book.title = \"Small Gods\"\n    var id: Id(^books) = nextId(^books)\n    id = Id(^books, 1)\n    ^books(id) = book\n",
+    );
+
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    let found = with_code(&report, CHECK_LOSSY_ROUND_TRIP);
+    assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
+    assert_eq!(found[0].severity, Severity::Warning);
+}
+
+#[test]
 fn composite_identity_splice_whole_saved_root_assignment_warns() {
     let report = check_source(
         "lossy-composite-identity-splice",
