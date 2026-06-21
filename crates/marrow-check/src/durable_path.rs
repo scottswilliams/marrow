@@ -32,9 +32,9 @@ pub fn parse_path(text: &str) -> Result<Vec<PathSegment>, PathParseError> {
     Ok(parser.segments)
 }
 
-/// Render segments for display and diagnostics only. String keys use Rust debug
-/// escaping, which is not the escape grammar [`parse_path`] accepts, so this
-/// output is not guaranteed to re-parse: never feed it back into [`parse_path`].
+/// Render segments back into saved-path text. String keys are encoded through the
+/// language's string grammar, the inverse of what [`parse_path`] decodes, so the
+/// output re-parses to the same segments.
 pub fn display_path(segments: &[PathSegment]) -> String {
     let mut text = String::new();
     for segment in segments {
@@ -200,7 +200,9 @@ impl PathTextParser<'_> {
             let inner = quoted
                 .strip_suffix('"')
                 .ok_or_else(|| self.error("a closing quote in a string key"))?;
-            return Ok(SavedKey::Str(unescape_string(inner)));
+            let decoded = marrow_syntax::decode_string_escapes(inner)
+                .map_err(|_| self.error("a recognized string escape (\\\\ \\\" \\n \\r \\t)"))?;
+            return Ok(SavedKey::Str(decoded));
         }
         if let Some(hex) = text.strip_prefix("0x") {
             let bytes = decode_hex(hex).ok_or_else(|| self.error("valid hex bytes after `0x`"))?;
@@ -248,7 +250,7 @@ fn display_key(key: &SavedKey) -> String {
     match key {
         SavedKey::Int(value) => value.to_string(),
         SavedKey::Bool(value) => value.to_string(),
-        SavedKey::Str(value) => format!("{value:?}"),
+        SavedKey::Str(value) => marrow_syntax::encode_string_literal(value),
         SavedKey::Bytes(value) => {
             let mut text = String::from("0x");
             push_lower_hex(&mut text, value);
@@ -265,26 +267,6 @@ fn render_temporal(value: SavedValue) -> String {
         Ok(bytes) => String::from_utf8(bytes).unwrap_or_else(|_| format!("{value:?}")),
         Err(_) => format!("{value:?}"),
     }
-}
-
-fn unescape_string(inner: &str) -> String {
-    let mut out = String::new();
-    let mut chars = inner.chars();
-    while let Some(ch) = chars.next() {
-        if ch == '\\' {
-            match chars.next() {
-                Some('n') => out.push('\n'),
-                Some('t') => out.push('\t'),
-                Some('r') => out.push('\r'),
-                Some('0') => out.push('\0'),
-                Some(other) => out.push(other),
-                None => out.push('\\'),
-            }
-        } else {
-            out.push(ch);
-        }
-    }
-    out
 }
 
 fn decode_hex(text: &str) -> Option<Vec<u8>> {
@@ -419,5 +401,41 @@ mod tests {
         assert!(parse_path(r#"^r("unterminated)"#).is_err());
         assert!(parse_path("^r(0xZZ)").is_err());
         assert!(parse_path("^r(not-a-literal)").is_err());
+    }
+
+    #[test]
+    fn display_path_string_keys_reparse_to_the_same_key() {
+        // A raw control char (ESC) and a non-ASCII scalar are `string_text`: the renderer
+        // must emit them literally, not as a Rust-debug `\u{NN}` the decoder rejects, so
+        // the rendered path round-trips. This is the encode/decode symmetry the saved-path
+        // string-key grammar requires.
+        for key in [
+            "abc",
+            "a\nb\tc\\d\"e",
+            "k\u{1b}\u{00e9}z",
+            "\u{0}\u{7f}\u{1b}",
+        ] {
+            let path = [
+                PathSegment::Root("items".to_string()),
+                PathSegment::RecordKey(SavedKey::Str(key.to_string())),
+            ];
+            let rendered = display_path(&path);
+            assert_eq!(record_key(&rendered), SavedKey::Str(key.to_string()));
+        }
+    }
+
+    #[test]
+    fn parse_path_rejects_a_string_key_escape_the_language_rejects() {
+        // The key decoder shares the language's five-escape vocabulary, so an escape
+        // outside it fails closed rather than stripping the backslash and resolving a
+        // neighbouring key.
+        for bad in [
+            r#"^r("a\bc")"#,
+            r#"^r("\a")"#,
+            r#"^r("a\qbc")"#,
+            r#"^r("z\0")"#,
+        ] {
+            assert!(parse_path(bad).is_err(), "expected {bad} to be rejected");
+        }
     }
 }

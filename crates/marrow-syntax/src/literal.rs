@@ -34,6 +34,34 @@ pub fn decode_string_literal(text: &str) -> Result<String, StringLiteralError> {
     decode_string_escapes(inner)
 }
 
+/// Encode a string into the quoted, escaped spelling that [`decode_string_literal`]
+/// is the exact inverse of: the five recognized escapes for `\`, `"`, newline,
+/// carriage return, and tab; every other scalar — control characters and
+/// non-ASCII alike — emitted literally as `string_text`. This is the canonical
+/// encoder for any tool, such as the saved-path renderer, whose output must
+/// re-parse through the language's string grammar.
+pub fn encode_string_literal(value: &str) -> String {
+    let mut text = String::with_capacity(value.len() + 2);
+    text.push('"');
+    push_string_escapes(&mut text, value);
+    text.push('"');
+    text
+}
+
+/// Append `value` to `text` with the five recognized escapes applied, no quotes.
+pub fn push_string_escapes(text: &mut String, value: &str) {
+    for ch in value.chars() {
+        match ch {
+            '\\' => text.push_str("\\\\"),
+            '"' => text.push_str("\\\""),
+            '\n' => text.push_str("\\n"),
+            '\r' => text.push_str("\\r"),
+            '\t' => text.push_str("\\t"),
+            _ => text.push(ch),
+        }
+    }
+}
+
 /// Decode escapes in already-unquoted text (interpolation segments use this
 /// directly, having no quotes to strip).
 pub fn decode_string_escapes(inner: &str) -> Result<String, StringLiteralError> {
@@ -110,8 +138,38 @@ fn hex_digit(ch: char) -> Option<u8> {
 mod tests {
     use super::{
         BytesLiteralError, StringLiteralError, decode_bytes_escapes, decode_bytes_literal,
-        decode_string_escapes, decode_string_literal,
+        decode_string_escapes, decode_string_literal, encode_string_literal,
     };
+
+    #[test]
+    fn encode_string_literal_inverts_decode() {
+        // A raw control char (ESC) and a non-ASCII scalar are `string_text`, so they
+        // must survive a round trip literally; only the five recognized characters are
+        // escaped. The encoder is the exact inverse the saved-path renderer relies on.
+        for value in [
+            "plain",
+            "a\\b\"c\nd\re\tf",
+            "k\u{1b}\u{00e9}z",
+            "\u{0} \u{7f} \u{1b}",
+        ] {
+            let encoded = encode_string_literal(value);
+            assert_eq!(
+                decode_string_literal(&encoded).unwrap(),
+                value,
+                "round trip failed for {value:?} via {encoded:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn encode_string_literal_emits_only_the_five_escapes() {
+        assert_eq!(
+            encode_string_literal("a\\b\"c\nd\re\tf"),
+            r#""a\\b\"c\nd\re\tf""#
+        );
+        // A raw ESC stays literal rather than becoming a Rust-style `\u{1b}`.
+        assert_eq!(encode_string_literal("k\u{1b}z"), "\"k\u{1b}z\"");
+    }
 
     #[test]
     fn decodes_the_five_escapes() {

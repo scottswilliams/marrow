@@ -212,8 +212,11 @@ identity or keyed layer takes its keys as one comma-separated group, for example
 `^enrolls("s1","c9")`; the per-key spelling `^enrolls("s1")("c9")` is also
 accepted, and commands emit the comma form. String keys render quoted (e.g.
 `^users("alice")`), int and bool keys bare, bytes keys as `0x<hex>`, and temporal
-keys as their canonical ISO text. A stored key that does not decode is reported
-as store corruption by integrity and traversal commands.
+keys as their canonical ISO text. A quoted string key decodes the same escapes as
+a `.mw` string literal (`\\`, `\"`, `\n`, `\r`, `\t`); any other escape is a
+malformed path, not a silently stripped backslash, so a path never resolves a key
+other than the one it spells. A stored key that does not decode is reported as
+store corruption by integrity and traversal commands.
 
 ## `marrow data get`
 

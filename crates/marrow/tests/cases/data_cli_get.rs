@@ -2,7 +2,7 @@
 //! children-only node, and a truly absent path. Presence and value are asserted as
 //! typed JSON fields; a malformed path is asserted by its usage exit code. The
 //! default human text output is pinned by a separate render-contract test.
-use crate::support;
+use crate::support::{self, TempProject};
 use crate::support_data;
 use marrow_store::tree::TreeStore;
 
@@ -43,6 +43,139 @@ fn data_get_reads_a_path_value_and_reports_absence() {
 
     // A path that does not parse fails before touching the store: a usage error.
     assert_eq!(malformed.status.code(), Some(2), "{malformed:?}");
+}
+
+/// A string-keyed store seeded with three records: the plain key `abc` -> 100, a key
+/// carrying every recognized string escape (`a\nb\tc\\d"e`) -> 200, and a key holding a
+/// raw control char and a non-ASCII scalar (`k\x1b\u{00e9}z`) -> 300. Raw ESC and `é`
+/// are `string_text`, so the language writes them literally rather than as escapes;
+/// they expose any encoder that emits a Rust-debug `\u{NN}` the decoder cannot accept.
+/// Together these prove the path-key decoder accepts exactly the language's five escapes
+/// and that every path `dump` emits round-trips back through `get`.
+fn escaped_key_project(name: &str) -> (TempProject, String) {
+    let project = support::temp_project_uncommitted(name, |root| {
+        support::write(root, "marrow.json", support::native_config());
+        support::write(
+            root,
+            "src/app.mw",
+            "module app\n\
+             \n\
+             resource Item\n\
+             \x20\x20\x20\x20required v: int\n\
+             store ^items(key: string): Item\n\
+             \n\
+             pub fn seed()\n\
+             \x20\x20\x20\x20var plain: Item\n\
+             \x20\x20\x20\x20plain.v = 100\n\
+             \x20\x20\x20\x20var escaped: Item\n\
+             \x20\x20\x20\x20escaped.v = 200\n\
+             \x20\x20\x20\x20var raw: Item\n\
+             \x20\x20\x20\x20raw.v = 300\n\
+             \x20\x20\x20\x20transaction\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20^items(\"abc\") = plain\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20^items(\"a\\nb\\tc\\\\d\\\"e\") = escaped\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20^items(\"k\x1b\u{00e9}z\") = raw\n",
+        );
+    });
+    let dir = project.to_str().unwrap().to_string();
+    assert_eq!(
+        marrow(&["run", "--entry", "app::seed", &dir]).status.code(),
+        Some(0)
+    );
+    (project, dir)
+}
+
+#[test]
+fn data_get_rejects_an_unrecognized_string_key_escape() {
+    // The saved-path string-key decoder shares the language's five-escape vocabulary
+    // (`\\ \" \n \r \t`). An unknown escape such as `\b` must fail closed with a
+    // malformed-path usage error, never silently strip the backslash and resolve a
+    // different key -- which would let `^items("a\bc")` read the value stored at `abc`.
+    let (_project, dir) = escaped_key_project("data-get-bad-escape");
+    for path in [
+        r#"^items("a\bc").v"#,
+        r#"^items("\a").v"#,
+        r#"^items("a\qbc").v"#,
+    ] {
+        let rejected = marrow(&["data", "get", &dir, path]);
+        assert_eq!(rejected.status.code(), Some(2), "{path}: {rejected:?}");
+    }
+}
+
+#[test]
+fn data_get_decodes_the_recognized_string_key_escapes() {
+    // The five recognized escapes decode to the seeded key `a\nb\tc\\d"e`, so `get`
+    // resolves the record stored under that key and reads its value.
+    let (_project, dir) = escaped_key_project("data-get-good-escape");
+    let escaped = marrow(&[
+        "data",
+        "get",
+        "--format",
+        "json",
+        &dir,
+        r#"^items("a\nb\tc\\d\"e").v"#,
+    ]);
+
+    assert_eq!(escaped.status.code(), Some(0), "{escaped:?}");
+    let escaped = json(escaped);
+    assert_eq!(escaped["presence"], serde_json::json!("value_only"));
+    let value =
+        marrow_run::base64::decode(escaped["value_b64"].as_str().expect("b64")).expect("decode");
+    assert_eq!(value, b"200");
+}
+
+#[test]
+fn data_get_resolves_a_plain_string_key_and_round_trips_a_dumped_path() {
+    // A plain quoted key resolves, and every path `data dump` emits re-parses through
+    // `get` to the same value: the decoder and the dump renderer agree on one grammar.
+    let (_project, dir) = escaped_key_project("data-get-round-trip");
+
+    let plain = marrow(&[
+        "data",
+        "get",
+        "--format",
+        "json",
+        &dir,
+        r#"^items("abc").v"#,
+    ]);
+    assert_eq!(plain.status.code(), Some(0), "{plain:?}");
+    let plain = json(plain);
+    let plain_value =
+        marrow_run::base64::decode(plain["value_b64"].as_str().expect("b64")).expect("decode");
+    assert_eq!(plain_value, b"100");
+
+    let dump = marrow(&["data", "dump", &dir]);
+    assert_eq!(dump.status.code(), Some(0), "{dump:?}");
+    let dump_text = String::from_utf8(dump.stdout).expect("utf8");
+
+    // The raw control char and non-ASCII scalar are `string_text`, so the renderer must
+    // emit them literally; a Rust-debug `\u{1b}` spelling would not re-parse through the
+    // five-escape key decoder and would silently break the loop below.
+    assert!(
+        dump_text.contains("^items(\"k\x1b\u{00e9}z\").v"),
+        "dump must spell the raw-control-char key as literal string_text, got:\n{dump_text}"
+    );
+    assert!(
+        !dump_text.contains("\\u{"),
+        "dump must not emit Rust-debug escapes, got:\n{dump_text}"
+    );
+
+    for line in dump_text.lines() {
+        let Some((path, value)) = line.split_once('\t') else {
+            continue;
+        };
+        let got = marrow(&["data", "get", "--format", "json", &dir, path]);
+        assert_eq!(got.status.code(), Some(0), "{path}: {got:?}");
+        let got = json(got);
+        assert_eq!(got["presence"], serde_json::json!("value_only"), "{path}");
+        let got_value =
+            marrow_run::base64::decode(got["value_b64"].as_str().expect("b64")).expect("decode");
+        assert_eq!(
+            String::from_utf8(got_value).expect("utf8"),
+            value,
+            "dumped path {path} did not round-trip"
+        );
+    }
 }
 
 #[test]

@@ -48,7 +48,7 @@ A value the grammar cannot structure yields `None` plus a `parse.syntax` diagnos
 | `crates/marrow-syntax/src/parse_expr.rs` | `ExprParser`: single-expression recursive descent with the full precedence ladder. |
 | `crates/marrow-syntax/src/ast.rs` | The full AST: `ParsedSource`, `SourceFile`, every declaration/statement/expression node, comment trivia, `span()` accessors, `TypeRef`. |
 | `crates/marrow-syntax/src/diagnostic.rs` | `Diagnostic`, the typed reason tree, `Severity`, `SourceSpan`, the `Diagnose` trait, `kind_for_code`. |
-| `crates/marrow-syntax/src/literal.rs` | Canonical string-literal decoder (`decode_string_literal`/`decode_string_escapes`, `StringLiteralError`) — single owner of the five escapes. |
+| `crates/marrow-syntax/src/literal.rs` | Canonical string-literal codec (`decode_string_literal`/`decode_string_escapes` and `encode_string_literal`/`push_string_escapes`, `StringLiteralError`) — single owner of the five escapes in both directions; the encoder is the inverse the saved-path renderer relies on. |
 | `crates/marrow-syntax/src/format.rs` | The formatter: `format_source` (re-parses then renders), per-node renderers, minimal precedence parens, comment re-emission. |
 
 ## Read next

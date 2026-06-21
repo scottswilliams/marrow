@@ -217,7 +217,7 @@ fn render_scalar_value(ty: marrow_store::value::ScalarType, bytes: &[u8]) -> Opt
         return Some(render_undecodable_string_value(bytes));
     }
     match decode_value(bytes, ty)? {
-        SavedValue::Str(value) => Some(format!("{value:?}")),
+        SavedValue::Str(value) => Some(marrow_syntax::encode_string_literal(&value)),
         SavedValue::Bytes(value) => Some(render_hex_value(&value)),
         SavedValue::Bool(value) => Some(value.to_string()),
         value => render_encoded_scalar(value),
@@ -345,7 +345,7 @@ fn render_key(key: &SavedKey) -> String {
     match key {
         SavedKey::Int(value) => value.to_string(),
         SavedKey::Bool(value) => value.to_string(),
-        SavedKey::Str(value) => format!("{value:?}"),
+        SavedKey::Str(value) => marrow_syntax::encode_string_literal(value),
         SavedKey::Bytes(value) => render_hex_value(value),
         SavedKey::Date(value) => render_key_temporal(SavedValue::Date(*value)),
         SavedKey::Instant(value) => render_key_temporal(SavedValue::Instant(*value)),
@@ -487,7 +487,7 @@ fn push_key_body_preview(text: &mut String, key: &SavedKey, limit: usize) -> boo
 }
 
 fn push_quoted_string_preview(text: &mut String, value: &str, limit: usize) -> bool {
-    let rendered = format!("{value:?}");
+    let rendered = marrow_syntax::encode_string_literal(value);
     if push_str_atomic_with_limit(text, &rendered, limit) {
         return true;
     }
@@ -499,19 +499,13 @@ fn push_truncated_quoted_string_preview(text: &mut String, value: &str, limit: u
         return false;
     }
     for ch in value.chars() {
-        let escaped = truncated_debug_char_fragment(ch);
+        let mut escaped = String::new();
+        marrow_syntax::push_string_escapes(&mut escaped, ch.encode_utf8(&mut [0; 4]));
         if !push_str_atomic_with_limit(text, &escaped, limit) {
             return false;
         }
     }
     push_char_with_limit(text, '"', limit)
-}
-
-fn truncated_debug_char_fragment(ch: char) -> String {
-    let mut bytes = [0; 4];
-    let value = ch.encode_utf8(&mut bytes);
-    let rendered = format!("{value:?}");
-    rendered[1..rendered.len() - 1].to_string()
 }
 
 fn push_hex_preview(text: &mut String, bytes: &[u8], limit: usize) -> bool {
