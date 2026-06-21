@@ -127,7 +127,7 @@ for pos in reversed(^books(id).tags)
     if const tag = ^books(id).tags(pos)
         print(tag)
 
-for word in reversed(std::text::split(line, ","))
+for word in reversed(values(std::text::split(line, ",")))
     print(word)
 ```
 
