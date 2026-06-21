@@ -84,6 +84,16 @@ pub struct SymbolRef {
     pub kind: SymbolKind,
 }
 
+/// The exact source occurrence under a cursor and the definition it resolves to.
+///
+/// `reference` preserves the internal binding selected by cursor position. Use
+/// this when duplicate saved-data bindings intentionally share a definition site.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SymbolOccurrence {
+    pub definition: SymbolRef,
+    pub reference: SymbolRef,
+}
+
 /// Whether renaming a symbol is safe to do purely in source.
 ///
 /// `SourceOnly` symbols exist only in source, so they are not backed by saved
@@ -208,6 +218,18 @@ impl BindingIndex {
             .map(|binding| binding.definition.clone())
     }
 
+    /// The exact occurrence at byte `offset` in `file`, paired with the definition
+    /// it resolves to. Unlike [`definition`](Self::definition), this retains the
+    /// reference from the selected binding, so callers do not collapse distinct
+    /// bindings that share the same source definition span.
+    pub fn occurrence(&self, file: &Path, offset: usize) -> Option<SymbolOccurrence> {
+        let (binding, reference) = self.binding_reference_at(file, offset)?;
+        Some(SymbolOccurrence {
+            definition: binding.definition.clone(),
+            reference: reference.clone(),
+        })
+    }
+
     /// Every reference to `def`'s symbol, the definition included, in the order
     /// they were collected (definitions first, then uses in source order). `def`
     /// may be any [`SymbolRef`] of the symbol — a definition or a use — so a caller
@@ -271,18 +293,23 @@ impl BindingIndex {
     /// `file`. The tightest covering span wins, so a use nested inside a wider
     /// declaration resolves to the use's symbol rather than the enclosing one.
     fn binding_at(&self, file: &Path, offset: usize) -> Option<&Binding> {
-        let mut best: Option<(&Binding, usize)> = None;
+        self.binding_reference_at(file, offset)
+            .map(|(binding, _)| binding)
+    }
+
+    fn binding_reference_at(&self, file: &Path, offset: usize) -> Option<(&Binding, &SymbolRef)> {
+        let mut best: Option<(&Binding, &SymbolRef, usize)> = None;
         for binding in &self.bindings {
             for reference in &binding.references {
                 if reference.file == file && span_covers(reference.span, offset) {
                     let width = span_width(reference.span);
-                    if best.is_none_or(|(_, current)| width < current) {
-                        best = Some((binding, width));
+                    if best.is_none_or(|(_, _, current)| width < current) {
+                        best = Some((binding, reference, width));
                     }
                 }
             }
         }
-        best.map(|(binding, _)| binding)
+        best.map(|(binding, reference, _)| (binding, reference))
     }
 
     /// The binding `def` belongs to: the one whose definition site matches, falling

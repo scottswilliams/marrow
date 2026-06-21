@@ -48,7 +48,7 @@ pub use analysis::{
 };
 pub use binding::{
     BindingIndex, ParameterDefinition, RenameAction, RenameSafety, SourceEdit, SymbolKind,
-    SymbolRef, build_binding_index,
+    SymbolOccurrence, SymbolRef, build_binding_index,
 };
 pub use diagnostics::{
     AppendTargetDiagnostic, CHECK_AMBIGUOUS_CALL, CHECK_AMBIGUOUS_MATCH_ARM,

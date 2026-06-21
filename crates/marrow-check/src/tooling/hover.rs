@@ -1,12 +1,46 @@
 use std::path::Path;
 
-use marrow_syntax::{Declaration, EnumMember, ResourceMember, SourceFile, SourceSpan};
+use marrow_syntax::{
+    Declaration, EnumMember, IndexDecl, KeyParam, ResourceMember, SourceFile, SourceSpan,
+    TokenKind, lex_source,
+};
 
-use crate::{AnalysisSnapshot, BindingIndex, SymbolKind, SymbolRef};
+use crate::{
+    AnalysisSnapshot, BindingIndex, ModuleId, ResourceMemberKind, SymbolKind, SymbolOccurrence,
+    SymbolRef,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceSymbolDocs {
     pub lines: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SavedPlaceHoverFact {
+    Field {
+        name: String,
+        key_params: Vec<SavedPlaceHoverKeyParam>,
+        ty: String,
+        required: bool,
+        docs: Vec<String>,
+    },
+    Layer {
+        name: String,
+        key_params: Vec<SavedPlaceHoverKeyParam>,
+        docs: Vec<String>,
+    },
+    Index {
+        name: String,
+        args: Vec<String>,
+        unique: bool,
+        docs: Vec<String>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SavedPlaceHoverKeyParam {
+    pub name: String,
+    pub ty: String,
 }
 
 pub fn source_symbol_docs_at(
@@ -24,6 +58,142 @@ pub fn source_symbol_docs_at(
     (!lines.is_empty()).then(|| SourceSymbolDocs {
         lines: lines.to_vec(),
     })
+}
+
+pub fn saved_place_hover_fact_at(
+    snapshot: &AnalysisSnapshot,
+    index: &BindingIndex,
+    file: &Path,
+    offset: usize,
+) -> Option<SavedPlaceHoverFact> {
+    let occurrence = index.occurrence(file, offset)?;
+    let symbol = &occurrence.definition;
+    if !matches!(
+        symbol.kind,
+        SymbolKind::Field | SymbolKind::Layer | SymbolKind::Index
+    ) || !is_saved_place_hover_target(snapshot, file, offset, &occurrence)
+    {
+        return None;
+    }
+
+    let analyzed = snapshot
+        .files
+        .iter()
+        .find(|analyzed| analyzed.path == symbol.file)?;
+    match symbol.kind {
+        SymbolKind::Field | SymbolKind::Layer => member_hover_fact(snapshot, analyzed, symbol),
+        SymbolKind::Index => index_hover_fact(snapshot, analyzed, symbol),
+        _ => None,
+    }
+}
+
+fn is_saved_place_hover_target(
+    snapshot: &AnalysisSnapshot,
+    file: &Path,
+    offset: usize,
+    occurrence: &SymbolOccurrence,
+) -> bool {
+    let symbol = &occurrence.definition;
+    is_saved_place_declaration_name(file, offset, symbol)
+        || is_saved_place_reference_leaf(snapshot, file, offset, occurrence)
+}
+
+fn is_saved_place_reference_leaf(
+    snapshot: &AnalysisSnapshot,
+    file: &Path,
+    offset: usize,
+    occurrence: &SymbolOccurrence,
+) -> bool {
+    let symbol = &occurrence.definition;
+    let reference = &occurrence.reference;
+    reference.kind == symbol.kind
+        && reference.file == file
+        && (reference.file != symbol.file || reference.span != symbol.span)
+        && span_covers(reference.span, offset)
+        && offset_is_on_last_identifier(snapshot, file, reference.span, offset)
+}
+
+fn is_saved_place_declaration_name(file: &Path, offset: usize, symbol: &SymbolRef) -> bool {
+    symbol.file == file && span_covers(symbol.span, offset)
+}
+
+fn member_hover_fact(
+    snapshot: &AnalysisSnapshot,
+    analyzed: &crate::AnalyzedFile,
+    symbol: &SymbolRef,
+) -> Option<SavedPlaceHoverFact> {
+    let member_fact = snapshot
+        .program
+        .facts
+        .resource_members()
+        .iter()
+        .find(|member| {
+            let resource = snapshot.program.facts.resource(member.resource);
+            member.name_span == symbol.span
+                && fact_file(snapshot, resource.module) == Some(symbol.file.as_path())
+                && matches!(
+                    (member.kind, symbol.kind),
+                    (ResourceMemberKind::Field, SymbolKind::Field)
+                        | (ResourceMemberKind::Group, SymbolKind::Layer)
+                )
+        })?;
+    let member = resource_member_at(&analyzed.parsed.file, member_fact.span)?;
+    match member {
+        ResourceMember::Field(field) => Some(SavedPlaceHoverFact::Field {
+            name: field.name.clone(),
+            key_params: hover_key_params(&field.keys),
+            ty: field.ty.text.clone(),
+            required: field.required,
+            docs: field.docs.clone(),
+        }),
+        ResourceMember::Group(group) => Some(SavedPlaceHoverFact::Layer {
+            name: group.name.clone(),
+            key_params: hover_key_params(&group.keys),
+            docs: group.docs.clone(),
+        }),
+    }
+}
+
+fn index_hover_fact(
+    snapshot: &AnalysisSnapshot,
+    analyzed: &crate::AnalyzedFile,
+    symbol: &SymbolRef,
+) -> Option<SavedPlaceHoverFact> {
+    let index_fact = snapshot
+        .program
+        .facts
+        .store_indexes()
+        .iter()
+        .find(|index| {
+            let store = snapshot.program.facts.store(index.store);
+            index.name_span == symbol.span
+                && fact_file(snapshot, store.module) == Some(symbol.file.as_path())
+        })?;
+    let index = store_index_at(&analyzed.parsed.file, index_fact.span)?;
+    Some(SavedPlaceHoverFact::Index {
+        name: index.name.clone(),
+        args: index.args.clone(),
+        unique: index.unique,
+        docs: index.docs.clone(),
+    })
+}
+
+fn fact_file(snapshot: &AnalysisSnapshot, module: ModuleId) -> Option<&Path> {
+    snapshot
+        .program
+        .facts
+        .modules()
+        .get(module.0 as usize)
+        .map(|module| module.source_file.as_path())
+}
+
+fn hover_key_params(keys: &[KeyParam]) -> Vec<SavedPlaceHoverKeyParam> {
+    keys.iter()
+        .map(|key| SavedPlaceHoverKeyParam {
+            name: key.name.clone(),
+            ty: key.ty.text.clone(),
+        })
+        .collect()
 }
 
 fn declaration_docs<'a>(source: &'a SourceFile, symbol: &SymbolRef) -> Option<&'a [String]> {
@@ -141,6 +311,84 @@ fn member_docs(members: &[ResourceMember], span: SourceSpan) -> Option<&[String]
         }
     }
     None
+}
+
+fn resource_member_at(source: &SourceFile, span: SourceSpan) -> Option<&ResourceMember> {
+    for declaration in &source.declarations {
+        let Declaration::Resource(resource) = declaration else {
+            continue;
+        };
+        if let Some(member) = resource_member_in(&resource.members, span) {
+            return Some(member);
+        }
+    }
+    None
+}
+
+fn resource_member_in(members: &[ResourceMember], span: SourceSpan) -> Option<&ResourceMember> {
+    for member in members {
+        match member {
+            ResourceMember::Field(field) if span_contains_span(field.span, span) => {
+                return Some(member);
+            }
+            ResourceMember::Group(group) if span_contains_span(group.span, span) => {
+                return Some(member);
+            }
+            ResourceMember::Group(group) => {
+                if let Some(member) = resource_member_in(&group.members, span) {
+                    return Some(member);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn store_index_at(source: &SourceFile, span: SourceSpan) -> Option<&IndexDecl> {
+    source
+        .declarations
+        .iter()
+        .find_map(|declaration| match declaration {
+            Declaration::Store(store) => store
+                .indexes
+                .iter()
+                .find(|index| span_contains_span(index.span, span)),
+            _ => None,
+        })
+}
+
+fn offset_is_on_last_identifier(
+    snapshot: &AnalysisSnapshot,
+    file: &Path,
+    span: SourceSpan,
+    offset: usize,
+) -> bool {
+    let Some(analyzed) = snapshot.files.iter().find(|f| f.path == file) else {
+        return false;
+    };
+    let Some((start, end)) = last_identifier_span(span, &analyzed.source) else {
+        return false;
+    };
+    start <= offset && offset <= end
+}
+
+fn last_identifier_span(span: SourceSpan, source: &str) -> Option<(usize, usize)> {
+    let lexed = lex_source(source);
+    let mut found = None;
+    for token in lexed.tokens {
+        if token.kind == TokenKind::Identifier
+            && span_covers(span, token.span.start_byte)
+            && span_covers(span, token.span.end_byte)
+        {
+            found = Some((token.span.start_byte, token.span.end_byte));
+        }
+    }
+    found
+}
+
+fn span_covers(span: SourceSpan, offset: usize) -> bool {
+    span.start_byte <= offset && offset <= span.end_byte
 }
 
 fn span_contains_span(outer: SourceSpan, inner: SourceSpan) -> bool {

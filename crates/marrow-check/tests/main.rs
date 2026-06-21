@@ -134,6 +134,8 @@ mod ranges;
 mod required_field_assignment;
 #[path = "cases/resource_store_contract.rs"]
 mod resource_store_contract;
+#[path = "cases/saved_place_hover_facts.rs"]
+mod saved_place_hover_facts;
 #[path = "cases/saved_place_owner_architecture.rs"]
 mod saved_place_owner_architecture;
 #[path = "cases/source_symbol_docs.rs"]
