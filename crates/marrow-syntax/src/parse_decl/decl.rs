@@ -201,7 +201,7 @@ impl<'a> DeclParser<'a> {
     }
 
     pub(super) fn take_docs_for_current_item(
-        &self,
+        &mut self,
         docs: &mut Vec<Token>,
         comments: &mut Vec<Comment>,
     ) -> Vec<String> {
@@ -219,19 +219,29 @@ impl<'a> DeclParser<'a> {
         Vec::new()
     }
 
+    /// Drain accumulated `;;` doc comments that found no following declaration,
+    /// member, or parameter to attach to. A dangling doc comment is a syntax error
+    /// — a swallowed doc comment is one the formatter cannot place, breaking the
+    /// check-run-format round trip — so each is reported and retained as trivia for
+    /// the formatter to surface alongside the diagnostic.
     pub(super) fn flush_docs_as_comments(
-        &self,
+        &mut self,
         docs: &mut Vec<Token>,
         comments: &mut Vec<Comment>,
     ) {
-        comments.extend(docs.drain(..).map(|token| {
-            comment_from_token(
+        for token in docs.drain(..) {
+            self.error_span(
+                token.span,
+                ParseDiagnosticReason::DocCommentWithoutTarget,
+                "a `;;` doc comment must precede a declaration, member, or parameter",
+            );
+            comments.push(comment_from_token(
                 self.source,
                 token,
                 CommentPlacement::OwnLine,
                 CommentMarker::Doc,
-            )
-        }));
+            ));
+        }
     }
 
     fn parse_module(&mut self, file: &mut SourceFile, saw_top_level_item: bool) {

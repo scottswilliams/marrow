@@ -233,6 +233,10 @@ pub const CHECK_CATEGORY_NOT_SELECTABLE: &str = "check.category_not_selectable";
 /// A `match` arm names a bare member that exists at more than one level of the
 /// enum tree. The arm must resolve to a single member.
 pub const CHECK_AMBIGUOUS_MATCH_ARM: &str = "check.ambiguous_match_arm";
+/// A `match` arm is qualified with the scrutinee enum's own name. Arms are member
+/// paths relative to the scrutinee enum, so the enum name is implicit and writing
+/// it as a prefix is redundant; the arm is the path with that prefix dropped.
+pub const CHECK_SCRUTINEE_QUALIFIED_MATCH_ARM: &str = "check.scrutinee_qualified_match_arm";
 /// The left operand of `is` is not an enum value. `is` tests enum-subtree
 /// membership, so it requires an enum-typed left operand.
 pub const CHECK_IS_REQUIRES_ENUM: &str = "check.is_requires_enum";
@@ -453,6 +457,12 @@ pub enum EnumDiagnostic {
         enum_name: String,
         label: String,
         candidates: Vec<String>,
+    },
+    /// A `match` arm written as `Enum::member` where `Enum` is the scrutinee enum's
+    /// own name. `relative` is the corrected arm with that prefix dropped.
+    ScrutineeQualifiedMatchArm {
+        enum_name: String,
+        relative: String,
     },
     NonexhaustiveMatch {
         enum_name: String,

@@ -273,6 +273,80 @@ fn a_partial_match_arm_path_names_the_segment_that_is_not_a_direct_member() {
 }
 
 #[test]
+fn a_match_arm_qualified_with_the_scrutinee_enum_is_rejected_clearly() {
+    // A match arm is a member path relative to the scrutinee enum, so the bare
+    // `active` is correct and `Status::active` re-spells the scrutinee enum as a
+    // prefix. The diagnostic must say so directly and never echo the rejected
+    // spelling back as the suggestion.
+    let found = check_module(
+        "match-scrutinee-qualified-arm",
+        "module m\n\
+         enum Status\n    active\n    archived\n\n\
+         fn f(s: Status)\n    \
+         match s\n        Status::active\n            return\n        \
+         Status::archived\n            return\n",
+        "check.scrutinee_qualified_match_arm",
+    );
+    assert_eq!(found.len(), 2, "{found:#?}");
+    assert_enum_payload(
+        &found[0],
+        EnumDiagnostic::ScrutineeQualifiedMatchArm {
+            enum_name: "Status".into(),
+            relative: "active".into(),
+        },
+    );
+    // The fix the diagnostic offers is the bare relative arm, never the rejected
+    // qualified spelling: it asserts no false "has no member" fact and never loops
+    // by suggesting the exact input back as the correction.
+    assert!(
+        found[0].message.contains("write the arm as `active`"),
+        "the diagnostic must guide to the bare relative arm: {}",
+        found[0].message
+    );
+    assert!(
+        !found[0].message.contains("has no member"),
+        "the diagnostic must not assert a false member fact: {}",
+        found[0].message
+    );
+    // `Status::active` arm: `Status` is the first segment, at column 9 under the arm indent.
+    assert_eq!(found[0].span.column, 9);
+}
+
+#[test]
+fn a_match_arm_qualified_with_a_foreign_enum_name_stays_an_unknown_member() {
+    // Only the scrutinee enum's own name is the relative-arm hint. A different
+    // name as the first segment is an ordinary unknown member, not the
+    // relative-arm guidance.
+    let found = check_module(
+        "match-foreign-qualified-arm",
+        "module m\n\
+         enum Status\n    active\n    archived\n\n\
+         fn f(s: Status)\n    \
+         match s\n        Other::active\n            return\n        \
+         archived\n            return\n",
+        "check.unknown_enum_member",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn an_arm_through_a_member_sharing_the_enum_name_resolves_normally() {
+    // When the enum genuinely has a top-level member with the enum's own name,
+    // `Status::active` is a real member step, not the redundant scrutinee prefix.
+    // It must resolve through that member and check clean, not trip the
+    // relative-arm guidance.
+    let report = check_module_report(
+        "match-member-named-as-enum",
+        "module m\n\
+         enum Status\n    category Status\n        active\n        archived\n\n\
+         fn f(s: Status)\n    \
+         match s\n        Status::active\n            return\n        \
+         Status::archived\n            return\n",
+    );
+    assert_clean(&report);
+}
+
+#[test]
 fn a_match_over_a_non_enum_scrutinee_is_rejected() {
     let found = check_module(
         "match-non-enum",

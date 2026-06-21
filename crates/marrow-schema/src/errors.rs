@@ -103,7 +103,8 @@ impl SchemaErrorKind {
                 SchemaNameCollision::IdentityKeyWithMember { .. } => {
                     Some(SchemaStoreInvalidation::Store)
                 }
-                SchemaNameCollision::IdentityKeyWithIndex { index, .. } => {
+                SchemaNameCollision::IdentityKeyWithIndex { index, .. }
+                | SchemaNameCollision::FieldWithIndex { index } => {
                     Some(SchemaStoreInvalidation::Index {
                         name: index.clone(),
                     })
@@ -169,6 +170,7 @@ impl SchemaSavedUnknownTarget {
 pub enum SchemaNameCollision {
     IdentityKeyWithMember { key: String },
     IdentityKeyWithIndex { key: String, index: String },
+    FieldWithIndex { index: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -200,8 +202,10 @@ pub const SCHEMA_PARENT_NOT_CATEGORY: &str = "schema.parent_not_category";
 /// resources may use `unknown`.
 pub const SCHEMA_UNKNOWN_IN_SAVED: &str = "schema.unknown_in_saved";
 
-/// A top-level field or layer shares a name with an identity key. Identity keys
-/// live in the saved path, so a stored member of the same name is ambiguous.
+/// Two members of a store collide in its source namespace: a top-level field or
+/// layer shares a name with an identity key, or a declared field shares a name
+/// with an index. Identity keys, declared fields, keyed layers, and index names
+/// share one namespace, so a reused name leaves a member unaddressable.
 pub const SCHEMA_KEY_MEMBER_COLLISION: &str = "schema.key_member_collision";
 
 /// An index argument does not resolve to an identity key or a top-level field.
@@ -299,6 +303,22 @@ pub(crate) fn key_index_collision_error(index: &str, span: SourceSpan) -> Schema
         message: format!(
             "identity key `{index}` collides with index `{index}`; identity keys \
              and indexes share the store namespace"
+        ),
+        span,
+    }
+}
+
+pub(crate) fn field_index_collision_error(index: &str, span: SourceSpan) -> SchemaError {
+    SchemaError {
+        kind: SchemaErrorKind::KeyMemberCollision {
+            collision: SchemaNameCollision::FieldWithIndex {
+                index: index.to_string(),
+            },
+        },
+        code: SCHEMA_KEY_MEMBER_COLLISION,
+        message: format!(
+            "index `{index}` collides with a stored field of the same name; \
+             declared fields and indexes share the store namespace"
         ),
         span,
     }

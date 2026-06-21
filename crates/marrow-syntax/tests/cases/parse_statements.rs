@@ -514,6 +514,68 @@ fn a_doc_comment_in_statement_position_is_a_parse_error() {
 }
 
 #[test]
+fn a_dangling_doc_comment_with_no_following_target_is_a_parse_error() {
+    // A `;;` doc comment attaches to the next declaration, member, or parameter.
+    // With nothing to attach to — at end of file, at the end of a resource or
+    // store body, or separated from the next declaration by a blank line — it has
+    // no target and must be rejected everywhere, just like the statement-position
+    // case, so it can never pass check and then brick the formatter.
+    let cases = [
+        // top-level, dangling at end of file
+        ("module app\n;; just docs\n", 2),
+        // top-level, separated from the next declaration by a blank line
+        ("module app\n;; orphan\n\nfn main()\n    return\n", 2),
+        // end of a resource body, after the last member
+        (
+            "module app\nresource Book\n    required title: string\n    ;; orphan\n",
+            4,
+        ),
+        // end of a store body, after the last index
+        (
+            "module app\nresource Book\n    required title: string\nstore ^books(id: int): Book\n    index byTitle(title, id)\n    ;; orphan\n",
+            6,
+        ),
+    ];
+    for (source, line) in cases {
+        let parsed = parse_source(source);
+        assert!(
+            parsed.has_errors(),
+            "a dangling doc comment must not parse cleanly: {source:?}: {:#?}",
+            parsed.diagnostics
+        );
+        let diagnostic = parsed
+            .diagnostics
+            .iter()
+            .find(|diagnostic| {
+                diagnostic.reason == parse_reason(ParseDiagnosticReason::DocCommentWithoutTarget)
+            })
+            .unwrap_or_else(|| panic!("expected a doc-comment diagnostic for {source:?}"));
+        assert_eq!(diagnostic.code, "parse.syntax", "{source:?}");
+        assert_eq!(diagnostic.span.line, line, "{source:?}");
+    }
+}
+
+#[test]
+fn a_doc_comment_that_precedes_a_declaration_or_member_attaches_cleanly() {
+    // The attachment cases must stay clean: a doc comment immediately before a
+    // declaration, a resource member, a store index, or a parameter documents it
+    // and is not a dangling error.
+    for source in [
+        "module app\n;; documents the const\nconst Limit: int = 10\n",
+        "module app\nresource Book\n    ;; the title\n    required title: string\n",
+        "module app\nresource Book\n    required title: string\nstore ^books(id: int): Book\n    ;; lookup by title\n    index byTitle(title, id)\n",
+        "module app\n;; documents main\nfn main()\n    return\n",
+    ] {
+        let parsed = parse_source(source);
+        assert!(
+            !parsed.has_errors(),
+            "an attaching doc comment must parse cleanly: {source:?}: {:#?}",
+            parsed.diagnostics
+        );
+    }
+}
+
+#[test]
 fn an_ordinary_comment_in_statement_position_parses_cleanly() {
     // A single-`;` line comment in statement position is fine; only `;;` doc
     // comments require an attachment target.

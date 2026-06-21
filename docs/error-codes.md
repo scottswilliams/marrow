@@ -181,6 +181,7 @@ over every configured source and test file.
 | `check.duplicate_match_arm` | Two `match` arms cover the same member — a repeated arm, or a leaf already covered by an enclosing category arm. |
 | `check.nonexhaustive_match` | A `match` over an enum does not cover every selectable leaf; the message names each uncovered leaf by its full path. |
 | `check.ambiguous_match_arm` | A `match` arm is a bare member name that appears under more than one parent of the enum tree; the message names the qualifying paths to disambiguate. |
+| `check.scrutinee_qualified_match_arm` | A `match` arm is qualified with the scrutinee enum's own name (`Status::active`); arms are relative to the scrutinee, so the message names the corrected arm with that prefix dropped (`active`). |
 | `check.ambiguous_member` | A bare `Enum::member` literal (in value or `is` position) names a member that appears under more than one parent; the full path (`Enum::parent::member`) disambiguates. |
 | `check.category_not_selectable` | A category enum member is named in value position; only a concrete member under it is selectable. |
 | `check.is_requires_enum` | The left operand of `is` is not an enum value. |
@@ -215,7 +216,7 @@ Resource-schema rules. Reported during a project check alongside `check.*`.
 | `schema.parent_not_category` | An enum member has nested members but is not a `category`; a grouping node must be marked `category`, since a value selects a concrete member under it. |
 | `schema.duplicate_root_owner` | Two stores declare the same saved root (a cross-declaration rule the project checker reports). |
 | `schema.unknown_in_saved` | A managed saved field or key is typed `unknown`; saved schemas use concrete types. |
-| `schema.key_member_collision` | A top-level field or layer shares a name with an identity key. |
+| `schema.key_member_collision` | Two store members collide in the store namespace: a top-level field or layer shares a name with an identity key, or a declared field shares a name with an index. |
 | `schema.unknown_index_arg` | An index argument names neither an identity key nor a top-level member. |
 | `schema.unorderable_key` | A saved key has a type with no order-preserving key encoding (currently `decimal`). |
 | `schema.nonscalar_key` | A saved key (an identity key or keyed-layer key parameter) is typed as an identity, a name, or a sequence; saved keys must be orderable scalars. Index arguments also reject sequences, keyed-layer members, and resource-name fields, while top-level enum and `Id(^store)` fields are valid index components. |

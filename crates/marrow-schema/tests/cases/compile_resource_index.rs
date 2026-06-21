@@ -49,6 +49,47 @@ store ^books(id: int): Book
 }
 
 #[test]
+fn index_name_colliding_with_a_resource_field_is_an_error() {
+    // Declared fields and index names share the store source namespace, so an
+    // index may not reuse a stored field's name. A run would otherwise let a
+    // field `tag` and an index `tag` coexist with no way to address one of them.
+    let source = "\
+resource Product
+    required name: string
+    required price: int
+    tag: string
+store ^products(id: int): Product
+    index tag(price, id)
+";
+    let errors = compile_store_errors(source);
+    assert_eq!(codes(&errors), [SCHEMA_KEY_MEMBER_COLLISION], "{errors:#?}");
+    assert_kind(
+        &errors[0],
+        SchemaErrorKind::KeyMemberCollision {
+            collision: SchemaNameCollision::FieldWithIndex {
+                index: "tag".to_string(),
+            },
+        },
+    );
+}
+
+#[test]
+fn an_index_referencing_a_field_with_a_distinct_name_is_clean() {
+    // Only a name collision is rejected; an index that reads a field as an
+    // argument under its own distinct name is fine.
+    let source = "\
+resource Product
+    required name: string
+    required price: int
+    tag: string
+store ^products(id: int): Product
+    index byTag(tag, id)
+";
+    let errors = compile_store_errors(source);
+    assert!(errors.is_empty(), "{errors:#?}");
+}
+
+#[test]
 fn duplicate_index_name_is_an_error() {
     let source = "\
 resource Book

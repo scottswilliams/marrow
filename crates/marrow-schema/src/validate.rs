@@ -10,8 +10,8 @@ use crate::errors::{
     SCHEMA_DUPLICATE_MEMBER, SCHEMA_INDEX_MISSING_IDENTITY_KEYS, SCHEMA_NESTED_INDEX_ARG,
     SCHEMA_NON_ENUM_NAMED_FIELD, SCHEMA_NONSCALAR_KEY, SCHEMA_UNKNOWN_INDEX_ARG,
     SCHEMA_UNORDERABLE_KEY, SchemaDuplicateTarget, SchemaError, SchemaErrorKind, SchemaKeyTarget,
-    SchemaSavedUnknownTarget, index_requires_keyed_root_error, key_index_collision_error,
-    key_member_collision_error, unknown_error,
+    SchemaSavedUnknownTarget, field_index_collision_error, index_requires_keyed_root_error,
+    key_index_collision_error, key_member_collision_error, unknown_error,
 };
 use crate::{Node, NodeKind, ResourceSchema, ScalarType, Type};
 
@@ -73,6 +73,13 @@ pub(crate) fn check_store_index(
     errors: &mut Vec<SchemaError>,
 ) {
     names.check(&index.name, index.span, errors);
+    if resource
+        .members
+        .iter()
+        .any(|member| member.name == index.name)
+    {
+        errors.push(field_index_collision_error(&index.name, index.span));
+    }
     if decl.root.keys.is_empty() {
         errors.push(index_requires_keyed_root_error(&index.name, index.span));
         return;

@@ -15,10 +15,11 @@ use crate::typerules::marrow_type_name;
 use crate::{
     CHECK_AMBIGUOUS_MATCH_ARM, CHECK_AMBIGUOUS_MEMBER, CHECK_DUPLICATE_MATCH_ARM,
     CHECK_IS_REQUIRES_ENUM, CHECK_IS_TYPE, CHECK_MATCH_REQUIRES_ENUM, CHECK_NONEXHAUSTIVE_MATCH,
-    CHECK_PRIVATE_ENUM, CHECK_UNKNOWN_ENUM_MEMBER, CHECK_UNKNOWN_TYPE, CheckDiagnostic,
-    CheckedModule, CheckedProgram, Def, DefItem, DiagnosticPayload, EnumDiagnostic, MarrowType,
-    Resolution, ResolvableKind, TypeNames, build_alias_map, expand_alias, expand_module_alias,
-    module_of_file, resolve, resource_type_name, split_type_path,
+    CHECK_PRIVATE_ENUM, CHECK_SCRUTINEE_QUALIFIED_MATCH_ARM, CHECK_UNKNOWN_ENUM_MEMBER,
+    CHECK_UNKNOWN_TYPE, CheckDiagnostic, CheckedModule, CheckedProgram, Def, DefItem,
+    DiagnosticPayload, EnumDiagnostic, MarrowType, Resolution, ResolvableKind, TypeNames,
+    build_alias_map, expand_alias, expand_module_alias, module_of_file, resolve,
+    resource_type_name, split_type_path,
 };
 
 /// Re-resolve every named signature slot in the assembled program against the
@@ -339,6 +340,35 @@ fn check_match_coverage(
     for arm in arms {
         let segments: Vec<&str> = arm.path.iter().map(String::as_str).collect();
         let arm_label = segments.join("::");
+        // An arm is a member path relative to the scrutinee enum, so writing the
+        // enum's own name as a prefix is the redundant `Status::active` mistake —
+        // unless the enum genuinely has a top-level member of that name, where the
+        // prefix is a real member step and the path resolves normally.
+        if let [head, relative @ ..] = segments.as_slice()
+            && !relative.is_empty()
+            && *head == enum_name
+            && !is_top_level_member(schema, head)
+        {
+            let relative_label = relative.join("::");
+            env.diagnostics.push(
+                CheckDiagnostic::error(
+                    CHECK_SCRUTINEE_QUALIFIED_MATCH_ARM,
+                    env.file,
+                    arm.path_spans.first().copied().unwrap_or(arm.span),
+                    format!(
+                        "`match` arms are relative to the scrutinee enum `{enum_name}`; \
+                         write the arm as `{relative_label}`, not `{arm_label}`"
+                    ),
+                )
+                .with_payload(DiagnosticPayload::Enum(
+                    EnumDiagnostic::ScrutineeQualifiedMatchArm {
+                        enum_name: enum_name.to_string(),
+                        relative: relative_label,
+                    },
+                )),
+            );
+            continue;
+        }
         let arm_ordinal = match schema.walk_member_path(&segments) {
             MemberPathResolution::Found(ordinal) => ordinal,
             MemberPathResolution::NotFound => {
