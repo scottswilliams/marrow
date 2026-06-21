@@ -64,6 +64,10 @@ from the checked program or snapshot:
   checked functions and constants with catalog-backed resources, stores, indexes,
   members, enums, and enum members so editor callers only translate the typed
   kind to their transport's symbol enum.
+- `tooling::document_symbols(file, source)` returns parsed document-outline
+  facts with Marrow-owned kind, detail, full span, selection span, and nested
+  children. It accepts a parsed `SourceFile` plus source text, so editor callers
+  can keep outline behavior for broken open buffers without rechecking.
 - `AnalysisSnapshot::surface_read_operations()` iterates snapshot-bound
   `SurfaceReadOperationAnalysis` views. Each view carries the source file,
   checked `SurfaceFact`, and checked `SurfaceReadOperationFact`, so editor
@@ -214,7 +218,7 @@ add only transport availability and request-envelope concerns around those DTOs.
 | `crates/marrow-check/src/evolution/preview.rs` | Schema-only and backup-backed `WitnessFactSet` preview facts for tooling. |
 | `crates/marrow-check/src/tooling/mod.rs` | Tooling facade: re-exports the data/integrity API; defines `ToolingError` (Path vs Store). |
 | `crates/marrow-check/src/tooling/signatures.rs` | Editor callable facts and renderable signature inputs: active/batch callee context re-exports, intrinsic callable signatures, and resource constructors. |
-| `crates/marrow-check/src/tooling/symbols.rs` | Flat source-symbol facts for workspace search: checked functions/constants plus catalog-backed declarations with Marrow-owned kind, display name, file/span, and container ownership. |
+| `crates/marrow-check/src/tooling/symbols.rs` | Source-symbol facts for editor outlines and workspace search: parsed document-outline DTOs plus checked functions/constants and catalog-backed declarations with Marrow-owned kind, display name, file/span, and container ownership. |
 | `crates/marrow-check/src/tooling/data/mod.rs` | Data tooling root and shared value types (`ResolvedDataPath`, `DataChild`, `DeclaredDataChild`, `SourceDataPathSegment`, `DataEntry`, `DataWalkPage`, `DataReadResult`, `DataRecord`, `StampedData`, `DataSnapshotStamp`, `DataCommitStamp`, `KeyMismatch`, `MAX_PREVIEW_ITEMS`, `DEFAULT_VALUE_PREVIEW_LIMIT`, `MAX_VALUE_PREVIEW_LIMIT`). |
 | `crates/marrow-check/src/tooling/data/declared.rs` | Schema-only declared child lookup for saved source paths and concrete data paths through the shared checked path walk; opens no store. |
 | `crates/marrow-check/src/tooling/data/path.rs` | Shared checked saved-path walk plus `StorageDataPath` conversion for wire/source segments, with typed `DataPathError`; `data_path_under_prefix` containment. `inspection_root_place` retypes leaf members to the accepted-catalog leaf so inspection renders by the epoch data was written under, not drifted source. |

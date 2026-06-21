@@ -44,7 +44,10 @@ pub use signatures::{
     intrinsic_callable_signature, intrinsic_callable_signature_for_file,
     intrinsic_completion_callables, resource_constructor_signature,
 };
-pub use symbols::{SourceSymbol, SourceSymbolKind, source_symbols};
+pub use symbols::{
+    DocumentSymbol, DocumentSymbolKind, SourceSymbol, SourceSymbolKind, document_symbols,
+    source_symbols,
+};
 pub use type_annotations::{IdentityTypeAnnotation, identity_type_annotations};
 
 #[derive(Debug)]

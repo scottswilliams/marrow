@@ -1,8 +1,10 @@
 use std::collections::HashMap;
 
 use crate::support;
-use marrow_check::tooling::{SourceSymbolKind, source_symbols};
-use marrow_syntax::SourceSpan;
+use marrow_check::tooling::{
+    DocumentSymbolKind, SourceSymbolKind, document_symbols, source_symbols,
+};
+use marrow_syntax::{SourceSpan, parse_source};
 
 #[test]
 fn source_symbols_report_checked_kinds_locations_and_owners() {
@@ -134,6 +136,214 @@ fn f(a: Booook): Alsobad
     );
 }
 
+#[test]
+fn document_symbols_report_parsed_outline_facts() {
+    let source = "\
+module shelf
+
+const LIMIT: int = 10
+
+enum Status
+    active
+    archived
+
+resource Book
+    required title: string
+    notes(noteId: string)
+        text: string
+
+store ^books(id: int): Book
+    index byTitle(title, id)
+
+surface Books from ^books
+    fields title
+
+evolve
+    rename Book.title -> Book.name
+    default Book.name = \"untitled\"
+    retire Book.title
+    transform ^books
+        const id: Id(^books) = 1
+
+pub fn add(title: string): Id(^books)
+    return nextId(^books)
+";
+    let parsed = parse_source(source);
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+
+    let symbols = document_symbols(&parsed.file, source);
+
+    assert_document_symbol(
+        find_document_symbol(&symbols, "LIMIT"),
+        DocumentSymbolKind::Constant,
+        Some("int"),
+        "const LIMIT",
+        "LIMIT",
+        source,
+    );
+    assert_document_symbol(
+        find_document_symbol(&symbols, "add"),
+        DocumentSymbolKind::Function,
+        Some("(title: string): Id(^books)"),
+        "pub fn add",
+        "add",
+        source,
+    );
+    assert_document_symbol(
+        find_document_symbol(&symbols, "Status"),
+        DocumentSymbolKind::Enum,
+        None,
+        "enum Status",
+        "Status",
+        source,
+    );
+    assert_document_symbol(
+        find_child(find_document_symbol(&symbols, "Status"), "active"),
+        DocumentSymbolKind::EnumMember,
+        None,
+        "    active",
+        "active",
+        source,
+    );
+    let book = find_document_symbol(&symbols, "Book");
+    assert_document_symbol(
+        book,
+        DocumentSymbolKind::Resource,
+        None,
+        "resource Book",
+        "Book",
+        source,
+    );
+    assert_document_symbol(
+        find_child(book, "title"),
+        DocumentSymbolKind::ResourceField,
+        Some("string"),
+        "    required title",
+        "title",
+        source,
+    );
+    let notes = find_child(book, "notes");
+    assert_document_symbol(
+        notes,
+        DocumentSymbolKind::ResourceGroup,
+        None,
+        "    notes(noteId: string)",
+        "notes",
+        source,
+    );
+    assert_document_symbol(
+        find_child(notes, "text"),
+        DocumentSymbolKind::ResourceField,
+        Some("string"),
+        "        text: string",
+        "text",
+        source,
+    );
+    let store = find_document_symbol(&symbols, "^books");
+    assert_document_symbol(
+        store,
+        DocumentSymbolKind::Store,
+        Some("Book"),
+        "store ^books",
+        "^books",
+        source,
+    );
+    assert_document_symbol(
+        find_child(store, "byTitle"),
+        DocumentSymbolKind::StoreIndex,
+        Some("index(title, id)"),
+        "    index byTitle",
+        "byTitle",
+        source,
+    );
+    assert_document_symbol(
+        find_document_symbol(&symbols, "Books"),
+        DocumentSymbolKind::Surface,
+        Some("^books"),
+        "surface Books",
+        "Books",
+        source,
+    );
+    let evolve = find_document_symbol(&symbols, "evolve");
+    assert_document_symbol(
+        evolve,
+        DocumentSymbolKind::Evolve,
+        None,
+        "evolve",
+        "evolve",
+        source,
+    );
+    for (name, starts_with) in [
+        ("rename", "    rename Book.title"),
+        ("default", "    default Book.name"),
+        ("retire", "    retire Book.title"),
+        ("transform", "    transform ^books"),
+    ] {
+        assert_document_symbol(
+            find_child(evolve, name),
+            DocumentSymbolKind::EvolveStep,
+            None,
+            starts_with,
+            name,
+            source,
+        );
+    }
+}
+
+#[test]
+fn document_symbols_preserve_parsed_outline_for_broken_source() {
+    let source = "\
+resource Book
+    required title: string
+
+fn broken(
+";
+    let parsed = parse_source(source);
+    assert!(
+        !parsed.diagnostics.is_empty(),
+        "source should have parse diagnostics"
+    );
+
+    let symbols = document_symbols(&parsed.file, source);
+    let book = find_document_symbol(&symbols, "Book");
+    assert_document_symbol(
+        book,
+        DocumentSymbolKind::Resource,
+        None,
+        "resource Book",
+        "Book",
+        source,
+    );
+    assert_document_symbol(
+        find_child(book, "title"),
+        DocumentSymbolKind::ResourceField,
+        Some("string"),
+        "    required title",
+        "title",
+        source,
+    );
+}
+
+#[test]
+fn document_symbols_do_not_panic_on_mismatched_source_text() {
+    let source = "\
+resource Book
+    title: string
+";
+    let parsed = parse_source(source);
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+
+    let symbols = document_symbols(&parsed.file, "");
+
+    let book = find_document_symbol(&symbols, "Book");
+    assert_eq!(book.kind, DocumentSymbolKind::Resource);
+    assert_eq!(book.selection_span, book.span);
+
+    let title = find_child(book, "title");
+    assert_eq!(title.kind, DocumentSymbolKind::ResourceField);
+    assert_eq!(title.selection_span, title.span);
+}
+
 fn only<'a>(
     by_name: &'a HashMap<&str, Vec<&'a marrow_check::tooling::SourceSymbol>>,
     name: &str,
@@ -168,5 +378,40 @@ fn assert_span_text(span: SourceSpan, expected: &str, source: &str) {
         &source[span.start_byte..span.start_byte + expected.len()],
         expected,
         "{span:?}"
+    );
+}
+
+fn find_document_symbol<'a>(
+    symbols: &'a [marrow_check::tooling::DocumentSymbol],
+    name: &str,
+) -> &'a marrow_check::tooling::DocumentSymbol {
+    symbols
+        .iter()
+        .find(|symbol| symbol.name == name)
+        .unwrap_or_else(|| panic!("missing document symbol `{name}` in {symbols:#?}"))
+}
+
+fn find_child<'a>(
+    symbol: &'a marrow_check::tooling::DocumentSymbol,
+    name: &str,
+) -> &'a marrow_check::tooling::DocumentSymbol {
+    find_document_symbol(&symbol.children, name)
+}
+
+fn assert_document_symbol(
+    symbol: &marrow_check::tooling::DocumentSymbol,
+    kind: DocumentSymbolKind,
+    detail: Option<&str>,
+    span_starts_with: &str,
+    selection_text: &str,
+    source: &str,
+) {
+    assert_eq!(symbol.kind, kind, "{symbol:#?}");
+    assert_eq!(symbol.detail.as_deref(), detail, "{symbol:#?}");
+    assert_span_text(symbol.span, span_starts_with, source);
+    assert_eq!(
+        &source[symbol.selection_span.start_byte..symbol.selection_span.end_byte],
+        selection_text,
+        "{symbol:#?}"
     );
 }

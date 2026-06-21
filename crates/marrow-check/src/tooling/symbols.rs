@@ -1,8 +1,12 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use marrow_syntax::SourceSpan;
+use marrow_syntax::{
+    Declaration, EnumDecl, EnumMember, EvolveDecl, EvolveStep, FieldDecl, FunctionDecl, GroupDecl,
+    IndexDecl, ResourceDecl, ResourceMember, SourceFile, SourceSpan, StoreDecl, SurfaceDecl,
+};
 
+use crate::source_spans::source_span_at;
 use crate::{
     AnalysisSnapshot, CatalogDeclaration, CatalogEntryKind, CheckedFacts, EnumMemberFact,
     ModuleFact, ModuleId, ResourceMemberFact,
@@ -27,6 +31,39 @@ pub enum SourceSymbolKind {
     ResourceMember,
     Enum,
     EnumMember,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DocumentSymbol {
+    pub name: String,
+    pub detail: Option<String>,
+    pub kind: DocumentSymbolKind,
+    pub span: SourceSpan,
+    pub selection_span: SourceSpan,
+    pub children: Vec<DocumentSymbol>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DocumentSymbolKind {
+    Constant,
+    Function,
+    Enum,
+    EnumMember,
+    Resource,
+    ResourceField,
+    ResourceGroup,
+    Store,
+    StoreIndex,
+    Surface,
+    Evolve,
+    EvolveStep,
+}
+
+pub fn document_symbols(file: &SourceFile, source: &str) -> Vec<DocumentSymbol> {
+    file.declarations
+        .iter()
+        .map(|declaration| document_symbol(declaration, source))
+        .collect()
 }
 
 pub fn source_symbols(snapshot: &AnalysisSnapshot) -> Vec<SourceSymbol> {
@@ -77,6 +114,221 @@ pub fn source_symbols(snapshot: &AnalysisSnapshot) -> Vec<SourceSymbol> {
     }
 
     symbols
+}
+
+fn document_symbol(declaration: &Declaration, source: &str) -> DocumentSymbol {
+    match declaration {
+        Declaration::Const(constant) => outline_symbol(
+            &constant.name,
+            constant.ty.as_ref().map(|ty| ty.text.clone()),
+            DocumentSymbolKind::Constant,
+            constant.span,
+            source,
+            Vec::new(),
+        ),
+        Declaration::Function(function) => outline_symbol(
+            &function.name,
+            Some(function_signature(function)),
+            DocumentSymbolKind::Function,
+            function.span,
+            source,
+            Vec::new(),
+        ),
+        Declaration::Enum(enum_decl) => enum_symbol(enum_decl, source),
+        Declaration::Resource(resource) => resource_symbol(resource, source),
+        Declaration::Store(store) => store_symbol(store, source),
+        Declaration::Surface(surface) => surface_symbol(surface, source),
+        Declaration::Evolve(evolve) => evolve_symbol(evolve, source),
+    }
+}
+
+fn evolve_symbol(evolve: &EvolveDecl, source: &str) -> DocumentSymbol {
+    outline_symbol(
+        "evolve",
+        None,
+        DocumentSymbolKind::Evolve,
+        evolve.span,
+        source,
+        evolve
+            .steps
+            .iter()
+            .map(|step| evolve_step_symbol(step, source))
+            .collect(),
+    )
+}
+
+fn evolve_step_symbol(step: &EvolveStep, source: &str) -> DocumentSymbol {
+    let name = match step {
+        EvolveStep::Rename { .. } => "rename",
+        EvolveStep::Default { .. } => "default",
+        EvolveStep::Retire { .. } => "retire",
+        EvolveStep::Transform { .. } => "transform",
+    };
+    outline_symbol(
+        name,
+        None,
+        DocumentSymbolKind::EvolveStep,
+        step.span(),
+        source,
+        Vec::new(),
+    )
+}
+
+fn enum_symbol(enum_decl: &EnumDecl, source: &str) -> DocumentSymbol {
+    outline_symbol(
+        &enum_decl.name,
+        None,
+        DocumentSymbolKind::Enum,
+        enum_decl.span,
+        source,
+        enum_decl
+            .members
+            .iter()
+            .map(|member| enum_member_symbol(member, source))
+            .collect(),
+    )
+}
+
+fn enum_member_symbol(member: &EnumMember, source: &str) -> DocumentSymbol {
+    outline_symbol(
+        &member.name,
+        None,
+        DocumentSymbolKind::EnumMember,
+        member.span,
+        source,
+        Vec::new(),
+    )
+}
+
+fn resource_symbol(resource: &ResourceDecl, source: &str) -> DocumentSymbol {
+    outline_symbol(
+        &resource.name,
+        None,
+        DocumentSymbolKind::Resource,
+        resource.span,
+        source,
+        resource
+            .members
+            .iter()
+            .map(|member| member_symbol(member, source))
+            .collect(),
+    )
+}
+
+fn member_symbol(member: &ResourceMember, source: &str) -> DocumentSymbol {
+    match member {
+        ResourceMember::Field(field) => field_symbol(field, source),
+        ResourceMember::Group(group) => group_symbol(group, source),
+    }
+}
+
+fn store_symbol(store: &StoreDecl, source: &str) -> DocumentSymbol {
+    outline_symbol(
+        &format!("^{}", store.root.root),
+        Some(store.resource.clone()),
+        DocumentSymbolKind::Store,
+        store.span,
+        source,
+        store
+            .indexes
+            .iter()
+            .map(|idx| index_symbol(idx, source))
+            .collect(),
+    )
+}
+
+fn surface_symbol(surface: &SurfaceDecl, source: &str) -> DocumentSymbol {
+    outline_symbol(
+        &surface.name,
+        Some(format!("^{}", surface.store.root)),
+        DocumentSymbolKind::Surface,
+        surface.span,
+        source,
+        Vec::new(),
+    )
+}
+
+fn field_symbol(field: &FieldDecl, source: &str) -> DocumentSymbol {
+    outline_symbol(
+        &field.name,
+        Some(field.ty.text.clone()),
+        DocumentSymbolKind::ResourceField,
+        field.span,
+        source,
+        Vec::new(),
+    )
+}
+
+fn group_symbol(group: &GroupDecl, source: &str) -> DocumentSymbol {
+    outline_symbol(
+        &group.name,
+        None,
+        DocumentSymbolKind::ResourceGroup,
+        group.span,
+        source,
+        group
+            .members
+            .iter()
+            .map(|member| member_symbol(member, source))
+            .collect(),
+    )
+}
+
+fn index_symbol(idx: &IndexDecl, source: &str) -> DocumentSymbol {
+    outline_symbol(
+        &idx.name,
+        Some(format!("index({})", idx.args.join(", "))),
+        DocumentSymbolKind::StoreIndex,
+        idx.span,
+        source,
+        Vec::new(),
+    )
+}
+
+fn outline_symbol(
+    name: &str,
+    detail: Option<String>,
+    kind: DocumentSymbolKind,
+    span: SourceSpan,
+    source: &str,
+    children: Vec<DocumentSymbol>,
+) -> DocumentSymbol {
+    DocumentSymbol {
+        name: name.to_string(),
+        detail,
+        kind,
+        span,
+        selection_span: selection_span(name, span, source),
+        children,
+    }
+}
+
+fn selection_span(name: &str, span: SourceSpan, source: &str) -> SourceSpan {
+    let Some(slice) = source.get(span.start_byte..span.end_byte) else {
+        return span;
+    };
+    let Some(offset) = slice.find(name) else {
+        return span;
+    };
+    let start = span.start_byte + offset;
+    let end = start + name.len();
+    if source.get(start..end).is_none() {
+        return span;
+    }
+    source_span_at(source, start, end)
+}
+
+fn function_signature(function: &FunctionDecl) -> String {
+    let params = function
+        .params
+        .iter()
+        .map(|param| format!("{}: {}", param.name, param.ty.text))
+        .collect::<Vec<_>>()
+        .join(", ");
+    match &function.return_type {
+        Some(ty) => format!("({params}): {}", ty.text),
+        None => format!("({params})"),
+    }
 }
 
 struct CatalogContainers {
