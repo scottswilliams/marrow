@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use marrow_schema::ScalarType;
 use marrow_syntax::{self as syntax, SourceSpan};
 
 use crate::checks::catch_frame;
@@ -63,7 +64,7 @@ pub enum CheckedLiteralKind {
 }
 
 impl CheckedLiteralKind {
-    pub(super) fn lower(kind: syntax::LiteralKind) -> Self {
+    pub(crate) fn lower(kind: syntax::LiteralKind) -> Self {
         match kind {
             syntax::LiteralKind::Integer => Self::Integer,
             syntax::LiteralKind::Decimal => Self::Decimal,
@@ -72,6 +73,19 @@ impl CheckedLiteralKind {
             syntax::LiteralKind::Bytes => Self::Bytes,
             syntax::LiteralKind::Bool => Self::Bool,
         }
+    }
+
+    /// The scalar type a literal of this kind carries. Sole owner of the
+    /// literal-kind-to-type table for the checker.
+    pub(crate) fn marrow_type(self) -> MarrowType {
+        MarrowType::Primitive(match self {
+            Self::Integer => ScalarType::Int,
+            Self::Decimal => ScalarType::Decimal,
+            Self::Duration => ScalarType::Duration,
+            Self::String => ScalarType::Str,
+            Self::Bytes => ScalarType::Bytes,
+            Self::Bool => ScalarType::Bool,
+        })
     }
 }
 

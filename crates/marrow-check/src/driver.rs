@@ -430,6 +430,7 @@ impl TestResolutionSuppression {
             | DiagnosticPayload::ReservedCatalogPathReuse { .. }
             | DiagnosticPayload::CatalogIntent(_)
             | DiagnosticPayload::SuggestedIndex { .. }
+            | DiagnosticPayload::UnresolvedName { .. }
             | DiagnosticPayload::RequiredAbsent { .. }
             | DiagnosticPayload::TypeMismatch { .. }
             | DiagnosticPayload::SavedCollectionByValue { .. }

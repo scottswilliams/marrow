@@ -744,30 +744,42 @@ fn suggested_index_arg_key(
     if arg.name.is_some() {
         return None;
     }
-    let CheckedExpr::Name { segments, .. } = &arg.value else {
-        return None;
+    let actual = match &arg.value {
+        CheckedExpr::Name { segments, .. } => match segments.as_slice() {
+            [name] => scoped_name_type(scope, name)?,
+            _ => return None,
+        },
+        CheckedExpr::Literal { kind, .. } => &kind.marrow_type(),
+        _ => return None,
     };
-    let [name] = segments.as_slice() else {
-        return None;
-    };
-    let member = root_plain_field(place, name)?;
-    let expected = SavedPlaceResolver::new(program).leaf_type(member.leaf.as_ref()?)?;
-    let actual = scoped_name_type(scope, name)?;
-    (type_compatible(&expected, actual) == Some(true)).then(|| member.name.clone())
+    unique_plain_field_for_key(program, place, actual)
+}
+
+/// The plain field an index column on a hidden lookup would key on: the one root
+/// field whose declared leaf type accepts the argument value. A column is named only
+/// when exactly one field matches; when zero or multiple match the column is ambiguous,
+/// so no suggested index is produced and the lookup is left to its other classification
+/// (the key-type member-access error) rather than promoted to missing-index.
+fn unique_plain_field_for_key(
+    program: &CheckedProgram,
+    place: &CheckedSavedPlace,
+    actual: &MarrowType,
+) -> Option<String> {
+    let resolver = SavedPlaceResolver::new(program);
+    let mut matches = place.root_members.iter().filter(|member| {
+        member.is_plain_field()
+            && member
+                .leaf
+                .as_ref()
+                .and_then(|leaf| resolver.leaf_type(leaf))
+                .is_some_and(|expected| type_compatible(&expected, actual) == Some(true))
+    });
+    let member = matches.next()?;
+    matches.next().is_none().then(|| member.name.clone())
 }
 
 fn root_member_named(place: &CheckedSavedPlace, name: &str) -> bool {
     place.root_members.iter().any(|member| member.name == name)
-}
-
-fn root_plain_field<'p>(
-    place: &'p CheckedSavedPlace,
-    name: &str,
-) -> Option<&'p CheckedSavedMember> {
-    place
-        .root_members
-        .iter()
-        .find(|member| member.name == name && member.is_plain_field())
 }
 
 fn scoped_name_type<'a>(

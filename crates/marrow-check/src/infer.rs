@@ -16,8 +16,8 @@ use crate::enums::{
     resolve_enum_member_path,
 };
 use crate::executable::{
-    CheckedBuiltinCall, CheckedBuiltinValueShape, SavedAccessRejection, SavedPlaceResolver,
-    lower_expr_for_file,
+    CheckedBuiltinCall, CheckedBuiltinValueShape, CheckedLiteralKind, SavedAccessRejection,
+    SavedPlaceResolver, lower_expr_for_file,
 };
 use crate::program::TypeNames;
 use crate::typerules::{
@@ -26,9 +26,9 @@ use crate::typerules::{
 };
 use crate::{
     CHECK_AMBIGUOUS_MEMBER, CHECK_CATEGORY_NOT_SELECTABLE, CHECK_COLLECTION_UNSUPPORTED,
-    CHECK_LAYER_NOT_VALUE, CHECK_OPERATOR_TYPE, CHECK_PRIVATE_ENUM, CHECK_UNKNOWN_ENUM_MEMBER,
-    CHECK_UNKNOWN_FIELD, CHECK_UNRESOLVED_NAME, CheckDiagnostic, CheckedProgram, DiagnosticPayload,
-    EnumDiagnostic, MarrowType, resolve_resource_type,
+    CHECK_LAYER_NOT_VALUE, CHECK_OPERATOR_TYPE, CHECK_PRIVATE_ENUM, CHECK_UNKNOWN_FIELD,
+    CHECK_UNRESOLVED_NAME, CheckDiagnostic, CheckedProgram, DiagnosticPayload, EnumDiagnostic,
+    MarrowType, resolve_resource_type,
 };
 
 /// Infer a type during post-check resolution, discarding diagnostics the checking
@@ -327,12 +327,15 @@ fn infer_value(
         Expression::Name { segments, span, .. } if segments.len() == 1 => {
             let name = &segments[0];
             lookup_opt(scope, name).unwrap_or_else(|| {
-                diagnostics.push(CheckDiagnostic::error(
-                    CHECK_UNRESOLVED_NAME,
-                    file,
-                    *span,
-                    format!("`{name}` is not defined"),
-                ));
+                diagnostics.push(
+                    CheckDiagnostic::error(
+                        CHECK_UNRESOLVED_NAME,
+                        file,
+                        *span,
+                        format!("`{name}` is not defined"),
+                    )
+                    .with_payload(DiagnosticPayload::UnresolvedName { name: name.clone() }),
+                );
                 MarrowType::Unknown
             })
         }
@@ -1283,23 +1286,14 @@ fn enum_member_value_type(
             MarrowType::Invalid
         }
         MemberPathResolution::NotFound => {
-            let (index, member) = resolved.unresolved_segment(segments);
-            let member = member.to_string();
+            let (index, _) = resolved.unresolved_segment(segments);
             let segment_span = name_segment_span(expr, index).unwrap_or(span);
-            diagnostics.push(
-                CheckDiagnostic::error(
-                    CHECK_UNKNOWN_ENUM_MEMBER,
-                    file,
-                    segment_span,
-                    format!("`{enum_name}` has no member `{member}`"),
-                )
-                .with_payload(DiagnosticPayload::Enum(
-                    EnumDiagnostic::UnknownMember {
-                        enum_name: enum_name.clone(),
-                        member,
-                    },
-                )),
-            );
+            diagnostics.push(resolved.unknown_member_diagnostic(
+                file,
+                segment_span,
+                segments,
+                index,
+            ));
             MarrowType::Invalid
         }
     }
@@ -1704,13 +1698,5 @@ fn is_bare_name(expr: &marrow_syntax::Expression) -> bool {
 }
 
 fn literal_type(kind: marrow_syntax::LiteralKind) -> MarrowType {
-    use marrow_syntax::LiteralKind;
-    MarrowType::Primitive(match kind {
-        LiteralKind::Integer => ScalarType::Int,
-        LiteralKind::Decimal => ScalarType::Decimal,
-        LiteralKind::Duration => ScalarType::Duration,
-        LiteralKind::String => ScalarType::Str,
-        LiteralKind::Bytes => ScalarType::Bytes,
-        LiteralKind::Bool => ScalarType::Bool,
-    })
+    CheckedLiteralKind::lower(kind).marrow_type()
 }

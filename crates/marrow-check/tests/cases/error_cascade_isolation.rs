@@ -85,6 +85,38 @@ fn an_unresolved_assignment_target_reports_exactly_one_diagnostic() {
     assert_eq!(unresolved[0].span.column, 5);
 }
 
+/// One undeclared name is one root cause however many times it is used. `x = 5`
+/// followed by `print(x)` references the same undeclared `x` twice, but the report
+/// holds a single `check.unresolved_name` — keyed at the first use — not one per
+/// reference. The dedup is by name within the function, so the read after the failed
+/// assignment does not re-report the same missing binding.
+#[test]
+fn a_repeated_undeclared_name_reports_one_diagnostic() {
+    let report = check_module_report(
+        "cascade-repeated-name",
+        "module m\nfn f()\n    x = 5\n    print(x)\n",
+    );
+
+    let unresolved = with_code(&report, "check.unresolved_name");
+    assert_eq!(unresolved.len(), 1, "{:#?}", report.diagnostics);
+    assert_eq!(unresolved[0].span.line, 3);
+    assert_eq!(unresolved[0].span.column, 5);
+}
+
+/// Distinct undeclared names are distinct root causes: each reports once. `print(a)`
+/// and `print(b)` for two undeclared names hold two `check.unresolved_name`
+/// diagnostics, so the name dedup never collapses different names into one.
+#[test]
+fn distinct_undeclared_names_each_report_once() {
+    let report = check_module_report(
+        "cascade-distinct-names",
+        "module m\nfn f()\n    print(a)\n    print(b)\n",
+    );
+
+    let unresolved = with_code(&report, "check.unresolved_name");
+    assert_eq!(unresolved.len(), 2, "{:#?}", report.diagnostics);
+}
+
 /// Two independent faults in two separate functions stay independent: one diagnostic
 /// each, neither leaking a recovery artifact into the other's report. This guards the
 /// isolation boundary — a fault is local to the expression that caused it, so a clean

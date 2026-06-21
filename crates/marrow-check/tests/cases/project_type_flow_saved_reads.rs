@@ -58,6 +58,119 @@ fn a_loop_over_an_undeclared_index_is_a_collection_error_not_a_key_type_error() 
     );
 }
 
+#[test]
+fn a_literal_arg_undeclared_index_loop_is_a_collection_error() {
+    // The hidden-lookup root cause is the missing index regardless of whether the
+    // argument is a bound name or a literal: `^books.byShelf("fiction")` over a store
+    // with no `byShelf` index is a missing-index collection error carrying the index
+    // that would admit it, not a `check.key_type` member-access error.
+    let report = check_module_report(
+        "loop-undeclared-index-literal",
+        "module m\n\
+         resource Book\n    shelf: string\n\
+         store ^books(id: int): Book\n\n\
+         fn f()\n    for id in ^books.byShelf(\"fiction\")\n        print(id)\n",
+    );
+
+    let found = with_code(&report, "check.collection_unsupported");
+    assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
+    let DiagnosticPayload::SuggestedIndex { declaration } = &found[0].payload else {
+        panic!(
+            "expected suggested index payload, got {:#?}",
+            found[0].payload
+        );
+    };
+    assert_eq!(declaration, "index byShelf(shelf, id)");
+    assert!(
+        with_code(&report, "check.key_type").is_empty(),
+        "a literal-arg undeclared-index lookup is not a key-type error: {:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
+fn an_ambiguous_undeclared_index_lookup_falls_through_to_a_key_type_error() {
+    // Naming a column for the suggested index requires exactly one root field whose
+    // declared type accepts the argument. When two root fields type-match the column is
+    // ambiguous, so no suggested index is produced and the hidden lookup is not promoted
+    // to a missing-index collection error — it keeps its key-type member-access
+    // classification.
+    let report = check_module_report(
+        "ambiguous-undeclared-index",
+        "module m\n\
+         resource Book\n    shelf: string\n    section: string\n\
+         store ^books(id: int): Book\n\n\
+         fn f()\n    for id in ^books.byShelf(\"fiction\")\n        print(id)\n",
+    );
+
+    assert!(
+        with_code(&report, "check.collection_unsupported").is_empty(),
+        "an ambiguous-column lookup yields no suggested index, so no collection error: {:#?}",
+        report.diagnostics
+    );
+    assert_eq!(
+        with_code(&report, "check.key_type").len(),
+        1,
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
+fn a_count_over_an_undeclared_index_is_a_collection_error() {
+    // `count(^books.byShelf("fiction"))` over a store with no `byShelf` index is the
+    // same hidden-lookup root cause as the loop form, so it reports the missing index
+    // with its suggested declaration rather than a member-access key-type error.
+    let report = check_module_report(
+        "count-undeclared-index",
+        "module m\n\
+         resource Book\n    shelf: string\n\
+         store ^books(id: int): Book\n\n\
+         fn f()\n    const n = count(^books.byShelf(\"fiction\"))\n    print(n)\n",
+    );
+
+    let found = with_code(&report, "check.collection_unsupported");
+    assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
+    let DiagnosticPayload::SuggestedIndex { declaration } = &found[0].payload else {
+        panic!(
+            "expected suggested index payload, got {:#?}",
+            found[0].payload
+        );
+    };
+    assert_eq!(declaration, "index byShelf(shelf, id)");
+    assert!(
+        with_code(&report, "check.key_type").is_empty(),
+        "an undeclared-index count is not a key-type error: {:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
+fn a_scalar_field_off_a_keyed_root_stays_a_key_type_error() {
+    // `^books.shelf` reads a member off a keyed root with no identity supplied. That is
+    // a genuine missing-identity mistake, not a hidden lookup, so it keeps the
+    // `check.key_type` "address it with an identity" diagnostic.
+    let report = check_module_report(
+        "scalar-field-no-identity",
+        "module m\n\
+         resource Book\n    shelf: string\n\
+         store ^books(id: int): Book\n\n\
+         fn f()\n    print(^books.shelf)\n",
+    );
+
+    assert_eq!(
+        with_code(&report, "check.key_type").len(),
+        1,
+        "{:#?}",
+        report.diagnostics
+    );
+    assert!(
+        with_code(&report, "check.collection_unsupported").is_empty(),
+        "a bare scalar-field read off a keyed root is not a collection error: {:#?}",
+        report.diagnostics
+    );
+}
+
 /// The composite-key grid the descent tests address: a single leaf layer with two
 /// key columns, modeled as a chain of single-key sub-layers.
 const GRID_CELLS: &str = "module m\n\

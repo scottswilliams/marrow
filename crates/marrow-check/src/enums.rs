@@ -343,22 +343,15 @@ fn check_match_coverage(
             MemberPathResolution::Found(ordinal) => ordinal,
             MemberPathResolution::NotFound => {
                 let offending = unresolved_member_segment(schema, &arm.path);
-                let member = arm.path[offending].clone();
                 let segment_span = arm.path_spans.get(offending).copied().unwrap_or(arm.span);
-                env.diagnostics.push(
-                    CheckDiagnostic::error(
-                        CHECK_UNKNOWN_ENUM_MEMBER,
-                        env.file,
-                        segment_span,
-                        format!("`{enum_name}` has no member `{member}`"),
-                    )
-                    .with_payload(DiagnosticPayload::Enum(
-                        EnumDiagnostic::UnknownMember {
-                            enum_name: enum_name.to_string(),
-                            member,
-                        },
-                    )),
-                );
+                env.diagnostics.push(unknown_enum_member_diagnostic(
+                    env.file,
+                    segment_span,
+                    enum_name,
+                    schema,
+                    &arm.path,
+                    offending,
+                ));
                 continue;
             }
             MemberPathResolution::Ambiguous(paths) => {
@@ -466,6 +459,28 @@ impl ResolvedMemberPath<'_> {
         let index = self.enum_index + 1 + relative_index;
         (index, segments[index].as_str())
     }
+
+    /// The `check.unknown_enum_member` diagnostic for this value-position path, with the
+    /// segment span the caller computed. Routes through the shared builder so the value
+    /// position and `match` arms blame the same segment and offer the same valid forms.
+    pub(crate) fn unknown_member_diagnostic(
+        &self,
+        file: &Path,
+        segment_span: SourceSpan,
+        segments: &[String],
+        index: usize,
+    ) -> CheckDiagnostic {
+        let member_segments = &segments[self.enum_index + 1..];
+        let offending = index - (self.enum_index + 1);
+        unknown_enum_member_diagnostic(
+            file,
+            segment_span,
+            &self.enum_name,
+            self.schema,
+            member_segments,
+            offending,
+        )
+    }
 }
 
 /// The relative index of the first segment that breaks a `NotFound` member walk. A
@@ -494,6 +509,78 @@ fn unresolved_member_segment(schema: &marrow_schema::EnumSchema, relative: &[Str
         }
     }
     relative.len().saturating_sub(1)
+}
+
+/// Build the `check.unknown_enum_member` diagnostic for a member path whose written
+/// segment at `offending` walks to no member. The single owner of the unknown-member
+/// message, span, and payload, shared by the value position and `match` arms, so both
+/// blame the same segment and offer the same valid forms.
+fn unknown_enum_member_diagnostic(
+    file: &Path,
+    segment_span: SourceSpan,
+    enum_name: &str,
+    schema: &marrow_schema::EnumSchema,
+    member_segments: &[String],
+    offending: usize,
+) -> CheckDiagnostic {
+    let member = member_segments[offending].clone();
+    let suggestions = valid_member_forms(schema, enum_name, &member_segments[offending..]);
+    let mut message = format!("`{enum_name}` has no member `{member}`");
+    if let [only] = suggestions.as_slice() {
+        message.push_str(&format!("; did you mean `{only}`?"));
+    } else if !suggestions.is_empty() {
+        message.push_str(&format!("; did you mean {}?", join_or(&suggestions)));
+    }
+    CheckDiagnostic::error(CHECK_UNKNOWN_ENUM_MEMBER, file, segment_span, message).with_payload(
+        DiagnosticPayload::Enum(EnumDiagnostic::UnknownMember {
+            enum_name: enum_name.to_string(),
+            member,
+            suggestions,
+        }),
+    )
+}
+
+/// Valid full-path forms the written tail (`["cat", "tabby"]`, starting at the
+/// offending segment) could have meant: the qualified path that reaches the same leaf
+/// through the offending segment's real parent, and the bare leaf. A mid-path category
+/// segment skips its parents, so reattaching the offending name to its true location
+/// and the bare-leaf shorthand are the two ways to name the intended value. Forms are
+/// returned in `Enum::…` spelling, qualified-first, with no duplicates.
+fn valid_member_forms(
+    schema: &marrow_schema::EnumSchema,
+    enum_name: &str,
+    tail: &[String],
+) -> Vec<String> {
+    let mut forms: Vec<String> = Vec::new();
+    let mut push = |path: Vec<&str>| {
+        let form = format!("{enum_name}::{}", path.join("::"));
+        if !forms.contains(&form) {
+            forms.push(form);
+        }
+    };
+    let [head, rest @ ..] = tail else {
+        return forms;
+    };
+    let rest_names: Vec<&str> = rest.iter().map(String::as_str).collect();
+    for ordinal in 0..schema.members.len() {
+        if schema.member_name(ordinal) != Some(head.as_str()) {
+            continue;
+        }
+        let mut path: Vec<&str> = schema.member_path(ordinal);
+        path.extend(rest_names.iter().copied());
+        if let MemberPathResolution::Found(leaf) = schema.walk_member_path(&path)
+            && schema.is_selectable_leaf(leaf)
+        {
+            push(schema.member_path(leaf));
+        }
+    }
+    if let Some(last) = tail.last()
+        && let MemberPathResolution::Found(leaf) = schema.walk_member_path(&[last.as_str()])
+        && schema.is_selectable_leaf(leaf)
+    {
+        push(vec![last.as_str()]);
+    }
+    forms
 }
 
 /// Whether `name` is the schema's unique top-level member — the only valid start of

@@ -164,6 +164,7 @@ fn an_unknown_member_of_a_nested_module_enum_literal_is_a_check_error() {
         EnumDiagnostic::UnknownMember {
             enum_name: "Status".into(),
             member: "bogus".into(),
+            suggestions: vec![],
         },
     );
 }

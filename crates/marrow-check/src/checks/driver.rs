@@ -117,6 +117,7 @@ pub(crate) fn check_resolved_files(
                 | DiagnosticPayload::ReservedCatalogPathReuse { .. }
                 | DiagnosticPayload::CatalogIntent(_)
                 | DiagnosticPayload::SuggestedIndex { .. }
+                | DiagnosticPayload::UnresolvedName { .. }
                 | DiagnosticPayload::RequiredAbsent { .. }
                 | DiagnosticPayload::TypeMismatch { .. }
                 | DiagnosticPayload::SavedCollectionByValue { .. }

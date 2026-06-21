@@ -3,7 +3,7 @@
 //! routes each statement kind to its operator, range, condition, and saved-access
 //! checks.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use marrow_schema::ReturnPresence;
@@ -20,7 +20,7 @@ use crate::resolve::resolve_store_by_root;
 use crate::{
     CHECK_CALL_ARGUMENT, CHECK_COLLECTION_UNSUPPORTED, CHECK_CONDITION_TYPE, CHECK_KEY_TYPE,
     CHECK_LAYER_NOT_VALUE, CHECK_LOSSY_ROUND_TRIP, CHECK_UNRESOLVED_NAME, CheckDiagnostic,
-    CheckedProgram, MarrowType,
+    CheckedProgram, DiagnosticPayload, MarrowType,
 };
 
 use super::calls::is_by_value_collection_slot;
@@ -73,6 +73,7 @@ pub(crate) fn check_function_types(
         .map_or(MarrowType::Unknown, |ty| {
             resolve_diagnosed_annotation_type(ty, program, aliases, file)
         });
+    let body_start = diagnostics.len();
     check_block_types_with_read_scope(
         BlockTypeContext {
             program,
@@ -86,6 +87,26 @@ pub(crate) fn check_function_types(
         diagnostics,
         &mut required_fields,
     );
+    collapse_repeated_unresolved_names(diagnostics, body_start);
+}
+
+/// One undeclared name is one root cause however many times the function uses it. A
+/// failed assignment leaves the read sites that follow still unresolved, so the bare
+/// name reports at the first use and later uses of the same name are dropped. The
+/// dedup is keyed by the typed name payload, not the span, and stays within this
+/// function's diagnostics so distinct names and other functions' faults are untouched.
+fn collapse_repeated_unresolved_names(diagnostics: &mut Vec<CheckDiagnostic>, body_start: usize) {
+    let mut reported: HashSet<String> = HashSet::new();
+    let mut index = body_start;
+    while index < diagnostics.len() {
+        if let DiagnosticPayload::UnresolvedName { name } = &diagnostics[index].payload
+            && !reported.insert(name.clone())
+        {
+            diagnostics.remove(index);
+            continue;
+        }
+        index += 1;
+    }
 }
 
 /// Type-check a block under a fresh scope frame for its `const`/`var` bindings.

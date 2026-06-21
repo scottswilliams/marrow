@@ -60,6 +60,7 @@ fn reports_an_unknown_enum_member() {
         EnumDiagnostic::UnknownMember {
             enum_name: "Status".into(),
             member: "deleted".into(),
+            suggestions: vec![],
         },
     );
 }
@@ -82,12 +83,21 @@ fn a_partial_enum_path_names_the_segment_that_is_not_a_direct_member() {
         "check.unknown_enum_member",
     );
     assert_eq!(found.len(), 1, "{found:#?}");
+    // The category segment skips its parents, so the diagnostic guides to the two valid
+    // forms: the full path through `cat`'s real parent and the bare leaf.
     assert_enum_payload(
         &found[0],
         EnumDiagnostic::UnknownMember {
             enum_name: "Animal".into(),
             member: "cat".into(),
+            suggestions: vec!["Animal::mammal::cat::tabby".into(), "Animal::tabby".into()],
         },
+    );
+    assert!(
+        found[0].message.contains("Animal::mammal::cat::tabby")
+            && found[0].message.contains("Animal::tabby"),
+        "the message must offer both valid forms: {}",
+        found[0].message
     );
     // `return Animal::cat::tabby` on line 10: `Animal` starts at column 12, so `cat`
     // (after `Animal::`) starts at column 20.
@@ -220,6 +230,7 @@ fn a_match_arm_for_an_unknown_member_is_a_check_error() {
         EnumDiagnostic::UnknownMember {
             enum_name: "Status".into(),
             member: "deleted".into(),
+            suggestions: vec![],
         },
     );
 }
@@ -252,6 +263,7 @@ fn a_partial_match_arm_path_names_the_segment_that_is_not_a_direct_member() {
                 == DiagnosticPayload::Enum(EnumDiagnostic::UnknownMember {
                     enum_name: "Animal".into(),
                     member: "cat".into(),
+                    suggestions: vec!["Animal::mammal::cat::tabby".into(), "Animal::tabby".into()],
                 })
         })
         .collect();
@@ -317,6 +329,7 @@ fn a_match_over_a_sequence_enum_element_enforces_its_identity() {
         EnumDiagnostic::UnknownMember {
             enum_name: "Status".into(),
             member: "red".into(),
+            suggestions: vec![],
         },
     );
     assert_enum_payload(
@@ -324,6 +337,7 @@ fn a_match_over_a_sequence_enum_element_enforces_its_identity() {
         EnumDiagnostic::UnknownMember {
             enum_name: "Status".into(),
             member: "green".into(),
+            suggestions: vec![],
         },
     );
 }

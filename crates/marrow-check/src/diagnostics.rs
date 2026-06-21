@@ -429,6 +429,11 @@ pub enum EnumDiagnostic {
     UnknownMember {
         enum_name: String,
         member: String,
+        /// Valid full-path forms the named segment could have meant — the qualified
+        /// member path through its real parent and/or the bare leaf — when the segment
+        /// is a category or a leaf reached at the wrong level. Empty when no concrete
+        /// member matches the written tail.
+        suggestions: Vec<String>,
     },
     AmbiguousMember {
         enum_name: String,
@@ -717,6 +722,9 @@ pub enum DiagnosticPayload {
     CatalogIntent(CatalogIntentDiagnostic),
     /// `check.collection_unsupported`: a lookup names no declared index.
     SuggestedIndex { declaration: String },
+    /// `check.unresolved_name`: the bare name that resolved to no binding. Carries the
+    /// name so repeated uses of one undeclared name collapse to a single root cause.
+    UnresolvedName { name: String },
     /// `check.layer_not_value`: a `.field`/child-layer descends off a base that
     /// names a keyed sub-layer rather than a record value — a keyed child layer read
     /// off a materialized value, or a descent off a partially keyed composite layer.
