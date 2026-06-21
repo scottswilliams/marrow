@@ -1,6 +1,7 @@
 use std::path::Path;
 
-use marrow_schema::{IndexSchema, Node, NodeKind, ResourceSchema, StoreSchema};
+use marrow_catalog::CatalogEntryKind;
+use marrow_schema::{EnumSchema, IndexSchema, Node, NodeKind, ResourceSchema, StoreSchema};
 use marrow_syntax::{
     Declaration, EnumMember, FunctionDecl, IndexDecl, KeyParam, ResourceMember, SourceFile,
     SourceSpan, StoreDecl, TokenKind, lex_source,
@@ -9,6 +10,7 @@ use marrow_syntax::{
 use crate::{
     AnalysisSnapshot, BindingIndex, CheckedConst, CheckedFunction, DirectEffectFacts, FunctionFact,
     MarrowType, ModuleId, ResourceMemberKind, StoreFact, SymbolKind, SymbolOccurrence, SymbolRef,
+    UseSiteKind,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -41,6 +43,72 @@ pub struct SourceCallableParamFact {
     pub name: String,
     pub ty: MarrowType,
     pub docs: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SourceSchemaHoverFact {
+    Resource(SourceResourceHoverFact),
+    Enum(SourceEnumHoverFact),
+    EnumMember(SourceEnumMemberHoverFact),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceResourceHoverFact {
+    pub name: String,
+    pub docs: Vec<String>,
+    pub members: Vec<SourceResourceHoverMember>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceResourceHoverMember {
+    pub path: Vec<SourceResourceHoverPathSegment>,
+    pub kind: SourceResourceHoverMemberKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceResourceHoverPathSegment {
+    pub name: String,
+    pub key_params: Vec<SourceSchemaHoverKeyParam>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SourceResourceHoverMemberKind {
+    Field { required: bool, ty: String },
+    Layer,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceSchemaHoverKeyParam {
+    pub name: String,
+    pub ty: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceEnumHoverFact {
+    pub name: String,
+    pub docs: Vec<String>,
+    pub members: Vec<SourceEnumMemberSummary>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceEnumMemberSummary {
+    pub path: Vec<String>,
+    pub status: SourceEnumMemberStatus,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceEnumMemberHoverFact {
+    pub enum_name: String,
+    pub path: Vec<String>,
+    pub docs: Vec<String>,
+    pub status: SourceEnumMemberStatus,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SourceEnumMemberStatus {
+    Selectable,
+    Category,
+    Group,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -153,6 +221,44 @@ pub fn source_callable_hover_fact_at(
     }
 }
 
+pub fn source_schema_hover_fact_at(
+    snapshot: &AnalysisSnapshot,
+    index: &BindingIndex,
+    file: &Path,
+    offset: usize,
+) -> Option<SourceSchemaHoverFact> {
+    if let Some(fact) = enum_annotation_source_schema_hover_fact(snapshot, file, offset) {
+        return Some(SourceSchemaHoverFact::Enum(fact));
+    }
+
+    let occurrence = index.occurrence(file, offset)?;
+    let symbol = &occurrence.definition;
+    match symbol.kind {
+        SymbolKind::Resource => {
+            if !is_source_schema_hover_target(snapshot, file, offset, &occurrence) {
+                return None;
+            }
+            resource_source_schema_hover_fact(snapshot, symbol).map(SourceSchemaHoverFact::Resource)
+        }
+        SymbolKind::Enum => {
+            if blocked_enum_type_symbol_hover(snapshot, file, offset, symbol)
+                || !is_source_schema_hover_target(snapshot, file, offset, &occurrence)
+            {
+                return None;
+            }
+            enum_source_schema_hover_fact(snapshot, symbol).map(SourceSchemaHoverFact::Enum)
+        }
+        SymbolKind::EnumMember => {
+            if !is_source_schema_hover_target(snapshot, file, offset, &occurrence) {
+                return None;
+            }
+            enum_member_source_schema_hover_fact(snapshot, symbol)
+                .map(SourceSchemaHoverFact::EnumMember)
+        }
+        _ => None,
+    }
+}
+
 fn function_source_callable_hover_fact(
     snapshot: &AnalysisSnapshot,
     index: &BindingIndex,
@@ -227,6 +333,282 @@ fn module_const_source_callable_hover_fact(
         ty: checked.ty.clone(),
         docs: parsed_const.docs.clone(),
     })
+}
+
+fn enum_annotation_source_schema_hover_fact(
+    snapshot: &AnalysisSnapshot,
+    file: &Path,
+    offset: usize,
+) -> Option<SourceEnumHoverFact> {
+    let site = snapshot
+        .use_sites()
+        .iter()
+        .filter(|site| site.kind == UseSiteKind::Enum)
+        .filter(|site| site.file == file && span_covers_half_open(site.span, offset))
+        .min_by_key(|site| site.span.end_byte.saturating_sub(site.span.start_byte))?;
+    let declaration = snapshot.catalog_declaration(&site.catalog_id)?;
+    if declaration.kind != CatalogEntryKind::Enum {
+        return None;
+    }
+    let schema = enum_schema_in_file(snapshot, &declaration.file, &declaration.name)?;
+    Some(enum_hover_fact(schema))
+}
+
+fn is_source_schema_hover_target(
+    snapshot: &AnalysisSnapshot,
+    file: &Path,
+    offset: usize,
+    occurrence: &SymbolOccurrence,
+) -> bool {
+    source_schema_declaration_name(snapshot, file, offset, &occurrence.definition)
+        || source_schema_reference_leaf(snapshot, file, offset, occurrence)
+}
+
+fn source_schema_reference_leaf(
+    snapshot: &AnalysisSnapshot,
+    file: &Path,
+    offset: usize,
+    occurrence: &SymbolOccurrence,
+) -> bool {
+    let symbol = &occurrence.definition;
+    let reference = &occurrence.reference;
+    reference.kind == symbol.kind
+        && reference.file == file
+        && (reference.file != symbol.file || reference.span != symbol.span)
+        && span_covers(reference.span, offset)
+        && offset_is_on_last_identifier_half_open(snapshot, file, reference.span, offset)
+}
+
+fn source_schema_declaration_name(
+    snapshot: &AnalysisSnapshot,
+    file: &Path,
+    offset: usize,
+    symbol: &SymbolRef,
+) -> bool {
+    if symbol.file != file {
+        return false;
+    }
+    let Some(analyzed) = snapshot.files.iter().find(|f| f.path == symbol.file) else {
+        return false;
+    };
+    match symbol.kind {
+        SymbolKind::Resource => {
+            let Some(resource) = parsed_resource_at(&analyzed.parsed.file, symbol.span) else {
+                return false;
+            };
+            offset_is_on_declaration_identifier(
+                &analyzed.source,
+                resource.span,
+                &resource.name,
+                offset,
+            )
+        }
+        SymbolKind::Enum => {
+            let Some(enum_decl) = parsed_enum_at(&analyzed.parsed.file, symbol.span) else {
+                return false;
+            };
+            offset_is_on_declaration_identifier(
+                &analyzed.source,
+                enum_decl.span,
+                &enum_decl.name,
+                offset,
+            )
+        }
+        SymbolKind::EnumMember => {
+            let Some(member) = parsed_enum_member_at(&analyzed.parsed.file, symbol.span) else {
+                return false;
+            };
+            offset_is_on_declaration_identifier(&analyzed.source, member.span, &member.name, offset)
+        }
+        _ => false,
+    }
+}
+
+fn blocked_enum_type_symbol_hover(
+    snapshot: &AnalysisSnapshot,
+    file: &Path,
+    offset: usize,
+    symbol: &SymbolRef,
+) -> bool {
+    if !type_annotation_at(snapshot, file, offset) {
+        return false;
+    }
+    let Some(analyzed) = snapshot.files.iter().find(|f| f.path == file) else {
+        return false;
+    };
+    identifier_path_segment_count_at(&analyzed.source, offset).is_some_and(|count| count > 1)
+        || symbol.file != file
+}
+
+fn type_annotation_at(snapshot: &AnalysisSnapshot, file: &Path, offset: usize) -> bool {
+    let Some(analyzed) = snapshot.files.iter().find(|f| f.path == file) else {
+        return false;
+    };
+    let mut found = false;
+    for declaration in &analyzed.parsed.file.declarations {
+        crate::annotation_refs::walk_declaration_type_refs(
+            declaration,
+            crate::annotation_refs::TypeAnnotationBodies::Include,
+            &mut |ty| {
+                if span_covers_half_open(ty.span, offset) {
+                    found = true;
+                }
+            },
+        );
+    }
+    found
+}
+
+fn identifier_path_segment_count_at(source: &str, offset: usize) -> Option<usize> {
+    let tokens = lex_source(source).tokens;
+    let index = tokens.iter().position(|token| {
+        token.kind == TokenKind::Identifier
+            && offset_in_name(token.span.start_byte, token.span.end_byte, offset)
+    })?;
+
+    let mut count = 1;
+    let mut cursor = index;
+    while cursor >= 2
+        && tokens[cursor - 1].kind == TokenKind::DoubleColon
+        && tokens[cursor - 2].kind == TokenKind::Identifier
+    {
+        count += 1;
+        cursor -= 2;
+    }
+
+    cursor = index;
+    while cursor + 2 < tokens.len()
+        && tokens[cursor + 1].kind == TokenKind::DoubleColon
+        && tokens[cursor + 2].kind == TokenKind::Identifier
+    {
+        count += 1;
+        cursor += 2;
+    }
+
+    Some(count)
+}
+
+fn resource_source_schema_hover_fact(
+    snapshot: &AnalysisSnapshot,
+    symbol: &SymbolRef,
+) -> Option<SourceResourceHoverFact> {
+    let analyzed = snapshot.files.iter().find(|f| f.path == symbol.file)?;
+    let resource = parsed_resource_at(&analyzed.parsed.file, symbol.span)?;
+    let schema = resource_schema_in_file(snapshot, &symbol.file, &resource.name)?;
+    Some(SourceResourceHoverFact {
+        name: schema.name.clone(),
+        docs: schema.docs.clone(),
+        members: source_resource_members(schema),
+    })
+}
+
+fn enum_source_schema_hover_fact(
+    snapshot: &AnalysisSnapshot,
+    symbol: &SymbolRef,
+) -> Option<SourceEnumHoverFact> {
+    let analyzed = snapshot.files.iter().find(|f| f.path == symbol.file)?;
+    let enum_decl = parsed_enum_at(&analyzed.parsed.file, symbol.span)?;
+    let schema = enum_schema_in_file(snapshot, &symbol.file, &enum_decl.name)?;
+    Some(enum_hover_fact(schema))
+}
+
+fn enum_member_source_schema_hover_fact(
+    snapshot: &AnalysisSnapshot,
+    symbol: &SymbolRef,
+) -> Option<SourceEnumMemberHoverFact> {
+    let analyzed = snapshot.files.iter().find(|f| f.path == symbol.file)?;
+    let (enum_name, path) = parsed_enum_member_path_at(&analyzed.parsed.file, symbol.span)?;
+    let schema = enum_schema_in_file(snapshot, &symbol.file, &enum_name)?;
+    let segments = path.iter().map(String::as_str).collect::<Vec<_>>();
+    let marrow_schema::MemberPathResolution::Found(ordinal) = schema.walk_member_path(&segments)
+    else {
+        return None;
+    };
+    let member = schema.members.get(ordinal)?;
+    Some(SourceEnumMemberHoverFact {
+        enum_name: schema.name.clone(),
+        path,
+        docs: member.docs.clone(),
+        status: enum_member_status(schema, ordinal),
+    })
+}
+
+fn enum_hover_fact(schema: &EnumSchema) -> SourceEnumHoverFact {
+    SourceEnumHoverFact {
+        name: schema.name.clone(),
+        docs: schema.docs.clone(),
+        members: (0..schema.members.len())
+            .map(|ordinal| SourceEnumMemberSummary {
+                path: schema
+                    .member_path(ordinal)
+                    .into_iter()
+                    .map(str::to_string)
+                    .collect(),
+                status: enum_member_status(schema, ordinal),
+            })
+            .collect(),
+    }
+}
+
+fn enum_member_status(schema: &EnumSchema, ordinal: usize) -> SourceEnumMemberStatus {
+    if schema.is_selectable_leaf(ordinal) {
+        SourceEnumMemberStatus::Selectable
+    } else if schema.is_category(ordinal) {
+        SourceEnumMemberStatus::Category
+    } else {
+        SourceEnumMemberStatus::Group
+    }
+}
+
+fn source_resource_members(schema: &ResourceSchema) -> Vec<SourceResourceHoverMember> {
+    let mut members = Vec::new();
+    for member in &schema.members {
+        source_resource_member(member, &mut Vec::new(), &mut members);
+    }
+    members
+}
+
+fn source_resource_member(
+    member: &Node,
+    path: &mut Vec<SourceResourceHoverPathSegment>,
+    members: &mut Vec<SourceResourceHoverMember>,
+) {
+    path.push(SourceResourceHoverPathSegment {
+        name: member.name.clone(),
+        key_params: member
+            .key_params
+            .iter()
+            .map(schema_hover_key_param)
+            .collect(),
+    });
+    match &member.kind {
+        NodeKind::Slot { ty, required, .. } => {
+            members.push(SourceResourceHoverMember {
+                path: path.clone(),
+                kind: SourceResourceHoverMemberKind::Field {
+                    required: *required,
+                    ty: render_schema_leaf_type(member, ty),
+                },
+            });
+        }
+        NodeKind::Group => {
+            members.push(SourceResourceHoverMember {
+                path: path.clone(),
+                kind: SourceResourceHoverMemberKind::Layer,
+            });
+            for child in &member.members {
+                source_resource_member(child, path, members);
+            }
+        }
+    }
+    path.pop();
+}
+
+fn schema_hover_key_param(key: &marrow_schema::KeyDef) -> SourceSchemaHoverKeyParam {
+    SourceSchemaHoverKeyParam {
+        name: key.name.clone(),
+        ty: key.ty.to_string(),
+    }
 }
 
 pub fn store_root_hover_fact_at(
@@ -334,6 +716,36 @@ fn store_root_schemas<'a>(
         .iter()
         .find(|resource| resource.name == schema.resource)?;
     Some((schema, resource))
+}
+
+fn resource_schema_in_file<'a>(
+    snapshot: &'a AnalysisSnapshot,
+    file: &Path,
+    name: &str,
+) -> Option<&'a ResourceSchema> {
+    snapshot
+        .program
+        .modules
+        .iter()
+        .find(|module| module.source_file == file)?
+        .resources
+        .iter()
+        .find(|resource| resource.name == name)
+}
+
+fn enum_schema_in_file<'a>(
+    snapshot: &'a AnalysisSnapshot,
+    file: &Path,
+    name: &str,
+) -> Option<&'a EnumSchema> {
+    snapshot
+        .program
+        .modules
+        .iter()
+        .find(|module| module.source_file == file)?
+        .enums
+        .iter()
+        .find(|enum_schema| enum_schema.name == name)
 }
 
 fn store_root_members(
@@ -584,6 +996,85 @@ fn parsed_const_at(source: &SourceFile, span: SourceSpan) -> Option<&marrow_synt
             }
             _ => None,
         })
+}
+
+fn parsed_resource_at(
+    source: &SourceFile,
+    span: SourceSpan,
+) -> Option<&marrow_syntax::ResourceDecl> {
+    source
+        .declarations
+        .iter()
+        .find_map(|declaration| match declaration {
+            Declaration::Resource(resource) if span_contains_span(resource.span, span) => {
+                Some(resource)
+            }
+            _ => None,
+        })
+}
+
+fn parsed_enum_at(source: &SourceFile, span: SourceSpan) -> Option<&marrow_syntax::EnumDecl> {
+    source
+        .declarations
+        .iter()
+        .find_map(|declaration| match declaration {
+            Declaration::Enum(enum_decl) if span_contains_span(enum_decl.span, span) => {
+                Some(enum_decl)
+            }
+            _ => None,
+        })
+}
+
+fn parsed_enum_member_at(source: &SourceFile, span: SourceSpan) -> Option<&EnumMember> {
+    for declaration in &source.declarations {
+        let Declaration::Enum(enum_decl) = declaration else {
+            continue;
+        };
+        if let Some(member) = enum_member_in(&enum_decl.members, span) {
+            return Some(member);
+        }
+    }
+    None
+}
+
+fn enum_member_in(members: &[EnumMember], span: SourceSpan) -> Option<&EnumMember> {
+    for member in members {
+        if span_contains_span(member.span, span) {
+            return Some(member);
+        }
+        if let Some(member) = enum_member_in(&member.members, span) {
+            return Some(member);
+        }
+    }
+    None
+}
+
+fn parsed_enum_member_path_at(
+    source: &SourceFile,
+    span: SourceSpan,
+) -> Option<(String, Vec<String>)> {
+    for declaration in &source.declarations {
+        let Declaration::Enum(enum_decl) = declaration else {
+            continue;
+        };
+        let mut path = Vec::new();
+        if enum_member_path_in(&enum_decl.members, span, &mut path) {
+            return Some((enum_decl.name.clone(), path));
+        }
+    }
+    None
+}
+
+fn enum_member_path_in(members: &[EnumMember], span: SourceSpan, path: &mut Vec<String>) -> bool {
+    for member in members {
+        path.push(member.name.clone());
+        if span_contains_span(member.span, span) || enum_member_path_in(&member.members, span, path)
+        {
+            return true;
+        }
+        path.pop();
+    }
+    false
 }
 
 fn checked_function_for_parsed<'a>(
@@ -967,6 +1458,10 @@ fn declaration_identifier_span(
 
 fn span_covers(span: SourceSpan, offset: usize) -> bool {
     span.start_byte <= offset && offset <= span.end_byte
+}
+
+fn span_covers_half_open(span: SourceSpan, offset: usize) -> bool {
+    span.start_byte <= offset && offset < span.end_byte
 }
 
 fn span_contains_span(outer: SourceSpan, inner: SourceSpan) -> bool {
