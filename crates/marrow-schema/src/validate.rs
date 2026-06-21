@@ -364,19 +364,24 @@ enum KeyTypeVerdict {
 enum SavedKeyTarget {
     IdentityKey { name: String },
     KeyParam { name: String },
+    LocalKey { name: String },
 }
 
 impl SavedKeyTarget {
+    /// The leading phrase a key-type message uses for this target, including the
+    /// `saved` qualifier where it applies. A local key is not saved, so it carries
+    /// its own qualifier rather than the saved prefix.
     fn label(&self) -> &'static str {
         match self {
-            Self::IdentityKey { .. } => "identity key",
-            Self::KeyParam { .. } => "key",
+            Self::IdentityKey { .. } => "saved identity key",
+            Self::KeyParam { .. } => "saved key",
+            Self::LocalKey { .. } => "local keyed-collection key",
         }
     }
 
     fn name(&self) -> &str {
         match self {
-            Self::IdentityKey { name } | Self::KeyParam { name } => name,
+            Self::IdentityKey { name } | Self::KeyParam { name } | Self::LocalKey { name } => name,
         }
     }
 
@@ -384,6 +389,7 @@ impl SavedKeyTarget {
         match self {
             Self::IdentityKey { name } => SchemaKeyTarget::IdentityKey { name },
             Self::KeyParam { name } => SchemaKeyTarget::KeyParam { name },
+            Self::LocalKey { name } => SchemaKeyTarget::LocalKey { name },
         }
     }
 }
@@ -418,8 +424,8 @@ fn key_type_error(target: SavedKeyTarget, ty: &Type, span: SourceSpan) -> Option
             },
             code: SCHEMA_UNORDERABLE_KEY,
             message: format!(
-                "saved {what} `{name}` cannot use `decimal`; saved keys use ordered \
-                 key types and `decimal` has no key encoding"
+                "{what} `{name}` cannot use `decimal`; keys use ordered key types \
+                 and `decimal` has no key encoding"
             ),
             span,
         }),
@@ -429,12 +435,24 @@ fn key_type_error(target: SavedKeyTarget, ty: &Type, span: SourceSpan) -> Option
                 ty: ty.clone(),
             },
             code: SCHEMA_NONSCALAR_KEY,
-            message: format!(
-                "saved {what} `{name}` must be an orderable scalar type, but found `{ty}`"
-            ),
+            message: format!("{what} `{name}` must be an orderable scalar type, but found `{ty}`"),
             span,
         }),
     }
+}
+
+/// The error a local keyed-collection key of type `ty` earns, or `None` if it is a
+/// valid key. A local keyed `var` and a keyed function parameter hold no saved data,
+/// but a key still projects from an orderable scalar, so they obey the same key-type
+/// allowlist as a saved keyed layer through the one [`classify_key_type`] owner.
+pub fn local_key_type_error(name: &str, ty: &Type, span: SourceSpan) -> Option<SchemaError> {
+    key_type_error(
+        SavedKeyTarget::LocalKey {
+            name: name.to_string(),
+        },
+        ty,
+        span,
+    )
 }
 
 /// The error an index argument of type `resolved` earns, sharing the orderable-key

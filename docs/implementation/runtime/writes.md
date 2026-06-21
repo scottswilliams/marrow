@@ -25,7 +25,7 @@ Step order is the correctness contract: within a plan, `DeleteData` (clear the o
 | `crates/marrow-run/src/write_dispatch.rs` | Facade: declares the five per-kind submodules and re-exports their `eval_*`/`write_*` entry points. |
 | `crates/marrow-run/src/write_dispatch/resource.rs` | Whole-record assign: flatten a `Resource` value into a `ResourceValue`, plan, apply, defer the entry check. |
 | `crates/marrow-run/src/write_dispatch/field.rs` | Single saved-field write (top-level/nested, scalar/identity): plan, immediate out-of-txn required check, apply, note created-required paths. |
-| `crates/marrow-run/src/write_dispatch/local.rs` | In-memory local-resource field set; no store contact. |
+| `crates/marrow-run/src/write_dispatch/local.rs` | In-memory local-resource field set, descending and materializing unkeyed nested groups for a dotted path; no store contact. |
 | `crates/marrow-run/src/write_dispatch/required.rs` | Required-field bookkeeping: newly-materialized fields, preexisting-data probes, required-path enumeration, checked-member predicates. |
 | `crates/marrow-run/src/write_dispatch/delete.rs` | Delete dispatch: a `LocalCollection` call target removes a local sequence position or keyed entry (a hole or absent position is a tolerant no-op); otherwise field/nested/unkeyed-group/layer-entry/record/root, with required-field and maintenance-capability guards and maintenance delete notes. A saved address that resolves to no node — an absent position, including a non-positive sequence position — folds the catchable absent fault into a no-op. |
 | `crates/marrow-run/src/group_write.rs` | Keyed-group-entry and keyed-leaf writes: lower record identity + parent layers + entry keys, branch leaf vs whole-entry, plan, apply. |

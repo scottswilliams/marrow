@@ -23,7 +23,7 @@ Every `compile_*` entry returns the schema **and** a `Vec<SchemaError>` together
 | Index requires a keyed root; non-unique index must end with all identity keys in declaration order | `SCHEMA_INDEX_REQUIRES_KEYED_ROOT` |
 | Duplicate member/key, key-member collision, index collisions | `SchemaNameCollision` payloads |
 
-`classify_key_type` is purely structural — no enum/resource list. Index args diverge in exactly one way: a `Named` arg (an enum the checker later proves scalar) is accepted where a written key would reject it. The category⟺has-children lockstep makes a value-position reject cover exactly the categories and `match` cover exactly the childless non-categories, so a legal-but-uncoverable value is impossible.
+`classify_key_type` is purely structural — no enum/resource list. `local_key_type_error` reuses it so a local keyed `var`/keyed parameter key (checked by `marrow-check`) obeys the same allowlist as a saved key. Index args diverge in exactly one way: a `Named` arg (an enum the checker later proves scalar) is accepted where a written key would reject it. The category⟺has-children lockstep makes a value-position reject cover exactly the categories and `match` cover exactly the childless non-categories, so a legal-but-uncoverable value is impossible.
 
 `SchemaError` messages are render-only. The asserted contract is the `SchemaErrorKind` payload (typed target enums: `SchemaDuplicateTarget`, `SchemaSavedUnknownTarget`, `SchemaKeyTarget`, `SchemaNameCollision`) and the stable `schema.*` codes — tests match kinds and codes, never prose.
 

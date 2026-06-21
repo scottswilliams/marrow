@@ -205,14 +205,17 @@ or a catchable branch. Assigning absence to a required field is an error; use
 `delete` only when deleting the surrounding keyed entry or resource, or when a
 tool/admin maintenance run grants that capability.
 
-A local mutable resource can be built field by field. Required fields are
-checked when the resource is saved, returned, or passed where a complete
-resource value is required. The checker reports the straight-line case where an
-uninitialized local resource variable is written as a whole saved root without a
-required plain field path, including an unkeyed nested field path, ever being
-assigned. Branches, loops, prior whole-resource reads, constructor-built values,
-and keyed-layer entries are left to the runtime `write.required_absent` backstop
-when the checker cannot prove absence.
+A local mutable resource can be built field by field, assigning each plain field
+and each unkeyed nested group field through its dotted path (`p.name.first = …`)
+the same way a saved record is populated. A keyed layer inside a resource is not
+a writable place on a local value; its entries are keyed only after the resource
+is saved. Required fields are checked when the resource is saved, returned, or
+passed where a complete resource value is required. The checker reports the
+straight-line case where an uninitialized local resource variable is written as a
+whole saved root without a required plain field path, including an unkeyed nested
+field path, ever being assigned. Branches, loops, prior whole-resource reads,
+constructor-built values, and keyed-layer entries are left to the runtime
+`write.required_absent` backstop when the checker cannot prove absence.
 
 Inside a keyed layer, required fields are checked for entries that exist. They
 do not require every possible key to be present.
@@ -486,6 +489,12 @@ const id: Id(^books) = nextId(^books)
 var loanCount = 0
 loanCount = loanCount + 1
 ```
+
+A `var` may be declared without an initializer when its type has a buildable
+initial form: a scalar starts at its zero value, a resource is built field by
+field, and a sequence or keyed tree starts empty. An enum and a store identity
+have neither a default member nor incremental construction, so a `var` of one
+must be given an initial value at its declaration.
 
 Function parameters are read-only by-value inputs. Return a new value and assign
 it at the call site when a caller-local value must change.

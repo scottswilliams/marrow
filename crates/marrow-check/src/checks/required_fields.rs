@@ -81,11 +81,11 @@ impl RequiredFieldAssignments {
             self.mark_untracked(name);
             return;
         }
-        let Some((local, field)) = direct_local_field(target) else {
+        let Some((local, field_path)) = direct_local_field_path(target) else {
             return;
         };
         if let Some(LocalResourceState::Tracked { missing, .. }) = self.lookup_mut(local) {
-            mark_assigned_field(missing, field);
+            mark_assigned_field(missing, &field_path);
         }
     }
 
@@ -159,9 +159,9 @@ impl RequiredFieldAssignments {
     }
 }
 
-fn mark_assigned_field(missing: &mut BTreeSet<String>, field: &str) {
-    missing.remove(field);
-    let prefix = format!("{field}.");
+fn mark_assigned_field(missing: &mut BTreeSet<String>, field_path: &str) {
+    missing.remove(field_path);
+    let prefix = format!("{field_path}.");
     missing.retain(|path| !path.starts_with(&prefix));
 }
 
@@ -223,12 +223,19 @@ fn bare_name(expr: &marrow_syntax::Expression) -> Option<&str> {
     Some(name)
 }
 
-fn direct_local_field(expr: &marrow_syntax::Expression) -> Option<(&str, &str)> {
+/// The local name and dotted field path a direct local-field assignment target
+/// names, e.g. `("p", "name.first")` for `p.name.first`. Only a chain of plain
+/// `.field` accesses off a bare local qualifies; a keyed-layer lookup in the path
+/// is not a tracked plain-field assignment and returns `None`.
+fn direct_local_field_path(expr: &marrow_syntax::Expression) -> Option<(&str, String)> {
     let marrow_syntax::Expression::Field { base, name, .. } = expr else {
         return None;
     };
-    let local = bare_name(base)?;
-    Some((local, name))
+    if let Some(local) = bare_name(base) {
+        return Some((local, name.clone()));
+    }
+    let (local, parent_path) = direct_local_field_path(base)?;
+    Some((local, format!("{parent_path}.{name}")))
 }
 
 fn field_list(fields: &BTreeSet<String>) -> String {

@@ -527,7 +527,10 @@ fn local_field_and_name_assignment_targets_are_allowed() {
 }
 
 #[test]
-fn nested_local_resource_field_assignment_targets_are_rejected() {
+fn nested_local_resource_group_field_assignment_targets_are_allowed() {
+    // An unkeyed nested group is a sanctioned field-by-field place on a local
+    // resource, the same as a plain field, so building one through its grouped
+    // path is not a writability error.
     let found = check_module(
         "assign-nested-local-resource-field",
         "module m\n\
@@ -535,7 +538,7 @@ fn nested_local_resource_field_assignment_targets_are_rejected() {
          fn f()\n    var book: Book\n    book.meta.subtitle = \"x\"\n",
         "check.invalid_assign_target",
     );
-    assert_eq!(found.len(), 1, "{found:#?}");
+    assert!(found.is_empty(), "{found:#?}");
 }
 
 #[test]
@@ -545,6 +548,70 @@ fn nested_local_resource_keyed_layer_field_assignment_targets_are_rejected() {
         "module m\n\
          resource Book\n    title: string\n    versions(version: int)\n        title: string\n\n\
          fn f()\n    var book: Book\n    book.versions(1).title = \"x\"\n",
+        "check.invalid_assign_target",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn unkeyed_descent_through_a_local_resource_keyed_layer_is_rejected() {
+    // Descending a keyed layer by its bare name without a key (`book.versions.title`,
+    // no `(key)`) addresses no place either: the layer is keyed only after the
+    // resource is saved. The rejection keys on the layer being keyed, not on a key
+    // call appearing in the path, so the unkeyed spelling cannot slip through and
+    // corrupt the local resource into a bogus nested group at runtime.
+    let found = check_module(
+        "assign-unkeyed-local-resource-keyed-layer-field",
+        "module m\n\
+         resource Book\n    title: string\n    versions(version: int)\n        title: string\n\n\
+         fn f()\n    var book: Book\n    book.versions.title = \"x\"\n",
+        "check.invalid_assign_target",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn unkeyed_descent_through_a_keyed_layer_below_an_unkeyed_group_is_rejected() {
+    // The schema walk descends an unkeyed group (`meta`) and still catches the keyed
+    // layer (`versions`) below it, so a write nested past a sanctioned group cannot
+    // reach a keyed layer unguarded.
+    let found = check_module(
+        "assign-unkeyed-nested-keyed-layer-field",
+        "module m\n\
+         resource Book\n    title: string\n    meta\n        versions(version: int)\n            title: string\n\n\
+         fn f()\n    var book: Book\n    book.meta.versions.title = \"x\"\n",
+        "check.invalid_assign_target",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn write_descending_a_local_resource_scalar_field_is_rejected() {
+    // A scalar field is not a group, so descending through it (`book.title.sub`)
+    // addresses no writable place. The runtime cannot honor such a write, so the
+    // checker, the owner of rejecting unhonorable writes, must reject it rather
+    // than defer to a runtime fault.
+    let found = check_module(
+        "assign-descend-local-resource-scalar-field",
+        "module m\n\
+         resource Book\n    title: string\n\n\
+         fn f()\n    var book: Book\n    book.title.sub = \"x\"\n",
+        "check.invalid_assign_target",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn write_descending_an_undeclared_local_resource_member_is_rejected() {
+    // An undeclared intermediate member (`book.bogus.deep`) is not a group of the
+    // resource, so the descent addresses no place. Reading the same undeclared
+    // member is rejected `check.unknown_field`; the write side must not be a
+    // silent asymmetry the checker blesses.
+    let found = check_module(
+        "assign-descend-undeclared-local-resource-member",
+        "module m\n\
+         resource Book\n    title: string\n\n\
+         fn f()\n    var book: Book\n    book.bogus.deep = \"x\"\n",
         "check.invalid_assign_target",
     );
     assert_eq!(found.len(), 1, "{found:#?}");

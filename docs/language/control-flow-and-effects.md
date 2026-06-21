@@ -202,6 +202,11 @@ preserves the selected shape in descending key order: direct local keyed-tree
 loops stay key-only or key/value by loop head, `reversed(values(scores))` yields
 values, and `reversed(entries(scores))` yields pairs.
 
+A local keyed tree's key columns follow the same key-type contract as a saved
+keyed layer: each key must be an orderable scalar. An identity, an enum, a
+resource, a sequence, or a `decimal` key is rejected at check, on a local keyed
+`var` and a keyed function parameter alike.
+
 A local sequence is a 1-based integer-keyed tree, so it follows the same shapes
 as any other keyed collection — identical to a saved sequence. For
 `var xs: sequence[int]`, `for pos in xs` and `for pos in keys(xs)` bind the

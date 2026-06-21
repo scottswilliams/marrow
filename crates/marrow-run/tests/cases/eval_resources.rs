@@ -53,6 +53,32 @@ fn reads_a_local_resource_field() {
     assert_eq!(value, Some(Value::Str("Mort".into())));
 }
 
+#[test]
+fn builds_a_nested_group_on_a_local_resource_field_by_field() {
+    // A nested unkeyed group is populated through its dotted field path on a local
+    // resource, the same field-by-field idiom plain fields use, and reads back from
+    // the group with no intervening whole-group assignment.
+    let program = checked_program(
+        "resource Person\n    name\n        first: string\n        last: string\n\n\
+         pub fn full(f: string, l: string): string\n    \
+         var p: Person\n    p.name.first = f\n    p.name.last = l\n    \
+         return $\"{p.name.first ?? \"?\"} {p.name.last ?? \"?\"}\"\n",
+    );
+    let store = TreeStore::memory();
+    let value = run_entry(
+        &store,
+        checked_entry!(
+            &program,
+            "test::full",
+            Value::Str("Ada".into()),
+            Value::Str("Lovelace".into())
+        ),
+    )
+    .expect("run")
+    .value;
+    assert_eq!(value, Some(Value::Str("Ada Lovelace".into())));
+}
+
 /// A program that records the run's clock instant into a saved `instant` field
 /// and reads it back, exercising `std::clock::now()` through `const` and a managed
 /// write.

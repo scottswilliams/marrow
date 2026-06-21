@@ -395,7 +395,48 @@ impl StatementCheck<'_> {
                 );
             }
         }
+        if value.is_none() {
+            self.check_uninitialized_binding(statement, annotation);
+        }
         self.bind_local(statement);
+    }
+
+    /// Reject a `var` of a type with no buildable initial form — an enum or a store
+    /// identity — declared without an initializer. A keyed `var` starts as an empty
+    /// tree, a resource builds field by field, and a scalar defaults, so each is a
+    /// legitimate uninitialized declaration; an enum and an identity have neither a
+    /// default member nor incremental construction, so an uninitialized one would only
+    /// fault at its first use.
+    fn check_uninitialized_binding(
+        &mut self,
+        statement: &marrow_syntax::Statement,
+        annotation: Option<&marrow_syntax::TypeRef>,
+    ) {
+        let marrow_syntax::Statement::Var { keys, span, .. } = statement else {
+            return;
+        };
+        if !keys.is_empty() {
+            return;
+        }
+        let Some(annotation) = annotation else {
+            return;
+        };
+        let ty =
+            resolve_diagnosed_annotation_type(annotation, self.program, self.aliases, self.file);
+        let kind = match ty {
+            MarrowType::Enum { .. } => "an enum",
+            MarrowType::Identity(_) => "a store identity",
+            _ => return,
+        };
+        self.diagnostics.push(CheckDiagnostic::error(
+            crate::diagnostics::CHECK_UNINITIALIZED_VAR,
+            self.file,
+            *span,
+            format!(
+                "a `var` of {kind} type (`{}`) must be given an initial value; it has no default to start from",
+                annotation.text
+            ),
+        ));
     }
 
     /// Whether `value` materializes a saved collection — a store root, saved keyed
@@ -505,14 +546,14 @@ impl StatementCheck<'_> {
                 "a bare store root addresses the whole collection, not a writable record; supply every identity key to write an entry",
             ));
         }
-        if self.is_nested_local_resource_field_write(target)
+        if self.local_resource_nested_write_is_unaddressable(target)
             && !has_invalid_assign_target(self.diagnostics, self.file, target.span())
         {
             self.diagnostics.push(CheckDiagnostic::error(
                 crate::rules::CHECK_INVALID_ASSIGN_TARGET,
                 self.file,
                 target.span(),
-                "nested local resource fields cannot be assigned",
+                "a nested write on a local resource must descend its declared groups; a keyed layer, a scalar field, or an undeclared member is not a place to write through",
             ));
         }
         if let Some(store) = saved_root_replacement(TargetCheck {
@@ -576,15 +617,29 @@ impl StatementCheck<'_> {
         ));
     }
 
-    fn is_nested_local_resource_field_write(&self, target: &marrow_syntax::Expression) -> bool {
-        let Some(root) = nested_local_field_root(target) else {
+    /// Whether `target` writes a nested field of a local resource through a path that
+    /// addresses no writable place, e.g. `book.versions(1).title` (or its unkeyed
+    /// spelling `book.versions.title`), `book.title.sub` descending a scalar field, or
+    /// `book.bogus.deep` descending an undeclared member. A local resource builds its
+    /// plain and grouped fields directly, so the only writable nested path descends
+    /// declared unkeyed groups (`p.name.first`); a keyed layer, a non-group field, or an
+    /// undeclared member is not a group to descend, and a write through one corrupts the
+    /// local resource into a bogus nested value at runtime. The check keys on the schema,
+    /// not on a key appearing in the source, so neither keyed spelling slips through.
+    fn local_resource_nested_write_is_unaddressable(
+        &self,
+        target: &marrow_syntax::Expression,
+    ) -> bool {
+        let Some((root, members)) = local_field_write_path(target) else {
             return false;
         };
-        self.scope
-            .iter()
-            .rev()
-            .find_map(|frame| frame.get(root))
-            .is_some_and(|ty| matches!(ty, MarrowType::Resource(_)))
+        let Some(MarrowType::Resource(name)) =
+            self.scope.iter().rev().find_map(|frame| frame.get(root))
+        else {
+            return false;
+        };
+        crate::driver::resolve_resource_type(self.program, name)
+            .is_some_and(|(resource, _)| descent_leaves_local_resource(resource, &members))
     }
 
     fn check_delete_statement(&mut self, path: &marrow_syntax::Expression) {
@@ -966,31 +1021,80 @@ fn allowed_saved_key_range_value_context(
     }
 }
 
-fn nested_local_field_root(target: &marrow_syntax::Expression) -> Option<&str> {
-    let marrow_syntax::Expression::Field { base, .. } = target else {
+/// The local root and ordered member chain of a field write, e.g.
+/// `("book", ["versions", "title"])` for both `book.versions.title` and
+/// `book.versions(1).title`. The chain is every member named between the root and the
+/// written field, ending with the field itself; a key applied to a layer is dropped,
+/// since the schema, not the source, decides whether a layer is keyed. `None` for any
+/// target that is not a dotted write rooted at a bare local name.
+fn local_field_write_path(target: &marrow_syntax::Expression) -> Option<(&str, Vec<&str>)> {
+    let marrow_syntax::Expression::Field { base, name, .. } = target else {
         return None;
     };
-    if matches!(base.as_ref(), marrow_syntax::Expression::Name { .. }) {
-        return None;
-    }
-    local_field_root(base)
+    let mut members = vec![name.as_str()];
+    let root = collect_field_members(base, &mut members)?;
+    members.reverse();
+    Some((root, members))
 }
 
-fn local_field_root(expr: &marrow_syntax::Expression) -> Option<&str> {
-    match expr {
-        marrow_syntax::Expression::Name { segments, .. } => {
-            let [name] = segments.as_slice() else {
-                return None;
-            };
-            Some(name)
+/// Walk a field-write base from the written field down to its root, pushing each
+/// member name (a `.field` step or the callee of a `layer(key)` lookup) onto
+/// `members` in reverse order and returning the bare root name. `None` for any base
+/// shape that is not a chain of field accesses and keyed-layer lookups rooted at a
+/// single bare name.
+fn collect_field_members<'a>(
+    base: &'a marrow_syntax::Expression,
+    members: &mut Vec<&'a str>,
+) -> Option<&'a str> {
+    match base {
+        marrow_syntax::Expression::Name { segments, .. } => match segments.as_slice() {
+            [name] => Some(name),
+            _ => None,
+        },
+        marrow_syntax::Expression::Field { base, name, .. } => {
+            members.push(name);
+            collect_field_members(base, members)
         }
-        marrow_syntax::Expression::Field { base, .. } => local_field_root(base),
         marrow_syntax::Expression::Call { callee, .. } => match callee.as_ref() {
-            marrow_syntax::Expression::Field { .. } => local_field_root(callee),
+            marrow_syntax::Expression::Field { base, name, .. } => {
+                members.push(name);
+                collect_field_members(base, members)
+            }
             _ => None,
         },
         _ => None,
     }
+}
+
+/// Whether descending the resource `members` chain (a field-write path from the
+/// outermost member to the written field) leaves the local resource at some
+/// intermediate step. Every intermediate name must resolve to a declared unkeyed group
+/// to descend into: a keyed layer is populated only after the resource is saved, a
+/// non-group field is a leaf with no members, and an undeclared name names nothing. Any
+/// of those means the write addresses no writable place on the local value. The final
+/// member is the field being written and is never itself descended into.
+fn descent_leaves_local_resource(
+    resource: &marrow_schema::ResourceSchema,
+    members: &[&str],
+) -> bool {
+    let Some((_, descended)) = members.split_last() else {
+        return false;
+    };
+    let mut current = &resource.members;
+    for &name in descended {
+        let Some(node) = current.iter().find(|node| node.name == name) else {
+            return true;
+        };
+        if !node.key_params.is_empty() {
+            return true;
+        }
+        if matches!(node.kind, marrow_schema::NodeKind::Group) {
+            current = &node.members;
+        } else {
+            return true;
+        }
+    }
+    false
 }
 
 struct TargetCheck<'p, 'a> {

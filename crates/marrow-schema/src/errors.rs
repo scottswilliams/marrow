@@ -119,7 +119,7 @@ impl SchemaErrorKind {
             Self::UnorderableKey { target, .. } | Self::NonScalarKey { target, .. } => match target
             {
                 SchemaKeyTarget::IdentityKey { .. } => Some(SchemaStoreInvalidation::Store),
-                SchemaKeyTarget::KeyParam { .. } => None,
+                SchemaKeyTarget::KeyParam { .. } | SchemaKeyTarget::LocalKey { .. } => None,
                 SchemaKeyTarget::IndexArg { index, .. } => Some(SchemaStoreInvalidation::Index {
                     name: index.clone(),
                 }),
@@ -175,9 +175,22 @@ pub enum SchemaNameCollision {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SchemaKeyTarget {
-    IdentityKey { name: String },
-    KeyParam { name: String },
-    IndexArg { index: String, arg: String },
+    IdentityKey {
+        name: String,
+    },
+    KeyParam {
+        name: String,
+    },
+    IndexArg {
+        index: String,
+        arg: String,
+    },
+    /// A local keyed-collection key column — a local keyed `var` or a keyed
+    /// function parameter. It holds nothing saved, but follows the same key-type
+    /// contract as a saved keyed layer.
+    LocalKey {
+        name: String,
+    },
 }
 
 /// A resource member name collides with another member at the same level.

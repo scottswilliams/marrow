@@ -877,6 +877,7 @@ pub(crate) fn check_file_source(
         match declaration {
             marrow_syntax::Declaration::Function(function) => {
                 rules::check_function_body(file_path, function, diagnostics);
+                check_local_key_types(file_path, function, diagnostics);
                 functions.push(checked_function(function, names));
             }
             marrow_syntax::Declaration::Resource(_) => {}
@@ -989,6 +990,94 @@ pub(crate) fn push_schema_error(
     error: marrow_schema::SchemaError,
 ) {
     diagnostics.push(schema_diagnostic(file_path, error));
+}
+
+/// Validate the key types of a function's local keyed collections — its keyed
+/// parameters and the keyed `var` declarations in its body — against the same
+/// orderable-scalar allowlist a saved keyed layer obeys. A local keyed tree holds no
+/// saved data, but its key still projects from an orderable scalar, so an `Id`, an
+/// enum, a resource, a sequence, or a `decimal` key is rejected here as it would be on
+/// a saved layer, before it reaches the runtime.
+fn check_local_key_types(
+    file_path: &Path,
+    function: &marrow_syntax::FunctionDecl,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    for param in &function.params {
+        check_key_param_types(file_path, &param.keys, diagnostics);
+    }
+    check_block_local_key_types(file_path, &function.body, diagnostics);
+}
+
+fn check_block_local_key_types(
+    file_path: &Path,
+    block: &marrow_syntax::Block,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    use marrow_syntax::Statement;
+    for statement in &block.statements {
+        match statement {
+            Statement::Var { keys, .. } => check_key_param_types(file_path, keys, diagnostics),
+            Statement::If {
+                then_block,
+                else_ifs,
+                else_block,
+                ..
+            }
+            | Statement::IfConst {
+                then_block,
+                else_ifs,
+                else_block,
+                ..
+            } => {
+                check_block_local_key_types(file_path, then_block, diagnostics);
+                for else_if in else_ifs {
+                    check_block_local_key_types(file_path, &else_if.block, diagnostics);
+                }
+                if let Some(block) = else_block {
+                    check_block_local_key_types(file_path, block, diagnostics);
+                }
+            }
+            Statement::While { body, .. }
+            | Statement::For { body, .. }
+            | Statement::Transaction { body, .. } => {
+                check_block_local_key_types(file_path, body, diagnostics);
+            }
+            Statement::Try { body, catch, .. } => {
+                check_block_local_key_types(file_path, body, diagnostics);
+                if let Some(catch) = catch {
+                    check_block_local_key_types(file_path, &catch.block, diagnostics);
+                }
+            }
+            Statement::Match { arms, .. } => {
+                for arm in arms {
+                    check_block_local_key_types(file_path, &arm.block, diagnostics);
+                }
+            }
+            Statement::Const { .. }
+            | Statement::Assign { .. }
+            | Statement::Delete { .. }
+            | Statement::Return { .. }
+            | Statement::ReturnAbsent { .. }
+            | Statement::Break { .. }
+            | Statement::Continue { .. }
+            | Statement::Throw { .. }
+            | Statement::Expr { .. } => {}
+        }
+    }
+}
+
+fn check_key_param_types(
+    file_path: &Path,
+    keys: &[marrow_syntax::KeyParam],
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    for key in keys {
+        let ty = marrow_schema::Type::resolve(&key.ty);
+        if let Some(error) = marrow_schema::local_key_type_error(&key.name, &ty, key.ty.span) {
+            push_schema_error(file_path, diagnostics, error);
+        }
+    }
 }
 
 /// Whether `diagnostic` repeats one already collected, by typed identity: same

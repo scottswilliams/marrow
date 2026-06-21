@@ -68,6 +68,12 @@ pub const CHECK_LOSSY_ROUND_TRIP: &str = "check.lossy_round_trip";
 /// A straight-line local resource value is missing a required field when written
 /// as a whole saved root.
 pub const CHECK_REQUIRED_ABSENT: &str = "check.required_absent";
+/// A `var` of a type with no buildable initial form — an enum or a store identity —
+/// is declared without an initializer. A scalar var defaults, a resource var builds
+/// field by field, and a sequence or keyed-tree var starts empty, but an enum and an
+/// identity have no default member and no incremental construction, so they must be
+/// given an initial value at the declaration.
+pub const CHECK_UNINITIALIZED_VAR: &str = "check.uninitialized_var";
 /// A loop condition or body contains a saved-data write outside an explicit transaction.
 pub const CHECK_COMMIT_AMPLIFICATION: &str = "check.commit_amplification";
 /// A value whose type cannot be resolved is stored into a concrete typed place.

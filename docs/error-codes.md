@@ -151,6 +151,7 @@ over every configured source and test file.
 | `check.assignment_type` | A value's type does not match the typed binding or assignment target it is stored into. |
 | `check.lossy_round_trip` | Warning: a whole saved-record replacement targets a record shape with keyed child layers, so omitted keyed children will be cleared. |
 | `check.required_absent` | A straight-line whole saved-root write stores a local resource variable whose required field path was never assigned. Inconclusive paths remain runtime `write.required_absent` checks. |
+| `check.uninitialized_var` | A `var` of a type with no buildable initial form — an enum or a store identity — is declared without an initializer. A scalar var defaults, a resource var builds field by field, and a sequence or keyed-tree var starts empty, but an enum and an identity have no default member and no incremental construction, so they must be given an initial value at the declaration. |
 | `check.commit_amplification` | Warning: a loop condition or body contains a saved-data write outside an enclosing `transaction`. |
 | `check.untyped_value` | A value whose type cannot be resolved (`unknown`) is stored into a concrete typed place. |
 | `check.key_type` | A saved key or identity argument's type does not match the key it addresses: a scalar of the wrong type in a keyed lookup, or an identity of a foreign store root spliced into a keyspace. |
@@ -186,7 +187,7 @@ over every configured source and test file.
 | `check.category_not_selectable` | A category enum member is named in value position; only a concrete member under it is selectable. |
 | `check.is_requires_enum` | The left operand of `is` is not an enum value. |
 | `check.is_type` | The right operand of `is` is not a member of the left operand's enum. |
-| `check.invalid_assign_target` | An assignment target is not a writable place: a non-place expression, a read-only parameter, or an immutable binding (a `const`, a loop variable, or an `if const` binding). |
+| `check.invalid_assign_target` | An assignment target is not a writable place: a non-place expression, a read-only parameter, an immutable binding (a `const`, a loop variable, or an `if const` binding), or a nested write on a local resource whose path does not descend its declared groups — a keyed layer (whose layers are keyed only after the resource is saved), a scalar field, or an undeclared member. An unkeyed nested group field path on a local resource is writable and is not flagged. |
 | `check.non_constant_const` | A `const` initializer is not a constant expression. |
 | `check.loop_mutates_traversed_layer` | A loop over a saved layer mutates that same layer: a whole keyed-entry write, delete, or append that changes its key set, or a field write at a key that is not provably the loop's key (which may insert or rewrite a sibling). Collect the keys into a local sequence first. The static counterpart of `run.traversal`. |
 | `check.neighbor_unsupported` | `next`/`prev` targets a shape with no single key level to seek: a composite-identity record or an index branch. |
@@ -218,8 +219,8 @@ Resource-schema rules. Reported during a project check alongside `check.*`.
 | `schema.unknown_in_saved` | A managed saved field or key is typed `unknown`; saved schemas use concrete types. |
 | `schema.key_member_collision` | Two store members collide in the store namespace: a top-level field or layer shares a name with an identity key, or a declared field shares a name with an index. |
 | `schema.unknown_index_arg` | An index argument names neither an identity key nor a top-level member. |
-| `schema.unorderable_key` | A saved key has a type with no order-preserving key encoding (currently `decimal`). |
-| `schema.nonscalar_key` | A saved key (an identity key or keyed-layer key parameter) is typed as an identity, a name, or a sequence; saved keys must be orderable scalars. Index arguments also reject sequences, keyed-layer members, and resource-name fields, while top-level enum and `Id(^store)` fields are valid index components. |
+| `schema.unorderable_key` | A key (saved or local keyed-collection) has a type with no order-preserving key encoding (currently `decimal`). |
+| `schema.nonscalar_key` | A key (a saved identity key or keyed-layer key parameter, or a local keyed-`var`/keyed-parameter key column) is typed as an identity, a name, or a sequence; keys must be orderable scalars. A local keyed tree follows the same key-type contract as a saved keyed layer. Index arguments also reject sequences, keyed-layer members, and resource-name fields, while top-level enum and `Id(^store)` fields are valid index components. |
 | `schema.non_enum_named_field` | A saved field or explicit keyed leaf has a named value type that is not a declared enum; these members store scalars, identities, or declared enum values. Direct resource names on keyed fields are typed keyed entries instead. |
 | `schema.index_missing_identity_keys` | A non-unique index does not end with all identity keys in declaration order. |
 | `schema.index_requires_keyed_root` | An index is declared on a store with no keyed root. |

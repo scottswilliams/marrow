@@ -65,6 +65,97 @@ fn reports_unknown_type_for_parser_migrated_keyed_var_key_annotation() {
 }
 
 #[test]
+fn rejects_a_local_keyed_var_with_a_nonscalar_key_type() {
+    // A local keyed tree obeys the same key-type allowlist as a saved keyed layer:
+    // an identity, an enum, or a resource key projects to no orderable scalar, so it
+    // is rejected at check rather than faulting at the first key write.
+    for key_type in ["Id(^books)", "Color", "Book"] {
+        let src = format!(
+            "module m\n\
+             enum Color\n    red\n    green\n\
+             resource Book\n    required title: string\n\
+             store ^books(id: int): Book\n\n\
+             fn f()\n    var t(k: {key_type}): bool\n"
+        );
+        let found = check_module(
+            "local-keyed-var-nonscalar-key",
+            &src,
+            "schema.nonscalar_key",
+        );
+        assert_eq!(found.len(), 1, "{key_type}: {found:#?}");
+    }
+}
+
+#[test]
+fn rejects_a_keyed_parameter_with_a_nonscalar_key_type() {
+    // A keyed function parameter is a local keyed collection too, so the same key-type
+    // rule applies to its declared key columns.
+    let found = check_module(
+        "keyed-param-nonscalar-key",
+        "module m\n\
+         enum Color\n    red\n    green\n\n\
+         fn f(seen(k: Color): bool)\n    print(\"h\")\n",
+        "schema.nonscalar_key",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn accepts_a_local_keyed_var_with_a_scalar_key_type() {
+    let found = check_script(
+        "local-keyed-var-scalar-key",
+        "fn f()\n    var scores(player: string): int\n    var seen(k: int): bool\n",
+        "schema.nonscalar_key",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn rejects_an_uninitialized_enum_var() {
+    // An enum has no default member and no incremental construction, so an
+    // uninitialized enum `var` is caught at check rather than faulting at first use.
+    let found = check_module(
+        "uninitialized-enum-var",
+        "module m\n\
+         enum Status\n    active\n    archived\n\n\
+         fn f()\n    var s: Status\n    s = Status::active\n",
+        "check.uninitialized_var",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn rejects_an_uninitialized_identity_var() {
+    let found = check_module(
+        "uninitialized-identity-var",
+        "module m\n\
+         resource Book\n    required title: string\n\
+         store ^books(id: int): Book\n\n\
+         fn f()\n    var x: Id(^books)\n    x = nextId(^books)\n",
+        "check.uninitialized_var",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn accepts_an_initialized_enum_var_and_uninitialized_buildable_vars() {
+    // An enum var with an initializer, a resource var built field by field, a keyed
+    // tree, and a scalar that defaults are all legitimate uninitialized or
+    // initialized declarations.
+    let found = check_module(
+        "initialized-enum-and-buildable-vars",
+        "module m\n\
+         enum Status\n    active\n    archived\n\
+         resource Book\n    required title: string\n\n\
+         fn f()\n    \
+         var s: Status = Status::active\n    \
+         var b: Book\n    var n: int\n    var t(k: int): bool\n",
+        "check.uninitialized_var",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
 fn unknown_annotation_diagnostics_do_not_cascade_to_untyped_values() {
     let report = check_module_report(
         "unknown-annotation-cascade",
