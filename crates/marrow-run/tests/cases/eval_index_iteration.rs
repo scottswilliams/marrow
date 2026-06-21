@@ -64,6 +64,14 @@ pub fn titlePairsBetween(start: int, end: int)
     for id, post in ^posts.byDate(start..end)
         print($\"{id}: {post.title}\")
 
+pub fn valuesBetween(start: int, end: int)
+    for post in values(^posts.byDate(start..end))
+        print(post.title)
+
+pub fn entriesBetween(start: int, end: int)
+    for id, post in entries(^posts.byDate(start..end))
+        print($\"{id}: {post.title}\")
+
 pub fn countBetween(start: int, end: int): int
     return count(^posts.byDate(start..end))
 
@@ -358,6 +366,53 @@ fn bounded_index_range_streams_matching_records() {
     )
     .expect("inverted");
     assert_eq!(inverted.output, "");
+}
+
+/// `values(...)` and `entries(...)` over a non-unique index branch materialize
+/// the whole record at each streamed identity, exactly as the bare two-name loop
+/// (`titlePairsBetween`) does. The single-name `values` form reads the record
+/// value; the two-name `entries` form pairs the identity with that record.
+#[test]
+fn value_materialization_wrappers_stream_records_over_a_non_unique_index_branch() {
+    let program = checked_program(POST_DATES);
+    let store = TreeStore::memory();
+    for (id, title, published) in [(1, "A", 10), (2, "B", 20), (3, "C", 30), (4, "D", 40)] {
+        run_entry(
+            &store,
+            checked_entry!(
+                &program,
+                "test::add",
+                Value::Int(id),
+                Value::Str(title.into()),
+                Value::Int(published),
+            ),
+        )
+        .expect("add");
+    }
+
+    let values = run_entry(
+        &store,
+        checked_entry!(
+            &program,
+            "test::valuesBetween",
+            Value::Int(20),
+            Value::Int(40)
+        ),
+    )
+    .expect("values");
+    assert_eq!(values.output, "B\nC\n");
+
+    let entries = run_entry(
+        &store,
+        checked_entry!(
+            &program,
+            "test::entriesBetween",
+            Value::Int(20),
+            Value::Int(40)
+        ),
+    )
+    .expect("entries");
+    assert_eq!(entries.output, "2: B\n3: C\n");
 }
 
 #[test]

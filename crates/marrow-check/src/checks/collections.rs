@@ -93,13 +93,31 @@ pub(super) fn collection_loop_binding_types(
         return Some((saved_path_key_type(program, path, scope, file)?, None));
     }
     if let Some(path) = collection_wrapper_arg(iterable, "values") {
-        if two_name || is_saved_index_branch_path(program, path, scope, file) {
+        if two_name {
+            return None;
+        }
+        // A non-unique index branch streams the store identity, so `values(...)`
+        // materializes the whole record at it, exactly as the bare two-name form
+        // does. A unique branch is a single-identity lookup, not a stream.
+        if let Some(resource) = non_unique_index_branch_resource_type(program, path, scope, file) {
+            return Some((resource, None));
+        }
+        if is_saved_index_branch_path(program, path, scope, file) {
             return None;
         }
         return Some((saved_path_value_type(program, path, scope, file), None));
     }
     if let Some(path) = collection_wrapper_arg(iterable, "entries") {
-        if !two_name || is_saved_index_branch_path(program, path, scope, file) {
+        if !two_name {
+            return None;
+        }
+        if let Some(resource) = non_unique_index_branch_resource_type(program, path, scope, file) {
+            return Some((
+                saved_path_key_type(program, path, scope, file)?,
+                Some(resource),
+            ));
+        }
+        if is_saved_index_branch_path(program, path, scope, file) {
             return None;
         }
         return Some((
@@ -110,12 +128,12 @@ pub(super) fn collection_loop_binding_types(
     saved_path_key_type(program, iterable, scope, file)?;
     if is_saved_index_branch_path(program, iterable, scope, file) {
         if two_name {
-            let checked = checked_saved_expr(program, iterable, scope, file)?;
-            if SavedPlaceResolver::new(program).non_unique_index_branch_yields_identity(&checked) {
-                let place = checked.saved_place()?;
+            if let Some(resource) =
+                non_unique_index_branch_resource_type(program, iterable, scope, file)
+            {
                 return Some((
                     saved_path_key_type(program, iterable, scope, file)?,
-                    Some(saved_place_resource_type(program, place)),
+                    Some(resource),
                 ));
             }
             return None;
@@ -543,7 +561,10 @@ fn entries_loop_arg_status(
     file: &Path,
 ) -> EntriesLoopArgStatus {
     if saved_path_key_type(program, arg, scope, file).is_some() {
-        return if is_saved_index_branch_path(program, arg, scope, file) {
+        // A non-unique index branch pairs each streamed identity with its
+        // materialized record, so `entries(...)` is supported over it; only a
+        // unique branch — a single-identity lookup — has no entry stream.
+        return if is_saved_unique_index_branch_path(program, arg, scope, file) {
             EntriesLoopArgStatus::Unsupported
         } else {
             EntriesLoopArgStatus::Supported
@@ -657,6 +678,24 @@ fn saved_place_resource_type(program: &CheckedProgram, place: &CheckedSavedPlace
     SavedPlaceResolver::new(program).record_root_element_type(place)
 }
 
+/// The store's resource type when `path` names a non-unique index branch, whose
+/// streamed store identity materializes the whole record. `None` for a unique
+/// index branch (a single-identity lookup) or any non-index path, so the caller
+/// keeps its own value-typing for those shapes.
+fn non_unique_index_branch_resource_type(
+    program: &CheckedProgram,
+    path: &marrow_syntax::Expression,
+    scope: &[HashMap<String, MarrowType>],
+    file: &Path,
+) -> Option<MarrowType> {
+    let checked = checked_saved_expr(program, path, scope, file)?;
+    let resolver = SavedPlaceResolver::new(program);
+    if !resolver.non_unique_index_branch_yields_identity(&checked) {
+        return None;
+    }
+    Some(saved_place_resource_type(program, checked.saved_place()?))
+}
+
 pub(crate) fn is_saved_index_branch_path(
     program: &CheckedProgram,
     path: &marrow_syntax::Expression,
@@ -735,7 +774,7 @@ fn saved_key_range_subject(mut path: &marrow_syntax::Expression) -> &marrow_synt
     }
 }
 
-fn is_saved_unique_index_branch_path(
+pub(crate) fn is_saved_unique_index_branch_path(
     program: &CheckedProgram,
     path: &marrow_syntax::Expression,
     scope: &[HashMap<String, MarrowType>],

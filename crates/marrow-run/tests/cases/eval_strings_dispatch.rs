@@ -242,11 +242,13 @@ fn an_unknown_function_is_rejected() {
 }
 
 #[test]
-fn values_and_entries_over_an_index_branch_are_unsupported() {
-    let resource = BOOK_SHELF_INDEX_SCHEMA;
+fn values_and_entries_over_a_unique_index_lookup_are_unsupported() {
+    let resource = BOOK_ISBN_SCHEMA;
     for builtin in ["values", "entries"] {
         checker_rejects(
-            &format!("{resource}fn f()\n    {builtin}(^books.byShelf(\"x\"))\n"),
+            &format!(
+                "{resource}fn f()\n    for x in {builtin}(^books.byIsbn(\"978-0\"))\n        print($\"{{x}}\")\n"
+            ),
             "check.collection_unsupported",
         );
     }

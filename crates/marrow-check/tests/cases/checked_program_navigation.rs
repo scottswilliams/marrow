@@ -1,7 +1,8 @@
 use crate::support;
 use marrow_check::{
     CHECK_CALL_ARGUMENT, CHECK_KEY_REQUIRES_SINGLE_KEY, CHECK_NEIGHBOR_UNSUPPORTED,
-    CHECK_NEXT_ID_REQUIRES_SINGLE_INT, CHECK_OPERATOR_TYPE, CHECK_UNRESOLVED_CALL, check_project,
+    CHECK_NEXT_ID_REQUIRES_SINGLE_INT, CHECK_OPERATOR_TYPE, CHECK_UNRESOLVED_CALL,
+    DiagnosticPayload, check_project,
 };
 
 use support::{check_module, check_module_report, config, temp_project, with_code, write};
@@ -112,6 +113,100 @@ fn next_id_over_a_singleton_root_is_flagged() {
         "{:#?}",
         report.diagnostics
     );
+}
+
+/// `nextId` over an argument that is not a saved store root — a literal, a
+/// non-identity local, or a scalar field — cannot allocate an identity, so it is
+/// rejected at check with `check.call_argument` rather than checking clean and
+/// faulting `write.next_id_unsupported`/`run.unsupported` at run. The diagnostic
+/// reports at the call span and carries no typed payload.
+#[test]
+fn next_id_over_a_non_root_argument_is_flagged() {
+    let root = temp_project("program-nextid-non-root", |root| {
+        write(
+            root,
+            "src/shelf/books.mw",
+            "module shelf::books\n\
+             resource Book\n\
+             \x20   required title: string\n\
+             store ^books(id: int): Book\n\
+             fn bad()\n\
+             \x20   const x = nextId(5)\n",
+        );
+    });
+    let (report, _) = check_project(&root, &config()).expect("check");
+
+    let flagged = report
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.code == CHECK_CALL_ARGUMENT)
+        .unwrap_or_else(|| panic!("{:#?}", report.diagnostics));
+    assert_eq!(flagged.span.line, 6);
+    assert_eq!(flagged.span.column, 15);
+    assert_eq!(flagged.payload, DiagnosticPayload::None);
+}
+
+/// `nextId` over a saved path that is not a bare store root — an index branch
+/// here — addresses no allocatable identity, so it is rejected at check with
+/// `check.call_argument` on shape rather than checking clean (the index branch
+/// types to `unknown`) and faulting `run.unsupported` at run. The diagnostic
+/// reports at the call span with no typed payload.
+#[test]
+fn next_id_over_an_index_branch_is_flagged() {
+    let root = temp_project("program-nextid-index-branch", |root| {
+        write(
+            root,
+            "src/shelf/books.mw",
+            "module shelf::books\n\
+             resource Book\n\
+             \x20   required title: string\n\
+             \x20   shelf: string\n\
+             store ^books(id: int): Book\n\
+             \x20   index byShelf(shelf, id)\n\
+             fn bad()\n\
+             \x20   const x = nextId(^books.byShelf(\"fiction\"))\n",
+        );
+    });
+    let (report, _) = check_project(&root, &config()).expect("check");
+
+    let flagged = report
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.code == CHECK_CALL_ARGUMENT)
+        .unwrap_or_else(|| panic!("{:#?}", report.diagnostics));
+    assert_eq!(flagged.span.line, 8);
+    assert_eq!(flagged.span.column, 15);
+    assert_eq!(flagged.payload, DiagnosticPayload::None);
+}
+
+/// A concrete non-identity argument to `key` — a literal, a non-identity local,
+/// or a scalar field — has no store identity to project, so it is rejected at
+/// check with `check.call_argument` rather than checking clean and faulting
+/// `run.type` at run. The diagnostic reports at the call span with no payload.
+#[test]
+fn key_over_a_non_identity_argument_is_flagged() {
+    let root = temp_project("program-key-non-identity", |root| {
+        write(
+            root,
+            "src/shelf/books.mw",
+            "module shelf::books\n\
+             resource Book\n\
+             \x20   required title: string\n\
+             store ^books(id: int): Book\n\
+             fn bad()\n\
+             \x20   const x = key(\"hi\")\n",
+        );
+    });
+    let (report, _) = check_project(&root, &config()).expect("check");
+
+    let flagged = report
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.code == CHECK_CALL_ARGUMENT)
+        .unwrap_or_else(|| panic!("{:#?}", report.diagnostics));
+    assert_eq!(flagged.span.line, 6);
+    assert_eq!(flagged.span.column, 15);
+    assert_eq!(flagged.payload, DiagnosticPayload::None);
 }
 
 // --- Ordered navigation: reversed / next / prev ---

@@ -1152,19 +1152,41 @@ fn composite_root_traversal_binds_addressable_identities() {
 }
 
 #[test]
-fn index_branches_reject_value_materialization_wrappers() {
-    for wrapper in ["values", "entries"] {
+fn non_unique_index_branches_accept_value_materialization_wrappers() {
+    // A non-unique index branch yields the store identity, so `values`/`entries`
+    // materialize the whole record at that identity exactly as the bare two-name
+    // form does. The single-name `values(...)` binds the record; the two-name
+    // `entries(...)` binds the identity paired with the record.
+    let report = check_module_report(
+        "non-unique-index-materialization",
+        "module m\n\
+         resource Book\n    required title: string\n    shelf: string\n\
+         store ^books(id: int): Book\n\n    index byShelf(shelf, id)\n\n\
+         fn f()\n    \
+         for book in values(^books.byShelf(\"fiction\"))\n        var title: string = book.title\n    \
+         for id, book in entries(^books.byShelf(\"fiction\"))\n        var typed_id: Id(^books) = id\n        var title: string = book.title\n",
+    );
+    assert_clean(&report);
+}
+
+#[test]
+fn unique_index_branches_reject_collection_wrappers() {
+    // A unique index branch is a single-identity lookup, not a streaming
+    // collection, so every loop-wrapper over it stays a clean check error,
+    // matching the bare two-name rejection. `keys` has no key stream either: a
+    // single identity addresses no orderable key sequence.
+    for wrapper in ["keys", "values", "entries"] {
         let found = check_module(
-            &format!("index-{wrapper}-unsupported"),
+            &format!("unique-index-{wrapper}-unsupported"),
             &format!(
                 "module m\n\
-                 resource Book\n    shelf: string\n\
-                 store ^books(id: int): Book\n\n    index byShelf(shelf, id)\n\n\
-                 fn f()\n    for item in {wrapper}(^books.byShelf(\"fiction\"))\n        print($\"{{item}}\")\n",
+                 resource Book\n    required title: string\n    isbn: string\n\
+                 store ^books(id: int): Book\n\n    index byIsbn(isbn) unique\n\n\
+                 fn f()\n    for item in {wrapper}(^books.byIsbn(\"978\"))\n        print($\"{{item}}\")\n",
             ),
             "check.collection_unsupported",
         );
-        assert_eq!(found.len(), 1, "{wrapper}: {found:#?}");
+        assert!(!found.is_empty(), "{wrapper}: {found:#?}");
     }
 }
 

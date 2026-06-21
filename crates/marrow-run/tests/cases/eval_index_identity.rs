@@ -4,7 +4,7 @@
 use crate::support;
 use support::*;
 
-use marrow_run::{RUN_TRAVERSAL, RUN_TYPE, RUN_UNSUPPORTED, Value};
+use marrow_run::{RUN_TRAVERSAL, RUN_TYPE, Value};
 use marrow_store::key::{SavedKey, encode_identity_payload};
 use marrow_store::tree::TreeStore;
 
@@ -392,34 +392,16 @@ fn helper_call_mutating_a_traversed_unique_index_faults() {
     );
 }
 
+/// A unique index lookup addresses a single identity, so it has no key stream
+/// for `keys(...)` to yield. The checker rejects it with
+/// `check.collection_unsupported`, so the program never reaches the runtime.
 #[test]
-fn keys_over_a_unique_index_lookup_is_not_a_collection() {
-    let program = checked_program(&format!(
-        "{BOOK_ISBN_SCHEMA}pub fn register(id: int, t: string, isbn: string)\n    ^books(id).title = t\n    ^books(id).isbn = isbn\n\npub fn countKeysByIsbn(isbn: string): int\n    var c = 0\n    for id in keys(^books.byIsbn(isbn))\n        c = c + 1\n    return c\n"
-    ));
-    let store = TreeStore::memory();
-    run_entry(
-        &store,
-        checked_entry!(
-            &program,
-            "test::register",
-            Value::Int(42),
-            Value::Str("Mort".into()),
-            Value::Str("978-0".into()),
+fn keys_over_a_unique_index_lookup_is_rejected_by_the_checker() {
+    checker_rejects(
+        &format!(
+            "{BOOK_ISBN_SCHEMA}pub fn countKeysByIsbn(isbn: string): int\n    var c = 0\n    for id in keys(^books.byIsbn(isbn))\n        c = c + 1\n    return c\n"
         ),
-    )
-    .expect("register");
-
-    assert_run_error(
-        run_entry(
-            &store,
-            checked_entry!(
-                &program,
-                "test::countKeysByIsbn",
-                Value::Str("978-0".into())
-            ),
-        ),
-        RUN_UNSUPPORTED,
+        "check.collection_unsupported",
     );
 }
 

@@ -28,8 +28,8 @@ use crate::{
 
 use super::collections::{
     collection_loop_binding_types, has_collection_unsupported, is_concrete_scalar_value,
-    is_recognized_collection, is_saved_index_branch_path, is_saved_index_range_path,
-    is_saved_key_range_path, saved_path_key_type,
+    is_recognized_collection, is_saved_index_range_path, is_saved_key_range_path,
+    is_saved_unique_index_branch_path, saved_path_key_type,
 };
 use super::diagnostics::{call_diagnostic, key_type_diagnostic};
 use super::saved_keys::check_keys_against;
@@ -121,6 +121,7 @@ fn check_special_single_name_call(
         "nextId" => Some(check_next_id(
             env.program,
             args,
+            arg_types,
             env.span,
             env.file,
             env.diagnostics,
@@ -159,8 +160,8 @@ fn check_special_single_name_call(
         "keys" | "values" => {
             check_arity(name, 1, args, env.span, env.file, env.diagnostics);
             let rejected = check_collection_combinator_args(env, name, args, arg_types);
-            if !rejected && name == "values" {
-                check_value_materialization_args(env, name, args);
+            if !rejected {
+                check_index_branch_wrapper_args(env, name, args);
             }
             // A rejected argument has no stream to key or materialize; typing the
             // result `invalid` (not `unknown`) keeps a typed consumer from stacking a
@@ -174,7 +175,7 @@ fn check_special_single_name_call(
         }
         "entries" => {
             check_arity(name, 1, args, env.span, env.file, env.diagnostics);
-            check_value_materialization_args(env, name, args);
+            check_index_branch_wrapper_args(env, name, args);
             Some(MarrowType::Unknown)
         }
         "append" => {
@@ -809,22 +810,33 @@ fn check_collection_combinator_args(
     false
 }
 
-fn check_value_materialization_args(
+/// Reject a loop-wrapper over a unique index branch. A unique branch is a
+/// single-identity lookup, not a stream, so it has no key sequence for `keys` to
+/// yield and no record stream for `values`/`entries` to materialize. A non-unique
+/// branch streams the store identity, so its record materializes through every
+/// wrapper, exactly as the bare two-name form does.
+fn check_index_branch_wrapper_args(
     env: &mut CallEnv<'_>,
     name: &str,
     args: &[marrow_syntax::Argument],
 ) {
     let [arg] = args else { return };
     if arg.name.is_some()
-        || !is_saved_index_branch_path(env.program, &arg.value, env.scope, env.file)
+        || !is_saved_unique_index_branch_path(env.program, &arg.value, env.scope, env.file)
     {
         return;
     }
+    let message = if name == "keys" {
+        "`keys` cannot stream keys from a unique index lookup, which addresses a single identity"
+            .to_string()
+    } else {
+        format!("`{name}` cannot materialize values from a unique index lookup; use `keys`")
+    };
     env.diagnostics.push(CheckDiagnostic::error(
         CHECK_COLLECTION_UNSUPPORTED,
         env.file,
         env.span,
-        format!("`{name}` cannot materialize values from an index branch; use `keys`"),
+        message,
     ));
 }
 
@@ -1251,12 +1263,17 @@ fn check_identity_constructor(
 
 /// Type `nextId(^root)` and gate it on a single-`int` saved root, which types to
 /// `Id(^root)`; any other identity shape reports
-/// `check.next_id_requires_single_int`. A non-`^root` or wrong-arity argument is
-/// left to the runtime, and an undeclared root is reported elsewhere, so neither is
+/// `check.next_id_requires_single_int`. The argument must be a bare keyed store
+/// root — the only shape the runtime can allocate against — so `check.call_argument`
+/// rejects a saved path that is not a bare root (an index branch, keyed lookup, or
+/// field) on shape, and a concrete non-saved argument (a literal, an identity value,
+/// or a scalar) on type. An undeclared root is reported by resolution, and an
+/// `unknown`-typed non-saved argument defers to a cross-module result, so neither is
 /// double-reported here.
 pub(crate) fn check_next_id(
     program: &CheckedProgram,
     args: &[marrow_syntax::Argument],
+    arg_types: &[MarrowType],
     span: SourceSpan,
     file: &Path,
     diagnostics: &mut Vec<CheckDiagnostic>,
@@ -1265,6 +1282,33 @@ pub(crate) fn check_next_id(
         return MarrowType::Unknown;
     };
     let marrow_syntax::Expression::SavedRoot { name: root, .. } = &arg.value else {
+        // A saved path that is not a bare `^root` — an index branch, a keyed
+        // lookup, a field — is statically the wrong shape regardless of the type
+        // it lowers to (an index branch lowers to `unknown`), so reject it on
+        // shape. A non-saved argument is rejected only when its type is concrete;
+        // an `unknown`-typed non-saved value defers to a cross-module result.
+        if crate::rules::is_saved_path(&arg.value) {
+            diagnostics.push(CheckDiagnostic::error(
+                CHECK_CALL_ARGUMENT,
+                file,
+                span,
+                "`nextId` requires a bare keyed store root (`^store`), \
+                 not a saved path into one",
+            ));
+        } else if let Some(arg_type) = arg_types
+            .first()
+            .filter(|ty| !matches!(ty, MarrowType::Unknown))
+        {
+            diagnostics.push(CheckDiagnostic::error(
+                CHECK_CALL_ARGUMENT,
+                file,
+                span,
+                format!(
+                    "`nextId` requires a keyed store root (`^store`), but this argument is `{}`",
+                    marrow_type_name(arg_type)
+                ),
+            ));
+        }
         return MarrowType::Unknown;
     };
     let Some(store) = resolve_store_by_root(program, root) else {
@@ -1370,11 +1414,26 @@ fn check_neighbor(
 /// Type `key(id)`, projecting a single-key store identity to its scalar key. A
 /// composite identity has no single key to project — it is reconstructed as a
 /// whole value, never a tuple of raw components — so it reports
-/// `check.key_requires_single_key`. A non-identity argument is left `Unknown` for
-/// the runtime, and an unresolved root is reported elsewhere, so neither is
-/// double-reported here.
+/// `check.key_requires_single_key`. A concrete non-identity argument has no
+/// identity to project, so it is rejected with `check.call_argument`; an
+/// `unknown`-typed argument defers to a cross-module result, and an unresolved
+/// root is reported elsewhere, so neither is double-reported here.
 fn check_key(env: &mut CallEnv<'_>, arg_types: &[MarrowType]) -> MarrowType {
     let Some(MarrowType::Identity(root)) = arg_types.first() else {
+        if let Some(arg_type) = arg_types
+            .first()
+            .filter(|ty| !matches!(ty, MarrowType::Unknown))
+        {
+            env.diagnostics.push(CheckDiagnostic::error(
+                CHECK_CALL_ARGUMENT,
+                env.file,
+                env.span,
+                format!(
+                    "`key` requires a store identity (`Id(^store)`), but this argument is `{}`",
+                    marrow_type_name(arg_type)
+                ),
+            ));
+        }
         return MarrowType::Unknown;
     };
     let Some(store) = resolve_store_by_root(env.program, root) else {
