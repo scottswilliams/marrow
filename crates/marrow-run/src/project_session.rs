@@ -672,6 +672,59 @@ impl ProjectSession {
     }
 }
 
+fn surface_session_admits_checked_program(
+    session_program: &CheckedProgram,
+    program: &CheckedProgram,
+) -> bool {
+    if session_program.source_digest() != program.source_digest() {
+        return false;
+    }
+    if session_program.read_only_context_digest() == program.read_only_context_digest() {
+        return true;
+    }
+    lock_bound_read_only_context_matches(session_program, program)
+}
+
+fn lock_bound_read_only_context_matches(
+    session_program: &CheckedProgram,
+    program: &CheckedProgram,
+) -> bool {
+    program.catalog.accepted_digest.is_none()
+        && lock_bound_accepted_catalog_matches(session_program, program)
+        && program.evolution_digest() == session_program.evolution_digest()
+        && proposal_context(program) == proposal_context(session_program)
+}
+
+fn lock_bound_accepted_catalog_matches(
+    session_program: &CheckedProgram,
+    program: &CheckedProgram,
+) -> bool {
+    let Some(epoch) = program.catalog.accepted_epoch else {
+        return false;
+    };
+    if session_program.catalog.accepted_epoch != Some(epoch) {
+        return false;
+    }
+    let Some(session_digest) = session_program.catalog.accepted_digest.as_deref() else {
+        return false;
+    };
+    let Ok(admitted) =
+        marrow_catalog::CatalogMetadata::new(epoch, program.catalog.accepted_entries.clone())
+    else {
+        return false;
+    };
+    admitted.digest == session_digest
+}
+
+fn proposal_context(program: &CheckedProgram) -> (u64, Option<&str>) {
+    program
+        .catalog
+        .proposal
+        .as_ref()
+        .map(|proposal| (proposal.epoch, Some(proposal.digest.as_str())))
+        .unwrap_or((0, None))
+}
+
 impl ProjectSurfaceReadSession {
     pub fn open(root: impl AsRef<Path>) -> Result<Self, ProjectSessionError> {
         let root = root.as_ref().to_path_buf();
@@ -687,6 +740,10 @@ impl ProjectSurfaceReadSession {
 
     pub fn program(&self) -> &CheckedProgram {
         &self.program
+    }
+
+    pub fn admits_checked_program(&self, program: &CheckedProgram) -> bool {
+        surface_session_admits_checked_program(&self.program, program)
     }
 
     pub fn store_stamp(&self) -> Result<StoreStamp, ProjectSessionError> {

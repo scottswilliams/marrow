@@ -6,6 +6,7 @@ use marrow_check::{
     ProjectConfig, StoreBackend, StoreConfig, SurfaceId, SurfaceReadOperationKind,
     SurfaceUpdateOperationDescriptor,
 };
+use marrow_run::evolution::{Approval, apply};
 use marrow_run::{
     EntryArgument, EntryArgumentValue, EntryDescriptor, EntryInvocation, EntryScalarArgument, Host,
     ProjectMode, ProjectOpen, ProjectSession, ProjectSurfaceReadSession, ProjectSurfaceSession,
@@ -146,6 +147,66 @@ fn advanced_surface_counter_source() -> &'static str {
      \x20\x20\x20\x20print(\"advanced\")\n"
 }
 
+fn surface_books_with_legacy_source() -> &'static str {
+    "module books\n\
+     enum Status\n\
+     \x20\x20\x20\x20old\n\
+     \x20\x20\x20\x20current\n\
+     resource Book\n\
+     \x20\x20\x20\x20required title: string\n\
+     store ^books(id: int): Book\n\
+     surface Books from ^books\n\
+     \x20\x20\x20\x20fields title\n\
+     \x20\x20\x20\x20collection ^books as list\n\
+     pub fn seed()\n\
+     \x20\x20\x20\x20var b: Book\n\
+     \x20\x20\x20\x20b.title = \"Dune\"\n\
+     \x20\x20\x20\x20transaction\n\
+     \x20\x20\x20\x20\x20\x20\x20\x20^books(1) = b\n\
+     pub fn show()\n\
+     \x20\x20\x20\x20print(\"books\")\n"
+}
+
+fn surface_books_retire_legacy_source() -> &'static str {
+    "module books\n\
+     enum Status\n\
+     \x20\x20\x20\x20current\n\
+     resource Book\n\
+     \x20\x20\x20\x20required title: string\n\
+     store ^books(id: int): Book\n\
+     surface Books from ^books\n\
+     \x20\x20\x20\x20fields title\n\
+     \x20\x20\x20\x20collection ^books as list\n\
+     evolve\n\
+     \x20\x20\x20\x20retire Status.old\n\
+     pub fn seed()\n\
+     \x20\x20\x20\x20var b: Book\n\
+     \x20\x20\x20\x20b.title = \"Dune\"\n\
+     \x20\x20\x20\x20transaction\n\
+     \x20\x20\x20\x20\x20\x20\x20\x20^books(1) = b\n\
+     pub fn show()\n\
+     \x20\x20\x20\x20print(\"books\")\n"
+}
+
+fn surface_books_after_retire_source() -> &'static str {
+    "module books\n\
+     enum Status\n\
+     \x20\x20\x20\x20current\n\
+     resource Book\n\
+     \x20\x20\x20\x20required title: string\n\
+     store ^books(id: int): Book\n\
+     surface Books from ^books\n\
+     \x20\x20\x20\x20fields title\n\
+     \x20\x20\x20\x20collection ^books as list\n\
+     pub fn seed()\n\
+     \x20\x20\x20\x20var b: Book\n\
+     \x20\x20\x20\x20b.title = \"Dune\"\n\
+     \x20\x20\x20\x20transaction\n\
+     \x20\x20\x20\x20\x20\x20\x20\x20^books(1) = b\n\
+     pub fn show()\n\
+     \x20\x20\x20\x20print(\"books\")\n"
+}
+
 fn invoke(session: &ProjectSession, entry: &str) -> String {
     let host = Host::new();
     let mut output = String::new();
@@ -162,6 +223,39 @@ fn checked_source_identity(root: &Path) -> marrow_check::AnalysisIdentity {
     marrow_check::check_source_project_analysis_against(root, &config, accepted.as_ref(), None)
         .expect("check source analysis")
         .content_identity
+}
+
+fn checked_program_against_accepted(
+    root: &Path,
+    accepted: &marrow_catalog::CatalogMetadata,
+) -> marrow_check::CheckedProgram {
+    let config = marrow_check::load_config(root).expect("load config");
+    marrow_check::check_project_against(root, &config, Some(accepted), None)
+        .expect("check project against accepted catalog")
+}
+
+fn accepted_catalog_from_program(
+    program: &marrow_check::CheckedProgram,
+) -> marrow_catalog::CatalogMetadata {
+    marrow_catalog::CatalogMetadata::from_stored_parts(
+        program.catalog.accepted_epoch.expect("accepted epoch"),
+        program
+            .catalog
+            .accepted_digest
+            .clone()
+            .expect("accepted digest"),
+        program.catalog.accepted_entries.clone(),
+    )
+    .expect("accepted catalog from checked program")
+}
+
+fn lock_bound_checked_program(root: &Path) -> marrow_check::CheckedProgram {
+    let config = marrow_check::load_config(root).expect("load config");
+    let lock = marrow_check::read_committed_lock(root)
+        .expect("read committed lock")
+        .expect("committed lock");
+    marrow_check::check_project_against(root, &config, None, Some(&lock))
+        .expect("check project against committed lock")
 }
 
 #[test]
@@ -291,6 +385,200 @@ fn surface_read_session_serves_existing_native_store_without_advancing_it() {
         fs::read(&lock_path).expect("read committed lock after surface read"),
         "surface reads must not rewrite the committed lock"
     );
+}
+
+#[test]
+fn surface_read_session_admits_lock_bound_checked_program() {
+    let root = TempDir::new("marrow-run-surface-admits-lock-bound").expect("create project");
+    write_native_config(root.path());
+    write_temp_source(
+        root.path(),
+        Path::new("src/shelf.mw"),
+        surface_counter_source(),
+    );
+    let seed = ProjectSession::open(
+        root.path(),
+        ProjectOpen::run().with_entry_override("shelf::seed"),
+    )
+    .expect("open seed session");
+    assert_eq!(invoke(&seed, "shelf::seed"), "");
+    drop(seed);
+
+    let lock_bound = lock_bound_checked_program(root.path());
+    assert!(
+        lock_bound.catalog.accepted_digest.is_none(),
+        "committed-lock analysis has no native store digest"
+    );
+
+    let read_session =
+        ProjectSurfaceReadSession::open(root.path()).expect("open surface read session");
+    assert!(read_session.admits_checked_program(read_session.program()));
+    assert!(read_session.admits_checked_program(&lock_bound));
+}
+
+#[test]
+fn surface_read_session_admits_lock_bound_program_after_non_final_retire() {
+    let root = TempDir::new("marrow-run-surface-admits-lock-bound-retire").expect("create project");
+    write_native_config_no_default(root.path());
+    write_temp_source(
+        root.path(),
+        Path::new("src/books.mw"),
+        surface_books_with_legacy_source(),
+    );
+    let seed = ProjectSession::open(
+        root.path(),
+        ProjectOpen::run().with_entry_override("books::seed"),
+    )
+    .expect("open seed session");
+    assert_eq!(invoke(&seed, "books::seed"), "");
+    drop(seed);
+
+    let store_path = root.path().join(".data").join("marrow.redb");
+    let store = TreeStore::open(&store_path).expect("open native store");
+    let accepted = store
+        .read_catalog_snapshot()
+        .expect("read accepted catalog")
+        .expect("accepted catalog");
+    let old_status_id = accepted
+        .entries
+        .iter()
+        .find(|entry| entry.path == "books::Status::old")
+        .expect("old status accepted entry")
+        .stable_id
+        .clone();
+
+    write_temp_source(
+        root.path(),
+        Path::new("src/books.mw"),
+        surface_books_retire_legacy_source(),
+    );
+    let retiring = checked_program_against_accepted(root.path(), &accepted);
+    let (witness, _diagnostics) =
+        marrow_check::evolution::preview(&retiring, &store).expect("preview retire");
+    let approval = Approval {
+        retires: vec![(CatalogId::new(old_status_id).expect("old status id"), 0)],
+    };
+    apply(&witness, &retiring, &store, true, Some(&approval)).expect("apply retire");
+    let retired = store
+        .read_catalog_snapshot()
+        .expect("read retired catalog")
+        .expect("retired catalog");
+    assert_eq!(
+        retired
+            .entries
+            .iter()
+            .find(|entry| entry.path == "books::Status::old")
+            .expect("old status member remains reserved")
+            .lifecycle,
+        marrow_catalog::CatalogLifecycle::Reserved
+    );
+    write_temp_source(
+        root.path(),
+        Path::new("src/books.mw"),
+        surface_books_after_retire_source(),
+    );
+    let current = checked_program_against_accepted(root.path(), &retired);
+    marrow_check::project_store_lock(root.path(), &retired, &current.source_digest())
+        .expect("project retired lock");
+    drop(store);
+
+    let session = ProjectSurfaceReadSession::open(root.path()).expect("open surface read session");
+    let lock_bound = lock_bound_checked_program(root.path());
+    assert!(
+        lock_bound.catalog.accepted_digest.is_none(),
+        "committed-lock analysis has no native store digest"
+    );
+    let session_catalog = accepted_catalog_from_program(session.program());
+    let lock_catalog = marrow_catalog::CatalogMetadata::new(
+        lock_bound.catalog.accepted_epoch.expect("accepted epoch"),
+        lock_bound.catalog.accepted_entries.clone(),
+    )
+    .expect("lock-bound accepted catalog is valid");
+    assert_eq!(
+        lock_catalog.digest, session_catalog.digest,
+        "store-bound and lock-bound accepted identity must be canonical-equivalent"
+    );
+    assert_ne!(
+        lock_bound.catalog.accepted_entries,
+        session.program().catalog.accepted_entries,
+        "fixture must exercise accepted-entry order drift"
+    );
+
+    assert!(session.admits_checked_program(&lock_bound));
+}
+
+#[test]
+fn surface_read_session_admission_rejects_changed_source() {
+    let root = TempDir::new("marrow-run-surface-admission-source-change").expect("create project");
+    write_native_config(root.path());
+    write_temp_source(
+        root.path(),
+        Path::new("src/shelf.mw"),
+        surface_counter_source(),
+    );
+    let seed = ProjectSession::open(
+        root.path(),
+        ProjectOpen::run().with_entry_override("shelf::seed"),
+    )
+    .expect("open seed session");
+    assert_eq!(invoke(&seed, "shelf::seed"), "");
+    drop(seed);
+
+    let session = ProjectSurfaceReadSession::open(root.path()).expect("open surface read session");
+    let accepted = accepted_catalog_from_program(session.program());
+    write_temp_source(
+        root.path(),
+        Path::new("src/shelf.mw"),
+        advanced_surface_counter_source(),
+    );
+
+    let changed = checked_program_against_accepted(root.path(), &accepted);
+
+    assert!(!session.admits_checked_program(&changed));
+}
+
+#[test]
+fn surface_read_session_admission_rejects_changed_store_or_lock_authority() {
+    let root =
+        TempDir::new("marrow-run-surface-admission-authority-change").expect("create project");
+    write_native_config(root.path());
+    write_temp_source(
+        root.path(),
+        Path::new("src/shelf.mw"),
+        surface_counter_source(),
+    );
+    let seed = ProjectSession::open(
+        root.path(),
+        ProjectOpen::run().with_entry_override("shelf::seed"),
+    )
+    .expect("open seed session");
+    assert_eq!(invoke(&seed, "shelf::seed"), "");
+    drop(seed);
+
+    let session = ProjectSurfaceReadSession::open(root.path()).expect("open surface read session");
+    let accepted = accepted_catalog_from_program(session.program());
+    let changed_store =
+        marrow_catalog::CatalogMetadata::new(accepted.epoch + 1, accepted.entries.clone())
+            .expect("changed store authority");
+    let changed_store_program = checked_program_against_accepted(root.path(), &changed_store);
+    assert!(!session.admits_checked_program(&changed_store_program));
+
+    let lock = marrow_check::read_committed_lock(root.path())
+        .expect("read committed lock")
+        .expect("committed lock");
+    let changed_lock = marrow_catalog::CatalogLock::new(
+        lock.entries,
+        lock.ledger,
+        lock.epoch_high_water + 1,
+        lock.source_digest,
+    )
+    .expect("changed lock authority");
+    let config = marrow_check::load_config(root.path()).expect("load config");
+    let changed_lock_program =
+        marrow_check::check_project_against(root.path(), &config, None, Some(&changed_lock))
+            .expect("check project against changed lock");
+
+    assert!(!session.admits_checked_program(&changed_lock_program));
 }
 
 #[test]
