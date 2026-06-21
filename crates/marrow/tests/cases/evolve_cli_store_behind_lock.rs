@@ -93,6 +93,20 @@ fn evolve_apply_over_a_store_behind_an_ahead_lock_never_regresses_the_lock() {
         serde_json::json!("run.store_behind"),
         "the desynced apply surfaces the typed store-behind fence: {record}"
     );
+    // The apply-desync remedy must be actionable, not circular: it tells the operator to
+    // reconcile the local store with the team's up-to-date store, and must never advise
+    // re-running the apply that just refused (the run-path remedy that would mislead here).
+    let message = record["message"]
+        .as_str()
+        .expect("remedy message is a string");
+    assert!(
+        message.contains("Reconcile the local store") && message.contains("up-to-date store"),
+        "the apply-desync remedy points at reconciling the local store, not re-running apply: {message}"
+    );
+    assert!(
+        !message.contains("Run `marrow evolve apply`"),
+        "the apply-desync remedy must not be circular by telling the operator to re-run apply: {message}"
+    );
 
     // The catastrophe oracle: the committed lock is byte-identical after the refused apply. Its
     // epoch high-water never regressed below 9 and the retired-id tombstone is intact, so a fresh

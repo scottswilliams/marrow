@@ -304,8 +304,9 @@ pub fn recheck_source_project_analysis_against_store_catalog(
 /// fresh checkout's seed) would rewind the high-water and erase a tombstone, letting a later
 /// checkout reissue a retired id to a different entity. A tombstone the snapshot has since promoted
 /// back to an active id is not re-added, so the union never resurrects an id the store now holds
-/// live. The projection writes the canonical lock atomically (temp file, fsync, rename) so a torn
-/// write can never leave a corrupt lock, and is idempotent on the bytes a converged lock holds.
+/// live. The projection writes the canonical lock atomically (temp file, fsync, rename, parent
+/// fsync) so a torn write can never leave a corrupt lock, and is idempotent on the bytes a
+/// converged lock holds.
 pub fn project_store_lock(
     root: &Path,
     snapshot: &marrow_catalog::CatalogMetadata,
@@ -389,9 +390,11 @@ fn union_committed_ledger(
 }
 
 /// Write the committed lock atomically: render to a sibling temp file in the same directory, fsync
-/// its contents, then rename it over the target. A rename within a directory is atomic on the
-/// target filesystems, so a crash mid-write leaves either the prior lock or the new one, never a
-/// torn projection a reader would reject as corrupt.
+/// its contents, rename it over the target, then fsync the parent directory. A rename within a
+/// directory is atomic on the target filesystems, so a crash mid-write leaves either the prior lock
+/// or the new one, never a torn projection a reader would reject as corrupt. Fsyncing the parent
+/// after the rename persists the directory entry itself, so a host crash right after the rename
+/// cannot lose the renamed file.
 fn write_lock_atomically(path: &Path, contents: &str) -> Result<(), ProjectIoError> {
     let dir = path.parent().unwrap_or_else(|| Path::new("."));
     let file_name = path
@@ -419,6 +422,17 @@ fn write_lock_atomically(path: &Path, contents: &str) -> Result<(), ProjectIoErr
             error,
         });
     }
+    let dir = if dir.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        dir
+    };
+    fs::File::open(dir)
+        .and_then(|handle| handle.sync_all())
+        .map_err(|error| ProjectIoError::Io {
+            path: dir.to_path_buf(),
+            error,
+        })?;
     Ok(())
 }
 

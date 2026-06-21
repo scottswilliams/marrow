@@ -239,14 +239,38 @@ fn guard_store_behind_committed_lock(
     };
     let (_, target_epoch) = witness.epoch_range();
     if lock.epoch_high_water > target_epoch {
-        let fence = FenceError::StoreBehind {
+        // Share the typed `run.store_behind` code with the run-path fence so the code stays
+        // single-owner, but the remedy is the apply-desync one: applying here would land the
+        // store below the committed high-water, so re-running apply would only fail closed
+        // again. The operator must reconcile the local store with the team's up-to-date store
+        // first, never re-run the command that just refused.
+        let code = FenceError::StoreBehind {
             stored: target_epoch,
             accepted: lock.epoch_high_water,
-        };
-        report_simple_error(fence.code(), &fence.message(), format);
+        }
+        .code();
+        report_simple_error(
+            code,
+            &apply_desync_remedy(target_epoch, lock.epoch_high_water),
+            format,
+        );
         return Err(ExitCode::FAILURE);
     }
     Ok(())
+}
+
+/// The remedy for a desynced apply: the local store is behind the committed lock by more than the
+/// single catch-up step this activation can take, so applying would regress or erase the committed
+/// lock. Unlike the run-path fence this never advises re-running the failing command; the operator
+/// must first pull or rebuild the local store to match the committed lock's high-water.
+fn apply_desync_remedy(target_epoch: u64, high_water: u64) -> String {
+    format!(
+        "applying would land the store at epoch {target_epoch}, below the committed lock's epoch \
+         high-water {high_water}; a teammate has already activated and committed past this local \
+         store, so this apply would regress or erase the committed lock. Reconcile the local store \
+         with the team's up-to-date store first (pull or rebuild the store that matches the \
+         committed lock), then re-check; do not re-run apply against this stale store."
+    )
 }
 
 struct ManagedRecoveryPath {
