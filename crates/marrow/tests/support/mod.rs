@@ -369,6 +369,36 @@ pub(crate) fn native_store_path(
     marrow_check::native_store_path(root, config).expect("valid fixture store config")
 }
 
+/// The native store file a seeded project writes its data into. The default config
+/// roots the store at `<project>/.data/marrow.redb`; tests that corrupt or probe the
+/// raw redb file share this single resolution rather than respelling it.
+pub(crate) fn redb_store_path(project: &Path) -> PathBuf {
+    project.join(".data").join("marrow.redb")
+}
+
+/// Flip redb's primary-slot selector bit (god byte, offset 9, bit 0x01) so the header
+/// points the open path at a slot whose allocator state fails to load. redb aborts the
+/// repair, which Marrow's read-only open surfaces as the typed `store.recovery_required`.
+/// Marrow's two-phase durability deliberately does not silently repair this on a
+/// write-capable open, so the corrupted selector survives until `data recover` runs. The
+/// helper lives here so every case that needs a recovery-required store drives the same
+/// redb layout rather than copying the byte offset.
+pub(crate) fn corrupt_primary_slot_selector(project: &Path) {
+    use std::io::{Read, Seek, SeekFrom, Write};
+    let path = redb_store_path(project);
+    let mut file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&path)
+        .expect("open store header");
+    file.seek(SeekFrom::Start(9)).expect("seek to god byte");
+    let mut byte = [0u8; 1];
+    file.read_exact(&mut byte).expect("read god byte");
+    file.seek(SeekFrom::Start(9)).expect("seek back");
+    file.write_all(&[byte[0] ^ 0x01])
+        .expect("flip primary-slot selector");
+}
+
 /// The accepted store catalog id of a checked root member, addressed by name. CLI
 /// tests that write cells under the live store resolve member ids through the same
 /// checked facts the runtime uses, never by spelling the id.

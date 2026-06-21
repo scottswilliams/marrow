@@ -10,7 +10,10 @@ use std::path::Path;
 use crate::support;
 use crate::support_evolve;
 use marrow_store::tree::TreeStore;
-use support::{counter_source, marrow, native_config, temp_project_uncommitted, write};
+use support::{
+    corrupt_primary_slot_selector, counter_source, marrow, native_config, temp_project_uncommitted,
+    write,
+};
 use support_evolve::{
     OPTIONAL_PAGES_DEFAULT_INDEX_SOURCE, REQUIRED_BASELINE_SOURCE, accepted_catalog,
     commit_catalog, native_books_project, native_store_path, open_native_store, root_place,
@@ -558,6 +561,85 @@ fn check_locked_still_fails_on_a_present_stale_lock() {
     assert!(
         !stderr.contains("check.lock_missing"),
         "a present lock is never a missing-lock condition: {stderr}"
+    );
+}
+
+#[test]
+fn check_locked_fails_when_the_lock_is_absent_over_an_unreadable_store() {
+    // The post-crash state where the `--locked` gate matters most: a durable store exists on
+    // disk but an unclean shutdown left it recovery-required, so a read-only open fails. A store
+    // file that is present-but-unreadable still carries durable shape that demands a committed
+    // lock — treating an unopenable store as no-authority would misclassify a crashed project as
+    // a first run and pass an absent lock green, defeating the gate exactly when it is needed.
+    let root = native_books_project("check-ro-locked-missing-unclean", REQUIRED_BASELINE_SOURCE);
+    commit_catalog(&root);
+    assert!(
+        store_path(&root).exists(),
+        "commit established the durable store shape"
+    );
+    corrupt_primary_slot_selector(&root);
+    fs::remove_file(lock_path(&root)).expect("remove committed lock");
+    assert!(
+        TreeStore::open_read_only(&store_path(&root)).is_err(),
+        "the corrupted store must be unreadable read-only"
+    );
+
+    let strict = marrow(&["check", "--locked", root.to_str().unwrap()]);
+    assert_eq!(
+        strict.status.code(),
+        Some(1),
+        "--locked over a present-but-unreadable store with no committed lock is fatal: {strict:?}"
+    );
+    assert!(
+        String::from_utf8(strict.stderr)
+            .expect("stderr utf8")
+            .contains("check.lock_missing"),
+        "a present-but-unreadable durable store still demands a committed lock"
+    );
+    assert!(
+        !lock_path(&root).exists(),
+        "a fatal --locked check does not reconstruct the missing lock or repair the store"
+    );
+}
+
+#[test]
+fn check_locked_consistent_across_data_recover_for_an_unclean_store() {
+    // `data recover` repairs the recovery-required store back to readable; with the committed
+    // lock still absent, the `--locked` gate must remain fatal `check.lock_missing` before and
+    // after recovery. Repairing the store does not invent a lock, so the gate's verdict is
+    // consistent across the unreadable and the readable state of the same durable store.
+    let root = native_books_project(
+        "check-ro-locked-recover-consistent",
+        REQUIRED_BASELINE_SOURCE,
+    );
+    commit_catalog(&root);
+    corrupt_primary_slot_selector(&root);
+    fs::remove_file(lock_path(&root)).expect("remove committed lock");
+
+    let before = marrow(&["check", "--locked", root.to_str().unwrap()]);
+    assert_eq!(before.status.code(), Some(1), "{before:?}");
+    assert!(
+        String::from_utf8(before.stderr)
+            .expect("stderr utf8")
+            .contains("check.lock_missing"),
+        "unclean store with absent lock fails the gate"
+    );
+
+    let recover = marrow(&["data", "recover", root.to_str().unwrap()]);
+    assert_eq!(recover.status.code(), Some(0), "{recover:?}");
+    TreeStore::open_read_only(&store_path(&root)).expect("recover leaves the store readable");
+
+    let after = marrow(&["check", "--locked", root.to_str().unwrap()]);
+    assert_eq!(
+        after.status.code(),
+        Some(1),
+        "a recovered store with no committed lock is still a fatal gate: {after:?}"
+    );
+    assert!(
+        String::from_utf8(after.stderr)
+            .expect("stderr utf8")
+            .contains("check.lock_missing"),
+        "the gate verdict is consistent across recovery"
     );
 }
 

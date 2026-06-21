@@ -6,15 +6,12 @@
 
 use crate::support;
 use crate::support_data;
-use std::io::{Seek, SeekFrom, Write};
 use std::path::Path;
-use support::{find_code_segment, last_fault, marrow, write};
+use support::{
+    corrupt_primary_slot_selector, find_code_segment, last_fault, marrow,
+    redb_store_path as store_path, write,
+};
 use support_data::{native_project, seeded_project};
-
-/// The native store file a seeded project writes its data into.
-fn store_path(project: &Path) -> std::path::PathBuf {
-    project.join(".data").join("marrow.redb")
-}
 
 /// Truncate the store body below its recorded length: a valid header over a damaged
 /// body, the shape that drives redb's open path into a panic without the backstop.
@@ -27,29 +24,6 @@ fn truncate_store_body(project: &Path) {
         .open(&path)
         .expect("open store for truncation");
     file.set_len(4096).expect("truncate store body");
-}
-
-/// Flip redb's primary-slot selector bit (god byte, offset 9, bit 0x01) so the header
-/// points the open path at a slot whose allocator state fails to load. redb aborts the
-/// repair, which Marrow's read-only open surfaces as the typed `store.recovery_required`.
-/// Marrow's two-phase durability deliberately does not silently repair this on a
-/// write-capable open, so the corrupted selector survives until `data recover` runs.
-fn corrupt_primary_slot_selector(project: &Path) {
-    let path = store_path(project);
-    let mut file = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(&path)
-        .expect("open store header");
-    file.seek(SeekFrom::Start(9)).expect("seek to god byte");
-    let mut byte = [0u8; 1];
-    {
-        use std::io::Read;
-        file.read_exact(&mut byte).expect("read god byte");
-    }
-    file.seek(SeekFrom::Start(9)).expect("seek back");
-    file.write_all(&[byte[0] ^ 0x01])
-        .expect("flip primary-slot selector");
 }
 
 /// The dotted code a `marrow` command printed on stderr, located the same way the

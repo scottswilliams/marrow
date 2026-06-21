@@ -78,12 +78,13 @@ enum LockStrictness {
 /// `run` or `evolve apply` re-projects the lock to converge it.
 const CHECK_STALE_LOCK: &str = "check.stale_lock";
 
-/// `--locked` over a project that has durable shape to lock — a stamped store / accepted catalog —
-/// but no committed `marrow.lock` at all. The gate's contract is that the committed lock is current;
-/// an absent lock over durable shape is not current, it is missing, and a CI gate that passed it
-/// would give a false green to a developer who forgot to commit or deleted the lock. The advisory
-/// (non-`--locked`) mode stays silent on absence so a legitimate first run, which has no durable
-/// shape to lock yet, checks cleanly.
+/// `--locked` over a project that has durable shape to lock — any present store file, whether it
+/// opens read-only or is recovery-required after a crash — but no committed `marrow.lock` at all.
+/// The gate's contract is that the committed lock is current; an absent lock over durable shape is
+/// not current, it is missing, and a CI gate that passed it would give a false green to a developer
+/// who forgot to commit or deleted the lock — most dangerously in the post-crash state where the
+/// store is present but unreadable. The advisory (non-`--locked`) mode stays silent on absence so a
+/// legitimate first run, which has no store and no durable shape to lock yet, checks cleanly.
 const CHECK_LOCK_MISSING: &str = "check.lock_missing";
 
 const MISSING_LOCK_MESSAGE: &str =
@@ -108,17 +109,17 @@ fn check_project_dir(dir: &str, format: CheckFormat, locked: bool) -> ExitCode {
         Ok(lock) => lock,
         Err(code) => return code,
     };
-    // Bind from the store when one is present and readable, falling back to the committed lock
-    // otherwise. The store is the accepted authority — binding its snapshot gives the checked
-    // program its frozen shapes — and the read is read-only, so check never opens an unreadable
-    // store for repair, creates one, or writes the source tree. A store that cannot be opened
-    // read-only is treated as no accepted authority, leaving the lock as the first-run anchor.
-    let accepted = crate::read_accepted_store_catalog_lenient(dir, &config);
+    // Classify the durable store: readable (bind its accepted snapshot), present-but-unreadable
+    // (a crashed/locked store that still carries durable shape), or absent (a first run). The
+    // read is read-only, so check never opens an unreadable store for repair, creates one, or
+    // writes the source tree; only a readable store's snapshot binds the checked program's frozen
+    // shapes, while presence alone governs the `--locked` missing-lock gate below.
+    let authority = crate::read_accepted_store_catalog_lenient(dir, &config);
     let snapshot = match marrow_check::analyze_project(
         Path::new(dir),
         &config,
         &marrow_check::ProjectSources::new(),
-        accepted.as_ref(),
+        authority.snapshot(),
         lock.as_ref(),
     ) {
         Ok(snapshot) => snapshot,
@@ -140,7 +141,7 @@ fn check_project_dir(dir: &str, format: CheckFormat, locked: bool) -> ExitCode {
     // A `--locked` gate over a project that has durable shape to lock but no committed lock at all
     // is a distinct fatal condition: the committed lock is missing, not merely stale. The advisory
     // mode stays silent on absence, so a legitimate first run (no accepted authority yet) is clean.
-    if strictness == LockStrictness::Fatal && lock.is_none() && accepted.is_some() {
+    if strictness == LockStrictness::Fatal && lock.is_none() && authority.store_present() {
         crate::report_project_failed_with_diagnostic(
             dir,
             &snapshot.report,

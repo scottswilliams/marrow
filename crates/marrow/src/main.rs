@@ -608,26 +608,64 @@ pub(crate) fn read_committed_lock(
         .map_err(|error| project_io_exit(dir, error, format))
 }
 
-/// Bind the accepted catalog from a present, readable store for the read-only `check` surface,
-/// returning `None` when no store is present or it cannot be opened read-only. Unlike
-/// [`read_accepted_store_catalog`], a store that is absent or unreadable is not an error here:
-/// `check` is read-only and must neither create a store nor fail on a hostile store file, so it
-/// degrades to no accepted authority and binds first-run identity from the committed lock instead.
-/// The read never writes the source tree.
+/// What the read-only `check` surface found at the native store path. The distinction matters to
+/// the `--locked` gate: a store file that is present carries durable shape that demands a committed
+/// lock, whether or not it can be opened. Collapsing present-but-unreadable into absent would let a
+/// post-crash, recovery-required store masquerade as a first run and pass an absent lock green.
+pub(crate) enum AcceptedAuthority {
+    /// A store opened read-only and yielded its accepted catalog snapshot (or had no accepted
+    /// catalog yet); the snapshot binds the checked program's frozen shapes.
+    Readable(Option<marrow_catalog::CatalogMetadata>),
+    /// A store file is present but could not be opened read-only — unclean-shutdown
+    /// recovery-required, locked by a writer, or hard-corrupted. `check` neither repairs nor
+    /// fails on it, but its presence still counts as durable shape under `--locked`.
+    ExistsButUnreadable,
+    /// No store file is present: a legitimate first run with no durable shape to lock yet.
+    Absent,
+}
+
+impl AcceptedAuthority {
+    /// The accepted catalog snapshot to bind the checked program against, present only when a
+    /// readable store carried one. An unreadable or absent store binds first-run identity from
+    /// the committed lock instead.
+    pub(crate) fn snapshot(&self) -> Option<&marrow_catalog::CatalogMetadata> {
+        match self {
+            Self::Readable(snapshot) => snapshot.as_ref(),
+            Self::ExistsButUnreadable | Self::Absent => None,
+        }
+    }
+
+    /// Whether a durable store is present on disk, readable or not. The `--locked` gate keys its
+    /// missing-lock failure on this: any present store has durable shape that a committed lock
+    /// must project, so an absent lock over a present store is a missing commit, not a first run.
+    pub(crate) fn store_present(&self) -> bool {
+        matches!(self, Self::Readable(_) | Self::ExistsButUnreadable)
+    }
+}
+
+/// Classify the accepted authority at the native store path for the read-only `check` surface.
+/// Unlike [`read_accepted_store_catalog`], a store that is absent or unreadable is not an error
+/// here: `check` is read-only and must neither create a store nor fail on a hostile or
+/// recovery-required store file. It distinguishes a present-but-unreadable store from no store at
+/// all so the `--locked` gate can demand a committed lock over a crashed durable store. The read
+/// never writes the source tree.
 pub(crate) fn read_accepted_store_catalog_lenient(
     dir: &str,
     config: &marrow_project::ProjectConfig,
-) -> Option<marrow_catalog::CatalogMetadata> {
+) -> AcceptedAuthority {
     let Ok(Some(path)) = marrow_check::native_store_path(Path::new(dir), config) else {
-        return None;
+        return AcceptedAuthority::Absent;
     };
     if !path.exists() {
-        return None;
+        return AcceptedAuthority::Absent;
     }
-    let store = marrow_store::tree::TreeStore::open_read_only(&path).ok()?;
-    marrow_check::read_accepted_catalog_with_store_read_only(Path::new(dir), Some(&store))
-        .ok()
-        .flatten()
+    let Ok(store) = marrow_store::tree::TreeStore::open_read_only(&path) else {
+        return AcceptedAuthority::ExistsButUnreadable;
+    };
+    match marrow_check::read_accepted_catalog_with_store_read_only(Path::new(dir), Some(&store)) {
+        Ok(snapshot) => AcceptedAuthority::Readable(snapshot),
+        Err(_) => AcceptedAuthority::ExistsButUnreadable,
+    }
 }
 
 /// Re-project the committed `marrow.lock` from the store's accepted snapshot. The store is the
