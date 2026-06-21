@@ -112,7 +112,13 @@ impl CatalogMetadata {
             }
             if let Some(shape) = &entry.accepted_index_shape {
                 reject_nul("accepted index shape", shape)?;
-            } else if entry.kind == CatalogEntryKind::StoreIndex {
+            } else if entry.kind == CatalogEntryKind::StoreIndex
+                && entry.lifecycle == CatalogLifecycle::Active
+            {
+                // Only an active store index has live derived cells whose shape must be recorded.
+                // A Reserved store index is a materialized ledger tombstone: identity-only, holding
+                // no shape, so a fresh store re-seeded from a valid lock that retired an index
+                // re-seeds instead of failing closed on a synthesized corruption.
                 return Err(CatalogError::new(
                     "store index catalog entry must record an accepted index shape",
                 ));
@@ -659,6 +665,50 @@ mod digest_tests {
         let error = CatalogMetadata::from_json(&json).expect_err("stale JSON digest rejected");
 
         assert_eq!(error.code, CATALOG_INVALID);
+    }
+}
+
+#[cfg(test)]
+mod validate_tests {
+    use super::{
+        CATALOG_INVALID, CatalogEntry, CatalogEntryKind, CatalogLifecycle, CatalogMetadata,
+    };
+
+    fn store_index_entry(lifecycle: CatalogLifecycle, shape: Option<&str>) -> CatalogEntry {
+        CatalogEntry {
+            kind: CatalogEntryKind::StoreIndex,
+            path: "books::by_title".to_string(),
+            stable_id: "cat_00000000000000000000000000000001".to_string(),
+            aliases: Vec::new(),
+            lifecycle,
+            accepted_key_shape: None,
+            accepted_index_shape: shape.map(str::to_string),
+            accepted_struct: None,
+        }
+    }
+
+    #[test]
+    fn an_active_store_index_must_record_an_accepted_index_shape() {
+        let catalog =
+            CatalogMetadata::new(1, vec![store_index_entry(CatalogLifecycle::Active, None)])
+                .expect("digest computes for an in-memory catalog");
+        let error = catalog
+            .validate()
+            .expect_err("an active store index with no shape is rejected");
+        assert_eq!(error.code, CATALOG_INVALID);
+    }
+
+    #[test]
+    fn a_reserved_store_index_tombstone_validates_without_a_shape() {
+        // A Reserved store-index row is the materialized form of a ledger tombstone: identity-only
+        // by design, it legitimately holds no live index shape. Requiring one would brick a fresh
+        // store re-seeded from a valid committed lock that retired a store index.
+        let catalog =
+            CatalogMetadata::new(1, vec![store_index_entry(CatalogLifecycle::Reserved, None)])
+                .expect("digest computes for an in-memory catalog");
+        catalog
+            .validate()
+            .expect("a reserved store-index tombstone validates without a shape");
     }
 }
 

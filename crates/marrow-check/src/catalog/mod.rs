@@ -824,7 +824,7 @@ fn adopt_or_mint_first_run(
         return mint_first_run(program, &source.entries, &[]).map(FirstRunOutcome::Proposal);
     };
     let Some(mut proposal_entries) =
-        adopt_first_run_entries(&source.entries, lock, &lock.ledger, diagnostics)
+        adopt_first_run_entries(&source.entries, lock, &lock.ledger, diagnostics)?
     else {
         return Ok(FirstRunOutcome::Refused);
     };
@@ -911,7 +911,29 @@ fn adopt_first_run_entries(
     lock: &CatalogLock,
     ledger: &[LockLedgerTombstone],
     diagnostics: &mut Vec<CheckDiagnostic>,
-) -> Option<Vec<CatalogEntry>> {
+) -> Result<Option<Vec<CatalogEntry>>, CatalogProposalError> {
+    // Seed the never-reuse set, through the allocator's single never-reuse owner, with the ledger
+    // tombstones and every committed lock id, so a fresh mint for an unrecorded entity re-rolls
+    // past an id the lock already commits or has retired. The committed ids enter as entry stubs
+    // because the allocator seeds from catalog entries.
+    let committed_stubs = committed_id_stubs(&lock.entries);
+    let allocator = StableIdAllocator::over(ledger, &committed_stubs);
+    adopt_first_run_entries_with(source_entries, lock, ledger, allocator, diagnostics)
+}
+
+/// The adoption body, generic over the allocator's entropy so a fault-injecting test can drive the
+/// mint path. An OS-entropy `allocate()` failure (fd exhaustion, a sandbox blocking `/dev/urandom`)
+/// propagates as [`CatalogProposalError::Allocation`] rather than collapsing to a diagnostic-less
+/// refusal, so the binding fails closed loudly exactly as the no-lock mint does. The Refused result
+/// (`Ok(None)`) is reserved for the tombstone-reissue case, which has already pushed its typed
+/// diagnostic.
+fn adopt_first_run_entries_with<E: CatalogIdEntropy>(
+    source_entries: &[SourceCatalogEntry],
+    lock: &CatalogLock,
+    ledger: &[LockLedgerTombstone],
+    mut allocator: StableIdAllocator<E>,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) -> Result<Option<Vec<CatalogEntry>>, CatalogProposalError> {
     let committed: HashMap<(CatalogEntryKind, &str), &str> = lock
         .entries
         .iter()
@@ -926,12 +948,6 @@ fn adopt_first_run_entries(
             )
         })
         .collect();
-    // Seed the never-reuse set, through the allocator's single never-reuse owner, with the ledger
-    // tombstones and every committed lock id, so a fresh mint for an unrecorded entity re-rolls
-    // past an id the lock already commits or has retired. The committed ids enter as entry stubs
-    // because the allocator seeds from catalog entries.
-    let committed_stubs = committed_id_stubs(&lock.entries);
-    let mut allocator = StableIdAllocator::over(ledger, &committed_stubs);
     let mut proposal_entries = Vec::with_capacity(source_entries.len() + reserved.len());
     for source in source_entries {
         if let Some(reserved_entry) = reserved.get(&(source.kind, source.path.as_str())) {
@@ -942,16 +958,16 @@ fn adopt_first_run_entries(
         }
         let entry = match committed.get(&(source.kind, source.path.as_str())) {
             Some(stable_id) => proposed_catalog_entry_with_id(source, stable_id),
-            None => proposed_catalog_entry(source, &mut allocator).ok()?,
+            None => proposed_catalog_entry(source, &mut allocator)?,
         };
         proposal_entries.push(entry);
     }
     if let Some(reissued) = tombstone_reissue(&proposal_entries, ledger) {
         diagnostics.push(lock_corrupt_diagnostic(source_entries, reissued));
-        return None;
+        return Ok(None);
     }
     proposal_entries.extend(reserved.into_values());
-    Some(proposal_entries)
+    Ok(Some(proposal_entries))
 }
 
 /// Adopt a committed lock id onto an unkeyed source view directly, for the binding's
@@ -965,7 +981,10 @@ fn adopt_first_run(
     ledger: &[LockLedgerTombstone],
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) -> Option<CatalogMetadata> {
-    let entries = adopt_first_run_entries(source_entries, lock, ledger, diagnostics)?;
+    let entries = match adopt_first_run_entries(source_entries, lock, ledger, diagnostics) {
+        Ok(entries) => entries?,
+        Err(_) => panic!("adoption mints without an entropy fault in these fixtures"),
+    };
     CatalogMetadata::new(lock.epoch_high_water, entries).ok()
 }
 
@@ -2315,6 +2334,131 @@ mod tests {
             lifecycle: CatalogLifecycle::Reserved,
             high_water,
         }
+    }
+
+    /// An OS-entropy failure while minting a fresh id for a source entity the lock does not record
+    /// must surface as a hard allocation error, exactly as the no-lock mint does, not collapse to a
+    /// diagnostic-less Refused that lets the check go green with no identity bound.
+    #[test]
+    fn adoption_mint_entropy_failure_is_a_hard_allocation_error_not_a_silent_refusal() {
+        // The lock records nothing, so the lone source entity must be freshly minted; the injected
+        // entropy fails, so the mint cannot succeed.
+        let committed = lock(Vec::new(), Vec::new(), 0);
+        let source_entries = vec![source_entry(CatalogEntryKind::Store, "books::^books")];
+        let allocator =
+            StableIdAllocator::with_entropy(std::collections::HashSet::new(), FailingEntropy);
+        let mut diagnostics = Vec::new();
+
+        let result = adopt_first_run_entries_with(
+            &source_entries,
+            &committed,
+            &committed.ledger,
+            allocator,
+            &mut diagnostics,
+        );
+
+        assert!(
+            matches!(result, Err(CatalogProposalError::Allocation(_))),
+            "an entropy fault must propagate as an allocation error, got {:?}",
+            result
+                .as_ref()
+                .map(|outcome| outcome.is_some())
+                .map_err(|_| ())
+        );
+    }
+
+    /// A reserved tombstone for a retired entity at `(kind, path)`, materialized into a first-run
+    /// proposal as a Reserved row carrying the tombstoned id. Distinct from [`tombstone`]: the
+    /// `(kind, path)` is the one under test, so the materialized reserved row reseeds the never-reuse
+    /// defense rather than serving as a reissue probe.
+    fn reserved_tombstone_at(
+        kind: CatalogEntryKind,
+        path: &str,
+        stable_id: &str,
+        high_water: u64,
+    ) -> LockLedgerTombstone {
+        LockLedgerTombstone {
+            kind,
+            path: path.to_string(),
+            id: stable_id.to_string(),
+            lifecycle: CatalogLifecycle::Reserved,
+            high_water,
+        }
+    }
+
+    /// A first-run proposal materialized from a lock whose ledger retired a STORE INDEX must build
+    /// and validate: the reserved row that reseeds the never-reuse defense is identity-only and
+    /// holds no live index shape. Before the validate relaxation this proposal failed closed on a
+    /// synthesized catalog.invalid, bricking a fresh store re-seeded from a valid committed lock.
+    #[test]
+    fn first_run_materializes_a_store_index_tombstone_without_a_shape() {
+        let retired_index_id = fixed_id(0x51);
+        let retired_index_path = "books::^books::by_title";
+        let ledger = vec![reserved_tombstone_at(
+            CatalogEntryKind::StoreIndex,
+            retired_index_path,
+            &retired_index_id,
+            7,
+        )];
+        let committed = lock(Vec::new(), ledger.clone(), 7);
+        let mut diagnostics = Vec::new();
+
+        // No source entity re-declares the retired index, so the only proposal row is the
+        // materialized reserved tombstone. Build through CatalogMetadata::new + validate, exactly
+        // as the first-run proposal path does, so the reserved StoreIndex row is held to the real
+        // accepted invariants.
+        let proposal = adopt_first_run(&[], &committed, &ledger, &mut diagnostics)
+            .expect("a store-index tombstone materializes into a valid first-run proposal");
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+        let reserved = proposal
+            .entries
+            .iter()
+            .find(|entry| entry.kind == CatalogEntryKind::StoreIndex)
+            .expect("the proposal carries the reserved store-index row");
+        assert_eq!(
+            reserved.stable_id, retired_index_id,
+            "preserves the retired id"
+        );
+        assert_eq!(reserved.lifecycle, CatalogLifecycle::Reserved);
+        assert!(
+            reserved.accepted_index_shape.is_none(),
+            "a reserved store-index tombstone holds no live shape"
+        );
+        proposal
+            .validate()
+            .expect("the materialized proposal satisfies the accepted invariants");
+    }
+
+    /// The Store-kind control: a retired STORE tombstone reseeds the same way, confirming the
+    /// relaxation is StoreIndex-specific and the sibling kind was always sound.
+    #[test]
+    fn first_run_materializes_a_store_tombstone_without_a_shape() {
+        let retired_store_id = fixed_id(0x52);
+        let retired_store_path = "archive::^archive";
+        let ledger = vec![reserved_tombstone_at(
+            CatalogEntryKind::Store,
+            retired_store_path,
+            &retired_store_id,
+            7,
+        )];
+        let committed = lock(Vec::new(), ledger.clone(), 7);
+        let mut diagnostics = Vec::new();
+
+        let proposal = adopt_first_run(&[], &committed, &ledger, &mut diagnostics)
+            .expect("a store tombstone materializes into a valid first-run proposal");
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+        let reserved = proposal
+            .entries
+            .iter()
+            .find(|entry| entry.kind == CatalogEntryKind::Store)
+            .expect("the proposal carries the reserved store row");
+        assert_eq!(
+            reserved.stable_id, retired_store_id,
+            "preserves the retired id"
+        );
+        proposal
+            .validate()
+            .expect("the materialized proposal satisfies the accepted invariants");
     }
 
     /// First-run binding with a present committed lock adopts the lock's identity by `(kind,

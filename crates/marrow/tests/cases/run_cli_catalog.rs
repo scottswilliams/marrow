@@ -7,7 +7,7 @@ use crate::support;
 
 use marrow_catalog::{CatalogEntryKind, CatalogLock, CatalogMetadata};
 use marrow_store::tree::TreeStore;
-use support::{TempProject, find_code_segment, marrow_sub, write};
+use support::{TempProject, find_code_segment, marrow, marrow_sub, write};
 
 /// A native-store project with a saved root but no committed catalog: checking it
 /// proposes durable identity that no flow has frozen yet. Built without committing
@@ -189,6 +189,120 @@ fn a_fresh_checkout_adopts_the_committed_lock_into_an_empty_store() {
         committed_lock(&root),
         committed,
         "re-projecting the adopted store yields the committed lock unchanged"
+    );
+}
+
+#[test]
+fn a_retired_store_index_reseeds_a_wiped_store_from_the_lock_alone() {
+    // The catastrophic store-loss path: a committed lock whose append-only ledger tombstones a
+    // retired STORE INDEX must still re-seed a fresh empty store. The lock is the sole survivor of
+    // a checkout that loses its local store, so a valid committed lock that retired an index must
+    // never brick the project on the next write-capable open, and the retired id must stay reserved
+    // rather than being reissued.
+    let root = support::temp_project_uncommitted("run-retired-index-reseeds-wiped-store", |root| {
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".data" }, "run": { "defaultEntry": "app::main" } }"#,
+        );
+        write(
+            root,
+            "src/app.mw",
+            "module app\n\
+             resource Book\n\
+             \x20   required title: string\n\
+             store ^books(id: int): Book\n\
+             \x20   index byTitle(title, id)\n\
+             pub fn main()\n\
+             \x20   print(\"ran\")\n",
+        );
+    });
+
+    // First run commits the store index into the accepted store and re-projects the lock.
+    let first = marrow_sub("run", &[root.to_str().unwrap()]);
+    assert_eq!(first.status.code(), Some(0), "first run: {first:?}");
+    let index_id = committed_lock(&root)
+        .entries
+        .iter()
+        .find(|entry| entry.kind == CatalogEntryKind::StoreIndex)
+        .map(|entry| entry.stable_id.clone())
+        .expect("the committed lock carries the store index");
+
+    // Retire the index: drop its declaration and stage an explicit evolve retire of it.
+    write(
+        &root,
+        "src/app.mw",
+        "module app\n\
+         resource Book\n\
+         \x20   required title: string\n\
+         store ^books(id: int): Book\n\
+         evolve\n\
+         \x20   retire ^books.byTitle\n\
+         pub fn main()\n\
+         \x20   print(\"ran\")\n",
+    );
+    // An index retire clears only derived cells, so it activates with no destructive approval.
+    let apply = marrow(&["evolve", "apply", root.to_str().unwrap(), "--no-backup"]);
+    assert_eq!(apply.status.code(), Some(0), "evolve apply: {apply:?}");
+
+    // The retire is consumed; remove the spent evolve block so the source is clean again. The
+    // ledger now holds the index as a Reserved tombstone with its id retired forever.
+    write(
+        &root,
+        "src/app.mw",
+        "module app\n\
+         resource Book\n\
+         \x20   required title: string\n\
+         store ^books(id: int): Book\n\
+         pub fn main()\n\
+         \x20   print(\"ran\")\n",
+    );
+    let check = marrow_sub("check", &[root.to_str().unwrap()]);
+    assert_eq!(check.status.code(), Some(0), "post-retire check: {check:?}");
+    let tombstoned = committed_lock(&root);
+    assert!(
+        tombstoned
+            .ledger
+            .iter()
+            .any(|tombstone| tombstone.kind == CatalogEntryKind::StoreIndex
+                && tombstone.id == index_id),
+        "the retired index is tombstoned in the committed ledger: {:#?}",
+        tombstoned.ledger
+    );
+
+    // Store loss: a checkout that keeps the committed lock but loses the local store.
+    std::fs::remove_dir_all(root.join(".data")).expect("simulate checkout without local store");
+
+    // Re-seeding the fresh empty store from the lock alone must recover, not brick on a
+    // synthesized store.corruption over the shapeless reserved index row.
+    let reseed = marrow_sub("run", &[root.to_str().unwrap()]);
+    assert_eq!(
+        reseed.status.code(),
+        Some(0),
+        "a retired store index must reseed a wiped store from the lock: {reseed:?}"
+    );
+
+    // The retired id is preserved as a Reserved row in the re-seeded store and is never reissued:
+    // the re-projected lock still tombstones the same id, byte-identical to the pre-loss lock.
+    let snapshot = store_snapshot(&root);
+    let reserved = snapshot
+        .entries
+        .iter()
+        .find(|entry| entry.kind == CatalogEntryKind::StoreIndex)
+        .expect("the re-seeded store carries the reserved index row");
+    assert_eq!(
+        reserved.stable_id, index_id,
+        "the reserved index preserves the retired id, never reissues it"
+    );
+    assert_eq!(
+        reserved.lifecycle,
+        marrow_catalog::CatalogLifecycle::Reserved,
+        "the re-seeded index row is reserved, not active"
+    );
+    assert_eq!(
+        committed_lock(&root),
+        tombstoned,
+        "re-projecting the re-seeded store yields the committed lock unchanged"
     );
 }
 
