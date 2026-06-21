@@ -33,7 +33,6 @@ pub fn add(title: string, author: string, shelf: string): Id(^books)
     book.title = title
     book.author = author
     book.shelf = shelf
-
     const id: Id(^books) = nextId(^books)
     ^books(id) = book
     return id
@@ -112,6 +111,9 @@ fn init_scaffold_checks_runs_and_tests() {
 
     let check = marrow(&["check", target_arg]);
     assert_eq!(check.status.code(), Some(0), "{check:?}");
+
+    let fmt = marrow(&["fmt", "--check", target_arg]);
+    assert_eq!(fmt.status.code(), Some(0), "{fmt:?}");
 
     let run = marrow(&["run", target_arg]);
     assert_eq!(run.status.code(), Some(0), "{run:?}");

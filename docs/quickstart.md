@@ -62,7 +62,6 @@ pub fn add(title: string, author: string, shelf: string): Id(^books)
     book.title = title
     book.author = author
     book.shelf = shelf
-
     const id: Id(^books) = nextId(^books)
     ^books(id) = book
     return id
