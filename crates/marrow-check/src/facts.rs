@@ -1673,6 +1673,13 @@ pub struct EntryCostShapeFact {
     pub commit_points: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EntryRunFacts {
+    pub footprint: EntryFootprintFact,
+    pub cost_shape: EntryCostShapeFact,
+    pub store_open_mode: EntryStoreOpenMode,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkShapeClass {
     ComputeOnly,

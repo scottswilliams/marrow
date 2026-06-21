@@ -289,7 +289,7 @@ code, except `run.uncaught_error` — see "Typed Errors In Running Programs".
 | `run.capability` | A host capability a builtin needs (e.g. the clock for `std::clock::now`) was not provided to this run. Fatal host/tooling failure. |
 | `run.transaction_host_effect` | A rollback-sensitive host effect (`print`, `std::log::*`, `std::io::writeText`, `std::io::writeBytes`) was attempted inside a `transaction`. Host effects cannot be rolled back, so the effect is rejected before it runs; move it outside the transaction. A structural program error: uncatchable. |
 | `run.assertion` | A `std::assert::*` assertion did not hold. `marrow test` reports these as located test failures. |
-| `run.uncaught_error` | An `Error` raised by `throw` reached the top of a function with no `catch`. The original code travels in text messages (e.g. `[io.read]`) and in JSON envelopes as `data.code`. |
+| `run.uncaught_error` | An `Error` raised by `throw` reached the top of a function with no `catch`. The original code travels in text messages (e.g. `[io.read]`) and in run JSON envelopes as `diagnostics[0].data.code`. |
 | `run.traversal` | A write, delete, or append changed the saved layer a loop was actively traversing. Fatal dynamic counterpart of `check.loop_mutates_traversed_layer`. |
 | `run.depth` | Function-call nesting exceeded the fixed call-depth budget (256). Located at the offending call site and reports the callee name, budget, and observed attempted depth, so runaway or unbounded recursion fails closed rather than overflowing the stack; see the [cost model](language/cost-model.md). |
 | `run.no_entry` | `marrow run` found no entry: no `--entry` was given and `marrow.json` sets no `run.defaultEntry`. |
@@ -458,8 +458,8 @@ backstops for unchecked/internal states and host/tooling failures are not
 `Error` values and can surface at the top level under their own `run.*` code.
 When a language `throw` or `std::io` error is *not* caught and reaches the top of
 the program, `run`/`test` report it as `run.uncaught_error`. Text carries the
-original code in the message, while JSON envelopes carry it in `data.code`, for
-example:
+original code in the message, while JSON run envelopes carry it in
+`diagnostics[0].data.code`, for example:
 
 ```
 run.uncaught_error: uncaught error [io.read]: std::io::readText failed for `/no/such/file`: No such file or directory (os error 2)

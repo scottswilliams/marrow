@@ -4,9 +4,10 @@
 boundary needs. It exists to keep `marrow run --format json`, trace, data
 integrity, store-backed data inspection, surface reads, computed reads,
 generated writes, actions, operation envelopes, and descriptor export from
-copying entry-return, saved-key, data-snapshot, surface descriptor/result
-rendering, checked surface read/computed-read request decode, generated write
-request-body decode, and action argument/result rendering. Surface descriptors
+copying run envelopes, run diagnostics, run result rendering, saved-key,
+data-snapshot, surface descriptor/result rendering, checked surface
+read/computed-read request decode, generated write request-body decode, and
+action argument/result rendering. Surface descriptors
 include checked read/computed-read/action aliases as labels for later route or
 client renderers; those aliases are not operation identity. For surfaces it also
 renders the `surface.route.v1` manifest from the active descriptor export and
@@ -17,13 +18,17 @@ execution helpers over `ProjectSurfaceSession`, and `surface.operation.v1`
 request/response/error envelope DTOs over project surface sessions; it does not
 own HTTP serving or process lifetime policy.
 
-The crate deliberately does not define a general `Value` JSON ABI. Its entry
-return renderer preserves the current CLI-compatible result surface: scalars,
-enums, identities, and sequences render; whole resources and local trees fault
-at the CLI boundary as `run.entry_surface`. The enum form renders its stable
-`Enum::member` spelling — the reorder-invariant `render_name` form that
-print/string/interpolation produce — and `int` values remain JSON numbers for
-compatibility with current CLI consumers. Its data-snapshot DTO
+The crate deliberately does not define a general `Value` JSON ABI. Its run DTOs
+own the `result`/`output`/`diagnostics` envelope, bounded return-value surface,
+runtime diagnostic payloads, optional store state, auto-applied transition, and
+run-fact projection. Run-fact projection is session-bound: source identity,
+entry admission, and checked facts come from the same `ProjectSession`, not from
+caller text. Scalars, enums, identities, and sequences render; whole resources
+and local trees fault at the CLI boundary as `run.entry_surface`. The enum form
+renders its stable `Enum::member` spelling — the reorder-invariant
+`render_name` form that print/string/interpolation produce — and `int` values
+remain JSON numbers for compatibility with current CLI consumers. Its
+data-snapshot DTO
 renders the shared `store_snapshot` object for `marrow data roots|get`, including
 the store UID, catalog digest, optional commit stamp, and checked source digest.
 Its surface DTOs render `marrow-run` surface records, pages, values,
@@ -162,17 +167,18 @@ cursor error path.
 
 ## Read next
 
-- `crates/marrow-json/src/lib.rs` — `entry_return_to_json`,
-  `saved_key_to_json`, `data_snapshot_stamp_to_json`,
-  `DataSnapshotJson`, and `DataCommitJson`.
+- `crates/marrow-json/src/run.rs` — bounded run result, run diagnostic, and
+  run-fact DTOs.
+- `crates/marrow-json/src/lib.rs` — `saved_key_to_json`,
+  `data_snapshot_stamp_to_json`, `DataSnapshotJson`, and `DataCommitJson`.
 - `crates/marrow-json/src/surface.rs` and `crates/marrow-json/src/surface/` —
   surface ABI descriptor DTOs, operation catalog and route binding validation,
   surface read and computed-read result DTOs, checked surface read/computed-read
   request and generated write request DTOs, action DTOs, operation envelope
   DTOs, descriptor alias rendering, route manifest rendering, thin TypeScript
   client rendering, and in-process operation-tag execution helpers.
-- `crates/marrow/src/cmd_run.rs` — the run JSON envelope and `run.entry_surface`
-  mapping.
+- `crates/marrow/src/cmd_run.rs` — run flag parsing, output capture, store-stamp
+  capture, and serialization of the typed run DTOs.
 - `crates/marrow/src/trace.rs` and `crates/marrow/src/cmd_data/integrity.rs` —
   saved-key tooling consumers.
 - `crates/marrow/src/cmd_data.rs` and `crates/marrow/src/cmd_data/get.rs` —

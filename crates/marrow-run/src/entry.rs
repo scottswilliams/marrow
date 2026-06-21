@@ -22,9 +22,8 @@ use crate::activation::{
 use crate::call::function_by_ref;
 use crate::env::{Context, Env, TransactionState};
 use crate::error::{
-    RuntimeError, ambiguous_function, entry_argument, entry_type_error, private_function,
-    raise_with_transaction_escape, reraise_fault_with_transaction_escape, unknown_function,
-    unsupported,
+    RuntimeError, entry_argument, entry_descriptor_runtime_error, entry_type_error,
+    raise_with_transaction_escape, reraise_fault_with_transaction_escape, unsupported,
 };
 use crate::expr::eval_expr;
 use crate::host::{Host, StepHook};
@@ -726,7 +725,13 @@ impl<'p> CheckedEntryCall<'p> {
             entry_target(program, &identity.canonical_name).map_err(|_| stale_entry_identity())?;
         let descriptor = entry_descriptor(program, &identity.canonical_name)
             .map_err(|_| stale_entry_identity())?;
-        admit_entry_identity(identity, &descriptor.identity)?;
+        let requested_descriptor = entry_descriptor(program, &identity.requested_name)
+            .map_err(|_| stale_entry_identity())?;
+        admit_entry_identity(
+            identity,
+            &descriptor.identity,
+            &requested_descriptor.identity,
+        )?;
         let args = decode_entry_protocol_args(program, &descriptor.parameters, args)?;
         Ok(Self {
             program,
@@ -914,9 +919,18 @@ fn entry_target(
 ) -> Result<marrow_check::CheckedFunctionRef, RuntimeError> {
     match program.entry_function_ref(entry) {
         CheckedEntryFunction::Found(target) => Ok(target),
-        CheckedEntryFunction::Ambiguous => Err(ambiguous_function(entry, SourceSpan::default())),
-        CheckedEntryFunction::Private => Err(private_function(entry, SourceSpan::default())),
-        CheckedEntryFunction::Missing => Err(unknown_function(entry, SourceSpan::default())),
+        CheckedEntryFunction::Ambiguous => Err(entry_descriptor_runtime_error(
+            entry,
+            EntryDescriptorError::Ambiguous,
+        )),
+        CheckedEntryFunction::Private => Err(entry_descriptor_runtime_error(
+            entry,
+            EntryDescriptorError::Private,
+        )),
+        CheckedEntryFunction::Missing => Err(entry_descriptor_runtime_error(
+            entry,
+            EntryDescriptorError::Missing,
+        )),
     }
 }
 
@@ -931,18 +945,20 @@ fn entry_descriptor(
     program: &CheckedRuntimeProgram,
     requested: &str,
 ) -> Result<EntryDescriptor, RuntimeError> {
-    EntryDescriptor::resolve(program, requested).map_err(|error| match error {
-        EntryDescriptorError::Ambiguous => ambiguous_function(requested, SourceSpan::default()),
-        EntryDescriptorError::Private => private_function(requested, SourceSpan::default()),
-        EntryDescriptorError::Missing => unknown_function(requested, SourceSpan::default()),
-    })
+    EntryDescriptor::resolve(program, requested)
+        .map_err(|error| entry_descriptor_runtime_error(requested, error))
 }
 
 fn admit_entry_identity(
     expected: &EntryIdentity,
     current: &EntryIdentity,
+    requested: &EntryIdentity,
 ) -> Result<(), RuntimeError> {
-    if current.entry_tag == expected.entry_tag
+    if requested == expected
+        && current.canonical_name == expected.canonical_name
+        && current.entry_tag == expected.entry_tag
+        && current.accepted_catalog_epoch == expected.accepted_catalog_epoch
+        && current.source_digest == expected.source_digest
         && current.read_only_context_digest == expected.read_only_context_digest
     {
         return Ok(());

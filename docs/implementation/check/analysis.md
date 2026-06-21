@@ -12,11 +12,12 @@ Two halves live in `crates/marrow-check/src`:
 
 `CheckedProgram` also exposes the static entry footprint surface built from
 checked facts: `effect_closure`, `entry_footprints`, `entry_cost_shapes`, and
-`entry_store_open_mode`. These APIs expand lowered direct callee refs, not
-source names, and report typed store/index ids plus the
-`write_effects_reachable` bit. Store-open classification also stays
-write-capable for first-run catalogs, pending catalog proposals, and reachable
-transaction blocks.
+`entry_run_facts`. `entry_run_facts` is the single per-entry carrier for the
+runtime footprint, cost shape, and store-open mode used by run tooling. These
+APIs expand lowered direct callee refs, not source names, and report typed
+store/index ids plus the `write_effects_reachable` bit. Store-open
+classification also stays write-capable for first-run catalogs, pending catalog
+proposals, and reachable transaction blocks.
 
 ## Analysis pipeline
 
@@ -100,13 +101,15 @@ from the checked program or snapshot:
   multiplicity counter: repeated reads of the same saved member are one point
   read shape, and a counted index branch is one range-scan shape.
 - `CheckedProgram::effect_closure`, `entry_footprints`,
-  `entry_store_open_mode`, and `write_effects_reachable` provide the transitive
-  checked-fact view for editor and tooling classification. They expand lowered
-  direct callees and carry typed `StoreId`/`StoreIndexId`. The CLI JSON
-  projection of `entry_footprints` renders those ids as canonical structural
-  paths (`module::^root`, `module::^root::index`) via
-  `store_structural_path`/`store_index_structural_path`, so footprint identities
-  are freeze-independent and join to the catalog by path.
+  `entry_cost_shapes`, `entry_run_facts`, and `write_effects_reachable` provide
+  the transitive checked-fact view for editor and tooling classification.
+  `entry_run_facts` carries the canonical footprint, cost shape, and store-open
+  mode for one entry. These APIs expand lowered direct callees and carry typed
+  `StoreId`/`StoreIndexId`. The CLI JSON projection of entry footprints renders
+  those ids as canonical structural paths (`module::^root`,
+  `module::^root::index`) via `store_structural_path`/
+  `store_index_structural_path`, so footprint identities are freeze-independent
+  and join to the catalog by path.
 - `BindingIndex::rename_action` returns source edits plus a canonical
   `evolve rename` fragment for saved-data-backed definitions, so editor callers
   do not synthesize catalog paths or formatter output themselves. Imported
@@ -201,7 +204,7 @@ add only transport availability and request-envelope concerns around those DTOs.
 | File | Responsibility |
 | --- | --- |
 | `crates/marrow-check/src/analysis.rs` | Two-pass IDE analysis core: discover + overlay + parse + check into `AnalysisSnapshot`, enforce module/script/root-owner uniqueness, run the shared checker tail, compute test-resolution suppression, and build snapshot-bound use-site and surface-operation views. |
-| `crates/marrow-check/src/program.rs` | Checked-program artifact plus analysis APIs for effect closure, per-entry durable footprints, entry cost shape, entry store-open mode, checked read-only expressions, and runtime statement stop points. |
+| `crates/marrow-check/src/program.rs` | Checked-program artifact plus analysis APIs for effect closure, per-entry run facts, durable footprints, cost shapes, store-open mode, checked read-only expressions, and runtime statement stop points. |
 | `crates/marrow-check/src/analysis/cursor.rs` | Cursor `type_at`/`scope_at`: replay the checker's binding primitives to rebuild lexical scope, infer the tightest covering expression; records no diagnostics. |
 | `crates/marrow-check/src/evolution/preview.rs` | Schema-only and backup-backed `WitnessFactSet` preview facts for tooling. |
 | `crates/marrow-check/src/tooling/mod.rs` | Tooling facade: re-exports the data/integrity API; defines `ToolingError` (Path vs Store). |

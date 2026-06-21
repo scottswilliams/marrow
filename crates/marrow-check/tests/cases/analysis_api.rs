@@ -21,9 +21,9 @@ use marrow_check::tooling::{
 use marrow_check::{
     CHECK_READ_ONLY_EXPRESSION_HOST_EFFECT, CHECK_READ_ONLY_EXPRESSION_UNINDEXED_LOOKUP,
     CHECK_READ_ONLY_EXPRESSION_WRITE, CatalogEntryKind, CheckedProgram, DebugExpressionDataAccess,
-    DiagnosticPayload, ProjectSources, StoreLeafKind, SurfaceCatalogBlocker, SurfaceCatalogStatus,
-    SurfaceReadFootprint, SurfaceReadOperationKind, UseSiteKind, analyze_project, check_project,
-    scope_at, type_at,
+    DiagnosticPayload, EntryStoreOpenMode, ProjectSources, StoreLeafKind, SurfaceCatalogBlocker,
+    SurfaceCatalogStatus, SurfaceReadFootprint, SurfaceReadOperationKind, UseSiteKind,
+    WorkShapeClass, analyze_project, check_project, scope_at, type_at,
 };
 use marrow_project::parse_config;
 use marrow_schema::{SCHEMA_DUPLICATE_MEMBER, ScalarType, Type};
@@ -77,6 +77,65 @@ fn required_string_child(name: &str) -> DeclaredDataChild {
         key_params: Vec::new(),
         leaf: Some(StoreLeafKind::Scalar(StoreScalarType::Str)),
     }
+}
+
+#[test]
+fn entry_run_facts_resolve_single_entry_runtime_shape() {
+    let source = "module m\n\
+        resource Book\n    \
+        required title: string\n\
+        store ^books(id: int): Book\n\
+        pub fn title(id: int): string\n    \
+        return ^books(id).title ?? \"\"\n";
+    let root = temp_root("entry-run-facts");
+    write(&root, "src/m.mw", source);
+    let (checked, program) = check_project(&root, &config()).expect("check source");
+    assert!(!checked.has_errors(), "{:#?}", checked.diagnostics);
+    let accepted = program
+        .catalog
+        .proposal
+        .clone()
+        .expect("first check proposes a catalog");
+    let snapshot = analyze_project(
+        &root,
+        &config(),
+        &ProjectSources::new(),
+        Some(&accepted),
+        None,
+    )
+    .expect("analyze accepted source");
+    assert!(
+        !snapshot.report.has_errors(),
+        "{:#?}",
+        snapshot.report.diagnostics
+    );
+
+    let facts = snapshot
+        .program
+        .entry_run_facts("m::title")
+        .expect("entry run facts");
+
+    assert_eq!(facts.store_open_mode, EntryStoreOpenMode::ReadOnly);
+    let footprint = facts.footprint;
+    assert_eq!(footprint.entry, "m::title");
+    let stores_read = footprint
+        .stores_read
+        .iter()
+        .map(|store| snapshot.program.store_structural_path(*store))
+        .collect::<Option<Vec<_>>>()
+        .expect("store paths");
+    assert_eq!(stores_read, vec!["m::^books"]);
+    assert!(footprint.stores_written.is_empty());
+    assert!(footprint.indexes_touched.is_empty());
+    assert_eq!(footprint.work_shape, WorkShapeClass::ReadOnly);
+    let cost_shape = facts.cost_shape;
+    assert_eq!(cost_shape.entry, "m::title");
+    assert_eq!(cost_shape.work_shape, WorkShapeClass::ReadOnly);
+    assert_eq!(cost_shape.point_reads, 1);
+    assert_eq!(cost_shape.range_scans, 0);
+    assert_eq!(cost_shape.writes, 0);
+    assert_eq!(cost_shape.index_entry_touches, 0);
+    assert_eq!(cost_shape.commit_points, 0);
 }
 
 fn declared_receiver_children(

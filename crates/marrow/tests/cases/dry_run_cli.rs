@@ -770,9 +770,20 @@ fn dry_run_json_flushes_the_plan_when_the_run_faults() {
     assert_eq!(report["committed"], false, "{report}");
     assert_eq!(report["writes"], 2, "{report}");
     assert_eq!(report["deletes"], 0, "{report}");
-    assert_eq!(fault["code"], "run.divide_by_zero", "{fault}");
-    assert_eq!(fault["kind"], "runtime", "{fault}");
-    assert_eq!(fault["data"], serde_json::json!({}), "{fault}");
+    assert_eq!(fault["output"], "", "{fault}");
+    assert_eq!(
+        fault["diagnostics"][0]["code"], "run.divide_by_zero",
+        "{fault}"
+    );
+    assert_eq!(fault["diagnostics"][0]["kind"], "runtime", "{fault}");
+    assert_eq!(
+        fault["diagnostics"][0]["data"],
+        serde_json::json!({}),
+        "{fault}"
+    );
+    assert!(fault.get("code").is_none(), "{fault}");
+    assert!(fault.get("kind").is_none(), "{fault}");
+    assert!(fault.get("data").is_none(), "{fault}");
     assert!(
         report["planned"]
             .as_array()

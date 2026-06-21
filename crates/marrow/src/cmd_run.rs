@@ -7,11 +7,10 @@ use std::process::ExitCode;
 use marrow_run::{
     Nondeterminism, ProjectInvokeError, ProjectOpen, ProjectSession, ProjectSessionError,
     ProjectSessionNotice, RunOutput, RunOutputSink, RuntimeError, SessionEntry, StoreStamp,
-    SystemNondeterminism, Value,
+    SystemNondeterminism,
 };
-use serde_json::json;
 
-use crate::cmd_check::{report_runtime_fault, runtime_fault_json};
+use crate::cmd_check::report_runtime_fault;
 use crate::dry_run::{self, DryRunHook};
 use crate::trace::TraceHook;
 use crate::{CheckFormat, report_io_error, report_project, report_simple_error};
@@ -224,10 +223,10 @@ fn run_project_dir(
     }
     let session = match ProjectSession::open(dir, open) {
         Ok(session) => session,
-        Err(error) => return report_session_open_error(dir, error, format),
+        Err(error) => return report_run_open_error(dir, error, format),
     };
     let Some(entry) = session.run_entry() else {
-        return report_session_open_error(dir, ProjectSessionError::NoEntry, format);
+        return report_run_session_error(dir, ProjectSessionError::NoEntry, "", format);
     };
     if !observe.isolates_writes() {
         for notice in session.notices() {
@@ -259,6 +258,17 @@ fn run_project_dir(
     )
 }
 
+fn report_run_open_error(dir: &str, error: ProjectSessionError, format: CheckFormat) -> ExitCode {
+    match error {
+        ProjectSessionError::Io { .. }
+        | ProjectSessionError::Config { .. }
+        | ProjectSessionError::Catalog { .. }
+        | ProjectSessionError::Check { .. }
+        | ProjectSessionError::CheckLoad { .. } => report_session_open_error(dir, error, format),
+        error => report_run_session_error(dir, error, "", format),
+    }
+}
+
 pub(crate) fn report_session_open_error(
     dir: &str,
     error: ProjectSessionError,
@@ -283,6 +293,24 @@ pub(crate) fn report_session_open_error(
         }
     }
     ExitCode::FAILURE
+}
+
+fn report_run_session_error(
+    dir: &str,
+    error: ProjectSessionError,
+    output: &str,
+    format: CheckFormat,
+) -> ExitCode {
+    match format {
+        CheckFormat::Text => report_session_open_error(dir, error, format),
+        CheckFormat::Json | CheckFormat::Jsonl => {
+            let envelope = marrow_json::run_session_error_to_json(&error, output.to_string());
+            crate::write_json_err(
+                serde_json::to_value(envelope).expect("run session error DTO serializes"),
+            );
+            ExitCode::FAILURE
+        }
+    }
 }
 
 /// The host capabilities a run and a test share: the real system clock, environment,
@@ -443,7 +471,7 @@ fn execute(request: RunExecution<'_>, nondeterminism: &impl Nondeterminism) -> E
         Ok(output) => Ok(output),
         Err(ProjectInvokeError::Runtime(error)) => Err(error),
         Err(ProjectInvokeError::Session(error)) => {
-            return report_session_open_error(dir, error, format);
+            return report_run_session_error(dir, error, "", format);
         }
     };
     report.emit(program);
@@ -463,6 +491,7 @@ fn execute(request: RunExecution<'_>, nondeterminism: &impl Nondeterminism) -> E
                         report_runtime_fault_with_run_state(
                             program,
                             &error,
+                            captured_output,
                             format,
                             after_stamp.as_ref(),
                             before_stamp.as_ref(),
@@ -475,9 +504,20 @@ fn execute(request: RunExecution<'_>, nondeterminism: &impl Nondeterminism) -> E
         }
         Err(error) => {
             if json_envelope {
+                let captured_output = &program_output.borrow().captured;
                 report_runtime_fault_with_run_state(
                     program,
                     &error,
+                    captured_output,
+                    format,
+                    after_stamp.as_ref(),
+                    before_stamp.as_ref(),
+                );
+            } else if matches!(format, CheckFormat::Json | CheckFormat::Jsonl) {
+                report_runtime_fault_with_run_state(
+                    program,
+                    &error,
+                    "",
                     format,
                     after_stamp.as_ref(),
                     before_stamp.as_ref(),
@@ -568,59 +608,17 @@ fn render_run_json(
     before: Option<&StoreStamp>,
     auto_applied: Option<(u64, u64)>,
 ) -> Result<(), RuntimeError> {
-    let mut envelope = serde_json::Map::new();
-    envelope.insert("output".to_string(), json!(output));
-    envelope.insert(
-        "return".to_string(),
-        match &result.value {
-            Some(value) => render_return_value(value)?,
-            None => serde_json::Value::Null,
-        },
-    );
-    envelope.insert("signature_digest".to_string(), serde_json::Value::Null);
-    envelope.insert("raises".to_string(), serde_json::Value::Null);
-    insert_run_store_state(&mut envelope, stamp, before);
-    if let Some((from_epoch, to_epoch)) = auto_applied {
-        envelope.insert(
-            "auto_applied".to_string(),
-            json!({ "from_epoch": from_epoch, "to_epoch": to_epoch }),
-        );
-    }
-    crate::write_json(serde_json::Value::Object(envelope));
+    let envelope = marrow_json::run_output_to_json(result, output.to_string())?
+        .with_store_state(marrow_json::RunStoreStateJson::from_stamps(stamp, before))
+        .with_auto_applied(auto_applied.map(marrow_json::RunAutoAppliedJson::from));
+    crate::write_json(serde_json::to_value(envelope).expect("run output DTO serializes"));
     Ok(())
-}
-
-fn insert_run_store_state(
-    envelope: &mut serde_json::Map<String, serde_json::Value>,
-    stamp: Option<&StoreStamp>,
-    before: Option<&StoreStamp>,
-) {
-    if let Some(stamp) = stamp {
-        envelope.insert(
-            "store_stamp".to_string(),
-            json!({
-                "store_uid": stamp.store_uid.as_str(),
-                "catalog_epoch": stamp.catalog_epoch,
-                "commit_id": stamp.commit_id,
-            }),
-        );
-        if run_committed(stamp, before) {
-            envelope.insert("committed".to_string(), serde_json::Value::Bool(true));
-        }
-    } else {
-        envelope.insert("store_stamp".to_string(), serde_json::Value::Null);
-    }
-}
-
-fn run_committed(stamp: &StoreStamp, before: Option<&StoreStamp>) -> bool {
-    before
-        .map(|before| before.commit_id != stamp.commit_id)
-        .unwrap_or(false)
 }
 
 fn report_runtime_fault_with_run_state(
     program: &marrow_check::CheckedRuntimeProgram,
     error: &RuntimeError,
+    output: &str,
     format: CheckFormat,
     stamp: Option<&StoreStamp>,
     before: Option<&StoreStamp>,
@@ -628,15 +626,15 @@ fn report_runtime_fault_with_run_state(
     match format {
         CheckFormat::Text => report_runtime_fault(program, error, format),
         CheckFormat::Json | CheckFormat::Jsonl => {
-            let mut envelope = runtime_fault_json(program, error);
-            insert_run_store_state(&mut envelope, stamp, before);
-            crate::write_json_err(serde_json::Value::Object(envelope));
+            let envelope = marrow_json::run_error_to_json(
+                program,
+                &ProjectInvokeError::Runtime(error.clone()),
+                output.to_string(),
+            )
+            .with_store_state(marrow_json::RunStoreStateJson::from_stamps(stamp, before));
+            crate::write_json_err(
+                serde_json::to_value(envelope).expect("run error DTO serializes"),
+            );
         }
     }
-}
-
-fn render_return_value(value: &Value) -> Result<serde_json::Value, RuntimeError> {
-    marrow_json::entry_return_to_json(value).map_err(|_| {
-        RuntimeError::entry_surface("entry return value is outside the run JSON result surface")
-    })
 }

@@ -5,6 +5,7 @@
 //! producing a resolved [`CheckedProgram`] alongside the diagnostics.
 
 pub use marrow_store::value::ScalarType;
+pub use marrow_syntax::{Severity, kind_for_code};
 
 pub mod analysis;
 mod annotation_refs;
@@ -102,14 +103,14 @@ pub use executable::{
 pub use facts::PresenceProofRead;
 pub use facts::{
     CheckedFacts, CheckedType, DirectEffectFacts, EffectClosureFacts, EntryCostShapeFact,
-    EntryFootprintFact, EntryStoreOpenMode, EnumFact, EnumId, EnumMemberFact, EnumMemberId,
-    FunctionFact, FunctionId, HostEffect, LocalFact, LocalId, ModuleFact, ModuleId, ResourceFact,
-    ResourceId, ResourceMemberFact, ResourceMemberId, ResourceMemberKind, SavedPlaceEffect,
-    StoreFact, StoreId, StoreIdentityKeyFact, StoreIndexFact, StoreIndexId, StoreIndexKeyFact,
-    StoreIndexKeySource, StoredValueMeaning, SurfaceActionFact, SurfaceCatalogBlocker,
-    SurfaceCatalogStatus, SurfaceCollectionFact, SurfaceCollectionTarget, SurfaceComputedReadFact,
-    SurfaceDeleteFact, SurfaceFact, SurfaceFieldFact, SurfaceId, SurfaceReadFootprint,
-    SurfaceReadOperationFact, SurfaceReadOperationKind, WorkShapeClass,
+    EntryFootprintFact, EntryRunFacts, EntryStoreOpenMode, EnumFact, EnumId, EnumMemberFact,
+    EnumMemberId, FunctionFact, FunctionId, HostEffect, LocalFact, LocalId, ModuleFact, ModuleId,
+    ResourceFact, ResourceId, ResourceMemberFact, ResourceMemberId, ResourceMemberKind,
+    SavedPlaceEffect, StoreFact, StoreId, StoreIdentityKeyFact, StoreIndexFact, StoreIndexId,
+    StoreIndexKeyFact, StoreIndexKeySource, StoredValueMeaning, SurfaceActionFact,
+    SurfaceCatalogBlocker, SurfaceCatalogStatus, SurfaceCollectionFact, SurfaceCollectionTarget,
+    SurfaceComputedReadFact, SurfaceDeleteFact, SurfaceFact, SurfaceFieldFact, SurfaceId,
+    SurfaceReadFootprint, SurfaceReadOperationFact, SurfaceReadOperationKind, WorkShapeClass,
 };
 pub use facts::{
     PresenceProofFact, PresenceProofId, PresenceProofPlace, PresenceProofSource,

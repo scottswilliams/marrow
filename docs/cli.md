@@ -540,21 +540,23 @@ machine-readable `value_b64` field in dry-run JSON output stays the raw stored
 bytes.
 
 `--format json` on a non-dry run moves the program's `print` stream into the
-`output` field of a stdout envelope. The envelope also carries `return` when the
-entry's return value has a JSON surface, `signature_digest: null`,
-`raises: null`, and `store_stamp` with `store_uid`, `catalog_epoch`, and
-`commit_id`. A sibling `committed: true` appears only when this invocation
-committed a write; read-only runs omit `committed`. Identity returns use the
-same JSON identity form as `marrow data` JSON surfaces. An enum return renders as
+`output` field of a stdout envelope. The envelope carries `result` as either
+`{"kind":"none"}` or `{"kind":"value","value":...}` when the entry's return
+value has a JSON surface, an empty `diagnostics` array, and `store_stamp` with
+`store_uid`, `catalog_epoch`, and `commit_id` for durable-store runs. A sibling
+`committed: true` appears only when this invocation committed a write; read-only
+runs omit `committed`. Identity returns carry the store root and saved-key type
+tags; string and bytes keys are bounded in the run envelope with `truncated` and
+`originalBytes`. An enum return renders as
 `{"kind":"enum","member":"Enum::member"}`, the stable, reorder-invariant member
 spelling `print`/`string`/interpolation produce, not a positional index.
 Resource-shaped returns are outside the run surface and fail with
-`run.entry_surface` (exit `1`). If
-return rendering or a later runtime fault fails after a durable write has
-committed, stderr carries the runtime fault JSON with `store_stamp` and
-`committed: true`; stdout does not carry a successful result envelope. If an
-uncaught `Error` reaches the top of a JSON run, stderr carries the runtime fault
-JSON and includes the original error code as `data.code`.
+`run.entry_surface` (exit `1`). If return rendering or a later runtime fault
+fails after a durable write has committed, stderr carries a run error envelope
+with `diagnostics`, `output`, `store_stamp`, and `committed: true`; stdout does
+not carry a successful result envelope. If an uncaught `Error` reaches the top
+of a JSON run, stderr includes the original error code as
+`diagnostics[0].data.code`.
 
 `--dry-run` classifies the run through the checked project and store fences
 without freezing first-run durable identity into the native store and without

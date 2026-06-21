@@ -208,9 +208,11 @@ fn client_typescript_generated_client_runs_against_live_surface_server() {
     ]);
     assert_eq!(describe.status.code(), Some(0), "describe: {describe:?}");
     let envelope = support::json(describe.stdout);
+    assert_eq!(envelope["result"]["kind"], "value", "{envelope}");
+    assert_eq!(envelope["result"]["value"]["kind"], "string", "{envelope}");
     assert_eq!(
-        envelope["return"],
-        serde_json::json!({ "kind": "string", "value": "The Dispossessed|Ursula Le Guin" })
+        envelope["result"]["value"]["value"], "The Dispossessed|Ursula Le Guin",
+        "{envelope}"
     );
 
     let integrity = marrow(&[

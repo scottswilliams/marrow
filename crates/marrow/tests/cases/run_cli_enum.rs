@@ -83,8 +83,11 @@ fn an_enum_return_renders_by_member_name_in_the_run_json_envelope() {
     let envelope: Value =
         serde_json::from_slice(&got.stdout).expect("stdout is one JSON run envelope");
     assert_eq!(
-        envelope["return"],
-        serde_json::json!({ "kind": "enum", "member": "Status::archived" }),
+        envelope["result"],
+        serde_json::json!({
+            "kind": "value",
+            "value": { "kind": "enum", "member": "Status::archived" }
+        }),
         "an enum return names its member, not positional ids: {envelope:#?}"
     );
 }

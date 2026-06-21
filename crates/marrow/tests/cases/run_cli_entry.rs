@@ -51,6 +51,34 @@ fn failing_run_keeps_program_output_written_before_the_fault() {
 }
 
 #[test]
+fn json_failing_run_keeps_program_output_in_the_error_envelope() {
+    let root = temp_project("run-json-fault-output", |root| {
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" }, "run": { "defaultEntry": "app::main" } }"#,
+        );
+        write(
+            root,
+            "src/app.mw",
+            "module app\n\npub fn main()\n    print(\"before fault\")\n    const boom = 1 / 0\n",
+        );
+    });
+    let output = marrow_sub("run", &["--format", "json", root.to_str().unwrap()]);
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert!(output.stdout.is_empty(), "{output:?}");
+    let faults = support::json_records_in_stderr(output.stderr);
+    let fault = faults.last().expect("json fault");
+    assert_eq!(fault["output"], "before fault\n", "{fault}");
+    assert_eq!(
+        fault["diagnostics"][0]["code"], "run.divide_by_zero",
+        "{fault}"
+    );
+    assert!(fault.get("code").is_none(), "{fault}");
+}
+
+#[test]
 fn entry_flag_overrides_the_default_entry() {
     let root = temp_project("run-entry", |root| {
         write(
@@ -167,6 +195,31 @@ fn reports_a_missing_entry() {
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     assert_eq!(fault_code(&output.stderr), "run.no_entry");
+}
+
+#[test]
+fn json_missing_entry_uses_the_run_error_envelope() {
+    let root = temp_project("run-json-noentry", |root| {
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" } }"#,
+        );
+        write(
+            root,
+            "src/app.mw",
+            "module app\n\npub fn main()\n    print(\"hi\")\n",
+        );
+    });
+    let output = marrow_sub("run", &["--format", "json", root.to_str().unwrap()]);
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert!(output.stdout.is_empty(), "{output:?}");
+    let faults = support::json_records_in_stderr(output.stderr);
+    let fault = faults.last().expect("json fault");
+    assert_eq!(fault["output"], "", "{fault}");
+    assert_eq!(fault["diagnostics"][0]["code"], "run.no_entry", "{fault}");
+    assert!(fault.get("code").is_none(), "{fault}");
 }
 
 #[test]
@@ -403,7 +456,7 @@ fn entry_args_reject_composite_identity_params() {
 }
 
 #[test]
-fn json_run_envelope_captures_output_return_and_read_only_stamp() {
+fn json_run_envelope_captures_output_result_and_read_only_stamp() {
     let root = temp_project("run-json-envelope", |root| {
         write(
             root,
@@ -434,11 +487,11 @@ fn json_run_envelope_captures_output_return_and_read_only_stamp() {
         serde_json::from_slice(&output.stdout).expect("run JSON envelope");
     assert_eq!(envelope["output"], "captured\n", "{envelope}");
     assert_eq!(
-        envelope["return"],
-        serde_json::json!({ "kind": "int", "value": 7 })
+        envelope["result"],
+        serde_json::json!({ "kind": "value", "value": { "kind": "int", "value": 7 } })
     );
-    assert_eq!(envelope["signature_digest"], serde_json::Value::Null);
-    assert_eq!(envelope["raises"], serde_json::Value::Null);
+    assert!(envelope.get("signature_digest").is_none(), "{envelope}");
+    assert!(envelope.get("raises").is_none(), "{envelope}");
     assert!(envelope.get("committed").is_none(), "{envelope}");
     assert!(
         envelope["store_stamp"]["store_uid"].is_string(),
@@ -481,10 +534,9 @@ fn json_run_envelope_marks_committed_write_invocations() {
     let envelope: serde_json::Value =
         serde_json::from_slice(&output.stdout).expect("run JSON envelope");
     assert_eq!(envelope["committed"], true, "{envelope}");
-    assert_eq!(
-        envelope["return"],
-        serde_json::json!({ "kind": "string", "value": "ok" })
-    );
+    assert_eq!(envelope["result"]["kind"], "value", "{envelope}");
+    assert_eq!(envelope["result"]["value"]["kind"], "string", "{envelope}");
+    assert_eq!(envelope["result"]["value"]["value"], "ok", "{envelope}");
 }
 
 #[test]
@@ -529,11 +581,15 @@ fn json_run_surface_errors_after_commit_report_mutation_truth() {
         assert_eq!(output.status.code(), Some(1), "{output:?}");
         assert!(
             output.stdout.is_empty(),
-            "post-commit return-surface failure must not look like a successful JSON run: {output:?}"
+            "post-commit result-surface failure must not look like a successful JSON run: {output:?}"
         );
         let faults = support::json_records_in_stderr(output.stderr);
         let fault = faults.last().expect("json fault");
-        assert_eq!(fault["code"], "run.entry_surface", "{fault}");
+        assert_eq!(
+            fault["diagnostics"][0]["code"], "run.entry_surface",
+            "{fault}"
+        );
+        assert!(fault.get("code").is_none(), "{fault}");
         assert_eq!(fault["committed"], true, "{fault}");
         assert!(fault["store_stamp"]["store_uid"].is_string(), "{fault}");
         assert!(fault["store_stamp"]["catalog_epoch"].is_number(), "{fault}");
@@ -552,7 +608,7 @@ fn json_run_surface_errors_after_commit_report_mutation_truth() {
                 .expect("cells array")
                 .iter()
                 .any(|cell| cell["path"] == expected_path),
-            "the durable write must have committed before return rendering failed: {dump_json}"
+            "the durable write must have committed before result rendering failed: {dump_json}"
         );
     }
 }
@@ -579,8 +635,15 @@ fn json_run_errors_carry_uncaught_error_data_code() {
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let records = support::json_records_in_stderr(output.stderr);
     let fault = records.last().expect("json fault");
-    assert_eq!(fault["code"], "run.uncaught_error", "{fault}");
-    assert_eq!(fault["data"]["code"], "app.boom", "{fault}");
+    assert_eq!(
+        fault["diagnostics"][0]["code"], "run.uncaught_error",
+        "{fault}"
+    );
+    assert_eq!(
+        fault["diagnostics"][0]["data"]["code"], "app.boom",
+        "{fault}"
+    );
+    assert!(fault.get("code").is_none(), "{fault}");
 }
 
 #[test]
@@ -614,7 +677,11 @@ fn json_runtime_fault_after_commit_reports_mutation_truth() {
     );
     let faults = support::json_records_in_stderr(output.stderr);
     let fault = faults.last().expect("json fault");
-    assert_eq!(fault["code"], "run.divide_by_zero", "{fault}");
+    assert_eq!(
+        fault["diagnostics"][0]["code"], "run.divide_by_zero",
+        "{fault}"
+    );
+    assert!(fault.get("code").is_none(), "{fault}");
     assert_eq!(fault["committed"], true, "{fault}");
     assert!(fault["store_stamp"]["store_uid"].is_string(), "{fault}");
     assert!(fault["store_stamp"]["catalog_epoch"].is_number(), "{fault}");
@@ -638,7 +705,7 @@ fn json_runtime_fault_after_commit_reports_mutation_truth() {
 }
 
 #[test]
-fn json_run_envelope_renders_identity_return_and_rejects_resource_return() {
+fn json_run_envelope_renders_identity_result_and_rejects_resource_result() {
     let root = temp_project("run-json-identity-return", |root| {
         write(
             root,
@@ -679,15 +746,12 @@ fn json_run_envelope_renders_identity_return_and_rejects_resource_return() {
     assert_eq!(identity.status.code(), Some(0), "{identity:?}");
     let envelope: serde_json::Value =
         serde_json::from_slice(&identity.stdout).expect("identity envelope");
-    assert_eq!(
-        envelope["return"],
-        serde_json::json!({
-            "kind": "identity",
-            "root": "authors",
-            "keys": [{ "type": "string", "value": "ada" }]
-        }),
-        "{envelope}"
-    );
+    let value = &envelope["result"]["value"];
+    assert_eq!(envelope["result"]["kind"], "value", "{envelope}");
+    assert_eq!(value["kind"], "identity", "{envelope}");
+    assert_eq!(value["root"], "authors", "{envelope}");
+    assert_eq!(value["keys"][0]["type"], "string", "{envelope}");
+    assert_eq!(value["keys"][0]["value"], "ada", "{envelope}");
 
     let status = marrow_sub(
         "run",
@@ -703,10 +767,13 @@ fn json_run_envelope_renders_identity_return_and_rejects_resource_return() {
     let envelope: serde_json::Value =
         serde_json::from_slice(&status.stdout).expect("status envelope");
     assert_eq!(
-        envelope["return"],
+        envelope["result"],
         serde_json::json!({
-            "kind": "enum",
-            "member": "Status::archived",
+            "kind": "value",
+            "value": {
+                "kind": "enum",
+                "member": "Status::archived",
+            }
         }),
         "{envelope}"
     );
@@ -723,5 +790,10 @@ fn json_run_envelope_renders_identity_return_and_rejects_resource_return() {
     );
     assert_eq!(resource.status.code(), Some(1), "{resource:?}");
     let faults = support::json_records_in_stderr(resource.stderr);
-    assert_eq!(faults.last().unwrap()["code"], "run.entry_surface");
+    let fault = faults.last().expect("json fault");
+    assert_eq!(
+        fault["diagnostics"][0]["code"], "run.entry_surface",
+        "{fault}"
+    );
+    assert!(fault.get("code").is_none(), "{fault}");
 }

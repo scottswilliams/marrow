@@ -122,10 +122,11 @@ callable ABI tag and read-only checked-program context before execution. It does
 not make the Rust crates stable, does not define JSON request bodies, and does
 not publish HTTP routes or generated-client names.
 
-The `signature_digest` field in the run JSON envelope is reserved for the future
-public JSON exposure of entry ABI identity and remains `null` in v0.1. The
-linked-Rust `entry.invoke.v1` profile does not populate it. The `raises` field
-is reserved for the future declared error surface and remains `null` in v0.1.
+The run JSON envelope is the v0.1 command profile for entry results and faults:
+success reports `result`, `output`, and an empty `diagnostics` array, while
+faults report `diagnostics` plus captured `output`. Entry ABI identity remains a
+linked-Rust implementation profile in v0.1 and is not exposed as a separate run
+JSON signature field. Declared error surfaces remain future work.
 
 A typed JSONL export remains a gated future surface. It depends on the designed
 export boundary and type-identity contract; it is not a v0.1 data export API.

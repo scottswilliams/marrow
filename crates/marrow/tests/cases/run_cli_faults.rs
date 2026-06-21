@@ -378,17 +378,19 @@ fn unbounded_recursion_surfaces_a_json_call_depth_payload() {
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let records = support::json_records_in_stderr(output.stderr);
     let fault = records.last().expect("json fault");
-    assert_eq!(fault["code"], "run.depth", "{fault}");
-    assert_eq!(fault["data"]["callee"], "sumTo", "{fault}");
-    assert_eq!(fault["data"]["budget"], 256, "{fault}");
-    assert_eq!(fault["data"]["observed_depth"], 257, "{fault}");
+    let diagnostic = &fault["diagnostics"][0];
+    assert_eq!(diagnostic["code"], "run.depth", "{fault}");
+    assert_eq!(diagnostic["data"]["callee"], "sumTo", "{fault}");
+    assert_eq!(diagnostic["data"]["budget"], 256, "{fault}");
+    assert_eq!(diagnostic["data"]["observed_depth"], 257, "{fault}");
     assert!(
-        fault["source_span"]["file"]
+        diagnostic["source_span"]["file"]
             .as_str()
             .is_some_and(|file| file.ends_with("src/app.mw")),
         "{fault}"
     );
-    assert_eq!(fault["source_span"]["line"], 6, "{fault}");
+    assert_eq!(diagnostic["source_span"]["line"], 6, "{fault}");
+    assert!(fault.get("code").is_none(), "{fault}");
 }
 
 #[test]
@@ -418,14 +420,16 @@ fn a_host_effect_inside_a_transaction_is_its_own_typed_fault() {
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let records = support::json_records_in_stderr(output.stderr);
     let fault = records.last().expect("json fault");
-    assert_eq!(fault["code"], "run.transaction_host_effect", "{fault}");
-    assert_eq!(fault["kind"], "runtime", "{fault}");
+    let diagnostic = &fault["diagnostics"][0];
+    assert_eq!(diagnostic["code"], "run.transaction_host_effect", "{fault}");
+    assert_eq!(diagnostic["kind"], "runtime", "{fault}");
     assert!(
-        fault["source_span"]["file"]
+        diagnostic["source_span"]["file"]
             .as_str()
             .is_some_and(|file| file.ends_with("src/app.mw")),
         "{fault}"
     );
+    assert!(fault.get("code").is_none(), "{fault}");
 }
 
 #[test]

@@ -1,9 +1,10 @@
 //! Runtime faults: `RuntimeError`, the `run.*` codes, and the fault constructors.
 
+use std::borrow::Cow;
 #[cfg(test)]
 use std::cell::Cell;
 
-use marrow_check::{CheckedRuntimeModule, CheckedRuntimeProgram, FileId};
+use marrow_check::{CheckedRuntimeModule, CheckedRuntimeProgram, EntryDescriptorError, FileId};
 use marrow_store::StoreError;
 use marrow_store::value::{ScalarType, ValueError};
 use marrow_syntax::SourceSpan;
@@ -11,6 +12,8 @@ use marrow_syntax::SourceSpan;
 use crate::env::AssignError;
 use crate::value::Value;
 use crate::write::WriteError;
+
+const RUNTIME_DIAGNOSTIC_NAME_CAP: usize = 1024;
 
 /// Typed details for a `run.depth` fault.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -191,6 +194,31 @@ impl RuntimeError {
         }
         self
     }
+}
+
+pub(crate) fn entry_descriptor_runtime_error(
+    requested: &str,
+    error: EntryDescriptorError,
+) -> RuntimeError {
+    let requested = bounded_diagnostic_name(requested);
+    match error {
+        EntryDescriptorError::Ambiguous => ambiguous_function(&requested, SourceSpan::default()),
+        EntryDescriptorError::Private => private_function(&requested, SourceSpan::default()),
+        EntryDescriptorError::Missing => unknown_function(&requested, SourceSpan::default()),
+    }
+}
+
+fn bounded_diagnostic_name(name: &str) -> Cow<'_, str> {
+    if name.len() <= RUNTIME_DIAGNOSTIC_NAME_CAP {
+        return Cow::Borrowed(name);
+    }
+    let mut end = RUNTIME_DIAGNOSTIC_NAME_CAP;
+    while !name.is_char_boundary(end) {
+        end -= 1;
+    }
+    let mut name = name[..end].to_string();
+    name.push('\u{2026}');
+    Cow::Owned(name)
 }
 
 impl marrow_syntax::Diagnose for RuntimeError {

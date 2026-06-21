@@ -29,8 +29,9 @@ use crate::executable::{
     walk_checked_stmt,
 };
 use crate::facts::{
-    CheckedFacts, EffectClosureFacts, EntryCostShapeFact, EntryFootprintFact, EntryStoreOpenMode,
-    FunctionId, ResourceId, ResourceMemberId, StoreId, StoreIndexId, WorkShapeClass,
+    CheckedFacts, EffectClosureFacts, EntryCostShapeFact, EntryFootprintFact, EntryRunFacts,
+    EntryStoreOpenMode, FunctionId, ResourceId, ResourceMemberId, StoreId, StoreIndexId,
+    WorkShapeClass,
 };
 
 /// Identifies one source file in a [`CheckedProgram`] by the index of the module
@@ -418,17 +419,8 @@ impl CheckedProgram {
         self.public_entry_refs()
             .into_iter()
             .filter_map(|entry_ref| {
-                let closure = self.effect_closure(entry_ref.function_ref)?;
-                let work_shape = work_shape(&closure);
-                Some(EntryFootprintFact {
-                    function: entry_ref.function,
-                    entry: entry_ref.entry,
-                    write_effects_reachable: closure.write_effects_reachable,
-                    stores_read: closure.stores_read,
-                    stores_written: closure.stores_written,
-                    indexes_touched: closure.indexes_touched,
-                    work_shape,
-                })
+                self.entry_shape_facts(entry_ref)
+                    .map(|facts| facts.footprint)
             })
             .collect()
     }
@@ -437,25 +429,24 @@ impl CheckedProgram {
         self.public_entry_refs()
             .into_iter()
             .filter_map(|entry_ref| {
-                let closure = self.effect_closure(entry_ref.function_ref)?;
-                let work_shape = work_shape(&closure);
-                let writes = closure.saved_writes.len() + closure.stores_written.len();
-                Some(EntryCostShapeFact {
-                    function: entry_ref.function,
-                    entry: entry_ref.entry,
-                    work_shape,
-                    point_reads: closure.saved_reads.len(),
-                    range_scans: closure.saved_index_reads.len(),
-                    writes,
-                    index_entry_touches: if closure.write_effects_reachable {
-                        closure.indexes_touched.len()
-                    } else {
-                        0
-                    },
-                    commit_points: commit_points(&closure, writes),
-                })
+                self.entry_shape_facts(entry_ref)
+                    .map(|facts| facts.cost_shape)
             })
             .collect()
+    }
+
+    pub fn entry_run_facts(&self, entry: &str) -> Option<EntryRunFacts> {
+        let entry_ref = self
+            .public_entry_refs()
+            .into_iter()
+            .find(|entry_ref| entry_ref.entry == entry)?;
+        let shape = self.entry_shape_facts(entry_ref)?;
+        let store_open_mode = self.entry_store_open_mode(shape.function_ref)?;
+        Some(EntryRunFacts {
+            footprint: shape.footprint,
+            cost_shape: shape.cost_shape,
+            store_open_mode,
+        })
     }
 
     pub fn entry_store_open_mode(
@@ -471,6 +462,41 @@ impl CheckedProgram {
             return Some(EntryStoreOpenMode::WriteCapable);
         }
         Some(EntryStoreOpenMode::ReadOnly)
+    }
+
+    fn entry_shape_facts(&self, entry_ref: PublicEntryRef) -> Option<EntryShapeFacts> {
+        let closure = self.effect_closure(entry_ref.function_ref)?;
+        let work_shape = work_shape(&closure);
+        let writes = closure.saved_writes.len() + closure.stores_written.len();
+        let index_entry_touches = if closure.write_effects_reachable {
+            closure.indexes_touched.len()
+        } else {
+            0
+        };
+        let commit_points = commit_points(&closure, writes);
+        Some(EntryShapeFacts {
+            function_ref: entry_ref.function_ref,
+            entry: entry_ref.entry.clone(),
+            footprint: EntryFootprintFact {
+                function: entry_ref.function,
+                entry: entry_ref.entry.clone(),
+                write_effects_reachable: closure.write_effects_reachable,
+                stores_read: closure.stores_read,
+                stores_written: closure.stores_written,
+                indexes_touched: closure.indexes_touched,
+                work_shape,
+            },
+            cost_shape: EntryCostShapeFact {
+                function: entry_ref.function,
+                entry: entry_ref.entry,
+                work_shape,
+                point_reads: closure.saved_reads.len(),
+                range_scans: closure.saved_index_reads.len(),
+                writes,
+                index_entry_touches,
+                commit_points,
+            },
+        })
     }
 
     pub fn store_catalog_id(&self, store_id: StoreId) -> Option<&str> {
@@ -1163,6 +1189,14 @@ struct PublicEntryRef {
     function: FunctionId,
     entry: String,
     function_ref: CheckedFunctionRef,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct EntryShapeFacts {
+    function_ref: CheckedFunctionRef,
+    entry: String,
+    footprint: EntryFootprintFact,
+    cost_shape: EntryCostShapeFact,
 }
 
 impl CheckedProgram {

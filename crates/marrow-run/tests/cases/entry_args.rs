@@ -32,6 +32,16 @@ fn protocol_invocation(
     }
 }
 
+fn single_int_protocol_invocation(descriptor: &EntryDescriptor) -> EntryInvocation {
+    protocol_invocation(
+        descriptor,
+        vec![EntryArgument {
+            name: "n".into(),
+            value: EntryArgumentValue::Scalar(EntryScalarArgument::Int(1)),
+        }],
+    )
+}
+
 #[test]
 fn text_arg_instant_accepts_standard_rfc3339_and_normalizes() {
     // A CLI `--arg t=instant("...")` shares the in-language constructor's wider
@@ -810,6 +820,51 @@ fn stale_protocol_entry_identity_rejects_signature_changes_before_running() {
 }
 
 #[test]
+fn stale_protocol_entry_identity_rejects_forged_public_identity_fields() {
+    let program = checked_program("pub fn run(n: int): int\n    return n\n");
+    let descriptor = EntryDescriptor::resolve(&program, "run").expect("entry descriptor");
+
+    let mut invocation = single_int_protocol_invocation(&descriptor);
+    invocation.identity.requested_name.push_str("_forged");
+    let error = CheckedEntryCall::from_protocol_invocation(&program, &invocation)
+        .expect_err("forged requested name rejects");
+    assert_eq!(error.code(), RUN_ENTRY_ARGUMENT);
+
+    let mut invocation = single_int_protocol_invocation(&descriptor);
+    invocation.identity.canonical_name.push_str("_forged");
+    let error = CheckedEntryCall::from_protocol_invocation(&program, &invocation)
+        .expect_err("forged canonical name rejects");
+    assert_eq!(error.code(), RUN_ENTRY_ARGUMENT);
+
+    let mut invocation = single_int_protocol_invocation(&descriptor);
+    invocation.identity.entry_tag.push_str("-forged");
+    let error = CheckedEntryCall::from_protocol_invocation(&program, &invocation)
+        .expect_err("forged entry tag rejects");
+    assert_eq!(error.code(), RUN_ENTRY_ARGUMENT);
+
+    let mut invocation = single_int_protocol_invocation(&descriptor);
+    invocation.identity.accepted_catalog_epoch = Some(99);
+    let error = CheckedEntryCall::from_protocol_invocation(&program, &invocation)
+        .expect_err("forged accepted epoch rejects");
+    assert_eq!(error.code(), RUN_ENTRY_ARGUMENT);
+
+    let mut invocation = single_int_protocol_invocation(&descriptor);
+    invocation.identity.source_digest.push_str("-forged");
+    let error = CheckedEntryCall::from_protocol_invocation(&program, &invocation)
+        .expect_err("forged source digest rejects");
+    assert_eq!(error.code(), RUN_ENTRY_ARGUMENT);
+
+    let mut invocation = single_int_protocol_invocation(&descriptor);
+    invocation
+        .identity
+        .read_only_context_digest
+        .push_str("-forged");
+    let error = CheckedEntryCall::from_protocol_invocation(&program, &invocation)
+        .expect_err("forged read-only context digest rejects");
+    assert_eq!(error.code(), RUN_ENTRY_ARGUMENT);
+}
+
+#[test]
 fn stale_protocol_entry_identity_rejects_removed_entries_as_entry_arguments() {
     let stale = checked_program("pub fn run(n: int): int\n    return n\n");
     let stale = EntryDescriptor::resolve(&stale, "run").expect("stale descriptor");
@@ -1085,6 +1140,18 @@ fn text_args_reject_scalar_conversion_calls() {
 
         assert_eq!(error.code(), "run.entry_argument", "{entry} {args:?}");
     }
+}
+
+#[test]
+fn text_entry_lookup_bounds_missing_entry_diagnostics() {
+    let program = checked_program("pub fn main(): int\n    return 1\n");
+    let entry = "missing::entry".repeat(1000);
+
+    let error = CheckedEntryCall::from_text_args(&program, &entry, &[])
+        .expect_err("missing entry stays a runtime entry fault");
+
+    assert_eq!(error.code(), marrow_run::RUN_UNKNOWN_FUNCTION);
+    assert!(error.message.len() < entry.len(), "{}", error.message.len());
 }
 
 #[test]

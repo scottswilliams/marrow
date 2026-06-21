@@ -31,13 +31,14 @@ Nine crates stacked in dependency order, lowest first:
 - **run** — a tree-walking interpreter over the checked program: evaluates entries,
   drives managed saved writes inside transactions, applies schema evolution, and
   owns linked-Rust project surface sessions over accepted native stores.
-- **json** — JSON DTOs for entry return values, saved-key leaves, data snapshot
-  stamps, surface ABI descriptors, surface reads, computed reads, generated
-  write request bodies, action request/results, and operation envelopes. It
-  preserves existing machine-readable CLI shapes and owns checked surface
-  read/computed-read request decode, project create/update/delete/action
-  execution wrappers, accepted-catalog surface action and computed-read value
-  rendering, read/computed-read/action alias descriptor rendering, and
+- **json** — JSON DTOs for typed run result/error envelopes, run diagnostics,
+  run store state and facts, saved-key leaves, data snapshot stamps, surface ABI
+  descriptors, surface reads, computed reads, generated write request bodies,
+  action request/results, and operation envelopes. It preserves existing
+  machine-readable CLI shapes and owns checked surface read/computed-read
+  request decode, project create/update/delete/action execution wrappers,
+  accepted-catalog surface action and computed-read value rendering,
+  read/computed-read/action alias descriptor rendering, and
   context-aware cursor-boundary rendering. It also renders the
   descriptor-derived `surface.route.v1` manifest for check JSON output and the
   thin TypeScript operation client over ABI plus routes; HTTP serving and opaque
@@ -89,7 +90,7 @@ over data the checker has not proven safe.
 | `marrow-check` | Resolution, types, facts, catalog identity, evolution, lowering | [check/](check/README.md) |
 | `marrow-store` | Tree-cell storage contract; key/value codecs; mem + redb engines | [store.md](store.md) |
 | `marrow-run` | Tree-walking interpreter; saved reads/writes; evolution apply; project surface sessions | [runtime/](runtime/README.md) |
-| `marrow-json` | JSON for entry returns, tooling keys, data stamps, and checked surface operation DTOs | [json.md](json.md) |
+| `marrow-json` | JSON DTOs for run envelopes/facts, tooling keys, data stamps, and checked surface operations | [json.md](json.md) |
 | `marrow-catalog` | Accepted-catalog model: epoch/digest/entries, validation, structural-signature decode | [check/](check/README.md) |
 | `marrow-project` | `marrow.json` schema, discovery, the project digest | [cli.md](cli.md) |
 | `marrow` | CLI dispatch, run/test/fmt, data/backup/evolve | [cli.md](cli.md) |

@@ -169,7 +169,11 @@ fn run_uncaught_error_json_envelope_carries_the_thrown_code_in_data() {
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let records = json_records_in_stderr(output.stderr);
     let envelope = records.last().expect("runtime error envelope");
-    assert_eq!(envelope["code"], "run.uncaught_error");
-    assert_eq!(envelope["kind"], "runtime");
-    assert_eq!(envelope["data"]["code"], "book.absent");
+    assert_eq!(envelope["output"], "");
+    assert_eq!(envelope["diagnostics"][0]["code"], "run.uncaught_error");
+    assert_eq!(envelope["diagnostics"][0]["kind"], "runtime");
+    assert_eq!(envelope["diagnostics"][0]["data"]["code"], "book.absent");
+    assert!(envelope.get("code").is_none(), "{envelope}");
+    assert!(envelope.get("kind").is_none(), "{envelope}");
+    assert!(envelope.get("data").is_none(), "{envelope}");
 }
