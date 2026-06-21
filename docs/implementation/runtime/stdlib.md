@@ -35,7 +35,7 @@ Dispatch enters from `eval_std_call` and `eval_builtin_call` in `crates/marrow-r
 | `crates/marrow-run/src/stdlib/index_lookup.rs` | Unique-index lookup: resolves a checked `Index` terminal to an `IndexAddress`, scans, decodes the payload to an identity, answers presence/count. |
 | `crates/marrow-run/src/stdlib/math.rs` | Integer `int_remainder` (shared with the `%` remainder operator lowering) and `int_modulo` (backs `std::math::modulo` only); divide-by-zero/overflow faults, sign from divisor. |
 | `crates/marrow-run/src/stdlib/output.rs` | `print`: renders one runtime value, guards the write, appends a newline to `env.output` (not the host log sink). |
-| `crates/marrow-run/src/stdlib/temporal.rs` | Input parsers for `parseInstant`/`instant(text)` and `parseDuration`/`duration(text)`: accept the wider standard RFC-3339/ISO-8601 spelling (trailing-zero fractions, numeric instant offsets normalized to UTC) and produce canonical values; the strict store decoder stays canonical-only. |
+| `crates/marrow-run/src/stdlib/temporal.rs` | Input parsers for `parseInstant`/`instant(text)` and `parseDuration`/`duration(text)`: instants accept wider RFC-3339 (trailing-zero fractions, numeric offsets normalized to UTC); durations tokenize the exact time-based ISO-8601 subset `PnDTnHnMnS` into signed nanoseconds, refusing calendar-ambiguous year/month components via `DurationParseError`. Both produce canonical values; the strict store decoder stays canonical-only. |
 | `crates/marrow-run/src/stdlib/tests.rs` | `every_table_row_reaches_a_live_handler`: every `marrow_schema::stdlib::all()` row routes to a handler that does not return `run.unsupported`. |
 
 ## Invariants worth knowing

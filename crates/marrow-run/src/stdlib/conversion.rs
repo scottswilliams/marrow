@@ -153,7 +153,10 @@ fn convert_to_canonical_scalar(
             .ok_or_else(|| conversion_error_for_value(&value, ty.name(), span)),
         Value::Str(text) if ty == ScalarType::Duration => parse_iso8601_duration_nanos(text)
             .map(Value::Duration)
-            .ok_or_else(|| conversion_error_for_value(&value, ty.name(), span)),
+            .map_err(|err| {
+                let base = conversion_error_for_value(&value, ty.name(), span);
+                type_error(&err.message(&base.message), span)
+            }),
         Value::Str(text) => decode_value(text.as_bytes(), ty)
             .map(saved_value_to_value)
             .ok_or_else(|| conversion_error_for_value(&value, ty.name(), span)),

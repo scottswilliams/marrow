@@ -96,10 +96,17 @@ Saved `instant` values use a canonical UTC representation. `parseInstant` and th
 fractional seconds and an explicit numeric offset (`Z`, `+00:00`, or any
 `±HH:MM`) — and normalize to the canonical UTC value, so a non-UTC offset is
 shifted to its equivalent UTC instant. `parseDuration` and `duration(text)`
-likewise accept trailing-zero fractional seconds. Output always uses the
-canonical trimmed text; `today()` returns the current UTC calendar date, not a
-host-local date. Local time zone presentation and localized formatting belong
-in host libraries, not in the language/database kernel.
+accept the time-based ISO-8601 subset `PnDTnHnMnS`: optional days, then `T` and
+optional hours, minutes, and seconds, with a fraction allowed only on the seconds
+component. Each unit is an exact fixed span (`1D` = 86400s, `1H` = 3600s,
+`1M` = 60s), summed and normalized to canonical `PT<seconds>S`. A Marrow duration
+is pure signed nanoseconds with no calendar or DST arithmetic, so nominal year and
+month components (`P1Y`, or a date-position `M`) are rejected as
+calendar-ambiguous — use days, hours, minutes, and seconds, matching `addDays`
+without `addMonths`/`addYears`. Output always uses the canonical trimmed text;
+`today()` returns the current UTC calendar date, not a host-local date. Local time
+zone presentation and localized formatting belong in host libraries, not in the
+language/database kernel.
 
 ## `std::io`
 

@@ -77,18 +77,31 @@ fn instant_input_accepts_standard_rfc3339_and_normalizes_to_canonical() {
 }
 
 #[test]
-fn duration_input_accepts_trailing_zero_fractions_and_normalizes() {
-    // Durations share the instant's trailing-zero fractional-second input widening:
-    // a `PT1.500S` ingested from an ISO-8601 producer normalizes to canonical `PT1.5S`.
-    // Both `parseDuration` and `duration(...)` accept it; canonical output is unchanged.
+fn duration_input_accepts_iso8601_time_subset_and_normalizes() {
+    // Durations accept the time-based ISO-8601 subset `PnDTnHnMnS` where every
+    // component is an exact fixed span (1D=86400s, 1H=3600s, 1M=60s) summed and
+    // normalized to canonical `PT<seconds>S`. Trailing-zero fractional seconds and a
+    // canonical input both round-trip. Both `parseDuration` and `duration(...)` share
+    // this acceptance.
     let program = checked_program(
         "pub fn parsed(t: string): string\n    return std::clock::formatDuration(std::clock::parseDuration(t))\n\
          pub fn built(t: string): string\n    return std::clock::formatDuration(duration(t))\n",
     );
     let cases: &[(&str, &str)] = &[
+        // Multi-component time spans sum to canonical seconds.
+        ("PT1H30M", "PT5400S"),
+        ("PT1H", "PT3600S"),
+        ("PT1M", "PT60S"),
+        ("P1D", "PT86400S"),
+        ("P1DT2H3M4S", "PT93784S"),
+        ("-PT1H30M", "-PT5400S"),
+        // Fractions on the seconds component are preserved and trimmed to canonical.
+        ("PT1.5S", "PT1.5S"),
         ("PT1.500S", "PT1.5S"),
         ("PT1.000S", "PT1S"),
         ("PT0.100000000S", "PT0.1S"),
+        ("PT1H0.5S", "PT3600.5S"),
+        // The canonical store spelling still parses unchanged.
         ("PT90S", "PT90S"),
         ("-PT1.500S", "-PT1.5S"),
     ];
@@ -104,12 +117,39 @@ fn duration_input_accepts_trailing_zero_fractions_and_normalizes() {
 }
 
 #[test]
-fn duration_input_still_rejects_non_canonical_non_fraction_forms() {
-    // Widening covers only trailing-zero fractions: leading-zero seconds, `-PT0S`,
-    // and a missing `PT`/`S` remain catchable type errors.
+fn duration_input_rejects_nominal_calendar_components_with_a_clear_message() {
+    // Year and month components are calendar-ambiguous: Marrow durations are exact
+    // signed nanosecond spans with no DST/calendar arithmetic, so they reject with a
+    // message that points to the exact units. The date-position `M` (months) is
+    // distinguished from the time-position `M` (minutes) by the `T` separator. Both
+    // entry points carry the clarifying note.
+    let parse =
+        checked_program("pub fn f(t: string): duration\n    return std::clock::parseDuration(t)\n");
+    let convert = checked_program("pub fn f(t: string): duration\n    return duration(t)\n");
+    for input in ["P1Y", "P1M", "P1MT", "P1Y2M", "P1YT1H"] {
+        for program in [&parse, &convert] {
+            let error =
+                run(checked_entry!(program, "test::f", Value::Str(input.into()))).unwrap_err();
+            assert_eq!(error.code(), RUN_TYPE, "{input}");
+            assert!(
+                error.message.contains("calendar-ambiguous")
+                    && error.message.contains("days/hours/minutes/seconds"),
+                "{input}: {}",
+                error.message
+            );
+        }
+    }
+}
+
+#[test]
+fn duration_input_still_rejects_malformed_forms() {
+    // Widening covers only the exact time-based subset: leading-zero seconds, `-PT0S`,
+    // a missing `S`, a bare `P`, and garbage remain catchable type errors.
     let program =
         checked_program("pub fn f(t: string): duration\n    return std::clock::parseDuration(t)\n");
-    for input in ["PT01S", "-PT0S", "PT1", "1.5S", "PTS"] {
+    for input in [
+        "PT01S", "-PT0S", "PT1", "1.5S", "PTS", "P", "PT", "nonsense",
+    ] {
         assert_eq!(
             run(checked_entry!(
                 &program,

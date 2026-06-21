@@ -718,15 +718,13 @@ fn eval_clock_std(
         ),
         "parseDuration" => {
             let text = eval_text(unary()?, env, span)?;
-            parse_clock(
-                &text,
-                ScalarType::Duration,
-                &format!(
-                    "parseDuration: invalid duration text {}",
-                    diagnostic_text_preview(&text)
-                ),
-                span,
-            )
+            let base = format!(
+                "parseDuration: invalid duration text {}",
+                diagnostic_text_preview(&text)
+            );
+            parse_iso8601_duration_nanos(&text)
+                .map(Value::Duration)
+                .map_err(|err| type_error(&err.message(&base), span))
         }
         "addDays" => eval_clock_add_days(args, span, env),
         "daysBetween" => eval_clock_days_between(args, span, env),
@@ -831,14 +829,14 @@ fn parse_clock(
     parse_temporal_input(text, ty).ok_or_else(|| type_error(invalid_message, span))
 }
 
-/// Parses user-supplied temporal text to its value. Instants and durations accept
-/// the wider standard input surface (trailing-zero fractions, and numeric offsets
-/// for instants) and normalize to canonical; dates are fixed-width with no such
-/// ambiguity, so they read through the canonical store decoder directly.
+/// Parses user-supplied temporal text to its value. Instants accept the wider
+/// standard input surface (trailing-zero fractions and numeric offsets) and normalize
+/// to canonical; dates are fixed-width with no such ambiguity, so they read through
+/// the canonical store decoder directly. Durations carry a distinct calendar-ambiguous
+/// reason and are parsed at their own boundary.
 fn parse_temporal_input(text: &str, ty: ScalarType) -> Option<Value> {
     match ty {
         ScalarType::Instant => parse_rfc3339_instant_nanos(text).map(Value::Instant),
-        ScalarType::Duration => parse_iso8601_duration_nanos(text).map(Value::Duration),
         _ => decode_value(text.as_bytes(), ty).map(saved_value_to_value),
     }
 }

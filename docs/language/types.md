@@ -554,11 +554,18 @@ rendering each as `print` does: a temporal as its canonical text, `bytes` as
 `string(...)` does not accept a saved identity (`Id(^...)`) — that is rejected at
 check; `print` and interpolation render an identity by its key directly. Decode
 bytes as UTF-8 text through `std::bytes::toText`, not `string(...)`.
-`instant(...)` and `duration(...)` accept standard RFC-3339/ISO-8601 spelling —
-including trailing-zero fractional seconds and explicit numeric instant offsets,
-which normalize to the canonical UTC value (see
-[Standard Library](standard-library.md)). A value that does not convert raises a
-catchable type error.
+`instant(...)` and `duration(...)` accept standard RFC-3339/ISO-8601 spelling,
+which normalizes to the canonical value (see
+[Standard Library](standard-library.md)). `instant(...)` accepts trailing-zero
+fractional seconds and explicit numeric offsets, normalizing to the canonical UTC
+value. `duration(...)` accepts the time-based ISO-8601 subset `PnDTnHnMnS` —
+optional days, then `T` and optional hours, minutes, and seconds (the seconds
+component may carry a fraction) — where every unit is an exact fixed span
+(`1D` = 86400s, `1H` = 3600s, `1M` = 60s), summed and normalized to the canonical
+`PT<seconds>S`. A Marrow duration is pure signed nanoseconds with no calendar or
+DST arithmetic, so nominal year and month components (`P1Y`, or a date-position
+`M`) are rejected as calendar-ambiguous; use days, hours, minutes, and seconds. A
+value that does not convert raises a catchable type error.
 
 ## `unknown`
 

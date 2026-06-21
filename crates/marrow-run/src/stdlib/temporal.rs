@@ -6,14 +6,44 @@
 //! standard RFC-3339 / ISO-8601 spellings and normalizes them to the canonical value.
 //! Instants accept trailing-zero fractional seconds and explicit numeric offsets, with
 //! a non-UTC offset shifted to the equivalent UTC instant since instants are stored in
-//! UTC; durations accept trailing-zero fractional seconds. This widening lives only at
-//! the input boundary; output and storage stay canonical.
+//! UTC. Durations accept the time-based ISO-8601 subset `PnDTnHnMnS` of exact fixed
+//! spans, summing each component to signed nanoseconds; nominal year/month components
+//! are calendar-ambiguous and refused. This widening lives only at the input boundary;
+//! output and storage stay canonical.
 
-use marrow_store::value::{
-    NANOS_PER_DAY, SavedValue, ScalarType, date_days, decode_value, supported_instant_nanos,
-};
+use marrow_store::value::{NANOS_PER_DAY, date_days, supported_instant_nanos};
 
 const NANOS_PER_SEC: i128 = 1_000_000_000;
+const NANOS_PER_MINUTE: i128 = 60 * NANOS_PER_SEC;
+const NANOS_PER_HOUR: i128 = 60 * NANOS_PER_MINUTE;
+
+/// Why an ISO-8601 duration string was rejected, so the boundary can render the
+/// right diagnostic: a calendar component carries a clarifying note, while any other
+/// malformed text falls back to the generic invalid-text message.
+pub(crate) enum DurationParseError {
+    /// A nominal year or month component. Marrow durations are exact signed spans
+    /// with no calendar or DST arithmetic, so these have no unambiguous nanosecond
+    /// width and are refused outright.
+    CalendarAmbiguous,
+    /// Any other unparseable or out-of-range text.
+    Malformed,
+}
+
+impl DurationParseError {
+    /// Renders a boundary diagnostic for rejected duration text by extending a
+    /// caller-supplied base message: a calendar component appends the clarifying note
+    /// that Marrow durations are exact spans, while any other malformed text keeps the
+    /// generic message unchanged.
+    pub(crate) fn message(&self, base: &str) -> String {
+        match self {
+            DurationParseError::CalendarAmbiguous => format!(
+                "{base} (calendar-ambiguous; Marrow durations are exact spans — \
+                 use days/hours/minutes/seconds)"
+            ),
+            DurationParseError::Malformed => base.to_string(),
+        }
+    }
+}
 
 /// Parses standard RFC-3339 instant text to canonical UTC nanoseconds-since-epoch,
 /// returning `None` for malformed text or a value outside the supported range. The
@@ -74,41 +104,141 @@ fn parse_time_and_zone(time: &[u8]) -> Option<(u32, i128, i128)> {
     Some((seconds_of_day, fraction_nanos, offset_nanos))
 }
 
-/// Parses a signed `PT<seconds>S` span to nanoseconds. The only widening over the
-/// canonical store spelling is trailing-zero fractional seconds, so the fraction is
-/// trimmed back to canonical form and the store decoder owns every other rule
-/// (`PT`/`S` framing, no leading zeros, no `-PT0S`, overflow). `None` for malformed
-/// or out-of-range text.
-pub(crate) fn parse_iso8601_duration_nanos(text: &str) -> Option<i128> {
-    match decode_value(
-        canonicalize_duration_fraction(text).as_bytes(),
-        ScalarType::Duration,
-    )? {
-        SavedValue::Duration(nanos) => Some(nanos),
-        _ => None,
+/// Parses the time-based ISO-8601 duration subset `[-]PnDTnHnMnS` to a signed
+/// nanosecond span. Every component is an exact fixed width — `1D` is 86400s, `1H`
+/// 3600s, `1M` 60s — summed under an `i128` overflow envelope; only the seconds
+/// component may carry a fraction. Nominal year/month components have no exact
+/// nanosecond width and are refused. The result is a plain span; canonical
+/// `PT<seconds>S` output is produced by the formatter, so no spelling is round-tripped
+/// here.
+pub(crate) fn parse_iso8601_duration_nanos(text: &str) -> Result<i128, DurationParseError> {
+    let (negative, body) = match text.strip_prefix('-') {
+        Some(rest) => (true, rest),
+        None => (false, text),
+    };
+    let body = body
+        .strip_prefix('P')
+        .ok_or(DurationParseError::Malformed)?;
+
+    let (date_part, time_part) = match body.split_once('T') {
+        Some((date, time)) => (date, Some(time)),
+        None => (body, None),
+    };
+
+    let mut magnitude: i128 = 0;
+    let mut any_component = false;
+
+    if !date_part.is_empty() {
+        // A date-position component is only ever days for an exact span; a `Y` or `M`
+        // here is the calendar-ambiguous case the language deliberately bans.
+        let days = take_duration_component(date_part, 'D')?;
+        magnitude = add_component(magnitude, days, NANOS_PER_DAY)?;
+        any_component = true;
+    }
+
+    if let Some(time) = time_part {
+        if time.is_empty() {
+            return Err(DurationParseError::Malformed);
+        }
+        let (hours, rest) = split_optional_component(time, 'H')?;
+        let (minutes, rest) = split_optional_component(rest, 'M')?;
+        if let Some(hours) = hours {
+            magnitude = add_component(magnitude, hours, NANOS_PER_HOUR)?;
+            any_component = true;
+        }
+        if let Some(minutes) = minutes {
+            magnitude = add_component(magnitude, minutes, NANOS_PER_MINUTE)?;
+            any_component = true;
+        }
+        if !rest.is_empty() {
+            let seconds_nanos = parse_seconds_component(rest)?;
+            magnitude = magnitude
+                .checked_add(seconds_nanos)
+                .ok_or(DurationParseError::Malformed)?;
+            any_component = true;
+        }
+    }
+
+    if !any_component {
+        return Err(DurationParseError::Malformed);
+    }
+    if negative && magnitude == 0 {
+        // Negative zero has no canonical spelling; zero is `PT0S`.
+        return Err(DurationParseError::Malformed);
+    }
+    Ok(if negative { -magnitude } else { magnitude })
+}
+
+/// Reads the whole date-position field, requiring it to be exactly `<digits>D`. A
+/// year or month unit (`Y`, or an `M` before the `T`) is calendar-ambiguous and
+/// rejected with that reason; anything else is malformed.
+fn take_duration_component(field: &str, unit: char) -> Result<i128, DurationParseError> {
+    if field.contains('Y') || field.contains('M') {
+        return Err(DurationParseError::CalendarAmbiguous);
+    }
+    let digits = field
+        .strip_suffix(unit)
+        .ok_or(DurationParseError::Malformed)?;
+    parse_unsigned_count(digits)
+}
+
+/// Pulls an optional leading `<digits><unit>` off the front of a time-position field,
+/// returning the parsed count (if present) and the remaining text. A `Y` unit anywhere
+/// in the time part is calendar-ambiguous.
+fn split_optional_component(
+    field: &str,
+    unit: char,
+) -> Result<(Option<i128>, &str), DurationParseError> {
+    if field.contains('Y') {
+        return Err(DurationParseError::CalendarAmbiguous);
+    }
+    match field.split_once(unit) {
+        Some((digits, rest)) => Ok((Some(parse_unsigned_count(digits)?), rest)),
+        None => Ok((None, field)),
     }
 }
 
-/// Trims trailing zeros from a duration's fractional-second digits, dropping the `.`
-/// when an all-zero fraction (`PT1.000S`) collapses to whole seconds, so a standard
-/// ISO-8601 spelling reaches the canonical decoder as `PT1.5S` / `PT1S`. The fraction
-/// runs from the `.` to the trailing `S`; a bare `.` with no digits, or text without a
-/// `.`, is returned verbatim for the decoder to reject on its own terms.
-fn canonicalize_duration_fraction(text: &str) -> String {
-    let Some((head, after_dot)) = text.split_once('.') else {
-        return text.to_string();
+/// Parses the trailing seconds component `<digits>[.<fraction>]S` to nanoseconds.
+fn parse_seconds_component(field: &str) -> Result<i128, DurationParseError> {
+    let body = field
+        .strip_suffix('S')
+        .ok_or(DurationParseError::Malformed)?;
+    let (seconds_text, fraction_text) = match body.split_once('.') {
+        Some((seconds, fraction)) => (seconds, Some(fraction)),
+        None => (body, None),
     };
-    let Some((fraction, suffix)) = after_dot.split_once('S') else {
-        return text.to_string();
+    let seconds = parse_unsigned_count(seconds_text)?;
+    let fraction_nanos = match fraction_text {
+        None => 0,
+        Some(digits) => {
+            parse_fraction_nanos(digits.as_bytes()).ok_or(DurationParseError::Malformed)?
+        }
     };
-    let trimmed = fraction.trim_end_matches('0');
-    if fraction.is_empty() || !suffix.is_empty() {
-        text.to_string()
-    } else if trimmed.is_empty() {
-        format!("{head}S")
-    } else {
-        format!("{head}.{trimmed}S")
+    seconds
+        .checked_mul(NANOS_PER_SEC)
+        .and_then(|whole| whole.checked_add(fraction_nanos))
+        .ok_or(DurationParseError::Malformed)
+}
+
+/// Parses an all-digit unsigned count with no leading zero, so a non-canonical
+/// spelling like `01` is malformed. Empty input or any non-digit byte is malformed.
+fn parse_unsigned_count(digits: &str) -> Result<i128, DurationParseError> {
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(DurationParseError::Malformed);
     }
+    if digits.len() > 1 && digits.starts_with('0') {
+        return Err(DurationParseError::Malformed);
+    }
+    digits.parse().map_err(|_| DurationParseError::Malformed)
+}
+
+/// Multiplies a component count by its fixed nanosecond width and adds it to the
+/// running magnitude under the `i128` overflow envelope.
+fn add_component(magnitude: i128, count: i128, width: i128) -> Result<i128, DurationParseError> {
+    count
+        .checked_mul(width)
+        .and_then(|nanos| magnitude.checked_add(nanos))
+        .ok_or(DurationParseError::Malformed)
 }
 
 /// Parses one to nine fractional-second digits to nanoseconds. Unlike the canonical
