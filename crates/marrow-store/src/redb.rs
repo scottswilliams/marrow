@@ -851,6 +851,10 @@ impl Backend for RedbStore {
         Ok(())
     }
 
+    fn transaction_depth(&self) -> usize {
+        self.txn.as_ref().map_or(0, |txn| txn.depth)
+    }
+
     fn begin_snapshot(&mut self) -> Result<(), StoreError> {
         if self.txn.is_some() {
             return Err(StoreError::snapshot_while_transaction_open());

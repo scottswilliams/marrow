@@ -4,9 +4,10 @@ use marrow_store::key::{SavedKey, decode_identity_payload_arity};
 use marrow_store::tree::{DataPathSegment as StoreDataPathSegment, decode_tree_enum_member};
 use marrow_store::value::{SavedValue, decode_value, encode_value};
 
-use super::{DataPathSegment, DataValuePreview, ResolvedDataPath};
+use super::{DataPathSegment, DataProgram, DataValuePreview, ResolvedDataPath};
+use crate::durable_path::identity_leaf_key_mismatch_in_facts;
 use crate::hex::push_lower_hex;
-use crate::{CheckedProgram, EnumId, StoreLeafKind, identity_leaf_key_mismatch};
+use crate::{CheckedProgram, EnumId, StoreLeafKind};
 
 const UNDECLARED_MEMBER: &str = "<undeclared member>";
 const LOWER_HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
@@ -103,6 +104,14 @@ pub(crate) fn pop_key(path: &mut String, mark: KeyMark) {
 }
 
 pub fn render_data_value(program: &CheckedProgram, leaf: &StoreLeafKind, bytes: &[u8]) -> String {
+    render_data_value_with(program, leaf, bytes)
+}
+
+fn render_data_value_with(
+    program: &(impl DataProgram + ?Sized),
+    leaf: &StoreLeafKind,
+    bytes: &[u8],
+) -> String {
     match leaf {
         StoreLeafKind::Scalar(ty) => {
             render_scalar_value(*ty, bytes).unwrap_or_else(|| render_hex_value(bytes))
@@ -122,14 +131,22 @@ pub fn render_data_path_value(
     path: &ResolvedDataPath,
     bytes: &[u8],
 ) -> String {
+    render_data_path_value_with(program, path, bytes)
+}
+
+fn render_data_path_value_with(
+    program: &(impl DataProgram + ?Sized),
+    path: &ResolvedDataPath,
+    bytes: &[u8],
+) -> String {
     match path.leaf() {
-        Some(leaf) => render_data_value(program, leaf, bytes),
+        Some(leaf) => render_data_value_with(program, leaf, bytes),
         None => render_hex_value(bytes),
     }
 }
 
 pub(super) fn render_data_path_value_prefix_preview(
-    program: &CheckedProgram,
+    program: &(impl DataProgram + ?Sized),
     path: &ResolvedDataPath,
     bytes: &[u8],
     bytes_truncated: bool,
@@ -154,7 +171,7 @@ fn render_data_value_preview(
 }
 
 fn render_data_value_prefix_preview(
-    program: &CheckedProgram,
+    program: &(impl DataProgram + ?Sized),
     leaf: &StoreLeafKind,
     bytes: &[u8],
     bytes_truncated: bool,
@@ -166,7 +183,7 @@ fn render_data_value_prefix_preview(
 }
 
 fn render_data_value_prefix_preview_inner(
-    program: &CheckedProgram,
+    program: &(impl DataProgram + ?Sized),
     leaf: &StoreLeafKind,
     bytes: &[u8],
     bytes_truncated: bool,
@@ -222,13 +239,13 @@ fn render_encoded_scalar(value: SavedValue) -> Option<String> {
 }
 
 fn render_identity_value(
-    program: &CheckedProgram,
+    program: &(impl DataProgram + ?Sized),
     store_root: &str,
     arity: usize,
     bytes: &[u8],
 ) -> Option<String> {
     let keys = decode_identity_payload_arity(bytes, arity)?;
-    if identity_leaf_key_mismatch(program, store_root, &keys).is_some() {
+    if identity_leaf_key_mismatch_in_facts(program.facts(), store_root, &keys).is_some() {
         return None;
     }
     let mut segments = Vec::with_capacity(1 + keys.len());
@@ -238,14 +255,14 @@ fn render_identity_value(
 }
 
 fn render_identity_value_preview(
-    program: &CheckedProgram,
+    program: &(impl DataProgram + ?Sized),
     store_root: &str,
     arity: usize,
     bytes: &[u8],
     limit: usize,
 ) -> Option<DataValuePreview> {
     let keys = decode_identity_payload_arity(bytes, arity)?;
-    if identity_leaf_key_mismatch(program, store_root, &keys).is_some() {
+    if identity_leaf_key_mismatch_in_facts(program.facts(), store_root, &keys).is_some() {
         return None;
     }
     let mut text = String::new();
@@ -266,20 +283,24 @@ fn render_identity_value_preview(
     })
 }
 
-fn render_enum_value(program: &CheckedProgram, enum_id: EnumId, bytes: &[u8]) -> Option<String> {
+fn render_enum_value(
+    program: &(impl DataProgram + ?Sized),
+    enum_id: EnumId,
+    bytes: &[u8],
+) -> Option<String> {
     let stored = decode_tree_enum_member(bytes).ok()?;
-    let enum_fact = program.facts.enum_(enum_id)?;
+    let enum_fact = program.facts().enum_(enum_id)?;
     if enum_fact.catalog_id.as_deref() != Some(stored.enum_id().as_str()) {
         return None;
     }
-    let member = program.facts.enum_members().iter().find(|member| {
+    let member = program.facts().enum_members().iter().find(|member| {
         member.enum_id == enum_id
             && member.catalog_id.as_deref() == Some(stored.member_id().as_str())
     })?;
-    if !program.facts.enum_member_is_selectable(member.id) {
+    if !program.facts().enum_member_is_selectable(member.id) {
         return None;
     }
-    program.facts.enum_member_catalog_path(member.id)
+    program.facts().enum_member_catalog_path(member.id)
 }
 
 fn render_key(key: &SavedKey) -> String {

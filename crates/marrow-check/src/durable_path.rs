@@ -1,15 +1,13 @@
 //! Checked classification for decoded durable store paths.
 
-use marrow_schema::KeyDef;
 use marrow_store::key::SavedKey;
 use marrow_store::value::{
     SavedValue, ScalarType, decode_value, encode_value, scalar_key_matches_type,
 };
 
 use crate::CheckedProgram;
-use crate::facts::EnumId;
+use crate::facts::{CheckedFacts, EnumId};
 use crate::hex::push_lower_hex;
-use crate::resolve::resolve_store_by_root;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PathSegment {
@@ -84,27 +82,27 @@ pub fn identity_leaf_key_mismatch(
     store_root: &str,
     keys: &[SavedKey],
 ) -> Option<(ScalarType, ScalarType)> {
-    let declared = checked_identity_key_defs(program, store_root)?;
-    key_type_mismatch(declared, keys.iter())
+    identity_leaf_key_mismatch_in_facts(&program.facts, store_root, keys)
 }
 
-fn key_type_mismatch<'a>(
-    declared: &[KeyDef],
-    found: impl Iterator<Item = &'a SavedKey>,
+pub(crate) fn identity_leaf_key_mismatch_in_facts(
+    facts: &CheckedFacts,
+    store_root: &str,
+    keys: &[SavedKey],
 ) -> Option<(ScalarType, ScalarType)> {
-    declared
-        .iter()
-        .zip(found)
-        .find_map(|(def, key)| match def.ty.scalar() {
+    let store = facts.store_by_root(store_root)?;
+    store.identity_keys.iter().zip(keys).find_map(|(def, key)| {
+        match def
+            .value_meaning
+            .as_ref()
+            .and_then(|meaning| meaning.scalar())
+        {
             Some(expected) if !scalar_key_matches_type(key, expected) => {
                 Some((expected, key.scalar_type()))
             }
             _ => None,
-        })
-}
-
-fn checked_identity_key_defs<'p>(program: &'p CheckedProgram, root: &str) -> Option<&'p [KeyDef]> {
-    resolve_store_by_root(program, root).map(|store| store.store.identity_keys.as_slice())
+        }
+    })
 }
 
 struct PathTextParser<'a> {

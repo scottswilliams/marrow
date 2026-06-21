@@ -22,6 +22,7 @@ pub(crate) fn run_all<B: Backend>(
     a_joined_transaction_commit_waits_for_the_outer_commit(&mut make()?)?;
     rollback_of_a_joined_transaction_aborts_the_whole_transaction(&mut make()?)?;
     a_transaction_sees_its_writes_in_scans(&mut make()?)?;
+    open_transaction_state_tracks_transaction_depth(&mut make()?)?;
     a_snapshot_pins_one_consistent_view(&mut make()?)?;
     read_prefix_observes_snapshot_visibility(&mut make()?)?;
     a_snapshot_and_write_transaction_cannot_overlap(&mut make()?)?;
@@ -314,6 +315,21 @@ fn a_transaction_sees_its_writes_in_scans(store: &mut dyn Backend) -> Result<(),
         vec![(b"\x60\x01".to_vec(), b"inside".to_vec())]
     );
     store.rollback()?;
+    Ok(())
+}
+
+fn open_transaction_state_tracks_transaction_depth(
+    store: &mut dyn Backend,
+) -> Result<(), StoreError> {
+    assert_eq!(store.transaction_depth(), 0);
+    store.begin()?;
+    assert_eq!(store.transaction_depth(), 1);
+    store.begin()?;
+    assert_eq!(store.transaction_depth(), 2);
+    store.commit()?;
+    assert_eq!(store.transaction_depth(), 1);
+    store.rollback()?;
+    assert_eq!(store.transaction_depth(), 0);
     Ok(())
 }
 

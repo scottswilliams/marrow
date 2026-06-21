@@ -3,12 +3,13 @@
 //! live store handle, terminate-by-Err, and debug value previews.
 
 use crate::support;
+use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use support::*;
 
 use marrow_check::{
     AnalysisSnapshot, CheckedDebugExpression, CheckedRuntimeProgram, ProjectSources,
-    analyze_project,
+    analyze_project, tooling,
 };
 use marrow_run::{
     CheckedEntryCall, DEBUG_VALUE_DEFAULT_PAGE_LIMIT, DEBUG_VALUE_MAX_PAGE_LIMIT,
@@ -894,6 +895,356 @@ fn hook_store_handle_sees_prior_writes() {
     )
     .expect("debugged run completes");
     assert_eq!(hook.balance_seen_at_return, Some(7));
+}
+
+#[test]
+fn frame_debug_data_reads_the_paused_run_store() {
+    let program = checked_program(
+        "resource Account\n\
+         \x20\x20\x20\x20balance: int\nstore ^accts(id: int): Account\n\
+         \n\
+         pub fn seed(): int\n\
+         \x20\x20\x20\x20^accts(1).balance = 7\n\
+         \x20\x20\x20\x20return 0\n",
+    );
+    let store = TreeStore::memory();
+
+    struct DebugDataProbe<'a> {
+        program: &'a CheckedRuntimeProgram,
+        preview: Option<tooling::StampedData<tooling::DataPreviewReadResult>>,
+        children: Option<tooling::StampedData<tooling::DataChildrenPage>>,
+    }
+
+    const RETURN_LINE: u32 = 9;
+    impl StepHook for DebugDataProbe<'_> {
+        fn before_statement(
+            &mut self,
+            span: SourceSpan,
+            frame: Frame<'_, '_>,
+        ) -> Result<(), RuntimeError> {
+            if span.line == RETURN_LINE {
+                let record = [
+                    tooling::DataPathSegment::Root("accts".into()),
+                    tooling::DataPathSegment::Key(SavedKey::Int(1)),
+                ];
+                let balance = [
+                    tooling::DataPathSegment::Root("accts".into()),
+                    tooling::DataPathSegment::Key(SavedKey::Int(1)),
+                    tooling::DataPathSegment::Field("balance".into()),
+                ];
+                self.children = Some(
+                    frame
+                        .debug_data_children(
+                            &[tooling::DataPathSegment::Root("accts".into())],
+                            10,
+                            None,
+                        )
+                        .expect("debug data children read"),
+                );
+                self.preview = frame
+                    .debug_data_preview(&balance, 64)
+                    .expect("debug data preview read");
+                assert_eq!(
+                    frame
+                        .debug_data_preview(&record, 64)
+                        .expect("record preview read")
+                        .expect("record path resolves")
+                        .data
+                        .presence,
+                    tooling::DataPresence::ChildrenOnly
+                );
+            }
+            Ok(())
+        }
+    }
+
+    let mut hook = DebugDataProbe {
+        program: &program,
+        preview: None,
+        children: None,
+    };
+    run_entry_with_debugger(
+        &store,
+        &Host::new(),
+        &mut hook,
+        checked_entry!(&program, "test::seed"),
+    )
+    .expect("debugged run completes");
+
+    let preview = hook.preview.expect("preview captured");
+    assert_eq!(
+        preview.stamp.checked_source_digest,
+        hook.program.source_digest()
+    );
+    let commit = preview
+        .stamp
+        .store_commit
+        .as_ref()
+        .expect("debug data read is stamped with the live run commit");
+    assert_eq!(commit.commit_id, 1);
+    assert_eq!(commit.source_digest, hook.program.source_digest());
+    assert_eq!(preview.stamp.open_transaction, None);
+    assert_eq!(preview.data.presence, tooling::DataPresence::ValueOnly);
+    let value = preview.data.preview.expect("value preview");
+    assert_eq!(value.text, "7");
+    assert!(!value.truncated);
+
+    let children = hook.children.expect("children captured");
+    assert_eq!(
+        children.stamp.checked_source_digest,
+        hook.program.source_digest()
+    );
+    assert_eq!(children.stamp.store_commit, preview.stamp.store_commit);
+    assert_eq!(children.stamp.open_transaction, None);
+    assert_eq!(
+        children.data.children,
+        vec![tooling::DataChild::Key(SavedKey::Int(1))]
+    );
+    assert!(!children.data.truncated);
+}
+
+#[test]
+fn frame_debug_data_reads_keyed_member_entries() {
+    let program = checked_program(
+        "resource Book\n\
+         \x20\x20\x20\x20title: string\n\
+         \x20\x20\x20\x20versions(version: int)\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20note: string\n\
+         store ^books(id: int): Book\n\
+         \n\
+         pub fn seed(): int\n\
+         \x20\x20\x20\x20^books(1).title = \"root\"\n\
+         \x20\x20\x20\x20^books(1).versions(2).note = \"second\"\n\
+         \x20\x20\x20\x20return 0\n",
+    );
+    let store = TreeStore::memory();
+
+    struct KeyedProbe {
+        keys: Option<tooling::StampedData<tooling::DataChildrenPage>>,
+        preview: Option<tooling::StampedData<tooling::DataPreviewReadResult>>,
+    }
+
+    const RETURN_LINE: u32 = 12;
+    impl StepHook for KeyedProbe {
+        fn before_statement(
+            &mut self,
+            span: SourceSpan,
+            frame: Frame<'_, '_>,
+        ) -> Result<(), RuntimeError> {
+            if span.line == RETURN_LINE {
+                let versions = [
+                    tooling::DataPathSegment::Root("books".into()),
+                    tooling::DataPathSegment::Key(SavedKey::Int(1)),
+                    tooling::DataPathSegment::Layer("versions".into()),
+                ];
+                let note = [
+                    tooling::DataPathSegment::Root("books".into()),
+                    tooling::DataPathSegment::Key(SavedKey::Int(1)),
+                    tooling::DataPathSegment::Layer("versions".into()),
+                    tooling::DataPathSegment::Key(SavedKey::Int(2)),
+                    tooling::DataPathSegment::Field("note".into()),
+                ];
+                self.keys = Some(
+                    frame
+                        .debug_data_children(&versions, 10, None)
+                        .expect("keyed member children read"),
+                );
+                self.preview = frame
+                    .debug_data_preview(&note, 64)
+                    .expect("keyed member preview read");
+            }
+            Ok(())
+        }
+    }
+
+    let mut hook = KeyedProbe {
+        keys: None,
+        preview: None,
+    };
+    run_entry_with_debugger(
+        &store,
+        &Host::new(),
+        &mut hook,
+        checked_entry!(&program, "test::seed"),
+    )
+    .expect("debugged run completes");
+
+    assert_eq!(
+        hook.keys.expect("keys captured").data.children,
+        vec![tooling::DataChild::Key(SavedKey::Int(2))]
+    );
+    let preview = hook
+        .preview
+        .expect("preview captured")
+        .data
+        .preview
+        .expect("value preview");
+    assert_eq!(preview.text, "\"second\"");
+    assert!(!preview.truncated);
+}
+
+#[test]
+fn frame_debug_data_reads_open_transaction_store_with_transaction_stamp() {
+    let program = checked_program(
+        "resource Account\n\
+         \x20\x20\x20\x20balance: int\nstore ^accts(id: int): Account\n\
+         \n\
+         pub fn init(): int\n\
+         \x20\x20\x20\x20^accts(1).balance = 1\n\
+         \x20\x20\x20\x20return 0\n\
+         \n\
+         pub fn seed(): int\n\
+         \x20\x20\x20\x20transaction\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20^accts(1).balance = 7\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20return 0\n",
+    );
+    let store = TreeStore::memory();
+    run_entry(&store, checked_entry!(&program, "test::init")).expect("initial write commits");
+
+    struct TransactionProbe {
+        preview: Option<tooling::StampedData<tooling::DataPreviewReadResult>>,
+        children: Option<tooling::StampedData<tooling::DataChildrenPage>>,
+    }
+
+    const RETURN_LINE: u32 = 14;
+    impl StepHook for TransactionProbe {
+        fn before_statement(
+            &mut self,
+            span: SourceSpan,
+            frame: Frame<'_, '_>,
+        ) -> Result<(), RuntimeError> {
+            if span.line == RETURN_LINE {
+                let balance = [
+                    tooling::DataPathSegment::Root("accts".into()),
+                    tooling::DataPathSegment::Key(SavedKey::Int(1)),
+                    tooling::DataPathSegment::Field("balance".into()),
+                ];
+                self.children = Some(
+                    frame
+                        .debug_data_children(
+                            &[tooling::DataPathSegment::Root("accts".into())],
+                            10,
+                            None,
+                        )
+                        .expect("debug data children read inside transaction"),
+                );
+                self.preview = frame
+                    .debug_data_preview(&balance, 64)
+                    .expect("debug data preview read inside transaction");
+            }
+            Ok(())
+        }
+    }
+
+    let mut hook = TransactionProbe {
+        preview: None,
+        children: None,
+    };
+    run_entry_with_debugger(
+        &store,
+        &Host::new(),
+        &mut hook,
+        checked_entry!(&program, "test::seed"),
+    )
+    .expect("debugged run completes");
+
+    let preview = hook.preview.expect("preview captured");
+    assert_eq!(preview.data.presence, tooling::DataPresence::ValueOnly);
+    assert_eq!(preview.data.preview.expect("value preview").text, "7");
+    assert_eq!(preview.stamp.store_commit, None);
+    assert_eq!(
+        preview
+            .stamp
+            .open_transaction
+            .expect("transaction stamp")
+            .depth,
+        NonZeroUsize::new(1).expect("nonzero depth")
+    );
+
+    let children = hook.children.expect("children captured");
+    assert_eq!(
+        children.data.children,
+        vec![tooling::DataChild::Key(SavedKey::Int(1))]
+    );
+    assert_eq!(children.stamp.store_commit, None);
+    assert_eq!(
+        children
+            .stamp
+            .open_transaction
+            .expect("transaction stamp")
+            .depth,
+        NonZeroUsize::new(1).expect("nonzero depth")
+    );
+}
+
+#[test]
+fn frame_debug_data_stamps_nested_source_transaction_depth() {
+    let program = checked_program(
+        "resource Account\n\
+         \x20\x20\x20\x20balance: int\nstore ^accts(id: int): Account\n\
+         \n\
+         pub fn seed(): int\n\
+         \x20\x20\x20\x20transaction\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20transaction\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20^accts(1).balance = 9\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20return 0\n",
+    );
+    let store = TreeStore::memory();
+
+    struct NestedProbe {
+        preview: Option<tooling::StampedData<tooling::DataPreviewReadResult>>,
+        source_depth_at_return: Option<usize>,
+        store_depth_at_return: Option<usize>,
+    }
+
+    const RETURN_LINE: u32 = 11;
+    impl StepHook for NestedProbe {
+        fn before_statement(
+            &mut self,
+            span: SourceSpan,
+            frame: Frame<'_, '_>,
+        ) -> Result<(), RuntimeError> {
+            if span.line == RETURN_LINE {
+                let balance = [
+                    tooling::DataPathSegment::Root("accts".into()),
+                    tooling::DataPathSegment::Key(SavedKey::Int(1)),
+                    tooling::DataPathSegment::Field("balance".into()),
+                ];
+                self.source_depth_at_return = Some(frame.transaction_depth());
+                self.store_depth_at_return = Some(frame.store().transaction_depth());
+                self.preview = frame
+                    .debug_data_preview(&balance, 64)
+                    .expect("nested transaction debug data preview read");
+            }
+            Ok(())
+        }
+    }
+
+    let mut hook = NestedProbe {
+        preview: None,
+        source_depth_at_return: None,
+        store_depth_at_return: None,
+    };
+    run_entry_with_debugger(
+        &store,
+        &Host::new(),
+        &mut hook,
+        checked_entry!(&program, "test::seed"),
+    )
+    .expect("debugged run completes");
+
+    assert_eq!(hook.source_depth_at_return, Some(2));
+    assert_eq!(hook.store_depth_at_return, Some(1));
+    let preview = hook.preview.expect("preview captured");
+    assert_eq!(preview.data.preview.expect("value preview").text, "9");
+    assert_eq!(
+        preview
+            .stamp
+            .open_transaction
+            .expect("transaction stamp")
+            .depth,
+        NonZeroUsize::new(2).expect("nonzero depth")
+    );
 }
 
 #[test]

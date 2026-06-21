@@ -959,7 +959,9 @@ pub struct CheckedRuntimeProgram {
     private_entry_functions: HashSet<String>,
     facts: CheckedFacts,
     accepted_catalog_ids: HashSet<String>,
+    accepted_leaf_tokens: HashMap<String, String>,
     accepted_catalog_epoch: Option<u64>,
+    debug_data_places: Vec<crate::CheckedSavedPlace>,
     debug_source_identity: Option<DebugSourceIdentity>,
     source_digest: String,
     read_only_context_digest: String,
@@ -987,7 +989,18 @@ impl CheckedRuntimeProgram {
                 .iter()
                 .map(|entry| entry.stable_id.clone())
                 .collect(),
+            accepted_leaf_tokens: program
+                .catalog
+                .accepted_entries
+                .iter()
+                .filter_map(|entry| {
+                    entry
+                        .accepted_leaf_token()
+                        .map(|token| (entry.stable_id.clone(), token.to_string()))
+                })
+                .collect(),
             accepted_catalog_epoch: program.catalog.accepted_epoch,
+            debug_data_places: crate::checked_activation_root_places(program),
             debug_source_identity: program.debug_source_identity.clone(),
             source_digest: program.source_digest(),
             read_only_context_digest: program.read_only_context_digest(),
@@ -1020,6 +1033,16 @@ impl CheckedRuntimeProgram {
 
     pub fn has_accepted_catalog_id(&self, catalog_id: &str) -> bool {
         self.accepted_catalog_ids.contains(catalog_id)
+    }
+
+    pub(crate) fn accepted_leaf_token(&self, catalog_id: &str) -> Option<&str> {
+        self.accepted_leaf_tokens
+            .get(catalog_id)
+            .map(String::as_str)
+    }
+
+    pub(crate) fn debug_data_places(&self) -> &[crate::CheckedSavedPlace] {
+        &self.debug_data_places
     }
 
     pub fn source_digest(&self) -> &str {

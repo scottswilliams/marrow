@@ -167,6 +167,7 @@ pub(crate) trait Backend {
     fn begin(&mut self) -> Result<(), StoreError>;
     fn commit(&mut self) -> Result<(), StoreError>;
     fn rollback(&mut self) -> Result<(), StoreError>;
+    fn transaction_depth(&self) -> usize;
     /// Pin a consistent read view so a multi-call traversal observes one
     /// snapshot. Reads and scans route through the pinned view until
     /// [`end_snapshot`](Backend::end_snapshot) releases it, and this handle
@@ -414,6 +415,10 @@ pub(crate) mod counting {
 
         fn rollback(&mut self) -> Result<(), StoreError> {
             self.inner.rollback()
+        }
+
+        fn transaction_depth(&self) -> usize {
+            self.inner.transaction_depth()
         }
 
         fn begin_snapshot(&mut self) -> Result<(), StoreError> {

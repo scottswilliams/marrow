@@ -9,7 +9,7 @@ use super::{
     DataPresence, DataPreviewReadResult, DataReadResult, DebugDataPayload, ResolvedDataPath,
     clamp_value_preview_limit,
 };
-use crate::CheckedProgram;
+use crate::{CheckedProgram, CheckedRuntimeProgram};
 
 pub fn read_data_path(
     store: &TreeStore,
@@ -44,8 +44,24 @@ pub fn preview_data_path(
     })
 }
 
+pub fn preview_runtime_data_path(
+    program: &CheckedRuntimeProgram,
+    store: &TreeStore,
+    path: &ResolvedDataPath,
+    limit: usize,
+) -> Result<DataPreviewReadResult, StoreError> {
+    preview_data_path_with_prefix_reader(program, store, path, limit, |store, path, limit| {
+        store.read_data_value_prefix(
+            &path.storage.store,
+            &path.storage.identity,
+            &path.storage.data_path,
+            limit,
+        )
+    })
+}
+
 fn preview_data_path_with_prefix_reader(
-    program: &CheckedProgram,
+    program: &(impl super::DataProgram + ?Sized),
     store: &TreeStore,
     path: &ResolvedDataPath,
     limit: usize,

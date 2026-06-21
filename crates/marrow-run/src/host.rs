@@ -4,17 +4,19 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt;
 use std::io::{self, Read};
+use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use marrow_check::{CheckedDebugExpression, FileId, RuntimeStopPoint};
+use marrow_check::{CheckedDebugExpression, FileId, RuntimeStopPoint, tooling};
+use marrow_store::key::SavedKey;
 use marrow_store::tree::TreeStore;
 use marrow_syntax::SourceSpan;
 
 use crate::debugger::{DebugFrameSnapshot, DebugValue, DebugValueFilter, DebugValuePage};
 use crate::env::{Context, Env};
-use crate::error::{RuntimeError, unsupported};
+use crate::error::{Located, RuntimeError, unsupported};
 use crate::expr::eval_expr;
 use crate::value::{RunOutputSink, Value};
 use crate::write_plan::{WriteOp, WriteTarget};
@@ -223,6 +225,11 @@ impl<'e, 'p> Frame<'e, 'p> {
         self.env.depth
     }
 
+    /// The current source `transaction` nesting depth for this run.
+    pub fn transaction_depth(&self) -> usize {
+        self.env.transaction_depth()
+    }
+
     /// The source file this activation runs in, or `None` without module context.
     /// Found by module name, since a span carries only line and column, not file.
     pub fn file(&self) -> Option<&std::path::Path> {
@@ -348,6 +355,72 @@ impl<'e, 'p> Frame<'e, 'p> {
             .map_err(|error| error.with_origin_from(self.env.program, Some(module)));
         env.pop_scope();
         value
+    }
+
+    pub fn debug_data_children(
+        &self,
+        segments: &[tooling::DataPathSegment],
+        limit: usize,
+        resume: Option<&SavedKey>,
+    ) -> Result<tooling::StampedData<tooling::DataChildrenPage>, RuntimeError> {
+        if let Some(depth) = self.source_transaction_depth() {
+            return tooling::stamped_runtime_open_transaction_data_children(
+                self.env.program,
+                self.env.store,
+                segments,
+                limit,
+                resume,
+                depth,
+            )
+            .map_err(|error| self.debug_tooling_error(error));
+        }
+        tooling::stamped_runtime_data_children(
+            self.env.program,
+            self.env.store,
+            segments,
+            limit,
+            resume,
+        )
+        .map_err(|error| self.debug_tooling_error(error))
+    }
+
+    pub fn debug_data_preview(
+        &self,
+        segments: &[tooling::DataPathSegment],
+        limit: usize,
+    ) -> Result<Option<tooling::StampedData<tooling::DataPreviewReadResult>>, RuntimeError> {
+        let Some(path) = tooling::resolve_runtime_data_path(self.env.program, segments)
+            .map_err(|error| self.debug_tooling_error(error))?
+        else {
+            return Ok(None);
+        };
+        if let Some(depth) = self.source_transaction_depth() {
+            return tooling::stamped_runtime_open_transaction_preview_data_path(
+                self.env.program,
+                self.env.store,
+                &path,
+                limit,
+                depth,
+            )
+            .map(Some)
+            .map_err(|error| error.located(self.span));
+        }
+        tooling::stamped_runtime_preview_data_path(self.env.program, self.env.store, &path, limit)
+            .map(Some)
+            .map_err(|error| error.located(self.span))
+    }
+
+    fn source_transaction_depth(&self) -> Option<NonZeroUsize> {
+        NonZeroUsize::new(self.env.transaction_depth())
+    }
+
+    fn debug_tooling_error(&self, error: tooling::ToolingError) -> RuntimeError {
+        match error {
+            tooling::ToolingError::Path(error) => {
+                unsupported(&format!("this debug data path: {error}"), self.span)
+            }
+            tooling::ToolingError::Store(error) => error.located(self.span),
+        }
     }
 }
 

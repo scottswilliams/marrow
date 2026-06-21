@@ -1,15 +1,17 @@
+use marrow_store::StoreError;
 use marrow_store::key::SavedKey;
 use marrow_store::tree::{DataPathSegment as StoreDataPathSegment, TreeStore};
 
 use crate::tooling::ToolingError;
-use crate::{CheckedProgram, CheckedSavedMember, checked_saved_root_place};
+use crate::{CheckedProgram, CheckedRuntimeProgram, CheckedSavedMember};
 
-use super::path::resolve_data_path;
+use super::path::{resolve_data_path, resolve_runtime_data_path};
 use super::path_error::DataPathError;
+use super::program::{DataProgram, inspection_root_place};
 use super::record_nav;
 use super::shape::stored_key_mismatch;
 use super::shape::{data_path_segment_for_member, declared_members_below_path, tooling_catalog_id};
-use super::traversal::data_roots_in_store;
+use super::traversal::{data_roots_in_store, runtime_data_roots_in_store};
 use super::{DataChild, DataChildrenPage, DataPathSegment, ResolvedDataPath};
 
 /// How a resolved path's children are scanned, decided once so that both the
@@ -38,10 +40,28 @@ fn classify_child_scan(
     program: &CheckedProgram,
     segments: &[DataPathSegment],
 ) -> Result<ChildScanKind, ToolingError> {
+    classify_child_scan_in(program, segments, resolve_data_path)
+}
+
+fn classify_runtime_child_scan(
+    program: &CheckedRuntimeProgram,
+    segments: &[DataPathSegment],
+) -> Result<ChildScanKind, ToolingError> {
+    classify_child_scan_in(program, segments, resolve_runtime_data_path)
+}
+
+fn classify_child_scan_in<P>(
+    program: &P,
+    segments: &[DataPathSegment],
+    resolve: fn(&P, &[DataPathSegment]) -> Result<Option<ResolvedDataPath>, ToolingError>,
+) -> Result<ChildScanKind, ToolingError>
+where
+    P: DataProgram + ?Sized,
+{
     if segments.is_empty() {
         return Ok(ChildScanKind::Roots);
     }
-    let Some(path) = resolve_data_path(program, segments)? else {
+    let Some(path) = resolve(program, segments)? else {
         return Ok(ChildScanKind::Empty);
     };
     if path.storage.identity.len() < path.storage.identity_arity {
@@ -50,7 +70,7 @@ fn classify_child_scan(
     let Some((DataPathSegment::Root(root), _)) = segments.split_first() else {
         return Err(DataPathError::MissingRoot.into());
     };
-    let place = checked_saved_root_place(program, root, marrow_syntax::SourceSpan::default())
+    let place = inspection_root_place(program, root)
         .ok_or_else(|| DataPathError::UnknownRoot { root: root.clone() })?;
     if let Some(members) = declared_members_below_path(&place.root_members, &path.storage.data_path)
     {
@@ -70,12 +90,53 @@ pub fn data_children(
     limit: usize,
     resume: Option<&SavedKey>,
 ) -> Result<DataChildrenPage, ToolingError> {
+    data_children_in(
+        program,
+        store,
+        segments,
+        limit,
+        resume,
+        classify_child_scan,
+        data_roots_in_store,
+    )
+}
+
+pub fn runtime_data_children(
+    program: &CheckedRuntimeProgram,
+    store: &TreeStore,
+    segments: &[DataPathSegment],
+    limit: usize,
+    resume: Option<&SavedKey>,
+) -> Result<DataChildrenPage, ToolingError> {
+    data_children_in(
+        program,
+        store,
+        segments,
+        limit,
+        resume,
+        classify_runtime_child_scan,
+        runtime_data_roots_in_store,
+    )
+}
+
+fn data_children_in<P>(
+    program: &P,
+    store: &TreeStore,
+    segments: &[DataPathSegment],
+    limit: usize,
+    resume: Option<&SavedKey>,
+    classify: fn(&P, &[DataPathSegment]) -> Result<ChildScanKind, ToolingError>,
+    roots: fn(&P, &TreeStore) -> Result<Vec<String>, StoreError>,
+) -> Result<DataChildrenPage, ToolingError>
+where
+    P: DataProgram + ?Sized,
+{
     if limit == 0 {
         return Err(DataPathError::ZeroLimit.into());
     }
-    match classify_child_scan(program, segments)? {
+    match classify(program, segments)? {
         ChildScanKind::Roots => {
-            let children = data_roots_in_store(program, store)?
+            let children = roots(program, store)?
                 .into_iter()
                 .map(DataChild::Root)
                 .collect();
@@ -107,6 +168,13 @@ pub fn data_children_supports_paging(
     segments: &[DataPathSegment],
 ) -> Result<bool, ToolingError> {
     Ok(classify_child_scan(program, segments)?.is_paged())
+}
+
+pub fn runtime_data_children_supports_paging(
+    program: &CheckedRuntimeProgram,
+    segments: &[DataPathSegment],
+) -> Result<bool, ToolingError> {
+    Ok(classify_runtime_child_scan(program, segments)?.is_paged())
 }
 
 fn record_children(

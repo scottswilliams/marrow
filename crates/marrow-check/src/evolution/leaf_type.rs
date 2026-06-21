@@ -24,7 +24,7 @@ use marrow_schema::{KeyDef, Type};
 
 use crate::catalog::{CatalogKey, enum_path, store_path};
 use crate::resolve::resolve_store_by_root;
-use crate::{CheckedProgram, StoreLeafKind};
+use crate::{CheckedFacts, CheckedProgram, StoreLeafKind};
 
 /// The value-type token recorded for a leaf-position member whose declared value type
 /// produces no identity token: an `unknown`, a `sequence`, or any future leaf type
@@ -100,10 +100,13 @@ fn leaf_type_token(
 /// leaf token [`member_leaf_token`] wrote. It inverts the encoder: a keyed leaf's
 /// `[<key-shape>]` prefix is stripped to reach the value token, a scalar names its
 /// type, `enum:<id>` and `id:<store>:<arity>` name their referent by stable catalog
-/// id and are resolved through `program`. `None` for a token naming an untokenizable
-/// value (a `sequence`/`unknown` leaf, recorded as [`UNTOKENIZABLE_VALUE`]) or a
-/// referent the current program no longer resolves.
-pub(crate) fn accepted_leaf_kind(program: &CheckedProgram, token: &str) -> Option<StoreLeafKind> {
+/// id and are resolved through checked facts. `None` for a token naming an
+/// untokenizable value (a `sequence`/`unknown` leaf, recorded as
+/// [`UNTOKENIZABLE_VALUE`]) or a referent the current checked facts no longer resolve.
+pub(crate) fn accepted_leaf_kind_in_facts(
+    facts: &CheckedFacts,
+    token: &str,
+) -> Option<StoreLeafKind> {
     let value = match token.strip_prefix('[') {
         Some(rest) => rest.split_once(']')?.1,
         None => token,
@@ -112,8 +115,7 @@ pub(crate) fn accepted_leaf_kind(program: &CheckedProgram, token: &str) -> Optio
         return Some(StoreLeafKind::Scalar(scalar));
     }
     if let Some(enum_catalog_id) = value.strip_prefix("enum:") {
-        let enum_fact = program
-            .facts
+        let enum_fact = facts
             .enums()
             .iter()
             .find(|fact| fact.catalog_id.as_deref() == Some(enum_catalog_id))?;
@@ -123,8 +125,7 @@ pub(crate) fn accepted_leaf_kind(program: &CheckedProgram, token: &str) -> Optio
     }
     if let Some(rest) = value.strip_prefix("id:") {
         let (store_catalog_id, arity) = rest.rsplit_once(':')?;
-        let store = program
-            .facts
+        let store = facts
             .stores()
             .iter()
             .find(|fact| fact.catalog_id.as_deref() == Some(store_catalog_id))?;

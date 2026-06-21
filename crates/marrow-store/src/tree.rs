@@ -218,6 +218,10 @@ impl TreeStore {
         self.backend.borrow_mut().rollback()
     }
 
+    pub fn transaction_depth(&self) -> usize {
+        self.backend.borrow().transaction_depth()
+    }
+
     pub fn write_commit_metadata(&self, metadata: &CommitMetadata) -> Result<(), StoreError> {
         self.write_cell(
             CellKey::meta(MetaCell::Commit).as_bytes(),
@@ -2031,6 +2035,10 @@ mod tests {
 
         fn rollback(&mut self) -> Result<(), StoreError> {
             self.inner.rollback()
+        }
+
+        fn transaction_depth(&self) -> usize {
+            self.inner.transaction_depth()
         }
 
         fn begin_snapshot(&mut self) -> Result<(), StoreError> {

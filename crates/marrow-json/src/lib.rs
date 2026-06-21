@@ -12,7 +12,7 @@
 //! need host capabilities use the explicit-host helper. It is not a general
 //! `Value` codec, and it does not define HTTP serving or opaque cursor tokens.
 
-use marrow_check::tooling::{DataCommitStamp, DataSnapshotStamp};
+use marrow_check::tooling::{DataCommitStamp, DataSnapshotStamp, DataTransactionStamp};
 use marrow_run::Value;
 use marrow_store::key::SavedKey;
 use serde::Serialize;
@@ -34,6 +34,7 @@ pub struct DataSnapshotJson {
     pub store_uid: Option<String>,
     pub catalog_digest: Option<String>,
     pub commit: Option<DataCommitJson>,
+    pub open_transaction: Option<DataTransactionJson>,
     pub checked_source_digest: String,
 }
 
@@ -44,6 +45,11 @@ pub struct DataCommitJson {
     pub source_digest: String,
     pub layout_epoch: u64,
     pub engine_profile_digest: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DataTransactionJson {
+    pub depth: usize,
 }
 
 pub fn entry_return_to_json(value: &Value) -> Result<serde_json::Value, EntryReturnJsonError> {
@@ -111,6 +117,10 @@ impl From<&DataSnapshotStamp> for DataSnapshotJson {
             store_uid: stamp.store_uid.as_ref().map(|uid| uid.as_str().to_string()),
             catalog_digest: stamp.store_catalog_digest.clone(),
             commit: stamp.store_commit.as_ref().map(DataCommitJson::from),
+            open_transaction: stamp
+                .open_transaction
+                .as_ref()
+                .map(DataTransactionJson::from),
             checked_source_digest: stamp.checked_source_digest.clone(),
         }
     }
@@ -124,6 +134,14 @@ impl From<&DataCommitStamp> for DataCommitJson {
             source_digest: stamp.source_digest.clone(),
             layout_epoch: stamp.layout_epoch,
             engine_profile_digest: lower_hex(&stamp.engine_profile_digest),
+        }
+    }
+}
+
+impl From<&DataTransactionStamp> for DataTransactionJson {
+    fn from(stamp: &DataTransactionStamp) -> Self {
+        Self {
+            depth: stamp.depth.get(),
         }
     }
 }
@@ -143,7 +161,9 @@ mod tests {
         DataSnapshotJson, EntryReturnJsonError, data_snapshot_stamp_to_json, entry_return_to_json,
         saved_key_to_json,
     };
-    use marrow_check::tooling::{DataCommitStamp, DataSnapshotStamp};
+    use std::num::NonZeroUsize;
+
+    use marrow_check::tooling::{DataCommitStamp, DataSnapshotStamp, DataTransactionStamp};
     use marrow_run::Value;
     use marrow_store::Decimal;
     use marrow_store::key::SavedKey;
@@ -200,6 +220,7 @@ mod tests {
                 layout_epoch: 2,
                 engine_profile_digest: [0x77, 0x94, 0x4e, 0xb8, 0x6c, 0x08, 0xb6, 0x65],
             }),
+            open_transaction: None,
             checked_source_digest: "sha256:checked".to_string(),
         };
 
@@ -215,6 +236,7 @@ mod tests {
                     "layout_epoch": 2,
                     "engine_profile_digest": "77944eb86c08b665",
                 },
+                "open_transaction": null,
                 "checked_source_digest": "sha256:checked",
             })
         );
@@ -226,6 +248,7 @@ mod tests {
             store_uid: None,
             store_catalog_digest: None,
             store_commit: None,
+            open_transaction: None,
             checked_source_digest: "sha256:checked".to_string(),
         };
 
@@ -235,6 +258,31 @@ mod tests {
                 "store_uid": null,
                 "catalog_digest": null,
                 "commit": null,
+                "open_transaction": null,
+                "checked_source_digest": "sha256:checked",
+            })
+        );
+    }
+
+    #[test]
+    fn data_snapshot_stamp_json_renders_open_transaction() {
+        let stamp = DataSnapshotStamp {
+            store_uid: None,
+            store_catalog_digest: None,
+            store_commit: None,
+            open_transaction: Some(DataTransactionStamp {
+                depth: NonZeroUsize::new(2).expect("nonzero depth"),
+            }),
+            checked_source_digest: "sha256:checked".to_string(),
+        };
+
+        assert_eq!(
+            data_snapshot_stamp_to_json(&stamp),
+            json!({
+                "store_uid": null,
+                "catalog_digest": null,
+                "commit": null,
+                "open_transaction": { "depth": 2 },
                 "checked_source_digest": "sha256:checked",
             })
         );

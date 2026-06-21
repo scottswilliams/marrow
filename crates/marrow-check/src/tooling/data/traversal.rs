@@ -5,9 +5,12 @@ use marrow_store::cell::CatalogId;
 use marrow_store::key::SavedKey;
 use marrow_store::tree::{DataPathSegment as StoreDataPathSegment, TreeStore};
 
-use crate::{CheckedProgram, CheckedSavedMember, CheckedSavedMemberKind, CheckedSavedPlace};
+use crate::{
+    CheckedProgram, CheckedRuntimeProgram, CheckedSavedMember, CheckedSavedMemberKind,
+    CheckedSavedPlace,
+};
 
-use super::path::inspection_root_place;
+use super::program::{DataProgram, checked_places};
 use super::record_nav;
 use super::render::{pop_key, push_key, push_member};
 use super::shape::{stored_key_mismatch, tooling_catalog_id};
@@ -21,6 +24,20 @@ fn fold_records(running: usize, count: usize) -> Result<usize, StoreError> {
 
 pub fn data_roots_in_store(
     program: &CheckedProgram,
+    store: &TreeStore,
+) -> Result<Vec<String>, StoreError> {
+    data_roots_in_store_for(program, store)
+}
+
+pub fn runtime_data_roots_in_store(
+    program: &CheckedRuntimeProgram,
+    store: &TreeStore,
+) -> Result<Vec<String>, StoreError> {
+    data_roots_in_store_for(program, store)
+}
+
+fn data_roots_in_store_for(
+    program: &(impl DataProgram + ?Sized),
     store: &TreeStore,
 ) -> Result<Vec<String>, StoreError> {
     let mut roots = Vec::new();
@@ -94,15 +111,6 @@ pub(crate) fn visit_place_record_identities_until(
     };
     let mut identity = Vec::new();
     visit_identity_record_nodes_until(place, &store_id, store, &mut identity, visit)
-}
-
-pub(crate) fn checked_places(program: &CheckedProgram) -> Vec<CheckedSavedPlace> {
-    program
-        .facts
-        .stores()
-        .iter()
-        .filter_map(|store| inspection_root_place(program, &store.root))
-        .collect()
 }
 
 fn place_has_data(place: &CheckedSavedPlace, store: &TreeStore) -> Result<bool, StoreError> {

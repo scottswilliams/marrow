@@ -2,6 +2,7 @@ mod children;
 mod declared;
 mod path;
 mod path_error;
+mod program;
 mod read;
 mod record_nav;
 mod render;
@@ -9,33 +10,44 @@ mod shape;
 mod traversal;
 mod walk;
 
+use std::num::NonZeroUsize;
+
 use marrow_store::StoreError;
 use marrow_store::cell::CatalogId;
 use marrow_store::key::SavedKey;
 use marrow_store::tree::{CommitMetadata, EngineProfileDigest, StoreUid, TreeStore};
 
 use crate::tooling::ToolingError;
-use crate::{CheckedProgram, ScalarType, StoreLeafKind};
+use crate::{CheckedProgram, CheckedRuntimeProgram, ScalarType, StoreLeafKind};
 
-pub use children::{data_children, data_children_supports_paging};
+pub use children::{
+    data_children, data_children_supports_paging, runtime_data_children,
+    runtime_data_children_supports_paging,
+};
 pub use declared::{
     DeclaredDataChild, DeclaredDataChildKind, DeclaredDataKeyParam, SourceDataPathSegment,
     declared_data_children, declared_source_data_children, declared_source_receiver_data_children,
 };
-pub use path::{data_path_under_prefix, resolve_data_path, resolve_source_text_data_path};
+pub use path::{
+    data_path_under_prefix, resolve_data_path, resolve_runtime_data_path,
+    resolve_source_text_data_path,
+};
 pub use path_error::{DataPathError, MemberFlavor};
-pub use read::{preview_data_path, read_data_path};
+pub use read::{preview_data_path, preview_runtime_data_path, read_data_path};
 pub use render::{render_data_path_segments, render_data_path_value, render_data_value};
-pub use traversal::{count_data_records, data_roots_in_store, visit_data_records};
+pub use traversal::{
+    count_data_records, data_roots_in_store, runtime_data_roots_in_store, visit_data_records,
+};
 pub use walk::walk_data;
 
 pub(crate) use path::StorageDataPath;
+pub(crate) use program::{DataProgram, checked_places};
 pub(crate) use render::{push_key, render_data_path};
 pub(crate) use shape::{
     stored_key_mismatch, tooling_catalog_id, validate_member_path_node, validate_member_value_path,
 };
 pub(crate) use traversal::{
-    checked_places, visit_data_records_in_places, visit_data_records_in_places_until,
+    visit_data_records_in_places, visit_data_records_in_places_until,
     visit_place_record_identities_until,
 };
 
@@ -53,21 +65,48 @@ pub struct DataSnapshotStamp {
     pub store_uid: Option<StoreUid>,
     pub store_catalog_digest: Option<String>,
     pub store_commit: Option<DataCommitStamp>,
+    pub open_transaction: Option<DataTransactionStamp>,
     pub checked_source_digest: String,
 }
 
 impl DataSnapshotStamp {
-    fn read(program: &CheckedProgram, store: &TreeStore) -> Result<Self, StoreError> {
+    fn read(program: &(impl DataProgram + ?Sized), store: &TreeStore) -> Result<Self, StoreError> {
+        Self::read_with_open_transaction(program, store, None)
+    }
+
+    fn read_open_transaction(
+        program: &(impl DataProgram + ?Sized),
+        store: &TreeStore,
+        depth: NonZeroUsize,
+    ) -> Result<Self, StoreError> {
+        Self::read_with_open_transaction(program, store, Some(DataTransactionStamp { depth }))
+    }
+
+    fn read_with_open_transaction(
+        program: &(impl DataProgram + ?Sized),
+        store: &TreeStore,
+        open_transaction: Option<DataTransactionStamp>,
+    ) -> Result<Self, StoreError> {
         let store_uid = store.read_store_uid()?;
-        let commit = store.read_commit_metadata()?;
+        let commit = if open_transaction.is_some() {
+            None
+        } else {
+            store.read_commit_metadata()?
+        };
         let store_catalog_digest = store.catalog_snapshot_digest()?;
         Ok(Self {
             store_uid,
             store_catalog_digest,
             store_commit: commit.map(DataCommitStamp::from),
+            open_transaction,
             checked_source_digest: program.source_digest(),
         })
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DataTransactionStamp {
+    pub depth: NonZeroUsize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -122,6 +161,15 @@ pub fn stamped_data_roots_in_store(
     with_stamped_read(program, store, |store| data_roots_in_store(program, store))
 }
 
+pub fn stamped_runtime_data_roots_in_store(
+    program: &CheckedRuntimeProgram,
+    store: &TreeStore,
+) -> Result<StampedData<Vec<String>>, StoreError> {
+    with_stamped_read(program, store, |store| {
+        runtime_data_roots_in_store(program, store)
+    })
+}
+
 pub fn stamped_read_data_path(
     program: &CheckedProgram,
     store: &TreeStore,
@@ -141,6 +189,29 @@ pub fn stamped_preview_data_path(
     })
 }
 
+pub fn stamped_runtime_preview_data_path(
+    program: &CheckedRuntimeProgram,
+    store: &TreeStore,
+    path: &ResolvedDataPath,
+    limit: usize,
+) -> Result<StampedData<DataPreviewReadResult>, StoreError> {
+    with_stamped_read(program, store, |store| {
+        preview_runtime_data_path(program, store, path, limit)
+    })
+}
+
+pub fn stamped_runtime_open_transaction_preview_data_path(
+    program: &CheckedRuntimeProgram,
+    store: &TreeStore,
+    path: &ResolvedDataPath,
+    limit: usize,
+    source_transaction_depth: NonZeroUsize,
+) -> Result<StampedData<DataPreviewReadResult>, StoreError> {
+    with_open_transaction_stamped_read(program, store, source_transaction_depth, |store| {
+        preview_runtime_data_path(program, store, path, limit)
+    })
+}
+
 pub fn stamped_data_children(
     program: &CheckedProgram,
     store: &TreeStore,
@@ -153,8 +224,33 @@ pub fn stamped_data_children(
     })
 }
 
+pub fn stamped_runtime_data_children(
+    program: &CheckedRuntimeProgram,
+    store: &TreeStore,
+    segments: &[DataPathSegment],
+    limit: usize,
+    resume: Option<&SavedKey>,
+) -> Result<StampedData<DataChildrenPage>, ToolingError> {
+    with_stamped_read(program, store, |store| {
+        runtime_data_children(program, store, segments, limit, resume)
+    })
+}
+
+pub fn stamped_runtime_open_transaction_data_children(
+    program: &CheckedRuntimeProgram,
+    store: &TreeStore,
+    segments: &[DataPathSegment],
+    limit: usize,
+    resume: Option<&SavedKey>,
+    source_transaction_depth: NonZeroUsize,
+) -> Result<StampedData<DataChildrenPage>, ToolingError> {
+    with_open_transaction_stamped_read(program, store, source_transaction_depth, |store| {
+        runtime_data_children(program, store, segments, limit, resume)
+    })
+}
+
 pub(crate) fn with_stamped_read<T, E>(
-    program: &CheckedProgram,
+    program: &(impl DataProgram + ?Sized),
     store: &TreeStore,
     read: impl FnOnce(&TreeStore) -> Result<T, E>,
 ) -> Result<StampedData<T>, E>
@@ -165,6 +261,26 @@ where
     let _snapshot = store.read_snapshot()?;
     let data = read(store)?;
     let stamp = DataSnapshotStamp::read(program, store)?;
+    Ok(StampedData { data, stamp })
+}
+
+pub(crate) fn with_open_transaction_stamped_read<T, E>(
+    program: &(impl DataProgram + ?Sized),
+    store: &TreeStore,
+    source_transaction_depth: NonZeroUsize,
+    read: impl FnOnce(&TreeStore) -> Result<T, E>,
+) -> Result<StampedData<T>, E>
+where
+    E: From<StoreError>,
+{
+    if store.transaction_depth() == 0 {
+        return Err(StoreError::InvalidTransaction {
+            message: "expected an open write transaction".to_string(),
+        }
+        .into());
+    }
+    let data = read(store)?;
+    let stamp = DataSnapshotStamp::read_open_transaction(program, store, source_transaction_depth)?;
     Ok(StampedData { data, stamp })
 }
 
@@ -331,9 +447,14 @@ pub(crate) struct KeyMismatch {
 
 #[cfg(test)]
 mod tests {
+    use std::num::NonZeroUsize;
+
+    use marrow_store::StoreError;
     use marrow_store::tree::{CommitMetadata, EngineProfile, TreeStore};
 
-    use crate::CheckedProgram;
+    use crate::{CheckedFacts, CheckedProgram, CheckedSavedPlace, StoreLeafKind};
+
+    use super::DataProgram;
 
     fn commit_metadata(commit_id: u64) -> CommitMetadata {
         let profile = EngineProfile::new(0);
@@ -348,6 +469,39 @@ mod tests {
             changed_root_catalog_ids: Vec::new(),
             changed_index_catalog_ids: Vec::new(),
         }
+    }
+
+    struct FakeProgram;
+
+    impl DataProgram for FakeProgram {
+        fn facts(&self) -> &CheckedFacts {
+            unreachable!("store-state rejection must not inspect facts")
+        }
+
+        fn source_digest(&self) -> String {
+            unreachable!("store-state rejection must not inspect source digest")
+        }
+
+        fn root_place(&self, _root: &str) -> Option<CheckedSavedPlace> {
+            unreachable!("store-state rejection must not inspect root places")
+        }
+
+        fn accepted_leaf_kind(&self, _catalog_id: &str) -> Option<StoreLeafKind> {
+            unreachable!("store-state rejection must not inspect leaf kinds")
+        }
+    }
+
+    #[test]
+    fn open_transaction_stamped_read_requires_open_store_transaction() {
+        let store = TreeStore::memory();
+        let error = super::with_open_transaction_stamped_read(
+            &FakeProgram,
+            &store,
+            NonZeroUsize::new(1).expect("nonzero depth"),
+            |_| Ok::<_, StoreError>(()),
+        )
+        .expect_err("transaction stamp requires an open store transaction");
+        assert_eq!(error.code(), "store.transaction");
     }
 
     #[test]

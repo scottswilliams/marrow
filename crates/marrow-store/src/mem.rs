@@ -226,6 +226,12 @@ impl Backend for MemStore {
         Ok(())
     }
 
+    fn transaction_depth(&self) -> usize {
+        self.transaction
+            .as_ref()
+            .map_or(0, |transaction| transaction.depth)
+    }
+
     fn begin_snapshot(&mut self) -> Result<(), StoreError> {
         if self.transaction.is_some() {
             return Err(StoreError::snapshot_while_transaction_open());

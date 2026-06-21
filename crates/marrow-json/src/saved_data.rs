@@ -542,6 +542,7 @@ mod tests {
             store_uid: None,
             store_catalog_digest: None,
             store_commit: None,
+            open_transaction: None,
             checked_source_digest: "sha256:checked".into(),
         };
         let children = DataChildViewsPageJson::from(StampedData {
@@ -570,6 +571,7 @@ mod tests {
                     "store_uid": null,
                     "catalog_digest": null,
                     "commit": null,
+                    "open_transaction": null,
                     "checked_source_digest": "sha256:checked",
                 },
             })
@@ -595,6 +597,7 @@ mod tests {
                     "store_uid": null,
                     "catalog_digest": null,
                     "commit": null,
+                    "open_transaction": null,
                     "checked_source_digest": "sha256:checked",
                 },
             })
