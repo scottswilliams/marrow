@@ -1113,7 +1113,7 @@ fn test_session_does_not_read_an_existing_native_store() {
     let mut unreadable = fs::metadata(&store_path)
         .expect("seed run creates a native store")
         .permissions();
-    unreadable.set_mode(0);
+    unreadable.set_mode(0o0);
     fs::set_permissions(&store_path, unreadable).expect("make native store unreadable");
 
     let session = ProjectSession::open(root.path(), ProjectOpen::test())
