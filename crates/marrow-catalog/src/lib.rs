@@ -277,8 +277,8 @@ impl CatalogLock {
     /// Git conflict markers, an unknown field, a malformed fingerprint or source digest, a NUL
     /// byte in any id or path, an empty entry path, a duplicate `(kind, path)` adoption anchor, a
     /// ledger id reused by an active entry, a ledger tombstone recording the active lifecycle, a
-    /// duplicate ledger id, or an epoch high-water below a tombstone's recorded high-water. It
-    /// never panics and is never lenient.
+    /// duplicate ledger id, an epoch high-water below a tombstone's recorded high-water, or an
+    /// epoch high-water no real change could advance past. It never panics and is never lenient.
     pub fn from_lock_json(json: &str) -> Result<Self, CatalogError> {
         if contains_conflict_marker(json) {
             return Err(CatalogError::lock_corrupt("contains Git conflict markers"));
@@ -302,9 +302,26 @@ impl CatalogLock {
     }
 
     fn validate(&self) -> Result<(), CatalogError> {
+        self.validate_epoch_high_water()?;
         let active = self.validate_entries()?;
         self.validate_ledger(&active)?;
         validate_sha256("source digest", &self.source_digest)
+    }
+
+    /// Reject an epoch high-water no real change could advance past. The single advance owner
+    /// mints `max(_, high_water) + 1`, so a high-water within one of `u64::MAX` cannot yield a
+    /// strictly greater epoch: the advance would saturate and pin the version line, silently
+    /// reusing a witnessed epoch for different identity on the next evolve. An un-advanceable
+    /// high-water is therefore itself a corrupt lock, caught at decode before it reaches any
+    /// write-adjacent path.
+    fn validate_epoch_high_water(&self) -> Result<(), CatalogError> {
+        if self.epoch_high_water >= u64::MAX - 1 {
+            return Err(CatalogError::lock_corrupt(format!(
+                "epoch high-water {} cannot be advanced",
+                self.epoch_high_water
+            )));
+        }
+        Ok(())
     }
 
     fn validate_entries(&self) -> Result<ActiveLockKeys<'_>, CatalogError> {
@@ -698,6 +715,49 @@ mod structural_signature_tests {
     fn an_unknown_shape_decodes_to_none() {
         assert_eq!(structural_signature("mystery"), None);
         assert_eq!(structural_signature("keyed-group:[int"), None);
+    }
+}
+
+#[cfg(test)]
+mod lock_epoch_tests {
+    use super::{CatalogLock, LOCK_CORRUPT};
+
+    /// A canonical lock JSON with no entries or tombstones, carrying `epoch_high_water`. The
+    /// source digest is a well-formed zero sha256 so only the epoch high-water is under test.
+    fn lock_json(epoch_high_water: u64) -> String {
+        serde_json::json!({
+            "entries": [],
+            "ledger": [],
+            "epochHighWater": epoch_high_water,
+            "sourceDigest":
+                "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn an_unadvanceable_epoch_high_water_is_rejected_as_lock_corrupt() {
+        // A committed lock whose epoch high-water is u64::MAX is codec-valid in every other
+        // respect (no entries, no tombstones, a well-formed digest), yet no real change could
+        // ever advance past it: the single advance owner would have to mint epoch u64::MAX + 1.
+        // The lock is therefore corrupt at decode, before it can reach any write-adjacent path.
+        let error = CatalogLock::from_lock_json(&lock_json(u64::MAX))
+            .expect_err("an unadvanceable epoch high-water is rejected");
+        assert_eq!(error.code, LOCK_CORRUPT);
+
+        // Within one of the ceiling is equally unadvanceable: advancing would saturate and pin
+        // the epoch, breaking strict monotonicity for the next evolve. Reject it too.
+        let error = CatalogLock::from_lock_json(&lock_json(u64::MAX - 1))
+            .expect_err("an epoch high-water one below the ceiling is rejected");
+        assert_eq!(error.code, LOCK_CORRUPT);
+    }
+
+    #[test]
+    fn an_advanceable_epoch_high_water_decodes() {
+        // The largest still-advanceable high-water decodes cleanly: max(_, N) + 1 stays in range.
+        let lock = CatalogLock::from_lock_json(&lock_json(u64::MAX - 2))
+            .expect("an advanceable epoch high-water decodes");
+        assert_eq!(lock.epoch_high_water, u64::MAX - 2);
     }
 }
 

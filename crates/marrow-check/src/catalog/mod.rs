@@ -774,8 +774,13 @@ fn record_signatures_into(
 /// store loss — a wiped store whose committed lock reached epoch N cannot mint a new proposal
 /// at or below N and silently reuse a witnessed epoch for different identity. The single owner
 /// of the advance rule, consumed by both bind paths and by the run baseline.
+///
+/// The add saturates rather than overflowing: a wrap to zero on a write-adjacent path would
+/// silently reuse a witnessed epoch for different identity, and a debug panic would crash the
+/// checker. The lock codec already rejects an un-advanceable high-water, so saturation is the
+/// belt to that suspenders, never the primary defense.
 fn advance_epoch(accepted_epoch: u64, lock_high_water: u64) -> u64 {
-    accepted_epoch.max(lock_high_water) + 1
+    accepted_epoch.max(lock_high_water).saturating_add(1)
 }
 
 /// The lock's append-only id ledger, or an empty slice when no lock is present. The
@@ -2404,6 +2409,25 @@ mod tests {
             advance_epoch(9, 3),
             10,
             "max favors the larger accepted epoch"
+        );
+    }
+
+    /// The single advance owner never panics or wraps to zero at the integer ceiling. A
+    /// codec-valid lock can no longer carry an un-advanceable high-water, but the advance rule is
+    /// the load-bearing monotonicity guarantee, so it saturates rather than overflowing even if a
+    /// ceiling value reaches it: a wrap to zero on a write-adjacent path would silently reuse a
+    /// witnessed epoch for different identity.
+    #[test]
+    fn advance_epoch_saturates_at_the_ceiling_without_panicking() {
+        assert_eq!(
+            advance_epoch(u64::MAX, 0),
+            u64::MAX,
+            "an accepted epoch at the ceiling saturates rather than wrapping to zero"
+        );
+        assert_eq!(
+            advance_epoch(0, u64::MAX),
+            u64::MAX,
+            "a lock high-water at the ceiling saturates rather than wrapping to zero"
         );
     }
 
