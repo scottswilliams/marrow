@@ -211,13 +211,48 @@ impl TreeStore {
     /// as a typed [`StoreError`] rather than on a later read. Used by `recover`,
     /// which otherwise opens and replays without traversing the tree. The walk
     /// paginates rather than materializing the whole store.
+    ///
+    /// Two passes prove a store is traversable the way every read command traverses it.
+    ///
+    /// First, every data-family cell is decoded and value-validated through the same
+    /// backup-cell grammar `data integrity`'s undeclared-cell pass uses, so a flipped key
+    /// or value byte that leaves the file scannable but no longer well-formed is caught
+    /// here. That linear pass also records each `(store, record arity)` seen at a leaf and
+    /// checks decoded keys never regress: the encoding is order-preserving, so a strictly
+    /// smaller identity is the damage that stalls a descent, caught rather than looped.
+    ///
+    /// Second, each recorded `(store, arity)` is descended through `for_each_record`, the
+    /// seek-driven navigation `data integrity` runs. A clobbered interior page can sit off
+    /// the linear scan's path yet on a record descent's re-seek, panicking deep in the
+    /// engine; running the descent here surfaces it as corruption instead of leaving
+    /// `recover` to bless a store a later read would fault on.
     pub fn verify_readable(&self) -> Result<(), StoreError> {
-        let mut page = self.scan(&[], BACKUP_SCAN_PAGE)?;
-        while page.truncated {
-            let Some((resume, _)) = page.entries.last() else {
-                break;
-            };
-            page = self.scan_after(&[], &resume.clone(), BACKUP_SCAN_PAGE)?;
+        let mut previous: Option<(CatalogId, Vec<SavedKey>)> = None;
+        let mut record_shapes: std::collections::BTreeSet<(CatalogId, usize)> =
+            std::collections::BTreeSet::new();
+        self.visit_backup_cells(|cell| {
+            let key = cell.data_key();
+            if matches!(
+                key.kind,
+                crate::cell::DataCellKind::Leaf { .. }
+                    | crate::cell::DataCellKind::Sequence { .. }
+                    | crate::cell::DataCellKind::Value { .. }
+            ) {
+                record_shapes.insert((key.store.clone(), key.identity.len()));
+            }
+            let current = (key.store.clone(), key.identity.clone());
+            if let Some(previous) = &previous
+                && current < *previous
+            {
+                return Err(StoreError::Corruption {
+                    message: "data cell keys are out of order".into(),
+                });
+            }
+            previous = Some(current);
+            Ok(())
+        })?;
+        for (store, arity) in record_shapes {
+            self.for_each_record(&store, arity, &mut |_| Ok(()))?;
         }
         Ok(())
     }
@@ -417,7 +452,8 @@ impl TreeStore {
         let Some(cursor) = prefix_successor(cursor.as_bytes()) else {
             return Ok(None);
         };
-        self.next_child_after_cursor(prefix.as_bytes(), &cursor, decode_data_child)
+        let child = self.next_child_after_cursor(prefix.as_bytes(), &cursor, decode_data_child)?;
+        guard_child_advances(child, after, std::cmp::Ordering::Greater)
     }
 
     pub fn data_first_child(
@@ -451,12 +487,13 @@ impl TreeStore {
         let mut cursor_path = path.to_vec();
         cursor_path.push(DataPathSegment::Key(before.clone()));
         let cursor = CellKey::data_path_prefix(store, identity, &cursor_path);
-        self.prev_child_before(
+        let child = self.prev_child_before(
             prefix.as_bytes(),
             cursor.as_bytes(),
             before,
             decode_data_child,
-        )
+        )?;
+        guard_child_advances(child, before, std::cmp::Ordering::Less)
     }
 
     pub fn data_child_count(
@@ -548,7 +585,7 @@ impl TreeStore {
             result = Some(child);
             std::ops::ControlFlow::Break(())
         })?;
-        Ok(result)
+        guard_child_advances(result, after, std::cmp::Ordering::Greater)
     }
 
     pub fn record_first_child(
@@ -635,7 +672,7 @@ impl TreeStore {
                 std::ops::ControlFlow::Break(())
             },
         )?;
-        Ok(result)
+        guard_child_advances(result, before, std::cmp::Ordering::Less)
     }
 
     pub fn max_int_record_child(
@@ -898,7 +935,8 @@ impl TreeStore {
         let Some(cursor) = prefix_successor(&cursor) else {
             return Ok(None);
         };
-        self.next_child_after_cursor(prefix.as_bytes(), &cursor, decode_index_child)
+        let child = self.next_child_after_cursor(prefix.as_bytes(), &cursor, decode_index_child)?;
+        guard_child_advances(child, after, std::cmp::Ordering::Greater)
     }
 
     pub fn index_first_child(
@@ -927,7 +965,9 @@ impl TreeStore {
     ) -> Result<Option<SavedKey>, StoreError> {
         let prefix = CellKey::index_key_prefix(index, key_prefix);
         let cursor = self.index_child_stem(index, key_prefix, before)?;
-        self.prev_child_before(prefix.as_bytes(), &cursor, before, decode_index_child)
+        let child =
+            self.prev_child_before(prefix.as_bytes(), &cursor, before, decode_index_child)?;
+        guard_child_advances(child, before, std::cmp::Ordering::Less)
     }
 
     pub fn scan_index_tuple(
@@ -1843,6 +1883,26 @@ fn corrupt_cell(bytes: &[u8]) -> StoreError {
     }
 }
 
+/// A child step seeded from `cursor` must move strictly in `direction` past it; a
+/// healthy ordered store guarantees this. A non-advancing or out-of-order child is
+/// backend damage that would otherwise spin a descent forever, so it fails closed
+/// rather than looping. `direction` is [`Ordering::Greater`] for forward steps and
+/// [`Ordering::Less`] for reverse steps.
+fn guard_child_advances(
+    child: Option<SavedKey>,
+    cursor: &SavedKey,
+    direction: std::cmp::Ordering,
+) -> Result<Option<SavedKey>, StoreError> {
+    if let Some(child) = &child
+        && child.cmp(cursor) != direction
+    {
+        return Err(StoreError::Corruption {
+            message: "record scan returned a non-advancing child key".into(),
+        });
+    }
+    Ok(child)
+}
+
 #[cfg(test)]
 mod tests {
     use std::cell::Cell;
@@ -1866,6 +1926,19 @@ mod tests {
         EmptyTruncatedScan {
             method: EmptyTruncatedScanMethod,
             prefix: Vec<u8>,
+        },
+        /// Model backend damage where a record-prefix `scan_after` yields a
+        /// validly-decoding node cell whose child does not advance past the
+        /// cursor, so a descent that trusts the backend to advance would loop.
+        NonAdvancingRecordChild {
+            prefix: Vec<u8>,
+            cell_key: Vec<u8>,
+        },
+        /// Model damage where a prefix scan returns validly-decoding data cells whose
+        /// decoded keys are not in scan order, the divergence `verify_readable` catches.
+        OutOfOrderDataScan {
+            prefix: Vec<u8>,
+            cells: Vec<Vec<u8>>,
         },
     }
 
@@ -1929,6 +2002,62 @@ mod tests {
                 truncated: true,
             }
         }
+
+        /// Seed two single-int records, then pin every record-prefix `scan_after`
+        /// to the first record's node cell so the decoded child never advances.
+        fn non_advancing_record_child(store: &CatalogId) -> Self {
+            let mut inner = MemStore::default();
+            for id in [1, 2] {
+                let key = CellKey::node(store, &[SavedKey::Int(id)]).into_bytes();
+                Backend::write(&mut inner, &key, NODE_MARKER.to_vec()).expect("seed record");
+            }
+            Self {
+                inner,
+                fault: BackendFault::NonAdvancingRecordChild {
+                    prefix: CellKey::record_prefix(store, &[]).into_bytes(),
+                    cell_key: CellKey::node(store, &[SavedKey::Int(1)]).into_bytes(),
+                },
+            }
+        }
+
+        /// Yield two record node cells whose decoded identities descend even though the
+        /// scan reports them in forward order, the byte-vs-decoded-key divergence that
+        /// stalls a descent. The data-family scan that `verify_readable` drives sees both.
+        fn out_of_order_data_cells(store: &CatalogId) -> Self {
+            Self {
+                inner: MemStore::default(),
+                fault: BackendFault::OutOfOrderDataScan {
+                    prefix: CellKey::data_family().into_bytes(),
+                    cells: vec![
+                        CellKey::node(store, &[SavedKey::Int(2)]).into_bytes(),
+                        CellKey::node(store, &[SavedKey::Int(1)]).into_bytes(),
+                    ],
+                },
+            }
+        }
+
+        fn injected_page(&self, prefix: &[u8]) -> Option<ScanPage> {
+            match &self.fault {
+                BackendFault::NonAdvancingRecordChild {
+                    prefix: fault_prefix,
+                    cell_key,
+                } if fault_prefix.as_slice() == prefix => Some(ScanPage {
+                    entries: vec![(cell_key.clone(), NODE_MARKER.to_vec())],
+                    truncated: false,
+                }),
+                BackendFault::OutOfOrderDataScan {
+                    prefix: fault_prefix,
+                    cells,
+                } if fault_prefix.as_slice() == prefix => Some(ScanPage {
+                    entries: cells
+                        .iter()
+                        .map(|cell| (cell.clone(), NODE_MARKER.to_vec()))
+                        .collect(),
+                    truncated: false,
+                }),
+                _ => None,
+            }
+        }
     }
 
     fn empty_commit_metadata(catalog_epoch: u64) -> CommitMetadata {
@@ -1975,6 +2104,9 @@ mod tests {
             if self.should_return_empty_truncated(EmptyTruncatedScanMethod::Scan, prefix) {
                 return Ok(Self::empty_truncated_page());
             }
+            if let Some(page) = self.injected_page(prefix) {
+                return Ok(page);
+            }
             self.inner.scan(prefix, limit)
         }
 
@@ -1986,6 +2118,9 @@ mod tests {
         ) -> Result<ScanPage, StoreError> {
             if self.should_return_empty_truncated(EmptyTruncatedScanMethod::ScanAfter, prefix) {
                 return Ok(Self::empty_truncated_page());
+            }
+            if let Some(page) = self.injected_page(prefix) {
+                return Ok(page);
             }
             self.inner.scan_after(prefix, cursor, limit)
         }
@@ -2064,6 +2199,45 @@ mod tests {
         fn end_snapshot(&mut self) {
             self.inner.end_snapshot();
         }
+    }
+
+    /// A record descent advances by feeding the prior child key back as an after-cursor.
+    /// Backend damage that yields a non-advancing child must fail closed as corruption
+    /// rather than loop forever, so the descent never trusts the backend to make progress.
+    /// The walk runs on a worker thread with a deadline so a regression surfaces as a test
+    /// timeout instead of hanging the suite.
+    #[test]
+    fn record_descent_rejects_a_non_advancing_child_as_corruption() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let store_id = catalog("cat_00000000000000000000000000000001");
+        let (sender, receiver) = mpsc::channel();
+        std::thread::spawn(move || {
+            let store = TreeStore::from_backend(Box::new(
+                FaultingBackend::non_advancing_record_child(&store_id),
+            ));
+            let result = store.for_each_record(&store_id, 1, &mut |_| Ok(()));
+            let _ = sender.send(result);
+        });
+
+        match receiver.recv_timeout(Duration::from_secs(5)) {
+            Ok(result) => assert_corruption(result),
+            Err(_) => panic!("record descent did not terminate on a non-advancing child"),
+        }
+    }
+
+    /// `recover` proves a store is traversable by reading it through `verify_readable`.
+    /// Out-of-order data cells — the damage that stalls a record descent — must surface
+    /// as corruption so recover refuses rather than reporting a false repair.
+    #[test]
+    fn verify_readable_rejects_out_of_order_data_cells() {
+        let store_id = catalog("cat_00000000000000000000000000000001");
+        let store = TreeStore::from_backend(Box::new(FaultingBackend::out_of_order_data_cells(
+            &store_id,
+        )));
+
+        assert_corruption(store.verify_readable());
     }
 
     #[test]

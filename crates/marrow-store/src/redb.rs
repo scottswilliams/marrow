@@ -54,12 +54,33 @@ impl<'a> traversal::ScanEntry
 }
 
 pub(crate) struct RedbStore {
-    db: DatabaseHandle,
+    /// `Some` for the whole live handle; [`Drop`] takes it to close the database
+    /// under the panic backstop. redb flushes its allocator and region bitmaps as the
+    /// handle drops, and a store damaged in that metadata drives redb's close into a
+    /// slice-index panic; without the catch it would abort the process after a command
+    /// had already returned. The open transaction and pinned snapshot borrow the
+    /// database, so close drops them first.
+    db: Option<DatabaseHandle>,
     /// The live write transaction while one is open.
     txn: Option<OpenTransaction>,
     /// A pinned read transaction while a snapshot is held, so reads observe one
     /// consistent version even as later write transactions commit.
     read_view: Option<ReadTransaction>,
+}
+
+impl Drop for RedbStore {
+    fn drop(&mut self) {
+        // Close the database under the panic backstop: redb persists its allocator
+        // state as the handle drops, and a store corrupted in that metadata panics
+        // there. The catch keeps a damaged store fail-closed rather than aborting the
+        // process on teardown.
+        let _ = catch_traversal(|| {
+            self.txn = None;
+            self.read_view = None;
+            drop(self.db.take());
+            Ok(())
+        });
+    }
 }
 
 struct OpenTransaction {
@@ -213,16 +234,17 @@ fn catch_open<T>(open: impl FnOnce() -> Result<T, StoreError>) -> Result<T, Stor
     catch_store_panic(open, "the storage engine could not open the store file")
 }
 
-/// Run a store read or traversal under the panic backstop.
+/// Run a store traversal under the panic backstop.
 ///
-/// redb walks btree pages lazily as a command reads, gets, scans, or seeks. A
-/// clobbered interior or leaf page that opened cleanly drives that walk into a
-/// slice-index assertion or an `unreachable!()`, panicking deep inside redb. Reads
-/// run here so the panic becomes typed corruption: every access shape — point get,
-/// forward and reverse scan, seek, and snapshot pin — fails closed with a stable
-/// code instead of aborting the process on first traversal.
-fn catch_read<T>(read: impl FnOnce() -> Result<T, StoreError>) -> Result<T, StoreError> {
-    catch_store_panic(read, "the store contains a damaged page and cannot be read")
+/// redb walks btree pages lazily as a command reads, gets, scans, seeks, inserts,
+/// or removes. A clobbered interior or leaf page that opened cleanly drives that
+/// walk into a slice-index assertion or an `unreachable!()`, panicking deep inside
+/// redb. Both reads and writes run here so the panic becomes typed corruption:
+/// every access shape — point get, forward and reverse scan, seek, snapshot pin,
+/// and the insert/remove descent a write performs — fails closed with a stable code
+/// instead of aborting the process on first traversal.
+fn catch_traversal<T>(body: impl FnOnce() -> Result<T, StoreError>) -> Result<T, StoreError> {
+    catch_store_panic(body, "the store contains a damaged page and cannot be read")
 }
 
 /// Run `body` under a panic backstop that converts an escaping panic into
@@ -445,7 +467,7 @@ fn stamp_or_verify_format_version(
 /// A file with no meta table or no data table is not a complete Marrow store;
 /// this path never creates, so it cannot be a fresh one. Damage below the table
 /// roots is not probed here: redb walks those pages lazily, so it surfaces when a
-/// read traverses the tree, under [`catch_read`].
+/// read traverses the tree, under [`catch_traversal`].
 fn verify_existing_store_shape(db: &impl ReadableDatabase) -> Result<(), StoreError> {
     let read = db.begin_read().map_err(open_transaction_error)?;
     let recorded = match read.open_table(META) {
@@ -500,12 +522,28 @@ fn open_commit_error(error: redb::CommitError) -> StoreError {
     }
 }
 
-fn delete_key_batch<T>(table: &T, prefix: &[u8]) -> Result<Vec<Vec<u8>>, StoreError>
+/// Collect up to one batch of keys under `prefix`, starting strictly after `after`
+/// when one is given. Resuming from an excluded cursor — rather than re-opening the
+/// range at `prefix` each batch — bounds the iterator the same way the read scans do,
+/// so a damaged page that would spin redb's range walk on a re-entered region is
+/// stepped over by an exclusive seek rather than looped on.
+fn delete_key_batch<T>(
+    table: &T,
+    prefix: &[u8],
+    after: Option<&[u8]>,
+) -> Result<Vec<Vec<u8>>, StoreError>
 where
     T: ReadableTable<&'static [u8], &'static [u8]>,
 {
+    let lower = match after {
+        Some(after) => Bound::Excluded(after),
+        None => Bound::Included(prefix),
+    };
     let mut keys = Vec::new();
-    for entry in table.range::<&[u8]>(prefix..).map_err(io("delete"))? {
+    for entry in table
+        .range::<&[u8]>((lower, Bound::Unbounded))
+        .map_err(io("delete"))?
+    {
         let (key, _) = entry.map_err(io("delete"))?;
         let key = key.value();
         if !key.starts_with(prefix) {
@@ -638,7 +676,7 @@ macro_rules! read_view {
             }
             // Otherwise read the latest committed data.
             (None, None) => {
-                let read = $self.db.begin_read($op)?;
+                let read = $self.handle().begin_read($op)?;
                 let $table = read.open_table(TABLE).map_err(io($op))?;
                 $body
             }
@@ -660,11 +698,21 @@ impl RedbStore {
             stamp_or_verify_format_version(sync_parent_after_commit.as_deref(), &db)?;
             Ok(db)
         })?;
-        Ok(Self {
-            db: DatabaseHandle::ReadWrite(db),
+        Ok(Self::from_handle(DatabaseHandle::ReadWrite(db)))
+    }
+
+    fn from_handle(db: DatabaseHandle) -> Self {
+        Self {
+            db: Some(db),
             txn: None,
             read_view: None,
-        })
+        }
+    }
+
+    /// The open database handle. Always present while the store is live; only
+    /// [`Drop`] takes it to close the database under the panic backstop.
+    fn handle(&self) -> &DatabaseHandle {
+        self.db.as_ref().expect("store handle is live until drop")
     }
 
     /// Open an existing redb-backed store with write capability, without creating
@@ -676,11 +724,7 @@ impl RedbStore {
             verify_existing_store_shape(&db)?;
             Ok(db)
         })?;
-        Ok(Self {
-            db: DatabaseHandle::ReadWrite(db),
-            txn: None,
-            read_view: None,
-        })
+        Ok(Self::from_handle(DatabaseHandle::ReadWrite(db)))
     }
 
     /// Open an existing store read-only. Unlike [`open`](Self::open) it never
@@ -697,11 +741,7 @@ impl RedbStore {
             verify_existing_store_shape(&db)?;
             Ok(db)
         })?;
-        Ok(Self {
-            db: DatabaseHandle::ReadOnly(db),
-            txn: None,
-            read_view: None,
-        })
+        Ok(Self::from_handle(DatabaseHandle::ReadOnly(db)))
     }
 
     /// Require a writable handle and no pinned read snapshot. `on_snapshot` names
@@ -711,7 +751,7 @@ impl RedbStore {
         op: &'static str,
         on_snapshot: fn() -> StoreError,
     ) -> Result<(), StoreError> {
-        self.db.require_write_access(op)?;
+        self.handle().require_write_access(op)?;
         if self.read_view.is_some() {
             return Err(on_snapshot());
         }
@@ -726,23 +766,25 @@ impl RedbStore {
         op: &'static str,
         mutate: impl FnOnce(&mut Table<&[u8], &[u8]>) -> Result<(), StoreError>,
     ) -> Result<(), StoreError> {
-        let Some(txn) = &self.txn else {
-            let write = self.db.begin_write(op)?;
-            {
-                let mut table = write.open_table(TABLE).map_err(io(op))?;
-                mutate(&mut table)?;
-            }
-            return write.commit().map_err(io(op));
-        };
-        let mut table = txn.write.open_table(TABLE).map_err(io(op))?;
-        mutate(&mut table)?;
-        Ok(())
+        catch_traversal(|| {
+            let Some(txn) = &self.txn else {
+                let write = self.handle().begin_write(op)?;
+                {
+                    let mut table = write.open_table(TABLE).map_err(io(op))?;
+                    mutate(&mut table)?;
+                }
+                return write.commit().map_err(io(op));
+            };
+            let mut table = txn.write.open_table(TABLE).map_err(io(op))?;
+            mutate(&mut table)?;
+            Ok(())
+        })
     }
 }
 
 impl Backend for RedbStore {
     fn read(&self, key: &[u8]) -> Result<Option<Vec<u8>>, StoreError> {
-        catch_read(|| {
+        catch_traversal(|| {
             read_view!(self, "read", |table| Ok(table
                 .get(key)
                 .map_err(io("read"))?
@@ -751,7 +793,7 @@ impl Backend for RedbStore {
     }
 
     fn read_prefix(&self, key: &[u8], limit: usize) -> Result<Option<ValuePrefix>, StoreError> {
-        catch_read(|| {
+        catch_traversal(|| {
             read_view!(self, "read_prefix", |table| Ok(table
                 .get(key)
                 .map_err(io("read_prefix"))?
@@ -778,22 +820,26 @@ impl Backend for RedbStore {
         self.ensure_writable("delete", StoreError::delete_while_snapshot_pinned)?;
         self.mutate("delete", |table| {
             // Collect and remove keys in bounded batches so a large prefix subtree
-            // never materializes every key at once.
+            // never materializes every key at once, resuming each batch strictly
+            // after the prior one so the scan advances monotonically across the
+            // subtree rather than re-reading from its start.
+            let mut after: Option<Vec<u8>> = None;
             loop {
-                let keys = delete_key_batch(&*table, prefix)?;
-                if keys.is_empty() {
+                let keys = delete_key_batch(&*table, prefix, after.as_deref())?;
+                let Some(last) = keys.last().cloned() else {
                     break;
-                }
+                };
                 for key in keys {
                     table.remove(key.as_slice()).map_err(io("delete"))?;
                 }
+                after = Some(last);
             }
             Ok(())
         })
     }
 
     fn scan(&self, prefix: &[u8], limit: usize) -> Result<ScanPage, StoreError> {
-        catch_read(|| read_view!(self, "scan", |table| streamed_scan(&table, prefix, limit)))
+        catch_traversal(|| read_view!(self, "scan", |table| streamed_scan(&table, prefix, limit)))
     }
 
     fn scan_after(
@@ -802,7 +848,7 @@ impl Backend for RedbStore {
         cursor: &[u8],
         limit: usize,
     ) -> Result<ScanPage, StoreError> {
-        catch_read(|| {
+        catch_traversal(|| {
             read_view!(self, "scan_after", |table| {
                 streamed_scan_after(&table, prefix, cursor, limit)
             })
@@ -815,7 +861,7 @@ impl Backend for RedbStore {
         cursor: &[u8],
         limit: usize,
     ) -> Result<ScanPage, StoreError> {
-        catch_read(|| {
+        catch_traversal(|| {
             read_view!(self, "scan_before", |table| {
                 streamed_scan_before(&table, prefix, cursor, limit)
             })
@@ -829,7 +875,7 @@ impl Backend for RedbStore {
         upper: Option<&[u8]>,
         limit: usize,
     ) -> Result<ScanPage, StoreError> {
-        catch_read(|| {
+        catch_traversal(|| {
             read_view!(self, "scan_between", |table| {
                 streamed_scan_between(&table, prefix, lower, upper, limit)
             })
@@ -844,7 +890,7 @@ impl Backend for RedbStore {
         cursor: &[u8],
         limit: usize,
     ) -> Result<ScanPage, StoreError> {
-        catch_read(|| {
+        catch_traversal(|| {
             read_view!(self, "scan_between_after", |table| {
                 streamed_scan_between_after(&table, prefix, lower, upper, cursor, limit)
             })
@@ -859,7 +905,7 @@ impl Backend for RedbStore {
         cursor: &[u8],
         limit: usize,
     ) -> Result<ScanPage, StoreError> {
-        catch_read(|| {
+        catch_traversal(|| {
             read_view!(self, "scan_between_before", |table| {
                 streamed_scan_between_before(&table, prefix, lower, upper, cursor, limit)
             })
@@ -872,7 +918,7 @@ impl Backend for RedbStore {
             Some(txn) => txn.depth += 1,
             None => {
                 self.txn = Some(OpenTransaction {
-                    write: self.db.begin_write("begin")?,
+                    write: catch_traversal(|| self.handle().begin_write("begin"))?,
                     depth: 1,
                 });
             }
@@ -887,7 +933,7 @@ impl Backend for RedbStore {
         };
         txn.depth -= 1;
         if txn.depth == 0 {
-            txn.write.commit().map_err(io("commit"))?;
+            catch_traversal(|| txn.write.commit().map_err(io("commit")))?;
         } else {
             self.txn = Some(txn);
         }
@@ -899,7 +945,7 @@ impl Backend for RedbStore {
         let Some(txn) = self.txn.take() else {
             return Ok(());
         };
-        txn.write.abort().map_err(io("rollback"))?;
+        catch_traversal(|| txn.write.abort().map_err(io("rollback")))?;
         Ok(())
     }
 
@@ -915,7 +961,7 @@ impl Backend for RedbStore {
             return Err(StoreError::snapshot_already_pinned());
         }
         // A redb read transaction is a stable version unaffected by later writes.
-        self.read_view = Some(self.db.begin_read("snapshot")?);
+        self.read_view = Some(self.handle().begin_read("snapshot")?);
         Ok(())
     }
 
@@ -934,8 +980,8 @@ mod tests {
     use redb::{Database, ReadableDatabase, TableDefinition};
 
     use super::{
-        DELETE_BATCH_LIMIT, DatabaseHandle, FORMAT_VERSION, META, RedbStore, STORE_PANIC_HOOK,
-        TABLE, catch_open, catch_store_panic_locked, map_open_error,
+        DELETE_BATCH_LIMIT, FORMAT_VERSION, META, RedbStore, STORE_PANIC_HOOK, TABLE, catch_open,
+        catch_store_panic_locked, map_open_error,
     };
     use crate::backend::{Backend, StoreError};
     use crate::conformance;
@@ -1259,11 +1305,8 @@ mod tests {
 
         let mut store = RedbStore::open(&path).expect("open");
         Backend::write(&mut store, key, old.to_vec()).expect("seed old value");
-
-        let db = match store.db {
-            DatabaseHandle::ReadWrite(db) => db,
-            DatabaseHandle::ReadOnly(_) => panic!("expected a read-write redb handle"),
-        };
+        drop(store);
+        let db = Database::open(&path).expect("reopen raw redb handle");
 
         let read = db.begin_read().expect("begin read transaction");
         let table = read
@@ -1311,11 +1354,8 @@ mod tests {
         let dir = TempDir::new("marrow-store-redb-test").expect("temp dir");
         let path = dir.path().join("aborted-write.redb");
 
-        let store = RedbStore::open(&path).expect("open");
-        let db = match store.db {
-            DatabaseHandle::ReadWrite(db) => db,
-            DatabaseHandle::ReadOnly(_) => panic!("expected a read-write redb handle"),
-        };
+        drop(RedbStore::open(&path).expect("open"));
+        let db = Database::open(&path).expect("reopen raw redb handle");
 
         let seed = db.begin_write().expect("begin seed transaction");
         {
@@ -1374,11 +1414,8 @@ mod tests {
         let dir = TempDir::new("marrow-store-redb-test").expect("temp dir");
         let path = dir.path().join("ordered-bytes.redb");
 
-        let store = RedbStore::open(&path).expect("open");
-        let db = match store.db {
-            DatabaseHandle::ReadWrite(db) => db,
-            DatabaseHandle::ReadOnly(_) => panic!("expected a read-write redb handle"),
-        };
+        drop(RedbStore::open(&path).expect("open"));
+        let db = Database::open(&path).expect("reopen raw redb handle");
 
         let write = db.begin_write().expect("begin write transaction");
         {

@@ -114,6 +114,57 @@ pub(crate) fn marrow(args: &[&str]) -> Output {
         .expect("run marrow")
 }
 
+/// Run `marrow`, failing the test if it does not finish within `deadline`. A guard that
+/// makes a damaged store fail closed must terminate; a regression that reintroduces an
+/// infinite traversal would otherwise hang the whole suite, so the timeout converts that
+/// into a clear failure. The child's stdout and stderr are drained on their own threads
+/// so a command that produces a lot of output cannot block on a full pipe, which would
+/// otherwise masquerade as a traversal hang.
+pub(crate) fn marrow_bounded(args: &[&str], deadline: std::time::Duration) -> Output {
+    use std::io::Read;
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_marrow"))
+        .args(args)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn marrow");
+    let mut stdout = child.stdout.take().expect("capture stdout");
+    let mut stderr = child.stderr.take().expect("capture stderr");
+    let stdout_reader = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = stdout.read_to_end(&mut buf);
+        buf
+    });
+    let stderr_reader = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = stderr.read_to_end(&mut buf);
+        buf
+    });
+
+    let start = std::time::Instant::now();
+    loop {
+        if let Some(status) = child.try_wait().expect("poll marrow") {
+            let stdout = stdout_reader.join().expect("join stdout reader");
+            let stderr = stderr_reader.join().expect("join stderr reader");
+            return Output {
+                status,
+                stdout,
+                stderr,
+            };
+        }
+        if start.elapsed() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!(
+                "`marrow {}` did not finish within {deadline:?}",
+                args.join(" ")
+            );
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
 /// Invoke the `marrow` binary from a chosen working directory.
 pub(crate) fn marrow_in(cwd: impl AsRef<Path>, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_marrow"))

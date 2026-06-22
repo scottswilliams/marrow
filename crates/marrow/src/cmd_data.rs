@@ -390,15 +390,48 @@ fn data_recover(args: &[String]) -> ExitCode {
     if !path.exists() {
         return report_no_store_to_recover(&dir, Some(&path), format);
     }
-    match TreeStore::open_existing(&path) {
-        // Opening replays an interrupted commit but does not traverse the data tree;
-        // a store damaged below its table roots opens cleanly and only fails when
-        // read. Walk it here so recover reports corruption rather than a false repair.
-        Ok(store) => match store.verify_readable() {
-            Ok(()) => report_recovered_store(&dir, &path, format),
-            Err(error) => report_store_error(error, format),
-        },
+    match recover_store(&path) {
+        Ok(()) => report_recovered_store(&dir, &path, format),
         Err(error) => report_store_error(error, format),
+    }
+}
+
+/// Attempt a write-capable repair of the store at `path`, then prove the repair
+/// converged.
+///
+/// The write-capable open replays an interrupted commit but does not traverse the
+/// data tree; a store damaged below its table roots opens cleanly and only faults
+/// when read, so the first pass walks it to reject damage rather than bless it. The
+/// repaired handle is then dropped, letting redb persist whatever clean state the
+/// replay produced.
+///
+/// Some allocator- and slot-region damage replays into a handle that reads cleanly
+/// yet leaves the on-disk file still demanding recovery on the next open, so a
+/// single write-open pass would report success while every following read faulted
+/// and re-running recover never converged. To rule that out, recover finally proves
+/// the store is convergently readable the way the next command opens it: a fresh
+/// read-only open and traversal. If that fresh open or walk fails, the store was not
+/// made readable and recover reports corruption rather than a false repair.
+fn recover_store(path: &std::path::Path) -> Result<(), StoreError> {
+    {
+        let store = TreeStore::open_existing(path)?;
+        store.verify_readable()?;
+    }
+    let reopened = TreeStore::open_read_only(path).map_err(recovery_not_converged)?;
+    reopened.verify_readable().map_err(recovery_not_converged)
+}
+
+/// Map a fresh-open or fresh-traversal failure after a repair attempt to the
+/// corruption recover must report. A store still asking for recovery, or one whose
+/// re-open traversal faults, was not made readable: it is damaged beyond repair, not
+/// a clean recoverable store, so `store.recovery_required` would wrongly invite the
+/// developer to run recover again on a store recover cannot fix.
+fn recovery_not_converged(error: StoreError) -> StoreError {
+    match error {
+        StoreError::Corruption { .. } => error,
+        _ => StoreError::Corruption {
+            message: "the store could not be made readable by recovery".into(),
+        },
     }
 }
 
