@@ -774,6 +774,120 @@ fn surface_write_session_updates_existing_native_store() {
     assert_eq!(record.fields[0].value, Some(SurfaceValue::Int(7)));
 }
 
+/// Rewrite the committed `marrow.lock` so its epoch high-water sits one ahead of the local
+/// store's committed epoch, reproducing the state a teammate leaves behind when they commit an
+/// activation against the shared source tree that this checkout has not yet caught up to. The
+/// store stamp is untouched, so a check still binds the store's own accepted epoch and the
+/// per-program fence passes; only the committed lock signals the local store is behind.
+fn advance_committed_lock_one_epoch_ahead_of_store(root: &Path) {
+    let lock = marrow_check::read_committed_lock(root)
+        .expect("read committed lock")
+        .expect("committed lock");
+    let ahead = marrow_catalog::CatalogLock::new(
+        lock.entries,
+        lock.ledger,
+        lock.epoch_high_water + 1,
+        lock.source_digest,
+    )
+    .expect("ahead lock authority");
+    fs::write(
+        lock_path(root),
+        ahead.to_lock_json_pretty().expect("ahead lock renders"),
+    )
+    .expect("publish the ahead committed lock");
+}
+
+/// The store's durable identity facts a refused open must leave untouched: the minted UID and the
+/// commit stamp. A write-capable open touches redb's on-disk header to acquire its handle, but a
+/// fenced refusal must commit no Marrow write, so these logical facts are the byte-identity that
+/// matters.
+fn store_commit_identity(
+    store_path: &Path,
+) -> (Option<String>, Option<marrow_store::tree::CommitMetadata>) {
+    let store = TreeStore::open_read_only(store_path).expect("open store for identity read");
+    let uid = store
+        .read_store_uid()
+        .expect("read store uid")
+        .map(|uid| uid.as_str().to_string());
+    let commit = store.read_commit_metadata().expect("read commit metadata");
+    (uid, commit)
+}
+
+fn seed_surface_counter_store(root: &Path) {
+    write_native_config(root);
+    write_temp_source(root, Path::new("src/shelf.mw"), surface_counter_source());
+    let seed = ProjectSession::open(root, ProjectOpen::run().with_entry_override("shelf::seed"))
+        .expect("open seed session");
+    assert_eq!(invoke(&seed, "shelf::seed"), "");
+    drop(seed);
+}
+
+#[test]
+fn surface_write_session_fails_closed_when_store_is_behind_the_committed_lock() {
+    // A binary must not commit a write to a store it is not admitted against. Run and evolve apply
+    // already fail closed when the local store lags an ahead committed lock high-water; the surface
+    // write path must mirror them, leaving the store byte-identical rather than committing a write
+    // against an epoch a teammate has already advanced past.
+    let root = TempDir::new("marrow-run-surface-write-behind-lock").expect("create project");
+    seed_surface_counter_store(root.path());
+    advance_committed_lock_one_epoch_ahead_of_store(root.path());
+
+    let store_path = root.path().join(".data").join("marrow.redb");
+    let before = store_commit_identity(&store_path);
+
+    let error = ProjectSurfaceSession::open(root.path())
+        .expect_err("surface write must fail closed when the store is behind the committed lock");
+    assert_eq!(error.code(), "run.store_behind");
+
+    assert_eq!(
+        before,
+        store_commit_identity(&store_path),
+        "a refused surface write open must commit no write: no re-stamp, no new commit",
+    );
+}
+
+#[test]
+fn surface_read_session_admits_a_store_behind_the_committed_lock() {
+    // A read cannot corrupt the store, so a behind read-only surface is admitted: the lag is a
+    // local checkout that has not caught up, and refusing reads would needlessly block inspection
+    // of data that is still valid at its own epoch. Only the write path fails closed.
+    let root = TempDir::new("marrow-run-surface-read-behind-lock").expect("create project");
+    seed_surface_counter_store(root.path());
+    advance_committed_lock_one_epoch_ahead_of_store(root.path());
+
+    ProjectSurfaceReadSession::open(root.path())
+        .expect("surface read must admit a store behind the committed lock");
+}
+
+#[test]
+fn surface_write_session_admits_a_store_at_the_committed_lock_high_water() {
+    // The fence refuses only a behind store; a store at (or ahead of) the committed lock high-water
+    // is legitimately admitted and commits its write.
+    let root = TempDir::new("marrow-run-surface-write-at-lock").expect("create project");
+    seed_surface_counter_store(root.path());
+
+    let session = ProjectSurfaceSession::open(root.path())
+        .expect("surface write must admit a store at the committed lock high-water");
+    let before = session.store_stamp().expect("store stamp before update");
+    let update_tag = update_operation_tag(session.program(), "Counters");
+    session
+        .admit_update_by_operation_tag(&update_tag)
+        .expect("admit point update")
+        .update_point(
+            &[SavedKey::Int(1)],
+            &[SurfaceUpdateField {
+                catalog_id: update_field_catalog_id(session.program(), "Counters", "value"),
+                value: SurfaceValue::Int(7),
+            }],
+        )
+        .expect("execute point update");
+    let after = session.store_stamp().expect("store stamp after update");
+    assert!(
+        after.commit_id > before.commit_id,
+        "an admitted surface write advances the store commit",
+    );
+}
+
 #[test]
 fn surface_write_session_requires_existing_accepted_native_store_without_creating_it() {
     let root = TempDir::new("marrow-run-surface-write-session-empty").expect("create project");

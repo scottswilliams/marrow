@@ -1187,6 +1187,16 @@ fn open_surface_session(
     if store.store.read_store_uid()?.is_none() || store.store.read_commit_metadata()?.is_none() {
         return Err(ProjectSessionError::DurableStoreRequired);
     }
+    // A write-capable open must not seize a store the binary is not admitted against. When the
+    // committed lock records an epoch high-water a teammate already advanced past, the local store
+    // is behind that committed activation, so a surface write would commit against an epoch the
+    // shared source tree has left behind. Fail closed here exactly as run and evolve apply do; a
+    // read cannot corrupt the store, so a behind read-only open is admitted at its own epoch.
+    if matches!(access, SurfaceStoreAccess::Write)
+        && let Some(behind) = store_behind_committed_lock(&root, &store.store)?
+    {
+        return Err(ProjectSessionError::Fence(behind));
+    }
     // The fence owns the no-accepted-epoch decision for both open paths: a stamped store opened
     // by a program with no accepted epoch fails closed with `run.durable_store_required`. Once it
     // passes, the program carries an accepted epoch and digest to drift-check against.
