@@ -222,6 +222,98 @@ fn worked_store_rekey_copies_through_non_int_identity_constructor() {
 }
 
 #[test]
+fn populated_store_key_shape_change_fences_preview_apply_and_run() {
+    const REKEYED_SAME_STORE_SOURCE: &str = "module books\n\
+         resource Book\n\
+         \x20   required title: string\n\
+         store ^books(slug: string): Book\n\
+         pub fn noop()\n\
+         \x20   print(\"entry executed\")\n";
+
+    let root = native_books_project(
+        "evolve-unhappy-store-key-shape",
+        STORE_REKEY_BASELINE_SOURCE,
+    );
+    let dir = root.to_str().unwrap();
+
+    let seed = marrow(&["run", "--entry", "books::seed", dir]);
+    assert_eq!(seed.status.code(), Some(0), "{seed:?}");
+    let old_store_id = accepted_catalog_entry_id(&root, "books::^books");
+    let old_title_id = accepted_catalog_entry_id(&root, "books::Book::title");
+    let old_title_bytes = encode_value(&Scalar::Str("Dune".into())).expect("encode title");
+    assert_eq!(
+        read_member_bytes(&root, "books::^books", &[SavedKey::Int(1)], &old_title_id),
+        Some(old_title_bytes.clone()),
+        "baseline stores the populated title under the int-keyed identity"
+    );
+    let old_epoch = store_epoch(&root);
+    assert_eq!(old_epoch, Some(1));
+
+    write(&root, "src/books.mw", REKEYED_SAME_STORE_SOURCE);
+    let preview = marrow(&["evolve", "preview", "--format", "json", dir]);
+    assert_eq!(preview.status.code(), Some(1), "{preview:?}");
+    let preview_json = support::json(preview.stdout);
+    assert_eq!(preview_json["status"], serde_json::json!("blocked"));
+    let blocking = preview_json["blocking"]
+        .as_array()
+        .expect("blocking reports");
+    assert!(
+        blocking.iter().any(|report| {
+            report["code"] == serde_json::json!("evolve.repair_required")
+                && report["data"]["catalog_id"] == serde_json::json!(old_store_id)
+        }),
+        "preview should report repair required for the re-keyed populated store: {preview_json:#?}"
+    );
+
+    let apply = marrow(&["evolve", "apply", "--format", "json", dir]);
+    assert_eq!(apply.status.code(), Some(1), "{apply:?}");
+    let apply_json = support::json(apply.stdout);
+    assert_eq!(
+        apply_json["code"],
+        serde_json::json!("evolve.repair_required")
+    );
+    assert_eq!(
+        apply_json["data"]["catalog_id"],
+        serde_json::json!(old_store_id)
+    );
+    assert_eq!(
+        store_epoch(&root),
+        old_epoch,
+        "refused apply does not advance the durable store epoch"
+    );
+    assert!(record_exists(&root, "books::^books", &[SavedKey::Int(1)]));
+    assert_eq!(
+        read_member_bytes(&root, "books::^books", &[SavedKey::Int(1)], &old_title_id),
+        Some(old_title_bytes.clone()),
+        "refused apply leaves the old int-keyed member bytes in place"
+    );
+
+    let run = marrow(&["run", "--entry", "books::noop", dir]);
+    assert_eq!(run.status.code(), Some(1), "{run:?}");
+    let stderr = String::from_utf8(run.stderr).expect("stderr utf8");
+    assert!(
+        stderr.contains("run.schema_drift"),
+        "the run fences on schema drift before executing the entry: {stderr}"
+    );
+    let stdout = String::from_utf8(run.stdout).expect("stdout utf8");
+    assert!(
+        !stdout.contains("entry executed"),
+        "the schema drift fence must stop before entry output: {stdout}"
+    );
+    assert_eq!(
+        store_epoch(&root),
+        old_epoch,
+        "fenced run does not advance the durable store epoch"
+    );
+    assert!(record_exists(&root, "books::^books", &[SavedKey::Int(1)]));
+    assert_eq!(
+        read_member_bytes(&root, "books::^books", &[SavedKey::Int(1)], &old_title_id),
+        Some(old_title_bytes),
+        "fenced run leaves the old int-keyed member bytes in place"
+    );
+}
+
+#[test]
 fn worked_orphan_repair_is_bracketed_by_integrity() {
     let root = native_books_project("evolve-unhappy-orphan-repair", ORPHAN_REPAIR_SOURCE);
     let dir = root.to_str().unwrap();
