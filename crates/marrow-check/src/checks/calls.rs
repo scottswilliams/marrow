@@ -216,6 +216,7 @@ fn check_builtin_call(
         check_args_against(
             &label,
             &params,
+            args,
             arg_types,
             env.span,
             env.file,
@@ -438,9 +439,10 @@ fn check_user_function_call(
             }
             check_one_arg(
                 &callee,
+                &ArgParam::Named(&param.name),
                 &param.ty,
                 arg_type,
-                env.span,
+                arg.value.span(),
                 env.file,
                 env.diagnostics,
             );
@@ -634,7 +636,15 @@ fn check_named_field_args<F>(
         }
         supplied[index] = true;
         if let Some(expected) = expected_type(index) {
-            check_one_arg(label, &expected, arg_type, span, file, diagnostics);
+            check_one_arg(
+                label,
+                &ArgParam::Named(name),
+                &expected,
+                arg_type,
+                arg.value.span(),
+                file,
+                diagnostics,
+            );
         }
     }
 
@@ -1046,12 +1056,33 @@ fn constructor_field_type(
     crate::enums::resolve_schema_type_for_module(ty, program, module)
 }
 
+/// Identifies the argument an [`check_one_arg`] message is about: a named
+/// parameter when one is known (user functions, constructor fields) or a 1-based
+/// position otherwise (positional std helpers). Rendered as `parameter \`name\``
+/// or `argument N` so two failures on one line are distinguishable.
+pub(crate) enum ArgParam<'a> {
+    Named(&'a str),
+    Position(usize),
+}
+
+impl ArgParam<'_> {
+    fn describe(&self) -> String {
+        match self {
+            ArgParam::Named(name) => format!("parameter `{name}`"),
+            ArgParam::Position(index) => format!("argument {}", index + 1),
+        }
+    }
+}
+
 /// Check one positional/named argument against the type its parameter expects: a
 /// known-but-different type is a `check.call_argument`; an `Unknown` argument for a
 /// concrete parameter is a `check.untyped_value` (strict typing). Shared by the
-/// user-function and std argument loops; `label` names the callee for the message.
+/// user-function and std argument loops; `label` names the callee, `param` names
+/// the failing parameter or position, and `span` locates the argument expression so
+/// the diagnostic points at the offending argument rather than the call token.
 pub(crate) fn check_one_arg(
     label: &str,
+    param: &ArgParam<'_>,
     parameter: &MarrowType,
     arg_type: &MarrowType,
     span: SourceSpan,
@@ -1068,7 +1099,10 @@ pub(crate) fn check_one_arg(
                 call_diagnostic(
                     file,
                     span,
-                    format!("argument to `{label}` expects `{expected}`, but found `{found}`"),
+                    format!(
+                        "{} to `{label}` expects `{expected}`, but found `{found}`",
+                        param.describe(),
+                    ),
                 )
                 .with_payload(DiagnosticPayload::TypeMismatch {
                     expected: parameter.clone(),
@@ -1084,7 +1118,8 @@ pub(crate) fn check_one_arg(
                 file,
                 span,
                 format!(
-                    "argument to `{label}` has no known type, but `{}` is expected; convert it first",
+                    "{} to `{label}` has no known type, but `{}` is expected; convert it first",
+                    param.describe(),
                     marrow_type_name(parameter),
                 ),
             ));
@@ -1176,6 +1211,7 @@ fn reject_saved_collection_by_value(
 pub(crate) fn check_args_against(
     label: &str,
     params: &[Option<MarrowType>],
+    args: &[marrow_syntax::Argument],
     arg_types: &[MarrowType],
     span: SourceSpan,
     file: &Path,
@@ -1192,9 +1228,20 @@ pub(crate) fn check_args_against(
             ),
         ));
     }
-    for (parameter, arg_type) in params.iter().zip(arg_types) {
+    for (index, (parameter, arg_type)) in params.iter().zip(arg_types).enumerate() {
         if let Some(parameter) = parameter {
-            check_one_arg(label, parameter, arg_type, span, file, diagnostics);
+            // An argument-count mismatch is reported above; the per-argument span
+            // falls back to the call token when this slot has no argument.
+            let arg_span = args.get(index).map_or(span, |arg| arg.value.span());
+            check_one_arg(
+                label,
+                &ArgParam::Position(index),
+                parameter,
+                arg_type,
+                arg_span,
+                file,
+                diagnostics,
+            );
         }
     }
 }

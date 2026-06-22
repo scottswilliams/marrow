@@ -179,6 +179,48 @@ fn a_resource_constructor_checks_field_arguments() {
 }
 
 #[test]
+fn a_wrong_user_function_argument_points_at_the_argument_and_names_the_parameter() {
+    // The diagnostic must span the offending argument expression (the string
+    // literal at column 13), not the call token, and the message must name the
+    // parameter it failed against so two errors on one line are distinguishable.
+    let found = check_module(
+        "user-call-arg-span",
+        "module m\n\
+         fn t(a: int, b: int, c: int): int\n    return a\n\
+         fn caller(): int\n    return t(1, 2, \"wrong\")\n",
+        "check.call_argument",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+    assert_eq!(found[0].span.line, 5, "{found:#?}");
+    // `    return t(1, 2, "wrong")` — the offending literal opens at column 20,
+    // not the call token `t` at column 12.
+    assert_eq!(found[0].span.column, 20, "{found:#?}");
+    assert!(
+        found[0].message.contains("`c`"),
+        "message should name parameter `c`: {found:#?}"
+    );
+}
+
+#[test]
+fn each_wrong_std_helper_argument_points_at_its_own_argument() {
+    // The std helper argument loop shares the same single-span defect: each wrong
+    // positional argument must point at its own expression, not the call token.
+    let found = check_module(
+        "std-call-arg-span",
+        "module m\n\
+         fn caller(): bool\n    return std::text::contains(\"a\", 3)\n",
+        "check.call_argument",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+    assert_eq!(found[0].span.line, 3, "{found:#?}");
+    // The mismatched `3` sits well past the `text::contains` call token.
+    assert!(
+        found[0].span.column > 12,
+        "span should point past the call token: {found:#?}"
+    );
+}
+
+#[test]
 fn resource_constructor_fields_resolve_resource_types_by_declaring_module() {
     let report = check_module_report(
         "ctor-resource-field-owner",
