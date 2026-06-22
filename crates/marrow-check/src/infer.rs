@@ -1306,13 +1306,15 @@ fn enum_member_value_type(
             module: resolved.module,
             name: enum_name.clone(),
         },
-        MemberPathResolution::Ambiguous(paths) => {
+        MemberPathResolution::Ambiguous(matches) => {
             diagnostics.push(ambiguous_member_value_diagnostic(
                 file,
                 span,
                 enum_name,
                 resolved.member_label,
-                &paths,
+                resolved.schema,
+                &matches,
+                true,
             ));
             MarrowType::Invalid
         }

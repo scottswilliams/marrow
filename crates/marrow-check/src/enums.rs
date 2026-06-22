@@ -395,7 +395,16 @@ fn check_match_coverage(
                 ));
                 continue;
             }
-            MemberPathResolution::Ambiguous(paths) => {
+            MemberPathResolution::Ambiguous(matches) => {
+                // Arms are scrutinee-relative, so a candidate keeps its bare member
+                // path. The candidate that spells the rejected arm itself is dropped,
+                // so a category sharing its descendant's name offers only the
+                // resolvable deeper path rather than echoing the ambiguous arm.
+                let candidates: Vec<String> = matches
+                    .iter()
+                    .map(|&ordinal| schema.member_path(ordinal).join("::"))
+                    .filter(|candidate| *candidate != arm_label)
+                    .collect();
                 env.diagnostics.push(
                     CheckDiagnostic::error(
                         CHECK_AMBIGUOUS_MATCH_ARM,
@@ -403,13 +412,13 @@ fn check_match_coverage(
                         arm.span,
                         format!(
                             "`{arm_label}` names more than one member of `{enum_name}`; qualify as {}",
-                            join_or(&paths)
+                            join_or(&candidates)
                         ),
                     )
                     .with_payload(DiagnosticPayload::Enum(EnumDiagnostic::AmbiguousMatchArm {
                         enum_name: enum_name.to_string(),
                         label: arm_label,
-                        candidates: paths,
+                        candidates,
                     })),
                 );
                 continue;
@@ -772,29 +781,53 @@ pub(crate) fn join_or(paths: &[String]) -> String {
     }
 }
 
-/// Build the `check.ambiguous_member` diagnostic for a bare duplicated leaf reached
-/// in a value or `is`-RHS position. There the leaf is named by its full enum-qualified
-/// path, so the candidates carry the enum prefix (`Cat::tiger::paw`) — the spelling the
-/// checker confirms, unlike the scrutinee-relative `tiger::paw` that only resolves in a
-/// `match` arm. `relative_paths` are the disambiguating member paths the schema walk
-/// returns (`tiger::paw`, `lion::paw`); each gains the prefix here.
+/// Build the `check.ambiguous_member` diagnostic for a bare duplicated name reached
+/// in a value or `is`-RHS position. There a member is named by its full enum-qualified
+/// path, so each candidate carries the enum prefix (`Cat::tiger::paw`) — the spelling
+/// the checker confirms, unlike the scrutinee-relative `tiger::paw` that only resolves
+/// in a `match` arm. `matches` are the traversal indices the ambiguous walk returned.
+///
+/// When `value_position`, a category candidate is dropped: a category cannot be
+/// selected as a value, so only its selectable descendants are real fixes. The
+/// candidate that spells the rejected input itself is always dropped, so a category
+/// sharing its descendant leaf's name never offers a dead-end requalification. When
+/// that leaves the value hint empty — every match is an unselectable category, or the
+/// only selectable match spells the rejected input — it descends to the selectable
+/// leaves under the matches, again excluding the rejected spelling, so the hint is the
+/// real concrete values the rejected name groups and never the dead-end input itself.
 pub(crate) fn ambiguous_member_value_diagnostic(
     file: &Path,
     span: SourceSpan,
     enum_name: &str,
     label: String,
-    relative_paths: &[String],
+    schema: &marrow_schema::EnumSchema,
+    matches: &[usize],
+    value_position: bool,
 ) -> CheckDiagnostic {
-    let candidates: Vec<String> = relative_paths
+    let rejected = format!("{enum_name}::{label}");
+    let qualify =
+        |ordinal: usize| format!("{enum_name}::{}", schema.member_path(ordinal).join("::"));
+    let mut candidates: Vec<String> = matches
         .iter()
-        .map(|path| format!("{enum_name}::{path}"))
+        .filter(|&&ordinal| !(value_position && schema.is_category(ordinal)))
+        .map(|&ordinal| qualify(ordinal))
+        .filter(|candidate| *candidate != rejected)
         .collect();
+    if candidates.is_empty() && value_position {
+        candidates = matches
+            .iter()
+            .flat_map(|&category| schema.subtree_ordinals(category))
+            .filter(|&ordinal| schema.is_selectable_leaf(ordinal))
+            .map(qualify)
+            .filter(|candidate| *candidate != rejected)
+            .collect();
+    }
     CheckDiagnostic::error(
         CHECK_AMBIGUOUS_MEMBER,
         file,
         span,
         format!(
-            "`{enum_name}::{label}` names more than one member of `{enum_name}`; qualify as {}",
+            "`{rejected}` names more than one member of `{enum_name}`; qualify as {}",
             join_or(&candidates)
         ),
     )
@@ -915,13 +948,15 @@ pub(crate) fn check_is(input: IsCheck<'_>) -> MarrowType {
     // rejected with the qualifying paths — the symmetric fix to the value footgun.
     match resolved.member {
         MemberPathResolution::Found(_) => {}
-        MemberPathResolution::Ambiguous(paths) => {
+        MemberPathResolution::Ambiguous(matches) => {
             diagnostics.push(ambiguous_member_value_diagnostic(
                 file,
                 right_span,
                 left_name,
                 resolved.member_label,
-                &paths,
+                resolved.schema,
+                &matches,
+                false,
             ))
         }
         MemberPathResolution::NotFound => diagnostics.push(CheckDiagnostic::error(

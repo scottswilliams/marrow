@@ -168,6 +168,37 @@ fn assignment_between_same_named_enums_reports_qualified_payload() {
     );
 }
 
+/// A `return` mismatch between two same-named enums from different modules qualifies
+/// each side as `module::Name`, never the ambiguous bare `Status` on both sides.
+#[test]
+fn return_between_same_named_enums_qualifies_each_side() {
+    let root = temp_project("enum-same-name-return-message", |root| {
+        write(root, "src/a.mw", "module a\npub enum Status\n    active\n");
+        write(root, "src/b.mw", "module b\npub enum Status\n    active\n");
+        write(
+            root,
+            "src/app.mw",
+            "module app\nuse a\nuse b\n\
+             fn pick(s: a::Status): b::Status\n    return s\n",
+        );
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+    let found = with_code(&report, "check.return_type");
+    assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
+    assert!(
+        found[0].message.contains("returns `b::Status`")
+            && found[0].message.contains("this value is `a::Status`"),
+        "{}",
+        found[0].message
+    );
+    assert_only_mismatch(
+        &found,
+        |d| &d.payload,
+        enum_type("b", "Status"),
+        enum_type("a", "Status"),
+    );
+}
+
 #[test]
 fn a_nonexhaustive_match_over_a_qualified_enum_scrutinee_is_a_check_error() {
     // `s: b::Status` is a qualified enum annotation. The match over it must resolve

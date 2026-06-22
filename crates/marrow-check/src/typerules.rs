@@ -310,8 +310,9 @@ pub(crate) fn binary_symbol(op: marrow_syntax::BinaryOp) -> &'static str {
     }
 }
 
-/// The source spelling of a type for a diagnostic message, or `value` for a type
-/// with no surface spelling.
+/// The source spelling of a type for a diagnostic message. The poison `Invalid`
+/// type has no surface spelling and renders as `value`; it normally suppresses the
+/// cascades that would surface it.
 pub(crate) fn marrow_type_name(ty: &MarrowType) -> String {
     match ty {
         MarrowType::Primitive(scalar) => scalar.name().to_string(),
@@ -323,7 +324,7 @@ pub(crate) fn marrow_type_name(ty: &MarrowType) -> String {
         MarrowType::Sequence(element) => format!("sequence[{}]", marrow_type_name(element)),
         MarrowType::LocalTree { value, .. } => format!("tree[{}]", marrow_type_name(value)),
         MarrowType::Invalid => "value".to_string(),
-        MarrowType::Unknown => "value".to_string(),
+        MarrowType::Unknown => "unknown".to_string(),
     }
 }
 

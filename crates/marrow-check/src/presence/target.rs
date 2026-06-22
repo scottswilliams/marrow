@@ -194,6 +194,14 @@ pub(super) fn read_target_with_scope(
         let mut target = args
             .first()
             .and_then(|arg| read_target_with_scope(program, &arg.value, scope))?;
+        // A neighbor seek over a composite-identity record is statically unsupported
+        // and already rejected by the type pass. Recording its presence proof here
+        // would only stack a second diagnostic on the same mistake.
+        if let ReadPlace::Saved { root, .. } = &target.place
+            && crate::checks::composite_identity(program, root)
+        {
+            return None;
+        }
         let key = expression_key(callee, scope);
         target.keys.insert(0, key.text);
         target.key_types.insert(0, key.ty);

@@ -378,6 +378,44 @@ fn next_over_a_composite_identity_record_is_flagged() {
     );
 }
 
+/// A rejected `next` over a composite-identity record is the one error. Reading its
+/// result must not cascade a second diagnostic: the unsupported neighbor poisons its
+/// result type, so no `check.untyped_value` or `check.bare_maybe_present_read` stacks.
+#[test]
+fn rejected_composite_neighbor_does_not_cascade() {
+    let root = temp_project("program-next-composite-no-cascade", |root| {
+        write(
+            root,
+            "src/shelf/enroll.mw",
+            "module shelf::enroll\n\
+             resource Enrollment\n\
+             \x20   required grade: string\n\
+             store ^enrollments(studentId: string, courseId: string): Enrollment\n\
+             fn step(s: string, c: string): string\n\
+             \x20   const n = next(^enrollments(s, c))\n\
+             \x20   return n.grade\n",
+        );
+    });
+    let (report, _) = check_project(&root, &config()).expect("check");
+
+    assert_eq!(
+        with_code(&report, CHECK_NEIGHBOR_UNSUPPORTED).len(),
+        1,
+        "{:#?}",
+        report.diagnostics
+    );
+    assert!(
+        with_code(&report, "check.untyped_value").is_empty(),
+        "{:#?}",
+        report.diagnostics
+    );
+    assert!(
+        with_code(&report, "check.bare_maybe_present_read").is_empty(),
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
 #[test]
 fn next_over_a_bare_composite_identity_root_is_flagged() {
     let root = temp_project("program-next-bare-composite", |root| {

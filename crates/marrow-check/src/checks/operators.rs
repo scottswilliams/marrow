@@ -120,22 +120,21 @@ pub(crate) fn check_return_type(
 ) {
     match type_compatible(return_type, value_type) {
         Some(true) => {}
-        Some(false) => diagnostics.push(
-            CheckDiagnostic::error(
-                CHECK_RETURN_TYPE,
-                file,
-                span,
-                format!(
-                    "function returns `{}`, but this value is `{}`",
-                    marrow_type_name(return_type),
-                    marrow_type_name(value_type),
-                ),
-            )
-            .with_payload(DiagnosticPayload::TypeMismatch {
-                expected: return_type.clone(),
-                found: value_type.clone(),
-            }),
-        ),
+        Some(false) => {
+            let (expected_name, found_name) = mismatch_display(return_type, value_type);
+            diagnostics.push(
+                CheckDiagnostic::error(
+                    CHECK_RETURN_TYPE,
+                    file,
+                    span,
+                    format!("function returns `{expected_name}`, but this value is `{found_name}`"),
+                )
+                .with_payload(DiagnosticPayload::TypeMismatch {
+                    expected: return_type.clone(),
+                    found: value_type.clone(),
+                }),
+            );
+        }
         // Strict typing: an untyped value returned where a convertible type is
         // declared must be converted first. A return type with no conversion boundary
         // (void, a whole resource, a sequence) places no such constraint.

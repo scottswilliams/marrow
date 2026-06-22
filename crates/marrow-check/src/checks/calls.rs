@@ -1564,7 +1564,9 @@ pub(crate) fn composite_identity(program: &CheckedProgram, root: &str) -> bool {
 }
 
 /// Report a `check.neighbor_unsupported` error for a statically-unnavigable
-/// `next`/`prev` shape and leave the result `Unknown`.
+/// `next`/`prev` shape and poison the result. The poison `Invalid` type (not the
+/// untyped `Unknown`) keeps the rejected read from cascading a second
+/// `untyped_value` or `bare_maybe_present_read` on the same mistake.
 pub(crate) fn neighbor_unsupported(
     which: &str,
     shape: &str,
@@ -1578,7 +1580,7 @@ pub(crate) fn neighbor_unsupported(
         span,
         format!("`{which}` cannot navigate {shape}"),
     ));
-    MarrowType::Unknown
+    MarrowType::Invalid
 }
 
 /// Report a `check.call_argument` arity diagnostic when a fixed-arity builtin is

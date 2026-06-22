@@ -32,9 +32,10 @@ pub enum MemberPathResolution {
     /// The path names exactly this member traversal index.
     Found(usize),
     /// A single bare name appears under more than one parent, so it cannot pick
-    /// one member. Carries the full disambiguating paths of every match
-    /// (`["tiger::paw", "lion::paw"]`), in pre-order, for the diagnostic.
-    Ambiguous(Vec<String>),
+    /// one member. Carries the traversal index of every match, in pre-order, so a
+    /// caller can render the disambiguating paths and apply its own position rule
+    /// (a value position excludes a category candidate; an `is` operand admits one).
+    Ambiguous(Vec<usize>),
     /// No member the path could walk to. Either the first segment is not a member
     /// of the enum, or a later segment is not a child of the member before it.
     NotFound,
@@ -65,12 +66,7 @@ impl EnumSchema {
             return match matches.as_slice() {
                 [] => MemberPathResolution::NotFound,
                 [ordinal] => MemberPathResolution::Found(*ordinal),
-                _ => MemberPathResolution::Ambiguous(
-                    matches
-                        .iter()
-                        .map(|&ordinal| self.member_path(ordinal).join("::"))
-                        .collect(),
-                ),
+                _ => MemberPathResolution::Ambiguous(matches),
             };
         }
         // A qualified path starts at the top level (`tiger` in `tiger::paw`) and

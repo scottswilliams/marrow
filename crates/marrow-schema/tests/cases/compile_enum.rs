@@ -214,12 +214,18 @@ fn walk_member_path_resolves_a_qualified_path_to_a_distinct_member() {
 }
 
 /// A bare name shared by members under different parents is ambiguous, and the
-/// resolution names the qualifying paths so the diagnostic can quote them.
+/// resolution names the matching members in pre-order so the diagnostic can render
+/// their qualifying paths.
 #[test]
 fn walk_member_path_reports_a_duplicated_bare_name_as_ambiguous() {
     let schema = duplicate_paw_enum();
     match schema.walk_member_path(&["paw"]) {
-        marrow_schema::MemberPathResolution::Ambiguous(paths) => {
+        marrow_schema::MemberPathResolution::Ambiguous(ordinals) => {
+            assert_eq!(ordinals, vec![2, 4]);
+            let paths: Vec<String> = ordinals
+                .iter()
+                .map(|&ordinal| schema.member_path(ordinal).join("::"))
+                .collect();
             assert_eq!(
                 paths,
                 vec!["tiger::paw".to_string(), "lion::paw".to_string()]

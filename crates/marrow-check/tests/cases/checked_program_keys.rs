@@ -123,6 +123,38 @@ fn unknown_key_reentry_is_rejected() {
     );
 }
 
+/// An `unknown`-typed key argument is named by its spec spelling `unknown`, not the
+/// internal poison token `value`, so the message reads "this value is `unknown`".
+#[test]
+fn unknown_key_argument_is_named_unknown_not_value() {
+    let root = temp_project("program-key-unknown-spelling", |root| {
+        write(
+            root,
+            "src/shelf/lib.mw",
+            "module shelf::lib\n\
+             resource Book\n\
+             \x20   required title: string\n\
+             store ^books(id: int): Book\n\
+             fn f(k: unknown): string\n\
+             \x20   return ^books(k).title\n",
+        );
+    });
+    let (report, _) = check_project(&root, &config()).expect("check");
+
+    let key_type = with_code(&report, CHECK_KEY_TYPE);
+    assert_eq!(key_type.len(), 1, "{:#?}", report.diagnostics);
+    assert!(
+        key_type[0].message.contains("this value is `unknown`"),
+        "{}",
+        key_type[0].message
+    );
+    assert!(
+        !key_type[0].message.contains("`value`"),
+        "{}",
+        key_type[0].message
+    );
+}
+
 #[test]
 fn explicit_identity_constructor_typechecks_against_store_keys() {
     let root = temp_project("program-id-constructor", |root| {

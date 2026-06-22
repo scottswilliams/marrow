@@ -390,6 +390,133 @@ fn a_bare_duplicated_member_in_value_position_is_ambiguous() {
     );
 }
 
+/// An enum where a category `x` and a leaf `x` under it share the name. Pre-order:
+/// x(0, category), y(1), x(2).
+fn category_leaf_name_clash_enum() -> &'static str {
+    "module m\n\
+     enum E\n\
+     \x20   category x\n        y\n        x\n"
+}
+
+#[test]
+fn a_category_sharing_a_leaf_name_offers_only_the_selectable_leaf() {
+    // `E::x` names both the category `x` (path `x`) and the leaf `x` under it
+    // (`x::x`). Echoing `E::x` as a fix is a dead-end loop and the category is
+    // unselectable in value position, so the only offered qualification is the leaf.
+    let errors = check_module(
+        "category-leaf-clash-value",
+        &format!(
+            "{}\
+             fn a(): E\n    return E::x\n",
+            category_leaf_name_clash_enum()
+        ),
+        "check.ambiguous_member",
+    );
+    assert_eq!(errors.len(), 1, "{errors:#?}");
+    assert_enum_payload(
+        &errors[0],
+        EnumDiagnostic::AmbiguousMember {
+            enum_name: "E".into(),
+            label: "x".into(),
+            candidates: vec!["E::x::x".into()],
+        },
+    );
+    assert!(
+        errors[0].message.contains("`E::x::x`") && !errors[0].message.contains("or `E::x`"),
+        "{}",
+        errors[0].message
+    );
+}
+
+/// An enum where a name (`p`) labels a category under two distinct parents and no
+/// selectable leaf. Pre-order: a(0, cat), p(1, cat), q(2), b(3, cat), p(4, cat),
+/// r(5).
+fn category_only_name_clash_enum() -> &'static str {
+    "module m\n\
+     enum E\n\
+     \x20   category a\n        category p\n            q\n\
+     \x20   category b\n        category p\n            r\n"
+}
+
+#[test]
+fn an_all_category_clash_in_value_position_offers_the_selectable_leaves() {
+    // `E::p` names only categories (`a::p`, `b::p`), neither selectable as a value.
+    // Excluding both would leave nothing to suggest, so the diagnostic descends to
+    // the concrete leaves under each colliding category instead of an empty hint.
+    let errors = check_module(
+        "all-category-clash-value",
+        &format!(
+            "{}\
+             fn a(): E\n    return E::p\n",
+            category_only_name_clash_enum()
+        ),
+        "check.ambiguous_member",
+    );
+    assert_eq!(errors.len(), 1, "{errors:#?}");
+    assert_enum_payload(
+        &errors[0],
+        EnumDiagnostic::AmbiguousMember {
+            enum_name: "E".into(),
+            label: "p".into(),
+            candidates: vec!["E::a::p::q".into(), "E::b::p::r".into()],
+        },
+    );
+    assert!(
+        errors[0].message.contains("`E::a::p::q`")
+            && errors[0].message.contains("`E::b::p::r`")
+            && !errors[0].message.ends_with("qualify as "),
+        "{}",
+        errors[0].message
+    );
+}
+
+/// An enum where a top-level selectable leaf `p` and a category `p` nested under
+/// `g` share the name; the category itself wraps a single leaf `r`. Pre-order:
+/// p(0, leaf), g(1, cat), p(2, cat), r(3).
+fn leaf_and_nested_category_name_clash_enum() -> &'static str {
+    "module m\n\
+     enum E\n\
+     \x20   p\n    category g\n        category p\n            r\n"
+}
+
+#[test]
+fn a_leaf_and_a_same_named_category_in_value_position_never_offers_the_rejected_input() {
+    // `E::p` names the top-level leaf (path `p`, spelling the rejected input) and the
+    // category `g::p` (unselectable in value position). Dropping both leaves the hint
+    // empty, so it descends to the concrete leaf under the category — never re-offering
+    // the dead-end `E::p` that the leaf in the subtree would otherwise produce.
+    let errors = check_module(
+        "leaf-category-clash-value",
+        &format!(
+            "{}\
+             fn a(): E\n    return E::p\n",
+            leaf_and_nested_category_name_clash_enum()
+        ),
+        "check.ambiguous_member",
+    );
+    assert_eq!(errors.len(), 1, "{errors:#?}");
+    assert_enum_payload(
+        &errors[0],
+        EnumDiagnostic::AmbiguousMember {
+            enum_name: "E".into(),
+            label: "p".into(),
+            candidates: vec!["E::g::p::r".into()],
+        },
+    );
+    // The leading message names the rejected input; only the hint after `qualify as`
+    // lists offered candidates, and the rejected `E::p` must never appear there as its
+    // own quoted token (closed by a space or the end, not continued with `::`).
+    let hint = errors[0]
+        .message
+        .split_once("qualify as ")
+        .expect("ambiguous-member message names a qualification hint")
+        .1;
+    assert!(
+        hint.contains("`E::g::p::r`") && !hint.contains("`E::p` ") && !hint.ends_with("`E::p`"),
+        "{hint}"
+    );
+}
+
 #[test]
 fn an_ambiguous_enum_member_does_not_emit_an_untyped_return_hint() {
     let report = check_module_report(
