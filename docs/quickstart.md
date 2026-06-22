@@ -36,7 +36,8 @@ The generated `marrow.json` is:
 - `store` selects where saved data lives. `native` is the persistent on-disk
   store and requires a `dataDir`. This project declares saved data, so it needs
   one: selecting the explicit memory backend would make `marrow run` refuse
-  with `run.durable_store_required`. (Tests always run in-memory.)
+  with `check.durable_store_required` (the run checks the project first).
+  (Tests always run in-memory.)
 - `tests` lists plain paths to test files or test directories.
 
 A module's name must match its path under the source root. Because the file
@@ -140,8 +141,9 @@ marrow run .
 ```
 
 (If `marrow.json` selected `"store": { "backend": "memory" }`, the run would
-refuse with `run.durable_store_required`: a program that declares saved data
-requires a native store. Omitting `store` is a `config.invalid` error.)
+refuse with `check.durable_store_required`: a program that declares saved data
+requires a native store, and `marrow run` checks the project before running.
+Omitting `store` is a `config.invalid` error.)
 
 ## 4. Inspect The Saved Data
 
@@ -229,8 +231,12 @@ marrow data stats --format json .
 ```
 
 ```text
-{"cells":12,"project":"/absolute/path/to/shelf","records":4,"roots":1}
+{"cells":12,"project":"/absolute/path/to/shelf","records":4,"roots":1,"store_snapshot":{"profile_version":"data.generation.v1","store_uid":"store_00000000000000000000000000000001","catalog_digest":"sha256:...","commit":{"commit_id":1,"catalog_epoch":1,"source_digest":"sha256:...","layout_epoch":0,"engine_profile_digest":"77944eb86c08b665"},"open_transaction":null,"checked_source_digest":"sha256:..."}}
 ```
+
+The `store_snapshot` block records the store's current generation: its uid, the
+accepted catalog and source digests, and the last commit. Digests are elided
+here for brevity.
 
 `marrow data` inspection commands are read-only; `marrow data recover` is the
 explicit store-open repair command. The `diff` and `load` subcommands are

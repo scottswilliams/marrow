@@ -57,9 +57,9 @@ Marrow surfaces use dotted Marrow error codes and typed error values.
 Storage errors include the failed operation and the capability or limit
 involved. Machine-readable facts belong in `data`; clients do not parse
 `message`. The store reports a `store.*` code:
-`store.io`, `store.locked`, `store.format_version`, `store.corruption`,
-`store.recovery_required`, `store.limit`, `store.cursor`, `store.transaction`,
-and `store.read_only`.
+`store.io`, `store.permission_denied`, `store.locked`, `store.format_version`,
+`store.corruption`, `store.recovery_required`, `store.limit`, `store.cursor`,
+`store.transaction`, and `store.read_only`.
 Backends enforce no key or value size limit, so `store.limit` is produced only
 when Marrow framing cannot encode a tree-cell metadata or value-codec length
 above a `u32` field.
@@ -362,6 +362,7 @@ directly.
 | Code | Meaning |
 |---|---|
 | `store.io` | An I/O operation on a persistent backend failed. |
+| `store.permission_denied` | The process lacks read/write access to the store directory or file. The message names the store path; grant access to that directory, then retry. |
 | `store.locked` | The store file is held open by another process (a writer or a read-only inspection). Close the other process, then retry. |
 | `store.format_version` | The store's recorded format version is not the one this build supports. |
 | `store.corruption` | The store file, tree-cell metadata, tree-cell index cell, or accepted catalog table is corrupt and could not be opened or decoded — including a truncated or torn store body and a catalog snapshot whose recomputed digest does not match its stored header. |

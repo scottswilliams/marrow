@@ -407,13 +407,13 @@ reports the store error such as `store.corruption`.
 
 ```
 $ marrow data recover ./project
-store open/repair completed: ./project/.data/marrow.redb
+store open/repair completed: ./project/.marrow/data/marrow.redb
 ```
 
 `--format json` and `jsonl` emit the same single status object:
 
 ```json
-{"project":"/absolute/path/to/project","status":"opened","store":"./project/.data/marrow.redb"}
+{"project":"/absolute/path/to/project","status":"opened","store":"./project/.marrow/data/marrow.redb"}
 ```
 
 ## Deferred: `diff` and `load`

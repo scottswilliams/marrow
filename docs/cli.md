@@ -392,8 +392,8 @@ envelope:
       "next_command": "marrow doctor ./proj",
       "data": {
         "underlying_code": "store.locked",
-        "message": "the store file is held open by another process (a writer or a read-only inspection): /absolute/path/to/proj/.data/marrow.redb. Close the other process, then retry",
-        "store": "/absolute/path/to/proj/.data/marrow.redb"
+        "message": "the store file is held open by another process (a writer or a read-only inspection): /absolute/path/to/proj/.marrow/data/marrow.redb. Close the other process, then retry",
+        "store": "/absolute/path/to/proj/.marrow/data/marrow.redb"
       },
       "source_span": null
     }
@@ -515,8 +515,8 @@ selects (see [project-config.md](project-config.md)). A project must check
 cleanly before it runs. The explicit memory backend admits only a program with no
 durable declarations; a program that declares a durable surface (a `resource`,
 a saved `store`, or an `enum`) needs a configured `native` store and otherwise
-fails with `run.durable_store_required`. Omitting `store` is a `config.invalid`
-project configuration error.
+fails the pre-run check with `check.durable_store_required`. Omitting `store` is
+a `config.invalid` project configuration error.
 
 A clean run records the project's baseline saved-data identity if it has none yet.
 The first run of a project with a durable surface freezes its identity into the
@@ -613,7 +613,12 @@ saved data is isolated; host side effects such as `std::io` writes or
 under every format, off the program's stdout stream. Under text, planned writes
 are `would write <path>` / `would delete <path>` lines, followed by per-target
 create/write/delete counts and a `dry run: N write(s), M delete(s) (not
-committed)` summary. Under `json`, the report object contains `committed`,
+committed)` summary. A whole-record assignment (`^books(id) = book`) clears the
+record slot before writing it, so it renders as a `would delete <record>`
+immediately followed by `would write <record>` for the same id. When the id is
+brand new this removes no existing data; the leading delete is the slot clear,
+not a deletion of prior cells. Under `json`, the report object contains
+`committed`,
 `writes`, `deletes`, `messages`, `would_freeze`, `would_apply`, `would_fence`,
 `planned`, and `write_counts`. Planned entries carry the op, human path, base64
 value bytes, and a structured `target`. Target identities, index keys, and keyed
@@ -837,7 +842,7 @@ reports the store error such as `store.corruption`.
 
 ```console
 $ marrow data recover ./proj
-store open/repair completed: ./proj/.data/marrow.redb
+store open/repair completed: ./proj/.marrow/data/marrow.redb
 ```
 
 ### `data get`
