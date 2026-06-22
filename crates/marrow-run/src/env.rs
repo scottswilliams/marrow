@@ -797,6 +797,22 @@ impl<'p> Env<'p> {
             .map(|(_, binding)| &binding.value)
     }
 
+    /// A mutable borrow of an existing mutable binding's value, for an in-place write
+    /// to a local collection. A non-existent or immutable binding yields the matching
+    /// [`AssignError`], the same outcome [`assign`](Self::assign) reports, so a write
+    /// never silently mutates an unbound or `let` value.
+    pub(crate) fn lookup_mut(&mut self, name: &str) -> Result<&mut Value, AssignError> {
+        for (bound, binding) in self.scopes.iter_rev_mut() {
+            if bound == name {
+                if !binding.mutable {
+                    return Err(AssignError::Immutable);
+                }
+                return Ok(&mut binding.value);
+            }
+        }
+        Err(AssignError::Unbound)
+    }
+
     /// Reassign an existing mutable binding.
     pub(crate) fn assign(&mut self, name: &str, value: Value) -> Result<(), AssignError> {
         for (bound, binding) in self.scopes.iter_rev_mut() {

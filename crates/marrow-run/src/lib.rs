@@ -116,5 +116,5 @@ pub use surface::{
     SurfaceReadOperationRef, SurfaceReadRecord, SurfaceUpdate, SurfaceUpdateField,
     SurfaceUpdateInput, SurfaceValue, read_surface_point, read_surface_singleton,
 };
-pub use value::{IdentityValue, RunOutput, RunOutputSink, Sequence, Value};
+pub use value::{IdentityValue, LocalTree, RunOutput, RunOutputSink, Sequence, Value};
 pub use write_plan::{WriteDataSegment, WriteOp, WriteTarget};

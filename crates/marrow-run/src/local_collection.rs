@@ -6,7 +6,7 @@ use crate::collection::{Direction, absent_read, peel_reversed};
 use crate::env::Env;
 use crate::error::{RUN_ABSENT, RuntimeError, assign_error, overflow, type_error, unsupported};
 use crate::expr::eval_expr;
-use crate::value::{LocalTreeEntry, Sequence, Value, saved_key_to_value, value_to_key};
+use crate::value::{Value, saved_key_to_value, value_to_key};
 
 pub(crate) fn eval_local_collection_read(
     name: &str,
@@ -14,14 +14,27 @@ pub(crate) fn eval_local_collection_read(
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<Option<Value>, RuntimeError> {
-    match env.lookup(name).cloned() {
-        Some(Value::Sequence(items)) => read_local_sequence(&items, args, span, env).map(Some),
-        Some(Value::LocalTree(entries)) => {
+    // Resolve the key against the environment first, then borrow the binding to read
+    // a single element. Only that one value is cloned, never the whole collection.
+    match env.lookup(name) {
+        Some(Value::Sequence(_)) => {
+            let position = eval_local_sequence_position(args, span, env)?;
+            let Some(Value::Sequence(items)) = env.lookup(name) else {
+                return Ok(None);
+            };
+            items
+                .get(position)
+                .cloned()
+                .ok_or_else(|| absent_read("`local sequence` is absent".into(), span))
+                .map(Some)
+        }
+        Some(Value::LocalTree(_)) => {
             let keys = eval_local_keys(args, span, env)?;
-            entries
-                .into_iter()
-                .find(|entry| entry.keys == keys)
-                .map(|entry| entry.value)
+            let Some(Value::LocalTree(tree)) = env.lookup(name) else {
+                return Ok(None);
+            };
+            tree.get(&keys)
+                .cloned()
                 .ok_or_else(|| absent_read("`local tree` is absent".into(), span))
                 .map(Some)
         }
@@ -36,31 +49,44 @@ pub(crate) fn eval_local_collection_write(
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<bool, RuntimeError> {
-    match env.lookup(name).cloned() {
-        Some(Value::Sequence(mut items)) => {
+    // Resolve the key and the right-hand value before borrowing the binding, since
+    // both evaluate against the environment. The binding is then mutated in place so
+    // a write costs one node, not a deep copy of the whole collection.
+    match env.lookup(name) {
+        Some(Value::Sequence(_)) => {
             let position = eval_local_sequence_position(args, span, env)?;
             let value = eval_expr(value, env)?;
+            let Value::Sequence(items) = mutable_local_collection(name, span, env)? else {
+                return Ok(true);
+            };
             items.set(position, value);
-            env.assign(name, Value::Sequence(items))
-                .map_err(|error| assign_error(name, error, span))?;
             Ok(true)
         }
-        Some(Value::LocalTree(mut entries)) => {
+        Some(Value::LocalTree(_)) => {
             let keys = eval_local_keys(args, span, env)?;
             reject_non_positive_sequence_key(&keys, span)?;
             let value = eval_expr(value, env)?;
-            if let Some(entry) = entries.iter_mut().find(|entry| entry.keys == keys) {
-                entry.value = value;
-            } else {
-                entries.push(LocalTreeEntry { keys, value });
-                entries.sort_by(|left, right| left.keys.cmp(&right.keys));
-            }
-            env.assign(name, Value::LocalTree(entries))
-                .map_err(|error| assign_error(name, error, span))?;
+            let Value::LocalTree(tree) = mutable_local_collection(name, span, env)? else {
+                return Ok(true);
+            };
+            tree.insert(keys, value);
             Ok(true)
         }
         _ => Ok(false),
     }
+}
+
+/// A mutable borrow of `name`'s collection binding, surfacing an unbound or immutable
+/// binding as the same assignment fault a whole-value reassignment would. Mutating in
+/// place is what keeps a local-collection write proportional to one node rather than
+/// cloning the whole collection.
+fn mutable_local_collection<'v>(
+    name: &str,
+    span: SourceSpan,
+    env: &'v mut Env<'_>,
+) -> Result<&'v mut Value, RuntimeError> {
+    env.lookup_mut(name)
+        .map_err(|error| assign_error(name, error, span))
 }
 
 /// The catchable absent fault a write or read to a non-positive sequence position
@@ -96,24 +122,27 @@ pub(crate) fn eval_local_collection_delete(
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<(), RuntimeError> {
-    match env.lookup(name).cloned() {
-        Some(Value::Sequence(mut items)) => {
-            match eval_local_sequence_position(args, span, env) {
-                Ok(position) => {
-                    items.remove(position);
-                }
+    match env.lookup(name) {
+        Some(Value::Sequence(_)) => {
+            let position = match eval_local_sequence_position(args, span, env) {
+                Ok(position) => Some(position),
                 // A non-positive position addresses no node, so its delete is a no-op.
-                Err(error) if error.code() == RUN_ABSENT && error.is_catchable() => {}
+                Err(error) if error.code() == RUN_ABSENT && error.is_catchable() => None,
                 Err(error) => return Err(error),
+            };
+            if let (Some(position), Value::Sequence(items)) =
+                (position, mutable_local_collection(name, span, env)?)
+            {
+                items.remove(position);
             }
-            env.assign(name, Value::Sequence(items))
-                .map_err(|error| assign_error(name, error, span))
+            Ok(())
         }
-        Some(Value::LocalTree(mut entries)) => {
+        Some(Value::LocalTree(_)) => {
             let keys = eval_local_keys(args, span, env)?;
-            entries.retain(|entry| entry.keys != keys);
-            env.assign(name, Value::LocalTree(entries))
-                .map_err(|error| assign_error(name, error, span))
+            if let Value::LocalTree(tree) = mutable_local_collection(name, span, env)? {
+                tree.remove(&keys);
+            }
+            Ok(())
         }
         _ => Err(unsupported("deleting from this local value", span)),
     }
@@ -127,7 +156,7 @@ pub(crate) fn local_collection_count(
         Value::Sequence(items) => i64::try_from(items.len())
             .map(Value::Int)
             .map_err(|_| overflow(span)),
-        Value::LocalTree(entries) => i64::try_from(entries.len())
+        Value::LocalTree(tree) => i64::try_from(tree.len())
             .map(Value::Int)
             .map_err(|_| overflow(span)),
         _ => Err(unsupported("counting this value", span)),
@@ -141,14 +170,16 @@ pub(crate) fn enumerate_local_collection_dir(
 ) -> Result<Vec<Value>, RuntimeError> {
     let mut keys: Vec<Value> = match value {
         Value::Sequence(items) => items.positions().map(Value::Int).collect(),
-        Value::LocalTree(entries) => {
+        Value::LocalTree(tree) => {
+            // Rows already iterate in key-tuple order, so the distinct first-column keys
+            // come out ascending; only collapse the runs a multi-column tree repeats.
             let mut seen = Vec::<SavedKey>::new();
-            for entry in entries {
-                let Some(key) = entry.keys.first().cloned() else {
+            for (keys, _) in tree.rows() {
+                let Some(key) = keys.first() else {
                     continue;
                 };
-                if !seen.contains(&key) {
-                    seen.push(key);
+                if seen.last() != Some(key) {
+                    seen.push(key.clone());
                 }
             }
             seen.into_iter()
@@ -211,13 +242,13 @@ pub(crate) fn materialize_local_collection_dir(
             .iter()
             .map(|(position, value)| (Value::Int(*position), value.clone()))
             .collect(),
-        Value::LocalTree(entries) => entries
-            .into_iter()
-            .map(|entry| {
-                let key = entry.keys.first().cloned().ok_or_else(|| {
+        Value::LocalTree(tree) => tree
+            .into_rows()
+            .map(|(keys, value)| {
+                let key = keys.into_iter().next().ok_or_else(|| {
                     unsupported("entries over a local tree with no key column", span)
                 })?;
-                Ok((saved_key_to_value(key, span)?, entry.value))
+                Ok((saved_key_to_value(key, span)?, value))
             })
             .collect::<Result<Vec<_>, RuntimeError>>()?,
         _ => return Err(unsupported("values/entries over this value", span)),
@@ -232,19 +263,6 @@ fn apply_direction<T>(rows: &mut [T], dir: Direction) {
     if dir == Direction::Descending {
         rows.reverse();
     }
-}
-
-fn read_local_sequence(
-    items: &Sequence,
-    args: &[ExecArg],
-    span: SourceSpan,
-    env: &mut Env<'_>,
-) -> Result<Value, RuntimeError> {
-    let position = eval_local_sequence_position(args, span, env)?;
-    items
-        .get(position)
-        .cloned()
-        .ok_or_else(|| absent_read("`local sequence` is absent".into(), span))
 }
 
 /// The 1-based integer position a local-sequence lookup addresses. A non-int key is

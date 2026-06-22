@@ -1007,6 +1007,105 @@ fn reads_and_writes_a_multi_key_local_tree() {
 }
 
 #[test]
+fn a_local_sequence_copies_at_bind_so_a_later_append_does_not_alias_the_copy() {
+    // `const b = a` copies the whole sequence value, so growing `a` afterward never
+    // reaches `b`. This is the value-semantics contract an in-place write must keep:
+    // the copy happens at bind time, never relying on a clone at the write site.
+    let program = checked_program(
+        "pub fn probe(): string\n\
+         \x20   var a: sequence[int]\n\
+         \x20   append(a, 1)\n\
+         \x20   const b = a\n\
+         \x20   append(a, 2)\n\
+         \x20   a(1) = 99\n\
+         \x20   return $\"{count(a)}:{a(1) ?? -1}|{count(b)}:{b(1) ?? -1}\"\n",
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::probe")).unwrap(),
+        Some(Value::Str("2:99|1:1".into())),
+        "the bound copy must keep its own one-element sequence after `a` grows and mutates",
+    );
+}
+
+#[test]
+fn a_local_keyed_tree_copies_at_bind_so_a_later_insert_does_not_alias_the_copy() {
+    // The same value-semantics contract for a keyed local tree: a later insert or
+    // overwrite into `a` must not reach the bound copy `b`.
+    let program = checked_program(
+        "pub fn probe(): string\n\
+         \x20   var a(k: int): int\n\
+         \x20   a(1) = 10\n\
+         \x20   const b = a\n\
+         \x20   a(2) = 20\n\
+         \x20   a(1) = 99\n\
+         \x20   return $\"{count(a)}:{a(1) ?? -1}|{count(b)}:{b(1) ?? -1}\"\n",
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::probe")).unwrap(),
+        Some(Value::Str("2:99|1:10".into())),
+        "the bound copy must keep its own one-entry tree after `a` grows and mutates",
+    );
+}
+
+#[test]
+fn local_collection_writes_are_subquadratic_for_every_key_order() {
+    // A local sequence append and a local keyed-tree insert each write one node; the
+    // collection is the same shape saved data carries, so `n` writes must stay close to
+    // `O(n)` (an ordered map gives `O(log n)` per write) regardless of the order keys
+    // arrive in — ascending, descending, or scattered. A clone-per-write or sorted-Vec
+    // regression is `O(n^2)`: at this `n` it cannot finish inside the absolute ceiling,
+    // while the ordered-map cost finishes in well under a second on any host. Wall-clock
+    // ratios between orders are too flaky on a loaded host to assert, so this guards a
+    // generous absolute ceiling plus the structural truth that every order keeps the
+    // same final count. Timed through the production run pipeline.
+    use std::time::{Duration, Instant};
+
+    // Descending and scattered keys exercise the insert-at-a-low-index path a sorted Vec
+    // makes `O(n)` per write; the modular stride visits every key in `1..=n` exactly once
+    // in a non-monotonic order without revisiting or leaving holes.
+    fn insert_loop(order: &str, n: i64) -> Duration {
+        let program = checked_program(&format!(
+            "pub fn grow(n: int): int\n\
+             \x20   var xs: sequence[int]\n\
+             \x20   var m(k: int): int\n\
+             \x20   var i = 1\n\
+             \x20   while i <= n\n\
+             \x20       append(xs, i)\n\
+             \x20       const k = {order}\n\
+             \x20       m(k) = i\n\
+             \x20       i = i + 1\n\
+             \x20   return count(xs) + count(m)\n",
+        ));
+        let start = Instant::now();
+        let result = run(checked_entry!(&program, "test::grow", Value::Int(n))).unwrap();
+        assert_eq!(
+            result,
+            Some(Value::Int(n * 2)),
+            "every insert order must populate all {n} distinct keys exactly once",
+        );
+        start.elapsed()
+    }
+
+    // 200k writes is where an `O(n^2)` descending or scattered insert measured tens of
+    // seconds; an ordered map finishes in well under a second, so a one-second ceiling
+    // separates the two without depending on a cross-order ratio.
+    let n = 200_000;
+    let ceiling = Duration::from_secs(5);
+    for (label, order) in [
+        ("ascending", "i"),
+        ("descending", "n - i + 1"),
+        ("scattered", "(i * 2654435761) % n + 1"),
+    ] {
+        let elapsed = insert_loop(order, n);
+        assert!(
+            elapsed < ceiling,
+            "{label} insert of {n} keys took {elapsed:?}; a sorted-Vec or clone-per-write \
+             regression is O(n^2) and blows the {ceiling:?} ceiling",
+        );
+    }
+}
+
+#[test]
 fn std_math_decimal_helpers() {
     // absDecimal yields a decimal; floor rounds toward negative infinity to an int.
     let program = checked_program(

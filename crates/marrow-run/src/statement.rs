@@ -23,7 +23,7 @@ use crate::loop_exec::{eval_for, eval_while};
 use crate::path::direct_root_place;
 use crate::stdlib::convert_to_error_code;
 use crate::transaction::eval_transaction;
-use crate::value::Value;
+use crate::value::{LocalTree, Value};
 use crate::write_dispatch::{
     eval_delete, eval_local_field_set, eval_resource_write, eval_saved_field_write,
 };
@@ -165,7 +165,11 @@ fn eval_var(
     env: &mut Env<'_>,
 ) -> Result<Flow, RuntimeError> {
     if key_count != 0 {
-        env.bind(name.to_string(), Value::LocalTree(Vec::new()), true);
+        env.bind(
+            name.to_string(),
+            Value::LocalTree(LocalTree::default()),
+            true,
+        );
         return Ok(Flow::Normal);
     }
     let value = match value {

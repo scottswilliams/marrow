@@ -73,14 +73,14 @@ fn eval_local_append(
         return Err(assign_error(name, AssignError::Unbound, *target_span));
     }
     let appended = eval_expr(value, env)?;
-    let Some(Value::Sequence(mut items)) = env.lookup(name).cloned() else {
-        return Err(unsupported("appending to this path", span));
+    let items = match env.lookup_mut(name) {
+        Ok(Value::Sequence(items)) => items,
+        Ok(_) => return Err(unsupported("appending to this path", span)),
+        Err(error) => return Err(assign_error(name, error, *target_span)),
     };
     let highest = items.highest_position().unwrap_or(0);
     let pos = next_after(highest).map_err(|error| write_fault(error, span))?;
     items.append(pos, appended);
-    env.assign(name, Value::Sequence(items))
-        .map_err(|error| assign_error(name, error, *target_span))?;
     Ok(Some(Value::Int(pos)))
 }
 

@@ -188,13 +188,12 @@ impl DebugValue {
                 depth,
                 budget,
             ),
-            Value::LocalTree(entries) => Self::from_runtime_children(
+            Value::LocalTree(tree) => Self::from_runtime_children(
                 runtime_value_preview(value),
                 DebugCapturedChildKind::Named,
-                entries.len(),
-                entries
-                    .iter()
-                    .map(|entry| (DebugChildName::KeyTuple(&entry.keys), &entry.value)),
+                tree.len(),
+                tree.rows()
+                    .map(|(keys, value)| (DebugChildName::KeyTuple(keys), value)),
                 depth,
                 budget,
             ),
@@ -528,17 +527,16 @@ fn saved_key_preview(key: &SavedKey) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::value::LocalTreeEntry;
+    use crate::value::LocalTree;
 
     #[test]
     fn local_tree_child_labels_bound_key_tuple_arity() {
         let keys: Vec<SavedKey> = (0..IDENTITY_KEY_PREVIEW_COUNT + 1)
             .map(|value| SavedKey::Int(value as i64))
             .collect();
-        let tree = DebugValue::from_value(Value::LocalTree(vec![LocalTreeEntry {
-            keys,
-            value: Value::Int(42),
-        }]));
+        let mut local_tree = LocalTree::default();
+        local_tree.insert(keys, Value::Int(42));
+        let tree = DebugValue::from_value(Value::LocalTree(local_tree));
 
         let children = tree.children(DebugValuePage::default(), DebugValueFilter::Named);
 

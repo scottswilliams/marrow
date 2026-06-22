@@ -369,7 +369,7 @@ mod tests {
 
     use marrow_check::tooling::{DataCommitStamp, DataSnapshotStamp, DataTransactionStamp};
     use marrow_run::{
-        Host, ProjectInvokeError, ProjectOpen, ProjectSession, ProjectSessionError,
+        Host, LocalTree, ProjectInvokeError, ProjectOpen, ProjectSession, ProjectSessionError,
         ProjectSurfaceReadSession, RunOutput, RuntimeError, Sequence, SessionEntry, Value,
     };
     use marrow_store::Decimal;
@@ -574,7 +574,7 @@ mod tests {
         .expect_err("resource values stay outside the run JSON result surface");
         let local_tree_error = run_output_to_json(
             &RunOutput {
-                value: Some(Value::LocalTree(Vec::new())),
+                value: Some(Value::LocalTree(LocalTree::default())),
             },
             String::new(),
         )

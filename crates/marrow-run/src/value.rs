@@ -50,7 +50,7 @@ pub enum Value {
     /// grow holes through a positional write past the dense range or a delete, exactly
     /// as the saved side does. Iterated by a `for` loop; not itself a scalar saved value.
     Sequence(Sequence),
-    LocalTree(Vec<LocalTreeEntry>),
+    LocalTree(LocalTree),
     /// A materialized resource tree: its present top-level fields, in schema
     /// order. Produced by a whole-resource read and consumed by a whole-resource
     /// write.
@@ -154,6 +154,51 @@ impl Sequence {
 
     fn find(&self, position: i64) -> Option<usize> {
         self.0.binary_search_by_key(&position, |(key, _)| *key).ok()
+    }
+}
+
+/// An in-memory keyed local tree (`var m(k: …): …`), held as an ordered map from a
+/// row's full key tuple to its value. Iteration, the key-ordered `keys`/`entries`
+/// walk, `count`, and a keyed read all observe rows in ascending key-tuple order, the
+/// same key-ordered contract a `^`-saved keyed group guarantees. Backing it with a
+/// `BTreeMap` keeps insert, lookup, and delete `O(log n)` for any key arrival order,
+/// where a sorted `Vec` shifted its whole tail on a low-index insert and degraded to
+/// `O(n^2)` for descending or scattered keys.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct LocalTree(std::collections::BTreeMap<Vec<SavedKey>, Value>);
+
+impl LocalTree {
+    /// The value stored under the exact key tuple `keys`, or `None` when no row is
+    /// addressed.
+    pub(crate) fn get(&self, keys: &[SavedKey]) -> Option<&Value> {
+        self.0.get(keys)
+    }
+
+    /// Overwrite the row at `keys`, or insert a new one. The map keeps rows in
+    /// ascending key-tuple order, so no caller re-sorts and any arrival order is
+    /// `O(log n)`.
+    pub(crate) fn insert(&mut self, keys: Vec<SavedKey>, value: Value) {
+        self.0.insert(keys, value);
+    }
+
+    /// Remove the row at `keys`. Deleting an absent key removes nothing.
+    pub(crate) fn remove(&mut self, keys: &[SavedKey]) {
+        self.0.remove(keys);
+    }
+
+    /// The number of stored rows.
+    pub(crate) fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// The `(keys, value)` rows in ascending key-tuple order.
+    pub(crate) fn rows(&self) -> impl Iterator<Item = (&[SavedKey], &Value)> {
+        self.0.iter().map(|(keys, value)| (keys.as_slice(), value))
+    }
+
+    /// Consume the tree into its `(keys, value)` rows in ascending key-tuple order.
+    pub(crate) fn into_rows(self) -> impl Iterator<Item = (Vec<SavedKey>, Value)> {
+        self.0.into_iter()
     }
 }
 
@@ -683,12 +728,6 @@ pub(crate) fn validate_place_identity_keys(
         }
     }
     Ok(())
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LocalTreeEntry {
-    pub keys: Vec<SavedKey>,
-    pub value: Value,
 }
 
 /// Lower a runtime value to the [`LeafValue`] a managed write stores for `leaf`: a
