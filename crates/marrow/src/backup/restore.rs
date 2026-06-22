@@ -303,13 +303,16 @@ fn catalog_digest_mismatch() -> BackupError {
 }
 
 /// Refuse a backup outside this binary's checked replay contract: a different
-/// engine, layout, or value codec needs a recompile; a different schema or
-/// catalog identity belongs to a different program state.
+/// schema or catalog identity belongs to a different program state. The engine
+/// recompile gate is deferred to [`require_current_engine`], which the replay
+/// runs only after the integrity checksum has proven the engine block intact, so
+/// a byte-tampered engine block is reported as corruption rather than a foreign
+/// engine.
 fn restore_program(
     program: &CheckedProgram,
     manifest: &BackupManifest,
 ) -> Result<CheckedProgram, BackupError> {
-    validate_engine_and_commit(manifest)?;
+    validate_commit_binding(manifest)?;
     let project_source_digest = program.source_digest();
     if manifest.source_digest != project_source_digest {
         return Err(BackupError::source_mismatch(
@@ -325,12 +328,23 @@ fn restore_program_for_evolution_preview(
     program: &CheckedProgram,
     manifest: &BackupManifest,
 ) -> Result<CheckedProgram, BackupError> {
-    validate_engine_and_commit(manifest)?;
+    validate_commit_binding(manifest)?;
     validate_catalog_fingerprint(program, manifest)?;
     Ok(program.clone())
 }
 
-fn validate_engine_and_commit(manifest: &BackupManifest) -> Result<(), BackupError> {
+fn validate_commit_binding(manifest: &BackupManifest) -> Result<(), BackupError> {
+    if let Some(commit) = &manifest.commit {
+        commit.validate_manifest_binding(manifest)?;
+    }
+    Ok(())
+}
+
+/// Refuse an integrity-clean backup whose engine, layout, or value codec differs
+/// from this build's: a cross-engine restore is a future engine recompile. The
+/// caller verifies the archive checksum first, so corruption of the engine block
+/// is caught as a checksum mismatch and never misread as a foreign engine.
+fn require_current_engine(manifest: &BackupManifest) -> Result<(), BackupError> {
     let current = EngineDescriptor::current(&current_engine_profile());
     if manifest.engine != current {
         return Err(BackupError::EngineRecompileRequired(
@@ -338,9 +352,6 @@ fn validate_engine_and_commit(manifest: &BackupManifest) -> Result<(), BackupErr
              a cross-engine restore is a future engine recompile"
                 .to_string(),
         ));
-    }
-    if let Some(commit) = &manifest.commit {
-        commit.validate_manifest_binding(manifest)?;
     }
     Ok(())
 }
@@ -382,6 +393,11 @@ fn replay(
     }
 
     fold_archive_stream(manifest, section, input, |cell| restore_cell(store, cell))?;
+
+    // The integrity checksum has now proven the engine block intact, so a genuine
+    // engine difference, not corruption, is the reason to refuse a cross-engine
+    // restore. The open transaction rolls back, preserving the target.
+    require_current_engine(manifest)?;
 
     // Indexes are derived, so rebuild them from the replayed records rather than
     // trusting bytes that could disagree. The rebuild runs inside this open
@@ -748,16 +764,48 @@ mod tests {
     }
 
     #[test]
-    fn rejects_an_engine_recompile() {
+    fn rejects_an_intact_engine_recompile() {
         let (root, program) =
             committed_program("restore-engine", BOOK_SOURCE).expect("committed backup fixture");
         let archive = seeded_backup(&program);
-        // Rewrite the manifest's engine layout epoch to a value this build does not
-        // write, so the restore reports an engine recompile is required.
-        let archive = with_bumped_layout_epoch(&archive);
+        // An intact backup genuinely written under a different engine layout: the engine
+        // block and the embedded commit descriptor both carry the foreign layout epoch and
+        // the integrity checksum is rebuilt to match, so the archive is corruption-free and
+        // the engine difference is the only reason to refuse.
+        let archive = with_intact_foreign_engine(&archive);
         let error = restore_into_empty(&program, &archive)
             .expect_err("a foreign engine layout is rejected");
         assert_eq!(error.code(), "restore.engine_recompile_required");
+        cleanup(&root);
+    }
+
+    #[test]
+    fn rejects_a_byte_tampered_engine_block_as_corruption() {
+        let (root, program) = committed_program("restore-engine-tamper", BOOK_SOURCE)
+            .expect("committed backup fixture");
+        let archive = seeded_backup(&program);
+        // Byte-flip an engine-block field the commit descriptor does not bind, without
+        // rebuilding the checksum: the engine block is part of the manifest the integrity
+        // checksum covers, so this is corruption caught by the checksum, not a backup
+        // written under a foreign engine.
+        let archive = rewrite_manifest(&archive, |manifest| {
+            let engine = manifest.get_mut("engine").expect("engine object");
+            let codec = engine
+                .get("value_codec_version")
+                .and_then(|v| v.as_u64())
+                .expect("value codec version");
+            engine["value_codec_version"] = serde_json::json!(codec + 1);
+        });
+        let error = restore_into_empty(&program, &archive)
+            .expect_err("a tampered engine block is rejected");
+        assert_eq!(error.code(), "restore.corrupt_chunk");
+        assert!(matches!(
+            error,
+            BackupError::CorruptChunk {
+                problem: BackupCorruptProblem::ChecksumMismatch,
+                ..
+            }
+        ));
         cleanup(&root);
     }
 
@@ -1052,14 +1100,18 @@ mod tests {
         cleanup(&root);
     }
 
-    /// Re-encode the manifest with a layout epoch bumped past the running build's, so a
-    /// restore validates it as a foreign engine. The cell stream is left intact.
-    fn with_bumped_layout_epoch(archive: &[u8]) -> Vec<u8> {
-        rewrite_manifest(archive, |manifest| {
-            let engine = manifest.get_mut("engine").expect("engine object");
-            let epoch = engine.get("layout_epoch").and_then(|v| v.as_u64()).unwrap();
-            engine["layout_epoch"] = serde_json::json!(epoch + 100);
-        })
+    /// An intact backup genuinely written under a foreign engine layout: the engine block
+    /// and the embedded commit descriptor agree on a layout epoch past the running build's,
+    /// and the integrity checksum is rebuilt so the only reason to refuse is the engine
+    /// difference. The cell stream is left intact.
+    fn with_intact_foreign_engine(archive: &[u8]) -> Vec<u8> {
+        let mut parts = split_archive(archive);
+        let engine = parts.manifest.get_mut("engine").expect("engine object");
+        let epoch = engine.get("layout_epoch").and_then(|v| v.as_u64()).unwrap();
+        let foreign = epoch + 100;
+        engine["layout_epoch"] = serde_json::json!(foreign);
+        parts.manifest["commit"]["layout_epoch"] = serde_json::json!(foreign);
+        reframe_with_matching_checksum(parts.manifest, parts.catalog, parts.data)
     }
 
     /// Flip the first cell value byte so its declared scalar no longer decodes, leaving
