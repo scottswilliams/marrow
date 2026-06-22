@@ -375,6 +375,7 @@ pub struct SurfaceDecl {
 pub enum SurfaceItem {
     Fields {
         names: Vec<String>,
+        name_spans: Vec<SourceSpan>,
         span: SourceSpan,
     },
     Collection {
@@ -394,10 +395,12 @@ pub enum SurfaceItem {
     },
     Create {
         names: Vec<String>,
+        name_spans: Vec<SourceSpan>,
         span: SourceSpan,
     },
     Update {
         names: Vec<String>,
+        name_spans: Vec<SourceSpan>,
         span: SourceSpan,
     },
     Delete {
@@ -421,8 +424,25 @@ impl SurfaceItem {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SurfaceTarget {
-    Root { root: String },
-    Index { root: String, index: String },
+    Root {
+        root: String,
+        span: SourceSpan,
+    },
+    Index {
+        root: String,
+        index: String,
+        span: SourceSpan,
+    },
+}
+
+impl SurfaceTarget {
+    /// The span of the `^target` token(s), so a checker rejection points at the
+    /// offending target rather than column 1 of the `collection` line.
+    pub fn span(&self) -> SourceSpan {
+        match self {
+            Self::Root { span, .. } | Self::Index { span, .. } => *span,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -475,6 +495,9 @@ pub struct IndexDecl {
     pub name: String,
     pub name_span: SourceSpan,
     pub args: Vec<String>,
+    /// The source span of each argument, parallel to `args`, so a per-argument
+    /// diagnostic points at the offending path rather than the whole `index` line.
+    pub arg_spans: Vec<SourceSpan>,
     pub unique: bool,
     pub span: SourceSpan,
 }

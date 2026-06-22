@@ -7,8 +7,9 @@ use super::head::{parse_enum_head, parse_resource_head, parse_store_head};
 use super::params::parse_function_head;
 use super::stmt::StmtParser;
 use super::tokens::{
-    comment_from_token, doc_comment_text, find_top_level_equal, import_name, line_span,
-    line_text_end_before, module_name, reject_structural_type_tokens, type_ref_from_tokens,
+    PathNameError, comment_from_token, doc_comment_text, find_top_level_equal, import_name,
+    line_span, line_text_end_before, module_name, reject_structural_type_tokens,
+    type_ref_from_tokens,
 };
 use crate::ast::{
     Block, Comment, CommentMarker, CommentPlacement, ConstDecl, Declaration, EnumDecl, Expression,
@@ -254,29 +255,46 @@ impl<'a> DeclParser<'a> {
                 ParseDiagnosticReason::LateModuleDeclaration,
                 "module declaration must appear once at the start of the file",
             );
-        } else if let Some(name) = name {
-            file.module = Some(ModuleDecl { name, span });
         } else {
-            self.error_span(
-                span,
-                ParseDiagnosticReason::Expected(ExpectedSyntax::ModuleName),
-                "expected qualified module name",
-            );
+            match name {
+                Ok(name) => file.module = Some(ModuleDecl { name, span }),
+                Err(PathNameError::ReservedSegment(reserved)) => {
+                    self.report_reserved_path_segment(reserved);
+                }
+                Err(PathNameError::NotQualified) => self.error_span(
+                    span,
+                    ParseDiagnosticReason::Expected(ExpectedSyntax::ModuleName),
+                    "expected qualified module name",
+                ),
+            }
         }
     }
 
     fn parse_use(&mut self, file: &mut SourceFile) {
         let span = self.header_span();
         let header = self.take_header_line();
-        if let Some(name) = import_name(self.source, &header[1..]) {
-            file.uses.push(UseDecl { name, span });
-        } else {
-            self.error_span(
+        match import_name(self.source, &header[1..]) {
+            Ok(name) => file.uses.push(UseDecl { name, span }),
+            Err(PathNameError::ReservedSegment(reserved)) => {
+                self.report_reserved_path_segment(reserved);
+            }
+            Err(PathNameError::NotQualified) => self.error_span(
                 span,
                 ParseDiagnosticReason::Expected(ExpectedSyntax::ImportName),
                 "expected qualified import name",
-            );
+            ),
         }
+    }
+
+    /// Report a reserved word used as a `use`/`module` path segment, at the
+    /// offending segment rather than the declaration keyword.
+    fn report_reserved_path_segment(&mut self, reserved: Token) {
+        let word = reserved.text(self.source);
+        self.error_span(
+            reserved.span,
+            ParseDiagnosticReason::KeywordPathSegment,
+            format!("`{word}` is a keyword and cannot be a path segment"),
+        );
     }
 
     fn parse_const(&mut self, docs: Vec<String>) -> ConstDecl {

@@ -7,6 +7,26 @@ fn parse_reason(reason: ParseDiagnosticReason) -> marrow_syntax::DiagnosticReaso
     marrow_syntax::DiagnosticReason::Parser(reason)
 }
 
+/// The per-name spans a field-list item carries, for asserting structural
+/// equality without recomputing each name's column by hand.
+fn field_name_spans(item: &SurfaceItem) -> Vec<marrow_syntax::SourceSpan> {
+    match item {
+        SurfaceItem::Fields { name_spans, .. }
+        | SurfaceItem::Create { name_spans, .. }
+        | SurfaceItem::Update { name_spans, .. } => name_spans.clone(),
+        _ => panic!("not a field-list surface item: {item:?}"),
+    }
+}
+
+/// The `^target` span a collection item carries, for asserting structural
+/// equality without recomputing each target's column by hand.
+fn collection_target_span(item: &SurfaceItem) -> marrow_syntax::SourceSpan {
+    match item {
+        SurfaceItem::Collection { target, .. } => target.span(),
+        _ => panic!("not a collection surface item: {item:?}"),
+    }
+}
+
 fn surface_decl(source: &str) -> SurfaceDecl {
     let parsed = parse_source(source);
     assert!(
@@ -49,6 +69,7 @@ fn parses_surface_declaration_with_contextual_items() {
         surface.items[0],
         SurfaceItem::Fields {
             names: vec!["title".into(), "author".into(), "blurb".into()],
+            name_spans: field_name_spans(&surface.items[0]),
             span: surface.items[0].span(),
         }
     );
@@ -56,7 +77,8 @@ fn parses_surface_declaration_with_contextual_items() {
         surface.items[1],
         SurfaceItem::Collection {
             target: SurfaceTarget::Root {
-                root: "books".into()
+                root: "books".into(),
+                span: collection_target_span(&surface.items[1]),
             },
             alias: "list".into(),
             span: surface.items[1].span(),
@@ -67,7 +89,8 @@ fn parses_surface_declaration_with_contextual_items() {
         SurfaceItem::Collection {
             target: SurfaceTarget::Index {
                 root: "books".into(),
-                index: "byAuthor".into()
+                index: "byAuthor".into(),
+                span: collection_target_span(&surface.items[2]),
             },
             alias: "byAuthor".into(),
             span: surface.items[2].span(),
@@ -77,6 +100,7 @@ fn parses_surface_declaration_with_contextual_items() {
         surface.items[3],
         SurfaceItem::Create {
             names: vec!["title".into(), "author".into(), "blurb".into()],
+            name_spans: field_name_spans(&surface.items[3]),
             span: surface.items[3].span(),
         }
     );
@@ -84,6 +108,7 @@ fn parses_surface_declaration_with_contextual_items() {
         surface.items[4],
         SurfaceItem::Update {
             names: vec!["title".into(), "blurb".into()],
+            name_spans: field_name_spans(&surface.items[4]),
             span: surface.items[4].span(),
         }
     );
@@ -120,6 +145,34 @@ fn parses_surface_declaration_with_contextual_items() {
 }
 
 #[test]
+fn field_list_items_record_each_name_span() {
+    // Each field name on a `fields`/`create`/`update` line carries its own span so a
+    // checker rejection points at the offending name rather than column 1.
+    let surface = surface_decl(
+        "module app\n\
+         surface Books from ^books\n\
+         \x20   fields title, author\n",
+    );
+    let spans = field_name_spans(&surface.items[0]);
+    assert_eq!(spans.len(), 2, "{:#?}", surface.items[0]);
+    assert_eq!((spans[0].line, spans[0].column), (3, 12));
+    assert_eq!((spans[1].line, spans[1].column), (3, 19));
+}
+
+#[test]
+fn collection_items_record_the_target_token_span() {
+    // The `^target` of a collection line carries its own span so a checker
+    // rejection points at the offending target rather than column 1.
+    let surface = surface_decl(
+        "module app\n\
+         surface Books from ^books\n\
+         \x20   collection ^shelf.byAuthor as list\n",
+    );
+    let span = collection_target_span(&surface.items[0]);
+    assert_eq!((span.line, span.column), (3, 16));
+}
+
+#[test]
 fn surface_contextual_words_remain_identifiers_outside_surface_blocks() {
     let parsed = parse_source(
         "module app\n\
@@ -148,6 +201,7 @@ fn surface_collection_index_can_be_named_as() {
             target: SurfaceTarget::Index {
                 root: "books".into(),
                 index: "as".into(),
+                span: collection_target_span(&surface.items[0]),
             },
             alias: "byAs".into(),
             span: surface.items[0].span(),

@@ -489,8 +489,26 @@ surface Books from ^books
 
         let collisions = surface_collisions(&report);
         assert_eq!(collisions.len(), 1, "{:#?}", report.diagnostics);
-        assert_surface_collision_payload(collisions[0], name, kind, kind, source, 3);
-        assert_eq!(collisions[0].span.line, 3, "{:#?}", collisions[0]);
+        // The first occurrence of a duplicated payload name is spanned at the
+        // name itself, and the duplicate at the second name's column, so the two
+        // names on one line are distinguishable rather than collapsed to column 1.
+        let DiagnosticPayload::SurfaceCollision {
+            name: payload_name,
+            first_kind,
+            first_span,
+            duplicate_kind,
+        } = &collisions[0].payload
+        else {
+            panic!("expected a surface-collision payload: {:#?}", collisions[0]);
+        };
+        assert_eq!(payload_name, name);
+        assert_eq!(*first_kind, kind);
+        assert_eq!(*duplicate_kind, kind);
+        assert_eq!((first_span.line, first_span.column), (3, 12));
+        assert_eq!(
+            (collisions[0].span.line, collisions[0].span.column),
+            (3, 19)
+        );
     }
 }
 
@@ -896,6 +914,129 @@ surface Books from ^books
             problem: SurfaceFieldProblem::RequiredNotCreateAddressable,
         })
     );
+}
+
+#[test]
+fn surface_target_diagnostics_span_the_offending_target_token() {
+    // A missing `from ^target` and a foreign `collection ^target` each point at
+    // the `^target` token rather than collapsing to column 1 of the item line.
+    let source = "\
+module app
+resource Book
+    title: string
+resource Author
+    name: string
+store ^books(id: int): Book
+store ^authors(id: int): Author
+surface Missing from ^nonexistent
+    fields title
+surface Foreign from ^books
+    fields title
+    collection ^authors as authors
+";
+    let root = temp_project("surface-target-spans", |root| {
+        write(root, "src/app.mw", source);
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+
+    let diagnostics = surface_targets(&report);
+    assert_eq!(diagnostics.len(), 2, "{:#?}", report.diagnostics);
+    // `from ^nonexistent` on line 8: the caret sits at column 22.
+    assert_eq!(diagnostics[0].span.line, 8, "{diagnostics:#?}");
+    assert_eq!(diagnostics[0].span.column, 22, "{diagnostics:#?}");
+    // `collection ^authors` on line 12: the caret sits at column 16.
+    assert_eq!(diagnostics[1].span.line, 12, "{diagnostics:#?}");
+    assert_eq!(diagnostics[1].span.column, 16, "{diagnostics:#?}");
+}
+
+#[test]
+fn ambiguous_resource_surface_target_spans_the_offending_target_token() {
+    // An ambiguous backing resource points the diagnostic at the `^target` token
+    // in the surface header rather than collapsing to column 1.
+    let source = "\
+module app
+resource Book
+    title: string
+resource Book
+    title: string
+store ^books(id: int): Book
+surface Books from ^books
+    fields title
+";
+    let root = temp_project("surface-ambiguous-resource-span", |root| {
+        write(root, "src/app.mw", source);
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+
+    let diagnostics = surface_targets(&report);
+    assert_eq!(diagnostics.len(), 1, "{:#?}", report.diagnostics);
+    assert!(
+        matches!(
+            diagnostics[0].payload,
+            DiagnosticPayload::SurfaceTarget(
+                SurfaceTargetDiagnostic::AmbiguousStoreResource { .. }
+            )
+        ),
+        "{diagnostics:#?}"
+    );
+    // `from ^books` on line 7: the caret sits at column 20.
+    assert_eq!(diagnostics[0].span.line, 7, "{diagnostics:#?}");
+    assert_eq!(diagnostics[0].span.column, 20, "{diagnostics:#?}");
+}
+
+#[test]
+fn invalid_store_surface_target_spans_the_offending_target_token() {
+    // An invalid backing store points the diagnostic at the `^target` token in the
+    // surface header rather than collapsing to column 1.
+    let source = "\
+module app
+resource Book
+    title: string
+store ^books(id: decimal): Book
+surface Books from ^books
+    fields title
+";
+    let root = temp_project("surface-invalid-store-span", |root| {
+        write(root, "src/app.mw", source);
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+
+    let diagnostics = surface_targets(&report);
+    assert_eq!(diagnostics.len(), 1, "{:#?}", report.diagnostics);
+    assert!(
+        matches!(
+            diagnostics[0].payload,
+            DiagnosticPayload::SurfaceTarget(SurfaceTargetDiagnostic::InvalidStore { .. })
+        ),
+        "{diagnostics:#?}"
+    );
+    // `from ^books` on line 5: the caret sits at column 20.
+    assert_eq!(diagnostics[0].span.line, 5, "{diagnostics:#?}");
+    assert_eq!(diagnostics[0].span.column, 20, "{diagnostics:#?}");
+}
+
+#[test]
+fn surface_field_items_span_each_offending_name() {
+    // Two bad field names on one `fields` line each earn a diagnostic at their own
+    // column, so they are distinguishable rather than collapsed to column 1.
+    let source = "\
+module app
+resource Book
+    required title: string
+store ^books(id: int): Book
+surface Books from ^books
+    fields nopeA, nopeB
+";
+    let root = temp_project("surface-field-item-spans", |root| {
+        write(root, "src/app.mw", source);
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+
+    let fields = surface_fields(&report);
+    assert_eq!(fields.len(), 2, "{:#?}", report.diagnostics);
+    assert_eq!(fields[0].span.line, 6, "{fields:#?}");
+    assert_eq!(fields[0].span.column, 12, "{fields:#?}");
+    assert_eq!(fields[1].span.column, 19, "{fields:#?}");
 }
 
 #[test]

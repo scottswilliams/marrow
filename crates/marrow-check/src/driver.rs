@@ -1784,13 +1784,15 @@ fn check_surface_local_namespace(
     let mut delete: HashMap<&str, (SourceSpan, SurfaceCollisionNameKind)> = HashMap::new();
     for item in &surface.items {
         match item {
-            SurfaceItem::Fields { names, span } => {
+            SurfaceItem::Fields {
+                names, name_spans, ..
+            } => {
                 collided |= introduce_surface_payload_names(
                     file,
                     diagnostics,
                     &mut fields,
                     names,
-                    *span,
+                    name_spans,
                     SurfaceCollisionNameKind::FieldItem,
                 );
             }
@@ -1824,23 +1826,27 @@ fn check_surface_local_namespace(
                     SurfaceCollisionNameKind::ComputedReadAlias,
                 );
             }
-            SurfaceItem::Create { names, span } => {
+            SurfaceItem::Create {
+                names, name_spans, ..
+            } => {
                 collided |= introduce_surface_payload_names(
                     file,
                     diagnostics,
                     &mut create,
                     names,
-                    *span,
+                    name_spans,
                     SurfaceCollisionNameKind::CreateItem,
                 );
             }
-            SurfaceItem::Update { names, span } => {
+            SurfaceItem::Update {
+                names, name_spans, ..
+            } => {
                 collided |= introduce_surface_payload_names(
                     file,
                     diagnostics,
                     &mut update,
                     names,
-                    *span,
+                    name_spans,
                     SurfaceCollisionNameKind::UpdateItem,
                 );
             }
@@ -1865,12 +1871,12 @@ fn introduce_surface_payload_names<'a>(
     diagnostics: &mut Vec<CheckDiagnostic>,
     first_seen: &mut HashMap<&'a str, (SourceSpan, SurfaceCollisionNameKind)>,
     names: &'a [String],
-    span: SourceSpan,
+    name_spans: &[SourceSpan],
     kind: SurfaceCollisionNameKind,
 ) -> bool {
     let mut collided = false;
-    for name in names {
-        collided |= introduce_surface_local_name(file, diagnostics, first_seen, name, span, kind);
+    for (name, span) in names.iter().zip(name_spans) {
+        collided |= introduce_surface_local_name(file, diagnostics, first_seen, name, *span, kind);
     }
     collided
 }

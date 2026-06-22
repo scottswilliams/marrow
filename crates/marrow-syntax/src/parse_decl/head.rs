@@ -4,7 +4,7 @@
 
 use super::params::match_paren;
 use super::tokens::{
-    reject_structural_type_tokens, split_top_level_commas, strip_comment_tokens,
+    line_span, reject_structural_type_tokens, split_top_level_commas, strip_comment_tokens,
     type_ref_from_tokens,
 };
 use super::{MemberHead, ParseError, ParseResult};
@@ -316,11 +316,14 @@ pub(super) fn parse_index_tokens(source: &str, tokens: &[Token]) -> ParseResult<
         ));
     }
     let mut args = Vec::new();
+    let mut arg_spans = Vec::new();
     for part in split_top_level_commas(&inner) {
-        args.push(field_path_text(source, part).ok_or(ParseError::new(
+        let arg = field_path_text(source, part).ok_or(ParseError::new(
             ParseDiagnosticReason::Expected(ExpectedSyntax::IndexFieldPath),
             "expected index field path",
-        ))?);
+        ))?;
+        args.push(arg);
+        arg_spans.push(line_span(part));
     }
     let tail = &rest[close + 1..];
     let unique = match tail {
@@ -338,6 +341,7 @@ pub(super) fn parse_index_tokens(source: &str, tokens: &[Token]) -> ParseResult<
         name,
         name_span,
         args,
+        arg_spans,
         unique,
         span: SourceSpan::default(),
     })

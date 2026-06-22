@@ -57,6 +57,9 @@ pub enum ParseDiagnosticReason {
     InvalidVisibility,
     KeywordExpression,
     KeywordFieldName,
+    /// A reserved word used as a segment of a `use` or `module` path, where the
+    /// grammar admits only identifiers.
+    KeywordPathSegment,
     LateModuleDeclaration,
     MatchArmMemberPath,
     NestingLimit,

@@ -560,8 +560,8 @@ fn format_surface_name_list(names: &[String]) -> String {
 
 fn format_surface_target(target: &SurfaceTarget) -> String {
     match target {
-        SurfaceTarget::Root { root } => format!("^{root}"),
-        SurfaceTarget::Index { root, index } => format!("^{root}.{index}"),
+        SurfaceTarget::Root { root, .. } => format!("^{root}"),
+        SurfaceTarget::Index { root, index, .. } => format!("^{root}.{index}"),
     }
 }
 

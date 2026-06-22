@@ -337,18 +337,33 @@ fn rejects_invalid_module_names() {
 
 #[test]
 fn reserved_words_as_module_segments_are_rejected() {
-    for source in [
-        "module journal\n",
-        "module app::sensitive\n",
-        "module app::declassify\n",
-        "module app::Id\n",
+    // A reserved word in a module path earns a precise reserved-word diagnostic at
+    // the offending segment, not a generic "expected module name" at the keyword.
+    for (source, word, column) in [
+        ("module journal\n", "journal", 8),
+        ("module app::sensitive\n", "sensitive", 13),
+        ("module app::declassify\n", "declassify", 13),
+        ("module app::Id\n", "Id", 13),
     ] {
         let parsed = parse_source(source);
+        let segment: Vec<_> = parsed
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| {
+                diagnostic.reason == parse_reason(ParseDiagnosticReason::KeywordPathSegment)
+            })
+            .collect();
+        assert_eq!(segment.len(), 1, "for {source}: {:#?}", parsed.diagnostics);
         assert!(
-            parsed.diagnostics.iter().any(|diagnostic| diagnostic.reason
-                == parse_reason(ParseDiagnosticReason::Expected(ExpectedSyntax::ModuleName))),
-            "expected module-name diagnostic for {source}: {:#?}",
-            parsed.diagnostics
+            segment[0].message.contains(word),
+            "for {source}: {:#?}",
+            segment[0]
+        );
+        assert_eq!(segment[0].span.line, 1, "for {source}: {:#?}", segment[0]);
+        assert_eq!(
+            segment[0].span.column, column,
+            "for {source}: {:#?}",
+            segment[0]
         );
     }
 }
@@ -372,19 +387,34 @@ use *
 
 #[test]
 fn reserved_words_as_import_segments_are_rejected() {
-    for source in [
-        "module app\nuse journal\n",
-        "module app\nuse pkg::sensitive\n",
-        "module app\nuse pkg::declassify\n",
-        "module app\nuse pkg::Id\n",
-        "module app\nuse std::Id\n",
+    // A reserved word in an import path earns a precise reserved-word diagnostic at
+    // the offending segment, on line 2 (the `use` line).
+    for (source, word, column) in [
+        ("module app\nuse journal\n", "journal", 5),
+        ("module app\nuse pkg::sensitive\n", "sensitive", 10),
+        ("module app\nuse pkg::declassify\n", "declassify", 10),
+        ("module app\nuse pkg::Id\n", "Id", 10),
+        ("module app\nuse std::Id\n", "Id", 10),
     ] {
         let parsed = parse_source(source);
+        let segment: Vec<_> = parsed
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| {
+                diagnostic.reason == parse_reason(ParseDiagnosticReason::KeywordPathSegment)
+            })
+            .collect();
+        assert_eq!(segment.len(), 1, "for {source}: {:#?}", parsed.diagnostics);
         assert!(
-            parsed.diagnostics.iter().any(|diagnostic| diagnostic.reason
-                == parse_reason(ParseDiagnosticReason::Expected(ExpectedSyntax::ImportName))),
-            "expected import-name diagnostic for {source}: {:#?}",
-            parsed.diagnostics
+            segment[0].message.contains(word),
+            "for {source}: {:#?}",
+            segment[0]
+        );
+        assert_eq!(segment[0].span.line, 2, "for {source}: {:#?}", segment[0]);
+        assert_eq!(
+            segment[0].span.column, column,
+            "for {source}: {:#?}",
+            segment[0]
         );
     }
 

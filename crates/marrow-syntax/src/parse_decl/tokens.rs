@@ -49,13 +49,28 @@ fn qualified_name_text(source: &str, tokens: &[Token]) -> Option<String> {
     let text = &source[first.span.start_byte..last.span.end_byte];
     is_qualified_name(text).then(|| text.to_string())
 }
-pub(super) fn module_name(source: &str, tokens: &[Token]) -> Option<String> {
-    let text = qualified_name_text(source, tokens)?;
-    reserved_segment(tokens).is_none().then_some(text)
+/// Why a `use`/`module` path failed to parse: a reserved word stands where a
+/// path segment must be (with the offending token), or the tokens do not spell a
+/// dotted/`::`-qualified name at all.
+pub(super) enum PathNameError {
+    ReservedSegment(Token),
+    NotQualified,
 }
-pub(super) fn import_name(source: &str, tokens: &[Token]) -> Option<String> {
-    let text = qualified_name_text(source, tokens)?;
-    (reserved_segment(tokens).is_none() || is_std_bytes_import(source, tokens)).then_some(text)
+pub(super) fn module_name(source: &str, tokens: &[Token]) -> Result<String, PathNameError> {
+    if let Some(reserved) = reserved_segment(tokens) {
+        return Err(PathNameError::ReservedSegment(*reserved));
+    }
+    qualified_name_text(source, tokens).ok_or(PathNameError::NotQualified)
+}
+pub(super) fn import_name(source: &str, tokens: &[Token]) -> Result<String, PathNameError> {
+    // `std::bytes` is the one import whose final segment is a reserved word, so a
+    // reserved segment elsewhere is the path error.
+    if let Some(reserved) =
+        reserved_segment(tokens).filter(|_| !is_std_bytes_import(source, tokens))
+    {
+        return Err(PathNameError::ReservedSegment(*reserved));
+    }
+    qualified_name_text(source, tokens).ok_or(PathNameError::NotQualified)
 }
 fn reserved_segment(tokens: &[Token]) -> Option<&Token> {
     tokens

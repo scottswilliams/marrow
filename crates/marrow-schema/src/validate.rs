@@ -231,7 +231,7 @@ pub fn non_enum_named_field_error(field: &FieldDecl, name: &str) -> SchemaError 
              a saved field stores a scalar or checked enum value",
             field.name
         ),
-        span: field.span,
+        span: field.name_span,
     }
 }
 
@@ -241,7 +241,10 @@ fn check_store_index_args(
     resource: &ResourceSchema,
     errors: &mut Vec<SchemaError>,
 ) {
-    for arg in &index.args {
+    for (position, arg) in index.args.iter().enumerate() {
+        // Point a per-argument rejection at the argument itself, falling back to
+        // the declaration when the parser recorded no span for it.
+        let arg_span = index.arg_spans.get(position).copied().unwrap_or(index.span);
         match store_index_arg_type(arg, keys, resource) {
             None if store_index_arg_is_nested_field(arg, resource) => {
                 errors.push(SchemaError {
@@ -255,7 +258,7 @@ fn check_store_index_args(
                          unkeyed group, which the write planner does not maintain",
                         index.name
                     ),
-                    span: index.span,
+                    span: arg_span,
                 });
             }
             None => {
@@ -264,7 +267,7 @@ fn check_store_index_args(
                     arg: arg.clone(),
                 };
                 errors.push(match top_level_keyed_layer(arg, resource) {
-                    Some(layer) => index_arg_nonscalar_key_error(target, &layer, index.span),
+                    Some(layer) => index_arg_nonscalar_key_error(target, &layer, arg_span),
                     None => SchemaError {
                         kind: SchemaErrorKind::UnknownIndexArg {
                             index: index.name.clone(),
@@ -276,12 +279,12 @@ fn check_store_index_args(
                              key or top-level field",
                             index.name
                         ),
-                        span: index.span,
+                        span: arg_span,
                     },
                 });
             }
             Some(ty) => {
-                if let Some(error) = index_arg_type_key_error(&index.name, arg, &ty, index.span) {
+                if let Some(error) = index_arg_type_key_error(&index.name, arg, &ty, arg_span) {
                     errors.push(error);
                 }
             }

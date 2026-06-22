@@ -184,6 +184,9 @@ store ^orders(id: int): Order
             ty: "Status".to_string(),
         },
     );
+    // The error points at the field name, not column 1 of the declaration line.
+    assert_eq!(errors[0].span.line, 2, "{errors:#?}");
+    assert_eq!(errors[0].span.column, 14, "{errors:#?}");
 }
 
 #[test]

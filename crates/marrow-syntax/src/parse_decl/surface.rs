@@ -145,7 +145,11 @@ impl<'a> DeclParser<'a> {
         tokens: &[Token],
     ) -> Option<SurfaceItem> {
         surface_name_list(self.source, tokens)
-            .map(|names| SurfaceItem::Fields { names, span })
+            .map(|(names, name_spans)| SurfaceItem::Fields {
+                names,
+                name_spans,
+                span,
+            })
             .map_err(|error| self.report(err, error))
             .ok()
     }
@@ -157,7 +161,11 @@ impl<'a> DeclParser<'a> {
         tokens: &[Token],
     ) -> Option<SurfaceItem> {
         surface_name_list(self.source, tokens)
-            .map(|names| SurfaceItem::Create { names, span })
+            .map(|(names, name_spans)| SurfaceItem::Create {
+                names,
+                name_spans,
+                span,
+            })
             .map_err(|error| self.report(err, error))
             .ok()
     }
@@ -169,7 +177,11 @@ impl<'a> DeclParser<'a> {
         tokens: &[Token],
     ) -> Option<SurfaceItem> {
         surface_name_list(self.source, tokens)
-            .map(|names| SurfaceItem::Update { names, span })
+            .map(|(names, name_spans)| SurfaceItem::Update {
+                names,
+                name_spans,
+                span,
+            })
             .map_err(|error| self.report(err, error))
             .ok()
     }
@@ -281,7 +293,10 @@ fn parse_surface_head(source: &str, tokens: &[Token]) -> ParseResult<(String, Sa
     Ok((name, store))
 }
 
-fn surface_name_list(source: &str, tokens: &[Token]) -> ParseResult<Vec<String>> {
+fn surface_name_list(
+    source: &str,
+    tokens: &[Token],
+) -> ParseResult<(Vec<String>, Vec<SourceSpan>)> {
     if tokens.is_empty() {
         return Err(ParseError::new(
             ParseDiagnosticReason::Expected(ExpectedSyntax::SurfaceFieldList),
@@ -289,10 +304,12 @@ fn surface_name_list(source: &str, tokens: &[Token]) -> ParseResult<Vec<String>>
         ));
     }
     let mut names = Vec::new();
+    let mut spans = Vec::new();
     for part in split_top_level_commas(tokens) {
         match part {
             [token] if token.kind == TokenKind::Identifier => {
                 names.push(token.text(source).to_string());
+                spans.push(token.span);
             }
             _ => {
                 return Err(ParseError::new(
@@ -308,7 +325,7 @@ fn surface_name_list(source: &str, tokens: &[Token]) -> ParseResult<Vec<String>>
             "expected one or more field names",
         ));
     }
-    Ok(names)
+    Ok((names, spans))
 }
 
 fn surface_collection(source: &str, tokens: &[Token]) -> ParseResult<(SurfaceTarget, String)> {
@@ -352,6 +369,7 @@ fn surface_collection_target<'a>(
                 SurfaceTarget::Index {
                     root: root.text(source).to_string(),
                     index: index.text(source).to_string(),
+                    span: crate::parse_expr::join_spans(caret.span, index.span),
                 },
                 rest,
             ))
@@ -360,6 +378,7 @@ fn surface_collection_target<'a>(
             Ok((
                 SurfaceTarget::Root {
                     root: root.text(source).to_string(),
+                    span: crate::parse_expr::join_spans(caret.span, root.span),
                 },
                 &[],
             ))
@@ -370,6 +389,7 @@ fn surface_collection_target<'a>(
             Ok((
                 SurfaceTarget::Root {
                     root: root.text(source).to_string(),
+                    span: crate::parse_expr::join_spans(caret.span, root.span),
                 },
                 rest,
             ))

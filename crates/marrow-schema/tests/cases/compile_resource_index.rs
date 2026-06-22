@@ -197,6 +197,41 @@ store ^orders(id: int): Order
 }
 
 #[test]
+fn an_unknown_index_argument_points_at_the_offending_argument() {
+    // A per-argument rejection spans the argument itself, not the `index` line, so
+    // a second bad argument on the same line is distinguishable from the first.
+    let source = "\
+resource Book
+    required title: string
+store ^books(id: int): Book
+    index bad(missingA, missingB, id)
+";
+    let errors = compile_store_errors(source);
+    assert_eq!(
+        codes(&errors),
+        [SCHEMA_UNKNOWN_INDEX_ARG, SCHEMA_UNKNOWN_INDEX_ARG],
+        "{errors:#?}"
+    );
+    assert_eq!(errors[0].span.line, 4, "{errors:#?}");
+    assert_eq!(errors[0].span.column, 15, "{errors:#?}");
+    assert_eq!(errors[1].span.column, 25, "{errors:#?}");
+}
+
+#[test]
+fn a_nonscalar_index_argument_points_at_the_offending_argument() {
+    let source = "\
+resource Order
+    tags: sequence[string]
+store ^orders(id: int): Order
+    index byTags(tags, id)
+";
+    let errors = compile_store_errors(source);
+    assert_eq!(codes(&errors), [SCHEMA_NONSCALAR_KEY], "{errors:#?}");
+    assert_eq!(errors[0].span.line, 4, "{errors:#?}");
+    assert_eq!(errors[0].span.column, 18, "{errors:#?}");
+}
+
+#[test]
 fn an_enum_field_index_argument_is_clean() {
     // Schema admits an enum-typed top-level field as an index argument. Project
     // checking attaches the catalog-member key meaning once the enum identity is

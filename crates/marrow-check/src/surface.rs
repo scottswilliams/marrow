@@ -308,7 +308,7 @@ impl<'a> SurfaceChecker<'a> {
         {
             push_invalid_store_resource_diagnostic(
                 file,
-                surface.span,
+                surface.store.span,
                 &surface.name,
                 store,
                 self.program,
@@ -1060,7 +1060,7 @@ fn resolve_backing_store<'p>(
     let store = resolve_surface_store_root(
         program,
         file,
-        surface.span,
+        surface.store.span,
         &surface.store.root,
         backing_validity,
         RootDiagnosticContext::Surface {
@@ -1072,7 +1072,7 @@ fn resolve_backing_store<'p>(
     if backing_validity.store_is_invalid(store) {
         push_invalid_store_diagnostic(
             file,
-            surface.span,
+            surface.store.span,
             &surface.name,
             &surface.store.root,
             diagnostics,
@@ -1086,7 +1086,7 @@ fn resolve_backing_store<'p>(
             CheckDiagnostic::error(
                 CHECK_SURFACE_TARGET,
                 file,
-                surface.span,
+                surface.store.span,
                 format!(
                     "surface `{}` targets store `^{}` with ambiguous resource `{}`",
                     surface.name, surface.store.root, resource.name
@@ -1182,18 +1182,31 @@ fn resolve_field_list(
 ) -> Vec<SurfaceFieldFact> {
     let mut fields = Vec::new();
     for item in &surface.items {
-        let Some((names, span)) = (match (list, item) {
-            (SurfaceFieldList::Fields, SurfaceItem::Fields { names, span })
-            | (SurfaceFieldList::Create, SurfaceItem::Create { names, span })
-            | (SurfaceFieldList::Update, SurfaceItem::Update { names, span }) => {
-                Some((names, *span))
-            }
+        let Some((names, name_spans)) = (match (list, item) {
+            (
+                SurfaceFieldList::Fields,
+                SurfaceItem::Fields {
+                    names, name_spans, ..
+                },
+            )
+            | (
+                SurfaceFieldList::Create,
+                SurfaceItem::Create {
+                    names, name_spans, ..
+                },
+            )
+            | (
+                SurfaceFieldList::Update,
+                SurfaceItem::Update {
+                    names, name_spans, ..
+                },
+            ) => Some((names, name_spans)),
             _ => None,
         }) else {
             continue;
         };
-        for name in names {
-            if let Some(field) = resolve_surface_field(context, list, name, span, diagnostics) {
+        for (name, span) in names.iter().zip(name_spans) {
+            if let Some(field) = resolve_surface_field(context, list, name, *span, diagnostics) {
                 fields.push(field);
             }
         }
@@ -1413,17 +1426,18 @@ fn resolve_collection(
     backing_validity: &BackingValidity,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) -> Option<SurfaceCollectionFact> {
+    let target_span = item.target.span();
     let target = match item.target {
-        SurfaceTarget::Root { root } => resolve_root_collection(
+        SurfaceTarget::Root { root, .. } => resolve_root_collection(
             program,
             file,
             store,
             root,
-            item.span,
+            target_span,
             backing_validity,
             diagnostics,
         )?,
-        SurfaceTarget::Index { root, index } => resolve_index_collection(
+        SurfaceTarget::Index { root, index, .. } => resolve_index_collection(
             CollectionResolveContext {
                 program,
                 file,
@@ -1433,7 +1447,7 @@ fn resolve_collection(
             },
             root,
             index,
-            item.span,
+            target_span,
         )?,
     };
     Some(SurfaceCollectionFact {
