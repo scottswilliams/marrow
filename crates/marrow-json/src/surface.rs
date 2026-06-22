@@ -14,7 +14,9 @@ mod request;
 mod route;
 mod route_binding;
 pub use client_ts::{
-    SurfaceClientRenderError, SurfaceClientRenderErrorKind, render_typescript_client,
+    SURFACE_CLIENT_DIGEST_PREFIX, SURFACE_CLIENT_DO_NOT_EDIT, SurfaceClientRenderError,
+    SurfaceClientRenderErrorKind, render_typescript_client, surface_abi_digest,
+    surface_client_header, surface_client_header_digest,
 };
 pub use execute::{
     execute_project_surface_page_by_tag, execute_project_surface_point_create_by_tag,
@@ -1692,6 +1694,7 @@ mod tests {
     use serde_json::json;
 
     use crate::surface::{
+        SURFACE_CLIENT_DIGEST_PREFIX, SURFACE_CLIENT_DO_NOT_EDIT,
         SURFACE_OPERATION_PROFILE_VERSION, SurfaceAbiJson, SurfaceActionRequestJson,
         SurfaceActionResultJson, SurfaceActionValueJson, SurfaceArgumentJson,
         SurfaceCallableArgumentShapeJson, SurfaceCatalogStatusJson, SurfaceClientRenderErrorKind,
@@ -1708,6 +1711,7 @@ mod tests {
         SurfaceRouteBindings, SurfaceRouteManifestJson, SurfaceRouteMethodJson,
         SurfaceRouteRequestJson, SurfaceSingletonUpdateRequestJson, SurfaceUniqueLookupRequestJson,
         SurfaceUpdateFieldJson, SurfaceValueJson, SurfaceWriteValueJson, render_typescript_client,
+        surface_abi_digest, surface_client_header, surface_client_header_digest,
     };
 
     static TEMP_PROJECT_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -3401,6 +3405,35 @@ pub fn seed()
             assert_eq!(binding["request_kind"], kind.operation_request_kind());
             assert_eq!(binding["result_kind"], kind.operation_result_kind());
         }
+    }
+
+    fn fixture_abi_and_routes() -> (SurfaceAbiJson, SurfaceRouteManifestJson) {
+        let program = checked_source_only_surface_program(SURFACE_ACTION_UPDATE);
+        let abi = SurfaceAbiJson::from_program(&program);
+        let routes = SurfaceRouteManifestJson::from_abi(&abi);
+        (abi, routes)
+    }
+
+    #[test]
+    fn digest_is_stable_and_sha256_prefixed() {
+        let (abi, routes) = fixture_abi_and_routes();
+        let a = surface_abi_digest(&abi, &routes);
+        let b = surface_abi_digest(&abi, &routes);
+        assert_eq!(a, b, "digest must be deterministic");
+        assert!(a.starts_with("sha256:"), "{a}");
+        assert_eq!(a.len(), "sha256:".len() + 64, "{a}");
+    }
+
+    #[test]
+    fn header_round_trips_through_parser() {
+        let header = surface_client_header("sha256:abc123");
+        assert!(header.contains(SURFACE_CLIENT_DO_NOT_EDIT));
+        assert!(header.contains(SURFACE_CLIENT_DIGEST_PREFIX));
+        assert_eq!(
+            surface_client_header_digest(&header).as_deref(),
+            Some("sha256:abc123")
+        );
+        assert_eq!(surface_client_header_digest("no header here"), None);
     }
 
     #[test]

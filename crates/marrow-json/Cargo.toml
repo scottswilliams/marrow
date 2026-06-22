@@ -10,6 +10,7 @@ authors.workspace = true
 
 [dependencies]
 marrow-check = { path = "../marrow-check" }
+marrow-project = { path = "../marrow-project" }
 marrow-run = { path = "../marrow-run" }
 marrow-store = { path = "../marrow-store" }
 serde = { version = "1", features = ["derive"] }

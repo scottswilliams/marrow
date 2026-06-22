@@ -106,6 +106,7 @@ name = "marrow-json"
 version = "0.1.0"
 dependencies = [
  "marrow-check",
+ "marrow-project",
  "marrow-run",
  "marrow-store",
  "serde",

@@ -127,7 +127,11 @@ The route manifest is a descriptor over the operation envelope, not a listener,
 router implementation, or opaque-token codec. `surface/client_ts.rs` renders the
 thin TypeScript operation client from ABI plus routes; it validates route/ABI
 agreement before rendering and does not add a response value decoder or domain
-model.
+model. It also owns the client freshness key: `surface_abi_digest` is a
+`sha256:` digest over the canonically serialized ABI and route manifest (stable
+across checkouts of the same surface shape), and `surface_client_header` /
+`surface_client_header_digest` write and parse the do-not-edit + digest header
+prepended to every generated client.
 
 The operation-tag execution functions compose those DTOs with `marrow-run`
 admission. Reads admit stable read tags, decode the point/page/unique request
