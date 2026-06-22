@@ -1106,6 +1106,66 @@ fn local_collection_writes_are_subquadratic_for_every_key_order() {
 }
 
 #[test]
+fn local_sequence_front_drain_is_subquadratic_like_the_keyed_tree() {
+    // A `sequence[int]` is sugar for the 1-based int-keyed tree, so deleting the lowest
+    // populated position `n` times — a front-drain — must cost the same class as the same
+    // drain over a `(k: int): int` keyed tree. Both back onto an ordered map, so a delete is
+    // `O(log n)` and the whole drain is `O(n log n)`. A `Vec` sequence shifts its entire tail
+    // on every low-position delete, making the drain `O(n^2)`: at this `n` it measured seconds
+    // while the keyed-tree spelling finished in milliseconds. Wall-clock ratios are too flaky
+    // on a loaded host to assert, so this guards a generous absolute ceiling that an `O(n^2)`
+    // tail-shift cannot meet while the ordered map clears it easily. Timed through the
+    // production run pipeline.
+    use std::time::{Duration, Instant};
+
+    fn drain_loop(decl: &str, write: &str, delete: &str, n: i64) -> Duration {
+        let program = checked_program(&format!(
+            "pub fn drain(n: int): int\n\
+             \x20   {decl}\n\
+             \x20   var i = 1\n\
+             \x20   while i <= n\n\
+             \x20       {write}\n\
+             \x20       i = i + 1\n\
+             \x20   var d = 1\n\
+             \x20   while d <= n\n\
+             \x20       {delete}\n\
+             \x20       d = d + 1\n\
+             \x20   return count(xs)\n",
+        ));
+        let start = Instant::now();
+        let result = run(checked_entry!(&program, "test::drain", Value::Int(n))).unwrap();
+        assert_eq!(
+            result,
+            Some(Value::Int(0)),
+            "the front-drain must remove every populated position",
+        );
+        start.elapsed()
+    }
+
+    // At this `n` a `Vec` tail-shift drain measured several seconds; the ordered map finishes in
+    // well under a second, so a generous ceiling separates the two cost classes without a
+    // cross-form ratio.
+    let n = 80_000;
+    let ceiling = Duration::from_secs(3);
+
+    // `xs` is both the sequence and the byte-identical keyed-tree spelling; the keyed form is the
+    // cost-class oracle the sequence must match.
+    let sequence = drain_loop("var xs: sequence[int]", "append(xs, i)", "delete xs(d)", n);
+    let keyed_tree = drain_loop("var xs(k: int): int", "xs(i) = i", "delete xs(d)", n);
+
+    assert!(
+        sequence < ceiling,
+        "sequence[int] front-drain of {n} positions took {sequence:?}; a Vec tail-shift is \
+         O(n^2) and blows the {ceiling:?} ceiling that the keyed tree ({keyed_tree:?}) clears",
+    );
+    assert!(
+        keyed_tree < ceiling,
+        "the keyed-tree oracle front-drain of {n} positions took {keyed_tree:?}, over the \
+         {ceiling:?} ceiling",
+    );
+}
+
+#[test]
 fn std_math_decimal_helpers() {
     // absDecimal yields a decimal; floor rounds toward negative infinity to an int.
     let program = checked_program(

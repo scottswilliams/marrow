@@ -183,7 +183,6 @@ impl DebugValue {
                 // each child by its stored position so a hole is visible as a gap.
                 items
                     .rows()
-                    .iter()
                     .map(|(position, item)| (DebugChildName::Index((position - 1) as usize), item)),
                 depth,
                 budget,

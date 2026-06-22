@@ -59,15 +59,17 @@ pub enum Value {
     Identity(IdentityValue),
 }
 
-/// A 1-based integer-keyed local sequence held as its populated positions in
-/// ascending key order. Holes are absent positions, not stored entries, so a
+/// A 1-based integer-keyed local sequence held as an ordered map from a populated
+/// position to its value. Holes are absent positions, not stored entries, so a
 /// positional write past the dense range or a delete leaves a gap that iteration,
 /// `count`, and a positional read all skip — the same stored-only, gap-skipping,
 /// key-ordered contract a saved sequence guarantees, with no in-memory-versus-saved
-/// distinction. The invariant — positions strictly ascending and at least `1` — is
-/// owned here, so every producer and consumer goes through these methods.
+/// distinction. Backing it with a `BTreeMap` keeps a positional write, read, and
+/// delete `O(log n)` for any position, where a sorted `Vec` shifted its whole tail on
+/// a low-position write or delete and degraded a front-drain to `O(n^2)` — the same
+/// representation the byte-identical `(k: int): int` keyed tree carries.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct Sequence(Vec<(i64, Value)>);
+pub struct Sequence(std::collections::BTreeMap<i64, Value>);
 
 impl Sequence {
     /// A dense `1..n` sequence from values in order, the shape every materializing
@@ -89,71 +91,61 @@ impl Sequence {
 
     /// The value at `position`, or `None` when the position is a hole or non-positive.
     pub(crate) fn get(&self, position: i64) -> Option<&Value> {
-        self.find(position).map(|index| &self.0[index].1)
+        self.0.get(&position)
     }
 
-    /// Write `value` at `position`, replacing any existing entry or inserting a new one
-    /// in key order. A non-positive position addresses no node and is rejected by the
-    /// caller before reaching here.
+    /// Write `value` at `position`, replacing any existing entry or inserting a new one.
+    /// The map keeps positions in ascending order, so any position is `O(log n)`. A
+    /// non-positive position addresses no node and is rejected by the caller first.
     pub(crate) fn set(&mut self, position: i64, value: Value) {
-        match self.0.binary_search_by_key(&position, |(key, _)| *key) {
-            Ok(index) => self.0[index].1 = value,
-            Err(index) => self.0.insert(index, (position, value)),
-        }
+        self.0.insert(position, value);
     }
 
     /// Remove the entry at `position`, returning whether one was present. Deleting a
     /// hole removes nothing.
     pub(crate) fn remove(&mut self, position: i64) -> bool {
-        match self.find(position) {
-            Some(index) => {
-                self.0.remove(index);
-                true
-            }
-            None => false,
-        }
+        self.0.remove(&position).is_some()
     }
 
     /// The highest populated position, or `None` when empty. Callers allocate the
     /// next append position one past this through the shared key-space allocator, so
     /// the strictly-ascending, exhaustion-faulting contract has a single owner.
     pub(crate) fn highest_position(&self) -> Option<i64> {
-        self.0.last().map(|(key, _)| *key)
+        self.0.keys().next_back().copied()
     }
 
     /// Store `value` at `position`, which the caller has allocated strictly above
     /// every existing key. Append never fills a hole, so this only ever extends the
-    /// tail and the ascending invariant holds without re-sorting.
+    /// tail and the ascending invariant holds.
     pub(crate) fn append(&mut self, position: i64, value: Value) {
         debug_assert!(
-            self.0.last().is_none_or(|(last, _)| position > *last),
+            self.0
+                .keys()
+                .next_back()
+                .is_none_or(|last| position > *last),
             "append position must exceed every existing key"
         );
-        self.0.push((position, value));
+        self.0.insert(position, value);
     }
 
     /// The populated positions in ascending key order.
     pub(crate) fn positions(&self) -> impl Iterator<Item = i64> + '_ {
-        self.0.iter().map(|(key, _)| *key)
+        self.0.keys().copied()
     }
 
     /// The stored values in ascending position order.
     pub fn values(&self) -> impl Iterator<Item = &Value> {
-        self.0.iter().map(|(_, value)| value)
+        self.0.values()
     }
 
     /// The `(position, value)` rows in ascending position order.
-    pub(crate) fn rows(&self) -> &[(i64, Value)] {
-        &self.0
+    pub(crate) fn rows(&self) -> impl Iterator<Item = (i64, &Value)> {
+        self.0.iter().map(|(position, value)| (*position, value))
     }
 
     /// Consume the sequence into its stored values in ascending position order.
     pub(crate) fn into_values(self) -> Vec<Value> {
-        self.0.into_iter().map(|(_, value)| value).collect()
-    }
-
-    fn find(&self, position: i64) -> Option<usize> {
-        self.0.binary_search_by_key(&position, |(key, _)| *key).ok()
+        self.0.into_values().collect()
     }
 }
 

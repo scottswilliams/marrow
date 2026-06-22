@@ -239,8 +239,7 @@ pub(crate) fn materialize_local_collection_dir(
     let mut rows = match value {
         Value::Sequence(items) => items
             .rows()
-            .iter()
-            .map(|(position, value)| (Value::Int(*position), value.clone()))
+            .map(|(position, value)| (Value::Int(position), value.clone()))
             .collect(),
         Value::LocalTree(tree) => tree
             .into_rows()
