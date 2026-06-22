@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use marrow_check::evolution::{
     EvolutionWitness, RejectedDefault, RepairDiagnostic, RepairGuidance, RepairReason, Verdict,
@@ -465,11 +465,26 @@ fn scaffold_source(
         .iter()
         .map(|diagnostic| (diagnostic.catalog_id.as_str(), &diagnostic.guidance))
         .collect();
+    // A bare rename surfaces as two obligations: the dropped source field, whose guidance
+    // names the rename target, and the added target field, whose own missing-required
+    // obligation would otherwise scaffold a `default <target> = empty`. That default runs
+    // before the rename and wipes every record the rename carries over, so the target's
+    // default block is dropped here in favor of the identity-preserving rename alone.
+    let rename_targets: HashSet<String> = diagnostics
+        .iter()
+        .filter_map(|diagnostic| match &diagnostic.guidance {
+            RepairGuidance::RenameOrRetire { to, .. } => Some(labels.source_path_spelling(to)),
+            _ => None,
+        })
+        .collect();
     let blocks: Vec<String> = witness
         .verdicts
         .iter()
         .filter_map(|obligation| {
             let catalog_id = obligation.catalog_id.as_str();
+            if rename_targets.contains(&labels.scaffold_target(catalog_id)) {
+                return None;
+            }
             scaffold_block(
                 catalog_id,
                 &obligation.verdict,

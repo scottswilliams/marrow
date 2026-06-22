@@ -96,6 +96,21 @@ pub const WRITE_LAYER_KEY_ARITY: &str = "write.layer_key_arity";
 pub const WRITE_ID_OVERFLOW: &str = "write.id_overflow";
 pub const WRITE_NEXT_ID_UNSUPPORTED: &str = "write.next_id_unsupported";
 
+/// The fault raised when a managed write would leave a required field unset.
+/// A bare field assignment populates one field at a time, so the first write to
+/// a new record is rejected for the still-absent siblings; the guidance points
+/// the developer at grouping the populating writes in a transaction so every
+/// required field lands in one atomic commit.
+fn required_absent_error(name: &str) -> WriteError {
+    WriteError {
+        code: WRITE_REQUIRED_ABSENT,
+        message: format!(
+            "required field `{name}` is absent; group the writes that populate this \
+             record in a transaction block so every required field is set in one commit"
+        ),
+    }
+}
+
 impl From<marrow_store::StoreError> for WriteError {
     fn from(error: marrow_store::StoreError) -> Self {
         WriteError {
@@ -709,10 +724,7 @@ fn collect_supplied_field_writes(
                 bytes,
             }),
             None if field.required => {
-                return Err(WriteError {
-                    code: WRITE_REQUIRED_ABSENT,
-                    message: format!("required field `{name}` is absent"),
-                });
+                return Err(required_absent_error(&name));
             }
             None => {}
         }
@@ -869,13 +881,7 @@ fn ensure_required_fields_present(
             .map_err(store_error)?
             .is_none()
         {
-            return Err(WriteError {
-                code: WRITE_REQUIRED_ABSENT,
-                message: format!(
-                    "required field `{}` is absent",
-                    materialized_field_name(&field.path)
-                ),
-            });
+            return Err(required_absent_error(&materialized_field_name(&field.path)));
         }
     }
     Ok(())

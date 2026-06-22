@@ -171,10 +171,11 @@ fn enum_member_removed_fails_closed() -> Result<(), Box<dyn std::error::Error>> 
         .message;
     assert!(
         message.contains("record(s) 1")
+            && message.contains("evolve rename")
             && message.contains("evolve transform")
             && message.contains("marrow data get")
             && !message.contains("repair before activating"),
-        "the enum-drift repair must name the record and the way forward: {message}"
+        "the enum-drift repair must name a record-preserving `evolve rename` and the transform fallback: {message}"
     );
     // The `data get` example is concrete and copy-pasteable: a real drifted record's saved path,
     // never the `<saved-path>` placeholder.

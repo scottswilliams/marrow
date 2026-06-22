@@ -162,6 +162,89 @@ fn a_parse_error_suppresses_the_spurious_unknown_type_in_its_own_module() {
     );
 }
 
+fn config_with_default_entry(entry: &str) -> marrow_project::ProjectConfig {
+    marrow_project::parse_config(&format!(
+        r#"{{ "sourceRoots": ["src"], "store": {{ "backend": "memory" }}, "run": {{ "defaultEntry": "{entry}" }} }}"#
+    ))
+    .expect("config")
+}
+
+/// A parse error in a module suppresses the spurious schema and default-entry cascades that
+/// depend on its unparsed region. A stray `#` line cannot parse, so the parser stops before
+/// finishing the module: the `state: Status` field reads as a non-enum field even though the
+/// `Status` enum is declared, and `main` never enters the program so the default entry reads as
+/// missing. The parse error is the real cause: the report keeps it and drops both follow-on
+/// `schema.non_enum_named_field` and `check.default_entry`.
+#[test]
+fn a_parse_error_suppresses_spurious_schema_and_default_entry_in_its_own_module() {
+    let root = temp_project("cascade-parse-schema-entry", |root| {
+        write(
+            root,
+            "src/app.mw",
+            "module app\n\
+             enum Status\n    draft\n    shipped\n\
+             resource Order\n    state: Status\n\
+             store ^orders(id: int): Order\n\
+             # stray comment that cannot parse\n\
+             pub fn main()\n    print(\"go\")\n",
+        );
+    });
+    let (report, _) = check_project(&root, &config_with_default_entry("app::main")).expect("check");
+
+    assert!(
+        !with_code(&report, "parse.syntax").is_empty(),
+        "the parse error is the real cause and must be reported: {:#?}",
+        report.diagnostics
+    );
+    assert!(
+        with_code(&report, "schema.non_enum_named_field").is_empty(),
+        "the field's enum is declared; the non-enum cascade must be suppressed: {:#?}",
+        report.diagnostics
+    );
+    assert!(
+        with_code(&report, "check.default_entry").is_empty(),
+        "`main` is defined; the default-entry cascade must be suppressed: {:#?}",
+        report.diagnostics
+    );
+}
+
+/// The parse-cascade suppression must not hide real schema or default-entry errors in
+/// cleanly-parsed source. A module that parses cleanly but truly names a non-enum type in a
+/// field and configures a default entry that names no public function reports both
+/// `schema.non_enum_named_field` and `check.default_entry`.
+#[test]
+fn a_clean_module_still_reports_real_schema_and_default_entry_errors() {
+    let root = temp_project("clean-schema-entry", |root| {
+        write(
+            root,
+            "src/app.mw",
+            "module app\n\
+             resource Order\n    state: NotAnEnum\n\
+             store ^orders(id: int): Order\n\
+             pub fn other()\n    print(\"go\")\n",
+        );
+    });
+    let (report, _) = check_project(&root, &config_with_default_entry("app::main")).expect("check");
+
+    assert!(
+        with_code(&report, "parse.syntax").is_empty(),
+        "the module parses cleanly: {:#?}",
+        report.diagnostics
+    );
+    assert_eq!(
+        with_code(&report, "schema.non_enum_named_field").len(),
+        1,
+        "a genuine non-enum field in clean source must still report: {:#?}",
+        report.diagnostics
+    );
+    assert_eq!(
+        with_code(&report, "check.default_entry").len(),
+        1,
+        "a genuine missing default entry in clean source must still report: {:#?}",
+        report.diagnostics
+    );
+}
+
 /// Two independent faults in two separate functions stay independent: one diagnostic
 /// each, neither leaking a recovery artifact into the other's report. This guards the
 /// isolation boundary — a fault is local to the expression that caused it, so a clean

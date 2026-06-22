@@ -25,6 +25,7 @@ use crate::facts::{
     SurfaceComputedReadFact, SurfaceDeleteFact, SurfaceFact, SurfaceFieldFact, SurfaceId,
     SurfaceReadFootprint, SurfaceReadOperationFact, SurfaceReadOperationKind,
 };
+use crate::presence::transitive_unindexed_lookup_span;
 use crate::surface_abi::surface_read_operation_tag;
 use crate::{
     CheckDiagnostic, CheckedProgram, Def, DefItem, DiagnosticPayload, Resolution, ResolvableKind,
@@ -112,9 +113,10 @@ pub(crate) fn check_computed_read_effects(
                 rejected = true;
                 if let Some(file) = file.as_deref() {
                     let message = computed_read_effect_message(&payload);
+                    let span = computed_read_effect_span(program, read, &payload);
                     push_surface_computed_read_diagnostic(
                         file,
-                        read.span,
+                        span,
                         payload,
                         message,
                         diagnostics,
@@ -630,6 +632,23 @@ fn push_surface_function_diagnostic(
             };
             push_surface_computed_read_diagnostic(file, span, payload, message, diagnostics);
         }
+    }
+}
+
+/// The span a computed-read effect diagnostic points at. An unindexed-collection rejection points
+/// at the offending traversal site inside the read's function body (or a transitive callee), so
+/// the developer fixes the loop rather than the surface declaration that names the read. Every
+/// other rejection stays anchored at the surface read declaration.
+fn computed_read_effect_span(
+    program: &CheckedProgram,
+    read: &SurfaceComputedReadFact,
+    payload: &SurfaceComputedReadDiagnostic,
+) -> SourceSpan {
+    match payload {
+        SurfaceComputedReadDiagnostic::UnindexedCollectionRead { .. } => {
+            transitive_unindexed_lookup_span(program, read.function).unwrap_or(read.span)
+        }
+        _ => read.span,
     }
 }
 
@@ -1371,6 +1390,9 @@ fn unique_top_level_member<'p>(
         member.resource == store.resource && member.parent.is_none() && member.name == name
     });
     let Some(member) = matches.next() else {
+        if store.identity_keys.iter().any(|key| key.name == name) {
+            return Err(SurfaceFieldProblem::IdentityKey);
+        }
         return Err(SurfaceFieldProblem::Unknown);
     };
     if matches.next().is_some() {
@@ -1746,6 +1768,14 @@ fn push_field_diagnostic(
         }
         SurfaceFieldProblem::RequiredNotCreateAddressable => {
             format!("surface create item must include required backing field `{name}`")
+        }
+        SurfaceFieldProblem::IdentityKey => {
+            format!(
+                "surface {} item `{name}` names an identity key; identity keys are returned \
+                 automatically under `identity` in every read and page response, so they cannot \
+                 be listed in `fields`",
+                list.label()
+            )
         }
     };
     diagnostics.push(

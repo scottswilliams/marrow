@@ -80,10 +80,11 @@ pub(crate) fn check_resolved_files(
 
     // A file that fails to parse is reported by its parse diagnostics; the type pass still runs
     // over its half-assembled declarations and resolves annotations against a module the parser
-    // could not finish, so an annotation like `Id(^books)` reads as an unknown type even though
-    // the real fault is the parse error above it. Suppress those follow-on type diagnostics in the
-    // broken file alone so the developer fixes the parse error first; other files' type checks,
-    // which ran over clean source, stay trustworthy.
+    // could not finish. An annotation like `Id(^books)` then reads as an unknown type, and an
+    // enum-typed field reads as a non-enum field, even though the real fault is the parse error
+    // above it. Suppress those follow-on type and schema diagnostics in the broken file alone so
+    // the developer fixes the parse error first; other files' type checks, which ran over clean
+    // source, stay trustworthy.
     let unparsed_files: HashSet<&Path> = parsed_files
         .iter()
         .filter(|(_, parsed)| parsed.has_errors())
@@ -94,7 +95,9 @@ pub(crate) fn check_resolved_files(
             !unparsed_files.contains(diagnostic.file.as_path())
                 || !matches!(
                     diagnostic.payload,
-                    DiagnosticPayload::UnknownType(_) | DiagnosticPayload::AmbiguousType { .. }
+                    DiagnosticPayload::UnknownType(_)
+                        | DiagnosticPayload::AmbiguousType { .. }
+                        | DiagnosticPayload::Schema(_)
                 )
         });
     }

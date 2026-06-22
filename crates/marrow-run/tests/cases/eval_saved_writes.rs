@@ -423,6 +423,14 @@ fn out_of_transaction_field_write_rejects_partial_required_record() {
         checked_entry!(&program, "test::set_shelf", Value::Int(1)),
     );
     assert_run_error(result, "write.required_absent");
+    let message = run_error_message(run_entry(
+        &store,
+        checked_entry!(&program, "test::set_shelf", Value::Int(1)),
+    ));
+    assert!(
+        message.contains("transaction"),
+        "required-absent guidance should point at grouping writes in a transaction: {message}"
+    );
     assert_eq!(
         run_entry(
             &store,

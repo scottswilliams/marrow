@@ -1,9 +1,10 @@
 use marrow_syntax::SourceSpan;
 
-use crate::executable::{CheckedBodyVisitor, walk_checked_expr};
+use crate::executable::{CheckedBodyVisitor, CheckedStmt, walk_checked_expr, walk_checked_stmt};
 use crate::facts::{DirectEffectFacts, EffectClosureFacts};
 use crate::{
-    CheckedBuiltinCall, CheckedCallTarget, CheckedExpr, CheckedProgram, DebugExpressionDataAccess,
+    CheckedBuiltinCall, CheckedCallTarget, CheckedExpr, CheckedFunctionRef, CheckedProgram,
+    DebugExpressionDataAccess,
 };
 
 use super::{direct_effects_for_expr, effect_closure_for_direct};
@@ -125,4 +126,81 @@ fn direct_saved_write_span(expression: &CheckedExpr) -> Option<SourceSpan> {
 
 fn direct_unindexed_lookup_span(expression: &CheckedExpr) -> Option<SourceSpan> {
     super::direct::unindexed_collection_lookup(expression).then_some(expression.span())
+}
+
+/// The source span of the first unindexed collection traversal `function` reaches, following its
+/// transitive callees. A surface computed read that rejects an unindexed scan reports at this
+/// traversal site — the `for ... in ^store` or whole-collection builtin that actually scans —
+/// rather than at the surface declaration that merely names the read, so the developer fixes the
+/// offending loop. Returns `None` when no traversal is reachable.
+pub(crate) fn transitive_unindexed_lookup_span(
+    program: &CheckedProgram,
+    function: CheckedFunctionRef,
+) -> Option<SourceSpan> {
+    let mut finder = UnindexedTraversalFinder {
+        program,
+        visited: Vec::new(),
+        span: None,
+    };
+    finder.search(function);
+    finder.span
+}
+
+struct UnindexedTraversalFinder<'a> {
+    program: &'a CheckedProgram,
+    visited: Vec<CheckedFunctionRef>,
+    span: Option<SourceSpan>,
+}
+
+impl UnindexedTraversalFinder<'_> {
+    fn search(&mut self, function: CheckedFunctionRef) {
+        if self.span.is_some() || self.visited.contains(&function) {
+            return;
+        }
+        self.visited.push(function);
+        let Some(fact) = self.program.facts.function_for_ref(function) else {
+            return;
+        };
+        let callees = fact.direct_effects.user_function_calls.clone();
+        if let Some(body) = self
+            .program
+            .modules
+            .get(fact.module.0 as usize)
+            .and_then(|module| module.functions.get(fact.source_index as usize))
+            .and_then(|function| function.runtime_body())
+        {
+            for statement in body.statements() {
+                self.visit_stmt(statement);
+            }
+        }
+        for callee in callees {
+            self.search(callee);
+        }
+    }
+}
+
+impl CheckedBodyVisitor for UnindexedTraversalFinder<'_> {
+    fn visit_stmt(&mut self, statement: &CheckedStmt) {
+        if self.span.is_some() {
+            return;
+        }
+        if let CheckedStmt::For { iterable, .. } = statement
+            && super::direct::saved_non_index_path(iterable)
+        {
+            self.span = Some(iterable.span());
+            return;
+        }
+        walk_checked_stmt(self, statement);
+    }
+
+    fn visit_expr(&mut self, expression: &CheckedExpr) {
+        if self.span.is_some() {
+            return;
+        }
+        if let Some(span) = direct_unindexed_lookup_span(expression) {
+            self.span = Some(span);
+            return;
+        }
+        walk_checked_expr(self, expression);
+    }
 }

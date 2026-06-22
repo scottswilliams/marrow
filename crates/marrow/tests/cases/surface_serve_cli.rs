@@ -711,6 +711,56 @@ fn surface_serve_rejects_unknown_json_fields_without_mutation() {
 }
 
 #[test]
+fn surface_serve_non_post_method_names_post() {
+    let fixture = seeded_surface_fixture("surface-serve-non-post");
+    let point_route = route_by_alias(&fixture.report, "get");
+    let (_server, addr) = spawn_surface_server(fixture.root());
+
+    let response = raw_http(
+        addr,
+        format!("GET {} HTTP/1.1\r\nHost: {addr}\r\n\r\n", point_route.path).into_bytes(),
+        &[],
+    );
+    assert_eq!(response.status, 400, "{:#?}", response.body);
+    assert_eq!(response.body["code"], "surface.request");
+    let message = response.body["message"].as_str().unwrap_or_default();
+    assert!(
+        message.contains("POST"),
+        "a non-POST request must be told POST is required: {message}"
+    );
+}
+
+#[test]
+fn surface_serve_negative_page_limit_reports_limit_must_be_positive() {
+    let fixture = seeded_surface_fixture("surface-serve-negative-limit");
+    let page_route = route_by_alias(&fixture.report, "byAuthor");
+    let (_server, addr) = spawn_surface_server(fixture.root());
+
+    let response = post_json(
+        addr,
+        &page_route.path,
+        json!({
+            "profile_version": "surface.operation.v1",
+            "operation_tag": page_route.operation_tag,
+            "request": {
+                "kind": "page",
+                "request": {
+                    "exact_keys": [{ "kind": "string", "value": "Frank Herbert" }],
+                    "limit": -1
+                }
+            }
+        }),
+        &[("Content-Type", "application/json")],
+    );
+    assert_eq!(response.status, 400, "{:#?}", response.body);
+    let message = response.body["message"].as_str().unwrap_or_default();
+    assert!(
+        message.contains("greater than zero"),
+        "a negative page limit must route through the limit-must-be-greater-than-zero branch: {message}"
+    );
+}
+
+#[test]
 fn surface_serve_write_mode_executes_sparse_update_over_http() {
     let fixture = seeded_surface_fixture("surface-serve-write-update");
     let point_route = route_by_alias(&fixture.report, "get");

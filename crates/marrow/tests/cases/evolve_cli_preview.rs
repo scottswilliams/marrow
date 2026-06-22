@@ -868,15 +868,16 @@ fn evolve_preview_scaffold_for_a_bare_rename_emits_a_rename_block()
             Scalar::Str("Appendix".into()),
         );
     }
-    // Drop `subtitle`, add a same-type `tagline`: a bare rename the checker resolves as a
-    // single plausible rename candidate.
+    // Drop `subtitle`, add a same-type required `tagline`: a bare rename the checker resolves as a
+    // single plausible rename candidate. The new member being required is what would otherwise
+    // pull in a data-clobbering `default` block ahead of the rename.
     write(
         &root,
         "src/books.mw",
         "module books\n\
          resource Book\n\
          \x20   required title: string\n\
-         \x20   tagline: string\n\
+         \x20   required tagline: string\n\
          store ^books(id: int): Book\n\
          pub fn add(title: string): Id(^books)\n\
          \x20   return nextId(^books)\n",
@@ -905,6 +906,11 @@ fn evolve_preview_scaffold_for_a_bare_rename_emits_a_rename_block()
         !scaffold.contains("retire Book.subtitle"),
         "a bare rename must not scaffold a destructive retire of the renamed-away field: \
          {scaffold}"
+    );
+    assert!(
+        !scaffold.contains("default Book.tagline"),
+        "a bare rename must not scaffold a data-clobbering default for the renamed-to field, \
+         which would wipe the records the rename carries over: {scaffold}"
     );
 
     Ok(())

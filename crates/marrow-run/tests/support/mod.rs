@@ -554,6 +554,18 @@ pub fn run_expecting_error(call: CheckedEntryCall<'_>) -> marrow_run::RuntimeErr
     run(call).expect_err("expected runtime error")
 }
 
+/// The rendered message of a catchable runtime fault, for tests that assert
+/// guidance prose beyond the code.
+pub fn run_error_message<T: std::fmt::Debug>(
+    result: Result<T, marrow_run::RuntimeError>,
+) -> String {
+    let error = result.expect_err("expected runtime error");
+    let Some(Value::Resource(fields)) = error.error_value() else {
+        panic!("expected catchable fault carrying a message: {error:?}");
+    };
+    resource_str_field(&fields, "message").to_string()
+}
+
 pub fn error_throw_fields(error: &marrow_run::RuntimeError) -> (String, String) {
     let Some(Value::Resource(fields)) = error.error_value() else {
         panic!("expected Error resource throw: {error:?}");

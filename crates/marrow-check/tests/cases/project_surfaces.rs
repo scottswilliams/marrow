@@ -1487,6 +1487,51 @@ surface Books from ^books
 }
 
 #[test]
+fn surface_computed_read_unindexed_scan_spans_the_traversal_not_the_surface_decl() {
+    // The computed read `summary` is clean itself; it calls `tally`, whose `for` loop scans the
+    // whole `^books` collection unindexed. The diagnostic must point at that traversal so the dev
+    // fixes the loop, not the surface declaration that merely names the read.
+    let source = "\
+module app
+resource Book
+    title: string
+store ^books(id: int): Book
+fn tally(): int
+    var total: int = 0
+    for id in ^books
+        total = total + 1
+    return total
+pub fn summary(): int
+    return tally()
+surface Books from ^books
+    fields title
+    read summary
+";
+    let root = temp_project("surface-computed-read-unindexed-span", |root| {
+        write(root, "src/app.mw", source);
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+
+    let diagnostics = surface_computed_reads(&report);
+    assert_eq!(diagnostics.len(), 1, "{:#?}", report.diagnostics);
+    assert_eq!(
+        diagnostics[0].payload,
+        DiagnosticPayload::SurfaceComputedRead(
+            SurfaceComputedReadDiagnostic::UnindexedCollectionRead {
+                path: "summary".into(),
+            }
+        )
+    );
+    // The `for id in ^books` traversal is on line 7; the surface declaration is line 12. The span
+    // must resolve to the traversal site inside the function body.
+    assert_eq!(
+        diagnostics[0].span.line, 7,
+        "the unindexed-read diagnostic must point at the traversal, not the surface decl: {:#?}",
+        diagnostics[0]
+    );
+}
+
+#[test]
 fn surface_computed_read_alias_collides_with_generated_operations() {
     let source = "\
 module app
@@ -1851,7 +1896,7 @@ surface Books from ^books
             &DiagnosticPayload::SurfaceField(SurfaceFieldDiagnostic {
                 list: SurfaceFieldList::Fields,
                 name: "id".into(),
-                problem: SurfaceFieldProblem::Unknown,
+                problem: SurfaceFieldProblem::IdentityKey,
             }),
             &DiagnosticPayload::SurfaceField(SurfaceFieldDiagnostic {
                 list: SurfaceFieldList::Fields,
@@ -1869,5 +1914,19 @@ surface Books from ^books
                 problem: SurfaceFieldProblem::NotProjected,
             }),
         ]
+    );
+    let identity_message = &diagnostics
+        .iter()
+        .find(|diagnostic| match &diagnostic.payload {
+            DiagnosticPayload::SurfaceField(field) => {
+                field.problem == SurfaceFieldProblem::IdentityKey
+            }
+            _ => false,
+        })
+        .expect("an identity-key surface field diagnostic")
+        .message;
+    assert!(
+        identity_message.contains("identity") && identity_message.contains("automatic"),
+        "the identity-key message must explain that identity is returned automatically: {identity_message}"
     );
 }

@@ -897,7 +897,14 @@ pub(crate) fn analyze_source_project(
     crate::evolution::check_transform_effects(&program, &mut report.diagnostics);
     crate::presence::check_presence(&mut program, &mut report.diagnostics);
     crate::surface::check_computed_read_effects(&mut program, &mut report.diagnostics);
-    check_default_entry(project_root, config, &program, &mut report.diagnostics);
+    let any_parse_errors = parsed_files.iter().any(|(_, parsed)| parsed.has_errors());
+    check_default_entry(
+        project_root,
+        config,
+        &program,
+        any_parse_errors,
+        &mut report.diagnostics,
+    );
 
     // Move every parse — error files included — into the snapshot now that the
     // shared tail has finished borrowing them. The path and module name are
@@ -937,10 +944,17 @@ pub(crate) fn analyze_source_project(
 /// with no arguments, so a missing, private, ambiguous, or parameterized target can
 /// only fault at run time; the check fails it up front, spanned at `marrow.json`
 /// where the entry is configured.
+///
+/// A module that failed to parse never enters the program, so a target it would have
+/// defined reads as missing, private, or ambiguous purely because of the parse error.
+/// Those verdicts are suppressed while any module has parse errors so the developer
+/// fixes the parse error first; a `HasParameters` verdict comes from a function that
+/// did parse and is reported regardless.
 fn check_default_entry(
     project_root: &Path,
     config: &ProjectConfig,
     program: &CheckedProgram,
+    any_parse_errors: bool,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
     let Some(entry) = config.default_entry.as_deref() else {
@@ -949,6 +963,16 @@ fn check_default_entry(
     let Some(problem) = program.default_entry_verdict(entry) else {
         return;
     };
+    if any_parse_errors
+        && matches!(
+            problem,
+            DefaultEntryProblem::Missing
+                | DefaultEntryProblem::Private
+                | DefaultEntryProblem::Ambiguous
+        )
+    {
+        return;
+    }
     let reason = match problem {
         DefaultEntryProblem::Missing => "names no public entry",
         DefaultEntryProblem::Private => "names a private function; mark it `pub`",

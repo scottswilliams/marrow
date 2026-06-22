@@ -618,6 +618,10 @@ pub enum SurfaceFieldProblem {
     Ambiguous,
     NotProjected,
     RequiredNotCreateAddressable,
+    /// The item names a store identity key, which every read and page response already
+    /// returns automatically under `identity`. Listing it in `fields` is redundant and
+    /// rejected.
+    IdentityKey,
 }
 
 /// Structured facts for a `check.surface_field` diagnostic.

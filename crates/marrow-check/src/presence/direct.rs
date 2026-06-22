@@ -279,7 +279,7 @@ fn unindexed_collection_builtin(builtin: CheckedBuiltinCall) -> bool {
     )
 }
 
-fn saved_non_index_path(expression: &CheckedExpr) -> bool {
+pub(super) fn saved_non_index_path(expression: &CheckedExpr) -> bool {
     expression
         .saved_place()
         .is_some_and(|place| !matches!(place.terminal, CheckedSavedTerminal::Index { .. }))

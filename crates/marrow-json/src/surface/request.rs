@@ -30,9 +30,21 @@ pub struct SurfacePointRequestJson {
 pub struct SurfacePageRequestJson {
     #[serde(default)]
     pub exact_keys: Vec<SurfaceArgumentJson>,
+    #[serde(deserialize_with = "deserialize_page_limit")]
     pub limit: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cursor: Option<SurfaceCursorJson>,
+}
+
+/// Accept any JSON integer for `limit`, clamping a non-positive value to zero so a negative
+/// limit fails the same "must be greater than zero" check as an explicit zero, rather than the
+/// generic body-not-a-valid-operation error a bare `usize` rejection would raise.
+fn deserialize_page_limit<'de, D>(deserializer: D) -> Result<usize, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = i64::deserialize(deserializer)?;
+    Ok(usize::try_from(value).unwrap_or(0))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

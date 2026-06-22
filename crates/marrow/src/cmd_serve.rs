@@ -635,6 +635,14 @@ fn read_http_request(stream: &mut TcpStream) -> Result<HttpRequest, HttpFailure>
     let content_length = match parsed.content_length {
         Some(content_length) => content_length,
         None if parsed.method == "OPTIONS" => 0,
+        // A non-POST method reaches here before the route-level method check because it
+        // carries no Content-Length, so the bare Content-Length error would hide the real
+        // cause. Name the method requirement instead so the developer switches to POST.
+        None if parsed.method != "POST" => {
+            return Err(request_failure(
+                "surface routes accept POST only; send the operation as a POST request",
+            ));
+        }
         None => {
             return Err(request_failure(
                 "surface request must contain exactly one Content-Length",
