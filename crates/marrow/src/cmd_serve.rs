@@ -6,10 +6,10 @@ use std::time::Duration;
 
 use marrow_check::CheckedProgram;
 use marrow_json::surface::{
-    execute_project_surface_operation, execute_project_surface_operation_read_only, SurfaceAbiJson,
-    SurfaceOperationCatalog, SurfaceOperationErrorJson, SurfaceOperationRequestJson,
-    SurfaceOperationResponseJson, SurfaceRouteBinding, SurfaceRouteBindings,
-    SurfaceRouteManifestJson,
+    SurfaceAbiJson, SurfaceOperationCatalog, SurfaceOperationErrorJson,
+    SurfaceOperationRequestJson, SurfaceOperationResponseJson, SurfaceRouteBinding,
+    SurfaceRouteBindings, SurfaceRouteManifestJson, execute_project_surface_operation,
+    execute_project_surface_operation_read_only,
 };
 use marrow_run::{
     ProjectSessionError, ProjectSurfaceReadSession, ProjectSurfaceSession, ProjectSurfaceSnapshot,
@@ -19,7 +19,7 @@ use marrow_run::{
 };
 
 use crate::cmd_run::report_session_open_error;
-use crate::{report_simple_error, CheckFormat};
+use crate::{CheckFormat, report_simple_error};
 
 mod cors;
 use cors::CorsPolicy;
