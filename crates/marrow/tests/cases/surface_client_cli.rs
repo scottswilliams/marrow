@@ -344,6 +344,11 @@ fn client_typescript_generated_client_runs_against_live_surface_server() {
     );
     write(&app, "app.ts", GENERATED_CLIENT_APP);
 
+    // The whole point of the typed client is that it compiles in a strict TS project. Node's
+    // type stripping only erases syntax, so it cannot catch an undeclared type or a bad assignment;
+    // a real `tsc --strict` pass over the generated client and its consumer is the load-bearing gate.
+    type_check_strict(&app);
+
     {
         let (_server, addr) = spawn_surface_server_with_args(&root, &["--write"]);
         let output = Command::new(node)
@@ -518,6 +523,100 @@ fn node_with_type_stripping() -> Option<PathBuf> {
     }
     None
 }
+
+/// Type-check the generated client under `tsc --strict`, the gate that proves the client is genuinely
+/// typed rather than merely strip-able. Node's `--experimental-strip-types` only erases type syntax,
+/// so it cannot catch an undeclared type or a bad assignment; only a resolving type-checker does. The
+/// consumer is a Node-free stub that asserts each typed signature lands in its declared type (a
+/// branded id, the enum union, the non-null action result, a `Page` cursor), so the gate measures the
+/// client's types, not `@types/node`. The checker is `MARROW_TEST_TSC` if set, otherwise an
+/// `npx`-resolved `typescript@5`. When neither is reachable the gate is skipped, except under CI where
+/// a typed client that does not compile is a hard failure.
+fn type_check_strict(app_dir: &std::path::Path) {
+    write(app_dir, "strict-consumer.ts", STRICT_CONSUMER);
+    write(
+        app_dir,
+        "tsconfig.json",
+        concat!(
+            "{ \"compilerOptions\": { \"strict\": true, \"noEmit\": true, \"target\": \"ES2022\", ",
+            "\"module\": \"ESNext\", \"moduleResolution\": \"Bundler\", \"skipLibCheck\": true, ",
+            "\"allowImportingTsExtensions\": true, \"types\": [] }, ",
+            "\"include\": [\"marrow-client.ts\", \"strict-consumer.ts\"] }",
+        ),
+    );
+    let Some(mut command) = strict_type_checker() else {
+        if std::env::var_os("CI").is_some() {
+            panic!("generated TypeScript client strict gate requires tsc; set MARROW_TEST_TSC");
+        }
+        eprintln!("skipping generated TypeScript client strict gate; no tsc found");
+        return;
+    };
+    let output = command
+        .arg("--project")
+        .arg(app_dir.join("tsconfig.json"))
+        .current_dir(app_dir)
+        .output()
+        .expect("run tsc --strict");
+    assert!(
+        output.status.success(),
+        "generated client failed tsc --strict\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+}
+
+fn strict_type_checker() -> Option<Command> {
+    if let Some(tsc) = std::env::var_os("MARROW_TEST_TSC") {
+        return Some(Command::new(tsc));
+    }
+    let mut npx = Command::new("npx");
+    npx.args(["-y", "-p", "typescript@5", "tsc"]);
+    Command::new("npx")
+        .arg("--version")
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|_| npx)
+}
+
+/// A Node-free consumer that pins each typed signature of the `Books` client to its declared type, so
+/// `tsc --strict` fails if a brand, the enum union, the non-null action result, or the page cursor
+/// ever decays to `string`/`any`/`undefined`. It is never executed; it exists only to be type-checked.
+const STRICT_CONSUMER: &str = r#"import {
+  createClient,
+  booksId,
+  type BooksRecord,
+  type BooksCursor,
+} from "./marrow-client.ts";
+
+export async function pinTypes(client: ReturnType<typeof createClient>): Promise<void> {
+  const id = booksId(1);
+  const record: BooksRecord = await client.Books.get(id);
+  const title: string = record.title;
+  const author: string | null = record.author;
+
+  const page = await client.Books.byAuthor("Frank Herbert", 10);
+  const rows: BooksRecord[] = page.rows;
+  const cursor: BooksCursor | null = page.next;
+  await client.Books.byAuthor("Frank Herbert", 10, cursor);
+
+  const created: BooksRecord = await client.Books.create(id, { title: "a", author: "b" });
+  await client.Books.update(id, { author: "c" });
+  const removed: void = await client.Books.delete(id);
+
+  const retitled: { value: string; output: string } = await client.Books.retitle(1, "x");
+  const described: string = await client.Books.describe(1);
+
+  void title;
+  void author;
+  void rows;
+  void created;
+  void removed;
+  void retitled.value;
+  void retitled.output;
+  void described;
+}
+"#;
 
 /// The hand-authored E2E exercises the typed client end to end against a live `serve --write`:
 /// branded ids, name-keyed create, typed records, decoded computed-read and action values, a

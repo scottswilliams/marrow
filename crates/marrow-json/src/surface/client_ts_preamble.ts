@@ -275,13 +275,16 @@ function decodeWireScalar(value: SurfaceWireValueJson, kind: string): string {
   return field;
 }
 
-function decodeEnumValue(value: SurfaceWireValueJson, byLabel: Record<string, string>): string {
+function decodeEnumValue<Member extends string>(
+  value: SurfaceWireValueJson,
+  byLabel: Record<string, string>,
+): Member {
   if (value.kind !== "enum" || typeof value.member_catalog_id !== "string") {
     throw new Error("Marrow surface enum value is malformed");
   }
   for (const [label, catalogId] of Object.entries(byLabel)) {
     if (catalogId === value.member_catalog_id) {
-      return label;
+      return label as Member;
     }
   }
   throw new Error("Marrow surface enum member is not in the generated catalog");
@@ -355,43 +358,68 @@ function pageOf<Row, Cursor>(
   };
 }
 
-function actionResult<T>(
-  envelope: SurfaceOperationResponseJson,
-  decode: ((value: SurfaceWireValueJson) => T) | undefined,
-): { value: T | null; output: string } {
+function actionOutput(envelope: SurfaceOperationResponseJson): { output: string; value: unknown } {
   const result = (envelope.result as { result?: unknown }).result as
     | { output?: unknown; value?: unknown }
     | undefined;
   if (!result || typeof result.output !== "string") {
     throw new Error("Marrow surface action result is malformed");
   }
-  return { value: decodeOptionalValue(result.value, decode), output: result.output };
+  return { output: result.output, value: result.value };
 }
 
-function computedReadValue<T>(
+/// An action that returns no domain value: its `value` is always null, `output` carries any printed
+/// text. Decoding a present value here would be a wire contract violation, so reject it.
+function actionResultVoid(envelope: SurfaceOperationResponseJson): { value: null; output: string } {
+  const { output, value } = actionOutput(envelope);
+  if (value !== null && value !== undefined) {
+    throw new Error("Marrow surface action result carried an unexpected value");
+  }
+  return { value: null, output };
+}
+
+/// An action that returns a domain value: the value is required and decodes through `decode`.
+function actionResultValue<T>(
   envelope: SurfaceOperationResponseJson,
-  decode: ((value: SurfaceWireValueJson) => T) | undefined,
-): T | null {
+  decode: (value: SurfaceWireValueJson) => T,
+): { value: T; output: string } {
+  const { output, value } = actionOutput(envelope);
+  if (value === null || value === undefined) {
+    throw new Error("Marrow surface action result is missing its value");
+  }
+  return { value: decode(value as SurfaceWireValueJson), output };
+}
+
+function computedReadResult(envelope: SurfaceOperationResponseJson): unknown {
   const result = (envelope.result as { result?: unknown }).result as
     | { value?: unknown }
     | undefined;
   if (!result) {
     throw new Error("Marrow surface computed read result is malformed");
   }
-  return decodeOptionalValue(result.value, decode);
+  return result.value;
 }
 
-function decodeOptionalValue<T>(
-  value: unknown,
-  decode: ((value: SurfaceWireValueJson) => T) | undefined,
-): T | null {
+/// A computed read that yields a domain value: required and decoded to the typed value (D6 drops the
+/// always-empty `output`). A computed read forbids host effects, so the value is the whole result.
+function computedReadValue<T>(
+  envelope: SurfaceOperationResponseJson,
+  decode: (value: SurfaceWireValueJson) => T,
+): T {
+  const value = computedReadResult(envelope);
   if (value === null || value === undefined) {
-    return null;
-  }
-  if (!decode) {
-    throw new Error("Marrow surface result carried an unexpected value");
+    throw new Error("Marrow surface computed read is missing its value");
   }
   return decode(value as SurfaceWireValueJson);
+}
+
+/// A computed read declared to yield no value: its result is always null.
+function computedReadVoid(envelope: SurfaceOperationResponseJson): null {
+  const value = computedReadResult(envelope);
+  if (value !== null && value !== undefined) {
+    throw new Error("Marrow surface computed read carried an unexpected value");
+  }
+  return null;
 }
 
 function encodeEnumWrite(member: string, byLabel: Record<string, string>): SurfaceWireValueJson {
@@ -410,11 +438,17 @@ function requireMemberId(member: string, byLabel: Record<string, string>): strin
   return catalogId;
 }
 
-function encodeIdentityWrite(brand: { keys: SurfaceKeyJson[] }): SurfaceWireValueJson {
+function encodeIdentityWrite(brand: {
+  __store: string;
+  keys: SurfaceKeyJson[];
+}): SurfaceWireValueJson {
   return identityFromBrand(brand) as never;
 }
 
-function encodeIdentityArgument(brand: { keys: SurfaceKeyJson[] }): SurfaceWireValueJson {
+function encodeIdentityArgument(brand: {
+  __store: string;
+  keys: SurfaceKeyJson[];
+}): SurfaceWireValueJson {
   return { kind: "identity", ...identityFromBrand(brand) } as never;
 }
 

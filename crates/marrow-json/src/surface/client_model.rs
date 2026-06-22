@@ -75,6 +75,9 @@ pub(super) struct SurfaceClientSurface {
     pub records: Vec<SurfaceClientRecord>,
     pub enums: Vec<String>,
     pub methods: Vec<SurfaceMethod>,
+    /// The opaque page-cursor brand to declare for this surface, present only when the surface owns
+    /// a paged read. Page method signatures reference it, so it must be emitted exactly once here.
+    pub page_cursor_brand: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -466,11 +469,16 @@ impl ModelBuilder {
         disambiguate_method_names(&mut methods);
         enums.sort();
         enums.dedup();
+        let page_cursor_brand = methods
+            .iter()
+            .find(|method| matches!(method.result, SurfaceMethodResult::Page { .. }))
+            .map(|method| method.cursor_brand.clone());
         self.surfaces.push(SurfaceClientSurface {
             name: surface.name.clone(),
             records,
             enums,
             methods,
+            page_cursor_brand,
         });
     }
 

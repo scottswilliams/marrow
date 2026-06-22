@@ -239,6 +239,9 @@ fn render_store(output: &mut String, store: &SurfaceClientStore) {
 
 fn render_surfaces(output: &mut String, model: &SurfaceClientModel) {
     for surface in &model.surfaces {
+        if let Some(cursor_brand) = &surface.page_cursor_brand {
+            render_cursor_brand(output, cursor_brand);
+        }
         for enumeration in surface.enums.iter() {
             render_enum_type(output, model, enumeration);
         }
@@ -258,6 +261,16 @@ fn record_has_identity(record: &SurfaceClientRecord) -> bool {
         .fields
         .iter()
         .any(|field| field.label == "id" && field.member_catalog_id.is_none())
+}
+
+/// Emit a surface's opaque page-cursor brand. The cursor is preserved verbatim across a page round
+/// trip, so the brand is a distinct nominal alias over the wire cursor shape, not a decoded value.
+fn render_cursor_brand(output: &mut String, cursor_brand: &str) {
+    writeln!(
+        output,
+        "export type {cursor_brand} = SurfaceCursorJson & {{ readonly __brand: \"{cursor_brand}\" }};\n"
+    )
+    .expect("write cursor brand");
 }
 
 fn render_enum_type(output: &mut String, model: &SurfaceClientModel, enum_const: &str) {
@@ -519,19 +532,19 @@ fn method_decode_expr(method: &SurfaceMethod) -> String {
             format!("decode{}(recordOf(envelope))", record)
         }
         SurfaceMethodResult::Updated | SurfaceMethodResult::Deleted => "undefined".to_string(),
-        SurfaceMethodResult::Action { value } => {
-            let value_decode = match value {
-                Some(ty) => format!("(value) => {}", decode_value_expr(ty, "value")),
-                None => "undefined".to_string(),
-            };
-            format!("actionResult(envelope, {value_decode})")
-        }
+        SurfaceMethodResult::Action { value } => match value {
+            Some(ty) => {
+                let value_decode = decode_value_expr(ty, "value");
+                format!("actionResultValue(envelope, (value) => {value_decode})")
+            }
+            None => "actionResultVoid(envelope)".to_string(),
+        },
         SurfaceMethodResult::ComputedRead { value } => match value {
             Some(ty) => {
-                let value_decode = format!("(value) => {}", decode_value_expr(ty, "value"));
-                format!("computedReadValue(envelope, {value_decode})")
+                let value_decode = decode_value_expr(ty, "value");
+                format!("computedReadValue(envelope, (value) => {value_decode})")
             }
-            None => "computedReadValue(envelope, undefined)".to_string(),
+            None => "computedReadVoid(envelope)".to_string(),
         },
     }
 }
@@ -581,8 +594,11 @@ fn value_ts_type(ty: &SurfaceFieldType) -> String {
 fn decode_value_expr(ty: &SurfaceFieldType, source: &str) -> String {
     match ty {
         SurfaceFieldType::Scalar(scalar) => decode_scalar_expr(scalar, source),
-        SurfaceFieldType::Enum { encode_table, .. } => {
-            format!("decodeEnumValue({source}, {encode_table})")
+        SurfaceFieldType::Enum {
+            type_name,
+            encode_table,
+        } => {
+            format!("decodeEnumValue<{type_name}>({source}, {encode_table})")
         }
         SurfaceFieldType::Identity { decode_fn, .. } => {
             format!("decodeIdentityValue({source}, {decode_fn})")
