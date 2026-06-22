@@ -5,15 +5,17 @@ use crate::support;
 use crate::support_evolve;
 use marrow_store::cell::{CatalogId, DataCellKey};
 use marrow_store::key::SavedKey;
-use marrow_store::tree::{DataPathSegment, TreeStore};
+use marrow_store::tree::{
+    DataPathSegment, TreeEnumMember, TreeStore, decode_tree_enum_member, encode_tree_enum_member,
+};
 use marrow_store::value::{Scalar, encode_value};
 use support::{marrow, write};
 use support_evolve::{
     BRANCH_WORKFLOW_BASELINE_SOURCE, BRANCH_WORKFLOW_EVOLVED_SOURCE, LEAF_RETYPE_BASELINE_SOURCE,
     LEAF_RETYPE_RETIRE_OLD_SOURCE, LEAF_RETYPE_TRANSFORM_SOURCE, ORPHAN_REPAIR_SOURCE,
     ORPHAN_REPAIRED_TARGET_SOURCE, STORE_REKEY_BASELINE_SOURCE, STORE_REKEY_STRING_TARGET_SOURCE,
-    TRANSFORM_FAULT_BASELINE_SOURCE, TRANSFORM_FAULT_OVERFLOW_SOURCE, accepted_catalog_entry_id,
-    native_books_project, native_store_path, store_epoch,
+    TRANSFORM_FAULT_BASELINE_SOURCE, TRANSFORM_FAULT_OVERFLOW_SOURCE, accepted_catalog,
+    accepted_catalog_entry_id, native_books_project, native_store_path, store_epoch,
 };
 
 #[test]
@@ -516,6 +518,151 @@ fn populated_keyed_layer_to_unkeyed_group_fences_preview_apply_and_run() {
     );
 }
 
+const ENUM_UNSELECT_BASELINE_SOURCE: &str = "module books\n\
+     enum Status\n\
+     \x20   draft\n\
+     \x20   archived\n\
+     \x20   review\n\
+     resource Book\n\
+     \x20   required title: string\n\
+     \x20   required status: Status\n\
+     store ^books(id: int): Book\n\
+     pub fn seed()\n\
+     \x20   transaction\n\
+     \x20       ^books(1).title = \"Dune\"\n\
+     \x20       ^books(1).status = Status::archived\n";
+
+#[test]
+fn stored_enum_value_naming_removed_member_fences_preview_apply_and_run() {
+    const REMOVED_SOURCE: &str = "module books\n\
+         enum Status\n\
+         \x20   draft\n\
+         \x20   review\n\
+         resource Book\n\
+         \x20   required title: string\n\
+         \x20   required status: Status\n\
+         store ^books(id: int): Book\n\
+         pub fn noop()\n\
+         \x20   print(\"enum removed entry executed\")\n";
+
+    assert_seeded_enum_status_fences_after_source_change(
+        "evolve-unhappy-enum-member-removed",
+        REMOVED_SOURCE,
+        "enum removed entry executed",
+    );
+}
+
+#[test]
+fn stored_enum_value_naming_member_later_made_category_fences_preview_apply_and_run() {
+    const CATEGORY_SOURCE: &str = "module books\n\
+         enum Status\n\
+         \x20   draft\n\
+         \x20   category archived\n\
+         \x20       old\n\
+         \x20   review\n\
+         resource Book\n\
+         \x20   required title: string\n\
+         \x20   required status: Status\n\
+         store ^books(id: int): Book\n\
+         pub fn noop()\n\
+         \x20   print(\"enum category entry executed\")\n";
+
+    assert_seeded_enum_status_fences_after_source_change(
+        "evolve-unhappy-enum-member-category",
+        CATEGORY_SOURCE,
+        "enum category entry executed",
+    );
+}
+
+#[test]
+fn stored_enum_value_naming_bare_renamed_member_fences_preview_apply_and_run() {
+    const BARE_RENAME_SOURCE: &str = "module books\n\
+         enum Status\n\
+         \x20   draft\n\
+         \x20   stored\n\
+         \x20   review\n\
+         resource Book\n\
+         \x20   required title: string\n\
+         \x20   required status: Status\n\
+         store ^books(id: int): Book\n\
+         pub fn noop()\n\
+         \x20   print(\"enum rename entry executed\")\n";
+
+    assert_seeded_enum_status_fences_after_source_change(
+        "evolve-unhappy-enum-member-bare-rename",
+        BARE_RENAME_SOURCE,
+        "enum rename entry executed",
+    );
+}
+
+#[test]
+fn explicit_enum_member_rename_preserves_seeded_value() {
+    const EXPLICIT_RENAME_SOURCE: &str = "module books\n\
+         evolve\n\
+         \x20   rename Status::archived -> Status::stored\n\
+         enum Status\n\
+         \x20   draft\n\
+         \x20   stored\n\
+         \x20   review\n\
+         resource Book\n\
+         \x20   required title: string\n\
+         \x20   required status: Status\n\
+         store ^books(id: int): Book\n\
+         pub fn show()\n\
+         \x20   print(^books(1).status ?? Status::draft)\n";
+
+    let root = native_books_project(
+        "evolve-unhappy-enum-member-explicit-rename",
+        ENUM_UNSELECT_BASELINE_SOURCE,
+    );
+    let dir = root.to_str().unwrap();
+
+    let seed = marrow(&["run", "--entry", "books::seed", dir]);
+    assert_eq!(seed.status.code(), Some(0), "{seed:?}");
+    let old_status_id = accepted_catalog_entry_id(&root, "books::Book::status");
+    let old_archived_id = accepted_catalog_entry_id(&root, "books::Status::archived");
+    let old_status_bytes =
+        read_member_bytes(&root, "books::^books", &[SavedKey::Int(1)], &old_status_id)
+            .expect("seeded status bytes");
+    assert_seeded_archived_enum_bytes(&root, &old_status_bytes);
+    let old_epoch = store_epoch(&root).expect("baseline epoch");
+
+    write(&root, "src/books.mw", EXPLICIT_RENAME_SOURCE);
+    let apply = marrow(&["evolve", "apply", "--format", "json", dir]);
+    assert_eq!(apply.status.code(), Some(0), "{apply:?}");
+    let apply_json = support::json(apply.stdout);
+    assert_eq!(apply_json["kind"], serde_json::json!("evolve_apply"));
+    assert_eq!(apply_json["status"], serde_json::json!("applied"));
+    assert_eq!(
+        store_epoch(&root),
+        Some(old_epoch + 1),
+        "explicit enum-member rename advances the accepted catalog epoch"
+    );
+
+    let new_status_id = accepted_catalog_entry_id(&root, "books::Book::status");
+    let new_stored_id = accepted_catalog_entry_id(&root, "books::Status::stored");
+    assert_eq!(
+        new_status_id, old_status_id,
+        "the enum-typed field keeps its stable identity"
+    );
+    assert_eq!(
+        new_stored_id, old_archived_id,
+        "evolve rename moves the enum member's stable identity to the new spelling"
+    );
+    assert_eq!(
+        read_member_bytes(&root, "books::^books", &[SavedKey::Int(1)], &new_status_id),
+        Some(old_status_bytes),
+        "explicit rename leaves the stored enum-member bytes attached to the same field"
+    );
+
+    let show = marrow(&["run", "--entry", "books::show", dir]);
+    assert_eq!(show.status.code(), Some(0), "{show:?}");
+    assert_eq!(
+        String::from_utf8(show.stdout).expect("stdout utf8"),
+        "Status::stored\n"
+    );
+}
+
 #[test]
 fn worked_orphan_repair_is_bracketed_by_integrity() {
     let root = native_books_project("evolve-unhappy-orphan-repair", ORPHAN_REPAIR_SOURCE);
@@ -625,6 +772,147 @@ fn data_cells_snapshot(root: impl AsRef<Path>) -> Vec<(DataCellKey, Vec<u8>)> {
         })
         .expect("visit data cells");
     cells
+}
+
+fn assert_seeded_enum_status_fences_after_source_change(
+    case_name: &str,
+    changed_source: &str,
+    sentinel: &str,
+) {
+    let root = native_books_project(case_name, ENUM_UNSELECT_BASELINE_SOURCE);
+    let dir = root.to_str().unwrap();
+
+    let seed = marrow(&["run", "--entry", "books::seed", dir]);
+    assert_eq!(seed.status.code(), Some(0), "{seed:?}");
+    let old_status_id = accepted_catalog_entry_id(&root, "books::Book::status");
+    let old_status_bytes =
+        read_member_bytes(&root, "books::^books", &[SavedKey::Int(1)], &old_status_id)
+            .expect("seeded status bytes");
+    assert_seeded_archived_enum_bytes(&root, &old_status_bytes);
+    let old_epoch = store_epoch(&root);
+    let old_lock = fs::read(root.join("marrow.lock")).expect("read lock before enum source change");
+    let old_data_cells = data_cells_snapshot(&root);
+    let old_catalog = accepted_catalog(&root)
+        .to_json_pretty()
+        .expect("render accepted catalog snapshot");
+
+    write(&root, "src/books.mw", changed_source);
+    assert_enum_unselect_fences_preview_apply_and_run(
+        &root,
+        dir,
+        &old_status_id,
+        &old_status_bytes,
+        old_epoch,
+        &old_lock,
+        &old_data_cells,
+        &old_catalog,
+        sentinel,
+    );
+}
+
+fn assert_seeded_archived_enum_bytes(root: impl AsRef<Path>, status_bytes: &[u8]) {
+    let status_enum_id = catalog_id(root.as_ref(), "books::Status");
+    let archived_member_id = catalog_id(root.as_ref(), "books::Status::archived");
+    let expected = TreeEnumMember::new(status_enum_id, archived_member_id);
+    assert_eq!(
+        decode_tree_enum_member(status_bytes).expect("decode seeded enum status bytes"),
+        expected,
+        "seeded status bytes name books::Status::archived"
+    );
+    assert_eq!(
+        encode_tree_enum_member(&expected).expect("encode expected enum status bytes"),
+        status_bytes,
+        "seeded status bytes are the canonical native enum-member payload"
+    );
+}
+
+fn assert_enum_unselect_fences_preview_apply_and_run(
+    root: impl AsRef<Path>,
+    dir: &str,
+    old_status_id: &str,
+    old_status_bytes: &[u8],
+    old_epoch: Option<u64>,
+    old_lock: &[u8],
+    old_data_cells: &[(DataCellKey, Vec<u8>)],
+    old_catalog: &str,
+    sentinel: &str,
+) {
+    let root = root.as_ref();
+    assert_eq!(old_epoch, Some(1));
+    let assert_unchanged = |action: &str| {
+        assert_eq!(
+            store_epoch(root),
+            old_epoch,
+            "{action} does not advance the durable store epoch"
+        );
+        assert_eq!(
+            fs::read(root.join("marrow.lock")).expect("read lock after enum unselect fence"),
+            old_lock,
+            "{action} does not rewrite the committed lock"
+        );
+        assert_eq!(
+            accepted_catalog(root)
+                .to_json_pretty()
+                .expect("render accepted catalog after enum unselect fence"),
+            old_catalog,
+            "{action} does not rewrite the store's accepted catalog snapshot"
+        );
+        let data_cells = data_cells_snapshot(root);
+        assert_eq!(
+            data_cells.as_slice(),
+            old_data_cells,
+            "{action} leaves the complete data-family snapshot unchanged"
+        );
+        assert!(record_exists(root, "books::^books", &[SavedKey::Int(1)]));
+        assert_eq!(
+            read_member_bytes(root, "books::^books", &[SavedKey::Int(1)], old_status_id),
+            Some(old_status_bytes.to_vec()),
+            "{action} leaves the old enum-field bytes in place"
+        );
+    };
+
+    let preview = marrow(&["evolve", "preview", "--format", "json", dir]);
+    assert_eq!(preview.status.code(), Some(1), "{preview:?}");
+    let preview_json = support::json(preview.stdout);
+    assert_eq!(preview_json["status"], serde_json::json!("blocked"));
+    let blocking = preview_json["blocking"]
+        .as_array()
+        .expect("blocking reports");
+    assert!(
+        blocking.iter().any(|report| {
+            report["code"] == serde_json::json!("evolve.repair_required")
+                && report["data"]["catalog_id"] == serde_json::json!(old_status_id)
+        }),
+        "preview should report repair required for the populated enum field: {preview_json:#?}"
+    );
+    assert_unchanged("preview");
+
+    let apply = marrow(&["evolve", "apply", "--format", "json", dir]);
+    assert_eq!(apply.status.code(), Some(1), "{apply:?}");
+    let apply_json = support::json(apply.stdout);
+    assert_eq!(
+        apply_json["code"],
+        serde_json::json!("evolve.repair_required")
+    );
+    assert_eq!(
+        apply_json["data"]["catalog_id"],
+        serde_json::json!(old_status_id)
+    );
+    assert_unchanged("refused apply");
+
+    let run = marrow(&["run", "--entry", "books::noop", dir]);
+    assert_eq!(run.status.code(), Some(1), "{run:?}");
+    let stderr = String::from_utf8(run.stderr).expect("stderr utf8");
+    assert!(
+        stderr.contains("run.schema_drift"),
+        "the run fences on schema drift before executing the entry: {stderr}"
+    );
+    let stdout = String::from_utf8(run.stdout).expect("stdout utf8");
+    assert!(
+        !stdout.contains(sentinel),
+        "the schema drift fence must stop before entry output: {stdout}"
+    );
+    assert_unchanged("fenced run");
 }
 
 fn assert_group_keyed_reshape_fences_preview_apply_and_run(
