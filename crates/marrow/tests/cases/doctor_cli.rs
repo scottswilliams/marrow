@@ -608,7 +608,7 @@ fn doctor_text_reports_truncated_clean_sample() {
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let stdout = String::from_utf8(output.stdout).expect("doctor stdout utf8");
     assert!(
-        stdout.contains(&format!("ok: {dir} doctor found no findings")),
+        stdout.contains(&format!("ok: {dir} is healthy (no issues found)")),
         "{stdout}"
     );
     assert!(

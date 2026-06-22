@@ -71,6 +71,7 @@ fn preview_cmd(raw_args: &[String]) -> ExitCode {
     match preview(&program, &store) {
         Ok((witness, diagnostics)) => {
             render::preview(
+                &input.dir,
                 &witness,
                 &diagnostics,
                 &labels,
@@ -162,7 +163,7 @@ fn apply_cmd(raw_args: &[String]) -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(ApplyError::NotActivatable) => {
-            render::blocked(&witness, &diagnostics, &labels, input.format);
+            render::blocked(&input.dir, &witness, &diagnostics, &labels, input.format);
             ExitCode::FAILURE
         }
         Err(ApplyError::ApprovalMismatch) => {

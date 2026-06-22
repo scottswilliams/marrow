@@ -182,18 +182,18 @@ fn a_required_add_against_an_empty_store_auto_applies_on_run() {
     );
     let notice = String::from_utf8(rerun.stderr).expect("stderr utf8");
     let notice_lines: Vec<&str> = notice.lines().collect();
-    // Auto-apply advances the epoch and re-projects the committed lock, so the run announces both
-    // the epoch transition and the lock update.
-    let epoch_line = notice_lines
-        .iter()
-        .find(|line| {
-            line.contains(&epoch_before.to_string())
-                && line.contains(&(epoch_before + 1).to_string())
-        })
-        .unwrap_or_else(|| panic!("auto-apply must name the epoch transition: {notice:?}"));
+    // Auto-apply re-projects the committed lock and applies the saved-data change, so the run
+    // announces both in plain language. The epoch transition is a storage internal reserved for
+    // the JSON envelope, not the everyday human line.
     assert!(
-        epoch_line.contains("auto-applied"),
-        "the epoch notice names the auto-apply: {epoch_line:?}"
+        notice_lines
+            .iter()
+            .any(|line| line.contains("applied saved-data changes") && line.contains("marrow.lock")),
+        "auto-apply must announce the applied saved-data change in plain language: {notice:?}"
+    );
+    assert!(
+        !notice.contains("catalog epoch") && !notice.contains("auto-applied evolution"),
+        "the human auto-apply line must not leak the catalog epoch transition: {notice:?}"
     );
     assert!(
         notice_lines

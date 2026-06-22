@@ -292,6 +292,29 @@ fn an_unknown_data_subcommand_is_a_usage_failure_that_opens_no_store() {
 }
 
 #[test]
+fn data_with_only_a_project_directory_asks_for_a_subcommand() {
+    // `marrow data <projectdir>` puts the project path where the subcommand belongs. Because the
+    // token names a real directory, the developer plainly meant to inspect that project but forgot
+    // the subcommand, so the error names the missing subcommand rather than blaming the path.
+    let dir = support::temp_dir("usage-data-no-subcommand");
+    fs::write(
+        dir.join("marrow.json"),
+        r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": "data" } }"#,
+    )
+    .expect("write config");
+
+    let output = marrow(&["data", dir.to_str().unwrap()]);
+
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+    assert!(
+        stderr.contains("marrow data requires a subcommand")
+            && stderr.contains("roots, stats, dump, integrity, recover, or get"),
+        "a bare project path must ask for a subcommand, not read as an unknown one: {stderr}"
+    );
+}
+
+#[test]
 fn removed_data_flag_is_an_unknown_option_before_project_load() {
     let dir = project_that_must_not_be_loaded("usage-check-data");
 

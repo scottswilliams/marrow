@@ -287,11 +287,8 @@ pub enum ProjectSessionNotice {
 impl ProjectSessionNotice {
     pub fn message(&self) -> String {
         match self {
-            Self::AutoApplied {
-                from_epoch,
-                to_epoch,
-            } => {
-                format!("auto-applied evolution: catalog epoch {from_epoch} -> {to_epoch}")
+            Self::AutoApplied { .. } => {
+                "applied saved-data changes from your source and refreshed marrow.lock".to_string()
             }
             Self::LockCreated => {
                 "wrote marrow.lock (commit this file alongside your source)".to_string()

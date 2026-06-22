@@ -231,8 +231,10 @@ fn evolve_preview_reports_when_there_is_nothing_to_discharge() {
     assert_eq!(text.status.code(), Some(0), "{text:?}");
     let stdout = String::from_utf8(text.stdout).expect("stdout utf8");
     assert!(
-        stdout.contains("nothing to discharge"),
-        "text preview must make the no-work discharge explicit: {stdout}"
+        stdout.contains("safe to apply")
+            && stdout.contains("no records to backfill or transform")
+            && stdout.contains("marrow evolve apply"),
+        "text preview must say the evolution is safe and name the next command: {stdout}"
     );
 
     let json = marrow(&[
@@ -399,6 +401,74 @@ fn evolve_preview_reports_destructive_approval_requirement()
         "{report:#?}"
     );
     assert_eq!(report["data"]["populated"], serde_json::json!(1));
+
+    Ok(())
+}
+
+/// A blocked `--scaffold` preview already printed the parseable evolve block, so pointing back at
+/// `--scaffold` would loop. Instead it gives the real next step: paste the block, then apply. A
+/// blocked preview without `--scaffold` still points at `--scaffold` to print the block.
+#[test]
+fn evolve_preview_scaffold_suppresses_the_circular_hint() -> Result<(), Box<dyn std::error::Error>>
+{
+    let root = native_books_project(
+        "evolve-preview-scaffold-hint",
+        "module books\n\
+         resource Book\n\
+         \x20   required title: string\n\
+         \x20   subtitle: string\n\
+         store ^books(id: int): Book\n\
+         pub fn add(title: string): Id(^books)\n\
+         \x20   return nextId(^books)\n",
+    );
+    let accepted = commit_catalog(&root);
+    let accepted_place = root_place(&accepted, "books")?;
+    {
+        let store = open_native_store(&root);
+        seed_title_only(&store, &accepted_place, 1, "Dune");
+        seed_member(
+            &store,
+            &accepted_place,
+            1,
+            "subtitle",
+            Scalar::Str("Appendix".into()),
+        );
+    }
+    // Drop the populated `subtitle` so the preview is blocked on a repair obligation.
+    write(
+        &root,
+        "src/books.mw",
+        "module books\n\
+         resource Book\n\
+         \x20   required title: string\n\
+         store ^books(id: int): Book\n\
+         pub fn add(title: string): Id(^books)\n\
+         \x20   return nextId(^books)\n",
+    );
+
+    let scaffold = marrow(&["evolve", "preview", "--scaffold", root.to_str().unwrap()]);
+    assert_eq!(scaffold.status.code(), Some(1), "{scaffold:?}");
+    let scaffold_stderr = String::from_utf8(scaffold.stderr).expect("stderr utf8");
+    // The trailing breadcrumb is the circular line under test, not the repair-required message
+    // body (which legitimately teaches the scaffold command). With --scaffold set it must give the
+    // real next step rather than re-suggesting --scaffold.
+    assert!(
+        !scaffold_stderr.contains("hint: run `marrow evolve preview --scaffold"),
+        "the scaffold breadcrumb must not tell the dev to rerun the command they just ran: {scaffold_stderr}"
+    );
+    assert!(
+        scaffold_stderr.contains("next: paste the evolve block")
+            && scaffold_stderr.contains("marrow evolve apply"),
+        "the scaffold next step must point at pasting the block then applying: {scaffold_stderr}"
+    );
+
+    let plain = marrow(&["evolve", "preview", root.to_str().unwrap()]);
+    assert_eq!(plain.status.code(), Some(1), "{plain:?}");
+    let plain_stderr = String::from_utf8(plain.stderr).expect("stderr utf8");
+    assert!(
+        plain_stderr.contains("hint: run `marrow evolve preview --scaffold"),
+        "a blocked preview without --scaffold still points at it to print the block: {plain_stderr}"
+    );
 
     Ok(())
 }

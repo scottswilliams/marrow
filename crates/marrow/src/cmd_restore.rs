@@ -12,8 +12,8 @@ use marrow_run::SystemNondeterminism;
 use marrow_store::tree::TreeStore;
 
 use crate::backup::{
-    BackupError, BackupPrologue, CatalogFingerprintRef, RestoreReceipt, RestoreTargetMode,
-    read_backup_prologue, restore_backup_with_prologue,
+    BackupError, BackupPrologue, CatalogFingerprintRef, RestoreTargetMode, read_backup_prologue,
+    restore_backup_with_prologue,
 };
 use crate::{
     CheckFormat, load_config_with_format, native_store_path, report_project, report_simple_error,
@@ -88,7 +88,7 @@ pub(crate) fn restore(args: &[String]) -> ExitCode {
         &mut nondeterminism,
         verify_restored_data,
     ) {
-        Ok(report) => {
+        Ok(_) => {
             // The restored store now holds exactly the backup's entities, the
             // user-facing record count that `data stats records:` and the backup line
             // also report. The manifest's physical cell-frame count stays internal.
@@ -106,7 +106,7 @@ pub(crate) fn restore(args: &[String]) -> ExitCode {
             if let Err(code) = crate::reproject_committed_lock(&dir, &store, &program, format) {
                 return code;
             }
-            report_restore_text(&input, records, &report);
+            report_restore_text(&input, records);
             ExitCode::SUCCESS
         }
         Err(error) => {
@@ -277,20 +277,8 @@ fn parse_count_value(value: &str) -> Result<u64, ExitCode> {
     })
 }
 
-fn report_restore_text(input: &str, records: u64, report: &crate::backup::RestoreReport) {
-    match report.receipt {
-        RestoreReceipt::EmptyOnly => {
-            println!("ok: restored {records} record(s) from {input}");
-        }
-        RestoreReceipt::Replace {
-            expected_live_records,
-            replaced_live_records,
-        } => {
-            println!(
-                "ok: restored {records} record(s) from {input}; receipt: mode=replace expected_live_records={expected_live_records} replaced_live_records={replaced_live_records}"
-            );
-        }
-    }
+fn report_restore_text(input: &str, records: u64) {
+    println!("ok: restored {records} record(s) from {input}");
 }
 
 fn report_backup_error(error: BackupError, format: CheckFormat) -> ExitCode {

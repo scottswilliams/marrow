@@ -223,6 +223,7 @@ fn discharge_is_no_work(verdict: &Verdict) -> bool {
 }
 
 pub(super) fn preview(
+    dir: &str,
     witness: &EvolutionWitness,
     diagnostics: &[RepairDiagnostic],
     labels: &SourceLabels,
@@ -233,38 +234,26 @@ pub(super) fn preview(
         CheckFormat::Text if scaffold => {
             print!("{}", scaffold_source(witness, diagnostics, labels));
             if !witness.is_activatable() {
-                render_blocking_text(witness, diagnostics, labels);
+                render_blocking_text(witness, diagnostics, labels, scaffold, dir);
             }
         }
         CheckFormat::Text => {
-            println!("evolution preview");
-            println!(
-                "status: {}",
-                if witness.is_activatable() {
-                    "activatable"
+            if witness.is_activatable() {
+                let backfill = witness.counts.records_to_backfill;
+                let transform = witness.counts.records_to_transform;
+                if backfill == 0 && transform == 0 {
+                    println!(
+                        "This evolution is safe to apply (no records to backfill or transform)."
+                    );
                 } else {
-                    "blocked"
+                    println!("This evolution is safe to apply.");
+                    println!("records to backfill: {backfill}");
+                    println!("records to transform: {transform}");
                 }
-            );
-            println!("source digest: {}", witness.source_digest);
-            println!("accepted epoch: {}", witness.accepted_catalog.epoch);
-            if let Some(proposal) = &witness.proposal_catalog {
-                println!("proposal epoch: {}", proposal.epoch);
-            }
-            println!("records scanned: {}", witness.counts.scanned_records);
-            println!(
-                "records to backfill: {}",
-                witness.counts.records_to_backfill
-            );
-            println!(
-                "records to transform: {}",
-                witness.counts.records_to_transform
-            );
-            if nothing_to_discharge(witness) {
-                println!("nothing to discharge");
-            }
-            if !witness.is_activatable() {
-                render_blocking_text(witness, diagnostics, labels);
+                println!("Next: marrow evolve apply {dir}");
+            } else {
+                println!("This evolution cannot be applied yet:");
+                render_blocking_text(witness, diagnostics, labels, scaffold, dir);
             }
         }
         CheckFormat::Json | CheckFormat::Jsonl => {
@@ -337,6 +326,7 @@ pub(super) fn preview(
 }
 
 pub(super) fn blocked(
+    dir: &str,
     witness: &EvolutionWitness,
     diagnostics: &[RepairDiagnostic],
     labels: &SourceLabels,
@@ -344,7 +334,7 @@ pub(super) fn blocked(
 ) {
     match format {
         CheckFormat::Text => {
-            render_blocking_text(witness, diagnostics, labels);
+            render_blocking_text(witness, diagnostics, labels, false, dir);
         }
         CheckFormat::Json | CheckFormat::Jsonl => {
             write_json(report_envelope(&first_blocking_report(
@@ -375,13 +365,23 @@ fn render_blocking_text(
     witness: &EvolutionWitness,
     diagnostics: &[RepairDiagnostic],
     labels: &SourceLabels,
+    scaffold: bool,
+    dir: &str,
 ) {
     for report in blocking_reports(witness, diagnostics, labels) {
         eprintln!("{}: {}", report.code, report.message);
     }
-    eprintln!(
-        "hint: run `marrow evolve preview --scaffold <projectdir>` to print parseable evolve blocks"
-    );
+    // The scaffold flag already printed the parseable evolve blocks above, so pointing back at it
+    // would loop. Give the real next step instead; without the flag, point at it to get the blocks.
+    if scaffold {
+        eprintln!(
+            "next: paste the evolve block above into your source, then run `marrow evolve apply {dir}`"
+        );
+    } else {
+        eprintln!(
+            "hint: run `marrow evolve preview --scaffold {dir}` to print parseable evolve blocks"
+        );
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -629,19 +629,17 @@ pub(super) fn apply_success(outcome: &ApplyOutcome, recovery: &RecoveryPoint, fo
         && receipt.indexes_rebuilt == 0;
     match format {
         CheckFormat::Text if nothing_to_apply => {
-            println!("nothing to apply");
-            println!("catalog epoch: {}", receipt.catalog_epoch);
-            println!("commit id: {}", receipt.commit_id);
+            println!("Nothing to apply; the store already matches your source.");
             render_recovery_text(recovery);
         }
         CheckFormat::Text => {
-            println!("applied evolution");
-            println!("catalog epoch: {}", receipt.catalog_epoch);
-            println!("commit id: {}", receipt.commit_id);
-            println!("records backfilled: {}", receipt.records_backfilled);
-            println!("records transformed: {}", receipt.records_transformed);
-            println!("records retired: {}", receipt.records_retired);
-            println!("indexes rebuilt: {}", receipt.indexes_rebuilt);
+            println!("Evolution applied. marrow.lock updated - commit it.");
+            let records_changed =
+                receipt.records_backfilled + receipt.records_transformed + receipt.records_retired;
+            println!(
+                "{} record(s) changed, {} index(es) rebuilt.",
+                records_changed, receipt.indexes_rebuilt
+            );
             render_recovery_text(recovery);
         }
         CheckFormat::Json | CheckFormat::Jsonl => {

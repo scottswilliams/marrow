@@ -86,6 +86,11 @@ fn fmt_check_fails_on_unformatted_source() {
     assert_eq!(output.status.code(), Some(1));
     let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
     assert!(stderr.contains(NOT_FORMATTED_GOLDEN), "{stderr}");
+    // The finding must teach the fix: the exact write command for this file.
+    assert!(
+        stderr.contains(&format!("marrow fmt --write {}", path.display())),
+        "the not-formatted finding must point at the fixing command: {stderr}"
+    );
 }
 
 #[test]

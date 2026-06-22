@@ -34,9 +34,8 @@ mod restore;
 pub(crate) use artifact::create_backup_artifact;
 pub(crate) use create::create_backup;
 pub(crate) use restore::{
-    BackupPrologue, RestoreReceipt, RestoreReport, RestoreTargetMode,
-    mount_backup_for_evolution_preview, read_backup_prologue, restore_backup_with_prologue,
-    validate_backup_archive,
+    BackupPrologue, RestoreTargetMode, mount_backup_for_evolution_preview, read_backup_prologue,
+    restore_backup_with_prologue, validate_backup_archive,
 };
 
 use marrow_check::CheckedProgram;

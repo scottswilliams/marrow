@@ -54,6 +54,7 @@ With --locked, a stale or missing marrow.lock is a fatal error for CI rather tha
 
     let Some(target) = target else {
         eprintln!("missing project directory");
+        eprintln!("usage: marrow check [--format text|json|jsonl] [--locked] <projectdir>");
         return ExitCode::from(2);
     };
     if let Err(code) = crate::reject_bare_file_target("check", &target) {
@@ -87,8 +88,7 @@ const CHECK_STALE_LOCK: &str = "check.stale_lock";
 /// legitimate first run, which has no store and no durable shape to lock yet, checks cleanly.
 const CHECK_LOCK_MISSING: &str = "check.lock_missing";
 
-const MISSING_LOCK_MESSAGE: &str =
-    "marrow.lock is missing but saved data exists; run marrow run (or marrow evolve apply) \
+const MISSING_LOCK_MESSAGE: &str = "marrow.lock is missing but saved data exists; run marrow run (or marrow evolve apply) \
      to regenerate marrow.lock, then commit it";
 
 /// A `marrow check --locked` failure: the project declares a surface and a `client` output, but
@@ -251,8 +251,7 @@ const STALE_LOCK_MESSAGE: &str =
 
 /// The fatal `--locked` stale-lock message. Unlike the advisory note, this gates CI, so it states
 /// the consequence and the exact two-step fix a developer must run before the gate passes.
-const STALE_LOCK_FATAL_MESSAGE: &str =
-    "marrow.lock is behind the current source; CI requires a committed fresh lock - \
+const STALE_LOCK_FATAL_MESSAGE: &str = "marrow.lock is behind the current source; CI requires a committed fresh lock - \
      run marrow run and commit marrow.lock";
 
 /// The stale-lock condition as a structured diagnostic for the failed-check envelope. It carries

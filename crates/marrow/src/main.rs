@@ -976,7 +976,7 @@ pub(crate) fn parse_format_flag(
         return Err(ExitCode::from(2));
     };
     let Some(parsed) = CheckFormat::parse(value) else {
-        eprintln!("unknown format: {value}");
+        eprintln!("unknown format: {value} (expected text, json, or jsonl)");
         return Err(ExitCode::from(2));
     };
     *format = parsed;
@@ -984,7 +984,7 @@ pub(crate) fn parse_format_flag(
 }
 
 pub(crate) fn unknown_option(command: &str, value: &str) -> ExitCode {
-    eprintln!("unknown {command} option: {value}");
+    eprintln!("unknown {command} option: {value}; run marrow {command} --help for usage");
     ExitCode::from(2)
 }
 

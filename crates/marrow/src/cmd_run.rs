@@ -119,7 +119,7 @@ pub(crate) fn run(args: &[String]) -> ExitCode {
                     CheckFormat::Text => dry_run::ReportFormat::Text,
                     CheckFormat::Json => dry_run::ReportFormat::Json,
                     CheckFormat::Jsonl => {
-                        eprintln!("unknown format: jsonl");
+                        eprintln!("unknown format: jsonl (expected text or json)");
                         return ExitCode::from(2);
                     }
                 };

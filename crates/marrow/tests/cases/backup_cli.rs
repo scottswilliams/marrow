@@ -416,11 +416,11 @@ fn restore_replace_replays_backup_after_confirmed_live_count() {
         restore_stdout.contains(&format!("restored {backup_records} record(s)")),
         "{restore_stdout}"
     );
+    // The success line is the restored record count alone; the internal verification receipt
+    // (mode/expected/replaced live records) is no longer leaked into the human output.
     assert!(
-        restore_stdout.contains(&format!(
-            "mode=replace expected_live_records={backup_records} replaced_live_records={backup_records}"
-        )),
-        "replace restore emits an audit receipt: {restore_stdout}"
+        !restore_stdout.contains("receipt:") && !restore_stdout.contains("expected_live_records"),
+        "the success line must not leak the internal restore receipt: {restore_stdout}"
     );
     assert_eq!(
         dump_cells(&root),
@@ -541,8 +541,8 @@ fn record_count_is_one_coherent_entity_count_across_stats_backup_and_restore() {
         "{restore_stdout}"
     );
     assert!(
-        restore_stdout.contains("mode=replace expected_live_records=1 replaced_live_records=1"),
-        "{restore_stdout}"
+        !restore_stdout.contains("receipt:") && !restore_stdout.contains("expected_live_records"),
+        "the success line must not leak the internal restore receipt: {restore_stdout}"
     );
 
     // The physical-cell count never satisfies the guard: `--count 2` is refused with

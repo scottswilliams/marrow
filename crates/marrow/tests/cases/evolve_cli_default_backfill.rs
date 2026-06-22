@@ -323,11 +323,11 @@ fn evolve_apply_noop_when_store_already_at_target() -> Result<(), Box<dyn std::e
     assert_eq!(second.status.code(), Some(0), "no-op apply: {second:?}");
     let stdout = String::from_utf8(second.stdout).expect("stdout utf8");
     assert!(
-        stdout.contains("nothing to apply"),
+        stdout.contains("Nothing to apply"),
         "no-op apply output must say no work was applied: {stdout}"
     );
     assert!(
-        !stdout.contains("applied evolution"),
+        !stdout.contains("Evolution applied"),
         "no-op apply output must not imply a new activation was applied: {stdout}"
     );
 

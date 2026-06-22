@@ -739,7 +739,7 @@ fn render_report(
 
 fn render_text(dir: &str, findings: &[Finding], integrity_sample: Option<IntegritySample>) {
     if findings.is_empty() {
-        println!("ok: {dir} doctor found no findings");
+        println!("ok: {dir} is healthy (no issues found)");
     } else {
         for finding in findings {
             println!(

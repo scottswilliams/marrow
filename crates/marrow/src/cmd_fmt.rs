@@ -176,7 +176,7 @@ fn fmt_one(file: &str, source: &str, mode: FmtMode) -> Result<FmtOutcome, ()> {
             if source == formatted {
                 Ok(FmtOutcome::Unchanged)
             } else {
-                eprintln!("{file}: not formatted");
+                eprintln!("{file}: not formatted; run marrow fmt --write {file} to format it");
                 Ok(FmtOutcome::NeedsFormatting)
             }
         }

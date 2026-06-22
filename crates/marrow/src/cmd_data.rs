@@ -356,8 +356,17 @@ command; the other subcommands never create or modify the store.
         "recover" => data_recover(rest),
         "get" => get::data_get(rest),
         other => {
-            eprintln!("unknown data subcommand: {other}");
-            eprintln!("expected `roots`, `stats`, `dump`, `integrity`, `recover`, or `get`");
+            // A bare `marrow data <projectdir>` puts the project path where a subcommand belongs,
+            // so the path reads as an unknown subcommand. When the token names a real directory,
+            // the developer meant to inspect that project but omitted the subcommand: say so.
+            if std::path::Path::new(other).is_dir() {
+                eprintln!(
+                    "marrow data requires a subcommand: roots, stats, dump, integrity, recover, or get"
+                );
+            } else {
+                eprintln!("unknown data subcommand: {other}");
+                eprintln!("expected `roots`, `stats`, `dump`, `integrity`, `recover`, or `get`");
+            }
             ExitCode::from(2)
         }
     }
