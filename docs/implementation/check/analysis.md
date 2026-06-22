@@ -137,6 +137,10 @@ from the checked program or snapshot:
   intrinsic signatures from the checker-owned builtin and scalar-conversion
   vocabularies plus `Id` and `Error`. It excludes namespace-qualified standard
   library operations and removed builtins.
+- `tooling::source_saved_root_completion_fact(program)` returns project-wide
+  saved-root completion candidates with root segment, owning module, resource
+  name, and declaration docs. Editor callers render protocol items from those
+  semantic fields instead of walking module stores.
 - `CheckedProgram::checked_read_only_expression` parses and checks an injected
   expression against one checked module, rejects writes, host effects, and
   unindexed saved collection lookups with source-level diagnostic codes, and
@@ -221,7 +225,8 @@ add only transport availability and request-envelope concerns around those DTOs.
 | `crates/marrow-check/src/program.rs` | Checked-program artifact plus analysis APIs for effect closure, per-entry run facts, durable footprints, cost shapes, store-open mode, checked read-only expressions, and runtime statement stop points. |
 | `crates/marrow-check/src/analysis/cursor.rs` | Cursor `type_at`/`scope_at`: replay the checker's binding primitives to rebuild lexical scope, infer the tightest covering expression; records no diagnostics. |
 | `crates/marrow-check/src/evolution/preview.rs` | Schema-only and backup-backed `WitnessFactSet` preview facts for tooling. |
-| `crates/marrow-check/src/tooling/mod.rs` | Tooling facade: re-exports the data/integrity API; defines `ToolingError` (Path vs Store). |
+| `crates/marrow-check/src/tooling/mod.rs` | Tooling facade: re-exports completion, signature, symbol, data, and integrity facts; defines `ToolingError` (Path vs Store). |
+| `crates/marrow-check/src/tooling/completion.rs` | Source completion facts for type candidates, namespace members, and saved-root candidates. |
 | `crates/marrow-check/src/tooling/signatures.rs` | Editor callable facts and renderable signature inputs: active/batch callee context re-exports, intrinsic callable signatures, and resource constructors. |
 | `crates/marrow-check/src/tooling/symbols.rs` | Source-symbol facts for editor outlines and workspace search: parsed document-outline DTOs plus checked functions/constants and catalog-backed declarations with Marrow-owned kind, display name, file/span, and container ownership. |
 | `crates/marrow-check/src/tooling/data/mod.rs` | Data tooling root and shared value types (`ResolvedDataPath`, `DataChild`, `DeclaredDataChild`, `SourceDataPathSegment`, `DataEntry`, `DataWalkPage`, `DataReadResult`, `DataRecord`, `StampedData`, `DataSnapshotStamp`, `DataCommitStamp`, `KeyMismatch`, `MAX_PREVIEW_ITEMS`, `DEFAULT_VALUE_PREVIEW_LIMIT`, `MAX_VALUE_PREVIEW_LIMIT`). |

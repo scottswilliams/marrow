@@ -27,6 +27,19 @@ pub struct SourceTypeCompletionFact {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceSavedRootCompletionFact {
+    pub candidates: Vec<SourceSavedRootCompletionCandidate>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceSavedRootCompletionCandidate {
+    pub root: String,
+    pub module: String,
+    pub resource_name: String,
+    pub docs: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SourceTypeCompletionCandidate {
     Builtin {
         spelling: SourceTypeBuiltin,
@@ -209,11 +222,40 @@ pub fn source_namespace_completion_file_fact(
     namespace_completion_fact_for_expanded_qualifier(program, file, source_file, &expanded)
 }
 
+pub fn source_saved_root_completion_fact(
+    program: &CheckedProgram,
+) -> SourceSavedRootCompletionFact {
+    SourceSavedRootCompletionFact {
+        candidates: program
+            .modules
+            .iter()
+            .flat_map(|module| {
+                module
+                    .stores
+                    .iter()
+                    .map(|store| source_saved_root_completion_candidate(module, store))
+            })
+            .collect(),
+    }
+}
+
 fn stores(program: &CheckedProgram) -> impl Iterator<Item = &StoreSchema> {
     program
         .modules
         .iter()
         .flat_map(|module| module.stores.iter())
+}
+
+fn source_saved_root_completion_candidate(
+    module: &CheckedModule,
+    store: &StoreSchema,
+) -> SourceSavedRootCompletionCandidate {
+    SourceSavedRootCompletionCandidate {
+        root: store.root.clone(),
+        module: module.name.clone(),
+        resource_name: store.resource.clone(),
+        docs: store.docs.clone(),
+    }
 }
 
 fn imported_resource_completions(
