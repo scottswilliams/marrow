@@ -912,6 +912,11 @@ pub struct EvolveTransform {
     pub file: PathBuf,
     pub target_path: String,
     pub body_span: SourceSpan,
+    /// The canonical rendering of the transform body. With the target id, it forms the
+    /// per-transform identity that the apply stamp records and the discharge consults, so a
+    /// discharged transform stays discharged under an unrelated shape edit and a changed body
+    /// reads as a fresh obligation.
+    pub(crate) body_text: String,
     pub(crate) runtime_body: Option<CheckedBody>,
 }
 

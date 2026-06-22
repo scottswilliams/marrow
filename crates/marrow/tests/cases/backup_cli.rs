@@ -676,6 +676,7 @@ fn stale_catalog_snapshot() -> CatalogMetadata {
             accepted_key_shape: Some("int".to_string()),
             accepted_index_shape: None,
             accepted_struct: Some("old::Book".to_string()),
+            applied_transform: None,
         }],
     )
     .expect("catalog builds")

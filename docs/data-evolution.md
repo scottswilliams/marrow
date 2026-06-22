@@ -334,6 +334,13 @@ identity and the migrated data carry the result forward, and a stale block left
 in source only describes work already done. Keep a block only while its apply is
 still pending.
 
+A kept block does not re-run its work. An `evolve transform` recomputes an
+existing member without changing its shape, so apply records the consuming
+evolution on the target's accepted identity and advances the epoch. A later
+`evolve preview` over the same source then reports nothing to discharge, a repeat
+`evolve apply` is a no-op, and `marrow run` proceeds: the migration is recognized
+as already applied rather than re-executed.
+
 ## Index Rebuilds
 
 Adding an `index` to a store that already holds data creates a rebuild

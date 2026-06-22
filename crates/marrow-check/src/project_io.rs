@@ -599,6 +599,7 @@ mod tests {
                 accepted_key_shape: None,
                 accepted_index_shape: None,
                 accepted_struct: None,
+                applied_transform: None,
             }
         }
 
@@ -765,6 +766,7 @@ mod tests {
                 accepted_key_shape: None,
                 accepted_index_shape: None,
                 accepted_struct: None,
+                applied_transform: None,
             };
             LockLedgerTombstone::from_reserved_entry(&reserved, high_water)
         }
@@ -901,6 +903,7 @@ mod tests {
                     accepted_key_shape: None,
                     accepted_index_shape: None,
                     accepted_struct: None,
+                    applied_transform: None,
                 }],
             )
             .expect("snapshot builds");

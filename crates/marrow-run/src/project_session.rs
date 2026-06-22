@@ -1369,19 +1369,58 @@ fn open_run_store(
         return Err(ProjectSessionError::Fence(behind));
     }
     match fence_run(checked.program(), &store.store) {
+        // A shape-neutral in-place transform recomputes an already-accepted member, so it
+        // moves neither the catalog epoch nor the source digest the fence reads. The fence
+        // therefore agrees even though the migration is still pending. A pending evolution
+        // blocks run until applied or withdrawn, so route a live in-place transform through
+        // the discharge path the same way schema drift does: it auto-applies when the
+        // affected store is empty and fences when it has records to rewrite.
+        Ok(()) if marrow_check::evolution::has_pending_transform(checked.program()) => {
+            divert_to_discharge(
+                root,
+                config,
+                checked,
+                store,
+                isolate_writes,
+                admission,
+                notices,
+            )
+        }
         Ok(()) => {
             validate_source_analysis_admission(&checked.snapshot, admission)?;
             reproject_and_finish_open(root, checked, store, isolate_writes)
         }
-        Err(FenceError::SchemaDrift) => {
-            validate_no_source_analysis_admission(admission)?;
-            if isolate_writes {
-                return classify_dry_run_drift(root, config, checked, store, notices);
-            }
-            auto_apply_then_reopen(root, config, checked, store, isolate_writes, notices)
-        }
+        Err(FenceError::SchemaDrift) => divert_to_discharge(
+            root,
+            config,
+            checked,
+            store,
+            isolate_writes,
+            admission,
+            notices,
+        ),
         Err(error) => Err(ProjectSessionError::Fence(error)),
     }
+}
+
+/// Discharge a pending evolution on the run path: auto-apply it when it mutates no stored
+/// record, otherwise fence with the obligation. This is the same gateway schema drift
+/// takes, factored out so a shape-neutral in-place transform — which the fence cannot
+/// see — reaches it too. An admitted session cannot serve a pending evolution.
+fn divert_to_discharge(
+    root: &Path,
+    config: &ProjectConfig,
+    checked: CheckedSourceProgram,
+    store: NativeRunStore,
+    isolate_writes: bool,
+    admission: Option<&SourceAnalysisAdmission>,
+    notices: &mut Vec<ProjectSessionNotice>,
+) -> Result<OpenRunStore, ProjectSessionError> {
+    validate_no_source_analysis_admission(admission)?;
+    if isolate_writes {
+        return classify_dry_run_drift(root, config, checked, store, notices);
+    }
+    auto_apply_then_reopen(root, config, checked, store, isolate_writes, notices)
 }
 
 fn open_memory_preview_store(

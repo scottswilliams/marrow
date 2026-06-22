@@ -50,8 +50,9 @@ Keys are order-preserving; values are not. `SavedKey` encodes scalars so byte-le
 - Scans are always bounded and resumable. A truncated page with no resume key is treated as corrupt scan state (`store.cursor`), never as the end.
 - Catalog snapshot integrity is independent of declaration order. New headers
   store a digest over entries sorted by kind tag, path, stable ID, aliases,
-  lifecycle tag, accepted store-key shape, accepted store-index shape, and
-  accepted structural signature. Reads accept only that canonical digest.
+  lifecycle tag, accepted store-key shape, accepted store-index shape, accepted
+  structural signature, and the applied-transform mark. Reads accept only that
+  canonical digest.
 - Corruption is fail-closed and typed: malformed keys, value frames, metadata, or backup frames decode to `StoreError::Corruption`, never partial values. Decoders enforce exact-length consumption and bounded list counts.
 - On-disk format is version-gated with no automatic conversion: a mismatched `FORMAT_VERSION` is refused, a non-empty redb file with no `marrow.meta` table is corruption, and a read/write lock conflict is `store.locked`.
 - Native open fails closed, never crashes: `RedbStore::open`/`open_read_only` run the redb open and its structural probe under a panic backstop (`catch_open`), so a truncated or torn body that drives redb into a layout assertion or btree `unreachable!()` becomes `store.corruption` instead of aborting the process. Redb open errors map by damage (`map_open_error`): a torn body to corruption, an unclean-shutdown repair-needed file to the typed `store.recovery_required` (a write-capable open attempts the replay and reports whether the store opened), a read/write holder conflict to `store.locked`, everything else to `store.io`.

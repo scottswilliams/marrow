@@ -33,7 +33,10 @@ pub use diagnostic::{
     ObsoleteOperator, ParseDiagnosticReason, ReservedSyntax, Severity, SourceSpan,
     UnsupportedSyntax, kind_for_code,
 };
-pub use format::{format_declaration, format_expression, format_preserves_comments, format_source};
+pub use format::{
+    format_declaration, format_expression, format_preserves_comments, format_source,
+    format_transform_body,
+};
 pub use lexer::lex_source;
 pub use literal::{
     BytesLiteralError, StringLiteralError, decode_bytes_escapes, decode_bytes_literal,

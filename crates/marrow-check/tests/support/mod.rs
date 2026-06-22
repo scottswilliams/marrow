@@ -215,6 +215,7 @@ pub mod catalog {
             accepted_key_shape: None,
             accepted_index_shape: None,
             accepted_struct: None,
+            applied_transform: None,
         }
     }
 

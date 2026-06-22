@@ -24,7 +24,7 @@ pub(crate) use intents::{
 };
 pub(crate) use transform_reads::transform_old_member;
 
-pub use discharge::{RepairDiagnostic, RepairGuidance};
+pub use discharge::{RepairDiagnostic, RepairGuidance, has_pending_transform};
 pub use preview::{
     BackupWitnessFactSet, EvolutionPreviewError, WitnessFactSet, evolution_preview, preview,
 };

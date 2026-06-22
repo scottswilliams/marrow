@@ -40,6 +40,34 @@ fn accepted_epoch(root: &TempProject) -> u64 {
     support_evolve::accepted_catalog(root).epoch
 }
 
+/// Assert the stored `code` of `^books(1)`, re-checking the project against its committed
+/// catalog so the saved-place fact resolves the member's current stable id. This is the
+/// typed oracle for "did the transform run", reading decoded value bytes rather than prose.
+fn assert_code(
+    root: &TempProject,
+    expected: i64,
+    context: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let config_text = std::fs::read_to_string(root.join("marrow.json")).expect("read config");
+    let config = marrow_project::parse_config(&config_text).expect("parse config");
+    let accepted = TreeStore::open_read_only(&native_store_path(root))
+        .expect("open store read-only")
+        .read_catalog_snapshot()
+        .expect("read store catalog snapshot");
+    let (report, program) =
+        marrow_check::check_project_with_catalog(root.path(), &config, accepted.as_ref())
+            .expect("re-check project");
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    let place = root_place(&program, "books")?;
+    let store = TreeStore::open(&native_store_path(root)).expect("reopen native store");
+    assert_eq!(
+        read_scalar(&store, &place, 1, "code", ScalarType::Int),
+        Some(Scalar::Int(expected)),
+        "{context}",
+    );
+    Ok(())
+}
+
 fn commit_stamp(root: &TempProject) -> marrow_store::tree::CommitMetadata {
     TreeStore::open_read_only(&native_store_path(root))
         .expect("open store read-only")
@@ -228,6 +256,385 @@ fn the_same_required_add_against_a_populated_store_fences_and_evolve_apply_backf
         read_scalar(&store, &place, 1, "pages", ScalarType::Int),
         Some(Scalar::Int(0)),
         "evolve apply backfilled the constant default onto the populated record",
+    );
+
+    Ok(())
+}
+
+/// A baseline whose `Book` already carries both `title` and `code`, so an `evolve
+/// transform` over `code` recomputes an existing member in place and proposes no new
+/// catalog entry — a shape-neutral data migration that does not move the source digest.
+const TRANSFORM_BASELINE: &str = "module app\n\
+     resource Log\n\
+     \x20   note: string\n\
+     store ^log(id: int): Log\n\
+     resource Book\n\
+     \x20   required title: string\n\
+     \x20   required code: int\n\
+     store ^books(id: int): Book\n\
+     pub fn seed()\n\
+     \x20   transaction\n\
+     \x20       ^log(1).note = \"ran\"\n\
+     pub fn seedBook()\n\
+     \x20   transaction\n\
+     \x20       ^books(1).title = \"Mort\"\n\
+     \x20       ^books(1).code = 5\n";
+
+/// The same shape, plus a live `evolve transform` that recomputes `Book.code` from
+/// `old.title`. The transform changes no durable shape, so its target epoch and source
+/// digest equal the ones the store already carries; only the live transform intent
+/// distinguishes a pending migration from a settled store.
+const TRANSFORM_IN_PLACE: &str = "module app\n\
+     resource Log\n\
+     \x20   note: string\n\
+     store ^log(id: int): Log\n\
+     resource Book\n\
+     \x20   required title: string\n\
+     \x20   required code: int\n\
+     store ^books(id: int): Book\n\
+     evolve\n\
+     \x20   transform Book.code\n\
+     \x20       return std::text::length(old.title)\n\
+     pub fn seed()\n\
+     \x20   transaction\n\
+     \x20       ^log(1).note = \"ran\"\n\
+     pub fn seedBook()\n\
+     \x20   transaction\n\
+     \x20       ^books(1).title = \"Mort\"\n\
+     \x20       ^books(1).code = 5\n";
+
+#[test]
+fn an_in_place_transform_over_a_populated_store_fences_run_until_applied()
+-> Result<(), Box<dyn std::error::Error>> {
+    // A live in-place transform rewrites the `code` of every populated record, so a bare
+    // run must not proceed against the un-migrated store: a pending evolution blocks run
+    // until it is applied or withdrawn. The transform is shape-neutral, so the activation
+    // fence sees a matching epoch and digest and would let the run through — the run path
+    // must consult the evolution obligation, not the shape stamp alone, to catch it.
+    let root = books_and_log_project("run-in-place-transform-populated", TRANSFORM_BASELINE);
+    let first = marrow_sub("run", &[dir(&root)]);
+    assert_eq!(first.status.code(), Some(0), "first run: {first:?}");
+    let seed_book = marrow_sub("run", &["--entry", "app::seedBook", dir(&root)]);
+    assert_eq!(seed_book.status.code(), Some(0), "seed book: {seed_book:?}");
+    let epoch_before = accepted_epoch(&root);
+
+    write(&root, "src/app.mw", TRANSFORM_IN_PLACE);
+    let rerun = marrow_sub("run", &[dir(&root)]);
+    assert_eq!(
+        rerun.status.code(),
+        Some(1),
+        "a live in-place transform over a populated store fences the run: {rerun:?}",
+    );
+    let stderr = String::from_utf8(rerun.stderr).expect("stderr utf8");
+    assert!(
+        stderr.contains("run.schema_drift"),
+        "the in-place-transform fence reports the schema-drift code: {stderr}",
+    );
+    assert_eq!(
+        accepted_epoch(&root),
+        epoch_before,
+        "a fenced run does not advance the epoch",
+    );
+
+    // The explicit apply discharges the transform, recomputing `code` to the title length.
+    let apply = marrow(&["evolve", "apply", dir(&root)]);
+    assert_eq!(apply.status.code(), Some(0), "evolve apply: {apply:?}");
+    let config_text = std::fs::read_to_string(root.join("marrow.json")).expect("read config");
+    let config = marrow_project::parse_config(&config_text).expect("parse config");
+    let accepted = TreeStore::open_read_only(&native_store_path(&root))
+        .expect("open store read-only")
+        .read_catalog_snapshot()
+        .expect("read store catalog snapshot");
+    let (report, program) =
+        marrow_check::check_project_with_catalog(root.path(), &config, accepted.as_ref())
+            .expect("re-check after apply");
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    let place = root_place(&program, "books")?;
+    {
+        let store = TreeStore::open(&native_store_path(&root)).expect("reopen native store");
+        assert_eq!(
+            read_scalar(&store, &place, 1, "code", ScalarType::Int),
+            Some(Scalar::Int(4)),
+            "evolve apply recomputed code to the length of the title",
+        );
+    }
+
+    // Apply advances the accepted epoch: a record-rewriting transform is a real catalog
+    // change, so the new accepted catalog records the transform as discharged on its target.
+    let epoch_after_apply = accepted_epoch(&root);
+    assert_eq!(
+        epoch_after_apply,
+        epoch_before + 1,
+        "discharging the in-place transform advances the accepted epoch",
+    );
+
+    // The transform is now consumed: a second `evolve apply` with the block still in source
+    // discharges nothing rather than re-executing. Were it not stamped, the commit id would
+    // climb on every apply and `code` would keep being rewritten unbounded.
+    let reapply = marrow(&["evolve", "apply", "--format", "json", dir(&root)]);
+    assert_eq!(reapply.status.code(), Some(0), "re-apply: {reapply:?}");
+    let reapply_record: serde_json::Value =
+        serde_json::from_slice(&reapply.stdout).expect("re-apply json envelope");
+    assert_eq!(
+        reapply_record.get("records_transformed"),
+        Some(&serde_json::json!(0)),
+        "a consumed transform re-applies as a no-op: {reapply_record}",
+    );
+    assert_eq!(
+        accepted_epoch(&root),
+        epoch_after_apply,
+        "a no-op re-apply does not advance the epoch again",
+    );
+
+    // `marrow run` recovers: the fence the pending transform raised is gone once the
+    // transform is discharged, so a bare run proceeds instead of fencing forever.
+    let run_after = marrow_sub("run", &["--entry", "app::seedBook", dir(&root)]);
+    assert_eq!(
+        run_after.status.code(),
+        Some(0),
+        "run exits 0 once the in-place transform is applied: {run_after:?}",
+    );
+    assert!(
+        !String::from_utf8(run_after.stderr)
+            .expect("stderr utf8")
+            .contains("run.schema_drift"),
+        "a discharged transform no longer fences the run",
+    );
+
+    Ok(())
+}
+
+#[test]
+fn an_in_place_transform_over_an_empty_store_auto_applies_and_re_runs_cleanly() {
+    // The same live in-place transform over an empty `^books` rewrites zero records, so
+    // the run discharges it itself rather than fencing. Discharging it advances the epoch
+    // and records the transform as consumed on its target, so re-running with the transform
+    // still in source must not re-fence or climb the epoch a second time.
+    let root = books_and_log_project("run-in-place-transform-empty", TRANSFORM_BASELINE);
+    let first = marrow_sub("run", &[dir(&root)]);
+    assert_eq!(first.status.code(), Some(0), "first run: {first:?}");
+    let epoch_before = accepted_epoch(&root);
+
+    write(&root, "src/app.mw", TRANSFORM_IN_PLACE);
+    let rerun = marrow_sub("run", &[dir(&root)]);
+    assert_eq!(
+        rerun.status.code(),
+        Some(0),
+        "an in-place transform over an empty store auto-applies: {rerun:?}",
+    );
+    assert_eq!(
+        accepted_epoch(&root),
+        epoch_before + 1,
+        "discharging the transform records it on its target and advances the epoch",
+    );
+
+    let resume = marrow_sub("run", &[dir(&root)]);
+    assert_eq!(
+        resume.status.code(),
+        Some(0),
+        "re-running with the transform still in source stays clean: {resume:?}",
+    );
+    assert!(
+        !String::from_utf8(resume.stderr)
+            .expect("stderr utf8")
+            .contains("run.schema_drift"),
+        "a settled transform does not read as drift on re-run",
+    );
+    assert_eq!(
+        accepted_epoch(&root),
+        epoch_before + 1,
+        "a settled transform does not advance the epoch a second time",
+    );
+}
+
+/// The discharged in-place transform, kept in source, plus an unrelated durable edit — a
+/// new module `const`. The const changes the program's whole-program shape but touches
+/// neither the transform's target nor its body, so the transform's per-transform identity
+/// is unchanged and it must stay discharged rather than re-execute against current data.
+const TRANSFORM_IN_PLACE_PLUS_UNRELATED_CONST: &str = "module app\n\
+     const PAD: int = 1\n\
+     resource Log\n\
+     \x20   note: string\n\
+     store ^log(id: int): Log\n\
+     resource Book\n\
+     \x20   required title: string\n\
+     \x20   required code: int\n\
+     store ^books(id: int): Book\n\
+     evolve\n\
+     \x20   transform Book.code\n\
+     \x20       return std::text::length(old.title)\n\
+     pub fn seed()\n\
+     \x20   transaction\n\
+     \x20       ^log(1).note = \"ran\"\n\
+     pub fn seedBook()\n\
+     \x20   transaction\n\
+     \x20       ^books(1).title = \"Mort\"\n\
+     \x20       ^books(1).code = 5\n";
+
+/// The same shape, plus a *changed* transform body (multiplied by ten). The new body is a
+/// fresh obligation: its per-transform identity differs from the stored mark, so it must
+/// re-execute and advance the epoch again, recomputing `code` to `10 * length(title)`.
+const TRANSFORM_IN_PLACE_CHANGED_BODY: &str = "module app\n\
+     resource Log\n\
+     \x20   note: string\n\
+     store ^log(id: int): Log\n\
+     resource Book\n\
+     \x20   required title: string\n\
+     \x20   required code: int\n\
+     store ^books(id: int): Book\n\
+     evolve\n\
+     \x20   transform Book.code\n\
+     \x20       return std::text::length(old.title) * 10\n\
+     pub fn seed()\n\
+     \x20   transaction\n\
+     \x20       ^log(1).note = \"ran\"\n\
+     pub fn seedBook()\n\
+     \x20   transaction\n\
+     \x20       ^books(1).title = \"Mort\"\n\
+     \x20       ^books(1).code = 5\n";
+
+#[test]
+fn a_discharged_transform_does_not_re_run_on_a_later_unrelated_durable_edit()
+-> Result<(), Box<dyn std::error::Error>> {
+    // The corruption guard. Once a transform is applied, its mark is keyed on the
+    // transform's own identity (target + body), not the whole-program shape. An unrelated
+    // durable edit moves the program shape but not that identity, so the transform stays
+    // discharged: it must not re-execute against current data, fence the run, or climb the
+    // epoch on every subsequent edit.
+    let root = books_and_log_project("transform-no-rerun-on-unrelated-edit", TRANSFORM_BASELINE);
+    let first = marrow_sub("run", &[dir(&root)]);
+    assert_eq!(first.status.code(), Some(0), "first run: {first:?}");
+    let seed_book = marrow_sub("run", &["--entry", "app::seedBook", dir(&root)]);
+    assert_eq!(seed_book.status.code(), Some(0), "seed book: {seed_book:?}");
+
+    write(&root, "src/app.mw", TRANSFORM_IN_PLACE);
+    let apply = marrow(&["evolve", "apply", dir(&root)]);
+    assert_eq!(apply.status.code(), Some(0), "evolve apply: {apply:?}");
+    let epoch_after_apply = accepted_epoch(&root);
+    assert_code(
+        &root,
+        4,
+        "apply ran the transform once (length of \"Mort\")",
+    )?;
+
+    // An unrelated durable edit: a new module-level constant. It must neither re-run the
+    // discharged transform nor fence the run, and the epoch must not climb.
+    write(&root, "src/app.mw", TRANSFORM_IN_PLACE_PLUS_UNRELATED_CONST);
+    let run_after_const = marrow_sub("run", &[dir(&root)]);
+    assert_eq!(
+        run_after_const.status.code(),
+        Some(0),
+        "an unrelated const does not re-fence the discharged transform: {run_after_const:?}",
+    );
+    assert_eq!(
+        accepted_epoch(&root),
+        epoch_after_apply,
+        "an unrelated edit does not re-run the transform or advance the epoch",
+    );
+
+    // A preview after the unrelated edit reports nothing to transform: the obligation is
+    // settled by identity, not by a digest that the const moved.
+    let preview = marrow(&["evolve", "preview", "--format", "json", dir(&root)]);
+    assert_eq!(preview.status.code(), Some(0), "preview: {preview:?}");
+    let preview_record: serde_json::Value =
+        serde_json::from_slice(&preview.stdout).expect("preview json envelope");
+    assert_eq!(
+        preview_record.get("records_to_transform"),
+        Some(&serde_json::json!(0)),
+        "a settled transform has no records left to transform: {preview_record}",
+    );
+
+    // A *changed* transform body is a genuinely new obligation: it re-executes and advances
+    // the epoch again, recomputing `code` to ten times the title length (40).
+    write(&root, "src/app.mw", TRANSFORM_IN_PLACE_CHANGED_BODY);
+    let reapply = marrow(&["evolve", "apply", dir(&root)]);
+    assert_eq!(
+        reapply.status.code(),
+        Some(0),
+        "changed-body apply: {reapply:?}"
+    );
+    assert_code(&root, 40, "a changed transform body is a fresh obligation")?;
+    let epoch_after_changed = accepted_epoch(&root);
+    assert_eq!(
+        epoch_after_changed,
+        epoch_after_apply + 1,
+        "discharging the changed-body transform advances the epoch again",
+    );
+
+    // Deleting the consumed block (run cleanly with no block), then re-declaring the identical
+    // changed body, reproduces the same identity already recorded on the target — so the
+    // re-declaration is recognized as work already done and does not re-run. The block only
+    // describes a completed migration.
+    write(&root, "src/app.mw", TRANSFORM_BASELINE);
+    let run_without_block = marrow_sub("run", &[dir(&root)]);
+    assert_eq!(
+        run_without_block.status.code(),
+        Some(0),
+        "deleting a consumed block runs cleanly: {run_without_block:?}",
+    );
+    write(&root, "src/app.mw", TRANSFORM_IN_PLACE_CHANGED_BODY);
+    let run_after_readd = marrow_sub("run", &[dir(&root)]);
+    assert_eq!(
+        run_after_readd.status.code(),
+        Some(0),
+        "an identical re-declaration is suppressed, not re-run: {run_after_readd:?}",
+    );
+    assert_code(
+        &root,
+        40,
+        "an identical re-declaration does not re-run the transform",
+    )?;
+    assert_eq!(
+        accepted_epoch(&root),
+        epoch_after_changed,
+        "an identical re-declaration does not advance the epoch",
+    );
+
+    Ok(())
+}
+
+#[test]
+fn a_discharged_transform_survives_backup_and_restore() -> Result<(), Box<dyn std::error::Error>> {
+    // `applied_transform` is durable catalog state. A backup taken after apply and restored
+    // into a fresh store must still report the transform discharged: a restored store does
+    // not re-run the migration, and `code` keeps its applied value.
+    let root = books_and_log_project("transform-survives-backup-restore", TRANSFORM_BASELINE);
+    let first = marrow_sub("run", &[dir(&root)]);
+    assert_eq!(first.status.code(), Some(0), "first run: {first:?}");
+    let seed_book = marrow_sub("run", &["--entry", "app::seedBook", dir(&root)]);
+    assert_eq!(seed_book.status.code(), Some(0), "seed book: {seed_book:?}");
+
+    write(&root, "src/app.mw", TRANSFORM_IN_PLACE);
+    let apply = marrow(&["evolve", "apply", dir(&root)]);
+    assert_eq!(apply.status.code(), Some(0), "evolve apply: {apply:?}");
+    assert_code(&root, 4, "apply ran the transform once")?;
+    let epoch_after_apply = accepted_epoch(&root);
+
+    let archive = root.join("books.mwbackup");
+    let archive_arg = archive.to_str().expect("archive path utf8").to_string();
+    let backup = marrow(&["backup", dir(&root), &archive_arg]);
+    assert_eq!(backup.status.code(), Some(0), "backup: {backup:?}");
+
+    // Lose the store, then restore: the backup carries the durable catalog rows, so the
+    // restored snapshot must replay the recorded transform mark.
+    std::fs::remove_dir_all(root.join(".data")).expect("remove store data");
+    let restore = marrow(&["restore", dir(&root), &archive_arg]);
+    assert_eq!(restore.status.code(), Some(0), "restore: {restore:?}");
+
+    // The transform block is still in source. A restored store that lost the discharge mark
+    // would re-fence the run and re-run the migration; a sound restore keeps the mark, so the
+    // run is a clean no-op that leaves both the value and the epoch untouched.
+    let run_after = marrow_sub("run", &[dir(&root)]);
+    assert_eq!(
+        run_after.status.code(),
+        Some(0),
+        "a restored store reports the transform discharged: {run_after:?}",
+    );
+    assert_code(&root, 4, "the restored store did not re-run the transform")?;
+    assert_eq!(
+        accepted_epoch(&root),
+        epoch_after_apply,
+        "a restored discharged transform does not advance the epoch again",
     );
 
     Ok(())

@@ -29,6 +29,7 @@ fn sample_snapshot() -> CatalogMetadata {
                 accepted_key_shape: Some("int".to_string()),
                 accepted_index_shape: None,
                 accepted_struct: None,
+                applied_transform: None,
             },
             CatalogEntry {
                 kind: CatalogEntryKind::ResourceMember,
@@ -39,6 +40,7 @@ fn sample_snapshot() -> CatalogMetadata {
                 accepted_key_shape: None,
                 accepted_index_shape: None,
                 accepted_struct: Some("leaf:string".to_string()),
+                applied_transform: None,
             },
         ],
     )
@@ -59,6 +61,7 @@ fn store_snapshot_with_key_shape(key_shape: &str) -> CatalogMetadata {
             accepted_key_shape: Some(key_shape.to_string()),
             accepted_index_shape: None,
             accepted_struct: None,
+            applied_transform: None,
         }],
     )
     .expect("catalog builds")
@@ -78,6 +81,7 @@ fn member_snapshot_with_struct(struct_signature: &str) -> CatalogMetadata {
             accepted_key_shape: None,
             accepted_index_shape: None,
             accepted_struct: Some(struct_signature.to_string()),
+            applied_transform: None,
         }],
     )
     .expect("catalog builds")
@@ -98,6 +102,7 @@ fn index_snapshot_with_index_shape(index_shape: &str) -> CatalogMetadata {
             accepted_key_shape: None,
             accepted_index_shape: Some(index_shape.to_string()),
             accepted_struct: None,
+            applied_transform: None,
         }],
     )
     .expect("catalog builds")
@@ -418,6 +423,7 @@ fn redb_persists_a_shape_discriminating_catalog_digest() {
             accepted_key_shape: Some("int,string".to_string()),
             accepted_index_shape: None,
             accepted_struct: None,
+            applied_transform: None,
         }],
     )
     .expect("catalog builds");
@@ -447,6 +453,7 @@ fn redb_persists_a_shape_discriminating_catalog_digest() {
             accepted_key_shape: Some("int".to_string()),
             accepted_index_shape: None,
             accepted_struct: None,
+            applied_transform: None,
         }],
     )
     .expect("catalog builds");

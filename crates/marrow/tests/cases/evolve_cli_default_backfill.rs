@@ -409,6 +409,23 @@ fn evolve_apply_does_not_rerun_a_consumed_transform() -> Result<(), Box<dyn std:
         );
     }
 
+    // The transform is consumed: drop its evolve block, the expected lifecycle once an
+    // apply has synced the change to saved data. A live in-place transform is a pending
+    // evolution that blocks run, so the operator write below proceeds only after the block
+    // is withdrawn. The durable shape is unchanged, so the blockless source checks clean.
+    write(
+        &root,
+        "src/books.mw",
+        "module books\n\
+         resource Book\n\
+         \x20   required price: int\n\
+         \x20   required priceCents: int\n\
+         store ^books(id: int): Book\n\
+         pub fn overrideCents()\n\
+         \x20   transaction\n\
+         \x20       ^books(1).priceCents = 999\n",
+    );
+
     let override_run = marrow_sub(
         "run",
         &["--entry", "books::overrideCents", root.to_str().unwrap()],
@@ -441,21 +458,6 @@ fn evolve_apply_does_not_rerun_a_consumed_transform() -> Result<(), Box<dyn std:
             "the current target-state data is the value a stale apply must preserve",
         );
     }
-    // The transform is consumed: drop its evolve block, the expected lifecycle once an
-    // apply has synced the change to saved data. The durable shape is unchanged, so the
-    // blockless source checks clean and the second apply has no transform to discharge.
-    write(
-        &root,
-        "src/books.mw",
-        "module books\n\
-         resource Book\n\
-         \x20   required price: int\n\
-         \x20   required priceCents: int\n\
-         store ^books(id: int): Book\n\
-         pub fn overrideCents()\n\
-         \x20   transaction\n\
-         \x20       ^books(1).priceCents = 999\n",
-    );
     let before_second_commit = commit_metadata(&root);
 
     let second = marrow(&["evolve", "apply", root.to_str().unwrap()]);

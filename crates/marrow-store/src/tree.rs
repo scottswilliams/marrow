@@ -2778,6 +2778,7 @@ mod tests {
                 accepted_key_shape: Some("int".to_string()),
                 accepted_index_shape: None,
                 accepted_struct: None,
+                applied_transform: None,
             }],
         )
         .expect("catalog builds")
@@ -2867,6 +2868,7 @@ mod tests {
                 accepted_key_shape: Some("int".to_string()),
                 accepted_index_shape: None,
                 accepted_struct: None,
+                applied_transform: None,
             }],
         )
         .expect("catalog builds");

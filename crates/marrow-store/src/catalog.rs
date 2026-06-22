@@ -163,6 +163,7 @@ fn encode_entry(ordinal: u64, entry: &CatalogEntry) -> Result<Vec<u8>, StoreErro
     put_optional_text(entry.accepted_key_shape.as_deref(), &mut out)?;
     put_optional_text(entry.accepted_struct.as_deref(), &mut out)?;
     put_optional_text(entry.accepted_index_shape.as_deref(), &mut out)?;
+    put_optional_text(entry.applied_transform.as_deref(), &mut out)?;
     Ok(out)
 }
 
@@ -177,6 +178,7 @@ fn decode_entry(stable_id: &str, bytes: &[u8]) -> Result<EntryRow, StoreError> {
     let accepted_key_shape = take_optional_text(&mut cursor)?;
     let accepted_struct = take_optional_text(&mut cursor)?;
     let accepted_index_shape = take_optional_text(&mut cursor)?;
+    let applied_transform = take_optional_text(&mut cursor)?;
     if !cursor.is_empty() {
         return Err(corrupt_catalog("catalog entry has trailing bytes"));
     }
@@ -189,6 +191,7 @@ fn decode_entry(stable_id: &str, bytes: &[u8]) -> Result<EntryRow, StoreError> {
         accepted_key_shape,
         accepted_index_shape,
         accepted_struct,
+        applied_transform,
     };
     Ok(EntryRow { ordinal, entry })
 }
@@ -339,6 +342,7 @@ mod tests {
                     accepted_key_shape: Some("int,string".to_string()),
                     accepted_index_shape: None,
                     accepted_struct: None,
+                    applied_transform: None,
                 },
                 CatalogEntry {
                     kind: CatalogEntryKind::StoreIndex,
@@ -352,6 +356,7 @@ mod tests {
                             .to_string(),
                     ),
                     accepted_struct: None,
+                    applied_transform: None,
                 },
                 CatalogEntry {
                     kind: CatalogEntryKind::ResourceMember,
@@ -362,6 +367,7 @@ mod tests {
                     accepted_key_shape: None,
                     accepted_index_shape: None,
                     accepted_struct: Some("leaf:string".to_string()),
+                    applied_transform: None,
                 },
             ],
         )
@@ -410,6 +416,7 @@ mod tests {
                 accepted_key_shape: None,
                 accepted_index_shape: None,
                 accepted_struct: None,
+                applied_transform: None,
             }],
         )
         .expect("catalog builds");
@@ -444,6 +451,7 @@ mod tests {
             accepted_key_shape: None,
             accepted_index_shape: None,
             accepted_struct: None,
+            applied_transform: None,
         };
         backend
             .write(&entry_key(&id), encode_entry(0, &entry).expect("encode"))
@@ -497,6 +505,7 @@ mod tests {
                 accepted_key_shape: None,
                 accepted_index_shape: None,
                 accepted_struct: None,
+                applied_transform: None,
             }],
         )
         .expect("catalog builds");
@@ -589,6 +598,7 @@ mod tests {
             .expect("a member entry with an accepted struct");
         let tampered = CatalogEntry {
             accepted_struct: Some("leaf:int".to_string()),
+            applied_transform: None,
             ..snapshot.entries[member].clone()
         };
         backend

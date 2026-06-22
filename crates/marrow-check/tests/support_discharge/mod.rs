@@ -53,6 +53,7 @@ pub fn entry(kind: CatalogEntryKind, path: &str, stable_id: &str) -> CatalogEntr
 pub fn member_entry(path: &str, stable_id: &str, accepted_leaf: &str) -> CatalogEntry {
     CatalogEntry {
         accepted_struct: Some(format!("leaf:{accepted_leaf}")),
+        applied_transform: None,
         ..entry(CatalogEntryKind::ResourceMember, path, stable_id)
     }
 }
@@ -64,6 +65,7 @@ pub fn member_entry(path: &str, stable_id: &str, accepted_leaf: &str) -> Catalog
 pub fn keyed_group_entry(path: &str, stable_id: &str, key_shape: &str) -> CatalogEntry {
     CatalogEntry {
         accepted_struct: Some(format!("keyed-group:[{key_shape}]")),
+        applied_transform: None,
         ..entry(CatalogEntryKind::ResourceMember, path, stable_id)
     }
 }
@@ -74,6 +76,7 @@ pub fn keyed_group_entry(path: &str, stable_id: &str, key_shape: &str) -> Catalo
 pub fn group_entry(path: &str, stable_id: &str) -> CatalogEntry {
     CatalogEntry {
         accepted_struct: Some("group".to_string()),
+        applied_transform: None,
         ..entry(CatalogEntryKind::ResourceMember, path, stable_id)
     }
 }
@@ -86,6 +89,7 @@ pub fn group_entry(path: &str, stable_id: &str) -> CatalogEntry {
 pub fn struct_signature_entry(path: &str, stable_id: &str, signature: &str) -> CatalogEntry {
     CatalogEntry {
         accepted_struct: Some(signature.to_string()),
+        applied_transform: None,
         ..entry(CatalogEntryKind::ResourceMember, path, stable_id)
     }
 }

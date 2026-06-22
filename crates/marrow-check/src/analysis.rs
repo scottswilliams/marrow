@@ -851,9 +851,11 @@ pub(crate) fn analyze_source_project(
     }));
 
     let evolve_intents = crate::evolution::collect_evolve_intents(
-        parsed_files
-            .iter()
-            .map(|(file, parsed)| (file.path.as_path(), parsed)),
+        parsed_files.iter().filter_map(|(file, parsed)| {
+            parsed_sources
+                .get(&file.path)
+                .map(|source| (file.path.as_path(), source.as_str(), parsed))
+        }),
         &mut report.diagnostics,
     );
     crate::catalog::bind_catalog(

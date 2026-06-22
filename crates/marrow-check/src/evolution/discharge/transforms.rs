@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 
 use marrow_store::StoreError;
 use marrow_store::cell::CatalogId;
@@ -25,12 +25,19 @@ pub(super) fn discharge_transforms(
     enum_members: &EnumMembers,
     acc: &mut Accumulator,
 ) -> Result<(), StoreError> {
+    let pending = pending_transform_ids(program);
     for transform in &program.catalog.evolve_transforms {
         // The type pass already reported an unresolved target; the lowered body still
         // had its purity checked, but there is no catalog obligation to discharge.
         let Some(target_raw_id) = transform.catalog_id.as_deref() else {
             continue;
         };
+        // A transform whose accepted target already records this transform's own identity was
+        // applied against the current source: the presence scan classifies the now-settled member
+        // as an ordinary one, so there is no transform obligation left to discharge.
+        if !pending.contains(target_raw_id) {
+            continue;
+        }
         let target_places = transform_places(program, places, transform);
         if target_places.is_empty() {
             // No accepted/proposal activation place uses this resource, so there is no
@@ -88,6 +95,38 @@ pub(super) fn discharge_transforms(
         acc.push(target_id, verdict)?;
     }
     Ok(())
+}
+
+/// The catalog ids of every `evolve transform` target still pending against the current source:
+/// a transform whose accepted target entry already records the transform's own identity (a hash
+/// of its target id and body) was applied at this source and is no longer a transform obligation,
+/// so its target is classified by the ordinary presence scan instead. Keying on the transform's
+/// own identity rather than the whole-program shape is what keeps a later unrelated durable edit
+/// from re-opening a discharged transform, while a changed body computes a different identity that
+/// reads as a fresh obligation. This is the single owner of the "is this transform consumed" rule,
+/// consulted both to seed the discharge accumulator and to skip a settled transform's scan.
+pub(crate) fn pending_transform_ids(program: &CheckedProgram) -> BTreeSet<String> {
+    let accepted_marks: HashSet<(&str, &str)> = program
+        .catalog
+        .accepted_entries
+        .iter()
+        .filter_map(|entry| {
+            entry
+                .applied_transform
+                .as_deref()
+                .map(|mark| (entry.stable_id.as_str(), mark))
+        })
+        .collect();
+    program
+        .catalog
+        .evolve_transforms
+        .iter()
+        .filter_map(|transform| {
+            let id = transform.catalog_id.as_deref()?;
+            let identity = crate::catalog::transform_identity(id, &transform.body_text);
+            (!accepted_marks.contains(&(id, identity.as_str()))).then(|| id.to_string())
+        })
+        .collect()
 }
 
 /// The checked saved places that own a transform's target member, found by the

@@ -229,6 +229,13 @@ pub fn format_declaration(source: &str, declaration: &Declaration) -> String {
     }
 }
 
+/// Render an `evolve transform` body to canonical layout, the normalized text that
+/// identifies the transform's work independent of source whitespace. A reformat of the
+/// body leaves this unchanged, while a real change to what the body computes drifts it.
+pub fn format_transform_body(source: &str, body: &Block) -> String {
+    format_block(source, body, 0)
+}
+
 fn format_evolve(source: &str, decl: &EvolveDecl) -> String {
     let mut out = String::from("evolve");
     let body = format_body_lines(

@@ -34,6 +34,7 @@ fn literal_entry(
         accepted_key_shape: None,
         accepted_index_shape: None,
         accepted_struct: None,
+        applied_transform: None,
     }
 }
 
@@ -95,6 +96,7 @@ fn round_trips_stable_ids_aliases_lifecycle_epoch_and_digest() {
             accepted_key_shape: None,
             accepted_index_shape: None,
             accepted_struct: None,
+            applied_transform: None,
         },
     ]);
 

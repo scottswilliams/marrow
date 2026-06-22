@@ -339,10 +339,27 @@ fn transform_computes_new_member_per_record_and_stamps() -> Result<(), Box<dyn s
         "the transform apply stamps the store"
     );
 
-    // Idempotent: re-previewing against the now-transformed store and re-applying
-    // recomputes the same value from the unchanged `price` reads.
-    let resumed = witness(&program, &store);
-    apply(&resumed, &program, &store, false, None).expect("re-apply succeeds");
+    // The apply advanced the catalog and recorded the transform on its target. Re-checking
+    // against the now-advanced store catalog, the transform reads as consumed: re-applying it
+    // discharges nothing rather than rewriting the same values forever.
+    let advanced = store
+        .read_catalog_snapshot()
+        .expect("read advanced catalog snapshot");
+    let (report, resumed_program) =
+        marrow_check::check_project_with_catalog(&root, &config(), advanced.as_ref())
+            .expect("re-check against advanced catalog");
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    let resumed = witness(&resumed_program, &store);
+    assert_eq!(
+        resumed.counts.records_to_transform, 0,
+        "a consumed transform leaves no record work: {resumed:#?}"
+    );
+    let outcome =
+        apply(&resumed, &resumed_program, &store, false, None).expect("re-apply succeeds");
+    assert_eq!(
+        outcome.receipt.records_transformed, 0,
+        "re-applying a consumed transform is a no-op"
+    );
     assert_eq!(
         read_scalar(&store, &store_id, 1, &cents_id, ScalarType::Int),
         Some(Scalar::Int(300))

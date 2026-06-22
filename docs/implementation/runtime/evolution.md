@@ -9,7 +9,7 @@ The witness is a proof, not a work list. `apply` re-runs preview against the liv
 One apply path serves two callers:
 
 - **`evolve apply`** — explicit, operator-driven, full obligation set.
-- **`run` auto-apply** — unattended; applies only zero-record-mutation changes, otherwise fences.
+- **`run` auto-apply** — unattended; applies only zero-record-mutation changes, otherwise fences. The session (`project_session.rs`) enters this path on shape drift *and* when `marrow_check::evolution::has_pending_transform` reports a transform the shape fence cannot see: a shape-neutral in-place transform moves no epoch or source digest, so the pending-evolution run blocker would otherwise miss it. A transform already discharged (its target records the transform's own identity, a hash of the target id and body) no longer reads as pending, so the run proceeds without re-fencing — and an unrelated later edit does not re-open it.
 
 ## Apply control flow
 

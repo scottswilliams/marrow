@@ -71,6 +71,10 @@ pub(crate) struct TransformIntent {
     pub(crate) read_paths: Vec<String>,
     pub(crate) file: std::path::PathBuf,
     pub(crate) body_span: SourceSpan,
+    /// The canonical rendering of the transform body, the per-transform identity input that
+    /// distinguishes one transform's work from another's and a changed body from the one that
+    /// was already discharged.
+    pub(crate) body_text: String,
 }
 
 /// The rename, retire, default, and transform intents an evolve block declares. The
@@ -97,10 +101,10 @@ pub(crate) fn collect_evolve_intents<'a, I>(
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) -> EvolveIntents
 where
-    I: IntoIterator<Item = (&'a Path, &'a ParsedSource)>,
+    I: IntoIterator<Item = (&'a Path, &'a str, &'a ParsedSource)>,
 {
     let mut intents = EvolveIntents::default();
-    for (file, parsed) in parsed_files {
+    for (file, source, parsed) in parsed_files {
         let module = module_name(parsed);
         for declaration in &parsed.file.declarations {
             let Declaration::Evolve(evolve) = declaration else {
@@ -145,6 +149,7 @@ where
                                 read_paths,
                                 file: file.to_path_buf(),
                                 body_span: body.span,
+                                body_text: marrow_syntax::format_transform_body(source, body),
                             });
                         }
                     }

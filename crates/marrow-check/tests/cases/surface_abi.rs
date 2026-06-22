@@ -172,6 +172,7 @@ surface Books from ^books
                 },
                 CatalogEntry {
                     accepted_struct: Some("leaf:string".to_string()),
+                    applied_transform: None,
                     ..entry(
                         CatalogEntryKind::ResourceMember,
                         "app::Book::title",
@@ -250,6 +251,7 @@ surface Books from ^books
         },
         CatalogEntry {
             accepted_struct: Some("leaf:string".to_string()),
+            applied_transform: None,
             ..entry(
                 CatalogEntryKind::ResourceMember,
                 "app::Book::title",

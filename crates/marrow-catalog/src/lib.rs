@@ -167,6 +167,19 @@ pub struct CatalogEntry {
     /// kind leaves it `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub accepted_struct: Option<String>,
+    /// The per-transform identity under which an `evolve transform` last recomputed this member's
+    /// stored cells — a hash of this member's stable id and the transform body. A transform is
+    /// shape-neutral — it rewrites every record of an existing member without changing its type —
+    /// so it moves no structural signature the fence or the other classifiers can see, and its
+    /// data work would otherwise re-derive on every preview. Recording this identity here makes
+    /// the transform a catalog change that advances the epoch on apply, and lets the discharge
+    /// recognize a transform already applied at the current source. Keying on the transform's own
+    /// target and body — not the whole-program shape — means a later unrelated durable edit cannot
+    /// drift the mark and re-run the migration against already-migrated data, while a changed body
+    /// computes a different identity that reads as a fresh obligation. Only a transformed
+    /// resource-member entry records it; every other kind leaves it `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub applied_transform: Option<String>,
 }
 
 impl CatalogEntry {
@@ -509,6 +522,7 @@ impl LockLedgerTombstone {
             accepted_key_shape: None,
             accepted_index_shape: None,
             accepted_struct: None,
+            applied_transform: None,
         }
     }
 }
@@ -522,6 +536,7 @@ struct FingerprintPreimage<'a> {
     key_shape: &'a Option<String>,
     index_shape: &'a Option<String>,
     struct_signature: &'a Option<String>,
+    applied_transform: &'a Option<String>,
 }
 
 fn shape_fingerprint(entry: &CatalogEntry) -> String {
@@ -530,6 +545,7 @@ fn shape_fingerprint(entry: &CatalogEntry) -> String {
         key_shape: &entry.accepted_key_shape,
         index_shape: &entry.accepted_index_shape,
         struct_signature: &entry.accepted_struct,
+        applied_transform: &entry.applied_transform,
     };
     let json = serde_json::to_string(&preimage)
         .expect("a fingerprint pre-image of owned shape fields serializes");
@@ -627,6 +643,7 @@ mod digest_tests {
             accepted_key_shape: None,
             accepted_index_shape: None,
             accepted_struct: None,
+            applied_transform: None,
         }
     }
 
@@ -684,6 +701,7 @@ mod validate_tests {
             accepted_key_shape: None,
             accepted_index_shape: shape.map(str::to_string),
             accepted_struct: None,
+            applied_transform: None,
         }
     }
 
@@ -935,6 +953,7 @@ type DigestEntryOrder<'a> = (
     &'a Option<String>,
     &'a Option<String>,
     &'a Option<String>,
+    &'a Option<String>,
 );
 
 fn digest_json(json: &str) -> String {
@@ -962,6 +981,7 @@ fn digest_entry_order(entry: &CatalogEntry) -> DigestEntryOrder<'_> {
         &entry.accepted_key_shape,
         &entry.accepted_index_shape,
         &entry.accepted_struct,
+        &entry.applied_transform,
     )
 }
 

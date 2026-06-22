@@ -40,6 +40,17 @@ pub(crate) fn evolution_digest(program: &CheckedProgram) -> String {
     digest_of(&render_declarations(program), DigestScope::ShapeAndEvolve)
 }
 
+/// The durable identity of one `evolve transform`: a `sha256:<hex>` of its target's stable
+/// catalog id and its canonical body rendering. Apply stamps this on the target so a
+/// re-bind recognizes the same transform, and discharge compares against it to skip a
+/// transform already applied. Keying on the transform's own target and body — not the
+/// whole-program shape — means an unrelated durable edit never moves the mark, so a
+/// discharged transform cannot re-execute and corrupt already-migrated data, while a
+/// changed body computes a different identity and is correctly a fresh obligation.
+pub(crate) fn transform_identity(stable_id: &str, body_text: &str) -> String {
+    marrow_project::sha256_digest(format!("transform-v1\0{stable_id}\0{body_text}").as_bytes())
+}
+
 /// Which declarations a digest binds. The shape digest the store stamps excludes the
 /// evolve block; the evolution digest the witness records includes it.
 #[derive(Clone, Copy, PartialEq, Eq)]

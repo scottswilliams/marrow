@@ -82,12 +82,7 @@ pub(crate) fn discharge(
 ) -> Result<Discharge, StoreError> {
     let mut acc = Accumulator::new(
         program.catalog.evolve_defaults.clone(),
-        program
-            .catalog
-            .evolve_transforms
-            .iter()
-            .filter_map(|transform| transform.catalog_id.clone())
-            .collect(),
+        transforms::pending_transform_ids(program),
         renamed_member_ids(program),
         accepted_member_leaves(program),
     );
@@ -119,6 +114,15 @@ pub(crate) fn discharge(
         classify_structural_backstop(store, place, &mut acc)?;
     }
     Ok(acc.into_discharge())
+}
+
+/// Whether the program declares an `evolve transform` not yet applied against the current
+/// source. The activation fence cannot see a shape-neutral in-place transform — it moves no
+/// source digest or epoch — so the run path consults this to honor the pending-evolution run
+/// blocker, and a transform already discharged (its target records the transform's own identity)
+/// no longer reads as pending.
+pub fn has_pending_transform(program: &CheckedProgram) -> bool {
+    !transforms::pending_transform_ids(program).is_empty()
 }
 
 fn catalog_id(raw: &str) -> Result<CatalogId, StoreError> {

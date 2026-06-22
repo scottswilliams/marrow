@@ -24,7 +24,7 @@ mod stable_id;
 
 pub(crate) use source_digest::{
     DurableRendering, analyzed_source_digest, durable_renderings_for_source, evolution_digest,
-    source_and_evolution_digests,
+    source_and_evolution_digests, transform_identity,
 };
 use stable_id::{CatalogIdEntropy, StableIdAllocator};
 
@@ -676,6 +676,9 @@ fn bind_against_accepted(
     if record_signatures_into(program, &mut proposal_entries, Some(catalog)) {
         changed = true;
     }
+    if record_transform_marks(&mut proposal_entries, &evolve.transforms, ids, catalog) {
+        changed = true;
+    }
     if changed {
         Ok(Some(CatalogMetadata::new(
             advance_epoch(catalog.epoch, lock_high_water(lock)),
@@ -684,6 +687,56 @@ fn bind_against_accepted(
     } else {
         Ok(None)
     }
+}
+
+/// Stamp every live `evolve transform` target with its own per-transform identity (a hash of
+/// the target's stable id and the transform body), so a shape-neutral in-place transform becomes
+/// a real catalog change that advances the epoch on apply. A transform rewrites an existing
+/// member's data without changing its type, so it moves no structural signature; without this
+/// mark the proposal would equal the accepted catalog and the data work would re-derive on every
+/// preview, re-executing forever. Keying the mark on the transform's own target and body — not the
+/// whole-program shape — is what keeps a later unrelated durable edit from drifting the mark and
+/// re-running a transform against already-migrated data. Once the accepted entry carries this
+/// identity, a re-bind of the same transform records the same value and reports no change, while a
+/// changed body computes a different identity that reads as a fresh obligation. Returns whether any
+/// target gained a new mark.
+fn record_transform_marks(
+    proposal_entries: &mut [CatalogEntry],
+    transforms: &[TransformIntent],
+    ids: &HashMap<CatalogKey, String>,
+    accepted: &CatalogMetadata,
+) -> bool {
+    let identities: HashMap<String, String> = transforms
+        .iter()
+        .filter_map(|transform| {
+            let id = member_target_id(&transform.path, ids)?;
+            let identity = transform_identity(&id, &transform.body_text);
+            Some((id, identity))
+        })
+        .collect();
+    if identities.is_empty() {
+        return false;
+    }
+    let accepted_marks: HashMap<&str, &Option<String>> = accepted
+        .entries
+        .iter()
+        .map(|entry| (entry.stable_id.as_str(), &entry.applied_transform))
+        .collect();
+    let mut changed = false;
+    for entry in proposal_entries.iter_mut() {
+        let Some(identity) = identities.get(&entry.stable_id) else {
+            continue;
+        };
+        let already = accepted_marks
+            .get(entry.stable_id.as_str())
+            .copied()
+            .and_then(Option::as_deref);
+        if already != Some(identity.as_str()) {
+            changed = true;
+        }
+        entry.applied_transform = Some(identity.clone());
+    }
+    changed
 }
 
 /// Resolve each current source entry to its identity — carry an accepted active entry's id
@@ -1003,6 +1056,7 @@ fn committed_id_stubs(committed: &[LockEntry]) -> Vec<CatalogEntry> {
             accepted_key_shape: None,
             accepted_index_shape: None,
             accepted_struct: None,
+            applied_transform: None,
         })
         .collect()
 }
@@ -1052,6 +1106,7 @@ fn proposed_catalog_entry_with_id(source: &SourceCatalogEntry, stable_id: &str) 
         accepted_key_shape: None,
         accepted_index_shape: None,
         accepted_struct: None,
+        applied_transform: None,
     }
 }
 
@@ -1176,6 +1231,7 @@ fn bound_transforms(
                 file: transform.file.clone(),
                 target_path: transform.path.clone(),
                 body_span: transform.body_span,
+                body_text: transform.body_text.clone(),
                 runtime_body: None,
             })
         })
@@ -2249,6 +2305,7 @@ mod tests {
             accepted_key_shape: None,
             accepted_index_shape: None,
             accepted_struct: None,
+            applied_transform: None,
         }
     }
 
