@@ -1150,6 +1150,7 @@ mod tests {
                 data_dir: Some(data_dir.to_string()),
             },
             tests: Vec::new(),
+            client: None,
         }
     }
 
@@ -1303,6 +1304,7 @@ mod tests {
                 data_dir: None,
             },
             tests: vec!["src".to_string(), "tests".to_string()],
+            client: None,
         };
 
         crate::driver::reset_source_read_count();

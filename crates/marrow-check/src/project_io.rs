@@ -487,6 +487,7 @@ mod tests {
                 data_dir: data_dir.map(str::to_string),
             },
             tests: Vec::new(),
+            client: None,
         }
     }
 

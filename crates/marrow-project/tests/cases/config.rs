@@ -31,6 +31,34 @@ fn fills_optional_run_and_tests_with_defaults() {
 }
 
 #[test]
+fn client_path_parses_as_optional_output() {
+    let config = marrow_project::parse_config(
+        r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" }, "client": "generated/marrow.ts" }"#,
+    )
+    .expect("config with client path parses");
+    assert_eq!(config.client.as_deref(), Some("generated/marrow.ts"));
+}
+
+#[test]
+fn client_absent_defaults_to_none() {
+    let config = marrow_project::parse_config(
+        r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" } }"#,
+    )
+    .expect("config without client parses");
+    assert!(config.client.is_none());
+}
+
+#[test]
+fn client_path_must_stay_under_root() {
+    let error = marrow_project::parse_config(
+        r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" }, "client": "../web/marrow.ts" }"#,
+    )
+    .expect_err("client path escaping the root is rejected");
+    assert_eq!(error.code, "config.invalid");
+    assert!(error.message.contains("client"), "{}", error.message);
+}
+
+#[test]
 fn accepts_the_memory_backend() {
     let config = parse_config(r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" } }"#)
         .expect("valid config");

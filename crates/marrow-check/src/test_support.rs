@@ -36,6 +36,7 @@ pub fn test_config() -> ProjectConfig {
             data_dir: Some(".marrow/data".into()),
         },
         tests: Vec::new(),
+        client: None,
     }
 }
 

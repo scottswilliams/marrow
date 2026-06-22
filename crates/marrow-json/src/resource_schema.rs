@@ -693,6 +693,7 @@ mod tests {
                 data_dir: Some(".marrow/data".into()),
             },
             tests: Vec::new(),
+            client: None,
         };
         check_project(root.path(), &config).expect("check project")
     }

@@ -2251,6 +2251,7 @@ pub fn seed()
                 data_dir: Some(".marrow/data".into()),
             },
             tests: Vec::new(),
+            client: None,
         };
         let (report, program) = check_project(root.path(), &config).expect("check project");
         assert!(
@@ -2280,6 +2281,7 @@ pub fn seed()
                 data_dir: Some(".marrow/data".into()),
             },
             tests: Vec::new(),
+            client: None,
         };
         let (report, program) = check_project(root.path(), &config).expect("check project");
         assert!(

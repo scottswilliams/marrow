@@ -30,6 +30,7 @@ fn native_config() -> ProjectConfig {
             data_dir: Some(".data".into()),
         },
         tests: Vec::new(),
+        client: None,
     }
 }
 

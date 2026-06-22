@@ -567,6 +567,7 @@ pub(super) mod test_support {
                 data_dir: Some(".marrow/data".into()),
             },
             tests: Vec::new(),
+            client: None,
         }
     }
 

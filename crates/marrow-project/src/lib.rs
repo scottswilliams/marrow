@@ -34,6 +34,10 @@ pub struct ProjectConfig {
     pub store: StoreConfig,
     /// Test file or directory paths, relative to the project root.
     pub tests: Vec<String>,
+    /// Project-relative output path for the generated TypeScript surface client, when declared.
+    /// `None` means the project emits no client. A bare string today; an object form is a
+    /// forward-compatible extension reserved for the split-repo profile.
+    pub client: Option<String>,
 }
 
 /// The storage selection: which backend, and where its data lives.
@@ -102,6 +106,7 @@ pub enum ConfigPathField {
     SourceRootsEntry,
     DataDir,
     TestsEntry,
+    Client,
 }
 
 /// Why a configured project-relative path is invalid.
@@ -129,6 +134,7 @@ impl ConfigPathField {
             Self::SourceRootsEntry => "sourceRoots entry",
             Self::DataDir => "dataDir",
             Self::TestsEntry => "tests entry",
+            Self::Client => "client",
         }
     }
 }
@@ -228,11 +234,16 @@ pub fn parse_config(json: &str) -> Result<ProjectConfig, ConfigError> {
         data_dir: raw_store.data_dir,
     };
 
+    if let Some(client) = &raw.client {
+        check_under_root(ConfigPathField::Client, client)?;
+    }
+
     Ok(ProjectConfig {
         source_roots: raw.source_roots,
         default_entry: raw.run.and_then(|run| run.default_entry),
         store,
         tests: raw.tests,
+        client: raw.client,
     })
 }
 
@@ -614,6 +625,8 @@ struct RawConfig {
     store: Option<RawStore>,
     #[serde(default)]
     tests: Vec<String>,
+    #[serde(default)]
+    client: Option<String>,
 }
 
 #[derive(Deserialize)]

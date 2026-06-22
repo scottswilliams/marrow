@@ -109,7 +109,7 @@ Structured reports that include a `project` field render the canonical absolute 
 
 ## Load-bearing invariants
 
-- **Path containment.** Every project-relative path (source roots, `dataDir`, tests) is rejected if empty, absolute, or containing `..`, because each is later `Path::join`ed onto the project root. Test paths additionally reject glob metacharacters, so discovery is plain file-or-directory selection rather than pattern matching. `parse_config` double-parses (raw `Value` then typed `RawConfig`) to catch non-object roots and unknown-key spans.
+- **Path containment.** Every project-relative path (source roots, `dataDir`, tests, the optional `client` output) is rejected if empty, absolute, or containing `..`, because each is later `Path::join`ed onto the project root. Test paths additionally reject glob metacharacters, so discovery is plain file-or-directory selection rather than pattern matching. `parse_config` double-parses (raw `Value` then typed `RawConfig`) to catch non-object roots and unknown-key spans.
 - **Run admission.** `ProjectSession::open` owns run admission. A clean project
   with a pending durable identity has its baseline frozen into the store the
   first time a real `run` opens it write-capable; a memory-backed project with a
