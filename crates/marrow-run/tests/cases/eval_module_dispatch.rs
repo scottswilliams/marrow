@@ -99,6 +99,20 @@ fn checked_program_entry_fault_carries_origin() {
 }
 
 #[test]
+fn uncaught_fault_binding_a_module_constant_carries_its_file_id() {
+    // A module-level `const` is evaluated when its module's entry activates, before
+    // the body runs. A fault raised there (a divide-by-zero the static fold leaves to
+    // the runtime) must still carry the module's file id, so it renders with a
+    // location rather than a null file.
+    let program = checked_program_modules(&[
+        "module a\n\nconst BIG = 1 / 0\n\npub fn run(): int\n    return 0\n",
+    ]);
+    let error = run_expecting_error(checked_entry!(&program, "a::run"));
+    assert_eq!(error.code(), RUN_DIVIDE_BY_ZERO);
+    assert_eq!(error.origin, Some(FileId(0)));
+}
+
+#[test]
 fn outer_frame_does_not_overwrite_inner_origin() {
     // `a::outer` calls `a::mid` calls `b::boom`. The uncaught fault crosses
     // three frames in two modules; the deepest (`b`, index 1) wins and the outer

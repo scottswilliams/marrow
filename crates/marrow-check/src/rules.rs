@@ -14,7 +14,7 @@ use marrow_syntax::{
     format_expression,
 };
 
-use crate::checks::{check_entries_value_position, check_range_value};
+use crate::checks::{check_const_int_overflow, check_entries_value_position, check_range_value};
 use crate::typerules::{LiteralSign, check_literal_range, negated_integer_literal};
 use crate::walk::for_each_child_expr;
 use crate::{CHECK_COMMIT_AMPLIFICATION, CheckDiagnostic};
@@ -92,7 +92,12 @@ impl ImmutableKind {
 /// A `const` value must be a compile-time constant expression: literals and
 /// other constants combined with operators, never a host call or saved-data
 /// read.
-pub(crate) fn check_const_value(file: &Path, value: &Expression, out: &mut Vec<CheckDiagnostic>) {
+pub(crate) fn check_const_value(
+    file: &Path,
+    value: &Expression,
+    const_ints: &HashMap<String, Option<i64>>,
+    out: &mut Vec<CheckDiagnostic>,
+) {
     if !is_constant_expr(value) {
         out.push(diagnostic(
             CHECK_NON_CONSTANT_CONST,
@@ -102,6 +107,7 @@ pub(crate) fn check_const_value(file: &Path, value: &Expression, out: &mut Vec<C
         ));
     }
     check_literal_ranges(file, value, out);
+    check_const_int_overflow(file, value, std::slice::from_ref(const_ints), out);
     check_entries_value_position(file, value, out);
     check_range_value(file, value, out);
 }

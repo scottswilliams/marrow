@@ -923,7 +923,15 @@ pub(crate) fn check_file_source(
             }
             marrow_syntax::Declaration::Const(constant) => {
                 if let Some(value) = &constant.value {
-                    rules::check_const_value(file_path, value, diagnostics);
+                    // Earlier module constants in declaration order are already folded
+                    // in `constants`, so a `const` defined over a preceding one resolves
+                    // its overflow at check rather than faulting at run.
+                    rules::check_const_value(
+                        file_path,
+                        value,
+                        &checks::module_const_int_scope(&constants),
+                        diagnostics,
+                    );
                 }
                 constants.push(CheckedConst {
                     name: constant.name.clone(),

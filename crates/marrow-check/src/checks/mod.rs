@@ -25,6 +25,7 @@ mod statements;
 
 pub(crate) use calls::{CallCheck, check_call, materializes_saved_collection_by_value};
 pub(crate) use collections::{catch_frame, check_entries_value_position, for_frame};
+pub(crate) use const_int::{check_const_int_overflow, module_const_int_scope};
 pub(crate) use diagnostics::key_type_diagnostic;
 pub(crate) use driver::{
     FilePrelude, ModuleNamePolicy, ResolvedFileCheck, check_resolved_files, file_prelude,

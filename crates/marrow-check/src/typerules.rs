@@ -91,15 +91,22 @@ fn elide(text: &str) -> std::borrow::Cow<'_, str> {
     }
 }
 
-/// Whether an integer literal's magnitude is outside `i64`. A bare magnitude must
-/// itself fit `i64`; a negated one may reach `i64::MAX + 1`, whose negation is
-/// `i64::MIN`. The negated case folds the sign before parsing rather than parsing
-/// the bare magnitude, which would reject `i64::MIN`.
-fn integer_out_of_range(text: &str, sign: LiteralSign) -> bool {
+/// The `i64` an integer literal magnitude denotes, or `None` when it is out of
+/// range. A bare magnitude must itself fit `i64`; a negated one may reach
+/// `i64::MAX + 1`, whose negation is `i64::MIN`. The negated case folds the sign
+/// before parsing rather than parsing the bare magnitude, which would reject
+/// `i64::MIN`. This is the single place the `i64` boundary lives, so the range
+/// check and the constant fold agree on it.
+pub(crate) fn parse_integer_literal(text: &str, sign: LiteralSign) -> Option<i64> {
     match sign {
-        LiteralSign::Bare => text.parse::<i64>().is_err(),
-        LiteralSign::Negated => format!("-{text}").parse::<i64>().is_err(),
+        LiteralSign::Bare => text.parse().ok(),
+        LiteralSign::Negated => format!("-{text}").parse().ok(),
     }
+}
+
+/// Whether an integer literal's magnitude is outside `i64`.
+fn integer_out_of_range(text: &str, sign: LiteralSign) -> bool {
+    parse_integer_literal(text, sign).is_none()
 }
 
 /// Whether a decimal literal provably exceeds the 34-digit envelope. Mirrors

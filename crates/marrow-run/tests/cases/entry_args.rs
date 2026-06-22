@@ -107,6 +107,45 @@ fn text_args_accept_negative_numeric_spellings() {
 }
 
 #[test]
+fn text_args_accept_i64_min() {
+    // `i64::MIN` is a valid int everywhere — source literal, `int("...")`, saved
+    // key — so the entry-argument decoder must fold the leading minus into the
+    // magnitude before parsing rather than rejecting the bare `i64::MAX + 1`.
+    let program = checked_program("pub fn main(n: int): int\n    return n\n");
+    let call =
+        CheckedEntryCall::from_text_args(&program, "test::main", &[("n", "-9223372036854775808")])
+            .expect("i64::MIN entry arg decodes");
+    let store = TreeStore::memory();
+    let mut output = String::new();
+    let result = run_entry(&store, &call, &mut output).expect("run entry");
+    assert_eq!(result.value, Some(Value::Int(i64::MIN)));
+}
+
+#[test]
+fn text_args_accept_an_i64_min_identity_key() {
+    // An identity key shares the scalar literal grammar, so the `i64::MIN` key
+    // spelling decodes through the same sign-folding path.
+    let program = checked_program(
+        "resource Reading\n\
+         \x20   note: string\n\
+         store ^readings(temp: int): Reading\n\
+         \n\
+         pub fn accept(reading: Id(^readings)): int\n\
+         \x20   return 1\n",
+    );
+    let call = CheckedEntryCall::from_text_args(
+        &program,
+        "test::accept",
+        &[("reading", "-9223372036854775808")],
+    )
+    .expect("an i64::MIN identity key decodes");
+    let store = TreeStore::memory();
+    let mut output = String::new();
+    let result = run_entry(&store, &call, &mut output).expect("run entry");
+    assert_eq!(result.value, Some(Value::Int(1)));
+}
+
+#[test]
 fn text_args_accept_a_negative_int_identity_key() {
     // An identity key shares the scalar literal grammar, so a negative int key
     // spelling decodes through the same unary-minus path.
@@ -395,6 +434,7 @@ fn json_protocol_args_use_exact_scalar_strings() {
     let args = entry_arguments_from_json(&[
         json!({ "name": "n", "value": { "kind": "int", "value": "7" } }),
         json!({ "name": "max", "value": { "kind": "int", "value": i64::MAX.to_string() } }),
+        json!({ "name": "min", "value": { "kind": "int", "value": i64::MIN.to_string() } }),
         json!({ "name": "day", "value": { "kind": "date", "value": "1969-12-30" } }),
         json!({ "name": "payload", "value": { "kind": "bytes", "value": "01ff" } }),
     ])
@@ -410,6 +450,10 @@ fn json_protocol_args_use_exact_scalar_strings() {
             EntryArgument {
                 name: "max".into(),
                 value: EntryArgumentValue::Scalar(EntryScalarArgument::Int(i64::MAX)),
+            },
+            EntryArgument {
+                name: "min".into(),
+                value: EntryArgumentValue::Scalar(EntryScalarArgument::Int(i64::MIN)),
             },
             EntryArgument {
                 name: "day".into(),

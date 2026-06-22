@@ -82,6 +82,77 @@ fn an_in_range_decimal_literal_is_not_flagged() {
 }
 
 #[test]
+fn an_over_range_const_arithmetic_expression_is_flagged_at_check_time() {
+    // A `const` value is a compile-time constant expression evaluated at check, so
+    // arithmetic that overflows `i64` is just as out of range as the value-equal
+    // literal and is flagged at check, not left to a run-time fault.
+    let local = check_script(
+        "const-arith-overflow",
+        "fn f()\n    const big: int = 9223372036854775807 + 1\n",
+        "check.literal_range",
+    );
+    assert_eq!(local.len(), 1, "{local:#?}");
+
+    let module = check_module(
+        "module-const-arith-overflow",
+        "module m\nconst BIG: int = 9223372036854775807 + 1\n",
+        "check.literal_range",
+    );
+    assert_eq!(module.len(), 1, "{module:#?}");
+}
+
+#[test]
+fn an_in_range_const_arithmetic_expression_is_not_flagged() {
+    // Arithmetic that stays within `i64` checks clean, and a non-constant operand
+    // (a parameter) leaves the expression dynamic, so no static range error fires.
+    let found = check_script(
+        "const-arith-ok",
+        "fn f(n: int)\n\
+         \x20   const sum: int = 9223372036854775806 + 1\n\
+         \x20   const dynamic: int = n + 1\n",
+        "check.literal_range",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn an_over_range_const_name_arithmetic_expression_is_flagged_at_check_time() {
+    // A `const` initializer that references another constant is still a compile-time
+    // constant expression, so arithmetic over the referenced value that overflows
+    // `i64` is out of range at check rather than left to a run-time fault.
+    let local = check_script(
+        "const-name-arith-overflow",
+        "fn f()\n\
+         \x20   const a: int = 9223372036854775807\n\
+         \x20   const b: int = a + 1\n",
+        "check.literal_range",
+    );
+    assert_eq!(local.len(), 1, "{local:#?}");
+
+    let module = check_module(
+        "module-const-name-arith-overflow",
+        "module m\n\
+         const A: int = 9223372036854775807\n\
+         const B: int = A + 1\n",
+        "check.literal_range",
+    );
+    assert_eq!(module.len(), 1, "{module:#?}");
+}
+
+#[test]
+fn an_in_range_const_name_arithmetic_expression_is_not_flagged() {
+    // Arithmetic over a referenced constant that stays within `i64` checks clean.
+    let found = check_script(
+        "const-name-arith-ok",
+        "fn f()\n\
+         \x20   const a: int = 9223372036854775806\n\
+         \x20   const b: int = a + 1\n",
+        "check.literal_range",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
 fn an_over_range_module_const_literal_is_flagged_at_check_time() {
     // A module-level `const` initializer is range-checked like a local one.
     let found = check_module(

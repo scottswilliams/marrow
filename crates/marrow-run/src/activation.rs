@@ -77,7 +77,11 @@ pub(crate) fn invoke<'a, 'p>(input: Invocation<'a, 'p>) -> Result<Activation<'p>
         depth,
         traversed_layers,
     });
-    bind_module_constants(module, &mut env)?;
+    // A module constant is evaluated here, before the body, so a fault raised
+    // binding it would otherwise escape with no origin; stamp the module's file id
+    // so it renders with a location like a body fault.
+    bind_module_constants(module, &mut env)
+        .map_err(|error| error.with_origin_from(env.program, module))?;
     bind_activation_params(param_names, args, &mut env);
     let outcome = eval_block(body, &mut env);
     env.pop_scope();

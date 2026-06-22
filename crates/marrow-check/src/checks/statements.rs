@@ -102,27 +102,15 @@ pub(crate) fn check_function_types(
     collapse_repeated_unresolved_names(diagnostics, body_start);
 }
 
-/// The module's integer constants folded to their values. A constant whose value is
-/// not a statically-known integer is omitted, so the environment holds only what the
-/// sequence-position fold can use. Constants are folded in declaration order, so a
-/// later constant defined over an earlier one resolves.
+/// The module's integer constants folded to their values, seeding the function or
+/// block const-int environment.
 fn module_const_ints(program: &CheckedProgram, file: &Path) -> HashMap<String, Option<i64>> {
-    let mut const_ints = HashMap::new();
-    let Some(module) = program
+    program
         .modules
         .iter()
         .find(|module| module.source_file == file)
-    else {
-        return const_ints;
-    };
-    for constant in &module.constants {
-        if let Some(value) = &constant.value
-            && let Some(folded) = fold_const_int(value, std::slice::from_ref(&const_ints))
-        {
-            const_ints.insert(constant.name.clone(), Some(folded));
-        }
-    }
-    const_ints
+        .map(|module| super::const_int::module_const_int_scope(&module.constants))
+        .unwrap_or_default()
 }
 
 /// One undeclared name is one root cause however many times the function uses it. A
@@ -433,6 +421,17 @@ impl StatementCheck<'_> {
                 self.check_range_value(value);
                 if self.value_is_saved_collection(value) {
                     self.reject_saved_collection_materialization(value);
+                }
+                // A `const` value is a compile-time constant expression, so arithmetic
+                // that overflows `i64` is out of range at check, like the value-equal
+                // literal. A `var` value is evaluated at run, so it is excluded.
+                if matches!(statement, marrow_syntax::Statement::Const { .. }) {
+                    super::check_const_int_overflow(
+                        self.file,
+                        value,
+                        self.const_ints,
+                        self.diagnostics,
+                    );
                 }
                 value_type
             }

@@ -1457,7 +1457,9 @@ fn eval_scalar_arg_expression(scalar: ScalarType, expression: &Expression) -> Op
             span,
         } => {
             let Expression::Literal {
-                span: operand_span, ..
+                kind,
+                text,
+                span: operand_span,
             } = operand.as_ref()
             else {
                 return None;
@@ -1465,12 +1467,26 @@ fn eval_scalar_arg_expression(scalar: ScalarType, expression: &Expression) -> Op
             if operand_span.start_byte != span.start_byte + 1 {
                 return None;
             }
-            match eval_scalar_arg_expression(scalar, operand)? {
-                Value::Int(n) => n.checked_neg().map(Value::Int),
-                Value::Decimal(d) => {
-                    Decimal::from_parts(-d.coefficient(), d.scale()).map(Value::Decimal)
+            // Fold the sign into the literal text before parsing so the magnitude
+            // is read as one signed value, matching the checker. A bare
+            // `i64::MAX + 1` is out of range, yet negated it is exactly `i64::MIN`,
+            // so negating the parsed magnitude would reject a valid argument.
+            match kind {
+                marrow_syntax::LiteralKind::Integer => {
+                    let value = crate::expr::eval_literal(
+                        CheckedLiteralKind::Integer,
+                        &format!("-{text}"),
+                        *operand_span,
+                    )
+                    .ok()?;
+                    (value_scalar_type(&value) == Some(scalar)).then_some(value)
                 }
-                _ => None,
+                _ => match eval_scalar_arg_expression(scalar, operand)? {
+                    Value::Decimal(d) => {
+                        Decimal::from_parts(-d.coefficient(), d.scale()).map(Value::Decimal)
+                    }
+                    _ => None,
+                },
             }
         }
         Expression::Call { callee, args, .. } => {
