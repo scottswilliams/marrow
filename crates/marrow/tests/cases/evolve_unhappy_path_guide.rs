@@ -314,6 +314,111 @@ fn populated_store_key_shape_change_fences_preview_apply_and_run() {
 }
 
 #[test]
+fn populated_keyed_layer_key_shape_change_fences_preview_apply_and_run() {
+    const BASELINE_SOURCE: &str = "module books\n\
+         resource Book\n\
+         \x20   required title: string\n\
+         \x20   versions(version: int)\n\
+         \x20       required body: string\n\
+         store ^books(id: int): Book\n\
+         pub fn seed()\n\
+         \x20   ^books(1).title = \"Dune\"\n\
+         \x20   ^books(1).versions(7).body = \"draft\"\n";
+    const KEY_RESHAPED_SOURCE: &str = "module books\n\
+         resource Book\n\
+         \x20   required title: string\n\
+         \x20   versions(version: string)\n\
+         \x20       required body: string\n\
+         store ^books(id: int): Book\n\
+         pub fn noop()\n\
+         \x20   print(\"keyed layer entry executed\")\n";
+
+    let root = native_books_project("evolve-unhappy-keyed-layer-key-shape", BASELINE_SOURCE);
+    let dir = root.to_str().unwrap();
+
+    let seed = marrow(&["run", "--entry", "books::seed", dir]);
+    assert_eq!(seed.status.code(), Some(0), "{seed:?}");
+    let old_versions_id = accepted_catalog_entry_id(&root, "books::Book::versions");
+    let old_body_id = accepted_catalog_entry_id(&root, "books::Book::versions::body");
+    let old_body_path = [
+        member_segment(&old_versions_id),
+        DataPathSegment::Key(SavedKey::Int(7)),
+        member_segment(&old_body_id),
+    ];
+    let old_body_bytes = encode_value(&Scalar::Str("draft".into())).expect("encode body");
+    assert_eq!(
+        read_path_bytes(&root, "books::^books", &[SavedKey::Int(1)], &old_body_path),
+        Some(old_body_bytes.clone()),
+        "baseline stores the keyed-layer leaf under the int-keyed layer path"
+    );
+    let old_epoch = store_epoch(&root);
+    assert_eq!(old_epoch, Some(1));
+
+    write(&root, "src/books.mw", KEY_RESHAPED_SOURCE);
+    let preview = marrow(&["evolve", "preview", "--format", "json", dir]);
+    assert_eq!(preview.status.code(), Some(1), "{preview:?}");
+    let preview_json = support::json(preview.stdout);
+    assert_eq!(preview_json["status"], serde_json::json!("blocked"));
+    let blocking = preview_json["blocking"]
+        .as_array()
+        .expect("blocking reports");
+    assert!(
+        blocking.iter().any(|report| {
+            report["code"] == serde_json::json!("evolve.repair_required")
+                && report["data"]["catalog_id"] == serde_json::json!(old_versions_id)
+        }),
+        "preview should report repair required for the populated keyed layer: {preview_json:#?}"
+    );
+
+    let apply = marrow(&["evolve", "apply", "--format", "json", dir]);
+    assert_eq!(apply.status.code(), Some(1), "{apply:?}");
+    let apply_json = support::json(apply.stdout);
+    assert_eq!(
+        apply_json["code"],
+        serde_json::json!("evolve.repair_required")
+    );
+    assert_eq!(
+        apply_json["data"]["catalog_id"],
+        serde_json::json!(old_versions_id)
+    );
+    assert_eq!(
+        store_epoch(&root),
+        old_epoch,
+        "refused apply does not advance the durable store epoch"
+    );
+    assert!(record_exists(&root, "books::^books", &[SavedKey::Int(1)]));
+    assert_eq!(
+        read_path_bytes(&root, "books::^books", &[SavedKey::Int(1)], &old_body_path),
+        Some(old_body_bytes.clone()),
+        "refused apply leaves the old keyed-layer bytes in place"
+    );
+
+    let run = marrow(&["run", "--entry", "books::noop", dir]);
+    assert_eq!(run.status.code(), Some(1), "{run:?}");
+    let stderr = String::from_utf8(run.stderr).expect("stderr utf8");
+    assert!(
+        stderr.contains("run.schema_drift"),
+        "the run fences on schema drift before executing the entry: {stderr}"
+    );
+    let stdout = String::from_utf8(run.stdout).expect("stdout utf8");
+    assert!(
+        !stdout.contains("keyed layer entry executed"),
+        "the schema drift fence must stop before entry output: {stdout}"
+    );
+    assert_eq!(
+        store_epoch(&root),
+        old_epoch,
+        "fenced run does not advance the durable store epoch"
+    );
+    assert!(record_exists(&root, "books::^books", &[SavedKey::Int(1)]));
+    assert_eq!(
+        read_path_bytes(&root, "books::^books", &[SavedKey::Int(1)], &old_body_path),
+        Some(old_body_bytes),
+        "fenced run leaves the old keyed-layer bytes in place"
+    );
+}
+
+#[test]
 fn worked_orphan_repair_is_bracketed_by_integrity() {
     let root = native_books_project("evolve-unhappy-orphan-repair", ORPHAN_REPAIR_SOURCE);
     let dir = root.to_str().unwrap();
@@ -391,6 +496,24 @@ fn read_member_bytes(
             )],
         )
         .expect("read member bytes")
+}
+
+fn member_segment(member_id: &str) -> DataPathSegment {
+    DataPathSegment::Member(CatalogId::new(member_id.to_string()).expect("member catalog id"))
+}
+
+fn read_path_bytes(
+    root: impl AsRef<Path>,
+    store_path: &str,
+    identity: &[SavedKey],
+    path: &[DataPathSegment],
+) -> Option<Vec<u8>> {
+    let store_id = catalog_id(root.as_ref(), store_path);
+    let store =
+        TreeStore::open_read_only(&native_store_path(root.as_ref())).expect("open native store");
+    store
+        .read_data_value(&store_id, identity, path)
+        .expect("read path bytes")
 }
 
 fn record_exists(root: impl AsRef<Path>, store_path: &str, identity: &[SavedKey]) -> bool {
