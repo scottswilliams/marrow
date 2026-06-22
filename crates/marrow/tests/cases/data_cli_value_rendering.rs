@@ -176,6 +176,70 @@ fn data_text_marks_an_undecodable_string_leaf_distinctly_from_bytes() {
 }
 
 #[test]
+fn data_text_marks_an_undecodable_numeric_leaf_distinctly_from_bytes() {
+    // An `int` leaf whose stored bytes are not its canonical form is corruption, not a
+    // bytes value. The renderer must mark it the same way it marks an undecodable
+    // string or enum, so a reader cannot mistake the raw `0x<hex>` for a legitimate
+    // bytes field, while `data integrity` stays the authority that flags it and the
+    // lossless JSON form keeps the raw bytes.
+    let (project, dir) = seeded_project(
+        "data-value-render-undecodable-int",
+        "module app\n\
+         resource Counter\n\
+         \x20   required value: int\n\
+         store ^counters(id: int): Counter\n\
+         pub fn seed()\n\
+         \x20   transaction\n\
+         \x20       ^counters(1).value = 1\n",
+    );
+    let place = checked_place(&project, "counters");
+    let value_path = field_path(&place, "value");
+    // `01` parses as 1 but is not the canonical int spelling, so the strict decoder
+    // rejects it as corruption rather than normalizing it.
+    let corrupt = b"01".to_vec();
+    write_tree_value(
+        &project,
+        "counters",
+        &[SavedKey::Int(1)],
+        &value_path,
+        corrupt.clone(),
+    );
+
+    let reference = stdout(marrow(&["data", "get", &dir, "^counters(1).value"]));
+    let dump = stdout(marrow(&["data", "dump", &dir]));
+    let bare_hex = hex_text(&corrupt);
+
+    let expected = format!("<undecodable int: {bare_hex}>");
+    assert_eq!(reference, format!("{expected}\n"));
+    assert!(
+        dump.contains(&format!("^counters(1).value\t{expected}\n")),
+        "{dump}"
+    );
+    assert!(
+        !reference.starts_with("0x")
+            && !dump.contains(&format!("^counters(1).value\t{bare_hex}\n")),
+        "a corrupt int must not render as a bare bytes value: get={reference:?} dump={dump:?}"
+    );
+
+    // `data integrity` remains the authority and still flags the corruption.
+    let integrity = marrow(&["data", "integrity", "--format", "json", &dir]);
+    assert_eq!(integrity.status.code(), Some(1), "{integrity:?}");
+
+    // The lossless JSON form carries the unchanged raw bytes regardless of the text marker.
+    let value_json = support_data::json(marrow(&[
+        "data",
+        "get",
+        "--format",
+        "json",
+        &dir,
+        "^counters(1).value",
+    ]));
+    let raw = marrow_run::base64::decode(value_json["value_b64"].as_str().expect("b64"))
+        .expect("decode value");
+    assert_eq!(raw, corrupt);
+}
+
+#[test]
 fn data_text_renders_a_drifted_leaf_by_its_accepted_catalog_type() {
     // Data was committed under `pages: int`. Drifting the source to `pages: string`
     // is a blocked populated-leaf retype; the inspection tools must render the real

@@ -211,13 +211,18 @@ fn render_data_value_prefix_preview_inner(
 }
 
 fn render_scalar_value(ty: marrow_store::value::ScalarType, bytes: &[u8]) -> Option<String> {
-    // A declared string whose stored bytes are not valid UTF-8 is corruption, not a
-    // bytes value. Mark it distinctly so a reader cannot mistake it for a legitimate
-    // `0x<hex>` bytes field; `data integrity` stays the authority that flags it.
-    if ty == marrow_store::value::ScalarType::Str && std::str::from_utf8(bytes).is_err() {
-        return Some(render_undecodable_string_value(bytes));
+    // `bytes` legitimately holds arbitrary octets and renders as `0x<hex>`; every
+    // other scalar has a canonical form, so bytes it cannot decode are corruption,
+    // not a value. Mark those distinctly so a reader cannot mistake an undecodable
+    // leaf for a healthy `0x<hex>` bytes field; `data integrity` stays the authority
+    // that flags it as `data.decode`.
+    if ty == marrow_store::value::ScalarType::Bytes {
+        return Some(render_hex_value(bytes));
     }
-    match decode_value(bytes, ty)? {
+    let Some(value) = decode_value(bytes, ty) else {
+        return Some(render_undecodable_scalar_value(ty, bytes));
+    };
+    match value {
         SavedValue::Str(value) => Some(encode_data_text_string(&value)),
         SavedValue::Bytes(value) => Some(render_hex_value(&value)),
         SavedValue::Bool(value) => Some(value.to_string()),
@@ -235,10 +240,13 @@ fn render_scalar_value_preview(
         marrow_store::value::ScalarType::Str => {
             match render_string_value_preview(bytes, bytes_truncated, limit) {
                 Some(preview) => preview,
-                None => render_undecodable_string_preview(bytes, limit),
+                None => render_undecodable_scalar_preview(ty, bytes, limit),
             }
         }
         marrow_store::value::ScalarType::Bytes => render_hex_value_preview(bytes, limit),
+        _ if decode_value(bytes, ty).is_none() => {
+            render_undecodable_scalar_preview(ty, bytes, limit)
+        }
         _ => match render_scalar_value(ty, bytes) {
             Some(text) => bounded_rendered_text(text, limit),
             None => render_hex_value_preview(bytes, limit),
@@ -360,13 +368,18 @@ fn render_hex_value(bytes: &[u8]) -> String {
     text
 }
 
-const UNDECODABLE_STRING_PREFIX: &str = "<undecodable string: ";
-const UNDECODABLE_STRING_SUFFIX: &str = ">";
+const UNDECODABLE_SCALAR_SUFFIX: &str = ">";
 
-fn render_undecodable_string_value(bytes: &[u8]) -> String {
-    let mut text = String::from(UNDECODABLE_STRING_PREFIX);
+/// The `<undecodable {type}: ` opener for a scalar leaf whose stored bytes the
+/// checked type can no longer decode.
+fn undecodable_scalar_prefix(ty: marrow_store::value::ScalarType) -> String {
+    format!("<undecodable {}: ", ty.name())
+}
+
+fn render_undecodable_scalar_value(ty: marrow_store::value::ScalarType, bytes: &[u8]) -> String {
+    let mut text = undecodable_scalar_prefix(ty);
     text.push_str(&render_hex_value(bytes));
-    text.push_str(UNDECODABLE_STRING_SUFFIX);
+    text.push_str(UNDECODABLE_SCALAR_SUFFIX);
     text
 }
 
@@ -387,15 +400,19 @@ fn render_string_value_preview(
     }
 }
 
-fn render_undecodable_string_preview(bytes: &[u8], limit: usize) -> DataValuePreview {
+fn render_undecodable_scalar_preview(
+    ty: marrow_store::value::ScalarType,
+    bytes: &[u8],
+    limit: usize,
+) -> DataValuePreview {
     let mut text = String::new();
-    if !push_str_atomic_with_limit(&mut text, UNDECODABLE_STRING_PREFIX, limit) {
+    if !push_str_atomic_with_limit(&mut text, &undecodable_scalar_prefix(ty), limit) {
         return truncated_preview(text);
     }
     if !push_hex_preview(&mut text, bytes, limit) {
         return truncated_preview(text);
     }
-    if !push_str_atomic_with_limit(&mut text, UNDECODABLE_STRING_SUFFIX, limit) {
+    if !push_str_atomic_with_limit(&mut text, UNDECODABLE_SCALAR_SUFFIX, limit) {
         return truncated_preview(text);
     }
     DataValuePreview {
@@ -731,6 +748,25 @@ mod tests {
         assert_eq!(bytes_render, "0xff656c6c6f");
         assert_ne!(string_render, bytes_render);
         assert!(!string_render.starts_with("0x"), "{string_render}");
+    }
+
+    #[test]
+    fn undecodable_numeric_leaf_renders_distinctly_from_bytes() {
+        let int_leaf = StoreLeafKind::Scalar(marrow_store::value::ScalarType::Int);
+        let bytes_leaf = StoreLeafKind::Scalar(marrow_store::value::ScalarType::Bytes);
+        let corrupt = b"01";
+
+        let int_render = render_data_value(&CheckedProgram::default(), &int_leaf, corrupt);
+        let bytes_render = render_data_value(&CheckedProgram::default(), &bytes_leaf, corrupt);
+
+        assert_eq!(int_render, "<undecodable int: 0x3031>");
+        assert_eq!(bytes_render, "0x3031");
+        assert!(!int_render.starts_with("0x"), "{int_render}");
+
+        let preview =
+            render_data_value_preview(&CheckedProgram::default(), &int_leaf, corrupt, 128);
+        assert_eq!(preview.text, int_render);
+        assert!(!preview.truncated, "{preview:?}");
     }
 
     #[test]
