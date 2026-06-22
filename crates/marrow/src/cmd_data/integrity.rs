@@ -1,13 +1,12 @@
 use std::io;
 use std::process::ExitCode;
 
-use marrow_check::tooling::{IntegrityProblem, count_integrity_problems, visit_integrity_problems};
+use marrow_check::tooling::{count_integrity_problems, visit_integrity_problems};
 use marrow_store::StoreError;
-use marrow_store::tree::DataPathSegment;
 use marrow_store::tree::TreeStore;
 use serde_json::json;
 
-use crate::{CheckFormat, envelope, write_json};
+use crate::{CheckFormat, write_json};
 
 pub(super) fn data_integrity(args: &[String]) -> ExitCode {
     let super::DataReadTarget {
@@ -140,7 +139,9 @@ fn write_integrity_problems_jsonl(
 ) -> Result<(), StoreError> {
     visit_integrity_problems(store, program, |outcome| {
         if let Some(problem) = outcome.problem {
-            write_json(integrity_record(&problem));
+            write_json(marrow_json::saved_data::integrity_problem_record_to_json(
+                &problem,
+            ));
         }
         Ok(())
     })
@@ -177,7 +178,9 @@ fn write_integrity_json(
                 if let Some(problem) = outcome.problem {
                     super::stop_on_output_error(
                         &mut output_error,
-                        emit(&integrity_record(&problem)),
+                        emit(&marrow_json::saved_data::integrity_problem_record_to_json(
+                            &problem,
+                        )),
                     )?;
                 }
                 Ok(())
@@ -185,83 +188,4 @@ fn write_integrity_json(
             super::finish_output_visit(result, output_error)
         },
     )
-}
-
-fn integrity_record(problem: &IntegrityProblem) -> serde_json::Value {
-    let mut record = envelope(
-        problem,
-        json!({ "path": problem.path }),
-        None,
-        Some(problem.help),
-    );
-    if let Some(incomplete) = &problem.incomplete {
-        record.insert(
-            "store_catalog_id".into(),
-            json!(incomplete.store_catalog_id.as_str()),
-        );
-        record.insert(
-            "record_identity".into(),
-            json!(
-                incomplete
-                    .record_identity
-                    .iter()
-                    .map(marrow_json::saved_key_to_json)
-                    .collect::<Vec<_>>()
-            ),
-        );
-        record.insert(
-            "parent_path".into(),
-            json!(
-                incomplete
-                    .parent_path
-                    .iter()
-                    .map(data_path_segment_json)
-                    .collect::<Vec<_>>()
-            ),
-        );
-        record.insert(
-            "missing_member_catalog_id".into(),
-            json!(incomplete.missing_member_catalog_id.as_str()),
-        );
-    }
-    if let Some(dangling_ref) = &problem.dangling_ref {
-        record.insert(
-            "containing_identity".into(),
-            json!(
-                dangling_ref
-                    .containing_identity
-                    .iter()
-                    .map(marrow_json::saved_key_to_json)
-                    .collect::<Vec<_>>()
-            ),
-        );
-        record.insert(
-            "field_catalog_id".into(),
-            json!(dangling_ref.field_catalog_id.as_str()),
-        );
-        record.insert(
-            "referenced_root".into(),
-            json!(dangling_ref.referenced_root),
-        );
-        record.insert(
-            "referenced_identity".into(),
-            json!(
-                dangling_ref
-                    .referenced_identity
-                    .iter()
-                    .map(marrow_json::saved_key_to_json)
-                    .collect::<Vec<_>>()
-            ),
-        );
-    }
-    serde_json::Value::Object(record)
-}
-
-fn data_path_segment_json(segment: &DataPathSegment) -> serde_json::Value {
-    match segment {
-        DataPathSegment::Member(catalog_id) => {
-            json!({ "member_catalog_id": catalog_id.as_str() })
-        }
-        DataPathSegment::Key(key) => json!({ "key": marrow_json::saved_key_to_json(key) }),
-    }
 }

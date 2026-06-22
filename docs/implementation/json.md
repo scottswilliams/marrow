@@ -38,6 +38,10 @@ renders the shared `store_snapshot` object for `marrow data roots|get|stats`,
 --format json`, and integrity JSONL summaries, including the profile version,
 store UID, catalog digest, optional commit stamp, open transaction stamp, and
 checked source digest.
+Its saved-data DTOs also render the bounded integrity advisory result shared by
+the CLI, LSP, MCP, and editor extension: each finding carries the Marrow
+diagnostic envelope plus typed incomplete-record and dangling-reference payloads
+where the checker exposes them.
 Its surface DTOs render `marrow-run` surface records, pages, values,
 identities, and commit-bound typed cursors with accepted catalog IDs, store
 commit IDs, typed keys, base64 bytes, and lossless strings for integers,

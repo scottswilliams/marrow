@@ -210,6 +210,9 @@ bounded integrity problem samples wrap their existing readers in one
 the physical store identity, catalog digest, optional `DataCommitStamp`, and
 checked program source digest separate, so callers can mark stale data without
 guessing whether a difference came from the store or the editor snapshot.
+`marrow-json` owns the public integrity sample DTO over those stamped facts,
+including the diagnostic envelope and typed incomplete-record or
+dangling-reference payloads.
 `marrow data roots|get --format json|jsonl` render the stamp as
 `store_snapshot`. Multi-pass commands and lower-level tooling tests still call
 the un-stamped reader primitives under their own broader snapshot.

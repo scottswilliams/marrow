@@ -17,7 +17,6 @@ use marrow_check::tooling::{DataCommitStamp, DataSnapshotStamp, DataTransactionS
 use marrow_run::Value;
 use marrow_store::key::SavedKey;
 use serde::Serialize;
-use serde_json::json;
 
 pub mod resource_schema;
 pub mod run;
@@ -67,6 +66,33 @@ pub struct DataTransactionJson {
     pub depth: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum SavedKeyJson {
+    Int {
+        value: i64,
+    },
+    Bool {
+        value: bool,
+    },
+    #[serde(rename = "string")]
+    String {
+        value: String,
+    },
+    Date {
+        days_since_epoch: i32,
+    },
+    Duration {
+        nanos: String,
+    },
+    Instant {
+        nanos_since_epoch: String,
+    },
+    Bytes {
+        value_b64: String,
+    },
+}
+
 fn entry_return_to_json_bounded(
     value: &Value,
 ) -> Result<run::EntryReturnJson, EntryReturnJsonError> {
@@ -75,18 +101,36 @@ fn entry_return_to_json_bounded(
 }
 
 pub fn saved_key_to_json(key: &SavedKey) -> serde_json::Value {
-    match key {
-        SavedKey::Int(value) => json!({ "type": "int", "value": value }),
-        SavedKey::Bool(value) => json!({ "type": "bool", "value": value }),
-        SavedKey::Str(value) => json!({ "type": "string", "value": value }),
-        SavedKey::Date(value) => json!({ "type": "date", "days_since_epoch": value }),
-        SavedKey::Duration(value) => json!({ "type": "duration", "nanos": value.to_string() }),
-        SavedKey::Instant(value) => {
-            json!({ "type": "instant", "nanos_since_epoch": value.to_string() })
+    serde_json::to_value(SavedKeyJson::from(key)).expect("saved key DTO serializes")
+}
+
+impl From<&SavedKey> for SavedKeyJson {
+    fn from(key: &SavedKey) -> Self {
+        match key {
+            SavedKey::Int(value) => Self::Int { value: *value },
+            SavedKey::Bool(value) => Self::Bool { value: *value },
+            SavedKey::Str(value) => Self::String {
+                value: value.clone(),
+            },
+            SavedKey::Date(value) => Self::Date {
+                days_since_epoch: *value,
+            },
+            SavedKey::Duration(value) => Self::Duration {
+                nanos: value.to_string(),
+            },
+            SavedKey::Instant(value) => Self::Instant {
+                nanos_since_epoch: value.to_string(),
+            },
+            SavedKey::Bytes(value) => Self::Bytes {
+                value_b64: marrow_run::base64::encode(value),
+            },
         }
-        SavedKey::Bytes(value) => {
-            json!({ "type": "bytes", "value_b64": marrow_run::base64::encode(value) })
-        }
+    }
+}
+
+impl From<SavedKey> for SavedKeyJson {
+    fn from(key: SavedKey) -> Self {
+        Self::from(&key)
     }
 }
 
