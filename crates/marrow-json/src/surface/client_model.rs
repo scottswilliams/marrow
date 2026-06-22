@@ -8,14 +8,60 @@ use super::{
     SurfaceReadProjectionFieldJson, SurfaceRouteBinding, SurfaceRouteBindings,
 };
 
+/// The scalar leaf kinds a surface value can carry, parsed once from the descriptor's source
+/// spelling so the renderer matches a typed variant instead of re-inspecting a raw string. The set
+/// mirrors the language's scalar types; an unrecognized spelling is a checker/DTO contract break.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ScalarKind {
+    Int,
+    Bool,
+    String,
+    Decimal,
+    Date,
+    Instant,
+    Duration,
+    Bytes,
+}
+
+impl ScalarKind {
+    fn parse(scalar: &str) -> Self {
+        match scalar {
+            "int" => Self::Int,
+            "bool" => Self::Bool,
+            "string" => Self::String,
+            "decimal" => Self::Decimal,
+            "date" => Self::Date,
+            "instant" => Self::Instant,
+            "duration" => Self::Duration,
+            "bytes" => Self::Bytes,
+            other => panic!("surface descriptor carries an unknown scalar kind `{other}`"),
+        }
+    }
+
+    /// The canonical wire `kind` tag for this scalar, identical to its source spelling.
+    pub(super) fn name(self) -> &'static str {
+        match self {
+            Self::Int => "int",
+            Self::Bool => "bool",
+            Self::String => "string",
+            Self::Decimal => "decimal",
+            Self::Date => "date",
+            Self::Instant => "instant",
+            Self::Duration => "duration",
+            Self::Bytes => "bytes",
+        }
+    }
+}
+
 /// The shape a generated TypeScript record/argument field decodes to or encodes from. This is the
 /// single owner of "what TS type and decode/encode strategy a surface value uses"; the renderer
 /// reads it, never re-deriving the classification from raw descriptor JSON.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum SurfaceFieldType {
-    Scalar(String),
+    Scalar(ScalarKind),
     Enum {
         type_name: String,
+        enum_catalog_const: String,
         encode_table: String,
     },
     Identity {
@@ -32,6 +78,8 @@ pub(super) enum SurfaceFieldType {
 #[derive(Debug, Clone)]
 pub(super) struct SurfaceEnumModel {
     pub type_name: String,
+    pub enum_catalog_id: String,
+    pub enum_catalog_const: String,
     pub member_table_const: String,
     pub encode_table_const: String,
     pub members: Vec<SurfaceEnumMember>,
@@ -50,7 +98,7 @@ pub(super) struct SurfaceClientStore {
     pub brand_type: String,
     pub constructor: String,
     pub decode_fn: String,
-    pub key_scalars: Vec<String>,
+    pub key_scalars: Vec<ScalarKind>,
 }
 
 #[derive(Debug, Clone)]
@@ -118,10 +166,10 @@ pub(super) enum SurfaceMethodInput {
         fields: Vec<CreateFieldPlan>,
     },
     Page {
-        exact_key_scalars: Vec<String>,
+        exact_keys: Vec<SurfaceFieldType>,
     },
     UniqueLookup {
-        key_scalars: Vec<String>,
+        keys: Vec<SurfaceFieldType>,
     },
     Callable {
         params: Vec<(String, SurfaceFieldType)>,
@@ -312,88 +360,26 @@ impl ModelBuilder {
             let brand = self.store_brand(&read.store_catalog_id);
             let cursor_brand = format!("{surface_name}Cursor");
             let alias = method_alias(bindings, &read.operation_tag, &read.alias);
-            methods.push(read_method(
+            let method = self.read_method(
                 read,
                 &record_type,
                 &brand,
                 &cursor_brand,
                 &alias,
-            ));
+                &mut enums,
+            );
+            methods.push(method);
         }
         if let Some(create) = &surface.create {
-            self.register_store(&create.store_catalog_id, &create.identity_keys);
-            let brand = self.store_brand(&create.store_catalog_id);
-            let body_type = format!("{surface_name}CreateBody");
-            let fields = self.create_fields(&create.fields, &mut enums);
-            let input = if create_is_singleton(create) {
-                SurfaceMethodInput::SingletonCreate {
-                    body_type: body_type.clone(),
-                    fields,
-                }
-            } else {
-                SurfaceMethodInput::Create {
-                    brand: brand.clone(),
-                    body_type: body_type.clone(),
-                    fields,
-                }
-            };
-            records.push(self.create_body_record(&body_type, create, &mut enums));
-            methods.push(SurfaceMethod {
-                name: "create".into(),
-                operation_tag: create.operation_tag.clone(),
-                result_kind: "created",
-                cursor_brand: format!("{surface_name}Cursor"),
-                input,
-                result: SurfaceMethodResult::Created {
-                    record: record_type.clone(),
-                },
-            });
+            let (method, body) =
+                self.create_method(create, &surface_name, &record_type, &mut enums);
+            records.push(body);
+            methods.push(method);
         }
         if let Some(update) = &surface.update {
-            let brand = self.store_brand(&update.store_catalog_id);
-            self.register_store(&update.store_catalog_id, &update.identity_keys);
-            let body_type = format!("{surface_name}UpdateBody");
-            let fields = update
-                .fields
-                .iter()
-                .map(|field| CreateFieldPlan {
-                    label: field.render_label.clone(),
-                    member_catalog_id: field.member_catalog_id.clone(),
-                    ty: self.value_type(&field.value, &mut enums),
-                })
-                .collect::<Vec<_>>();
-            records.push(SurfaceClientRecord {
-                type_name: body_type.clone(),
-                fields: fields
-                    .iter()
-                    .map(|field| SurfaceRecordField {
-                        label: field.label.clone(),
-                        required: true,
-                        ty: field.ty.clone(),
-                        member_catalog_id: None,
-                    })
-                    .collect(),
-            });
-            let input = if matches!(
-                update.kind,
-                super::SurfaceUpdateOperationKindJson::SingletonUpdate
-            ) {
-                SurfaceMethodInput::SingletonUpdate { body_type, fields }
-            } else {
-                SurfaceMethodInput::Update {
-                    brand,
-                    body_type,
-                    fields,
-                }
-            };
-            methods.push(SurfaceMethod {
-                name: "update".into(),
-                operation_tag: update.operation_tag.clone(),
-                result_kind: "updated",
-                cursor_brand: format!("{surface_name}Cursor"),
-                input,
-                result: SurfaceMethodResult::Updated,
-            });
+            let (method, body) = self.update_method(update, &surface_name, &mut enums);
+            records.push(body);
+            methods.push(method);
         }
         if let Some(delete) = &surface.delete {
             self.register_store(&delete.store_catalog_id, &delete.identity_keys);
@@ -482,6 +468,186 @@ impl ModelBuilder {
         });
     }
 
+    fn read_method(
+        &mut self,
+        read: &SurfaceReadOperationDescriptorJson,
+        record_type: &str,
+        brand: &str,
+        cursor_brand: &str,
+        alias: &str,
+        enums: &mut Vec<String>,
+    ) -> SurfaceMethod {
+        let (input, result) = match &read.kind {
+            SurfaceReadOperationKindJson::SingletonRead => (
+                SurfaceMethodInput::None,
+                SurfaceMethodResult::Record {
+                    record: record_type.into(),
+                },
+            ),
+            SurfaceReadOperationKindJson::PointRead => (
+                SurfaceMethodInput::Identity {
+                    brand: brand.into(),
+                },
+                SurfaceMethodResult::Record {
+                    record: record_type.into(),
+                },
+            ),
+            SurfaceReadOperationKindJson::PagedRootCollection => (
+                SurfaceMethodInput::Page {
+                    exact_keys: Vec::new(),
+                },
+                SurfaceMethodResult::Page {
+                    record: record_type.into(),
+                },
+            ),
+            SurfaceReadOperationKindJson::PagedIndexCollection {
+                exact_key_count, ..
+            } => (
+                SurfaceMethodInput::Page {
+                    exact_keys: self.index_exact_key_types(read, *exact_key_count, enums),
+                },
+                SurfaceMethodResult::Page {
+                    record: record_type.into(),
+                },
+            ),
+            SurfaceReadOperationKindJson::UniqueIndexLookup { key_count, .. } => (
+                SurfaceMethodInput::UniqueLookup {
+                    keys: self.index_exact_key_types(read, *key_count, enums),
+                },
+                SurfaceMethodResult::OptionalRecord {
+                    record: record_type.into(),
+                },
+            ),
+        };
+        let result_kind = match read.kind {
+            SurfaceReadOperationKindJson::SingletonRead
+            | SurfaceReadOperationKindJson::PointRead => "record",
+            SurfaceReadOperationKindJson::PagedRootCollection
+            | SurfaceReadOperationKindJson::PagedIndexCollection { .. } => "page",
+            SurfaceReadOperationKindJson::UniqueIndexLookup { .. } => "optional_record",
+        };
+        SurfaceMethod {
+            name: alias.into(),
+            operation_tag: read.operation_tag.clone(),
+            result_kind,
+            cursor_brand: cursor_brand.into(),
+            input,
+            result,
+        }
+    }
+
+    /// The index exact-keys precede the identity keys in `index_keys`; take the leading `count` of
+    /// them as the typed page/unique-lookup parameters. Each carries its real shape so an enum or
+    /// identity exact-key is typed and encoded by that shape, not collapsed to a raw string.
+    fn index_exact_key_types(
+        &mut self,
+        read: &SurfaceReadOperationDescriptorJson,
+        count: usize,
+        enums: &mut Vec<String>,
+    ) -> Vec<SurfaceFieldType> {
+        read.index_keys
+            .iter()
+            .take(count)
+            .map(|key| self.value_type(&key.value, enums))
+            .collect()
+    }
+
+    fn create_method(
+        &mut self,
+        create: &SurfaceCreateOperationDescriptorJson,
+        surface_name: &str,
+        record_type: &str,
+        enums: &mut Vec<String>,
+    ) -> (SurfaceMethod, SurfaceClientRecord) {
+        self.register_store(&create.store_catalog_id, &create.identity_keys);
+        let brand = self.store_brand(&create.store_catalog_id);
+        let body_type = format!("{surface_name}CreateBody");
+        let fields = self.create_fields(&create.fields, enums);
+        let body = self.body_record(&body_type, &fields);
+        let input = if create_is_singleton(create) {
+            SurfaceMethodInput::SingletonCreate {
+                body_type: body_type.clone(),
+                fields,
+            }
+        } else {
+            SurfaceMethodInput::Create {
+                brand,
+                body_type: body_type.clone(),
+                fields,
+            }
+        };
+        let method = SurfaceMethod {
+            name: "create".into(),
+            operation_tag: create.operation_tag.clone(),
+            result_kind: "created",
+            cursor_brand: format!("{surface_name}Cursor"),
+            input,
+            result: SurfaceMethodResult::Created {
+                record: record_type.into(),
+            },
+        };
+        (method, body)
+    }
+
+    fn update_method(
+        &mut self,
+        update: &super::SurfaceUpdateOperationDescriptorJson,
+        surface_name: &str,
+        enums: &mut Vec<String>,
+    ) -> (SurfaceMethod, SurfaceClientRecord) {
+        self.register_store(&update.store_catalog_id, &update.identity_keys);
+        let brand = self.store_brand(&update.store_catalog_id);
+        let body_type = format!("{surface_name}UpdateBody");
+        let fields = update
+            .fields
+            .iter()
+            .map(|field| CreateFieldPlan {
+                label: field.render_label.clone(),
+                member_catalog_id: field.member_catalog_id.clone(),
+                ty: self.value_type(&field.value, enums),
+            })
+            .collect::<Vec<_>>();
+        let body = self.body_record(&body_type, &fields);
+        let input = if matches!(
+            update.kind,
+            super::SurfaceUpdateOperationKindJson::SingletonUpdate
+        ) {
+            SurfaceMethodInput::SingletonUpdate { body_type, fields }
+        } else {
+            SurfaceMethodInput::Update {
+                brand,
+                body_type,
+                fields,
+            }
+        };
+        let method = SurfaceMethod {
+            name: "update".into(),
+            operation_tag: update.operation_tag.clone(),
+            result_kind: "updated",
+            cursor_brand: format!("{surface_name}Cursor"),
+            input,
+            result: SurfaceMethodResult::Updated,
+        };
+        (method, body)
+    }
+
+    /// The input record a create/update method binds: one required field per write plan, keyed by
+    /// render label. Write bodies are input-only, so the fields carry no decode member id.
+    fn body_record(&self, body_type: &str, fields: &[CreateFieldPlan]) -> SurfaceClientRecord {
+        SurfaceClientRecord {
+            type_name: body_type.into(),
+            fields: fields
+                .iter()
+                .map(|field| SurfaceRecordField {
+                    label: field.label.clone(),
+                    required: true,
+                    ty: field.ty.clone(),
+                    member_catalog_id: None,
+                })
+                .collect(),
+        }
+    }
+
     fn record_fields(
         &mut self,
         store_catalog_id: &str,
@@ -509,27 +675,6 @@ impl ModelBuilder {
         fields
     }
 
-    fn create_body_record(
-        &mut self,
-        body_type: &str,
-        create: &SurfaceCreateOperationDescriptorJson,
-        enums: &mut Vec<String>,
-    ) -> SurfaceClientRecord {
-        SurfaceClientRecord {
-            type_name: body_type.into(),
-            fields: create
-                .fields
-                .iter()
-                .map(|field| SurfaceRecordField {
-                    label: field.render_label.clone(),
-                    required: true,
-                    ty: self.value_type(&field.value, enums),
-                    member_catalog_id: None,
-                })
-                .collect(),
-        }
-    }
-
     fn create_fields(
         &mut self,
         fields: &[super::SurfaceCreateFieldDescriptorJson],
@@ -552,7 +697,7 @@ impl ModelBuilder {
     ) -> SurfaceFieldType {
         match shape {
             SurfaceOperationValueShapeJson::Scalar { scalar } => {
-                SurfaceFieldType::Scalar(scalar.clone())
+                SurfaceFieldType::Scalar(ScalarKind::parse(scalar))
             }
             SurfaceOperationValueShapeJson::Enum {
                 render_name,
@@ -569,6 +714,7 @@ impl ModelBuilder {
                 enums.push(model.member_table_const.clone());
                 SurfaceFieldType::Enum {
                     type_name: model.type_name,
+                    enum_catalog_const: model.enum_catalog_const,
                     encode_table: model.encode_table_const,
                 }
             }
@@ -577,7 +723,11 @@ impl ModelBuilder {
                 key_scalars,
                 ..
             } => {
-                self.register_store_scalars(store_catalog_id, key_scalars);
+                let scalars = key_scalars
+                    .iter()
+                    .map(|scalar| ScalarKind::parse(scalar))
+                    .collect::<Vec<_>>();
+                self.register_store_scalars(store_catalog_id, &scalars);
                 SurfaceFieldType::Identity {
                     brand: self.store_brand(store_catalog_id),
                     decode_fn: self.store_decode_fn(store_catalog_id),
@@ -593,7 +743,7 @@ impl ModelBuilder {
     ) -> SurfaceFieldType {
         use super::SurfaceCallableArgumentShapeJson as Shape;
         match shape {
-            Shape::Scalar { scalar } => SurfaceFieldType::Scalar(scalar.clone()),
+            Shape::Scalar { scalar } => SurfaceFieldType::Scalar(ScalarKind::parse(scalar)),
             Shape::Enum {
                 render_label,
                 enum_catalog_id,
@@ -609,6 +759,7 @@ impl ModelBuilder {
                 enums.push(model.member_table_const.clone());
                 SurfaceFieldType::Enum {
                     type_name: model.type_name,
+                    enum_catalog_const: model.enum_catalog_const,
                     encode_table: model.encode_table_const,
                 }
             }
@@ -619,7 +770,7 @@ impl ModelBuilder {
             } => {
                 let scalars = keys
                     .iter()
-                    .map(|key| key.scalar.clone())
+                    .map(|key| ScalarKind::parse(&key.scalar))
                     .collect::<Vec<_>>();
                 self.register_store_scalars(store_catalog_id, &scalars);
                 SurfaceFieldType::Identity {
@@ -630,7 +781,7 @@ impl ModelBuilder {
             Shape::Sequence { element } => {
                 SurfaceFieldType::Sequence(Box::new(self.callable_argument_type(element, enums)))
             }
-            Shape::Unsupported => SurfaceFieldType::Scalar("string".into()),
+            Shape::Unsupported => SurfaceFieldType::Scalar(ScalarKind::String),
         }
     }
 
@@ -649,7 +800,7 @@ impl ModelBuilder {
     ) -> SurfaceFieldType {
         use super::SurfaceComputedReadValueShapeJson as Shape;
         match shape {
-            Shape::Scalar { scalar } => SurfaceFieldType::Scalar(scalar.clone()),
+            Shape::Scalar { scalar } => SurfaceFieldType::Scalar(ScalarKind::parse(scalar)),
             Shape::Enum {
                 render_label,
                 enum_catalog_id,
@@ -665,6 +816,7 @@ impl ModelBuilder {
                 enums.push(model.member_table_const.clone());
                 SurfaceFieldType::Enum {
                     type_name: model.type_name,
+                    enum_catalog_const: model.enum_catalog_const,
                     encode_table: model.encode_table_const,
                 }
             }
@@ -675,7 +827,7 @@ impl ModelBuilder {
             } => {
                 let scalars = keys
                     .iter()
-                    .map(|key| key.scalar.clone())
+                    .map(|key| ScalarKind::parse(&key.scalar))
                     .collect::<Vec<_>>();
                 self.register_store_scalars(store_catalog_id, &scalars);
                 SurfaceFieldType::Identity {
@@ -724,14 +876,14 @@ impl ModelBuilder {
         let scalars = identity_keys
             .iter()
             .map(|key| match &key.value {
-                SurfaceOperationValueShapeJson::Scalar { scalar } => scalar.clone(),
-                _ => "string".into(),
+                SurfaceOperationValueShapeJson::Scalar { scalar } => ScalarKind::parse(scalar),
+                _ => panic!("surface store identity keys must be scalar"),
             })
             .collect::<Vec<_>>();
         self.register_store_scalars(store_catalog_id, &scalars);
     }
 
-    fn register_store_scalars(&mut self, store_catalog_id: &str, key_scalars: &[String]) {
+    fn register_store_scalars(&mut self, store_catalog_id: &str, key_scalars: &[ScalarKind]) {
         let suffix = sanitize_catalog(store_catalog_id);
         let base = self.brand_base(store_catalog_id);
         self.stores
@@ -759,6 +911,8 @@ impl ModelBuilder {
         let type_name = self.unique_type_name(render_name, &format!("Enum_{suffix}"));
         let model = SurfaceEnumModel {
             type_name,
+            enum_catalog_id: enum_catalog_id.to_string(),
+            enum_catalog_const: format!("ENUM_{suffix}_CATALOG"),
             member_table_const: format!("ENUM_{suffix}"),
             encode_table_const: format!("ENUM_{suffix}_BY_LABEL"),
             members: members
@@ -834,87 +988,6 @@ fn lower_first(value: &str) -> String {
         Some(first) => first.to_ascii_lowercase().to_string() + chars.as_str(),
         None => String::new(),
     }
-}
-
-fn read_method(
-    read: &SurfaceReadOperationDescriptorJson,
-    record_type: &str,
-    brand: &str,
-    cursor_brand: &str,
-    alias: &str,
-) -> SurfaceMethod {
-    let (input, result) = match &read.kind {
-        SurfaceReadOperationKindJson::SingletonRead => (
-            SurfaceMethodInput::None,
-            SurfaceMethodResult::Record {
-                record: record_type.into(),
-            },
-        ),
-        SurfaceReadOperationKindJson::PointRead => (
-            SurfaceMethodInput::Identity {
-                brand: brand.into(),
-            },
-            SurfaceMethodResult::Record {
-                record: record_type.into(),
-            },
-        ),
-        SurfaceReadOperationKindJson::PagedRootCollection => (
-            SurfaceMethodInput::Page {
-                exact_key_scalars: Vec::new(),
-            },
-            SurfaceMethodResult::Page {
-                record: record_type.into(),
-            },
-        ),
-        SurfaceReadOperationKindJson::PagedIndexCollection {
-            exact_key_count, ..
-        } => (
-            SurfaceMethodInput::Page {
-                exact_key_scalars: index_exact_key_scalars(read, *exact_key_count),
-            },
-            SurfaceMethodResult::Page {
-                record: record_type.into(),
-            },
-        ),
-        SurfaceReadOperationKindJson::UniqueIndexLookup { key_count, .. } => (
-            SurfaceMethodInput::UniqueLookup {
-                key_scalars: index_exact_key_scalars(read, *key_count),
-            },
-            SurfaceMethodResult::OptionalRecord {
-                record: record_type.into(),
-            },
-        ),
-    };
-    let result_kind = match read.kind {
-        SurfaceReadOperationKindJson::SingletonRead | SurfaceReadOperationKindJson::PointRead => {
-            "record"
-        }
-        SurfaceReadOperationKindJson::PagedRootCollection
-        | SurfaceReadOperationKindJson::PagedIndexCollection { .. } => "page",
-        SurfaceReadOperationKindJson::UniqueIndexLookup { .. } => "optional_record",
-    };
-    SurfaceMethod {
-        name: alias.into(),
-        operation_tag: read.operation_tag.clone(),
-        result_kind,
-        cursor_brand: cursor_brand.into(),
-        input,
-        result,
-    }
-}
-
-/// The index exact-key scalars precede the identity keys in `index_keys`; take the leading
-/// `exact_key_count` of them as the typed page/unique-lookup parameters.
-fn index_exact_key_scalars(read: &SurfaceReadOperationDescriptorJson, count: usize) -> Vec<String> {
-    read.index_keys
-        .iter()
-        .take(count)
-        .map(|key| match &key.value {
-            SurfaceOperationValueShapeJson::Scalar { scalar } => scalar.clone(),
-            SurfaceOperationValueShapeJson::Identity { .. } => "string".into(),
-            SurfaceOperationValueShapeJson::Enum { .. } => "string".into(),
-        })
-        .collect()
 }
 
 fn method_alias(bindings: &SurfaceRouteBindings, operation_tag: &str, fallback: &str) -> String {

@@ -400,8 +400,8 @@ function computedReadResult(envelope: SurfaceOperationResponseJson): unknown {
   return result.value;
 }
 
-/// A computed read that yields a domain value: required and decoded to the typed value (D6 drops the
-/// always-empty `output`). A computed read forbids host effects, so the value is the whole result.
+/// A computed read that yields a domain value: required and decoded to the typed value, dropping the
+/// always-empty `output`. A computed read forbids host effects, so the value is the whole result.
 function computedReadValue<T>(
   envelope: SurfaceOperationResponseJson,
   decode: (value: SurfaceWireValueJson) => T,
@@ -422,12 +422,24 @@ function computedReadVoid(envelope: SurfaceOperationResponseJson): null {
   return null;
 }
 
-function encodeEnumWrite(member: string, byLabel: Record<string, string>): SurfaceWireValueJson {
-  return { kind: "enum", member_catalog_id: requireMemberId(member, byLabel) } as never;
+/// Encode an enum member into the request enum shape the server validates for write fields, index
+/// keys, and unique-lookup keys: the enum catalog id alongside the member id.
+function encodeEnum(
+  member: string,
+  enumCatalogId: string,
+  byLabel: Record<string, string>,
+): SurfaceWireValueJson {
+  return {
+    kind: "enum",
+    enum_catalog_id: enumCatalogId,
+    member_catalog_id: requireMemberId(member, byLabel),
+  };
 }
 
+/// Encode an enum member into the entry argument shape an action or computed read decodes, which
+/// tags the bare member id under `enum_member`.
 function encodeEnumMember(member: string, byLabel: Record<string, string>): SurfaceWireValueJson {
-  return { kind: "enum_member", member_catalog_id: requireMemberId(member, byLabel) } as never;
+  return { kind: "enum_member", member_catalog_id: requireMemberId(member, byLabel) };
 }
 
 function requireMemberId(member: string, byLabel: Record<string, string>): string {
@@ -438,18 +450,14 @@ function requireMemberId(member: string, byLabel: Record<string, string>): strin
   return catalogId;
 }
 
-function encodeIdentityWrite(brand: {
+/// Encode a branded identity into its wire value. Write fields, index keys, and callable arguments
+/// share one identity shape, so the same encoder serves every keyed identity.
+function encodeIdentity(brand: {
   __store: string;
   keys: SurfaceKeyJson[];
 }): SurfaceWireValueJson {
-  return identityFromBrand(brand) as never;
-}
-
-function encodeIdentityArgument(brand: {
-  __store: string;
-  keys: SurfaceKeyJson[];
-}): SurfaceWireValueJson {
-  return { kind: "identity", ...identityFromBrand(brand) } as never;
+  const identity = identityFromBrand(brand);
+  return { kind: "identity", store_catalog_id: identity.store_catalog_id, keys: identity.keys };
 }
 
 function encodeWriteValue(value: unknown): SurfaceWireValueJson {

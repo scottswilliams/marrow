@@ -503,6 +503,169 @@ fn client_typescript_decode_unit_tests() {
     );
 }
 
+/// A store whose paged index keys on an enum then an identity, the two exact-key shapes a raw-string
+/// encoding would silently corrupt. Its generated `byStatus(status, author, limit)` must send the
+/// checked request enum/identity argument shapes, while the `label` action must send the distinct
+/// entry argument enum shape an action decodes; both contracts run against the live server.
+const INDEX_KEY_SURFACE_SOURCE: &str = "module app\n\
+\n\
+enum Status\n\
+\x20\x20\x20\x20draft\n\
+\x20\x20\x20\x20published\n\
+\n\
+resource Author\n\
+\x20\x20\x20\x20required name: string\n\
+store ^authors(id: int): Author\n\
+\n\
+resource Book\n\
+\x20\x20\x20\x20required title: string\n\
+\x20\x20\x20\x20required status: Status\n\
+\x20\x20\x20\x20required writtenBy: Id(^authors)\n\
+store ^catalog(id: int): Book\n\
+\x20\x20\x20\x20index byStatus(status, writtenBy, id)\n\
+\n\
+pub fn seed()\n\
+\x20\x20\x20\x20var herbert: Author\n\
+\x20\x20\x20\x20herbert.name = \"Frank Herbert\"\n\
+\x20\x20\x20\x20var dune: Book\n\
+\x20\x20\x20\x20dune.title = \"Dune\"\n\
+\x20\x20\x20\x20dune.status = Status::published\n\
+\x20\x20\x20\x20dune.writtenBy = Id(^authors, 1)\n\
+\x20\x20\x20\x20var messiah: Book\n\
+\x20\x20\x20\x20messiah.title = \"Dune Messiah\"\n\
+\x20\x20\x20\x20messiah.status = Status::published\n\
+\x20\x20\x20\x20messiah.writtenBy = Id(^authors, 1)\n\
+\x20\x20\x20\x20var notes: Book\n\
+\x20\x20\x20\x20notes.title = \"Working Notes\"\n\
+\x20\x20\x20\x20notes.status = Status::draft\n\
+\x20\x20\x20\x20notes.writtenBy = Id(^authors, 1)\n\
+\x20\x20\x20\x20transaction\n\
+\x20\x20\x20\x20\x20\x20\x20\x20^authors(1) = herbert\n\
+\x20\x20\x20\x20\x20\x20\x20\x20^catalog(1) = dune\n\
+\x20\x20\x20\x20\x20\x20\x20\x20^catalog(2) = messiah\n\
+\x20\x20\x20\x20\x20\x20\x20\x20^catalog(3) = notes\n\
+\n\
+pub fn label(status: Status): string\n\
+\x20\x20\x20\x20match status\n\
+\x20\x20\x20\x20\x20\x20\x20\x20draft\n\
+\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20return \"draft-label\"\n\
+\x20\x20\x20\x20\x20\x20\x20\x20published\n\
+\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20return \"published-label\"\n\
+\x20\x20\x20\x20return \"\"\n\
+\n\
+surface Authors from ^authors\n\
+\x20\x20\x20\x20fields name\n\
+\n\
+surface Catalog from ^catalog\n\
+\x20\x20\x20\x20fields title, status\n\
+\x20\x20\x20\x20collection ^catalog.byStatus as byStatus\n\
+\x20\x20\x20\x20action label\n";
+
+#[test]
+fn client_typescript_index_key_collection_runs_against_live_surface_server() {
+    let Some(node) = node_with_type_stripping() else {
+        if std::env::var_os("CI").is_some() || std::env::var_os("MARROW_TEST_NODE").is_some() {
+            panic!(
+                "generated TypeScript client index-key E2E requires Node with --experimental-strip-types"
+            );
+        }
+        eprintln!("skipping generated TypeScript client index-key E2E; compatible node not found");
+        return;
+    };
+    let root = temp_project("surface-client-index-key-e2e", |root| {
+        write(root, "marrow.json", support::native_config());
+        write(root, "src/app.mw", INDEX_KEY_SURFACE_SOURCE);
+    });
+    let seed = marrow(&["run", "--entry", "app::seed", root.to_str().unwrap()]);
+    assert_eq!(seed.status.code(), Some(0), "seed: {seed:?}");
+
+    let client = marrow(&[
+        "client",
+        "typescript",
+        root.to_str().expect("project path utf8"),
+    ]);
+    assert_eq!(client.status.code(), Some(0), "client: {client:?}");
+    let app = support::temp_dir("surface-client-index-key-e2e-app");
+    write(
+        &app,
+        "marrow-client.ts",
+        &String::from_utf8(client.stdout).expect("client utf8"),
+    );
+    write(&app, "index.ts", INDEX_KEY_APP);
+
+    let (_server, addr) = spawn_surface_server_with_args(&root, &["--write"]);
+    let output = Command::new(node)
+        .arg("--experimental-strip-types")
+        .arg("--no-warnings")
+        .arg(app.join("index.ts"))
+        .current_dir(&app)
+        .env("MARROW_SURFACE_BASE_URL", format!("http://{addr}"))
+        .output()
+        .expect("run index-key app");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "index-key app failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(output.stdout)
+            .expect("index-key stdout utf8")
+            .trim(),
+        "index-key-e2e-ok"
+    );
+}
+
+/// The index-key consumer drives the enum+identity paged index and an enum-argument action against a
+/// live server. Index keys and action arguments are distinct wire contracts; a raw-string or
+/// mis-tagged encoding of either fails the server's checked-shape validation, so a successful page
+/// with the expected rows and a correct action result prove both contracts serialize correctly.
+const INDEX_KEY_APP: &str = r#"import assert from "node:assert/strict";
+import {
+  createClient,
+  authorsId,
+  isMarrowSurfaceError,
+} from "./marrow-client.ts";
+
+const client = createClient({ baseUrl: process.env.MARROW_SURFACE_BASE_URL });
+
+// The enum exact-key encodes to the checked enum argument shape and the identity exact-key to the
+// checked identity argument shape; the server returns exactly the two published books by this author.
+const published = await client.Catalog.byStatus("published", authorsId(1), 10);
+assert.deepEqual(
+  published.rows.map((row) => row.title),
+  ["Dune", "Dune Messiah"],
+);
+for (const row of published.rows) {
+  assert.equal(row.status, "published");
+}
+
+// A different enum member selects the lone draft, confirming the enum key is matched by member, not
+// collapsed to a constant.
+const drafts = await client.Catalog.byStatus("draft", authorsId(1), 10);
+assert.deepEqual(
+  drafts.rows.map((row) => row.title),
+  ["Working Notes"],
+);
+
+// A member outside the generated catalog is rejected before any request leaves the client.
+await assert.rejects(
+  () => client.Catalog.byStatus("retired", authorsId(1), 10),
+  /generated catalog/,
+);
+
+// An enum action argument uses the entry argument shape, which differs from the index-key enum shape:
+// the server accepts it and the action runs only when the member-tagged wire value decodes correctly.
+const draftLabel = await client.Catalog.label("draft");
+assert.equal(draftLabel.value, "draft-label");
+const publishedLabel = await client.Catalog.label("published");
+assert.equal(publishedLabel.value, "published-label");
+void isMarrowSurfaceError;
+
+console.log("index-key-e2e-ok");
+"#;
+
 fn node_with_type_stripping() -> Option<PathBuf> {
     let candidates = std::env::var_os("MARROW_TEST_NODE")
         .map(PathBuf::from)
@@ -692,10 +855,10 @@ assert.throws(() => booksId(Number.MAX_SAFE_INTEGER + 1), /safe integers/);
 console.log("generated-client-e2e-ok");
 "#;
 
-/// The decode unit checks, each tied to a red-team soundness correction: an i64 above 2^53 round
-/// trips through bigint (F9), a composite non-int key brands correctly (F6), an enum decodes by its
-/// catalog id (F4), an optional field arriving as `value: null` becomes `null` (F8), the page cursor
-/// is preserved verbatim (D8), and a missing record throws a typed `MarrowSurfaceError` (F* errors).
+/// The decode unit checks: an i64 above 2^53 round trips through bigint, a composite non-int key
+/// brands correctly, an enum decodes by its catalog id, an optional field arriving as `value: null`
+/// becomes `null`, the page cursor is preserved verbatim, and a missing record throws a typed
+/// `MarrowSurfaceError`.
 const DECODE_UNIT_APP: &str = r#"import assert from "node:assert/strict";
 import {
   createClient,
@@ -716,7 +879,7 @@ const recordingFetch = async (input: string, init: any) => {
 const options = { baseUrl: process.env.MARROW_SURFACE_BASE_URL, fetch: recordingFetch };
 const client = createClient(options);
 
-// F9: an i64 above 2^53 survives as an exact bigint, never a truncated number. A JS number would
+// An i64 above 2^53 survives as an exact bigint, never a truncated number. A JS number would
 // collapse this odd value to the even 2^53 below it, so the bigint must differ from that float.
 const withNote = await client.Entries.get(entriesId("alpha", 7));
 assert.equal(withNote.score, 9007199254740993n);
@@ -724,22 +887,22 @@ assert.equal(typeof withNote.score, "bigint");
 assert.notEqual(withNote.score, BigInt(Number(9007199254740993n)));
 assert.equal(BigInt(Number(9007199254740993n)), 9007199254740992n);
 
-// F4: the enum decodes through the generated member-id table to its label.
+// The enum decodes through the generated member-id table to its label.
 assert.equal(withNote.tier, "gold");
 
-// F8: a present optional field decodes; an absent one arrives as value:null and becomes null.
+// A present optional field decodes; an absent one arrives as value:null and becomes null.
 assert.equal(withNote.note, "present");
 const withoutNote = await client.Entries.get(entriesId("alpha", 8));
 assert.equal(withoutNote.note, null);
 assert.equal(withoutNote.tier, "bronze");
 
-// F6: a composite, non-int key brands and decodes back to its two-scalar key vector.
+// A composite, non-int key brands and decodes back to its two-scalar key vector.
 assert.deepEqual(withNote.id.keys, [
   { kind: "string", value: "alpha" },
   { kind: "int", value: "7" },
 ]);
 
-// D8: the typed page cursor equals the raw envelope cursor, byte for byte.
+// The typed page cursor equals the raw envelope cursor, byte for byte.
 const page = await client.Entries.list(1);
 assert.equal(page.rows.length, 1);
 assert.ok(page.next);

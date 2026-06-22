@@ -6,6 +6,7 @@ use marrow_run::{
     SURFACE_STORE, SURFACE_WRITE,
 };
 
+use super::client_model::ScalarKind;
 use super::{
     SurfaceAbiJson, SurfaceClientModel, SurfaceClientRecord, SurfaceClientStore, SurfaceFieldType,
     SurfaceMethod, SurfaceMethodInput, SurfaceMethodResult, SurfaceOperationCatalog,
@@ -168,6 +169,13 @@ fn render_catalog_constants(output: &mut String, model: &SurfaceClientModel) {
         output.push('\n');
     }
     for enumeration in &model.enums {
+        writeln!(
+            output,
+            "const {} = {};",
+            enumeration.enum_catalog_const,
+            ts_string(&enumeration.enum_catalog_id)
+        )
+        .expect("write enum catalog id");
         writeln!(output, "const {} = {{", enumeration.member_table_const)
             .expect("write enum table");
         for member in &enumeration.members {
@@ -206,7 +214,7 @@ fn render_store(output: &mut String, store: &SurfaceClientStore) {
         .key_scalars
         .iter()
         .enumerate()
-        .map(|(index, scalar)| format!("key{index}: {}", key_input_type(scalar)))
+        .map(|(index, scalar)| format!("key{index}: {}", scalar_input_type(*scalar)))
         .collect::<Vec<_>>()
         .join(", ");
     writeln!(
@@ -223,7 +231,7 @@ fn render_store(output: &mut String, store: &SurfaceClientStore) {
         .key_scalars
         .iter()
         .enumerate()
-        .map(|(index, scalar)| key_encode_expr(scalar, &format!("key{index}")))
+        .map(|(index, scalar)| request_scalar_expr(*scalar, &format!("key{index}")))
         .collect::<Vec<_>>()
         .join(", ");
     output.push_str(&key_exprs);
@@ -404,24 +412,22 @@ fn method_signature(method: &SurfaceMethod) -> String {
             format!("id: {brand}, body: {body_type}")
         }
         SurfaceMethodInput::SingletonUpdate { body_type, .. } => format!("body: {body_type}"),
-        SurfaceMethodInput::Page { exact_key_scalars } => {
-            page_signature(exact_key_scalars, &method.cursor_brand)
-        }
-        SurfaceMethodInput::UniqueLookup { key_scalars } => key_scalars
+        SurfaceMethodInput::Page { exact_keys } => page_signature(exact_keys, &method.cursor_brand),
+        SurfaceMethodInput::UniqueLookup { keys } => keys
             .iter()
             .enumerate()
-            .map(|(index, scalar)| format!("key{index}: {}", key_input_type(scalar)))
+            .map(|(index, ty)| format!("key{index}: {}", argument_ts_type(ty)))
             .collect::<Vec<_>>()
             .join(", "),
         SurfaceMethodInput::Callable { params } => callable_signature(params),
     }
 }
 
-fn page_signature(exact_key_scalars: &[String], cursor_brand: &str) -> String {
-    let exact = exact_key_scalars
+fn page_signature(exact_keys: &[SurfaceFieldType], cursor_brand: &str) -> String {
+    let exact = exact_keys
         .iter()
         .enumerate()
-        .map(|(index, scalar)| format!("exactKey{index}: {}", key_input_type(scalar)))
+        .map(|(index, ty)| format!("exactKey{index}: {}", argument_ts_type(ty)))
         .collect::<Vec<_>>();
     let mut params = exact;
     params.push("limit: number".to_string());
@@ -457,12 +463,12 @@ fn method_request_expr(method: &SurfaceMethod) -> String {
         SurfaceMethodInput::SingletonUpdate { fields, .. } => {
             format!("{{ fields: {} }}", create_fields_expr(fields))
         }
-        SurfaceMethodInput::Page { exact_key_scalars } => page_request_expr(exact_key_scalars),
-        SurfaceMethodInput::UniqueLookup { key_scalars } => {
-            let keys = key_scalars
+        SurfaceMethodInput::Page { exact_keys } => page_request_expr(exact_keys),
+        SurfaceMethodInput::UniqueLookup { keys } => {
+            let keys = keys
                 .iter()
                 .enumerate()
-                .map(|(index, scalar)| argument_encode_expr(scalar, &format!("key{index}")))
+                .map(|(index, ty)| request_value_expr(ty, &format!("key{index}")))
                 .collect::<Vec<_>>()
                 .join(", ");
             format!("{{ keys: [{keys}] }}")
@@ -478,7 +484,7 @@ fn create_fields_expr(fields: &[CreateFieldPlan]) -> String {
             format!(
                 "{{ catalog_id: {}, value: {} }}",
                 ts_string(&field.member_catalog_id),
-                write_value_expr(&field.ty, &format!("body[{}]", ts_string(&field.label)))
+                request_value_expr(&field.ty, &format!("body[{}]", ts_string(&field.label)))
             )
         })
         .collect::<Vec<_>>()
@@ -486,13 +492,13 @@ fn create_fields_expr(fields: &[CreateFieldPlan]) -> String {
     format!("[{entries}]")
 }
 
-fn page_request_expr(exact_key_scalars: &[String]) -> String {
+fn page_request_expr(exact_keys: &[SurfaceFieldType]) -> String {
     let mut parts = Vec::new();
-    if !exact_key_scalars.is_empty() {
-        let keys = exact_key_scalars
+    if !exact_keys.is_empty() {
+        let keys = exact_keys
             .iter()
             .enumerate()
-            .map(|(index, scalar)| argument_encode_expr(scalar, &format!("exactKey{index}")))
+            .map(|(index, ty)| request_value_expr(ty, &format!("exactKey{index}")))
             .collect::<Vec<_>>()
             .join(", ");
         parts.push(format!("exact_keys: [{keys}]"));
@@ -573,7 +579,7 @@ fn method_result_type(method: &SurfaceMethod) -> String {
 
 fn argument_ts_type(ty: &SurfaceFieldType) -> String {
     match ty {
-        SurfaceFieldType::Scalar(scalar) => scalar_input_type(scalar).to_string(),
+        SurfaceFieldType::Scalar(scalar) => scalar_input_type(*scalar).to_string(),
         SurfaceFieldType::Enum { type_name, .. } => type_name.clone(),
         SurfaceFieldType::Identity { brand, .. } => brand.clone(),
         SurfaceFieldType::Sequence(inner) => format!("{}[]", argument_ts_type(inner)),
@@ -583,7 +589,7 @@ fn argument_ts_type(ty: &SurfaceFieldType) -> String {
 
 fn value_ts_type(ty: &SurfaceFieldType) -> String {
     match ty {
-        SurfaceFieldType::Scalar(scalar) => scalar_output_type(scalar).to_string(),
+        SurfaceFieldType::Scalar(scalar) => scalar_output_type(*scalar).to_string(),
         SurfaceFieldType::Enum { type_name, .. } => type_name.clone(),
         SurfaceFieldType::Identity { brand, .. } => brand.clone(),
         SurfaceFieldType::Sequence(inner) => format!("{}[]", value_ts_type(inner)),
@@ -593,10 +599,11 @@ fn value_ts_type(ty: &SurfaceFieldType) -> String {
 
 fn decode_value_expr(ty: &SurfaceFieldType, source: &str) -> String {
     match ty {
-        SurfaceFieldType::Scalar(scalar) => decode_scalar_expr(scalar, source),
+        SurfaceFieldType::Scalar(scalar) => decode_scalar_expr(*scalar, source),
         SurfaceFieldType::Enum {
             type_name,
             encode_table,
+            ..
         } => {
             format!("decodeEnumValue<{type_name}>({source}, {encode_table})")
         }
@@ -613,64 +620,51 @@ fn decode_value_expr(ty: &SurfaceFieldType, source: &str) -> String {
     }
 }
 
-fn decode_scalar_expr(scalar: &str, source: &str) -> String {
+fn decode_scalar_expr(scalar: ScalarKind, source: &str) -> String {
     match scalar {
-        "int" => format!("decodeIntValue({source})"),
-        "bool" => format!("decodeBoolValue({source})"),
-        "string" => format!("decodeStringValue({source})"),
-        "decimal" => format!("decodeWireScalar({source}, \"decimal\")"),
-        "date" => format!("decodeWireScalar({source}, \"date\")"),
-        "instant" => format!("decodeWireScalar({source}, \"instant\")"),
-        "duration" => format!("decodeWireScalar({source}, \"duration\")"),
-        "bytes" => format!("decodeWireScalar({source}, \"bytes\")"),
-        other => panic!("unexpected scalar kind `{other}`"),
+        ScalarKind::Int => format!("decodeIntValue({source})"),
+        ScalarKind::Bool => format!("decodeBoolValue({source})"),
+        ScalarKind::String => format!("decodeStringValue({source})"),
+        ScalarKind::Decimal => format!("decodeWireScalar({source}, \"decimal\")"),
+        ScalarKind::Date => format!("decodeWireScalar({source}, \"date\")"),
+        ScalarKind::Instant => format!("decodeWireScalar({source}, \"instant\")"),
+        ScalarKind::Duration => format!("decodeWireScalar({source}, \"duration\")"),
+        ScalarKind::Bytes => format!("decodeWireScalar({source}, \"bytes\")"),
     }
 }
 
-fn write_value_expr(ty: &SurfaceFieldType, source: &str) -> String {
+/// Encode a typed value into the request shape used by write fields, index exact-keys, and
+/// unique-lookup keys. The server decodes all three against `SurfaceWriteValueJson` /
+/// `SurfaceArgumentJson`, which carry the enum catalog id and per-scalar field names.
+fn request_value_expr(ty: &SurfaceFieldType, source: &str) -> String {
     match ty {
-        SurfaceFieldType::Scalar(scalar) => write_scalar_expr(scalar, source),
-        SurfaceFieldType::Enum { encode_table, .. } => {
-            format!("encodeEnumWrite({source}, {encode_table})")
+        SurfaceFieldType::Scalar(scalar) => request_scalar_expr(*scalar, source),
+        SurfaceFieldType::Enum {
+            enum_catalog_const,
+            encode_table,
+            ..
+        } => {
+            format!("encodeEnum({source}, {enum_catalog_const}, {encode_table})")
         }
-        SurfaceFieldType::Identity { .. } => format!("encodeIdentityWrite({source})"),
+        SurfaceFieldType::Identity { .. } => format!("encodeIdentity({source})"),
         SurfaceFieldType::Sequence(_) | SurfaceFieldType::Resource { .. } => {
-            // Create/update bodies never carry sequence or nested-resource leaves on a store field.
+            // Create/update bodies never carry sequence or nested-resource leaves on a store field;
+            // index and lookup keys are always scalar, enum, or identity.
             format!("encodeWriteValue({source})")
         }
     }
 }
 
-fn write_scalar_expr(scalar: &str, source: &str) -> String {
-    match scalar {
-        "int" => format!("{{ kind: \"int\", value: encodeMarrowInt({source}) }}"),
-        "bool" => format!("{{ kind: \"bool\", value: {source} }}"),
-        "string" => format!("{{ kind: \"string\", value: {source} }}"),
-        "decimal" => format!("{{ kind: \"decimal\", value: {source} }}"),
-        "date" | "instant" | "duration" | "bytes" => encode_wire_scalar(scalar, source),
-        other => panic!("unexpected scalar kind `{other}`"),
-    }
-}
-
-fn encode_wire_scalar(scalar: &str, source: &str) -> String {
-    match scalar {
-        "date" => format!("{{ kind: \"date\", days_since_epoch: Number({source}) }}"),
-        "duration" => format!("{{ kind: \"duration\", nanos: encodeMarrowInt({source}) }}"),
-        "instant" => {
-            format!("{{ kind: \"instant\", nanos_since_epoch: encodeMarrowInt({source}) }}")
-        }
-        "bytes" => format!("{{ kind: \"bytes\", value_b64: {source} }}"),
-        other => panic!("unexpected wire scalar `{other}`"),
-    }
-}
-
+/// Encode a typed value into the entry argument shape an action or computed read decodes. This is a
+/// distinct wire contract from the request shape: enums tag the bare member under `enum_member`, and
+/// temporal/bytes scalars carry their datum under a uniform `value` field.
 fn entry_argument_expr(ty: &SurfaceFieldType, source: &str) -> String {
     match ty {
-        SurfaceFieldType::Scalar(scalar) => entry_scalar_expr(scalar, source),
+        SurfaceFieldType::Scalar(scalar) => entry_scalar_expr(*scalar, source),
         SurfaceFieldType::Enum { encode_table, .. } => {
             format!("encodeEnumMember({source}, {encode_table})")
         }
-        SurfaceFieldType::Identity { .. } => format!("encodeIdentityArgument({source})"),
+        SurfaceFieldType::Identity { .. } => format!("encodeIdentity({source})"),
         SurfaceFieldType::Sequence(inner) => {
             let element = entry_argument_expr(inner, "item");
             format!("{{ kind: \"sequence\", value: {source}.map((item) => {element}) }}")
@@ -681,55 +675,55 @@ fn entry_argument_expr(ty: &SurfaceFieldType, source: &str) -> String {
     }
 }
 
-fn entry_scalar_expr(scalar: &str, source: &str) -> String {
+/// Encode a scalar leaf into the request shape (`SurfaceWriteValueJson` / `SurfaceArgumentJson`),
+/// which names each temporal/bytes field explicitly. `SurfaceKeyJson` agrees on these field names,
+/// so identity keys reuse this encoder; `decimal` reaches it only through a write field, never a key.
+fn request_scalar_expr(scalar: ScalarKind, source: &str) -> String {
     match scalar {
-        "int" => format!("{{ kind: \"int\", value: encodeMarrowInt({source}) }}"),
-        "bool" => format!("{{ kind: \"bool\", value: {source} }}"),
-        "string" => format!("{{ kind: \"string\", value: {source} }}"),
-        "decimal" | "date" | "instant" | "duration" | "bytes" => {
-            format!("{{ kind: {}, value: {source} }}", ts_string(scalar))
+        ScalarKind::Int => format!("{{ kind: \"int\", value: encodeMarrowInt({source}) }}"),
+        ScalarKind::Bool => format!("{{ kind: \"bool\", value: {source} }}"),
+        ScalarKind::String => format!("{{ kind: \"string\", value: {source} }}"),
+        ScalarKind::Decimal => format!("{{ kind: \"decimal\", value: {source} }}"),
+        ScalarKind::Date => format!("{{ kind: \"date\", days_since_epoch: Number({source}) }}"),
+        ScalarKind::Duration => {
+            format!("{{ kind: \"duration\", nanos: encodeMarrowInt({source}) }}")
         }
-        other => panic!("unexpected scalar kind `{other}`"),
-    }
-}
-
-fn key_input_type(scalar: &str) -> &'static str {
-    scalar_input_type(scalar)
-}
-
-fn scalar_input_type(scalar: &str) -> &'static str {
-    match scalar {
-        "int" => "MarrowIntInput",
-        "bool" => "boolean",
-        _ => "string",
-    }
-}
-
-fn scalar_output_type(scalar: &str) -> &'static str {
-    match scalar {
-        "int" => "bigint",
-        "bool" => "boolean",
-        _ => "string",
-    }
-}
-
-fn key_encode_expr(scalar: &str, source: &str) -> String {
-    match scalar {
-        "int" => format!("{{ kind: \"int\", value: encodeMarrowInt({source}) }}"),
-        "bool" => format!("{{ kind: \"bool\", value: {source} }}"),
-        "string" => format!("{{ kind: \"string\", value: {source} }}"),
-        "date" => format!("{{ kind: \"date\", days_since_epoch: Number({source}) }}"),
-        "duration" => format!("{{ kind: \"duration\", nanos: encodeMarrowInt({source}) }}"),
-        "instant" => {
+        ScalarKind::Instant => {
             format!("{{ kind: \"instant\", nanos_since_epoch: encodeMarrowInt({source}) }}")
         }
-        "bytes" => format!("{{ kind: \"bytes\", value_b64: {source} }}"),
-        other => panic!("unexpected key scalar `{other}`"),
+        ScalarKind::Bytes => format!("{{ kind: \"bytes\", value_b64: {source} }}"),
     }
 }
 
-fn argument_encode_expr(scalar: &str, source: &str) -> String {
-    key_encode_expr(scalar, source)
+/// Encode a scalar leaf into the entry argument shape an action or computed read decodes, which
+/// carries every scalar datum under a uniform `value` field regardless of scalar kind.
+fn entry_scalar_expr(scalar: ScalarKind, source: &str) -> String {
+    match scalar {
+        ScalarKind::Int => format!("{{ kind: \"int\", value: encodeMarrowInt({source}) }}"),
+        ScalarKind::Bool => format!("{{ kind: \"bool\", value: {source} }}"),
+        ScalarKind::String
+        | ScalarKind::Decimal
+        | ScalarKind::Date
+        | ScalarKind::Instant
+        | ScalarKind::Duration
+        | ScalarKind::Bytes => format!("{{ kind: {}, value: {source} }}", ts_string(scalar.name())),
+    }
+}
+
+fn scalar_input_type(scalar: ScalarKind) -> &'static str {
+    match scalar {
+        ScalarKind::Int => "MarrowIntInput",
+        ScalarKind::Bool => "boolean",
+        _ => "string",
+    }
+}
+
+fn scalar_output_type(scalar: ScalarKind) -> &'static str {
+    match scalar {
+        ScalarKind::Int => "bigint",
+        ScalarKind::Bool => "boolean",
+        _ => "string",
+    }
 }
 
 #[derive(Debug, Clone)]

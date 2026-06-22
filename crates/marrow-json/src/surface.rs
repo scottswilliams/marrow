@@ -3479,7 +3479,7 @@ pub fn seed()
             client.contains("computedReadValue(envelope, (value) =>"),
             "{client}"
         );
-        assert!(client.contains("encodeIdentityArgument(id)"), "{client}");
+        assert!(client.contains("encodeIdentity(id)"), "{client}");
         let computed_route = manifest
             .routes
             .iter()
@@ -3518,6 +3518,32 @@ pub fn seed()
     }
 
     #[test]
+    fn client_ts_encodes_enum_and_identity_index_keys_in_the_request_shape() {
+        let (program, _runtime) = checked_surface_program(SURFACE_WITH_ENUM_IDENTITY_INDEX);
+        let abi = SurfaceAbiJson::from_program(&program);
+        let manifest = SurfaceRouteManifestJson::from_abi(&abi);
+
+        let client = render_typescript_client(&abi, &manifest).expect("typescript client renders");
+
+        // The paged index keys on an enum then an identity. Both exact-keys must serialize to the
+        // request argument shapes the server validates (enum carries its catalog id; identity its
+        // store), never the raw-string stand-in that prompted this fix or the entry `enum_member`
+        // shape reserved for action arguments.
+        assert!(
+            client.contains("encodeEnum(exactKey0,"),
+            "enum index key must use the request enum encoder: {client}"
+        );
+        assert!(
+            client.contains("encodeIdentity(exactKey1)"),
+            "identity index key must use the identity encoder: {client}"
+        );
+        assert!(
+            !client.contains("encodeEnumMember(exactKey0"),
+            "index keys must not use the entry enum_member shape: {client}"
+        );
+    }
+
+    #[test]
     fn client_ts_sanitizes_reserved_words_and_label_collisions() {
         let (program, _runtime) = checked_surface_program(SURFACE_WITH_ENUM_IDENTITY_INDEX);
         let mut abi = SurfaceAbiJson::from_program(&program);
@@ -3532,11 +3558,6 @@ pub fn seed()
         for read in &mut surface.read {
             read.alias = "delete".into();
         }
-        let expected_read_tags = surface
-            .read
-            .iter()
-            .map(|read| read.operation_tag.clone())
-            .collect::<BTreeSet<_>>();
         let expected_read_count = surface.read.len();
         for route in manifest
             .routes
@@ -3555,7 +3576,6 @@ pub fn seed()
             }
         }
 
-        let _ = &expected_read_tags;
         let client = render_typescript_client(&abi, &manifest).expect("typescript client renders");
 
         // The colliding read aliases stay distinct method keys, none duplicated, so the emitted
