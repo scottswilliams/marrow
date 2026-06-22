@@ -492,8 +492,23 @@ type SurfaceSingletonUpdateRequestJson = { fields: SurfaceUpdateFieldJson[] };
 type SurfacePointCreateRequestJson = { identity: SurfaceIdentityJson; fields: SurfaceCreateFieldJson[] };
 type SurfaceSingletonCreateRequestJson = { fields: SurfaceCreateFieldJson[] };
 type SurfacePointDeleteRequestJson = { identity: SurfaceIdentityJson };
-type SurfaceActionRequestJson = { arguments: unknown[] };
-type SurfaceComputedReadRequestJson = { arguments: unknown[] };
+type SurfaceEntryScalarArgumentJson =
+  | { kind: "int"; value: string }
+  | { kind: "bool"; value: boolean }
+  | { kind: "string"; value: string }
+  | { kind: "decimal"; value: string }
+  | { kind: "date"; value: string }
+  | { kind: "instant"; value: string }
+  | { kind: "duration"; value: string }
+  | { kind: "bytes"; value: string };
+type SurfaceEntryArgumentValueJson =
+  | SurfaceEntryScalarArgumentJson
+  | { kind: "enum_member"; member_catalog_id: string }
+  | { kind: "identity"; store_catalog_id: string; keys: SurfaceEntryScalarArgumentJson[] }
+  | { kind: "sequence"; value: SurfaceEntryArgumentValueJson[] };
+type SurfaceEntryArgumentJson = { name: string; value: SurfaceEntryArgumentValueJson };
+type SurfaceActionRequestJson = { arguments: SurfaceEntryArgumentJson[] };
+type SurfaceComputedReadRequestJson = { arguments: SurfaceEntryArgumentJson[] };
 type SurfaceOperationRequestKind =
   | "singleton_read"
   | "point_read"

@@ -3442,7 +3442,9 @@ pub fn seed()
         let client = render_typescript_client(&abi, &manifest).expect("typescript client renders");
 
         assert!(
-            client.contains("type SurfaceComputedReadRequestJson = { arguments: unknown[] };"),
+            client.contains(
+                "type SurfaceComputedReadRequestJson = { arguments: SurfaceEntryArgumentJson[] };"
+            ),
             "{client}"
         );
         assert!(
@@ -3458,6 +3460,48 @@ pub fn seed()
         let binding = client_binding_for_tag(&bindings, &computed_route.operation_tag);
         assert_eq!(binding["request_kind"], "computed_read");
         assert_eq!(binding["result_kind"], "computed_read");
+    }
+
+    #[test]
+    fn client_ts_types_action_arguments_with_entry_invoke_shape() {
+        let (program, _runtime) = checked_surface_program(SURFACE_ACTION_UPDATE);
+        let abi = SurfaceAbiJson::from_program(&program);
+        let manifest = SurfaceRouteManifestJson::from_abi(&abi);
+
+        let client = render_typescript_client(&abi, &manifest).expect("typescript client renders");
+
+        assert!(
+            !client.contains("arguments: unknown[]"),
+            "action/computed-read request bodies must not type arguments as unknown[]: {client}"
+        );
+        assert!(
+            client.contains(
+                "type SurfaceActionRequestJson = { arguments: SurfaceEntryArgumentJson[] };"
+            ),
+            "{client}"
+        );
+        assert!(
+            client.contains("type SurfaceEntryArgumentJson = { name: string; value: SurfaceEntryArgumentValueJson };"),
+            "{client}"
+        );
+        for kind in [
+            "\"int\"; value: string",
+            "\"bool\"; value: boolean",
+            "\"string\"; value: string",
+            "\"decimal\"; value: string",
+            "\"date\"; value: string",
+            "\"instant\"; value: string",
+            "\"duration\"; value: string",
+            "\"bytes\"; value: string",
+            "\"enum_member\"; member_catalog_id: string",
+            "\"identity\"; store_catalog_id: string; keys: SurfaceEntryScalarArgumentJson[]",
+            "\"sequence\"; value: SurfaceEntryArgumentValueJson[]",
+        ] {
+            assert!(
+                client.contains(kind),
+                "entry argument value union missing `{kind}`: {client}"
+            );
+        }
     }
 
     #[test]
