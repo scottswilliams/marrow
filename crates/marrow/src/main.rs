@@ -29,7 +29,7 @@ Usage:
   marrow check [--format text|json|jsonl] [--locked] <projectdir>
   marrow doctor [--format text|json|jsonl] <projectdir>
   marrow evolve preview [--from-backup <artifact>] [--scaffold] [--format text|json|jsonl] <projectdir>
-  marrow evolve apply [--maintenance] [--approve-retire <catalog-id>:<count>]
+  marrow evolve apply [--maintenance] [--approve-retire <field-path>:<count>]
     [--backup <path> | --no-backup] [--format text|json|jsonl] <projectdir>
   marrow fmt [--check | --write] <file.mw | projectdir>
   marrow run [--entry <entry>] [--arg name=value]... [--maintenance] [--trace] [--dry-run] [--format text|json] <projectdir>

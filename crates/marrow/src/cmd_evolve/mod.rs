@@ -451,7 +451,7 @@ fn print_help() {
         "\
 Usage:
   marrow evolve preview [--from-backup <artifact>] [--scaffold] [--format text|json|jsonl] <projectdir>
-  marrow evolve apply [--maintenance] [--approve-retire <catalog-id>:<count>] \
+  marrow evolve apply [--maintenance] [--approve-retire <field-path>:<count>] \
     [--backup <path> | --no-backup] \
     [--format text|json|jsonl] <projectdir>
 

@@ -298,7 +298,7 @@ transform, or destructively drops populated data does not auto-apply. The run
 fences with an actionable diagnostic that names `marrow evolve apply` and the
 backfill count where the witness proved one. A destructive drop against
 populated data stays explicit and requires confirmation through
-`marrow evolve apply --maintenance --approve-retire <catalog-id>:<count>`,
+`marrow evolve apply --maintenance --approve-retire <field-path>:<count>`,
 naming each retired identity at its exact populated count, because losing data
 must never be a silent side effect of a run; a drop whose target holds no cells
 has nothing to lose and auto-applies. An evolution that needs that destructive
@@ -438,7 +438,7 @@ evolve
 ```
 
 ```sh
-marrow evolve apply --maintenance --approve-retire <pages-catalog-id>:<count> ./project
+marrow evolve apply --maintenance --approve-retire Book.pages:<count> ./project
 ```
 
 The result is byte-stable: the new `pageLabel` cell is written under its own

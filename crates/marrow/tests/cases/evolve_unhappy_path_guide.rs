@@ -53,6 +53,14 @@ fn branch_workflow_conflict_resolution_keeps_losing_store_fenced() {
         stderr.contains("catalog.lock_corrupt"),
         "the conflict marker surfaces the typed lock-corrupt code: {stderr}"
     );
+    // The conflict-marker case keeps its specific cause rather than collapsing to a plain parse
+    // error, states the recovery, and never leaks the internal "re-project" word.
+    assert!(
+        stderr.contains("contains unresolved Git conflict markers")
+            && !stderr.contains("malformed JSON")
+            && !stderr.contains("re-project"),
+        "the conflict-marker lock names its own cause without internal jargon: {stderr}"
+    );
 
     write(&root, "marrow.lock", &resolved_lock);
     let resolved = marrow(&["check", dir]);

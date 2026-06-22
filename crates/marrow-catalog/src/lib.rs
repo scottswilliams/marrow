@@ -300,10 +300,12 @@ impl CatalogLock {
     /// epoch high-water no real change could advance past. It never panics and is never lenient.
     pub fn from_lock_json(json: &str) -> Result<Self, CatalogError> {
         if contains_conflict_marker(json) {
-            return Err(CatalogError::lock_unparseable());
+            return Err(CatalogError::lock_unparseable(
+                "contains unresolved Git conflict markers",
+            ));
         }
-        let lock: Self =
-            serde_json::from_str(json).map_err(|_| CatalogError::lock_unparseable())?;
+        let lock: Self = serde_json::from_str(json)
+            .map_err(|_| CatalogError::lock_unparseable("malformed JSON"))?;
         lock.validate()?;
         Ok(lock)
     }
@@ -830,6 +832,52 @@ mod lock_epoch_tests {
     }
 }
 
+#[cfg(test)]
+mod lock_unparseable_tests {
+    use super::{CatalogLock, LOCK_CORRUPT};
+
+    #[test]
+    fn malformed_json_names_a_parse_cause_and_gives_recovery() {
+        let error = CatalogLock::from_lock_json("{ not json")
+            .expect_err("malformed JSON is rejected as corrupt");
+        assert_eq!(error.code, LOCK_CORRUPT);
+        assert!(
+            error.message.contains("(malformed JSON)"),
+            "the parse-error cause is named: {}",
+            error.message
+        );
+        // The recovery action is stated plainly; it must not leak the internal "re-project" word.
+        assert!(
+            error.message.contains("delete it and run marrow run")
+                && !error.message.contains("re-project"),
+            "the recovery is stated without internal jargon: {}",
+            error.message
+        );
+    }
+
+    #[test]
+    fn a_conflict_marker_names_its_own_cause() {
+        // A git-conflict-marker lock keeps the specific signal rather than collapsing to a generic
+        // parse failure, while sharing the same recovery sentence.
+        let conflicted = "{\n<<<<<<< HEAD\n  \"epochHighWater\": 1\n=======\n  \"epochHighWater\": 2\n>>>>>>> other\n}";
+        let error = CatalogLock::from_lock_json(conflicted)
+            .expect_err("a conflict-marker lock is rejected as corrupt");
+        assert_eq!(error.code, LOCK_CORRUPT);
+        assert!(
+            error
+                .message
+                .contains("contains unresolved Git conflict markers"),
+            "the conflict-marker cause is named: {}",
+            error.message
+        );
+        assert!(
+            !error.message.contains("malformed JSON"),
+            "the conflict-marker cause must not report a plain parse error: {}",
+            error.message
+        );
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum CatalogEntryKind {
@@ -917,18 +965,20 @@ impl CatalogError {
         }
     }
 
-    /// A committed lock that is not valid JSON at all — malformed JSON or unresolved Git conflict
-    /// markers. The lock is generated and never hand-edited, so the recovery is always the same:
-    /// delete it and let a write path re-project it, or restore the committed file. The message
-    /// gives that recovery directly rather than leaking parser line/column detail, which an
-    /// everyday developer cannot act on.
-    fn lock_unparseable() -> Self {
+    /// A committed lock that is not valid JSON at all. The recovery is always the same — the lock
+    /// is generated and never hand-edited, so delete it and run a write path, or restore the
+    /// committed file — but the cause clause names the specific corruption (a parse error vs.
+    /// unresolved Git conflict markers) so the signal is not lost. The message gives the recovery
+    /// directly rather than leaking parser line/column detail, which an everyday developer cannot
+    /// act on.
+    fn lock_unparseable(cause: &str) -> Self {
         Self {
             code: LOCK_CORRUPT,
-            message: "marrow.lock is not valid (malformed JSON); it is generated and never \
-                      hand-edited -- delete it and run marrow run <projectdir> (or marrow evolve \
-                      apply) to re-project it from the store, or restore the committed file"
-                .to_string(),
+            message: format!(
+                "marrow.lock is not valid ({cause}); it is generated and never hand-edited -- \
+                 delete it and run marrow run <projectdir> (or marrow evolve apply), or restore \
+                 the committed file"
+            ),
         }
     }
 }

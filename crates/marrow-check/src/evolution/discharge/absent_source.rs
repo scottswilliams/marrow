@@ -93,8 +93,9 @@ pub(super) fn classify_absent_source_entries(
                     acc.diagnostic(
                         entry_id.clone(),
                         format!(
-                            "dropped `{}` is still used by index `{index_name}`; add an in-source evolve block that retires it (run `marrow evolve preview --scaffold <projectdir>` to print the exact block), then apply it with `marrow evolve apply <projectdir>`",
-                            entry.path
+                            "dropped `{}` is still used by index `{index_name}`; {}",
+                            entry.path,
+                            retire_via_evolve_block(&entry.path)
                         ),
                     );
                     acc.push(
@@ -149,11 +150,22 @@ struct AbsentRepairDiagnostic {
     guidance: RepairGuidance,
 }
 
+/// The single owner of the retire-via-evolve-block remediation prose. It frames the retire as an
+/// in-source `evolve` block, points at the scaffold to print the exact block, and names `evolve
+/// apply` as the command — never `evolve retire` as if it were a CLI subcommand. Callers append a
+/// populated-data clause where one is warranted.
+fn retire_via_evolve_block(path: &str) -> String {
+    format!(
+        "add an in-source evolve block that retires `{path}` (run `marrow evolve preview --scaffold <projectdir>` to print the exact block), then apply it with `marrow evolve apply <projectdir>`"
+    )
+}
+
 fn dropped_store_diagnostic(entry: &CatalogEntry) -> AbsentRepairDiagnostic {
     AbsentRepairDiagnostic {
         message: format!(
-            "dropped store `{}` still holds records; add an in-source evolve block that retires it (run `marrow evolve preview --scaffold <projectdir>` to print the exact block), then apply it with `marrow evolve apply <projectdir>` and approval, or repair the data first",
-            entry.path
+            "dropped store `{}` still holds records; {} and approval, or repair the data first",
+            entry.path,
+            retire_via_evolve_block(&entry.path)
         ),
         guidance: RepairGuidance::Retire {
             target: entry.path.clone(),
@@ -168,8 +180,8 @@ fn populated_member_drop_diagnostic(
     entry: &CatalogEntry,
 ) -> Result<AbsentRepairDiagnostic, StoreError> {
     let retire_guidance = format!(
-        "add an in-source evolve block that retires `{}` (run `marrow evolve preview --scaffold <projectdir>` to print the exact block), then apply it with `marrow evolve apply <projectdir>` and approval, or repair the data first",
-        entry.path
+        "{} and approval, or repair the data first",
+        retire_via_evolve_block(&entry.path)
     );
     if let Some(target) = plausible_bare_rename_target(program, store, source_paths, entry)? {
         return Ok(AbsentRepairDiagnostic {

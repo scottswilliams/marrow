@@ -47,7 +47,7 @@ Use this choreography for a production catalog change:
 5. Run `marrow evolve preview <projectdir>` and inspect the witness.
 6. Run `marrow evolve apply <projectdir>`. When preview names destructive
    retire work, add `--maintenance`, the required
-   `--approve-retire <catalog-id>:<count>` arguments, and an explicit
+   `--approve-retire <field-path>:<count>` arguments, and an explicit
    recovery-point decision (`--backup <archive>` or `--no-backup`); apply fails
    closed without it.
 7. Start the new writer after apply succeeds.

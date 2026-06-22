@@ -170,6 +170,12 @@ fn check_rejects_lock_conflict_markers_without_creating_a_store() {
         "an unparseable lock must give the recovery step, not just diagnose: {stderr}"
     );
     assert!(
+        stderr.contains("contains unresolved Git conflict markers")
+            && !stderr.contains("malformed JSON")
+            && !stderr.contains("re-project"),
+        "the conflict-marker lock names its own cause without internal jargon: {stderr}"
+    );
+    assert!(
         !store_path(&project).exists(),
         "rejecting a conflicted lock must not create a store"
     );
@@ -201,8 +207,12 @@ fn check_rejects_a_torn_lock_without_opening_the_store_snapshot() {
         "the torn lock surfaces the typed lock-corrupt code: {stderr}"
     );
     assert!(
-        stderr.contains("delete it and run marrow run"),
-        "a malformed-JSON lock must give the recovery step: {stderr}"
+        stderr.contains("(malformed JSON)") && stderr.contains("delete it and run marrow run"),
+        "a malformed-JSON lock must name its cause and give the recovery step: {stderr}"
+    );
+    assert!(
+        !stderr.contains("re-project"),
+        "the recovery must not leak the internal re-project word: {stderr}"
     );
     assert!(
         !stderr.contains("line 1 column") && !stderr.contains("EOF while parsing"),

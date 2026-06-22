@@ -199,6 +199,28 @@ fn top_level_help_advertises_run_arg_and_test_filter() {
 }
 
 #[test]
+fn top_level_help_teaches_field_path_form_of_approve_retire() {
+    // The everyday teaching form of --approve-retire is the field path the rest of the surface
+    // resolves, never the internal catalog id, so the top-level synopsis must match.
+    let output = marrow(&["--help"]);
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let stdout = String::from_utf8(output.stdout).expect("stdout utf8");
+    let apply_line = stdout
+        .lines()
+        .find(|line| line.trim_start().starts_with("marrow evolve apply "))
+        .expect("an evolve apply usage line");
+    assert!(
+        apply_line.contains("[--approve-retire <field-path>:<count>]"),
+        "evolve apply usage must teach the field-path form of --approve-retire: {stdout}"
+    );
+    assert!(
+        !apply_line.contains("<catalog-id>"),
+        "evolve apply usage must not teach the internal catalog id: {stdout}"
+    );
+}
+
+#[test]
 fn run_with_no_project_dir_is_a_usage_failure() {
     let output = marrow(&["run"]);
     assert_eq!(output.status.code(), Some(2), "{output:?}");
