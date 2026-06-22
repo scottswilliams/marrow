@@ -795,19 +795,17 @@ fn assert_seeded_enum_status_fences_after_source_change(
     let old_catalog = accepted_catalog(&root)
         .to_json_pretty()
         .expect("render accepted catalog snapshot");
+    let old_state = EnumUnselectFenceState {
+        status_id: &old_status_id,
+        status_bytes: &old_status_bytes,
+        epoch: old_epoch,
+        lock: &old_lock,
+        data_cells: &old_data_cells,
+        catalog: &old_catalog,
+    };
 
     write(&root, "src/books.mw", changed_source);
-    assert_enum_unselect_fences_preview_apply_and_run(
-        &root,
-        dir,
-        &old_status_id,
-        &old_status_bytes,
-        old_epoch,
-        &old_lock,
-        &old_data_cells,
-        &old_catalog,
-        sentinel,
-    );
+    assert_enum_unselect_fences_preview_apply_and_run(&root, dir, old_state, sentinel);
 }
 
 fn assert_seeded_archived_enum_bytes(root: impl AsRef<Path>, status_bytes: &[u8]) {
@@ -826,47 +824,56 @@ fn assert_seeded_archived_enum_bytes(root: impl AsRef<Path>, status_bytes: &[u8]
     );
 }
 
+struct EnumUnselectFenceState<'a> {
+    status_id: &'a str,
+    status_bytes: &'a [u8],
+    epoch: Option<u64>,
+    lock: &'a [u8],
+    data_cells: &'a [(DataCellKey, Vec<u8>)],
+    catalog: &'a str,
+}
+
 fn assert_enum_unselect_fences_preview_apply_and_run(
     root: impl AsRef<Path>,
     dir: &str,
-    old_status_id: &str,
-    old_status_bytes: &[u8],
-    old_epoch: Option<u64>,
-    old_lock: &[u8],
-    old_data_cells: &[(DataCellKey, Vec<u8>)],
-    old_catalog: &str,
+    old_state: EnumUnselectFenceState<'_>,
     sentinel: &str,
 ) {
     let root = root.as_ref();
-    assert_eq!(old_epoch, Some(1));
+    assert_eq!(old_state.epoch, Some(1));
     let assert_unchanged = |action: &str| {
         assert_eq!(
             store_epoch(root),
-            old_epoch,
+            old_state.epoch,
             "{action} does not advance the durable store epoch"
         );
         assert_eq!(
             fs::read(root.join("marrow.lock")).expect("read lock after enum unselect fence"),
-            old_lock,
+            old_state.lock,
             "{action} does not rewrite the committed lock"
         );
         assert_eq!(
             accepted_catalog(root)
                 .to_json_pretty()
                 .expect("render accepted catalog after enum unselect fence"),
-            old_catalog,
+            old_state.catalog,
             "{action} does not rewrite the store's accepted catalog snapshot"
         );
         let data_cells = data_cells_snapshot(root);
         assert_eq!(
             data_cells.as_slice(),
-            old_data_cells,
+            old_state.data_cells,
             "{action} leaves the complete data-family snapshot unchanged"
         );
         assert!(record_exists(root, "books::^books", &[SavedKey::Int(1)]));
         assert_eq!(
-            read_member_bytes(root, "books::^books", &[SavedKey::Int(1)], old_status_id),
-            Some(old_status_bytes.to_vec()),
+            read_member_bytes(
+                root,
+                "books::^books",
+                &[SavedKey::Int(1)],
+                old_state.status_id
+            ),
+            Some(old_state.status_bytes.to_vec()),
             "{action} leaves the old enum-field bytes in place"
         );
     };
@@ -881,7 +888,7 @@ fn assert_enum_unselect_fences_preview_apply_and_run(
     assert!(
         blocking.iter().any(|report| {
             report["code"] == serde_json::json!("evolve.repair_required")
-                && report["data"]["catalog_id"] == serde_json::json!(old_status_id)
+                && report["data"]["catalog_id"] == serde_json::json!(old_state.status_id)
         }),
         "preview should report repair required for the populated enum field: {preview_json:#?}"
     );
@@ -896,7 +903,7 @@ fn assert_enum_unselect_fences_preview_apply_and_run(
     );
     assert_eq!(
         apply_json["data"]["catalog_id"],
-        serde_json::json!(old_status_id)
+        serde_json::json!(old_state.status_id)
     );
     assert_unchanged("refused apply");
 
