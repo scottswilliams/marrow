@@ -6,10 +6,10 @@ use std::time::Duration;
 
 use marrow_check::CheckedProgram;
 use marrow_json::surface::{
-    SurfaceAbiJson, SurfaceOperationCatalog, SurfaceOperationErrorJson,
-    SurfaceOperationRequestJson, SurfaceOperationResponseJson, SurfaceRouteBinding,
-    SurfaceRouteBindings, SurfaceRouteManifestJson, execute_project_surface_operation,
-    execute_project_surface_operation_read_only,
+    execute_project_surface_operation, execute_project_surface_operation_read_only, SurfaceAbiJson,
+    SurfaceOperationCatalog, SurfaceOperationErrorJson, SurfaceOperationRequestJson,
+    SurfaceOperationResponseJson, SurfaceRouteBinding, SurfaceRouteBindings,
+    SurfaceRouteManifestJson,
 };
 use marrow_run::{
     ProjectSessionError, ProjectSurfaceReadSession, ProjectSurfaceSession, ProjectSurfaceSnapshot,
@@ -19,7 +19,7 @@ use marrow_run::{
 };
 
 use crate::cmd_run::report_session_open_error;
-use crate::{CheckFormat, report_simple_error};
+use crate::{report_simple_error, CheckFormat};
 
 mod cors;
 use cors::CorsPolicy;
@@ -347,7 +347,7 @@ impl SurfaceWatch {
         let session = SurfaceServeSession::open(&snapshot, self.mode)
             .map_err(|error| format!("{}: {}", error.code(), error.message()))?;
         let fresh_routes = SurfaceRoutes::from_program(session.program(), self.mode)?;
-        crate::write_declared_client_if_changed(
+        crate::sync_declared_client(
             &self.dir,
             &self.config,
             session.program(),
