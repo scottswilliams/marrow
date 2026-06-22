@@ -303,7 +303,7 @@ fn maintenance_transaction_whole_resource_required_delete_does_not_permit_partia
 #[test]
 fn maintenance_transaction_whole_group_required_delete_does_not_permit_partial_entry() {
     let program = checked_program(
-        "resource Book\n    required title: string\n    versions(version: int)\n        required title: string\n        note: string\nstore ^books(id: int): Book\n\npub fn seed(id: int)\n    ^books(id).title = \"root\"\n\npub fn create_version(id: int)\n    var version: Book\n    version.title = \"temporary\"\n    version.note = \"legacy\"\n    transaction\n        ^books(id).versions(1) = version\n        delete ^books(id).versions(1).title\n\npub fn has_version(id: int): bool\n    return exists(^books(id).versions(1))\n",
+        "resource Book\n    required title: string\n    versions(version: int)\n        required title: string\n        note: string\nstore ^books(id: int): Book\n\npub fn seed(id: int)\n    ^books(id).title = \"root\"\n\npub fn create_version(id: int)\n    var version: Book\n    version.title = \"temporary\"\n    transaction\n        ^books(id).versions(1) = version\n        delete ^books(id).versions(1).title\n\npub fn has_version(id: int): bool\n    return exists(^books(id).versions(1))\n",
     );
     let store = TreeStore::memory();
     let host = Host::new().with_maintenance();
@@ -474,18 +474,14 @@ fn maintenance_required_delete_exemption_crosses_nested_transaction_commit() {
 }
 
 #[test]
-fn unquoted_undeclared_field_stays_unknown_field_even_under_maintenance() {
-    let program = checked_program(&format!(
-        "{BOOK_PRIMARY_SCHEMA}pub fn typo(id: int)\n    ^books(id).nope = \"x\"\n"
-    ));
-    let store = TreeStore::memory();
-    let host = Host::new().with_maintenance();
-    let result = run_entry_with_host(
-        &store,
-        &host,
-        checked_entry!(&program, "test::typo", Value::Int(1)),
+fn unquoted_undeclared_field_write_is_rejected_at_check() {
+    // A saved record is a fixed typed tree, so writing a statically undeclared field is
+    // rejected at check the same way reading one is; maintenance does not loosen the
+    // schema. The runtime backstop remains for paths the checker cannot prove.
+    checker_rejects(
+        &format!("{BOOK_PRIMARY_SCHEMA}pub fn typo(id: int)\n    ^books(id).nope = \"x\"\n"),
+        "check.unknown_field",
     );
-    assert_run_error(result, "write.unknown_field");
 }
 
 #[test]

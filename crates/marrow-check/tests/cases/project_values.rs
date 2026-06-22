@@ -802,6 +802,250 @@ fn a_user_function_write_in_value_position_advances_the_cohort() {
 }
 
 #[test]
+fn two_helper_allocations_used_as_distinct_keys_warn() {
+    // `fresh()` returns `nextId(^docs)`, so calling it is allocating from `^docs`. Two
+    // calls with no write between them yield the same id; writing both as keys is the
+    // same silent overwrite as two direct `nextId` calls and must warn.
+    let found = check_module(
+        "nextid-helper-collision",
+        "module m\n\
+         resource Doc\n    title: string\n\
+         store ^docs(id: int): Doc\n\n\
+         fn fresh(): Id(^docs)\n\
+         \x20   return nextId(^docs)\n\n\
+         fn f()\n\
+         \x20   const a = fresh()\n\
+         \x20   const b = fresh()\n\
+         \x20   ^docs(a).title = \"x\"\n\
+         \x20   ^docs(b).title = \"y\"\n",
+        "check.next_id_collision",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+    assert_eq!(
+        found[0].severity,
+        marrow_syntax::Severity::Warning,
+        "{found:#?}"
+    );
+}
+
+#[test]
+fn a_helper_allocation_interleaved_with_writes_does_not_warn() {
+    // Writing `^docs(a)` before the second `fresh()` advances the allocation, so the
+    // helper form of the safe interleaved pattern must not warn.
+    let found = check_module(
+        "nextid-helper-interleaved",
+        "module m\n\
+         resource Doc\n    title: string\n\
+         store ^docs(id: int): Doc\n\n\
+         fn fresh(): Id(^docs)\n\
+         \x20   return nextId(^docs)\n\n\
+         fn f()\n\
+         \x20   const a = fresh()\n\
+         \x20   ^docs(a).title = \"x\"\n\
+         \x20   const b = fresh()\n\
+         \x20   ^docs(b).title = \"y\"\n",
+        "check.next_id_collision",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn a_constructed_identity_helper_is_not_an_allocation() {
+    // `keyed(n)` returns a constructed `Id(^docs, n)`, not a fresh allocation, so two
+    // calls do not collide and writing both keys must not warn.
+    let found = check_module(
+        "nextid-helper-constructed",
+        "module m\n\
+         resource Doc\n    title: string\n\
+         store ^docs(id: int): Doc\n\n\
+         fn keyed(n: int): Id(^docs)\n\
+         \x20   return Id(^docs, n)\n\n\
+         fn f()\n\
+         \x20   const a = keyed(1)\n\
+         \x20   const b = keyed(2)\n\
+         \x20   ^docs(a).title = \"x\"\n\
+         \x20   ^docs(b).title = \"y\"\n",
+        "check.next_id_collision",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn a_helper_that_writes_a_different_store_does_not_advance_the_allocated_cohort() {
+    // `mint()` allocates from `^docs` but only ever writes `^logs`. The intervening
+    // calls write `^logs`, not `^docs`, so the two `^docs` allocations are still equal:
+    // advancing only the written store's cohort keeps the collision visible. Advancing
+    // every live cohort on any write would suppress this real overwrite.
+    let found = check_module(
+        "nextid-cross-store-write",
+        "module m\n\
+         resource Doc\n    title: string\n\
+         resource Log\n    line: string\n\
+         store ^docs(id: int): Doc\n\
+         store ^logs(id: int): Log\n\n\
+         fn mint(): Id(^docs)\n\
+         \x20   const n = nextId(^docs)\n\
+         \x20   ^logs(nextId(^logs)).line = \"minted\"\n\
+         \x20   return n\n\n\
+         fn f()\n\
+         \x20   const a = mint()\n\
+         \x20   const b = mint()\n\
+         \x20   ^docs(a).title = \"x\"\n\
+         \x20   ^docs(b).title = \"y\"\n",
+        "check.next_id_collision",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn a_bind_then_return_helper_is_an_allocation() {
+    // `fresh()` binds the allocation to a local and returns the name rather than the
+    // `nextId` call syntactically. It is the same allocator, so two calls with no
+    // intervening write collide and must warn.
+    let found = check_module(
+        "nextid-bind-then-return",
+        "module m\n\
+         resource Doc\n    title: string\n\
+         store ^docs(id: int): Doc\n\n\
+         fn fresh(): Id(^docs)\n\
+         \x20   const n = nextId(^docs)\n\
+         \x20   return n\n\n\
+         fn f()\n\
+         \x20   const a = fresh()\n\
+         \x20   const b = fresh()\n\
+         \x20   ^docs(a).title = \"x\"\n\
+         \x20   ^docs(b).title = \"y\"\n",
+        "check.next_id_collision",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn a_bind_then_return_constructed_identity_helper_is_not_an_allocation() {
+    // Binding a constructed `Id(^docs, n)` to a local and returning the name is not a
+    // fresh allocation, so two calls naming distinct keys must not warn.
+    let found = check_module(
+        "nextid-bind-then-return-constructed",
+        "module m\n\
+         resource Doc\n    title: string\n\
+         store ^docs(id: int): Doc\n\n\
+         fn keyed(n: int): Id(^docs)\n\
+         \x20   const made = Id(^docs, n)\n\
+         \x20   return made\n\n\
+         fn f()\n\
+         \x20   const a = keyed(1)\n\
+         \x20   const b = keyed(2)\n\
+         \x20   ^docs(a).title = \"x\"\n\
+         \x20   ^docs(b).title = \"y\"\n",
+        "check.next_id_collision",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn a_var_reassigned_after_its_initializer_is_not_an_allocation() {
+    // `idFor` initializes `chosen` from `nextId(^docs)` but reassigns it to a
+    // constructed `Id(^docs, explicit)` on one path before returning it, so the
+    // returned value is not unconditionally a fresh allocation. Following a
+    // reassigned `var` through its initializer alone would wrongly classify the
+    // helper as an allocator and warn on safe code called with distinct explicit
+    // keys. The warning must stay conservative: a reassigned `var` is not followed,
+    // so two calls with distinct keys do not warn.
+    let found = check_module(
+        "nextid-var-reassigned",
+        "module m\n\
+         resource Doc\n    title: string\n\
+         store ^docs(id: int): Doc\n\n\
+         fn idFor(explicit: int): Id(^docs)\n\
+         \x20   var chosen = nextId(^docs)\n\
+         \x20   if explicit > 0\n\
+         \x20       chosen = Id(^docs, explicit)\n\
+         \x20   return chosen\n\n\
+         fn f()\n\
+         \x20   const a = idFor(1)\n\
+         \x20   const b = idFor(2)\n\
+         \x20   ^docs(a).title = \"x\"\n\
+         \x20   ^docs(b).title = \"y\"\n",
+        "check.next_id_collision",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn an_unknown_field_write_on_a_local_resource_is_rejected() {
+    // The read of an undeclared field is rejected as `check.unknown_field`; the write to
+    // the same place is just as invalid (the data is silently dropped at runtime), so the
+    // assignment target is validated against the declared fields the same way.
+    let found = check_module(
+        "unknown-field-write",
+        "module m\n\
+         resource R\n    a: int\n\n\
+         fn f()\n\
+         \x20   var r: R\n\
+         \x20   r.a = 1\n\
+         \x20   r.bogus = 99\n",
+        "check.unknown_field",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn a_declared_field_write_on_a_local_resource_is_clean() {
+    // Writing a declared field must not be flagged.
+    let found = check_module(
+        "known-field-write",
+        "module m\n\
+         resource R\n    a: int\n    b: string\n\n\
+         fn f()\n\
+         \x20   var r: R\n\
+         \x20   r.a = 1\n\
+         \x20   r.b = \"x\"\n",
+        "check.unknown_field",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn an_unknown_field_write_on_a_saved_record_is_rejected() {
+    // A saved record is the same fixed typed tree as its local form, so writing an
+    // undeclared field through its saved path is rejected `check.unknown_field` at the
+    // field token, the same as the local write and the read.
+    let found = check_module(
+        "unknown-field-saved-write",
+        "module m\n\
+         resource R\n    a: int\n\n\
+         store ^rs(id: int): R\n\n\
+         fn f()\n\
+         \x20   ^rs(1).bogus = 99\n",
+        "check.unknown_field",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn an_unknown_leaf_write_in_a_nested_group_is_rejected() {
+    // Writing an undeclared leaf through a declared unkeyed group is rejected at the leaf
+    // token, while a declared leaf in the same group is clean.
+    let found = check_module(
+        "unknown-field-group-write",
+        "module m\n\
+         resource P\n    name\n        first: string\n\n\
+         fn f()\n    var p: P\n    p.name.bogus = \"x\"\n",
+        "check.unknown_field",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+
+    let clean = check_module(
+        "known-field-group-write",
+        "module m\n\
+         resource P\n    name\n        first: string\n\n\
+         fn f()\n    var p: P\n    p.name.first = \"x\"\n",
+        "check.unknown_field",
+    );
+    assert!(clean.is_empty(), "{clean:#?}");
+}
+
+#[test]
 fn an_unknown_value_into_an_unknown_place_is_not_flagged() {
     // `unknown` is the explicit dynamic opt-out: storing an unresolved value into
     // an `unknown`-typed place is allowed.

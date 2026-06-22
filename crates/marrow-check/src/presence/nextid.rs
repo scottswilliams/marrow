@@ -20,10 +20,13 @@
 //! conservatively recorded as used), so a write in one arm is never seen as a
 //! colliding sibling of a write in another.
 //!
-//! The analysis is intentionally conservative: a call that may write saved data
-//! (an `append`, or a user function whose effect closure writes) advances every
-//! live cohort, so an unmodeled write can only suppress the warning, never invent
-//! one.
+//! The analysis is intentionally conservative: a call that may write a saved record
+//! (an `append`, or a user function whose effect closure reaches a record write)
+//! advances the cohorts of exactly the stores it writes — the per-store write identity
+//! from its effect closure — so an unmodeled write to one store cannot suppress a
+//! collision on a store it never touched. A call that merely allocates (a helper
+//! returning `nextId`) writes no record, so it is the allocation it names and advances
+//! no cohort.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -34,7 +37,7 @@ use crate::executable::accepted_saved_place;
 use crate::facts::StoreId;
 use crate::{
     CheckDiagnostic, CheckedBody, CheckedBuiltinCall, CheckedCallTarget, CheckedExpr,
-    CheckedInterpolationPart, CheckedProgram, CheckedStmt,
+    CheckedFunctionRef, CheckedInterpolationPart, CheckedProgram, CheckedStmt,
 };
 
 pub(super) fn check_next_id_collisions(
@@ -104,17 +107,6 @@ impl<'a> Guard<'a> {
     fn advance(&mut self, store: StoreId) {
         let generation = self.cohorts.generations.entry(store).or_insert(0);
         *generation += 1;
-    }
-
-    /// Any write of unknown destination conservatively advances the cohort of every
-    /// store with a live allocation, so an unmodeled write suppresses rather than
-    /// invents a warning. Stores are seeded into the generation map when they first
-    /// allocate, so a whole-cohort advance reaches even cohorts that have not yet
-    /// taken a direct write.
-    fn advance_all(&mut self) {
-        for generation in self.cohorts.generations.values_mut() {
-            *generation += 1;
-        }
     }
 
     /// Walk each block of a branch from a shared snapshot so sibling arms never see
@@ -291,12 +283,12 @@ impl<'a> Guard<'a> {
     }
 
     fn record_allocation(&mut self, binding: u32, value: &CheckedExpr) {
-        let Some(store) = next_id_store(value) else {
+        let Some(store) = self.allocation_store(value) else {
             return;
         };
-        // Seed the generation entry on first allocation so a whole-cohort advance
-        // (a user-function write of unknown destination) can reach this store even
-        // before it has taken a direct write.
+        // Seed the generation entry on first allocation so a later write to this store
+        // (including one buried in a user function's effect closure) can advance its
+        // cohort even before it has taken a direct write here.
         let generation = *self.cohorts.generations.entry(store).or_insert(0);
         self.cohorts.allocations.push(Allocation {
             binding,
@@ -360,8 +352,8 @@ impl<'a> Guard<'a> {
             .position(|alloc| alloc.store == store && alloc.binding == binding)
     }
 
-    /// Walk an expression for writes nested in value position — an `append`, or a
-    /// user function whose effect closure writes saved data.
+    /// Walk an expression for record writes nested in value position — an `append`, or a
+    /// user function whose effect closure reaches a record write.
     fn observe_writes(&mut self, expr: &CheckedExpr, scope: &mut NameScope) {
         match expr {
             CheckedExpr::Call {
@@ -383,8 +375,8 @@ impl<'a> Guard<'a> {
                 for arg in args {
                     self.observe_writes(&arg.value, scope);
                 }
-                if super::writes::call_writes_saved_data(self.program, target) {
-                    self.advance_all();
+                for store in super::writes::call_written_stores(self.program, target) {
+                    self.advance(store);
                 }
             }
             CheckedExpr::Field { base, .. } | CheckedExpr::OptionalField { base, .. } => {
@@ -454,15 +446,261 @@ fn join_cohorts(mut acc: CohortState, other: &CohortState) -> CohortState {
     acc
 }
 
-fn next_id_store(value: &CheckedExpr) -> Option<StoreId> {
-    let CheckedExpr::Call { target, args, .. } = value else {
-        return None;
-    };
-    if !matches!(
-        target,
-        CheckedCallTarget::Builtin(CheckedBuiltinCall::NextId)
-    ) {
-        return None;
+impl Guard<'_> {
+    /// The store an initializer allocates a fresh id from, if any. A direct
+    /// `nextId(^store)` is the literal allocation; calling a helper whose return value
+    /// originates from `nextId(^store)` is the same allocation one call deep, so the
+    /// idiomatic allocator wrapper participates in the cohort the same way. A constructed
+    /// identity (`Id(^store, key)`) names an existing id, not a fresh one, so it is never
+    /// an allocation.
+    fn allocation_store(&self, value: &CheckedExpr) -> Option<StoreId> {
+        self.allocation_origin_store(value, &LocalBindings::empty(), &mut Vec::new())
     }
-    Some(args.first()?.value.saved_place()?.store_id)
+
+    /// The store a function allocates from when every value it returns originates from a
+    /// `nextId` of that one store (directly, or through another allocator it calls). A
+    /// function with no such return, or one whose returns name more than one store, is not
+    /// a single-store allocator. The visited set bounds recursion through allocator chains
+    /// and breaks cycles.
+    fn allocator_function_store(
+        &self,
+        function_ref: CheckedFunctionRef,
+        visited: &mut Vec<CheckedFunctionRef>,
+    ) -> Option<StoreId> {
+        if visited.contains(&function_ref) {
+            return None;
+        }
+        visited.push(function_ref);
+        let function = self
+            .program
+            .modules
+            .get(function_ref.module as usize)?
+            .functions
+            .get(function_ref.function as usize)?;
+        let body = function.runtime_body()?;
+        let bindings = LocalBindings::from_body(body);
+        let mut store = None;
+        for value in returned_values(body) {
+            let returned = self.allocation_origin_store(value, &bindings, visited)?;
+            match store {
+                None => store = Some(returned),
+                Some(existing) if existing == returned => {}
+                Some(_) => return None,
+            }
+        }
+        store
+    }
+
+    /// The store an expression allocates from: a direct `nextId(^store)`, a call to an
+    /// allocator function, or a single-segment name whose immutable local initializer
+    /// originates from one of those. Following the name lets the idiomatic
+    /// `const n = nextId(^s); return n` shape be recognized as an allocation rather than
+    /// a constructed identity. Only immutable bindings are followed (a reassigned `var`
+    /// is dropped before this runs), so a returned name traces to an allocation only when
+    /// its value is unconditionally a fresh one.
+    fn allocation_origin_store(
+        &self,
+        value: &CheckedExpr,
+        bindings: &LocalBindings<'_>,
+        visited: &mut Vec<CheckedFunctionRef>,
+    ) -> Option<StoreId> {
+        match value {
+            CheckedExpr::Call { target, args, .. } => match target {
+                CheckedCallTarget::Builtin(CheckedBuiltinCall::NextId) => {
+                    Some(args.first()?.value.saved_place()?.store_id)
+                }
+                CheckedCallTarget::Function(function_ref) => {
+                    self.allocator_function_store(*function_ref, visited)
+                }
+                _ => None,
+            },
+            CheckedExpr::Name { segments, .. } => {
+                let [name] = segments.as_slice() else {
+                    return None;
+                };
+                let initializer = bindings.follow(name)?;
+                self.allocation_origin_store(initializer, &bindings.without(name), visited)
+            }
+            _ => None,
+        }
+    }
+}
+
+/// The initializer expression of every single-segment *immutable* local binding in a
+/// function body, so a returned name can be traced back to the expression that produced
+/// it. A reassigned `var` is excluded: its initializer no longer describes its value.
+struct LocalBindings<'a> {
+    initializers: HashMap<&'a str, &'a CheckedExpr>,
+}
+
+impl<'a> LocalBindings<'a> {
+    fn empty() -> Self {
+        Self {
+            initializers: HashMap::new(),
+        }
+    }
+
+    fn from_body(body: &'a CheckedBody) -> Self {
+        let mut initializers = HashMap::new();
+        collect_local_initializers(body, &mut initializers);
+        Self { initializers }
+    }
+
+    fn follow(&self, name: &str) -> Option<&'a CheckedExpr> {
+        self.initializers.get(name).copied()
+    }
+
+    /// The same bindings with one name dropped, so following that name's initializer
+    /// cannot loop back through a self-reference.
+    fn without(&self, name: &str) -> Self {
+        let mut initializers = self.initializers.clone();
+        initializers.remove(name);
+        Self { initializers }
+    }
+}
+
+/// Collect the immutable initializers a returned name may be traced through. A
+/// `const` binding is immutable, so its initializer always describes the bound
+/// value. A `var` may be reassigned after its initializer (on any path), in which
+/// case the initializer no longer describes the returned value, so it is dropped:
+/// classifying such a helper as an allocator on its initializer alone would warn on
+/// safe code. A reassigned `var` is therefore conservatively not followed, leaving a
+/// false negative for the rare `var` reassigned from a constructed id to `nextId`,
+/// which is acceptable for a safety-net warning and never produces a false positive.
+fn collect_local_initializers<'a>(
+    body: &'a CheckedBody,
+    initializers: &mut HashMap<&'a str, &'a CheckedExpr>,
+) {
+    let mut reassigned = Vec::new();
+    collect_reassigned_names(body, &mut reassigned);
+    for statement in body.statements() {
+        let (name, value) = match statement {
+            CheckedStmt::Const { name, value, .. } => (name, value),
+            CheckedStmt::Var {
+                name,
+                value: Some(value),
+                ..
+            } => (name, value),
+            _ => continue,
+        };
+        if reassigned.contains(&name.as_str()) {
+            continue;
+        }
+        initializers.insert(name.as_str(), value);
+    }
+}
+
+/// Names assigned to as a single-segment local target anywhere in the body,
+/// including nested blocks and branches, so a `var` reassigned on any path is not
+/// followed as if its initializer were its final value.
+fn collect_reassigned_names<'a>(body: &'a CheckedBody, names: &mut Vec<&'a str>) {
+    for statement in body.statements() {
+        match statement {
+            CheckedStmt::Assign { target, .. } => {
+                if let CheckedExpr::Name { segments, .. } = target
+                    && let [name] = segments.as_slice()
+                {
+                    names.push(name.as_str());
+                }
+            }
+            CheckedStmt::If {
+                then_block,
+                else_ifs,
+                else_block,
+                ..
+            }
+            | CheckedStmt::IfConst {
+                then_block,
+                else_ifs,
+                else_block,
+                ..
+            } => {
+                collect_reassigned_names(then_block, names);
+                for else_if in else_ifs {
+                    collect_reassigned_names(&else_if.block, names);
+                }
+                if let Some(else_block) = else_block {
+                    collect_reassigned_names(else_block, names);
+                }
+            }
+            CheckedStmt::Match { arms, .. } => {
+                for arm in arms {
+                    collect_reassigned_names(&arm.block, names);
+                }
+            }
+            CheckedStmt::While { body, .. }
+            | CheckedStmt::For { body, .. }
+            | CheckedStmt::Transaction { body, .. } => collect_reassigned_names(body, names),
+            CheckedStmt::Try { body, catch, .. } => {
+                collect_reassigned_names(body, names);
+                if let Some(catch) = catch {
+                    collect_reassigned_names(&catch.block, names);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// The value of every `return` statement reachable in a body, including those nested in
+/// blocks, branches, loops, and transactions. A bare `return` with no value is not an
+/// allocation site and is skipped, so a function that takes any value-free return path is
+/// simply not classified as an allocator.
+fn returned_values(body: &CheckedBody) -> Vec<&CheckedExpr> {
+    let mut values = Vec::new();
+    collect_returned_values(body, &mut values);
+    values
+}
+
+fn collect_returned_values<'a>(body: &'a CheckedBody, values: &mut Vec<&'a CheckedExpr>) {
+    for statement in body.statements() {
+        match statement {
+            CheckedStmt::Return {
+                value: Some(value), ..
+            } => values.push(value),
+            CheckedStmt::If {
+                then_block,
+                else_ifs,
+                else_block,
+                ..
+            } => {
+                collect_returned_values(then_block, values);
+                for else_if in else_ifs {
+                    collect_returned_values(&else_if.block, values);
+                }
+                if let Some(else_block) = else_block {
+                    collect_returned_values(else_block, values);
+                }
+            }
+            CheckedStmt::IfConst {
+                then_block,
+                else_ifs,
+                else_block,
+                ..
+            } => {
+                collect_returned_values(then_block, values);
+                for else_if in else_ifs {
+                    collect_returned_values(&else_if.block, values);
+                }
+                if let Some(else_block) = else_block {
+                    collect_returned_values(else_block, values);
+                }
+            }
+            CheckedStmt::Match { arms, .. } => {
+                for arm in arms {
+                    collect_returned_values(&arm.block, values);
+                }
+            }
+            CheckedStmt::While { body, .. }
+            | CheckedStmt::For { body, .. }
+            | CheckedStmt::Transaction { body, .. } => collect_returned_values(body, values),
+            CheckedStmt::Try { body, catch, .. } => {
+                collect_returned_values(body, values);
+                if let Some(catch) = catch {
+                    collect_returned_values(&catch.block, values);
+                }
+            }
+            _ => {}
+        }
+    }
 }

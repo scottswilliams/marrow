@@ -6,7 +6,7 @@ use crate::{
 };
 
 use super::util::extend_unique;
-use crate::facts::{DirectEffectFacts, EffectClosureFacts};
+use crate::facts::{DirectEffectFacts, EffectClosureFacts, StoreId};
 
 pub(crate) fn effect_closure(
     program: &CheckedProgram,
@@ -35,6 +35,40 @@ pub(crate) fn effect_closure_for_direct(
 
 pub(super) fn call_writes_saved_data(program: &CheckedProgram, target: &CheckedCallTarget) -> bool {
     call_target_writes_saved_data(program, target)
+}
+
+/// The stores a user-function call actually writes a saved record or index entry to. A
+/// `nextId` allocation reports a `stores_written` store effect but commits no record, so
+/// that coarse set cannot be used: only a record write (`saved_writes`, keyed by the
+/// written resource) or an index write (`saved_index_writes`, keyed by its index) counts.
+/// Returning the precise written stores lets a caller advance just those allocation
+/// cohorts, so a helper that allocates from one store but writes another never suppresses
+/// a collision on the store it left untouched.
+pub(super) fn call_written_stores(
+    program: &CheckedProgram,
+    target: &CheckedCallTarget,
+) -> Vec<StoreId> {
+    let CheckedCallTarget::Function(function_ref) = target else {
+        return Vec::new();
+    };
+    let Some(closure) = effect_closure(program, *function_ref) else {
+        return Vec::new();
+    };
+    let mut stores: Vec<StoreId> = Vec::new();
+    for write in &closure.saved_writes {
+        for store in program.facts.stores() {
+            if store.resource == write.resource && !stores.contains(&store.id) {
+                stores.push(store.id);
+            }
+        }
+    }
+    for index in &closure.saved_index_writes {
+        let store = program.facts.store_index(*index).store;
+        if !stores.contains(&store) {
+            stores.push(store);
+        }
+    }
+    stores
 }
 
 fn call_target_writes_saved_data(program: &CheckedProgram, target: &CheckedCallTarget) -> bool {

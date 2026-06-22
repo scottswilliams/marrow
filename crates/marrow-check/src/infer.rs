@@ -161,6 +161,29 @@ pub(crate) fn infer_assignment_target_type_with_read_scope(
     diagnostics: &mut Vec<CheckDiagnostic>,
     transform_old: Option<crate::presence::TransformOldReadScope<'_>>,
 ) -> MarrowType {
+    infer_assignment_field_type(
+        program,
+        expr,
+        scope,
+        aliases,
+        file,
+        diagnostics,
+        transform_old,
+        FieldAccessContext::AssignmentTarget,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn infer_assignment_field_type(
+    program: &CheckedProgram,
+    expr: &marrow_syntax::Expression,
+    scope: &[HashMap<String, MarrowType>],
+    aliases: &HashMap<String, Vec<String>>,
+    file: &Path,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+    transform_old: Option<crate::presence::TransformOldReadScope<'_>>,
+    context: FieldAccessContext,
+) -> MarrowType {
     use marrow_syntax::Expression;
     match expr {
         Expression::Field {
@@ -179,7 +202,7 @@ pub(crate) fn infer_assignment_target_type_with_read_scope(
             file,
             diagnostics,
             transform_old,
-            context: FieldAccessContext::AssignmentTarget,
+            context,
             position: ValuePosition::Value,
         }),
         // A write or delete target is an address, not a value read. A partially keyed
@@ -621,7 +644,13 @@ fn infer_value(
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum FieldAccessContext {
     Read,
+    /// The terminal field of a write target. An undeclared field here is rejected
+    /// `check.unknown_field`, the same as a read, because the write is silently dropped.
     AssignmentTarget,
+    /// A value navigated to reach a write target (the base of `r.group.field = …`).
+    /// Resolution stays silent so the dedicated assignment-target rules own any error on
+    /// the write path without stacking a second diagnostic on an intermediate member.
+    AssignmentBase,
 }
 
 struct FieldAccessInfer<'a, 'd> {
@@ -672,15 +701,21 @@ fn infer_field_access(input: FieldAccessInfer<'_, '_>) -> MarrowType {
             input.diagnostics,
             input.transform_old,
         ),
-        FieldAccessContext::AssignmentTarget => infer_assignment_target_type_with_read_scope(
-            input.program,
-            input.base,
-            input.scope,
-            input.aliases,
-            input.file,
-            input.diagnostics,
-            input.transform_old,
-        ),
+        // The base of a write target is navigated, not itself written, so resolve it
+        // silently: only the terminal field reports an undeclared member, leaving an
+        // intermediate one to the dedicated assignment-target rules.
+        FieldAccessContext::AssignmentTarget | FieldAccessContext::AssignmentBase => {
+            infer_assignment_field_type(
+                input.program,
+                input.base,
+                input.scope,
+                input.aliases,
+                input.file,
+                input.diagnostics,
+                input.transform_old,
+                FieldAccessContext::AssignmentBase,
+            )
+        }
     };
     // A bare-key field access in a value position is itself a value-read entry, like the
     // call and saved-root arms. A partially keyed composite layer there — `^grids(1).cells`,
@@ -710,9 +745,17 @@ fn infer_field_access(input: FieldAccessInfer<'_, '_>) -> MarrowType {
     }
     match local_field_resolution(input.program, &base_type, input.name) {
         FieldResolution::Resolved(ty) => ty,
-        FieldResolution::UnknownField | FieldResolution::NoFields
-            if input.context == FieldAccessContext::Read =>
-        {
+        // An undeclared field on a resolved resource base is invalid whether it is read
+        // or written: a write to it is silently dropped at runtime, so the terminal
+        // assignment target is validated against the declared fields the same way the read
+        // is. An intermediate navigated base stays silent for the dedicated rules to own.
+        FieldResolution::UnknownField if input.context != FieldAccessContext::AssignmentBase => {
+            input
+                .diagnostics
+                .push(unknown_field_diagnostic(input.file, input.span, input.name));
+            MarrowType::Invalid
+        }
+        FieldResolution::NoFields if input.context == FieldAccessContext::Read => {
             input
                 .diagnostics
                 .push(unknown_field_diagnostic(input.file, input.span, input.name));
