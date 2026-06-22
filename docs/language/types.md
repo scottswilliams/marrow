@@ -98,11 +98,19 @@ Saving an identity in a field does not create a foreign-key constraint, cascade,
 or join: it is a typed value, not an enforced relationship. The field is not an
 unconditional write-time existence check — a reference may name a resource that
 was never written or was later deleted, and a `delete` does not follow stored
-references. Dangling references are still compiler-visible integrity facts:
-data-attached compiler and integrity flows can report an `Id(^store)` value whose
-referent is absent without turning that report into an implicit cascade or write
-rejection. Applications enforce relationship policy in code or model it as
-resources and indexes.
+references. Creating a record whose reference points at a missing identity
+succeeds, including through a surface write or a generated client; neither the
+surface nor the client rejects a dangling reference, because the reference is a
+typed value, not a verified link. Applications enforce relationship policy in
+code or model it as resources and indexes.
+
+Dangling references are still compiler-visible integrity facts. `marrow data
+integrity` reports a `data.dangling_ref` finding for an `Id(^store)` value whose
+referent is absent, naming the storing path so you can repair it; it does not
+turn that finding into an implicit cascade or write rejection. To require that a
+reference resolve, check existence in code before the write (an `exists` guard on
+the referenced record), since the type system guarantees only that the value is
+a well-formed identity for the named store.
 
 Saved keys are orderable scalar types — every scalar except `decimal`. A key
 may not be `decimal`, an enum or other named type, a whole resource, a

@@ -362,6 +362,92 @@ prove catalog IDs, re-decode response values against descriptors, or become an
 authority boundary. `marrow-json`, `marrow-run`, and `marrow serve`
 continue to validate every request from clients that bypass generated code.
 
+### Calling A Generated Client
+
+`createClient(options)` returns a nested object of async methods keyed by
+sanitized module, surface, and operation label. Pass `baseUrl` for the running
+server (and `fetch` in a non-browser runtime):
+
+```ts
+import { createClient } from "./generated/marrow";
+
+const client = createClient({ baseUrl: "http://127.0.0.1:8080" });
+
+const page = await client.shelf__books.Books.byShelf({
+  exact_keys: [{ kind: "string", value: "fiction" }],
+  limit: 20,
+});
+for (const row of page.result.page.rows) {
+  // row.identity.keys and row.fields[].value are typed surface values
+}
+```
+
+On a 2xx response the method returns the validated `surface.operation.v1`
+envelope: an object with `profile_version`, the echoed `operation_tag`, and a
+`result` whose `kind` is the operation's result kind (`record`, `page`,
+`optional_record`, `created`, `updated`, `deleted`, `action`, or
+`computed_read`). A page read returns `result.page.rows`; a computed read
+returns `result.result.value` as a typed value such as
+`{ kind: "int", value: "4" }`. Marrow `int` leaves are strings on the wire to
+stay exact.
+
+### Handling Errors
+
+On any non-2xx response the generated method does not return — it **throws the
+parsed error envelope**. The thrown value is the body object
+`{ code: string, message: string }`, where `code` is a stable `surface.*` code
+and `message` is a sanitized public string. Branch on `code`, not on the HTTP
+status, and not on `message` (the prose may change):
+
+```ts
+try {
+  const book = await client.shelf__books.Books.get({
+    identity: {
+      store_catalog_id: "...",
+      keys: [{ kind: "int", value: "999" }],
+    },
+  });
+  return book.result.record;
+} catch (err) {
+  const fault = err as { code?: string; message?: string };
+  switch (fault.code) {
+    case "surface.absent":
+      return null; // record does not exist
+    case "surface.abi_mismatch":
+      throw new Error("client is stale; regenerate it"); // also 404
+    case "surface.stale_cursor":
+      return refetchFromStart(); // a write advanced the store; page again
+    default:
+      throw err;
+  }
+}
+```
+
+The codes a client author branches on:
+
+| `code` | HTTP | Meaning | What to do |
+|---|---|---|---|
+| `surface.absent` | 404 | The requested record or singleton does not exist. | Treat as not found. |
+| `surface.request` | 400 | The request parameters, fields, or arguments did not decode to the operation's input shape. | Fix the request shape; do not retry unchanged. |
+| `surface.conflict` | 409 | A write conflicts with existing data, such as creating a record that already exists or violating a unique index. | Resolve the conflict (read first, or use update). |
+| `surface.stale_cursor` | 409 | A page cursor is well-formed but a committed write moved the store past it. | Discard the cursor and refetch from the start. |
+| `surface.abi_mismatch` | 404 | The operation the client targeted is no longer active — usually a stale client after a surface change. | Regenerate the client. |
+
+Because `surface.absent` (record not found) and `surface.abi_mismatch`
+(unknown or stale operation) both return **HTTP 404**, the status alone cannot
+distinguish "no such record" from "stale client." Always branch on `code` in
+the body. Other `surface.*` codes (such as `surface.limit`, `surface.write`,
+`surface.action`, `surface.computed`, `surface.store`, and `surface.invalid_data`)
+are server-side faults; surface them as a generic failure and inspect the
+running server's tooling output. The full list is in
+[error-codes.md](error-codes.md).
+
+A surface change rotates affected operation tags, so an old generated client
+sends tags the server no longer serves and gets `surface.abi_mismatch`. This
+includes [enum](language/enums.md) changes: adding or renaming a member of an
+enum that reaches the surface rotates those tags. Regenerate the client after a
+surface change to clear the mismatch.
+
 ## Generated Clients And LSP
 
 Generated clients consume the serialized descriptor and route profiles. Read,

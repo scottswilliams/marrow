@@ -191,3 +191,16 @@ within its own module. Naming a non-`pub` enum in a `pub fn` parameter or return
 type warns (`check.exposed_private_enum`): the enum's values flow across the
 module boundary through that public signature even though callers cannot name the
 type. Mark the enum `pub` to make it nameable, or keep the function private.
+
+## Enums And Generated Clients
+
+An enum that reaches a surface — as a projected field, a generated write input,
+or an action or computed-read parameter or return — is part of that surface's
+shape. Changing the enum changes the shape, so adding or renaming a member
+rotates the operation tags of every affected surface operation. A previously
+generated TypeScript client still sends the old tags, so its calls return
+`surface.abi_mismatch` (HTTP 404) until the client is regenerated. Regenerating
+the client after an enum change is the remedy: `marrow run`, `marrow serve`
+startup, and `marrow evolve apply` rewrite the declared `client` output when the
+surface shape changes, or run `marrow client typescript` to refresh it directly.
+See [Surface ABI](../surface-abi.md).

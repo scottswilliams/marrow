@@ -282,6 +282,66 @@ ok    tests::books_test::addThenFind
 A failed `std::assert::*` is reported as a located test failure. The command
 exits non-zero if any test fails.
 
+## 6. Add A Read And Call It From TypeScript
+
+Scaffold with `marrow init --client shelf` instead of bare `marrow init` to also
+get a `surface` over the store and a declared TypeScript client at
+`generated/marrow.ts`. The surface exposes the store's reads as typed operations;
+a `run` writes the client. This section adds a computed read — a public read-only
+function — and calls it through the generated client.
+
+Add a function that counts a shelf, then expose it on the surface with a `read`
+alias:
+
+```mw
+pub fn countShelf(shelf: string): int
+    var n: int = 0
+    for id, book in ^books.byShelf(shelf)
+        n = n + 1
+    return n
+
+surface Books from ^books
+    fields title, author, shelf
+    collection ^books.byShelf as byShelf
+    read countShelf as countShelf
+```
+
+A computed read is an ordinary public read-only function; it may not write saved
+data, open a transaction, or call a host-effecting operation. See
+[Resources And Storage](language/resources-and-storage.md) for the full surface
+declaration.
+
+Run the project to refresh the generated client, then serve the surface:
+
+```sh
+marrow run .
+marrow serve .
+```
+
+`marrow run` rewrites `generated/marrow.ts` when the surface shape changes, so
+the client always matches the current surface. `marrow serve` runs a local
+read-only HTTP endpoint on `127.0.0.1:8080` by default. Import the client and
+call the read:
+
+```ts
+import { createClient } from "./generated/marrow";
+
+const client = createClient({ baseUrl: "http://127.0.0.1:8080" });
+
+const response = await client.shelf__books.Books.countShelf({
+  arguments: [{ name: "shelf", value: { kind: "string", value: "fiction" } }],
+});
+
+console.log(response.result.result.value); // { kind: "int", value: "2" }
+```
+
+On success the method returns the validated response envelope. A computed read
+puts its value at `response.result.result.value`, a typed leaf such as
+`{ kind: "int", value: "2" }`; Marrow `int` values are strings on the wire to
+stay exact. A non-2xx response throws the parsed `{ code, message }` error
+instead of returning. See [Surface ABI](surface-abi.md) for the generated-client
+walkthrough, the response envelope, and how to handle errors by `code`.
+
 ## Exit Codes
 
 The CLI uses three exit codes: `0` success, `1` a check/runtime/storage/project
@@ -293,4 +353,6 @@ full contract and the machine-readable error envelope.
 - [CLI Reference](cli.md) — every command, flag, and output format.
 - [Project Configuration](project-config.md) — every `marrow.json` field.
 - [Data Modeling](data-modeling.md) — resources, identity, indexes, and history.
+- [Surface ABI](surface-abi.md) — the generated client, response envelope, and
+  handling errors by `code`.
 - [Language Reference](language/) — the full `.mw` language.
