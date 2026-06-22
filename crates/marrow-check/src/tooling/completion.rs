@@ -1,9 +1,88 @@
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-use marrow_schema::{EnumSchema, ResourceSchema};
+use marrow_schema::{EnumSchema, ResourceSchema, StoreSchema};
 use marrow_syntax::{Declaration, FunctionDecl, SourceFile};
 
 use crate::{CheckedFunction, CheckedModule, CheckedProgram, MarrowType};
+
+const BUILTIN_TYPE_COMPLETIONS: &[SourceTypeBuiltin] = &[
+    SourceTypeBuiltin::Int,
+    SourceTypeBuiltin::Decimal,
+    SourceTypeBuiltin::Bool,
+    SourceTypeBuiltin::String,
+    SourceTypeBuiltin::Bytes,
+    SourceTypeBuiltin::Date,
+    SourceTypeBuiltin::Instant,
+    SourceTypeBuiltin::Duration,
+    SourceTypeBuiltin::ErrorCode,
+    SourceTypeBuiltin::Sequence,
+    SourceTypeBuiltin::Unknown,
+    SourceTypeBuiltin::Error,
+];
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceTypeCompletionFact {
+    pub candidates: Vec<SourceTypeCompletionCandidate>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SourceTypeCompletionCandidate {
+    Builtin {
+        spelling: SourceTypeBuiltin,
+    },
+    Resource {
+        path: Vec<String>,
+        module: String,
+        name: String,
+        docs: Vec<String>,
+    },
+    StoreIdentity {
+        root: String,
+        docs: Vec<String>,
+    },
+    Enum {
+        path: Vec<String>,
+        module: String,
+        name: String,
+        docs: Vec<String>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SourceTypeBuiltin {
+    Int,
+    Decimal,
+    Bool,
+    String,
+    Bytes,
+    Date,
+    Instant,
+    Duration,
+    ErrorCode,
+    Sequence,
+    Unknown,
+    Error,
+}
+
+impl SourceTypeBuiltin {
+    pub fn spelling(self) -> &'static str {
+        match self {
+            SourceTypeBuiltin::Int => "int",
+            SourceTypeBuiltin::Decimal => "decimal",
+            SourceTypeBuiltin::Bool => "bool",
+            SourceTypeBuiltin::String => "string",
+            SourceTypeBuiltin::Bytes => "bytes",
+            SourceTypeBuiltin::Date => "date",
+            SourceTypeBuiltin::Instant => "instant",
+            SourceTypeBuiltin::Duration => "duration",
+            SourceTypeBuiltin::ErrorCode => "ErrorCode",
+            SourceTypeBuiltin::Sequence => "sequence",
+            SourceTypeBuiltin::Unknown => "unknown",
+            SourceTypeBuiltin::Error => "Error",
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SourceNamespaceCompletionFact {
@@ -66,6 +145,50 @@ pub enum SourceNamespaceEnumMemberStatus {
     Group,
 }
 
+pub fn source_type_completion_fact(
+    program: &CheckedProgram,
+    file: &Path,
+    source_file: &SourceFile,
+) -> SourceTypeCompletionFact {
+    let mut candidates = BUILTIN_TYPE_COMPLETIONS
+        .iter()
+        .map(|spelling| SourceTypeCompletionCandidate::Builtin {
+            spelling: *spelling,
+        })
+        .collect::<Vec<_>>();
+
+    let current = current_module(program, file);
+    if let Some(module) = current {
+        candidates.extend(module.resources.iter().map(|resource| {
+            type_resource_completion(vec![resource.name.clone()], module, resource)
+        }));
+    }
+    candidates.extend(imported_resource_completions(
+        program,
+        source_file,
+        current
+            .map(|module| module.name.as_str())
+            .unwrap_or_default(),
+    ));
+    candidates.extend(keyed_store_identity_completions(program));
+    if let Some(module) = current {
+        candidates.extend(module.enums.iter().map(|enum_schema| {
+            type_enum_completion(vec![enum_schema.name.clone()], module, enum_schema)
+        }));
+        candidates.extend(unique_visible_foreign_enum_completions(
+            program, file, module,
+        ));
+        candidates.extend(imported_enum_completions(
+            program,
+            file,
+            source_file,
+            module.name.as_str(),
+        ));
+    }
+
+    SourceTypeCompletionFact { candidates }
+}
+
 pub fn source_namespace_completion_fact(
     program: &CheckedProgram,
     file: &Path,
@@ -84,6 +207,190 @@ pub fn source_namespace_completion_file_fact(
 ) -> Option<SourceNamespaceCompletionFact> {
     let expanded = expand_file_namespace_qualifier(source_file, qualifier)?;
     namespace_completion_fact_for_expanded_qualifier(program, file, source_file, &expanded)
+}
+
+fn stores(program: &CheckedProgram) -> impl Iterator<Item = &StoreSchema> {
+    program
+        .modules
+        .iter()
+        .flat_map(|module| module.stores.iter())
+}
+
+fn imported_resource_completions(
+    program: &CheckedProgram,
+    source_file: &SourceFile,
+    current_module: &str,
+) -> Vec<SourceTypeCompletionCandidate> {
+    imported_type_modules(program, source_file, current_module)
+        .into_iter()
+        .flat_map(|(alias, module)| {
+            module.resources.iter().map(move |resource| {
+                type_resource_completion(
+                    vec![alias.clone(), resource.name.clone()],
+                    module,
+                    resource,
+                )
+            })
+        })
+        .collect()
+}
+
+fn imported_enum_completions(
+    program: &CheckedProgram,
+    file: &Path,
+    source_file: &SourceFile,
+    current_module: &str,
+) -> Vec<SourceTypeCompletionCandidate> {
+    imported_type_modules(program, source_file, current_module)
+        .into_iter()
+        .flat_map(|(alias, module)| {
+            module
+                .enums
+                .iter()
+                .filter(move |enum_schema| {
+                    enum_visible_from_file(module, enum_schema.name.as_str(), file)
+                })
+                .map(move |enum_schema| {
+                    type_enum_completion(
+                        vec![alias.clone(), enum_schema.name.clone()],
+                        module,
+                        enum_schema,
+                    )
+                })
+        })
+        .collect()
+}
+
+fn imported_type_modules<'a>(
+    program: &'a CheckedProgram,
+    source_file: &SourceFile,
+    current_module: &str,
+) -> Vec<(String, &'a CheckedModule)> {
+    let alias_counts = import_alias_counts(source_file);
+    source_file
+        .uses
+        .iter()
+        .filter_map(|use_decl| {
+            let alias = crate::short_name(&use_decl.name);
+            (alias_counts.get(alias).copied() == Some(1)
+                && !crate::source_declares_top_level_name(source_file, alias))
+            .then_some((alias.to_string(), use_decl))
+        })
+        .filter_map(|(alias, use_decl)| {
+            let module = module_for_segments(program, &crate::split_type_path(&use_decl.name))?;
+            (module.name != current_module).then_some((alias, module))
+        })
+        .collect()
+}
+
+fn import_alias_counts(source_file: &SourceFile) -> HashMap<&str, usize> {
+    let mut counts = HashMap::new();
+    for use_decl in &source_file.uses {
+        *counts.entry(crate::short_name(&use_decl.name)).or_insert(0) += 1;
+    }
+    counts
+}
+
+fn type_resource_completion(
+    path: Vec<String>,
+    module: &CheckedModule,
+    resource: &ResourceSchema,
+) -> SourceTypeCompletionCandidate {
+    SourceTypeCompletionCandidate::Resource {
+        path,
+        module: module.name.clone(),
+        name: resource.name.clone(),
+        docs: resource.docs.clone(),
+    }
+}
+
+fn keyed_store_identity_completions(
+    program: &CheckedProgram,
+) -> impl Iterator<Item = SourceTypeCompletionCandidate> + '_ {
+    stores(program)
+        .filter(|store| !store.identity_keys.is_empty())
+        .map(|store| SourceTypeCompletionCandidate::StoreIdentity {
+            root: store.root.clone(),
+            docs: store.docs.clone(),
+        })
+}
+
+fn type_enum_completion(
+    path: Vec<String>,
+    module: &CheckedModule,
+    enum_schema: &EnumSchema,
+) -> SourceTypeCompletionCandidate {
+    SourceTypeCompletionCandidate::Enum {
+        path,
+        module: module.name.clone(),
+        name: enum_schema.name.clone(),
+        docs: enum_schema.docs.clone(),
+    }
+}
+
+fn unique_visible_foreign_enum_completions(
+    program: &CheckedProgram,
+    file: &Path,
+    current: &CheckedModule,
+) -> Vec<SourceTypeCompletionCandidate> {
+    let same_module_names = current
+        .enums
+        .iter()
+        .map(|enum_schema| enum_schema.name.as_str())
+        .collect::<HashSet<_>>();
+    let mut emitted = HashSet::new();
+    let mut completions = Vec::new();
+    for module in &program.modules {
+        if module.source_file == file || module.name.is_empty() {
+            continue;
+        }
+        for enum_schema in &module.enums {
+            let name = enum_schema.name.as_str();
+            if same_module_names.contains(name) || !emitted.insert(name) {
+                continue;
+            }
+            if let Some((owner, visible_enum)) =
+                unique_visible_foreign_enum(program, file, current, name)
+            {
+                completions.push(type_enum_completion(
+                    vec![visible_enum.name.clone()],
+                    owner,
+                    visible_enum,
+                ));
+            }
+        }
+    }
+    completions
+}
+
+fn unique_visible_foreign_enum<'a>(
+    program: &'a CheckedProgram,
+    file: &Path,
+    current: &CheckedModule,
+    name: &str,
+) -> Option<(&'a CheckedModule, &'a EnumSchema)> {
+    let mut matches = program.modules.iter().filter_map(|module| {
+        if module.source_file == file || module.name.is_empty() {
+            return None;
+        }
+        if current
+            .enums
+            .iter()
+            .any(|enum_schema| enum_schema.name == name)
+        {
+            return None;
+        }
+        if !enum_visible_from_file(module, name, file) {
+            return None;
+        }
+        module
+            .enums
+            .iter()
+            .find(|enum_schema| enum_schema.name == name)
+            .map(|enum_schema| (module, enum_schema))
+    });
+    let candidate = matches.next()?;
+    matches.next().is_none().then_some(candidate)
 }
 
 fn namespace_completion_fact_for_expanded_qualifier(
