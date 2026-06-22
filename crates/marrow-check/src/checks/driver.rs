@@ -330,14 +330,14 @@ pub(crate) fn check_file_types(
                     for key in &param.keys {
                         check_type_annotation(
                             &key.ty,
-                            function.span,
+                            key.ty.span,
                             &annotation_context,
                             diagnostics,
                         );
                     }
                     check_type_annotation(
                         &param.ty,
-                        function.span,
+                        param.ty.span,
                         &annotation_context,
                         diagnostics,
                     );
@@ -345,7 +345,7 @@ pub(crate) fn check_file_types(
                 if let Some(return_type) = &function.return_type {
                     check_type_annotation(
                         return_type,
-                        function.span,
+                        return_type.span,
                         &annotation_context,
                         diagnostics,
                     );
@@ -389,7 +389,7 @@ pub(crate) fn check_file_types(
             }
             marrow_syntax::Declaration::Const(constant) => {
                 if let Some(ty) = &constant.ty {
-                    check_type_annotation(ty, constant.span, &annotation_context, diagnostics);
+                    check_type_annotation(ty, ty.span, &annotation_context, diagnostics);
                 }
             }
             marrow_syntax::Declaration::Resource(resource) => {

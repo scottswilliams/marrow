@@ -167,7 +167,7 @@ impl Normalizer<'_, '_> {
             }
             KeyedFieldType::PrivateEnum(name) => {
                 self.record_owner_resource_invalid(scope);
-                self.push_private_enum(scope.file, field.span, name);
+                self.push_private_enum(scope.file, field.ty.span, name);
             }
             KeyedFieldType::Unknown(ty) => {
                 self.record_owner_resource_invalid(scope);
@@ -350,7 +350,7 @@ impl Normalizer<'_, '_> {
             CheckDiagnostic::error(
                 CHECK_UNKNOWN_TYPE,
                 file,
-                field.span,
+                field.ty.span,
                 format!("unknown type `{}`", field.ty.text.trim()),
             )
             .with_payload(DiagnosticPayload::UnknownType(ty)),

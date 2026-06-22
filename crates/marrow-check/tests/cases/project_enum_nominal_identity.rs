@@ -5,7 +5,9 @@ use marrow_check::{
     EnumDiagnostic, MarrowType, ScalarType, check_project,
 };
 
-use support::{assert_clean, check_module, config, temp_project, with_code, write};
+use support::{
+    analyze_overlay, assert_clean, check_module, config, temp_project, with_code, write,
+};
 use support_enum::assert_enum_payload;
 
 fn enum_type(module: &str, name: &str) -> MarrowType {
@@ -719,6 +721,138 @@ fn a_qualified_enum_var_annotation_accepts_the_same_qualified_member() {
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
     assert_clean(&report);
+}
+
+/// The lone `check.unknown_type` diagnostic an `analyze_project` run reports for
+/// `source`, asserting it carries the `Id(^config)` identity payload. Routes
+/// through the editor-facing analysis API — the same path `marrow check` and the
+/// LSP take — so a keyless-singleton identity in a signature, field, or key
+/// rebuilds facts without panicking the prefix-preserving fact pass.
+fn singleton_identity_unknown_type(name: &str, source: &str) -> DiagnosticPayload {
+    let (snapshot, _) = analyze_overlay(name, &[("src/m.mw", source)]);
+    let found = with_code(&snapshot.report, "check.unknown_type");
+    assert_eq!(found.len(), 1, "{:#?}", snapshot.report.diagnostics);
+    found[0].payload.clone()
+}
+
+#[test]
+fn a_keyless_singleton_identity_parameter_is_a_check_error() {
+    // `store ^config: Config` is a singleton: it has no generated identity type,
+    // so `Id(^config)` is uninhabitable. The parameter site must reject it with a
+    // located diagnostic rather than resolving a phantom identity no value fills —
+    // and must not collapse the parameter's checked type so far that the rebuilt
+    // signature facts fall below their preserved prefix and abort the analysis.
+    let payload = singleton_identity_unknown_type(
+        "singleton-identity-param",
+        "module m\n\
+         resource Config\n    required name: string\n\n\
+         store ^config: Config\n\n\
+         fn apply(c: Id(^config))\n    return\n",
+    );
+    assert_eq!(
+        payload,
+        DiagnosticPayload::UnknownType(marrow_schema::Type::Identity("config".into())),
+    );
+}
+
+#[test]
+fn a_keyless_singleton_identity_return_type_is_a_check_error() {
+    let payload = singleton_identity_unknown_type(
+        "singleton-identity-return",
+        "module m\n\
+         resource Config\n    required name: string\n\n\
+         store ^config: Config\n\n\
+         fn make(): Id(^config)\n    return\n",
+    );
+    assert_eq!(
+        payload,
+        DiagnosticPayload::UnknownType(marrow_schema::Type::Identity("config".into())),
+    );
+}
+
+#[test]
+fn a_keyless_singleton_identity_saved_field_is_a_check_error() {
+    let payload = singleton_identity_unknown_type(
+        "singleton-identity-field",
+        "module m\n\
+         resource Config\n    required name: string\n\n\
+         resource Holder\n    ref: Id(^config)\n\n\
+         store ^config: Config\n\
+         store ^holders(id: int): Holder\n",
+    );
+    assert_eq!(
+        payload,
+        DiagnosticPayload::UnknownType(marrow_schema::Type::Identity("config".into())),
+    );
+}
+
+#[test]
+fn a_keyless_singleton_identity_store_key_is_a_check_error() {
+    // A keyed store's key annotation is a declaration site too: `^entries(k:
+    // Id(^config))` names the uninhabitable identity as the key type. A key must be
+    // an orderable scalar, so an identity type — keyless singleton or not — is
+    // rejected upstream as a non-scalar key, with a located diagnostic and no
+    // panic in the prefix-preserving fact rebuild.
+    let (snapshot, _) = analyze_overlay(
+        "singleton-identity-key",
+        &[(
+            "src/m.mw",
+            "module m\n\
+             resource Config\n    required name: string\n\n\
+             resource Entry\n    required note: string\n\n\
+             store ^config: Config\n\
+             store ^entries(k: Id(^config)): Entry\n",
+        )],
+    );
+    let found = with_code(&snapshot.report, "schema.nonscalar_key");
+    assert_eq!(found.len(), 1, "{:#?}", snapshot.report.diagnostics);
+    assert_eq!(
+        found[0].payload,
+        DiagnosticPayload::Schema(marrow_schema::SchemaErrorKind::NonScalarKey {
+            target: marrow_schema::SchemaKeyTarget::IdentityKey { name: "k".into() },
+            ty: marrow_schema::Type::Identity("config".into()),
+        }),
+        "{:#?}",
+        snapshot.report.diagnostics
+    );
+}
+
+#[test]
+fn a_keyed_store_identity_parameter_checks_clean() {
+    // The clean counterpart: a keyed store *does* define `Id(^books)`, so the same
+    // parameter annotation is well formed and must not be flagged.
+    let (snapshot, _) = analyze_overlay(
+        "keyed-identity-param",
+        &[(
+            "src/m.mw",
+            "module m\n\
+             resource Book\n    required title: string\n\n\
+             store ^books(id: int): Book\n\n\
+             fn apply(b: Id(^books))\n    return\n",
+        )],
+    );
+    assert!(
+        !snapshot.report.has_errors(),
+        "{:#?}",
+        snapshot.report.diagnostics
+    );
+}
+
+#[test]
+fn two_unknown_signature_types_carry_distinct_token_spans() {
+    // Both `Widget` and `Gadget` are unknown. Each diagnostic must point at its own
+    // type token, not collapse to the `fn` keyword at column 1 — otherwise two
+    // errors on one signature line are indistinguishable.
+    let found = check_module(
+        "signature-unknown-spans",
+        "module m\nfn f(x: Widget): Gadget\n    return\n",
+        "check.unknown_type",
+    );
+    assert_eq!(found.len(), 2, "{found:#?}");
+    let mut columns: Vec<u32> = found.iter().map(|d| d.span.column).collect();
+    columns.sort_unstable();
+    assert_eq!(columns, vec![9, 18], "{found:#?}");
+    assert!(found.iter().all(|d| d.span.line == 2), "{found:#?}");
 }
 
 #[test]

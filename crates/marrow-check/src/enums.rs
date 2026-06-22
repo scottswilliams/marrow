@@ -55,7 +55,14 @@ pub(crate) fn annotation_unknown_identity_name(
     program: &CheckedProgram,
 ) -> Option<String> {
     match ty {
-        Type::Identity(identity) if resolve_store_by_root(program, identity).is_none() => {
+        // An identity annotation is well formed only against a keyed store. A
+        // missing root has no store, and a keyless singleton defines no identity
+        // type at all — its root is addressed directly — so `Id(^singleton)` is
+        // uninhabitable and rejected here, the same as an undeclared root.
+        Type::Identity(identity)
+            if resolve_store_by_root(program, identity)
+                .is_none_or(|store| store.store.identity_keys.is_empty()) =>
+        {
             Some(format!("Id(^{identity})"))
         }
         Type::Identity(_) => None,
@@ -72,12 +79,16 @@ pub(crate) fn resolve_diagnosed_annotation_type(
 ) -> MarrowType {
     let schema_type = Type::resolve(ty);
     let resolved_type = resolve_type(ty, program, aliases, file);
-    if annotation_unknown_identity_name(&schema_type, program).is_some()
-        || !annotation_type_known(&schema_type, &resolved_type)
-    {
-        MarrowType::Invalid
-    } else {
+    // An uninhabitable `Id(^keyless-singleton)` is rejected with its own
+    // diagnostic at the declaration site; here it keeps the store-rooted identity
+    // type the store resolves to. Collapsing it to `Invalid` would drop the whole
+    // signature's facts when they are later rebuilt without source annotations,
+    // shrinking the fact set below its preserved prefix. The resolved type is
+    // identical in both build paths, so the facts stay consistent.
+    if annotation_type_known(&schema_type, &resolved_type) {
         resolved_type
+    } else {
+        MarrowType::Invalid
     }
 }
 
