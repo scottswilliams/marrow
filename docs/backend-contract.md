@@ -49,8 +49,11 @@ bytes moved, entries returned, commits, and commit fsync counts rather than by
 timing a backend.
 
 There is no public production raw saved-path API in v0.1 store. There is no
-public production raw archive API. Backup, tooling, and runtime code consume
-the typed tree-cell surface or opaque backup cells owned by the store.
+public production raw physical-cell replay API. Backup, tooling, and runtime
+code consume the typed tree-cell surface or opaque backup cells owned by the
+store. Public backup archive header and chunk helpers are bounded portable-format
+framing helpers for the manifest, catalog section, and typed cell stream; they
+do not expose physical engine keys or write raw cells.
 
 ## Tree-Cell Keys
 
@@ -140,7 +143,9 @@ Callers can read its typed data-cell identity, fold its framed checksum, and
 write its length-prefixed typed frame, but they cannot read or provide physical
 tree-cell key bytes. `TreeBackupCellBuf` reads the same typed frame back. Restore
 replays those cells through ordinary typed tree writes after manifest validation;
-there is no public physical-cell replay method.
+there is no public physical-cell replay method. The public archive header and
+chunk helpers frame bounded portable sections; they do not decode, expose, or
+replay physical tree-cell keys.
 
 ## Metadata
 

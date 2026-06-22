@@ -10,6 +10,8 @@ mod corruption_read_paths;
 mod crash_recovery_harness;
 #[path = "cases/identity_payload_codec.rs"]
 mod identity_payload_codec;
+#[path = "cases/public_surface.rs"]
+mod public_surface;
 #[path = "cases/redb_store.rs"]
 mod redb_store;
 #[path = "cases/store_open_robustness.rs"]
