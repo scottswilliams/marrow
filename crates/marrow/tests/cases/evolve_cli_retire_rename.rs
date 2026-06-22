@@ -285,11 +285,12 @@ fn evolve_apply_counts_and_deletes_a_retired_member_in_each_owning_root()
 }
 
 #[test]
-fn evolve_apply_accepts_the_human_field_path_on_approve_retire()
+fn evolve_apply_accepts_the_module_qualified_path_on_approve_retire()
 -> Result<(), Box<dyn std::error::Error>> {
-    // The everyday approval form names the human field path (`books::Book::subtitle`), not the
-    // internal catalog id. Apply resolves the path to the id and discharges the retire exactly as
-    // the id form would, so a developer never has to copy an opaque `cat_<hash>`.
+    // The module-qualified catalog path (`books::Book::subtitle`) resolves alongside the everyday
+    // resource-qualified field path the reference teaches, so a script that already spells the full
+    // path keeps working. Apply resolves the path to the id and discharges the retire exactly as the
+    // id form would, so a developer never has to copy an opaque `cat_<hash>`.
     let root = native_books_project("evolve-apply-retire-human-path", RETIRE_BASELINE_SOURCE);
     let accepted = commit_catalog(&root);
     let accepted_place = root_place(&accepted, "books")?;

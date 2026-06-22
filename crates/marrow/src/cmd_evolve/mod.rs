@@ -178,10 +178,10 @@ fn apply_cmd(raw_args: &[String]) -> ExitCode {
 }
 
 /// Resolve the `--approve-retire` targets against the checked program into one approval, accepting
-/// either the human field path (`demo::books::Book::author`) or the internal catalog id. The human
-/// path is the everyday form the approval message and scaffold teach; the id form still resolves so
-/// scripts that already pass it keep working. A target that matches neither a known field path nor a
-/// known catalog id is a usage error naming the unresolved target. One approval covers a multi-id
+/// the resource-qualified field path (`Book.pages`), the module-qualified catalog path, or the
+/// internal catalog id. The field path is the everyday form the approval message and scaffold teach;
+/// the other two still resolve so scripts that already pass them keep working. A target that matches
+/// none of these is a usage error naming the unresolved target. One approval covers a multi-id
 /// destructive evolution, and admission still matches each id and count against the witness exactly.
 fn resolve_approval(
     retires: &[args::RetireSpec],
@@ -210,9 +210,11 @@ fn resolve_approval(
     Ok(Some(Approval { retires: resolved }))
 }
 
-/// The catalog id a `--approve-retire` target names: the entry whose human path or stable id equals
-/// the target. The path is matched first so the human form wins; an exact catalog-id match is the
-/// fallback for the id form.
+/// The catalog id a `--approve-retire` target names. The everyday form is the resource-qualified
+/// field path the reference and scaffold teach (`Book.pages`); the module-qualified catalog path
+/// (`books::Book::pages`) and the internal stable id both still resolve so existing scripts keep
+/// working. The resource-qualified form is matched against each entry's spelling below its owning
+/// module, which is the same spelling the scaffold prints, so the two never diverge.
 fn resolve_retire_target(
     target: &str,
     program: &marrow_check::CheckedProgram,
@@ -220,11 +222,20 @@ fn resolve_retire_target(
     let entries = &program.catalog.accepted_entries;
     let id = entries
         .iter()
-        .find(|entry| entry.path == target)
+        .find(|entry| resource_qualified_path(program, &entry.path).as_deref() == Some(target))
+        .or_else(|| entries.iter().find(|entry| entry.path == target))
         .or_else(|| entries.iter().find(|entry| entry.stable_id == target))?
         .stable_id
         .clone();
     CatalogId::new(id).ok()
+}
+
+/// A catalog entry's resource-qualified surface spelling (`Book.pages`): the dot-joined segments
+/// below its owning module, matching the form the reference documents and the scaffold prints. An
+/// entry whose path no module owns has no such spelling.
+fn resource_qualified_path(program: &marrow_check::CheckedProgram, path: &str) -> Option<String> {
+    let (_, local) = render::owned_path(program, path)?;
+    Some(local.join("."))
 }
 
 fn prepare_recovery_point(

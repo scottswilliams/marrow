@@ -353,7 +353,7 @@ fn evolve_preview_reports_destructive_approval_requirement()
         "approval message should name the human field path: {stderr}"
     );
     assert!(
-        stderr.contains("--approve-retire books::Book::subtitle:1"),
+        stderr.contains("--approve-retire Book.subtitle:1"),
         "approval guidance should teach the field-path form of --approve-retire: {stderr}"
     );
     assert!(
@@ -397,7 +397,7 @@ fn evolve_preview_reports_destructive_approval_requirement()
         report["message"]
             .as_str()
             .is_some_and(|message| message.contains("retiring books.Book.subtitle")
-                && message.contains("--approve-retire books::Book::subtitle:1")),
+                && message.contains("--approve-retire Book.subtitle:1")),
         "{report:#?}"
     );
     assert_eq!(report["data"]["populated"], serde_json::json!(1));
@@ -546,7 +546,7 @@ fn evolve_preview_scaffold_spells_a_retired_store_root_with_a_single_caret()
     assert!(
         scaffold.contains("Step 1: paste the evolve block")
             && scaffold.contains("marrow evolve preview")
-            && scaffold.contains("--approve-retire books::^shelves:<count>"),
+            && scaffold.contains("--approve-retire ^shelves:<count>"),
         "store-root retire scaffold should give a two-step instruction, not a runnable approve line: {scaffold}"
     );
     assert!(
@@ -626,7 +626,7 @@ fn evolve_preview_scaffold_emits_parseable_formatted_evolve_blocks()
     // then apply), never a runnable approve line with a guessed count.
     assert!(
         scaffold.contains("Step 1: paste the evolve block")
-            && scaffold.contains("--approve-retire books::Book::subtitle:<count>"),
+            && scaffold.contains("--approve-retire Book.subtitle:<count>"),
         "retire scaffold should give a two-step instruction with the field-path approval form: {scaffold}"
     );
     assert!(

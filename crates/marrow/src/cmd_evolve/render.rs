@@ -25,10 +25,6 @@ pub(super) struct SourceLabels {
 struct SourceTarget {
     display: String,
     scaffold: String,
-    /// The catalog path (`demo::books::Book::author`), the human form `--approve-retire` accepts.
-    /// Shown in destructive-approval guidance so the everyday flow never has to type the internal
-    /// catalog id.
-    catalog_path: String,
     /// The type-correct constant an `evolve default` scaffold backfills this target with,
     /// for a scalar resource member; `None` for a target with no defaultable leaf type
     /// (a store root, index, enum, or a non-scalar member).
@@ -80,16 +76,6 @@ impl SourceLabels {
         )
     }
 
-    /// The human field path (`demo::books::Book::author`) for a catalog id — the form
-    /// `--approve-retire` accepts — falling back to the catalog id when the program declares no
-    /// such entry.
-    fn approve_path(&self, catalog_id: &str) -> String {
-        self.by_catalog_id.get(catalog_id).map_or_else(
-            || catalog_id.to_string(),
-            |target| target.catalog_path.clone(),
-        )
-    }
-
     /// The dotted source spelling (`Book.author`) for a catalog id, for naming what a retire
     /// removes in prose.
     fn display(&self, catalog_id: &str) -> String {
@@ -98,6 +84,9 @@ impl SourceLabels {
             .map_or_else(|| catalog_id.to_string(), |target| target.display.clone())
     }
 
+    /// The resource-qualified field path (`Book.pages`) for a catalog id: the form a paste-ready
+    /// scaffold spells and the form `--approve-retire` accepts and the reference documents. Falls
+    /// back to the catalog id when the program declares no such entry.
     fn scaffold_target(&self, catalog_id: &str) -> String {
         self.by_catalog_id
             .get(catalog_id)
@@ -120,7 +109,6 @@ impl SourceTarget {
         Self {
             display: source_label(path),
             scaffold: scaffold_target(program, path),
-            catalog_path: path.to_string(),
             default_literal: member_default_literal(program, path),
         }
     }
@@ -149,7 +137,7 @@ fn scaffold_target(program: &marrow_check::CheckedProgram, path: &str) -> String
 /// an index. The module whose name is the longest `::`-segment prefix wins, so a nested
 /// module (`shop::books`) is not mistaken for a shorter sibling (`shop`) whose name also
 /// prefixes the path text. `None` when no module owns the path.
-fn owned_path<'a>(
+pub(super) fn owned_path<'a>(
     program: &'a marrow_check::CheckedProgram,
     path: &'a str,
 ) -> Option<(&'a CheckedModule, Vec<&'a str>)> {
@@ -561,9 +549,8 @@ fn repair_scaffold(
 /// printed count would fail `approval_mismatch` when run verbatim.
 fn retire_scaffold(catalog_id: &str, labels: &SourceLabels) -> String {
     let target = labels.scaffold_target(catalog_id);
-    let path = labels.approve_path(catalog_id);
     format!(
-        "evolve\n    retire {target}\n    ; Step 1: paste the evolve block above into your source.\n    ; Step 2: run marrow evolve preview <projectdir> to get the exact populated count for {path}.\n    ; Step 3: run marrow evolve apply --maintenance --approve-retire {path}:<count> (--backup <backup-file> | --no-backup) <projectdir>\n"
+        "evolve\n    retire {target}\n    ; Step 1: paste the evolve block above into your source.\n    ; Step 2: run marrow evolve preview <projectdir> to get the exact populated count for {target}.\n    ; Step 3: run marrow evolve apply --maintenance --approve-retire {target}:<count> (--backup <backup-file> | --no-backup) <projectdir>\n"
     )
 }
 
@@ -626,7 +613,7 @@ fn generic_blocking_report() -> BlockingReport {
 /// The `evolve.approval_required` prose, shared by the preview's blocking report and the
 /// apply error so both name the same retire-approval invocation for a destructive evolution.
 fn approval_required_message(catalog_id: &str, populated: usize, labels: &SourceLabels) -> String {
-    let path = labels.approve_path(catalog_id);
+    let path = labels.scaffold_target(catalog_id);
     let display = labels.display(catalog_id);
     format!(
         "retiring {display} removes {populated} populated record(s); rerun with --maintenance --approve-retire {path}:{populated} --backup <backup-file> (or --no-backup to opt out)"
@@ -726,7 +713,7 @@ pub(super) fn approval_mismatch(
         .iter()
         .filter_map(|obligation| match &obligation.verdict {
             Verdict::DestructiveDecisionRequired { populated } => {
-                let path = labels.approve_path(obligation.catalog_id.as_str());
+                let path = labels.scaffold_target(obligation.catalog_id.as_str());
                 Some(format!("--approve-retire {path}:{populated}"))
             }
             _ => None,

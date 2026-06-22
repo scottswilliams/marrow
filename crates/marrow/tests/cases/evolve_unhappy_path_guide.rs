@@ -150,6 +150,64 @@ fn worked_leaf_retype_migrates_then_retires_old_leaf_bytes() {
     );
 }
 
+/// The worked example in the data-evolution reference spells the destructive approval with the
+/// resource-qualified field path (`--approve-retire Book.pages:<count>`), so the binary must accept
+/// that surface form and not only the module-qualified path or the internal catalog id. A field
+/// path that names no member is still a usage error.
+#[test]
+fn approve_retire_accepts_the_documented_resource_qualified_field_path() {
+    let root = native_books_project(
+        "evolve-approve-retire-field-path",
+        LEAF_RETYPE_BASELINE_SOURCE,
+    );
+    let dir = root.to_str().unwrap();
+
+    let seed = marrow(&["run", "--entry", "books::seed", dir]);
+    assert_eq!(seed.status.code(), Some(0), "{seed:?}");
+
+    write(&root, "src/books.mw", LEAF_RETYPE_TRANSFORM_SOURCE);
+    let transform = marrow(&["evolve", "apply", "--format", "json", dir]);
+    assert_eq!(transform.status.code(), Some(0), "{transform:?}");
+
+    write(&root, "src/books.mw", LEAF_RETYPE_RETIRE_OLD_SOURCE);
+
+    let unknown = marrow(&[
+        "evolve",
+        "apply",
+        "--maintenance",
+        "--approve-retire",
+        "Book.missing:1",
+        "--no-backup",
+        "--format",
+        "json",
+        dir,
+    ]);
+    assert_eq!(unknown.status.code(), Some(2), "{unknown:?}");
+    assert_eq!(
+        support::json(unknown.stdout)["code"],
+        serde_json::json!("evolve.approval_target_unknown"),
+        "an unknown field path is still rejected"
+    );
+
+    let retire = marrow(&[
+        "evolve",
+        "apply",
+        "--maintenance",
+        "--approve-retire",
+        "Book.pages:1",
+        "--no-backup",
+        "--format",
+        "json",
+        dir,
+    ]);
+    assert_eq!(retire.status.code(), Some(0), "{retire:?}");
+    assert_eq!(
+        support::json(retire.stdout)["records_retired"],
+        serde_json::json!(1),
+        "the documented resource-qualified field path approves the retire"
+    );
+}
+
 /// A transform body that faults over a real record (here an integer overflow) blocks the
 /// migration. The `evolve.transform_faulted` JSON diagnostic must name the offending
 /// record identity and the underlying runtime fault code, not an opaque empty payload, so

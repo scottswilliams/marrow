@@ -16,10 +16,10 @@ pub(super) struct ApplyArgs {
     pub(super) format: CheckFormat,
     pub(super) maintenance: bool,
     /// The `--approve-retire` flags as parsed but not yet resolved: each spell names a retire
-    /// target — either the human field path (`demo::books::Book::author`) or the internal catalog
-    /// id — plus its populated count. The target is resolved to a catalog id once the checked
-    /// program is loaded, so the everyday flow can spell the human path while the id form still
-    /// works.
+    /// target — the resource-qualified field path (`Book.pages`), the module-qualified catalog
+    /// path, or the internal catalog id — plus its populated count. The target is resolved to a
+    /// catalog id once the checked program is loaded, so the everyday flow can spell the field
+    /// path while the other forms still work.
     pub(super) retires: Vec<RetireSpec>,
     pub(super) backup: Option<String>,
     pub(super) no_backup: bool,
