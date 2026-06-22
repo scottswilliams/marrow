@@ -44,42 +44,67 @@ pub(crate) struct SequencePositionWrite<'a, 'd> {
 /// position raises at run time, and it is a write-target rule only: a guarded read
 /// of such a position resolves to absent at run time.
 pub(crate) fn check_sequence_position_write(check: SequencePositionWrite<'_, '_>) {
-    let Some(position) = static_non_positive_target_position(
-        check.program,
-        check.target,
-        check.scope,
-        check.const_ints,
-        check.aliases,
-        check.file,
-    ) else {
-        return;
-    };
-    check.diagnostics.push(CheckDiagnostic::error(
-        CHECK_SEQUENCE_POSITION,
-        check.file,
-        check.span,
-        format!(
-            "sequence positions are 1-based, so position `{position}` addresses no node and cannot be written",
-        ),
-    ));
+    for call in keyed_layer_calls_in_chain(check.target) {
+        let Some(position) = static_non_positive_call_position(
+            check.program,
+            call,
+            check.scope,
+            check.const_ints,
+            check.aliases,
+            check.file,
+        ) else {
+            continue;
+        };
+        check.diagnostics.push(CheckDiagnostic::error(
+            CHECK_SEQUENCE_POSITION,
+            check.file,
+            check.span,
+            format!(
+                "sequence positions are 1-based, so position `{position}` addresses no node and cannot be written",
+            ),
+        ));
+    }
 }
 
-/// The statically-known non-positive position a write target addresses, whether the
-/// target is a saved single int-keyed layer or a local single int-keyed collection.
-/// `None` for any other shape, an in-range position, or a position that does not
-/// fold to a constant.
-fn static_non_positive_target_position(
-    program: &CheckedProgram,
+/// The keyed-layer calls in a write target's access chain, outermost first. A
+/// history layer keys an entry whose fields are addressed beyond the call, so the
+/// position-bearing call is nested under field accesses rather than being the
+/// target itself; every such call along the chain is a sequence-position candidate.
+fn keyed_layer_calls_in_chain(
     target: &marrow_syntax::Expression,
+) -> Vec<&marrow_syntax::Expression> {
+    let mut calls = Vec::new();
+    let mut node = target;
+    loop {
+        match node {
+            marrow_syntax::Expression::Call { callee, .. } => {
+                calls.push(node);
+                node = callee;
+            }
+            marrow_syntax::Expression::Field { base, .. }
+            | marrow_syntax::Expression::OptionalField { base, .. } => node = base,
+            _ => break,
+        }
+    }
+    calls
+}
+
+/// The statically-known non-positive position a keyed-layer call addresses, whether
+/// it lands on a saved single int-keyed layer or a local single int-keyed
+/// collection. `None` for any other shape, an in-range position, or a position that
+/// does not fold to a constant.
+fn static_non_positive_call_position(
+    program: &CheckedProgram,
+    call: &marrow_syntax::Expression,
     scope: &[HashMap<String, MarrowType>],
     const_ints: &[HashMap<String, Option<i64>>],
     aliases: &HashMap<String, Vec<String>>,
     file: &Path,
 ) -> Option<i64> {
-    if !target_is_single_int_sequence(program, target, scope, aliases, file) {
+    if !target_is_single_int_sequence(program, call, scope, aliases, file) {
         return None;
     }
-    let [position] = sequence_position_args(target)? else {
+    let [position] = sequence_position_args(call)? else {
         return None;
     };
     fold_const_int(&position.value, const_ints).filter(|position| *position < 1)

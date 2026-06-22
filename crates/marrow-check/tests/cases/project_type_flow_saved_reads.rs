@@ -1904,3 +1904,78 @@ fn correctly_typed_group_and_leaf_reads_are_not_flagged() {
     );
     assert!(found.is_empty(), "{found:#?}");
 }
+
+#[test]
+fn a_static_non_positive_history_layer_write_is_rejected_at_check() {
+    // A history layer keys an entry rather than a scalar leaf, so its
+    // position-bearing call sits under the field access that reaches the entry's
+    // field. The 1-based-sequence guard must still fire: a below-1 position
+    // addresses no entry and can never be written, just as for a scalar-leaf
+    // sequence.
+    for (name, target) in [
+        ("hist-write-zero", "^policies(\"a\").versions(0).vlabel"),
+        ("hist-write-neg", "^policies(\"a\").versions(-3).vlabel"),
+        (
+            "hist-write-arith",
+            "^policies(\"a\").versions(1 - 1).vlabel",
+        ),
+    ] {
+        let src = format!(
+            "module m\n\
+             resource Policy\n    required label: string\n    \
+             versions(version: int)\n        required vlabel: string\n\
+             store ^policies(policyId: string): Policy\n\n\
+             fn f()\n    {target} = \"x\"\n"
+        );
+        let report = check_module_report(name, &src);
+        let found = with_code(&report, "check.sequence_position");
+        assert_eq!(found.len(), 1, "{name}: {:#?}", report.diagnostics);
+    }
+}
+
+#[test]
+fn a_non_positive_position_on_any_single_int_layer_in_a_history_chain_is_rejected() {
+    // Two single-int layers nest: `versions(v)` keys an entry that itself carries a
+    // single-int `comments(c)` layer. A below-1 position on either layer addresses
+    // no node, so each is independently guarded along the write chain.
+    for (name, target) in [
+        (
+            "outer-zero",
+            "^policies(\"a\").versions(0).comments(1).text",
+        ),
+        (
+            "inner-zero",
+            "^policies(\"a\").versions(1).comments(0).text",
+        ),
+    ] {
+        let src = format!(
+            "module m\n\
+             resource Policy\n    required label: string\n    \
+             versions(version: int)\n        required vlabel: string\n        \
+             comments(pos: int)\n            required text: string\n\
+             store ^policies(policyId: string): Policy\n\n\
+             fn f()\n    {target} = \"x\"\n"
+        );
+        let report = check_module_report(name, &src);
+        let found = with_code(&report, "check.sequence_position");
+        assert_eq!(found.len(), 1, "{name}: {:#?}", report.diagnostics);
+    }
+}
+
+#[test]
+fn an_in_range_history_layer_write_stays_clean() {
+    // A 1-based history position is a legitimate write target; the non-positive
+    // guard must not sweep up positions at or above 1 just because the layer keys
+    // an entry rather than a scalar leaf.
+    let src = "module m\n\
+         resource Policy\n    required label: string\n    \
+         versions(version: int)\n        required vlabel: string\n\
+         store ^policies(policyId: string): Policy\n\n\
+         fn f()\n    ^policies(\"a\").versions(1).vlabel = \"x\"\n";
+    let report = check_module_report("hist-write-positive", src);
+    assert!(
+        with_code(&report, "check.sequence_position").is_empty(),
+        "an in-range history write must stay clean: {:#?}",
+        report.diagnostics
+    );
+}
