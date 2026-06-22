@@ -695,6 +695,90 @@ pub(crate) fn reproject_committed_lock(
         .map_err(|error| project_io_exit(dir, error, format))
 }
 
+/// Outcome of regenerating a project's declared TypeScript client.
+pub(crate) enum ClientFreshness {
+    /// No `client` path is configured; nothing to do.
+    NotConfigured,
+    /// `client` is configured but the project declares no surface; a configuration warning.
+    SurfacelessConfigured,
+    /// The on-disk client already carried the current surface-ABI digest; left untouched.
+    AlreadyFresh,
+    /// The client was (re)written because it was absent or carried a stale digest.
+    Rewritten,
+}
+
+/// Regenerate the project's declared TypeScript client write-if-changed: resolve the configured
+/// path, build the surface ABI and route manifest from the checked program through the single
+/// render owner, and write only when the on-disk header digest differs (or the file is absent).
+/// A non-surface `.mw` edit leaves the digest unchanged, so the file is not churned. Skips when no
+/// `client` is configured; reports a surfaceless configuration when one is set without a surface.
+pub(crate) fn write_declared_client_if_changed(
+    dir: &str,
+    config: &marrow_project::ProjectConfig,
+    program: &marrow_check::CheckedProgram,
+    format: CheckFormat,
+) -> Result<ClientFreshness, ExitCode> {
+    let Some(rel) = config.client.as_deref() else {
+        return Ok(ClientFreshness::NotConfigured);
+    };
+    let abi = marrow_json::surface::SurfaceAbiJson::from_program(program);
+    if abi.surfaces.is_empty() {
+        return Ok(ClientFreshness::SurfacelessConfigured);
+    }
+    let routes = marrow_json::surface::SurfaceRouteManifestJson::from_abi(&abi);
+    let rendered = match marrow_json::surface::render_typescript_client(&abi, &routes) {
+        Ok(rendered) => rendered,
+        Err(error) => {
+            report_simple_error(
+                "surface.abi_mismatch",
+                &format!("surface client render failed: {error}"),
+                format,
+            );
+            return Err(ExitCode::FAILURE);
+        }
+    };
+    let digest = marrow_json::surface::surface_abi_digest(&abi, &routes);
+    let path = Path::new(dir).join(rel);
+    if let Ok(existing) = std::fs::read_to_string(&path)
+        && marrow_json::surface::surface_client_header_digest(&existing).as_deref()
+            == Some(digest.as_str())
+    {
+        return Ok(ClientFreshness::AlreadyFresh);
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| {
+            report_io_error(&parent.display().to_string(), &error, format);
+            ExitCode::FAILURE
+        })?;
+    }
+    std::fs::write(&path, rendered).map_err(|error| {
+        report_io_error(&path.display().to_string(), &error, format);
+        ExitCode::FAILURE
+    })?;
+    Ok(ClientFreshness::Rewritten)
+}
+
+/// Regenerate the declared client and report a surfaceless configuration as a warning. The three
+/// write paths (run, serve startup, evolve apply) share this so the warning prose lives in one
+/// place; a render or write failure propagates its exit code.
+pub(crate) fn sync_declared_client(
+    dir: &str,
+    config: &marrow_project::ProjectConfig,
+    program: &marrow_check::CheckedProgram,
+    format: CheckFormat,
+) -> Result<(), ExitCode> {
+    if let ClientFreshness::SurfacelessConfigured =
+        write_declared_client_if_changed(dir, config, program, format)?
+    {
+        report_simple_error(
+            "config.client_without_surface",
+            "`client` is set in marrow.json but the project declares no surface; no client written",
+            format,
+        );
+    }
+    Ok(())
+}
+
 /// Load the config and check the project. On any failure (config, unreadable
 /// source, or check errors) the problem is reported and an exit code returned.
 pub(crate) fn load_checked_project(

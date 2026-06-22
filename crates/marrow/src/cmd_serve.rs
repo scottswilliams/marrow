@@ -160,6 +160,17 @@ pub(crate) fn serve(args: &[String]) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    // Startup regenerates the declared client from the opened program so a fresh `serve` always
+    // hands clients the surface ABI it will answer over.
+    let config = match crate::load_config_with_format(&dir, CheckFormat::Text) {
+        Ok(config) => config,
+        Err(code) => return code,
+    };
+    if let Err(code) =
+        crate::sync_declared_client(&dir, &config, session.program(), CheckFormat::Text)
+    {
+        return code;
+    }
     drop(session);
     let executor = SurfaceServeExecutor::new(snapshot, mode);
     let listener = match TcpListener::bind(addr) {

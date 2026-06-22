@@ -46,6 +46,85 @@ surface Books from ^books\n\
 \x20\x20\x20\x20action retitle\n\
 \x20\x20\x20\x20read describe\n";
 
+/// A native-store config that declares a client output path so run/serve/evolve
+/// regenerate the TypeScript client write-if-changed.
+fn native_config_with_client() -> String {
+    r#"{"sourceRoots":["src"],"store":{"backend":"native","dataDir":".data"},"client":"generated/marrow.ts"}"#
+        .to_string()
+}
+
+#[test]
+fn run_writes_declared_client_then_skips_unchanged() {
+    let root = temp_project_uncommitted("run-writes-client", |root| {
+        write(root, "marrow.json", &native_config_with_client());
+        write(root, "src/app.mw", CLIENT_SURFACE_SOURCE);
+    });
+    let out = root.join("generated/marrow.ts");
+    let seed = marrow(&["run", "--entry", "app::seed", root.to_str().unwrap()]);
+    assert_eq!(seed.status.code(), Some(0), "seed: {seed:?}");
+    let first = std::fs::read_to_string(&out).expect("client written by run");
+    assert!(first.contains("export function createClient"), "{first}");
+
+    // A non-surface edit (private helper fn) must not change the digest header.
+    let mut src = CLIENT_SURFACE_SOURCE.to_string();
+    src.push_str("\nfn helperOnly(): int\n    return 7\n");
+    write(&root, "src/app.mw", &src);
+    let again = marrow(&["run", "--entry", "app::seed", root.to_str().unwrap()]);
+    assert_eq!(again.status.code(), Some(0), "rerun: {again:?}");
+    let second = std::fs::read_to_string(&out).expect("client still present");
+    assert_eq!(first, second, "non-surface edit must not churn the client");
+
+    // A surface change (a new read alias over an existing fn) rewrites the file.
+    let changed = src.replace(
+        "    read describe\n",
+        "    read describe\n    read describe as summary\n",
+    );
+    write(&root, "src/app.mw", &changed);
+    let third_run = marrow(&["run", "--entry", "app::seed", root.to_str().unwrap()]);
+    assert_eq!(third_run.status.code(), Some(0), "third: {third_run:?}");
+    let third = std::fs::read_to_string(&out).expect("client rewritten");
+    assert_ne!(first, third, "a surface change must rewrite the client");
+}
+
+#[test]
+fn run_warns_when_client_set_without_surface() {
+    let root = temp_project_uncommitted("run-client-no-surface", |root| {
+        write(root, "marrow.json", &native_config_with_client());
+        write(root, "src/app.mw", support::counter_source()); // no surface block
+    });
+    let run = marrow(&["run", "--entry", "app::seed", root.to_str().unwrap()]);
+    assert_eq!(run.status.code(), Some(0), "{run:?}");
+    let stderr = String::from_utf8(run.stderr).unwrap();
+    assert!(
+        stderr.contains("client"),
+        "expected a surfaceless-client warning: {stderr}"
+    );
+    assert!(
+        !root.join("generated/marrow.ts").exists(),
+        "no client without a surface"
+    );
+}
+
+#[test]
+fn dry_run_does_not_write_declared_client() {
+    let root = temp_project_uncommitted("run-dry-no-client", |root| {
+        write(root, "marrow.json", &native_config_with_client());
+        write(root, "src/app.mw", CLIENT_SURFACE_SOURCE);
+    });
+    let seed = marrow(&[
+        "run",
+        "--entry",
+        "app::seed",
+        "--dry-run",
+        root.to_str().unwrap(),
+    ]);
+    assert_eq!(seed.status.code(), Some(0), "dry seed: {seed:?}");
+    assert!(
+        !root.join("generated/marrow.ts").exists(),
+        "a dry run must not write the declared client"
+    );
+}
+
 #[test]
 fn client_typescript_uses_lock_projection_when_store_is_absent() {
     let root = temp_project("surface-client-typescript", |root| {

@@ -500,6 +500,18 @@ fn execute(request: RunExecution<'_>, nondeterminism: &impl Nondeterminism) -> E
                     }
                 }
             }
+            // A live run regenerates the declared client write-if-changed alongside the lock it
+            // re-projects; an isolated dry run leaves the source tree untouched, so it is skipped.
+            if !observe.isolates_writes()
+                && let Err(code) = crate::sync_declared_client(
+                    dir,
+                    session.config(),
+                    session.program(),
+                    output_format,
+                )
+            {
+                return code;
+            }
             ExitCode::SUCCESS
         }
         Err(error) => {

@@ -44,6 +44,28 @@ surface Books from ^books\n\
 \x20\x20\x20\x20collection ^books.byAuthor as byAuthor\n\
 \x20\x20\x20\x20action retitle\n";
 
+#[test]
+fn serve_startup_writes_declared_client() {
+    let root = temp_project("serve-writes-client", |root| {
+        write(
+            root,
+            "marrow.json",
+            r#"{"sourceRoots":["src"],"store":{"backend":"native","dataDir":".data"},"client":"generated/marrow.ts"}"#,
+        );
+        write(root, "src/app.mw", SURFACE_SOURCE);
+    });
+    let seed = marrow(&["run", "--entry", "app::seed", root.to_str().unwrap()]);
+    assert_eq!(seed.status.code(), Some(0), "seed: {seed:?}");
+    let out = root.join("generated/marrow.ts");
+    std::fs::remove_file(&out).ok();
+
+    let (_server, _addr) = spawn_surface_server(&root);
+    assert!(
+        out.exists(),
+        "serve startup must regenerate the declared client"
+    );
+}
+
 struct SurfaceFixture {
     _root: support::TempProject,
     report: Value,

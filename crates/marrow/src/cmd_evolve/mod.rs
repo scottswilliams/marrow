@@ -146,6 +146,13 @@ fn apply_cmd(raw_args: &[String]) -> ExitCode {
             {
                 return code;
             }
+            // The activated catalog can change the surface ABI, so refresh the declared client in
+            // lockstep with the re-projected lock.
+            if let Err(code) =
+                crate::sync_declared_client(&input.dir, &config, &program, input.format)
+            {
+                return code;
+            }
             render::apply_success(&outcome, &recovery, input.format);
             ExitCode::SUCCESS
         }

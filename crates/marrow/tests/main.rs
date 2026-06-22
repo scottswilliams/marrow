@@ -35,6 +35,8 @@ mod doctor_cli;
 mod dry_run_cli;
 #[path = "cases/evolve_cli_atomic_publish.rs"]
 mod evolve_cli_atomic_publish;
+#[path = "cases/evolve_cli_client_sync.rs"]
+mod evolve_cli_client_sync;
 #[path = "cases/evolve_cli_default_backfill.rs"]
 mod evolve_cli_default_backfill;
 #[path = "cases/evolve_cli_preview.rs"]
