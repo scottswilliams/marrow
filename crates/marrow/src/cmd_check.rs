@@ -165,11 +165,15 @@ fn check_project_dir(dir: &str, format: CheckFormat, locked: bool) -> ExitCode {
         .is_some_and(|lock| lock.source_digest != snapshot.program.source_digest());
 
     // The project declares a `client` output that the surface has outrun: the committed client is
-    // absent or carries a different surface-ABI digest than the current surface. A project with no
-    // `client`, or one with no surface to project, raises no client condition. Check is read-only,
-    // so it never writes the client; it only compares the on-disk header digest against the digest
-    // it would write.
-    let stale_client = config.client.is_some() && client_is_stale(dir, &config, &snapshot.program);
+    // absent or carries a different surface-ABI digest than the current surface. The shared
+    // freshness owner returns `Rewritten` for exactly that stale-or-absent state; a project with no
+    // `client` (`NotConfigured`) or no surface to project (`SurfacelessConfigured`), or an
+    // already-current client (`AlreadyFresh`), raises no client condition. Check is read-only and
+    // never writes; it only reads the verdict the write path would act on.
+    let stale_client = matches!(
+        crate::client_freshness(dir, &config, &snapshot.program),
+        crate::ClientFreshness::Rewritten
+    );
 
     // A fatal lock or client condition is a check failure, so its report must mirror any other
     // failing check: the structured envelope reports `failed`, carries the condition's diagnostic,
@@ -225,32 +229,6 @@ fn check_project_dir(dir: &str, format: CheckFormat, locked: bool) -> ExitCode {
         );
     }
     ExitCode::SUCCESS
-}
-
-/// Whether the project's declared client is stale or absent relative to the current surface. With
-/// no surface to project there is no client to keep fresh, so the condition is silent. Otherwise the
-/// client is stale-or-absent iff the on-disk header digest is not exactly the digest the surface
-/// would write; the spec treats stale and absent identically, so a missing file reads as stale.
-fn client_is_stale(
-    dir: &str,
-    config: &marrow_project::ProjectConfig,
-    program: &marrow_check::CheckedProgram,
-) -> bool {
-    use marrow_json::surface::{
-        SurfaceAbiJson, SurfaceRouteManifestJson, surface_abi_digest, surface_client_header_digest,
-    };
-    let Some(rel) = config.client.as_deref() else {
-        return false;
-    };
-    let abi = SurfaceAbiJson::from_program(program);
-    if abi.surfaces.is_empty() {
-        return false;
-    }
-    let want = surface_abi_digest(&abi, &SurfaceRouteManifestJson::from_abi(&abi));
-    let on_disk = std::fs::read_to_string(Path::new(dir).join(rel))
-        .ok()
-        .and_then(|contents| surface_client_header_digest(&contents));
-    on_disk.as_deref() != Some(want.as_str())
 }
 
 const STALE_LOCK_MESSAGE: &str =

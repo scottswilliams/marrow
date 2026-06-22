@@ -716,24 +716,59 @@ pub(crate) enum ClientFreshness {
     Rewritten,
 }
 
-/// Regenerate the project's declared TypeScript client write-if-changed: resolve the configured
-/// path, build the surface ABI and route manifest from the checked program through the single
-/// render owner, and write only when the on-disk header digest differs (or the file is absent).
-/// A non-surface `.mw` edit leaves the digest unchanged, so the file is not churned. Skips when no
-/// `client` is configured; reports a surfaceless configuration when one is set without a surface.
+/// Classify the project's declared client against the current surface without writing. This is the
+/// single owner of the stale-or-absent decision: it resolves the configured path, builds the
+/// surface ABI through the render owner, short-circuits on no `client` or no surface, then compares
+/// the on-disk header digest against the digest the surface would write. `Rewritten` means the
+/// on-disk client is absent or stale (the write path would rewrite it); `AlreadyFresh` means it
+/// already carries the current digest. A non-surface `.mw` edit leaves the digest unchanged, so a
+/// fresh client stays fresh. Both the write path and the read-only check gate consume this verdict.
+pub(crate) fn client_freshness(
+    dir: &str,
+    config: &marrow_project::ProjectConfig,
+    program: &marrow_check::CheckedProgram,
+) -> ClientFreshness {
+    let Some(rel) = config.client.as_deref() else {
+        return ClientFreshness::NotConfigured;
+    };
+    let abi = marrow_json::surface::SurfaceAbiJson::from_program(program);
+    if abi.surfaces.is_empty() {
+        return ClientFreshness::SurfacelessConfigured;
+    }
+    let routes = marrow_json::surface::SurfaceRouteManifestJson::from_abi(&abi);
+    let want = marrow_json::surface::surface_abi_digest(&abi, &routes);
+    let on_disk = std::fs::read_to_string(Path::new(dir).join(rel))
+        .ok()
+        .and_then(|contents| marrow_json::surface::surface_client_header_digest(&contents));
+    if on_disk.as_deref() == Some(want.as_str()) {
+        ClientFreshness::AlreadyFresh
+    } else {
+        ClientFreshness::Rewritten
+    }
+}
+
+/// Regenerate the project's declared TypeScript client write-if-changed: classify freshness through
+/// the single verdict owner, and on a stale-or-absent verdict render through the render owner and
+/// write. A non-surface `.mw` edit leaves the digest unchanged, so the file is not churned. Skips
+/// when no `client` is configured; reports a surfaceless configuration when one is set without a
+/// surface.
 pub(crate) fn write_declared_client_if_changed(
     dir: &str,
     config: &marrow_project::ProjectConfig,
     program: &marrow_check::CheckedProgram,
     format: CheckFormat,
 ) -> Result<ClientFreshness, ExitCode> {
-    let Some(rel) = config.client.as_deref() else {
-        return Ok(ClientFreshness::NotConfigured);
-    };
-    let abi = marrow_json::surface::SurfaceAbiJson::from_program(program);
-    if abi.surfaces.is_empty() {
-        return Ok(ClientFreshness::SurfacelessConfigured);
+    let verdict = client_freshness(dir, config, program);
+    if !matches!(verdict, ClientFreshness::Rewritten) {
+        return Ok(verdict);
     }
+    // A `Rewritten` verdict guarantees a configured path and a non-empty surface, so the ABI and
+    // route manifest rebuild cleanly here for the render the write needs.
+    let rel = config
+        .client
+        .as_deref()
+        .expect("Rewritten verdict implies a configured client path");
+    let abi = marrow_json::surface::SurfaceAbiJson::from_program(program);
     let routes = marrow_json::surface::SurfaceRouteManifestJson::from_abi(&abi);
     let rendered = match marrow_json::surface::render_typescript_client(&abi, &routes) {
         Ok(rendered) => rendered,
@@ -746,14 +781,7 @@ pub(crate) fn write_declared_client_if_changed(
             return Err(ExitCode::FAILURE);
         }
     };
-    let digest = marrow_json::surface::surface_abi_digest(&abi, &routes);
     let path = Path::new(dir).join(rel);
-    if let Ok(existing) = std::fs::read_to_string(&path)
-        && marrow_json::surface::surface_client_header_digest(&existing).as_deref()
-            == Some(digest.as_str())
-    {
-        return Ok(ClientFreshness::AlreadyFresh);
-    }
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|error| {
             report_io_error(&parent.display().to_string(), &error, format);
