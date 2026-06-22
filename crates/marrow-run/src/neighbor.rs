@@ -6,7 +6,7 @@ use marrow_syntax::SourceSpan;
 use crate::collection::Direction;
 use crate::env::Env;
 use crate::error::{RUN_ABSENT, RUN_TYPE, RuntimeError, raise_fault, unsupported};
-use crate::path::{Terminal, direct_root_place, lower};
+use crate::path::{Terminal, direct_root_place, lower_for_probe};
 use crate::read::{
     first_data_child, first_record_child, next_data_child, next_record_child,
     validate_scanned_child_key,
@@ -32,10 +32,15 @@ pub(crate) fn eval_neighbor(
             span,
         ));
     };
-    let target = neighbor_target(&arg.value, env)?;
-    let neighbor = seek_neighbor(&target, dir, span, env)?;
+    // A start position that addresses no node — non-positive or otherwise
+    // unlowerable — has no neighbor, the same maybe-present absence a positive
+    // out-of-range start resolves to, recoverable through `??`.
+    let neighbor = match neighbor_target(&arg.value, env)? {
+        Some(target) => seek_neighbor(&target, dir, span, env)?.map(|key| (target, key)),
+        None => None,
+    };
     match neighbor {
-        Some(key) => match &target {
+        Some((target, key)) => match &target {
             NeighborTarget::Record { place, .. } => {
                 validate_place_identity_keys(place, std::slice::from_ref(&key), span)?;
                 Ok(identity_value(&place.root, vec![key]))
@@ -60,24 +65,29 @@ pub(crate) fn eval_neighbor(
     }
 }
 
-fn neighbor_target(expr: &ExecExpr, env: &mut Env<'_>) -> Result<NeighborTarget, RuntimeError> {
+fn neighbor_target(
+    expr: &ExecExpr,
+    env: &mut Env<'_>,
+) -> Result<Option<NeighborTarget>, RuntimeError> {
     let span = expr.span();
     if let Some(place) = direct_root_place(expr).filter(|place| !place.identity_keys.is_empty()) {
-        return Ok(NeighborTarget::Record {
+        return Ok(Some(NeighborTarget::Record {
             place: Box::new(place.clone()),
             anchor: None,
-        });
+        }));
     }
-    let path = lower(expr, env)?;
+    let Some(path) = lower_for_probe(expr, env)? else {
+        return Ok(None);
+    };
     if !matches!(path.terminal, Terminal::Record) {
         return Err(unsupported("`next`/`prev` of this path", span));
     }
     if path.layers.is_empty() {
         return match path.identity.as_slice() {
-            [key] => Ok(NeighborTarget::Record {
+            [key] => Ok(Some(NeighborTarget::Record {
                 place: Box::new(path.place),
                 anchor: Some(key.clone()),
-            }),
+            })),
             _ => Err(unsupported(
                 "`next`/`prev` of a composite-identity record (scope a single key level)",
                 span,
@@ -115,11 +125,11 @@ fn neighbor_target(expr: &ExecExpr, env: &mut Env<'_>) -> Result<NeighborTarget,
         last.keys = prefix.to_vec();
     }
     let parent = DataAddress::layer_prefix(&path.place, &path.identity, &parent_layers, span)?;
-    Ok(NeighborTarget::Data {
+    Ok(Some(NeighborTarget::Data {
         parent,
         anchor,
         expected_key,
-    })
+    }))
 }
 
 enum NeighborTarget {

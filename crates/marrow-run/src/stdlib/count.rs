@@ -6,7 +6,7 @@ use crate::env::Env;
 use crate::error::{RuntimeError, overflow, type_error, unsupported};
 use crate::expr::eval_expr;
 use crate::local_collection::local_collection_count;
-use crate::path::{Terminal, direct_root_place, lower, saved_path_present};
+use crate::path::{Terminal, direct_root_place, lower_for_probe, saved_path_present};
 use crate::read::{count_iterable_index_branch, count_iterable_layer, validated_data_child_count};
 use crate::stdlib::exact_unique_index_lookup_value;
 use crate::store::{DataAddress, data_child_count, data_exists};
@@ -52,7 +52,11 @@ pub(crate) fn eval_count(
     if let Some(entries) = count_iterable_index_branch(&arg.value, env)? {
         return Ok(Value::Int(usize_to_i64(entries, span)?));
     }
-    let target = count_target(&arg.value, span, env)?;
+    // A position that addresses no node — non-positive or otherwise unlowerable —
+    // counts as 0, the same as a positive out-of-range hole.
+    let Some(target) = count_target(&arg.value, span, env)? else {
+        return Ok(Value::Int(0));
+    };
     let children = match &target.child_layer {
         Some(child_layer) => validated_data_child_count(
             env.store,
@@ -103,8 +107,10 @@ fn count_target(
     expr: &ExecExpr,
     span: SourceSpan,
     env: &mut Env<'_>,
-) -> Result<CountTarget, RuntimeError> {
-    let path = lower(expr, env)?;
+) -> Result<Option<CountTarget>, RuntimeError> {
+    let Some(path) = lower_for_probe(expr, env)? else {
+        return Ok(None);
+    };
     let mut child_layer = None;
     let address = match &path.terminal {
         Terminal::Record => {
@@ -132,8 +138,8 @@ fn count_target(
         ),
         Terminal::Index => Err(unsupported("counting this index path", span)),
     }?;
-    Ok(CountTarget {
+    Ok(Some(CountTarget {
         address,
         child_layer,
-    })
+    }))
 }

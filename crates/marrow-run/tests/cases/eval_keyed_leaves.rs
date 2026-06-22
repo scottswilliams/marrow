@@ -305,6 +305,48 @@ fn a_read_of_a_non_positive_sequence_position_is_absent() {
 }
 
 #[test]
+fn count_and_neighbor_over_a_non_positive_sequence_position_resolve_as_absent() {
+    // The presence-family `count` and the maybe-present `next`/`prev` resolve a
+    // below-1 position exactly as the positional read does: addressed-no-node, the
+    // same contract a positive out-of-range position already obeys. `count` returns
+    // 0 and the neighbor probes recover through `??` rather than faulting fatally.
+    let program = checked_program(&format!(
+        "{BOOK_TAGS_SCHEMA}pub fn seed(id: int)\n    ^books(id).tags(1) = \"one\"\n\npub fn count_at(id: int, pos: int): int\n    return count(^books(id).tags(pos))\n\npub fn next_at(id: int, pos: int): int\n    return next(^books(id).tags(pos)) ?? -999\n\npub fn prev_at(id: int, pos: int): int\n    return prev(^books(id).tags(pos)) ?? -999\n"
+    ));
+    let store = TreeStore::memory();
+    run_entry(
+        &store,
+        checked_entry!(&program, "test::seed", Value::Int(7)),
+    )
+    .expect("seed");
+    let probe = |func: &str, pos: i64| {
+        run_entry(
+            &store,
+            checked_entry!(
+                &program,
+                &format!("test::{func}"),
+                Value::Int(7),
+                Value::Int(pos)
+            ),
+        )
+        .unwrap_or_else(|error| panic!("{func}({pos}) faulted: {error:?}"))
+        .value
+    };
+    // A non-positive position counts as 0, matching a positive out-of-range hole.
+    assert_eq!(probe("count_at", 0), Some(Value::Int(0)));
+    assert_eq!(probe("count_at", -3), Some(Value::Int(0)));
+    assert_eq!(probe("count_at", 9), Some(Value::Int(0)));
+    // The populated position still counts as 1.
+    assert_eq!(probe("count_at", 1), Some(Value::Int(1)));
+    // Neighbor navigation over a non-positive start falls off cleanly to the
+    // fallback, the same as a positive out-of-range start does.
+    assert_eq!(probe("next_at", 0), Some(Value::Int(-999)));
+    assert_eq!(probe("next_at", -3), Some(Value::Int(-999)));
+    assert_eq!(probe("prev_at", 0), Some(Value::Int(-999)));
+    assert_eq!(probe("prev_at", -3), Some(Value::Int(-999)));
+}
+
+#[test]
 fn a_non_positive_sequence_group_entry_read_is_absent_through_the_whole_spine() {
     // A sequence of groups raises the absent fault at the position segment, not the
     // trailing field. A guarded read of `^books(id).versions(pos).title`,
