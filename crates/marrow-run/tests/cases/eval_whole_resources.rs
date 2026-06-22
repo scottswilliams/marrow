@@ -554,6 +554,69 @@ fn whole_resource_assignment_clears_omitted_saved_children() {
     );
 }
 
+#[test]
+fn whole_resource_assignment_clears_omitted_index_field() {
+    let program = checked_program(
+        "resource Book\n\
+         \x20   required title: string\n\
+         \x20   shelf: string\n\
+         store ^books(id: int): Book\n\
+         \x20   index byShelf(shelf, id)\n\n\
+         pub fn add(id: int, title: string, shelf: string)\n\
+         \x20   ^books(id).title = title\n\
+         \x20   ^books(id).shelf = shelf\n\n\
+         pub fn replace(id: int)\n\
+         \x20   var book: Book\n\
+         \x20   book.title = \"replacement\"\n\
+         \x20   ^books(id) = book\n\n\
+         pub fn title_of(id: int): string\n\
+         \x20   return ^books(id).title ?? \"\"\n\n\
+         pub fn count_by_shelf(shelf: string): int\n\
+         \x20   return count(^books.byShelf(shelf))\n",
+    );
+    let store = TreeStore::memory();
+    let call = |entry: &str, args: Vec<Value>| {
+        run_entry(&store, checked_entry_call(&program, entry, args))
+            .expect("run")
+            .value
+    };
+
+    call(
+        "test::add",
+        vec![
+            Value::Int(1),
+            Value::Str("original".into()),
+            Value::Str("fiction".into()),
+        ],
+    );
+    assert_eq!(
+        call("test::count_by_shelf", vec![Value::Str("fiction".into())]),
+        Some(Value::Int(1))
+    );
+    let by_shelf = index_catalog_id(&program, "books", "byShelf");
+    let old_tuple = [SavedKey::Str("fiction".into()), SavedKey::Int(1)];
+    let initial_entries = store
+        .scan_index_tuple(&by_shelf, &old_tuple, 2)
+        .expect("scan initial index");
+    assert!(!initial_entries.entries.is_empty());
+
+    call("test::replace", vec![Value::Int(1)]);
+
+    assert_eq!(
+        call("test::count_by_shelf", vec![Value::Str("fiction".into())]),
+        Some(Value::Int(0))
+    );
+    assert_eq!(
+        call("test::title_of", vec![Value::Int(1)]),
+        Some(Value::Str("replacement".into()))
+    );
+
+    let old_entries = store
+        .scan_index_tuple(&by_shelf, &old_tuple, 2)
+        .expect("scan index");
+    assert!(old_entries.entries.is_empty());
+}
+
 fn seed_patient_field(
     program: &CheckedRuntimeProgram,
     store: &TreeStore,
