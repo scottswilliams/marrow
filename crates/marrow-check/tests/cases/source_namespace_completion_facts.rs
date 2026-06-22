@@ -3,7 +3,7 @@ use std::path::Path;
 use crate::support;
 use marrow_check::AnalysisSnapshot;
 use marrow_check::tooling::{
-    SourceNamespaceCompletionFact, SourceNamespaceEnumMemberStatus,
+    CallableSignatureKind, SourceNamespaceCompletionFact, SourceNamespaceEnumMemberStatus,
     source_namespace_completion_fact, source_namespace_completion_file_fact,
 };
 use marrow_syntax::SourceFile;
@@ -303,6 +303,288 @@ resource books
         .expect("app file");
 
     assert_eq!(namespace_fact(&snapshot, app, &["books"]), None);
+}
+
+#[test]
+fn namespace_completion_returns_std_root_modules_from_checker_fact() {
+    let (snapshot, paths) = analyze_project("source-namespace-completion-std-root");
+    let app = paths
+        .iter()
+        .find(|path| path.ends_with("src/shelf/app.mw"))
+        .expect("app file");
+
+    let Some(SourceNamespaceCompletionFact::StandardLibraryRoot(fact)) =
+        namespace_fact(&snapshot, app, &["std"])
+    else {
+        panic!("expected std root namespace fact");
+    };
+
+    assert_eq!(
+        fact.modules
+            .iter()
+            .map(|module| module.name.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "text", "bytes", "hash", "math", "json", "csv", "id", "random", "context", "audit",
+            "error", "matrix", "clock", "env", "io", "assert", "log"
+        ]
+    );
+}
+
+#[test]
+fn namespace_completion_returns_std_module_ops_from_checker_fact() {
+    let (snapshot, paths) = analyze_project("source-namespace-completion-std-module");
+    let app = paths
+        .iter()
+        .find(|path| path.ends_with("src/shelf/app.mw"))
+        .expect("app file");
+
+    let Some(SourceNamespaceCompletionFact::StandardLibraryModule(fact)) =
+        namespace_fact(&snapshot, app, &["std", "clock"])
+    else {
+        panic!("expected std module namespace fact");
+    };
+
+    let names = fact
+        .operations
+        .iter()
+        .map(|operation| operation.name.as_str())
+        .collect::<Vec<_>>();
+    assert!(names.contains(&"now"), "clock op, got {names:?}");
+    assert!(names.contains(&"today"), "clock op, got {names:?}");
+    assert!(
+        !names.contains(&"length"),
+        "other std module ops must not leak, got {names:?}"
+    );
+
+    let now = fact
+        .operations
+        .iter()
+        .find(|operation| operation.name == "now")
+        .expect("now operation");
+    assert_eq!(now.signature.kind, CallableSignatureKind::StandardLibrary);
+    assert_eq!(now.signature.path, ["std", "clock", "now"]);
+}
+
+#[test]
+fn namespace_completion_keeps_raw_std_before_project_import_alias() {
+    let (snapshot, paths) = support::analyze_overlay(
+        "source-namespace-completion-raw-std-before-import-alias",
+        &[
+            (
+                "src/foo/std.mw",
+                "\
+module foo::std
+
+pub fn projectOnly(): string
+    return \"project\"
+",
+            ),
+            (
+                "src/app/main.mw",
+                "\
+module app::main
+
+use foo::std
+",
+            ),
+        ],
+    );
+    support::assert_clean(&snapshot.report);
+    let app = paths
+        .iter()
+        .find(|path| path.ends_with("src/app/main.mw"))
+        .expect("app file");
+
+    assert!(
+        matches!(
+            namespace_fact(&snapshot, app, &["std"]),
+            Some(SourceNamespaceCompletionFact::StandardLibraryRoot(_))
+        ),
+        "raw std qualifier must not expand through a project import alias"
+    );
+    assert!(
+        matches!(
+            namespace_fact(&snapshot, app, &["std", "clock"]),
+            Some(SourceNamespaceCompletionFact::StandardLibraryModule(_))
+        ),
+        "raw std::clock qualifier must not expand through a project import alias"
+    );
+}
+
+#[test]
+fn namespace_completion_keeps_raw_std_project_fallback_before_project_import_alias() {
+    let (snapshot, paths) = support::analyze_overlay(
+        "source-namespace-completion-raw-std-project-fallback-before-import-alias",
+        &[
+            (
+                "src/std/widgets.mw",
+                "\
+module std::widgets
+
+pub fn projectOnly(): string
+    return \"project\"
+",
+            ),
+            (
+                "src/foo/std.mw",
+                "\
+module foo::std
+
+pub fn wrongRoot(): string
+    return \"wrong\"
+",
+            ),
+            (
+                "src/foo/std/widgets.mw",
+                "\
+module foo::std::widgets
+
+pub fn wrongAlias(): string
+    return \"wrong\"
+",
+            ),
+            (
+                "src/app/main.mw",
+                "\
+module app::main
+
+use foo::std
+",
+            ),
+        ],
+    );
+    support::assert_clean(&snapshot.report);
+    let app = paths
+        .iter()
+        .find(|path| path.ends_with("src/app/main.mw"))
+        .expect("app file");
+
+    let Some(SourceNamespaceCompletionFact::Module(fact)) =
+        namespace_fact(&snapshot, app, &["std", "widgets"])
+    else {
+        panic!("expected raw std project module fallback");
+    };
+
+    assert_eq!(fact.module, "std::widgets");
+    assert_eq!(
+        fact.functions
+            .iter()
+            .map(|function| function.name.as_str())
+            .collect::<Vec<_>>(),
+        ["projectOnly"]
+    );
+}
+
+#[test]
+fn namespace_completion_expands_imported_std_module_alias_to_std_facts() {
+    let (snapshot, paths) = support::analyze_overlay(
+        "source-namespace-completion-imported-std-module-alias",
+        &[(
+            "src/app/main.mw",
+            "\
+module app::main
+
+use std::text
+",
+        )],
+    );
+    support::assert_clean(&snapshot.report);
+    let app = paths
+        .iter()
+        .find(|path| path.ends_with("src/app/main.mw"))
+        .expect("app file");
+
+    let Some(SourceNamespaceCompletionFact::StandardLibraryModule(fact)) =
+        namespace_fact(&snapshot, app, &["text"])
+    else {
+        panic!("expected imported std module alias to expose std module facts");
+    };
+
+    assert_eq!(fact.module, "text");
+    assert!(
+        fact.operations
+            .iter()
+            .any(|operation| operation.name == "length"),
+        "text std operation, got {:?}",
+        fact.operations
+            .iter()
+            .map(|operation| operation.name.as_str())
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn file_namespace_completion_keeps_stdlib_out_of_mcp_file_facts() {
+    let (snapshot, paths) = analyze_project("source-namespace-completion-file-std-closed");
+    let app = paths
+        .iter()
+        .find(|path| path.ends_with("src/shelf/app.mw"))
+        .expect("app file");
+
+    assert_eq!(file_namespace_fact(&snapshot, app, &["std"]), None);
+    assert_eq!(file_namespace_fact(&snapshot, app, &["std", "clock"]), None);
+}
+
+#[test]
+fn namespace_completion_prefers_known_std_modules_but_falls_back_to_project_modules() {
+    let (snapshot, paths) = support::analyze_overlay(
+        "source-namespace-completion-std-precedence",
+        &[
+            (
+                "src/std/clock.mw",
+                "\
+module std::clock
+
+pub fn projectOnly(): string
+    return \"project\"
+",
+            ),
+            (
+                "src/std/widgets.mw",
+                "\
+module std::widgets
+
+pub fn projectOnly(): string
+    return \"project\"
+",
+            ),
+            ("src/app/main.mw", "module app::main\n"),
+        ],
+    );
+    support::assert_clean(&snapshot.report);
+    let app = paths
+        .iter()
+        .find(|path| path.ends_with("src/app/main.mw"))
+        .expect("app file");
+
+    let Some(SourceNamespaceCompletionFact::StandardLibraryModule(clock)) =
+        namespace_fact(&snapshot, app, &["std", "clock"])
+    else {
+        panic!("expected known std module to keep builtin precedence");
+    };
+    assert!(
+        !clock
+            .operations
+            .iter()
+            .any(|operation| operation.name == "projectOnly"),
+        "known std module must not expose same-named project module members"
+    );
+
+    let Some(SourceNamespaceCompletionFact::Module(widgets)) =
+        namespace_fact(&snapshot, app, &["std", "widgets"])
+    else {
+        panic!("expected unknown std module to fall back to project module");
+    };
+    assert_eq!(widgets.module, "std::widgets");
+    assert_eq!(
+        widgets
+            .functions
+            .iter()
+            .map(|function| function.name.as_str())
+            .collect::<Vec<_>>(),
+        ["projectOnly"]
+    );
 }
 
 #[test]

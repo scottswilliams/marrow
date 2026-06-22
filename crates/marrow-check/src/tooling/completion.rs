@@ -1,9 +1,10 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-use marrow_schema::{EnumSchema, ResourceSchema, StoreSchema};
+use marrow_schema::{EnumSchema, ResourceSchema, StoreSchema, stdlib};
 use marrow_syntax::{Declaration, FunctionDecl, SourceFile};
 
+use super::signatures::{CallableSignature, intrinsic_callable_signature};
 use crate::{CheckedFunction, CheckedModule, CheckedProgram, MarrowType};
 
 const BUILTIN_TYPE_COMPLETIONS: &[SourceTypeBuiltin] = &[
@@ -101,6 +102,8 @@ impl SourceTypeBuiltin {
 pub enum SourceNamespaceCompletionFact {
     Module(SourceModuleNamespaceCompletionFact),
     Enum(SourceEnumNamespaceCompletionFact),
+    StandardLibraryRoot(SourceStandardLibraryRootNamespaceCompletionFact),
+    StandardLibraryModule(SourceStandardLibraryModuleNamespaceCompletionFact),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -109,6 +112,28 @@ pub struct SourceModuleNamespaceCompletionFact {
     pub resources: Vec<SourceNamespaceResourceCompletion>,
     pub enums: Vec<SourceNamespaceEnumCompletion>,
     pub functions: Vec<SourceNamespaceFunctionCompletion>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceStandardLibraryRootNamespaceCompletionFact {
+    pub modules: Vec<SourceStandardLibraryModuleCompletion>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceStandardLibraryModuleCompletion {
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceStandardLibraryModuleNamespaceCompletionFact {
+    pub module: String,
+    pub operations: Vec<SourceStandardLibraryOperationCompletion>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceStandardLibraryOperationCompletion {
+    pub name: String,
+    pub signature: CallableSignature,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -208,7 +233,21 @@ pub fn source_namespace_completion_fact(
     source_file: &SourceFile,
     qualifier: &[String],
 ) -> Option<SourceNamespaceCompletionFact> {
+    if qualifier.first().map(String::as_str) == Some("std") {
+        if let Some(fact) = standard_library_namespace_completion_fact(qualifier) {
+            return Some(fact);
+        }
+        return namespace_completion_fact_for_expanded_qualifier(
+            program,
+            file,
+            source_file,
+            qualifier,
+        );
+    }
     let expanded = expand_namespace_qualifier(source_file, qualifier)?;
+    if let Some(fact) = standard_library_namespace_completion_fact(&expanded) {
+        return Some(fact);
+    }
     namespace_completion_fact_for_expanded_qualifier(program, file, source_file, &expanded)
 }
 
@@ -449,6 +488,60 @@ fn namespace_completion_fact_for_expanded_qualifier(
     enum_for_segments(program, file, expanded)
         .map(enum_completion_fact)
         .map(SourceNamespaceCompletionFact::Enum)
+}
+
+fn standard_library_namespace_completion_fact(
+    qualifier: &[String],
+) -> Option<SourceNamespaceCompletionFact> {
+    match qualifier {
+        [root] if root == "std" => Some(SourceNamespaceCompletionFact::StandardLibraryRoot(
+            standard_library_root_completion_fact(),
+        )),
+        [root, module] if root == "std" && standard_library_module_exists(module) => {
+            Some(SourceNamespaceCompletionFact::StandardLibraryModule(
+                standard_library_module_completion_fact(module),
+            ))
+        }
+        _ => None,
+    }
+}
+
+fn standard_library_root_completion_fact() -> SourceStandardLibraryRootNamespaceCompletionFact {
+    let mut emitted = HashSet::new();
+    SourceStandardLibraryRootNamespaceCompletionFact {
+        modules: stdlib::all()
+            .iter()
+            .filter(|op| emitted.insert(op.module))
+            .map(|op| SourceStandardLibraryModuleCompletion {
+                name: op.module.to_string(),
+            })
+            .collect(),
+    }
+}
+
+fn standard_library_module_completion_fact(
+    module: &str,
+) -> SourceStandardLibraryModuleNamespaceCompletionFact {
+    SourceStandardLibraryModuleNamespaceCompletionFact {
+        module: module.to_string(),
+        operations: stdlib::all()
+            .iter()
+            .filter(|op| op.module == module)
+            .map(|op| {
+                let path = vec!["std".to_string(), module.to_string(), op.op.to_string()];
+                let signature = intrinsic_callable_signature(&path)
+                    .expect("stdlib operation has a callable signature");
+                SourceStandardLibraryOperationCompletion {
+                    name: op.op.to_string(),
+                    signature,
+                }
+            })
+            .collect(),
+    }
+}
+
+fn standard_library_module_exists(module: &str) -> bool {
+    stdlib::all().iter().any(|op| op.module == module)
 }
 
 fn expand_namespace_qualifier(
