@@ -6,6 +6,7 @@ use marrow_store::value::{
 };
 
 use crate::CheckedProgram;
+use crate::data_text::{decode_data_text_escapes, encode_data_text_string};
 use crate::facts::{CheckedFacts, EnumId};
 use crate::hex::push_lower_hex;
 
@@ -200,8 +201,9 @@ impl PathTextParser<'_> {
             let inner = quoted
                 .strip_suffix('"')
                 .ok_or_else(|| self.error("a closing quote in a string key"))?;
-            let decoded = marrow_syntax::decode_string_escapes(inner)
-                .map_err(|_| self.error("a recognized string escape (\\\\ \\\" \\n \\r \\t)"))?;
+            let decoded = decode_data_text_escapes(inner).map_err(|_| {
+                self.error("a recognized string escape (\\\\ \\\" \\n \\r \\t \\xNN)")
+            })?;
             return Ok(SavedKey::Str(decoded));
         }
         if let Some(hex) = text.strip_prefix("0x") {
@@ -250,7 +252,7 @@ fn display_key(key: &SavedKey) -> String {
     match key {
         SavedKey::Int(value) => value.to_string(),
         SavedKey::Bool(value) => value.to_string(),
-        SavedKey::Str(value) => marrow_syntax::encode_string_literal(value),
+        SavedKey::Str(value) => encode_data_text_string(value),
         SavedKey::Bytes(value) => {
             let mut text = String::from("0x");
             push_lower_hex(&mut text, value);
@@ -405,10 +407,10 @@ mod tests {
 
     #[test]
     fn display_path_string_keys_reparse_to_the_same_key() {
-        // A raw control char (ESC) and a non-ASCII scalar are `string_text`: the renderer
-        // must emit them literally, not as a Rust-debug `\u{NN}` the decoder rejects, so
-        // the rendered path round-trips. This is the encode/decode symmetry the saved-path
-        // string-key grammar requires.
+        // Control bytes have no `.mw` escaped spelling, so the text format escapes them
+        // as `\xNN` while a non-ASCII scalar stays literal `string_text`. Either way the
+        // rendered path round-trips, the encode/decode symmetry the saved-path string-key
+        // grammar requires.
         for key in [
             "abc",
             "a\nb\tc\\d\"e",

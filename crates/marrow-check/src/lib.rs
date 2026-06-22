@@ -13,6 +13,7 @@ mod backing_validity;
 pub mod binding;
 mod catalog;
 mod checks;
+mod data_text;
 mod diagnostics;
 mod driver;
 pub mod durable_path;

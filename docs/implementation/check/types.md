@@ -37,6 +37,7 @@ The orchestration that sequences the passes lives in `analysis.rs`, outside this
 | `crates/marrow-check/src/keyed_entries.rs` | Project-aware keyed resource-layer normalization, plus named enum field validation and diagnostics that schema compilation cannot decide alone. |
 | `crates/marrow-check/src/binding.rs` | The editor binding index: definition→reference map with scope/shadowing/alias awareness, reusing resolve/infer; `RenameSafety` (SourceOnly vs SavedDataBacked). |
 | `crates/marrow-check/src/durable_path.rs` | Classification of decoded `^root(key).field` store-path text: `parse_path`/`display_path`, `SavedKey` parsing, `StoreLeafKind`, `identity_leaf_key_mismatch`. |
+| `crates/marrow-check/src/data_text.rs` | The `data` tools' text-format string codec, paired so the dump/get renderer and the saved-path key parser are inverses: the five `.mw` escapes plus `\xNN` for every other control byte, a total round-trippable vocabulary broader than a `.mw` string literal. |
 | `crates/marrow-check/src/walk.rs` | Single owner of immediate-child enumeration of an `Expression` (`for_each_child_expr`), so read-only passes recurse without re-spelling tree shape. |
 
 ## Invariants worth knowing

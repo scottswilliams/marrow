@@ -5,6 +5,7 @@ use marrow_store::tree::{DataPathSegment as StoreDataPathSegment, decode_tree_en
 use marrow_store::value::{SavedValue, decode_value, encode_value};
 
 use super::{DataPathSegment, DataProgram, DataValuePreview, ResolvedDataPath};
+use crate::data_text::{encode_data_text_string, push_data_text_escapes};
 use crate::durable_path::identity_leaf_key_mismatch_in_facts;
 use crate::hex::push_lower_hex;
 use crate::{CheckedProgram, EnumId, StoreLeafKind};
@@ -217,7 +218,7 @@ fn render_scalar_value(ty: marrow_store::value::ScalarType, bytes: &[u8]) -> Opt
         return Some(render_undecodable_string_value(bytes));
     }
     match decode_value(bytes, ty)? {
-        SavedValue::Str(value) => Some(marrow_syntax::encode_string_literal(&value)),
+        SavedValue::Str(value) => Some(encode_data_text_string(&value)),
         SavedValue::Bytes(value) => Some(render_hex_value(&value)),
         SavedValue::Bool(value) => Some(value.to_string()),
         value => render_encoded_scalar(value),
@@ -345,7 +346,7 @@ fn render_key(key: &SavedKey) -> String {
     match key {
         SavedKey::Int(value) => value.to_string(),
         SavedKey::Bool(value) => value.to_string(),
-        SavedKey::Str(value) => marrow_syntax::encode_string_literal(value),
+        SavedKey::Str(value) => encode_data_text_string(value),
         SavedKey::Bytes(value) => render_hex_value(value),
         SavedKey::Date(value) => render_key_temporal(SavedValue::Date(*value)),
         SavedKey::Instant(value) => render_key_temporal(SavedValue::Instant(*value)),
@@ -487,7 +488,7 @@ fn push_key_body_preview(text: &mut String, key: &SavedKey, limit: usize) -> boo
 }
 
 fn push_quoted_string_preview(text: &mut String, value: &str, limit: usize) -> bool {
-    let rendered = marrow_syntax::encode_string_literal(value);
+    let rendered = encode_data_text_string(value);
     if push_str_atomic_with_limit(text, &rendered, limit) {
         return true;
     }
@@ -500,7 +501,7 @@ fn push_truncated_quoted_string_preview(text: &mut String, value: &str, limit: u
     }
     for ch in value.chars() {
         let mut escaped = String::new();
-        marrow_syntax::push_string_escapes(&mut escaped, ch.encode_utf8(&mut [0; 4]));
+        push_data_text_escapes(&mut escaped, ch.encode_utf8(&mut [0; 4]));
         if !push_str_atomic_with_limit(text, &escaped, limit) {
             return false;
         }

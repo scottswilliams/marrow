@@ -219,6 +219,61 @@ fn data_text_renders_a_drifted_leaf_by_its_accepted_catalog_type() {
 }
 
 #[test]
+fn data_text_round_trips_control_byte_string_keys_and_values() {
+    // A string key or value may legally hold any byte, including control bytes that
+    // the `.mw` string grammar has no escaped spelling for (NUL, BEL, VT, FF, ESC,
+    // DEL). The text format must escape every such byte so a dumped path is feedable
+    // back to `data get` as a process argument and round-trips to the same record.
+    let (project, dir) = seeded_project(
+        "data-value-render-control-bytes",
+        "module app\n\
+         resource Item\n\
+         \x20   required label: string\n\
+         store ^items(name: string): Item\n\
+         pub fn seed()\n\
+         \x20   transaction\n\
+         \x20       ^items(\"seed\").label = \"placeholder\"\n",
+    );
+    let place = checked_place(&project, "items");
+    let controls = "a\u{0}b\u{7}c\u{b}d\u{c}e\u{1b}f\u{7f}g";
+    let key = SavedKey::Str(controls.to_string());
+    let label_path = field_path(&place, "label");
+    let value_bytes = controls.as_bytes().to_vec();
+    write_tree_value(
+        &project,
+        "items",
+        std::slice::from_ref(&key),
+        &label_path,
+        value_bytes.clone(),
+    );
+
+    let dump = stdout(marrow(&["data", "dump", &dir]));
+    let line = dump
+        .lines()
+        .find(|line| line.starts_with("^items(\"a"))
+        .unwrap_or_else(|| panic!("no control-byte cell line in dump: {dump:?}"));
+    let (path, value) = line.split_once('\t').expect("tab-separated cell");
+
+    assert!(
+        !path.contains('\u{0}') && !path.contains('\u{1b}') && !path.contains('\u{7f}'),
+        "dumped path must not carry raw control bytes: {path:?}"
+    );
+    assert!(
+        path.contains("\\x00") && path.contains("\\x1b") && path.contains("\\x7f"),
+        "control bytes must escape as \\xNN: {path:?}"
+    );
+
+    let echoed = stdout(marrow(&["data", "get", &dir, path]));
+    assert_eq!(echoed, format!("{value}\n"));
+
+    // The lossless JSON form still carries the unchanged raw bytes.
+    let value_json = support_data::json(marrow(&["data", "get", "--format", "json", &dir, path]));
+    let raw = marrow_run::base64::decode(value_json["value_b64"].as_str().expect("b64"))
+        .expect("decode value");
+    assert_eq!(raw, value_bytes);
+}
+
+#[test]
 fn data_text_renders_identity_references_as_saved_paths() {
     let (_project, dir) = seeded_project(
         "data-value-render-identity",

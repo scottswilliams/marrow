@@ -148,16 +148,16 @@ fn data_get_resolves_a_plain_string_key_and_round_trips_a_dumped_path() {
     assert_eq!(dump.status.code(), Some(0), "{dump:?}");
     let dump_text = String::from_utf8(dump.stdout).expect("utf8");
 
-    // The raw control char and non-ASCII scalar are `string_text`, so the renderer must
-    // emit them literally; a Rust-debug `\u{1b}` spelling would not re-parse through the
-    // five-escape key decoder and would silently break the loop below.
+    // A control byte has no `.mw` escaped spelling, so the text format escapes it as
+    // `\xNN`; a non-ASCII scalar stays literal `string_text`. The emitted path carries no
+    // raw control byte and re-parses through the key decoder, so the loop below holds.
     assert!(
-        dump_text.contains("^items(\"k\x1b\u{00e9}z\").v"),
-        "dump must spell the raw-control-char key as literal string_text, got:\n{dump_text}"
+        dump_text.contains("^items(\"k\\x1b\u{00e9}z\").v"),
+        "dump must escape the control byte as \\xNN and keep the non-ASCII scalar literal, got:\n{dump_text}"
     );
     assert!(
-        !dump_text.contains("\\u{"),
-        "dump must not emit Rust-debug escapes, got:\n{dump_text}"
+        !dump_text.contains('\x1b'),
+        "dump must not emit a raw control byte, got:\n{dump_text}"
     );
 
     for line in dump_text.lines() {

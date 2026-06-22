@@ -212,11 +212,17 @@ identity or keyed layer takes its keys as one comma-separated group, for example
 `^enrolls("s1","c9")`; the per-key spelling `^enrolls("s1")("c9")` is also
 accepted, and commands emit the comma form. String keys render quoted (e.g.
 `^users("alice")`), int and bool keys bare, bytes keys as `0x<hex>`, and temporal
-keys as their canonical ISO text. A quoted string key decodes the same escapes as
-a `.mw` string literal (`\\`, `\"`, `\n`, `\r`, `\t`); any other escape is a
-malformed path, not a silently stripped backslash, so a path never resolves a key
-other than the one it spells. A stored key that does not decode is reported as
-store corruption by integrity and traversal commands.
+keys as their canonical ISO text. The text format's string escapes are the `.mw`
+escapes `\\`, `\"`, `\n`, `\r`, `\t` plus `\xNN` (lowercase hex) for every other
+control byte, such as `\x00` or `\x1b`. This is a total, round-trippable
+vocabulary broader than a `.mw` string literal — a stored string may hold a
+control byte the language gives no escaped spelling — so a dumped path carries no
+raw control byte, always re-parses to the key it spells, and stays feedable to
+`data get` as a process argument. The `.mw` string-literal grammar is unchanged.
+Any escape outside this vocabulary is a malformed path, not a silently stripped
+backslash, so a path never resolves a key other than the one it spells. A stored
+key that does not decode is reported as store corruption by integrity and
+traversal commands.
 
 ## `marrow data get`
 
