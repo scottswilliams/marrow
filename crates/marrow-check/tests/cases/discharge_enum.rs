@@ -176,6 +176,13 @@ fn enum_member_removed_fails_closed() -> Result<(), Box<dyn std::error::Error>> 
             && !message.contains("repair before activating"),
         "the enum-drift repair must name the record and the way forward: {message}"
     );
+    // The `data get` example is concrete and copy-pasteable: a real drifted record's saved path,
+    // never the `<saved-path>` placeholder.
+    assert!(
+        message.contains("marrow data get <projectdir> ^books(1).value")
+            && !message.contains("<saved-path>"),
+        "the repair must name a concrete drifted saved path, not a placeholder: {message}"
+    );
 
     Ok(())
 }

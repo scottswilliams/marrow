@@ -2,7 +2,7 @@ use crate::support;
 use std::fs;
 use std::path::Path;
 use std::process::Command;
-use support::marrow;
+use support::{marrow, marrow_in};
 
 const QUICKSTART: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -314,6 +314,42 @@ fn init_rejects_qualified_target_module_name_without_writing() {
     assert!(
         !target.exists(),
         "qualified target name should be rejected before creating files"
+    );
+}
+
+#[test]
+fn init_rejects_a_relative_nested_name_even_when_the_parent_exists() {
+    // A relative `bad/name` smuggles a path separator into what must be a single module
+    // identifier. The parent component existing must not let the separator slip through and
+    // silently create a nested project: it is rejected as config.invalid before any write,
+    // independent of whether `bad/` exists.
+    let parent = support::temp_dir("init-relative-nested");
+    fs::create_dir(parent.join("bad")).expect("create existing parent component");
+
+    let output = marrow_in(parent.path(), &["init", "bad/name"]);
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert!(
+        output.stdout.is_empty(),
+        "unexpected stdout: {:?}",
+        output.stdout
+    );
+    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+    assert!(
+        stderr.contains("config.invalid"),
+        "a relative nested name must be a config error: {stderr}"
+    );
+    assert!(
+        stderr.contains("separator"),
+        "the message must name the path separator as the invalid character: {stderr}"
+    );
+    assert!(
+        !parent.join("bad").join("name").exists(),
+        "a relative nested name must be rejected before creating files"
+    );
+    assert!(
+        !parent.join("bad").join("name").join("marrow.json").exists(),
+        "no scaffold may be written under the existing parent component"
     );
 }
 

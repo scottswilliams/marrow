@@ -30,6 +30,7 @@ use marrow_store::tree::TreeStore;
 use super::const_default::default_value_for_leaf;
 use super::witness::{ObligationVerdict, RejectedDefault, RepairReason, Verdict};
 use crate::StoreLeafKind;
+use crate::durable_path::PathSegment;
 use crate::executable::{CheckedSavedMember, CheckedSavedPlace, checked_activation_root_places};
 use crate::program::{CheckedProgram, EvolveDefault};
 
@@ -164,8 +165,9 @@ fn missing_member_message(member: &str, missing: usize, sample: &[Vec<SavedKey>]
 /// A leaf carries a stored value that no longer decodes under the current type, most often an
 /// enum member the shrunk enum dropped. The repair names the records and points at a transform to
 /// migrate them and at `marrow data get` to read the stored value, mirroring the rename/retire
-/// guidance rather than the bare `repair before activating`.
-fn invalid_member_message(member: &str, invalid: usize, sample: &[Vec<SavedKey>]) -> String {
+/// guidance rather than the bare `repair before activating`. The `data get` example names a real
+/// drifted record's saved path so the developer can copy it verbatim.
+fn invalid_member_message(leaf: &LeafSubject, invalid: usize, sample: &[Vec<SavedKey>]) -> String {
     let named: Vec<String> = sample
         .iter()
         .map(|identity| format_identity(identity))
@@ -177,9 +179,56 @@ fn invalid_member_message(member: &str, invalid: usize, sample: &[Vec<SavedKey>]
     };
     format!(
         "member `{member}` in record(s) {}{suffix} stores a value the current type no longer accepts (an enum member the current enum dropped, or bytes that no longer decode). \
-         Migrate those records to a current value with an `evolve transform`, then apply it with `marrow evolve apply <projectdir>`; `marrow data get <projectdir> <saved-path>` reads a record's stored value",
-        named.join(", ")
+         Migrate those records to a current value with an `evolve transform`, then apply it with `marrow evolve apply <projectdir>`; `marrow data get <projectdir> {saved_path}` reads a record's stored value",
+        named.join(", "),
+        member = leaf.label,
+        saved_path = leaf.saved_path_example(sample.first()),
     )
+}
+
+/// The renderable identity of one leaf obligation: the human label, the saved root that stores it,
+/// the leaf's own member name, and whether it sits directly under the record node. The first three
+/// build a copy-pasteable `data get` saved-path example; `record_level` decides whether the member
+/// name can be appended, since a nested-group or keyed-layer member resolves through deeper
+/// addresses the sampled record identity does not carry.
+pub(super) struct LeafSubject {
+    pub(super) label: String,
+    saved_root: String,
+    member_name: String,
+    record_level: bool,
+}
+
+impl LeafSubject {
+    /// The leaf subject of one member obligation at `place`, capturing its human label, the saved
+    /// root that stores it, and whether `record_level` (directly under the record node) lets a
+    /// `data get` example name the member.
+    pub(super) fn new(
+        place: &CheckedSavedPlace,
+        member: &CheckedSavedMember,
+        record_level: bool,
+    ) -> Self {
+        Self {
+            label: member_label(place, member),
+            saved_root: place.root.clone(),
+            member_name: member.name.clone(),
+            record_level,
+        }
+    }
+
+    /// A concrete, `data get`-feedable saved path for the first drifted record, so the diagnostic
+    /// example is copy-pasteable rather than a `<saved-path>` placeholder. A record-level member
+    /// renders the full `^root(key).member`; a nested or keyed member stops at the whole-record
+    /// path `^root(key)` the developer can read and then descend.
+    fn saved_path_example(&self, identity: Option<&Vec<SavedKey>>) -> String {
+        let mut segments = vec![PathSegment::Root(self.saved_root.clone())];
+        if let Some(identity) = identity {
+            segments.extend(identity.iter().cloned().map(PathSegment::RecordKey));
+        }
+        if self.record_level {
+            segments.push(PathSegment::Field(self.member_name.clone()));
+        }
+        crate::durable_path::display_path(&segments)
+    }
 }
 
 fn format_identity(identity: &[SavedKey]) -> String {

@@ -44,6 +44,19 @@ be a valid Marrow module identifier.
         return ExitCode::from(2);
     };
     let path = PathBuf::from(&target);
+    if let Some(separator) = nested_relative_separator(&path) {
+        report_simple_error(
+            "config.invalid",
+            &format!(
+                "project name `{}` contains a path separator `{separator}`; a project name must be \
+                 a single Marrow module identifier. Pass a bare name like `my_app`, or an absolute \
+                 path whose parent directory already exists",
+                path.display()
+            ),
+            CheckFormat::Text,
+        );
+        return ExitCode::FAILURE;
+    }
     let Some(name) = target_module_name(&path) else {
         report_invalid_target_name(&path);
         return ExitCode::FAILURE;
@@ -103,6 +116,22 @@ fn take_single_target(
         return Err(ExitCode::from(2));
     }
     Ok(())
+}
+
+/// The path separator a relative target carries in front of its final component, treating it as
+/// an invalid character in the project name. A relative `bad/name` names a single project but
+/// smuggles a separator into the name, so it is rejected whether or not `bad/` exists — distinct
+/// from the missing-parent case. An absolute path is the explicit directory-location form and is
+/// allowed; its parents are real directories the user addressed on purpose.
+fn nested_relative_separator(path: &Path) -> Option<char> {
+    if path.is_absolute() {
+        return None;
+    }
+    let parent = path.parent()?;
+    if parent.as_os_str().is_empty() {
+        return None;
+    }
+    path.to_str()?.chars().find(|c| std::path::is_separator(*c))
 }
 
 fn target_module_name(path: &Path) -> Option<String> {

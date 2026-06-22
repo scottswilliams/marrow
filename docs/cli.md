@@ -618,8 +618,7 @@ record slot before writing it, so it renders as a `would delete <record>`
 immediately followed by `would write <record>` for the same id. When the id is
 brand new this removes no existing data; the leading delete is the slot clear,
 not a deletion of prior cells. Under `json`, the report object contains
-`committed`,
-`writes`, `deletes`, `messages`, `would_freeze`, `would_apply`, `would_fence`,
+`committed`, `writes`, `deletes`, `messages`, `would_freeze`, `would_apply`, `would_fence`,
 `planned`, and `write_counts`. Planned entries carry the op, human path, base64
 value bytes, and a structured `target`. Target identities, index keys, and keyed
 data path segments use the same typed saved-key JSON objects as `marrow data`.

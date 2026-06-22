@@ -19,7 +19,7 @@ use super::index::{
 };
 use super::structural_backstop::for_each_entry_path;
 use super::{
-    Accumulator, MAX_NAMED_RECORDS, catalog_id, invalid_member_message, member_label,
+    Accumulator, LeafSubject, MAX_NAMED_RECORDS, catalog_id, invalid_member_message,
     missing_member_message, required_catalog_id,
 };
 
@@ -111,7 +111,7 @@ pub(super) fn discharge_root(
 struct LeafObligation {
     catalog_id: CatalogId,
     path: Vec<DataPathSegment>,
-    label: String,
+    subject: LeafSubject,
     /// The leaf kind whose bytes the scan validates, or `None` for a non-tokenizable position
     /// (`sequence`/`unknown`). Such a leaf arises only as a retype, so any present cell counts
     /// as populated and the retype check fails it closed.
@@ -127,6 +127,15 @@ struct LeafObligation {
     /// Set when the declared leaf type differs from the accepted one. A populated retyped leaf
     /// requires a transform; an unpopulated one falls back to its presence verdict.
     retyped: bool,
+}
+
+/// Where a leaf's cell sits, as the calling walker alone knows it: the member's catalog id, the
+/// data path that reaches it, and whether it is directly under the record node (so a diagnostic
+/// can name its full `^root(key).member` saved path).
+struct LeafSite {
+    member_id: CatalogId,
+    path: Vec<DataPathSegment>,
+    record_level: bool,
 }
 
 /// Leaf obligations at the root and inside unkeyed groups, whose presence cell sits directly
@@ -167,7 +176,15 @@ fn collect_required_leaves(
             // with no old leaf value must still presence-scan the group's new required
             // sub-members, so the walk emits the probe AND descends.
             CheckedSavedMemberKind::Group if acc.leaf_disappeared(&raw_id) => {
-                emit_disappeared_leaf(place, member, member_id, path.clone(), obligations);
+                // A field directly under the record node (an empty prefix) is record-level, so a
+                // diagnostic can name its full `^root(key).member` path; one inside an unkeyed
+                // group resolves through a deeper address the record identity does not carry.
+                let site = LeafSite {
+                    member_id: member_id.clone(),
+                    path: path.clone(),
+                    record_level: prefix.is_empty(),
+                };
+                emit_disappeared_leaf(place, member, site, obligations);
                 collect_required_leaves(place, &member.group_members, &path, obligations, acc)?;
             }
             // An unkeyed group whose own signature diverged is owned whole by the backstop;
@@ -177,7 +194,12 @@ fn collect_required_leaves(
                 collect_required_leaves(place, &member.group_members, &path, obligations, acc)?;
             }
             CheckedSavedMemberKind::Field { .. } => {
-                emit_member_leaf(place, member, &raw_id, member_id, path, obligations, acc)?;
+                let site = LeafSite {
+                    member_id,
+                    path,
+                    record_level: prefix.is_empty(),
+                };
+                emit_member_leaf(place, member, &raw_id, site, obligations, acc)?;
             }
         }
     }
@@ -194,7 +216,7 @@ enum MemberLeafOutcome {
     Skip,
     /// A leaf the scan must visit.
     Obligation {
-        label: String,
+        subject: LeafSubject,
         leaf: Option<StoreLeafKind>,
         error_code: bool,
         required: bool,
@@ -213,6 +235,7 @@ fn classify_member_leaf(
     member: &CheckedSavedMember,
     raw_id: &str,
     required: bool,
+    record_level: bool,
     acc: &Accumulator,
 ) -> MemberLeafOutcome {
     // A transform recomputes this member per record; `discharge_transforms` classifies it.
@@ -247,7 +270,7 @@ fn classify_member_leaf(
     // its populated count; an optional shrunk-enum leaf is scanned for stored validity only.
     // `classify_leaf` makes the call from the scan state.
     MemberLeafOutcome::Obligation {
-        label: member_label(place, member),
+        subject: LeafSubject::new(place, member, record_level),
         leaf,
         error_code: member.error_code,
         required,
@@ -262,30 +285,29 @@ fn emit_member_leaf(
     place: &CheckedSavedPlace,
     member: &CheckedSavedMember,
     raw_id: &str,
-    member_id: CatalogId,
-    path: Vec<DataPathSegment>,
+    site: LeafSite,
     obligations: &mut Vec<LeafObligation>,
     acc: &mut Accumulator,
 ) -> Result<(), StoreError> {
     let CheckedSavedMemberKind::Field { required } = &member.kind else {
         return Ok(());
     };
-    match classify_member_leaf(place, member, raw_id, *required, acc) {
+    match classify_member_leaf(place, member, raw_id, *required, site.record_level, acc) {
         MemberLeafOutcome::Eager(verdict) => {
-            acc.push_leaf(member_id, verdict)?;
+            acc.push_leaf(site.member_id, verdict)?;
         }
         MemberLeafOutcome::Skip => {}
         MemberLeafOutcome::Obligation {
-            label,
+            subject,
             leaf,
             error_code,
             required,
             renamed,
             retyped,
         } => obligations.push(LeafObligation {
-            catalog_id: member_id,
-            path,
-            label,
+            catalog_id: site.member_id,
+            path: site.path,
+            subject,
             leaf,
             error_code,
             required,
@@ -304,14 +326,13 @@ fn emit_member_leaf(
 fn emit_disappeared_leaf(
     place: &CheckedSavedPlace,
     member: &CheckedSavedMember,
-    member_id: CatalogId,
-    path: Vec<DataPathSegment>,
+    site: LeafSite,
     obligations: &mut Vec<LeafObligation>,
 ) {
     obligations.push(LeafObligation {
-        catalog_id: member_id,
-        path,
-        label: member_label(place, member),
+        catalog_id: site.member_id,
+        path: site.path,
+        subject: LeafSubject::new(place, member, site.record_level),
         leaf: None,
         error_code: false,
         required: false,
@@ -526,7 +547,14 @@ fn collect_keyed_leaves(
             // member path under no entry key. The subtree probe there fails a populated member
             // closed; its keyed sub-members are subsumed, so the scan does not descend.
             CheckedSavedMemberKind::Group if keyed_here && acc.leaf_disappeared(&raw_id) => {
-                emit_disappeared_leaf(place, member, member_id, obligation_path, obligations);
+                // The old leaf bytes sit at the static member path. That path names a record-level
+                // member only when nothing keyed precedes it and it is directly under the record.
+                let site = LeafSite {
+                    member_id,
+                    path: obligation_path,
+                    record_level: !in_keyed && prefix.is_empty(),
+                };
+                emit_disappeared_leaf(place, member, site, obligations);
             }
             // A keyed layer or group whose own signature diverged is owned whole by the
             // backstop; descending would emit a misleading per-entry proof on a deeper leaf.
@@ -542,15 +570,14 @@ fn collect_keyed_leaves(
                 )?;
             }
             CheckedSavedMemberKind::Field { .. } if keyed_here => {
-                emit_member_leaf(
-                    place,
-                    member,
-                    &raw_id,
+                // A field reached through a keyed layer resolves per entry, so the sampled record
+                // identity cannot name it: it is not record-level.
+                let site = LeafSite {
                     member_id,
-                    obligation_path,
-                    obligations,
-                    acc,
-                )?;
+                    path: obligation_path,
+                    record_level: false,
+                };
+                emit_member_leaf(place, member, &raw_id, site, obligations, acc)?;
             }
             CheckedSavedMemberKind::Field { .. } => {}
         }
@@ -628,7 +655,7 @@ fn classify_leaf(
             id.clone(),
             format!(
                 "member `{}` changed leaf type with {} populated record(s); a leaf type change on stored data fails closed. Add a new member of the new type, populate it with an `evolve transform` computed from this one, then retire this member",
-                leaf.label, state.present_count
+                leaf.subject.label, state.present_count
             ),
         );
         acc.push_leaf(
@@ -646,7 +673,7 @@ fn classify_leaf(
             acc.counts.records_lacking_member += state.invalid_count;
             return acc.invalid_stored_value(
                 id,
-                invalid_member_message(&leaf.label, state.invalid_count, &state.sample),
+                invalid_member_message(&leaf.subject, state.invalid_count, &state.sample),
             );
         }
         let verdict = if leaf.renamed {
@@ -670,7 +697,7 @@ fn classify_leaf(
     if state.invalid_count > 0 {
         return acc.invalid_stored_value(
             id,
-            invalid_member_message(&leaf.label, state.invalid_count, &state.sample),
+            invalid_member_message(&leaf.subject, state.invalid_count, &state.sample),
         );
     }
     let verdict = match acc.default_value_for(id.as_str(), leaf.leaf.as_ref(), leaf.error_code) {
@@ -689,7 +716,7 @@ fn classify_leaf(
         None => {
             acc.diagnostic(
                 id.clone(),
-                missing_member_message(&leaf.label, state.missing_count, &state.sample),
+                missing_member_message(&leaf.subject.label, state.missing_count, &state.sample),
             );
             Verdict::RepairRequired {
                 reason: RepairReason::MissingRequiredMember,
