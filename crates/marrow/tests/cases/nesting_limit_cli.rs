@@ -27,6 +27,14 @@ fn nested_parens(depth: usize) -> String {
     format!("module app\n\npub fn ignore()\n    var x: int = {expr}\n")
 }
 
+/// A binding whose `sequence[...]` type annotation is nested `depth` levels
+/// deep — the deep-type form whose spelling is stored flat and walked
+/// recursively during type resolution.
+fn nested_sequence_type(depth: usize) -> String {
+    let ty = format!("{}int{}", "sequence[".repeat(depth), "]".repeat(depth));
+    format!("module app\n\npub fn ignore()\n    var x: {ty}\n")
+}
+
 /// The dotted codes on a `--format json` check, read from the typed `code` slot of
 /// each diagnostic record rather than matched in any rendered prose.
 fn check_json_codes(source: &str) -> (Option<i32>, Vec<String>) {
@@ -94,6 +102,34 @@ fn fmt_on_deeply_nested_source_reports_the_nesting_limit() {
     let segments: Vec<&str> = fault.split(": ").collect();
     let (_, code) = find_code_segment(&segments);
     assert_eq!(code, "check.nesting_limit");
+}
+
+#[test]
+fn deeply_nested_type_annotation_check_reports_the_nesting_limit() {
+    // ~700k levels: the type spelling is stored flat, so its depth reaches the
+    // schema resolver, which once overflowed the native stack (exit 134).
+    let (code, codes) = check_json_codes(&nested_sequence_type(700_000));
+    assert_eq!(code, Some(1), "deep type nesting exits 1, not 134");
+    assert!(
+        codes.contains(&"check.nesting_limit".to_string()),
+        "expected check.nesting_limit, got {codes:?}"
+    );
+}
+
+#[test]
+fn deeply_nested_type_annotation_under_the_limit_checks_normally() {
+    // A type comfortably under the limit resolves without the nesting error, so
+    // the bound rejects only genuinely pathological type depth.
+    let (code, codes) = check_json_codes(&nested_sequence_type(200));
+    assert_eq!(
+        code,
+        Some(0),
+        "under-limit type nesting checks clean: {codes:?}"
+    );
+    assert!(
+        !codes.contains(&"check.nesting_limit".to_string()),
+        "under-limit type nesting should carry no nesting error: {codes:?}"
+    );
 }
 
 #[test]

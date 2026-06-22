@@ -10,7 +10,6 @@ use super::statement_lines::{
 use super::tokens::{
     comment_from_token, expr_of, first_line_end, is_line_comment, line_end, line_span,
 };
-use crate::PARSE_SYNTAX;
 use crate::ast::{
     Block, CatchClause, Comment, CommentMarker, CommentPlacement, ElseIf, Expression, MatchArm,
     Statement, TypeRef,
@@ -737,7 +736,7 @@ impl<'a> StmtParser<'a> {
         message: impl Into<String>,
     ) {
         self.diagnostics.push(Diagnostic {
-            code: PARSE_SYNTAX,
+            code: reason.code(),
             reason: DiagnosticReason::Parser(reason),
             severity: Severity::Error,
             message: message.into(),

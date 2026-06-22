@@ -5,7 +5,6 @@
 use super::DeclParser;
 use super::ParseError;
 use super::tokens::{comment_from_token, first_line_end, is_line_comment, line_end};
-use crate::PARSE_SYNTAX;
 use crate::ast::{Comment, CommentMarker, CommentPlacement};
 use crate::diagnostic::{
     Diagnostic, DiagnosticReason, ExpectedSyntax, ParseDiagnosticReason, Severity, SourceSpan,
@@ -268,7 +267,7 @@ impl<'a> DeclParser<'a> {
         message: impl Into<String>,
     ) {
         self.diagnostics.push(Diagnostic {
-            code: PARSE_SYNTAX,
+            code: reason.code(),
             reason: DiagnosticReason::Parser(reason),
             severity: Severity::Error,
             message: message.into(),

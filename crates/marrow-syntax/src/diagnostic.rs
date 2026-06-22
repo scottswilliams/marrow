@@ -73,6 +73,20 @@ pub enum ParseDiagnosticReason {
     Unsupported(UnsupportedSyntax),
 }
 
+impl ParseDiagnosticReason {
+    /// The dotted code a declaration-parser diagnostic carrying this reason
+    /// renders under. Nesting overflow is a `check.nesting_limit` finding
+    /// wherever the front end raises it, so it surfaces alongside the type-check
+    /// findings the operator reads; every other declaration parse error is
+    /// `parse.syntax`.
+    pub(crate) fn code(&self) -> &'static str {
+        match self {
+            Self::NestingLimit => crate::NESTING_LIMIT,
+            _ => crate::PARSE_SYNTAX,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExpectedSyntax {
     ConstName,

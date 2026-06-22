@@ -5,7 +5,7 @@
 use std::borrow::Cow;
 
 use super::{ParseError, ParseResult};
-use crate::PARSE_SYNTAX;
+use crate::NESTING_DEPTH_LIMIT;
 use crate::ast::{Comment, CommentMarker, CommentPlacement, Expression, TypeRef};
 use crate::diagnostic::{
     Diagnostic, DiagnosticReason, ExpectedSyntax, ParseDiagnosticReason, Severity, SourceSpan,
@@ -95,7 +95,7 @@ pub(super) fn push_parse_error(
 ) {
     let (span, reason, message) = error.locate(fallback);
     diagnostics.push(Diagnostic {
-        code: PARSE_SYNTAX,
+        code: reason.code(),
         reason: DiagnosticReason::Parser(reason),
         severity: Severity::Error,
         message,
@@ -193,6 +193,17 @@ pub(super) fn reject_structural_type_tokens(
     expected: ExpectedSyntax,
     message: &'static str,
 ) -> ParseResult<()> {
+    // A type spelling is stored as flat text and walked recursively downstream
+    // (sequence-element resolution and every later type walk), so its bracket
+    // nesting must fail closed here against the same limit expression and layout
+    // nesting do, rather than overflowing the native stack at resolution time.
+    if let Some(span) = type_nesting_overflow(tokens) {
+        return Err(ParseError::at(
+            span,
+            ParseDiagnosticReason::NestingLimit,
+            format!("type nests deeper than the limit of {NESTING_DEPTH_LIMIT}"),
+        ));
+    }
     if tokens
         .iter()
         .any(|token| matches!(token.kind, TokenKind::Keyword(Keyword::Maybe)))
@@ -243,6 +254,27 @@ fn type_token_len(tokens: &[Token]) -> usize {
         }
     }
     index.min(tokens.len())
+}
+
+/// The span of the bracket that first opens a type nested deeper than
+/// [`NESTING_DEPTH_LIMIT`], or `None` when the type stays within the limit.
+/// Counts `[`/`(` of either kind, mirroring the limit the lexer and expression
+/// parser enforce, so a deep type fails closed before any recursive walk runs.
+fn type_nesting_overflow(tokens: &[Token]) -> Option<SourceSpan> {
+    let mut depth = 0usize;
+    for token in tokens {
+        match token.kind {
+            TokenKind::LeftParen | TokenKind::LeftBracket => {
+                depth += 1;
+                if depth > NESTING_DEPTH_LIMIT {
+                    return Some(token.span);
+                }
+            }
+            TokenKind::RightParen | TokenKind::RightBracket => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+    }
+    None
 }
 
 /// Index of the bracket that closes the `[`/`(` at `open`, matching nested
