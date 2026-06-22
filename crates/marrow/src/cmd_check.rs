@@ -90,6 +90,15 @@ const CHECK_LOCK_MISSING: &str = "check.lock_missing";
 const MISSING_LOCK_MESSAGE: &str =
     "marrow.lock is absent but the store carries durable shape; commit the projected lock";
 
+/// A `marrow check --locked` failure: the project declares a surface and a `client` output, but
+/// the committed client is absent or carries a different surface-ABI digest than the current
+/// surface. Plain `check` is read-only and surfaces this as a non-fatal advisory; `--locked`
+/// makes it fatal so CI fails against a client the surface has outrun. Mirrors the stale-lock
+/// family.
+const CHECK_STALE_CLIENT: &str = "check.stale_client";
+
+const STALE_CLIENT_MESSAGE: &str = "the declared client is absent or behind the current surface; a run or evolve apply rewrites it";
+
 /// Check a whole project: load `<dir>/marrow.json`, then run the project
 /// checker over its source roots and configured test files. The committed lock binds first-run
 /// identity and, when it disagrees with the current source digest, surfaces a stale-lock condition
@@ -151,37 +160,97 @@ fn check_project_dir(dir: &str, format: CheckFormat, locked: bool) -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    let stale = lock
+    let stale_lock = lock
         .as_ref()
         .is_some_and(|lock| lock.source_digest != snapshot.program.source_digest());
 
-    // A fatal stale lock is a check failure, so its report must mirror any other failing check:
-    // the structured envelope reports `failed`, carries the stale-lock diagnostic, and omits the
-    // success-only entry footprints and surface descriptors. The advisory case keeps the clean
-    // success envelope and surfaces the stale lock as a separate stderr note.
-    if stale && strictness == LockStrictness::Fatal {
-        crate::report_project_failed_with_diagnostic(
-            dir,
-            &snapshot.report,
-            stale_lock_diagnostic(),
-            format,
-        );
-        return ExitCode::FAILURE;
+    // The project declares a `client` output that the surface has outrun: the committed client is
+    // absent or carries a different surface-ABI digest than the current surface. A project with no
+    // `client`, or one with no surface to project, raises no client condition. Check is read-only,
+    // so it never writes the client; it only compares the on-disk header digest against the digest
+    // it would write.
+    let stale_client = config.client.is_some() && client_is_stale(dir, &config, &snapshot.program);
+
+    // A fatal lock or client condition is a check failure, so its report must mirror any other
+    // failing check: the structured envelope reports `failed`, carries the condition's diagnostic,
+    // and omits the success-only entry footprints and surface descriptors. The lock gate is checked
+    // first so its diagnostic leads when both fault under `--locked`.
+    if strictness == LockStrictness::Fatal {
+        if stale_lock {
+            crate::report_project_failed_with_diagnostic(
+                dir,
+                &snapshot.report,
+                stale_lock_diagnostic(),
+                format,
+            );
+            return ExitCode::FAILURE;
+        }
+        if stale_client {
+            crate::report_project_failed_with_diagnostic(
+                dir,
+                &snapshot.report,
+                stale_client_diagnostic(),
+                format,
+            );
+            return ExitCode::FAILURE;
+        }
     }
 
-    if stale {
-        crate::report_project_ok_with_advisory(
+    // The advisory (non-`--locked`) case keeps the clean success envelope and surfaces each stale
+    // condition as a separate stderr note. Both advisories travel through one success render so a
+    // project that is both lock-advisory and client-advisory still reports a single `ok` envelope.
+    let mut advisories = Vec::new();
+    if stale_lock {
+        advisories.push(crate::ProjectAdvisory {
+            diagnostic: stale_lock_advisory_diagnostic(),
+            note: format!("{CHECK_STALE_LOCK}: {STALE_LOCK_MESSAGE}"),
+        });
+    }
+    if stale_client {
+        advisories.push(crate::ProjectAdvisory {
+            diagnostic: stale_client_advisory_diagnostic(),
+            note: format!("{CHECK_STALE_CLIENT}: {STALE_CLIENT_MESSAGE}"),
+        });
+    }
+
+    if advisories.is_empty() {
+        crate::report_project_with_program(dir, &snapshot.report, &snapshot.program, format);
+    } else {
+        crate::report_project_ok_with_advisories(
             dir,
             &snapshot.report,
             &snapshot.program,
-            stale_lock_advisory_diagnostic(),
-            &format!("{CHECK_STALE_LOCK}: {STALE_LOCK_MESSAGE}"),
+            advisories,
             format,
         );
-    } else {
-        crate::report_project_with_program(dir, &snapshot.report, &snapshot.program, format);
     }
     ExitCode::SUCCESS
+}
+
+/// Whether the project's declared client is stale or absent relative to the current surface. With
+/// no surface to project there is no client to keep fresh, so the condition is silent. Otherwise the
+/// client is stale-or-absent iff the on-disk header digest is not exactly the digest the surface
+/// would write; the spec treats stale and absent identically, so a missing file reads as stale.
+fn client_is_stale(
+    dir: &str,
+    config: &marrow_project::ProjectConfig,
+    program: &marrow_check::CheckedProgram,
+) -> bool {
+    use marrow_json::surface::{
+        SurfaceAbiJson, SurfaceRouteManifestJson, surface_abi_digest, surface_client_header_digest,
+    };
+    let Some(rel) = config.client.as_deref() else {
+        return false;
+    };
+    let abi = SurfaceAbiJson::from_program(program);
+    if abi.surfaces.is_empty() {
+        return false;
+    }
+    let want = surface_abi_digest(&abi, &SurfaceRouteManifestJson::from_abi(&abi));
+    let on_disk = std::fs::read_to_string(Path::new(dir).join(rel))
+        .ok()
+        .and_then(|contents| surface_client_header_digest(&contents));
+    on_disk.as_deref() != Some(want.as_str())
 }
 
 const STALE_LOCK_MESSAGE: &str =
@@ -222,6 +291,33 @@ fn stale_lock_advisory_diagnostic() -> serde_json::Value {
         "code": CHECK_STALE_LOCK,
         "kind": marrow_syntax::kind_for_code(CHECK_STALE_LOCK),
         "message": STALE_LOCK_MESSAGE,
+        "severity": "warning",
+        "source_span": null,
+    })
+}
+
+/// The stale-client condition as a structured diagnostic for the failed-check envelope. Like the
+/// lock diagnostics it carries no source span: it compares the committed client against the whole
+/// projected surface rather than faulting at a single declaration.
+fn stale_client_diagnostic() -> serde_json::Value {
+    serde_json::json!({
+        "code": CHECK_STALE_CLIENT,
+        "kind": marrow_syntax::kind_for_code(CHECK_STALE_CLIENT),
+        "message": STALE_CLIENT_MESSAGE,
+        "severity": "error",
+        "source_span": null,
+    })
+}
+
+/// The non-fatal stale-client advisory as a structured diagnostic for the success envelope. It is
+/// a warning, not an error, so a clean check still passes; carrying it in the stdout envelope lets
+/// a machine consumer see the advisory without parsing stderr. A later `run` or `evolve apply`
+/// rewrites the client to converge it.
+fn stale_client_advisory_diagnostic() -> serde_json::Value {
+    serde_json::json!({
+        "code": CHECK_STALE_CLIENT,
+        "kind": marrow_syntax::kind_for_code(CHECK_STALE_CLIENT),
+        "message": STALE_CLIENT_MESSAGE,
         "severity": "warning",
         "source_span": null,
     })

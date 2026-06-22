@@ -9,6 +9,8 @@ mod backup_cli;
 mod broken_pipe_cli;
 #[path = "cases/check_cli.rs"]
 mod check_cli;
+#[path = "cases/check_client_cli.rs"]
+mod check_client_cli;
 #[path = "cases/check_footprints_cli.rs"]
 mod check_footprints_cli;
 #[path = "cases/check_project_cli.rs"]

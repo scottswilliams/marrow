@@ -234,23 +234,32 @@ pub(crate) fn report_project_failed_with_diagnostic(
     }
 }
 
-/// Report a clean (no errors) project check that also surfaces a CLI-level advisory the checker
-/// itself does not raise, such as a non-fatal stale `marrow.lock`. The text path keeps the
-/// success line on stdout and the advisory note on stderr; the JSON envelope keeps its `ok`
-/// status and footprints while carrying the advisory as a structured diagnostic, so a machine
-/// consumer parsing the stdout envelope sees it without reading stderr.
-pub(crate) fn report_project_ok_with_advisory(
+/// A CLI-level advisory the checker itself does not raise — a stale `marrow.lock` or a stale
+/// declared client. Each carries the structured diagnostic for the JSON envelope and the text note
+/// for stderr, so a clean check can surface several at once through a single success render.
+pub(crate) struct ProjectAdvisory {
+    pub diagnostic: serde_json::Value,
+    pub note: String,
+}
+
+/// Report a clean (no errors) project check that also surfaces CLI-level advisories the checker
+/// itself does not raise. The text path keeps the success line on stdout and the advisory notes on
+/// stderr; the JSON envelope keeps its `ok` status and footprints while carrying the advisories as
+/// structured diagnostics, so a machine consumer parsing the stdout envelope sees them without
+/// reading stderr. Exactly one success envelope is rendered however many advisories apply.
+pub(crate) fn report_project_ok_with_advisories(
     target: &str,
     report: &marrow_check::CheckReport,
     program: &marrow_check::CheckedProgram,
-    advisory: serde_json::Value,
-    advisory_note: &str,
+    advisories: Vec<ProjectAdvisory>,
     format: CheckFormat,
 ) {
     match format {
         CheckFormat::Text => {
             report_project_with_program(target, report, program, format);
-            eprintln!("{advisory_note}");
+            for advisory in &advisories {
+                eprintln!("{}", advisory.note);
+            }
         }
         CheckFormat::Json | CheckFormat::Jsonl => report_diagnostic_records(
             format,
@@ -258,7 +267,7 @@ pub(crate) fn report_project_ok_with_advisory(
                 .diagnostics
                 .iter()
                 .map(check_diagnostic_record)
-                .chain(std::iter::once(advisory)),
+                .chain(advisories.into_iter().map(|advisory| advisory.diagnostic)),
             project_envelope(target, "ok", Some(program)),
         ),
     }
