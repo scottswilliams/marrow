@@ -73,12 +73,31 @@ pub fn source_namespace_completion_fact(
     qualifier: &[String],
 ) -> Option<SourceNamespaceCompletionFact> {
     let expanded = expand_namespace_qualifier(source_file, qualifier)?;
-    if let Some(module) = module_for_segments(program, &expanded) {
+    namespace_completion_fact_for_expanded_qualifier(program, file, source_file, &expanded)
+}
+
+pub fn source_namespace_completion_file_fact(
+    program: &CheckedProgram,
+    file: &Path,
+    source_file: &SourceFile,
+    qualifier: &[String],
+) -> Option<SourceNamespaceCompletionFact> {
+    let expanded = expand_file_namespace_qualifier(source_file, qualifier)?;
+    namespace_completion_fact_for_expanded_qualifier(program, file, source_file, &expanded)
+}
+
+fn namespace_completion_fact_for_expanded_qualifier(
+    program: &CheckedProgram,
+    file: &Path,
+    source_file: &SourceFile,
+    expanded: &[String],
+) -> Option<SourceNamespaceCompletionFact> {
+    if let Some(module) = module_for_segments(program, expanded) {
         return Some(SourceNamespaceCompletionFact::Module(
             module_completion_fact(program, file, source_file, module),
         ));
     }
-    enum_for_segments(program, file, &expanded)
+    enum_for_segments(program, file, expanded)
         .map(enum_completion_fact)
         .map(SourceNamespaceCompletionFact::Enum)
 }
@@ -94,6 +113,17 @@ fn expand_namespace_qualifier(
     }
 }
 
+fn expand_file_namespace_qualifier(
+    source_file: &SourceFile,
+    qualifier: &[String],
+) -> Option<Vec<String>> {
+    match qualifier {
+        [] => None,
+        [segment] => expand_unique_file_import_module_alias(source_file, segment),
+        _ => expand_unique_file_import_alias(source_file, qualifier),
+    }
+}
+
 fn expand_unique_import_module_alias(
     source_file: &SourceFile,
     segment: &str,
@@ -105,28 +135,50 @@ fn expand_unique_import_module_alias(
     let Some(import) = matches.next() else {
         return Some(vec![segment.to_string()]);
     };
-    if matches.next().is_some() || source_declares_top_level_name(source_file, segment) {
+    if matches.next().is_some() || crate::source_declares_top_level_name(source_file, segment) {
         return None;
     }
     Some(crate::split_type_path(&import.name))
 }
 
-fn source_declares_top_level_name(source_file: &SourceFile, name: &str) -> bool {
-    source_file
-        .declarations
+fn expand_unique_file_import_module_alias(
+    source_file: &SourceFile,
+    segment: &str,
+) -> Option<Vec<String>> {
+    let mut matches = source_file
+        .uses
         .iter()
-        .any(|declaration| declaration_introduced_name(declaration) == Some(name))
+        .filter(|use_decl| crate::short_name(&use_decl.name) == segment);
+    let Some(import) = matches.next() else {
+        return Some(vec![segment.to_string()]);
+    };
+    if matches.next().is_some() || crate::import_alias_head_is_file_shadowed(source_file, segment) {
+        return None;
+    }
+    Some(crate::split_type_path(&import.name))
 }
 
-fn declaration_introduced_name(declaration: &Declaration) -> Option<&str> {
-    match declaration {
-        Declaration::Const(declaration) => Some(declaration.name.as_str()),
-        Declaration::Resource(declaration) => Some(declaration.name.as_str()),
-        Declaration::Surface(declaration) => Some(declaration.name.as_str()),
-        Declaration::Function(declaration) => Some(declaration.name.as_str()),
-        Declaration::Enum(declaration) => Some(declaration.name.as_str()),
-        Declaration::Store(_) | Declaration::Evolve(_) => None,
+fn expand_unique_file_import_alias(
+    source_file: &SourceFile,
+    qualifier: &[String],
+) -> Option<Vec<String>> {
+    let head = qualifier.first()?;
+    let mut matches = source_file
+        .uses
+        .iter()
+        .filter(|use_decl| crate::short_name(&use_decl.name) == head.as_str());
+    let Some(import) = matches.next() else {
+        return Some(qualifier.to_vec());
+    };
+    if matches.next().is_some() || crate::import_alias_head_is_file_shadowed(source_file, head) {
+        return None;
     }
+    Some(
+        crate::split_type_path(&import.name)
+            .into_iter()
+            .chain(qualifier[1..].iter().cloned())
+            .collect(),
+    )
 }
 
 fn module_for_segments<'a>(

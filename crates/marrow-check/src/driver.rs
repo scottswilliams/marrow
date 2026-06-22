@@ -10,7 +10,9 @@ use std::path::{Path, PathBuf};
 use marrow_project::{DiscoverError, ProjectConfig, discover_test_modules};
 use marrow_schema::ReturnPresence;
 use marrow_schema::stdlib::{self, ParamType, ReturnType};
-use marrow_syntax::{SourceSpan, parse_source};
+use marrow_syntax::{
+    Block, Declaration, EvolveStep, FunctionDecl, SourceFile, SourceSpan, Statement, parse_source,
+};
 
 use crate::analysis;
 use crate::checks;
@@ -1214,12 +1216,122 @@ pub(crate) fn expand_unique_import_alias(
 
 pub(crate) struct AmbiguousImportAlias;
 
-fn source_declares_top_level_name(source: &marrow_syntax::SourceFile, name: &str) -> bool {
+pub(crate) fn import_alias_head_is_file_shadowed(source: &SourceFile, name: &str) -> bool {
+    source_declares_top_level_name(source, name) || source_declares_body_local_name(source, name)
+}
+
+pub(crate) fn source_declares_top_level_name(source: &SourceFile, name: &str) -> bool {
     source
         .declarations
         .iter()
         .filter_map(declaration_introduced_name)
         .any(|intro| intro.name == name)
+}
+
+fn source_declares_body_local_name(source_file: &SourceFile, name: &str) -> bool {
+    source_file
+        .declarations
+        .iter()
+        .any(|declaration| match declaration {
+            Declaration::Function(function) => function_declares_local_name(function, name),
+            Declaration::Evolve(evolve) => evolve.steps.iter().any(|step| {
+                matches!(
+                    step,
+                    EvolveStep::Transform { body, .. } if block_declares_local_name(body, name)
+                )
+            }),
+            Declaration::Const(_)
+            | Declaration::Resource(_)
+            | Declaration::Store(_)
+            | Declaration::Surface(_)
+            | Declaration::Enum(_) => false,
+        })
+}
+
+fn function_declares_local_name(function: &FunctionDecl, name: &str) -> bool {
+    function.params.iter().any(|param| param.name == name)
+        || block_declares_local_name(&function.body, name)
+}
+
+fn block_declares_local_name(block: &Block, name: &str) -> bool {
+    block
+        .statements
+        .iter()
+        .any(|statement| statement_declares_local_name(statement, name))
+}
+
+fn statement_declares_local_name(statement: &Statement, name: &str) -> bool {
+    match statement {
+        Statement::Const {
+            name: local_name, ..
+        }
+        | Statement::Var {
+            name: local_name, ..
+        }
+        | Statement::IfConst {
+            name: local_name, ..
+        } => local_name == name || statement_child_blocks_declare_local_name(statement, name),
+        Statement::For { binding, body, .. } => {
+            binding.first == name
+                || binding.second.as_deref() == Some(name)
+                || block_declares_local_name(body, name)
+        }
+        Statement::Try { body, catch, .. } => {
+            block_declares_local_name(body, name)
+                || catch.as_ref().is_some_and(|catch| {
+                    catch.name == name || block_declares_local_name(&catch.block, name)
+                })
+        }
+        _ => statement_child_blocks_declare_local_name(statement, name),
+    }
+}
+
+fn statement_child_blocks_declare_local_name(statement: &Statement, name: &str) -> bool {
+    match statement {
+        Statement::If {
+            then_block,
+            else_ifs,
+            else_block,
+            ..
+        }
+        | Statement::IfConst {
+            then_block,
+            else_ifs,
+            else_block,
+            ..
+        } => {
+            block_declares_local_name(then_block, name)
+                || else_ifs
+                    .iter()
+                    .any(|else_if| block_declares_local_name(&else_if.block, name))
+                || else_block
+                    .as_ref()
+                    .is_some_and(|block| block_declares_local_name(block, name))
+        }
+        Statement::While { body, .. } | Statement::Transaction { body, .. } => {
+            block_declares_local_name(body, name)
+        }
+        Statement::Match { arms, .. } => arms
+            .iter()
+            .any(|arm| block_declares_local_name(&arm.block, name)),
+        Statement::For { body, .. } => block_declares_local_name(body, name),
+        Statement::Try { body, catch, .. } => {
+            block_declares_local_name(body, name)
+                || catch
+                    .as_ref()
+                    .is_some_and(|catch| block_declares_local_name(&catch.block, name))
+        }
+        Statement::Const { .. }
+        | Statement::Var { .. }
+        | Statement::Assign { .. }
+        | Statement::Delete { .. }
+        | Statement::Return { .. }
+        | Statement::ReturnAbsent { .. }
+        | Statement::Break { .. }
+        | Statement::Continue { .. }
+        | Statement::Throw { .. }
+        | Statement::Expr { .. } => false,
+    }
 }
 
 fn expand_leading_alias(

@@ -16,6 +16,7 @@ pub use completion::{
     SourceNamespaceEnumMemberCompletion, SourceNamespaceEnumMemberStatus,
     SourceNamespaceFunctionCompletion, SourceNamespaceFunctionParamCompletion,
     SourceNamespaceResourceCompletion, source_namespace_completion_fact,
+    source_namespace_completion_file_fact,
 };
 pub use data::{
     DEFAULT_VALUE_PREVIEW_LIMIT, DataChild, DataChildView, DataChildViewsPage, DataChildrenPage,

@@ -4,7 +4,7 @@ use crate::support;
 use marrow_check::AnalysisSnapshot;
 use marrow_check::tooling::{
     SourceNamespaceCompletionFact, SourceNamespaceEnumMemberStatus,
-    source_namespace_completion_fact,
+    source_namespace_completion_fact, source_namespace_completion_file_fact,
 };
 use marrow_syntax::SourceFile;
 
@@ -84,6 +84,23 @@ fn namespace_fact(
         .map(|segment| segment.to_string())
         .collect::<Vec<_>>();
     source_namespace_completion_fact(
+        &snapshot.program,
+        file,
+        source_file(snapshot, file),
+        &qualifier,
+    )
+}
+
+fn file_namespace_fact(
+    snapshot: &AnalysisSnapshot,
+    file: &Path,
+    qualifier: &[&str],
+) -> Option<SourceNamespaceCompletionFact> {
+    let qualifier = qualifier
+        .iter()
+        .map(|segment| segment.to_string())
+        .collect::<Vec<_>>();
+    source_namespace_completion_file_fact(
         &snapshot.program,
         file,
         source_file(snapshot, file),
@@ -225,7 +242,15 @@ fn namespace_completion_fails_closed_for_ambiguous_single_segment_import_alias()
         &[
             (
                 "src/shelf/books.mw",
-                "module shelf::books\n\npub fn titleOf(): string\n    return \"title\"\n",
+                "\
+module shelf::books
+
+pub enum Status
+    active
+
+pub fn titleOf(): string
+    return \"title\"
+",
             ),
             (
                 "src/archive/books.mw",
@@ -278,4 +303,194 @@ resource books
         .expect("app file");
 
     assert_eq!(namespace_fact(&snapshot, app, &["books"]), None);
+}
+
+#[test]
+fn file_namespace_completion_fails_closed_when_function_parameter_shadows_import_alias() {
+    let (snapshot, paths) = support::analyze_overlay(
+        "source-namespace-completion-parameter-alias-collision",
+        &[
+            (
+                "src/shelf/books.mw",
+                "\
+module shelf::books
+
+pub enum Status
+    active
+
+pub fn titleOf(): string
+    return \"title\"
+",
+            ),
+            (
+                "src/app/main.mw",
+                "\
+module app::main
+
+use shelf::books
+
+pub fn run(books: int): int
+    return books
+",
+            ),
+        ],
+    );
+    support::assert_clean(&snapshot.report);
+    let app = paths
+        .iter()
+        .find(|path| path.ends_with("src/app/main.mw"))
+        .expect("app file");
+
+    assert_eq!(file_namespace_fact(&snapshot, app, &["books"]), None);
+    assert_eq!(
+        file_namespace_fact(&snapshot, app, &["books", "Status"]),
+        None
+    );
+    assert!(
+        matches!(
+            file_namespace_fact(&snapshot, app, &["shelf", "books", "Status"]),
+            Some(SourceNamespaceCompletionFact::Enum(_))
+        ),
+        "fully-qualified enum lookup should not depend on the alias head"
+    );
+}
+
+#[test]
+fn file_namespace_completion_fails_closed_when_function_local_binding_shadows_import_alias() {
+    for (name, body) in [
+        ("const", "    const books = 5\n    return books\n"),
+        ("var", "    var books: int = 5\n    return books\n"),
+        (
+            "if_const",
+            "    if const books = ^notes(1).title\n        return 1\n    return 0\n",
+        ),
+        (
+            "for_first",
+            "    for books in 1..3\n        print(books)\n    return 0\n",
+        ),
+        (
+            "for_second",
+            "    var scores(name: string): int\n    for key, books in entries(scores)\n        print(books)\n    return 0\n",
+        ),
+        (
+            "catch",
+            "    try\n        print(\"try\")\n    catch books: Error\n        print(books.message)\n    return 0\n",
+        ),
+    ] {
+        let (snapshot, paths) = support::analyze_overlay(
+            &format!("source-namespace-completion-local-alias-collision-{name}"),
+            &[
+                (
+                    "src/shelf/books.mw",
+                    "\
+module shelf::books
+
+pub enum Status
+    active
+
+pub fn titleOf(): string
+    return \"title\"
+",
+                ),
+                (
+                    "src/app/main.mw",
+                    &format!(
+                        "\
+module app::main
+
+use shelf::books
+
+resource Note
+    required title: string
+
+store ^notes(id: int): Note
+
+pub fn run(): int
+{body}"
+                    ),
+                ),
+            ],
+        );
+        support::assert_clean(&snapshot.report);
+        let app = paths
+            .iter()
+            .find(|path| path.ends_with("src/app/main.mw"))
+            .expect("app file");
+
+        assert_eq!(
+            file_namespace_fact(&snapshot, app, &["books"]),
+            None,
+            "case {name} should fail closed for module alias"
+        );
+        assert_eq!(
+            file_namespace_fact(&snapshot, app, &["books", "Status"]),
+            None,
+            "case {name} should fail closed for enum alias"
+        );
+        assert!(
+            matches!(
+                file_namespace_fact(&snapshot, app, &["shelf", "books", "Status"]),
+                Some(SourceNamespaceCompletionFact::Enum(_))
+            ),
+            "case {name} should preserve fully-qualified enum lookup"
+        );
+    }
+}
+
+#[test]
+fn file_namespace_completion_fails_closed_when_evolve_transform_body_shadows_import_alias() {
+    let (snapshot, paths) = support::analyze_overlay(
+        "source-namespace-completion-evolve-transform-alias-collision",
+        &[
+            (
+                "src/shelf/books.mw",
+                "\
+module shelf::books
+
+pub enum Status
+    active
+
+pub fn titleOf(): string
+    return \"title\"
+",
+            ),
+            (
+                "src/app/main.mw",
+                "\
+module app::main
+
+use shelf::books
+
+resource Draft
+    required source: string
+    title: string
+
+store ^drafts(id: int): Draft
+
+evolve
+    transform Draft.title
+        const books = old.source
+        return books
+",
+            ),
+        ],
+    );
+    support::assert_clean(&snapshot.report);
+    let app = paths
+        .iter()
+        .find(|path| path.ends_with("src/app/main.mw"))
+        .expect("app file");
+
+    assert_eq!(file_namespace_fact(&snapshot, app, &["books"]), None);
+    assert_eq!(
+        file_namespace_fact(&snapshot, app, &["books", "Status"]),
+        None
+    );
+    assert!(
+        matches!(
+            file_namespace_fact(&snapshot, app, &["shelf", "books", "Status"]),
+            Some(SourceNamespaceCompletionFact::Enum(_))
+        ),
+        "fully-qualified enum lookup should not depend on the alias head"
+    );
 }
