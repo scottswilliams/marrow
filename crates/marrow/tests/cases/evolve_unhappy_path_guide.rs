@@ -3,7 +3,7 @@ use std::path::Path;
 
 use crate::support;
 use crate::support_evolve;
-use marrow_store::cell::CatalogId;
+use marrow_store::cell::{CatalogId, DataCellKey};
 use marrow_store::key::SavedKey;
 use marrow_store::tree::{DataPathSegment, TreeStore};
 use marrow_store::value::{Scalar, encode_value};
@@ -419,6 +419,104 @@ fn populated_keyed_layer_key_shape_change_fences_preview_apply_and_run() {
 }
 
 #[test]
+fn populated_unkeyed_group_to_keyed_layer_fences_preview_apply_and_run() {
+    const BASELINE_SOURCE: &str = "module books\n\
+         resource Book\n\
+         \x20   required title: string\n\
+         \x20   notes\n\
+         \x20       required body: string\n\
+         store ^books(id: int): Book\n\
+         pub fn seed()\n\
+         \x20   transaction\n\
+         \x20       ^books(1).title = \"Dune\"\n\
+         \x20       ^books(1).notes.body = \"draft\"\n";
+    const KEYED_RESHAPED_SOURCE: &str = "module books\n\
+         resource Book\n\
+         \x20   required title: string\n\
+         \x20   notes(version: int)\n\
+         \x20       required body: string\n\
+         store ^books(id: int): Book\n\
+         pub fn noop()\n\
+         \x20   print(\"unkeyed group to keyed layer entry executed\")\n";
+
+    let root = native_books_project("evolve-unhappy-group-to-keyed-layer", BASELINE_SOURCE);
+    let dir = root.to_str().unwrap();
+
+    let seed = marrow(&["run", "--entry", "books::seed", dir]);
+    assert_eq!(seed.status.code(), Some(0), "{seed:?}");
+    let old_notes_id = accepted_catalog_entry_id(&root, "books::Book::notes");
+    let old_body_id = accepted_catalog_entry_id(&root, "books::Book::notes::body");
+    let old_body_path = [member_segment(&old_notes_id), member_segment(&old_body_id)];
+    let old_body_bytes = encode_value(&Scalar::Str("draft".into())).expect("encode body");
+    assert_eq!(
+        read_path_bytes(&root, "books::^books", &[SavedKey::Int(1)], &old_body_path),
+        Some(old_body_bytes.clone()),
+        "baseline stores the unkeyed-group leaf under the old group path"
+    );
+
+    write(&root, "src/books.mw", KEYED_RESHAPED_SOURCE);
+    assert_group_keyed_reshape_fences_preview_apply_and_run(
+        &root,
+        dir,
+        &old_notes_id,
+        &old_body_path,
+        &old_body_bytes,
+        "unkeyed group to keyed layer entry executed",
+    );
+}
+
+#[test]
+fn populated_keyed_layer_to_unkeyed_group_fences_preview_apply_and_run() {
+    const BASELINE_SOURCE: &str = "module books\n\
+         resource Book\n\
+         \x20   required title: string\n\
+         \x20   notes(version: int)\n\
+         \x20       required body: string\n\
+         store ^books(id: int): Book\n\
+         pub fn seed()\n\
+         \x20   transaction\n\
+         \x20       ^books(1).title = \"Dune\"\n\
+         \x20       ^books(1).notes(7).body = \"draft\"\n";
+    const GROUP_RESHAPED_SOURCE: &str = "module books\n\
+         resource Book\n\
+         \x20   required title: string\n\
+         \x20   notes\n\
+         \x20       required body: string\n\
+         store ^books(id: int): Book\n\
+         pub fn noop()\n\
+         \x20   print(\"keyed layer to unkeyed group entry executed\")\n";
+
+    let root = native_books_project("evolve-unhappy-keyed-layer-to-group", BASELINE_SOURCE);
+    let dir = root.to_str().unwrap();
+
+    let seed = marrow(&["run", "--entry", "books::seed", dir]);
+    assert_eq!(seed.status.code(), Some(0), "{seed:?}");
+    let old_notes_id = accepted_catalog_entry_id(&root, "books::Book::notes");
+    let old_body_id = accepted_catalog_entry_id(&root, "books::Book::notes::body");
+    let old_body_path = [
+        member_segment(&old_notes_id),
+        DataPathSegment::Key(SavedKey::Int(7)),
+        member_segment(&old_body_id),
+    ];
+    let old_body_bytes = encode_value(&Scalar::Str("draft".into())).expect("encode body");
+    assert_eq!(
+        read_path_bytes(&root, "books::^books", &[SavedKey::Int(1)], &old_body_path),
+        Some(old_body_bytes.clone()),
+        "baseline stores the keyed-layer leaf under the old keyed path"
+    );
+
+    write(&root, "src/books.mw", GROUP_RESHAPED_SOURCE);
+    assert_group_keyed_reshape_fences_preview_apply_and_run(
+        &root,
+        dir,
+        &old_notes_id,
+        &old_body_path,
+        &old_body_bytes,
+        "keyed layer to unkeyed group entry executed",
+    );
+}
+
+#[test]
 fn worked_orphan_repair_is_bracketed_by_integrity() {
     let root = native_books_project("evolve-unhappy-orphan-repair", ORPHAN_REPAIR_SOURCE);
     let dir = root.to_str().unwrap();
@@ -514,6 +612,116 @@ fn read_path_bytes(
     store
         .read_data_value(&store_id, identity, path)
         .expect("read path bytes")
+}
+
+fn data_cells_snapshot(root: impl AsRef<Path>) -> Vec<(DataCellKey, Vec<u8>)> {
+    let store =
+        TreeStore::open_read_only(&native_store_path(root.as_ref())).expect("open native store");
+    let mut cells = Vec::new();
+    store
+        .visit_backup_cells(|cell| {
+            cells.push((cell.data_key().clone(), cell.value().to_vec()));
+            Ok(())
+        })
+        .expect("visit data cells");
+    cells
+}
+
+fn assert_group_keyed_reshape_fences_preview_apply_and_run(
+    root: impl AsRef<Path>,
+    dir: &str,
+    old_group_id: &str,
+    old_body_path: &[DataPathSegment],
+    old_body_bytes: &[u8],
+    sentinel: &str,
+) {
+    let root = root.as_ref();
+    let old_epoch = store_epoch(root);
+    assert_eq!(old_epoch, Some(1));
+    let old_data_cells = data_cells_snapshot(root);
+    let old_lock = fs::read(root.join("marrow.lock")).expect("read lock before reshape");
+
+    let preview = marrow(&["evolve", "preview", "--format", "json", dir]);
+    assert_eq!(preview.status.code(), Some(1), "{preview:?}");
+    let preview_json = support::json(preview.stdout);
+    assert_eq!(preview_json["status"], serde_json::json!("blocked"));
+    let blocking = preview_json["blocking"]
+        .as_array()
+        .expect("blocking reports");
+    assert!(
+        blocking.iter().any(|report| {
+            report["code"] == serde_json::json!("evolve.repair_required")
+                && report["data"]["catalog_id"] == serde_json::json!(old_group_id)
+        }),
+        "preview should report repair required for the populated old group shape: {preview_json:#?}"
+    );
+
+    let apply = marrow(&["evolve", "apply", "--format", "json", dir]);
+    assert_eq!(apply.status.code(), Some(1), "{apply:?}");
+    let apply_json = support::json(apply.stdout);
+    assert_eq!(
+        apply_json["code"],
+        serde_json::json!("evolve.repair_required")
+    );
+    assert_eq!(
+        apply_json["data"]["catalog_id"],
+        serde_json::json!(old_group_id)
+    );
+    assert_eq!(
+        store_epoch(root),
+        old_epoch,
+        "refused apply does not advance the durable store epoch"
+    );
+    assert_eq!(
+        fs::read(root.join("marrow.lock")).expect("read lock after refused apply"),
+        old_lock,
+        "refused apply does not rewrite the committed lock"
+    );
+    assert_eq!(
+        data_cells_snapshot(root),
+        old_data_cells,
+        "refused apply leaves the complete data-family snapshot unchanged"
+    );
+    assert!(record_exists(root, "books::^books", &[SavedKey::Int(1)]));
+    assert_eq!(
+        read_path_bytes(root, "books::^books", &[SavedKey::Int(1)], old_body_path),
+        Some(old_body_bytes.to_vec()),
+        "refused apply leaves the old group/keyed bytes in place"
+    );
+
+    let run = marrow(&["run", "--entry", "books::noop", dir]);
+    assert_eq!(run.status.code(), Some(1), "{run:?}");
+    let stderr = String::from_utf8(run.stderr).expect("stderr utf8");
+    assert!(
+        stderr.contains("run.schema_drift"),
+        "the run fences on schema drift before executing the entry: {stderr}"
+    );
+    let stdout = String::from_utf8(run.stdout).expect("stdout utf8");
+    assert!(
+        !stdout.contains(sentinel),
+        "the schema drift fence must stop before entry output: {stdout}"
+    );
+    assert_eq!(
+        store_epoch(root),
+        old_epoch,
+        "fenced run does not advance the durable store epoch"
+    );
+    assert_eq!(
+        fs::read(root.join("marrow.lock")).expect("read lock after fenced run"),
+        old_lock,
+        "fenced run does not rewrite the committed lock"
+    );
+    assert_eq!(
+        data_cells_snapshot(root),
+        old_data_cells,
+        "fenced run leaves the complete data-family snapshot unchanged"
+    );
+    assert!(record_exists(root, "books::^books", &[SavedKey::Int(1)]));
+    assert_eq!(
+        read_path_bytes(root, "books::^books", &[SavedKey::Int(1)], old_body_path),
+        Some(old_body_bytes.to_vec()),
+        "fenced run leaves the old group/keyed bytes in place"
+    );
 }
 
 fn record_exists(root: impl AsRef<Path>, store_path: &str, identity: &[SavedKey]) -> bool {
