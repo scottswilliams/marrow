@@ -329,6 +329,42 @@ fn typed_keyed_resource_layer_rejects_recursive_entry_resource_once() {
     assert_eq!(errors.len(), 1, "{errors:#?}");
 }
 
+#[test]
+fn typed_keyed_resource_layer_rejects_indirect_recursive_entry_resource() {
+    let source = "module m\n\
+     resource Comment\n\
+     \x20   required body: string\n\
+     \x20   replies(seq: int): Reply\n\
+     resource Reply\n\
+     \x20   required body: string\n\
+     \x20   comments(seq: int): Comment\n\
+     resource Post\n\
+     \x20   comments(seq: int): Comment\n\
+     store ^posts(id: int): Post\n";
+    let errors = check_module(
+        "keyed-resource-field-indirect-recursive-entry",
+        source,
+        "check.recursive_keyed_entry",
+    );
+    assert_eq!(errors.len(), 2, "{errors:#?}");
+    let spans: Vec<_> = errors
+        .iter()
+        .map(|diagnostic| &source[diagnostic.span.start_byte..diagnostic.span.end_byte])
+        .collect();
+    assert!(
+        spans
+            .iter()
+            .any(|span| span.trim_start().starts_with("replies(")),
+        "{errors:#?}"
+    );
+    assert!(
+        spans
+            .iter()
+            .any(|span| span.trim_start().starts_with("comments(")),
+        "{errors:#?}"
+    );
+}
+
 /// A key must be an orderable scalar; any named type in a key position is rejected
 /// structurally, without resolving the name. Each row drives the same invariant from a
 /// distinct named-key source: an enum (names no scalar), a typo (resolves to nothing,
