@@ -345,72 +345,75 @@ stale digest while the project declares a surface; plain `marrow check` is
 read-only and advises instead. See
 [tooling-surfaces.md](tooling-surfaces.md) and [cli.md](cli.md).
 
-The generated code exposes sanitized module/surface namespaces and sanitized
-operation-label methods. JavaScript reserved words and label collisions are
-resolved deterministically; these names are render compatibility only.
-Operation equality remains the operation tag, and method bodies store the
-operation tag and descriptor-derived route path explicitly.
+The generated code flattens to surface-name keys (`client.Books`) with one async
+method per operation label. JavaScript reserved words and label collisions are
+resolved deterministically; these names are render compatibility only. Operation
+equality remains the operation tag, which the client carries in a private
+per-tag table; catalog IDs stay private constants and never appear in a method
+signature.
 
-The client serializes `surface.operation.v1` request envelopes for read,
-computed-read, create, sparse-update, delete, and action operations. It
-preserves Marrow `int` values as strings on the wire and rejects unsafe
-JavaScript `number` inputs before serialization. Response validation is
-intentionally envelope-only: active profile version, echoed operation tag, and
-expected result kind. The client
-returns the server-owned JSON DTO payload; it does not build model classes,
-prove catalog IDs, re-decode response values against descriptors, or become an
-authority boundary. `marrow-json`, `marrow-run`, and `marrow serve`
-continue to validate every request from clients that bypass generated code.
+The client decodes each response value against the descriptor as a **convenience
+projection, not a second validation authority** — the server still validates
+every request, and `marrow-json`, `marrow-run`, and `marrow serve` continue to
+validate every request from clients that bypass generated code. The client's job
+is to fail loud: a malformed or missing field throws a typed error rather than
+silently producing wrong data. Decoding is exact — a Marrow `int` decodes to a
+`bigint` (a JS `number` truncates above 2^53), an identity decodes to a branded
+id, and an enum decodes by its member catalog id. Input `int` values accept
+`string | number | bigint` and reject unsafe `number` inputs before
+serialization. The escape hatch `invokeRaw(options, operationTag, request)`
+returns the undecoded `surface.operation.v1` envelope for callers who need the
+wire shape.
 
 ### Calling A Generated Client
 
-`createClient(options)` returns a nested object of async methods keyed by
-sanitized module, surface, and operation label. Pass `baseUrl` for the running
-server (and `fetch` in a non-browser runtime):
+`createClient(options)` returns an object of async methods keyed by surface name.
+Pass `baseUrl` for the running server (and `fetch` in a non-browser runtime).
+Identities are branded — construct one with the generated `<surface>Id`
+constructor; create and update take name-keyed body objects:
 
 ```ts
-import { createClient } from "./generated/marrow";
+import { createClient, booksId } from "./generated/marrow";
 
 const client = createClient({ baseUrl: "http://127.0.0.1:8080" });
 
-const page = await client.shelf__books.Books.byShelf({
-  exact_keys: [{ kind: "string", value: "fiction" }],
-  limit: 20,
+const book = await client.Books.get(booksId(10)); // typed Book record
+book.title; // string
+book.id; // BooksId
+
+const created = await client.Books.create(booksId(11), {
+  title: "Dune",
+  author: "Frank Herbert",
 });
-for (const row of page.result.page.rows) {
-  // row.identity.keys and row.fields[].value are typed surface values
+
+const page = await client.Books.byAuthor("Frank Herbert", 20);
+for (const row of page.rows) {
+  row.title; // typed field
 }
+const next = await client.Books.byAuthor("Frank Herbert", 20, page.next);
 ```
 
-On a 2xx response the method returns the validated `surface.operation.v1`
-envelope: an object with `profile_version`, the echoed `operation_tag`, and a
-`result` whose `kind` is the operation's result kind (`record`, `page`,
-`optional_record`, `created`, `updated`, `deleted`, `action`, or
-`computed_read`). A page read returns `result.page.rows`; a computed read
-returns `result.result.value` as a typed value such as
-`{ kind: "int", value: "4" }`. Marrow `int` leaves are strings on the wire to
-stay exact.
+Methods return decoded domain values: a point read returns the typed record, a
+page returns `{ rows, next }` whose `next` cursor is preserved verbatim and
+passed straight back as the next request cursor, a computed read returns the
+decoded value directly, and an action returns `{ value, output }` (the `output`
+string carries anything the action printed).
 
 ### Handling Errors
 
-On any non-2xx response the generated method does not return — it **throws the
-parsed error envelope**. The thrown value is the body object
-`{ code: string, message: string }`, where `code` is a stable `surface.*` code
-and `message` is a sanitized public string. Branch on `code`, not on the HTTP
-status, and not on `message` (the prose may change):
+On any non-2xx response the generated method throws a typed `MarrowSurfaceError`
+with a closed `code: SurfaceErrorCode` union and the unparsed `rawBody`. Branch
+on `code`, not on the HTTP status or the human `message`. Use
+`isMarrowSurfaceError(e)` to narrow:
 
 ```ts
+import { isMarrowSurfaceError } from "./generated/marrow";
+
 try {
-  const book = await client.shelf__books.Books.get({
-    identity: {
-      store_catalog_id: "...",
-      keys: [{ kind: "int", value: "999" }],
-    },
-  });
-  return book.result.record;
+  return await client.Books.get(booksId(999));
 } catch (err) {
-  const fault = err as { code?: string; message?: string };
-  switch (fault.code) {
+  if (!isMarrowSurfaceError(err)) throw err;
+  switch (err.code) {
     case "surface.absent":
       return null; // record does not exist
     case "surface.abi_mismatch":

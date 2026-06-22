@@ -265,7 +265,9 @@ surface Books from ^books
                     &[],
                 ),
                 CatalogEntry {
-                    accepted_struct: Some("leaf:enum:cat_00000000000000000000000000000004".to_string()),
+                    accepted_struct: Some(
+                        "leaf:enum:cat_00000000000000000000000000000004".to_string(),
+                    ),
                     ..entry(
                         CatalogEntryKind::ResourceMember,
                         "app::Book::status",
@@ -283,11 +285,13 @@ surface Books from ^books
     let descriptor = program.facts.surfaces()[0]
         .read_operations
         .iter()
-        .find_map(|operation| SurfaceReadOperationDescriptor::from_operation(
-            &program,
-            &program.facts.surfaces()[0],
-            operation,
-        ))
+        .find_map(|operation| {
+            SurfaceReadOperationDescriptor::from_operation(
+                &program,
+                &program.facts.surfaces()[0],
+                operation,
+            )
+        })
         .expect("stable read descriptor");
     assert!(
         descriptor.projection.iter().any(|field| matches!(

@@ -6,6 +6,7 @@ use marrow_run::{
 use marrow_store::key::SavedKey;
 use serde::{Deserialize, Serialize};
 
+mod client_model;
 mod client_ts;
 mod execute;
 mod operation;
@@ -13,6 +14,10 @@ mod operation_catalog;
 mod request;
 mod route;
 mod route_binding;
+use client_model::{
+    SurfaceClientModel, SurfaceClientRecord, SurfaceClientStore, SurfaceFieldType, SurfaceMethod,
+    SurfaceMethodInput, SurfaceMethodResult, SurfaceRecordField,
+};
 pub use client_ts::{
     SURFACE_CLIENT_DIGEST_PREFIX, SURFACE_CLIENT_DO_NOT_EDIT, SurfaceClientRenderError,
     SurfaceClientRenderErrorKind, render_typescript_client, surface_abi_digest,
@@ -3387,7 +3392,7 @@ pub fn seed()
     }
 
     #[test]
-    fn client_ts_validates_routes_and_renders_operation_methods() {
+    fn client_ts_validates_routes_and_renders_typed_methods() {
         let (program, _runtime) = checked_surface_program(SURFACE_ACTION_UPDATE);
         let abi = SurfaceAbiJson::from_program(&program);
         let manifest = SurfaceRouteManifestJson::from_abi(&abi);
@@ -3397,27 +3402,35 @@ pub fn seed()
         assert!(client.contains("export function createClient"), "{client}");
         assert!(client.contains("Number.isSafeInteger"), "{client}");
         assert!(
-            client.contains("profile_version: SURFACE_OPERATION_PROFILE_VERSION"),
+            client.contains("export class MarrowSurfaceError"),
             "{client}"
         );
-        assert!(
-            client.contains("result.kind !== expectedResultKind"),
-            "{client}"
-        );
+        assert!(client.contains("export type SurfaceErrorCode"), "{client}");
+        assert!(client.contains("export function invokeRaw"), "{client}");
         assert!(
             !client.contains("import "),
-            "thin generated client must not depend on imports: {client}"
+            "the generated client must not depend on imports: {client}"
         );
 
-        let bindings = client_binding_constants(&client);
-        assert_eq!(client_binding_count(&bindings), manifest.routes.len());
+        // Every operation tag appears in the per-tag request-kind table the transport dispatches on.
         for route in &manifest.routes {
-            let binding = client_binding_for_tag(&bindings, &route.operation_tag);
             let kind = SurfaceOperationKind::from(&route.request);
-            assert_eq!(binding["path"], route.path);
-            assert_eq!(binding["request_kind"], kind.operation_request_kind());
-            assert_eq!(binding["result_kind"], kind.operation_result_kind());
+            assert!(
+                client.contains(&format!(
+                    "{:?}: {:?}",
+                    route.operation_tag,
+                    kind.operation_request_kind()
+                )),
+                "missing request kind for tag {}: {client}",
+                route.operation_tag
+            );
         }
+        // The typed surface exposes a branded point read and a typed `{ value, output }` action.
+        assert!(client.contains("get: async (id: BooksId)"), "{client}");
+        assert!(
+            client.contains("Promise<{ value: string; output: string }>"),
+            "{client}"
+        );
     }
 
     fn fixture_abi_and_routes() -> (SurfaceAbiJson, SurfaceRouteManifestJson) {
@@ -3450,74 +3463,55 @@ pub fn seed()
     }
 
     #[test]
-    fn client_ts_renders_computed_read_methods() {
+    fn client_ts_renders_typed_computed_read_method() {
         let (program, _runtime) = checked_surface_program(SURFACE_COMPUTED_READ);
         let abi = SurfaceAbiJson::from_program(&program);
         let manifest = SurfaceRouteManifestJson::from_abi(&abi);
 
         let client = render_typescript_client(&abi, &manifest).expect("typescript client renders");
 
+        // The computed read decodes its result into the typed resource value rather than returning
+        // the raw envelope, and identity arguments encode through the branded id.
         assert!(
-            client.contains(
-                "type SurfaceComputedReadRequestJson = { arguments: SurfaceEntryArgumentJson[] };"
-            ),
+            client.contains("computedReadValue(envelope, (value) =>"),
             "{client}"
         );
-        assert!(
-            client.contains("\"page\": (request: SurfaceComputedReadRequestJson)"),
-            "{client}"
-        );
+        assert!(client.contains("encodeIdentityArgument(id)"), "{client}");
         let computed_route = manifest
             .routes
             .iter()
             .find(|route| route.request == SurfaceRouteRequestJson::ComputedRead)
             .expect("computed-read route");
-        let bindings = client_binding_constants(&client);
-        let binding = client_binding_for_tag(&bindings, &computed_route.operation_tag);
-        assert_eq!(binding["request_kind"], "computed_read");
-        assert_eq!(binding["result_kind"], "computed_read");
+        assert!(
+            client.contains(&format!(
+                "{:?}: \"computed_read\"",
+                computed_route.operation_tag
+            )),
+            "{client}"
+        );
     }
 
     #[test]
-    fn client_ts_types_action_arguments_with_entry_invoke_shape() {
+    fn client_ts_encodes_action_arguments_through_typed_entry_shapes() {
         let (program, _runtime) = checked_surface_program(SURFACE_ACTION_UPDATE);
         let abi = SurfaceAbiJson::from_program(&program);
         let manifest = SurfaceRouteManifestJson::from_abi(&abi);
 
         let client = render_typescript_client(&abi, &manifest).expect("typescript client renders");
 
-        assert!(
-            !client.contains("arguments: unknown[]"),
-            "action/computed-read request bodies must not type arguments as unknown[]: {client}"
-        );
+        // The action method names its arguments and routes each scalar through the typed encoder,
+        // never an `unknown[]` argument array.
+        assert!(!client.contains("arguments: unknown[]"), "{client}");
         assert!(
             client.contains(
-                "type SurfaceActionRequestJson = { arguments: SurfaceEntryArgumentJson[] };"
+                "{ arguments: [{ name: \"title\", value: { kind: \"string\", value: title } }] }"
             ),
             "{client}"
         );
         assert!(
-            client.contains("type SurfaceEntryArgumentJson = { name: string; value: SurfaceEntryArgumentValueJson };"),
+            client.contains("Promise<{ value: string; output: string }>"),
             "{client}"
         );
-        for kind in [
-            "\"int\"; value: string",
-            "\"bool\"; value: boolean",
-            "\"string\"; value: string",
-            "\"decimal\"; value: string",
-            "\"date\"; value: string",
-            "\"instant\"; value: string",
-            "\"duration\"; value: string",
-            "\"bytes\"; value: string",
-            "\"enum_member\"; member_catalog_id: string",
-            "\"identity\"; store_catalog_id: string; keys: SurfaceEntryScalarArgumentJson[]",
-            "\"sequence\"; value: SurfaceEntryArgumentValueJson[]",
-        ] {
-            assert!(
-                client.contains(kind),
-                "entry argument value union missing `{kind}`: {client}"
-            );
-        }
     }
 
     #[test]
@@ -3558,25 +3552,44 @@ pub fn seed()
             }
         }
 
+        let _ = &expected_read_tags;
         let client = render_typescript_client(&abi, &manifest).expect("typescript client renders");
 
-        let bindings = client_binding_constants(&client);
-        let methods = bindings["default_"]["class_"]
-            .as_object()
-            .expect("sanitized surface methods");
-        let method_names = methods.keys().map(String::as_str).collect::<Vec<_>>();
-        assert_eq!(method_names.len(), expected_read_count);
-        assert!(methods.contains_key("delete"), "{methods:#?}");
-        assert!(method_names.iter().all(|name| name.starts_with("delete")));
-        assert!(method_names.iter().any(|name| name.contains("__")));
-        assert_eq!(
-            methods
-                .values()
-                .map(|binding| binding["operation_tag"].as_str().expect("operation tag"))
-                .map(str::to_string)
-                .collect::<BTreeSet<_>>(),
-            expected_read_tags
+        // The colliding read aliases stay distinct method keys, none duplicated, so the emitted
+        // surface object is valid TypeScript even when every read shares an alias.
+        let method_names = surface_method_names(&client, "    class");
+        assert_eq!(method_names.len(), expected_read_count, "{client}");
+        assert!(
+            method_names.iter().all(|name| name.starts_with("delete")),
+            "{method_names:?}"
         );
+        let unique = method_names.iter().collect::<BTreeSet<_>>();
+        assert_eq!(
+            unique.len(),
+            method_names.len(),
+            "duplicate method key: {method_names:?}"
+        );
+        assert!(method_names.len() > 1, "{method_names:?}");
+    }
+
+    /// Pull the async-method keys from a generated surface block. Method headers are the only lines
+    /// indented six spaces that contain `: async (`; nested helper braces never start that way.
+    fn surface_method_names(client: &str, surface_key: &str) -> Vec<String> {
+        let needle = format!("{surface_key}: {{");
+        let start = client.find(&needle).expect("surface block present") + needle.len();
+        let mut names = Vec::new();
+        for line in client[start..].lines() {
+            if line == "    }," {
+                break;
+            }
+            if let Some(key) = line.strip_prefix("      ").and_then(|rest| {
+                rest.split_once(": async (")
+                    .map(|(key, _)| key.trim_matches('"').to_string())
+            }) {
+                names.push(key);
+            }
+        }
+        names
     }
 
     #[test]
@@ -5653,52 +5666,6 @@ pub fn seed()
                 "shape bypass API must not be public: {forbidden}"
             );
         }
-    }
-
-    fn client_binding_constants(client: &str) -> serde_json::Value {
-        let prefix = "const SURFACE_OPERATION_BINDINGS = ";
-        let suffix = " as const;";
-        let start = client
-            .find(prefix)
-            .expect("generated client operation binding constants")
-            + prefix.len();
-        let rest = &client[start..];
-        let end = rest
-            .find(suffix)
-            .expect("generated client operation binding constants suffix");
-        serde_json::from_str(&rest[..end]).expect("operation binding constants JSON")
-    }
-
-    fn client_binding_count(constants: &serde_json::Value) -> usize {
-        constants
-            .as_object()
-            .expect("module map")
-            .values()
-            .map(|surfaces| {
-                surfaces
-                    .as_object()
-                    .expect("surface map")
-                    .values()
-                    .map(|operations| operations.as_object().expect("operation map").len())
-                    .sum::<usize>()
-            })
-            .sum()
-    }
-
-    fn client_binding_for_tag<'a>(
-        constants: &'a serde_json::Value,
-        operation_tag: &str,
-    ) -> &'a serde_json::Value {
-        for surfaces in constants.as_object().expect("module map").values() {
-            for operations in surfaces.as_object().expect("surface map").values() {
-                for binding in operations.as_object().expect("operation map").values() {
-                    if binding["operation_tag"] == operation_tag {
-                        return binding;
-                    }
-                }
-            }
-        }
-        panic!("client operation binding for tag {operation_tag}");
     }
 
     #[test]

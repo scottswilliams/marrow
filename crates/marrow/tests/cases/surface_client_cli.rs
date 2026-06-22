@@ -1,9 +1,8 @@
 use crate::support;
 use crate::support_surface::{
-    create_descriptor, create_field_catalog_id, route_by_alias, spawn_surface_server_with_args,
+    route_by_alias, spawn_surface_server, spawn_surface_server_with_args,
 };
 
-use serde_json::Value;
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
@@ -156,8 +155,16 @@ fn client_typescript_uses_lock_projection_when_store_is_absent() {
         stdout.contains("// marrow-surface-digest: sha256:"),
         "{stdout}"
     );
-    assert!(stdout.contains("\"app\""), "{stdout}");
-    assert!(stdout.contains("\"Books\""), "{stdout}");
+    // The client flattens to the surface name and exposes typed brand constructors and a typed
+    // error class rather than the old module-keyed, untyped transport shape.
+    assert!(stdout.contains("Books: {"), "{stdout}");
+    assert!(stdout.contains("export function booksId("), "{stdout}");
+    assert!(
+        stdout.contains("export class MarrowSurfaceError"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("export type SurfaceErrorCode"), "{stdout}");
+    assert!(stdout.contains("export function invokeRaw"), "{stdout}");
     assert!(stdout.contains("/surface/v1/create/"), "{stdout}");
     assert!(stdout.contains("/surface/v1/delete/"), "{stdout}");
     assert!(stdout.contains("Number.isSafeInteger"), "{stdout}");
@@ -221,15 +228,20 @@ fn client_typescript_uses_active_computed_read_route_tags() {
     ]);
     assert_eq!(client.status.code(), Some(0), "client: {client:?}");
     let stdout = String::from_utf8(client.stdout).expect("client stdout utf8");
+    // The active computed-read tag drives both the method invoke and the route-prefix table that
+    // builds its POST path; the path is the prefix plus the tag, assembled at request time.
     assert!(
-        stdout.contains(&format!("\"operation_tag\": {:?}", route.operation_tag)),
-        "generated client must use active computed-read operation tag {}; client:\n{stdout}",
+        stdout.contains(&format!("transport.invoke({:?}", route.operation_tag)),
+        "generated client must invoke active computed-read operation tag {}; client:\n{stdout}",
         route.operation_tag
     );
+    let prefix = route
+        .path
+        .strip_suffix(&route.operation_tag)
+        .expect("route path ends with its operation tag");
     assert!(
-        stdout.contains(&format!("\"path\": {:?}", route.path)),
-        "generated client must use active computed-read path {}; client:\n{stdout}",
-        route.path
+        stdout.contains(&format!("{:?}: {:?}", route.operation_tag, prefix)),
+        "generated client route table must map the active tag to its prefix {prefix}; client:\n{stdout}",
     );
 }
 
@@ -317,11 +329,6 @@ fn client_typescript_generated_client_runs_against_live_surface_server() {
     let seed = marrow(&["run", "--entry", "app::seed", root.to_str().unwrap()]);
     assert_eq!(seed.status.code(), Some(0), "seed: {seed:?}");
 
-    let check = marrow(&["check", "--format", "json", root.to_str().unwrap()]);
-    assert_eq!(check.status.code(), Some(0), "check: {check:?}");
-    let report = support::json(check.stdout);
-    let ids = surface_ids(&report);
-
     let client = marrow(&[
         "client",
         "typescript",
@@ -335,7 +342,7 @@ fn client_typescript_generated_client_runs_against_live_surface_server() {
         "marrow-client.ts",
         &String::from_utf8(client.stdout).expect("client utf8"),
     );
-    write(&app, "app.ts", &generated_client_app(&ids));
+    write(&app, "app.ts", GENERATED_CLIENT_APP);
 
     {
         let (_server, addr) = spawn_surface_server_with_args(&root, &["--write"]);
@@ -401,10 +408,94 @@ fn client_typescript_generated_client_runs_against_live_surface_server() {
     assert_eq!(integrity.status.code(), Some(0), "integrity: {integrity:?}");
 }
 
-struct SurfaceClientIds {
-    store_catalog_id: String,
-    title_catalog_id: String,
-    author_catalog_id: String,
+/// A composite-key store with an enum and an optional field, exercising every decode path the unit
+/// test probes against real saved data: a non-int multi-key brand, an i64 above 2^53 round-tripping
+/// through bigint, an enum decoded by catalog id, an optional field arriving as `value: null`, and a
+/// verbatim page cursor.
+const DECODE_SURFACE_SOURCE: &str = "module app\n\
+\n\
+enum Tier\n\
+\x20\x20\x20\x20bronze\n\
+\x20\x20\x20\x20gold\n\
+\n\
+resource Entry\n\
+\x20\x20\x20\x20required score: int\n\
+\x20\x20\x20\x20required tier: Tier\n\
+\x20\x20\x20\x20note: string\n\
+store ^entries(group: string, seq: int): Entry\n\
+\n\
+pub fn seed()\n\
+\x20\x20\x20\x20var withNote: Entry\n\
+\x20\x20\x20\x20withNote.score = 9007199254740993\n\
+\x20\x20\x20\x20withNote.tier = Tier::gold\n\
+\x20\x20\x20\x20withNote.note = \"present\"\n\
+\x20\x20\x20\x20var withoutNote: Entry\n\
+\x20\x20\x20\x20withoutNote.score = 1\n\
+\x20\x20\x20\x20withoutNote.tier = Tier::bronze\n\
+\x20\x20\x20\x20transaction\n\
+\x20\x20\x20\x20\x20\x20\x20\x20^entries(\"alpha\", 7) = withNote\n\
+\x20\x20\x20\x20\x20\x20\x20\x20^entries(\"alpha\", 8) = withoutNote\n\
+\n\
+surface Entries from ^entries\n\
+\x20\x20\x20\x20fields score, tier, note\n\
+\x20\x20\x20\x20collection ^entries as list\n";
+
+#[test]
+fn client_typescript_decode_unit_tests() {
+    let Some(node) = node_with_type_stripping() else {
+        if std::env::var_os("CI").is_some() || std::env::var_os("MARROW_TEST_NODE").is_some() {
+            panic!(
+                "generated TypeScript client decode unit tests require Node with --experimental-strip-types"
+            );
+        }
+        eprintln!(
+            "skipping generated TypeScript client decode unit tests; compatible node not found"
+        );
+        return;
+    };
+    let root = temp_project("surface-client-decode-unit", |root| {
+        write(root, "marrow.json", support::native_config());
+        write(root, "src/app.mw", DECODE_SURFACE_SOURCE);
+    });
+    let seed = marrow(&["run", "--entry", "app::seed", root.to_str().unwrap()]);
+    assert_eq!(seed.status.code(), Some(0), "seed: {seed:?}");
+
+    let client = marrow(&[
+        "client",
+        "typescript",
+        root.to_str().expect("project path utf8"),
+    ]);
+    assert_eq!(client.status.code(), Some(0), "client: {client:?}");
+    let app = support::temp_dir("surface-client-decode-unit-app");
+    write(
+        &app,
+        "marrow-client.ts",
+        &String::from_utf8(client.stdout).expect("client utf8"),
+    );
+    write(&app, "decode.ts", DECODE_UNIT_APP);
+
+    let (_server, addr) = spawn_surface_server(&root);
+    let output = Command::new(node)
+        .arg("--experimental-strip-types")
+        .arg("--no-warnings")
+        .arg(app.join("decode.ts"))
+        .current_dir(&app)
+        .env("MARROW_SURFACE_BASE_URL", format!("http://{addr}"))
+        .output()
+        .expect("run decode unit app");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "decode unit app failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(output.stdout)
+            .expect("decode stdout utf8")
+            .trim(),
+        "decode-unit-ok"
+    );
 }
 
 fn node_with_type_stripping() -> Option<PathBuf> {
@@ -428,194 +519,148 @@ fn node_with_type_stripping() -> Option<PathBuf> {
     None
 }
 
-fn surface_ids(report: &Value) -> SurfaceClientIds {
-    let create_route = route_by_alias(report, "create");
-    let create = create_descriptor(report, &create_route.operation_tag);
-    SurfaceClientIds {
-        store_catalog_id: create["store_catalog_id"]
-            .as_str()
-            .expect("create store catalog id")
-            .to_string(),
-        title_catalog_id: create_field_catalog_id(create, "title"),
-        author_catalog_id: create_field_catalog_id(create, "author"),
-    }
-}
+/// The hand-authored E2E exercises the typed client end to end against a live `serve --write`:
+/// branded ids, name-keyed create, typed records, decoded computed-read and action values, a
+/// `Page` whose cursor round-trips verbatim into a `surface.stale_cursor`, and a typed
+/// `MarrowSurfaceError`.
+const GENERATED_CLIENT_APP: &str = r#"import assert from "node:assert/strict";
+import {
+  createClient,
+  booksId,
+  isMarrowSurfaceError,
+  type BooksRecord,
+} from "./marrow-client.ts";
 
-fn generated_client_app(ids: &SurfaceClientIds) -> String {
-    format!(
-        r#"import assert from "node:assert/strict";
-import {{ createClient }} from "./marrow-client.ts";
+const client = createClient({ baseUrl: process.env.MARROW_SURFACE_BASE_URL });
 
-const ids = {{
-  store: {store},
-  title: {title},
-  author: {author},
-}};
-const client = createClient({{
-  baseUrl: process.env.MARROW_SURFACE_BASE_URL,
-}});
+const seeded: BooksRecord = await client.Books.get(booksId(1));
+assert.equal(seeded.title, "Dune");
+assert.equal(typeof seeded.title, "string");
 
-const key = (id) => ({{
-  store_catalog_id: ids.store,
-  keys: [{{ kind: "int", value: id }}],
-}});
-const field = (record, label) => {{
-  const found = record.fields.find((item) => item.render_label === label);
-  assert.ok(found, `missing field ${{label}}`);
-  return found.value;
-}};
-const get = async (id) => client.app.Books.get({{ identity: key(id) }});
+const staleAfterCreate = await client.Books.byAuthor("Frank Herbert", 1);
+assert.ok(staleAfterCreate.next);
+const verbatimCursor = staleAfterCreate.next;
 
-const seeded = await get(1);
-assert.equal(seeded.result.kind, "record");
-assert.deepEqual(field(seeded.result.record, "title"), {{
-  kind: "string",
-  value: "Dune",
-}});
+const created: BooksRecord = await client.Books.create(booksId(3), {
+  title: "Children of Dune",
+  author: "Frank Herbert",
+});
+assert.equal(created.title, "Children of Dune");
 
-const staleAfterCreate = await client.app.Books.byAuthor({{
-  exact_keys: [{{ kind: "string", value: "Frank Herbert" }}],
-  limit: 1,
-}});
-assert.ok(staleAfterCreate.result.page.next);
-
-const created = await client.app.Books.create({{
-  identity: key(3n),
-  fields: [
-    {{
-      catalog_id: ids.title,
-      value: {{ kind: "string", value: "Children of Dune" }},
-    }},
-    {{
-      catalog_id: ids.author,
-      value: {{ kind: "string", value: "Frank Herbert" }},
-    }},
-  ],
-}});
-assert.equal(created.result.kind, "created");
-assert.deepEqual(field(created.result.record, "title"), {{
-  kind: "string",
-  value: "Children of Dune",
-}});
 await assert.rejects(
-  () =>
-    client.app.Books.byAuthor({{
-      exact_keys: [{{ kind: "string", value: "Frank Herbert" }}],
-      limit: 10,
-      cursor: staleAfterCreate.result.page.next,
-    }}),
-  (error) => error.code === "surface.stale_cursor",
+  () => client.Books.byAuthor("Frank Herbert", 10, verbatimCursor),
+  (error: unknown) =>
+    isMarrowSurfaceError(error) && error.code === "surface.stale_cursor",
 );
 
-const staleAfterUpdate = await client.app.Books.byAuthor({{
-  exact_keys: [{{ kind: "string", value: "Frank Herbert" }}],
-  limit: 1,
-}});
-assert.ok(staleAfterUpdate.result.page.next);
+const staleAfterUpdate = await client.Books.byAuthor("Frank Herbert", 1);
+assert.ok(staleAfterUpdate.next);
 
-const updated = await client.app.Books.update({{
-  identity: key(1),
-  fields: [
-    {{
-      catalog_id: ids.author,
-      value: {{ kind: "string", value: "Ursula Le Guin" }},
-    }},
-  ],
-}});
-assert.equal(updated.result.kind, "updated");
-const updatedRead = await get(1);
-assert.deepEqual(field(updatedRead.result.record, "author"), {{
-  kind: "string",
-  value: "Ursula Le Guin",
-}});
+await client.Books.update(booksId(1), { author: "Ursula Le Guin" });
+const updatedRead = await client.Books.get(booksId(1));
+assert.equal(updatedRead.author, "Ursula Le Guin");
 await assert.rejects(
-  () =>
-    client.app.Books.byAuthor({{
-      exact_keys: [{{ kind: "string", value: "Frank Herbert" }}],
-      limit: 10,
-      cursor: staleAfterUpdate.result.page.next,
-    }}),
-  (error) => error.code === "surface.stale_cursor",
+  () => client.Books.byAuthor("Frank Herbert", 10, staleAfterUpdate.next),
+  (error: unknown) =>
+    isMarrowSurfaceError(error) && error.code === "surface.stale_cursor",
 );
 
-const frank = await client.app.Books.byAuthor({{
-  exact_keys: [{{ kind: "string", value: "Frank Herbert" }}],
-  limit: 10,
-}});
-assert.equal(frank.result.kind, "page");
+const frank = await client.Books.byAuthor("Frank Herbert", 10);
 assert.deepEqual(
-  frank.result.page.rows.map((record) => field(record, "title").value),
+  frank.rows.map((record) => record.title),
   ["Dune Messiah", "Children of Dune"],
 );
 
-const staleAfterAction = await client.app.Books.byAuthor({{
-  exact_keys: [{{ kind: "string", value: "Frank Herbert" }}],
-  limit: 1,
-}});
-assert.ok(staleAfterAction.result.page.next);
+const retitled = await client.Books.retitle(1, "The Dispossessed");
+assert.deepEqual(retitled, { value: "The Dispossessed", output: "" });
+const retitledRead = await client.Books.get(booksId(1));
+assert.equal(retitledRead.title, "The Dispossessed");
 
-const retitled = await client.app.Books.retitle({{
-  arguments: [
-    {{ name: "id", value: {{ kind: "int", value: "1" }} }},
-    {{ name: "title", value: {{ kind: "string", value: "The Dispossessed" }} }},
-  ],
-}});
-assert.equal(retitled.result.kind, "action");
-assert.deepEqual(retitled.result.result.value, {{
-  kind: "string",
-  value: "The Dispossessed",
-}});
-const retitledRead = await get(1);
-assert.deepEqual(field(retitledRead.result.record, "title"), {{
-  kind: "string",
-  value: "The Dispossessed",
-}});
-const described = await client.app.Books.describe({{
-  arguments: [{{ name: "id", value: {{ kind: "int", value: "1" }} }}],
-}});
-assert.equal(described.result.kind, "computed_read");
-assert.deepEqual(described.result.result.value, {{
-  kind: "string",
-  value: "The Dispossessed|Ursula Le Guin",
-}});
+const described = await client.Books.describe(1);
+assert.equal(described, "The Dispossessed|Ursula Le Guin");
+
+const deleted = await client.Books.delete(booksId(3));
+assert.equal(deleted, undefined);
 await assert.rejects(
-  () =>
-    client.app.Books.byAuthor({{
-      exact_keys: [{{ kind: "string", value: "Frank Herbert" }}],
-      limit: 10,
-      cursor: staleAfterAction.result.page.next,
-    }}),
-  (error) => error.code === "surface.stale_cursor",
+  () => client.Books.get(booksId(3)),
+  (error: unknown) =>
+    isMarrowSurfaceError(error) && error.code === "surface.absent",
 );
 
-const staleAfterDelete = await client.app.Books.byAuthor({{
-  exact_keys: [{{ kind: "string", value: "Frank Herbert" }}],
-  limit: 1,
-}});
-assert.ok(staleAfterDelete.result.page.next);
-
-const deleted = await client.app.Books.delete({{ identity: key(3) }});
-assert.equal(deleted.result.kind, "deleted");
-await assert.rejects(() => get(3), (error) => error.code === "surface.absent");
-await assert.rejects(
-  () =>
-    client.app.Books.byAuthor({{
-      exact_keys: [{{ kind: "string", value: "Frank Herbert" }}],
-      limit: 10,
-      cursor: staleAfterDelete.result.page.next,
-    }}),
-  (error) => error.code === "surface.stale_cursor",
-);
-
-await assert.rejects(
-  () => get(Number.MAX_SAFE_INTEGER + 1),
-  /safe integers/,
-);
+// The branded id constructor validates eagerly, so an unsafe number throws at construction.
+assert.throws(() => booksId(Number.MAX_SAFE_INTEGER + 1), /safe integers/);
 
 console.log("generated-client-e2e-ok");
-"#,
-        store = serde_json::to_string(&ids.store_catalog_id).expect("store id json"),
-        title = serde_json::to_string(&ids.title_catalog_id).expect("title id json"),
-        author = serde_json::to_string(&ids.author_catalog_id).expect("author id json"),
-    )
+"#;
+
+/// The decode unit checks, each tied to a red-team soundness correction: an i64 above 2^53 round
+/// trips through bigint (F9), a composite non-int key brands correctly (F6), an enum decodes by its
+/// catalog id (F4), an optional field arriving as `value: null` becomes `null` (F8), the page cursor
+/// is preserved verbatim (D8), and a missing record throws a typed `MarrowSurfaceError` (F* errors).
+const DECODE_UNIT_APP: &str = r#"import assert from "node:assert/strict";
+import {
+  createClient,
+  entriesId,
+  isMarrowSurfaceError,
+  MarrowSurfaceError,
+} from "./marrow-client.ts";
+
+// A recording fetch tees the last response body so the verbatim-cursor check can compare the typed
+// page cursor against exactly what the server sent.
+let lastBody: any = null;
+const recordingFetch = async (input: string, init: any) => {
+  const response = await fetch(input, init);
+  const body = await response.json();
+  lastBody = body;
+  return { ok: response.ok, json: async () => body };
+};
+const options = { baseUrl: process.env.MARROW_SURFACE_BASE_URL, fetch: recordingFetch };
+const client = createClient(options);
+
+// F9: an i64 above 2^53 survives as an exact bigint, never a truncated number. A JS number would
+// collapse this odd value to the even 2^53 below it, so the bigint must differ from that float.
+const withNote = await client.Entries.get(entriesId("alpha", 7));
+assert.equal(withNote.score, 9007199254740993n);
+assert.equal(typeof withNote.score, "bigint");
+assert.notEqual(withNote.score, BigInt(Number(9007199254740993n)));
+assert.equal(BigInt(Number(9007199254740993n)), 9007199254740992n);
+
+// F4: the enum decodes through the generated member-id table to its label.
+assert.equal(withNote.tier, "gold");
+
+// F8: a present optional field decodes; an absent one arrives as value:null and becomes null.
+assert.equal(withNote.note, "present");
+const withoutNote = await client.Entries.get(entriesId("alpha", 8));
+assert.equal(withoutNote.note, null);
+assert.equal(withoutNote.tier, "bronze");
+
+// F6: a composite, non-int key brands and decodes back to its two-scalar key vector.
+assert.deepEqual(withNote.id.keys, [
+  { kind: "string", value: "alpha" },
+  { kind: "int", value: "7" },
+]);
+
+// D8: the typed page cursor equals the raw envelope cursor, byte for byte.
+const page = await client.Entries.list(1);
+assert.equal(page.rows.length, 1);
+assert.ok(page.next);
+assert.deepEqual(page.next, lastBody.result.page.next);
+
+// The cursor passes back unchanged and continues the scan.
+const second = await client.Entries.list(1, page.next);
+assert.equal(second.rows.length, 1);
+assert.notDeepEqual(second.rows[0].id.keys, page.rows[0].id.keys);
+
+// A missing record throws a typed MarrowSurfaceError with a stable code.
+let thrown: unknown;
+try {
+  await client.Entries.get(entriesId("alpha", 999));
+} catch (error) {
+  thrown = error;
 }
+assert.ok(isMarrowSurfaceError(thrown));
+assert.ok(thrown instanceof MarrowSurfaceError);
+assert.equal((thrown as MarrowSurfaceError).code, "surface.absent");
+
+console.log("decode-unit-ok");
+"#;

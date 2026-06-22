@@ -124,10 +124,15 @@ argument JSON shape for surface action and computed-read request bodies. HTTP
 listeners, opaque cursor tokens, and remote serving remain outside this crate's
 current profile.
 The route manifest is a descriptor over the operation envelope, not a listener,
-router implementation, or opaque-token codec. `surface/client_ts.rs` renders the
-thin TypeScript operation client from ABI plus routes; it validates route/ABI
-agreement before rendering and does not add a response value decoder or domain
-model. It also owns the client freshness key: `surface_abi_digest` is a
+router implementation, or opaque-token codec. `surface/client_model.rs` lowers
+the ABI plus route bindings into a typed `SurfaceClientModel` (stores as branded
+ids, enums as member-id tables, surface records, and per-operation methods);
+`surface/client_ts.rs` renders that model into the typed TypeScript surface
+client, with the runtime decode/encode helpers in `surface/client_ts_preamble.ts`.
+The client decodes response values against the descriptor as a convenience
+projection that fails loud on a malformed field — it is not a second validation
+authority. It validates route/ABI agreement before rendering. It also owns the
+client freshness key: `surface_abi_digest` is a
 `sha256:` digest over the canonically serialized ABI and route manifest (stable
 across checkouts of the same surface shape), and `surface_client_header` /
 `surface_client_header_digest` write and parse the do-not-edit + digest header
@@ -192,8 +197,8 @@ cursor error path.
   surface ABI descriptor DTOs, operation catalog and route binding validation,
   surface read and computed-read result DTOs, checked surface read/computed-read
   request and generated write request DTOs, action DTOs, operation envelope
-  DTOs, descriptor alias rendering, route manifest rendering, thin TypeScript
-  client rendering, and in-process operation-tag execution helpers.
+  DTOs, descriptor alias rendering, route manifest rendering, typed TypeScript
+  client model and rendering, and in-process operation-tag execution helpers.
 - `crates/marrow/src/cmd_run.rs` — run flag parsing, output capture, store-stamp
   capture, and serialization of the typed run DTOs.
 - `crates/marrow/src/trace.rs` and `crates/marrow/src/cmd_data/integrity.rs` —

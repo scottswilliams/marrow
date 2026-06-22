@@ -1,11 +1,16 @@
-use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
 
-use serde::Serialize;
+use marrow_run::{
+    SURFACE_ABI_MISMATCH, SURFACE_ABSENT, SURFACE_ACTION, SURFACE_COMPUTED, SURFACE_CONFLICT,
+    SURFACE_CURSOR, SURFACE_INVALID_DATA, SURFACE_LIMIT, SURFACE_REQUEST, SURFACE_STALE_CURSOR,
+    SURFACE_STORE, SURFACE_WRITE,
+};
 
 use super::{
-    SurfaceAbiJson, SurfaceOperationCatalog, SurfaceOperationCatalogError, SurfaceOperationKind,
-    SurfaceRouteBinding, SurfaceRouteBindingError, SurfaceRouteBindings, SurfaceRouteManifestJson,
+    SurfaceAbiJson, SurfaceClientModel, SurfaceClientRecord, SurfaceClientStore, SurfaceFieldType,
+    SurfaceMethod, SurfaceMethodInput, SurfaceMethodResult, SurfaceOperationCatalog,
+    SurfaceOperationCatalogError, SurfaceRecordField, SurfaceRouteBindingError,
+    SurfaceRouteBindings, SurfaceRouteManifestJson,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -20,6 +25,23 @@ pub enum SurfaceClientRenderErrorKind {
     RouteBinding,
 }
 
+/// The closed set of public `surface.*` error codes a generated client may surface, sourced from the
+/// runtime constants so the union never drifts from the wire codes the server emits.
+const SURFACE_ERROR_CODES: &[&str] = &[
+    SURFACE_REQUEST,
+    SURFACE_ABSENT,
+    SURFACE_CURSOR,
+    SURFACE_STALE_CURSOR,
+    SURFACE_ABI_MISMATCH,
+    SURFACE_INVALID_DATA,
+    SURFACE_LIMIT,
+    SURFACE_CONFLICT,
+    SURFACE_WRITE,
+    SURFACE_ACTION,
+    SURFACE_COMPUTED,
+    SURFACE_STORE,
+];
+
 pub fn render_typescript_client(
     abi: &SurfaceAbiJson,
     routes: &SurfaceRouteManifestJson,
@@ -27,8 +49,9 @@ pub fn render_typescript_client(
     let catalog = SurfaceOperationCatalog::from_abi(abi).map_err(SurfaceClientRenderError::from)?;
     let bindings = SurfaceRouteBindings::from_manifest_for_client(routes, &catalog)
         .map_err(SurfaceClientRenderError::from)?;
+    let model = SurfaceClientModel::build(abi, &bindings);
     let header = surface_client_header(&surface_abi_digest(abi, routes));
-    Ok(render_bindings(&header, &bindings))
+    Ok(render_model(&header, &model))
 }
 
 impl SurfaceClientRenderError {
@@ -67,374 +90,666 @@ impl From<SurfaceRouteBindingError> for SurfaceClientRenderError {
     }
 }
 
-#[derive(Debug, Clone)]
-struct SurfaceClientGroup {
-    module: String,
-    surface: String,
-    operations: Vec<SurfaceRouteBinding>,
-}
-
-#[derive(Debug, Clone)]
-struct NamedGroup {
-    name: String,
-    group: SurfaceClientGroup,
-}
-
-#[derive(Debug, Clone)]
-struct NamedOperation {
-    name: String,
-    binding: SurfaceRouteBinding,
-}
-
-#[derive(Debug, Serialize)]
-struct TypeScriptOperationBinding {
-    operation_tag: String,
-    path: String,
-    request_kind: &'static str,
-    result_kind: &'static str,
-}
-
-fn render_bindings(header: &str, bindings: &SurfaceRouteBindings) -> String {
-    let modules = named_modules(bindings);
+fn render_model(header: &str, model: &SurfaceClientModel) -> String {
     let mut output = String::new();
     output.push_str(header);
     output.push_str(CLIENT_PREAMBLE);
-    render_operation_binding_constants(&mut output, &modules);
-    output.push_str("export function createClient(options: MarrowSurfaceClientOptions = {}) {\n");
-    output.push_str("  return {\n");
-    for module in modules {
-        writeln!(output, "    {}: {{", ts_string(&module.name)).expect("write module");
-        for surface in named_surfaces(module.group.clone()) {
-            writeln!(output, "      {}: {{", ts_string(&surface.name)).expect("write surface");
-            for operation in named_operations(surface.group.operations) {
-                let binding_ref = format!(
-                    "SURFACE_OPERATION_BINDINGS[{}][{}][{}]",
-                    ts_string(&module.name),
-                    ts_string(&surface.name),
-                    ts_string(&operation.name)
-                );
-                render_operation(&mut output, &operation, &binding_ref);
-            }
-            output.push_str("      },\n");
-        }
-        output.push_str("    },\n");
-    }
-    output.push_str("  };\n");
-    output.push_str("}\n");
+    render_error_codes(&mut output);
+    render_route_tables(&mut output, model);
+    render_catalog_constants(&mut output, model);
+    render_stores(&mut output, model);
+    render_surfaces(&mut output, model);
+    render_resources(&mut output, model);
+    render_create_client(&mut output, model);
     output
 }
 
-fn named_modules(bindings: &SurfaceRouteBindings) -> Vec<NamedGroup> {
-    let mut by_module = BTreeMap::<String, BTreeMap<String, Vec<SurfaceRouteBinding>>>::new();
-    for binding in bindings.iter() {
-        by_module
-            .entry(binding.surface_module.clone())
-            .or_default()
-            .entry(binding.surface_name.clone())
-            .or_default()
-            .push(binding.clone());
-    }
-
-    let groups = by_module
-        .into_iter()
-        .map(|(module, surfaces)| {
-            let operations = surfaces
-                .values()
-                .flat_map(|bindings| bindings.iter().cloned())
-                .collect::<Vec<_>>();
-            SurfaceClientGroup {
-                module: module.clone(),
-                surface: module,
-                operations,
-            }
-        })
-        .collect::<Vec<_>>();
-    named_groups(groups, |group| &group.module)
-}
-
-fn named_surfaces(module: SurfaceClientGroup) -> Vec<NamedGroup> {
-    let mut by_surface = BTreeMap::<String, Vec<SurfaceRouteBinding>>::new();
-    for binding in module.operations {
-        by_surface
-            .entry(binding.surface_name.clone())
-            .or_default()
-            .push(binding);
-    }
-    let groups = by_surface
-        .into_iter()
-        .map(|(surface, operations)| SurfaceClientGroup {
-            module: module.module.clone(),
-            surface,
-            operations,
-        })
-        .collect::<Vec<_>>();
-    named_groups(groups, |group| &group.surface)
-}
-
-fn named_groups(
-    mut groups: Vec<SurfaceClientGroup>,
-    label: impl Fn(&SurfaceClientGroup) -> &str,
-) -> Vec<NamedGroup> {
-    groups.sort_by(|left, right| {
-        sanitize_group_identifier(label(left))
-            .cmp(&sanitize_group_identifier(label(right)))
-            .then_with(|| group_suffix(left).cmp(&group_suffix(right)))
-    });
-    let mut used = BTreeSet::new();
-    groups
-        .into_iter()
-        .map(|group| {
-            let name = unique_name(
-                &mut used,
-                &sanitize_group_identifier(label(&group)),
-                &group_suffix(&group),
-            );
-            NamedGroup { name, group }
-        })
-        .collect()
-}
-
-fn named_operations(mut operations: Vec<SurfaceRouteBinding>) -> Vec<NamedOperation> {
-    operations.sort_by(|left, right| {
-        sanitize_property_identifier(&left.alias)
-            .cmp(&sanitize_property_identifier(&right.alias))
-            .then_with(|| left.operation_tag.cmp(&right.operation_tag))
-    });
-    let mut used = BTreeSet::new();
-    operations
-        .into_iter()
-        .map(|binding| {
-            let name = unique_name(
-                &mut used,
-                &sanitize_property_identifier(&binding.alias),
-                &operation_tag_suffix(&binding.operation_tag),
-            );
-            NamedOperation { name, binding }
-        })
-        .collect()
-}
-
-fn unique_name(used: &mut BTreeSet<String>, base: &str, suffix: &str) -> String {
-    if used.insert(base.to_string()) {
-        return base.to_string();
-    }
-    let suffixed = format!("{base}__{suffix}");
-    if used.insert(suffixed.clone()) {
-        return suffixed;
-    }
-    let mut counter = 2usize;
-    loop {
-        let candidate = format!("{base}__{suffix}_{counter}");
-        if used.insert(candidate.clone()) {
-            return candidate;
-        }
-        counter += 1;
+fn render_resources(output: &mut String, model: &SurfaceClientModel) {
+    for resource in &model.resources {
+        render_record_type(output, resource);
+        render_record_decoder(output, resource, false);
     }
 }
 
-fn render_operation_binding_constants(output: &mut String, modules: &[NamedGroup]) {
-    let constants = operation_binding_constants(modules);
-    output.push_str("const SURFACE_OPERATION_BINDINGS = ");
-    output.push_str(
-        &serde_json::to_string_pretty(&constants)
-            .expect("surface operation binding constants should serialize"),
-    );
-    output.push_str(" as const;\n\n");
-}
-
-fn operation_binding_constants(
-    modules: &[NamedGroup],
-) -> BTreeMap<String, BTreeMap<String, BTreeMap<String, TypeScriptOperationBinding>>> {
-    let mut constants = BTreeMap::new();
-    for module in modules {
-        let mut surfaces = BTreeMap::new();
-        for surface in named_surfaces(module.group.clone()) {
-            let mut operations = BTreeMap::new();
-            for operation in named_operations(surface.group.operations.clone()) {
-                let binding = operation.binding;
-                operations.insert(
-                    operation.name,
-                    TypeScriptOperationBinding {
-                        operation_tag: binding.operation_tag,
-                        path: binding.path,
-                        request_kind: binding.kind.operation_request_kind(),
-                        result_kind: binding.kind.operation_result_kind(),
-                    },
-                );
-            }
-            surfaces.insert(surface.name, operations);
-        }
-        constants.insert(module.name.clone(), surfaces);
-    }
-    constants
-}
-
-fn render_operation(output: &mut String, operation: &NamedOperation, binding_ref: &str) {
-    let method_name = ts_string(&operation.name);
-    if let Some(request_type) = request_type(operation.binding.kind) {
+/// Emit the per-operation request-kind and route-prefix lookups the transport uses to build a wire
+/// request and POST path from an operation tag. Operation identity stays the tag; these are render
+/// data, not a second classifier.
+fn render_route_tables(output: &mut String, model: &SurfaceClientModel) {
+    output.push_str("const REQUEST_KIND_BY_TAG: Record<string, string> = {\n");
+    for route in &model.routes {
         writeln!(
             output,
-            "        {method_name}: (request: {request_type}) => invoke({binding_ref}, request, options),"
+            "  {}: {},",
+            ts_string(&route.operation_tag),
+            ts_string(route.request_kind)
         )
-        .expect("write operation");
-    } else {
+        .expect("write request kind");
+    }
+    output.push_str("};\n\n");
+    output.push_str("const ROUTE_PREFIX_BY_TAG: Record<string, string> = {\n");
+    for route in &model.routes {
         writeln!(
             output,
-            "        {method_name}: () => invoke({binding_ref}, undefined, options),"
+            "  {}: {},",
+            ts_string(&route.operation_tag),
+            ts_string(route.route_prefix)
         )
-        .expect("write operation");
+        .expect("write route prefix");
     }
+    output.push_str("};\n\n");
 }
 
-fn request_type(kind: SurfaceOperationKind) -> Option<&'static str> {
-    match kind {
-        SurfaceOperationKind::SingletonRead | SurfaceOperationKind::SingletonDelete => None,
-        SurfaceOperationKind::PointRead => Some("SurfacePointRequestJson"),
-        SurfaceOperationKind::Page => Some("SurfacePageRequestJson"),
-        SurfaceOperationKind::UniqueLookup => Some("SurfaceUniqueLookupRequestJson"),
-        SurfaceOperationKind::SingletonUpdate => Some("SurfaceSingletonUpdateRequestJson"),
-        SurfaceOperationKind::PointUpdate => Some("SurfacePointUpdateRequestJson"),
-        SurfaceOperationKind::SingletonCreate => Some("SurfaceSingletonCreateRequestJson"),
-        SurfaceOperationKind::PointCreate => Some("SurfacePointCreateRequestJson"),
-        SurfaceOperationKind::PointDelete => Some("SurfacePointDeleteRequestJson"),
-        SurfaceOperationKind::Action => Some("SurfaceActionRequestJson"),
-        SurfaceOperationKind::ComputedRead => Some("SurfaceComputedReadRequestJson"),
-    }
-}
-
-fn sanitize_group_identifier(label: &str) -> String {
-    sanitize_identifier(label, true)
-}
-
-fn sanitize_property_identifier(label: &str) -> String {
-    sanitize_identifier(label, false)
-}
-
-fn sanitize_identifier(label: &str, avoid_reserved_words: bool) -> String {
-    let mut sanitized = String::new();
-    for character in label.chars() {
-        if sanitized.is_empty() {
-            if is_identifier_start(character) {
-                sanitized.push(character);
-            } else if is_identifier_continue(character) {
-                sanitized.push('_');
-                sanitized.push(character);
-            } else {
-                sanitized.push('_');
-            }
-        } else if is_identifier_continue(character) {
-            sanitized.push(character);
+fn render_error_codes(output: &mut String) {
+    output.push_str("export type SurfaceErrorCode =\n");
+    for (index, code) in SURFACE_ERROR_CODES.iter().enumerate() {
+        let separator = if index + 1 == SURFACE_ERROR_CODES.len() {
+            ";"
         } else {
-            sanitized.push('_');
+            ""
+        };
+        writeln!(output, "  | {}{separator}", ts_string(code)).expect("write error code");
+    }
+    output.push('\n');
+}
+
+/// Emit the private catalog-id constants: enum member-id tables and store catalog ids. These keep
+/// every catalog id out of user-facing signatures while letting decode/encode key on the stable id.
+fn render_catalog_constants(output: &mut String, model: &SurfaceClientModel) {
+    for store in &model.stores {
+        writeln!(
+            output,
+            "const {} = {};",
+            store.catalog_const,
+            ts_string(&store.store_catalog_id)
+        )
+        .expect("write store catalog id");
+    }
+    if !model.stores.is_empty() {
+        output.push('\n');
+    }
+    for enumeration in &model.enums {
+        writeln!(output, "const {} = {{", enumeration.member_table_const)
+            .expect("write enum table");
+        for member in &enumeration.members {
+            writeln!(
+                output,
+                "  {}: {},",
+                ts_string(&member.member_catalog_id),
+                ts_string(&member.label)
+            )
+            .expect("write enum member");
+        }
+        output.push_str("} as const;\n");
+        writeln!(
+            output,
+            "const {} = invertMembers({});\n",
+            enumeration.encode_table_const, enumeration.member_table_const
+        )
+        .expect("write enum encode table");
+    }
+}
+
+fn render_stores(output: &mut String, model: &SurfaceClientModel) {
+    for store in &model.stores {
+        render_store(output, store);
+    }
+}
+
+fn render_store(output: &mut String, store: &SurfaceClientStore) {
+    let brand = &store.brand_type;
+    writeln!(
+        output,
+        "export type {brand} = {{ readonly __brand: \"{brand}\"; readonly __store: string; readonly keys: SurfaceKeyJson[] }};"
+    )
+    .expect("write brand type");
+    let params = store
+        .key_scalars
+        .iter()
+        .enumerate()
+        .map(|(index, scalar)| format!("key{index}: {}", key_input_type(scalar)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    writeln!(
+        output,
+        "export function {}({params}): {brand} {{",
+        store.constructor
+    )
+    .expect("write constructor signature");
+    output.push_str("  return {\n");
+    writeln!(output, "    __brand: \"{brand}\",").expect("write brand tag");
+    writeln!(output, "    __store: {},", store.catalog_const).expect("write brand store");
+    output.push_str("    keys: [");
+    let key_exprs = store
+        .key_scalars
+        .iter()
+        .enumerate()
+        .map(|(index, scalar)| key_encode_expr(scalar, &format!("key{index}")))
+        .collect::<Vec<_>>()
+        .join(", ");
+    output.push_str(&key_exprs);
+    output.push_str("],\n");
+    output.push_str("  };\n}\n");
+    writeln!(
+        output,
+        "function {}(keys: SurfaceKeyJson[]): {brand} {{ return {{ __brand: \"{brand}\", __store: {}, keys }}; }}\n",
+        store.decode_fn, store.catalog_const
+    )
+    .expect("write brand decoder");
+}
+
+fn render_surfaces(output: &mut String, model: &SurfaceClientModel) {
+    for surface in &model.surfaces {
+        for enumeration in surface.enums.iter() {
+            render_enum_type(output, model, enumeration);
+        }
+        for record in &surface.records {
+            render_record_type(output, record);
+            if record_has_identity(record) {
+                render_record_decoder(output, record, true);
+            }
         }
     }
-    if sanitized.is_empty() {
-        sanitized.push('_');
-    }
-    if avoid_reserved_words && is_reserved_word(&sanitized) {
-        sanitized.push('_');
-    }
-    sanitized
 }
 
-fn is_identifier_start(character: char) -> bool {
-    character.is_ascii_alphabetic() || character == '_' || character == '$'
-}
-
-fn is_identifier_continue(character: char) -> bool {
-    is_identifier_start(character) || character.is_ascii_digit()
-}
-
-fn is_reserved_word(word: &str) -> bool {
-    matches!(
-        word,
-        "as" | "async"
-            | "await"
-            | "break"
-            | "case"
-            | "catch"
-            | "class"
-            | "const"
-            | "continue"
-            | "debugger"
-            | "default"
-            | "delete"
-            | "do"
-            | "else"
-            | "enum"
-            | "export"
-            | "extends"
-            | "false"
-            | "finally"
-            | "for"
-            | "from"
-            | "function"
-            | "if"
-            | "implements"
-            | "import"
-            | "in"
-            | "instanceof"
-            | "interface"
-            | "let"
-            | "new"
-            | "null"
-            | "of"
-            | "package"
-            | "private"
-            | "protected"
-            | "public"
-            | "return"
-            | "static"
-            | "super"
-            | "switch"
-            | "this"
-            | "throw"
-            | "true"
-            | "try"
-            | "type"
-            | "typeof"
-            | "var"
-            | "void"
-            | "while"
-            | "with"
-            | "yield"
-    )
-}
-
-fn group_suffix(group: &SurfaceClientGroup) -> String {
-    group
-        .operations
+/// A record decodes from the surface read envelope only when it carries the synthetic identity
+/// `id` field; create/update body records are input-only and need no decoder.
+fn record_has_identity(record: &SurfaceClientRecord) -> bool {
+    record
+        .fields
         .iter()
-        .map(|operation| operation_tag_suffix(&operation.operation_tag))
-        .min()
-        .unwrap_or_else(|| "surface".into())
+        .any(|field| field.label == "id" && field.member_catalog_id.is_none())
 }
 
-fn operation_tag_suffix(operation_tag: &str) -> String {
-    let suffix = operation_tag
-        .strip_prefix("sha256:")
-        .unwrap_or(operation_tag)
-        .chars()
-        .filter(|character| character.is_ascii_alphanumeric())
-        .take(8)
-        .collect::<String>();
-    if suffix.is_empty() {
-        "op".into()
-    } else {
-        suffix
+fn render_enum_type(output: &mut String, model: &SurfaceClientModel, enum_const: &str) {
+    let enumeration = model
+        .enums
+        .iter()
+        .find(|enumeration| enumeration.member_table_const == enum_const)
+        .expect("enum model present");
+    writeln!(output, "export type {} =", enumeration.type_name).expect("write enum union head");
+    for (index, member) in enumeration.members.iter().enumerate() {
+        let separator = if index + 1 == enumeration.members.len() {
+            ";"
+        } else {
+            ""
+        };
+        writeln!(output, "  | {}{separator}", ts_string(&member.label)).expect("write enum member");
     }
+    output.push('\n');
+}
+
+fn render_record_type(output: &mut String, record: &SurfaceClientRecord) {
+    writeln!(output, "export type {} = {{", record.type_name).expect("write record type head");
+    for field in &record.fields {
+        let optional = if field.required { "" } else { " | null" };
+        writeln!(
+            output,
+            "  {}: {}{optional};",
+            ts_property(&field.label),
+            value_ts_type(&field.ty)
+        )
+        .expect("write record field");
+    }
+    output.push_str("};\n\n");
+}
+
+/// Emit a `decode<Type>` that maps a wire record onto the typed record. Surface records read their
+/// `id` from the record identity and their values from `record.fields`; resource records read every
+/// field from the resource value's `fields`. Both index a field by its stable catalog id and fail
+/// loud on a missing required field, so a malformed wire shape throws rather than mis-decodes.
+fn render_record_decoder(output: &mut String, record: &SurfaceClientRecord, from_identity: bool) {
+    let source_type = if from_identity {
+        "SurfaceRecordWireJson"
+    } else {
+        "SurfaceResourceWireJson"
+    };
+    writeln!(
+        output,
+        "function decode{}(record: {source_type}): {} {{",
+        record.type_name, record.type_name
+    )
+    .expect("write decoder head");
+    output.push_str("  const fields = fieldsByCatalogId(record.fields);\n");
+    output.push_str("  return {\n");
+    for field in &record.fields {
+        let value = record_field_decode_expr(field, from_identity);
+        writeln!(output, "    {}: {value},", ts_property(&field.label))
+            .expect("write field decode");
+    }
+    output.push_str("  };\n}\n\n");
+}
+
+fn record_field_decode_expr(field: &SurfaceRecordField, from_identity: bool) -> String {
+    let Some(member_catalog_id) = &field.member_catalog_id else {
+        // The synthetic identity field is the only member-less field, present only on surface
+        // records, and decodes from the record identity rather than a projected value.
+        debug_assert!(from_identity, "resource records have no identity field");
+        let SurfaceFieldType::Identity { decode_fn, .. } = &field.ty else {
+            panic!("identity field must have an identity type");
+        };
+        return format!("{decode_fn}(record.identity.keys)");
+    };
+    let present = format!("presentField(fields, {})", ts_string(member_catalog_id));
+    let value_decode = decode_value_expr(&field.ty, "raw");
+    if field.required {
+        format!("((raw) => {value_decode})(requiredValue({present}))")
+    } else {
+        format!("optionalValue({present}, (raw) => {value_decode})")
+    }
+}
+
+fn render_create_client(output: &mut String, model: &SurfaceClientModel) {
+    output.push_str("export function createClient(options: MarrowSurfaceClientOptions = {}) {\n");
+    output.push_str("  const transport = makeTransport(options);\n");
+    output.push_str("  return {\n");
+    for surface in &model.surfaces {
+        writeln!(output, "    {}: {{", ts_property(&surface.name)).expect("write surface key");
+        for method in &surface.methods {
+            render_method(output, method);
+        }
+        output.push_str("    },\n");
+    }
+    output.push_str("  };\n}\n");
+}
+
+fn render_method(output: &mut String, method: &SurfaceMethod) {
+    let signature = method_signature(method);
+    let request_expr = method_request_expr(method);
+    let decode_expr = method_decode_expr(method);
+    writeln!(
+        output,
+        "      {}: async ({signature}): Promise<{}> => {{",
+        ts_property(&method.name),
+        method_result_type(method)
+    )
+    .expect("write method head");
+    writeln!(
+        output,
+        "        const envelope = await transport.invoke({}, {}, {request_expr});",
+        ts_string(&method.operation_tag),
+        ts_string(method.result_kind)
+    )
+    .expect("write method invoke");
+    writeln!(output, "        return {decode_expr};").expect("write method decode");
+    output.push_str("      },\n");
+}
+
+fn method_signature(method: &SurfaceMethod) -> String {
+    match &method.input {
+        SurfaceMethodInput::None => String::new(),
+        SurfaceMethodInput::Identity { brand } => format!("id: {brand}"),
+        SurfaceMethodInput::Delete { brand } => format!("id: {brand}"),
+        SurfaceMethodInput::Create {
+            brand, body_type, ..
+        } => {
+            format!("id: {brand}, body: {body_type}")
+        }
+        SurfaceMethodInput::SingletonCreate { body_type, .. } => format!("body: {body_type}"),
+        SurfaceMethodInput::Update {
+            brand, body_type, ..
+        } => {
+            format!("id: {brand}, body: {body_type}")
+        }
+        SurfaceMethodInput::SingletonUpdate { body_type, .. } => format!("body: {body_type}"),
+        SurfaceMethodInput::Page { exact_key_scalars } => {
+            page_signature(exact_key_scalars, &method.cursor_brand)
+        }
+        SurfaceMethodInput::UniqueLookup { key_scalars } => key_scalars
+            .iter()
+            .enumerate()
+            .map(|(index, scalar)| format!("key{index}: {}", key_input_type(scalar)))
+            .collect::<Vec<_>>()
+            .join(", "),
+        SurfaceMethodInput::Callable { params } => callable_signature(params),
+    }
+}
+
+fn page_signature(exact_key_scalars: &[String], cursor_brand: &str) -> String {
+    let exact = exact_key_scalars
+        .iter()
+        .enumerate()
+        .map(|(index, scalar)| format!("exactKey{index}: {}", key_input_type(scalar)))
+        .collect::<Vec<_>>();
+    let mut params = exact;
+    params.push("limit: number".to_string());
+    params.push(format!("cursor?: {cursor_brand} | null"));
+    params.join(", ")
+}
+
+fn callable_signature(params: &[(String, SurfaceFieldType)]) -> String {
+    params
+        .iter()
+        .map(|(name, ty)| format!("{}: {}", ts_property(name), argument_ts_type(ty)))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn method_request_expr(method: &SurfaceMethod) -> String {
+    match &method.input {
+        SurfaceMethodInput::None => "undefined".to_string(),
+        SurfaceMethodInput::Identity { .. } | SurfaceMethodInput::Delete { .. } => {
+            "{ identity: identityFromBrand(id) }".to_string()
+        }
+        SurfaceMethodInput::Create { fields, .. } => format!(
+            "{{ identity: identityFromBrand(id), fields: {} }}",
+            create_fields_expr(fields)
+        ),
+        SurfaceMethodInput::SingletonCreate { fields, .. } => {
+            format!("{{ fields: {} }}", create_fields_expr(fields))
+        }
+        SurfaceMethodInput::Update { fields, .. } => format!(
+            "{{ identity: identityFromBrand(id), fields: {} }}",
+            create_fields_expr(fields)
+        ),
+        SurfaceMethodInput::SingletonUpdate { fields, .. } => {
+            format!("{{ fields: {} }}", create_fields_expr(fields))
+        }
+        SurfaceMethodInput::Page { exact_key_scalars } => page_request_expr(exact_key_scalars),
+        SurfaceMethodInput::UniqueLookup { key_scalars } => {
+            let keys = key_scalars
+                .iter()
+                .enumerate()
+                .map(|(index, scalar)| argument_encode_expr(scalar, &format!("key{index}")))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("{{ keys: [{keys}] }}")
+        }
+        SurfaceMethodInput::Callable { params } => callable_request_expr(params),
+    }
+}
+
+fn create_fields_expr(fields: &[CreateFieldPlan]) -> String {
+    let entries = fields
+        .iter()
+        .map(|field| {
+            format!(
+                "{{ catalog_id: {}, value: {} }}",
+                ts_string(&field.member_catalog_id),
+                write_value_expr(&field.ty, &format!("body[{}]", ts_string(&field.label)))
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("[{entries}]")
+}
+
+fn page_request_expr(exact_key_scalars: &[String]) -> String {
+    let mut parts = Vec::new();
+    if !exact_key_scalars.is_empty() {
+        let keys = exact_key_scalars
+            .iter()
+            .enumerate()
+            .map(|(index, scalar)| argument_encode_expr(scalar, &format!("exactKey{index}")))
+            .collect::<Vec<_>>()
+            .join(", ");
+        parts.push(format!("exact_keys: [{keys}]"));
+    }
+    parts.push("limit".to_string());
+    parts.push("cursor: cursor ?? undefined".to_string());
+    format!("{{ {} }}", parts.join(", "))
+}
+
+fn callable_request_expr(params: &[(String, SurfaceFieldType)]) -> String {
+    let entries = params
+        .iter()
+        .map(|(name, ty)| {
+            format!(
+                "{{ name: {}, value: {} }}",
+                ts_string(name),
+                entry_argument_expr(ty, &ts_property(name))
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("{{ arguments: [{entries}] }}")
+}
+
+fn method_decode_expr(method: &SurfaceMethod) -> String {
+    match &method.result {
+        SurfaceMethodResult::Record { record } => {
+            format!("decode{}(recordOf(envelope))", record)
+        }
+        SurfaceMethodResult::OptionalRecord { record } => {
+            format!("optionalRecordOf(envelope, decode{record})")
+        }
+        SurfaceMethodResult::Page { record } => {
+            format!("pageOf(envelope, decode{record})")
+        }
+        SurfaceMethodResult::Created { record } => {
+            format!("decode{}(recordOf(envelope))", record)
+        }
+        SurfaceMethodResult::Updated | SurfaceMethodResult::Deleted => "undefined".to_string(),
+        SurfaceMethodResult::Action { value } => {
+            let value_decode = match value {
+                Some(ty) => format!("(value) => {}", decode_value_expr(ty, "value")),
+                None => "undefined".to_string(),
+            };
+            format!("actionResult(envelope, {value_decode})")
+        }
+        SurfaceMethodResult::ComputedRead { value } => match value {
+            Some(ty) => {
+                let value_decode = format!("(value) => {}", decode_value_expr(ty, "value"));
+                format!("computedReadValue(envelope, {value_decode})")
+            }
+            None => "computedReadValue(envelope, undefined)".to_string(),
+        },
+    }
+}
+
+fn method_result_type(method: &SurfaceMethod) -> String {
+    match &method.result {
+        SurfaceMethodResult::Record { record } | SurfaceMethodResult::Created { record } => {
+            record.clone()
+        }
+        SurfaceMethodResult::OptionalRecord { record } => format!("{record} | null"),
+        SurfaceMethodResult::Page { record } => format!("Page<{record}, {}>", method.cursor_brand),
+        SurfaceMethodResult::Updated | SurfaceMethodResult::Deleted => "void".to_string(),
+        SurfaceMethodResult::Action { value } => {
+            let value_type = value
+                .as_ref()
+                .map(value_ts_type)
+                .unwrap_or_else(|| "null".to_string());
+            format!("{{ value: {value_type}; output: string }}")
+        }
+        SurfaceMethodResult::ComputedRead { value } => value
+            .as_ref()
+            .map(value_ts_type)
+            .unwrap_or_else(|| "null".to_string()),
+    }
+}
+
+fn argument_ts_type(ty: &SurfaceFieldType) -> String {
+    match ty {
+        SurfaceFieldType::Scalar(scalar) => scalar_input_type(scalar).to_string(),
+        SurfaceFieldType::Enum { type_name, .. } => type_name.clone(),
+        SurfaceFieldType::Identity { brand, .. } => brand.clone(),
+        SurfaceFieldType::Sequence(inner) => format!("{}[]", argument_ts_type(inner)),
+        SurfaceFieldType::Resource { type_name, .. } => type_name.clone(),
+    }
+}
+
+fn value_ts_type(ty: &SurfaceFieldType) -> String {
+    match ty {
+        SurfaceFieldType::Scalar(scalar) => scalar_output_type(scalar).to_string(),
+        SurfaceFieldType::Enum { type_name, .. } => type_name.clone(),
+        SurfaceFieldType::Identity { brand, .. } => brand.clone(),
+        SurfaceFieldType::Sequence(inner) => format!("{}[]", value_ts_type(inner)),
+        SurfaceFieldType::Resource { type_name, .. } => type_name.clone(),
+    }
+}
+
+fn decode_value_expr(ty: &SurfaceFieldType, source: &str) -> String {
+    match ty {
+        SurfaceFieldType::Scalar(scalar) => decode_scalar_expr(scalar, source),
+        SurfaceFieldType::Enum { encode_table, .. } => {
+            format!("decodeEnumValue({source}, {encode_table})")
+        }
+        SurfaceFieldType::Identity { decode_fn, .. } => {
+            format!("decodeIdentityValue({source}, {decode_fn})")
+        }
+        SurfaceFieldType::Sequence(inner) => {
+            let element = decode_value_expr(inner, "item");
+            format!("decodeSequence({source}, (item) => {element})")
+        }
+        SurfaceFieldType::Resource { decode_fn, .. } => {
+            format!("{decode_fn}(resourceValueOf({source}))")
+        }
+    }
+}
+
+fn decode_scalar_expr(scalar: &str, source: &str) -> String {
+    match scalar {
+        "int" => format!("decodeIntValue({source})"),
+        "bool" => format!("decodeBoolValue({source})"),
+        "string" => format!("decodeStringValue({source})"),
+        "decimal" => format!("decodeWireScalar({source}, \"decimal\")"),
+        "date" => format!("decodeWireScalar({source}, \"date\")"),
+        "instant" => format!("decodeWireScalar({source}, \"instant\")"),
+        "duration" => format!("decodeWireScalar({source}, \"duration\")"),
+        "bytes" => format!("decodeWireScalar({source}, \"bytes\")"),
+        other => panic!("unexpected scalar kind `{other}`"),
+    }
+}
+
+fn write_value_expr(ty: &SurfaceFieldType, source: &str) -> String {
+    match ty {
+        SurfaceFieldType::Scalar(scalar) => write_scalar_expr(scalar, source),
+        SurfaceFieldType::Enum { encode_table, .. } => {
+            format!("encodeEnumWrite({source}, {encode_table})")
+        }
+        SurfaceFieldType::Identity { .. } => format!("encodeIdentityWrite({source})"),
+        SurfaceFieldType::Sequence(_) | SurfaceFieldType::Resource { .. } => {
+            // Create/update bodies never carry sequence or nested-resource leaves on a store field.
+            format!("encodeWriteValue({source})")
+        }
+    }
+}
+
+fn write_scalar_expr(scalar: &str, source: &str) -> String {
+    match scalar {
+        "int" => format!("{{ kind: \"int\", value: encodeMarrowInt({source}) }}"),
+        "bool" => format!("{{ kind: \"bool\", value: {source} }}"),
+        "string" => format!("{{ kind: \"string\", value: {source} }}"),
+        "decimal" => format!("{{ kind: \"decimal\", value: {source} }}"),
+        "date" | "instant" | "duration" | "bytes" => encode_wire_scalar(scalar, source),
+        other => panic!("unexpected scalar kind `{other}`"),
+    }
+}
+
+fn encode_wire_scalar(scalar: &str, source: &str) -> String {
+    match scalar {
+        "date" => format!("{{ kind: \"date\", days_since_epoch: Number({source}) }}"),
+        "duration" => format!("{{ kind: \"duration\", nanos: encodeMarrowInt({source}) }}"),
+        "instant" => {
+            format!("{{ kind: \"instant\", nanos_since_epoch: encodeMarrowInt({source}) }}")
+        }
+        "bytes" => format!("{{ kind: \"bytes\", value_b64: {source} }}"),
+        other => panic!("unexpected wire scalar `{other}`"),
+    }
+}
+
+fn entry_argument_expr(ty: &SurfaceFieldType, source: &str) -> String {
+    match ty {
+        SurfaceFieldType::Scalar(scalar) => entry_scalar_expr(scalar, source),
+        SurfaceFieldType::Enum { encode_table, .. } => {
+            format!("encodeEnumMember({source}, {encode_table})")
+        }
+        SurfaceFieldType::Identity { .. } => format!("encodeIdentityArgument({source})"),
+        SurfaceFieldType::Sequence(inner) => {
+            let element = entry_argument_expr(inner, "item");
+            format!("{{ kind: \"sequence\", value: {source}.map((item) => {element}) }}")
+        }
+        SurfaceFieldType::Resource { .. } => {
+            panic!("resource arguments are not part of the entry argument surface")
+        }
+    }
+}
+
+fn entry_scalar_expr(scalar: &str, source: &str) -> String {
+    match scalar {
+        "int" => format!("{{ kind: \"int\", value: encodeMarrowInt({source}) }}"),
+        "bool" => format!("{{ kind: \"bool\", value: {source} }}"),
+        "string" => format!("{{ kind: \"string\", value: {source} }}"),
+        "decimal" | "date" | "instant" | "duration" | "bytes" => {
+            format!("{{ kind: {}, value: {source} }}", ts_string(scalar))
+        }
+        other => panic!("unexpected scalar kind `{other}`"),
+    }
+}
+
+fn key_input_type(scalar: &str) -> &'static str {
+    scalar_input_type(scalar)
+}
+
+fn scalar_input_type(scalar: &str) -> &'static str {
+    match scalar {
+        "int" => "MarrowIntInput",
+        "bool" => "boolean",
+        _ => "string",
+    }
+}
+
+fn scalar_output_type(scalar: &str) -> &'static str {
+    match scalar {
+        "int" => "bigint",
+        "bool" => "boolean",
+        _ => "string",
+    }
+}
+
+fn key_encode_expr(scalar: &str, source: &str) -> String {
+    match scalar {
+        "int" => format!("{{ kind: \"int\", value: encodeMarrowInt({source}) }}"),
+        "bool" => format!("{{ kind: \"bool\", value: {source} }}"),
+        "string" => format!("{{ kind: \"string\", value: {source} }}"),
+        "date" => format!("{{ kind: \"date\", days_since_epoch: Number({source}) }}"),
+        "duration" => format!("{{ kind: \"duration\", nanos: encodeMarrowInt({source}) }}"),
+        "instant" => {
+            format!("{{ kind: \"instant\", nanos_since_epoch: encodeMarrowInt({source}) }}")
+        }
+        "bytes" => format!("{{ kind: \"bytes\", value_b64: {source} }}"),
+        other => panic!("unexpected key scalar `{other}`"),
+    }
+}
+
+fn argument_encode_expr(scalar: &str, source: &str) -> String {
+    key_encode_expr(scalar, source)
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct CreateFieldPlan {
+    pub label: String,
+    pub member_catalog_id: String,
+    pub ty: SurfaceFieldType,
 }
 
 fn ts_string(value: &str) -> String {
     serde_json::to_string(value).expect("string serialization cannot fail")
 }
 
+/// Render an object-property key: a bare identifier when the label is already a safe JS identifier,
+/// otherwise a quoted string so arbitrary render labels stay valid TypeScript.
+fn ts_property(label: &str) -> String {
+    if is_plain_identifier(label) {
+        label.to_string()
+    } else {
+        ts_string(label)
+    }
+}
+
+fn is_plain_identifier(label: &str) -> bool {
+    let mut chars = label.chars();
+    match chars.next() {
+        Some(first) if first.is_ascii_alphabetic() || first == '_' || first == '$' => {}
+        _ => return false,
+    }
+    chars.all(|character| character.is_ascii_alphanumeric() || character == '_' || character == '$')
+}
+
 /// The deterministic freshness key for a project's TypeScript client: a SHA-256 over the
 /// canonically serialized surface ABI and route manifest. Two checkouts of the same surface
 /// shape produce the same digest; a non-surface `.mw` edit leaves it unchanged.
 pub fn surface_abi_digest(abi: &SurfaceAbiJson, routes: &SurfaceRouteManifestJson) -> String {
-    // The DTOs serialize with fixed struct field order and sorted surfaces, so the bytes are
-    // stable across runs and checkouts; the newline separates the two payloads unambiguously.
     let mut bytes = serde_json::to_vec(abi).expect("surface ABI serializes");
     bytes.push(b'\n');
     bytes.extend_from_slice(&serde_json::to_vec(routes).expect("route manifest serializes"));
@@ -457,211 +772,4 @@ pub fn surface_client_header_digest(contents: &str) -> Option<String> {
 pub const SURFACE_CLIENT_DO_NOT_EDIT: &str = "// Generated by marrow — do not edit.";
 pub const SURFACE_CLIENT_DIGEST_PREFIX: &str = "// marrow-surface-digest: ";
 
-const CLIENT_PREAMBLE: &str = r#"const SURFACE_OPERATION_PROFILE_VERSION = "surface.operation.v1";
-
-type MarrowIntInput = string | number | bigint;
-type SurfaceScalarKeyJson =
-  | { kind: "int"; value: MarrowIntInput }
-  | { kind: "bool"; value: boolean }
-  | { kind: "string"; value: string }
-  | { kind: "date"; days_since_epoch: number }
-  | { kind: "duration"; nanos: MarrowIntInput }
-  | { kind: "instant"; nanos_since_epoch: MarrowIntInput }
-  | { kind: "bytes"; value_b64: string };
-type SurfaceKeyJson = SurfaceScalarKeyJson;
-type SurfaceArgumentJson =
-  | SurfaceScalarKeyJson
-  | { kind: "enum"; enum_catalog_id: string; member_catalog_id: string }
-  | { kind: "identity"; store_catalog_id: string; keys: SurfaceKeyJson[] };
-type SurfaceIdentityJson = { store_catalog_id: string; keys: SurfaceKeyJson[] };
-type SurfaceCursorJson = { operation_tag: string; [key: string]: unknown };
-type SurfaceWriteValueJson =
-  | SurfaceArgumentJson
-  | { kind: "decimal"; value: string };
-type SurfaceUpdateFieldJson = { catalog_id: string; value: SurfaceWriteValueJson };
-type SurfaceCreateFieldJson = { catalog_id: string; value: SurfaceWriteValueJson };
-type SurfacePointRequestJson = { identity: SurfaceIdentityJson };
-type SurfacePageRequestJson = {
-  exact_keys?: SurfaceArgumentJson[];
-  limit: number;
-  cursor?: SurfaceCursorJson;
-};
-type SurfaceUniqueLookupRequestJson = { keys: SurfaceArgumentJson[] };
-type SurfacePointUpdateRequestJson = { identity: SurfaceIdentityJson; fields: SurfaceUpdateFieldJson[] };
-type SurfaceSingletonUpdateRequestJson = { fields: SurfaceUpdateFieldJson[] };
-type SurfacePointCreateRequestJson = { identity: SurfaceIdentityJson; fields: SurfaceCreateFieldJson[] };
-type SurfaceSingletonCreateRequestJson = { fields: SurfaceCreateFieldJson[] };
-type SurfacePointDeleteRequestJson = { identity: SurfaceIdentityJson };
-type SurfaceEntryScalarArgumentJson =
-  | { kind: "int"; value: string }
-  | { kind: "bool"; value: boolean }
-  | { kind: "string"; value: string }
-  | { kind: "decimal"; value: string }
-  | { kind: "date"; value: string }
-  | { kind: "instant"; value: string }
-  | { kind: "duration"; value: string }
-  | { kind: "bytes"; value: string };
-type SurfaceEntryArgumentValueJson =
-  | SurfaceEntryScalarArgumentJson
-  | { kind: "enum_member"; member_catalog_id: string }
-  | { kind: "identity"; store_catalog_id: string; keys: SurfaceEntryScalarArgumentJson[] }
-  | { kind: "sequence"; value: SurfaceEntryArgumentValueJson[] };
-type SurfaceEntryArgumentJson = { name: string; value: SurfaceEntryArgumentValueJson };
-type SurfaceActionRequestJson = { arguments: SurfaceEntryArgumentJson[] };
-type SurfaceComputedReadRequestJson = { arguments: SurfaceEntryArgumentJson[] };
-type SurfaceOperationRequestKind =
-  | "singleton_read"
-  | "point_read"
-  | "page"
-  | "unique_lookup"
-  | "singleton_update"
-  | "point_update"
-  | "singleton_create"
-  | "point_create"
-  | "singleton_delete"
-  | "point_delete"
-  | "action"
-  | "computed_read";
-type SurfaceOperationResultKind =
-  | "record"
-  | "page"
-  | "optional_record"
-  | "updated"
-  | "created"
-  | "deleted"
-  | "action"
-  | "computed_read";
-type SurfaceOperationRequestJson = {
-  profile_version: typeof SURFACE_OPERATION_PROFILE_VERSION;
-  operation_tag: string;
-  request: { kind: SurfaceOperationRequestKind; request: unknown };
-};
-type SurfaceOperationResponseJson = {
-  profile_version: typeof SURFACE_OPERATION_PROFILE_VERSION;
-  operation_tag: string;
-  result: { kind: SurfaceOperationResultKind; [key: string]: unknown };
-};
-type SurfaceOperationBinding = {
-  readonly operation_tag: string;
-  readonly path: string;
-  readonly request_kind: SurfaceOperationRequestKind;
-  readonly result_kind: SurfaceOperationResultKind;
-};
-type SurfaceHttpResponse = { ok: boolean; json(): Promise<unknown> };
-type SurfaceFetch = (
-  input: string,
-  init: { method: "POST"; headers: Record<string, string>; body: string },
-) => Promise<SurfaceHttpResponse>;
-export type MarrowSurfaceClientOptions = {
-  baseUrl?: string;
-  fetch?: SurfaceFetch;
-  headers?: Record<string, string>;
-};
-
-function encodeMarrowInt(value: MarrowIntInput): string {
-  if (typeof value === "bigint") {
-    return value.toString();
-  }
-  if (typeof value === "number") {
-    if (!Number.isSafeInteger(value)) {
-      throw new Error("Marrow int number inputs must be safe integers");
-    }
-    return String(value);
-  }
-  if (typeof value === "string") {
-    return value;
-  }
-  throw new Error("Marrow int inputs must be string, number, or bigint");
-}
-
-function encodeSurfaceJson(value: unknown): unknown {
-  if (Array.isArray(value)) {
-    return value.map(encodeSurfaceJson);
-  }
-  if (value === null || typeof value !== "object") {
-    return value;
-  }
-  const record = value as Record<string, unknown>;
-  const encoded: Record<string, unknown> = {};
-  for (const [key, item] of Object.entries(record)) {
-    encoded[key] = encodeSurfaceJson(item);
-  }
-  if (record.kind === "int" && "value" in record) {
-    encoded.value = encodeMarrowInt(record.value as MarrowIntInput);
-  }
-  if (record.kind === "duration" && "nanos" in record) {
-    encoded.nanos = encodeMarrowInt(record.nanos as MarrowIntInput);
-  }
-  if (record.kind === "instant" && "nanos_since_epoch" in record) {
-    encoded.nanos_since_epoch = encodeMarrowInt(record.nanos_since_epoch as MarrowIntInput);
-  }
-  return encoded;
-}
-
-function operationRequest(
-  operationTag: string,
-  requestKind: SurfaceOperationRequestKind,
-  request: unknown,
-): SurfaceOperationRequestJson {
-  const body: SurfaceOperationRequestJson["request"] = {
-    kind: requestKind,
-    request: request === undefined ? {} : encodeSurfaceJson(request),
-  };
-  return {
-    profile_version: SURFACE_OPERATION_PROFILE_VERSION,
-    operation_tag: operationTag,
-    request: body,
-  };
-}
-
-function validateSurfaceResponse(
-  response: unknown,
-  operationTag: string,
-  expectedResultKind: SurfaceOperationResultKind,
-): SurfaceOperationResponseJson {
-  if (response === null || typeof response !== "object") {
-    throw new Error("Marrow surface response must be an object");
-  }
-  const envelope = response as SurfaceOperationResponseJson;
-  if (envelope.profile_version !== SURFACE_OPERATION_PROFILE_VERSION) {
-    throw new Error("Marrow surface response profile version mismatch");
-  }
-  if (envelope.operation_tag !== operationTag) {
-    throw new Error("Marrow surface response operation tag mismatch");
-  }
-  if (!envelope.result || envelope.result.kind !== expectedResultKind) {
-    throw new Error("Marrow surface response result kind mismatch");
-  }
-  return envelope;
-}
-
-function surfaceUrl(baseUrl: string | undefined, path: string): string {
-  if (!baseUrl) {
-    return path;
-  }
-  return `${baseUrl.replace(/\/$/, "")}${path}`;
-}
-
-async function invoke(
-  binding: SurfaceOperationBinding,
-  request: unknown,
-  options: MarrowSurfaceClientOptions,
-): Promise<SurfaceOperationResponseJson> {
-  const fetcher =
-    options.fetch ?? (globalThis as unknown as { fetch?: SurfaceFetch }).fetch;
-  if (!fetcher) {
-    throw new Error("Marrow surface client requires a fetch implementation");
-  }
-  const response = await fetcher(surfaceUrl(options.baseUrl, binding.path), {
-    method: "POST",
-    headers: { "Content-Type": "application/json", ...(options.headers ?? {}) },
-    body: JSON.stringify(operationRequest(binding.operation_tag, binding.request_kind, request)),
-  });
-  const json = await response.json();
-  if (!response.ok) {
-    throw json;
-  }
-  return validateSurfaceResponse(json, binding.operation_tag, binding.result_kind);
-}
-
-"#;
+const CLIENT_PREAMBLE: &str = include_str!("client_ts_preamble.ts");

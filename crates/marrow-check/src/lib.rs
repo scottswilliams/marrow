@@ -147,10 +147,10 @@ pub use surface_abi::{
     SurfaceCreateOperationField, SurfaceDeleteOperationDescriptor,
     SurfaceDeleteOperationDescriptorKind, SurfaceDeleteSemantics, SurfaceOperationEnumMember,
     SurfaceOperationIdentityKey, SurfaceOperationValueShape, SurfaceReadOperationDescriptor,
-    SurfaceReadOperationDescriptorKind,
-    SurfaceReadOperationIndexKey, SurfaceReadOperationIndexKeySource,
-    SurfaceReadOperationProjectionField, SurfaceUpdateOperationDescriptor,
-    SurfaceUpdateOperationDescriptorKind, SurfaceUpdateOperationField, SurfaceUpdatePatchSemantics,
+    SurfaceReadOperationDescriptorKind, SurfaceReadOperationIndexKey,
+    SurfaceReadOperationIndexKeySource, SurfaceReadOperationProjectionField,
+    SurfaceUpdateOperationDescriptor, SurfaceUpdateOperationDescriptorKind,
+    SurfaceUpdateOperationField, SurfaceUpdatePatchSemantics,
 };
 
 pub(crate) use driver::{
