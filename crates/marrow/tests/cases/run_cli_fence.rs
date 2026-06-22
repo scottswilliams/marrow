@@ -2,7 +2,7 @@ use crate::{support, support_evolve};
 use std::fs;
 
 use marrow_store::key::SavedKey;
-use marrow_store::tree::TreeStore;
+use marrow_store::tree::{EngineProfile, TreeStore};
 use marrow_store::value::Scalar;
 use support::{marrow_sub, temp_project, temp_project_uncommitted, write};
 
@@ -59,6 +59,52 @@ fn run_is_fenced_when_store_evolved_past_the_project_epoch() {
     let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
     assert!(stderr.contains("run.store_evolved"), "{stderr}");
     // The entry never ran: the fence fires before execution, so nothing prints.
+    let stdout = String::from_utf8(output.stdout).expect("stdout utf8");
+    assert_eq!(stdout, "");
+}
+
+#[test]
+fn run_is_fenced_when_store_engine_profile_drifts() {
+    let root = temp_project("run-fence-engine-profile", |root| {
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".data" }, "run": { "defaultEntry": "shelf::show" } }"#,
+        );
+        write(
+            root,
+            "src/shelf.mw",
+            "module shelf\n\
+             \n\
+             resource Counter\n\
+             \x20\x20\x20\x20required value: int\n\
+             store ^counter(id: int): Counter\n\
+             \n\
+             pub fn show()\n\
+             \x20\x20\x20\x20print(\"ran the entry\")\n",
+        );
+    });
+    let store_path = root.join(".data").join("marrow.redb");
+    {
+        let store = TreeStore::open(&store_path).expect("open native store");
+        let mut commit = store
+            .read_commit_metadata()
+            .expect("read commit metadata")
+            .expect("fixture store is stamped");
+        let drifted_profile =
+            EngineProfile::new(marrow_run::evolution::current_engine_profile().layout_epoch() + 1);
+        commit.layout_epoch = drifted_profile.layout_epoch();
+        commit.engine_profile_digest = drifted_profile.digest_bytes();
+        store
+            .write_commit_metadata(&commit)
+            .expect("stamp drifted engine profile");
+    }
+
+    let output = marrow_sub("run", &[root.to_str().unwrap()]);
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+    assert!(stderr.contains("run.engine_profile"), "{stderr}");
     let stdout = String::from_utf8(output.stdout).expect("stdout utf8");
     assert_eq!(stdout, "");
 }
