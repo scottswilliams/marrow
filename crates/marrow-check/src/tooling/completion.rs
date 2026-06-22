@@ -2,7 +2,9 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use marrow_schema::{EnumSchema, ResourceSchema, StoreSchema, stdlib};
-use marrow_syntax::{Declaration, FunctionDecl, SourceFile};
+use marrow_syntax::{
+    Declaration, FunctionDecl, LexedSource, SourceFile, SourceSpan, Token, TokenKind,
+};
 
 use super::signatures::{CallableSignature, intrinsic_callable_signature};
 use crate::{CheckedFunction, CheckedModule, CheckedProgram, MarrowType};
@@ -181,6 +183,386 @@ pub enum SourceNamespaceEnumMemberStatus {
     Selectable,
     Category,
     Group,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SourceCompletionContext {
+    Root,
+    SavedPath { receiver: String, span: SourceSpan },
+    InvalidSavedPath,
+    Namespace { qualifier: Vec<String> },
+    Type,
+    Bare,
+}
+
+pub fn source_completion_context(
+    source: &str,
+    lexed: &LexedSource,
+    offset: usize,
+) -> SourceCompletionContext {
+    let tokens = significant_tokens(lexed);
+    let Some(driver) = tokens
+        .iter()
+        .rposition(|token| token.span.start_byte < offset)
+    else {
+        return SourceCompletionContext::Bare;
+    };
+
+    let anchor =
+        if tokens[driver].kind == TokenKind::Identifier && tokens[driver].span.end_byte >= offset {
+            driver.checked_sub(1)
+        } else {
+            Some(driver)
+        };
+
+    let Some(anchor) = anchor else {
+        return SourceCompletionContext::Bare;
+    };
+
+    match tokens[anchor].kind {
+        TokenKind::Caret => SourceCompletionContext::Root,
+        TokenKind::DoubleColon => match qualifier_before(source, &tokens, anchor) {
+            Some(qualifier) => SourceCompletionContext::Namespace { qualifier },
+            None => SourceCompletionContext::Bare,
+        },
+        TokenKind::Dot | TokenKind::QuestionDot => {
+            match saved_path_before_dot(source, &tokens, anchor) {
+                SavedPathRecovery::Complete { receiver, span } => {
+                    SourceCompletionContext::SavedPath { receiver, span }
+                }
+                SavedPathRecovery::Invalid => SourceCompletionContext::InvalidSavedPath,
+                SavedPathRecovery::NotSavedPath => SourceCompletionContext::Bare,
+            }
+        }
+        TokenKind::DotDot | TokenKind::DotDotEqual => {
+            if saved_path_attempt_before_dot(&tokens, anchor) {
+                SourceCompletionContext::InvalidSavedPath
+            } else {
+                SourceCompletionContext::Bare
+            }
+        }
+        TokenKind::Colon => {
+            if introduces_type(&tokens, anchor) {
+                SourceCompletionContext::Type
+            } else {
+                SourceCompletionContext::Bare
+            }
+        }
+        _ if malformed_saved_member_receiver(&tokens, anchor) => {
+            SourceCompletionContext::InvalidSavedPath
+        }
+        _ => SourceCompletionContext::Bare,
+    }
+}
+
+fn qualifier_before(source: &str, tokens: &[Token], colon_index: usize) -> Option<Vec<String>> {
+    let mut segments = Vec::new();
+    let mut i = colon_index;
+    loop {
+        let ident = i.checked_sub(1)?;
+        if tokens[ident].kind != TokenKind::Identifier {
+            return None;
+        }
+        segments.push(tokens[ident].text(source).to_string());
+        match ident.checked_sub(1) {
+            Some(prev) if tokens[prev].kind == TokenKind::DoubleColon => i = prev,
+            _ => break,
+        }
+    }
+    segments.reverse();
+    Some(segments)
+}
+
+fn saved_path_before_dot(source: &str, tokens: &[Token], dot_index: usize) -> SavedPathRecovery {
+    let Some(end) = dot_index.checked_sub(1) else {
+        return unrecovered_saved_path(tokens, dot_index);
+    };
+    if matches!(tokens[end].kind, TokenKind::DotDot | TokenKind::DotDotEqual) {
+        return unrecovered_saved_path(tokens, dot_index);
+    }
+    let Some(start) = saved_receiver_start(tokens, end) else {
+        return unrecovered_saved_path(tokens, dot_index);
+    };
+    let span = recovered_receiver_span(tokens, start, end);
+    let receiver = source[span.start_byte..span.end_byte].to_string();
+    SavedPathRecovery::Complete { receiver, span }
+}
+
+fn saved_receiver_start(tokens: &[Token], end: usize) -> Option<usize> {
+    match tokens[end].kind {
+        TokenKind::Identifier => saved_receiver_identifier_start(tokens, end),
+        TokenKind::RightParen => {
+            let open = matching_open_paren(tokens, end)?;
+            if let Some(callee) = open.checked_sub(1)
+                && tokens[callee].kind == TokenKind::Identifier
+            {
+                return saved_receiver_identifier_start(tokens, callee);
+            }
+            saved_receiver_group_start(tokens, open, end)
+        }
+        _ => None,
+    }
+}
+
+fn saved_receiver_group_start(tokens: &[Token], open: usize, close: usize) -> Option<usize> {
+    let inner_end = close.checked_sub(1)?;
+    if inner_end <= open {
+        return None;
+    }
+    (saved_receiver_start(tokens, inner_end)? == open + 1).then_some(open)
+}
+
+fn saved_receiver_identifier_start(tokens: &[Token], ident: usize) -> Option<usize> {
+    let before = ident.checked_sub(1)?;
+    match tokens[before].kind {
+        TokenKind::Caret => Some(before),
+        TokenKind::Dot | TokenKind::QuestionDot => {
+            saved_receiver_start(tokens, before.checked_sub(1)?)
+        }
+        _ => None,
+    }
+}
+
+fn recovered_receiver_span(tokens: &[Token], start: usize, end: usize) -> SourceSpan {
+    let start_span = tokens[start].span;
+    SourceSpan {
+        start_byte: start_span.start_byte,
+        end_byte: tokens[end].span.end_byte,
+        line: start_span.line,
+        column: start_span.column,
+    }
+}
+
+fn unrecovered_saved_path(tokens: &[Token], dot_index: usize) -> SavedPathRecovery {
+    if malformed_saved_member_receiver_before_dot(tokens, dot_index)
+        || saved_path_attempt_before_dot(tokens, dot_index)
+        || open_saved_postfix_before_dot(tokens, dot_index)
+    {
+        SavedPathRecovery::Invalid
+    } else {
+        SavedPathRecovery::NotSavedPath
+    }
+}
+
+fn malformed_saved_member_receiver_before_dot(tokens: &[Token], dot_index: usize) -> bool {
+    dot_index
+        .checked_sub(1)
+        .is_some_and(|receiver| malformed_saved_member_receiver(tokens, receiver))
+}
+
+fn malformed_saved_member_receiver(tokens: &[Token], receiver: usize) -> bool {
+    let Some(delimiter) = receiver.checked_sub(1) else {
+        return false;
+    };
+    if !matches!(
+        tokens[delimiter].kind,
+        TokenKind::Dot | TokenKind::QuestionDot | TokenKind::DotDot | TokenKind::DotDotEqual
+    ) {
+        return false;
+    }
+    delimiter
+        .checked_sub(1)
+        .is_some_and(|end| saved_path_attempt_ending_at(tokens, end))
+}
+
+fn saved_path_attempt_before_dot(tokens: &[Token], dot_index: usize) -> bool {
+    let Some(mut end) = dot_index.checked_sub(1) else {
+        return false;
+    };
+    if matches!(tokens[end].kind, TokenKind::DotDot | TokenKind::DotDotEqual) {
+        let Some(prev) = end.checked_sub(1) else {
+            return false;
+        };
+        end = prev;
+    }
+
+    saved_path_attempt_ending_at(tokens, end)
+}
+
+fn saved_path_attempt_ending_at(tokens: &[Token], mut i: usize) -> bool {
+    loop {
+        match tokens[i].kind {
+            TokenKind::Caret => return true,
+            TokenKind::Identifier => return saved_path_callee_prefix_before(tokens, i),
+            TokenKind::RightParen => match matching_open_paren(tokens, i) {
+                Some(open) => {
+                    if let Some(callee) = open.checked_sub(1)
+                        && tokens[callee].kind == TokenKind::Identifier
+                    {
+                        return saved_path_callee_prefix_before(tokens, callee);
+                    }
+                    if saved_receiver_group_start(tokens, open, i).is_some() {
+                        return true;
+                    }
+                    let Some(prev) = open.checked_sub(1) else {
+                        return false;
+                    };
+                    i = prev;
+                }
+                None => {
+                    let Some(prev) = i.checked_sub(1) else {
+                        return false;
+                    };
+                    i = prev;
+                }
+            },
+            TokenKind::RightBracket => match matching_open_bracket(tokens, i) {
+                Some(open) => {
+                    let Some(prev) = open.checked_sub(1) else {
+                        return false;
+                    };
+                    return saved_path_attempt_ending_at(tokens, prev);
+                }
+                None => {
+                    let Some(prev) = i.checked_sub(1) else {
+                        return false;
+                    };
+                    i = prev;
+                }
+            },
+            TokenKind::Dot | TokenKind::QuestionDot => {
+                let Some(prev) = i.checked_sub(1) else {
+                    return false;
+                };
+                i = prev;
+            }
+            _ => return false,
+        }
+    }
+}
+
+fn open_saved_postfix_before_dot(tokens: &[Token], dot_index: usize) -> bool {
+    let Some(mut i) = dot_index.checked_sub(1) else {
+        return false;
+    };
+    let dot_line = tokens[dot_index].span.line;
+    let mut paren_depth = 0usize;
+    let mut bracket_depth = 0usize;
+    loop {
+        if tokens[i].span.line < dot_line {
+            return false;
+        }
+        match tokens[i].kind {
+            TokenKind::RightParen => paren_depth += 1,
+            TokenKind::LeftParen if paren_depth > 0 => paren_depth -= 1,
+            TokenKind::LeftParen
+                if bracket_depth == 0 && open_call_has_completed_saved_receiver(tokens, i) =>
+            {
+                return true;
+            }
+            TokenKind::RightBracket => bracket_depth += 1,
+            TokenKind::LeftBracket if bracket_depth > 0 => bracket_depth -= 1,
+            TokenKind::LeftBracket
+                if paren_depth == 0 && open_bracket_has_saved_receiver(tokens, i) =>
+            {
+                return true;
+            }
+            _ => {}
+        }
+        let Some(prev) = i.checked_sub(1) else {
+            return false;
+        };
+        i = prev;
+    }
+}
+
+fn open_call_has_completed_saved_receiver(tokens: &[Token], open: usize) -> bool {
+    let Some(receiver) = open.checked_sub(1) else {
+        return false;
+    };
+    matches!(
+        tokens[receiver].kind,
+        TokenKind::RightParen | TokenKind::RightBracket
+    ) && saved_path_attempt_ending_at(tokens, receiver)
+}
+
+fn open_bracket_has_saved_receiver(tokens: &[Token], open: usize) -> bool {
+    open.checked_sub(1)
+        .is_some_and(|receiver| saved_path_attempt_ending_at(tokens, receiver))
+}
+
+fn saved_path_callee_prefix_before(tokens: &[Token], callee: usize) -> bool {
+    let Some(before) = callee.checked_sub(1) else {
+        return false;
+    };
+    match tokens[before].kind {
+        TokenKind::Caret => true,
+        TokenKind::Dot | TokenKind::QuestionDot => before
+            .checked_sub(1)
+            .is_some_and(|end| saved_path_attempt_ending_at(tokens, end)),
+        _ => false,
+    }
+}
+
+enum SavedPathRecovery {
+    Complete { receiver: String, span: SourceSpan },
+    Invalid,
+    NotSavedPath,
+}
+
+fn matching_open_paren(tokens: &[Token], close_index: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    let mut i = close_index;
+    loop {
+        match tokens[i].kind {
+            TokenKind::RightParen => depth += 1,
+            TokenKind::LeftParen => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+        i = i.checked_sub(1)?;
+    }
+}
+
+fn matching_open_bracket(tokens: &[Token], close_index: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    let mut i = close_index;
+    loop {
+        match tokens[i].kind {
+            TokenKind::RightBracket => depth += 1,
+            TokenKind::LeftBracket => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+        i = i.checked_sub(1)?;
+    }
+}
+
+fn introduces_type(tokens: &[Token], colon_index: usize) -> bool {
+    let Some(before) = colon_index.checked_sub(1) else {
+        return false;
+    };
+    matches!(
+        tokens[before].kind,
+        TokenKind::Identifier | TokenKind::RightParen
+    )
+}
+
+fn significant_tokens(lexed: &LexedSource) -> Vec<Token> {
+    lexed
+        .tokens
+        .iter()
+        .filter(|token| {
+            !matches!(
+                token.kind,
+                TokenKind::Indent
+                    | TokenKind::Dedent
+                    | TokenKind::Newline
+                    | TokenKind::Eof
+                    | TokenKind::Comment
+                    | TokenKind::DocComment
+            )
+        })
+        .copied()
+        .collect()
 }
 
 pub fn source_type_completion_fact(
@@ -790,3 +1172,6 @@ fn enum_member_status(enum_schema: &EnumSchema, ordinal: usize) -> SourceNamespa
         SourceNamespaceEnumMemberStatus::Group
     }
 }
+
+#[cfg(test)]
+mod tests;
