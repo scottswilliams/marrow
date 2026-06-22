@@ -4,8 +4,8 @@ The `marrow` binary is the single entry point for the language and its built-in
 database.
 
 ```
-marrow init <projectdir>
-marrow check [--format text|json|jsonl] <projectdir>
+marrow init [--client] <projectdir>
+marrow check [--format text|json|jsonl] [--locked] <projectdir>
 marrow doctor [--format text|json|jsonl] <projectdir>
 marrow evolve preview [--from-backup <artifact>] [--scaffold] [--format text|json|jsonl] <projectdir>
 marrow evolve apply [--maintenance] [--approve-retire <catalog-id>:<count>] \
@@ -14,7 +14,7 @@ marrow fmt [--check | --write] <file.mw | projectdir>
 marrow run [--entry <entry>] [--arg name=value]... [--maintenance] \
   [--trace] [--dry-run] [--format text|json] <projectdir>
 marrow test [--trace] [--format text|json|jsonl] [--filter <substring>] <projectdir>
-marrow serve [--write] [--cors-origin <loopback-origin>] [--addr <loopback:port>] <projectdir>
+marrow serve [--write] [--watch] [--cors-origin <loopback-origin>] [--addr <loopback:port>] <projectdir>
 marrow client typescript [--out <path>] <projectdir>
 marrow data <roots|stats|dump|integrity> [--backup <artifact>] [--format text|json|jsonl] <projectdir>
 marrow data recover [--format text|json|jsonl] <projectdir>
@@ -102,7 +102,7 @@ not the raw directory argument.
 ## `marrow init`
 
 ```
-marrow init <projectdir>
+marrow init [--client] <projectdir>
 ```
 
 Create a new project directory with the quickstart scaffold: `marrow.json`,
@@ -117,6 +117,14 @@ The generated config is explicit: `sourceRoots` is `["src"]`,
 `run.defaultEntry` is `<name>::books::main`, the store is
 `{"backend":"native","dataDir":".marrow/data"}`, and `tests` is `["tests"]`.
 No `.gitignore` or extra project files are created.
+
+`--client` (short `-c`) opts into a surface-bearing scaffold: the generated
+source adds a minimal `surface` over the `^books` store, and the config gains a
+`"client": "generated/marrow.ts"` line, so the first `marrow run` emits the
+declared TypeScript client. Bare `marrow init` is unchanged — store-only, with
+no `surface` and no `client`. The flag is named after the client because a
+`client` path applies only to a surface-bearing project, so the two are
+scaffolded together or not at all.
 
 Exits `0` after writing the scaffold, `1` if the target name is invalid or the
 target cannot be written safely, and `2` for usage errors.
@@ -155,6 +163,13 @@ Check a project directory containing `marrow.json` and report diagnostics.
   advisory on stderr — the envelope stays `status: "ok"` — since a later `run` or
   `evolve apply` regenerates the lock; an absent lock on a legitimate first run,
   which has no durable shape to lock yet, raises no condition under `--locked`.
+- The same gate covers the declared TypeScript client. When the project declares
+  a callable surface and a `client` output path, and that file is absent or
+  carries a different `marrow-surface-digest` than the current surface, `--locked`
+  fails with `check.stale_client` for CI, and plain `check` advises on stderr and
+  exits `0`. `check` never writes the client — a later `run`, `serve` startup, or
+  `evolve apply` rewrites it. A project with no `client`, or no surface, raises no
+  client condition.
 - Passing a bare `.mw` file is a usage error. Run `marrow check` on the project
   directory that contains `marrow.json`.
 - When `marrow.json` sets `run.defaultEntry`, the check verifies it names a
@@ -216,9 +231,16 @@ marrow client typescript [--out <path>] <projectdir>
 ```
 
 Generate a self-contained TypeScript client for the checked application surface
-operation envelope. The command runs the same read-only project analysis used by
-`marrow check`, binding saved-data identity from the committed `marrow.lock`
-projection; it does not open, create, repair, or mutate the saved-data store.
+operation envelope, exporting a `createClient` factory. The command runs the same
+read-only project analysis used by `marrow check`, binding saved-data identity
+from the committed `marrow.lock` projection; it does not open, create, repair, or
+mutate the saved-data store.
+
+This command is the explicit escape hatch. The usual lifecycle is automatic:
+when `marrow.json` declares a `client` path, `marrow run`, `marrow serve`
+startup, and `marrow evolve apply` rewrite that file write-if-changed on a
+surface-ABI change, and `marrow check --locked` keeps it honest in CI. The
+developer never has to run a separate codegen step for the declared output.
 
 - With `--out <path>`, the rendered client is written to that file and nothing
   is echoed to stdout. A relative path resolves under the project directory; an
@@ -228,6 +250,10 @@ projection; it does not open, create, repair, or mutate the saved-data store.
   and prints no partial client.
 - Usage errors, including a missing project directory or unknown option, exit
   `2`.
+- Every generated file begins with a do-not-edit header and a
+  `// marrow-surface-digest: sha256:<hex>` line. That digest is the deterministic
+  freshness key the declared-output lifecycle and `check --locked` compare
+  against the current surface.
 - The generated client uses the exported `surface_abi` descriptors and
   `surface.route.v1` manifest as inputs. It validates route/ABI agreement before
   rendering, stores operation tags and route paths as constants in method bodies,
@@ -246,7 +272,7 @@ that bypass the generated client.
 ## `marrow serve`
 
 ```
-marrow serve [--write] [--cors-origin <loopback-origin>] [--addr <loopback:port>] <projectdir>
+marrow serve [--write] [--watch] [--cors-origin <loopback-origin>] [--addr <loopback:port>] <projectdir>
 ```
 
 Run the local HTTP serving profile for checked application surfaces. By
@@ -277,6 +303,14 @@ create, freeze, migrate, repair, or auto-apply saved data.
 - `--write` is single-owner and sequential through the native writer lock while
   the process is running. It excludes another writer and read-only inspection
   handle for the same store file.
+- At startup, when `marrow.json` declares a `client` path over a surface-bearing
+  project, the command rewrites that declared client write-if-changed before it
+  binds the listener, so the served surface and the on-disk client agree.
+- `--watch` keeps that client current while serving. Between connections the
+  command polls the source-root `.mw` files for a modification-time change; on
+  one it re-checks the project, rewrites the declared client write-if-changed, and
+  resumes serving the fresh surface, holding the last good surface if a re-check
+  transiently fails. The poll is dependency-free; `serve` adds no watcher crate.
 - Served actions run with zero host capabilities. Actions that require clock,
   environment, logging, filesystem, or other host capabilities fail closed as
   `surface.action`; explicit-host action execution is a linked-Rust embedding

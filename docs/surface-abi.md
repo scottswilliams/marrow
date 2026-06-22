@@ -323,11 +323,27 @@ remain future architecture decisions.
 
 ## TypeScript Client Profile
 
-`marrow client typescript` maps the active serialized ABI and
-`surface.route.v1` manifest to a self-contained TypeScript operation client. It
-validates route/ABI agreement before rendering and requires a bijection: every
-exported operation descriptor must have exactly one route row. It does not read
-or open the saved-data store.
+The TypeScript client maps the active serialized ABI and `surface.route.v1`
+manifest to a self-contained TypeScript operation client. It validates route/ABI
+agreement before rendering and requires a bijection: every exported operation
+descriptor must have exactly one route row. It does not read or open the
+saved-data store.
+
+The exported factory is `createClient`. Every generated file begins with a
+do-not-edit header and a `// marrow-surface-digest: sha256:<hex>` line. The
+digest is a deterministic key over the serialized surface ABI plus route
+manifest, so two checkouts of the same surface shape produce the same header.
+
+The client is a declared compile-fresh output, not a file the developer
+regenerates by hand. A project names one output path in `marrow.json`'s `client`
+field; `marrow run`, `marrow serve` startup, and `marrow evolve apply` rewrite
+it write-if-changed whenever the surface ABI changes, exactly as those paths
+re-project `marrow.lock`. The freshness key is the surface-ABI digest, not the
+whole source, so a non-surface `.mw` edit leaves the file untouched.
+`marrow check --locked` fails when the declared client is absent or carries a
+stale digest while the project declares a surface; plain `marrow check` is
+read-only and advises instead. See
+[tooling-surfaces.md](tooling-surfaces.md) and [cli.md](cli.md).
 
 The generated code exposes sanitized module/surface namespaces and sanitized
 operation-label methods. JavaScript reserved words and label collisions are

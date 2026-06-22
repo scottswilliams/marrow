@@ -5,7 +5,8 @@ root. Every command that takes a project directory — `check`, `run`, `test`,
 `fmt`, `data`, `evolve`, `backup`, and `restore` — reads
 `<projectdir>/marrow.json` first. The file
 holds project choices only: source roots, a default entrypoint, the store
-backend and its data directory, and test paths. It does not hold compiled
+backend and its data directory, test paths, and an optional generated-client
+output path. It does not hold compiled
 schemas, the accepted catalog, index metadata, data-evolution history,
 permissions, connection strings, or secrets.
 
@@ -44,6 +45,7 @@ durable declarations — see
 | `store.backend` | `"memory"` \| `"native"` | yes | — |
 | `store.dataDir` | string | only when `backend` is `"native"` | — |
 | `tests` | array of strings | no | `[]` |
+| `client` | string | no | none |
 
 All keys are camelCase. Any other top-level key, or any other key inside `run`
 or `store`, is rejected (see [Validation](#validation)).
@@ -156,6 +158,29 @@ error. With no `tests` key, `marrow test` finds no tests and reports so.
 Configured test symlinks are skipped, and recursive test walks skip symlinked
 files and directories.
 
+### `client`
+
+The project-relative output path for the generated TypeScript surface client,
+when the project declares one. It follows the same under-root rule as `dataDir`:
+relative, non-empty, no `..` component.
+
+```json
+{
+  "sourceRoots": ["src"],
+  "store": { "backend": "native", "dataDir": ".marrow/data" },
+  "client": "generated/marrow.ts"
+}
+```
+
+When set, the client is a declared compile-fresh output: `marrow run`,
+`marrow serve` startup, and `marrow evolve apply` rewrite that path
+write-if-changed whenever the surface ABI changes, and `marrow check --locked`
+fails when it is stale or absent. The output applies only to a project that
+declares a callable `surface`; setting `client` on a surfaceless project is a
+configuration warning (`config.client_without_surface`) that writes no file, not
+an error. A bare string is the path today; an object form is reserved as a
+forward-compatible extension for the split-repo client profile.
+
 ## Validation
 
 `marrow.json` is parsed and validated before any command runs. Every failure
@@ -169,9 +194,9 @@ rules:
 - A `native` store must have a non-empty `dataDir`. (A `native` store cannot
   open without a directory, so this is rejected at parse time, not at open
   time.)
-- Every path value — each `sourceRoots` entry, `dataDir`, and each `tests`
-  entry — must be relative and must not be empty, absolute, or contain a `..`
-  component. Such a value would escape the project root, so it is rejected.
+- Every path value — each `sourceRoots` entry, `dataDir`, each `tests` entry,
+  and `client` — must be relative and must not be empty, absolute, or contain a
+  `..` component. Such a value would escape the project root, so it is rejected.
 - `tests` entries must not contain glob metacharacters (`*`, `?`, `[`, `]`,
   `{`, `}`).
 - A `tests` entry must not overlap a source root — it must not equal, sit under,
@@ -203,7 +228,7 @@ $ marrow check ./proj          # store missing
 config.invalid: `store` must select either "native" or "memory"; for a one-line memory store use "store": { "backend": "memory" }
 
 $ marrow check ./proj          # unknown top-level key "globals"
-config.invalid: unknown field `globals`, expected one of `sourceRoots`, `run`, `store`, `tests` at line 1 column 35
+config.invalid: unknown field `globals`, expected one of `sourceRoots`, `run`, `store`, `tests`, `client` at line 1 column 35
 
 $ marrow check ./proj          # sourceRoots: ["/etc"]
 config.invalid: `sourceRoots entry` `/etc` must be relative to the project root, not absolute

@@ -38,7 +38,7 @@ Structured reports that include a `project` field render the canonical absolute 
 
 | Command | Module | Behavior |
 |---|---|---|
-| `init` | `cmd_init.rs` | Creates the quickstart scaffold in a new target directory after validating the final path component as one module-name segment. |
+| `init` | `cmd_init.rs` | Creates the quickstart scaffold in a new target directory after validating the final path component as one module-name segment. Bare `init` is store-only; `--client`/`-c` threads a `client: bool` through the single scaffold owner to also emit a `surface` over `^books` and a `client` output line. |
 | `check` | `cmd_check.rs` | Type-checks a project directory containing `marrow.json`; JSON output includes checker entry footprints, serialized surface ABI descriptors, and descriptor-derived `surface.route.v1` route manifests for successful checks. |
 | `doctor` | `cmd_doctor.rs` | Aggregates read-only operator triage findings with exact next commands, including store-open failures, catalog validation, fence/stamp classification, engine profile, and a capped integrity sample. |
 | `run` | `cmd_run.rs` | Parses run flags and repeated `--arg name=value` pairs, opens a `ProjectSession`, emits session notices, invokes the selected entry under a plain/trace/dry-run hook, and renders text output, JSON envelopes, or dry-run reports. |
@@ -70,7 +70,7 @@ Structured reports that include a `project` field render the canonical absolute 
 | File | Responsibility |
 |---|---|
 | `crates/marrow/src/main.rs` | argv dispatch, broken-pipe hook, CLI wrappers around shared project IO, store-path resolution, format parsing, and JSON envelope helpers. |
-| `crates/marrow/src/cmd_init.rs` | `init`: validates the target directory's final path component and writes the quickstart project scaffold without overwriting an existing target. |
+| `crates/marrow/src/cmd_init.rs` | `init`: validates the target directory's final path component and writes the quickstart project scaffold without overwriting an existing target. `--client`/`-c` is a typed `bool` through `write_scaffold`/`config_source`/`books_source`, so the surface-and-client variant is a parameter, not a duplicate scaffold path. |
 | `crates/marrow/src/cmd_check.rs` | `check`; also the located runtime-fault renderer reused by `run`. |
 | `crates/marrow/src/cmd_doctor.rs` | `doctor`: read-only operator triage that aggregates config, check, catalog, store-open, stamp/fence, engine-profile, and bounded integrity-sample facts into stable `doctor.*` findings. |
 | `crates/marrow/src/cmd_run.rs` | `run`: parse flags, preserve argv argument order, render session open errors/notices, execute through `ProjectSession::invoke` under a hook, emit text output, JSON envelopes, or dry-run reports. |
