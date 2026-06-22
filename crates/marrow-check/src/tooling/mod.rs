@@ -6,6 +6,7 @@ mod completion;
 pub mod data;
 mod hover;
 pub mod integrity;
+mod semantic_tokens;
 pub mod signatures;
 pub mod symbols;
 mod type_annotations;
@@ -65,6 +66,10 @@ pub use integrity::{
     count_activation_integrity_problems, count_integrity_problems, count_orphan_cells,
     sample_integrity_problem_details, sample_integrity_problems, stamped_integrity_problem_details,
     visit_integrity_problems,
+};
+pub use semantic_tokens::{
+    SourceSemanticTokenFact, SourceSemanticTokenModifiers, SourceSemanticTokenRole,
+    source_semantic_token_facts, source_semantic_token_facts_for_file,
 };
 pub use signatures::{
     ActiveCallableContext, CallableArgumentStyle, CallableCalleeContext, CallableParameter,

@@ -53,6 +53,19 @@ from the checked program or snapshot:
   checker, requires the store root to exist in the checked program, and recurses
   through `sequence[...]` annotations, so editor callers do not classify
   identity type constructors from token spelling alone.
+- `tooling::source_semantic_token_facts(source, lexed, parsed)` returns
+  syntax/parse-only source-token facts with token-tight `SourceSpan`,
+  Marrow-owned `SourceSemanticTokenRole`, and typed presentation modifiers.
+  This stale-buffer-safe API owns syntax baseline roles, parser declaration
+  roles, saved-root sigil/name facts, and context-free intrinsic callable
+  roles; it accepts no checked analysis or binding facts.
+- `tooling::source_semantic_token_facts_for_file(snapshot, binding_index,
+  file)` returns snapshot-bound checked source-token facts for one analyzed
+  file, or `None` when the file is not in the snapshot. It binds source text,
+  parse, file path, checked callable facts, binding-index reference roles,
+  module-const readonly roles, and checked `Id(^root)` type-constructor facts
+  coherently through `AnalysisSnapshot`. Transport callers map these roles into
+  their own token legends; they do not reclassify source tokens locally.
 - `AnalysisSnapshot::catalog_declarations()` returns catalog-owned
   declarations keyed by catalog id. Each `CatalogDeclaration` carries the source
   file, exact declaration-name span, catalog id, `CatalogEntryKind`, and source
@@ -231,8 +244,14 @@ add only transport availability and request-envelope concerns around those DTOs.
 | `crates/marrow-check/src/program.rs` | Checked-program artifact plus analysis APIs for effect closure, per-entry run facts, durable footprints, cost shapes, store-open mode, checked read-only expressions, and runtime statement stop points. |
 | `crates/marrow-check/src/analysis/cursor.rs` | Cursor `type_at`/`scope_at`: replay the checker's binding primitives to rebuild lexical scope, infer the tightest covering expression; records no diagnostics. |
 | `crates/marrow-check/src/evolution/preview.rs` | Schema-only and backup-backed `WitnessFactSet` preview facts for tooling. |
-| `crates/marrow-check/src/tooling/mod.rs` | Tooling facade: re-exports completion, signature, symbol, data, and integrity facts; defines `ToolingError` (Path vs Store). |
+| `crates/marrow-check/src/tooling/mod.rs` | Tooling facade: re-exports completion, semantic-token, signature, symbol, data, and integrity facts; defines `ToolingError` (Path vs Store). |
 | `crates/marrow-check/src/tooling/completion.rs` | Source completion facts for type candidates, project namespace members, standard-library namespace/module members, and saved-root candidates. |
+| `crates/marrow-check/src/tooling/semantic_tokens/mod.rs` | Source semantic-token facade: public syntax-only and snapshot-bound checked APIs, fact/role/modifier DTOs, and fact precedence orchestration. |
+| `crates/marrow-check/src/tooling/semantic_tokens/syntax.rs` | Syntax baseline roles for lexer tokens and shared token-span/path-segment helpers. |
+| `crates/marrow-check/src/tooling/semantic_tokens/declarations.rs` | Parser declaration roles for modules, uses, constants, functions, resources, stores, surfaces, enums, evolve steps, saved roots, resource members, indexes, parameters, and key parameters. |
+| `crates/marrow-check/src/tooling/semantic_tokens/callables.rs` | Intrinsic and standard-library callable roles, including snapshot-context import expansion for checked requests. |
+| `crates/marrow-check/src/tooling/semantic_tokens/references.rs` | Binding-index reference roles for checked source occurrences and qualified namespace prefixes. |
+| `crates/marrow-check/src/tooling/semantic_tokens/identity_annotations.rs` | Checked `Id(^root)` type-constructor roles from identity type annotation facts. |
 | `crates/marrow-check/src/tooling/signatures.rs` | Editor callable facts and renderable signature inputs: active/batch callee context re-exports, intrinsic callable signatures, and resource constructors. |
 | `crates/marrow-check/src/tooling/symbols.rs` | Source-symbol facts for editor outlines and workspace search: parsed document-outline DTOs plus checked functions/constants and catalog-backed declarations with Marrow-owned kind, display name, file/span, and container ownership. |
 | `crates/marrow-check/src/tooling/data/mod.rs` | Data tooling root and shared value types (`ResolvedDataPath`, `DataChild`, `DeclaredDataChild`, `SourceDataPathSegment`, `DataEntry`, `DataWalkPage`, `DataReadResult`, `DataRecord`, `StampedData`, `DataSnapshotStamp`, `DataCommitStamp`, `KeyMismatch`, `MAX_PREVIEW_ITEMS`, `DEFAULT_VALUE_PREVIEW_LIMIT`, `MAX_VALUE_PREVIEW_LIMIT`). |
