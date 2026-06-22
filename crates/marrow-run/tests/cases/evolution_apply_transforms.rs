@@ -372,6 +372,99 @@ fn transform_computes_new_member_per_record_and_stamps() -> Result<(), Box<dyn s
     Ok(())
 }
 
+/// A transform onto a member first MINTED in the same proposal settles in a single
+/// apply. The new required field is added and transformed together: one apply writes
+/// the computed cell and advances the epoch, and re-checking against the advanced
+/// catalog must read the transform as consumed (no record work, a no-op re-apply at a
+/// stable epoch). A new member's structural addition and its transform discharge mark
+/// must land in one activation, not split across two epochs.
+#[test]
+fn transform_onto_newly_minted_member_settles_in_one_apply()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = temp_project("apply-transform-new-member-one-apply", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Book\n\
+             \x20   required price: int\n\
+             store ^books(id: int): Book\n\
+             pub fn add(price: int): Id(^books)\n\
+             \x20   return nextId(^books)\n",
+        );
+    });
+    let accepted = commit_then_check(&root).expect("committed fixture");
+    let accepted_place = root_place(&accepted, "books")?;
+    let store = TreeStore::memory();
+    let seed = Seed {
+        store: &store,
+        place: &accepted_place,
+    };
+    seed.record(1);
+    seed.member(1, "price", Scalar::Int(3));
+
+    write(
+        &root,
+        "src/books.mw",
+        "module books\n\
+         resource Book\n\
+         \x20   required price: int\n\
+         \x20   required priceCents: int\n\
+         store ^books(id: int): Book\n\
+         evolve\n\
+         \x20   transform Book.priceCents\n\
+         \x20       return old.price * 100\n\
+         pub fn add(price: int): Id(^books)\n\
+         \x20   return nextId(^books)\n",
+    );
+    let program = checked(&root).expect("checked fixture");
+    let cents_id = proposal_catalog_id(&program, "books::Book::priceCents")?;
+    let w = witness(&program, &store);
+    assert!(w.is_activatable(), "{w:#?}");
+    assert_eq!(w.counts.records_to_transform, 1);
+
+    let outcome = apply(&w, &program, &store, false, None).expect("apply succeeds");
+    assert_eq!(outcome.receipt.records_transformed, 1);
+    let epoch_after_first = outcome.receipt.catalog_epoch;
+
+    let store_id = store_id_of(&accepted_place)?;
+    assert_eq!(
+        read_scalar(&store, &store_id, 1, &cents_id, ScalarType::Int),
+        Some(Scalar::Int(300))
+    );
+
+    // Re-check against the advanced catalog with the block kept. The transform must read
+    // as consumed: no record work, a no-op re-apply, and a stable epoch.
+    let advanced = store
+        .read_catalog_snapshot()
+        .expect("read advanced catalog snapshot");
+    let (report, resumed_program) =
+        marrow_check::check_project_with_catalog(&root, &config(), advanced.as_ref())
+            .expect("re-check against advanced catalog");
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    let resumed = witness(&resumed_program, &store);
+    assert_eq!(
+        resumed.counts.records_to_transform, 0,
+        "a consumed transform onto a new member leaves no record work: {resumed:#?}"
+    );
+    let outcome =
+        apply(&resumed, &resumed_program, &store, false, None).expect("re-apply succeeds");
+    assert_eq!(
+        outcome.receipt.records_transformed, 0,
+        "re-applying a consumed new-member transform is a no-op"
+    );
+    assert_eq!(
+        outcome.receipt.catalog_epoch, epoch_after_first,
+        "a settled transform does not advance the epoch on re-apply"
+    );
+    assert_eq!(
+        read_scalar(&store, &store_id, 1, &cents_id, ScalarType::Int),
+        Some(Scalar::Int(300))
+    );
+
+    Ok(())
+}
+
 /// A shape-neutral in-place transform of an already-accepted member, over a store
 /// already stamped at the accepted epoch under the accepted source digest, must still
 /// rewrite the data. The transform proposes no new catalog entry, so its target epoch

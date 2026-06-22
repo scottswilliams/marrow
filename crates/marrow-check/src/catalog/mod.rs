@@ -676,7 +676,7 @@ fn bind_against_accepted(
     if record_signatures_into(program, &mut proposal_entries, Some(catalog)) {
         changed = true;
     }
-    if record_transform_marks(&mut proposal_entries, &evolve.transforms, ids, catalog) {
+    if record_transform_marks(&mut proposal_entries, &evolve.transforms, catalog) {
         changed = true;
     }
     if changed {
@@ -700,16 +700,22 @@ fn bind_against_accepted(
 /// identity, a re-bind of the same transform records the same value and reports no change, while a
 /// changed body computes a different identity that reads as a fresh obligation. Returns whether any
 /// target gained a new mark.
+///
+/// The target id resolves through the proposal id map, not the accepted-only `ids`: a transform
+/// may target a member current source first mints in this same proposal, whose stable id lives
+/// only in the proposal entries until acceptance. Resolving from those entries stamps the mark in
+/// the same activation that adds the member, so a transform onto a newly-added field settles in
+/// one apply rather than splitting the structural add and the discharge mark across two epochs.
 fn record_transform_marks(
     proposal_entries: &mut [CatalogEntry],
     transforms: &[TransformIntent],
-    ids: &HashMap<CatalogKey, String>,
     accepted: &CatalogMetadata,
 ) -> bool {
+    let proposal_ids = proposal_id_map(proposal_entries);
     let identities: HashMap<String, String> = transforms
         .iter()
         .filter_map(|transform| {
-            let id = member_target_id(&transform.path, ids)?;
+            let id = member_target_id(&transform.path, &proposal_ids)?;
             let identity = transform_identity(&id, &transform.body_text);
             Some((id, identity))
         })
