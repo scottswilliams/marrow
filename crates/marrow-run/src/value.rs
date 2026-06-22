@@ -832,6 +832,34 @@ pub(crate) fn stored_enum_member_path(
     facts.enum_member_catalog_path(member)
 }
 
+/// The referent path an identity-typed index key renders as in a diagnostic,
+/// for example `^authors(1)`, recovered from the key's physical encoding. An
+/// index key over an `Id(^store)` field is stored as opaque bytes, so a
+/// unique-conflict diagnostic decodes it here rather than leaking the encoding.
+pub(crate) fn stored_identity_referent_path(
+    meaning: &StoredValueMeaning,
+    key: &SavedKey,
+) -> Option<String> {
+    let StoredValueMeaning::Identity {
+        root,
+        store_catalog_id,
+        arity,
+        ..
+    } = meaning
+    else {
+        return None;
+    };
+    let SavedKey::Bytes(bytes) = key else {
+        return None;
+    };
+    let store_catalog_id = store_catalog_id.as_deref()?;
+    let keys = decode_identity_index_key(bytes, store_catalog_id, *arity)?;
+    Some(render_debug_identity(&IdentityValue::for_root(
+        root.clone(),
+        keys,
+    )))
+}
+
 pub(crate) fn enum_value_from_member(
     facts: &CheckedFacts,
     member_id: EnumMemberId,

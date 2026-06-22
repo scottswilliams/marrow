@@ -225,6 +225,50 @@ fn unique_index_conflict_on_an_enum_key_renders_the_member_name() {
     );
 }
 
+#[test]
+fn unique_index_conflict_on_an_id_key_renders_the_referent_path() {
+    // An Id-keyed unique conflict must name the conflicting reference by its
+    // referent path, never the opaque physical encoding, matching how `data
+    // dump` renders an `Id(^store)` value.
+    let program = checked_program(
+        "resource Author\n\
+         \x20   required name: string\n\
+         store ^authors(id: int): Author\n\
+         \n\
+         resource Profile\n\
+         \x20   required owner: Id(^authors)\n\
+         store ^profiles(id: int): Profile\n\
+         \n\
+         \x20   index byOwner(owner) unique\n\
+         \n\
+         pub fn register(id: int)\n\
+         \x20   ^authors(1).name = \"Ann\"\n\
+         \x20   ^profiles(id).owner = Id(^authors, 1)\n",
+    );
+    let store = TreeStore::memory();
+    run_entry(
+        &store,
+        checked_entry!(&program, "test::register", Value::Int(10)),
+    )
+    .expect("register first profile");
+
+    let error = run_entry(
+        &store,
+        checked_entry!(&program, "test::register", Value::Int(20)),
+    )
+    .unwrap_err();
+    assert_eq!(error.code(), "write.unique_conflict");
+    assert_eq!(
+        error.message,
+        "unique index `byOwner` already holds key(s) (^authors(1)) for another identity"
+    );
+    assert!(
+        !error.message.contains("bytes["),
+        "conflict must not leak the physical encoding: {}",
+        error.message
+    );
+}
+
 /// A composite unique index over an enum plus another field. The two cases that
 /// draw the enum segment from the store, not the fresh write, are the magnets:
 /// a field-by-field write whose conflict fires on the non-enum field (the enum
@@ -1075,9 +1119,11 @@ fn unique_index_over_identity_field_rejects_conflicts() {
          \x20   ^books(2).authorId = ann\n",
     );
     let store = TreeStore::memory();
-    assert_run_error(
-        run_entry(&store, checked_entry!(&program, "test::conflict")),
-        "write.unique_conflict",
+    let error = run_entry(&store, checked_entry!(&program, "test::conflict")).unwrap_err();
+    assert_eq!(error.code(), "write.unique_conflict");
+    assert_eq!(
+        error.message,
+        "unique index `oneBookByAuthor` already holds key(s) (^authors(1)) for another identity"
     );
 }
 

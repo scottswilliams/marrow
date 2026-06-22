@@ -9,7 +9,9 @@ use marrow_store::tree::TreeStore;
 use marrow_syntax::SourceSpan;
 
 use crate::store::{DataAddress, IndexAddress, read_data};
-use crate::value::{LeafValue, diagnostic_saved_key_preview, stored_enum_member_path};
+use crate::value::{
+    LeafValue, diagnostic_saved_key_preview, stored_enum_member_path, stored_identity_referent_path,
+};
 use crate::write::{
     ResourceValue, WRITE_INVALID_DATA, WRITE_STORE, WRITE_UNIQUE_CONFLICT, WriteError,
 };
@@ -207,7 +209,7 @@ impl IndexFieldPatchValue {
                 .map_err(WriteError::from)?
                 .map(|saved| IndexKey::from_leaf(saved, value))),
             Self::IdentityBytes(bytes) => stored_index_key(&key.value_meaning, bytes)
-                .map(|saved| Some(IndexKey::scalar(saved))),
+                .map(|saved| Some(IndexKey::from_meaning(saved, &key.value_meaning))),
         }
     }
 }
@@ -365,7 +367,7 @@ fn index_keys(
                     let Some(saved_key) = key.value_meaning.stored_key(&bytes) else {
                         return Ok(None);
                     };
-                    result.push(IndexKey::scalar(saved_key));
+                    result.push(IndexKey::from_meaning(saved_key, &key.value_meaning));
                 }
             }
         }
@@ -374,46 +376,56 @@ fn index_keys(
 }
 
 /// One resolved index-entry key segment: the stored [`SavedKey`] the index entry
-/// is addressed by, plus the enum member's canonical path when the segment is an
-/// enum value. The name is carried so a unique-conflict diagnostic renders an
-/// enum key by its member name rather than its opaque catalog id, whether the
-/// value was freshly written or read back from the store.
+/// is addressed by, plus a readable rendering for segments whose stored form is
+/// opaque — an enum member's canonical path or an identity's referent path. The
+/// rendering is carried so a unique-conflict diagnostic names the conflicting
+/// value rather than its catalog id or physical encoding, whether the value was
+/// freshly written or read back from the store.
 struct IndexKey {
     saved: SavedKey,
-    enum_name: Option<String>,
+    display: Option<String>,
 }
 
 impl IndexKey {
     fn scalar(saved: SavedKey) -> Self {
         Self {
             saved,
-            enum_name: None,
+            display: None,
         }
     }
 
     fn from_leaf(saved: SavedKey, leaf: &LeafValue) -> Self {
         Self {
             saved,
-            enum_name: leaf.enum_display_name().map(str::to_string),
+            display: leaf.enum_display_name().map(str::to_string),
         }
     }
 
-    /// A segment read back from the store, recovering the enum member's canonical
-    /// path from `bytes` when the column is an enum so the conflict diagnostic
-    /// names the member rather than its stored catalog id.
+    /// A segment whose readable form is known only from its declared meaning: an
+    /// identity index key, stored as opaque bytes, renders as its referent path.
+    fn from_meaning(saved: SavedKey, meaning: &StoredValueMeaning) -> Self {
+        let display = stored_identity_referent_path(meaning, &saved);
+        Self { saved, display }
+    }
+
+    /// A segment read back from the store, recovering the readable form from
+    /// `bytes` when the column is an enum, or from the stored key when it is an
+    /// identity, so the conflict diagnostic names the value rather than its
+    /// catalog id or physical encoding.
     fn from_stored(
         saved: SavedKey,
         meaning: &StoredValueMeaning,
         bytes: &[u8],
         facts: &CheckedFacts,
     ) -> Self {
-        let enum_name = match meaning {
+        let display = match meaning {
             StoredValueMeaning::Enum { enum_id, .. } => {
                 stored_enum_member_path(facts, *enum_id, bytes)
             }
-            StoredValueMeaning::Scalar(_) | StoredValueMeaning::Identity { .. } => None,
+            StoredValueMeaning::Identity { .. } => stored_identity_referent_path(meaning, &saved),
+            StoredValueMeaning::Scalar(_) => None,
         };
-        Self { saved, enum_name }
+        Self { saved, display }
     }
 }
 
@@ -485,7 +497,7 @@ impl FieldIndexValue<'_> {
                 .map_err(WriteError::from)?
                 .map(|saved| IndexKey::from_leaf(saved, value))),
             Self::IdentityBytes(bytes) => stored_index_key(&key.value_meaning, bytes)
-                .map(|saved| Some(IndexKey::scalar(saved))),
+                .map(|saved| Some(IndexKey::from_meaning(saved, &key.value_meaning))),
         }
     }
 }
@@ -605,8 +617,8 @@ fn check_unique_conflict(
 fn conflict_key_tuple_preview(keys: &[IndexKey]) -> String {
     let rendered: Vec<String> = keys
         .iter()
-        .map(|key| match &key.enum_name {
-            Some(name) => name.clone(),
+        .map(|key| match &key.display {
+            Some(display) => display.clone(),
             None => diagnostic_saved_key_preview(&key.saved),
         })
         .collect();
