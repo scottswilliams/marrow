@@ -184,6 +184,73 @@ fn rejects_malformed_type_annotations() {
 }
 
 #[test]
+fn rejects_trailing_tokens_after_a_complete_type_annotation() {
+    // A complete type ends at its canonical word; a following token (`in`, `@`,
+    // `where`, or a second bare word) is not part of the type. The parser must
+    // point at that token rather than gluing it into a fabricated type spelling.
+    for (source, expected, offender) in [
+        (
+            "module app\nconst ratio: decimal in 0.0..=1.0 = 0.5\n",
+            ExpectedSyntax::ConstType,
+            "in",
+        ),
+        (
+            "module app\nfn f()\n    var x: int in 0..=5 = 1\n",
+            ExpectedSyntax::ParameterType,
+            "in",
+        ),
+        (
+            "module app\nresource Book\n    pages: int @ 0..150\n",
+            ExpectedSyntax::FieldType,
+            "@",
+        ),
+        (
+            "module app\nfn f(x: int where y): int\n    return 1\n",
+            ExpectedSyntax::ParameterType,
+            "where",
+        ),
+        (
+            "module app\nfn f(): int where y\n    return 1\n",
+            ExpectedSyntax::FunctionReturnType,
+            "where",
+        ),
+    ] {
+        let parsed = parse_source(source);
+
+        assert!(parsed.has_errors(), "expected error for:\n{source}");
+        let diagnostic = parsed
+            .diagnostics
+            .iter()
+            .find(|diagnostic| {
+                diagnostic.code == "parse.syntax"
+                    && diagnostic.reason == parse_reason(ParseDiagnosticReason::Expected(expected))
+            })
+            .unwrap_or_else(|| panic!("expected a {expected:?} diagnostic for {source}"));
+        // The offender stands as its own word; search the spaced form so the
+        // probe does not match a substring inside the preceding type (`int`).
+        let offender_byte = source
+            .find(&format!(" {offender} "))
+            .or_else(|| source.find(&format!(" {offender}\n")))
+            .map(|byte| byte + 1)
+            .expect("offender token in source");
+        assert_eq!(
+            diagnostic.span.start_byte, offender_byte,
+            "diagnostic should point at `{offender}` for {source}: {:#?}",
+            diagnostic
+        );
+        // No fabricated glued spelling: the offending token must never be folded
+        // into a type-annotation text.
+        assert!(
+            parsed.file.function("f").is_none_or(|function| function
+                .params
+                .iter()
+                .all(|param| !param.ty.text.contains(offender))),
+            "fabricated glued param type for {source}"
+        );
+    }
+}
+
+#[test]
 fn rejects_structural_equal_inside_type_annotations() {
     for (source, expected) in [
         (

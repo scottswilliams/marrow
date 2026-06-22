@@ -17,7 +17,7 @@ impl<'a> DeclParser<'a> {
         let (name, store) = match parse_surface_head(self.source, &header[1..]) {
             Ok(parsed) => parsed,
             Err(error) => {
-                self.error_span(err, error.reason, error.message);
+                self.report(err, error);
                 (
                     String::new(),
                     SavedRoot {
@@ -146,7 +146,7 @@ impl<'a> DeclParser<'a> {
     ) -> Option<SurfaceItem> {
         surface_name_list(self.source, tokens)
             .map(|names| SurfaceItem::Fields { names, span })
-            .map_err(|error| self.error_span(err, error.reason, error.message))
+            .map_err(|error| self.report(err, error))
             .ok()
     }
 
@@ -158,7 +158,7 @@ impl<'a> DeclParser<'a> {
     ) -> Option<SurfaceItem> {
         surface_name_list(self.source, tokens)
             .map(|names| SurfaceItem::Create { names, span })
-            .map_err(|error| self.error_span(err, error.reason, error.message))
+            .map_err(|error| self.report(err, error))
             .ok()
     }
 
@@ -170,7 +170,7 @@ impl<'a> DeclParser<'a> {
     ) -> Option<SurfaceItem> {
         surface_name_list(self.source, tokens)
             .map(|names| SurfaceItem::Update { names, span })
-            .map_err(|error| self.error_span(err, error.reason, error.message))
+            .map_err(|error| self.report(err, error))
             .ok()
     }
 
@@ -204,7 +204,7 @@ impl<'a> DeclParser<'a> {
                 span,
             }),
             Err(error) => {
-                self.error_span(err, error.reason, error.message);
+                self.report(err, error);
                 None
             }
         }
@@ -222,7 +222,7 @@ impl<'a> DeclParser<'a> {
                 alias,
                 span,
             })
-            .map_err(|error| self.error_span(err, error.reason, error.message))
+            .map_err(|error| self.report(err, error))
             .ok()
     }
 
@@ -238,7 +238,7 @@ impl<'a> DeclParser<'a> {
                 alias,
                 span,
             })
-            .map_err(|error| self.error_span(err, error.reason, error.message))
+            .map_err(|error| self.report(err, error))
             .ok()
     }
 }

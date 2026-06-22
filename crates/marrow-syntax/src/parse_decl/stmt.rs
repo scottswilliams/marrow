@@ -373,7 +373,8 @@ impl<'a> StmtParser<'a> {
         let (name, ty) = match parse_catch_header(self.source, header) {
             Ok(parsed) => parsed,
             Err(error) => {
-                self.error_span_reason(line_span(header), error.reason, error.message);
+                let (span, reason, message) = error.locate(line_span(header));
+                self.error_span_reason(span, reason, message);
                 (String::new(), None)
             }
         };

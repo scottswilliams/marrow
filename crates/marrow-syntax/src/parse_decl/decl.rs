@@ -361,7 +361,7 @@ impl<'a> DeclParser<'a> {
                     ExpectedSyntax::ConstType,
                     "expected const type annotation",
                 ) {
-                    self.error_span(span, error.reason, error.message);
+                    self.report(span, error);
                     return None;
                 }
                 return Some(type_ref_from_tokens(self.source, tokens));
@@ -382,7 +382,7 @@ impl<'a> DeclParser<'a> {
         let (name, name_span) = match parse_resource_head(self.source, &header[1..]) {
             Ok(parsed) => parsed,
             Err(error) => {
-                self.error_span(span, error.reason, error.message);
+                self.report(span, error);
                 (String::new(), SourceSpan::default())
             }
         };
@@ -413,7 +413,7 @@ impl<'a> DeclParser<'a> {
         let (root, resource) = match parse_store_head(self.source, &header[1..]) {
             Ok(parsed) => parsed,
             Err(error) => {
-                self.error_span(span, error.reason, error.message);
+                self.report(span, error);
                 (
                     SavedRoot {
                         root: String::new(),
@@ -445,7 +445,7 @@ impl<'a> DeclParser<'a> {
         let (public, name, name_span) = match parse_enum_head(self.source, header) {
             Ok(parsed) => parsed,
             Err(error) => {
-                self.error_span(span, error.reason, error.message);
+                self.report(span, error);
                 (false, String::new(), SourceSpan::default())
             }
         };
@@ -482,7 +482,7 @@ impl<'a> DeclParser<'a> {
         let head = match parse_function_head(self.source, header) {
             Ok(head) => head,
             Err(error) => {
-                self.error_span(span, error.reason, error.message);
+                self.report(span, error);
                 FunctionHead {
                     public: false,
                     name: String::new(),

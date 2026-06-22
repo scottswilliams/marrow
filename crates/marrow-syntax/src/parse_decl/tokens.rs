@@ -75,14 +75,15 @@ fn is_std_bytes_import(source: &str, tokens: &[Token]) -> bool {
 }
 pub(super) fn push_parse_error(
     diagnostics: &mut Vec<Diagnostic>,
-    span: SourceSpan,
+    fallback: SourceSpan,
     error: ParseError,
 ) {
+    let (span, reason, message) = error.locate(fallback);
     diagnostics.push(Diagnostic {
         code: PARSE_SYNTAX,
-        reason: DiagnosticReason::Parser(error.reason),
+        reason: DiagnosticReason::Parser(reason),
         severity: Severity::Error,
-        message: error.message.to_string(),
+        message,
         help: None,
         span,
     });
@@ -192,7 +193,60 @@ pub(super) fn reject_structural_type_tokens(
             message,
         ));
     }
+    // A type annotation is a single type production: one head word, optionally
+    // extended by `::` name segments and attached `[...]`/`(...)` groups. Any
+    // depth-0 token past that end (a `in`, `@`, `where`, or a second bare word)
+    // is not part of the type; reject it where it begins rather than gluing it
+    // into the spelling.
+    let end = type_token_len(tokens);
+    if let Some(trailing) = tokens.get(end) {
+        return Err(ParseError::at(
+            trailing.span,
+            ParseDiagnosticReason::Expected(expected),
+            message,
+        ));
+    }
     Ok(())
+}
+
+/// The number of leading tokens that make up one complete type production: the
+/// head token, then each following `::` name segment and each attached
+/// `[...]`/`(...)` group at depth 0. Bracket contents are spanned whole, so
+/// whitespace and nested types inside them do not end the type.
+fn type_token_len(tokens: &[Token]) -> usize {
+    let mut index = if tokens.is_empty() { 0 } else { 1 };
+    while index < tokens.len() {
+        match tokens[index].kind {
+            TokenKind::DoubleColon => index += 2,
+            TokenKind::LeftBracket | TokenKind::LeftParen => {
+                match balanced_group_end(tokens, index) {
+                    Some(close) => index = close + 1,
+                    None => return tokens.len(),
+                }
+            }
+            _ => break,
+        }
+    }
+    index.min(tokens.len())
+}
+
+/// Index of the bracket that closes the `[`/`(` at `open`, matching nested
+/// brackets of either kind. `None` when the group never closes.
+fn balanced_group_end(tokens: &[Token], open: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    for (offset, token) in tokens[open..].iter().enumerate() {
+        match token.kind {
+            TokenKind::LeftParen | TokenKind::LeftBracket => depth += 1,
+            TokenKind::RightParen | TokenKind::RightBracket => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(open + offset);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 pub(super) fn type_ref_from_tokens(source: &str, tokens: &[Token]) -> TypeRef {
     let start = tokens[0].span.start_byte;

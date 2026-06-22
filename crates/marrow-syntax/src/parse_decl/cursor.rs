@@ -3,6 +3,7 @@
 //! diagnostic emitters the declaration bodies build on.
 
 use super::DeclParser;
+use super::ParseError;
 use super::tokens::{comment_from_token, first_line_end, is_line_comment, line_end};
 use crate::PARSE_SYNTAX;
 use crate::ast::{Comment, CommentMarker, CommentPlacement};
@@ -274,5 +275,12 @@ impl<'a> DeclParser<'a> {
             help: None,
             span,
         });
+    }
+
+    /// Report a parse error at its own pinned span, or at `fallback` (the header
+    /// line) when it carries none.
+    pub(super) fn report(&mut self, fallback: SourceSpan, error: ParseError) {
+        let (span, reason, message) = error.locate(fallback);
+        self.error_span(span, reason, message);
     }
 }

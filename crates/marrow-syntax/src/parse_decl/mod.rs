@@ -64,6 +64,9 @@ pub(super) enum MemberBlockFrame {
 pub(super) struct ParseError {
     reason: ParseDiagnosticReason,
     message: String,
+    /// The span to report at, when the error already knows the offending token.
+    /// Errors without one are reported at a fallback span the caller supplies.
+    span: Option<SourceSpan>,
 }
 
 impl ParseError {
@@ -71,7 +74,29 @@ impl ParseError {
         Self {
             reason,
             message: message.into(),
+            span: None,
         }
+    }
+
+    pub(super) fn at(
+        span: SourceSpan,
+        reason: ParseDiagnosticReason,
+        message: impl Into<String>,
+    ) -> Self {
+        Self {
+            reason,
+            message: message.into(),
+            span: Some(span),
+        }
+    }
+
+    /// Resolve the error into its report span, reason, and message, falling back
+    /// to `fallback` when the error did not pin a span.
+    pub(super) fn locate(
+        self,
+        fallback: SourceSpan,
+    ) -> (SourceSpan, ParseDiagnosticReason, String) {
+        (self.span.unwrap_or(fallback), self.reason, self.message)
     }
 }
 

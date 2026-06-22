@@ -154,7 +154,7 @@ impl<'a> DeclParser<'a> {
                 None
             }
             Err(error) => {
-                self.error_span(err, error.reason, error.message);
+                self.report(err, error);
                 None
             }
         }
@@ -213,7 +213,7 @@ impl<'a> DeclParser<'a> {
                 }))
             }
             Err(error) => {
-                self.error_span(err, error.reason, error.message);
+                self.report(err, error);
                 None
             }
         }
@@ -265,7 +265,7 @@ impl<'a> DeclParser<'a> {
                                 span,
                             });
                         }
-                        Err(error) => self.error_span(err, error.reason, error.message),
+                        Err(error) => self.report(err, error),
                     }
                 }
             }
