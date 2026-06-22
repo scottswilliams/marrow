@@ -555,6 +555,423 @@ fn whole_resource_assignment_clears_omitted_saved_children() {
 }
 
 #[test]
+fn whole_keyed_entry_replacement_clears_omitted_saved_children() {
+    let program = checked_program(
+        "resource Reply\n\
+         \x20   required body: string\n\
+         resource Comment\n\
+         \x20   required body: string\n\
+         \x20   note: string\n\
+         \x20   meta\n\
+         \x20       author: string\n\
+         \x20   replies(seq: int): Reply\n\
+         resource Post\n\
+         \x20   title: string\n\
+         \x20   comments(seq: int): Comment\n\
+         store ^posts(id: int): Post\n\n\
+         pub fn replace_comment(post: int, seq: int)\n\
+         \x20   var comment: Comment\n\
+         \x20   comment.body = \"replacement\"\n\
+         \x20   ^posts(post).comments(seq) = comment\n\n\
+         pub fn title_of(post: int): string\n\
+         \x20   return ^posts(post).title ?? \"missing\"\n\n\
+         pub fn comment_body(post: int, seq: int): string\n\
+         \x20   return ^posts(post).comments(seq).body ?? \"missing\"\n\n\
+         pub fn comment_note(post: int, seq: int): string\n\
+         \x20   return ^posts(post).comments(seq).note ?? \"missing\"\n\n\
+         pub fn comment_author(post: int, seq: int): string\n\
+         \x20   return ^posts(post).comments(seq)?.meta?.author ?? \"missing\"\n\n\
+         pub fn reply_body(post: int, seq: int, reply: int): string\n\
+         \x20   return ^posts(post).comments(seq).replies(reply).body ?? \"missing\"\n",
+    );
+    let store = TreeStore::memory();
+    write_data_value(
+        &program,
+        &store,
+        "posts",
+        &[SavedKey::Int(1)],
+        &data_path(&program, "posts", &["title"]),
+        SavedValue::Str("root".into()),
+    );
+    write_data_value(
+        &program,
+        &store,
+        "posts",
+        &[SavedKey::Int(1)],
+        &keyed_data_path(
+            &program,
+            "posts",
+            &[("comments", vec![SavedKey::Int(2)])],
+            &["body"],
+        ),
+        SavedValue::Str("original".into()),
+    );
+    write_data_value(
+        &program,
+        &store,
+        "posts",
+        &[SavedKey::Int(1)],
+        &keyed_data_path(
+            &program,
+            "posts",
+            &[("comments", vec![SavedKey::Int(2)])],
+            &["note"],
+        ),
+        SavedValue::Str("clear".into()),
+    );
+    write_data_value(
+        &program,
+        &store,
+        "posts",
+        &[SavedKey::Int(1)],
+        &keyed_data_path(
+            &program,
+            "posts",
+            &[("comments", vec![SavedKey::Int(2)])],
+            &["meta", "author"],
+        ),
+        SavedValue::Str("Ann".into()),
+    );
+    write_data_value(
+        &program,
+        &store,
+        "posts",
+        &[SavedKey::Int(1)],
+        &keyed_data_path(
+            &program,
+            "posts",
+            &[
+                ("comments", vec![SavedKey::Int(2)]),
+                ("replies", vec![SavedKey::Int(1)]),
+            ],
+            &["body"],
+        ),
+        SavedValue::Str("nested".into()),
+    );
+    write_data_value(
+        &program,
+        &store,
+        "posts",
+        &[SavedKey::Int(1)],
+        &keyed_data_path(
+            &program,
+            "posts",
+            &[("comments", vec![SavedKey::Int(3)])],
+            &["body"],
+        ),
+        SavedValue::Str("sibling".into()),
+    );
+
+    run_entry(
+        &store,
+        checked_entry!(
+            &program,
+            "test::replace_comment",
+            Value::Int(1),
+            Value::Int(2)
+        ),
+    )
+    .expect("replace keyed entry");
+
+    let read = |entry: &str, args: Vec<Value>| {
+        run_entry(&store, checked_entry_call(&program, entry, args))
+            .expect("read")
+            .value
+    };
+    assert_eq!(
+        read("test::title_of", vec![Value::Int(1)]),
+        Some(Value::Str("root".into()))
+    );
+    assert_eq!(
+        read("test::comment_body", vec![Value::Int(1), Value::Int(2)]),
+        Some(Value::Str("replacement".into()))
+    );
+    assert_eq!(
+        read("test::comment_body", vec![Value::Int(1), Value::Int(3)]),
+        Some(Value::Str("sibling".into()))
+    );
+    assert_eq!(
+        read("test::comment_note", vec![Value::Int(1), Value::Int(2)]),
+        Some(Value::Str("missing".into()))
+    );
+    assert_eq!(
+        read("test::comment_author", vec![Value::Int(1), Value::Int(2)]),
+        Some(Value::Str("missing".into()))
+    );
+    assert_eq!(
+        read(
+            "test::reply_body",
+            vec![Value::Int(1), Value::Int(2), Value::Int(1)]
+        ),
+        Some(Value::Str("missing".into()))
+    );
+
+    assert_eq!(
+        read_data_value(
+            &program,
+            &store,
+            "posts",
+            &[SavedKey::Int(1)],
+            &keyed_data_path(
+                &program,
+                "posts",
+                &[("comments", vec![SavedKey::Int(2)])],
+                &["note"],
+            ),
+            ScalarType::Str,
+        ),
+        None
+    );
+    assert_eq!(
+        read_data_value(
+            &program,
+            &store,
+            "posts",
+            &[SavedKey::Int(1)],
+            &keyed_data_path(
+                &program,
+                "posts",
+                &[("comments", vec![SavedKey::Int(2)])],
+                &["meta", "author"],
+            ),
+            ScalarType::Str,
+        ),
+        None
+    );
+    assert_eq!(
+        read_data_value(
+            &program,
+            &store,
+            "posts",
+            &[SavedKey::Int(1)],
+            &keyed_data_path(
+                &program,
+                "posts",
+                &[
+                    ("comments", vec![SavedKey::Int(2)]),
+                    ("replies", vec![SavedKey::Int(1)]),
+                ],
+                &["body"],
+            ),
+            ScalarType::Str,
+        ),
+        None
+    );
+}
+
+#[test]
+fn singleton_whole_resource_assignment_clears_omitted_saved_children() {
+    let program = checked_program(
+        "resource Settings\n\
+         \x20   required theme: string\n\
+         \x20   label: string\n\
+         \x20   owner\n\
+         \x20       name: string\n\
+         \x20   flags(name: string): string\n\
+         store ^settings: Settings\n\n\
+         pub fn replace()\n\
+         \x20   var settings: Settings\n\
+         \x20   settings.theme = \"solar\"\n\
+         \x20   ^settings = settings\n\n\
+         pub fn theme(): string\n\
+         \x20   return ^settings.theme ?? \"missing\"\n\n\
+         pub fn label(): string\n\
+         \x20   return ^settings.label ?? \"missing\"\n\n\
+         pub fn owner_name(): string\n\
+         \x20   return ^settings?.owner?.name ?? \"missing\"\n\n\
+         pub fn flag(name: string): string\n\
+         \x20   return ^settings.flags(name) ?? \"missing\"\n",
+    );
+    let store = TreeStore::memory();
+    write_data_value(
+        &program,
+        &store,
+        "settings",
+        &[],
+        &data_path(&program, "settings", &["theme"]),
+        SavedValue::Str("dark".into()),
+    );
+    write_data_value(
+        &program,
+        &store,
+        "settings",
+        &[],
+        &data_path(&program, "settings", &["label"]),
+        SavedValue::Str("primary".into()),
+    );
+    write_data_value(
+        &program,
+        &store,
+        "settings",
+        &[],
+        &data_path(&program, "settings", &["owner", "name"]),
+        SavedValue::Str("Ada".into()),
+    );
+    write_data_value(
+        &program,
+        &store,
+        "settings",
+        &[],
+        &keyed_data_path(
+            &program,
+            "settings",
+            &[("flags", vec![SavedKey::Str("beta".into())])],
+            &[],
+        ),
+        SavedValue::Str("on".into()),
+    );
+
+    run_entry(&store, checked_entry!(&program, "test::replace")).expect("replace singleton");
+
+    let read = |entry: &str, args: Vec<Value>| {
+        run_entry(&store, checked_entry_call(&program, entry, args))
+            .expect("read")
+            .value
+    };
+    assert_eq!(
+        read("test::theme", vec![]),
+        Some(Value::Str("solar".into()))
+    );
+    assert_eq!(
+        read("test::label", vec![]),
+        Some(Value::Str("missing".into()))
+    );
+    assert_eq!(
+        read("test::owner_name", vec![]),
+        Some(Value::Str("missing".into()))
+    );
+    assert_eq!(
+        read("test::flag", vec![Value::Str("beta".into())]),
+        Some(Value::Str("missing".into()))
+    );
+
+    assert_eq!(
+        read_data_value(
+            &program,
+            &store,
+            "settings",
+            &[],
+            &data_path(&program, "settings", &["label"]),
+            ScalarType::Str,
+        ),
+        None
+    );
+    assert_eq!(
+        read_data_value(
+            &program,
+            &store,
+            "settings",
+            &[],
+            &data_path(&program, "settings", &["owner", "name"]),
+            ScalarType::Str,
+        ),
+        None
+    );
+    assert_eq!(
+        read_data_value(
+            &program,
+            &store,
+            "settings",
+            &[],
+            &keyed_data_path(
+                &program,
+                "settings",
+                &[("flags", vec![SavedKey::Str("beta".into())])],
+                &[],
+            ),
+            ScalarType::Str,
+        ),
+        None
+    );
+}
+
+#[test]
+fn whole_resource_assignment_from_materialized_saved_value_clears_keyed_children() {
+    let program = checked_program(
+        "resource Book\n\
+         \x20   required title: string\n\
+         \x20   tags(pos: int): string\n\
+         store ^books(id: int): Book\n\n\
+         pub fn copy(from: int, to: int)\n\
+         \x20   var fallback: Book\n\
+         \x20   fallback.title = \"fallback\"\n\
+         \x20   ^books(to) = ^books(from) ?? fallback\n\n\
+         pub fn title_of(id: int): string\n\
+         \x20   return ^books(id).title ?? \"missing\"\n\n\
+         pub fn tag_at(id: int, pos: int): string\n\
+         \x20   return ^books(id).tags(pos) ?? \"missing\"\n",
+    );
+    let store = TreeStore::memory();
+    write_data_value(
+        &program,
+        &store,
+        "books",
+        &[SavedKey::Int(1)],
+        &data_path(&program, "books", &["title"]),
+        SavedValue::Str("source".into()),
+    );
+    write_data_value(
+        &program,
+        &store,
+        "books",
+        &[SavedKey::Int(1)],
+        &keyed_data_path(&program, "books", &[("tags", vec![SavedKey::Int(1)])], &[]),
+        SavedValue::Str("source tag".into()),
+    );
+    write_data_value(
+        &program,
+        &store,
+        "books",
+        &[SavedKey::Int(2)],
+        &data_path(&program, "books", &["title"]),
+        SavedValue::Str("target".into()),
+    );
+    write_data_value(
+        &program,
+        &store,
+        "books",
+        &[SavedKey::Int(2)],
+        &keyed_data_path(&program, "books", &[("tags", vec![SavedKey::Int(1)])], &[]),
+        SavedValue::Str("stale target tag".into()),
+    );
+
+    run_entry(
+        &store,
+        checked_entry!(&program, "test::copy", Value::Int(1), Value::Int(2)),
+    )
+    .expect("copy materialized saved value");
+
+    let read = |entry: &str, args: Vec<Value>| {
+        run_entry(&store, checked_entry_call(&program, entry, args))
+            .expect("read")
+            .value
+    };
+    assert_eq!(
+        read("test::title_of", vec![Value::Int(2)]),
+        Some(Value::Str("source".into()))
+    );
+    assert_eq!(
+        read("test::tag_at", vec![Value::Int(1), Value::Int(1)]),
+        Some(Value::Str("source tag".into()))
+    );
+    assert_eq!(
+        read("test::tag_at", vec![Value::Int(2), Value::Int(1)]),
+        Some(Value::Str("missing".into()))
+    );
+    assert_eq!(
+        read_data_value(
+            &program,
+            &store,
+            "books",
+            &[SavedKey::Int(2)],
+            &keyed_data_path(&program, "books", &[("tags", vec![SavedKey::Int(1)])], &[]),
+            ScalarType::Str,
+        ),
+        None
+    );
+}
+
+#[test]
 fn whole_resource_assignment_clears_omitted_index_field() {
     let program = checked_program(
         "resource Book\n\
