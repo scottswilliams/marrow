@@ -89,6 +89,38 @@ fn client_typescript_uses_lock_projection_when_store_is_absent() {
 }
 
 #[test]
+fn client_typescript_out_writes_file_and_is_silent_on_stdout() {
+    let root = temp_project("surface-client-out", |root| {
+        write(root, "marrow.json", support::native_config());
+        write(root, "src/app.mw", CLIENT_SURFACE_SOURCE);
+    });
+    let seed = marrow(&["run", "--entry", "app::seed", root.to_str().unwrap()]);
+    assert_eq!(seed.status.code(), Some(0), "seed: {seed:?}");
+    let out = root.join("generated/marrow.ts");
+    let output = marrow(&[
+        "client",
+        "typescript",
+        "--out",
+        out.to_str().unwrap(),
+        root.to_str().unwrap(),
+    ]);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert!(
+        output.stdout.is_empty(),
+        "--out must not echo to stdout: {output:?}"
+    );
+    let written = std::fs::read_to_string(&out).expect("client file written");
+    assert!(
+        written.contains("export function createClient"),
+        "{written}"
+    );
+    assert!(
+        written.contains("// marrow-surface-digest: sha256:"),
+        "{written}"
+    );
+}
+
+#[test]
 fn client_typescript_uses_active_computed_read_route_tags() {
     let root = temp_project("surface-client-typescript-computed-read-tag", |root| {
         write(root, "marrow.json", support::native_config());

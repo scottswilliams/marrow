@@ -15,7 +15,7 @@ marrow run [--entry <entry>] [--arg name=value]... [--maintenance] \
   [--trace] [--dry-run] [--format text|json] <projectdir>
 marrow test [--trace] [--format text|json|jsonl] [--filter <substring>] <projectdir>
 marrow serve [--write] [--cors-origin <loopback-origin>] [--addr <loopback:port>] <projectdir>
-marrow client typescript <projectdir>
+marrow client typescript [--out <path>] <projectdir>
 marrow data <roots|stats|dump|integrity> [--backup <artifact>] [--format text|json|jsonl] <projectdir>
 marrow data recover [--format text|json|jsonl] <projectdir>
 marrow data get [--backup <artifact>] [--format text|json|jsonl] <projectdir> <path>
@@ -212,7 +212,7 @@ $ echo $?
 ## `marrow client typescript`
 
 ```
-marrow client typescript <projectdir>
+marrow client typescript [--out <path>] <projectdir>
 ```
 
 Generate a self-contained TypeScript client for the checked application surface
@@ -220,7 +220,10 @@ operation envelope. The command runs the same read-only project analysis used by
 `marrow check`, binding saved-data identity from the committed `marrow.lock`
 projection; it does not open, create, repair, or mutate the saved-data store.
 
-- A successful check prints TypeScript to stdout and diagnostics nowhere.
+- With `--out <path>`, the rendered client is written to that file and nothing
+  is echoed to stdout. A relative path resolves under the project directory; an
+  absolute path is honored as given. Missing parent directories are created.
+- Without `--out`, a successful check prints TypeScript to stdout and diagnostics nowhere.
 - A failed check reports the existing text diagnostics to stderr, exits `1`,
   and prints no partial client.
 - Usage errors, including a missing project directory or unknown option, exit
