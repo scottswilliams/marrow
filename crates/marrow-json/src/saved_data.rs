@@ -166,6 +166,7 @@ pub struct DataStoreErrorJson {
 #[serde(rename_all = "snake_case")]
 pub enum DataStoreErrorCodeJson {
     Io,
+    PermissionDenied,
     Locked,
     FormatVersion,
     Corruption,
@@ -550,6 +551,7 @@ impl From<StoreError> for DataStoreErrorJson {
     fn from(error: StoreError) -> Self {
         let code = match &error {
             StoreError::Io { .. } => DataStoreErrorCodeJson::Io,
+            StoreError::PermissionDenied { .. } => DataStoreErrorCodeJson::PermissionDenied,
             StoreError::Locked { .. } => DataStoreErrorCodeJson::Locked,
             StoreError::FormatVersion { .. } => DataStoreErrorCodeJson::FormatVersion,
             StoreError::Corruption { .. } => DataStoreErrorCodeJson::Corruption,

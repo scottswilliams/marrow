@@ -158,6 +158,14 @@ fn map_open_error(path: &Path, error: DatabaseError) -> StoreError {
             data_dir: path.to_path_buf(),
         },
         DatabaseError::RepairAborted => StoreError::RecoveryRequired,
+        // A denied open is its own path-bearing state: the fix is to grant access, not retry.
+        DatabaseError::Storage(StorageError::Io(error))
+            if error.kind() == std::io::ErrorKind::PermissionDenied =>
+        {
+            StoreError::PermissionDenied {
+                path: path.to_path_buf(),
+            }
+        }
         DatabaseError::Storage(storage) => map_storage_error(storage),
         other => StoreError::Io {
             op: "open",
@@ -329,6 +337,11 @@ fn prepare_new_store_file(path: &Path) -> Result<Option<std::path::PathBuf>, Sto
             Ok(Some(create_path))
         }
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(None),
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+            Err(StoreError::PermissionDenied {
+                path: path.to_path_buf(),
+            })
+        }
         Err(error) => Err(StoreError::Io {
             op: "open",
             message: error.to_string(),
@@ -353,6 +366,9 @@ fn missing_file_or_symlink_target(path: &Path) -> Result<Option<std::path::PathB
         let metadata = match fs::symlink_metadata(&path) {
             Ok(metadata) => metadata,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Some(path)),
+            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+                return Err(StoreError::PermissionDenied { path: path.clone() });
+            }
             Err(error) => {
                 return Err(StoreError::Io {
                     op: "open",
@@ -1062,8 +1078,8 @@ mod tests {
     }
 
     /// The redb-error mapping is damage-faithful: a recoverable unclean shutdown, a
-    /// reported corruption, a torn body, a read/write lock conflict, and a transient
-    /// fault each land on their own typed code instead of collapsing to `store.io`.
+    /// reported corruption, a torn body, a read/write lock conflict, a denied open, and a
+    /// transient fault each land on their own typed code instead of collapsing to `store.io`.
     #[test]
     fn map_open_error_classifies_each_redb_failure() {
         let path = std::path::Path::new("/tmp/marrow-store.redb");
@@ -1094,16 +1110,15 @@ mod tests {
             StoreError::Locked { data_dir } => assert_eq!(data_dir, path),
             other => panic!("expected store.locked, got {other:?}"),
         }
-        assert_eq!(
-            map_open_error(
-                path,
-                redb::DatabaseError::Storage(redb::StorageError::Io(std::io::Error::from(
-                    std::io::ErrorKind::PermissionDenied
-                )))
-            )
-            .code(),
-            "store.io"
-        );
+        match map_open_error(
+            path,
+            redb::DatabaseError::Storage(redb::StorageError::Io(std::io::Error::from(
+                std::io::ErrorKind::PermissionDenied,
+            ))),
+        ) {
+            StoreError::PermissionDenied { path: reported } => assert_eq!(reported, path),
+            other => panic!("expected store.permission_denied, got {other:?}"),
+        }
     }
 
     /// The native store satisfies the same backend conformance suite as the

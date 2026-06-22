@@ -5,6 +5,10 @@
 pub enum StoreError {
     /// An I/O operation on a persistent backend failed.
     Io { op: &'static str, message: String },
+    /// The process lacks read/write access to the store directory or file. A distinct,
+    /// path-bearing state rather than a raw errno, since the fix (grant access) differs from a
+    /// transient I/O fault.
+    PermissionDenied { path: std::path::PathBuf },
     /// The store file is already held open by another process, either with write
     /// capability or as a read-only inspection.
     Locked { data_dir: std::path::PathBuf },
@@ -63,6 +67,7 @@ impl StoreError {
     pub fn code(&self) -> &'static str {
         match self {
             Self::Io { .. } => "store.io",
+            Self::PermissionDenied { .. } => "store.permission_denied",
             Self::Locked { .. } => "store.locked",
             Self::FormatVersion { .. } => "store.format_version",
             Self::Corruption { .. } => "store.corruption",
@@ -79,6 +84,12 @@ impl std::fmt::Display for StoreError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Io { op, message } => write!(f, "storage {op} failed: {message}"),
+            Self::PermissionDenied { path } => write!(
+                f,
+                "cannot open the store at {}: permission denied. Check that you have read/write \
+                 access to that directory",
+                path.display()
+            ),
             Self::Locked { data_dir } => write!(
                 f,
                 "the store file is held open by another process (a writer or a read-only \

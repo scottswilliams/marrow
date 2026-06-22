@@ -143,6 +143,56 @@ fn a_data_dir_create_denied_by_permissions_reports_a_directory_fault_not_a_read(
 }
 
 #[test]
+#[cfg(unix)]
+fn opening_an_existing_store_denied_by_permissions_names_the_path_and_the_fix() {
+    // Opening an existing store the process cannot access is a permission fault, not a transient
+    // I/O blip: it must carry the typed `store.permission_denied` code, name the store path, and
+    // tell the developer to grant access -- never a doubled "I/O error" or a raw OS error code.
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = temp_project_uncommitted("run-store-open-denied", |root| {
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".marrow/data" }, "run": { "defaultEntry": "app::main" } }"#,
+        );
+        write(
+            root,
+            "src/app.mw",
+            "module app\n\nresource Book\n    required title: string\nstore ^books(id: int): Book\n\npub fn main()\n    ^books(1).title = \"Mort\"\n",
+        );
+    });
+
+    // A first run stamps the store on disk, then the data directory is locked so a second open is
+    // denied before any read of the store file.
+    let seed = marrow_sub("run", &[root.to_str().unwrap()]);
+    assert_eq!(seed.status.code(), Some(0), "seed run: {seed:?}");
+    let data_dir = root.join(".marrow").join("data");
+    std::fs::set_permissions(&data_dir, std::fs::Permissions::from_mode(0o000))
+        .expect("lock the data directory");
+
+    let output = marrow_sub("run", &[root.to_str().unwrap()]);
+
+    // Restore access so the self-cleaning temp project can be removed.
+    std::fs::set_permissions(&data_dir, std::fs::Permissions::from_mode(0o700)).ok();
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+    assert!(
+        stderr.contains("store.permission_denied") && stderr.contains("permission denied"),
+        "a denied store open must carry the typed permission code: {stderr}"
+    );
+    assert!(
+        stderr.contains("marrow.redb"),
+        "the fault must name the store path: {stderr}"
+    );
+    assert!(
+        !stderr.contains("I/O error") && !stderr.contains("os error"),
+        "the message must not leak a doubled I/O error or a raw OS error code: {stderr}"
+    );
+}
+
+#[test]
 fn a_dynamically_built_invalid_error_code_faults_typed_at_run() {
     let root = temp_project("run-bad-dynamic-code", |root| {
         write(
