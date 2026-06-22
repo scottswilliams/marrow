@@ -44,6 +44,22 @@ surface Books from ^books\n\
 \x20\x20\x20\x20collection ^books.byAuthor as byAuthor\n\
 \x20\x20\x20\x20action retitle\n";
 
+const SINGLETON_SURFACE_SOURCE: &str = "module app\n\
+ \n\
+ resource Settings\n\
+ \x20\x20\x20\x20required theme: string\n\
+ store ^settings: Settings\n\
+ \n\
+pub fn seed()\n\
+\x20\x20\x20\x20var settings: Settings\n\
+\x20\x20\x20\x20settings.theme = \"dark\"\n\
+\x20\x20\x20\x20transaction\n\
+\x20\x20\x20\x20\x20\x20\x20\x20^settings = settings\n\
+\n\
+surface SettingsSurface from ^settings\n\
+\x20\x20\x20\x20fields theme\n\
+\x20\x20\x20\x20delete\n";
+
 const CLIENT_SURFACE_SOURCE: &str = "module app\n\
 \n\
 resource Book\n\
@@ -935,6 +951,96 @@ fn surface_serve_write_mode_executes_create_and_delete_over_http() {
 }
 
 #[test]
+fn surface_serve_rejects_garbage_singleton_bodies_without_mutation() {
+    let fixture = seeded_singleton_fixture("surface-serve-singleton-strict");
+    let read_route = route_by_alias(&fixture.report, "get");
+    let delete_route = route_by_alias(&fixture.report, "delete");
+    let (_server, addr) = spawn_surface_server_with_args(fixture.root(), &["--write"]);
+
+    // The empty closed object is the valid singleton-read request body.
+    let valid_read = post_json(
+        addr,
+        &read_route.path,
+        json!({
+            "profile_version": "surface.operation.v1",
+            "operation_tag": read_route.operation_tag,
+            "request": { "kind": "singleton_read", "request": {} }
+        }),
+        &[("Content-Type", "application/json")],
+    );
+    assert_eq!(valid_read.status, 200, "{:#?}", valid_read.body);
+    assert_eq!(
+        field_value(&valid_read.body["result"]["record"], "theme"),
+        json!({ "kind": "string", "value": "dark" })
+    );
+
+    let garbage_bodies = [
+        json!({ "kind": "singleton_read", "request": { "unexpected": true } }),
+        json!({ "kind": "singleton_read", "request": "garbage" }),
+        json!({ "kind": "singleton_read", "request": [] }),
+        json!({ "kind": "singleton_read" }),
+    ];
+    for body in garbage_bodies {
+        let response = post_json(
+            addr,
+            &read_route.path,
+            json!({
+                "profile_version": "surface.operation.v1",
+                "operation_tag": read_route.operation_tag,
+                "request": body,
+            }),
+            &[("Content-Type", "application/json")],
+        );
+        assert_eq!(response.status, 400, "{body:#?} -> {:#?}", response.body);
+        assert_eq!(response.body["code"], "surface.request", "{body:#?}");
+    }
+
+    // A garbage-body singleton delete must be rejected before it can delete.
+    let garbage_delete = post_json(
+        addr,
+        &delete_route.path,
+        json!({
+            "profile_version": "surface.operation.v1",
+            "operation_tag": delete_route.operation_tag,
+            "request": { "kind": "singleton_delete", "request": { "unexpected": true } }
+        }),
+        &[("Content-Type", "application/json")],
+    );
+    assert_eq!(garbage_delete.status, 400, "{:#?}", garbage_delete.body);
+    assert_eq!(garbage_delete.body["code"], "surface.request");
+
+    let still_present = post_json(
+        addr,
+        &read_route.path,
+        json!({
+            "profile_version": "surface.operation.v1",
+            "operation_tag": read_route.operation_tag,
+            "request": { "kind": "singleton_read", "request": {} }
+        }),
+        &[("Content-Type", "application/json")],
+    );
+    assert_eq!(still_present.status, 200, "{:#?}", still_present.body);
+    assert_eq!(
+        field_value(&still_present.body["result"]["record"], "theme"),
+        json!({ "kind": "string", "value": "dark" })
+    );
+
+    // The valid empty delete body removes the singleton.
+    let valid_delete = post_json(
+        addr,
+        &delete_route.path,
+        json!({
+            "profile_version": "surface.operation.v1",
+            "operation_tag": delete_route.operation_tag,
+            "request": { "kind": "singleton_delete", "request": {} }
+        }),
+        &[("Content-Type", "application/json")],
+    );
+    assert_eq!(valid_delete.status, 200, "{:#?}", valid_delete.body);
+    assert_eq!(valid_delete.body["result"]["kind"], "deleted");
+}
+
+#[test]
 fn surface_serve_write_mode_idle_kill_leaves_store_clean() {
     let fixture = seeded_surface_fixture("surface-serve-write-idle-kill");
     let create_route = route_by_alias(&fixture.report, "create");
@@ -1354,6 +1460,21 @@ fn seeded_surface_fixture(name: &str) -> SurfaceFixture {
     let root = temp_project(name, |root| {
         write(root, "marrow.json", support::native_config());
         write(root, "src/app.mw", SURFACE_SOURCE);
+    });
+    let seed = marrow_sub("run", &["--entry", "app::seed", root.to_str().unwrap()]);
+    assert_eq!(seed.status.code(), Some(0), "seed: {seed:?}");
+    let checked = marrow_sub("check", &["--format", "json", root.to_str().unwrap()]);
+    assert_eq!(checked.status.code(), Some(0), "check: {checked:?}");
+    SurfaceFixture {
+        _root: root,
+        report: support::json(checked.stdout),
+    }
+}
+
+fn seeded_singleton_fixture(name: &str) -> SurfaceFixture {
+    let root = temp_project(name, |root| {
+        write(root, "marrow.json", support::native_config());
+        write(root, "src/app.mw", SINGLETON_SURFACE_SOURCE);
     });
     let seed = marrow_sub("run", &["--entry", "app::seed", root.to_str().unwrap()]);
     assert_eq!(seed.status.code(), Some(0), "seed: {seed:?}");

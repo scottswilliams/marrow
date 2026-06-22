@@ -534,7 +534,7 @@ type SurfaceOperationResultKind =
 type SurfaceOperationRequestJson = {
   profile_version: typeof SURFACE_OPERATION_PROFILE_VERSION;
   operation_tag: string;
-  request: { kind: SurfaceOperationRequestKind; request?: unknown };
+  request: { kind: SurfaceOperationRequestKind; request: unknown };
 };
 type SurfaceOperationResponseJson = {
   profile_version: typeof SURFACE_OPERATION_PROFILE_VERSION;
@@ -603,10 +603,10 @@ function operationRequest(
   requestKind: SurfaceOperationRequestKind,
   request: unknown,
 ): SurfaceOperationRequestJson {
-  const body: SurfaceOperationRequestJson["request"] = { kind: requestKind };
-  if (request !== undefined) {
-    body.request = encodeSurfaceJson(request);
-  }
+  const body: SurfaceOperationRequestJson["request"] = {
+    kind: requestKind,
+    request: request === undefined ? {} : encodeSurfaceJson(request),
+  };
   return {
     profile_version: SURFACE_OPERATION_PROFILE_VERSION,
     operation_tag: operationTag,

@@ -84,7 +84,7 @@ impl SurfaceOperationKind {
             (self, body),
             (
                 Self::SingletonRead,
-                SurfaceOperationRequestBodyJson::SingletonRead
+                SurfaceOperationRequestBodyJson::SingletonRead { .. }
             ) | (
                 Self::PointRead,
                 SurfaceOperationRequestBodyJson::PointRead { .. }
@@ -111,7 +111,7 @@ impl SurfaceOperationKind {
                 )
                 | (
                     Self::SingletonDelete,
-                    SurfaceOperationRequestBodyJson::SingletonDelete
+                    SurfaceOperationRequestBodyJson::SingletonDelete { .. }
                 )
                 | (
                     Self::PointDelete,

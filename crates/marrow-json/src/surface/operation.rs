@@ -34,7 +34,9 @@ pub struct SurfaceOperationRequestJson {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum SurfaceOperationRequestBodyJson {
-    SingletonRead,
+    SingletonRead {
+        request: SurfaceEmptyRequestJson,
+    },
     PointRead {
         request: SurfacePointRequestJson,
     },
@@ -56,7 +58,9 @@ pub enum SurfaceOperationRequestBodyJson {
     PointCreate {
         request: SurfacePointCreateRequestJson,
     },
-    SingletonDelete,
+    SingletonDelete {
+        request: SurfaceEmptyRequestJson,
+    },
     PointDelete {
         request: SurfacePointDeleteRequestJson,
     },
@@ -66,6 +70,56 @@ pub enum SurfaceOperationRequestBodyJson {
     ComputedRead {
         request: SurfaceComputedReadRequestJson,
     },
+}
+
+/// The closed request payload for singleton read and delete, which carry no
+/// arguments. It serializes as `{}` and deserializes only from an empty JSON
+/// object, so the singleton variants reject unknown fields, a non-object body,
+/// or an omitted request, matching the closed-object contract of the
+/// body-bearing variants. A derived empty struct would also accept a JSON
+/// array, so the object shape is enforced directly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct SurfaceEmptyRequestJson;
+
+impl Serialize for SurfaceEmptyRequestJson {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeMap;
+        serializer.serialize_map(Some(0))?.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for SurfaceEmptyRequestJson {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct EmptyObjectVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for EmptyObjectVisitor {
+            type Value = SurfaceEmptyRequestJson;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("an empty object")
+            }
+
+            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+            where
+                A: serde::de::MapAccess<'de>,
+            {
+                if let Some(key) = map.next_key::<String>()? {
+                    return Err(serde::de::Error::custom(format!(
+                        "unexpected field `{key}` in request"
+                    )));
+                }
+                Ok(SurfaceEmptyRequestJson)
+            }
+        }
+
+        deserializer.deserialize_map(EmptyObjectVisitor)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -343,9 +397,11 @@ fn execute_read_operation(
     request: &SurfaceOperationRequestBodyJson,
 ) -> Result<SurfaceOperationResultJson, SurfaceError> {
     match request {
-        SurfaceOperationRequestBodyJson::SingletonRead => Ok(SurfaceOperationResultJson::Record {
-            record: execute_singleton_read(operation)?,
-        }),
+        SurfaceOperationRequestBodyJson::SingletonRead { .. } => {
+            Ok(SurfaceOperationResultJson::Record {
+                record: execute_singleton_read(operation)?,
+            })
+        }
         SurfaceOperationRequestBodyJson::PointRead { request } => {
             Ok(SurfaceOperationResultJson::Record {
                 record: execute_point_read(operation, request)?,
@@ -363,7 +419,7 @@ fn execute_read_operation(
         | SurfaceOperationRequestBodyJson::PointUpdate { .. }
         | SurfaceOperationRequestBodyJson::SingletonCreate { .. }
         | SurfaceOperationRequestBodyJson::PointCreate { .. }
-        | SurfaceOperationRequestBodyJson::SingletonDelete
+        | SurfaceOperationRequestBodyJson::SingletonDelete { .. }
         | SurfaceOperationRequestBodyJson::PointDelete { .. }
         | SurfaceOperationRequestBodyJson::Action { .. }
         | SurfaceOperationRequestBodyJson::ComputedRead { .. } => Err(SurfaceError::request(
@@ -385,13 +441,13 @@ fn execute_update_operation(
             execute_point_update(update, request)?;
             Ok(SurfaceOperationResultJson::Updated)
         }
-        SurfaceOperationRequestBodyJson::SingletonRead
+        SurfaceOperationRequestBodyJson::SingletonRead { .. }
         | SurfaceOperationRequestBodyJson::PointRead { .. }
         | SurfaceOperationRequestBodyJson::Page { .. }
         | SurfaceOperationRequestBodyJson::UniqueLookup { .. }
         | SurfaceOperationRequestBodyJson::SingletonCreate { .. }
         | SurfaceOperationRequestBodyJson::PointCreate { .. }
-        | SurfaceOperationRequestBodyJson::SingletonDelete
+        | SurfaceOperationRequestBodyJson::SingletonDelete { .. }
         | SurfaceOperationRequestBodyJson::PointDelete { .. }
         | SurfaceOperationRequestBodyJson::Action { .. }
         | SurfaceOperationRequestBodyJson::ComputedRead { .. } => Err(SurfaceError::request(
@@ -415,13 +471,13 @@ fn execute_create_operation(
                 record: execute_point_create(create, request)?,
             })
         }
-        SurfaceOperationRequestBodyJson::SingletonRead
+        SurfaceOperationRequestBodyJson::SingletonRead { .. }
         | SurfaceOperationRequestBodyJson::PointRead { .. }
         | SurfaceOperationRequestBodyJson::Page { .. }
         | SurfaceOperationRequestBodyJson::UniqueLookup { .. }
         | SurfaceOperationRequestBodyJson::SingletonUpdate { .. }
         | SurfaceOperationRequestBodyJson::PointUpdate { .. }
-        | SurfaceOperationRequestBodyJson::SingletonDelete
+        | SurfaceOperationRequestBodyJson::SingletonDelete { .. }
         | SurfaceOperationRequestBodyJson::PointDelete { .. }
         | SurfaceOperationRequestBodyJson::Action { .. }
         | SurfaceOperationRequestBodyJson::ComputedRead { .. } => Err(SurfaceError::request(
@@ -435,7 +491,7 @@ fn execute_delete_operation(
     request: &SurfaceOperationRequestBodyJson,
 ) -> Result<SurfaceOperationResultJson, SurfaceError> {
     match request {
-        SurfaceOperationRequestBodyJson::SingletonDelete => {
+        SurfaceOperationRequestBodyJson::SingletonDelete { .. } => {
             execute_singleton_delete(delete)?;
             Ok(SurfaceOperationResultJson::Deleted)
         }
@@ -443,7 +499,7 @@ fn execute_delete_operation(
             execute_point_delete(delete, request)?;
             Ok(SurfaceOperationResultJson::Deleted)
         }
-        SurfaceOperationRequestBodyJson::SingletonRead
+        SurfaceOperationRequestBodyJson::SingletonRead { .. }
         | SurfaceOperationRequestBodyJson::PointRead { .. }
         | SurfaceOperationRequestBodyJson::Page { .. }
         | SurfaceOperationRequestBodyJson::UniqueLookup { .. }

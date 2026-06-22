@@ -33,9 +33,10 @@ pub use execute::{
 pub use operation::{
     SURFACE_OPERATION_PROFILE_VERSION, SurfaceActionRequestJson, SurfaceActionResultJson,
     SurfaceComputedReadInvocationResultJson, SurfaceComputedReadRequestJson,
-    SurfaceOperationErrorJson, SurfaceOperationRequestBodyJson, SurfaceOperationRequestJson,
-    SurfaceOperationResponseJson, SurfaceOperationResultJson, execute_project_surface_operation,
-    execute_project_surface_operation_read_only, execute_project_surface_operation_with_host,
+    SurfaceEmptyRequestJson, SurfaceOperationErrorJson, SurfaceOperationRequestBodyJson,
+    SurfaceOperationRequestJson, SurfaceOperationResponseJson, SurfaceOperationResultJson,
+    execute_project_surface_operation, execute_project_surface_operation_read_only,
+    execute_project_surface_operation_with_host,
 };
 pub use operation_catalog::{
     SurfaceOperationBinding, SurfaceOperationCatalog, SurfaceOperationCatalogError,
@@ -1702,7 +1703,7 @@ mod tests {
         SurfaceComputedReadRequestJson, SurfaceComputedReadValueJson,
         SurfaceComputedReadValueShapeJson, SurfaceCreateFieldJson, SurfaceCreateOperationKindJson,
         SurfaceCursorBoundaryJson, SurfaceCursorJson, SurfaceDeleteOperationKindJson,
-        SurfaceIdentityJson, SurfaceKeyJson, SurfaceOperationCatalog,
+        SurfaceEmptyRequestJson, SurfaceIdentityJson, SurfaceKeyJson, SurfaceOperationCatalog,
         SurfaceOperationCatalogErrorKind, SurfaceOperationErrorJson, SurfaceOperationKind,
         SurfaceOperationRequestBodyJson, SurfaceOperationRequestJson, SurfaceOperationResultJson,
         SurfacePageJson, SurfacePageRequestJson, SurfacePointCreateRequestJson,
@@ -3620,6 +3621,56 @@ pub fn seed()
     }
 
     #[test]
+    fn singleton_read_and_delete_bodies_are_closed_objects() {
+        for kind in ["singleton_read", "singleton_delete"] {
+            serde_json::from_value::<SurfaceOperationRequestBodyJson>(json!({
+                "kind": kind,
+                "request": {}
+            }))
+            .unwrap_or_else(|error| panic!("{kind} with empty request must parse: {error}"));
+
+            assert!(
+                serde_json::from_value::<SurfaceOperationRequestBodyJson>(json!({
+                    "kind": kind,
+                    "request": { "unexpected": true }
+                }))
+                .is_err(),
+                "{kind} must reject an unknown request field"
+            );
+            assert!(
+                serde_json::from_value::<SurfaceOperationRequestBodyJson>(json!({
+                    "kind": kind,
+                    "request": "garbage"
+                }))
+                .is_err(),
+                "{kind} must reject a string request"
+            );
+            assert!(
+                serde_json::from_value::<SurfaceOperationRequestBodyJson>(json!({
+                    "kind": kind,
+                    "request": []
+                }))
+                .is_err(),
+                "{kind} must reject an array request"
+            );
+            assert!(
+                serde_json::from_value::<SurfaceOperationRequestBodyJson>(json!({ "kind": kind }))
+                    .is_err(),
+                "{kind} must reject an omitted request"
+            );
+            assert!(
+                serde_json::from_value::<SurfaceOperationRequestBodyJson>(json!({
+                    "kind": kind,
+                    "stray": 1,
+                    "request": {}
+                }))
+                .is_err(),
+                "{kind} must reject a sibling field on the envelope"
+            );
+        }
+    }
+
+    #[test]
     fn surface_operation_kind_matches_operation_body_kind() {
         let point_read = serde_json::from_value::<SurfaceOperationRequestBodyJson>(json!({
             "kind": "point_read",
@@ -3671,7 +3722,9 @@ pub fn seed()
         let cases = [
             (
                 SurfaceOperationKind::SingletonRead,
-                SurfaceOperationRequestBodyJson::SingletonRead,
+                SurfaceOperationRequestBodyJson::SingletonRead {
+                    request: SurfaceEmptyRequestJson,
+                },
             ),
             (SurfaceOperationKind::PointRead, point_read),
             (SurfaceOperationKind::Page, page),
@@ -3694,10 +3747,11 @@ pub fn seed()
         assert!(!SurfaceOperationKind::SingletonUpdate.is_read());
         assert!(!SurfaceOperationKind::PointUpdate.is_read());
         assert!(!SurfaceOperationKind::Action.is_read());
-        assert!(
-            !SurfaceOperationKind::Page
-                .matches_operation_body(&SurfaceOperationRequestBodyJson::SingletonRead)
-        );
+        assert!(!SurfaceOperationKind::Page.matches_operation_body(
+            &SurfaceOperationRequestBodyJson::SingletonRead {
+                request: SurfaceEmptyRequestJson,
+            }
+        ));
     }
 
     #[test]
