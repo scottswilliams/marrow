@@ -531,9 +531,9 @@ pub(crate) fn prefix_successor(prefix: &[u8]) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::{
-        CatalogId, CellKey, DataCellKey, DataCellKind, DataPathSegment, FAMILY_DATA,
-        SequencePosition, decode_data_cell_key, decode_index_child_key, decode_index_entry_key,
-        decode_index_identity, encode_id, family,
+        CatalogId, CellKey, CellRange, DataCellKey, DataCellKind, DataPathSegment, FAMILY_CATALOG,
+        FAMILY_DATA, FAMILY_INDEX, FAMILY_META, MetaCell, SequencePosition, decode_data_cell_key,
+        decode_index_child_key, decode_index_entry_key, decode_index_identity, encode_id, family,
     };
     use crate::key::SavedKey;
 
@@ -545,12 +545,186 @@ mod tests {
         CatalogId::new("cat_fedcba9876543210fedcba9876543210").expect("member id")
     }
 
+    fn hex(bytes: &str) -> Vec<u8> {
+        let compact: String = bytes.split_ascii_whitespace().collect();
+        assert_eq!(compact.len() % 2, 0, "hex strings use byte pairs");
+        compact
+            .as_bytes()
+            .chunks(2)
+            .map(|pair| {
+                let hi = char::from(pair[0]).to_digit(16).expect("hex digit");
+                let lo = char::from(pair[1]).to_digit(16).expect("hex digit");
+                ((hi << 4) | lo) as u8
+            })
+            .collect()
+    }
+
+    fn assert_key_bytes(key: CellKey, expected_hex: &str) {
+        let expected = hex(expected_hex);
+        assert_eq!(key.as_bytes(), expected.as_slice());
+    }
+
     #[test]
     fn catalog_ids_use_128_bit_lowercase_hex() {
         assert!(CatalogId::new("cat_0123456789abcdef0123456789abcdef").is_ok());
         assert!(CatalogId::new("cat_0123456789abcdef").is_err());
         assert!(CatalogId::new("cat_0123456789abcdef0123456789abcdeF").is_err());
         assert!(CatalogId::new("cat_0123456789abcdef0123456789abcdef_1").is_err());
+    }
+
+    #[test]
+    fn physical_key_family_and_meta_goldens_match_backend_contract() {
+        assert_eq!(family(FAMILY_META), hex("00 01 10"));
+        assert_eq!(family(FAMILY_DATA), hex("00 01 20"));
+        assert_eq!(family(FAMILY_INDEX), hex("00 01 30"));
+        assert_eq!(family(FAMILY_CATALOG), hex("00 01 40"));
+
+        assert_key_bytes(CellKey::meta(MetaCell::Commit), "00 01 10 04");
+        assert_key_bytes(CellKey::meta(MetaCell::StoreUid), "00 01 10 05");
+    }
+
+    #[test]
+    fn data_cell_key_goldens_match_backend_contract() {
+        let store = store_id("");
+        let member = member_id();
+        let identity = [SavedKey::Int(1)];
+        let path = [
+            DataPathSegment::Member(member.clone()),
+            DataPathSegment::Key(SavedKey::Str("title".into())),
+        ];
+
+        assert_key_bytes(
+            CellKey::node(&store, &identity),
+            "00 01 20
+             63 61 74 5f 30 31 32 33 34 35 36 37 38 39 61 62 63 64 65 66
+             30 31 32 33 34 35 36 37 38 39 61 62 63 64 65 66 00 00
+             02 80 00 00 00 00 00 00 01
+             00",
+        );
+
+        assert_key_bytes(
+            CellKey::leaf(&store, &identity, &member),
+            "00 01 20
+             63 61 74 5f 30 31 32 33 34 35 36 37 38 39 61 62 63 64 65 66
+             30 31 32 33 34 35 36 37 38 39 61 62 63 64 65 66 00 00
+             02 80 00 00 00 00 00 00 01
+             00
+             10
+             63 61 74 5f 66 65 64 63 62 61 39 38 37 36 35 34 33 32 31 30
+             66 65 64 63 62 61 39 38 37 36 35 34 33 32 31 30 00 00",
+        );
+
+        assert_key_bytes(
+            CellKey::sequence(
+                &store,
+                &identity,
+                &member,
+                SequencePosition::new(0x0102_0304_0506_0708),
+            ),
+            "00 01 20
+             63 61 74 5f 30 31 32 33 34 35 36 37 38 39 61 62 63 64 65 66
+             30 31 32 33 34 35 36 37 38 39 61 62 63 64 65 66 00 00
+             02 80 00 00 00 00 00 00 01
+             00
+             20
+             63 61 74 5f 66 65 64 63 62 61 39 38 37 36 35 34 33 32 31 30
+             66 65 64 63 62 61 39 38 37 36 35 34 33 32 31 30 00 00
+             01 02 03 04 05 06 07 08",
+        );
+
+        assert_key_bytes(
+            CellKey::data_path_value(&store, &identity, &path),
+            "00 01 20
+             63 61 74 5f 30 31 32 33 34 35 36 37 38 39 61 62 63 64 65 66
+             30 31 32 33 34 35 36 37 38 39 61 62 63 64 65 66 00 00
+             02 80 00 00 00 00 00 00 01
+             00
+             30
+             63 61 74 5f 66 65 64 63 62 61 39 38 37 36 35 34 33 32 31 30
+             66 65 64 63 62 61 39 38 37 36 35 34 33 32 31 30 00 00
+             40
+             07 74 69 74 6c 65 00 00
+             00",
+        );
+    }
+
+    #[test]
+    fn index_key_goldens_match_backend_contract() {
+        let index = member_id();
+        let index_keys = [SavedKey::Str("title".into()), SavedKey::Int(2)];
+        let identity = [SavedKey::Int(7), SavedKey::Str("x".into())];
+
+        assert_key_bytes(
+            CellKey::index(&index, &index_keys, &identity),
+            "00 01 30
+             63 61 74 5f 66 65 64 63 62 61 39 38 37 36 35 34 33 32 31 30
+             66 65 64 63 62 61 39 38 37 36 35 34 33 32 31 30 00 00
+             07 74 69 74 6c 65 00 00
+             02 80 00 00 00 00 00 00 02
+             00
+             02 80 00 00 00 00 00 00 07
+             07 78 00 00
+             00",
+        );
+
+        assert_key_bytes(
+            CellKey::index_key_prefix(&index, &index_keys),
+            "00 01 30
+             63 61 74 5f 66 65 64 63 62 61 39 38 37 36 35 34 33 32 31 30
+             66 65 64 63 62 61 39 38 37 36 35 34 33 32 31 30 00 00
+             07 74 69 74 6c 65 00 00
+             02 80 00 00 00 00 00 00 02",
+        );
+
+        assert_key_bytes(
+            CellKey::index_tuple_prefix(&index, &index_keys),
+            "00 01 30
+             63 61 74 5f 66 65 64 63 62 61 39 38 37 36 35 34 33 32 31 30
+             66 65 64 63 62 61 39 38 37 36 35 34 33 32 31 30 00 00
+             07 74 69 74 6c 65 00 00
+             02 80 00 00 00 00 00 00 02
+             00",
+        );
+    }
+
+    #[test]
+    fn prefix_ranges_use_successor_upper_bound_and_unbounded_all_ff() {
+        let normal = CellRange::for_prefix(&[0x00, 0x01, 0x20]);
+        assert_eq!(
+            normal,
+            CellRange {
+                start: hex("00 01 20"),
+                end: Some(hex("00 01 21")),
+            },
+        );
+        assert!(normal.contains(&hex("00 01 20")));
+        assert!(normal.contains(&hex("00 01 20 ff")));
+        assert!(!normal.contains(&hex("00 01 1f ff")));
+        assert!(!normal.contains(&hex("00 01 21")));
+
+        let all_ff = CellRange::for_prefix(&[0xff, 0xff]);
+        assert_eq!(
+            all_ff,
+            CellRange {
+                start: hex("ff ff"),
+                end: None,
+            },
+        );
+        assert!(all_ff.contains(&hex("ff ff")));
+        assert!(all_ff.contains(&hex("ff ff 00")));
+        assert!(!all_ff.contains(&hex("ff fe ff")));
+
+        let empty = CellRange::for_prefix(&[]);
+        assert_eq!(
+            empty,
+            CellRange {
+                start: Vec::new(),
+                end: None,
+            },
+        );
+        assert!(empty.contains(&[]));
+        assert!(empty.contains(&hex("00")));
+        assert!(empty.contains(&hex("ff ff")));
     }
 
     fn assert_data(key: &CellKey, expected_path: &[DataPathSegment]) {

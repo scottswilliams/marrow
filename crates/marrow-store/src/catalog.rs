@@ -314,7 +314,7 @@ mod tests {
     use marrow_catalog::{CatalogEntry, CatalogEntryKind, CatalogLifecycle, CatalogMetadata};
 
     use super::{
-        ENTRY_ROW, HEADER_ROW, ROW_VALUE_VERSION_V0, encode_entry, encode_header, put_text,
+        HEADER_ROW, ROW_VALUE_VERSION_V0, encode_entry, encode_header, put_text,
         read_catalog_snapshot, read_catalog_snapshot_digest, replace_catalog_snapshot,
     };
     use crate::backend::Backend;
@@ -618,14 +618,14 @@ mod tests {
         assert_eq!(error.code(), "store.corruption", "{error:?}");
     }
 
-    // The entry-row tag is referenced indirectly through `catalog_entry_key`; this
-    // anchors the constant so a tag renumber is caught here too.
     #[test]
-    fn entry_key_carries_the_entry_row_tag() {
-        let key = entry_key(&stable_id(1));
-        let tail = key
-            .strip_prefix(super::catalog_family().as_slice())
-            .unwrap();
-        assert_eq!(tail.first(), Some(&ENTRY_ROW));
+    fn catalog_row_key_goldens_match_backend_contract() {
+        assert_eq!(super::catalog_header_key(), vec![0x00, 0x01, 0x40, 0x00]);
+
+        let id = stable_id(1);
+        let entry = super::catalog_entry_key(&id);
+        let mut expected = vec![0x00, 0x01, 0x40, 0x10];
+        expected.extend_from_slice(id.as_bytes());
+        assert_eq!(entry, expected);
     }
 }

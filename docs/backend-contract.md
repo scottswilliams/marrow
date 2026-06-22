@@ -69,6 +69,7 @@ names, member names, index names, enum member spelling, or declaration order.
 | Node cell | data family + store ID + record-key tuple + `00` | Node marker and prefix for the record's leaf and sequence cells. |
 | Leaf cell | node prefix + `10` + member ID | A typed leaf under a node. |
 | Sequence cell | node prefix + `20` + member ID + `u64_be(position)` | A sequence element under a node/member, ordered by position. |
+| Nested-data value cell | node prefix + one or more (`30` + member ID or `40` + typed key value) segments + `00` | A typed value below a record node. Member and key path segments are structural; the trailing `00` marks the value cell. Empty nested-data paths use the node cell. |
 | Index cell | index family + index ID + index-key tuple + `00` + record-key tuple + `00` | Sorts by exact index tuple, then record identity. |
 | Commit metadata cell | meta family + `04` | Latest commit metadata. A store is stamped when `read_commit_metadata()` returns `Some`. |
 | Store UID cell | meta family + `05` | `store_<32 lowercase hex>` physical store identity. |
