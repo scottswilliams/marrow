@@ -2,7 +2,7 @@ use crate::support;
 use crate::support_surface::{
     create_descriptor, create_field_catalog_id, delete_descriptor, read_descriptor, route_by_alias,
     spawn_surface_server, spawn_surface_server_with_args, update_descriptor,
-    update_field_catalog_id,
+    update_field_catalog_id, wait_for_client_change,
 };
 use serde_json::{Value, json};
 use std::io::{ErrorKind, Read, Write};
@@ -43,6 +43,72 @@ surface Books from ^books\n\
 \x20\x20\x20\x20delete\n\
 \x20\x20\x20\x20collection ^books.byAuthor as byAuthor\n\
 \x20\x20\x20\x20action retitle\n";
+
+const CLIENT_SURFACE_SOURCE: &str = "module app\n\
+\n\
+resource Book\n\
+\x20\x20\x20\x20required title: string\n\
+\x20\x20\x20\x20author: string\n\
+store ^books(id: int): Book\n\
+\x20\x20\x20\x20index byAuthor(author, id)\n\
+\n\
+pub fn seed()\n\
+\x20\x20\x20\x20var book: Book\n\
+\x20\x20\x20\x20book.title = \"Dune\"\n\
+\x20\x20\x20\x20book.author = \"Frank Herbert\"\n\
+\x20\x20\x20\x20var sequel: Book\n\
+\x20\x20\x20\x20sequel.title = \"Dune Messiah\"\n\
+\x20\x20\x20\x20sequel.author = \"Frank Herbert\"\n\
+\x20\x20\x20\x20transaction\n\
+\x20\x20\x20\x20\x20\x20\x20\x20^books(1) = book\n\
+\x20\x20\x20\x20\x20\x20\x20\x20^books(2) = sequel\n\
+\n\
+pub fn retitle(id: int, title: string): string\n\
+\x20\x20\x20\x20transaction\n\
+\x20\x20\x20\x20\x20\x20\x20\x20^books(id).title = title\n\
+\x20\x20\x20\x20return title\n\
+\n\
+pub fn describe(id: int): string\n\
+\x20\x20\x20\x20return (^books(id).title ?? \"\") + \"|\" + (^books(id).author ?? \"\")\n\
+\n\
+surface Books from ^books\n\
+\x20\x20\x20\x20fields title, author\n\
+\x20\x20\x20\x20create title, author\n\
+\x20\x20\x20\x20update author\n\
+\x20\x20\x20\x20delete\n\
+\x20\x20\x20\x20collection ^books.byAuthor as byAuthor\n\
+\x20\x20\x20\x20action retitle\n\
+\x20\x20\x20\x20read describe\n";
+
+/// A native-store config that declares a client output path so serve regenerates the TypeScript
+/// client write-if-changed at startup and on a `--watch` source change.
+fn native_config_with_client() -> String {
+    r#"{"sourceRoots":["src"],"store":{"backend":"native","dataDir":".data"},"client":"generated/marrow.ts"}"#
+        .to_string()
+}
+
+#[test]
+fn serve_watch_rewrites_client_on_source_change() {
+    let root = temp_project("serve-watch-client", |root| {
+        write(root, "marrow.json", &native_config_with_client());
+        write(root, "src/app.mw", CLIENT_SURFACE_SOURCE);
+    });
+    let seed = marrow(&["run", "--entry", "app::seed", root.to_str().unwrap()]);
+    assert_eq!(seed.status.code(), Some(0), "{seed:?}");
+    let out = root.join("generated/marrow.ts");
+    let before = std::fs::read_to_string(&out).expect("client present after seed");
+    let (_server, _addr) = spawn_surface_server_with_args(&root, &["--write", "--watch"]);
+    let changed = CLIENT_SURFACE_SOURCE.replace(
+        "    read describe\n",
+        "    read describe\n    read describe as summary\n",
+    );
+    write(&root, "src/app.mw", &changed);
+    let after = wait_for_client_change(&out, &before, std::time::Duration::from_secs(8));
+    assert_ne!(
+        after, before,
+        "serve --watch must rewrite the client on a surface change"
+    );
+}
 
 #[test]
 fn serve_startup_writes_declared_client() {

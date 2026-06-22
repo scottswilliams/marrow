@@ -108,6 +108,20 @@ impl Drop for ServeProcess {
     }
 }
 
+/// Poll a generated client file until its contents differ from `before` or the deadline passes,
+/// returning the final contents. The bound is generous so `serve --watch`'s poll cadence and the
+/// re-check it triggers have room to land before the assertion runs.
+pub(crate) fn wait_for_client_change(path: &Path, before: &str, deadline: Duration) -> String {
+    let start = std::time::Instant::now();
+    loop {
+        let current = std::fs::read_to_string(path).unwrap_or_default();
+        if current != before || start.elapsed() >= deadline {
+            return current;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
 pub(crate) fn spawn_surface_server(root: &Path) -> (ServeProcess, SocketAddr) {
     spawn_surface_server_with_args(root, &[])
 }

@@ -59,6 +59,7 @@ connection and closes the response on descriptor-derived
            Allow one exact browser Origin such as http://localhost:5173.
            No CORS headers are emitted unless this option is present.
   --addr   Loopback socket address to bind. Defaults to 127.0.0.1:8080.
+  --watch  Re-check and rewrite the declared client on a .mw change, then keep serving.
 ";
 
 pub(crate) fn serve(args: &[String]) -> ExitCode {
@@ -68,6 +69,7 @@ pub(crate) fn serve(args: &[String]) -> ExitCode {
     let mut saw_addr = false;
     let mut saw_cors_origin = false;
     let mut saw_write = false;
+    let mut watch = false;
     let mut dir = None;
     let mut index = 0;
     while index < args.len() {
@@ -79,6 +81,13 @@ pub(crate) fn serve(args: &[String]) -> ExitCode {
                 }
                 mode = ServeMode::Write;
                 saw_write = true;
+            }
+            "--watch" => {
+                if watch {
+                    eprintln!("duplicate --watch");
+                    return ExitCode::from(2);
+                }
+                watch = true;
             }
             "--cors-origin" => {
                 index += 1;
@@ -205,41 +214,151 @@ pub(crate) fn serve(args: &[String]) -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    run_server(listener, &executor, &routes, cors.as_ref())
+    let watch = watch.then(|| {
+        let signature = source_signature(&dir, &config).unwrap_or(0);
+        SurfaceWatch {
+            dir,
+            config,
+            mode,
+            signature,
+        }
+    });
+    run_server(listener, executor, routes, cors.as_ref(), watch)
+}
+
+/// The state `serve --watch` re-checks on a source change: where to re-open the snapshot, the
+/// declared config to rewrite the client against, the session mode to re-open under, and the last
+/// observed source signature. A change in the signature triggers a re-open, a client rewrite, and a
+/// swap of the live executor and routes.
+struct SurfaceWatch {
+    dir: String,
+    config: marrow_project::ProjectConfig,
+    mode: ServeMode,
+    signature: u64,
+}
+
+/// A cheap signature over the project's source-root `.mw` files: the set of paths plus each file's
+/// modification time. A change to any tracked source — content saved, file added, file removed —
+/// moves the signature, which is all `--watch` needs to decide whether to re-check. It deliberately
+/// does not read file bodies; mtime is enough to detect an edit between poll cycles.
+fn source_signature(dir: &str, config: &marrow_project::ProjectConfig) -> std::io::Result<u64> {
+    use std::hash::{Hash, Hasher};
+
+    let modules = marrow_project::discover_modules(std::path::Path::new(dir), config)
+        .map_err(|error| std::io::Error::other(error.to_string()))?;
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    for module in &modules {
+        module.path.hash(&mut hasher);
+        let modified = std::fs::metadata(&module.path)?.modified()?;
+        modified.hash(&mut hasher);
+    }
+    Ok(hasher.finish())
 }
 
 fn default_addr() -> SocketAddr {
     SocketAddr::from(([127, 0, 0, 1], DEFAULT_PORT))
 }
 
+/// The cadence at which a `--watch` server recomputes the source signature between accepts. Short
+/// enough that an editor save reflects quickly, long enough not to busy-poll the filesystem.
+const WATCH_POLL: Duration = Duration::from_millis(200);
+
 fn run_server(
     listener: TcpListener,
-    executor: &SurfaceServeExecutor,
-    routes: &SurfaceRoutes,
+    mut executor: SurfaceServeExecutor,
+    mut routes: SurfaceRoutes,
     cors: Option<&CorsPolicy>,
+    mut watch: Option<SurfaceWatch>,
 ) -> ExitCode {
-    for connection in listener.incoming() {
-        let mut stream = match connection {
-            Ok(stream) => stream,
+    // Without `--watch` the accept loop blocks; with it the listener is nonblocking so the loop can
+    // recompute the source signature on each idle cadence and re-check when a source file changes.
+    if watch.is_some()
+        && let Err(error) = listener.set_nonblocking(true)
+    {
+        eprintln!("io.listen: failed to set surface watch poll: {error}");
+        return ExitCode::FAILURE;
+    }
+    loop {
+        match listener.accept() {
+            Ok((mut stream, _)) => {
+                if let Err(error) = stream.set_nonblocking(false) {
+                    eprintln!("io.read: failed to set surface connection blocking: {error}");
+                    continue;
+                }
+                if let Err(error) = stream.set_read_timeout(Some(STREAM_TIMEOUT)) {
+                    eprintln!("io.read: failed to set surface read timeout: {error}");
+                    continue;
+                }
+                if let Err(error) = stream.set_write_timeout(Some(STREAM_TIMEOUT)) {
+                    eprintln!("io.write: failed to set surface write timeout: {error}");
+                    continue;
+                }
+                let response = handle_connection(&mut stream, &executor, &routes, cors);
+                if let Err(error) = write_response(&mut stream, &response) {
+                    eprintln!("io.write: failed to write surface response: {error}");
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                if let Some(watch) = watch.as_mut() {
+                    watch.poll(&mut executor, &mut routes);
+                }
+                std::thread::sleep(WATCH_POLL);
+            }
             Err(error) => {
                 eprintln!("io.listen: failed to accept surface connection: {error}");
-                continue;
             }
-        };
-        if let Err(error) = stream.set_read_timeout(Some(STREAM_TIMEOUT)) {
-            eprintln!("io.read: failed to set surface read timeout: {error}");
-            continue;
-        }
-        if let Err(error) = stream.set_write_timeout(Some(STREAM_TIMEOUT)) {
-            eprintln!("io.write: failed to set surface write timeout: {error}");
-            continue;
-        }
-        let response = handle_connection(&mut stream, executor, routes, cors);
-        if let Err(error) = write_response(&mut stream, &response) {
-            eprintln!("io.write: failed to write surface response: {error}");
         }
     }
-    ExitCode::SUCCESS
+}
+
+impl SurfaceWatch {
+    /// On a changed source signature, re-open the snapshot, rewrite the declared client, and swap in
+    /// the fresh executor and routes so the next request answers over the updated surface. A
+    /// transient re-check failure logs a tooling error and leaves the last good surface serving
+    /// rather than tearing the server down.
+    fn poll(&mut self, executor: &mut SurfaceServeExecutor, routes: &mut SurfaceRoutes) {
+        let signature = match source_signature(&self.dir, &self.config) {
+            Ok(signature) => signature,
+            Err(error) => {
+                eprintln!("{SURFACE_STORE}: failed to read project sources for watch: {error}");
+                return;
+            }
+        };
+        if signature == self.signature {
+            return;
+        }
+        // Advance past the change before attempting the re-check so a source that fails to check is
+        // not re-attempted every cadence; the next genuine edit retriggers it.
+        self.signature = signature;
+        if let Err(message) = self.recheck(executor, routes) {
+            eprintln!(
+                "{SURFACE_ABI_MISMATCH}: surface re-check failed, serving last good surface: {message}"
+            );
+        }
+    }
+
+    fn recheck(
+        &self,
+        executor: &mut SurfaceServeExecutor,
+        routes: &mut SurfaceRoutes,
+    ) -> Result<(), String> {
+        let snapshot = ProjectSurfaceSnapshot::open(&self.dir)
+            .map_err(|error| format!("{}: {}", error.code(), error.message()))?;
+        let session = SurfaceServeSession::open(&snapshot, self.mode)
+            .map_err(|error| format!("{}: {}", error.code(), error.message()))?;
+        let fresh_routes = SurfaceRoutes::from_program(session.program(), self.mode)?;
+        crate::write_declared_client_if_changed(
+            &self.dir,
+            &self.config,
+            session.program(),
+            CheckFormat::Text,
+        )
+        .map_err(|_| "declared client rewrite failed".to_string())?;
+        drop(session);
+        *executor = SurfaceServeExecutor::new(snapshot, self.mode);
+        *routes = fresh_routes;
+        Ok(())
+    }
 }
 
 enum SurfaceServeSession {
