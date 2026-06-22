@@ -8,7 +8,7 @@ use marrow_check::CheckedRuntimeProgram;
 use marrow_run::Value;
 use marrow_store::key::SavedKey;
 use marrow_store::tree::TreeStore;
-use marrow_store::value::SavedValue;
+use marrow_store::value::{SavedValue, ScalarType};
 
 /// A program that reads, copies, and reads back whole `Book` resources.
 const BOOK_COPY: &str = "\
@@ -394,6 +394,163 @@ fn whole_resource_write_from_local_value_accepts_resources_with_unkeyed_groups()
         .expect("read")
         .value,
         Some(Value::Str("Small Gods".into()))
+    );
+}
+
+#[test]
+fn whole_resource_assignment_clears_omitted_saved_children() {
+    let program = checked_program(
+        "resource Book\n\
+         \x20   required title: string\n\
+         \x20   note: string\n\
+         \x20   details\n\
+         \x20       edition: string\n\
+         \x20   tags(pos: int): string\n\
+         \x20   versions(version: int)\n\
+         \x20       required title: string\n\
+         store ^books(id: int): Book\n\n\
+         pub fn replace(id: int)\n\
+         \x20   var book: Book\n\
+         \x20   book.title = \"replacement\"\n\
+         \x20   ^books(id) = book\n\n\
+         pub fn title_of(id: int): string\n\
+         \x20   return ^books(id).title ?? \"\"\n\n\
+         pub fn note_of(id: int): string\n\
+         \x20   return ^books(id).note ?? \"missing\"\n\n\
+         pub fn edition_of(id: int): string\n\
+         \x20   return ^books(id)?.details?.edition ?? \"missing\"\n\n\
+         pub fn tag_at(id: int, pos: int): string\n\
+         \x20   return ^books(id).tags(pos) ?? \"missing\"\n\n\
+         pub fn version_title(id: int, version: int): string\n\
+         \x20   return ^books(id).versions(version).title ?? \"missing\"\n",
+    );
+    let store = TreeStore::memory();
+    write_data_value(
+        &program,
+        &store,
+        "books",
+        &[SavedKey::Int(1)],
+        &data_path(&program, "books", &["title"]),
+        SavedValue::Str("original".into()),
+    );
+    write_data_value(
+        &program,
+        &store,
+        "books",
+        &[SavedKey::Int(1)],
+        &data_path(&program, "books", &["note"]),
+        SavedValue::Str("keep?".into()),
+    );
+    write_data_value(
+        &program,
+        &store,
+        "books",
+        &[SavedKey::Int(1)],
+        &data_path(&program, "books", &["details", "edition"]),
+        SavedValue::Str("first".into()),
+    );
+    write_data_value(
+        &program,
+        &store,
+        "books",
+        &[SavedKey::Int(1)],
+        &keyed_data_path(&program, "books", &[("tags", vec![SavedKey::Int(1)])], &[]),
+        SavedValue::Str("tag".into()),
+    );
+    write_data_value(
+        &program,
+        &store,
+        "books",
+        &[SavedKey::Int(1)],
+        &keyed_data_path(
+            &program,
+            "books",
+            &[("versions", vec![SavedKey::Int(1)])],
+            &["title"],
+        ),
+        SavedValue::Str("v1".into()),
+    );
+
+    run_entry(
+        &store,
+        checked_entry!(&program, "test::replace", Value::Int(1)),
+    )
+    .expect("replace");
+
+    let read = |entry: &str, args: Vec<Value>| {
+        run_entry(&store, checked_entry_call(&program, entry, args))
+            .expect("read")
+            .value
+    };
+    assert_eq!(
+        read("test::title_of", vec![Value::Int(1)]),
+        Some(Value::Str("replacement".into()))
+    );
+    assert_eq!(
+        read("test::note_of", vec![Value::Int(1)]),
+        Some(Value::Str("missing".into()))
+    );
+    assert_eq!(
+        read("test::edition_of", vec![Value::Int(1)]),
+        Some(Value::Str("missing".into()))
+    );
+    assert_eq!(
+        read("test::tag_at", vec![Value::Int(1), Value::Int(1)]),
+        Some(Value::Str("missing".into()))
+    );
+    assert_eq!(
+        read("test::version_title", vec![Value::Int(1), Value::Int(1)]),
+        Some(Value::Str("missing".into()))
+    );
+
+    assert_eq!(
+        read_data_value(
+            &program,
+            &store,
+            "books",
+            &[SavedKey::Int(1)],
+            &data_path(&program, "books", &["note"]),
+            ScalarType::Str,
+        ),
+        None
+    );
+    assert_eq!(
+        read_data_value(
+            &program,
+            &store,
+            "books",
+            &[SavedKey::Int(1)],
+            &data_path(&program, "books", &["details", "edition"]),
+            ScalarType::Str,
+        ),
+        None
+    );
+    assert_eq!(
+        read_data_value(
+            &program,
+            &store,
+            "books",
+            &[SavedKey::Int(1)],
+            &keyed_data_path(&program, "books", &[("tags", vec![SavedKey::Int(1)])], &[],),
+            ScalarType::Str,
+        ),
+        None
+    );
+    assert_eq!(
+        read_data_value(
+            &program,
+            &store,
+            "books",
+            &[SavedKey::Int(1)],
+            &keyed_data_path(
+                &program,
+                "books",
+                &[("versions", vec![SavedKey::Int(1)])],
+                &["title"],
+            ),
+            ScalarType::Str,
+        ),
+        None
     );
 }
 
