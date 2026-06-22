@@ -56,6 +56,22 @@ be a valid Marrow module identifier.
         );
         return ExitCode::FAILURE;
     }
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+        && !parent.exists()
+    {
+        report_simple_error(
+            "config.invalid",
+            &format!(
+                "cannot create {} because its parent directory {} does not exist; \
+                 create the parent first, or pass a target whose parent exists",
+                path.display(),
+                parent.display()
+            ),
+            CheckFormat::Text,
+        );
+        return ExitCode::FAILURE;
+    }
 
     match write_scaffold(&path, &name, client) {
         Ok(()) => {

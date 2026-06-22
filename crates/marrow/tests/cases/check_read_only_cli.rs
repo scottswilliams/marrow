@@ -420,11 +420,20 @@ fn check_locked_fails_on_a_stale_lock_that_plain_check_only_advises() {
         Some(1),
         "--locked makes a stale lock fatal: {strict:?}"
     );
+    let strict_stderr = String::from_utf8(strict.stderr).expect("stderr utf8");
     assert!(
-        String::from_utf8(strict.stderr)
-            .expect("stderr utf8")
-            .contains("check.stale_lock"),
+        strict_stderr.contains("check.stale_lock"),
         "--locked reports the same typed stale-lock code"
+    );
+    // The fatal line is severity error (exit 1), so it must carry the error: label and an
+    // actionable fix, not an unlabeled advisory note.
+    assert!(
+        strict_stderr.contains("error: check.stale_lock"),
+        "a fatal stale lock must be labeled error: {strict_stderr}"
+    );
+    assert!(
+        strict_stderr.contains("marrow run") && strict_stderr.contains("commit marrow.lock"),
+        "the fatal stale lock must tell CI to regenerate and commit the lock: {strict_stderr}"
     );
 
     // Both runs are read-only: the store bytes and committed lock are untouched.

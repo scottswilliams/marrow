@@ -317,6 +317,35 @@ fn init_rejects_qualified_target_module_name_without_writing() {
     );
 }
 
+#[test]
+fn init_rejects_a_target_whose_parent_directory_is_missing_with_a_config_error() {
+    let parent = support::temp_dir("init-missing-parent");
+    // A relative-style target whose parent component does not exist must surface a clear
+    // config error naming the missing parent, not a raw OS read/write failure.
+    let target = parent.join("absent").join("my_app");
+    let output = marrow(&["init", target.to_str().expect("target path utf8")]);
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert!(
+        output.stdout.is_empty(),
+        "unexpected stdout: {:?}",
+        output.stdout
+    );
+    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+    assert!(
+        stderr.contains("config.invalid"),
+        "a missing parent must be a config error, not a raw io failure: {stderr}"
+    );
+    assert!(
+        !stderr.contains("os error"),
+        "the message must not leak a raw OS error code: {stderr}"
+    );
+    assert!(
+        !target.exists(),
+        "a missing-parent target must be rejected before creating files"
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn init_rejects_non_utf8_target_without_panicking_or_writing() {

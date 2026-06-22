@@ -12,11 +12,20 @@ use crate::{CheckReport, CheckedProgram};
 /// The native store `dataDir` directory could not be created.
 pub const CONFIG_DATA_DIR: &str = "config.data_dir";
 
+/// No `marrow.json` was found at the project directory: the path is not a Marrow project.
+pub const CONFIG_MISSING: &str = "config.missing";
+
 #[derive(Debug)]
 pub enum ProjectIoError {
     Io {
         path: PathBuf,
         error: std::io::Error,
+    },
+    /// No `marrow.json` exists at the project directory. This is the everyday "wrong directory or
+    /// not yet initialized" mistake, distinct from a file that exists but cannot be read, so it
+    /// carries a missing-project remedy rather than a raw read fault.
+    ConfigMissing {
+        dir: PathBuf,
     },
     /// The native store's `dataDir` directory could not be created: the path is
     /// occupied by a non-directory file, a parent denies access, or the
@@ -49,6 +58,7 @@ impl ProjectIoError {
     pub fn code(&self) -> &'static str {
         match self {
             Self::Io { .. } => crate::IO_READ,
+            Self::ConfigMissing { .. } => CONFIG_MISSING,
             Self::DataDirCreate { .. } => CONFIG_DATA_DIR,
             Self::Config { code, .. } => code,
             Self::Catalog { code, .. } => code,
@@ -61,6 +71,12 @@ impl ProjectIoError {
     pub fn message(&self) -> String {
         match self {
             Self::Io { error, .. } => error.to_string(),
+            Self::ConfigMissing { dir } => format!(
+                "no marrow.json in {}; this is not a Marrow project. \
+                 Run marrow init {}, or run from a directory containing marrow.json",
+                dir.display(),
+                dir.display()
+            ),
             Self::DataDirCreate { path, error } => format!(
                 "cannot create the native store `dataDir` directory {}: {error}; \
                  point `dataDir` at a writable directory or remove the file occupying it",
@@ -83,9 +99,17 @@ impl From<StoreError> for ProjectIoError {
 
 pub fn load_config(root: &Path) -> Result<ProjectConfig, ProjectIoError> {
     let path = root.join("marrow.json");
-    let json = fs::read_to_string(&path).map_err(|error| ProjectIoError::Io {
-        path: path.clone(),
-        error,
+    let json = fs::read_to_string(&path).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            ProjectIoError::ConfigMissing {
+                dir: root.to_path_buf(),
+            }
+        } else {
+            ProjectIoError::Io {
+                path: path.clone(),
+                error,
+            }
+        }
     })?;
     marrow_project::parse_config(&json).map_err(|error| ProjectIoError::Config {
         code: error.code,

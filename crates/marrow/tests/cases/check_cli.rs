@@ -77,7 +77,7 @@ fn check_rejects_file_targets_before_json_diagnostics() {
 }
 
 #[test]
-fn check_on_a_missing_directory_reports_the_io_read_failure() {
+fn check_on_a_missing_directory_reports_a_missing_project() {
     let missing = support::unique_temp_path("check-missing-dir");
 
     let output = support::marrow_sub("check", &[missing.to_str().unwrap()]);
@@ -89,9 +89,20 @@ fn check_on_a_missing_directory_reports_the_io_read_failure() {
         output.stdout
     );
     let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+    // A directory with no marrow.json is the everyday "wrong dir or not initialized" mistake, not
+    // a low-level read fault: it names the missing project and points at marrow init, with no raw
+    // OS error code.
     assert!(
-        stderr.contains("io.read") && stderr.contains("marrow.json"),
-        "a missing directory must read like run/test, not the bare-file guidance: {stderr}"
+        stderr.contains("config.missing") && stderr.contains("marrow.json"),
+        "a missing project must read as config.missing, not a raw read fault: {stderr}"
+    );
+    assert!(
+        stderr.contains("marrow init"),
+        "the message must point at marrow init: {stderr}"
+    );
+    assert!(
+        !stderr.contains("os error"),
+        "the message must not leak a raw OS error code: {stderr}"
     );
     assert!(
         !stderr.contains("not a bare file"),

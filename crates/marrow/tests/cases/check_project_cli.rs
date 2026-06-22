@@ -678,7 +678,12 @@ fn reports_missing_marrow_json() {
 
     assert_eq!(output.status.code(), Some(1));
     let record = support::json(output.stdout);
-    assert_eq!(record["code"], "io.read");
+    assert_eq!(record["code"], "config.missing");
+    let message = record["message"].as_str().expect("message");
+    assert!(
+        message.contains("marrow init") && !message.contains("os error"),
+        "a missing marrow.json must read as a missing project, not a raw read fault: {message}"
+    );
 }
 
 #[test]

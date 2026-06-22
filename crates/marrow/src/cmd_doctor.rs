@@ -433,8 +433,8 @@ fn probe_stale_lock(
     findings.push(Finding::new(
         "doctor.stale_lock",
         "the committed lock is behind the current source",
-        "regenerate marrow.lock with a run or evolve apply",
-        check_command(dir),
+        "regenerate marrow.lock with a run or evolve apply, then commit it",
+        run_command(dir),
         data,
     ));
 }
@@ -498,8 +498,8 @@ fn probe_fence(
             data.insert("message".into(), json!(error.message()));
             findings.push(Finding::new(
                 "doctor.fence_mismatch",
-                "store activation fence does not match the checked project",
-                "run the command named here to inspect or apply the required activation work",
+                "the saved store is at an older schema than the current source",
+                "preview the pending change, then apply it",
                 fence_next_command(dir, &error),
                 data,
             ));
@@ -572,6 +572,9 @@ fn project_error_finding(
         | ProjectIoError::CheckLoad { path, .. } => {
             data.insert("path".into(), json!(path.display().to_string()));
         }
+        ProjectIoError::ConfigMissing { dir } => {
+            data.insert("path".into(), json!(dir.display().to_string()));
+        }
         ProjectIoError::Config { .. }
         | ProjectIoError::Catalog { .. }
         | ProjectIoError::Check { .. }
@@ -633,6 +636,10 @@ fn fence_next_command(dir: &str, error: &FenceError) -> String {
 
 fn check_command(dir: &str) -> String {
     format!("marrow check {dir}")
+}
+
+fn run_command(dir: &str) -> String {
+    format!("marrow run {dir}")
 }
 
 fn doctor_command(dir: &str) -> String {

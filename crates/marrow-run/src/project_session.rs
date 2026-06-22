@@ -404,6 +404,12 @@ impl From<marrow_check::ProjectIoError> for ProjectSessionError {
     fn from(error: marrow_check::ProjectIoError) -> Self {
         match error {
             marrow_check::ProjectIoError::Io { path, error } => Self::Io { path, error },
+            // A missing `marrow.json` owns its `config.missing` code and not-a-project remedy in
+            // `marrow-check`; surface those rather than a raw read fault.
+            ref missing @ marrow_check::ProjectIoError::ConfigMissing { .. } => Self::Config {
+                code: missing.code(),
+                message: missing.message(),
+            },
             // The `dataDir` directory-creation fault owns its `config.data_dir`
             // code and write-path message in `marrow-check`; surface those rather
             // than reclassifying I/O failures by errno here.

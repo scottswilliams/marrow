@@ -662,19 +662,23 @@ fn fmt_write_on_a_project_directory_reports_write_failures_as_io_write_and_conti
 }
 
 #[test]
-fn fmt_on_a_directory_with_no_config_reports_io_read_for_config() {
+fn fmt_on_a_directory_with_no_config_reports_a_missing_project() {
     let dir = support::temp_dir("fmt-noconfig");
     let output = run_fmt(&["--check", dir.to_str().unwrap()]);
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     assert!(
-        fmt_reports_code(&output.stderr, "io.read"),
+        fmt_reports_code(&output.stderr, "config.missing"),
         "{:?}",
         output.stderr
     );
-    // The unreadable config path is part of the io.read payload.
+    // A directory with no marrow.json names the missing project and points at marrow init.
     let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
-    assert!(stderr.contains("marrow.json"), "{stderr}");
+    assert!(
+        stderr.contains("marrow.json") && stderr.contains("marrow init"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("os error"), "{stderr}");
 }
 
 #[test]

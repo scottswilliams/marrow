@@ -99,28 +99,28 @@ fn doctor_integrity_finding<'a>(value: &'a serde_json::Value, dir: &str) -> &'a 
 }
 
 #[test]
-fn doctor_on_a_missing_directory_reports_the_io_read_failure() {
+fn doctor_on_a_missing_directory_reports_a_missing_project() {
     let missing = support::unique_temp_path("doctor-missing-dir");
 
     let output = marrow(&["doctor", "--format", "json", missing.to_str().unwrap()]);
 
     // A missing directory is not a passed-a-file usage error: doctor probes it
-    // like run/test, surfacing the unreadable marrow.json as a finding and
-    // exiting 1, not short-circuiting with the bare-file guidance and exit 2.
+    // like run/test, surfacing the missing project as a finding and exiting 1,
+    // not short-circuiting with the bare-file guidance and exit 2.
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let value = json(output.stdout);
     let config_finding = finding(&value, "doctor.config_invalid");
     assert_eq!(
         config_finding["data"]["underlying_code"],
-        serde_json::json!("io.read"),
+        serde_json::json!("config.missing"),
         "{value:#?}"
     );
+    let message = config_finding["data"]["message"]
+        .as_str()
+        .expect("finding message");
     assert!(
-        config_finding["data"]["path"]
-            .as_str()
-            .expect("finding path")
-            .ends_with("marrow.json"),
-        "{value:#?}"
+        message.contains("marrow init") && !message.contains("os error"),
+        "the missing-project finding must point at marrow init with no raw OS error: {value:#?}"
     );
 }
 
@@ -324,6 +324,18 @@ fn doctor_reports_a_stale_lock_against_the_live_store_without_writing() {
         stale["data"]["lock_source_digest"],
         serde_json::json!("sha256:".to_string() + &"a".repeat(64)),
         "{value:#?}"
+    );
+    // The next: breadcrumb must point at the fixing command, not a re-report.
+    let next = stale["next_command"]
+        .as_str()
+        .expect("next_command is a string");
+    assert!(
+        next.contains("marrow run"),
+        "stale_lock next must point at the regenerating run: {next}"
+    );
+    assert!(
+        !next.contains("marrow check"),
+        "stale_lock next must not loop back to a no-op check: {next}"
     );
 
     assert_eq!(

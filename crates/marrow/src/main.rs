@@ -218,8 +218,14 @@ pub(crate) fn report_project_failed_with_diagnostic(
             for line in project_diagnostic_lines(report) {
                 eprintln!("{line}");
             }
+            // The unspanned fatal condition carries an explicit severity that the text line must
+            // surface, so an exit-1 error reads as `error:` rather than an unlabeled note.
+            let label = match diagnostic["severity"].as_str() {
+                Some("warning") => "warning: ",
+                _ => "error: ",
+            };
             eprintln!(
-                "{}: {}",
+                "{label}{}: {}",
                 diagnostic["code"].as_str().unwrap_or_default(),
                 diagnostic["message"].as_str().unwrap_or_default()
             );

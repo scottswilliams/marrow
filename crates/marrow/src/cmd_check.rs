@@ -88,7 +88,8 @@ const CHECK_STALE_LOCK: &str = "check.stale_lock";
 const CHECK_LOCK_MISSING: &str = "check.lock_missing";
 
 const MISSING_LOCK_MESSAGE: &str =
-    "marrow.lock is absent but the store carries durable shape; commit the projected lock";
+    "marrow.lock is missing but saved data exists; run marrow run (or marrow evolve apply) \
+     to regenerate marrow.lock, then commit it";
 
 /// A `marrow check --locked` failure: the project declares a surface and a `client` output, but
 /// the committed client is absent or carries a different surface-ABI digest than the current
@@ -164,6 +165,11 @@ fn check_project_dir(dir: &str, format: CheckFormat, locked: bool) -> ExitCode {
         .as_ref()
         .is_some_and(|lock| lock.source_digest != snapshot.program.source_digest());
 
+    // A committed lock is missing while the store carries durable shape. Under `--locked` this is
+    // the fatal condition above; in the advisory mode it is a local heads-up so a developer learns
+    // the lock is uncommitted before CI fails on it, mirroring the stale-lock advisory.
+    let missing_lock = lock.is_none() && authority.store_present();
+
     // The project declares a `client` output that the surface has outrun: the committed client is
     // absent or carries a different surface-ABI digest than the current surface. The shared
     // freshness owner returns `Rewritten` for exactly that stale-or-absent state; a project with no
@@ -211,6 +217,13 @@ fn check_project_dir(dir: &str, format: CheckFormat, locked: bool) -> ExitCode {
             summary: format!("marrow.lock is stale - run marrow run {dir} to refresh"),
         });
     }
+    if missing_lock {
+        advisories.push(crate::ProjectAdvisory {
+            diagnostic: missing_lock_advisory_diagnostic(),
+            note: format!("{CHECK_LOCK_MISSING}: {MISSING_LOCK_MESSAGE}"),
+            summary: format!("marrow.lock is missing - run marrow run {dir} to regenerate it"),
+        });
+    }
     if stale_client {
         advisories.push(crate::ProjectAdvisory {
             diagnostic: stale_client_advisory_diagnostic(),
@@ -236,6 +249,12 @@ fn check_project_dir(dir: &str, format: CheckFormat, locked: bool) -> ExitCode {
 const STALE_LOCK_MESSAGE: &str =
     "marrow.lock is behind the current source; a run or evolve apply re-projects it";
 
+/// The fatal `--locked` stale-lock message. Unlike the advisory note, this gates CI, so it states
+/// the consequence and the exact two-step fix a developer must run before the gate passes.
+const STALE_LOCK_FATAL_MESSAGE: &str =
+    "marrow.lock is behind the current source; CI requires a committed fresh lock - \
+     run marrow run and commit marrow.lock";
+
 /// The stale-lock condition as a structured diagnostic for the failed-check envelope. It carries
 /// no source span: it compares the committed lock against the whole checked source rather than
 /// faulting at a single declaration.
@@ -243,7 +262,7 @@ fn stale_lock_diagnostic() -> serde_json::Value {
     serde_json::json!({
         "code": CHECK_STALE_LOCK,
         "kind": marrow_syntax::kind_for_code(CHECK_STALE_LOCK),
-        "message": STALE_LOCK_MESSAGE,
+        "message": STALE_LOCK_FATAL_MESSAGE,
         "severity": "error",
         "source_span": null,
     })
@@ -258,6 +277,20 @@ fn missing_lock_diagnostic() -> serde_json::Value {
         "kind": marrow_syntax::kind_for_code(CHECK_LOCK_MISSING),
         "message": MISSING_LOCK_MESSAGE,
         "severity": "error",
+        "source_span": null,
+    })
+}
+
+/// The non-fatal missing-lock advisory as a structured diagnostic for the success envelope. It is
+/// a warning, not an error, so a plain check over a project whose lock is absent but whose store
+/// carries durable shape still passes while surfacing the absence; `--locked` makes the same
+/// condition fatal.
+fn missing_lock_advisory_diagnostic() -> serde_json::Value {
+    serde_json::json!({
+        "code": CHECK_LOCK_MISSING,
+        "kind": marrow_syntax::kind_for_code(CHECK_LOCK_MISSING),
+        "message": MISSING_LOCK_MESSAGE,
+        "severity": "warning",
         "source_span": null,
     })
 }
