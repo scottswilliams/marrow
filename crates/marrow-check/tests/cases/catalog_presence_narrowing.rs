@@ -348,6 +348,22 @@ fn if_exists_narrowing_expires_when_saved_field_is_deleted() {
 }
 
 #[test]
+fn if_exists_narrowing_expires_when_saved_field_is_assigned() {
+    assert_bare_present_read(
+        "presence-if-exists-write-field",
+        "module books\n\
+             resource Book\n\
+             \x20   subtitle: string\n\
+             store ^books(id: int): Book\n\
+             fn stale(): string\n\
+             \x20   if exists(^books(1).subtitle)\n\
+             \x20       ^books(1).subtitle = \"new\"\n\
+             \x20       return ^books(1).subtitle\n\
+             \x20   return \"untitled\"\n",
+    );
+}
+
+#[test]
 fn if_exists_narrowing_expires_when_saved_root_is_replaced() {
     assert_bare_present_read(
         "presence-if-exists-replace-root",
