@@ -159,6 +159,7 @@ pub enum SurfaceOperationValueShapeJson {
         scalar: String,
     },
     Enum {
+        render_name: String,
         enum_catalog_id: String,
         members: Vec<SurfaceOperationEnumMemberJson>,
     },
@@ -758,9 +759,11 @@ impl From<marrow_check::SurfaceOperationValueShape> for SurfaceOperationValueSha
                 scalar: scalar.name().to_string(),
             },
             marrow_check::SurfaceOperationValueShape::Enum {
+                render_name,
                 enum_catalog_id,
                 members,
             } => Self::Enum {
+                render_name,
                 enum_catalog_id: enum_catalog_id.as_str().to_string(),
                 members: members
                     .into_iter()

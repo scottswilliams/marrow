@@ -114,6 +114,7 @@ pub struct SurfaceOperationEnumMember {
 pub enum SurfaceOperationValueShape {
     Scalar(marrow_schema::ScalarType),
     Enum {
+        render_name: String,
         enum_catalog_id: CatalogId,
         members: Vec<SurfaceOperationEnumMember>,
     },
@@ -695,6 +696,7 @@ fn value_shape(
         StoredValueMeaning::Enum { enum_id, members } => {
             let enum_fact = program.facts.enum_(*enum_id)?;
             Some(SurfaceOperationValueShape::Enum {
+                render_name: enum_fact.name.clone(),
                 enum_catalog_id: accepted_catalog_id(program, enum_fact.catalog_id.as_deref())?,
                 members: members
                     .iter()

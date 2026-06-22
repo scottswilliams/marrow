@@ -185,6 +185,9 @@ struct ModelBuilder {
     stores: BTreeMap<String, SurfaceClientStore>,
     enums: BTreeMap<String, SurfaceEnumModel>,
     resources: BTreeMap<String, SurfaceClientRecord>,
+    /// The user-facing TypeScript type name chosen for each computed-read resource catalog id, so a
+    /// resource reused across computed reads keeps one uniquified name instead of re-uniquifying.
+    resource_names: BTreeMap<String, String>,
     surfaces: Vec<SurfaceClientSurface>,
 }
 
@@ -221,6 +224,26 @@ impl ModelBuilder {
     }
 
     fn unique_brand_base(&mut self, base: &str) -> String {
+        let mut candidate = base.to_string();
+        let mut counter = 2usize;
+        while !self.used_names.insert(candidate.clone()) {
+            candidate = format!("{base}{counter}");
+            counter += 1;
+        }
+        candidate
+    }
+
+    /// Pick the user-facing TypeScript type name for an enum or computed-read resource: the sanitized
+    /// source name when it is a usable identifier, the catalog-derived `fallback` otherwise. Either way
+    /// the result is uniquified against every other emitted type, so a name clash across surfaces never
+    /// produces a duplicate declaration. The catalog id stays a private const regardless.
+    fn unique_type_name(&mut self, render_name: &str, fallback: &str) -> String {
+        let sanitized = sanitize_type(render_name);
+        let base = if sanitized == "_" {
+            fallback
+        } else {
+            &sanitized
+        };
         let mut candidate = base.to_string();
         let mut counter = 2usize;
         while !self.used_names.insert(candidate.clone()) {
@@ -524,11 +547,13 @@ impl ModelBuilder {
                 SurfaceFieldType::Scalar(scalar.clone())
             }
             SurfaceOperationValueShapeJson::Enum {
+                render_name,
                 enum_catalog_id,
                 members,
             } => {
                 let model = self.register_enum(
                     enum_catalog_id,
+                    render_name,
                     members
                         .iter()
                         .map(|member| (member.render_label.clone(), member.catalog_id.clone())),
@@ -562,12 +587,13 @@ impl ModelBuilder {
         match shape {
             Shape::Scalar { scalar } => SurfaceFieldType::Scalar(scalar.clone()),
             Shape::Enum {
+                render_label,
                 enum_catalog_id,
                 members,
-                ..
             } => {
                 let model = self.register_enum(
                     enum_catalog_id,
+                    render_label,
                     members
                         .iter()
                         .map(|member| (member.render_label.clone(), member.catalog_id.clone())),
@@ -617,12 +643,13 @@ impl ModelBuilder {
         match shape {
             Shape::Scalar { scalar } => SurfaceFieldType::Scalar(scalar.clone()),
             Shape::Enum {
+                render_label,
                 enum_catalog_id,
                 members,
-                ..
             } => {
                 let model = self.register_enum(
                     enum_catalog_id,
+                    render_label,
                     members
                         .iter()
                         .map(|member| (member.render_label.clone(), member.catalog_id.clone())),
@@ -652,11 +679,11 @@ impl ModelBuilder {
                 SurfaceFieldType::Sequence(Box::new(self.computed_value_type(element, enums)))
             }
             Shape::Resource {
+                render_label,
                 resource_catalog_id,
                 fields,
-                ..
             } => {
-                let type_name = format!("Resource_{}", sanitize_catalog(resource_catalog_id));
+                let type_name = self.resource_type_name(resource_catalog_id, render_label);
                 let decode_fn = format!("decode{type_name}");
                 let record_fields = fields
                     .iter()
@@ -714,23 +741,39 @@ impl ModelBuilder {
     fn register_enum(
         &mut self,
         enum_catalog_id: &str,
+        render_name: &str,
         members: impl Iterator<Item = (String, String)>,
     ) -> SurfaceEnumModel {
+        if let Some(model) = self.enums.get(enum_catalog_id) {
+            return model.clone();
+        }
         let suffix = sanitize_catalog(enum_catalog_id);
+        let type_name = self.unique_type_name(render_name, &format!("Enum_{suffix}"));
+        let model = SurfaceEnumModel {
+            type_name,
+            member_table_const: format!("ENUM_{suffix}"),
+            encode_table_const: format!("ENUM_{suffix}_BY_LABEL"),
+            members: members
+                .map(|(label, member_catalog_id)| SurfaceEnumMember {
+                    label,
+                    member_catalog_id,
+                })
+                .collect(),
+        };
         self.enums
-            .entry(enum_catalog_id.to_string())
-            .or_insert_with(|| SurfaceEnumModel {
-                type_name: format!("Enum_{suffix}"),
-                member_table_const: format!("ENUM_{suffix}"),
-                encode_table_const: format!("ENUM_{suffix}_BY_LABEL"),
-                members: members
-                    .map(|(label, member_catalog_id)| SurfaceEnumMember {
-                        label,
-                        member_catalog_id,
-                    })
-                    .collect(),
-            })
-            .clone()
+            .insert(enum_catalog_id.to_string(), model.clone());
+        model
+    }
+
+    fn resource_type_name(&mut self, resource_catalog_id: &str, render_label: &str) -> String {
+        if let Some(name) = self.resource_names.get(resource_catalog_id) {
+            return name.clone();
+        }
+        let fallback = format!("Resource_{}", sanitize_catalog(resource_catalog_id));
+        let name = self.unique_type_name(render_label, &fallback);
+        self.resource_names
+            .insert(resource_catalog_id.to_string(), name.clone());
+        name
     }
 
     fn store_brand(&self, store_catalog_id: &str) -> String {

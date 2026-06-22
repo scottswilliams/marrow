@@ -287,6 +287,7 @@ fn check_json_reports_surface_abi_read_and_update_descriptors() {
                 "backing_required": false,
                 "value": {
                     "kind": "enum",
+                    "render_name": "Status",
                     "enum_catalog_id": status_id,
                     "members": [
                         { "render_label": "draft", "catalog_id": draft_id },

@@ -548,6 +548,7 @@ surface Books from ^books
         |key| matches!(&key.value, SurfaceOperationValueShape::Enum {
                 enum_catalog_id,
                 members,
+                ..
             } if enum_catalog_id.as_str() == facts.enum_(status_enum).unwrap().catalog_id.as_deref().unwrap()
                 && members.len() == 2)
     ));
@@ -1501,9 +1502,11 @@ surface Books from ^books
     assert!(matches!(
         &status_field.value,
         SurfaceOperationValueShape::Enum {
+            render_name,
             enum_catalog_id,
             members,
-        } if enum_catalog_id.as_str() == facts.enum_(status_enum).unwrap().catalog_id.as_deref().unwrap()
+        } if render_name == "Status"
+            && enum_catalog_id.as_str() == facts.enum_(status_enum).unwrap().catalog_id.as_deref().unwrap()
             && members.iter().map(|member| member.render_label.as_str()).collect::<Vec<_>>()
                 == vec!["draft", "published"]
     ));
