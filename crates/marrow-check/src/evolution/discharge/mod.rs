@@ -161,6 +161,27 @@ fn missing_member_message(member: &str, missing: usize, sample: &[Vec<SavedKey>]
     )
 }
 
+/// A leaf carries a stored value that no longer decodes under the current type, most often an
+/// enum member the shrunk enum dropped. The repair names the records and points at a transform to
+/// migrate them and at `marrow data get` to read the stored value, mirroring the rename/retire
+/// guidance rather than the bare `repair before activating`.
+fn invalid_member_message(member: &str, invalid: usize, sample: &[Vec<SavedKey>]) -> String {
+    let named: Vec<String> = sample
+        .iter()
+        .map(|identity| format_identity(identity))
+        .collect();
+    let suffix = if invalid > sample.len() {
+        format!(" and {} more", invalid - sample.len())
+    } else {
+        String::new()
+    };
+    format!(
+        "member `{member}` in record(s) {}{suffix} stores a value the current type no longer accepts (an enum member the current enum dropped, or bytes that no longer decode). \
+         Migrate those records to a current value with an `evolve transform`, then apply it with `marrow evolve apply <projectdir>`; `marrow data get <projectdir> <saved-path>` reads a record's stored value",
+        named.join(", ")
+    )
+}
+
 fn format_identity(identity: &[SavedKey]) -> String {
     let parts: Vec<String> = identity.iter().map(format_key).collect();
     parts.join("/")

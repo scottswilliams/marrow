@@ -24,8 +24,10 @@ pub struct PathParseError {
 }
 
 pub fn parse_path(text: &str) -> Result<Vec<PathSegment>, PathParseError> {
+    let trimmed = text.trim();
     let mut parser = PathTextParser {
-        rest: text.trim(),
+        input: trimmed,
+        rest: trimmed,
         segments: Vec::new(),
         seen_member: false,
     };
@@ -107,6 +109,7 @@ pub(crate) fn identity_leaf_key_mismatch_in_facts(
 }
 
 struct PathTextParser<'a> {
+    input: &'a str,
     rest: &'a str,
     segments: Vec<PathSegment>,
     seen_member: bool,
@@ -117,7 +120,7 @@ impl PathTextParser<'_> {
         let after_root = self
             .rest
             .strip_prefix('^')
-            .ok_or_else(|| self.error("a saved path starts with `^root`"))?;
+            .ok_or_else(|| self.error("a saved root and key, for example ^books(1).title"))?;
         let (root, rest) = split_name(after_root);
         if root.is_empty() {
             return Err(self.error("a saved root name after `^`"));
@@ -238,7 +241,7 @@ impl PathTextParser<'_> {
 
     fn error(&self, expected: &str) -> PathParseError {
         PathParseError {
-            message: format!("malformed saved path: expected {expected}"),
+            message: format!("malformed saved path `{}`; expected {expected}", self.input),
         }
     }
 }

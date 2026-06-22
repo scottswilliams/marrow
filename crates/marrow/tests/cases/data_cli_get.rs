@@ -25,7 +25,7 @@ fn data_get_reads_a_path_value_and_reports_absence() {
     let (_project, dir) = seeded_project("data-get");
     let present = marrow(&["data", "get", "--format", "json", &dir, "^counter(1).value"]);
     let absent = marrow(&["data", "get", "--format", "json", &dir, "^counter(2).value"]);
-    let malformed = marrow(&["data", "get", &dir, "counter(1)"]);
+    let malformed = marrow(&["data", "get", &dir, "not a path"]);
 
     assert_eq!(present.status.code(), Some(0), "{present:?}");
     let present_json = json(present);
@@ -41,8 +41,14 @@ fn data_get_reads_a_path_value_and_reports_absence() {
     assert_eq!(absent_json["value_b64"], serde_json::Value::Null);
     assert_store_snapshot(&absent_json);
 
-    // A path that does not parse fails before touching the store: a usage error.
+    // A path that does not parse fails before touching the store: a usage error that quotes the
+    // offending input and shows the shape of a saved path, not a placeholder token.
     assert_eq!(malformed.status.code(), Some(2), "{malformed:?}");
+    let stderr = String::from_utf8(malformed.stderr).expect("stderr utf8");
+    assert!(
+        stderr.contains("malformed saved path `not a path`") && stderr.contains("^books(1).title"),
+        "the malformed-path error must quote the input and give an example: {stderr}"
+    );
 }
 
 /// A string-keyed store seeded with three records: the plain key `abc` -> 100, a key

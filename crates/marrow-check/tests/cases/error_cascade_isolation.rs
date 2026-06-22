@@ -117,6 +117,51 @@ fn distinct_undeclared_names_each_report_once() {
     assert_eq!(unresolved.len(), 2, "{:#?}", report.diagnostics);
 }
 
+/// A parse error in a module must not cascade into a spurious unknown-type complaint in the same
+/// module. A dangling-indentation fault leaves the parser unable to finish the module, so the
+/// `Id(^books)` annotation on a function in that file resolves against an incomplete store and
+/// reads as an unknown type. The parse error is the real cause: the report keeps it and drops the
+/// follow-on `check.unknown_type` from the broken file, while a real type error in a clean sibling
+/// module survives untouched.
+#[test]
+fn a_parse_error_suppresses_the_spurious_unknown_type_in_its_own_module() {
+    let root = temp_project("cascade-parse-unknown-type", |root| {
+        write(
+            root,
+            "src/broken.mw",
+            "module broken\n\
+             store ^books(id: int): Book\n\
+             resource Book\n    required title: string\n\
+             fn add(): Id(^books)\n    return nextId(^books)\n\
+             fn main()\n        add()\n    add()\n",
+        );
+        write(
+            root,
+            "src/clean.mw",
+            "module clean\nfn f(): int\n    return \"x\"\n",
+        );
+    });
+    let (report, _) = check_project(&root, &config()).expect("check");
+
+    assert!(
+        !with_code(&report, "parse.syntax").is_empty(),
+        "the parse error is the real cause and must be reported: {:#?}",
+        report.diagnostics
+    );
+    assert!(
+        with_code(&report, "check.unknown_type").is_empty(),
+        "the unknown-type cascade in the broken module must be suppressed: {:#?}",
+        report.diagnostics
+    );
+    let sibling = with_code(&report, "check.return_type");
+    assert_eq!(
+        sibling.len(),
+        1,
+        "a real type error in a clean sibling module must survive: {:#?}",
+        report.diagnostics
+    );
+}
+
 /// Two independent faults in two separate functions stay independent: one diagnostic
 /// each, neither leaking a recovery artifact into the other's report. This guards the
 /// isolation boundary — a fault is local to the expression that caused it, so a clean

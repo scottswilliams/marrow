@@ -161,6 +161,22 @@ fn enum_member_removed_fails_closed() -> Result<(), Box<dyn std::error::Error>> 
         RepairReason::InvalidStoredValue,
     );
 
+    // The repair must be actionable: it names the affected record, says the stored value is no
+    // longer accepted, and points at the way forward (an evolve transform and `marrow data get`),
+    // not a bare `repair before activating`.
+    let message = &diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.catalog_id.as_str() == value_id)
+        .expect("a repair diagnostic for the drifted member")
+        .message;
+    assert!(
+        message.contains("record(s) 1")
+            && message.contains("evolve transform")
+            && message.contains("marrow data get")
+            && !message.contains("repair before activating"),
+        "the enum-drift repair must name the record and the way forward: {message}"
+    );
+
     Ok(())
 }
 

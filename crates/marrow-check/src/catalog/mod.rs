@@ -2073,7 +2073,7 @@ fn push_pending_identity(source: &SourceCatalogEntry, diagnostics: &mut Vec<Chec
         &source.file,
         source.span,
         format!(
-            "durable identity for `{}` is not yet recorded; running the program or applying an evolution will record it",
+            "`{}` is new and has not been saved to the store yet; the next marrow run or marrow evolve apply records it",
             source.path
         ),
     ));

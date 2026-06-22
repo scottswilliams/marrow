@@ -19,8 +19,8 @@ use super::index::{
 };
 use super::structural_backstop::for_each_entry_path;
 use super::{
-    Accumulator, MAX_NAMED_RECORDS, catalog_id, member_label, missing_member_message,
-    required_catalog_id,
+    Accumulator, MAX_NAMED_RECORDS, catalog_id, invalid_member_message, member_label,
+    missing_member_message, required_catalog_id,
 };
 
 /// Classify the member-presence and index obligations one saved root carries. A single
@@ -646,10 +646,7 @@ fn classify_leaf(
             acc.counts.records_lacking_member += state.invalid_count;
             return acc.invalid_stored_value(
                 id,
-                format!(
-                    "member `{}` has {} record(s) whose stored value is not valid under the current type (it names an enum member the current enum no longer has); repair before activating",
-                    leaf.label, state.invalid_count
-                ),
+                invalid_member_message(&leaf.label, state.invalid_count, &state.sample),
             );
         }
         let verdict = if leaf.renamed {
@@ -673,10 +670,7 @@ fn classify_leaf(
     if state.invalid_count > 0 {
         return acc.invalid_stored_value(
             id,
-            format!(
-                "required member `{}` has {} record(s) whose stored value is not valid under the current type (it does not decode, or names an enum member the current enum no longer has); repair before activating",
-                leaf.label, state.invalid_count
-            ),
+            invalid_member_message(&leaf.label, state.invalid_count, &state.sample),
         );
     }
     let verdict = match acc.default_value_for(id.as_str(), leaf.leaf.as_ref(), leaf.error_code) {
