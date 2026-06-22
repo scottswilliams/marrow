@@ -31,6 +31,17 @@ store ^books(id: int): Book\n\
 pub fn add(title: string): Id(^books)\n\
 \x20   return nextId(^books)\n";
 
+/// The same bare `subtitle` drop with a zero-arg default entry. The entry writes a
+/// visible marker if execution gets past activation, so a fenced run can prove it did
+/// not execute user code.
+const SUBTITLE_DROPPED_RUN_SOURCE: &str = "module books\n\
+resource Book\n\
+\x20   required title: string\n\
+store ^books(id: int): Book\n\
+pub fn main()\n\
+\x20   transaction\n\
+\x20       ^books(2).title = \"entry-ran\"\n";
+
 /// Commit the `title`+`subtitle` baseline, seed both members for one record, then
 /// drop `subtitle` from source. Returns the project root, the committed baseline
 /// place (still resolves the store id for reads by catalog id after the drop), and
@@ -52,6 +63,21 @@ fn project_with_orphaned_subtitle(name: &str) -> (support::TempProject, CheckedS
         );
     }
     support::write(&root, "src/books.mw", SUBTITLE_DROPPED_SOURCE);
+    (root, place, subtitle_id)
+}
+
+/// Commit and seed the `title`+`subtitle` baseline, then drop `subtitle` from source
+/// with a default entry configured for plain `marrow run`.
+fn project_with_orphaned_subtitle_run(
+    name: &str,
+) -> (support::TempProject, CheckedSavedPlace, String) {
+    let (root, place, subtitle_id) = project_with_orphaned_subtitle(name);
+    support::write(
+        &root,
+        "marrow.json",
+        r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".data" }, "run": { "defaultEntry": "books::main" } }"#,
+    );
+    support::write(&root, "src/books.mw", SUBTITLE_DROPPED_RUN_SOURCE);
     (root, place, subtitle_id)
 }
 
@@ -124,6 +150,41 @@ store ^archive(id: int): Book\n\
 pub fn add(title: string): Id(^archive)\n\
 \x20   return nextId(^archive)\n";
 
+/// A store-root-only removal: `Book` and its member model remain declared, while the
+/// `^books` root is gone. `^log` keeps the project durable and gives a default entry a
+/// visible side effect if activation lets it execute.
+const STORE_REMOVED_SOURCE: &str = "module books\n\
+resource Log\n\
+\x20   note: string\n\
+store ^log(id: int): Log\n\
+resource Book\n\
+\x20   required title: string\n\
+pub fn main()\n\
+\x20   transaction\n\
+\x20       ^log(1).note = \"entry-ran\"\n";
+
+const STORE_RENAMED_RUN_SOURCE: &str = "module books\n\
+resource Log\n\
+\x20   note: string\n\
+store ^log(id: int): Log\n\
+resource Book\n\
+\x20   required title: string\n\
+store ^archive(id: int): Book\n\
+pub fn main()\n\
+\x20   transaction\n\
+\x20       ^log(1).note = \"entry-ran\"\n";
+
+const STORE_ONLY_BASELINE_SOURCE: &str = "module books\n\
+resource Log\n\
+\x20   note: string\n\
+store ^log(id: int): Log\n\
+resource Book\n\
+\x20   required title: string\n\
+store ^books(id: int): Book\n\
+pub fn main()\n\
+\x20   transaction\n\
+\x20       ^log(1).note = \"entry-ran\"\n";
+
 /// Commit the baseline, seed one populated record under `^books`, then rename the whole store to
 /// `^archive` in source. Every seeded cell is now orphaned under the gone store id, and the current
 /// source declares only the empty `^archive`. Returns the project root.
@@ -139,6 +200,28 @@ fn project_with_renamed_store(name: &str) -> support::TempProject {
     root
 }
 
+fn project_with_store_only_change(
+    name: &str,
+    target_source: &str,
+    populate_books: bool,
+) -> (support::TempProject, CheckedSavedPlace, CheckedSavedPlace) {
+    let root = native_books_project(name, STORE_ONLY_BASELINE_SOURCE);
+    support::write(
+        &root,
+        "marrow.json",
+        r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".data" }, "run": { "defaultEntry": "books::main" } }"#,
+    );
+    let program = commit_catalog(&root);
+    let books = root_place(&program, "books").expect("books root place");
+    let log = root_place(&program, "log").expect("log root place");
+    if populate_books {
+        let store = open_native_store(&root);
+        seed_title_only(&store, &books, 1, "Dune");
+    }
+    support::write(&root, "src/books.mw", target_source);
+    (root, books, log)
+}
+
 fn integrity_codes(value: &serde_json::Value) -> Vec<&str> {
     value["problems"]
         .as_array()
@@ -146,6 +229,28 @@ fn integrity_codes(value: &serde_json::Value) -> Vec<&str> {
         .iter()
         .filter_map(|problem| problem["code"].as_str())
         .collect()
+}
+
+fn assert_repair_required_guidance(value: &serde_json::Value, context: &str) {
+    let message = value["message"].as_str().unwrap_or_default();
+    assert!(
+        value["code"] == serde_json::json!("evolve.repair_required")
+            && message.contains("evolve retire")
+            && message.contains("repair"),
+        "{context} should report repair guidance including evolve retire: {value:#?}"
+    );
+}
+
+fn assert_run_repair_guidance(stderr: &[u8], context: &str) {
+    let stderr = String::from_utf8(stderr.to_vec()).expect("stderr utf8");
+    assert!(
+        stderr.contains("run.schema_drift")
+            && stderr.contains("evolve preview")
+            && stderr.contains("evolve apply")
+            && stderr.contains("evolve retire")
+            && stderr.contains("repair"),
+        "{context} should report repair guidance including evolve retire: {stderr}"
+    );
 }
 
 #[test]
@@ -447,6 +552,53 @@ fn a_populated_bare_drop_does_not_apply_without_a_retire_intent() {
 }
 
 #[test]
+fn a_populated_bare_member_drop_does_not_run_without_a_retire_intent() {
+    let (root, place, subtitle_id) =
+        project_with_orphaned_subtitle_run("orphan-member-survives-run");
+    let baseline_epoch = store_epoch(&root).expect("baseline epoch");
+
+    let run = marrow(&["run", root.to_str().unwrap()]);
+
+    assert_eq!(
+        run.status.code(),
+        Some(1),
+        "a populated bare member drop must fence the default run: {run:?}"
+    );
+    assert_run_repair_guidance(&run.stderr, "a populated bare member drop run");
+    assert_eq!(
+        store_epoch(&root),
+        Some(baseline_epoch),
+        "a fenced bare member drop does not advance the epoch"
+    );
+    {
+        let store = open_native_store(&root);
+        assert_eq!(
+            read_scalar_by_catalog_id(&store, &place, 1, &subtitle_id, ScalarType::Str),
+            Some(Scalar::Str("Appendix".into())),
+            "the dropped member's cell survives the fenced run"
+        );
+        assert_eq!(
+            read_scalar(&store, &place, 2, "title", ScalarType::Str),
+            None,
+            "the default entry did not execute after the activation fence"
+        );
+    }
+
+    let integrity = marrow(&[
+        "data",
+        "integrity",
+        "--format",
+        "json",
+        root.to_str().expect("project path utf-8"),
+    ]);
+    assert_eq!(integrity.status.code(), Some(1), "{integrity:?}");
+    assert!(
+        integrity_codes(&support::json(integrity.stdout)).contains(&"data.orphan"),
+        "the dropped member's lingering cell is still reported by integrity"
+    );
+}
+
+#[test]
 fn evolve_preview_fences_a_populated_whole_resource_drop() {
     // Dropping the whole `Book` resource takes its store with it. Its records would be
     // orphaned under the gone root, so the source-attached preview fails closed
@@ -490,6 +642,184 @@ fn evolve_preview_fences_a_populated_whole_resource_drop() {
             .as_str()
             .is_some_and(|message| message.contains("evolve retire")),
         "the fence's remediation command names evolve retire: {preview_value:#?}"
+    );
+}
+
+fn assert_store_only_preview_fences(name: &str, source: &str, context: &str) {
+    let (root, place, _log) = project_with_store_only_change(name, source, true);
+    let store_id = store_catalog_id(&place).expect("dropped root store catalog id");
+
+    let preview = marrow(&[
+        "evolve",
+        "preview",
+        "--format",
+        "json",
+        root.to_str().expect("project path utf-8"),
+    ]);
+
+    assert_eq!(preview.status.code(), Some(1), "{preview:?}");
+    let value = support::json(preview.stdout);
+    assert_eq!(value["status"], serde_json::json!("blocked"));
+    let blocking = value["blocking"].as_array().expect("blocking array");
+    assert!(
+        blocking.iter().any(|report| {
+            report["code"] == serde_json::json!("evolve.repair_required")
+                && report["data"]["catalog_id"] == serde_json::json!(store_id.as_str())
+                && report["message"].as_str().is_some_and(|message| {
+                    message.contains("evolve retire") && message.contains("repair")
+                })
+        }),
+        "{context} preview should fence the store root by catalog id with repair guidance: {value:#?}"
+    );
+}
+
+fn assert_populated_store_only_change_does_not_apply_or_run(
+    name: &str,
+    source: &str,
+    context: &str,
+) {
+    let (root, place, log) = project_with_store_only_change(name, source, true);
+    let baseline_epoch = store_epoch(&root).expect("baseline epoch");
+
+    let apply = marrow(&[
+        "evolve",
+        "apply",
+        "--format",
+        "json",
+        root.to_str().expect("project path utf-8"),
+    ]);
+    assert_eq!(apply.status.code(), Some(1), "{apply:?}");
+    assert_repair_required_guidance(&support::json(apply.stdout), &format!("{context} apply"));
+
+    let run = marrow(&["run", root.to_str().unwrap()]);
+    assert_eq!(
+        run.status.code(),
+        Some(1),
+        "{context} must fence the default run: {run:?}"
+    );
+    assert_run_repair_guidance(&run.stderr, &format!("{context} run"));
+    assert_eq!(
+        store_epoch(&root),
+        Some(baseline_epoch),
+        "{context} does not advance the epoch"
+    );
+    {
+        let store = TreeStore::open(&native_store_path(&root)).expect("reopen native store");
+        assert_eq!(
+            read_scalar(&store, &place, 1, "title", ScalarType::Str),
+            Some(Scalar::Str("Dune".into())),
+            "{context}'s record survives the fenced apply and run"
+        );
+        assert_eq!(
+            read_scalar(&store, &log, 1, "note", ScalarType::Str),
+            None,
+            "the default entry did not execute after the activation fence"
+        );
+    }
+
+    let integrity = marrow(&[
+        "data",
+        "integrity",
+        "--format",
+        "json",
+        root.to_str().expect("project path utf-8"),
+    ]);
+    assert_eq!(integrity.status.code(), Some(1), "{integrity:?}");
+    assert!(
+        integrity_codes(&support::json(integrity.stdout)).contains(&"data.orphan"),
+        "{context}'s lingering records are orphans"
+    );
+}
+
+fn assert_empty_store_only_change_is_a_free_no_op(name: &str, source: &str, context: &str) {
+    let (root, _place, log) = project_with_store_only_change(name, source, false);
+
+    let preview = marrow(&[
+        "evolve",
+        "preview",
+        "--format",
+        "json",
+        root.to_str().expect("project path utf-8"),
+    ]);
+    assert_eq!(preview.status.code(), Some(0), "{preview:?}");
+    let preview_value = support::json(preview.stdout);
+    assert_eq!(preview_value["status"], serde_json::json!("activatable"));
+    assert_eq!(preview_value["blocking"], serde_json::json!([]));
+
+    let apply = marrow(&[
+        "evolve",
+        "apply",
+        "--format",
+        "json",
+        root.to_str().expect("project path utf-8"),
+    ]);
+    assert_eq!(apply.status.code(), Some(0), "{apply:?}");
+
+    let run = marrow(&["run", root.to_str().unwrap()]);
+    assert_eq!(
+        run.status.code(),
+        Some(0),
+        "the default entry runs after {context} is activated: {run:?}"
+    );
+    let store = TreeStore::open(&native_store_path(&root)).expect("reopen native store");
+    assert_eq!(
+        read_scalar(&store, &log, 1, "note", ScalarType::Str),
+        Some(Scalar::Str("entry-ran".into())),
+        "{context} activated before the default entry executed"
+    );
+}
+
+#[test]
+fn evolve_preview_fences_a_populated_store_only_removal() {
+    assert_store_only_preview_fences(
+        "orphan-store-removal-preview",
+        STORE_REMOVED_SOURCE,
+        "store-only removal",
+    );
+}
+
+#[test]
+fn a_populated_store_only_removal_does_not_apply_or_run() {
+    assert_populated_store_only_change_does_not_apply_or_run(
+        "orphan-store-removal-survives",
+        STORE_REMOVED_SOURCE,
+        "a populated store-only removal",
+    );
+}
+
+#[test]
+fn an_empty_store_only_removal_is_a_free_no_op() {
+    assert_empty_store_only_change_is_a_free_no_op(
+        "orphan-store-removal-empty",
+        STORE_REMOVED_SOURCE,
+        "an empty store-only removal",
+    );
+}
+
+#[test]
+fn evolve_preview_fences_a_populated_store_only_rename() {
+    assert_store_only_preview_fences(
+        "orphan-store-rename-preview",
+        STORE_RENAMED_RUN_SOURCE,
+        "store-only rename",
+    );
+}
+
+#[test]
+fn a_populated_store_only_rename_does_not_apply_or_run() {
+    assert_populated_store_only_change_does_not_apply_or_run(
+        "orphan-store-rename-survives",
+        STORE_RENAMED_RUN_SOURCE,
+        "a populated store-only rename",
+    );
+}
+
+#[test]
+fn an_empty_store_only_rename_is_a_free_no_op() {
+    assert_empty_store_only_change_is_a_free_no_op(
+        "orphan-store-rename-empty",
+        STORE_RENAMED_RUN_SOURCE,
+        "an empty store-only rename",
     );
 }
 
@@ -548,11 +878,7 @@ fn a_populated_whole_resource_drop_does_not_apply_or_run_without_a_retire_intent
         Some(1),
         "a populated whole-resource drop must fence the run, not silently auto-apply: {run:?}"
     );
-    let stderr = String::from_utf8(run.stderr).expect("stderr utf8");
-    assert!(
-        stderr.contains("run.schema_drift"),
-        "the run fences on schema drift rather than dropping the records: {stderr}"
-    );
+    assert_run_repair_guidance(&run.stderr, "a populated whole-resource drop run");
 
     assert_eq!(
         store_epoch(&root),

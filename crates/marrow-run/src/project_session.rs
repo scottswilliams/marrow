@@ -3,7 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use marrow_check::evolution::preview;
+use marrow_check::evolution::{RepairDiagnostic, preview};
 use marrow_check::tooling;
 use marrow_check::{
     AnalysisGeneration, AnalysisIdentity, AnalysisSnapshot, CheckReport, CheckedProgram,
@@ -1499,9 +1499,8 @@ fn auto_apply_then_reopen(
     isolate_writes: bool,
     notices: &mut Vec<ProjectSessionNotice>,
 ) -> Result<OpenRunStore, ProjectSessionError> {
-    let witness = preview(checked.program(), &store.store)
-        .map_err(ProjectSessionError::Store)?
-        .0;
+    let (witness, diagnostics) =
+        preview(checked.program(), &store.store).map_err(ProjectSessionError::Store)?;
     let (from_epoch, to_epoch) = witness.epoch_range();
     match try_auto_apply(&witness, checked.program(), &store.store) {
         Ok(AutoApplyOutcome::Applied) => {
@@ -1512,7 +1511,7 @@ fn auto_apply_then_reopen(
         }
         Ok(AutoApplyOutcome::MustFence(obligation)) => {
             return Err(ProjectSessionError::SchemaDrift {
-                message: fence_message(&obligation),
+                message: fence_message(&obligation, &diagnostics),
             });
         }
         Err(_) => {
@@ -1538,9 +1537,8 @@ fn classify_dry_run_drift(
     store: NativeRunStore,
     notices: &mut Vec<ProjectSessionNotice>,
 ) -> Result<OpenRunStore, ProjectSessionError> {
-    let witness = preview(checked.program(), &store.store)
-        .map_err(ProjectSessionError::Store)?
-        .0;
+    let (witness, diagnostics) =
+        preview(checked.program(), &store.store).map_err(ProjectSessionError::Store)?;
     let (from_epoch, to_epoch) = witness.epoch_range();
     let obligation = RunObligation::classify(&witness);
     match obligation {
@@ -1554,7 +1552,7 @@ fn classify_dry_run_drift(
                 Ok(AutoApplyOutcome::Applied) => {}
                 Ok(AutoApplyOutcome::MustFence(obligation)) => {
                     notices.push(ProjectSessionNotice::DryRunWouldFence {
-                        message: fence_message(&obligation),
+                        message: fence_message(&obligation, &diagnostics),
                     });
                     return finish_open(checked, store, true);
                 }
@@ -1585,14 +1583,14 @@ fn classify_dry_run_drift(
         }
         obligation => {
             notices.push(ProjectSessionNotice::DryRunWouldFence {
-                message: fence_message(&obligation),
+                message: fence_message(&obligation, &diagnostics),
             });
         }
     }
     finish_open(checked, store, true)
 }
 
-fn fence_message(obligation: &RunObligation) -> String {
+fn fence_message(obligation: &RunObligation, diagnostics: &[RepairDiagnostic]) -> String {
     let base = "store was stamped under a different schema at this catalog epoch";
     let cause = match obligation {
         RunObligation::Backfill { records } => format!(
@@ -1604,10 +1602,24 @@ fn fence_message(obligation: &RunObligation) -> String {
         RunObligation::DestructiveDrop { populated } => format!(
             "; the change drops {populated} populated record(s). Run `marrow evolve apply --maintenance` and confirm the retire to discharge it."
         ),
-        RunObligation::Repair => "; the change cannot be discharged against the stored data. Run `marrow evolve preview` to see the required repair.".to_string(),
+        RunObligation::Repair => repair_fence_message(diagnostics),
         RunObligation::ZeroMutation { .. } => String::new(),
     };
     format!("{base}{cause}")
+}
+
+fn repair_fence_message(diagnostics: &[RepairDiagnostic]) -> String {
+    if diagnostics.is_empty() {
+        return "; the change cannot be discharged against the stored data. Run `marrow evolve preview`, then `marrow evolve apply` after the required repair.".to_string();
+    }
+    let details = diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic.message.as_str())
+        .collect::<Vec<_>>()
+        .join("; ");
+    format!(
+        "; the change cannot be discharged against the stored data: {details}. Run `marrow evolve preview`, then `marrow evolve apply` after the required repair."
+    )
 }
 
 fn load_checked_for_session(
