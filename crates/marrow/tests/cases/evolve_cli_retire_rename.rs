@@ -958,6 +958,61 @@ fn evolve_apply_advances_accepted_catalog_in_lockstep_for_retire()
     Ok(())
 }
 
+// A store index is a valid `evolve rename` target: a rename preserves the index's stable id
+// and changes only its path. Discharge must not read the accepted old-path index as a drop
+// while the same id is rebuilt under the new path, which would emit two verdicts for one id
+// and surface a false `store.corruption`. Both preview and apply must succeed.
+#[test]
+fn evolve_rename_of_a_store_index_previews_and_applies_cleanly()
+-> Result<(), Box<dyn std::error::Error>> {
+    const INDEX_BASELINE_SOURCE: &str = "module books\n\
+         resource Book\n\
+         \x20   required title: string\n\
+         \x20   required pages: int\n\
+         store ^books(id: int): Book\n\
+         \x20   index byPages(pages, id)\n\
+         pub fn add(title: string): Id(^books)\n\
+         \x20   return nextId(^books)\n";
+    const INDEX_RENAME_SOURCE: &str = "module books\n\
+         resource Book\n\
+         \x20   required title: string\n\
+         \x20   required pages: int\n\
+         store ^books(id: int): Book\n\
+         \x20   index byPageCount(pages, id)\n\
+         evolve\n\
+         \x20   rename ^books.byPages -> ^books.byPageCount\n\
+         pub fn add(title: string): Id(^books)\n\
+         \x20   return nextId(^books)\n";
+
+    let root = native_books_project("evolve-rename-store-index", INDEX_BASELINE_SOURCE);
+    commit_catalog(&root);
+    write(&root, "src/books.mw", INDEX_RENAME_SOURCE);
+
+    let preview = marrow(&[
+        "evolve",
+        "preview",
+        "--format",
+        "json",
+        root.to_str().expect("project path utf-8"),
+    ]);
+    let preview_record = support::json(preview.stdout.clone());
+    assert_ne!(
+        preview_record["code"],
+        serde_json::json!("store.corruption"),
+        "renaming a store index must not surface a false store.corruption: {preview_record:#?}"
+    );
+    assert_eq!(preview.status.code(), Some(0), "{preview:?}");
+
+    let apply = marrow(&[
+        "evolve",
+        "apply",
+        root.to_str().expect("project path utf-8"),
+    ]);
+    assert_eq!(apply.status.code(), Some(0), "{apply:?}");
+
+    Ok(())
+}
+
 #[test]
 fn evolve_apply_advances_accepted_catalog_in_lockstep_for_rename()
 -> Result<(), Box<dyn std::error::Error>> {

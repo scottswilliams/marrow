@@ -35,11 +35,21 @@ pub(super) fn classify_absent_source_entries(
     // A source-dropped index is removed from the proposal outright, so it no longer appears in
     // the drop-discharge entries; its derived cells were written under its accepted stable id,
     // so the deletion obligation is read from the accepted snapshot here. The catalog binding
-    // has already dropped its entry and advanced the epoch.
+    // has already dropped its entry and advanced the epoch. A rename keeps the same stable id
+    // under a new path, so it is keyed on the still-declared id rather than the old path text:
+    // a renamed index is rebuilt under its new path, not dropped.
+    let declared_index_ids: HashSet<&str> = catalog_entries_for_drop_discharge(program)
+        .iter()
+        .filter(|entry| {
+            entry.kind == CatalogEntryKind::StoreIndex
+                && entry.lifecycle == CatalogLifecycle::Active
+        })
+        .map(|entry| entry.stable_id.as_str())
+        .collect();
     for entry in &program.catalog.accepted_entries {
         if entry.kind != CatalogEntryKind::StoreIndex
             || entry.lifecycle != CatalogLifecycle::Active
-            || declared.contains(&(entry.kind, entry.path.as_str()))
+            || declared_index_ids.contains(entry.stable_id.as_str())
         {
             continue;
         }
