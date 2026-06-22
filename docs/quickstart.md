@@ -15,7 +15,10 @@ cd shelf
 ```
 
 This creates a Marrow project directory with `marrow.json`, one library module,
-and one test file. The generated `marrow.json` is:
+and one test file. Pass `--client` (short `-c`) to additionally scaffold a
+`surface` over the store and declare `"client": "generated/marrow.ts"`, so
+`marrow run` emits a typed TypeScript client; bare `marrow init` is store-only.
+The generated `marrow.json` is:
 
 ```json
 {

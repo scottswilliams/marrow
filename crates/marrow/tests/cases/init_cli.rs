@@ -47,6 +47,49 @@ pub fn main()
     listShelf("fiction")
 "#;
 
+const EXPECTED_CLIENT_CONFIG: &str = r#"{
+  "sourceRoots": ["src"],
+  "run": { "defaultEntry": "shelf::books::main" },
+  "store": { "backend": "native", "dataDir": ".marrow/data" },
+  "tests": ["tests"],
+  "client": "generated/marrow.ts"
+}
+"#;
+
+const EXPECTED_CLIENT_BOOKS: &str = r#"module shelf::books
+
+resource Book
+    required title: string
+    required author: string
+    required shelf: string
+    loanedTo: string
+
+store ^books(id: int): Book
+    index byShelf(shelf, id)
+
+pub fn add(title: string, author: string, shelf: string): Id(^books)
+    var book: Book
+    book.title = title
+    book.author = author
+    book.shelf = shelf
+    const id: Id(^books) = nextId(^books)
+    ^books(id) = book
+    return id
+
+pub fn listShelf(shelf: string)
+    for id, book in ^books.byShelf(shelf)
+        print($"{id}: {book.title} by {book.author}")
+
+pub fn main()
+    add(title: "Small Gods", author: "Terry Pratchett", shelf: "fiction")
+    add(title: "Sourcery", author: "Terry Pratchett", shelf: "fiction")
+    listShelf("fiction")
+
+surface Books from ^books
+    fields title, author, shelf
+    collection ^books.byShelf as byShelf
+"#;
+
 const EXPECTED_TEST: &str = r#"module tests::books_test
 
 use shelf::books
@@ -129,6 +172,83 @@ fn init_scaffold_checks_runs_and_tests() {
     assert!(
         stdout.contains("ok    tests::books_test::addThenFind"),
         "{stdout}"
+    );
+}
+
+#[test]
+fn init_client_scaffolds_surface_and_declared_client() {
+    let parent = support::temp_dir("init-client-shelf");
+    let target = parent.join("shelf");
+    let target_arg = target.to_str().expect("target path utf8");
+
+    let init = marrow(&["init", "--client", target_arg]);
+    assert_eq!(init.status.code(), Some(0), "{init:?}");
+    assert!(
+        init.stderr.is_empty(),
+        "unexpected stderr: {:?}",
+        init.stderr
+    );
+
+    assert_eq!(
+        fs::read_to_string(target.join("marrow.json")).expect("read config"),
+        EXPECTED_CLIENT_CONFIG,
+        "--client must write the client line into marrow.json"
+    );
+    assert_eq!(
+        fs::read_to_string(target.join("src/shelf/books.mw")).expect("read source"),
+        EXPECTED_CLIENT_BOOKS,
+        "--client must scaffold a surface over ^books"
+    );
+
+    // -c is the short alias and must produce the identical scaffold.
+    let short_target = parent.join("shelf2");
+    let short_arg = short_target.to_str().expect("short target utf8");
+    let short = marrow(&["init", "-c", short_arg]);
+    assert_eq!(short.status.code(), Some(0), "{short:?}");
+    assert_eq!(
+        fs::read_to_string(short_target.join("marrow.json")).expect("read short config"),
+        EXPECTED_CLIENT_CONFIG.replace("shelf", "shelf2"),
+        "-c must match --client"
+    );
+
+    // The --client scaffold checks, runs, and keeps its declared client --locked-clean.
+    let check = marrow(&["check", target_arg]);
+    assert_eq!(
+        check.status.code(),
+        Some(0),
+        "--client scaffold must check: {check:?}"
+    );
+    let run = marrow(&["run", target_arg]);
+    assert_eq!(run.status.code(), Some(0), "{run:?}");
+    assert!(
+        target.join("generated/marrow.ts").exists(),
+        "run must emit the declared client"
+    );
+    let locked = marrow(&["check", "--locked", target_arg]);
+    assert_eq!(
+        locked.status.code(),
+        Some(0),
+        "--client scaffold must be --locked clean after run: {locked:?}"
+    );
+}
+
+#[test]
+fn bare_init_writes_no_client_or_surface() {
+    let parent = support::temp_dir("init-bare-no-client");
+    let target = parent.join("shelf");
+    let target_arg = target.to_str().expect("target path utf8");
+
+    let init = marrow(&["init", target_arg]);
+    assert_eq!(init.status.code(), Some(0), "{init:?}");
+    let config = fs::read_to_string(target.join("marrow.json")).expect("read config");
+    assert!(
+        !config.contains("\"client\""),
+        "bare init must not write a client line: {config}"
+    );
+    let source = fs::read_to_string(target.join("src/shelf/books.mw")).expect("read source");
+    assert!(
+        !source.contains("surface "),
+        "bare init must not scaffold a surface: {source}"
     );
 }
 
@@ -228,7 +348,11 @@ fn init_help_and_usage_are_command_line_tier() {
         help.stderr
     );
     let stdout = String::from_utf8(help.stdout).expect("help stdout utf8");
-    assert!(stdout.contains("marrow init <projectdir>"), "{stdout}");
+    assert!(
+        stdout.contains("marrow init [--client] <projectdir>"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("--client, -c"), "{stdout}");
 
     let missing = marrow(&["init"]);
     assert_eq!(missing.status.code(), Some(2), "{missing:?}");

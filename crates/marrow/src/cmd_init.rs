@@ -10,21 +10,25 @@ use crate::{CheckFormat, report_simple_error};
 
 pub(crate) fn init_os(args: &[OsString]) -> ExitCode {
     let mut target = None;
+    let mut client = false;
     for arg in args {
         match arg.to_str() {
             Some("--help" | "-h") => {
                 print!(
                     "\
 Usage:
-  marrow init <projectdir>
+  marrow init [--client] <projectdir>
 
 Create a new Marrow project directory with the v0.1 quickstart scaffold.
 The target directory must not already exist, and its final path component must
 be a valid Marrow module identifier.
+
+  --client, -c  Also scaffold a surface over the store and a generated TypeScript client.
 "
                 );
                 return ExitCode::SUCCESS;
             }
+            Some("--client" | "-c") => client = true,
             Some(value) if value.starts_with('-') => return crate::unknown_option("init", value),
             _ => {
                 if let Err(code) = take_single_target(&mut target, arg, "init", "project directory")
@@ -53,7 +57,7 @@ be a valid Marrow module identifier.
         return ExitCode::FAILURE;
     }
 
-    match write_scaffold(&path, &name) {
+    match write_scaffold(&path, &name, client) {
         Ok(()) => {
             println!("created {}", path.display());
             ExitCode::SUCCESS
@@ -113,14 +117,14 @@ fn report_invalid_target_name(path: &Path) {
     );
 }
 
-fn write_scaffold(target: &Path, name: &str) -> io::Result<()> {
+fn write_scaffold(target: &Path, name: &str, client: bool) -> io::Result<()> {
     fs::create_dir(target)?;
     fs::create_dir_all(target.join("src").join(name))?;
     fs::create_dir(target.join("tests"))?;
-    write_new_file(target.join("marrow.json"), &config_source(name))?;
+    write_new_file(target.join("marrow.json"), &config_source(name, client))?;
     write_new_file(
         target.join("src").join(name).join("books.mw"),
-        &books_source(name),
+        &books_source(name, client),
     )?;
     write_new_file(target.join("tests/books_test.mw"), &books_test_source(name))?;
     Ok(())
@@ -131,19 +135,29 @@ fn write_new_file(path: PathBuf, contents: &str) -> io::Result<()> {
     file.write_all(contents.as_bytes())
 }
 
-fn config_source(name: &str) -> String {
+fn config_source(name: &str, client: bool) -> String {
+    let client_line = if client {
+        ",\n  \"client\": \"generated/marrow.ts\""
+    } else {
+        ""
+    };
     format!(
         r#"{{
   "sourceRoots": ["src"],
   "run": {{ "defaultEntry": "{name}::books::main" }},
   "store": {{ "backend": "native", "dataDir": ".marrow/data" }},
-  "tests": ["tests"]
+  "tests": ["tests"]{client_line}
 }}
 "#
     )
 }
 
-fn books_source(name: &str) -> String {
+fn books_source(name: &str, client: bool) -> String {
+    let surface = if client {
+        "\nsurface Books from ^books\n    fields title, author, shelf\n    collection ^books.byShelf as byShelf\n"
+    } else {
+        ""
+    };
     format!(
         r#"module {name}::books
 
@@ -173,7 +187,7 @@ pub fn main()
     add(title: "Small Gods", author: "Terry Pratchett", shelf: "fiction")
     add(title: "Sourcery", author: "Terry Pratchett", shelf: "fiction")
     listShelf("fiction")
-"#
+{surface}"#
     )
 }
 
