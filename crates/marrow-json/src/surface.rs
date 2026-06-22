@@ -3378,10 +3378,7 @@ pub fn seed()
 
         let client = render_typescript_client(&abi, &manifest).expect("typescript client renders");
 
-        assert!(
-            client.contains("export function createMarrowSurfaceClient"),
-            "{client}"
-        );
+        assert!(client.contains("export function createClient"), "{client}");
         assert!(client.contains("Number.isSafeInteger"), "{client}");
         assert!(
             client.contains("profile_version: SURFACE_OPERATION_PROFILE_VERSION"),

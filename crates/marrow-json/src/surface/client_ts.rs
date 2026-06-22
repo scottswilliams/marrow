@@ -27,7 +27,8 @@ pub fn render_typescript_client(
     let catalog = SurfaceOperationCatalog::from_abi(abi).map_err(SurfaceClientRenderError::from)?;
     let bindings = SurfaceRouteBindings::from_manifest_for_client(routes, &catalog)
         .map_err(SurfaceClientRenderError::from)?;
-    Ok(render_bindings(&bindings))
+    let header = surface_client_header(&surface_abi_digest(abi, routes));
+    Ok(render_bindings(&header, &bindings))
 }
 
 impl SurfaceClientRenderError {
@@ -93,14 +94,13 @@ struct TypeScriptOperationBinding {
     result_kind: &'static str,
 }
 
-fn render_bindings(bindings: &SurfaceRouteBindings) -> String {
+fn render_bindings(header: &str, bindings: &SurfaceRouteBindings) -> String {
     let modules = named_modules(bindings);
     let mut output = String::new();
+    output.push_str(header);
     output.push_str(CLIENT_PREAMBLE);
     render_operation_binding_constants(&mut output, &modules);
-    output.push_str(
-        "export function createMarrowSurfaceClient(options: MarrowSurfaceClientOptions = {}) {\n",
-    );
+    output.push_str("export function createClient(options: MarrowSurfaceClientOptions = {}) {\n");
     output.push_str("  return {\n");
     for module in modules {
         writeln!(output, "    {}: {{", ts_string(&module.name)).expect("write module");
