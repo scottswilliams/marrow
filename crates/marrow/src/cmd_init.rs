@@ -60,6 +60,9 @@ be a valid Marrow module identifier.
     match write_scaffold(&path, &name, client) {
         Ok(()) => {
             println!("created {}", path.display());
+            println!("next steps:");
+            println!("  cd {}", path.display());
+            println!("  marrow run .    # run the project and write its store and marrow.lock");
             ExitCode::SUCCESS
         }
         Err(error) => {

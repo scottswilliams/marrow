@@ -93,7 +93,7 @@ pub(super) fn classify_absent_source_entries(
                     acc.diagnostic(
                         entry_id.clone(),
                         format!(
-                            "dropped `{}` is still used by index `{index_name}`; retire it with an evolve intent",
+                            "dropped `{}` is still used by index `{index_name}`; add an in-source evolve block that retires it (run `marrow evolve preview --scaffold <projectdir>` to print the exact block), then apply it with `marrow evolve apply <projectdir>`",
                             entry.path
                         ),
                     );
@@ -152,8 +152,8 @@ struct AbsentRepairDiagnostic {
 fn dropped_store_diagnostic(entry: &CatalogEntry) -> AbsentRepairDiagnostic {
     AbsentRepairDiagnostic {
         message: format!(
-            "dropped store `{}` still holds records; retire it with `evolve retire {}` and apply with approval, or repair the data before activation",
-            entry.path, entry.path
+            "dropped store `{}` still holds records; add an in-source evolve block that retires it (run `marrow evolve preview --scaffold <projectdir>` to print the exact block), then apply it with `marrow evolve apply <projectdir>` and approval, or repair the data first",
+            entry.path
         ),
         guidance: RepairGuidance::Retire {
             target: entry.path.clone(),
@@ -168,13 +168,13 @@ fn populated_member_drop_diagnostic(
     entry: &CatalogEntry,
 ) -> Result<AbsentRepairDiagnostic, StoreError> {
     let retire_guidance = format!(
-        "retire it with `evolve retire {}` and apply with approval, or repair the data before activation",
+        "add an in-source evolve block that retires `{}` (run `marrow evolve preview --scaffold <projectdir>` to print the exact block), then apply it with `marrow evolve apply <projectdir>` and approval, or repair the data first",
         entry.path
     );
     if let Some(target) = plausible_bare_rename_target(program, store, source_paths, entry)? {
         return Ok(AbsentRepairDiagnostic {
             message: format!(
-                "dropped `{}` still holds stored data; if this was a rename, declare `evolve rename` from `{}` to `{target}` before activation. Otherwise {retire_guidance}",
+                "dropped `{}` still holds stored data; if this was a rename, add an in-source evolve block that renames `{}` to `{target}` (run `marrow evolve preview --scaffold <projectdir>` to print it), then apply it with `marrow evolve apply <projectdir>`. Otherwise {retire_guidance}",
                 entry.path, entry.path
             ),
             guidance: RepairGuidance::RenameOrRetire {

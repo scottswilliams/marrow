@@ -208,12 +208,14 @@ fn check_project_dir(dir: &str, format: CheckFormat, locked: bool) -> ExitCode {
         advisories.push(crate::ProjectAdvisory {
             diagnostic: stale_lock_advisory_diagnostic(),
             note: format!("{CHECK_STALE_LOCK}: {STALE_LOCK_MESSAGE}"),
+            summary: format!("marrow.lock is stale - run marrow run {dir} to refresh"),
         });
     }
     if stale_client {
         advisories.push(crate::ProjectAdvisory {
             diagnostic: stale_client_advisory_diagnostic(),
             note: format!("{CHECK_STALE_CLIENT}: {STALE_CLIENT_MESSAGE}"),
+            summary: format!("the declared client is stale - run marrow run {dir} to refresh"),
         });
     }
 

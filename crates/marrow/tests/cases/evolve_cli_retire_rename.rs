@@ -285,6 +285,91 @@ fn evolve_apply_counts_and_deletes_a_retired_member_in_each_owning_root()
 }
 
 #[test]
+fn evolve_apply_accepts_the_human_field_path_on_approve_retire()
+-> Result<(), Box<dyn std::error::Error>> {
+    // The everyday approval form names the human field path (`books::Book::subtitle`), not the
+    // internal catalog id. Apply resolves the path to the id and discharges the retire exactly as
+    // the id form would, so a developer never has to copy an opaque `cat_<hash>`.
+    let root = native_books_project("evolve-apply-retire-human-path", RETIRE_BASELINE_SOURCE);
+    let accepted = commit_catalog(&root);
+    let accepted_place = root_place(&accepted, "books")?;
+    {
+        let store = open_native_store(&root);
+        seed_title_only(&store, &accepted_place, 1, "Dune");
+        seed_member(
+            &store,
+            &accepted_place,
+            1,
+            "subtitle",
+            Scalar::Str("Cantos".into()),
+        );
+    }
+    write(&root, "src/books.mw", RETIRE_BLOCK_SOURCE);
+
+    let apply = marrow(&[
+        "evolve",
+        "apply",
+        "--maintenance",
+        "--approve-retire",
+        "books::Book::subtitle:1",
+        "--no-backup",
+        "--format",
+        "json",
+        root.to_str().expect("project path utf-8"),
+    ]);
+    assert_eq!(apply.status.code(), Some(0), "{apply:?}");
+    let apply_record = support::json(apply.stdout);
+    assert_eq!(apply_record["records_retired"], serde_json::json!(1));
+    let store = TreeStore::open(&native_store_path(&root)).expect("reopen native store");
+    assert_eq!(
+        read_scalar(&store, &accepted_place, 1, "subtitle", ScalarType::Str),
+        None,
+        "the retire approved by field path deleted the populated cell"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn evolve_apply_rejects_an_unknown_approve_retire_target() -> Result<(), Box<dyn std::error::Error>>
+{
+    let root = native_books_project("evolve-apply-retire-unknown-target", RETIRE_BASELINE_SOURCE);
+    let accepted = commit_catalog(&root);
+    let accepted_place = root_place(&accepted, "books")?;
+    {
+        let store = open_native_store(&root);
+        seed_title_only(&store, &accepted_place, 1, "Dune");
+        seed_member(
+            &store,
+            &accepted_place,
+            1,
+            "subtitle",
+            Scalar::Str("Cantos".into()),
+        );
+    }
+    write(&root, "src/books.mw", RETIRE_BLOCK_SOURCE);
+
+    let apply = marrow(&[
+        "evolve",
+        "apply",
+        "--maintenance",
+        "--approve-retire",
+        "books::Book::nonexistent:1",
+        "--no-backup",
+        root.to_str().expect("project path utf-8"),
+    ]);
+    assert_eq!(apply.status.code(), Some(2), "{apply:?}");
+    let stderr = String::from_utf8(apply.stderr).expect("stderr utf8");
+    assert!(
+        stderr.contains("evolve.approval_target_unknown")
+            && stderr.contains("marrow evolve preview"),
+        "an unknown approve-retire target is a usage error pointing at preview: {stderr}"
+    );
+
+    Ok(())
+}
+
+#[test]
 fn retire_apply_requires_backup_or_explicit_opt_out_before_mutation()
 -> Result<(), Box<dyn std::error::Error>> {
     let root = native_books_project(

@@ -1,6 +1,3 @@
-use marrow_run::evolution::Approval;
-use marrow_store::cell::CatalogId;
-
 use crate::CheckFormat;
 
 pub(super) enum ParseStop {
@@ -18,10 +15,21 @@ pub(super) struct PreviewArgs {
 pub(super) struct ApplyArgs {
     pub(super) format: CheckFormat,
     pub(super) maintenance: bool,
-    pub(super) approval: Option<Approval>,
+    /// The `--approve-retire` flags as parsed but not yet resolved: each spell names a retire
+    /// target — either the human field path (`demo::books::Book::author`) or the internal catalog
+    /// id — plus its populated count. The target is resolved to a catalog id once the checked
+    /// program is loaded, so the everyday flow can spell the human path while the id form still
+    /// works.
+    pub(super) retires: Vec<RetireSpec>,
     pub(super) backup: Option<String>,
     pub(super) no_backup: bool,
     pub(super) dir: String,
+}
+
+#[derive(Clone)]
+pub(super) struct RetireSpec {
+    pub(super) target: String,
+    pub(super) populated: usize,
 }
 
 pub(super) fn preview_args(args: &[String]) -> Result<PreviewArgs, ParseStop> {
@@ -39,7 +47,7 @@ pub(super) fn apply_args(args: &[String]) -> Result<ApplyArgs, ParseStop> {
     Ok(ApplyArgs {
         format: parsed.format,
         maintenance: parsed.maintenance,
-        approval: parsed.approval,
+        retires: parsed.retires,
         backup: parsed.backup,
         no_backup: parsed.no_backup,
         dir: parsed.dir,
@@ -50,7 +58,7 @@ struct CommonArgs {
     format: CheckFormat,
     dir: String,
     maintenance: bool,
-    approval: Option<Approval>,
+    retires: Vec<RetireSpec>,
     scaffold: bool,
     from_backup: Option<String>,
     backup: Option<String>,
@@ -80,7 +88,7 @@ fn common(args: &[String], command: Command) -> Result<CommonArgs, ParseStop> {
     let mut from_backup = None;
     let mut backup = None;
     let mut no_backup = false;
-    let mut retires: Vec<(CatalogId, usize)> = Vec::new();
+    let mut retires: Vec<RetireSpec> = Vec::new();
     let mut dir = None;
     let mut index = 0;
     while index < args.len() {
@@ -180,7 +188,7 @@ fn common(args: &[String], command: Command) -> Result<CommonArgs, ParseStop> {
         format,
         dir,
         maintenance,
-        approval: build_approval(retires),
+        retires,
         scaffold,
         from_backup,
         backup,
@@ -188,29 +196,24 @@ fn common(args: &[String], command: Command) -> Result<CommonArgs, ParseStop> {
     })
 }
 
-/// Fold the repeated `--approve-retire` flags into one approval: each flag names one
-/// retired catalog id and its populated count, which admission matches per id against
-/// the witness. One approval covers a multi-id destructive evolution, and a wrong count
-/// on any single id is rejected even if the counts across ids would sum the same.
-fn build_approval(retires: Vec<(CatalogId, usize)>) -> Option<Approval> {
-    if retires.is_empty() {
-        return None;
-    }
-    Some(Approval { retires })
-}
-
-fn parse_retire(value: &str) -> Result<(CatalogId, usize), ParseStop> {
-    let Some((catalog_id, populated)) = value.rsplit_once(':') else {
-        eprintln!("--approve-retire expects <catalog-id>:<populated-count>");
+/// Parse one `--approve-retire <target>:<count>` flag into a target spell and its populated count.
+/// The target is the field path or catalog id verbatim; it is resolved to a catalog id against the
+/// checked program later, so this stage only splits off the trailing count and validates it.
+fn parse_retire(value: &str) -> Result<RetireSpec, ParseStop> {
+    let Some((target, populated)) = value.rsplit_once(':') else {
+        eprintln!("--approve-retire expects <field-path>:<populated-count>");
         return Err(ParseStop::Usage);
     };
     let Ok(populated) = populated.parse::<usize>() else {
         eprintln!("--approve-retire populated count must be a non-negative integer");
         return Err(ParseStop::Usage);
     };
-    let Ok(catalog_id) = CatalogId::new(catalog_id.to_string()) else {
-        eprintln!("--approve-retire catalog id is malformed");
+    if target.is_empty() {
+        eprintln!("--approve-retire expects <field-path>:<populated-count>");
         return Err(ParseStop::Usage);
-    };
-    Ok((catalog_id, populated))
+    }
+    Ok(RetireSpec {
+        target: target.to_string(),
+        populated,
+    })
 }

@@ -5,7 +5,8 @@ use std::path::{Component, Path, PathBuf};
 use std::process::ExitCode;
 
 use marrow_check::evolution::{EvolutionWitness, Verdict, preview};
-use marrow_run::evolution::{ApplyError, FenceError, apply};
+use marrow_run::evolution::{ApplyError, Approval, FenceError, apply};
+use marrow_store::cell::CatalogId;
 
 use crate::{
     CheckFormat, load_checked_project_with_format, load_config_with_format, project_io_exit,
@@ -116,6 +117,10 @@ fn apply_cmd(raw_args: &[String]) -> ExitCode {
         program
     };
     let labels = render::SourceLabels::from_program(&program);
+    let approval = match resolve_approval(&input.retires, &program, input.format) {
+        Ok(approval) => approval,
+        Err(code) => return code,
+    };
     let (witness, diagnostics) = match preview(&program, &store) {
         Ok(result) => result,
         Err(error) => {
@@ -135,7 +140,7 @@ fn apply_cmd(raw_args: &[String]) -> ExitCode {
         &program,
         &store,
         input.maintenance,
-        input.approval.as_ref(),
+        approval.as_ref(),
     ) {
         Ok(outcome) => {
             // Apply is not done until the re-projected lock is committed: the store
@@ -160,11 +165,65 @@ fn apply_cmd(raw_args: &[String]) -> ExitCode {
             render::blocked(&witness, &diagnostics, &labels, input.format);
             ExitCode::FAILURE
         }
+        Err(ApplyError::ApprovalMismatch) => {
+            render::approval_mismatch(&witness, &labels, input.format);
+            ExitCode::FAILURE
+        }
         Err(error) => {
             render::apply_error(error, &labels, input.format);
             ExitCode::FAILURE
         }
     }
+}
+
+/// Resolve the `--approve-retire` targets against the checked program into one approval, accepting
+/// either the human field path (`demo::books::Book::author`) or the internal catalog id. The human
+/// path is the everyday form the approval message and scaffold teach; the id form still resolves so
+/// scripts that already pass it keep working. A target that matches neither a known field path nor a
+/// known catalog id is a usage error naming the unresolved target. One approval covers a multi-id
+/// destructive evolution, and admission still matches each id and count against the witness exactly.
+fn resolve_approval(
+    retires: &[args::RetireSpec],
+    program: &marrow_check::CheckedProgram,
+    format: CheckFormat,
+) -> Result<Option<Approval>, ExitCode> {
+    if retires.is_empty() {
+        return Ok(None);
+    }
+    let mut resolved = Vec::with_capacity(retires.len());
+    for spec in retires {
+        let id = resolve_retire_target(&spec.target, program).ok_or_else(|| {
+            report_simple_error(
+                "evolve.approval_target_unknown",
+                &format!(
+                    "--approve-retire target `{}` is not a field path or catalog id in this project; \
+                     run `marrow evolve preview <projectdir>` to see the exact path to approve",
+                    spec.target
+                ),
+                format,
+            );
+            ExitCode::from(2)
+        })?;
+        resolved.push((id, spec.populated));
+    }
+    Ok(Some(Approval { retires: resolved }))
+}
+
+/// The catalog id a `--approve-retire` target names: the entry whose human path or stable id equals
+/// the target. The path is matched first so the human form wins; an exact catalog-id match is the
+/// fallback for the id form.
+fn resolve_retire_target(
+    target: &str,
+    program: &marrow_check::CheckedProgram,
+) -> Option<CatalogId> {
+    let entries = &program.catalog.accepted_entries;
+    let id = entries
+        .iter()
+        .find(|entry| entry.path == target)
+        .or_else(|| entries.iter().find(|entry| entry.stable_id == target))?
+        .stable_id
+        .clone();
+    CatalogId::new(id).ok()
 }
 
 fn prepare_recovery_point(

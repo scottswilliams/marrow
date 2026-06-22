@@ -154,11 +154,30 @@ fn warning_only_project_check_prints_stable_summary() {
              \x20   subtitle: string\n\
              store ^books(id: int): Book\n",
     );
-    let output = run_check(&[root.to_str().unwrap()]);
+    let dir = root.to_str().unwrap();
+    let output = run_check(&[dir]);
 
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let stdout = String::from_utf8(output.stdout).expect("stdout utf8");
-    assert_eq!(stdout, "ok: checked (1 warning)\n");
+    // Adding a saved member both raises a `catalog_intent` warning and makes the committed lock
+    // stale, so the success line counts both and inlines the stale-lock summary. The human tally
+    // matches the JSON diagnostic count below; the path is kept even with warnings present.
+    assert_eq!(
+        stdout,
+        format!(
+            "ok: {dir} checked (2 warnings; marrow.lock is stale - run marrow run {dir} to refresh)\n"
+        )
+    );
+
+    // The human tally (2) matches the structured diagnostic count exactly.
+    let json = run_check(&["--format", "json", dir]);
+    assert_eq!(json.status.code(), Some(0), "{json:?}");
+    let value = support::json(json.stdout);
+    assert_eq!(
+        value["diagnostics"].as_array().expect("diagnostics").len(),
+        2,
+        "the JSON diagnostic count matches the human warning tally: {value:#?}"
+    );
 }
 
 #[test]

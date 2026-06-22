@@ -263,10 +263,25 @@ pub struct ProjectTestCase {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProjectSessionNotice {
-    AutoApplied { from_epoch: u64, to_epoch: u64 },
+    AutoApplied {
+        from_epoch: u64,
+        to_epoch: u64,
+    },
+    /// A run wrote `marrow.lock` for the first time. The committed lock is otherwise invisible on
+    /// the happy path, so a run announces its creation once to teach that the file exists and must
+    /// be committed alongside source.
+    LockCreated,
+    /// A run rewrote an existing `marrow.lock` to match the current source. Announced so the
+    /// developer knows the committed lock changed and must be re-committed.
+    LockUpdated,
     DryRunWouldFreeze,
-    DryRunWouldApply { from_epoch: u64, to_epoch: u64 },
-    DryRunWouldFence { message: String },
+    DryRunWouldApply {
+        from_epoch: u64,
+        to_epoch: u64,
+    },
+    DryRunWouldFence {
+        message: String,
+    },
 }
 
 impl ProjectSessionNotice {
@@ -277,6 +292,12 @@ impl ProjectSessionNotice {
                 to_epoch,
             } => {
                 format!("auto-applied evolution: catalog epoch {from_epoch} -> {to_epoch}")
+            }
+            Self::LockCreated => {
+                "wrote marrow.lock (commit this file alongside your source)".to_string()
+            }
+            Self::LockUpdated => {
+                "updated marrow.lock to match current source; commit the change".to_string()
             }
             Self::DryRunWouldFreeze => {
                 "dry run: would freeze accepted catalog identity".to_string()
@@ -1388,7 +1409,7 @@ fn open_run_store(
         }
         Ok(()) => {
             validate_source_analysis_admission(&checked.snapshot, admission)?;
-            reproject_and_finish_open(root, checked, store, isolate_writes)
+            reproject_and_finish_open(root, checked, store, isolate_writes, notices)
         }
         Err(FenceError::SchemaDrift) => divert_to_discharge(
             root,
@@ -1533,9 +1554,10 @@ fn reproject_and_finish_open(
     checked: CheckedSourceProgram,
     store: NativeRunStore,
     isolate_writes: bool,
+    notices: &mut Vec<ProjectSessionNotice>,
 ) -> Result<OpenRunStore, ProjectSessionError> {
     if !isolate_writes {
-        reproject_committed_lock(root, &store.store, checked.program())?;
+        reproject_committed_lock(root, &store.store, checked.program(), notices)?;
     }
     finish_open(checked, store, isolate_writes)
 }
@@ -1576,7 +1598,7 @@ fn auto_apply_then_reopen(
         return open_memory_store(checked);
     };
     fence_run(checked.program(), &store.store).map_err(ProjectSessionError::Fence)?;
-    reproject_and_finish_open(root, checked, store, isolate_writes)
+    reproject_and_finish_open(root, checked, store, isolate_writes, notices)
 }
 
 fn classify_dry_run_drift(
@@ -1885,12 +1907,17 @@ fn reproject_committed_lock(
     root: &Path,
     store: &TreeStore,
     program: &CheckedProgram,
+    notices: &mut Vec<ProjectSessionNotice>,
 ) -> Result<(), ProjectSessionError> {
     let Some(snapshot) = store.read_catalog_snapshot()? else {
         return Ok(());
     };
-    marrow_check::project_store_lock(root, &snapshot, &program.source_digest())
-        .map_err(ProjectSessionError::from)
+    match marrow_check::project_store_lock(root, &snapshot, &program.source_digest())? {
+        marrow_check::LockProjection::Created => notices.push(ProjectSessionNotice::LockCreated),
+        marrow_check::LockProjection::Updated => notices.push(ProjectSessionNotice::LockUpdated),
+        marrow_check::LockProjection::Unchanged => {}
+    }
+    Ok(())
 }
 
 fn fence_run(program: &CheckedProgram, store: &TreeStore) -> Result<(), FenceError> {

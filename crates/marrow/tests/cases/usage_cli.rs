@@ -17,6 +17,25 @@ fn project_that_must_not_be_loaded(name: &str) -> support::TempProject {
 }
 
 #[test]
+fn bare_marrow_is_a_usage_failure() {
+    // A bare `marrow` ran no command, so it must exit 2 (usage), not 0: a CI line that forgot the
+    // subcommand word must fail rather than pass green. The usage text goes to stderr.
+    let output = marrow(&[]);
+
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    assert!(
+        output.stdout.is_empty(),
+        "bare marrow prints usage on stderr, not stdout: {:?}",
+        output.stdout
+    );
+    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+    assert!(
+        stderr.contains("Usage:"),
+        "bare marrow prints usage: {stderr}"
+    );
+}
+
+#[test]
 fn an_unknown_subcommand_is_a_usage_failure() {
     let output = marrow(&["frobnicate"]);
     assert_eq!(output.status.code(), Some(2), "{output:?}");

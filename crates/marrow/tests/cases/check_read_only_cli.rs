@@ -165,6 +165,11 @@ fn check_rejects_lock_conflict_markers_without_creating_a_store() {
         "the error is the typed lock-corrupt code: {stderr}"
     );
     assert!(
+        stderr.contains("delete it and run marrow run")
+            && stderr.contains("restore the committed file"),
+        "an unparseable lock must give the recovery step, not just diagnose: {stderr}"
+    );
+    assert!(
         !store_path(&project).exists(),
         "rejecting a conflicted lock must not create a store"
     );
@@ -194,6 +199,14 @@ fn check_rejects_a_torn_lock_without_opening_the_store_snapshot() {
     assert!(
         stderr.contains("catalog.lock_corrupt"),
         "the torn lock surfaces the typed lock-corrupt code: {stderr}"
+    );
+    assert!(
+        stderr.contains("delete it and run marrow run"),
+        "a malformed-JSON lock must give the recovery step: {stderr}"
+    );
+    assert!(
+        !stderr.contains("line 1 column") && !stderr.contains("EOF while parsing"),
+        "the message must not leak raw serde parser line/column detail: {stderr}"
     );
     assert_eq!(
         fs::read(store_path(&project)).expect("read store after check"),
@@ -297,6 +310,15 @@ fn check_reports_a_stale_lock_when_the_source_digest_drifts() {
     assert!(
         stderr.contains("check.stale_lock"),
         "check surfaces the typed stale-lock advisory: {stderr}"
+    );
+    // The happy path reads only stdout, so the staleness must also surface there, folded into the
+    // success line and counted as a warning rather than living silently on stderr.
+    let stdout = String::from_utf8(check.stdout).expect("stdout utf8");
+    assert!(
+        stdout.contains("warning")
+            && stdout.contains("marrow.lock is stale")
+            && stdout.contains("marrow run"),
+        "the stale lock must surface and be counted on the stdout success line: {stdout}"
     );
 
     // Read-only: the store bytes are untouched and the committed lock is not re-projected.

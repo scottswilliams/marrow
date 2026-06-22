@@ -233,11 +233,16 @@ fn integrity_codes(value: &serde_json::Value) -> Vec<&str> {
 
 fn assert_repair_required_guidance(value: &serde_json::Value, context: &str) {
     let message = value["message"].as_str().unwrap_or_default();
+    // The guidance frames the retire as an in-source evolve block, points at the scaffold to print
+    // it, and names `evolve apply` as the command — never `evolve retire` as if it were a CLI
+    // subcommand.
     assert!(
         value["code"] == serde_json::json!("evolve.repair_required")
-            && message.contains("evolve retire")
-            && message.contains("repair"),
-        "{context} should report repair guidance including evolve retire: {value:#?}"
+            && message.contains("in-source evolve block")
+            && message.contains("evolve preview --scaffold")
+            && message.contains("marrow evolve apply")
+            && !message.contains("evolve retire <"),
+        "{context} should report in-source evolve-block repair guidance: {value:#?}"
     );
 }
 
@@ -245,11 +250,10 @@ fn assert_run_repair_guidance(stderr: &[u8], context: &str) {
     let stderr = String::from_utf8(stderr.to_vec()).expect("stderr utf8");
     assert!(
         stderr.contains("run.schema_drift")
-            && stderr.contains("evolve preview")
-            && stderr.contains("evolve apply")
-            && stderr.contains("evolve retire")
-            && stderr.contains("repair"),
-        "{context} should report repair guidance including evolve retire: {stderr}"
+            && stderr.contains("in-source evolve block")
+            && stderr.contains("evolve preview --scaffold")
+            && stderr.contains("marrow evolve apply"),
+        "{context} should report in-source evolve-block repair guidance: {stderr}"
     );
 }
 
@@ -468,11 +472,12 @@ fn evolve_preview_fences_a_populated_bare_drop() {
     assert!(
         blocking.iter().any(|report| {
             report["code"] == serde_json::json!("evolve.repair_required")
-                && report["message"]
-                    .as_str()
-                    .is_some_and(|message| message.contains("evolve retire"))
+                && report["message"].as_str().is_some_and(|message| {
+                    message.contains("in-source evolve block")
+                        && message.contains("marrow evolve apply")
+                })
         }),
-        "the fence names evolve retire: {preview_value:#?}"
+        "the fence frames an in-source evolve block: {preview_value:#?}"
     );
 }
 
@@ -638,10 +643,10 @@ fn evolve_preview_fences_a_populated_whole_resource_drop() {
         "exactly one fence repairs the dropped root by catalog id: {preview_value:#?}"
     );
     assert!(
-        drop_fences[0]["message"]
-            .as_str()
-            .is_some_and(|message| message.contains("evolve retire")),
-        "the fence's remediation command names evolve retire: {preview_value:#?}"
+        drop_fences[0]["message"].as_str().is_some_and(|message| {
+            message.contains("in-source evolve block") && message.contains("marrow evolve apply")
+        }),
+        "the fence's remediation frames an in-source evolve block: {preview_value:#?}"
     );
 }
 
@@ -666,7 +671,8 @@ fn assert_store_only_preview_fences(name: &str, source: &str, context: &str) {
             report["code"] == serde_json::json!("evolve.repair_required")
                 && report["data"]["catalog_id"] == serde_json::json!(store_id.as_str())
                 && report["message"].as_str().is_some_and(|message| {
-                    message.contains("evolve retire") && message.contains("repair")
+                    message.contains("in-source evolve block")
+                        && message.contains("marrow evolve apply")
                 })
         }),
         "{context} preview should fence the store root by catalog id with repair guidance: {value:#?}"

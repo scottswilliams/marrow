@@ -25,7 +25,7 @@ const HELP: &str = "\
 Marrow
 
 Usage:
-  marrow init <projectdir>
+  marrow init [--client] <projectdir>
   marrow check [--format text|json|jsonl] [--locked] <projectdir>
   marrow doctor [--format text|json|jsonl] <projectdir>
   marrow evolve preview [--from-backup <artifact>] [--scaffold] [--format text|json|jsonl] <projectdir>
@@ -34,8 +34,8 @@ Usage:
   marrow fmt [--check | --write] <file.mw | projectdir>
   marrow run [--entry <entry>] [--arg name=value]... [--maintenance] [--trace] [--dry-run] [--format text|json] <projectdir>
   marrow test [--trace] [--format text|json|jsonl] [--filter <substring>] <projectdir>
-  marrow serve [--write] [--cors-origin <loopback-origin>] [--addr <loopback:port>] <projectdir>
-  marrow client typescript <projectdir>
+  marrow serve [--write] [--watch] [--cors-origin <loopback-origin>] [--addr <loopback:port>] <projectdir>
+  marrow client typescript [--out <path>] <projectdir>
   marrow data <roots|stats|dump|integrity> [--backup <artifact>] [--format text|json|jsonl] <projectdir>
   marrow data recover [--format text|json|jsonl] <projectdir>
   marrow data get [--backup <artifact>] [--format text|json|jsonl] <projectdir> <path>
@@ -49,8 +49,10 @@ fn main() -> ExitCode {
     install_broken_pipe_exit();
     let args = std::env::args_os().skip(1).collect::<Vec<_>>();
     let Some((command, rest)) = args.split_first() else {
-        print!("{HELP}");
-        return ExitCode::SUCCESS;
+        // A bare `marrow` is a usage error, not success: it ran no command. Printing usage to
+        // stderr and exiting 2 keeps a forgotten subcommand from passing a CI gate green.
+        eprint!("{HELP}");
+        return ExitCode::from(2);
     };
     // Every command that parses, checks, or runs untrusted `.mw` source recurses
     // over the source on the call stack, so dispatch on a worker thread with a
@@ -235,11 +237,13 @@ pub(crate) fn report_project_failed_with_diagnostic(
 }
 
 /// A CLI-level advisory the checker itself does not raise — a stale `marrow.lock` or a stale
-/// declared client. Each carries the structured diagnostic for the JSON envelope and the text note
-/// for stderr, so a clean check can surface several at once through a single success render.
+/// declared client. Each carries the structured diagnostic for the JSON envelope, the full
+/// `code: message` note for stderr, and a short human `summary` folded into the stdout success
+/// line so the happy path (which never reads stderr) still sees the advisory and counts it.
 pub(crate) struct ProjectAdvisory {
     pub diagnostic: serde_json::Value,
     pub note: String,
+    pub summary: String,
 }
 
 /// Report a clean (no errors) project check that also surfaces CLI-level advisories the checker
@@ -256,10 +260,22 @@ pub(crate) fn report_project_ok_with_advisories(
 ) {
     match format {
         CheckFormat::Text => {
-            report_project_with_program(target, report, program, format);
+            // The checker diagnostics (if any) print located on stderr; the advisory full notes
+            // follow them there. The success line on stdout folds both the checker warnings and the
+            // advisories into one count and inlines each advisory summary, so the happy path that
+            // only reads stdout still sees and counts the staleness.
+            for line in project_diagnostic_lines(report) {
+                eprintln!("{line}");
+            }
             for advisory in &advisories {
                 eprintln!("{}", advisory.note);
             }
+            let warnings = warning_count(report) + advisories.len();
+            let summaries: Vec<&str> = advisories
+                .iter()
+                .map(|advisory| advisory.summary.as_str())
+                .collect();
+            println!("{}", success_line(target, warnings, &summaries));
         }
         CheckFormat::Json | CheckFormat::Jsonl => report_diagnostic_records(
             format,
@@ -273,6 +289,30 @@ pub(crate) fn report_project_ok_with_advisories(
     }
 }
 
+fn warning_count(report: &marrow_check::CheckReport) -> usize {
+    report
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.severity == marrow_syntax::Severity::Warning)
+        .count()
+}
+
+/// The stdout success line for a clean check: always `ok: <target> checked`, with a parenthetical
+/// warning count when any warning or advisory applies, and each advisory summary appended after the
+/// count so a stale lock or client is visible without reading stderr.
+fn success_line(target: &str, warnings: usize, advisory_summaries: &[&str]) -> String {
+    if warnings == 0 {
+        return format!("ok: {target} checked");
+    }
+    let suffix = if warnings == 1 { "warning" } else { "warnings" };
+    let mut detail = format!("{warnings} {suffix}");
+    for summary in advisory_summaries {
+        detail.push_str("; ");
+        detail.push_str(summary);
+    }
+    format!("ok: {target} checked ({detail})")
+}
+
 fn report_project_with_footprints(
     target: &str,
     report: &marrow_check::CheckReport,
@@ -283,21 +323,13 @@ fn report_project_with_footprints(
     match format {
         CheckFormat::Text => {
             if report.diagnostics.is_empty() {
-                println!("ok: {target} checked");
+                println!("{}", success_line(target, 0, &[]));
             } else {
                 for line in project_diagnostic_lines(report) {
                     eprintln!("{line}");
                 }
                 if !report.has_errors() {
-                    let warnings = report
-                        .diagnostics
-                        .iter()
-                        .filter(|diagnostic| {
-                            diagnostic.severity == marrow_syntax::Severity::Warning
-                        })
-                        .count();
-                    let suffix = if warnings == 1 { "warning" } else { "warnings" };
-                    println!("ok: checked ({warnings} {suffix})");
+                    println!("{}", success_line(target, warning_count(report), &[]));
                 }
             }
         }
@@ -700,8 +732,24 @@ pub(crate) fn reproject_committed_lock(
     else {
         return Ok(());
     };
-    marrow_check::project_store_lock(Path::new(dir), &snapshot, &program.source_digest())
-        .map_err(|error| project_io_exit(dir, error, format))
+    let projection =
+        marrow_check::project_store_lock(Path::new(dir), &snapshot, &program.source_digest())
+            .map_err(|error| project_io_exit(dir, error, format))?;
+    // The committed lock is otherwise invisible on the happy path; announce a create or rewrite
+    // once on stderr so the developer learns the file exists and must be committed. The note never
+    // touches the JSON envelope or program stdout.
+    if matches!(format, CheckFormat::Text) {
+        match projection {
+            marrow_check::LockProjection::Created => {
+                eprintln!("wrote marrow.lock (commit this file alongside your source)");
+            }
+            marrow_check::LockProjection::Updated => {
+                eprintln!("updated marrow.lock to match current source; commit the change");
+            }
+            marrow_check::LockProjection::Unchanged => {}
+        }
+    }
+    Ok(())
 }
 
 /// Outcome of regenerating a project's declared TypeScript client.

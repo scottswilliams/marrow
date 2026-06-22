@@ -59,6 +59,13 @@ fn run_commits_the_pending_catalog_into_the_store_and_reprojects_the_lock() {
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let stdout = String::from_utf8(output.stdout).expect("stdout utf8");
     assert_eq!(stdout, "ran\n");
+    // The first run writes the otherwise-invisible committed lock, so it announces the creation on
+    // stderr (off the program's stdout) and tells the developer to commit it.
+    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+    assert!(
+        stderr.contains("wrote marrow.lock") && stderr.contains("commit"),
+        "first run announces the new committed lock on stderr: {stderr}"
+    );
 
     // The store publishes the accepted catalog at the baseline epoch, with an entry for
     // the saved `^books` root; the committed lock is a projection of those committed rows.
@@ -124,6 +131,14 @@ fn a_second_run_does_not_churn_the_accepted_catalog() {
 
     let second = marrow_sub("run", &[root.to_str().unwrap()]);
     assert_eq!(second.status.code(), Some(0), "{second:?}");
+    // A second run re-projects nothing, so it emits no lock notice: the announcement fires only
+    // when the lock is actually created or changed, never on an idempotent re-run.
+    assert!(
+        !String::from_utf8(second.stderr.clone())
+            .expect("stderr utf8")
+            .contains("marrow.lock"),
+        "an idempotent second run must not announce a lock write: {second:?}"
+    );
     let (digest_two, commit_two, lock_two) = {
         let store = TreeStore::open(&store_path(&root)).expect("open store after second run");
         (

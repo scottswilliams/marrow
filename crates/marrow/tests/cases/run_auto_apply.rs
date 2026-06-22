@@ -182,15 +182,24 @@ fn a_required_add_against_an_empty_store_auto_applies_on_run() {
     );
     let notice = String::from_utf8(rerun.stderr).expect("stderr utf8");
     let notice_lines: Vec<&str> = notice.lines().collect();
-    assert_eq!(
-        notice_lines.len(),
-        1,
-        "auto-apply renders exactly one stderr line: {notice:?}"
-    );
-    let line = notice_lines[0];
+    // Auto-apply advances the epoch and re-projects the committed lock, so the run announces both
+    // the epoch transition and the lock update.
+    let epoch_line = notice_lines
+        .iter()
+        .find(|line| {
+            line.contains(&epoch_before.to_string())
+                && line.contains(&(epoch_before + 1).to_string())
+        })
+        .unwrap_or_else(|| panic!("auto-apply must name the epoch transition: {notice:?}"));
     assert!(
-        line.contains(&epoch_before.to_string()) && line.contains(&(epoch_before + 1).to_string()),
-        "the stderr notice names the epoch transition: {line:?}"
+        epoch_line.contains("auto-applied"),
+        "the epoch notice names the auto-apply: {epoch_line:?}"
+    );
+    assert!(
+        notice_lines
+            .iter()
+            .any(|line| line.contains("marrow.lock") && line.contains("commit")),
+        "auto-apply re-projects marrow.lock and announces it for commit: {notice:?}"
     );
     assert_eq!(
         accepted_epoch(&root),

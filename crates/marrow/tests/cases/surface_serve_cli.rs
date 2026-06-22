@@ -160,7 +160,7 @@ fn help_advertises_top_level_serve() {
     let stdout = String::from_utf8(output.stdout).expect("stdout utf8");
     assert!(
         stdout.contains(
-            "marrow serve [--write] [--cors-origin <loopback-origin>] [--addr <loopback:port>] <projectdir>"
+            "marrow serve [--write] [--watch] [--cors-origin <loopback-origin>] [--addr <loopback:port>] <projectdir>"
         ),
         "{stdout}"
     );
@@ -174,11 +174,12 @@ fn help_advertises_top_level_serve() {
     let serve_stdout = String::from_utf8(serve_help.stdout).expect("serve stdout utf8");
     assert!(
         serve_stdout.contains(
-            "marrow serve [--write] [--cors-origin <loopback-origin>] [--addr <loopback:port>] <projectdir>"
+            "marrow serve [--write] [--watch] [--cors-origin <loopback-origin>] [--addr <loopback:port>] <projectdir>"
         ),
         "{serve_stdout}"
     );
     assert!(serve_stdout.contains("--write"), "{serve_stdout}");
+    assert!(serve_stdout.contains("--watch"), "{serve_stdout}");
     assert!(serve_stdout.contains("--cors-origin"), "{serve_stdout}");
     assert!(
         serve_stdout.contains("/surface/v1/{read|create|update|delete|action}/<operation-tag>"),

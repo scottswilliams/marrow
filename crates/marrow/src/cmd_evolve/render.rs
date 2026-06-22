@@ -25,6 +25,10 @@ pub(super) struct SourceLabels {
 struct SourceTarget {
     display: String,
     scaffold: String,
+    /// The catalog path (`demo::books::Book::author`), the human form `--approve-retire` accepts.
+    /// Shown in destructive-approval guidance so the everyday flow never has to type the internal
+    /// catalog id.
+    catalog_path: String,
     /// The type-correct constant an `evolve default` scaffold backfills this target with,
     /// for a scalar resource member; `None` for a target with no defaultable leaf type
     /// (a store root, index, enum, or a non-scalar member).
@@ -76,6 +80,24 @@ impl SourceLabels {
         )
     }
 
+    /// The human field path (`demo::books::Book::author`) for a catalog id — the form
+    /// `--approve-retire` accepts — falling back to the catalog id when the program declares no
+    /// such entry.
+    fn approve_path(&self, catalog_id: &str) -> String {
+        self.by_catalog_id.get(catalog_id).map_or_else(
+            || catalog_id.to_string(),
+            |target| target.catalog_path.clone(),
+        )
+    }
+
+    /// The dotted source spelling (`Book.author`) for a catalog id, for naming what a retire
+    /// removes in prose.
+    fn display(&self, catalog_id: &str) -> String {
+        self.by_catalog_id
+            .get(catalog_id)
+            .map_or_else(|| catalog_id.to_string(), |target| target.display.clone())
+    }
+
     fn scaffold_target(&self, catalog_id: &str) -> String {
         self.by_catalog_id
             .get(catalog_id)
@@ -98,6 +120,7 @@ impl SourceTarget {
         Self {
             display: source_label(path),
             scaffold: scaffold_target(program, path),
+            catalog_path: path.to_string(),
             default_literal: member_default_literal(program, path),
         }
     }
@@ -474,9 +497,7 @@ fn scaffold_block(
     labels: &SourceLabels,
 ) -> Option<String> {
     match verdict {
-        Verdict::DestructiveDecisionRequired { populated } => {
-            Some(retire_scaffold(catalog_id, *populated, labels))
-        }
+        Verdict::DestructiveDecisionRequired { .. } => Some(retire_scaffold(catalog_id, labels)),
         Verdict::RepairRequired { reason } => repair_scaffold(catalog_id, reason, guidance, labels),
         _ => None,
     }
@@ -511,17 +532,23 @@ fn repair_scaffold(
                 Some(RepairGuidance::RenameOrRetire { from, to }) => {
                     Some(rename_scaffold(from, to, labels))
                 }
-                _ => Some(retire_scaffold(catalog_id, 0, labels)),
+                _ => Some(retire_scaffold(catalog_id, labels)),
             }
         }
         _ => None,
     }
 }
 
-fn retire_scaffold(catalog_id: &str, populated: usize, labels: &SourceLabels) -> String {
+/// The two-step retire scaffold. The first step is the parseable `evolve { retire ... }` block to
+/// paste into source; the second is a commented instruction to preview for the exact populated
+/// count and then apply with that count. It never prints a ready-to-run `--approve-retire <id>:0`
+/// line: at scaffold time the retire block is not yet in source, so the count is unknown and any
+/// printed count would fail `approval_mismatch` when run verbatim.
+fn retire_scaffold(catalog_id: &str, labels: &SourceLabels) -> String {
     let target = labels.scaffold_target(catalog_id);
+    let path = labels.approve_path(catalog_id);
     format!(
-        "evolve\n    retire {target}\n    ; approve with marrow evolve apply --maintenance --approve-retire {catalog_id}:{populated} (--backup <backup-file> | --no-backup) <projectdir>\n"
+        "evolve\n    retire {target}\n    ; Step 1: paste the evolve block above into your source.\n    ; Step 2: run marrow evolve preview <projectdir> to get the exact populated count for {path}.\n    ; Step 3: run marrow evolve apply --maintenance --approve-retire {path}:<count> (--backup <backup-file> | --no-backup) <projectdir>\n"
     )
 }
 
@@ -584,9 +611,10 @@ fn generic_blocking_report() -> BlockingReport {
 /// The `evolve.approval_required` prose, shared by the preview's blocking report and the
 /// apply error so both name the same retire-approval invocation for a destructive evolution.
 fn approval_required_message(catalog_id: &str, populated: usize, labels: &SourceLabels) -> String {
-    let display_id = labels.catalog_id(catalog_id);
+    let path = labels.approve_path(catalog_id);
+    let display = labels.display(catalog_id);
     format!(
-        "catalog id {display_id} retires {populated} populated record(s); rerun with --maintenance --approve-retire {catalog_id}:{populated} --backup <backup-file> (or --no-backup to opt out)"
+        "retiring {display} removes {populated} populated record(s); rerun with --maintenance --approve-retire {path}:{populated} --backup <backup-file> (or --no-backup to opt out)"
     )
 }
 
@@ -671,6 +699,40 @@ fn recovery_json(recovery: &RecoveryPoint) -> Option<serde_json::Value> {
     }
 }
 
+/// The concrete `evolve.approval_mismatch` for a witness whose destructive set the approval did not
+/// match: it names each retire the evolution requires by human path and exact count, so the
+/// operator can copy the corrected `--approve-retire` flag. Falls back to the generic message when
+/// the witness carries no destructive obligation (a defensive case admission would not reach).
+pub(super) fn approval_mismatch(
+    witness: &EvolutionWitness,
+    labels: &SourceLabels,
+    format: CheckFormat,
+) {
+    let expected: Vec<String> = witness
+        .verdicts
+        .iter()
+        .filter_map(|obligation| match &obligation.verdict {
+            Verdict::DestructiveDecisionRequired { populated } => {
+                let path = labels.approve_path(obligation.catalog_id.as_str());
+                Some(format!("--approve-retire {path}:{populated}"))
+            }
+            _ => None,
+        })
+        .collect();
+    if expected.is_empty() {
+        apply_error(ApplyError::ApprovalMismatch, labels, format);
+        return;
+    }
+    report_simple_error(
+        "evolve.approval_mismatch",
+        &format!(
+            "the --approve-retire counts did not match what this evolution retires; approve exactly: {}",
+            expected.join(" ")
+        ),
+        format,
+    );
+}
+
 pub(super) fn requires_backup(format: CheckFormat) {
     report_simple_error(
         "evolve.requires_backup",
@@ -724,9 +786,12 @@ pub(super) fn apply_error(error: ApplyError, labels: &SourceLabels, format: Chec
             &approval_required_message(catalog_id.as_str(), populated, labels),
             format,
         ),
+        // ApprovalMismatch is rendered by the caller, which holds the witness and can name the
+        // exact approval the destructive set requires; reaching it here means the caller did not,
+        // so fall back to a still-actionable message rather than the opaque "preview witness" one.
         ApplyError::ApprovalMismatch => report_simple_error(
             "evolve.approval_mismatch",
-            "destructive approval did not match the preview witness",
+            "the --approve-retire counts did not match what this evolution retires; run `marrow evolve preview <projectdir>` to see the exact path and count to approve",
             format,
         ),
         ApplyError::PlanMismatch { expected, staged } => report_drift_error(

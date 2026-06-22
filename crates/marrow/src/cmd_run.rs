@@ -592,9 +592,11 @@ fn preview_actions(notices: &[ProjectSessionNotice]) -> dry_run::PreviewActions 
                 actions.would_fence = true;
                 actions.messages.push(notice.message());
             }
-            // `AutoApplied` is a committed write-path event, not a dry-run preview action;
-            // it surfaces through the run's text stderr line and the JSON envelope.
-            ProjectSessionNotice::AutoApplied { .. } => {}
+            // `AutoApplied` and the lock-projection notices are committed write-path events, not
+            // dry-run preview actions; they surface through the run's stderr notice lines.
+            ProjectSessionNotice::AutoApplied { .. }
+            | ProjectSessionNotice::LockCreated
+            | ProjectSessionNotice::LockUpdated => {}
         }
     }
     actions

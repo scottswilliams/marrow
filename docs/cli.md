@@ -132,6 +132,9 @@ target cannot be written safely, and `2` for usage errors.
 ```console
 $ marrow init shelf
 created shelf
+next steps:
+  cd shelf
+  marrow run .    # run the project and write its store and marrow.lock
 
 $ cd shelf
 $ marrow check .

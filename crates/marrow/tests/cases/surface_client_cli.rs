@@ -261,10 +261,33 @@ fn client_help_advertises_top_level_command() {
 
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let stdout = String::from_utf8(output.stdout).expect("stdout utf8");
-    assert!(stdout.contains("marrow client typescript <projectdir>"));
+    assert!(stdout.contains("marrow client typescript [--out <path>] <projectdir>"));
+    assert!(
+        stdout.contains("--out"),
+        "client help must advertise the shipped --out flag: {stdout}"
+    );
     assert!(
         !stdout.contains("marrow surface"),
         "client help should not advertise removed surface commands: {stdout}"
+    );
+}
+
+#[test]
+fn bare_client_is_a_usage_failure() {
+    // A forgotten subcommand (`marrow client`) ran nothing, so it must exit 2 like every other
+    // missing-subcommand usage error rather than passing a CI gate green.
+    let output = marrow(&["client"]);
+
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    assert!(
+        output.stdout.is_empty(),
+        "usage text goes to stderr, not stdout: {:?}",
+        output.stdout
+    );
+    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+    assert!(
+        stderr.contains("marrow client typescript"),
+        "bare client must print usage on stderr: {stderr}"
     );
 }
 

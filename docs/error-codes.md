@@ -420,8 +420,9 @@ Source-native data-evolution preview/apply faults.
 | `evolve.drift` | The live source, catalog, store snapshot, engine metadata, affected IDs, store commit, or planned effect counts no longer match the preview witness. JSON envelopes carry `data.drift_kind`: `{"kind":"witness"}`, `{"kind":"store_commit","pinned":...,"found":...}`, or `{"kind":"plan_mismatch","expected":...,"staged":...}`. Rerun `marrow evolve preview`, then rerun `marrow evolve apply`. |
 | `evolve.catalog_drift` | The store's accepted catalog snapshot changed after preview, so the witness was discharged against a catalog the store no longer holds. Apply refuses before writing; rerun `marrow evolve preview`, then rerun `marrow evolve apply`. |
 | `evolve.maintenance_required` | A destructive retire was reached without the maintenance gate. |
-| `evolve.approval_required` | A destructive retire needs an approval naming the catalog ID and populated count from preview. |
-| `evolve.approval_mismatch` | The supplied destructive approval did not match the exact preview witness. |
+| `evolve.approval_required` | A destructive retire needs `--approve-retire <field-path>:<count>` naming the field path and populated count from preview. |
+| `evolve.approval_mismatch` | The `--approve-retire` counts did not match what the evolution retires. The message names the exact path and count to approve. |
+| `evolve.approval_target_unknown` | A `--approve-retire` target is not a field path or catalog id in the project. Run `marrow evolve preview <projectdir>` to see the exact path to approve. |
 | `evolve.requires_backup` | A Retire-bearing apply did not name `--backup <path>` or explicit `--no-backup`. Apply refuses before approval checks or evolution work. |
 | `evolve.backup_path_managed` | `evolve apply --backup` named a managed project artifact or subtree: `marrow.json`, `marrow.lock`, source roots, test paths, or the native data directory/store file. Apply refuses before backup creation or evolution work. |
 | `evolve.transform_faulted` | A checked transform body faulted while running against real data, so apply rolled back. |

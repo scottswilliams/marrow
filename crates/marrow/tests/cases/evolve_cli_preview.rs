@@ -344,13 +344,19 @@ fn evolve_preview_reports_destructive_approval_requirement()
     // A blocked text-format preview renders the typed code on the blocking-obligation
     // stream (stderr); the preview body itself stays on stdout.
     assert!(stderr.contains("evolve.approval_required"), "{stderr}");
+    // The approval message leads with the human field path and teaches the path form of
+    // --approve-retire, keeping the internal catalog id out of the everyday guidance.
     assert!(
-        stderr.contains(&format!("catalog id {subtitle_id} (books.Book.subtitle)")),
-        "{stderr}"
+        stderr.contains("retiring books.Book.subtitle"),
+        "approval message should name the human field path: {stderr}"
     );
     assert!(
-        stderr.contains(&format!("--approve-retire {subtitle_id}:1")),
-        "{stderr}"
+        stderr.contains("--approve-retire books::Book::subtitle:1"),
+        "approval guidance should teach the field-path form of --approve-retire: {stderr}"
+    );
+    assert!(
+        !stderr.contains(&format!("--approve-retire {subtitle_id}")),
+        "the everyday approval guidance should not require the internal catalog id: {stderr}"
     );
     assert!(
         stderr.contains("--backup <backup-file>") && stderr.contains("--no-backup"),
@@ -388,7 +394,8 @@ fn evolve_preview_reports_destructive_approval_requirement()
     assert!(
         report["message"]
             .as_str()
-            .is_some_and(|message| message.contains("(books.Book.subtitle)")),
+            .is_some_and(|message| message.contains("retiring books.Book.subtitle")
+                && message.contains("--approve-retire books::Book::subtitle:1")),
         "{report:#?}"
     );
     assert_eq!(report["data"]["populated"], serde_json::json!(1));
@@ -463,12 +470,21 @@ fn evolve_preview_scaffold_spells_a_retired_store_root_with_a_single_caret()
         !scaffold.contains("^^"),
         "store-root retire must not double the caret: {scaffold}"
     );
+    // The scaffold is a two-step instruction, never a ready-to-run approve line: at scaffold time
+    // the retire block is not yet in source, so the count is unknown. It teaches the field-path
+    // form of --approve-retire and points back at preview for the count.
     assert!(
-        scaffold.contains(&format!(
-            "; approve with marrow evolve apply --maintenance --approve-retire {shelves_store_id}:1 (--backup <backup-file> | --no-backup)"
-        )),
-        "store-root retire scaffold should name the exact approval count and recovery choice: {scaffold}"
+        scaffold.contains("Step 1: paste the evolve block")
+            && scaffold.contains("marrow evolve preview")
+            && scaffold.contains("--approve-retire books::^shelves:<count>"),
+        "store-root retire scaffold should give a two-step instruction, not a runnable approve line: {scaffold}"
     );
+    assert!(
+        !scaffold.contains(&format!("--approve-retire {shelves_store_id}:0"))
+            && !scaffold.contains(&format!("--approve-retire {shelves_store_id}:1")),
+        "scaffold must never print a runnable --approve-retire <id>:<count> line: {scaffold}"
+    );
+    let _ = shelves_store_id;
 
     Ok(())
 }
@@ -536,12 +552,19 @@ fn evolve_preview_scaffold_emits_parseable_formatted_evolve_blocks()
         scaffold.contains("evolve\n    retire Book.subtitle"),
         "retire block should be ready to paste: {scaffold}"
     );
+    // The retire scaffold is a two-step instruction (paste the block, then preview for the count,
+    // then apply), never a runnable approve line with a guessed count.
     assert!(
-        scaffold.contains(&format!(
-            "; approve with marrow evolve apply --maintenance --approve-retire {subtitle_id}:1 (--backup <backup-file> | --no-backup)"
-        )),
-        "retire scaffold should name the exact approval count and recovery choice: {scaffold}"
+        scaffold.contains("Step 1: paste the evolve block")
+            && scaffold.contains("--approve-retire books::Book::subtitle:<count>"),
+        "retire scaffold should give a two-step instruction with the field-path approval form: {scaffold}"
     );
+    assert!(
+        !scaffold.contains(&format!("--approve-retire {subtitle_id}:0"))
+            && !scaffold.contains(&format!("--approve-retire {subtitle_id}:1")),
+        "scaffold must never print a runnable --approve-retire <id>:<count> line: {scaffold}"
+    );
+    let _ = subtitle_id;
     assert!(
         scaffold.contains("evolve\n    default Book.pages = 0"),
         "missing required member should get a parseable default skeleton: {scaffold}"

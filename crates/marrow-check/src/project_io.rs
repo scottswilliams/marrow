@@ -311,7 +311,7 @@ pub fn project_store_lock(
     root: &Path,
     snapshot: &marrow_catalog::CatalogMetadata,
     source_digest: &str,
-) -> Result<(), ProjectIoError> {
+) -> Result<LockProjection, ProjectIoError> {
     let existing = read_committed_lock(root)?;
     let entries: Vec<marrow_catalog::LockEntry> = snapshot
         .entries
@@ -340,18 +340,34 @@ pub fn project_store_lock(
             message: error.message,
         })?;
     let path = root.join(marrow_project::CATALOG_FILE_NAME);
-    match fs::read_to_string(&path) {
-        Ok(current) if current == desired => return Ok(()),
-        Ok(_) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+    let projection = match fs::read_to_string(&path) {
+        Ok(current) if current == desired => return Ok(LockProjection::Unchanged),
+        Ok(_) => LockProjection::Updated,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => LockProjection::Created,
         Err(error) => {
             return Err(ProjectIoError::Io {
                 path: path.clone(),
                 error,
             });
         }
-    }
-    write_lock_atomically(&path, &desired)
+    };
+    write_lock_atomically(&path, &desired)?;
+    Ok(projection)
+}
+
+/// What a `marrow.lock` projection did to the on-disk file. The write path surfaces this to the
+/// developer so the otherwise-invisible lock lifecycle is announced once: a first run that creates
+/// the lock teaches that the file exists and must be committed; a re-projection that rewrites it
+/// teaches that the committed lock changed and must be re-committed. An idempotent no-op stays
+/// silent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LockProjection {
+    /// The on-disk lock already matched the projection; nothing was written.
+    Unchanged,
+    /// No lock existed on disk; the projection created it.
+    Created,
+    /// A different lock existed on disk; the projection rewrote it.
+    Updated,
 }
 
 /// Union the snapshot's reserved tombstones with the committed lock's, so an append-only ledger

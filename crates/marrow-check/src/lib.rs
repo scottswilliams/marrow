@@ -130,10 +130,10 @@ pub use program::{
     DebugSourceIdentity, EvolveTransform, FileId, MarrowType, ProgramCatalog, RuntimeStopPoint,
 };
 pub use project_io::{
-    CONFIG_DATA_DIR, ProjectIoError, check_project_against, check_source_project_analysis_against,
-    load_config, native_store_path, project_store_lock, read_accepted_catalog_artifact,
-    read_accepted_catalog_with_store, read_accepted_catalog_with_store_read_only,
-    read_committed_lock, recheck_against_store_catalog,
+    CONFIG_DATA_DIR, LockProjection, ProjectIoError, check_project_against,
+    check_source_project_analysis_against, load_config, native_store_path, project_store_lock,
+    read_accepted_catalog_artifact, read_accepted_catalog_with_store,
+    read_accepted_catalog_with_store_read_only, read_committed_lock, recheck_against_store_catalog,
     recheck_source_project_analysis_against_store_catalog, resolve_store_path,
 };
 pub use resolve::{Def, DefItem, Resolution, ResolvableKind, resolve};

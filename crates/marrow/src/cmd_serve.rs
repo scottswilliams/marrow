@@ -47,7 +47,7 @@ impl ServeMode {
 const COMMAND: &str = "serve";
 const HELP: &str = "\
 Usage:
-  marrow serve [--write] [--cors-origin <loopback-origin>] [--addr <loopback:port>] <projectdir>
+  marrow serve [--write] [--watch] [--cors-origin <loopback-origin>] [--addr <loopback:port>] <projectdir>
 
 Run a local HTTP surface endpoint. The server accepts one JSON POST per
 connection and closes the response on descriptor-derived

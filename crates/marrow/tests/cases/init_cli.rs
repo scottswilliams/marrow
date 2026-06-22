@@ -133,6 +133,14 @@ fn init_scaffold_checks_runs_and_tests() {
         "unexpected stderr: {:?}",
         init.stderr
     );
+    // init prints a next-steps block on stdout so a newcomer learns how to run the scaffold.
+    let init_stdout = String::from_utf8(init.stdout.clone()).expect("init stdout utf8");
+    assert!(
+        init_stdout.contains("next steps:")
+            && init_stdout.contains("cd ")
+            && init_stdout.contains("marrow run ."),
+        "init should print next steps (cd, marrow run): {init_stdout}"
+    );
 
     assert_eq!(
         fs::read_to_string(target.join("marrow.json")).expect("read config"),

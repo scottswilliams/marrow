@@ -300,9 +300,10 @@ impl CatalogLock {
     /// epoch high-water no real change could advance past. It never panics and is never lenient.
     pub fn from_lock_json(json: &str) -> Result<Self, CatalogError> {
         if contains_conflict_marker(json) {
-            return Err(CatalogError::lock_corrupt("contains Git conflict markers"));
+            return Err(CatalogError::lock_unparseable());
         }
-        let lock: Self = serde_json::from_str(json).map_err(CatalogError::lock_corrupt)?;
+        let lock: Self =
+            serde_json::from_str(json).map_err(|_| CatalogError::lock_unparseable())?;
         lock.validate()?;
         Ok(lock)
     }
@@ -913,6 +914,21 @@ impl CatalogError {
         Self {
             code: LOCK_CORRUPT,
             message: format!("marrow.lock is corrupt: {detail}"),
+        }
+    }
+
+    /// A committed lock that is not valid JSON at all — malformed JSON or unresolved Git conflict
+    /// markers. The lock is generated and never hand-edited, so the recovery is always the same:
+    /// delete it and let a write path re-project it, or restore the committed file. The message
+    /// gives that recovery directly rather than leaking parser line/column detail, which an
+    /// everyday developer cannot act on.
+    fn lock_unparseable() -> Self {
+        Self {
+            code: LOCK_CORRUPT,
+            message: "marrow.lock is not valid (malformed JSON); it is generated and never \
+                      hand-edited -- delete it and run marrow run <projectdir> (or marrow evolve \
+                      apply) to re-project it from the store, or restore the committed file"
+                .to_string(),
         }
     }
 }

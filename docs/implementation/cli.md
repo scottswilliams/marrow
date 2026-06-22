@@ -63,7 +63,7 @@ Structured reports that include a `project` field render the canonical absolute 
 
 | File | Responsibility |
 |---|---|
-| `crates/marrow-check/src/project_io.rs` | Shared project loaders, the committed `marrow.lock` reader and store-else-lock binding, the single lock-write owner (`project_store_lock`: monotonic-max epoch high-water, unioned retired-id ledger, atomic temp-file + `fsync` + rename write), and project IO error mapping for CLI callers (lock corruption, including Git conflict markers detected by the lock codec, surfaces as `catalog.lock_corrupt`). |
+| `crates/marrow-check/src/project_io.rs` | Shared project loaders, the committed `marrow.lock` reader and store-else-lock binding, the single lock-write owner (`project_store_lock`: monotonic-max epoch high-water, unioned retired-id ledger, atomic temp-file + `fsync` + rename write; returns a `LockProjection` of created/updated/unchanged so the write path can announce the otherwise-invisible lock), and project IO error mapping for CLI callers (lock corruption, including Git conflict markers and any non-JSON lock, surfaces as `catalog.lock_corrupt` with the delete-and-re-run recovery step). |
 
 ### CLI core (`marrow`)
 
