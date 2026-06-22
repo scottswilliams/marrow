@@ -105,11 +105,17 @@ pub enum SurfaceReadOperationIndexKeySource {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SurfaceOperationEnumMember {
+    pub render_label: String,
+    pub catalog_id: CatalogId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SurfaceOperationValueShape {
     Scalar(marrow_schema::ScalarType),
     Enum {
         enum_catalog_id: CatalogId,
-        member_catalog_ids: Vec<CatalogId>,
+        members: Vec<SurfaceOperationEnumMember>,
     },
     Identity {
         store_catalog_id: CatalogId,
@@ -690,7 +696,7 @@ fn value_shape(
             let enum_fact = program.facts.enum_(*enum_id)?;
             Some(SurfaceOperationValueShape::Enum {
                 enum_catalog_id: accepted_catalog_id(program, enum_fact.catalog_id.as_deref())?,
-                member_catalog_ids: members
+                members: members
                     .iter()
                     .map(|member_id| {
                         let member = program
@@ -698,7 +704,10 @@ fn value_shape(
                             .enum_members()
                             .iter()
                             .find(|member| member.id == *member_id)?;
-                        accepted_catalog_id(program, member.catalog_id.as_deref())
+                        Some(SurfaceOperationEnumMember {
+                            render_label: member.name.clone(),
+                            catalog_id: accepted_catalog_id(program, member.catalog_id.as_deref())?,
+                        })
                     })
                     .collect::<Option<Vec<_>>>()?,
             })

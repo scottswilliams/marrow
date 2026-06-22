@@ -155,13 +155,19 @@ pub enum SurfaceOperationValueShapeJson {
     },
     Enum {
         enum_catalog_id: String,
-        member_catalog_ids: Vec<String>,
+        members: Vec<SurfaceOperationEnumMemberJson>,
     },
     Identity {
         store_catalog_id: String,
         arity: usize,
         key_scalars: Vec<String>,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SurfaceOperationEnumMemberJson {
+    pub render_label: String,
+    pub catalog_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -748,12 +754,12 @@ impl From<marrow_check::SurfaceOperationValueShape> for SurfaceOperationValueSha
             },
             marrow_check::SurfaceOperationValueShape::Enum {
                 enum_catalog_id,
-                member_catalog_ids,
+                members,
             } => Self::Enum {
                 enum_catalog_id: enum_catalog_id.as_str().to_string(),
-                member_catalog_ids: member_catalog_ids
+                members: members
                     .into_iter()
-                    .map(|id| id.as_str().to_string())
+                    .map(SurfaceOperationEnumMemberJson::from)
                     .collect(),
             },
             marrow_check::SurfaceOperationValueShape::Identity {
@@ -768,6 +774,15 @@ impl From<marrow_check::SurfaceOperationValueShape> for SurfaceOperationValueSha
                     .map(|scalar| scalar.name().to_string())
                     .collect(),
             },
+        }
+    }
+}
+
+impl From<marrow_check::SurfaceOperationEnumMember> for SurfaceOperationEnumMemberJson {
+    fn from(member: marrow_check::SurfaceOperationEnumMember) -> Self {
+        Self {
+            render_label: member.render_label,
+            catalog_id: member.catalog_id.as_str().to_string(),
         }
     }
 }

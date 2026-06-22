@@ -196,6 +196,115 @@ surface Books from ^books
     );
 }
 
+/// An enum-bearing read tag is keyed by enum and member catalog ids, never by a member's render
+/// label. Adding per-member render labels to the surface value shape must leave this tag
+/// byte-identical; only the surface ABI digest may move. Fixed accepted catalog ids make the
+/// expected bytes a live contract that rotates if the tag inputs ever pick up the labels.
+#[test]
+fn surface_enum_read_operation_tag_is_independent_of_member_render_labels() {
+    let root = temp_project("surface-enum-abi-tag-stability", |root| {
+        write(
+            root,
+            "src/app.mw",
+            "\
+module app
+enum Status
+    draft
+    published
+resource Book
+    required title: string
+    status: Status
+store ^books(id: int): Book
+surface Books from ^books
+    fields status
+",
+        );
+        write_catalog(
+            root,
+            &catalog(vec![
+                entry(
+                    CatalogEntryKind::Resource,
+                    "app::Book",
+                    "cat_00000000000000000000000000000001",
+                    &[],
+                ),
+                CatalogEntry {
+                    accepted_key_shape: Some("int".to_string()),
+                    ..entry(
+                        CatalogEntryKind::Store,
+                        "app::^books",
+                        "cat_00000000000000000000000000000002",
+                        &[],
+                    )
+                },
+                CatalogEntry {
+                    accepted_struct: Some("leaf:string".to_string()),
+                    ..entry(
+                        CatalogEntryKind::ResourceMember,
+                        "app::Book::title",
+                        "cat_00000000000000000000000000000003",
+                        &[],
+                    )
+                },
+                entry(
+                    CatalogEntryKind::Enum,
+                    "app::Status",
+                    "cat_00000000000000000000000000000004",
+                    &[],
+                ),
+                entry(
+                    CatalogEntryKind::EnumMember,
+                    "app::Status::draft",
+                    "cat_00000000000000000000000000000005",
+                    &[],
+                ),
+                entry(
+                    CatalogEntryKind::EnumMember,
+                    "app::Status::published",
+                    "cat_00000000000000000000000000000006",
+                    &[],
+                ),
+                CatalogEntry {
+                    accepted_struct: Some("leaf:enum:cat_00000000000000000000000000000004".to_string()),
+                    ..entry(
+                        CatalogEntryKind::ResourceMember,
+                        "app::Book::status",
+                        "cat_00000000000000000000000000000007",
+                        &[],
+                    )
+                },
+            ]),
+        );
+    });
+    let (report, program) = check_with_accepted(&root);
+    assert_clean(&report);
+    assert_eq!(program.catalog.proposal, None);
+
+    let descriptor = program.facts.surfaces()[0]
+        .read_operations
+        .iter()
+        .find_map(|operation| SurfaceReadOperationDescriptor::from_operation(
+            &program,
+            &program.facts.surfaces()[0],
+            operation,
+        ))
+        .expect("stable read descriptor");
+    assert!(
+        descriptor.projection.iter().any(|field| matches!(
+            &field.value,
+            SurfaceOperationValueShape::Enum { members, .. }
+                if members.iter().map(|member| member.render_label.as_str()).collect::<Vec<_>>()
+                    == vec!["draft", "published"]
+        )),
+        "the status projection carries the labelled enum value shape this test guards"
+    );
+    assert_eq!(
+        descriptor.operation_tag,
+        "sha256:6d1b0249db57067d29f1accf7c7f85c78b7792e388ccd1ad3ecd45872803a36e",
+        "enum read tags must not rotate when member render labels are added"
+    );
+}
+
 #[test]
 fn surface_update_operation_tag_keeps_v1_bytes_stable_from_store_identity() {
     let root = temp_project("surface-update-abi-tag-stability", |root| {
@@ -434,9 +543,9 @@ surface Books from ^books
     assert!(by_status_descriptor.index_keys.iter().any(
         |key| matches!(&key.value, SurfaceOperationValueShape::Enum {
                 enum_catalog_id,
-                member_catalog_ids,
+                members,
             } if enum_catalog_id.as_str() == facts.enum_(status_enum).unwrap().catalog_id.as_deref().unwrap()
-                && member_catalog_ids.len() == 2)
+                && members.len() == 2)
     ));
 
     let unique = descriptors
@@ -1389,9 +1498,10 @@ surface Books from ^books
         &status_field.value,
         SurfaceOperationValueShape::Enum {
             enum_catalog_id,
-            member_catalog_ids,
+            members,
         } if enum_catalog_id.as_str() == facts.enum_(status_enum).unwrap().catalog_id.as_deref().unwrap()
-            && member_catalog_ids.len() == 2
+            && members.iter().map(|member| member.render_label.as_str()).collect::<Vec<_>>()
+                == vec!["draft", "published"]
     ));
     assert!(matches!(
         &author_field.value,
