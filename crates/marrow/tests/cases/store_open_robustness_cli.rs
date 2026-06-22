@@ -8,8 +8,8 @@ use crate::support;
 use crate::support_data;
 use std::path::Path;
 use support::{
-    corrupt_primary_slot_selector, find_code_segment, last_fault, marrow,
-    redb_store_path as store_path, write,
+    corrupt_primary_slot_selector, find_code_segment, last_fault, marrow, native_config,
+    redb_store_path as store_path, temp_project_uncommitted, write,
 };
 use support_data::{native_project, seeded_project};
 
@@ -24,6 +24,51 @@ fn truncate_store_body(project: &Path) {
         .open(&path)
         .expect("open store for truncation");
     file.set_len(4096).expect("truncate store body");
+}
+
+/// A seed that writes thousands of records, so the data btree spans interior pages
+/// rather than living entirely in its root. Internal-page damage on such a store is
+/// invisible to a probe that only opens the tables; it surfaces only when a command
+/// walks the tree.
+fn bulk_counter_source() -> &'static str {
+    "module app\n\
+     \n\
+     resource Counter\n\
+     \x20\x20\x20\x20required value: int\n\
+     store ^counter(id: int): Counter\n\
+     \n\
+     pub fn seed()\n\
+     \x20\x20\x20\x20transaction\n\
+     \x20\x20\x20\x20\x20\x20\x20\x20for i in 1..=4000\n\
+     \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20var c: Counter\n\
+     \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20c.value = i\n\
+     \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20^counter(i) = c\n"
+}
+
+/// Seed a multi-page native store, then flip one byte of the body at `offset`. The
+/// damage hides below the table roots, so opening the meta and data tables still
+/// succeeds; only walking the tree reaches it. This is the corruption that read
+/// commands, `run`, and `recover` formerly opened cleanly and then panicked on.
+fn bulk_seeded_corrupt_store(name: &str, offset: usize) -> (support::TempProject, String) {
+    let project = temp_project_uncommitted(name, |root| {
+        write(root, "marrow.json", native_config());
+        write(root, "src/app.mw", bulk_counter_source());
+    });
+    let dir = project.to_str().expect("dir utf8").to_string();
+    assert_eq!(
+        marrow(&["run", "--entry", "app::seed", &dir]).status.code(),
+        Some(0),
+        "seed a multi-page store",
+    );
+    let path = store_path(&project);
+    let mut bytes = std::fs::read(&path).expect("read store body");
+    assert!(
+        bytes.len() > offset,
+        "a 4000-record store should span past offset {offset}",
+    );
+    bytes[offset] ^= 0xff;
+    std::fs::write(&path, &bytes).expect("write corrupted store body");
+    (project, dir)
 }
 
 /// The dotted code a `marrow` command printed on stderr, located the same way the
@@ -96,6 +141,76 @@ fn store_opening_commands_report_corruption_not_a_panic() {
             "`marrow {}` must not leak a redb panic backtrace: {stderr}",
             command.join(" ")
         );
+    }
+}
+
+/// Damage below the table roots opens cleanly — every read-only data command,
+/// `run`, and `recover` walk the tree and so must fail closed with exit 1 and a
+/// typed code, never a redb traversal panic (exit 101). The data commands and
+/// `recover` report `store.corruption`; `run` anchors the same corruption at its
+/// source path as `run.store`, the runtime's code for a store fault. `recover` in
+/// particular must not report a false success on a store it cannot make readable.
+/// Run across a sweep of byte offsets, including 20484, which a probe that walks
+/// only an unbounded range misses while the bounded-prefix reads still panic.
+#[test]
+fn interior_page_corruption_reports_corruption_on_every_traversal_command() {
+    for offset in [8192usize, 12288, 16384, 20484, 24576] {
+        let (_project, dir) = bulk_seeded_corrupt_store(
+            &format!("cli-store-interior-page-corruption-{offset}"),
+            offset,
+        );
+
+        // The data tools and `recover` report the store code directly. `run`
+        // re-opens write-capable, so it reports `store.corruption` when the damage is
+        // caught at open and the runtime-anchored `run.store` when it surfaces during
+        // a read; both carry the same corruption fault.
+        let commands: &[(&[&str], &[&str])] = &[
+            (&["data", "integrity", &dir], &["store.corruption"]),
+            (&["data", "dump", &dir], &["store.corruption"]),
+            (&["data", "stats", &dir], &["store.corruption"]),
+            (&["data", "roots", &dir], &["store.corruption"]),
+            (&["data", "get", &dir, "^counter(1)"], &["store.corruption"]),
+            (
+                &["run", "--entry", "app::seed", &dir],
+                &["run.store", "store.corruption"],
+            ),
+            (&["data", "recover", &dir], &["store.corruption"]),
+        ];
+
+        for (command, expected_codes) in commands {
+            let output = marrow(command);
+            let code = output.status.code();
+            assert_ne!(
+                code,
+                Some(101),
+                "offset {offset}: `marrow {}` must not abort on a redb traversal panic: {output:?}",
+                command.join(" ")
+            );
+            // A flip redb tolerates leaves a readable store, so a command may still
+            // succeed; the contract is that it never panics and, when it does fault,
+            // reports a typed corruption code with exit 1.
+            if code != Some(0) {
+                assert_eq!(
+                    code,
+                    Some(1),
+                    "offset {offset}: `marrow {}` must exit 1 on corruption: {output:?}",
+                    command.join(" ")
+                );
+                let reported = stderr_code(&output);
+                assert!(
+                    expected_codes.contains(&reported.as_str()),
+                    "offset {offset}: `marrow {}` must report one of {expected_codes:?}, \
+                     got {reported}: {output:?}",
+                    command.join(" ")
+                );
+            }
+            let stderr = String::from_utf8(output.stderr.clone()).expect("utf8 stderr");
+            assert!(
+                !stderr.contains("panicked at") && !stderr.contains("RUST_BACKTRACE"),
+                "offset {offset}: `marrow {}` must not leak a redb panic backtrace: {stderr}",
+                command.join(" ")
+            );
+        }
     }
 }
 

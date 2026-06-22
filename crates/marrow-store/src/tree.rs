@@ -206,6 +206,22 @@ impl TreeStore {
         }
     }
 
+    /// Walk every cell through the production scan path, so damage below the table
+    /// roots — which opens cleanly because redb reads btree pages lazily — surfaces
+    /// as a typed [`StoreError`] rather than on a later read. Used by `recover`,
+    /// which otherwise opens and replays without traversing the tree. The walk
+    /// paginates rather than materializing the whole store.
+    pub fn verify_readable(&self) -> Result<(), StoreError> {
+        let mut page = self.scan(&[], BACKUP_SCAN_PAGE)?;
+        while page.truncated {
+            let Some((resume, _)) = page.entries.last() else {
+                break;
+            };
+            page = self.scan_after(&[], &resume.clone(), BACKUP_SCAN_PAGE)?;
+        }
+        Ok(())
+    }
+
     pub fn begin(&self) -> Result<(), StoreError> {
         self.backend.borrow_mut().begin()
     }

@@ -36,7 +36,7 @@ const MARROW_REDB_DURABILITY: Durability = Durability::Immediate;
 const DELETE_BATCH_LIMIT: usize = 256;
 #[cfg(unix)]
 const STORE_SYMLINK_HOP_LIMIT: usize = 40;
-static OPEN_PANIC_HOOK: Mutex<()> = Mutex::new(());
+static STORE_PANIC_HOOK: Mutex<()> = Mutex::new(());
 
 impl<'a> traversal::ScanEntry
     for (
@@ -195,42 +195,63 @@ fn is_torn_body(error: &std::io::Error) -> bool {
     )
 }
 
-/// Run a store open and its structural probe under a panic backstop.
+/// Run a store open and its structural probe under the panic backstop.
 ///
 /// redb does not return an error for every damaged file: a truncated or clobbered
 /// body drives its open-and-repair path into a layout assertion or an
-/// `unreachable!()` in btree traversal, which panics. Marrow builds unwind on
-/// panic, so the backstop catches that escape here and converts it into
-/// [`StoreError::Corruption`], leaving the process alive and the fault fail-closed
-/// with a typed code instead of a redb backtrace on stderr.
-///
-/// The catch wraps only the open and its probe so it cannot mask an unrelated bug;
-/// the closure itself maps redb open errors through [`map_open_error`]. A no-op
-/// panic hook is installed for the duration of the open so an expected redb open
-/// panic does not print its message and backtrace, then the previous hook is
-/// restored. The hook is process-global, so concurrent in-process opens serialize
-/// the swap, and panics from other threads still delegate to the hook that was
-/// installed before the open.
+/// `unreachable!()`, which panics. The backstop catches that escape and converts it
+/// into [`StoreError::Corruption`], with a message describing the open failure.
 fn catch_open<T>(open: impl FnOnce() -> Result<T, StoreError>) -> Result<T, StoreError> {
-    let hook_guard = OPEN_PANIC_HOOK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    catch_open_locked(open, &hook_guard)
+    catch_store_panic(open, "the storage engine could not open the store file")
 }
 
-fn catch_open_locked<T>(
-    open: impl FnOnce() -> Result<T, StoreError>,
+/// Run a store read or traversal under the panic backstop.
+///
+/// redb walks btree pages lazily as a command reads, gets, scans, or seeks. A
+/// clobbered interior or leaf page that opened cleanly drives that walk into a
+/// slice-index assertion or an `unreachable!()`, panicking deep inside redb. Reads
+/// run here so the panic becomes typed corruption: every access shape — point get,
+/// forward and reverse scan, seek, and snapshot pin — fails closed with a stable
+/// code instead of aborting the process on first traversal.
+fn catch_read<T>(read: impl FnOnce() -> Result<T, StoreError>) -> Result<T, StoreError> {
+    catch_store_panic(read, "the store contains a damaged page and cannot be read")
+}
+
+/// Run `body` under a panic backstop that converts an escaping panic into
+/// [`StoreError::Corruption`] carrying `corruption_message`.
+///
+/// Marrow builds unwind on panic, so the catch leaves the process alive and the
+/// fault fail-closed with a typed code instead of a redb backtrace on stderr. The
+/// catch wraps only the store operation so it cannot mask an unrelated bug. A no-op
+/// panic hook is installed for the operation's duration so an expected redb panic
+/// does not print its message and backtrace, then the previous hook is restored. The
+/// hook is process-global, so concurrent in-process store operations serialize the
+/// swap, and panics from other threads still delegate to the hook that was installed
+/// before the operation.
+fn catch_store_panic<T>(
+    body: impl FnOnce() -> Result<T, StoreError>,
+    corruption_message: &'static str,
+) -> Result<T, StoreError> {
+    let hook_guard = STORE_PANIC_HOOK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    catch_store_panic_locked(body, corruption_message, &hook_guard)
+}
+
+fn catch_store_panic_locked<T>(
+    body: impl FnOnce() -> Result<T, StoreError>,
+    corruption_message: &'static str,
     _hook_guard: &MutexGuard<'_, ()>,
 ) -> Result<T, StoreError> {
-    let open_thread = std::thread::current().id();
+    let body_thread = std::thread::current().id();
     let previous_hook = Arc::new(std::panic::take_hook());
     let delegate_hook = Arc::clone(&previous_hook);
     std::panic::set_hook(Box::new(move |info| {
-        if std::thread::current().id() != open_thread {
+        if std::thread::current().id() != body_thread {
             delegate_hook(info);
         }
     }));
-    let caught = std::panic::catch_unwind(AssertUnwindSafe(open));
+    let caught = std::panic::catch_unwind(AssertUnwindSafe(body));
     drop(std::panic::take_hook());
     let previous_hook =
         Arc::try_unwrap(previous_hook).unwrap_or_else(|hook| Box::new(move |info| hook(info)));
@@ -238,7 +259,7 @@ fn catch_open_locked<T>(
     match caught {
         Ok(result) => result,
         Err(_) => Err(StoreError::Corruption {
-            message: "the storage engine could not open the store file".into(),
+            message: corruption_message.into(),
         }),
     }
 }
@@ -406,8 +427,9 @@ fn stamp_or_verify_format_version(
 
 /// Verify the recorded format version and data table on an existing-store open.
 /// A file with no meta table or no data table is not a complete Marrow store;
-/// this path never creates, so it cannot be a fresh one. This probe walks the
-/// file structure for the same fail-fast reason as the creating writable open.
+/// this path never creates, so it cannot be a fresh one. Damage below the table
+/// roots is not probed here: redb walks those pages lazily, so it surfaces when a
+/// read traverses the tree, under [`catch_read`].
 fn verify_existing_store_shape(db: &impl ReadableDatabase) -> Result<(), StoreError> {
     let read = db.begin_read().map_err(open_transaction_error)?;
     let recorded = match read.open_table(META) {
@@ -704,24 +726,28 @@ impl RedbStore {
 
 impl Backend for RedbStore {
     fn read(&self, key: &[u8]) -> Result<Option<Vec<u8>>, StoreError> {
-        read_view!(self, "read", |table| Ok(table
-            .get(key)
-            .map_err(io("read"))?
-            .map(|guard| guard.value().to_vec())))
+        catch_read(|| {
+            read_view!(self, "read", |table| Ok(table
+                .get(key)
+                .map_err(io("read"))?
+                .map(|guard| guard.value().to_vec())))
+        })
     }
 
     fn read_prefix(&self, key: &[u8], limit: usize) -> Result<Option<ValuePrefix>, StoreError> {
-        read_view!(self, "read_prefix", |table| Ok(table
-            .get(key)
-            .map_err(io("read_prefix"))?
-            .map(|guard| {
-                let value = guard.value();
-                let copied = value.len().min(limit);
-                ValuePrefix {
-                    bytes: value[..copied].to_vec(),
-                    truncated: value.len() > limit,
-                }
-            })))
+        catch_read(|| {
+            read_view!(self, "read_prefix", |table| Ok(table
+                .get(key)
+                .map_err(io("read_prefix"))?
+                .map(|guard| {
+                    let value = guard.value();
+                    let copied = value.len().min(limit);
+                    ValuePrefix {
+                        bytes: value[..copied].to_vec(),
+                        truncated: value.len() > limit,
+                    }
+                })))
+        })
     }
 
     fn write(&mut self, key: &[u8], value: Vec<u8>) -> Result<(), StoreError> {
@@ -751,7 +777,7 @@ impl Backend for RedbStore {
     }
 
     fn scan(&self, prefix: &[u8], limit: usize) -> Result<ScanPage, StoreError> {
-        read_view!(self, "scan", |table| streamed_scan(&table, prefix, limit))
+        catch_read(|| read_view!(self, "scan", |table| streamed_scan(&table, prefix, limit)))
     }
 
     fn scan_after(
@@ -760,8 +786,10 @@ impl Backend for RedbStore {
         cursor: &[u8],
         limit: usize,
     ) -> Result<ScanPage, StoreError> {
-        read_view!(self, "scan_after", |table| {
-            streamed_scan_after(&table, prefix, cursor, limit)
+        catch_read(|| {
+            read_view!(self, "scan_after", |table| {
+                streamed_scan_after(&table, prefix, cursor, limit)
+            })
         })
     }
 
@@ -771,8 +799,10 @@ impl Backend for RedbStore {
         cursor: &[u8],
         limit: usize,
     ) -> Result<ScanPage, StoreError> {
-        read_view!(self, "scan_before", |table| {
-            streamed_scan_before(&table, prefix, cursor, limit)
+        catch_read(|| {
+            read_view!(self, "scan_before", |table| {
+                streamed_scan_before(&table, prefix, cursor, limit)
+            })
         })
     }
 
@@ -783,8 +813,10 @@ impl Backend for RedbStore {
         upper: Option<&[u8]>,
         limit: usize,
     ) -> Result<ScanPage, StoreError> {
-        read_view!(self, "scan_between", |table| {
-            streamed_scan_between(&table, prefix, lower, upper, limit)
+        catch_read(|| {
+            read_view!(self, "scan_between", |table| {
+                streamed_scan_between(&table, prefix, lower, upper, limit)
+            })
         })
     }
 
@@ -796,8 +828,10 @@ impl Backend for RedbStore {
         cursor: &[u8],
         limit: usize,
     ) -> Result<ScanPage, StoreError> {
-        read_view!(self, "scan_between_after", |table| {
-            streamed_scan_between_after(&table, prefix, lower, upper, cursor, limit)
+        catch_read(|| {
+            read_view!(self, "scan_between_after", |table| {
+                streamed_scan_between_after(&table, prefix, lower, upper, cursor, limit)
+            })
         })
     }
 
@@ -809,8 +843,10 @@ impl Backend for RedbStore {
         cursor: &[u8],
         limit: usize,
     ) -> Result<ScanPage, StoreError> {
-        read_view!(self, "scan_between_before", |table| {
-            streamed_scan_between_before(&table, prefix, lower, upper, cursor, limit)
+        catch_read(|| {
+            read_view!(self, "scan_between_before", |table| {
+                streamed_scan_between_before(&table, prefix, lower, upper, cursor, limit)
+            })
         })
     }
 
@@ -882,8 +918,8 @@ mod tests {
     use redb::{Database, ReadableDatabase, TableDefinition};
 
     use super::{
-        DELETE_BATCH_LIMIT, DatabaseHandle, FORMAT_VERSION, META, OPEN_PANIC_HOOK, RedbStore,
-        TABLE, catch_open, catch_open_locked, map_open_error,
+        DELETE_BATCH_LIMIT, DatabaseHandle, FORMAT_VERSION, META, RedbStore, STORE_PANIC_HOOK,
+        TABLE, catch_open, catch_store_panic_locked, map_open_error,
     };
     use crate::backend::{Backend, StoreError};
     use crate::conformance;
@@ -943,7 +979,7 @@ mod tests {
 
     #[test]
     fn catch_open_preserves_the_panic_hook_for_other_threads() {
-        let hook_guard = OPEN_PANIC_HOOK
+        let hook_guard = STORE_PANIC_HOOK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let seen = Arc::new(AtomicUsize::new(0));
@@ -953,7 +989,7 @@ mod tests {
             seen_hook.fetch_add(1, Ordering::SeqCst);
         }));
 
-        let result: Result<(), StoreError> = catch_open_locked(
+        let result: Result<(), StoreError> = catch_store_panic_locked(
             || {
                 std::thread::spawn(|| {
                     let _ = std::panic::catch_unwind(|| {
@@ -964,6 +1000,7 @@ mod tests {
                 .expect("panic was caught in the thread");
                 Ok(())
             },
+            "the storage engine could not open the store file",
             &hook_guard,
         );
 
@@ -1085,6 +1122,50 @@ mod tests {
             let path = dir.path().join(format!("store-{counter}.redb"));
             RedbStore::open(&path)
         })
+    }
+
+    /// A byte flip below the table roots — invisible to a table-open probe — must
+    /// surface as typed corruption when a read traverses the tree, never as a process
+    /// panic. The read backstop catches redb's slice-index panic on a damaged page
+    /// and maps it to corruption; an offset redb tolerates simply reads through.
+    /// Either way no read panics, across a point get, a forward scan, and a reverse
+    /// scan. The seed spans interior btree pages so the damage hides below the roots.
+    #[test]
+    fn reads_over_a_damaged_page_report_corruption_not_a_panic() {
+        let dir = TempDir::new("marrow-store-redb-test").expect("temp dir");
+        let seed = dir.path().join("seed.redb");
+        {
+            let mut store = RedbStore::open(&seed).expect("open fresh");
+            for n in 0..4000u32 {
+                let key = format!("k/{n:08}").into_bytes();
+                Backend::write(&mut store, &key, vec![0u8; 64]).expect("write");
+            }
+        }
+        let body = std::fs::read(&seed).expect("read store body");
+
+        for offset in [8192usize, 12288, 16384, 20484, 24576] {
+            let mut bytes = body.clone();
+            bytes[offset] ^= 0xff;
+            let path = dir.path().join(format!("corrupt-{offset}.redb"));
+            std::fs::write(&path, &bytes).expect("write corrupted body");
+
+            let store = match RedbStore::open(&path) {
+                Ok(store) => store,
+                // A flip that damages the file header is caught at open; still no panic.
+                Err(StoreError::Corruption { .. }) => continue,
+                Err(other) => panic!("offset {offset}: unexpected open error {other:?}"),
+            };
+            for outcome in [
+                Backend::read(&store, b"k/00000001").map(|_| ()),
+                Backend::scan(&store, b"k/", 8000).map(|_| ()),
+                Backend::scan_before(&store, b"k/", b"k/99999999", 8000).map(|_| ()),
+            ] {
+                match outcome {
+                    Ok(()) | Err(StoreError::Corruption { .. }) => {}
+                    Err(other) => panic!("offset {offset}: a read must not fault as {other:?}"),
+                }
+            }
+        }
     }
 
     #[test]

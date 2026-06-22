@@ -382,7 +382,13 @@ fn data_recover(args: &[String]) -> ExitCode {
         return report_no_store_to_recover(&dir, Some(&path), format);
     }
     match TreeStore::open_existing(&path) {
-        Ok(_store) => report_recovered_store(&dir, &path, format),
+        // Opening replays an interrupted commit but does not traverse the data tree;
+        // a store damaged below its table roots opens cleanly and only fails when
+        // read. Walk it here so recover reports corruption rather than a false repair.
+        Ok(store) => match store.verify_readable() {
+            Ok(()) => report_recovered_store(&dir, &path, format),
+            Err(error) => report_store_error(error, format),
+        },
         Err(error) => report_store_error(error, format),
     }
 }
