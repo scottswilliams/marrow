@@ -148,18 +148,48 @@ pub(crate) fn eval_local_collection_delete(
     }
 }
 
+/// Count a local collection by borrowing it: reading the cardinality needs only
+/// `len`, so a bound collection is never deep-cloned just to be measured. A bare
+/// name is resolved against the environment in place; any other expression is
+/// evaluated to a temporary value, which carries its own ownership.
 pub(crate) fn local_collection_count(
-    value: Value,
+    arg: &ExecExpr,
     span: SourceSpan,
+    env: &mut Env<'_>,
 ) -> Result<Value, RuntimeError> {
-    match value {
-        Value::Sequence(items) => i64::try_from(items.len())
-            .map(Value::Int)
-            .map_err(|_| overflow(span)),
-        Value::LocalTree(tree) => i64::try_from(tree.len())
-            .map(Value::Int)
-            .map_err(|_| overflow(span)),
-        _ => Err(unsupported("counting this value", span)),
+    if let Some(name) = local_collection_name(arg)
+        && let Some(value @ (Value::Sequence(_) | Value::LocalTree(_))) = env.lookup(name)
+    {
+        return local_collection_len(value, span);
+    }
+    local_collection_len(&eval_expr(arg, env)?, span)
+}
+
+fn local_collection_len(value: &Value, span: SourceSpan) -> Result<Value, RuntimeError> {
+    let len = match value {
+        Value::Sequence(items) => items.len(),
+        Value::LocalTree(tree) => tree.len(),
+        _ => return Err(unsupported("counting this value", span)),
+    };
+    i64::try_from(len)
+        .map(Value::Int)
+        .map_err(|_| overflow(span))
+}
+
+/// The single unqualified binding name an expression names directly, if any. A
+/// borrow of that binding reads a local collection without cloning it; anything
+/// qualified or computed is not a plain binding reference.
+fn local_collection_name(arg: &ExecExpr) -> Option<&str> {
+    match arg {
+        ExecExpr::Name {
+            segments,
+            enum_member: None,
+            ..
+        } => match segments.as_slice() {
+            [name] => Some(name),
+            _ => None,
+        },
+        _ => None,
     }
 }
 

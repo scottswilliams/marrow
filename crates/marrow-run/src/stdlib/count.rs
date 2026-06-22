@@ -41,7 +41,7 @@ pub(crate) fn eval_count(
         return Err(type_error("`count` takes one argument", span));
     };
     if arg.value.saved_place().is_none() {
-        return local_collection_count(eval_expr(&arg.value, env)?, span);
+        return local_collection_count(&arg.value, span, env);
     }
     if let Some(count) = direct_primary_root_count(&arg.value, span, env)? {
         return Ok(Value::Int(count));

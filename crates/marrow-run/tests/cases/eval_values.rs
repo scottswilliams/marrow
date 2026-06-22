@@ -1186,3 +1186,55 @@ fn std_math_decimal_helpers() {
         Some(Value::Int(-3))
     );
 }
+
+#[test]
+fn count_over_a_local_collection_in_a_loop_is_cheap() {
+    // count borrows the binding and reads its length, so each call is O(1)/O(log n)
+    // — the same node/count primitive a saved count uses, never a value read. A
+    // per-call deep clone of the collection makes a loop of `n` counts O(n^2): at
+    // this `n` it measured well over a minute in debug, while a borrow finishes in
+    // well under a second. Wall-clock ratios are flaky on a loaded host, so this
+    // guards a generous absolute ceiling both the sequence and the byte-identical
+    // keyed-tree spelling clear easily. Timed through the production run pipeline.
+    use std::time::{Duration, Instant};
+
+    fn count_loop(decl: &str, write: &str, n: i64) -> Duration {
+        let program = checked_program(&format!(
+            "pub fn probe(n: int): int\n\
+             \x20   {decl}\n\
+             \x20   var i = 1\n\
+             \x20   while i <= n\n\
+             \x20       {write}\n\
+             \x20       i = i + 1\n\
+             \x20   var total = 0\n\
+             \x20   var j = 1\n\
+             \x20   while j <= n\n\
+             \x20       total = total + count(xs)\n\
+             \x20       j = j + 1\n\
+             \x20   return total\n",
+        ));
+        let start = Instant::now();
+        let result = run(checked_entry!(&program, "test::probe", Value::Int(n))).unwrap();
+        assert_eq!(
+            result,
+            Some(Value::Int(n * n)),
+            "every one of the {n} counts must observe all {n} elements",
+        );
+        start.elapsed()
+    }
+
+    let n = 40_000;
+    let ceiling = Duration::from_secs(10);
+    let sequence = count_loop("var xs: sequence[int]", "append(xs, i)", n);
+    let keyed_tree = count_loop("var xs(k: int): int", "xs(i) = i", n);
+    assert!(
+        sequence < ceiling,
+        "count over a sequence[int] in a loop took {sequence:?}; a per-call clone is \
+         O(n^2) and blows the {ceiling:?} ceiling that the keyed tree ({keyed_tree:?}) clears",
+    );
+    assert!(
+        keyed_tree < ceiling,
+        "count over a keyed tree in a loop took {keyed_tree:?}; a per-call clone is O(n^2) \
+         and blows the {ceiling:?} ceiling",
+    );
+}
