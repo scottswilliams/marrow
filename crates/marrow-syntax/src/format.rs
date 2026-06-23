@@ -51,7 +51,7 @@ pub fn format_source(source: &str) -> String {
         sections.push(FormatSection {
             span: comment.span,
             text: match comment.placement {
-                CommentPlacement::OwnLine => format_comment(comment),
+                CommentPlacement::OwnLine => format_block_comment(comment, 0),
                 CommentPlacement::Trailing => format_trailing_comment(comment),
             },
             kind: FormatSectionKind::Comment(comment.placement),

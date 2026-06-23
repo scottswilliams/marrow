@@ -188,13 +188,14 @@ impl<'a> Lexer<'a> {
     /// outdented below the current block is otherwise transparent — kept inside
     /// the open block as trailing trivia rather than closing it.
     ///
-    /// The one exception is a column-zero line comment that introduces the next
-    /// top-level construct: a run of consecutive column-zero comments is
-    /// classified by the next NON-COMMENT significant line. When that line is at
-    /// the top level, the run sits between declarations rather than trailing the
-    /// block above, so it closes the open blocks and docks to the file's top
-    /// level. A run whose body continues with indented lines below stays
-    /// transparent.
+    /// A comment-only line is classified by the next NON-COMMENT significant
+    /// line, so a run of consecutive comments docks where the construct it
+    /// introduces docks. When that construct is at the file's top level the run
+    /// belongs at the top level, regardless of the comments' own indentation: a
+    /// top-level comment is not the body of any declaration. So an indented
+    /// comment whose run resolves to the top level stays transparent rather than
+    /// opening a spurious block above it, and a column-zero run that follows an
+    /// open block closes that block down to the top level.
     fn apply_comment_indent(
         &mut self,
         line: Line<'a>,
@@ -202,7 +203,17 @@ impl<'a> Lexer<'a> {
         next_indent: Option<usize>,
     ) -> Indent {
         let current = self.current_indent();
-        let introduces_top_level_decl = line.indent == 0 && next_indent == Some(0) && current > 0;
+        let run_at_top_level = matches!(next_indent, Some(0) | None);
+        if current == 0 {
+            // No open block to dock into: a top-level run is transparent and a
+            // run that opens an indented body below drives the normal logic.
+            return if run_at_top_level {
+                Indent::Within
+            } else {
+                self.apply_indent(line)
+            };
+        }
+        let introduces_top_level_decl = line.indent == 0 && next_indent == Some(0);
         if is_doc_comment || line.indent >= current || introduces_top_level_decl {
             self.apply_indent(line)
         } else {

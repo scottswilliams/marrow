@@ -909,6 +909,54 @@ fn preserves_top_level_and_member_line_comments() {
     assert_eq!(format_source(source), expected);
 }
 
+/// An indented top-level own-line comment must round-trip exactly like the
+/// column-1 form: parse cleanly, be retained, and re-render at column 1 so
+/// formatting is a fixed point and never refuses with comment loss. Covers the
+/// before-first-decl and between-decls positions for both `;` and `;;`, plus an
+/// indented top-level comment at end of file.
+#[test]
+fn preserves_indented_top_level_own_line_comments() {
+    let source = "module app\n\
+         \x20   ; indented before first decl\n\
+         const Max:int=5\n\
+         \x20   ;; indented between decls\n\
+         const Min:int=0\n\
+         \x20   ; indented at end of file\n";
+    let expected = "module app\n\
+         \n\
+         ; indented before first decl\n\
+         const Max: int = 5\n\
+         \n\
+         ;; indented between decls\n\
+         const Min: int = 0\n\
+         \n\
+         ; indented at end of file\n";
+
+    assert_eq!(format_source(source), expected);
+    assert!(
+        format_preserves_comments(source, expected),
+        "indented top-level comment must round-trip without comment loss"
+    );
+    let once = format_source(source);
+    assert_eq!(format_source(&once), once);
+}
+
+/// An indented `;;` doc comment with no declaration to document is a parse
+/// error at the top level, exactly like the column-1 form. Retaining indented
+/// top-level comments must not silently swallow a dangling doc comment.
+#[test]
+fn rejects_indented_top_level_doc_comment_without_target() {
+    let parsed = parse_source("module app\n    ;; dangling doc at eof\n");
+    assert!(
+        parsed
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "parse.syntax"),
+        "an indented dangling doc comment must be a parse error: {:#?}",
+        parsed.diagnostics
+    );
+}
+
 #[test]
 fn preserves_top_level_header_trailing_comments() {
     let source = "module app ; module rationale\n\
