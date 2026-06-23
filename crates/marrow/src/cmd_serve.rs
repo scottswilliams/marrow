@@ -538,7 +538,7 @@ fn execute_http_request(
     };
     if operation.operation_tag != route.operation_tag {
         return SurfaceHttpResponse::error(
-            HttpStatus::BadRequest,
+            HttpStatus::NotFound,
             surface_error(SURFACE_ABI_MISMATCH, "surface operation is not active"),
         )
         .with_cors(cors_origin);
@@ -627,12 +627,12 @@ fn execute_cors_preflight(
 
 fn status_for_surface_error(code: &str) -> HttpStatus {
     match code {
-        SURFACE_ABSENT => HttpStatus::NotFound,
+        SURFACE_ABSENT | SURFACE_ABI_MISMATCH => HttpStatus::NotFound,
         SURFACE_CONFLICT | SURFACE_STALE_CURSOR => HttpStatus::Conflict,
         SURFACE_LIMIT => HttpStatus::PayloadTooLarge,
         SURFACE_ACTION | SURFACE_COMPUTED | SURFACE_INVALID_DATA | SURFACE_STORE
         | SURFACE_WRITE => HttpStatus::InternalServerError,
-        SURFACE_ABI_MISMATCH | SURFACE_REQUEST => HttpStatus::BadRequest,
+        SURFACE_REQUEST => HttpStatus::BadRequest,
         _ => HttpStatus::BadRequest,
     }
 }
@@ -1033,5 +1033,11 @@ mod tests {
     fn computed_read_execution_faults_are_server_faults() {
         assert_eq!(status_for_surface_error(SURFACE_COMPUTED).code(), 500);
         assert_eq!(status_for_surface_error(SURFACE_REQUEST).code(), 400);
+    }
+
+    #[test]
+    fn abi_mismatch_is_the_not_found_wrong_route_class() {
+        assert_eq!(status_for_surface_error(SURFACE_ABI_MISMATCH).code(), 404);
+        assert_eq!(status_for_surface_error(SURFACE_ABSENT).code(), 404);
     }
 }

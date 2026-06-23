@@ -566,7 +566,7 @@ fn surface_serve_fails_closed_on_request_shape_mismatches() {
         }),
         &[("Content-Type", "application/json")],
     );
-    assert_eq!(tag_mismatch.status, 400, "{:#?}", tag_mismatch.body);
+    assert_eq!(tag_mismatch.status, 404, "{:#?}", tag_mismatch.body);
     assert_eq!(tag_mismatch.body["code"], "surface.abi_mismatch");
 
     let kind_mismatch = post_json(
@@ -663,6 +663,62 @@ fn surface_serve_fails_closed_on_request_shape_mismatches() {
         delete_route_response.body
     );
     assert_eq!(delete_route_response.body["code"], "surface.abi_mismatch");
+}
+
+#[test]
+fn surface_serve_reports_abi_mismatch_as_not_found() {
+    let fixture = seeded_surface_fixture("surface-serve-abi-mismatch-404");
+    let point_route = route_by_alias(&fixture.report, "get");
+    let store_catalog_id =
+        read_descriptor(&fixture.report, &point_route.operation_tag)["store_catalog_id"]
+            .as_str()
+            .expect("point read store catalog id")
+            .to_string();
+    let (_server, addr) = spawn_surface_server(fixture.root());
+
+    // An operation tag the route no longer serves is the wrong-route/stale-client class: 404.
+    let tag_mismatch = post_json(
+        addr,
+        &point_route.path,
+        json!({
+            "profile_version": "surface.operation.v1",
+            "operation_tag": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+            "request": {
+                "kind": "point_read",
+                "request": {
+                    "identity": {
+                        "store_catalog_id": store_catalog_id,
+                        "keys": [{ "kind": "int", "value": "1" }]
+                    }
+                }
+            }
+        }),
+        &[("Content-Type", "application/json")],
+    );
+    assert_eq!(tag_mismatch.status, 404, "{:#?}", tag_mismatch.body);
+    assert_eq!(tag_mismatch.body["code"], "surface.abi_mismatch");
+
+    // A stale profile version surfaces from the runtime executor as abi_mismatch: also 404.
+    let profile_mismatch = post_json(
+        addr,
+        &point_route.path,
+        json!({
+            "profile_version": "surface.operation.v0",
+            "operation_tag": point_route.operation_tag,
+            "request": {
+                "kind": "point_read",
+                "request": {
+                    "identity": {
+                        "store_catalog_id": store_catalog_id,
+                        "keys": [{ "kind": "int", "value": "1" }]
+                    }
+                }
+            }
+        }),
+        &[("Content-Type", "application/json")],
+    );
+    assert_eq!(profile_mismatch.status, 404, "{:#?}", profile_mismatch.body);
+    assert_eq!(profile_mismatch.body["code"], "surface.abi_mismatch");
 }
 
 #[test]
