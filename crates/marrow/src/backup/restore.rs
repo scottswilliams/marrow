@@ -321,7 +321,33 @@ fn restore_program(
         ));
     }
     validate_catalog_fingerprint(program, manifest)?;
+    reject_undeclared_catalog_rows(program)?;
     Ok(program.clone())
+}
+
+/// Refuse a restore whose backup catalog declares a managed identity the current source does not.
+/// The program is bound against the backup catalog as its accepted reference, so its proposal is
+/// the current source's projection over those rows: any active backup row the projection drops is
+/// undeclared. Replaying it would re-establish a phantom the source would not project on its own
+/// run, so restore fails closed exactly as activation would.
+fn reject_undeclared_catalog_rows(program: &CheckedProgram) -> Result<(), BackupError> {
+    let Some(proposal) = &program.catalog.proposal else {
+        return Ok(());
+    };
+    let projected: std::collections::HashSet<(marrow_catalog::CatalogEntryKind, &str)> = proposal
+        .entries
+        .iter()
+        .filter(|entry| entry.lifecycle == marrow_catalog::CatalogLifecycle::Active)
+        .map(|entry| (entry.kind, entry.path.as_str()))
+        .collect();
+    for entry in &program.catalog.accepted_entries {
+        if entry.lifecycle == marrow_catalog::CatalogLifecycle::Active
+            && !projected.contains(&(entry.kind, entry.path.as_str()))
+        {
+            return Err(BackupError::catalog_undeclared(entry.kind, &entry.path));
+        }
+    }
+    Ok(())
 }
 
 fn restore_program_for_evolution_preview(
@@ -702,6 +728,33 @@ mod tests {
         assert_eq!(error.code(), "restore.source_mismatch");
         cleanup(&root_a);
         cleanup(&root_b);
+    }
+
+    #[test]
+    fn rejects_a_backup_catalog_row_the_current_source_does_not_declare() {
+        // A backup whose catalog section carries an active row the current source never declares
+        // must fail closed rather than resurrect the phantom identity into the restored store.
+        let (root, program, phantom) =
+            super::super::test_support::committed_program_with_undeclared_row("restore-undeclared")
+                .expect("committed backup fixture with an undeclared catalog row");
+        let archive = seeded_backup(&program);
+        let error = restore_into_empty(&program, &archive)
+            .expect_err("an undeclared catalog row is rejected");
+        assert_eq!(error.code(), "restore.catalog_mismatch");
+        assert!(
+            error.to_string().contains(&phantom.path),
+            "the rejection names the undeclared identity: {error}"
+        );
+        let target = TreeStore::memory();
+        restore_backup(&program, &target, &mut &archive[..], accept).ok();
+        assert!(
+            target
+                .read_catalog_snapshot()
+                .expect("read restored catalog")
+                .is_none(),
+            "a rejected restore leaves no accepted catalog behind"
+        );
+        cleanup(&root);
     }
 
     #[test]

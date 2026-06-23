@@ -431,6 +431,15 @@ impl BackupError {
         ))
     }
 
+    /// A backup catalog active row the current source no longer declares. Replaying it would
+    /// resurrect a managed identity the project has dropped, so restore fails closed rather than
+    /// re-establishing a phantom the current source would not project.
+    pub(crate) fn catalog_undeclared(kind: marrow_catalog::CatalogEntryKind, path: &str) -> Self {
+        Self::CatalogMismatch(format!(
+            "backup catalog declares {kind:?} `{path}`, which the current source does not; restore would resurrect an identity the project no longer declares"
+        ))
+    }
+
     pub(crate) fn target_not_empty() -> Self {
         Self::NotEmpty(
             "the restore target already holds saved data or an accepted catalog; restore writes into an empty store unless --replace --count confirms the live record count"
@@ -598,6 +607,37 @@ pub(super) mod test_support {
         let (report, program) = check_project_with_catalog(&root, &config(), Some(&accepted))?;
         assert!(!report.has_errors(), "{:#?}", report.diagnostics);
         Ok((root, program))
+    }
+
+    /// A `committed_program` whose accepted catalog carries one extra active row the source never
+    /// declares — the shape a store with a pre-fix phantom (or a tampered backup catalog) would
+    /// hold. Checking the source against it projects a proposal that drops the row, so restore can
+    /// observe the undeclared identity and fail closed.
+    pub(super) fn committed_program_with_undeclared_row(
+        name: &str,
+    ) -> Result<(PathBuf, CheckedProgram, marrow_catalog::CatalogEntry), Box<dyn std::error::Error>>
+    {
+        let (root, baseline) = committed_program(name, BOOK_SOURCE)?;
+        let phantom = marrow_catalog::CatalogEntry {
+            kind: marrow_catalog::CatalogEntryKind::Resource,
+            path: "shelf::Tag".to_string(),
+            stable_id: "cat_000000000000000000000000000000aa".to_string(),
+            aliases: Vec::new(),
+            lifecycle: marrow_catalog::CatalogLifecycle::Active,
+            accepted_key_shape: None,
+            accepted_index_shape: None,
+            accepted_struct: None,
+            applied_transform: None,
+        };
+        let mut entries = baseline.catalog.accepted_entries.clone();
+        entries.push(phantom.clone());
+        let accepted = marrow_catalog::CatalogMetadata::new(
+            baseline.catalog.accepted_epoch.expect("accepted epoch"),
+            entries,
+        )?;
+        let (report, program) = check_project_with_catalog(&root, &config(), Some(&accepted))?;
+        assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+        Ok((root, program, phantom))
     }
 }
 

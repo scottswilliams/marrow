@@ -374,3 +374,169 @@ fn a_plain_script_runs_over_memory_with_no_baseline() {
     let stdout = String::from_utf8(output.stdout).expect("stdout utf8");
     assert_eq!(stdout, "ran\n");
 }
+
+/// The canonical lock entry view for divergence comparison: `(kind, path, lifecycle)` per entry,
+/// sorted. Stable ids are intentionally excluded here so the comparison isolates the entry set;
+/// the stable-id drift is asserted separately.
+fn lock_entry_set(root: &std::path::Path) -> Vec<String> {
+    let mut entries: Vec<_> = committed_lock(root)
+        .entries
+        .into_iter()
+        .map(|entry| format!("{:?}|{}|{:?}", entry.kind, entry.path, entry.lifecycle))
+        .collect();
+    entries.sort();
+    entries
+}
+
+fn lock_id_for(root: &std::path::Path, path: &str) -> Option<String> {
+    committed_lock(root)
+        .entries
+        .into_iter()
+        .find(|entry| entry.path == path)
+        .map(|entry| entry.stable_id)
+}
+
+const TWO_STORE_SOURCE: &str = "module app\n\
+     resource Book\n\
+     \x20   required title: string\n\
+     resource Tag\n\
+     \x20   required label: string\n\
+     store ^books(id: int): Book\n\
+     store ^tags(id: int): Tag\n\
+     pub fn main()\n\
+     \x20   print(\"ran\")\n";
+
+const ONE_STORE_SOURCE: &str = "module app\n\
+     resource Book\n\
+     \x20   required title: string\n\
+     store ^books(id: int): Book\n\
+     pub fn main()\n\
+     \x20   print(\"ran\")\n";
+
+fn native_two_store_project(name: &str) -> TempProject {
+    support::temp_project_uncommitted(name, |root| {
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".data" }, "run": { "defaultEntry": "app::main" } }"#,
+        );
+        write(root, "src/app.mw", TWO_STORE_SOURCE);
+    })
+}
+
+fn native_one_store_project(name: &str) -> TempProject {
+    support::temp_project_uncommitted(name, |root| {
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".data" }, "run": { "defaultEntry": "app::main" } }"#,
+        );
+        write(root, "src/app.mw", ONE_STORE_SOURCE);
+    })
+}
+
+fn run_ok(root: &std::path::Path, label: &str) {
+    let output = marrow_sub("run", &[root.to_str().unwrap()]);
+    assert_eq!(output.status.code(), Some(0), "{label}: {output:?}");
+}
+
+#[test]
+fn in_place_removal_of_an_unpopulated_store_matches_a_reseed_lock() {
+    // Run in place: the first run commits both stores, then the source drops the unpopulated
+    // `^tags` store and a second run reprojects the lock.
+    let in_place = native_two_store_project("catalog-remove-in-place");
+    run_ok(&in_place, "first run");
+    write(in_place.path(), "src/app.mw", ONE_STORE_SOURCE);
+    run_ok(&in_place, "second run");
+
+    // Reseed: the identical final source committed from scratch.
+    let reseed = native_one_store_project("catalog-remove-reseed");
+    run_ok(&reseed, "reseed run");
+
+    assert_eq!(
+        lock_entry_set(&in_place),
+        lock_entry_set(&reseed),
+        "an in-place removal of an unpopulated store must drop it from the lock exactly as a reseed does"
+    );
+    assert!(
+        lock_id_for(&in_place, "app::^tags").is_none(),
+        "the removed unpopulated store must not survive as a lock entry"
+    );
+}
+
+#[test]
+fn in_place_remove_then_readd_of_an_unpopulated_store_mints_a_fresh_id() {
+    // The store's pre-removal frozen id, captured before any removal.
+    let in_place = native_two_store_project("catalog-readd-in-place");
+    run_ok(&in_place, "first run");
+    let original_id = lock_id_for(&in_place, "app::^tags").expect("tags id before removal");
+
+    write(in_place.path(), "src/app.mw", ONE_STORE_SOURCE);
+    run_ok(&in_place, "removal run");
+    write(in_place.path(), "src/app.mw", TWO_STORE_SOURCE);
+    run_ok(&in_place, "re-add run");
+    let readded_id = lock_id_for(&in_place, "app::^tags").expect("tags id after re-add");
+
+    // A reseed of the same re-added source mints fresh random identity. An in-place remove+re-add
+    // must do the same: it must not silently resurrect the frozen pre-removal id.
+    assert_ne!(
+        readded_id, original_id,
+        "an in-place remove+re-add must mint a fresh id, matching a reseed, not reuse the retired one"
+    );
+}
+
+const TWO_MEMBER_ENUM_SOURCE: &str = "module app\n\
+     enum Status\n\
+     \x20   active\n\
+     \x20   archived\n\
+     resource Book\n\
+     \x20   required title: string\n\
+     store ^books(id: int): Book\n\
+     pub fn main()\n\
+     \x20   print(\"ran\")\n";
+
+const ONE_MEMBER_ENUM_SOURCE: &str = "module app\n\
+     enum Status\n\
+     \x20   active\n\
+     resource Book\n\
+     \x20   required title: string\n\
+     store ^books(id: int): Book\n\
+     pub fn main()\n\
+     \x20   print(\"ran\")\n";
+
+#[test]
+fn in_place_removal_of_an_unselected_enum_member_matches_a_reseed_lock() {
+    // No record selects the enum, so dropping a member is a free no-op. An in-place run must
+    // drop the member from the lock exactly as a reseed of the one-member source does.
+    let in_place = support::temp_project_uncommitted("catalog-enum-remove-in-place", |root| {
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".data" }, "run": { "defaultEntry": "app::main" } }"#,
+        );
+        write(root, "src/app.mw", TWO_MEMBER_ENUM_SOURCE);
+    });
+    run_ok(&in_place, "first run");
+    write(in_place.path(), "src/app.mw", ONE_MEMBER_ENUM_SOURCE);
+    run_ok(&in_place, "second run");
+
+    let reseed = support::temp_project_uncommitted("catalog-enum-remove-reseed", |root| {
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".data" }, "run": { "defaultEntry": "app::main" } }"#,
+        );
+        write(root, "src/app.mw", ONE_MEMBER_ENUM_SOURCE);
+    });
+    run_ok(&reseed, "reseed run");
+
+    assert_eq!(
+        lock_entry_set(&in_place),
+        lock_entry_set(&reseed),
+        "an in-place removal of an unselected enum member must drop it from the lock exactly as a reseed does"
+    );
+    assert!(
+        lock_id_for(&in_place, "app::Status::archived").is_none(),
+        "the removed enum member must not survive as a lock entry"
+    );
+}

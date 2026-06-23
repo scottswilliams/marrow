@@ -56,7 +56,7 @@ pub(super) fn classify_absent_source_entries(
         acc.push_index(catalog_id(&entry.stable_id)?, Verdict::IndexDropped)?;
     }
 
-    for entry in catalog_entries_for_drop_discharge(program) {
+    for entry in absent_source_entries(program) {
         if entry.kind == CatalogEntryKind::StoreIndex
             || declared.contains(&(entry.kind, entry.path.as_str()))
         {
@@ -143,6 +143,27 @@ pub(super) fn classify_absent_source_entries(
         }
     }
     Ok(())
+}
+
+/// The catalog entries to classify for a source drop. A retire reserves its entry in the
+/// proposal, so the proposal carries it (its `Reserved` lifecycle is what distinguishes a retire
+/// from a bare removal). A bare removal drops its entry from the proposal entirely — the
+/// projection no longer records it, exactly as a reseed would not — so it is recovered from the
+/// accepted snapshot here, where its still-`Active` lifecycle drives the populated-drop fence. An
+/// entry the proposal still carries is read from the proposal so the retire state is seen.
+fn absent_source_entries(program: &CheckedProgram) -> impl Iterator<Item = &CatalogEntry> {
+    let proposal_ids: HashSet<&str> = catalog_entries_for_drop_discharge(program)
+        .iter()
+        .map(|entry| entry.stable_id.as_str())
+        .collect();
+    let dropped_from_proposal = program
+        .catalog
+        .accepted_entries
+        .iter()
+        .filter(move |entry| !proposal_ids.contains(entry.stable_id.as_str()));
+    catalog_entries_for_drop_discharge(program)
+        .iter()
+        .chain(dropped_from_proposal)
 }
 
 struct AbsentRepairDiagnostic {
@@ -247,7 +268,7 @@ fn populated_drop_side_is_unique(
     leaf_token: &str,
 ) -> Result<bool, StoreError> {
     let mut matches = 0;
-    for entry in catalog_entries_for_drop_discharge(program) {
+    for entry in absent_source_entries(program) {
         if entry.kind != CatalogEntryKind::ResourceMember
             || !member_belongs_to_resource(&entry.path, resource_path)
             || entry.accepted_leaf_token() != Some(leaf_token)

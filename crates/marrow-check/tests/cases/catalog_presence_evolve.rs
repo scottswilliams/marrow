@@ -43,6 +43,23 @@ fn assert_entry_stays_active(program: &marrow_check::CheckedProgram, stable_id: 
     );
 }
 
+/// A source-dropped member that a rejected intent neither relocated nor reserved is a bare
+/// removal: the projection drops it so an in-place run matches a reseed, which never records it.
+/// The ambiguity diagnostic still fires; the entry simply does not linger as a phantom.
+fn assert_member_dropped(program: &marrow_check::CheckedProgram, stable_id: &str) {
+    let Some(proposal) = &program.catalog.proposal else {
+        return;
+    };
+    assert!(
+        !proposal
+            .entries
+            .iter()
+            .any(|entry| entry.stable_id == derived_id(stable_id)),
+        "a source-dropped member must not be carried forward in the proposal: {:#?}",
+        proposal.entries
+    );
+}
+
 fn assert_no_catalog_entry_at(program: &marrow_check::CheckedProgram, stable_id: &str, path: &str) {
     if let Some(proposal) = &program.catalog.proposal {
         assert!(
@@ -231,7 +248,7 @@ fn evolve_retire_fails_closed_when_accepted_path_matches_active_and_reserved_ent
         ],
         vec![],
     );
-    assert_entry_stays_active(&program, "member-subtitle");
+    assert_member_dropped(&program, "member-subtitle");
 }
 
 #[test]
@@ -292,7 +309,7 @@ fn evolve_retire_fails_closed_when_accepted_path_matches_an_active_alias() {
         ],
         vec![],
     );
-    assert_entry_stays_active(&program, "member-subtitle");
+    assert_member_dropped(&program, "member-subtitle");
 }
 
 #[test]
@@ -403,7 +420,7 @@ fn evolve_rename_fails_closed_when_target_path_matches_an_active_alias() {
         )],
         vec![CatalogEntryKind::ResourceMember],
     );
-    assert_entry_stays_active(&program, "member-subtitle");
+    assert_member_dropped(&program, "member-subtitle");
     assert_no_catalog_entry_at(&program, "member-subtitle", "books::Book::blurb");
 }
 

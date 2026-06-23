@@ -670,7 +670,7 @@ fn bind_against_accepted(
     ) {
         changed = true;
     }
-    if drop_absent_indexes(&mut proposal_entries, &source_catalog) {
+    if drop_bare_removed_entries(&mut proposal_entries, &source_catalog) {
         changed = true;
     }
     if record_signatures_into(program, &mut proposal_entries, Some(catalog)) {
@@ -1726,22 +1726,27 @@ fn entry_indexes_with_lifecycle(
         .collect()
 }
 
-/// Remove from the proposal each active store-index entry current source no longer declares,
-/// returning whether any was dropped. An index is derived schema, not user data: its entries
-/// rebuild from the records it covers, so a source drop removes its catalog entry outright
-/// rather than reserving it. Dropping the entry advances the epoch and publishes a catalog
-/// without the index; the discharge stages the deletion of its generated cells from the
-/// accepted snapshot in the same activation. A re-declared index later mints fresh identity,
-/// which is sound because the index holds no durable identity of its own.
-fn drop_absent_indexes(
+/// Remove from the proposal each active entry current source no longer declares and no intent
+/// relocated or retired, returning whether any was dropped. A bare removal of a durable entity —
+/// a resource, store, field, enum member, or derived index — leaves it active in the accepted
+/// catalog with no source backing; carrying it forward would keep it `lifecycle:"active"` in the
+/// lock, so an in-place run would diverge from a fresh reseed of the same source, which never
+/// records it at all. Dropping it makes the one-way store->lock projection identical to a reseed:
+/// same entries, and a re-add later mints fresh identity rather than resurrecting the dropped id.
+///
+/// This advances the proposal but does not authorize data loss. A dropped index is derived schema,
+/// so activation simply deletes its generated cells. A dropped data entity is fenced closed by
+/// activation discharge when it still holds records, read against the accepted snapshot, before
+/// this proposal can commit. A rename leaves the entry active under its new path, and a retire
+/// leaves it reserved, so neither is a bare removal.
+fn drop_bare_removed_entries(
     entries: &mut Vec<CatalogEntry>,
     source_catalog: &SourceCatalog<'_>,
 ) -> bool {
     let before = entries.len();
     entries.retain(|entry| {
-        !(entry.kind == CatalogEntryKind::StoreIndex
-            && entry.lifecycle == CatalogLifecycle::Active
-            && !source_catalog.contains(CatalogEntryKind::StoreIndex, entry.path.as_str()))
+        entry.lifecycle != CatalogLifecycle::Active
+            || source_catalog.contains(entry.kind, entry.path.as_str())
     });
     entries.len() != before
 }
