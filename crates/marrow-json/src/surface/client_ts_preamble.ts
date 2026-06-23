@@ -264,7 +264,33 @@ function decodeStringValue(value: SurfaceWireValueJson): string {
   return value.value;
 }
 
-function decodeWireScalar(value: SurfaceWireValueJson, kind: string): string {
+/// A surface `date` value carries its day count under `days_since_epoch`. The count is an i32, so a
+/// JS number holds it exactly; richer date domain types are deferred, so the faithful value is the
+/// raw day count.
+function decodeDateValue(value: SurfaceWireValueJson): number {
+  if (value.kind !== "date" || typeof value.days_since_epoch !== "number") {
+    throw new Error("Marrow surface date value is malformed");
+  }
+  return value.days_since_epoch;
+}
+
+/// An `instant` or `duration` value carries its nanosecond count as a decimal string because the
+/// count can exceed 2^53; decoding it as a JS number would silently truncate. The faithful value is
+/// a bigint over that exact count.
+function decodeNanosValue(value: SurfaceWireValueJson, kind: "instant" | "duration"): bigint {
+  if (value.kind !== kind) {
+    throw new Error(`Marrow surface ${kind} value is malformed`);
+  }
+  const nanos = kind === "instant" ? value.nanos_since_epoch : value.nanos;
+  if (typeof nanos !== "string") {
+    throw new Error(`Marrow surface ${kind} value is malformed`);
+  }
+  return BigInt(nanos);
+}
+
+/// A `decimal` value carries its canonical text under `value`; `bytes` carries base64 under
+/// `value_b64`. Both decode to their faithful string form without loss.
+function decodeWireScalar(value: SurfaceWireValueJson, kind: "decimal" | "bytes"): string {
   if (value.kind !== kind) {
     throw new Error(`Marrow surface ${kind} value is malformed`);
   }
@@ -450,8 +476,9 @@ function requireMemberId(member: string, byLabel: Record<string, string>): strin
   return catalogId;
 }
 
-/// Encode a branded identity into its wire value. Write fields, index keys, and callable arguments
-/// share one identity shape, so the same encoder serves every keyed identity.
+/// Encode a branded identity into its wire value for a write field, index exact-key, or unique
+/// lookup. These contexts decode each key as `SurfaceKeyJson`, the brand's stored key shape, so the
+/// keys pass through unchanged.
 function encodeIdentity(brand: {
   __store: string;
   keys: SurfaceKeyJson[];
@@ -460,7 +487,135 @@ function encodeIdentity(brand: {
   return { kind: "identity", store_catalog_id: identity.store_catalog_id, keys: identity.keys };
 }
 
+/// Encode a branded identity into the entry argument shape an action or computed read decodes. The
+/// entry decoder reads each key as a uniform `{ kind, value }` scalar with the value's canonical
+/// datum, which differs from the brand's `SurfaceKeyJson` form for `date` (day count vs canonical
+/// text) and `bytes` (base64 vs hex); the remaining kinds already carry their datum under `value`.
+function encodeIdentityArgument(brand: {
+  __store: string;
+  keys: SurfaceKeyJson[];
+}): SurfaceWireValueJson {
+  const identity = identityFromBrand(brand);
+  return {
+    kind: "identity",
+    store_catalog_id: identity.store_catalog_id,
+    keys: identity.keys.map(keyToEntryScalar),
+  };
+}
+
+function keyToEntryScalar(key: SurfaceKeyJson): SurfaceWireValueJson {
+  switch (key.kind) {
+    case "int":
+    case "string":
+      return { kind: key.kind, value: key.value };
+    case "bool":
+      return { kind: "bool", value: key.value };
+    case "duration":
+      return { kind: "duration", value: key.nanos };
+    case "instant":
+      return { kind: "instant", value: key.nanos_since_epoch };
+    case "date":
+      return { kind: "date", value: dateText(key.days_since_epoch) };
+    case "bytes":
+      return { kind: "bytes", value: base64ToHex(key.value_b64) };
+  }
+}
+
+/// Build the canonical `SurfaceKeyJson` for one key of a branded identity from the typed constructor
+/// input. The brand stores this wire form so a decoded identity (which only ever has `SurfaceKeyJson`)
+/// and a freshly constructed one are indistinguishable. Temporal and bytes keys take their faithful
+/// wire datum — a day count, a nanosecond count, base64 — because the client cannot derive it from a
+/// lossy display form without unsound conversion.
+function intKey(value: MarrowIntInput): SurfaceKeyJson {
+  return { kind: "int", value: encodeMarrowInt(value) };
+}
+
+function boolKey(value: boolean): SurfaceKeyJson {
+  return { kind: "bool", value };
+}
+
+function stringKey(value: string): SurfaceKeyJson {
+  return { kind: "string", value };
+}
+
+function dateKey(daysSinceEpoch: MarrowIntInput): SurfaceKeyJson {
+  return { kind: "date", days_since_epoch: Number(encodeMarrowInt(daysSinceEpoch)) };
+}
+
+function durationKey(nanos: MarrowIntInput): SurfaceKeyJson {
+  return { kind: "duration", nanos: encodeMarrowInt(nanos) };
+}
+
+function instantKey(nanosSinceEpoch: MarrowIntInput): SurfaceKeyJson {
+  return { kind: "instant", nanos_since_epoch: encodeMarrowInt(nanosSinceEpoch) };
+}
+
+function bytesKey(valueBase64: string): SurfaceKeyJson {
+  return { kind: "bytes", value_b64: valueBase64 };
+}
+
+/// Render a day count as canonical `YYYY-MM-DD`, the text the entry decoder parses for a `date`
+/// argument. The conversion is Howard Hinnant's proleptic-Gregorian `civil_from_days`, exact for
+/// every day count the server accepts.
+function dateText(days: number): string {
+  if (!Number.isInteger(days)) {
+    throw new Error("Marrow surface date day count must be an integer");
+  }
+  const z = days + 719468;
+  const era = Math.floor((z >= 0 ? z : z - 146096) / 146097);
+  const doe = z - era * 146097;
+  const yoe = Math.floor((doe - Math.floor(doe / 1460) + Math.floor(doe / 36524) - Math.floor(doe / 146096)) / 365);
+  const y = yoe + era * 400;
+  const doy = doe - (365 * yoe + Math.floor(yoe / 4) - Math.floor(yoe / 100));
+  const mp = Math.floor((5 * doy + 2) / 153);
+  const d = doy - Math.floor((153 * mp + 2) / 5) + 1;
+  const m = mp < 10 ? mp + 3 : mp - 9;
+  const year = m <= 2 ? y + 1 : y;
+  if (year < 1 || year > 9999) {
+    throw new Error("Marrow surface date is outside the canonical four-digit year range");
+  }
+  return `${pad(year, 4)}-${pad(m, 2)}-${pad(d, 2)}`;
+}
+
+function pad(value: number, width: number): string {
+  return value.toString().padStart(width, "0");
+}
+
+const BASE64_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+/// Decode padded base64 to its bytes, the inverse of the server's encoding. The brand stores bytes
+/// keys as base64; the entry decoder reads them as hex, so a bytes identity argument routes through
+/// this decode and `bytesToHex`.
+function base64ToBytes(text: string): number[] {
+  if (text.length % 4 !== 0) {
+    throw new Error("Marrow surface bytes value must be padded base64");
+  }
+  const bytes: number[] = [];
+  for (let index = 0; index < text.length; index += 4) {
+    const chunk = text.slice(index, index + 4);
+    const pad = chunk.endsWith("==") ? 2 : chunk.endsWith("=") ? 1 : 0;
+    let bits = 0;
+    for (let offset = 0; offset < 4; offset += 1) {
+      const character = chunk[offset];
+      const sextet = character === "=" ? 0 : BASE64_ALPHABET.indexOf(character);
+      if (sextet < 0) {
+        throw new Error("Marrow surface bytes value must be padded base64");
+      }
+      bits = (bits << 6) | sextet;
+    }
+    bytes.push((bits >> 16) & 0xff);
+    if (pad < 2) bytes.push((bits >> 8) & 0xff);
+    if (pad < 1) bytes.push(bits & 0xff);
+  }
+  return bytes;
+}
+
+function base64ToHex(text: string): string {
+  return base64ToBytes(text)
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+}
+
 function encodeWriteValue(value: unknown): SurfaceWireValueJson {
   return value as SurfaceWireValueJson;
 }
-

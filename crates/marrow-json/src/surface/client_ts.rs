@@ -626,10 +626,10 @@ fn decode_scalar_expr(scalar: ScalarKind, source: &str) -> String {
         ScalarKind::Bool => format!("decodeBoolValue({source})"),
         ScalarKind::String => format!("decodeStringValue({source})"),
         ScalarKind::Decimal => format!("decodeWireScalar({source}, \"decimal\")"),
-        ScalarKind::Date => format!("decodeWireScalar({source}, \"date\")"),
-        ScalarKind::Instant => format!("decodeWireScalar({source}, \"instant\")"),
-        ScalarKind::Duration => format!("decodeWireScalar({source}, \"duration\")"),
         ScalarKind::Bytes => format!("decodeWireScalar({source}, \"bytes\")"),
+        ScalarKind::Date => format!("decodeDateValue({source})"),
+        ScalarKind::Instant => format!("decodeNanosValue({source}, \"instant\")"),
+        ScalarKind::Duration => format!("decodeNanosValue({source}, \"duration\")"),
     }
 }
 
@@ -664,7 +664,7 @@ fn entry_argument_expr(ty: &SurfaceFieldType, source: &str) -> String {
         SurfaceFieldType::Enum { encode_table, .. } => {
             format!("encodeEnumMember({source}, {encode_table})")
         }
-        SurfaceFieldType::Identity { .. } => format!("encodeIdentity({source})"),
+        SurfaceFieldType::Identity { .. } => format!("encodeIdentityArgument({source})"),
         SurfaceFieldType::Sequence(inner) => {
             let element = entry_argument_expr(inner, "item");
             format!("{{ kind: \"sequence\", value: {source}.map((item) => {element}) }}")
@@ -677,52 +677,67 @@ fn entry_argument_expr(ty: &SurfaceFieldType, source: &str) -> String {
 
 /// Encode a scalar leaf into the request shape (`SurfaceWriteValueJson` / `SurfaceArgumentJson`),
 /// which names each temporal/bytes field explicitly. `SurfaceKeyJson` agrees on these field names,
-/// so identity keys reuse this encoder; `decimal` reaches it only through a write field, never a key.
+/// so identity keys reuse this encoder. A `date` key takes the faithful day count, `instant`/
+/// `duration` their nanosecond count, and `bytes` its base64 text; `decimal` reaches this encoder
+/// only through a write field, never a key.
 fn request_scalar_expr(scalar: ScalarKind, source: &str) -> String {
     match scalar {
-        ScalarKind::Int => format!("{{ kind: \"int\", value: encodeMarrowInt({source}) }}"),
-        ScalarKind::Bool => format!("{{ kind: \"bool\", value: {source} }}"),
-        ScalarKind::String => format!("{{ kind: \"string\", value: {source} }}"),
+        ScalarKind::Int => format!("intKey({source})"),
+        ScalarKind::Bool => format!("boolKey({source})"),
+        ScalarKind::String => format!("stringKey({source})"),
         ScalarKind::Decimal => format!("{{ kind: \"decimal\", value: {source} }}"),
-        ScalarKind::Date => format!("{{ kind: \"date\", days_since_epoch: Number({source}) }}"),
-        ScalarKind::Duration => {
-            format!("{{ kind: \"duration\", nanos: encodeMarrowInt({source}) }}")
-        }
-        ScalarKind::Instant => {
-            format!("{{ kind: \"instant\", nanos_since_epoch: encodeMarrowInt({source}) }}")
-        }
-        ScalarKind::Bytes => format!("{{ kind: \"bytes\", value_b64: {source} }}"),
+        ScalarKind::Date => format!("dateKey({source})"),
+        ScalarKind::Duration => format!("durationKey({source})"),
+        ScalarKind::Instant => format!("instantKey({source})"),
+        ScalarKind::Bytes => format!("bytesKey({source})"),
     }
 }
 
 /// Encode a scalar leaf into the entry argument shape an action or computed read decodes, which
-/// carries every scalar datum under a uniform `value` field regardless of scalar kind.
+/// carries every scalar datum under a uniform `value` field. The decoder reads the value's canonical
+/// datum, so a `date` argument sends canonical `YYYY-MM-DD` text built from its day count, a `bytes`
+/// argument sends hex built from its base64 text, and the remaining kinds send their value directly.
 fn entry_scalar_expr(scalar: ScalarKind, source: &str) -> String {
     match scalar {
         ScalarKind::Int => format!("{{ kind: \"int\", value: encodeMarrowInt({source}) }}"),
         ScalarKind::Bool => format!("{{ kind: \"bool\", value: {source} }}"),
-        ScalarKind::String
-        | ScalarKind::Decimal
-        | ScalarKind::Date
-        | ScalarKind::Instant
-        | ScalarKind::Duration
-        | ScalarKind::Bytes => format!("{{ kind: {}, value: {source} }}", ts_string(scalar.name())),
+        ScalarKind::Instant => {
+            format!("{{ kind: \"instant\", value: encodeMarrowInt({source}) }}")
+        }
+        ScalarKind::Duration => {
+            format!("{{ kind: \"duration\", value: encodeMarrowInt({source}) }}")
+        }
+        ScalarKind::Date => format!("{{ kind: \"date\", value: dateText(Number({source})) }}"),
+        ScalarKind::Bytes => format!("{{ kind: \"bytes\", value: base64ToHex({source}) }}"),
+        ScalarKind::String | ScalarKind::Decimal => {
+            format!("{{ kind: {}, value: {source} }}", ts_string(scalar.name()))
+        }
     }
 }
 
+/// The TypeScript input type for a scalar key or write field. Temporal keys take their faithful wire
+/// datum as the brand and request encoders store it without lossy conversion: a `date` is its day
+/// count, an `instant`/`duration` its nanosecond count (both `MarrowIntInput`, since the count can
+/// exceed 2^53), and `bytes` its base64 text.
 fn scalar_input_type(scalar: ScalarKind) -> &'static str {
     match scalar {
-        ScalarKind::Int => "MarrowIntInput",
+        ScalarKind::Int | ScalarKind::Date | ScalarKind::Instant | ScalarKind::Duration => {
+            "MarrowIntInput"
+        }
         ScalarKind::Bool => "boolean",
-        _ => "string",
+        ScalarKind::String | ScalarKind::Decimal | ScalarKind::Bytes => "string",
     }
 }
 
+/// The TypeScript type a decoded response value lands in. A `date` is its day count (an i32 number),
+/// an `instant`/`duration` its nanosecond count as a bigint (the count can exceed 2^53), `decimal`
+/// its canonical text, and `bytes` its base64 text.
 fn scalar_output_type(scalar: ScalarKind) -> &'static str {
     match scalar {
-        ScalarKind::Int => "bigint",
+        ScalarKind::Int | ScalarKind::Instant | ScalarKind::Duration => "bigint",
         ScalarKind::Bool => "boolean",
-        _ => "string",
+        ScalarKind::Date => "number",
+        ScalarKind::String | ScalarKind::Decimal | ScalarKind::Bytes => "string",
     }
 }
 

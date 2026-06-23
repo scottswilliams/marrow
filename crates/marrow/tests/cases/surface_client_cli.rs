@@ -666,6 +666,168 @@ void isMarrowSurfaceError;
 console.log("index-key-e2e-ok");
 "#;
 
+/// A date-keyed store whose resource carries every non-int scalar as a projection field, plus
+/// callables that take each scalar kind as an action/computed-read argument and a date identity as a
+/// callable argument. It exercises the whole temporal/bytes scalar family the renderer must encode
+/// and decode per wire context: a `date` identity key (request shape), the same date as a callable
+/// identity argument (entry shape), `instant`/`duration` as exact-bigint response values and entry
+/// arguments, `bytes` as a base64 response value and a hex entry argument, and `decimal` as canonical
+/// text. The two seeded dates are 2020-01-01 (day 18262) and 2021-06-15 (day 18793).
+const TEMPORAL_SURFACE_SOURCE: &str = "module app\n\
+\n\
+resource Event\n\
+\x20\x20\x20\x20required label: string\n\
+\x20\x20\x20\x20when: instant\n\
+\x20\x20\x20\x20span: duration\n\
+\x20\x20\x20\x20payload: bytes\n\
+\x20\x20\x20\x20cost: decimal\n\
+store ^events(day: date): Event\n\
+\n\
+pub fn seed()\n\
+\x20\x20\x20\x20var launch: Event\n\
+\x20\x20\x20\x20launch.label = \"launch\"\n\
+\x20\x20\x20\x20launch.when = instant(\"2020-01-01T00:00:00Z\")\n\
+\x20\x20\x20\x20launch.span = duration(\"PT3600S\")\n\
+\x20\x20\x20\x20launch.payload = bytes(\"hello\")\n\
+\x20\x20\x20\x20launch.cost = 12.5\n\
+\x20\x20\x20\x20var followup: Event\n\
+\x20\x20\x20\x20followup.label = \"followup\"\n\
+\x20\x20\x20\x20transaction\n\
+\x20\x20\x20\x20\x20\x20\x20\x20^events(date(\"2020-01-01\")) = launch\n\
+\x20\x20\x20\x20\x20\x20\x20\x20^events(date(\"2021-06-15\")) = followup\n\
+\n\
+pub fn dayLabel(at: date): string\n\
+\x20\x20\x20\x20return (^events(at).label ?? \"absent\")\n\
+\n\
+pub fn eventNote(ev: Id(^events)): string\n\
+\x20\x20\x20\x20return (^events(ev).label ?? \"absent\")\n\
+\n\
+pub fn echoSpan(s: duration): string\n\
+\x20\x20\x20\x20return string(s)\n\
+\n\
+pub fn echoMoment(m: instant): string\n\
+\x20\x20\x20\x20return string(m)\n\
+\n\
+pub fn echoBytes(b: bytes): string\n\
+\x20\x20\x20\x20return string(b)\n\
+\n\
+surface Events from ^events\n\
+\x20\x20\x20\x20fields label, when, span, payload, cost\n\
+\x20\x20\x20\x20collection ^events as list\n\
+\x20\x20\x20\x20read dayLabel\n\
+\x20\x20\x20\x20read eventNote\n\
+\x20\x20\x20\x20action echoSpan\n\
+\x20\x20\x20\x20action echoMoment\n\
+\x20\x20\x20\x20action echoBytes\n";
+
+/// Drive every temporal and bytes scalar through the generated client against a live `serve --write`:
+/// a `date` identity key, a `date` callable identity argument, each scalar kind as a decoded response
+/// field, and each scalar kind as an action/computed-read argument. A wrong (kind, context) cell
+/// throws on the client or is rejected by the server's checked-shape validation, so a clean run proves
+/// the whole family encodes and decodes correctly.
+const TEMPORAL_APP: &str = r#"import assert from "node:assert/strict";
+import { createClient, eventsId } from "./marrow-client.ts";
+
+const client = createClient({ baseUrl: process.env.MARROW_SURFACE_BASE_URL });
+
+// A date identity key uses the request shape (days_since_epoch); 2020-01-01 is day 18262.
+const launch = await client.Events.get(eventsId(18262));
+assert.equal(launch.label, "launch");
+
+// instant and duration decode as exact bigints, never a lossy number.
+assert.equal(typeof launch.when, "bigint");
+assert.equal(launch.when, 1577836800000000000n);
+assert.equal(launch.span, 3600000000000n);
+
+// bytes decodes as base64, decimal as canonical text.
+assert.equal(launch.payload, Buffer.from("hello").toString("base64"));
+assert.equal(launch.cost, "12.5");
+
+// The date identity decodes back to its faithful day count.
+assert.deepEqual(launch.id.keys, [{ kind: "date", days_since_epoch: 18262 }]);
+
+// An absent optional temporal/bytes field arrives as value:null and becomes null.
+const followup = await client.Events.get(eventsId(18793));
+assert.equal(followup.when, null);
+assert.equal(followup.span, null);
+assert.equal(followup.payload, null);
+
+// A date scalar entry argument encodes to canonical YYYY-MM-DD text the entry decoder parses.
+assert.equal(await client.Events.dayLabel(18262), "launch");
+assert.equal(await client.Events.dayLabel(18793), "followup");
+
+// A date identity entry argument encodes each key into the entry scalar shape, not the request shape.
+assert.equal(await client.Events.eventNote(eventsId(18262)), "launch");
+assert.equal(await client.Events.eventNote(eventsId(18793)), "followup");
+
+// instant, duration, and bytes action arguments round-trip through the server's canonical render.
+assert.equal((await client.Events.echoMoment(1577836800000000000n)).value, "2020-01-01T00:00:00Z");
+assert.equal((await client.Events.echoSpan(3600000000000n)).value, "PT3600S");
+assert.equal((await client.Events.echoBytes(Buffer.from("hi").toString("base64"))).value, "0x6869");
+
+// The paged list decodes both rows, including every temporal field.
+const page = await client.Events.list(10);
+assert.equal(page.rows.length, 2);
+
+console.log("temporal-e2e-ok");
+"#;
+
+#[test]
+fn client_typescript_temporal_scalars_run_against_live_surface_server() {
+    let Some(node) = node_with_type_stripping() else {
+        if std::env::var_os("CI").is_some() || std::env::var_os("MARROW_TEST_NODE").is_some() {
+            panic!(
+                "generated TypeScript client temporal E2E requires Node with --experimental-strip-types"
+            );
+        }
+        eprintln!("skipping generated TypeScript client temporal E2E; compatible node not found");
+        return;
+    };
+    let root = temp_project("surface-client-temporal-e2e", |root| {
+        write(root, "marrow.json", support::native_config());
+        write(root, "src/app.mw", TEMPORAL_SURFACE_SOURCE);
+    });
+    let seed = marrow(&["run", "--entry", "app::seed", root.to_str().unwrap()]);
+    assert_eq!(seed.status.code(), Some(0), "seed: {seed:?}");
+
+    let client = marrow(&[
+        "client",
+        "typescript",
+        root.to_str().expect("project path utf8"),
+    ]);
+    assert_eq!(client.status.code(), Some(0), "client: {client:?}");
+    let app = support::temp_dir("surface-client-temporal-e2e-app");
+    write(
+        &app,
+        "marrow-client.ts",
+        &String::from_utf8(client.stdout).expect("client utf8"),
+    );
+    write(&app, "temporal.ts", TEMPORAL_APP);
+
+    let (_server, addr) = spawn_surface_server_with_args(&root, &["--write"]);
+    let output = Command::new(node)
+        .arg("--experimental-strip-types")
+        .arg("--no-warnings")
+        .arg(app.join("temporal.ts"))
+        .current_dir(&app)
+        .env("MARROW_SURFACE_BASE_URL", format!("http://{addr}"))
+        .output()
+        .expect("run temporal app");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "temporal app failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(output.stdout)
+            .expect("temporal stdout utf8")
+            .trim(),
+        "temporal-e2e-ok"
+    );
+}
+
 fn node_with_type_stripping() -> Option<PathBuf> {
     let candidates = std::env::var_os("MARROW_TEST_NODE")
         .map(PathBuf::from)

@@ -3474,12 +3474,13 @@ pub fn seed()
         let client = render_typescript_client(&abi, &manifest).expect("typescript client renders");
 
         // The computed read decodes its result into the typed resource value rather than returning
-        // the raw envelope, and identity arguments encode through the branded id.
+        // the raw envelope, and an identity argument encodes through the entry argument shape the
+        // entry decoder reads, not the request identity shape used by write fields and index keys.
         assert!(
             client.contains("computedReadValue(envelope, (value) =>"),
             "{client}"
         );
-        assert!(client.contains("encodeIdentity(id)"), "{client}");
+        assert!(client.contains("encodeIdentityArgument(id)"), "{client}");
         let computed_route = manifest
             .routes
             .iter()

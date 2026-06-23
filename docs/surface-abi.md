@@ -359,9 +359,14 @@ validate every request from clients that bypass generated code. The client's job
 is to fail loud: a malformed or missing field throws a typed error rather than
 silently producing wrong data. Decoding is exact — a Marrow `int` decodes to a
 `bigint` (a JS `number` truncates above 2^53), an identity decodes to a branded
-id, and an enum decodes by its member catalog id. Input `int` values accept
-`string | number | bigint` and reject unsafe `number` inputs before
-serialization. The escape hatch `invokeRaw(options, operationTag, request)`
+id, and an enum decodes by its member catalog id. Temporal and bytes scalars
+decode to their faithful wire datum without loss: a `date` to its
+day-count `number`, an `instant`/`duration` to its nanosecond-count `bigint`, a
+`decimal` to its canonical text, and `bytes` to its base64 text. An identity key
+carries each datum in the same faithful form, so a temporal or bytes key takes
+its day count, nanosecond count, or base64 text rather than a display string.
+Input `int` values accept `string | number | bigint` and reject unsafe `number`
+inputs before serialization. The escape hatch `invokeRaw(options, operationTag, request)`
 returns the undecoded `surface.operation.v1` envelope for callers who need the
 wire shape.
 
