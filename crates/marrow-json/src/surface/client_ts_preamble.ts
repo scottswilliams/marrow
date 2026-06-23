@@ -179,10 +179,10 @@ function operationPath(operationTag: string): string {
 }
 
 function operationRequest(operationTag: string, requestKind: string, request: unknown): unknown {
-  const body: { kind: string; request?: unknown } = { kind: requestKind };
-  if (request !== undefined) {
-    body.request = request;
-  }
+  const body: { kind: string; request: unknown } = {
+    kind: requestKind,
+    request: request === undefined ? {} : request,
+  };
   return {
     profile_version: SURFACE_OPERATION_PROFILE_VERSION,
     operation_tag: operationTag,
