@@ -484,6 +484,13 @@ one stranded on a continuation line inside an open delimiter — is refused
 (`fmt.comment_loss`, exit `1`) in every mode, including the default stdout mode,
 which prints nothing rather than emit comment-stripped source. `marrow fmt
 file > file` therefore never silently discards content.
+
+Blank lines that group statements or members are kept: between two items in a
+body, a single blank line is preserved where the source held one or more, two or
+more consecutive blank lines collapse to one, and a leading or trailing blank
+inside a body is dropped. A comment that follows a blank line stays its own line
+attached to the item below it. Blank lines are layout only; they do not affect a
+declaration's durable shape identity.
 - A project directory formats every `.mw` file under its source roots, and
   requires `--check` or `--write`. Printing many files to stdout is meaningless,
   so a bare `marrow fmt <dir>` is a usage error (exit `2`).

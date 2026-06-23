@@ -475,6 +475,75 @@ fn formats_whole_file_with_blank_line_policy() {
     assert_eq!(format_source(source), expected);
 }
 
+/// The canonical runnable sample is the conformance oracle, and a formatter that
+/// cannot format its own canonical sample is the defect: `format_source` of the
+/// verbatim sample must return it unchanged.
+#[test]
+fn canonical_sample_is_already_fmt_canonical() {
+    let source = common::reference_sample();
+    assert_eq!(
+        format_source(&source),
+        source,
+        "the canonical sample.md is not in fmt-canonical form"
+    );
+}
+
+/// A single blank line between statements or members is preserved, two or more
+/// consecutive blank lines collapse to one, and a leading or trailing blank line
+/// inside a body is dropped.
+#[test]
+fn preserves_single_intra_body_blank_line() {
+    let source = "module app\n\
+         resource Book\n\
+         \x20   required title: string\n\
+         \n\
+         \n\
+         \x20   loanedTo: string\n\
+         pub fn run()\n\
+         \n\
+         \x20   const a = 1\n\
+         \n\
+         \x20   const b = 2\n\
+         \n";
+    let expected = "module app\n\
+         \n\
+         resource Book\n\
+         \x20   required title: string\n\
+         \n\
+         \x20   loanedTo: string\n\
+         \n\
+         pub fn run()\n\
+         \x20   const a = 1\n\
+         \n\
+         \x20   const b = 2\n";
+    assert_eq!(format_source(source), expected);
+    assert_eq!(
+        format_source(&format_source(source)),
+        expected,
+        "blank-line normalization is not idempotent"
+    );
+}
+
+/// A comment that sits after a blank line stays its own line and is not pulled up
+/// into the preceding statement's line.
+#[test]
+fn comment_after_blank_line_stays_attached_to_following_item() {
+    let source = "module app\n\
+         pub fn run()\n\
+         \x20   const a = 1\n\
+         \n\
+         \x20   ; about b\n\
+         \x20   const b = 2\n";
+    let expected = "module app\n\
+         \n\
+         pub fn run()\n\
+         \x20   const a = 1\n\
+         \n\
+         \x20   ; about b\n\
+         \x20   const b = 2\n";
+    assert_eq!(format_source(source), expected);
+}
+
 /// A span-independent structural fingerprint of a parsed file: the `Debug`
 /// rendering with every `SourceSpan { ... }` region removed. Two files compare
 /// equal exactly when their declarations match structurally (names, statements,

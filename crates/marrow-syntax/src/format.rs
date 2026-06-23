@@ -24,7 +24,9 @@ const INDENT: &str = "    ";
 
 /// Format a whole `.mw` source file to canonical Marrow. The module
 /// declaration, the `use` block, and each top-level declaration are separated by
-/// a single blank line, and the result ends with a newline.
+/// a single blank line, and the result ends with a newline. Inside a body, a
+/// single grouping blank line between statements or members is preserved
+/// (see `format_block` and `format_body_lines`).
 ///
 /// Normalizing layout makes the output a stable fixed point:
 /// `format_source(format_source(s))` equals `format_source(s)`. Line comments
@@ -220,11 +222,11 @@ fn declaration_span(declaration: &Declaration) -> crate::SourceSpan {
 pub fn format_declaration(source: &str, declaration: &Declaration) -> String {
     match declaration {
         Declaration::Const(decl) => format_const(decl),
-        Declaration::Resource(decl) => format_resource(decl),
-        Declaration::Store(decl) => format_store(decl),
+        Declaration::Resource(decl) => format_resource(source, decl),
+        Declaration::Store(decl) => format_store(source, decl),
         Declaration::Function(decl) => format_function(source, decl),
-        Declaration::Enum(decl) => format_enum(decl),
-        Declaration::Surface(decl) => format_surface(decl),
+        Declaration::Enum(decl) => format_enum(source, decl),
+        Declaration::Surface(decl) => format_surface(source, decl),
         Declaration::Evolve(decl) => format_evolve(source, decl),
     }
 }
@@ -232,13 +234,32 @@ pub fn format_declaration(source: &str, declaration: &Declaration) -> String {
 /// Render an `evolve transform` body to canonical layout, the normalized text that
 /// identifies the transform's work independent of source whitespace. A reformat of the
 /// body leaves this unchanged, while a real change to what the body computes drifts it.
+///
+/// Blank lines are layout, not work, so they are dropped here: the formatter
+/// preserves a grouping blank line in human-facing output, but the transform's
+/// identity must not shift when a developer adds or removes one.
 pub fn format_transform_body(source: &str, body: &Block) -> String {
-    format_block(source, body, 0)
+    strip_layout_blanks(&format_block(source, body, 0))
+}
+
+/// Drop the grouping blank lines the formatter preserves for human-facing output,
+/// yielding the layout-independent rendering that identifies a declaration's durable
+/// shape. The formatter owns the blank-preservation policy, so it also owns its
+/// inverse: a digest or transform identity that must not shift when a developer adds
+/// or removes a grouping blank line strips them through this one helper rather than
+/// re-deciding how identity rendering normalizes layout.
+pub fn strip_layout_blanks(rendering: &str) -> String {
+    rendering
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn format_evolve(source: &str, decl: &EvolveDecl) -> String {
     let mut out = String::from("evolve");
     let body = format_body_lines(
+        source,
         &decl.comments,
         decl.steps.iter().map(|step| {
             let text = format_evolve_step(source, step);
@@ -307,11 +328,11 @@ fn format_const(decl: &ConstDecl) -> String {
     out
 }
 
-fn format_resource(decl: &ResourceDecl) -> String {
+fn format_resource(source: &str, decl: &ResourceDecl) -> String {
     let mut out = format_docs(&decl.docs, 0);
     out.push_str("resource ");
     out.push_str(&decl.name);
-    let body = format_resource_body(&decl.members, &decl.comments, 1);
+    let body = format_resource_body(source, &decl.members, &decl.comments, 1);
     if !body.is_empty() {
         out.push('\n');
         out.push_str(&body);
@@ -319,7 +340,7 @@ fn format_resource(decl: &ResourceDecl) -> String {
     out
 }
 
-fn format_store(decl: &StoreDecl) -> String {
+fn format_store(source: &str, decl: &StoreDecl) -> String {
     let mut out = format_docs(&decl.docs, 0);
     out.push_str(&format!(
         "store ^{}{}: {}",
@@ -327,7 +348,7 @@ fn format_store(decl: &StoreDecl) -> String {
         format_key_params(&decl.root.keys),
         decl.resource
     ));
-    let body = format_store_body(&decl.indexes, &decl.comments, 1);
+    let body = format_store_body(source, &decl.indexes, &decl.comments, 1);
     if !body.is_empty() {
         out.push('\n');
         out.push_str(&body);
@@ -335,9 +356,9 @@ fn format_store(decl: &StoreDecl) -> String {
     out
 }
 
-fn format_surface(decl: &SurfaceDecl) -> String {
+fn format_surface(source: &str, decl: &SurfaceDecl) -> String {
     let mut out = format!("surface {} from ^{}", decl.name, decl.store.root);
-    let body = format_surface_body(&decl.items, &decl.comments, 1);
+    let body = format_surface_body(source, &decl.items, &decl.comments, 1);
     if !body.is_empty() {
         out.push('\n');
         out.push_str(&body);
@@ -345,11 +366,11 @@ fn format_surface(decl: &SurfaceDecl) -> String {
     out
 }
 
-fn format_enum(decl: &EnumDecl) -> String {
+fn format_enum(source: &str, decl: &EnumDecl) -> String {
     let mut out = format_docs(&decl.docs, 0);
     let visibility = if decl.public { "pub " } else { "" };
     out.push_str(&format!("{visibility}enum {}", decl.name));
-    let body = format_enum_body(&decl.members, &decl.comments, 1);
+    let body = format_enum_body(source, &decl.members, &decl.comments, 1);
     if !body.is_empty() {
         out.push('\n');
         out.push_str(&body);
@@ -359,7 +380,7 @@ fn format_enum(decl: &EnumDecl) -> String {
 
 /// Render one enum member and its nested members, each on its own line at the
 /// given indent depth. A `category` member leads with the `category` word.
-fn format_enum_member(member: &EnumMember, level: usize) -> String {
+fn format_enum_member(source: &str, member: &EnumMember, level: usize) -> String {
     let mut out = format_docs(&member.docs, level);
     let category = if member.category { "category " } else { "" };
     out.push_str(&format!(
@@ -367,7 +388,7 @@ fn format_enum_member(member: &EnumMember, level: usize) -> String {
         INDENT.repeat(level),
         member.name
     ));
-    let body = format_enum_body(&member.members, &member.comments, level + 1);
+    let body = format_enum_body(source, &member.members, &member.comments, level + 1);
     if !body.is_empty() {
         out.push('\n');
         out.push_str(&body);
@@ -375,19 +396,31 @@ fn format_enum_member(member: &EnumMember, level: usize) -> String {
     out
 }
 
-fn format_resource_body(members: &[ResourceMember], comments: &[Comment], level: usize) -> String {
+fn format_resource_body(
+    source: &str,
+    members: &[ResourceMember],
+    comments: &[Comment],
+    level: usize,
+) -> String {
     format_body_lines(
+        source,
         comments,
         members.iter().map(|member| FormattedBodyLine {
             span: member.span(),
-            text: format_resource_member(member, level),
+            text: format_resource_member(source, member, level),
             trailing_comment_line: resource_member_trailing_comment_line(member),
         }),
     )
 }
 
-fn format_store_body(indexes: &[crate::IndexDecl], comments: &[Comment], level: usize) -> String {
+fn format_store_body(
+    source: &str,
+    indexes: &[crate::IndexDecl],
+    comments: &[Comment],
+    level: usize,
+) -> String {
     format_body_lines(
+        source,
         comments,
         indexes.iter().map(|index| FormattedBodyLine {
             span: index.span,
@@ -397,8 +430,14 @@ fn format_store_body(indexes: &[crate::IndexDecl], comments: &[Comment], level: 
     )
 }
 
-fn format_surface_body(items: &[SurfaceItem], comments: &[Comment], level: usize) -> String {
+fn format_surface_body(
+    source: &str,
+    items: &[SurfaceItem],
+    comments: &[Comment],
+    level: usize,
+) -> String {
     format_body_lines(
+        source,
         comments,
         items.iter().map(|item| FormattedBodyLine {
             span: item.span(),
@@ -408,12 +447,18 @@ fn format_surface_body(items: &[SurfaceItem], comments: &[Comment], level: usize
     )
 }
 
-fn format_enum_body(members: &[EnumMember], comments: &[Comment], level: usize) -> String {
+fn format_enum_body(
+    source: &str,
+    members: &[EnumMember],
+    comments: &[Comment],
+    level: usize,
+) -> String {
     format_body_lines(
+        source,
         comments,
         members.iter().map(|member| FormattedBodyLine {
             span: member.span,
-            text: format_enum_member(member, level),
+            text: format_enum_member(source, member, level),
             trailing_comment_line: TrailingCommentLine::Line(member.docs.len()),
         }),
     )
@@ -427,10 +472,11 @@ fn resource_member_trailing_comment_line(member: &ResourceMember) -> TrailingCom
 }
 
 fn format_body_lines(
+    source: &str,
     comments: &[Comment],
     items: impl Iterator<Item = FormattedBodyLine>,
 ) -> String {
-    let mut lines = Vec::new();
+    let mut lines = BlankAwareLines::new(source);
     let mut comments = comments.iter().peekable();
     let items: Vec<FormattedBodyLine> = items.collect();
 
@@ -439,7 +485,7 @@ fn format_body_lines(
             if comment.placement == CommentPlacement::OwnLine
                 && comment.span.start_byte < item.span.start_byte
             {
-                lines.push(format_comment(comment));
+                lines.push(format_comment(comment), comment.span);
                 comments.next();
             } else {
                 break;
@@ -458,14 +504,85 @@ fn format_body_lines(
             append_trailing_comment(&mut text, comment, item.trailing_comment_line);
             comments.next();
         }
-        lines.push(text);
+        lines.push(text, item.span);
     }
 
     for comment in comments {
-        lines.push(format_comment(comment));
+        lines.push(format_comment(comment), comment.span);
     }
 
-    lines.join("\n")
+    lines.finish()
+}
+
+/// Accumulates body lines, joining them with a single blank line wherever the
+/// source held one or more blank lines immediately before a line, and with no
+/// blank line otherwise. Two or more source blank lines collapse to one, and a
+/// leading or trailing blank inside a body is dropped because the separator is
+/// emitted only between two pushed lines.
+///
+/// The gap is measured from each line's own start byte rather than the previous
+/// line's end byte: a block-bearing statement's span runs to its closing dedent,
+/// which already swallows the very blank line we want to preserve, so the
+/// reliable signal is whether the source immediately preceding the next line is
+/// an empty line.
+struct BlankAwareLines<'source> {
+    source: &'source str,
+    out: String,
+    pushed_any: bool,
+}
+
+impl<'source> BlankAwareLines<'source> {
+    fn new(source: &'source str) -> Self {
+        Self {
+            source,
+            out: String::new(),
+            pushed_any: false,
+        }
+    }
+
+    fn push(&mut self, text: String, span: crate::SourceSpan) {
+        if self.pushed_any {
+            self.out.push('\n');
+            if blank_line_precedes(self.source, span.start_byte) {
+                self.out.push('\n');
+            }
+        }
+        self.pushed_any = true;
+        self.out.push_str(&text);
+    }
+
+    fn finish(self) -> String {
+        self.out
+    }
+}
+
+/// Whether the line on which `start` sits is preceded by at least one blank
+/// (whitespace-only) source line. Walking back from `start` skips this line's own
+/// leading indentation, the newline that ends the line above, and that line; a
+/// blank line above leaves a second newline immediately before it.
+fn blank_line_precedes(source: &str, start: usize) -> bool {
+    let before = &source.as_bytes()[..start.min(source.len())];
+    let mut i = before.len();
+    // Skip the current line's leading whitespace back to the line break above it.
+    while i > 0 && before[i - 1] != b'\n' {
+        if !before[i - 1].is_ascii_whitespace() {
+            return false;
+        }
+        i -= 1;
+    }
+    if i == 0 {
+        return false;
+    }
+    i -= 1; // the newline ending the line above
+    // Skip any trailing whitespace on the line above; a blank line is reached
+    // when that walk lands on another newline.
+    while i > 0 && before[i - 1] != b'\n' {
+        if !before[i - 1].is_ascii_whitespace() {
+            return false;
+        }
+        i -= 1;
+    }
+    i > 0
 }
 
 struct FormattedBodyLine {
@@ -480,7 +597,7 @@ enum TrailingCommentLine {
     Line(usize),
 }
 
-fn format_resource_member(member: &ResourceMember, level: usize) -> String {
+fn format_resource_member(source: &str, member: &ResourceMember, level: usize) -> String {
     let pad = INDENT.repeat(level);
     match member {
         ResourceMember::Field(field) => {
@@ -502,7 +619,7 @@ fn format_resource_member(member: &ResourceMember, level: usize) -> String {
                 group.name,
                 format_key_params(&group.keys)
             ));
-            let body = format_resource_body(&group.members, &group.comments, level + 1);
+            let body = format_resource_body(source, &group.members, &group.comments, level + 1);
             if !body.is_empty() {
                 out.push('\n');
                 out.push_str(&body);
@@ -653,7 +770,7 @@ fn format_docs(docs: &[String], level: usize) -> String {
 /// parser does not carry through, a structural limitation inherited from the
 /// parser rather than the formatter.
 pub(crate) fn format_block(source: &str, block: &Block, level: usize) -> String {
-    let mut lines: Vec<String> = Vec::new();
+    let mut lines = BlankAwareLines::new(source);
     let mut comments = block.comments.iter().peekable();
 
     for (i, statement) in block.statements.iter().enumerate() {
@@ -662,7 +779,7 @@ pub(crate) fn format_block(source: &str, block: &Block, level: usize) -> String 
             if comment.placement == CommentPlacement::OwnLine
                 && comment.span.start_byte < stmt_span.start_byte
             {
-                lines.push(format_block_comment(comment, level));
+                lines.push(format_block_comment(comment, level), comment.span);
                 comments.next();
             } else {
                 break;
@@ -683,15 +800,15 @@ pub(crate) fn format_block(source: &str, block: &Block, level: usize) -> String 
             }
         }
         let text = format_statement_with_comments(source, statement, &statement_comments, level);
-        lines.push(text);
+        lines.push(text, stmt_span);
     }
 
     // Comments after the last statement, or an entirely statement-less block.
     for comment in comments {
-        lines.push(format_block_comment(comment, level));
+        lines.push(format_block_comment(comment, level), comment.span);
     }
 
-    lines.join("\n")
+    lines.finish()
 }
 
 fn comment_belongs_to_statement(
