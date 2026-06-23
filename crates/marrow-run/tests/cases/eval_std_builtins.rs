@@ -469,6 +469,12 @@ pub fn whole_with_point(): string
 pub fn one_point_zero(): string
     return string(std::json::decimal("{\"v\":1.0}", "/v") ?? 0.0)
 
+pub fn negative_zero_fraction(): string
+    return string(std::json::decimal("{\"v\":-0.0}", "/v") ?? 9.9)
+
+pub fn negative_zero_wider_fraction(): string
+    return string(std::json::decimal("{\"v\":-0.00}", "/v") ?? 9.9)
+
 pub fn overflow(): string
     return string(std::json::decimal("{\"v\":99999999999999999999999999999999999}", "/v") ?? 0.0)
 
@@ -489,6 +495,20 @@ pub fn malformed(): string
         run(checked_entry!(&program, "test::one_point_zero")).unwrap(),
         Some(Value::Str("1".into()))
     );
+    // A negative-zero coefficient is no value, so it canonicalizes to the one
+    // decimal zero rather than being rejected the way the integer `-0` spelling is.
+    assert_eq!(
+        run(checked_entry!(&program, "test::negative_zero_fraction")).unwrap(),
+        Some(Value::Str("0".into()))
+    );
+    assert_eq!(
+        run(checked_entry!(
+            &program,
+            "test::negative_zero_wider_fraction"
+        ))
+        .unwrap(),
+        Some(Value::Str("0".into()))
+    );
     assert_run_error(
         run(checked_entry!(&program, "test::overflow")),
         RUN_DECIMAL_OVERFLOW,
@@ -505,6 +525,12 @@ fn std_csv_decimal_canonicalizes_non_canonical_cells() {
 pub fn whole_with_point(): string
     return string(std::csv::decimal("amount\n9.0\n", 0, "amount") ?? 0.0)
 
+pub fn negative_zero_fraction(): string
+    return string(std::csv::decimal("amount\n-0.0\n", 0, "amount") ?? 9.9)
+
+pub fn negative_zero_wider_fraction(): string
+    return string(std::csv::decimal("amount\n-0.00\n", 0, "amount") ?? 9.9)
+
 pub fn overflow(): string
     return string(std::csv::decimal("amount\n99999999999999999999999999999999999\n", 0, "amount") ?? 0.0)
 
@@ -520,6 +546,18 @@ pub fn malformed(): string
     assert_eq!(
         run(checked_entry!(&program, "test::whole_with_point")).unwrap(),
         Some(Value::Str("9".into()))
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::negative_zero_fraction")).unwrap(),
+        Some(Value::Str("0".into()))
+    );
+    assert_eq!(
+        run(checked_entry!(
+            &program,
+            "test::negative_zero_wider_fraction"
+        ))
+        .unwrap(),
+        Some(Value::Str("0".into()))
     );
     assert_run_error(
         run(checked_entry!(&program, "test::overflow")),

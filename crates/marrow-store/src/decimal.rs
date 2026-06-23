@@ -298,7 +298,8 @@ impl<'a> DecimalShape<'a> {
     /// The decimal value, normalized into the envelope.
     /// [`Overflow`](DecimalParseError::Overflow) if the magnitude exceeds the
     /// 34-digit / 34-place envelope or `i128` range;
-    /// [`Malformed`](DecimalParseError::Malformed) for `-0`, which is no value.
+    /// [`Malformed`](DecimalParseError::Malformed) for the integer `-0` spelling,
+    /// which is no value.
     fn to_decimal(&self) -> Result<Decimal, DecimalParseError> {
         let scale = self.fraction.map_or(0, str::len) as u32;
         let digits = match self.fraction {
@@ -306,8 +307,14 @@ impl<'a> DecimalShape<'a> {
             None => self.integer.to_string(),
         };
         let magnitude: i128 = digits.parse().map_err(|_| DecimalParseError::Overflow)?;
-        if self.negative && magnitude == 0 {
-            return Err(DecimalParseError::Malformed); // `-0` is not a value
+        // The integer `-0` spelling is rejected, but a fractional negative zero
+        // such as `-0.0` is a well-formed number that canonicalizes to the one
+        // decimal zero; either way zero carries no sign.
+        if magnitude == 0 {
+            if self.negative && self.fraction.is_none() {
+                return Err(DecimalParseError::Malformed);
+            }
+            return Ok(Decimal::ZERO);
         }
         let coefficient = if self.negative { -magnitude } else { magnitude };
         Decimal::from_parts(coefficient, scale).ok_or(DecimalParseError::Overflow)
@@ -674,6 +681,10 @@ mod tests {
             ("-2.50", "-2.5"),
             ("123.456", "123.456"),
             ("0", "0"),
+            // A fractional negative zero is a well-formed number, not the rejected
+            // integer `-0` spelling, so it canonicalizes to the one decimal zero.
+            ("-0.0", "0"),
+            ("-0.00", "0"),
         ] {
             assert_eq!(
                 Decimal::parse_relaxed(text).map(Decimal::to_text),
