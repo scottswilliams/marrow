@@ -62,6 +62,28 @@ fn std_assert_equal_passes_and_renders_scalar_mismatches() {
 }
 
 #[test]
+fn std_assert_equal_renders_bytes_and_temporals_canonically() {
+    // Distinct bytes must render distinctly as `0x`-hex, not a length-only form
+    // that collapses different values to an identical, spurious-looking message.
+    let program = checked_program(
+        "pub fn bad()\n    std::assert::equal(std::bytes::fromText(\"abc\"), std::bytes::fromText(\"xyz\"))\n",
+    );
+    let error = run_expecting_error(checked_entry!(&program, "test::bad"));
+    assert_eq!(error.code(), RUN_ASSERT);
+    let (_code, message) = error_throw_fields(&error);
+    assert_eq!(message, "expected 0x78797a, got 0x616263");
+
+    // Temporals render as their canonical text, not a raw epoch integer.
+    let program = checked_program(
+        "pub fn bad()\n    std::assert::equal(date(\"2024-01-02\"), date(\"2024-01-03\"))\n",
+    );
+    let error = run_expecting_error(checked_entry!(&program, "test::bad"));
+    assert_eq!(error.code(), RUN_ASSERT);
+    let (_code, message) = error_throw_fields(&error);
+    assert_eq!(message, "expected 2024-01-03, got 2024-01-02");
+}
+
+#[test]
 fn std_assert_fail_raises_with_its_message() {
     let program = checked_program("pub fn bad()\n    std::assert::fail(\"boom\")\n");
     let error = run_expecting_error(checked_entry!(&program, "test::bad"));

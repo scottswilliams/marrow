@@ -1313,8 +1313,8 @@ fn a_conversion_error_message_includes_the_rejected_string() {
 #[test]
 fn conversion_error_message_includes_a_bounded_bytes_preview() {
     // A bytes value reaching a conversion that rejects it (here `int`, via an
-    // `unknown` source) renders as a bounded `bytes[len]` preview, never its raw
-    // contents.
+    // `unknown` source) renders as canonical `0x`-hex, the same form `print`
+    // produces, so distinct values render distinctly. Large blobs truncate.
     let program = checked_program(
         "fn raw(v: bytes): unknown\n    return v\n\
          pub fn n(v: bytes): int\n    return int(raw(v))\n",
@@ -1327,7 +1327,7 @@ fn conversion_error_message_includes_a_bounded_bytes_preview() {
         ))
         .unwrap_err()
         .message,
-        "cannot convert value bytes[1] to int"
+        "cannot convert value 0xff to int"
     );
 }
 

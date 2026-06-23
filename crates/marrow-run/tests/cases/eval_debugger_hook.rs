@@ -1686,9 +1686,9 @@ fn display_debug_renders_scalars_and_structured_previews() {
     assert_eq!(Value::Bool(true).display_debug(), "true");
     assert_eq!(Value::Str("hi".into()).display_debug(), "hi");
 
-    // Bytes and a sequence get a total, never-faulting preview (the normal
-    // renderer refuses these).
-    assert_eq!(Value::Bytes(vec![1, 2, 3]).display_debug(), "bytes[3]");
+    // Bytes render as canonical `0x`-hex so distinct values look distinct; a
+    // sequence gets a total, never-faulting structural preview.
+    assert_eq!(Value::Bytes(vec![1, 2, 3]).display_debug(), "0x010203");
     assert_eq!(
         Value::Sequence(Sequence::dense(vec![Value::Int(1), Value::Int(2)])).display_debug(),
         "sequence[2]"

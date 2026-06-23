@@ -322,10 +322,10 @@ impl Value {
             Value::Bool(b) => b.to_string(),
             Value::Str(s) => s.clone(),
             Value::Decimal(d) => d.to_text(),
-            Value::Instant(n) => format!("instant({n})"),
-            Value::Date(d) => format!("date({d})"),
-            Value::Duration(n) => format!("duration({n})"),
-            Value::Bytes(bytes) => format!("bytes[{}]", bytes.len()),
+            Value::Instant(n) => preview_temporal_text(SavedValue::Instant(*n)),
+            Value::Date(d) => preview_temporal_text(SavedValue::Date(*d)),
+            Value::Duration(n) => preview_temporal_text(SavedValue::Duration(*n)),
+            Value::Bytes(bytes) => render_bytes_hex(bytes),
             Value::Enum(value) => value.display_name.clone(),
             Value::Sequence(items) => format!("sequence[{}]", items.len()),
             Value::LocalTree(entries) => format!("tree[{}]", entries.len()),
@@ -348,10 +348,10 @@ pub(crate) fn saved_key_preview_with_text_limit(key: &SavedKey, text_limit: usiz
         SavedKey::Int(n) => n.to_string(),
         SavedKey::Bool(b) => b.to_string(),
         SavedKey::Str(s) => truncate_preview_chars(s, text_limit),
-        SavedKey::Date(d) => format!("date({d})"),
-        SavedKey::Duration(n) => format!("duration({n})"),
-        SavedKey::Instant(n) => format!("instant({n})"),
-        SavedKey::Bytes(bytes) => format!("bytes[{}]", bytes.len()),
+        SavedKey::Date(d) => preview_temporal_text(SavedValue::Date(*d)),
+        SavedKey::Duration(n) => preview_temporal_text(SavedValue::Duration(*n)),
+        SavedKey::Instant(n) => preview_temporal_text(SavedValue::Instant(*n)),
+        SavedKey::Bytes(bytes) => render_bytes_hex(bytes),
     }
 }
 
@@ -388,17 +388,30 @@ pub(crate) fn diagnostic_value_preview(value: &Value) -> Option<String> {
         Value::Int(n) => n.to_string(),
         Value::Bool(b) => b.to_string(),
         Value::Str(text) => diagnostic_text_preview(text),
-        Value::Date(d) => format!("date({d})"),
-        Value::Instant(n) => format!("instant({n})"),
-        Value::Duration(n) => format!("duration({n})"),
+        Value::Date(d) => preview_temporal_text(SavedValue::Date(*d)),
+        Value::Instant(n) => preview_temporal_text(SavedValue::Instant(*n)),
+        Value::Duration(n) => preview_temporal_text(SavedValue::Duration(*n)),
         Value::Decimal(decimal) => decimal.to_text(),
-        Value::Bytes(bytes) => format!("bytes[{}]", bytes.len()),
+        Value::Bytes(bytes) => diagnostic_bytes_preview(bytes),
         Value::Enum(_)
         | Value::Sequence(_)
         | Value::LocalTree(_)
         | Value::Resource(_)
         | Value::Identity(_) => return None,
     })
+}
+
+/// A bounded `0x`-hex preview of a bytes value for a diagnostic: canonical so two
+/// distinct values render distinctly, truncated past the scalar limit so a large
+/// blob does not flood the message.
+fn diagnostic_bytes_preview(bytes: &[u8]) -> String {
+    if bytes.len() <= DIAGNOSTIC_PREVIEW_SCALAR_LIMIT {
+        return render_bytes_hex(bytes);
+    }
+    format!(
+        "{}...",
+        render_bytes_hex(&bytes[..DIAGNOSTIC_PREVIEW_SCALAR_LIMIT])
+    )
 }
 
 pub(crate) fn diagnostic_saved_key_preview(key: &SavedKey) -> String {
@@ -931,6 +944,20 @@ pub(crate) fn render_bytes_hex(bytes: &[u8]) -> String {
     text
 }
 
+/// The canonical text a temporal scalar renders as in a preview (`2024-01-02`,
+/// not `date(19723)`), matching `print`. Total for previews: an out-of-range
+/// value that the canonical formatter rejects falls back to the raw form rather
+/// than faulting, since a preview must never raise.
+fn preview_temporal_text(value: SavedValue) -> String {
+    let fallback = match &value {
+        SavedValue::Date(d) => format!("date({d})"),
+        SavedValue::Instant(n) => format!("instant({n})"),
+        SavedValue::Duration(n) => format!("duration({n})"),
+        _ => unreachable!("preview_temporal_text takes a temporal value"),
+    };
+    canonical_scalar_text(value, SourceSpan::default()).unwrap_or(fallback)
+}
+
 fn render_identity(identity: &IdentityValue) -> String {
     let rendered: Vec<String> = identity.keys.iter().map(saved_key_preview).collect();
     match rendered.as_slice() {
@@ -942,8 +969,9 @@ fn render_identity(identity: &IdentityValue) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        Value, canonical_scalar_text, diagnostic_saved_key_preview, diagnostic_text_preview,
-        diagnostic_value_preview, saved_key_preview_with_text_limit, saved_key_to_value,
+        DIAGNOSTIC_PREVIEW_SCALAR_LIMIT, Value, canonical_scalar_text,
+        diagnostic_saved_key_preview, diagnostic_text_preview, diagnostic_value_preview,
+        saved_key_preview_with_text_limit, saved_key_to_value,
     };
     use crate::error::RUN_TYPE;
     use marrow_store::key::SavedKey;
@@ -966,6 +994,33 @@ mod tests {
         assert_eq!(SIXTY_FOUR_CHAR_PREFIX.chars().count(), 64);
         assert_eq!(preview, LONG_TEXT_PREVIEW);
         assert!(!preview.contains("tail-marker"), "{preview}");
+    }
+
+    #[test]
+    fn diagnostic_value_preview_renders_bytes_as_bounded_hex() {
+        // Distinct bytes render distinctly as canonical `0x`-hex, the form `print`
+        // produces, so an assertion failure is legible rather than length-only.
+        assert_eq!(
+            diagnostic_value_preview(&Value::Bytes(b"abc".to_vec())).as_deref(),
+            Some("0x616263")
+        );
+
+        let long = vec![0xab; DIAGNOSTIC_PREVIEW_SCALAR_LIMIT + 8];
+        let preview = diagnostic_value_preview(&Value::Bytes(long)).unwrap();
+        assert!(preview.ends_with("..."), "{preview}");
+        assert_eq!(
+            preview.trim_end_matches("..."),
+            format!("0x{}", "ab".repeat(DIAGNOSTIC_PREVIEW_SCALAR_LIMIT))
+        );
+    }
+
+    #[test]
+    fn diagnostic_value_preview_renders_temporals_as_canonical_text() {
+        // A date renders as its canonical calendar text, not a raw epoch integer.
+        assert_eq!(
+            diagnostic_value_preview(&Value::Date(19_723)).as_deref(),
+            Some("2024-01-01")
+        );
     }
 
     #[test]
