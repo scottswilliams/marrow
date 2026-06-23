@@ -523,6 +523,124 @@ fn guard_regular_store_file(path: &Path) -> Result<(), StoreError> {
     }
 }
 
+/// The fixed prefix of redb's super-header this build reads to bound an open. It
+/// spans the layout fields and both 128-byte commit slots.
+const SUPERBLOCK_PREFIX_LEN: usize = 320;
+
+/// Reject a store whose super-header points a committed btree root at a page lying
+/// beyond the file, before redb maps that page.
+///
+/// redb reads a page by computing its byte range from the page number and reading
+/// that span, so a root page number clobbered toward a huge region, index, or order
+/// makes the open allocate a span far past the file — gigabytes of zeroes, an OOM or
+/// hang — before any data is traversed. The engine's own length check guards the
+/// region-layout fields but not the committed root, so this validates each non-null
+/// root in both commit slots against the actual file length and reports a body that
+/// over-reaches as corruption. A header shorter than the prefix is left to redb,
+/// which rejects a truncated body itself.
+fn guard_superblock_header(path: &Path) -> Result<(), StoreError> {
+    let header = match read_file_prefix(path, SUPERBLOCK_PREFIX_LEN)? {
+        Some(header) => header,
+        None => return Ok(()),
+    };
+    let file_len = fs::metadata(path)
+        .map_err(io("open"))
+        .map(|meta| meta.len())?;
+
+    let page_size = u64::from(read_u32(&header, 12));
+    let region_header_pages = u64::from(read_u32(&header, 16));
+    let region_max_data_pages = u64::from(read_u32(&header, 20));
+    if page_size == 0 {
+        return Ok(());
+    }
+    let region_size = region_header_pages
+        .checked_add(region_max_data_pages)
+        .and_then(|pages| pages.checked_mul(page_size));
+    let region_pages_start = region_header_pages.checked_mul(page_size);
+    let (Some(region_size), Some(region_pages_start)) = (region_size, region_pages_start) else {
+        return Ok(());
+    };
+
+    // Each commit slot holds a user root at slot+8 and a system root at slot+40; a
+    // root is live only when its non-null flag (slot+1, slot+2) is set.
+    for slot in [64usize, 192] {
+        for (flag_offset, root_offset) in [(slot + 1, slot + 8), (slot + 2, slot + 40)] {
+            if header[flag_offset] == 0 {
+                continue;
+            }
+            let root = u64::from_le_bytes(header[root_offset..root_offset + 8].try_into().unwrap());
+            if root_page_overreaches(root, page_size, region_size, region_pages_start, file_len) {
+                return Err(StoreError::Corruption {
+                    message: "store header points a committed root page beyond the file".into(),
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Whether the byte range of a redb root page number falls outside the file. The
+/// page number packs an order in its top bits and a region/index below; its span is
+/// `2^order` pages. Any arithmetic that overflows a `u64` is itself out of range.
+fn root_page_overreaches(
+    root: u64,
+    page_size: u64,
+    region_size: u64,
+    region_pages_start: u64,
+    file_len: u64,
+) -> bool {
+    let order = (root >> 59) as u32;
+    let region = (root >> 20) & 0x000F_FFFF;
+    let page_index = root & (0x000F_FFFF >> order);
+    let Some(page_bytes) = 1u64
+        .checked_shl(order)
+        .and_then(|p| p.checked_mul(page_size))
+    else {
+        return true;
+    };
+    let end = region
+        .checked_mul(region_size)
+        .and_then(|base| base.checked_add(region_pages_start))
+        .and_then(|start| start.checked_add(page_index.checked_mul(page_bytes)?))
+        .and_then(|start| start.checked_add(page_size)) // data section begins after the super-header page
+        .and_then(|start| start.checked_add(page_bytes));
+    match end {
+        Some(end) => end > file_len,
+        None => true,
+    }
+}
+
+/// Read up to `len` bytes from the start of the file, or `None` when there is no
+/// committed header to validate: a missing file (creation handles it) or a body
+/// shorter than `len` (a truncated body redb rejects on its own).
+fn read_file_prefix(path: &Path, len: usize) -> Result<Option<Vec<u8>>, StoreError> {
+    use std::io::Read;
+
+    let mut file = match fs::File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(StoreError::Io {
+                op: "open",
+                message: error.to_string(),
+            });
+        }
+    };
+    let mut buffer = vec![0u8; len];
+    match file.read_exact(&mut buffer) {
+        Ok(()) => Ok(Some(buffer)),
+        Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => Ok(None),
+        Err(error) => Err(StoreError::Io {
+            op: "open",
+            message: error.to_string(),
+        }),
+    }
+}
+
+fn read_u32(header: &[u8], offset: usize) -> u32 {
+    u32::from_le_bytes(header[offset..offset + 4].try_into().unwrap())
+}
+
 #[cfg(unix)]
 fn prepare_new_store_file(path: &Path) -> Result<Option<std::path::PathBuf>, StoreError> {
     let Some(create_path) = missing_file_or_symlink_target(path)? else {
@@ -874,6 +992,7 @@ impl RedbStore {
     pub(crate) fn open(path: &Path) -> Result<Self, StoreError> {
         let db = catch_open(|| {
             guard_regular_store_file(path)?;
+            guard_superblock_header(path)?;
             let sync_parent_after_commit = prepare_new_store_file(path)?;
             let db = open_write_capable(path, || Database::create(path))?;
             stamp_or_verify_format_version(sync_parent_after_commit.as_deref(), &db)?;
@@ -903,6 +1022,7 @@ impl RedbStore {
         let db = open_tolerating_creation_race(path, || {
             catch_open(|| {
                 guard_regular_store_file(path)?;
+                guard_superblock_header(path)?;
                 let db = open_write_capable(path, || Database::open(path))?;
                 verify_existing_store_shape(&db)?;
                 Ok(DatabaseHandle::ReadWrite(db))
@@ -928,6 +1048,7 @@ impl RedbStore {
         let db = open_tolerating_creation_race(path, || {
             catch_open(|| {
                 guard_regular_store_file(path)?;
+                guard_superblock_header(path)?;
                 let db =
                     ReadOnlyDatabase::open(path).map_err(|error| map_open_error(path, error))?;
                 verify_existing_store_shape(&db)?;
@@ -1822,6 +1943,57 @@ mod tests {
                 panic!("mid-creation empty file misread as corruption: {message}")
             }
             other => panic!("unexpected mid-creation classification: {other:?}"),
+        }
+    }
+
+    /// A commit slot's root page number, clobbered in its high bit, decodes to a page
+    /// whose byte range lies far past the file. redb maps that page by allocating its
+    /// span, so the corrupt root drives an unbounded allocation before any data is read.
+    /// The open must reject such a header as corruption promptly, never allocate toward
+    /// it. Each flip runs on a worker thread with a deadline so a regression surfaces as
+    /// a timeout (the unbounded allocation) rather than a hung or OOM-killed suite.
+    #[test]
+    fn open_rejects_a_corrupt_root_page_number_without_unbounded_allocation() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let dir = TempDir::new("marrow-store-redb-root").expect("temp dir");
+        let seed = dir.path().join("seed.redb");
+        {
+            let mut store = RedbStore::open(&seed).expect("open fresh");
+            Backend::write(&mut store, b"k", b"v".to_vec()).expect("write");
+        }
+        let body = std::fs::read(&seed).expect("read store body");
+
+        // The high byte of the little-endian u64 root page number in commit slot 0:
+        // the user root at file offset 72 and the system root at offset 104.
+        for offset in [79usize, 111] {
+            let mut bytes = body.clone();
+            bytes[offset] = 0xff;
+            let path = dir.path().join(format!("root-{offset}.redb"));
+            std::fs::write(&path, &bytes).expect("write corrupted body");
+
+            for label in ["open", "open_existing", "open_read_only"] {
+                let path = path.clone();
+                let (sender, receiver) = mpsc::channel();
+                std::thread::spawn(move || {
+                    let result = match label {
+                        "open" => RedbStore::open(&path),
+                        "open_existing" => RedbStore::open_existing(&path),
+                        _ => RedbStore::open_read_only(&path),
+                    };
+                    let _ = sender.send(result.map(|_| ()));
+                });
+                match receiver.recv_timeout(Duration::from_secs(20)) {
+                    Ok(Err(StoreError::Corruption { .. })) => {}
+                    Ok(other) => panic!(
+                        "offset {offset} {label}: a corrupt root must be corruption, got {other:?}"
+                    ),
+                    Err(_) => panic!(
+                        "offset {offset} {label}: open did not return (unbounded allocation on a corrupt root)"
+                    ),
+                }
+            }
         }
     }
 

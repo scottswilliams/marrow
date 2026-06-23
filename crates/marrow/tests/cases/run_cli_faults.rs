@@ -97,6 +97,80 @@ fn a_data_dir_occupied_by_a_file_reports_an_accurate_directory_fault() {
 }
 
 #[test]
+fn read_only_inspection_of_a_data_dir_occupied_by_a_file_reports_a_directory_fault() {
+    // A regular file occupying the native `dataDir` is the same configuration fault on
+    // a read-only inspection as it is on `run`: it must carry the `config.data_dir`
+    // code and the directory-creation remedy, never a `store.io` fault with a raw OS
+    // errno leaked into the message. Every read-only inspection command and `doctor`
+    // share that classification.
+    let root = temp_project_uncommitted("inspect-data-dir-occupied", |root| {
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".data" } }"#,
+        );
+        write(
+            root,
+            "src/app.mw",
+            "module app\n\nresource Book\n    required title: string\nstore ^books(id: int): Book\n",
+        );
+        write(root, ".data", "not a directory");
+    });
+    let dir = root.to_str().unwrap();
+
+    // The read-only inspection family reports the occupied dataDir as the top-level
+    // `config.data_dir` fault, exactly as `run` does.
+    for args in [
+        vec!["data", "stats", dir],
+        vec!["data", "integrity", dir],
+        vec!["data", "roots", dir],
+        vec!["data", "dump", dir],
+    ] {
+        let (command, rest) = args.split_first().expect("command word");
+        let output = marrow_sub(command, rest);
+        let stderr = String::from_utf8(output.stderr.clone()).expect("stderr utf8");
+        assert_eq!(
+            output.status.code(),
+            Some(1),
+            "{args:?} should fail closed: {stderr}"
+        );
+        let fault = parse_fault(&output.stderr);
+        assert_eq!(
+            fault.code.as_str(),
+            "config.data_dir",
+            "{args:?}: a dataDir occupied by a file is a config fault: {stderr}"
+        );
+        assert!(
+            !stderr.contains("store.io") && !stderr.contains("os error"),
+            "{args:?}: must not leak a store.io errno: {stderr}"
+        );
+        assert!(
+            stderr.contains(".data") && stderr.contains("dataDir"),
+            "{args:?}: the fault must name the dataDir: {stderr}"
+        );
+    }
+
+    // `doctor` reports its own finding namespace, but the occupied dataDir is a
+    // configuration fault carrying the `config.data_dir` underlying code, never a
+    // `store.io` finding with a leaked OS errno.
+    let doctor = marrow_sub("doctor", &[dir, "--format", "json"]);
+    let report: serde_json::Value =
+        serde_json::from_slice(&doctor.stdout).expect("doctor json report");
+    let findings = report["findings"].as_array().expect("findings array");
+    assert!(
+        findings
+            .iter()
+            .any(|finding| finding["data"]["underlying_code"] == "config.data_dir"),
+        "doctor must report the occupied dataDir as config.data_dir: {report}"
+    );
+    let doctor_text = serde_json::to_string(&report).expect("serialize report");
+    assert!(
+        !doctor_text.contains("store.io") && !doctor_text.contains("os error"),
+        "doctor must not leak a store.io errno: {report}"
+    );
+}
+
+#[test]
 #[cfg(unix)]
 fn a_data_dir_create_denied_by_permissions_reports_a_directory_fault_not_a_read() {
     // Creating the native `dataDir` is a write-path operation. When the parent

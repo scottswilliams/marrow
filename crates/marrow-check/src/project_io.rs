@@ -162,6 +162,39 @@ pub fn resolve_store_path(
     Ok(Some(path))
 }
 
+/// Classify a native `dataDir` occupied by a non-directory file as the same
+/// `config.data_dir` fault the write path raises, before a read-only inspection
+/// tries to open a store under it.
+///
+/// The read path never creates the directory, so it cannot lean on `create_dir_all`
+/// to surface the condition; left to the store open, the stray file's `ENOTDIR`
+/// would leak as a raw `store.io` errno. This shares the directory-creation fault
+/// owner so every read-only inspection reports the occupied `dataDir` exactly as
+/// `run` does. A directory or an absent path is left to the open: a present store is
+/// read, and an absent one is the empty first run.
+pub fn guard_data_dir(root: &Path, config: &ProjectConfig) -> Result<(), ProjectIoError> {
+    let Some(path) = native_store_path(root, config)? else {
+        return Ok(());
+    };
+    let Some(data_dir) = path.parent() else {
+        return Ok(());
+    };
+    match fs::metadata(data_dir) {
+        Ok(metadata) if metadata.is_dir() => Ok(()),
+        // A present non-directory, an inaccessible parent, or a parent component that
+        // is itself a file: each is the directory the write path could not create.
+        Ok(_) => Err(ProjectIoError::DataDirCreate {
+            path: data_dir.to_path_buf(),
+            error: std::io::Error::other("the path is occupied by a non-directory file"),
+        }),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(ProjectIoError::DataDirCreate {
+            path: data_dir.to_path_buf(),
+            error,
+        }),
+    }
+}
+
 /// The committed lock, read from `marrow.lock` and decoded through its [`CatalogLock`]
 /// owner. A present-but-corrupt lock fails closed so a fresh checkout never mints over a
 /// committed identity; an absent lock is a true first run. This is read-only: reading a
@@ -516,7 +549,9 @@ mod tests {
 
     use marrow_project::{ProjectConfig, StoreBackend, StoreConfig};
 
-    use super::{CONFIG_DATA_DIR, ProjectIoError, native_store_path, resolve_store_path};
+    use super::{
+        CONFIG_DATA_DIR, ProjectIoError, guard_data_dir, native_store_path, resolve_store_path,
+    };
 
     fn native_config(data_dir: Option<&str>) -> ProjectConfig {
         ProjectConfig {
@@ -600,6 +635,54 @@ mod tests {
             message.contains("create") && message.contains("dataDir"),
             "the message names the directory it could not create: {message}"
         );
+    }
+
+    #[test]
+    fn guard_data_dir_classifies_a_non_directory_as_a_config_fault() {
+        // The read-only inspection guard never creates the directory, so it must
+        // detect a `dataDir` occupied by a regular file itself and raise the same
+        // `config.data_dir` fault the write path does, without leaking a raw OS errno.
+        let root = std::env::temp_dir().join(format!(
+            "marrow-guard-datadir-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&root).expect("create project root");
+        std::fs::write(root.join(".data"), b"not a directory").expect("occupy dataDir");
+
+        let error = guard_data_dir(&root, &native_config(Some(".data"))).unwrap_err();
+        std::fs::remove_dir_all(&root).ok();
+
+        assert_eq!(error.code(), CONFIG_DATA_DIR);
+        let message = error.message();
+        assert!(
+            message.contains("dataDir") && !message.contains("os error"),
+            "the message names the dataDir and leaks no errno: {message}"
+        );
+    }
+
+    #[test]
+    fn guard_data_dir_accepts_an_absent_or_present_directory() {
+        let root = std::env::temp_dir().join(format!(
+            "marrow-guard-datadir-ok-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&root).expect("create project root");
+        let config = native_config(Some(".data"));
+
+        // Absent dataDir: the empty first run, left to the open.
+        guard_data_dir(&root, &config).expect("absent dataDir is accepted");
+        // A real directory is accepted too.
+        std::fs::create_dir(root.join(".data")).expect("create dataDir");
+        guard_data_dir(&root, &config).expect("present dataDir is accepted");
+        std::fs::remove_dir_all(&root).ok();
     }
 
     mod store_vs_lock {

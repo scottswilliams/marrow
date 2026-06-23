@@ -624,6 +624,10 @@ pub(crate) fn open_store_for_inspection(
     config: &marrow_project::ProjectConfig,
     format: CheckFormat,
 ) -> Result<Option<marrow_store::tree::TreeStore>, ExitCode> {
+    marrow_check::guard_data_dir(Path::new(dir), config).map_err(|error| {
+        report_simple_error(error.code(), &error.message(), format);
+        ExitCode::FAILURE
+    })?;
     let Some(path) = native_store_path(dir, config, format)? else {
         return Ok(None);
     };

@@ -246,6 +246,19 @@ fn probe_store_open(
     config: &marrow_project::ProjectConfig,
     findings: &mut Vec<Finding>,
 ) -> Option<TreeStore> {
+    // A `dataDir` occupied by a non-directory is a configuration fault, the same one
+    // `run` raises; classifying it here keeps doctor from leaking the store open's raw
+    // `ENOTDIR` as a `store.io` finding.
+    if let Err(error) = marrow_check::guard_data_dir(root, config) {
+        findings.push(project_error_finding(
+            "doctor.config_invalid",
+            "native store dataDir is not a directory",
+            "point dataDir at a writable directory or remove the file occupying it, then rerun the next command",
+            doctor_command(dir),
+            error,
+        ));
+        return None;
+    }
     let path = match marrow_check::native_store_path(root, config) {
         Ok(Some(path)) => path,
         Ok(None) => return None,
