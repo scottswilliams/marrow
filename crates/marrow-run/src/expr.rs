@@ -270,7 +270,7 @@ pub(crate) fn eval_string_literal(text: &str, span: SourceSpan) -> Result<Value,
 fn string_literal_fault(error: StringLiteralError, span: SourceSpan) -> RuntimeError {
     let cause = match error {
         StringLiteralError::Unquoted => "an unquoted string literal",
-        StringLiteralError::BadEscape => {
+        StringLiteralError::BadEscape { .. } => {
             "an unsupported string escape; only `\\\\`, `\\\"`, `\\n`, `\\r`, and `\\t` are recognized"
         }
     };
@@ -290,7 +290,7 @@ pub(crate) fn eval_bytes_literal(text: &str, span: SourceSpan) -> Result<Value, 
 fn bytes_literal_fault(error: BytesLiteralError, span: SourceSpan) -> RuntimeError {
     let cause = match error {
         BytesLiteralError::Unquoted => "an unquoted bytes literal",
-        BytesLiteralError::BadEscape => {
+        BytesLiteralError::BadEscape { .. } => {
             "an unsupported bytes escape; only `\\\\`, `\\\"`, `\\n`, `\\r`, `\\t`, and `\\xNN` are recognized"
         }
     };

@@ -12,8 +12,10 @@
 pub enum StringLiteralError {
     /// Missing the surrounding double quotes.
     Unquoted,
-    /// An unrecognized escape, or a trailing lone backslash.
-    BadEscape,
+    /// An unrecognized escape, or a trailing lone backslash. The offset is the
+    /// byte position of the opening backslash within the decoded text, so a
+    /// diagnostic can point at the escape rather than the whole literal.
+    BadEscape { offset: usize },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -21,17 +23,29 @@ pub enum BytesLiteralError {
     /// Missing the surrounding `b"` … `"` delimiters.
     Unquoted,
     /// An unrecognized escape, a trailing lone backslash, or a malformed or
-    /// truncated `\xNN` hex escape.
-    BadEscape,
+    /// truncated `\xNN` hex escape. The offset is the byte position of the
+    /// opening backslash within the decoded text.
+    BadEscape { offset: usize },
 }
 
 /// Decode a full string literal — surrounding quotes included — into its value.
+/// A bad-escape offset is reported relative to the full literal, so it accounts
+/// for the opening quote stripped here.
 pub fn decode_string_literal(text: &str) -> Result<String, StringLiteralError> {
     let inner = text
         .strip_prefix('"')
         .and_then(|rest| rest.strip_suffix('"'))
         .ok_or(StringLiteralError::Unquoted)?;
-    decode_string_escapes(inner)
+    decode_string_escapes(inner).map_err(|error| shift_string_offset(error, 1))
+}
+
+fn shift_string_offset(error: StringLiteralError, by: usize) -> StringLiteralError {
+    match error {
+        StringLiteralError::BadEscape { offset } => StringLiteralError::BadEscape {
+            offset: offset + by,
+        },
+        other => other,
+    }
 }
 
 /// Encode a string into the quoted, escaped spelling that [`decode_string_literal`]
@@ -66,32 +80,44 @@ pub fn push_string_escapes(text: &mut String, value: &str) {
 /// directly, having no quotes to strip).
 pub fn decode_string_escapes(inner: &str) -> Result<String, StringLiteralError> {
     let mut decoded = String::with_capacity(inner.len());
-    let mut chars = inner.chars();
-    while let Some(ch) = chars.next() {
+    let mut chars = inner.char_indices();
+    while let Some((offset, ch)) = chars.next() {
         if ch != '\\' {
             decoded.push(ch);
             continue;
         }
-        let escaped = chars.next().ok_or(StringLiteralError::BadEscape)?;
+        let bad = StringLiteralError::BadEscape { offset };
+        let (_, escaped) = chars.next().ok_or(bad)?;
         decoded.push(match escaped {
             '\\' => '\\',
             '"' => '"',
             'n' => '\n',
             'r' => '\r',
             't' => '\t',
-            _ => return Err(StringLiteralError::BadEscape),
+            _ => return Err(bad),
         });
     }
     Ok(decoded)
 }
 
 /// Decode a full bytes literal — surrounding `b"` … `"` included — into its bytes.
+/// A bad-escape offset is reported relative to the full literal, so it accounts
+/// for the `b"` prefix stripped here.
 pub fn decode_bytes_literal(text: &str) -> Result<Vec<u8>, BytesLiteralError> {
     let inner = text
         .strip_prefix("b\"")
         .and_then(|rest| rest.strip_suffix('"'))
         .ok_or(BytesLiteralError::Unquoted)?;
-    decode_bytes_escapes(inner)
+    decode_bytes_escapes(inner).map_err(|error| shift_bytes_offset(error, 2))
+}
+
+fn shift_bytes_offset(error: BytesLiteralError, by: usize) -> BytesLiteralError {
+    match error {
+        BytesLiteralError::BadEscape { offset } => BytesLiteralError::BadEscape {
+            offset: offset + by,
+        },
+        other => other,
+    }
 }
 
 /// Decode escapes in already-unquoted bytes-literal text. Ordinary characters
@@ -99,14 +125,15 @@ pub fn decode_bytes_literal(text: &str) -> Result<Vec<u8>, BytesLiteralError> {
 /// individual byte values.
 pub fn decode_bytes_escapes(inner: &str) -> Result<Vec<u8>, BytesLiteralError> {
     let mut decoded = Vec::with_capacity(inner.len());
-    let mut chars = inner.chars();
-    while let Some(ch) = chars.next() {
+    let mut chars = inner.char_indices();
+    while let Some((offset, ch)) = chars.next() {
         if ch != '\\' {
             let mut buffer = [0; 4];
             decoded.extend_from_slice(ch.encode_utf8(&mut buffer).as_bytes());
             continue;
         }
-        let escaped = chars.next().ok_or(BytesLiteralError::BadEscape)?;
+        let bad = BytesLiteralError::BadEscape { offset };
+        let (_, escaped) = chars.next().ok_or(bad)?;
         match escaped {
             '\\' => decoded.push(b'\\'),
             '"' => decoded.push(b'"'),
@@ -114,17 +141,11 @@ pub fn decode_bytes_escapes(inner: &str) -> Result<Vec<u8>, BytesLiteralError> {
             'r' => decoded.push(b'\r'),
             't' => decoded.push(b'\t'),
             'x' => {
-                let high = chars
-                    .next()
-                    .and_then(hex_digit)
-                    .ok_or(BytesLiteralError::BadEscape)?;
-                let low = chars
-                    .next()
-                    .and_then(hex_digit)
-                    .ok_or(BytesLiteralError::BadEscape)?;
+                let high = chars.next().and_then(|(_, c)| hex_digit(c)).ok_or(bad)?;
+                let low = chars.next().and_then(|(_, c)| hex_digit(c)).ok_or(bad)?;
                 decoded.push((high << 4) | low);
             }
-            _ => return Err(BytesLiteralError::BadEscape),
+            _ => return Err(bad),
         }
     }
     Ok(decoded)
@@ -192,17 +213,31 @@ mod tests {
         for bad in [r"\0", r"\x41", r"\a", r"\u", r"\1"] {
             assert_eq!(
                 decode_string_escapes(bad),
-                Err(StringLiteralError::BadEscape),
+                Err(StringLiteralError::BadEscape { offset: 0 }),
                 "expected {bad:?} to be rejected"
             );
         }
     }
 
     #[test]
+    fn reports_the_offset_of_a_bad_escape() {
+        // The offset points at the backslash, not the start of the text, and the
+        // full-literal decoder shifts it past the opening quote.
+        assert_eq!(
+            decode_string_escapes("ok then \\q"),
+            Err(StringLiteralError::BadEscape { offset: 8 })
+        );
+        assert_eq!(
+            decode_string_literal(r#""ok then \q""#),
+            Err(StringLiteralError::BadEscape { offset: 9 })
+        );
+    }
+
+    #[test]
     fn rejects_a_trailing_backslash() {
         assert_eq!(
             decode_string_escapes("ends here\\"),
-            Err(StringLiteralError::BadEscape)
+            Err(StringLiteralError::BadEscape { offset: 9 })
         );
     }
 
@@ -243,13 +278,29 @@ mod tests {
 
     #[test]
     fn bytes_reject_unknown_and_truncated_escapes() {
-        for bad in [r"\q", r"\x", r"\x1", r"\xg0", r"ok\"] {
+        for (bad, offset) in [
+            (r"\q", 0),
+            (r"\x", 0),
+            (r"\x1", 0),
+            (r"\xg0", 0),
+            (r"ok\", 2),
+        ] {
             assert_eq!(
                 decode_bytes_escapes(bad),
-                Err(BytesLiteralError::BadEscape),
+                Err(BytesLiteralError::BadEscape { offset }),
                 "expected {bad:?} to be rejected"
             );
         }
+    }
+
+    #[test]
+    fn bytes_literal_offset_accounts_for_the_b_prefix() {
+        // The `b"` prefix is two bytes, so a bad escape at inner offset 1 lands at
+        // full-literal offset 3.
+        assert_eq!(
+            decode_bytes_literal(r#"b"a\q""#),
+            Err(BytesLiteralError::BadEscape { offset: 3 })
+        );
     }
 
     #[test]

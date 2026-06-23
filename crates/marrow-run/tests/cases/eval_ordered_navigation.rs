@@ -427,6 +427,39 @@ fn neighbors_on_a_keyed_child_layer_position() {
     );
 }
 
+#[test]
+fn if_const_binds_a_keyed_layer_neighbor_as_a_usable_key() {
+    // Over a keyed child layer the neighbor types to the layer's key, so an
+    // `if const` binding is directly usable as that key — addressing the sibling
+    // entry's value without a `??` default to recover the type.
+    let program = checked_program(&format!(
+        "{BOOK_TAGS_SCHEMA}pub fn seed()\n    const x: int = append(^books(1).tags, \"p\")\n    const y: int = append(^books(1).tags, \"q\")\n\npub fn neighborTag(p: int): string\n    if const n = next(^books(1).tags(p))\n        return ^books(1).tags(n) ?? \"absent\"\n    return \"edge\"\n"
+    ));
+    let store = TreeStore::memory();
+    run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed");
+
+    // The successor of position 1 is position 2, whose value is "q".
+    assert_eq!(
+        run_entry(
+            &store,
+            checked_entry!(&program, "test::neighborTag", Value::Int(1))
+        )
+        .expect("neighborTag")
+        .value,
+        Some(Value::Str("q".to_string()))
+    );
+    // Position 2 is the last, so its neighbor is absent and the `if const` is skipped.
+    assert_eq!(
+        run_entry(
+            &store,
+            checked_entry!(&program, "test::neighborTag", Value::Int(2))
+        )
+        .expect("neighborTag")
+        .value,
+        Some(Value::Str("edge".to_string()))
+    );
+}
+
 /// A composite keyed layer is a chain of single-key sub-layers. A partial prefix
 /// names an inner sub-layer, so its edge neighbor is the first/last entry of that
 /// inner column under the prefix — the same descent `count` and iteration take. A

@@ -1444,9 +1444,9 @@ fn check_neighbor(
             }
             resolver.key_type(callee).unwrap_or(MarrowType::Unknown)
         }
-        crate::CheckedExpr::Call { .. } | crate::CheckedExpr::Field { .. } => {
-            resolver.key_type(&checked).unwrap_or(MarrowType::Unknown)
-        }
+        crate::CheckedExpr::Call { .. } | crate::CheckedExpr::Field { .. } => resolver
+            .neighbor_key_type(&checked)
+            .unwrap_or(MarrowType::Unknown),
         _ if matches!(arg_types.first(), Some(MarrowType::Identity(_))) => neighbor_unsupported(
             which,
             "an identity value (use a saved place)",

@@ -691,6 +691,44 @@ fn accepts_if_const_over_a_neighbor_read() {
 }
 
 #[test]
+fn accepts_if_const_over_a_keyed_layer_neighbor_read() {
+    // Over a keyed child layer `next`/`prev` types to the layer's key, so the
+    // `if const` binding is usable as that key — addressing the sibling entry —
+    // and as a plain value of the key's scalar type. The store-root neighbor
+    // already binds a usable identity; a keyed-layer neighbor must bind a usable
+    // key the same way, without a `??` default to rescue the type.
+    let report = check_module_report(
+        "if-const-keyed-layer-neighbor-read",
+        "module m\n\
+         resource Book\n    tags(pos: int): string\n\
+         store ^books(id: int): Book\n\n\
+         fn f(id: Id(^books)): string\n\
+         \x20   if const n = next(^books(id).tags(1))\n\
+         \x20       return ^books(id).tags(n) ?? \"\"\n\
+         \x20   return \"\"\n",
+    );
+    assert_clean(&report);
+}
+
+#[test]
+fn accepts_if_const_over_a_composite_keyed_layer_neighbor_read() {
+    // A composite layer is a chain of single-key sub-layers; a fully-keyed leaf
+    // steps the final column, so the neighbor binds that column's key type and
+    // is usable as the trailing key argument.
+    let report = check_module_report(
+        "if-const-composite-layer-neighbor-read",
+        "module m\n\
+         resource Grid\n    cells(row: int, col: int): string\n\
+         store ^grids(id: int): Grid\n\n\
+         fn f(id: Id(^grids)): string\n\
+         \x20   if const c = next(^grids(id).cells(0, 2))\n\
+         \x20       return ^grids(id).cells(0, c) ?? \"\"\n\
+         \x20   return \"\"\n",
+    );
+    assert_clean(&report);
+}
+
+#[test]
 fn rejects_if_const_over_a_non_unique_index_branch() {
     let found = check_module(
         "if-const-non-unique-index",

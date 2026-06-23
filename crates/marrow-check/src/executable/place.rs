@@ -128,6 +128,25 @@ impl<'a> SavedPlaceResolver<'a> {
         self.place_key_type(expr.saved_place()?)
     }
 
+    /// The scalar type a `next`/`prev` neighbor binds for `expr`. A neighbor seek
+    /// steps one key column and yields that column's scalar value. Over a partial
+    /// layer prefix, a keyless layer, or a keyed root the stepped column is the one
+    /// `place_key_type` already reports. Over a fully-keyed final layer — a leaf
+    /// position such as `cells(row, col)` — the seek anchors on the last supplied
+    /// key and steps a sibling in that same final column, so the neighbor types to
+    /// the final column's key, not to `place_key_type`'s value read.
+    pub(crate) fn neighbor_key_type(&self, expr: &CheckedExpr) -> Option<MarrowType> {
+        let place = expr.saved_place()?;
+        if let CheckedSavedTerminal::Record = place.terminal
+            && let Some(layer) = place.layers.last()
+            && layer_fully_keyed(layer)
+            && range_arg_position_in(&layer.args).is_none()
+        {
+            return checked_key_param_type(layer.key_params.last()?);
+        }
+        self.place_key_type(place)
+    }
+
     pub(crate) fn is_index_branch(&self, expr: &CheckedExpr) -> bool {
         index_branch(expr).is_some()
     }

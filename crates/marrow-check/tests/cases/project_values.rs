@@ -1243,6 +1243,35 @@ fn an_unsupported_string_escape_is_flagged_at_check_time() {
 }
 
 #[test]
+fn a_string_escape_diagnostic_points_at_the_escape_not_the_opening_quote() {
+    // The literal opens well before the offending escape, so anchoring on the
+    // opening quote would mislocate the error; the span must land on the `\q`.
+    let src = "fn f()\n    const s: string = \"plain text \\q\"\n";
+    let found = check_script("string-escape-span", src, "check.string_escape");
+    let [diagnostic] = found.as_slice() else {
+        panic!("{found:#?}");
+    };
+    let opening_quote = src.find('"').expect("opening quote");
+    let backslash = src.find('\\').expect("backslash");
+    assert!(
+        diagnostic.span.start_byte > opening_quote,
+        "{diagnostic:#?}"
+    );
+    assert_eq!(diagnostic.span.start_byte, backslash, "{diagnostic:#?}");
+}
+
+#[test]
+fn a_bytes_escape_diagnostic_points_at_the_escape_not_the_prefix() {
+    let src = "fn f()\n    const b: bytes = b\"plain text \\q\"\n";
+    let found = check_script("bytes-escape-span", src, "check.bytes_escape");
+    let [diagnostic] = found.as_slice() else {
+        panic!("{found:#?}");
+    };
+    let backslash = src.find('\\').expect("backslash");
+    assert_eq!(diagnostic.span.start_byte, backslash, "{diagnostic:#?}");
+}
+
+#[test]
 fn supported_string_escapes_check_clean() {
     let found = check_script(
         "string-escape-supported",

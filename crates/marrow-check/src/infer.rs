@@ -5,7 +5,7 @@ use std::path::Path;
 
 use marrow_schema::{MemberPathResolution, Type};
 use marrow_store::value::ScalarType;
-use marrow_syntax::SourceSpan;
+use marrow_syntax::{BytesLiteralError, SourceSpan, StringLiteralError};
 
 use crate::checks::{
     CallCheck, CoalesceCheck, SavedKeyArgCheck, check_binary, check_call, check_coalesce,
@@ -1101,21 +1101,38 @@ fn check_string_escapes(
     file: &Path,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
-    if marrow_syntax::decode_string_literal(text).is_err() {
-        diagnostics.push(string_escape_diagnostic(file, span));
+    if let Err(StringLiteralError::BadEscape { offset }) =
+        marrow_syntax::decode_string_literal(text)
+    {
+        diagnostics.push(string_escape_diagnostic(file, escape_span(span, offset)));
     }
 }
 
 /// Like [`check_string_escapes`] but for an interpolation literal text segment,
-/// which carries no surrounding quotes.
+/// which carries no surrounding quotes, so the segment span needs no quote offset.
 fn check_interpolation_text_escapes(
     text: &str,
     span: SourceSpan,
     file: &Path,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
-    if marrow_syntax::decode_string_escapes(text).is_err() {
-        diagnostics.push(string_escape_diagnostic(file, span));
+    if let Err(StringLiteralError::BadEscape { offset }) =
+        marrow_syntax::decode_string_escapes(text)
+    {
+        diagnostics.push(string_escape_diagnostic(file, escape_span(span, offset)));
+    }
+}
+
+/// Narrow a literal's span to the two-byte escape that failed to decode, located
+/// `offset` bytes into the literal text. A literal never spans lines, so the line
+/// is unchanged and the column advances by the same byte offset the lexer uses.
+fn escape_span(literal: SourceSpan, offset: usize) -> SourceSpan {
+    let start_byte = literal.start_byte + offset;
+    SourceSpan {
+        start_byte,
+        end_byte: (start_byte + 2).min(literal.end_byte),
+        line: literal.line,
+        column: literal.column + offset as u32,
     }
 }
 
@@ -1138,8 +1155,9 @@ fn check_bytes_escapes(
     file: &Path,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
-    if marrow_syntax::decode_bytes_literal(text).is_err() {
-        diagnostics.push(bytes_escape_diagnostic(file, span));
+    if let Err(BytesLiteralError::BadEscape { offset }) = marrow_syntax::decode_bytes_literal(text)
+    {
+        diagnostics.push(bytes_escape_diagnostic(file, escape_span(span, offset)));
     }
 }
 
