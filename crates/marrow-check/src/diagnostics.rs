@@ -747,7 +747,8 @@ pub enum DiagnosticPayload {
         reserved_stable_id: String,
     },
     /// `check.catalog_intent`: a path-only evolve intent names more than one
-    /// catalog/source entity and cannot pick a semantic target.
+    /// catalog/source entity and cannot pick a semantic target, or a source
+    /// declaration has no durable identity yet and reports how it is recorded.
     CatalogIntent(CatalogIntentDiagnostic),
     /// `check.collection_unsupported`: a lookup names no declared index.
     SuggestedIndex { declaration: String },
@@ -804,6 +805,17 @@ pub struct CatalogPathCandidate {
     pub stable_id: String,
 }
 
+/// How a source entity the accepted catalog does not yet record can be saved. A plain
+/// `marrow run` records an additive change — a sparse field, a new resource, store, enum,
+/// or group — by auto-applying it; a newly `required` field cannot be auto-applied over an
+/// established store, since backfilling existing records is data work an explicit
+/// `evolve apply` must drive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PendingRecord {
+    RunOrEvolveApply,
+    EvolveApply,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CatalogIntentDiagnostic {
     AmbiguousPath {
@@ -811,6 +823,12 @@ pub enum CatalogIntentDiagnostic {
         path: String,
         accepted: Vec<CatalogPathCandidate>,
         source: Vec<CatalogEntryKind>,
+    },
+    /// A source entity with no durable identity yet, and how a state-establishing flow
+    /// records it.
+    PendingIdentity {
+        path: String,
+        records: PendingRecord,
     },
 }
 

@@ -2,7 +2,9 @@ use crate::support;
 use std::fs;
 
 use marrow_catalog::{CatalogEntry, CatalogEntryKind, CatalogLifecycle, CatalogMetadata};
-use marrow_check::{CHECK_CATALOG_INTENT, DiagnosticPayload};
+use marrow_check::{
+    CHECK_CATALOG_INTENT, CatalogIntentDiagnostic, DiagnosticPayload, PendingRecord,
+};
 
 use support::catalog::{
     catalog, catalog_path, derived_id, entry as literal_entry, entry_for_label as entry,
@@ -274,6 +276,67 @@ fn catalog_proposal_ids_do_not_collide_with_accepted_stable_ids() {
     let proposal = program.catalog.proposal.expect("proposal");
     CatalogMetadata::from_json(&proposal.to_json_pretty().expect("catalog renders"))
         .expect("proposal validates");
+}
+
+#[test]
+fn pending_required_field_directs_to_evolve_apply_while_sparse_field_records_on_run() {
+    let root = temp_project("catalog-pending-required", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Book\n\
+             \x20   title: string\n\
+             \x20   required isbn: string\n\
+             \x20   subtitle: string\n\
+             store ^books(id: int): Book\n",
+        );
+        let metadata = catalog(vec![
+            entry(CatalogEntryKind::Resource, "books::Book", "res-book", &[]),
+            entry(CatalogEntryKind::Store, "books::^books", "store-books", &[]),
+            entry(
+                CatalogEntryKind::ResourceMember,
+                "books::Book::title",
+                "member-title",
+                &[],
+            ),
+        ]);
+        write_catalog(root, &metadata);
+    });
+
+    let (report, _program) = check_with_accepted(&root);
+
+    let pending: Vec<(String, PendingRecord)> = report
+        .diagnostics
+        .iter()
+        .filter_map(|diagnostic| match &diagnostic.payload {
+            DiagnosticPayload::CatalogIntent(CatalogIntentDiagnostic::PendingIdentity {
+                path,
+                records,
+            }) => Some((path.clone(), *records)),
+            _ => None,
+        })
+        .collect();
+
+    let isbn = pending
+        .iter()
+        .find(|(path, _)| path == "books::Book::isbn")
+        .expect("pending identity for the new required field");
+    assert_eq!(
+        isbn.1,
+        PendingRecord::EvolveApply,
+        "a new required field over an established store cannot be recorded by a plain run"
+    );
+
+    let subtitle = pending
+        .iter()
+        .find(|(path, _)| path == "books::Book::subtitle")
+        .expect("pending identity for the new sparse field");
+    assert_eq!(
+        subtitle.1,
+        PendingRecord::RunOrEvolveApply,
+        "a new sparse field is recorded by a plain run"
+    );
 }
 
 #[test]

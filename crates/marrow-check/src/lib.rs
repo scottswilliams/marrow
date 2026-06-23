@@ -74,7 +74,7 @@ pub use diagnostics::{
     CHECK_UNRESOLVED_IMPORT, CHECK_UNRESOLVED_NAME, CHECK_UNTYPED_VALUE, CatalogIntentDiagnostic,
     CatalogIntentKind, CatalogPathCandidate, CheckDiagnostic, CheckReport, ConversionTarget,
     ConversionUnsupportedSourceDiagnostic, DefaultEntryProblem, DiagnosticPayload, EnumDiagnostic,
-    IO_READ, RejectedSurface, SCHEMA_DUPLICATE_ROOT_OWNER, SurfaceActionDiagnostic,
+    IO_READ, PendingRecord, RejectedSurface, SCHEMA_DUPLICATE_ROOT_OWNER, SurfaceActionDiagnostic,
     SurfaceCollisionNameKind, SurfaceComputedReadDiagnostic, SurfaceFieldDiagnostic,
     SurfaceFieldList, SurfaceFieldProblem, SurfaceTargetDiagnostic,
 };

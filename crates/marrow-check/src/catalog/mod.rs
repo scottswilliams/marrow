@@ -16,7 +16,7 @@ use crate::program::{EvolveDefault, EvolveTransform};
 use crate::{
     CHECK_CATALOG_INTENT, CHECK_DURABLE_STORE_REQUIRED, CHECK_EVOLVE_TARGET, CHECK_LOCK_CORRUPT,
     CatalogIntentDiagnostic, CatalogIntentKind, CatalogPathCandidate, CheckDiagnostic,
-    CheckedProgram, DiagnosticPayload,
+    CheckedProgram, DiagnosticPayload, PendingRecord,
 };
 
 mod source_digest;
@@ -1943,6 +1943,11 @@ pub(crate) struct SourceCatalogEntry {
     /// group<->keyed-group reshape or a re-key is a different signature. A leaf member's own key
     /// shape lives in its `leaf` facts; this is the only place a group's key shape lives.
     pub(crate) key_params: Vec<marrow_schema::KeyDef>,
+    /// Whether this is a `required` plain field. A required field added over an established
+    /// store cannot be recorded by a plain `marrow run` — backfilling existing records is
+    /// data work an explicit `evolve apply` must drive — so its pending-identity remedy
+    /// directs there rather than to a plain run.
+    pub(crate) required_field: bool,
 }
 
 impl SourceCatalogEntry {
@@ -1961,6 +1966,7 @@ impl SourceCatalogEntry {
             span,
             leaf: None,
             key_params: Vec::new(),
+            required_field: false,
         }
     }
 }
@@ -2050,6 +2056,7 @@ fn collect_resource_members(
             file: module.source_file.clone(),
             leaf: member_leaf(module, node),
             key_params: node.key_params.clone(),
+            required_field: node.is_required_field(),
         });
         collect_resource_members(entries, module, resource, &path, &node.members, spans);
     }
@@ -2140,17 +2147,38 @@ fn member_leaf(module: &crate::CheckedModule, node: &marrow_schema::Node) -> Opt
 
 /// A source entity the accepted catalog does not yet record has no durable identity until a
 /// state-establishing flow commits one. That pending state is informational, not a failure, so
-/// `check` stays read-only and exits clean.
+/// `check` stays read-only and exits clean. The remedy names how the entity is recorded: a
+/// `required` field added over an established store needs explicit data-evolution work to
+/// backfill existing records, while every additive change a plain `marrow run` auto-applies.
 fn push_pending_identity(source: &SourceCatalogEntry, diagnostics: &mut Vec<CheckDiagnostic>) {
-    diagnostics.push(CheckDiagnostic::warning(
-        CHECK_CATALOG_INTENT,
-        &source.file,
-        source.span,
-        format!(
-            "`{}` is new and has not been saved to the store yet; the next marrow run or marrow evolve apply records it",
-            source.path
-        ),
-    ));
+    let records = if source.required_field {
+        PendingRecord::EvolveApply
+    } else {
+        PendingRecord::RunOrEvolveApply
+    };
+    let remedy = match records {
+        PendingRecord::RunOrEvolveApply => "the next marrow run or marrow evolve apply records it",
+        PendingRecord::EvolveApply => {
+            "marrow evolve preview then marrow evolve apply records it, supplying a default or transform for existing records"
+        }
+    };
+    diagnostics.push(
+        CheckDiagnostic::warning(
+            CHECK_CATALOG_INTENT,
+            &source.file,
+            source.span,
+            format!(
+                "`{}` is new and has not been saved to the store yet; {remedy}",
+                source.path
+            ),
+        )
+        .with_payload(DiagnosticPayload::CatalogIntent(
+            CatalogIntentDiagnostic::PendingIdentity {
+                path: source.path.clone(),
+                records,
+            },
+        )),
+    );
 }
 
 fn push_rename_source_declared(rename: &RenameIntent, diagnostics: &mut Vec<CheckDiagnostic>) {
@@ -2404,6 +2432,7 @@ mod tests {
             span: SourceSpan::default(),
             leaf: None,
             key_params: Vec::new(),
+            required_field: false,
         }
     }
 

@@ -203,6 +203,14 @@ impl Node {
         self.key_params.is_empty() && matches!(self.kind, NodeKind::Slot { .. })
     }
 
+    /// Whether this node is a `required` plain field. Only a top-level or group field
+    /// carries `required`; a keyed leaf and a group never do. A required field added over
+    /// existing saved data needs an explicit data-evolution apply, since it cannot read as
+    /// absent the way a sparse field can.
+    pub fn is_required_field(&self) -> bool {
+        self.key_params.is_empty() && matches!(self.kind, NodeKind::Slot { required: true, .. })
+    }
+
     /// The type of this node when it is a plain field, else `None`.
     pub fn plain_field_type(&self) -> Option<&Type> {
         match &self.kind {
