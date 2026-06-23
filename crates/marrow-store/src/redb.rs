@@ -619,6 +619,13 @@ fn read_file_prefix(path: &Path, len: usize) -> Result<Option<Vec<u8>>, StoreErr
     let mut file = match fs::File::open(path) {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        // A denied store file is its own path-bearing state: the fix is to grant
+        // access, not retry, so it never collapses into the transient I/O bucket.
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+            return Err(StoreError::PermissionDenied {
+                path: path.to_path_buf(),
+            });
+        }
         Err(error) => {
             return Err(StoreError::Io {
                 op: "open",
@@ -630,6 +637,11 @@ fn read_file_prefix(path: &Path, len: usize) -> Result<Option<Vec<u8>>, StoreErr
     match file.read_exact(&mut buffer) {
         Ok(()) => Ok(Some(buffer)),
         Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => Ok(None),
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+            Err(StoreError::PermissionDenied {
+                path: path.to_path_buf(),
+            })
+        }
         Err(error) => Err(StoreError::Io {
             op: "open",
             message: error.to_string(),
@@ -1436,6 +1448,44 @@ mod tests {
             None,
             "relative symlink cycles must not spin while preparing owner-only creation"
         );
+    }
+
+    /// An unreadable store file — a regular store body whose mode denies access while
+    /// its parent directory stays searchable — is a permission fault, not a transient
+    /// I/O blip. The header probe runs before the engine open, so the denied prefix
+    /// read must carry the typed `store.permission_denied` code and name the path on
+    /// every open path, never collapse into the `store.io` catch-all with a raw errno.
+    #[cfg(unix)]
+    #[test]
+    fn opening_a_denied_store_file_is_permission_denied_on_every_open_path() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = TempDir::new("marrow-store-redb-denied-file").expect("temp dir");
+        let path = dir.path().join("marrow.redb");
+        {
+            let mut store = RedbStore::open(&path).expect("create fresh store");
+            Backend::write(&mut store, b"k", b"v".to_vec()).expect("write");
+        }
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000))
+            .expect("deny access to the store file");
+
+        for result in [
+            RedbStore::open(&path).map(|_| ()),
+            RedbStore::open_existing(&path).map(|_| ()),
+            RedbStore::open_read_only(&path).map(|_| ()),
+        ] {
+            match result {
+                Err(StoreError::PermissionDenied { path: reported }) => {
+                    assert_eq!(reported, path);
+                }
+                other => {
+                    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).ok();
+                    panic!("a denied store file must be permission_denied, got {other:?}");
+                }
+            }
+        }
+
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).ok();
     }
 
     /// The redb-error mapping is damage-faithful: a recoverable unclean shutdown, a
