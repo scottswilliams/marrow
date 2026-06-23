@@ -9,8 +9,14 @@ impl CorsPolicy {
         })
     }
 
-    pub(super) fn allows(&self, origin: &str) -> bool {
-        normalize_loopback_origin(origin).is_ok_and(|origin| origin == self.origin)
+    /// Returns the configured origin when the request origin matches it after
+    /// loopback normalization. The configured spelling is always emitted so the
+    /// `Access-Control-Allow-Origin` header never reflects request casing or
+    /// whitespace.
+    pub(super) fn matched_origin(&self, origin: &str) -> Option<&str> {
+        normalize_loopback_origin(origin)
+            .is_ok_and(|origin| origin == self.origin)
+            .then_some(self.origin.as_str())
     }
 }
 

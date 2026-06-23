@@ -553,8 +553,8 @@ fn cors_origin_for_request(
     let Some(cors) = cors else {
         return Ok(None);
     };
-    if cors.allows(origin) {
-        return Ok(Some(origin.clone()));
+    if let Some(configured) = cors.matched_origin(origin) {
+        return Ok(Some(configured.to_string()));
     }
     Err(SurfaceHttpResponse::error(
         HttpStatus::Forbidden,

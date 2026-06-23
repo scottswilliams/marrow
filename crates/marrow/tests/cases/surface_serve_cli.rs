@@ -395,6 +395,55 @@ fn surface_serve_cors_origin_allows_exact_local_browser_origin() {
 }
 
 #[test]
+fn surface_serve_cors_origin_echoes_configured_origin_for_casing_variant() {
+    let fixture = seeded_surface_fixture("surface-serve-cors-origin-casing");
+    let point_route = route_by_alias(&fixture.report, "get");
+    let origin = "http://localhost:5173";
+    let request_origin = "HTTP://LoCaLhOsT:5173";
+    let (_server, addr) =
+        spawn_surface_server_with_args(fixture.root(), &["--cors-origin", origin]);
+
+    let preflight = raw_http(
+        addr,
+        format!(
+            "OPTIONS {} HTTP/1.1\r\nHost: {addr}\r\nOrigin: {request_origin}\r\nAccess-Control-Request-Method: POST\r\nContent-Length: 0\r\n\r\n",
+            point_route.path
+        )
+        .into_bytes(),
+        &[],
+    );
+    assert_eq!(preflight.status, 204, "{:#?}", preflight.body);
+    assert_eq!(
+        preflight.header("access-control-allow-origin"),
+        Some(origin)
+    );
+
+    let response = post_json(
+        addr,
+        &point_route.path,
+        point_read_request(&fixture.report, &point_route.operation_tag, 1),
+        &[
+            ("Content-Type", "application/json"),
+            ("Origin", request_origin),
+        ],
+    );
+    assert_eq!(response.status, 200, "{:#?}", response.body);
+    assert_eq!(response.header("access-control-allow-origin"), Some(origin));
+
+    let blocked = raw_http(
+        addr,
+        format!(
+            "OPTIONS {} HTTP/1.1\r\nHost: {addr}\r\nOrigin: http://example.com\r\nAccess-Control-Request-Method: POST\r\nContent-Length: 0\r\n\r\n",
+            point_route.path
+        )
+        .into_bytes(),
+        &[],
+    );
+    assert_eq!(blocked.status, 403, "{:#?}", blocked.body);
+    assert_eq!(blocked.header("access-control-allow-origin"), None);
+}
+
+#[test]
 fn surface_serve_fails_closed_on_request_shape_mismatches() {
     let fixture = seeded_surface_fixture("surface-serve-strict");
     let point_route = route_by_alias(&fixture.report, "get");
