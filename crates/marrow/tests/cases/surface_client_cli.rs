@@ -174,6 +174,121 @@ fn client_typescript_uses_lock_projection_when_store_is_absent() {
     );
 }
 
+/// A surfaced store `^a` whose record projects an identity field referencing `^b`, a store with no
+/// surface of its own. The reference brand must read from the target store's source name (`BId`),
+/// never a catalog-id-derived `Ref_cat_...` symbol — the write/construct side of the relation must
+/// stay as hash-free as the read side already is.
+const RELATION_ID_SURFACE_SOURCE: &str = "module app\n\
+\n\
+resource Other\n\
+\x20\x20\x20\x20required label: string\n\
+store ^b(id: int): Other\n\
+\n\
+resource Thing\n\
+\x20\x20\x20\x20required name: string\n\
+\x20\x20\x20\x20required link: Id(^b)\n\
+store ^a(id: int): Thing\n\
+\n\
+pub fn seed()\n\
+\x20\x20\x20\x20var other: Other\n\
+\x20\x20\x20\x20other.label = \"target\"\n\
+\x20\x20\x20\x20var thing: Thing\n\
+\x20\x20\x20\x20thing.name = \"source\"\n\
+\x20\x20\x20\x20thing.link = Id(^b, 1)\n\
+\x20\x20\x20\x20transaction\n\
+\x20\x20\x20\x20\x20\x20\x20\x20^b(1) = other\n\
+\x20\x20\x20\x20\x20\x20\x20\x20^a(1) = thing\n\
+\n\
+surface A from ^a\n\
+\x20\x20\x20\x20fields name, link\n\
+\x20\x20\x20\x20create name, link\n";
+
+#[test]
+fn client_typescript_relation_id_brand_uses_target_store_name() {
+    let root = temp_project("surface-client-relation-id", |root| {
+        write(root, "marrow.json", support::native_config());
+        write(root, "src/app.mw", RELATION_ID_SURFACE_SOURCE);
+    });
+    let seed = marrow(&["run", "--entry", "app::seed", root.to_str().unwrap()]);
+    assert_eq!(seed.status.code(), Some(0), "seed: {seed:?}");
+
+    let output = marrow(&[
+        "client",
+        "typescript",
+        root.to_str().expect("project path utf8"),
+    ]);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let stdout = String::from_utf8(output.stdout).expect("stdout utf8");
+
+    // The reference to the surface-less `^b` store brands and constructs from its source name.
+    assert!(stdout.contains("export type BId"), "{stdout}");
+    assert!(stdout.contains("export function bId("), "{stdout}");
+
+    // No catalog-id hash may surface in any exported client symbol. The catalog ids live only in
+    // private consts, so a `cat_` substring on an `export` line is the leak this fixture guards.
+    for line in stdout.lines() {
+        if line.contains("export ") {
+            assert!(
+                !line.contains("cat_"),
+                "exported symbol leaks a catalog-id hash: {line}"
+            );
+        }
+    }
+}
+
+/// A surfaced store referenced by a surfaced store's identity field: the reference must keep using
+/// the target surface's brand name, not the target store's bare source name. This pins the prior
+/// typed-client behavior so the surface-less fallback never overrides a real surface name.
+const SURFACED_RELATION_SOURCE: &str = "module app\n\
+\n\
+resource Author\n\
+\x20\x20\x20\x20required name: string\n\
+store ^authors(id: int): Author\n\
+\n\
+resource Book\n\
+\x20\x20\x20\x20required title: string\n\
+\x20\x20\x20\x20required writtenBy: Id(^authors)\n\
+store ^books(id: int): Book\n\
+\n\
+pub fn seed()\n\
+\x20\x20\x20\x20var herbert: Author\n\
+\x20\x20\x20\x20herbert.name = \"Frank Herbert\"\n\
+\x20\x20\x20\x20var dune: Book\n\
+\x20\x20\x20\x20dune.title = \"Dune\"\n\
+\x20\x20\x20\x20dune.writtenBy = Id(^authors, 1)\n\
+\x20\x20\x20\x20transaction\n\
+\x20\x20\x20\x20\x20\x20\x20\x20^authors(1) = herbert\n\
+\x20\x20\x20\x20\x20\x20\x20\x20^books(1) = dune\n\
+\n\
+surface Writers from ^authors\n\
+\x20\x20\x20\x20fields name\n\
+\n\
+surface Books from ^books\n\
+\x20\x20\x20\x20fields title, writtenBy\n";
+
+#[test]
+fn client_typescript_relation_id_brand_uses_surface_name_when_surfaced() {
+    let root = temp_project("surface-client-surfaced-relation", |root| {
+        write(root, "marrow.json", support::native_config());
+        write(root, "src/app.mw", SURFACED_RELATION_SOURCE);
+    });
+    let seed = marrow(&["run", "--entry", "app::seed", root.to_str().unwrap()]);
+    assert_eq!(seed.status.code(), Some(0), "seed: {seed:?}");
+
+    let output = marrow(&[
+        "client",
+        "typescript",
+        root.to_str().expect("project path utf8"),
+    ]);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let stdout = String::from_utf8(output.stdout).expect("stdout utf8");
+
+    // The reference to the surfaced `^authors` store keeps the `Writers` surface brand, not `AuthorsId`.
+    assert!(stdout.contains("export type WritersId"), "{stdout}");
+    assert!(stdout.contains("export function writersId("), "{stdout}");
+    assert!(!stdout.contains("AuthorsId"), "{stdout}");
+}
+
 #[test]
 fn client_typescript_out_writes_file_and_is_silent_on_stdout() {
     let root = temp_project("surface-client-out", |root| {

@@ -164,6 +164,7 @@ pub enum SurfaceOperationValueShapeJson {
         members: Vec<SurfaceOperationEnumMemberJson>,
     },
     Identity {
+        store_name: String,
         store_catalog_id: String,
         arity: usize,
         key_scalars: Vec<String>,
@@ -771,10 +772,12 @@ impl From<marrow_check::SurfaceOperationValueShape> for SurfaceOperationValueSha
                     .collect(),
             },
             marrow_check::SurfaceOperationValueShape::Identity {
+                store_name,
                 store_catalog_id,
                 arity,
                 key_scalars,
             } => Self::Identity {
+                store_name,
                 store_catalog_id: store_catalog_id.as_str().to_string(),
                 arity,
                 key_scalars: key_scalars

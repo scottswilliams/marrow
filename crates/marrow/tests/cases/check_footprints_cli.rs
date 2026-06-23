@@ -303,6 +303,7 @@ fn check_json_reports_surface_abi_read_and_update_descriptors() {
                 "backing_required": false,
                 "value": {
                     "kind": "identity",
+                    "store_name": "authors",
                     "store_catalog_id": authors_id,
                     "arity": 1,
                     "key_scalars": ["int"]

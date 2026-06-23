@@ -1513,10 +1513,12 @@ surface Books from ^books
     assert!(matches!(
         &author_field.value,
         SurfaceOperationValueShape::Identity {
+            store_name,
             store_catalog_id,
             key_scalars,
             ..
-        } if store_catalog_id.as_str() == facts.store(authors).catalog_id.as_deref().unwrap()
+        } if store_name == "authors"
+            && store_catalog_id.as_str() == facts.store(authors).catalog_id.as_deref().unwrap()
             && key_scalars.as_slice() == [ScalarType::Int]
     ));
 }

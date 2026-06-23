@@ -119,6 +119,10 @@ pub enum SurfaceOperationValueShape {
         members: Vec<SurfaceOperationEnumMember>,
     },
     Identity {
+        /// The referenced store's source name (`projects` for `Id(^projects)`). The TypeScript
+        /// client brands a reference after this name when the target store has no surface of its
+        /// own, so no catalog-id hash reaches a user-facing symbol.
+        store_name: String,
         store_catalog_id: CatalogId,
         arity: usize,
         key_scalars: Vec<marrow_schema::ScalarType>,
@@ -715,11 +719,13 @@ fn value_shape(
             })
         }
         StoredValueMeaning::Identity {
+            root,
             store_catalog_id,
             arity,
             key_scalars,
             ..
         } => Some(SurfaceOperationValueShape::Identity {
+            store_name: root.clone(),
             store_catalog_id: accepted_catalog_id(program, store_catalog_id.as_deref())?,
             arity: *arity,
             key_scalars: key_scalars.clone(),

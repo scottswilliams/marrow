@@ -375,7 +375,10 @@ wire shape.
 `createClient(options)` returns an object of async methods keyed by surface name.
 Pass `baseUrl` for the running server (and `fetch` in a non-browser runtime).
 Identities are branded — construct one with the generated `<surface>Id`
-constructor; create and update take name-keyed body objects:
+constructor. A reference to a store with no surface of its own brands after the
+store's source name (`Id(^projects)` becomes the `ProjectsId` type and
+`projectsId` constructor), so no catalog-id hash ever reaches a client symbol.
+Create and update take name-keyed body objects:
 
 ```ts
 import { createClient, booksId } from "./generated/marrow";

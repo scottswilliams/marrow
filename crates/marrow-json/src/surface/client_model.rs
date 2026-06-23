@@ -311,6 +311,20 @@ impl ModelBuilder {
             .unwrap_or_else(|| format!("Ref_{}", sanitize_catalog(store_catalog_id)))
     }
 
+    /// Claim a brand base for a store reached only through an identity field. A store that owns a
+    /// surface already holds its surface name (assigned up front), so this only fires for a target
+    /// with no surface of its own: it brands the reference after the store's source name, keeping
+    /// the catalog-id hash out of every user-facing symbol. The base is uniquified against all other
+    /// emitted names, so two references to differently-pathed stores that share a leaf name stay
+    /// collision-free.
+    fn ensure_relation_brand(&mut self, store_catalog_id: &str, store_name: &str) {
+        if self.store_names.contains_key(store_catalog_id) {
+            return;
+        }
+        let base = self.unique_brand_base(&upper_first(&sanitize_type(store_name)));
+        self.store_names.insert(store_catalog_id.to_string(), base);
+    }
+
     fn finish(self) -> SurfaceClientModel {
         SurfaceClientModel {
             stores: self.stores.into_values().collect(),
@@ -719,6 +733,7 @@ impl ModelBuilder {
                 }
             }
             SurfaceOperationValueShapeJson::Identity {
+                store_name,
                 store_catalog_id,
                 key_scalars,
                 ..
@@ -727,6 +742,7 @@ impl ModelBuilder {
                     .iter()
                     .map(|scalar| ScalarKind::parse(scalar))
                     .collect::<Vec<_>>();
+                self.ensure_relation_brand(store_catalog_id, store_name);
                 self.register_store_scalars(store_catalog_id, &scalars);
                 SurfaceFieldType::Identity {
                     brand: self.store_brand(store_catalog_id),
@@ -764,14 +780,15 @@ impl ModelBuilder {
                 }
             }
             Shape::Identity {
+                render_label,
                 store_catalog_id,
                 keys,
-                ..
             } => {
                 let scalars = keys
                     .iter()
                     .map(|key| ScalarKind::parse(&key.scalar))
                     .collect::<Vec<_>>();
+                self.ensure_relation_brand(store_catalog_id, render_label);
                 self.register_store_scalars(store_catalog_id, &scalars);
                 SurfaceFieldType::Identity {
                     brand: self.store_brand(store_catalog_id),
@@ -821,14 +838,15 @@ impl ModelBuilder {
                 }
             }
             Shape::Identity {
+                render_label,
                 store_catalog_id,
                 keys,
-                ..
             } => {
                 let scalars = keys
                     .iter()
                     .map(|key| ScalarKind::parse(&key.scalar))
                     .collect::<Vec<_>>();
+                self.ensure_relation_brand(store_catalog_id, render_label);
                 self.register_store_scalars(store_catalog_id, &scalars);
                 SurfaceFieldType::Identity {
                     brand: self.store_brand(store_catalog_id),
@@ -986,6 +1004,17 @@ fn lower_first(value: &str) -> String {
     let mut chars = value.chars();
     match chars.next() {
         Some(first) => first.to_ascii_lowercase().to_string() + chars.as_str(),
+        None => String::new(),
+    }
+}
+
+/// Lift a store's lowercase source name into a PascalCase brand base, so a reference to `^projects`
+/// reads as the `ProjectsId` type and `projectsId` constructor, matching the casing a surface name
+/// already supplies.
+fn upper_first(value: &str) -> String {
+    let mut chars = value.chars();
+    match chars.next() {
+        Some(first) => first.to_ascii_uppercase().to_string() + chars.as_str(),
         None => String::new(),
     }
 }
