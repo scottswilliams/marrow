@@ -226,22 +226,21 @@ pub(super) fn preview(
             }
         }
         CheckFormat::Text => {
-            if witness.is_activatable() {
-                let backfill = witness.counts.records_to_backfill;
-                let transform = witness.counts.records_to_transform;
-                if backfill == 0 && transform == 0 {
-                    println!(
-                        "This evolution is safe to apply (no records to backfill or transform)."
-                    );
-                } else {
-                    println!("This evolution is safe to apply.");
-                    println!("records to backfill: {backfill}");
-                    println!("records to transform: {transform}");
-                }
-                println!("Next: marrow evolve apply {dir}");
-            } else {
+            if !witness.is_activatable() {
                 println!("This evolution cannot be applied yet:");
                 render_blocking_text(witness, diagnostics, labels, scaffold, dir);
+            } else if nothing_to_discharge(witness) {
+                // The store already matches the source, so a repeat apply would be a no-op.
+                // The text surface must agree with the JSON surface's `nothing_to_discharge`
+                // and must not recommend the no-op apply.
+                println!("Nothing to discharge; the store already matches your source.");
+            } else {
+                let backfill = witness.counts.records_to_backfill;
+                let transform = witness.counts.records_to_transform;
+                println!("This evolution is safe to apply.");
+                println!("records to backfill: {backfill}");
+                println!("records to transform: {transform}");
+                println!("Next: marrow evolve apply {dir}");
             }
         }
         CheckFormat::Json | CheckFormat::Jsonl => {

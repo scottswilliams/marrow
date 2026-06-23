@@ -230,11 +230,16 @@ fn evolve_preview_reports_when_there_is_nothing_to_discharge() {
     let text = marrow(&["evolve", "preview", root.to_str().unwrap()]);
     assert_eq!(text.status.code(), Some(0), "{text:?}");
     let stdout = String::from_utf8(text.stdout).expect("stdout utf8");
+    // The store already matches the source, so there is nothing to discharge and a repeat
+    // apply would be a guaranteed no-op. The text surface must say so and must NOT recommend
+    // `marrow evolve apply`, matching the JSON surface's `nothing_to_discharge: true`.
     assert!(
-        stdout.contains("safe to apply")
-            && stdout.contains("no records to backfill or transform")
-            && stdout.contains("marrow evolve apply"),
-        "text preview must say the evolution is safe and name the next command: {stdout}"
+        stdout.contains("Nothing to discharge") && stdout.contains("already matches your source"),
+        "text preview must report nothing to discharge when the store matches the source: {stdout}"
+    );
+    assert!(
+        !stdout.contains("safe to apply") && !stdout.contains("marrow evolve apply"),
+        "text preview must not recommend a no-op apply when there is nothing to discharge: {stdout}"
     );
 
     let json = marrow(&[
