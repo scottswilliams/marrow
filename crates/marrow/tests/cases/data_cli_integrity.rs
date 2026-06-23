@@ -1226,3 +1226,263 @@ fn data_integrity_reports_a_wrong_typed_record_key_as_data_key_type() {
     let value = json(output);
     integrity_problem(&value, "data.key_type");
 }
+
+/// Build and seed a project with a non-unique `byShelf(shelf, id)` index over enough
+/// books that the index spans several store pages, the shape the silent-truncation
+/// finding reproduces. The records are written through the production `run` pipeline,
+/// so the index family is populated exactly as a real write path leaves it.
+fn by_shelf_project(name: &str, books: i64) -> support::TempProject {
+    let mut seed = String::from("pub fn seed()\n    transaction\n");
+    for id in 0..books {
+        // Two shelves keep several keys per shelf so a dropped range hides many rows.
+        let shelf = if id % 2 == 0 { "fiction" } else { "history" };
+        seed.push_str(&format!(
+            "        ^books({id}).title = \"t{id}\"\n        ^books({id}).shelf = \"{shelf}\"\n"
+        ));
+    }
+    let project = support::temp_project(name, |root| {
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".data" }, "run": { "defaultEntry": "shelf::seed" } }"#,
+        );
+        write(
+            root,
+            "src/shelf.mw",
+            &format!(
+                "module shelf\n\n\
+                 resource Book\n\
+                 \x20\x20\x20\x20required title: string\n\
+                 \x20\x20\x20\x20shelf: string\n\
+                 store ^books(id: int): Book\n\n\
+                 \x20\x20\x20\x20index byShelf(shelf, id)\n\n\
+                 pub fn count_fiction()\n\
+                 \x20\x20\x20\x20var c = 0\n\
+                 \x20\x20\x20\x20for id in keys(^books.byShelf(\"fiction\"))\n\
+                 \x20\x20\x20\x20\x20\x20\x20\x20c = c + 1\n\
+                 \x20\x20\x20\x20print($\"{{c}}\")\n\n\
+                 {seed}"
+            ),
+        );
+    });
+    let seed = marrow(&["run", project.to_str().unwrap()]);
+    assert_eq!(seed.status.code(), Some(0), "seed run: {seed:?}");
+    project
+}
+
+/// The catalog id of one named index on a place, the id the index family is keyed by.
+fn index_catalog_id(project: &Path, root: &str, index: &str) -> marrow_store::cell::CatalogId {
+    let place = checked_place(project, root);
+    let raw = place
+        .indexes
+        .iter()
+        .find(|candidate| candidate.name == index)
+        .and_then(|candidate| candidate.catalog_id.clone())
+        .expect("index has a catalog id");
+    marrow_store::cell::CatalogId::new(raw).expect("index catalog id is well-formed")
+}
+
+/// A single-byte flip in an index page-structure region can make the backend's range
+/// scan silently truncate, dropping committed index entries from every enumeration
+/// while leaving the data records intact. The completeness cross-check derives the
+/// expected entry count from the data family, so dropping entries the records still
+/// imply must fail `data integrity` closed as `store.corruption` rather than report a
+/// store that an index-driven read would silently under-return.
+#[test]
+fn data_integrity_fails_closed_when_index_entries_are_silently_dropped() {
+    let project = by_shelf_project("data-integrity-index-truncated", 60);
+    let dir = project.to_str().unwrap().to_string();
+
+    // A clean store verifies and an index-driven read returns the full row set.
+    let clean = marrow(&["data", "integrity", "--format", "json", &dir]);
+    assert_eq!(
+        clean.status.code(),
+        Some(0),
+        "clean store verifies: {clean:?}"
+    );
+
+    // Resolve the index id, store id, and title path before opening any store handle:
+    // `checked_place` opens the store write-capable, so it must not race a held handle.
+    let store_path = project.join(".data").join("marrow.redb");
+    let by_shelf = index_catalog_id(&project, "books", "byShelf");
+    let place = checked_place(&project, "books");
+    let store_id =
+        marrow_store::cell::CatalogId::new(place.store_catalog_id.clone().unwrap()).unwrap();
+    let title_path = field_path(&place, "title");
+
+    {
+        let store = TreeStore::open(&store_path).expect("open seeded store");
+        store.begin().expect("begin");
+        // Drop the byShelf entries for several fiction records, the rows a truncated
+        // range scan would hide. The data records themselves are left untouched.
+        for id in [0i64, 2, 4, 6, 8] {
+            store
+                .delete_index_entry(
+                    &by_shelf,
+                    &[SavedKey::Str("fiction".into()), SavedKey::Int(id)],
+                    &[SavedKey::Int(id)],
+                )
+                .expect("drop index entry");
+        }
+        store.commit().expect("commit dropped entries");
+    }
+
+    let output = marrow(&["data", "integrity", "--format", "json", &dir]);
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "dropped index entries must fail integrity closed: {output:?}"
+    );
+    let value = json(output);
+    assert_eq!(
+        value["code"],
+        serde_json::json!("store.corruption"),
+        "{value}"
+    );
+
+    // The data records are intact: the failure is the missing index entries, not lost data.
+    {
+        let store = TreeStore::open_read_only(&store_path).expect("reopen store read-only");
+        assert!(
+            store
+                .read_data_value(&store_id, &[SavedKey::Int(0)], &title_path)
+                .expect("read record")
+                .is_some(),
+            "the dropped index entry leaves its data record in place"
+        );
+    }
+
+    // Recover must not bless the index-incomplete store either.
+    let recover = marrow(&["data", "recover", "--format", "json", &dir]);
+    assert_eq!(
+        recover.status.code(),
+        Some(1),
+        "recover must fail closed on a silently-truncated index: {recover:?}"
+    );
+    assert_eq!(
+        support::json(recover.stdout)["code"],
+        serde_json::json!("store.corruption"),
+    );
+}
+
+/// Backup carries data cells and rebuilds the index family on restore, so it must not
+/// archive a store whose committed index entries were silently dropped: a backup of an
+/// index-incomplete store would mask the under-read. Backup fails closed before writing
+/// the artifact.
+#[test]
+fn backup_fails_closed_when_index_entries_are_silently_dropped() {
+    let project = by_shelf_project("backup-index-truncated", 40);
+    let dir = project.to_str().unwrap().to_string();
+    let archive = project.join("books.mwbackup");
+    let archive_arg = archive.to_str().unwrap().to_string();
+
+    let by_shelf = index_catalog_id(&project, "books", "byShelf");
+    {
+        let store =
+            TreeStore::open(&project.join(".data").join("marrow.redb")).expect("open seeded store");
+        store.begin().expect("begin");
+        for id in [0i64, 2, 4] {
+            store
+                .delete_index_entry(
+                    &by_shelf,
+                    &[SavedKey::Str("fiction".into()), SavedKey::Int(id)],
+                    &[SavedKey::Int(id)],
+                )
+                .expect("drop index entry");
+        }
+        store.commit().expect("commit dropped entries");
+    }
+
+    let backup = marrow(&["backup", &dir, &archive_arg]);
+    assert_eq!(
+        backup.status.code(),
+        Some(1),
+        "backup must fail closed on a silently-truncated index: {backup:?}"
+    );
+    assert!(
+        !archive.exists(),
+        "a failed backup leaves no archive for the index-incomplete store"
+    );
+}
+
+/// The number of `fiction` rows an index-driven read returns, the count the finding
+/// watched silently collapse. `count_fiction` walks `^books.byShelf("fiction")`, so it
+/// reads through the index exactly as a user query would.
+fn fiction_row_count(dir: &str) -> Option<i64> {
+    // Invoke the binary directly: the `support_data::marrow` wrapper re-commits the
+    // catalog in-process first, which would open a flipped store and panic instead of
+    // letting the subprocess report the typed store error this sweep inspects.
+    let run = support::marrow(&["run", "--entry", "shelf::count_fiction", dir]);
+    if run.status.code() != Some(0) {
+        return None;
+    }
+    String::from_utf8(run.stdout).ok()?.trim().parse().ok()
+}
+
+/// A real single-byte flip in the store body must never leave `data integrity`
+/// reporting a verified, problem-free store while an index-driven read silently
+/// under-returns. This flips one byte at a sampling of offsets across the high and low
+/// regions where index pages live and, for each, requires the fail-closed invariant:
+/// either `data integrity` reports the damage as `store.corruption`, or the index
+/// still returns the full row set. A flip that silently truncates an index range would
+/// otherwise pass the structural check yet drop rows — exactly what the completeness
+/// cross-check now catches. The deterministic counterpart that drops index entries
+/// directly is `data_integrity_fails_closed_when_index_entries_are_silently_dropped`;
+/// this one proves the same closure against actual file corruption.
+#[test]
+fn data_integrity_never_blesses_an_index_that_silently_under_reads() {
+    let project = by_shelf_project("data-integrity-index-flip-sweep", 80);
+    let dir = project.to_str().unwrap().to_string();
+    let store_path = project.join(".data").join("marrow.redb");
+
+    let full = fiction_row_count(&dir).expect("clean index read");
+    assert_eq!(full, 40, "fixture seeds 40 fiction rows");
+    let clean = marrow(&["data", "integrity", "--format", "json", &dir]);
+    assert_eq!(
+        clean.status.code(),
+        Some(0),
+        "clean store verifies: {clean:?}"
+    );
+
+    let pristine = fs::read(&store_path).expect("read store bytes");
+    let len = pristine.len();
+    assert!(len > 4096, "seeded multi-page store: {len} bytes");
+
+    // Sample offsets across the body past the header page: the tail holds the higher
+    // index page-structure region and the mid-body the lower one. A bounded sample
+    // keeps the end-to-end flip coverage fast while still landing in both regions.
+    let body = len - 4096;
+    let offsets: Vec<usize> = (0..24).map(|i| 4096 + body * i / 24).collect();
+    for offset in offsets {
+        for bit in [0x01u8, 0x80] {
+            let mut bytes = pristine.clone();
+            bytes[offset] ^= bit;
+            fs::write(&store_path, &bytes).expect("write flipped store");
+
+            let integrity = support::marrow_bounded(
+                &["data", "integrity", "--format", "json", &dir],
+                std::time::Duration::from_secs(20),
+            );
+            // A flip redb cannot even open is fail-closed too; the forbidden outcome is
+            // an exit-0 verified verdict over an index that no longer returns every row.
+            if integrity.status.code() == Some(0) {
+                let value = support::json(integrity.stdout);
+                assert_eq!(
+                    value["problems"],
+                    serde_json::json!([]),
+                    "an exit-0 integrity verdict reports no problems: offset {offset:#x}"
+                );
+                // A read that fails to open is itself fail-closed and acceptable — a
+                // write-capable open can surface damage a read-only verdict did not.
+                if let Some(read) = fiction_row_count(&dir) {
+                    assert_eq!(
+                        read, full,
+                        "integrity verified a store at offset {offset:#x} whose index read under-returns"
+                    );
+                }
+            }
+        }
+    }
+
+    fs::write(&store_path, &pristine).expect("restore pristine store");
+}

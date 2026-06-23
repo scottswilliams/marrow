@@ -6,7 +6,8 @@ use std::process::ExitCode;
 use marrow_check::CheckedProgram;
 use marrow_check::tooling::{
     StampedData, count_data_records, count_orphan_cells, data_roots_in_store, data_snapshot_stamp,
-    render_data_value, stamped_data_roots_in_store, visit_data_records,
+    render_data_value, stamped_data_roots_in_store, verify_store_index_integrity,
+    visit_data_records,
 };
 use marrow_store::StoreError;
 use marrow_store::tree::TreeStore;
@@ -390,7 +391,14 @@ fn data_recover(args: &[String]) -> ExitCode {
     if !path.exists() {
         return report_no_store_to_recover(&dir, Some(&path), format);
     }
-    match recover_store(&path) {
+    // Recover is the repair path for a store read-only commands refuse, so it must not
+    // require the source to check: damaged source text must not block a store open. The
+    // index-completeness cross-check needs the schema, so it runs only when the project
+    // checks cleanly; a project that does not check still gets the store-level repair.
+    let program = load_checked_project_with_format(&dir, format)
+        .ok()
+        .map(|(_, program)| program);
+    match recover_store(&path, program.as_ref()) {
         Ok(()) => report_recovered_store(&dir, &path, format),
         Err(error) => report_store_error(error, format),
     }
@@ -412,13 +420,23 @@ fn data_recover(args: &[String]) -> ExitCode {
 /// the store is convergently readable the way the next command opens it: a fresh
 /// read-only open and traversal. If that fresh open or walk fails, the store was not
 /// made readable and recover reports corruption rather than a false repair.
-fn recover_store(path: &std::path::Path) -> Result<(), StoreError> {
+fn recover_store(
+    path: &std::path::Path,
+    program: Option<&CheckedProgram>,
+) -> Result<(), StoreError> {
     {
         let store = TreeStore::open_existing(path)?;
         store.verify_readable()?;
+        if let Some(program) = program {
+            verify_store_index_integrity(&store, program)?;
+        }
     }
     let reopened = TreeStore::open_read_only(path).map_err(recovery_not_converged)?;
-    reopened.verify_readable().map_err(recovery_not_converged)
+    reopened.verify_readable().map_err(recovery_not_converged)?;
+    if let Some(program) = program {
+        verify_store_index_integrity(&reopened, program).map_err(recovery_not_converged)?;
+    }
+    Ok(())
 }
 
 /// Map a fresh-open or fresh-traversal failure after a repair attempt to the

@@ -3,6 +3,7 @@
 use std::path::Path;
 use std::process::ExitCode;
 
+use marrow_check::tooling::verify_store_index_integrity;
 use marrow_run::SystemNondeterminism;
 use marrow_store::tree::TreeStore;
 
@@ -33,6 +34,15 @@ pub(crate) fn backup(args: &[String]) -> ExitCode {
         }
         Err(code) => return code,
     };
+
+    // A backup carries data cells and rebuilds the index family on restore, so an
+    // index whose entries were silently dropped would be archived as if healthy and
+    // its under-read masked. Fail closed on an index-corrupt store before writing the
+    // artifact rather than propagating a store the schema can no longer fully derive.
+    if let Err(error) = verify_store_index_integrity(&store, &program) {
+        report_simple_error(error.code(), &error.to_string(), format);
+        return ExitCode::FAILURE;
+    }
 
     let output_path = Path::new(&output);
     match create_backup_artifact(&program, &store, output_path) {

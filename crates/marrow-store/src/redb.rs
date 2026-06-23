@@ -224,6 +224,43 @@ fn is_torn_body(error: &std::io::Error) -> bool {
     )
 }
 
+/// Run a read-only or existing-store open, absorbing the brief window in which a
+/// concurrent first-run writer has created the store file but not yet written its
+/// header under the lock. A store this build committed is never zero-length, so a
+/// torn-body corruption reported while the file is still empty is a creation race,
+/// not a settled fault: the open retries until the writer's header and lock appear.
+/// A file that stays empty across the budget is genuinely truncated and its
+/// corruption surfaces, so a settled writer-free empty file is still rejected.
+fn open_tolerating_creation_race(
+    path: &Path,
+    open: impl Fn() -> Result<DatabaseHandle, StoreError>,
+) -> Result<DatabaseHandle, StoreError> {
+    const CREATION_RACE_BACKOFF: [u64; 4] = [1, 2, 4, 8];
+    let mut attempt = 0;
+    loop {
+        match open() {
+            Err(StoreError::Corruption { .. })
+                if attempt < CREATION_RACE_BACKOFF.len() && store_file_is_empty(path) =>
+            {
+                std::thread::sleep(std::time::Duration::from_millis(
+                    CREATION_RACE_BACKOFF[attempt],
+                ));
+                attempt += 1;
+            }
+            other => return other,
+        }
+    }
+}
+
+/// Whether the store file is currently zero-length: a header-less body that a
+/// concurrent creator is still filling, or a truncated file. A missing file is not
+/// empty; its open reports its own not-found error.
+fn store_file_is_empty(path: &Path) -> bool {
+    fs::metadata(path)
+        .map(|metadata| metadata.len() == 0)
+        .unwrap_or(false)
+}
+
 /// Run a store open and its structural probe under the panic backstop.
 ///
 /// redb does not return an error for every damaged file: a truncated or clobbered
@@ -341,6 +378,33 @@ fn sync_parent_directory(path: &Path) -> Result<(), StoreError> {
 #[cfg(not(any(unix, windows)))]
 fn sync_parent_directory(_path: &Path) -> Result<(), StoreError> {
     Ok(())
+}
+
+/// Reject a store path that resolves to an existing non-regular file before any
+/// handle is opened. redb opens the store file `O_RDWR`, so a FIFO, socket, or
+/// device at the path can block the open syscall indefinitely (a FIFO with no
+/// writer) or drive the engine through a body it can never lay out. A regular file
+/// is the only valid store body; anything else is treated as corruption, located at
+/// the path, so every open path fails closed promptly with a typed diagnostic. A
+/// missing path is left to the caller: creation handles it, and an existing-only
+/// open surfaces its own not-found error.
+fn guard_regular_store_file(path: &Path) -> Result<(), StoreError> {
+    match fs::metadata(path) {
+        Ok(metadata) if metadata.file_type().is_file() => Ok(()),
+        Ok(_) => Err(StoreError::Corruption {
+            message: "store path is not a regular file".into(),
+        }),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+            Err(StoreError::PermissionDenied {
+                path: path.to_path_buf(),
+            })
+        }
+        Err(error) => Err(StoreError::Io {
+            op: "open",
+            message: error.to_string(),
+        }),
+    }
 }
 
 #[cfg(unix)]
@@ -693,6 +757,7 @@ impl RedbStore {
     /// process; the open and its structural probe run under [`catch_open`].
     pub(crate) fn open(path: &Path) -> Result<Self, StoreError> {
         let db = catch_open(|| {
+            guard_regular_store_file(path)?;
             let sync_parent_after_commit = prepare_new_store_file(path)?;
             let db = open_write_capable(path, || Database::create(path))?;
             stamp_or_verify_format_version(sync_parent_after_commit.as_deref(), &db)?;
@@ -719,12 +784,15 @@ impl RedbStore {
     /// or adopting missing/non-store data. This is the repair path for a file that
     /// already carries Marrow metadata.
     pub(crate) fn open_existing(path: &Path) -> Result<Self, StoreError> {
-        let db = catch_open(|| {
-            let db = open_write_capable(path, || Database::open(path))?;
-            verify_existing_store_shape(&db)?;
-            Ok(db)
+        let db = open_tolerating_creation_race(path, || {
+            catch_open(|| {
+                guard_regular_store_file(path)?;
+                let db = open_write_capable(path, || Database::open(path))?;
+                verify_existing_store_shape(&db)?;
+                Ok(DatabaseHandle::ReadWrite(db))
+            })
         })?;
-        Ok(Self::from_handle(DatabaseHandle::ReadWrite(db)))
+        Ok(Self::from_handle(db))
     }
 
     /// Open an existing store read-only. Unlike [`open`](Self::open) it never
@@ -736,12 +804,16 @@ impl RedbStore {
     /// replay still surfaces corruption. The open and its probe run under
     /// [`catch_open`].
     pub(crate) fn open_read_only(path: &Path) -> Result<Self, StoreError> {
-        let db = catch_open(|| {
-            let db = ReadOnlyDatabase::open(path).map_err(|error| map_open_error(path, error))?;
-            verify_existing_store_shape(&db)?;
-            Ok(db)
+        let db = open_tolerating_creation_race(path, || {
+            catch_open(|| {
+                guard_regular_store_file(path)?;
+                let db =
+                    ReadOnlyDatabase::open(path).map_err(|error| map_open_error(path, error))?;
+                verify_existing_store_shape(&db)?;
+                Ok(DatabaseHandle::ReadOnly(db))
+            })
         })?;
-        Ok(Self::from_handle(DatabaseHandle::ReadOnly(db)))
+        Ok(Self::from_handle(db))
     }
 
     /// Require a writable handle and no pinned read snapshot. `on_snapshot` names
@@ -1532,5 +1604,142 @@ mod tests {
         }
         let store = RedbStore::open(&path).expect("reopen stamped store");
         assert_eq!(store.read(b"k").expect("read"), Some(b"v".to_vec()));
+    }
+
+    /// A read-only inspection racing a writer's first-run store creation must never see
+    /// a false corruption: it observes either no store yet, the writer's lock, or a
+    /// healthy store. The header-less empty-file window between the file appearing and
+    /// the writer committing its header under the lock once surfaced as corruption to a
+    /// racing reader; the reader now tolerates that transient empty body and so only
+    /// ever resolves to a healthy store, the lock, or a not-yet-created store.
+    #[test]
+    fn read_only_open_racing_first_run_creation_never_false_corrupts() {
+        for _ in 0..16 {
+            let dir = TempDir::new("marrow-store-redb-race").expect("temp dir");
+            let path = dir.path().join("marrow.redb");
+
+            let writer_path = path.clone();
+            let writer = std::thread::spawn(move || {
+                let mut store = RedbStore::open(&writer_path).expect("create fresh store");
+                store.write(b"k", b"v".to_vec()).expect("write");
+            });
+
+            let reader_path = path.clone();
+            let reader = std::thread::spawn(move || {
+                loop {
+                    match RedbStore::open_read_only(&reader_path) {
+                        Ok(_) => return,
+                        Err(StoreError::Locked { .. }) | Err(StoreError::Io { .. }) => {
+                            std::thread::yield_now();
+                            continue;
+                        }
+                        Err(StoreError::Corruption { message }) => {
+                            panic!("reader saw false corruption mid-creation: {message}")
+                        }
+                        Err(other) => {
+                            // A not-yet-created store surfaces as a not-found-style error;
+                            // anything else is an unexpected classification.
+                            if format!("{other:?}").contains("NotFound")
+                                || format!("{other:?}").contains("not found")
+                            {
+                                std::thread::yield_now();
+                                continue;
+                            }
+                            return;
+                        }
+                    }
+                }
+            });
+
+            writer.join().expect("writer thread");
+            reader.join().expect("reader thread");
+        }
+    }
+
+    /// A settled, writer-free zero-length store file is genuine corruption and must
+    /// still be reported as such: the creation-race tolerance retries only while the
+    /// file stays empty, so an empty file that never fills surfaces corruption once the
+    /// brief budget is spent.
+    #[test]
+    fn read_only_open_rejects_a_settled_empty_store_as_corruption() {
+        let dir = TempDir::new("marrow-store-redb-empty").expect("temp dir");
+        let path = dir.path().join("marrow.redb");
+        std::fs::File::create(&path).expect("create empty file");
+
+        match RedbStore::open_read_only(&path).map(|_| ()) {
+            Err(StoreError::Corruption { .. }) => {}
+            other => panic!("a settled empty store must be corruption, got {other:?}"),
+        }
+    }
+
+    /// A read-only open that begins while the store file is a header-less empty body —
+    /// the window a first-run writer briefly leaves — must resolve to the healthy store
+    /// once the writer fills and unlocks it, never a false corruption.
+    #[test]
+    fn read_only_open_tolerates_a_mid_creation_empty_file() {
+        use std::time::Duration;
+
+        let dir = TempDir::new("marrow-store-redb-fill").expect("temp dir");
+        let path = dir.path().join("marrow.redb");
+        std::fs::File::create(&path).expect("create empty file");
+
+        let writer_path = path.clone();
+        let writer = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(3));
+            let mut store = RedbStore::open(&writer_path).expect("create store");
+            store.write(b"k", b"v".to_vec()).expect("write");
+        });
+
+        // The reader starts against the empty placeholder; the tolerance window must
+        // outlast the writer so the reader sees the finished store, not corruption.
+        let result = RedbStore::open_read_only(&path).map(|_| ());
+        writer.join().expect("writer thread");
+        match result {
+            Ok(_) | Err(StoreError::Locked { .. }) | Err(StoreError::Io { .. }) => {}
+            Err(StoreError::Corruption { message }) => {
+                panic!("mid-creation empty file misread as corruption: {message}")
+            }
+            other => panic!("unexpected mid-creation classification: {other:?}"),
+        }
+    }
+
+    /// A store path that is a FIFO (or any other non-regular file) must fail closed
+    /// with a typed corruption diagnostic on every open path rather than blocking
+    /// forever in the `open()` syscall waiting for a writer. The open runs on a worker
+    /// thread with a deadline so a regression surfaces as a timeout, not a hung suite.
+    #[cfg(unix)]
+    #[test]
+    fn opening_a_fifo_store_fails_closed_without_blocking() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let dir = TempDir::new("marrow-store-redb-fifo").expect("temp dir");
+        let path = dir.path().join("marrow.redb");
+        let status = std::process::Command::new("mkfifo")
+            .arg(&path)
+            .status()
+            .expect("spawn mkfifo");
+        assert!(status.success(), "mkfifo failed");
+
+        for label in ["open", "open_existing", "open_read_only"] {
+            let path = path.clone();
+            let (sender, receiver) = mpsc::channel();
+            std::thread::spawn(move || {
+                let result = match label {
+                    "open" => RedbStore::open(&path),
+                    "open_existing" => RedbStore::open_existing(&path),
+                    _ => RedbStore::open_read_only(&path),
+                };
+                let _ = sender.send(result.map(|_| ()));
+            });
+            // The regular-file guard fails closed without ever issuing the blocking
+            // open, so the result is effectively immediate; the generous deadline only
+            // distinguishes a real infinite block from scheduling latency under load.
+            match receiver.recv_timeout(Duration::from_secs(30)) {
+                Ok(Err(StoreError::Corruption { .. })) => {}
+                Ok(other) => panic!("{label} on a FIFO should be corruption, got {other:?}"),
+                Err(_) => panic!("{label} on a FIFO blocked instead of failing closed"),
+            }
+        }
     }
 }

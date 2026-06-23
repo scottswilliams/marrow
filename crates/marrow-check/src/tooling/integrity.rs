@@ -11,7 +11,8 @@ use marrow_store::value::decode_value;
 use marrow_syntax::Diagnose;
 
 use crate::{
-    CheckedProgram, CheckedSavedMember, CheckedSavedMemberKind, CheckedSavedPlace, StoreLeafKind,
+    CheckedProgram, CheckedSavedIndex, CheckedSavedMember, CheckedSavedMemberKind,
+    CheckedSavedPlace, StoreIndexKeySource, StoreLeafKind, StoredValueMeaning,
     checked_activation_root_places, identity_leaf_key_mismatch,
 };
 
@@ -43,6 +44,15 @@ pub fn count_integrity_problems(
     program: &CheckedProgram,
 ) -> Result<(usize, usize), StoreError> {
     let places = checked_places(program);
+    // The record and orphan passes below traverse only the data family. The derived
+    // index family is verified two independent ways: a structural decode and seek
+    // re-descent that catches a malformed index node, and a completeness cross-check
+    // that catches a node whose damage silently truncates an index range so its
+    // entries vanish from every enumeration. Both run before the data passes so an
+    // index-corrupt store fails closed rather than being blessed while an index-driven
+    // read under-returns.
+    store.verify_index_readable()?;
+    verify_index_completeness(store, &places)?;
     count_integrity_problems_in_places(store, program, &places, IntegrityProfile::Report)
 }
 
@@ -910,4 +920,208 @@ fn collect_member_names(members: &[CheckedSavedMember], names: &mut HashMap<Stri
         }
         collect_member_names(&member.group_members, names);
     }
+}
+
+/// Verify the derived index family two independent ways for a store the schema
+/// describes: the structural decode and re-descent of [`verify_index_readable`],
+/// then the completeness cross-check below. `recover` and `backup` run this so they
+/// fail closed on an index-corrupt store rather than blessing or archiving one whose
+/// index-driven reads silently under-return.
+pub fn verify_store_index_integrity(
+    store: &TreeStore,
+    program: &CheckedProgram,
+) -> Result<(), StoreError> {
+    store.verify_index_readable()?;
+    verify_index_completeness(store, &checked_places(program))
+}
+
+/// Cross-check every declared index against the data records that derive it.
+///
+/// A structural scan of the index family cannot detect entries that were silently
+/// dropped from enumeration: if a damaged page makes the backend's range scan
+/// truncate an index range, the missing entries are absent from both the linear
+/// decode and the seek re-descent, so neither pass can miss what it never sees. The
+/// data records are the independent oracle. Each record whose indexed columns are all
+/// populated publishes exactly one entry per index, the same rule the runtime write
+/// path applies, so the expected entry count is derivable from the data family alone.
+/// A count that disagrees with the entries the index family actually enumerates is a
+/// dropped or orphaned entry: backend damage, failed closed as corruption.
+fn verify_index_completeness(
+    store: &TreeStore,
+    places: &[CheckedSavedPlace],
+) -> Result<(), StoreError> {
+    let mut expected: HashMap<CatalogId, usize> = HashMap::new();
+    for place in places {
+        let columns = index_completeness_columns(place)?;
+        if columns.is_empty() {
+            continue;
+        }
+        // Seed every resolvable index at zero so an index whose records publish no
+        // entry is still cross-checked: an orphaned entry under it then reads as a
+        // count above its derived zero.
+        for index in &columns {
+            expected.entry(index.id.clone()).or_default();
+        }
+        let _ = visit_place_record_identities_until(place, store, &mut |_, store_id, identity| {
+            for index in &columns {
+                if index.record_publishes(store, store_id, identity)? {
+                    *expected.entry(index.id.clone()).or_default() += 1;
+                }
+            }
+            Ok(ControlFlow::Continue(()))
+        })?;
+    }
+
+    for (index_id, expected_count) in expected {
+        let actual = enumerated_index_entry_count(store, &index_id)?;
+        if actual != expected_count {
+            return Err(StoreError::Corruption {
+                message: "an index holds a different number of entries than its records derive"
+                    .into(),
+            });
+        }
+    }
+    Ok(())
+}
+
+/// One declared index paired with the readers that resolve each of its key columns
+/// from a record. An index whose key shape the cross-check cannot resolve is skipped
+/// rather than counted, so a future nested or keyed-layer index column does not force
+/// a false corruption; the structural pass still guards such an index's bytes.
+struct IndexCompleteness {
+    id: CatalogId,
+    columns: Vec<IndexColumn>,
+}
+
+/// How to read one index key column from a record: an identity key by its tuple
+/// position, or a top-level member cell decoded by its stored meaning. These mirror
+/// the runtime index-write derivation: a record publishes an entry only when every
+/// column is present, so an absent member column means no entry, never a default.
+enum IndexColumn {
+    Identity {
+        position: usize,
+    },
+    Member {
+        path: DataPathSegment,
+        meaning: StoredValueMeaning,
+    },
+}
+
+impl IndexCompleteness {
+    /// Whether the record at `identity` publishes an entry for this index: every
+    /// column must read a present, decodable value. A member column that is absent or
+    /// whose bytes do not decode under its meaning yields no entry, the same outcome
+    /// the runtime write path produces, so the expected count matches what was written.
+    fn record_publishes(
+        &self,
+        store: &TreeStore,
+        store_id: &CatalogId,
+        identity: &[SavedKey],
+    ) -> Result<bool, StoreError> {
+        for column in &self.columns {
+            match column {
+                IndexColumn::Identity { position } => {
+                    if identity.get(*position).is_none() {
+                        return Ok(false);
+                    }
+                }
+                IndexColumn::Member { path, meaning } => {
+                    let Some(bytes) =
+                        store.read_data_value(store_id, identity, std::slice::from_ref(path))?
+                    else {
+                        return Ok(false);
+                    };
+                    if meaning.stored_key(&bytes).is_none() {
+                        return Ok(false);
+                    }
+                }
+            }
+        }
+        Ok(true)
+    }
+}
+
+/// Resolve each index a place declares to its key-column readers, dropping any index
+/// with a catalog id or column the cross-check cannot resolve. Every v0.1 index over
+/// identity keys or top-level plain fields resolves here.
+fn index_completeness_columns(
+    place: &CheckedSavedPlace,
+) -> Result<Vec<IndexCompleteness>, StoreError> {
+    let mut indexes = Vec::new();
+    for index in &place.indexes {
+        let Some(index_catalog_id) = index.catalog_id.as_deref() else {
+            continue;
+        };
+        if let Some(columns) = resolve_index_columns(place, index)? {
+            indexes.push(IndexCompleteness {
+                id: CatalogId::new(index_catalog_id.to_string()).map_err(|_| {
+                    StoreError::Corruption {
+                        message: "index catalog id is malformed".into(),
+                    }
+                })?,
+                columns,
+            });
+        }
+    }
+    Ok(indexes)
+}
+
+fn resolve_index_columns(
+    place: &CheckedSavedPlace,
+    index: &CheckedSavedIndex,
+) -> Result<Option<Vec<IndexColumn>>, StoreError> {
+    let mut columns = Vec::with_capacity(index.keys.len());
+    for key in &index.keys {
+        match key.source {
+            StoreIndexKeySource::IdentityKey => {
+                let Some(position) = place
+                    .identity_keys
+                    .iter()
+                    .position(|identity_key| identity_key.name == key.name)
+                else {
+                    return Ok(None);
+                };
+                columns.push(IndexColumn::Identity { position });
+            }
+            StoreIndexKeySource::ResourceMember(_) => {
+                let Some(member) = place
+                    .root_members
+                    .iter()
+                    .find(|member| member.name == key.name && member.is_plain_field())
+                else {
+                    return Ok(None);
+                };
+                let Some(member_catalog_id) = member.catalog_id.as_deref() else {
+                    return Ok(None);
+                };
+                let member_id = CatalogId::new(member_catalog_id.to_string()).map_err(|_| {
+                    StoreError::Corruption {
+                        message: "index member catalog id is malformed".into(),
+                    }
+                })?;
+                columns.push(IndexColumn::Member {
+                    path: DataPathSegment::Member(member_id),
+                    meaning: key.value_meaning.clone(),
+                });
+            }
+        }
+    }
+    Ok(Some(columns))
+}
+
+/// Count the entries the index family enumerates under one index. This is the
+/// possibly-truncated side of the cross-check: a silently dropped range lowers this
+/// count below what the records derive, surfacing the corruption.
+fn enumerated_index_entry_count(
+    store: &TreeStore,
+    index_id: &CatalogId,
+) -> Result<usize, StoreError> {
+    let mut count = 0usize;
+    store.for_each_index_entry(index_id, &mut |_, _, _| {
+        count = count.checked_add(1).ok_or(StoreError::LimitExceeded {
+            limit: "index entry count",
+        })?;
+        Ok(())
+    })?;
+    Ok(count)
 }

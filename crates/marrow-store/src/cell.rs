@@ -366,6 +366,40 @@ pub(crate) fn decode_data_cell_key(bytes: &[u8]) -> Option<DataCellKey> {
     })
 }
 
+/// A decoded index-family cell key: the index it belongs to, its stored index-key
+/// tuple, and the record identity it points at. Structural verification decodes these
+/// so a flipped index-subtree byte that leaves the file scannable but no longer
+/// well-formed under the v0 grammar is caught as corruption.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct IndexCellKey {
+    pub index: CatalogId,
+    pub index_keys: Vec<SavedKey>,
+    pub identity: Vec<SavedKey>,
+}
+
+/// Decodes an index-family cell key into its structural pieces. Returns `None` for a
+/// non-index key or for bytes that are malformed under the v0 grammar, which the
+/// caller treats as corruption.
+pub(crate) fn decode_index_cell_key(bytes: &[u8]) -> Option<IndexCellKey> {
+    let [
+        EMPTY_PLACEMENT_PREFIX,
+        TREE_CELL_PROFILE_V0,
+        FAMILY_INDEX,
+        rest @ ..,
+    ] = bytes
+    else {
+        return None;
+    };
+    let (index, after_index) = decode_escaped_id(rest)?;
+    let index = CatalogId::new(index).ok()?;
+    let (index_keys, identity) = decode_index_entry_key(after_index).ok()?;
+    Some(IndexCellKey {
+        index,
+        index_keys,
+        identity,
+    })
+}
+
 /// Decodes the identity key-values before the node terminator. A key tag is never
 /// `NODE_END`, so the run ends unambiguously at the first `NODE_END`.
 fn decode_leading_keys(mut bytes: &[u8]) -> Option<(Vec<SavedKey>, &[u8])> {

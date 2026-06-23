@@ -6,8 +6,8 @@ use std::ops::ControlFlow;
 use crate::backend::{Backend, ScanPage, StoreError, ValuePrefix};
 use crate::cell::{
     CatalogId, CellKey, MetaCell, NODE_MARKER, SequencePosition, decode_data_cell_key,
-    decode_data_child_key, decode_index_child_key, decode_index_entry_key, decode_index_identity,
-    prefix_successor,
+    decode_data_child_key, decode_index_cell_key, decode_index_child_key, decode_index_entry_key,
+    decode_index_identity, prefix_successor,
 };
 use crate::codec::BoundedReader;
 use crate::key::{KEY_INT_EXCLUSIVE_END, SavedKey, encode_key_value};
@@ -31,6 +31,7 @@ pub use crate::metadata::{CommitMetadata, EngineProfile, EngineProfileDigest, St
 const BACKUP_SCAN_PAGE: usize = 1024;
 const TREE_VALUE_VERSION_V0: u8 = 0;
 const CHILD_SCAN_PAGE_LIMIT: usize = 128;
+const INDEX_IDENTITY_SCAN_PAGE: usize = 1024;
 type IndexEntryVisitor<'a> =
     dyn FnMut(&[SavedKey], &[SavedKey], &[u8]) -> Result<(), StoreError> + 'a;
 
@@ -226,6 +227,12 @@ impl TreeStore {
     /// the linear scan's path yet on a record descent's re-seek, panicking deep in the
     /// engine; running the descent here surfaces it as corruption instead of leaving
     /// `recover` to bless a store a later read would fault on.
+    ///
+    /// The derived index family is verified the same two ways, since an index-driven
+    /// read navigates that family's btree just as a record read navigates the data
+    /// family's. A flipped index byte that orphans entries from an index scan would
+    /// otherwise let `recover` bless, and an index lookup silently under-return, a store
+    /// whose data records are intact.
     pub fn verify_readable(&self) -> Result<(), StoreError> {
         let mut previous: Option<(CatalogId, Vec<SavedKey>)> = None;
         let mut record_shapes: std::collections::BTreeSet<(CatalogId, usize)> =
@@ -254,7 +261,94 @@ impl TreeStore {
         for (store, arity) in record_shapes {
             self.for_each_record(&store, arity, &mut |_| Ok(()))?;
         }
+        self.verify_index_readable()
+    }
+
+    /// Verify the index family the way [`verify_readable`] verifies the data family:
+    /// a linear structural decode of every index cell, in encoded order, then a
+    /// seek-driven re-descent of every index it observes. The two passes traverse
+    /// different btree paths, so a clobbered index node fails closed as corruption
+    /// rather than silently dropping rows an index lookup would skip.
+    ///
+    /// `data integrity` runs this directly, because its record and orphan passes only
+    /// touch the data family and would otherwise bless an index-corrupt store.
+    ///
+    /// [`verify_readable`]: TreeStore::verify_readable
+    pub fn verify_index_readable(&self) -> Result<(), StoreError> {
+        let mut previous: Option<Vec<u8>> = None;
+        let mut index_shapes: std::collections::BTreeSet<(CatalogId, usize)> =
+            std::collections::BTreeSet::new();
+        self.for_each_page_entry(CellKey::index_family().as_bytes(), |key, _value| {
+            let decoded = decode_index_cell_key(key).ok_or_else(|| corrupt_cell(key))?;
+            index_shapes.insert((decoded.index, decoded.index_keys.len()));
+            if let Some(previous) = &previous
+                && key <= previous.as_slice()
+            {
+                return Err(StoreError::Corruption {
+                    message: "index cell keys are out of order".into(),
+                });
+            }
+            previous = Some(key.to_vec());
+            Ok(ControlFlow::Continue(()))
+        })?;
+        for (index, arity) in index_shapes {
+            self.descend_index_entries(&index, arity, &mut Vec::new())?;
+        }
         Ok(())
+    }
+
+    /// Seek-descend every entry under one index, mirroring how an index lookup walks
+    /// it: each of the `arity` index-key levels then the identity tuple are stepped
+    /// through `index_first_child`/`index_next_child`, the same cursor guards a read
+    /// uses. A non-advancing or malformed child fails closed rather than looping.
+    fn descend_index_entries(
+        &self,
+        index: &CatalogId,
+        arity: usize,
+        key_prefix: &mut Vec<SavedKey>,
+    ) -> Result<(), StoreError> {
+        if key_prefix.len() == arity {
+            return self.for_each_index_identity(index, key_prefix, &mut |_| Ok(()));
+        }
+        let mut next = self.index_first_child(index, key_prefix)?;
+        while let Some(child) = next {
+            key_prefix.push(child.clone());
+            self.descend_index_entries(index, arity, key_prefix)?;
+            key_prefix.pop();
+            next = self.index_next_child(index, key_prefix, &child)?;
+        }
+        Ok(())
+    }
+
+    /// Step every identity stored under one full index-key tuple, the leaf level an
+    /// index descent reaches. Identities order strictly, so a non-advancing step is
+    /// corruption.
+    fn for_each_index_identity(
+        &self,
+        index: &CatalogId,
+        index_keys: &[SavedKey],
+        visit: &mut dyn FnMut(&[SavedKey]) -> Result<(), StoreError>,
+    ) -> Result<(), StoreError> {
+        let mut page = self.scan_index_tuple(index, index_keys, INDEX_IDENTITY_SCAN_PAGE)?;
+        let mut previous_cursor: Option<Vec<u8>> = None;
+        loop {
+            for entry in &page.entries {
+                visit(&entry.identity)?;
+            }
+            let Some(cursor) = page.cursor.clone() else {
+                return Ok(());
+            };
+            if let Some(previous) = &previous_cursor {
+                guard_page_cursor_advances(
+                    &cursor.last_key,
+                    previous,
+                    std::cmp::Ordering::Greater,
+                )?;
+            }
+            previous_cursor = Some(cursor.last_key.clone());
+            page =
+                self.scan_index_tuple_after(index, index_keys, &cursor, INDEX_IDENTITY_SCAN_PAGE)?;
+        }
     }
 
     pub fn begin(&self) -> Result<(), StoreError> {
@@ -1125,6 +1219,7 @@ impl TreeStore {
         visit: &mut impl for<'cell> FnMut(TreeBackupCell<'cell>) -> Result<ControlFlow<()>, StoreError>,
     ) -> Result<(), StoreError> {
         let mut page = self.scan(prefix, BACKUP_SCAN_PAGE)?;
+        let mut previous_resume: Option<Vec<u8>> = None;
         loop {
             for (key, value) in &page.entries {
                 if visit(TreeBackupCell::from_raw(key, value)?)?.is_break() {
@@ -1141,7 +1236,11 @@ impl TreeStore {
                 .ok_or_else(|| StoreError::InvalidCursor {
                     message: "backup scan page was truncated without a cursor".into(),
                 })?;
+            if let Some(previous) = &previous_resume {
+                guard_page_cursor_advances(&resume, previous, std::cmp::Ordering::Greater)?;
+            }
             page = self.scan_after(prefix, &resume, BACKUP_SCAN_PAGE)?;
+            previous_resume = Some(resume);
         }
     }
 
@@ -1456,7 +1555,10 @@ impl TreeStore {
                 Some(cursor) => self.scan_after(prefix, cursor, CHILD_SCAN_PAGE_LIMIT)?,
                 None => self.scan(prefix, CHILD_SCAN_PAGE_LIMIT)?,
             };
-            cursor = page.entries.last().map(|(key, _)| key.clone());
+            let next_cursor = page.entries.last().map(|(key, _)| key.clone());
+            if let (Some(previous), Some(next)) = (&cursor, &next_cursor) {
+                guard_page_cursor_advances(next, previous, std::cmp::Ordering::Greater)?;
+            }
             for (key, value) in &page.entries {
                 if visit(key, value)?.is_break() {
                     return Ok(());
@@ -1465,11 +1567,12 @@ impl TreeStore {
             if !page.truncated {
                 break;
             }
-            if cursor.is_none() {
+            if next_cursor.is_none() {
                 return Err(StoreError::InvalidCursor {
                     message: "scan page was truncated without a cursor".into(),
                 });
             }
+            cursor = next_cursor;
         }
         Ok(())
     }
@@ -1522,9 +1625,11 @@ impl TreeStore {
             if !page.truncated {
                 break;
             }
-            cursor = next_cursor.ok_or_else(|| StoreError::InvalidCursor {
+            let next_cursor = next_cursor.ok_or_else(|| StoreError::InvalidCursor {
                 message: "reverse child scan page was truncated without a cursor".into(),
             })?;
+            guard_page_cursor_advances(&next_cursor, &cursor, std::cmp::Ordering::Less)?;
+            cursor = next_cursor;
         }
         Ok(())
     }
@@ -1577,9 +1682,11 @@ impl TreeStore {
             if !page.truncated {
                 break;
             }
-            cursor = next_cursor.ok_or_else(|| StoreError::InvalidCursor {
+            let next_cursor = next_cursor.ok_or_else(|| StoreError::InvalidCursor {
                 message: "record seek page was truncated without a cursor".into(),
             })?;
+            guard_page_cursor_advances(&next_cursor, &cursor, std::cmp::Ordering::Greater)?;
+            cursor = next_cursor;
         }
         Ok(())
     }
@@ -1615,9 +1722,11 @@ impl TreeStore {
             if !page.truncated {
                 break;
             }
-            cursor = next_cursor.ok_or_else(|| StoreError::InvalidCursor {
+            let next_cursor = next_cursor.ok_or_else(|| StoreError::InvalidCursor {
                 message: "reverse record scan page was truncated without a cursor".into(),
             })?;
+            guard_page_cursor_advances(&next_cursor, &cursor, std::cmp::Ordering::Less)?;
+            cursor = next_cursor;
         }
         Ok(())
     }
@@ -1660,9 +1769,11 @@ impl TreeStore {
             if !page.truncated {
                 break;
             }
-            cursor = next_cursor.ok_or_else(|| StoreError::InvalidCursor {
+            let next_cursor = next_cursor.ok_or_else(|| StoreError::InvalidCursor {
                 message: "child scan page was truncated without a cursor".into(),
             })?;
+            guard_page_cursor_advances(&next_cursor, &cursor, std::cmp::Ordering::Greater)?;
+            cursor = next_cursor;
         }
         Ok(None)
     }
@@ -1883,6 +1994,24 @@ fn corrupt_cell(bytes: &[u8]) -> StoreError {
     }
 }
 
+/// A paged scan that resumes from a page's final key must move strictly past the
+/// cursor it was seeded with: `scan_after` returns keys above its cursor and
+/// `scan_before` keys below it, so on a healthy store the next resume key always
+/// advances in `direction`. A non-advancing resume key is backend damage that would
+/// re-query the same cursor forever, so it fails closed rather than looping.
+fn guard_page_cursor_advances(
+    next: &[u8],
+    previous: &[u8],
+    direction: std::cmp::Ordering,
+) -> Result<(), StoreError> {
+    if next.cmp(previous) != direction {
+        return Err(StoreError::Corruption {
+            message: "store scan returned a non-advancing page cursor".into(),
+        });
+    }
+    Ok(())
+}
+
 /// A child step seeded from `cursor` must move strictly in `direction` past it; a
 /// healthy ordered store guarantees this. A non-advancing or out-of-order child is
 /// backend damage that would otherwise spin a descent forever, so it fails closed
@@ -1938,6 +2067,19 @@ mod tests {
         /// decoded keys are not in scan order, the divergence `verify_readable` catches.
         OutOfOrderDataScan {
             prefix: Vec<u8>,
+            cells: Vec<Vec<u8>>,
+        },
+        /// Model damage where a paged `scan`/`scan_after` under a prefix always reports
+        /// the same final key with `truncated: true`, so a page-cursor loop that resumes
+        /// from the last key never advances past it and would spin forever.
+        NonAdvancingScanPage {
+            prefix: Vec<u8>,
+            cells: Vec<Vec<u8>>,
+        },
+        /// Model a flipped index-subtree byte: an index-family scan yields one cell whose
+        /// key no longer decodes under the v0 grammar, the damage a structural index walk
+        /// must catch even though the data records are intact.
+        CorruptIndexScan {
             cells: Vec<Vec<u8>>,
         },
     }
@@ -2036,14 +2178,99 @@ mod tests {
             }
         }
 
+        /// Seed two single-int records, then pin every `scan`/`scan_after` under the
+        /// record family to a fixed truncated page so a page-cursor loop resuming from
+        /// the last key never moves past it.
+        fn non_advancing_scan_page(store: &CatalogId) -> Self {
+            let mut inner = MemStore::default();
+            for id in [1, 2] {
+                let key = CellKey::node(store, &[SavedKey::Int(id)]).into_bytes();
+                Backend::write(&mut inner, &key, NODE_MARKER.to_vec()).expect("seed record");
+            }
+            Self {
+                inner,
+                fault: BackendFault::NonAdvancingScanPage {
+                    prefix: CellKey::data_family().into_bytes(),
+                    cells: vec![CellKey::node(store, &[SavedKey::Int(1)]).into_bytes()],
+                },
+            }
+        }
+
+        /// Pin every record-family `scan`/`scan_after` to a fixed truncated page whose
+        /// only entry the active record scan skips, so the inner page-cursor loop
+        /// (`scan_record_children_after_cursor`) keeps re-querying the same cursor.
+        fn non_advancing_record_page(store: &CatalogId) -> Self {
+            Self {
+                inner: MemStore::default(),
+                fault: BackendFault::NonAdvancingScanPage {
+                    prefix: CellKey::record_prefix(store, &[]).into_bytes(),
+                    cells: vec![CellKey::node(store, &[SavedKey::Int(1)]).into_bytes()],
+                },
+            }
+        }
+
+        /// Pin every index-family `scan`/`scan_after` to a fixed truncated page holding one
+        /// valid index entry, so the identity-scan loop resuming from the last key never
+        /// moves past it and would spin without the page-cursor guard.
+        fn non_advancing_index_page(index: &CatalogId) -> Self {
+            Self {
+                inner: MemStore::default(),
+                fault: BackendFault::NonAdvancingScanPage {
+                    prefix: CellKey::index_family().into_bytes(),
+                    cells: vec![
+                        CellKey::index(index, &[SavedKey::Str("a".into())], &[SavedKey::Int(1)])
+                            .into_bytes(),
+                    ],
+                },
+            }
+        }
+
+        /// Flip a byte in one stored index cell's key, so an index-family scan returns a
+        /// cell that no longer decodes. Mirrors a single-byte corruption of an index node
+        /// over an otherwise-intact store; the data family is left untouched.
+        fn corrupt_index_cell(index: &CatalogId) -> Self {
+            let mut healthy =
+                CellKey::index(index, &[SavedKey::Str("a".into())], &[SavedKey::Int(1)])
+                    .into_bytes();
+            // Truncate the entry terminator so the key fails to decode under the v0 grammar.
+            healthy.pop();
+            Self {
+                inner: MemStore::default(),
+                fault: BackendFault::CorruptIndexScan {
+                    cells: vec![healthy],
+                },
+            }
+        }
+
         fn injected_page(&self, prefix: &[u8]) -> Option<ScanPage> {
             match &self.fault {
+                BackendFault::CorruptIndexScan { cells }
+                    if prefix.starts_with(CellKey::index_family().as_bytes()) =>
+                {
+                    Some(ScanPage {
+                        entries: cells
+                            .iter()
+                            .map(|cell| (cell.clone(), Vec::new()))
+                            .collect(),
+                        truncated: false,
+                    })
+                }
                 BackendFault::NonAdvancingRecordChild {
                     prefix: fault_prefix,
                     cell_key,
                 } if fault_prefix.as_slice() == prefix => Some(ScanPage {
                     entries: vec![(cell_key.clone(), NODE_MARKER.to_vec())],
                     truncated: false,
+                }),
+                BackendFault::NonAdvancingScanPage {
+                    prefix: fault_prefix,
+                    cells,
+                } if prefix.starts_with(fault_prefix) => Some(ScanPage {
+                    entries: cells
+                        .iter()
+                        .map(|cell| (cell.clone(), NODE_MARKER.to_vec()))
+                        .collect(),
+                    truncated: true,
                 }),
                 BackendFault::OutOfOrderDataScan {
                     prefix: fault_prefix,
@@ -2238,6 +2465,112 @@ mod tests {
         )));
 
         assert_corruption(store.verify_readable());
+    }
+
+    /// A flipped byte in an index subtree leaves the data records intact but clobbers an
+    /// index cell. The structural index walk must surface that as corruption so an index
+    /// lookup is never blessed while silently under-reading.
+    #[test]
+    fn verify_index_readable_rejects_a_corrupt_index_cell() {
+        let index = catalog("cat_00000000000000000000000000000003");
+        let store = TreeStore::from_backend(Box::new(FaultingBackend::corrupt_index_cell(&index)));
+
+        assert_corruption(store.verify_index_readable());
+        // The same corruption surfaces through the full readable check recover runs.
+        assert_corruption(store.verify_readable());
+    }
+
+    /// A healthy store with index entries verifies, and every index identity is reachable
+    /// through the seek-driven re-descent the verification runs.
+    #[test]
+    fn verify_index_readable_accepts_a_healthy_index() {
+        let index = catalog("cat_00000000000000000000000000000003");
+        let store = TreeStore::memory();
+        let identities = [1, 2, 3];
+        for id in identities {
+            store
+                .write_index_entry(
+                    &index,
+                    &[SavedKey::Str("shelf".into())],
+                    &[SavedKey::Int(id)],
+                    Vec::new(),
+                )
+                .expect("write index entry");
+        }
+
+        store
+            .verify_index_readable()
+            .expect("healthy index verifies");
+
+        let page = store
+            .scan_index_tuple(&index, &[SavedKey::Str("shelf".into())], 16)
+            .expect("scan index tuple");
+        assert_eq!(
+            page.entries.len(),
+            identities.len(),
+            "every index identity is returned: {page:?}"
+        );
+    }
+
+    /// The index-family walk pages the same way the data-family walk does. A backend that
+    /// reports the same final index key with `truncated: true` on every page must fail
+    /// closed as corruption rather than re-querying the same cursor forever.
+    #[test]
+    fn index_walk_rejects_a_non_advancing_page_cursor() {
+        let index = catalog("cat_00000000000000000000000000000003");
+        let result = assert_terminates(move || {
+            let store = TreeStore::from_backend(Box::new(
+                FaultingBackend::non_advancing_index_page(&index),
+            ));
+            store.verify_index_readable()
+        });
+        assert_corruption(result);
+    }
+
+    /// Run `body` on a worker thread with a deadline so a page-cursor spin surfaces as
+    /// a test timeout rather than hanging the suite, and a fixed result is returned.
+    fn assert_terminates<T: Send + 'static>(body: impl FnOnce() -> T + Send + 'static) -> T {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let (sender, receiver) = mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = sender.send(body());
+        });
+        match receiver.recv_timeout(Duration::from_secs(5)) {
+            Ok(result) => result,
+            Err(_) => panic!("store traversal did not terminate on damaged page cursor"),
+        }
+    }
+
+    /// `data integrity`/`stats`/`dump` drive the data-family page walk in `visit_family`.
+    /// A backend that reports the same final key with `truncated: true` on every page must
+    /// fail closed as corruption rather than re-querying the same cursor forever.
+    #[test]
+    fn family_walk_rejects_a_non_advancing_page_cursor() {
+        let store_id = catalog("cat_00000000000000000000000000000001");
+        let result = assert_terminates(move || {
+            let store = TreeStore::from_backend(Box::new(
+                FaultingBackend::non_advancing_scan_page(&store_id),
+            ));
+            store.verify_readable()
+        });
+        assert_corruption(result);
+    }
+
+    /// The record-seek inner loop (`scan_record_children_after_cursor`) resumes from
+    /// the last page key the same way. A truncated page whose only entry the scan skips
+    /// leaves the cursor unmoved; that must fail closed, not spin.
+    #[test]
+    fn record_seek_rejects_a_non_advancing_page_cursor() {
+        let store_id = catalog("cat_00000000000000000000000000000001");
+        let result = assert_terminates(move || {
+            let store = TreeStore::from_backend(Box::new(
+                FaultingBackend::non_advancing_record_page(&store_id),
+            ));
+            store.record_next_child(&store_id, &[SavedKey::Int(5)], &SavedKey::Int(0))
+        });
+        assert_corruption(result);
     }
 
     #[test]

@@ -15,7 +15,7 @@ use marrow_store::StoreError;
 use marrow_store::cell::CatalogId;
 use marrow_store::key::SavedKey;
 use marrow_store::tree::{DataPathSegment, TreeStore};
-use redb::{Database, TableDefinition};
+use redb::{Database, ReadableDatabase, TableDefinition};
 
 /// Seed a native store with enough records to fill several redb pages, so a
 /// truncation or mid-file clobber lands in real tree data rather than slack space.
@@ -238,6 +238,92 @@ fn open_existing_rejects_a_meta_only_file_as_corruption() {
         .err()
         .expect("a meta-only redb file must not open as a complete Marrow store");
     assert_eq!(error.code(), "store.corruption", "{error:?}");
+}
+
+/// A flipped byte in an index subtree leaves every data record intact but clobbers a
+/// derived index cell. `data integrity` and `recover` run `verify_index_readable`,
+/// which must fail closed as `store.corruption` rather than blessing the store while
+/// an index-driven read silently drops the rows the corrupt node covered.
+#[test]
+fn corrupt_index_cell_fails_closed_while_data_records_stay_readable() {
+    let dir = common::TempDir::new("marrow-store-test").expect("temp dir");
+    let path = dir.path().join("index-corrupt.redb");
+    seed_store(&path);
+    let by_shelf = catalog_id("3333333333333333");
+    {
+        let store = TreeStore::open(&path).expect("reopen to seed index");
+        store.begin().expect("begin");
+        for id in 0..200i64 {
+            store
+                .write_index_entry(
+                    &by_shelf,
+                    &[SavedKey::Str("fiction".into())],
+                    &[SavedKey::Int(id)],
+                    Vec::new(),
+                )
+                .expect("seed index entry");
+        }
+        store.commit().expect("commit index entries");
+    }
+
+    clobber_one_index_cell(&path);
+
+    let store = TreeStore::open(&path).expect("reopen clobbered store");
+    let title = catalog_id("2222222222222222");
+    assert_eq!(
+        store
+            .read_data_value(
+                &books(),
+                &[SavedKey::Int(0)],
+                &[DataPathSegment::Member(title)],
+            )
+            .expect("data records stay readable"),
+        Some(vec![0xAB; 64]),
+        "the data family is untouched by the index-subtree flip",
+    );
+
+    let error = store
+        .verify_index_readable()
+        .expect_err("a clobbered index node must fail closed");
+    assert_eq!(error.code(), "store.corruption", "{error:?}");
+}
+
+/// Replace one stored index-family cell key with bytes that keep the index-family
+/// prefix but no longer decode under the v0 grammar, the shape a flipped index byte
+/// leaves. The data family keys are left exactly as seeded.
+fn clobber_one_index_cell(path: &std::path::Path) {
+    const TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("marrow");
+    const INDEX_FAMILY_PREFIX: &[u8] = &[0x00, 0x01, 0x30];
+    let victim = {
+        let db = Database::open(path).expect("open redb for clobber");
+        let read = db.begin_read().expect("begin read");
+        let table = read.open_table(TABLE).expect("open marrow table");
+        table
+            .range::<&[u8]>(INDEX_FAMILY_PREFIX..)
+            .expect("range over index family")
+            .filter_map(Result::ok)
+            .map(|(key, _)| key.value().to_vec())
+            .find(|key| key.starts_with(INDEX_FAMILY_PREFIX))
+            .expect("an index cell to clobber")
+    };
+    let mut corrupt = victim.clone();
+    // Drop the entry terminator so the key no longer decodes as a well-formed index cell.
+    corrupt.pop();
+    let db = Database::open(path).expect("open redb for write");
+    let write = db.begin_write().expect("begin write");
+    {
+        let mut table = write.open_table(TABLE).expect("open marrow table");
+        let value = table
+            .remove(victim.as_slice())
+            .expect("remove victim cell")
+            .expect("victim present")
+            .value()
+            .to_vec();
+        table
+            .insert(corrupt.as_slice(), value.as_slice())
+            .expect("insert corrupt cell");
+    }
+    write.commit().expect("commit clobbered index cell");
 }
 
 /// Put the file into the typed recovery-required state without changing its data
