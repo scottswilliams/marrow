@@ -15,7 +15,8 @@ use serde_json::json;
 
 use crate::{
     CheckFormat, load_checked_project_with_format, load_config_with_format, native_store_path,
-    open_store_for_inspection, report_simple_error, write_json,
+    open_store_for_inspection, probe_checked_project, report_simple_error, store_path_is_absent,
+    write_json,
 };
 
 #[path = "cmd_data/get.rs"]
@@ -388,16 +389,16 @@ fn data_recover(args: &[String]) -> ExitCode {
     }) else {
         return report_no_store_to_recover(&dir, None, format);
     };
-    if !path.exists() {
+    if store_path_is_absent(&path) {
         return report_no_store_to_recover(&dir, Some(&path), format);
     }
     // Recover is the repair path for a store read-only commands refuse, so it must not
     // require the source to check: damaged source text must not block a store open. The
     // index-completeness cross-check needs the schema, so it runs only when the project
     // checks cleanly; a project that does not check still gets the store-level repair.
-    let program = load_checked_project_with_format(&dir, format)
-        .ok()
-        .map(|(_, program)| program);
+    // The probe is silent: a failed read-only store open or a failed check must not write
+    // its own error envelope to the recover command's single structured-report object.
+    let program = probe_checked_project(&dir, &config);
     match recover_store(&path, program.as_ref()) {
         Ok(()) => report_recovered_store(&dir, &path, format),
         Err(error) => report_store_error(error, format),

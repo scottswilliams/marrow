@@ -160,10 +160,36 @@ pub(crate) fn mount_backup_for_evolution_preview(
     Ok((program, store))
 }
 
+/// Reject a backup path that resolves to an existing non-regular file before the
+/// blocking open. `File::open` on a FIFO with no writer blocks the process forever,
+/// and a socket or device is not a backup body, so a special file is refused as not a
+/// backup file rather than opened. A missing path is left to the open, which reports
+/// its own not-found read fault. The stat follows symlinks the way the open will, so a
+/// symlink to a FIFO is rejected and a symlink loop surfaces its stat error.
+fn guard_regular_backup_file(input: &str, format: CheckFormat) -> Result<(), ExitCode> {
+    match fs::metadata(input) {
+        Ok(metadata) if metadata.file_type().is_file() => Ok(()),
+        Ok(_) => Err(report_backup_error(
+            BackupError::not_a_backup_file(input),
+            format,
+        )),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
+        Err(error) => {
+            report_simple_error(
+                "io.read",
+                &format!("could not open {input}: {error}"),
+                format,
+            );
+            Err(ExitCode::FAILURE)
+        }
+    }
+}
+
 fn read_backup_artifact(
     input: &str,
     format: CheckFormat,
 ) -> Result<(BufReader<File>, BackupPrologue), ExitCode> {
+    guard_regular_backup_file(input, format)?;
     let file = match File::open(input) {
         Ok(file) => file,
         Err(error) => {

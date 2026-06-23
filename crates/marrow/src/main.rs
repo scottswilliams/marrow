@@ -596,8 +596,29 @@ pub(crate) fn resolve_store_path(
         .map_err(|error| project_io_exit(dir, error, format))
 }
 
+/// Whether the native store path is physically absent — a genuine first run with no
+/// saved data yet. Only a `NotFound` stat is absent: a present file, a symlink loop
+/// (`ELOOP`), a denied lookup, or any other stat error means the path is occupied by
+/// something that must route to the read-only open and fail closed there, never be
+/// blessed as an empty first run. `Path::exists` collapses every stat error to absent,
+/// so a present-but-unresolvable store would masquerade as a clean first run; this
+/// distinguishes the two by inspecting the link itself rather than following it.
+pub(crate) fn store_path_is_absent(path: &Path) -> bool {
+    matches!(
+        std::fs::symlink_metadata(path),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound
+    )
+}
+
 /// Open the project's store read-only, or `Ok(None)` if it holds no saved data on
 /// disk yet (explicit memory store, or the native file does not exist). Never creates.
+///
+/// The opened store is proven fully traversable before it is handed to an inspection
+/// command, the same `verify_readable` walk `data recover` runs. A read-only open only
+/// checks the table roots, so damage below them — a clobbered index cell or a record
+/// the descent cannot re-seek — opens cleanly and a data-family scan reads through it.
+/// Without this walk the read-only inspections would bless a store `recover` and `run`
+/// classify as corrupt, leaving inspection more permissive than the write path.
 pub(crate) fn open_store_for_inspection(
     dir: &str,
     config: &marrow_project::ProjectConfig,
@@ -606,10 +627,12 @@ pub(crate) fn open_store_for_inspection(
     let Some(path) = native_store_path(dir, config, format)? else {
         return Ok(None);
     };
-    if !path.exists() {
+    if store_path_is_absent(&path) {
         return Ok(None);
     }
-    match marrow_store::tree::TreeStore::open_read_only(&path) {
+    match marrow_store::tree::TreeStore::open_read_only(&path)
+        .and_then(|store| store.verify_readable().map(|()| store))
+    {
         Ok(store) => Ok(Some(store)),
         Err(error) => {
             report_simple_error(error.code(), &error.to_string(), format);
@@ -707,7 +730,7 @@ pub(crate) fn read_accepted_store_catalog_lenient(
     let Ok(Some(path)) = marrow_check::native_store_path(Path::new(dir), config) else {
         return AcceptedAuthority::Absent;
     };
-    if !path.exists() {
+    if store_path_is_absent(&path) {
         return AcceptedAuthority::Absent;
     }
     let Ok(store) = marrow_store::tree::TreeStore::open_read_only(&path) else {
@@ -883,6 +906,28 @@ pub(crate) fn load_checked_project(
     dir: &str,
 ) -> Result<(marrow_project::ProjectConfig, marrow_check::CheckedProgram), ExitCode> {
     load_checked_project_with_format(dir, CheckFormat::Text)
+}
+
+/// Check the project without emitting any diagnostic to the structured-report stdout,
+/// for a best-effort probe whose failure the caller tolerates. `data recover` uses it
+/// to gather the schema for its index-completeness cross-check: a project that does not
+/// check, or a store that cannot be opened read-only, must not write its own error
+/// envelope to the recover command's single JSON object. The store snapshot is read
+/// through the lenient read-only path, so a recovery-required store binds first-run
+/// identity from the committed lock rather than reporting a fault, and a genuine
+/// check failure is discarded as `None`.
+pub(crate) fn probe_checked_project(
+    dir: &str,
+    config: &marrow_project::ProjectConfig,
+) -> Option<marrow_check::CheckedProgram> {
+    let authority = read_accepted_store_catalog_lenient(dir, config);
+    let lock = if authority.snapshot().is_some() {
+        None
+    } else {
+        marrow_check::read_committed_lock(Path::new(dir)).ok()?
+    };
+    marrow_check::check_project_against(Path::new(dir), config, authority.snapshot(), lock.as_ref())
+        .ok()
 }
 
 pub(crate) fn load_checked_project_with_format(

@@ -11,7 +11,7 @@ use marrow_store::StoreError;
 use marrow_store::tree::{CommitMetadata, TreeStore};
 use serde_json::{Value, json};
 
-use crate::{CheckFormat, write_json};
+use crate::{CheckFormat, store_path_is_absent, write_json};
 
 pub(crate) const DOCTOR_INTEGRITY_SAMPLE_LIMIT: usize = 64;
 
@@ -260,10 +260,14 @@ fn probe_store_open(
             return None;
         }
     };
-    if !path.exists() {
+    if store_path_is_absent(&path) {
         return None;
     }
-    match TreeStore::open_read_only(&path) {
+    // Prove the store is fully traversable, the same walk `data recover` runs, so doctor
+    // never reports a store healthy that the read-only inspections and the write path
+    // classify as corrupt below the table roots.
+    match TreeStore::open_read_only(&path).and_then(|store| store.verify_readable().map(|()| store))
+    {
         Ok(store) => Some(store),
         Err(error @ StoreError::Locked { .. }) => {
             findings.push(store_error_finding(

@@ -413,6 +413,127 @@ fn data_recover_is_convergent_or_reports_corruption() {
     }
 }
 
+/// Every read-only inspection proves the store fully traversable before rendering, the
+/// same `verify_readable` walk `data integrity` runs, so the lightweight render verbs
+/// are never more permissive than the verifying one. A read-only open only checks the
+/// table roots; damage below them — a record the descent cannot re-seek, a structurally
+/// malformed or out-of-order index cell — opens cleanly and a partial render would read
+/// straight through it. For every byte flip where `data integrity` reports
+/// `store.corruption`, each render verb (`stats`, `roots`, `dump`, `get`) must also fail
+/// closed with `store.corruption`, never bless the store with an exit-0 verdict. The
+/// sweep is bounded so a regression cannot hang the suite.
+#[test]
+fn read_only_renders_are_never_more_permissive_than_integrity() {
+    let (project, dir) = seeded_bulk_store("cli-store-render-vs-integrity");
+    let store = store_path(&project);
+    let clean = std::fs::read(&store).expect("read seeded store body");
+    let deadline = std::time::Duration::from_secs(30);
+
+    let renders: &[&[&str]] = &[
+        &["data", "stats", &dir],
+        &["data", "roots", &dir],
+        &["data", "dump", &dir],
+        &["data", "get", &dir, "^counter(1)"],
+    ];
+
+    for offset in (8192..clean.len().min(49152)).step_by(256) {
+        let mut corrupt = clean.clone();
+        corrupt[offset] ^= 0xff;
+        std::fs::write(&store, &corrupt).expect("write corrupted store body");
+
+        let integrity = marrow_bounded(&["data", "integrity", &dir], deadline);
+        assert_no_panic_and_bounded(&integrity, &["data", "integrity", &dir], offset);
+        // The contract bites only where the verifying verb anchors store corruption: a
+        // value-level finding it surfaces over a readable store is not a traversal fault.
+        if integrity.status.code() != Some(1) || stderr_code(&integrity) != "store.corruption" {
+            continue;
+        }
+
+        for command in renders {
+            let output = marrow_bounded(command, deadline);
+            assert_no_panic_and_bounded(&output, command, offset);
+            assert_ne!(
+                output.status.code(),
+                Some(0),
+                "offset {offset}: `marrow {}` blessed a store `data integrity` reports corrupt \
+                 (a render must not be more permissive than the verifying verb): {output:?}",
+                command.join(" ")
+            );
+            assert_eq!(
+                stderr_code(&output),
+                "store.corruption",
+                "offset {offset}: `marrow {}` must report store.corruption: {output:?}",
+                command.join(" ")
+            );
+        }
+    }
+}
+
+/// A read-only inspection must agree with the write-capable open `run` uses on a store
+/// damaged in redb's transaction-slot header — the commit-tracker region a read-only open
+/// reads through using the last clean commit's recorded roots. A flip there leaves the
+/// committed data btrees intact, so a bare read-only open succeeds and a content walk
+/// reads straight past the damage, while the write path consults that header and rejects
+/// the store. The inspection family must not be more permissive: every read-only verb
+/// (`integrity`, `stats`, `roots`, `dump`, `get`) must report `store.corruption` and exit
+/// 1 on the same bytes `run` reports corrupt, never a false `verified` (exit 0).
+///
+/// Each command runs over the same corrupt bytes written fresh from a clean snapshot, so a
+/// command that opens write-capable and rewrites the header — and a toggling re-flip —
+/// cannot restore the store between commands. Every command is bounded so a regression
+/// cannot hang the suite.
+#[test]
+fn inspection_agrees_with_write_open_on_commit_tracker_corruption() {
+    let (project, dir) = seeded_bulk_store("cli-store-commit-tracker-agreement");
+    let store = store_path(&project);
+    let clean = std::fs::read(&store).expect("read seeded store body");
+    let deadline = std::time::Duration::from_secs(30);
+
+    // The flip lands in redb's first transaction-slot header, leaving the data btrees
+    // intact so a bare read-only open reads through the committed roots. A clean snapshot
+    // is rewritten before each command so the corruption is identical every time.
+    let mut corrupt = clean.clone();
+    corrupt[128] ^= 0xff;
+    let restore_corrupt = || std::fs::write(&store, &corrupt).expect("write corrupted body");
+
+    // The write-capable open is the oracle: `run` reports the store corrupt without a
+    // read-only open's permissive read-through. The inspection family must match it.
+    restore_corrupt();
+    let run = marrow_bounded(&["run", "--entry", "app::seed", &dir], deadline);
+    assert_no_panic_and_bounded(&run, &["run"], 0);
+    assert_eq!(
+        run.status.code(),
+        Some(1),
+        "the commit-tracker flip must make the write-capable open reject the store: {run:?}"
+    );
+
+    let inspections: &[&[&str]] = &[
+        &["data", "integrity", &dir],
+        &["data", "stats", &dir],
+        &["data", "roots", &dir],
+        &["data", "dump", &dir],
+        &["data", "get", &dir, "^counter(1)"],
+    ];
+    for command in inspections {
+        restore_corrupt();
+        let output = marrow_bounded(command, deadline);
+        assert_no_panic_and_bounded(&output, command, 0);
+        assert_eq!(
+            output.status.code(),
+            Some(1),
+            "`marrow {}` blessed a commit-tracker-corrupt store the write open rejects \
+             (a read-only inspection must not be more permissive than the write path): {output:?}",
+            command.join(" ")
+        );
+        assert_eq!(
+            stderr_code(&output),
+            "store.corruption",
+            "`marrow {}` must report store.corruption: {output:?}",
+            command.join(" ")
+        );
+    }
+}
+
 /// A write-capable native handle excludes read-only CLI inspections. Every read-only
 /// store-opening command must surface the typed contract, not a redb-specific string
 /// or a generic I/O failure.
@@ -452,6 +573,36 @@ fn write_cli_commands_report_locked_while_read_only_holder_lives() {
         let output = marrow(command);
         assert_locked_output(command, &output);
     }
+}
+
+/// `data recover --format json` emits exactly one structured-report object. On a
+/// recovery-required store the schema-load probe opens the store read-only and fails;
+/// that probe must not write its own error envelope to the recover command's stdout
+/// before the single `status: opened` object. A second JSON object would break the
+/// one-object contract every JSON consumer relies on.
+#[test]
+fn data_recover_json_emits_exactly_one_object_after_recovery() {
+    let (project, dir) = seeded_project("cli-store-recover-json-single");
+    corrupt_primary_slot_selector(&project);
+
+    let output = marrow(&["data", "recover", "--format", "json", &dir]);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let stdout = String::from_utf8(output.stdout.clone()).expect("utf8 stdout");
+    let objects = stdout
+        .split_inclusive('\n')
+        .filter(|line| !line.trim().is_empty())
+        .count();
+    assert_eq!(
+        objects, 1,
+        "recover --format json must emit exactly one object, got {objects}: {stdout:?}"
+    );
+    let value: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("recover stdout is one JSON object");
+    assert_eq!(
+        value["status"],
+        serde_json::json!("opened"),
+        "the single object is the recovery result: {value}"
+    );
 }
 
 /// A store left needing repair by an unclean shutdown surfaces the typed
@@ -554,4 +705,49 @@ fn data_recover_rejects_an_empty_native_store_file() {
         0,
         "recover must not initialize an empty native file"
     );
+}
+
+/// A store path occupied by a symlink loop (`ELOOP`) is present, not absent: it is a
+/// store file the process cannot open, not a first run with no store. `Path::exists`
+/// collapses the `ELOOP` stat error to absent, so every read-only inspection would bless
+/// it as an empty healthy first run while `run` correctly reports `store.io`. The
+/// presence gate distinguishes a physically-absent file from a stat error, so a
+/// present-but-unopenable store routes to the typed open failure on every command.
+#[cfg(unix)]
+#[test]
+fn a_symlink_loop_store_is_not_a_first_run() {
+    let project = native_project("cli-store-symlink-loop");
+    let dir = project.to_str().expect("dir utf8").to_string();
+    let path = store_path(&project);
+    std::fs::create_dir_all(path.parent().expect("store parent")).expect("create store dir");
+    let sibling = path.with_file_name("marrow.loop.redb");
+    std::os::unix::fs::symlink(&sibling, &path).expect("link store to sibling");
+    std::os::unix::fs::symlink(&path, &sibling).expect("link sibling back to store");
+    assert!(
+        !path.exists(),
+        "Path::exists collapses the ELOOP stat error to absent"
+    );
+
+    let commands: &[&[&str]] = &[
+        &["data", "stats", &dir],
+        &["data", "dump", &dir],
+        &["data", "roots", &dir],
+        &["data", "integrity", &dir],
+        &["data", "get", &dir, "^counter(1)"],
+    ];
+    for command in commands {
+        let output = marrow(command);
+        assert_eq!(
+            output.status.code(),
+            Some(1),
+            "`marrow {}` must fail closed on an unopenable store, not bless a first run: {output:?}",
+            command.join(" ")
+        );
+        assert_eq!(
+            stderr_code(&output),
+            "store.io",
+            "`marrow {}` must report store.io for a symlink-loop store: {output:?}",
+            command.join(" ")
+        );
+    }
 }

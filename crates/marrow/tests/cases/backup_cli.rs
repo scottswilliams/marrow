@@ -1751,3 +1751,81 @@ fn backup_of_an_unseeded_project_restores_empty() {
     let stdout = String::from_utf8(restore.stdout).expect("restore stdout utf8");
     assert!(stdout.contains("restored 0 record(s)"), "{stdout}");
 }
+
+/// Create a named FIFO at `path`. A reader that opens a FIFO with no writer blocks
+/// indefinitely, the special file the backup-artifact guard must refuse before the
+/// blocking open.
+#[cfg(unix)]
+fn make_fifo(path: &Path) {
+    let status = Command::new("mkfifo")
+        .arg(path)
+        .status()
+        .expect("spawn mkfifo");
+    assert!(status.success(), "mkfifo {} failed", path.display());
+}
+
+/// A backup artifact that is a no-writer FIFO must fail closed with a typed
+/// `restore.format_version`, never block: every command that opens a backup archive —
+/// `restore`, `data <inspection> --backup`, and `evolve preview --from-backup` — shares
+/// one artifact open, so the regular-file guard refuses the special file promptly rather
+/// than hanging on a FIFO with no writer. The bounded run converts any reintroduced hang
+/// into a clear failure.
+#[cfg(unix)]
+#[test]
+fn backup_artifact_commands_reject_a_no_writer_fifo_without_hanging() {
+    let (root, _data_dir) = seeded_project("backup-artifact-fifo");
+    let dir = root.to_str().unwrap().to_string();
+    let fifo = root.join("archive.mwbackup");
+    make_fifo(&fifo);
+    let fifo_arg = fifo.to_str().unwrap().to_string();
+    let deadline = std::time::Duration::from_secs(15);
+
+    let commands: &[&[&str]] = &[
+        &["restore", &dir, &fifo_arg],
+        &["data", "integrity", "--backup", &fifo_arg, &dir],
+        &["data", "stats", "--backup", &fifo_arg, &dir],
+        &["evolve", "preview", "--from-backup", &fifo_arg, &dir],
+    ];
+    for command in commands {
+        let output = support::marrow_bounded(command, deadline);
+        assert_eq!(
+            output.status.code(),
+            Some(1),
+            "`marrow {}` must fail closed on a FIFO archive: {output:?}",
+            command.join(" ")
+        );
+        assert_eq!(
+            text_code(&output),
+            "restore.format_version",
+            "`marrow {}` must report restore.format_version for a non-regular archive: {output:?}",
+            command.join(" ")
+        );
+    }
+}
+
+/// A backup artifact that is a directory or a symlink loop is not a backup body either,
+/// and must fail closed promptly rather than hang or be misread: the regular-file guard
+/// refuses a directory as not a backup file and surfaces a symlink loop as a read fault.
+#[cfg(unix)]
+#[test]
+fn backup_artifact_commands_reject_a_directory_and_a_symlink_loop() {
+    let (root, _data_dir) = seeded_project("backup-artifact-special");
+    let dir = root.to_str().unwrap().to_string();
+    let deadline = std::time::Duration::from_secs(15);
+
+    let directory = root.join("archive-dir.mwbackup");
+    fs::create_dir(&directory).expect("create directory archive");
+    let directory_arg = directory.to_str().unwrap().to_string();
+    let directory_run = support::marrow_bounded(&["restore", &dir, &directory_arg], deadline);
+    assert_eq!(directory_run.status.code(), Some(1), "{directory_run:?}");
+    assert_eq!(text_code(&directory_run), "restore.format_version");
+
+    let loop_a = root.join("loop-a.mwbackup");
+    let loop_b = root.join("loop-b.mwbackup");
+    std::os::unix::fs::symlink(&loop_b, &loop_a).expect("link loop a");
+    std::os::unix::fs::symlink(&loop_a, &loop_b).expect("link loop b");
+    let loop_arg = loop_a.to_str().unwrap().to_string();
+    let loop_run = support::marrow_bounded(&["restore", &dir, &loop_arg], deadline);
+    assert_eq!(loop_run.status.code(), Some(1), "{loop_run:?}");
+    assert_eq!(text_code(&loop_run), "io.read", "{loop_run:?}");
+}

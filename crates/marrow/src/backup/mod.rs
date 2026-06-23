@@ -457,6 +457,15 @@ impl BackupError {
         Self::FormatVersion { problem, message }
     }
 
+    /// A backup path that resolves to a non-regular file (a FIFO, socket, or device)
+    /// is not a backup body; it is refused as not a backup file rather than opened.
+    pub(crate) fn not_a_backup_file(path: &str) -> Self {
+        Self::format_version(
+            BackupFormatProblem::NotBackupFile,
+            format!("{path} is not a Marrow backup file"),
+        )
+    }
+
     fn corrupt(problem: BackupCorruptProblem, message: impl Into<String>) -> Self {
         Self::CorruptChunk {
             problem,

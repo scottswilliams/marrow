@@ -224,6 +224,122 @@ fn is_torn_body(error: &std::io::Error) -> bool {
     )
 }
 
+/// A redb storage backend that serves reads from an existing store file but absorbs
+/// every write and length change in an in-memory overlay, so the engine's
+/// write-capable open path runs against the real committed bytes without ever
+/// touching the file or taking its write lock.
+///
+/// The engine reads pages lazily, so the overlay materializes only the header,
+/// allocator-state, and system pages the open consults, never the whole store. The
+/// overlay is keyed by byte offset; an unwritten position reads through to the file,
+/// or zero past the file's original length, matching the zero-fill a real backend
+/// gives a freshly extended region.
+#[derive(Debug)]
+struct RecoveryProbeBackend {
+    file: Mutex<fs::File>,
+    file_len: u64,
+    overlay: Mutex<std::collections::BTreeMap<u64, Vec<u8>>>,
+    len: Mutex<u64>,
+}
+
+impl RecoveryProbeBackend {
+    fn open(path: &Path) -> Result<Self, StoreError> {
+        let file = fs::File::open(path).map_err(io("open"))?;
+        let file_len = file.metadata().map_err(io("open"))?.len();
+        Ok(Self {
+            file: Mutex::new(file),
+            file_len,
+            overlay: Mutex::new(std::collections::BTreeMap::new()),
+            len: Mutex::new(file_len),
+        })
+    }
+}
+
+impl redb::StorageBackend for RecoveryProbeBackend {
+    fn len(&self) -> Result<u64, std::io::Error> {
+        Ok(*self
+            .len
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()))
+    }
+
+    fn read(&self, offset: u64, out: &mut [u8]) -> Result<(), std::io::Error> {
+        use std::io::{Read, Seek, SeekFrom};
+        let file_span = out.len().min(self.file_len.saturating_sub(offset) as usize);
+        if file_span > 0 {
+            let mut file = self
+                .file
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            file.seek(SeekFrom::Start(offset))?;
+            file.read_exact(&mut out[..file_span])?;
+        }
+        out[file_span..].fill(0);
+        let read_end = offset + out.len() as u64;
+        let overlay = self
+            .overlay
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        for (&start, bytes) in overlay.range(..read_end) {
+            let end = start + bytes.len() as u64;
+            let copy_start = start.max(offset);
+            let copy_end = end.min(read_end);
+            if copy_start >= copy_end {
+                continue;
+            }
+            let out_at = (copy_start - offset) as usize;
+            let src_at = (copy_start - start) as usize;
+            let span = (copy_end - copy_start) as usize;
+            out[out_at..out_at + span].copy_from_slice(&bytes[src_at..src_at + span]);
+        }
+        Ok(())
+    }
+
+    fn set_len(&self, len: u64) -> Result<(), std::io::Error> {
+        *self
+            .len
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = len;
+        Ok(())
+    }
+
+    fn sync_data(&self) -> Result<(), std::io::Error> {
+        Ok(())
+    }
+
+    fn write(&self, offset: u64, data: &[u8]) -> Result<(), std::io::Error> {
+        self.overlay
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(offset, data.to_vec());
+        Ok(())
+    }
+}
+
+/// Run redb's write-capable open detection against the store's committed bytes
+/// without modifying the file, so a read-only inspection agrees with `recover` and
+/// `run` on whether the store is recoverable.
+///
+/// A read-only open loads the allocator state recorded by the last clean commit and
+/// reads through the committed roots, so god-block or commit-tracker damage that the
+/// write-capable open rejects — a torn transaction slot, an aborted-repair state —
+/// opens cleanly and a content walk reads straight past it. The write-capable open
+/// consults that header region; this replays the same open over an overlay backend
+/// that reads the real bytes and discards every write, surfacing the engine's
+/// `RepairAborted` or corruption verdict while leaving the file and its lock
+/// untouched.
+///
+/// The caller runs this inside [`catch_open`], so a redb open panic on a clobbered
+/// header becomes typed corruption; the probe must not nest its own `catch_open`,
+/// whose panic-hook mutex is not reentrant.
+fn verify_committed_recoverable(path: &Path) -> Result<(), StoreError> {
+    let backend = RecoveryProbeBackend::open(path)?;
+    Database::builder()
+        .create_with_backend(backend)
+        .map(|_| ())
+        .map_err(|error| map_open_error(path, error))
+}
+
 /// Run a read-only or existing-store open, absorbing the brief window in which a
 /// concurrent first-run writer has created the store file but not yet written its
 /// header under the lock. A store this build committed is never zero-length, so a
@@ -798,11 +914,16 @@ impl RedbStore {
     /// Open an existing store read-only. Unlike [`open`](Self::open) it never
     /// creates the file and only verifies the recorded [`FORMAT_VERSION`] rather
     /// than stamping it; write-capability operations fail before any write
-    /// transaction begins. A store left needing repair by an unclean shutdown is
-    /// reported as [`StoreError::RecoveryRequired`]: a write-capable open attempts
-    /// the replay and reports whether the store opened, so a store damaged beyond
-    /// replay still surfaces corruption. The open and its probe run under
-    /// [`catch_open`].
+    /// transaction begins.
+    ///
+    /// A read-only open is more permissive than the write-capable open `recover` and
+    /// `run` use: it reads through the last clean commit's roots, so god-block or
+    /// commit-tracker damage that the write open rejects opens cleanly here and a
+    /// content walk reads past it. So before the handle is returned,
+    /// [`verify_committed_recoverable`] replays the write-capable open detection over
+    /// the committed bytes without touching the file, surfacing the same
+    /// [`StoreError::RecoveryRequired`] or corruption the write path reports. The open
+    /// and its probes run under [`catch_open`].
     pub(crate) fn open_read_only(path: &Path) -> Result<Self, StoreError> {
         let db = open_tolerating_creation_race(path, || {
             catch_open(|| {
@@ -810,6 +931,7 @@ impl RedbStore {
                 let db =
                     ReadOnlyDatabase::open(path).map_err(|error| map_open_error(path, error))?;
                 verify_existing_store_shape(&db)?;
+                verify_committed_recoverable(path)?;
                 Ok(DatabaseHandle::ReadOnly(db))
             })
         })?;
