@@ -356,8 +356,10 @@ Inspect a project for operator triage without repairing or writing anything.
 `doctor` aggregates independent probes where possible:
 
 - load `marrow.json`;
-- validate the committed `marrow.lock` projection and report a corrupt or stale
-  lock, or a lock that collides with the live store, as findings;
+- validate the committed `marrow.lock` projection and report a corrupt, stale,
+  or missing lock, or a lock that collides with the live store, as findings; a
+  lock absent over a store carrying saved shape is `doctor.lock_missing`,
+  mirroring `check.lock_missing`, while a true first run stays healthy;
 - run the normal project check summary;
 - open the configured native store read-only when a store file exists;
 - report store lock/recovery/open failures as findings instead of stopping

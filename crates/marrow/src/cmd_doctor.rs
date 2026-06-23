@@ -71,7 +71,8 @@ fn run_doctor(dir: &str, format: CheckFormat) -> ExitCode {
     let mut findings = Vec::new();
 
     let config = probe_config(root, dir, &mut findings);
-    let lock = probe_lock(root, dir, &mut findings);
+    let lock_probe = probe_lock(root, dir, &mut findings);
+    let lock = lock_probe.lock();
     let store = config
         .as_ref()
         .and_then(|config| probe_store_open(root, dir, config, &mut findings));
@@ -82,14 +83,7 @@ fn run_doctor(dir: &str, format: CheckFormat) -> ExitCode {
         .as_ref()
         .and_then(|store| store.read_catalog_snapshot().ok().flatten());
     let program = match &config {
-        Some(config) => probe_check(
-            root,
-            dir,
-            config,
-            accepted.as_ref(),
-            lock.as_ref(),
-            &mut findings,
-        ),
+        Some(config) => probe_check(root, dir, config, accepted.as_ref(), lock, &mut findings),
         None => None,
     };
     let store_report = store.as_ref().map(|store| {
@@ -97,7 +91,7 @@ fn run_doctor(dir: &str, format: CheckFormat) -> ExitCode {
             dir,
             store,
             accepted.as_ref(),
-            lock.as_ref(),
+            &lock_probe,
             program.as_ref(),
             &mut findings,
         )
@@ -153,13 +147,33 @@ fn probe_config(
     }
 }
 
+/// The doctor-relevant state of the committed `marrow.lock`. The distinction between an absent
+/// lock and a present-but-corrupt one is load-bearing: a stamped store with no lock at all is a
+/// missing committed projection, while a stamped store with a corrupt lock has a present file that
+/// must be deleted and regenerated, not reported as missing.
+enum LockProbe {
+    Present(CatalogLock),
+    Absent,
+    Corrupt,
+}
+
+impl LockProbe {
+    fn lock(&self) -> Option<&CatalogLock> {
+        match self {
+            LockProbe::Present(lock) => Some(lock),
+            LockProbe::Absent | LockProbe::Corrupt => None,
+        }
+    }
+}
+
 /// Read the committed `marrow.lock` through its canonical reader. A present-but-corrupt lock
 /// fails closed with the typed `doctor.lock_corrupt` finding so a hostile lock is never treated
 /// as absent; an absent lock is a true first run. The live store, not the lock, remains the
 /// binding authority, so a corrupt lock does not block the store-fact probes.
-fn probe_lock(root: &Path, dir: &str, findings: &mut Vec<Finding>) -> Option<CatalogLock> {
+fn probe_lock(root: &Path, dir: &str, findings: &mut Vec<Finding>) -> LockProbe {
     match marrow_check::read_committed_lock(root) {
-        Ok(lock) => lock,
+        Ok(Some(lock)) => LockProbe::Present(lock),
+        Ok(None) => LockProbe::Absent,
         Err(error) => {
             findings.push(project_error_finding(
                 "doctor.lock_corrupt",
@@ -168,7 +182,7 @@ fn probe_lock(root: &Path, dir: &str, findings: &mut Vec<Finding>) -> Option<Cat
                 check_command(dir),
                 error,
             ));
-            None
+            LockProbe::Corrupt
         }
     }
 }
@@ -291,10 +305,11 @@ fn probe_store_facts(
     dir: &str,
     store: &TreeStore,
     accepted: Option<&CatalogMetadata>,
-    lock: Option<&CatalogLock>,
+    lock_probe: &LockProbe,
     program: Option<&marrow_check::CheckedProgram>,
     findings: &mut Vec<Finding>,
 ) -> StoreReport {
+    let lock = lock_probe.lock();
     let current_profile = current_engine_profile();
     let commit = match store.read_commit_metadata() {
         Ok(commit) => commit,
@@ -313,6 +328,12 @@ fn probe_store_facts(
 
     if commit.is_none() && probe_populated(store, dir, findings) == Some(true) {
         findings.push(populated_unstamped_finding(dir));
+    }
+    // Only a physically absent lock over an accepted store is a missing committed projection. A
+    // corrupt lock is a present file already reported as `doctor.lock_corrupt`; reporting it as
+    // missing too would contradictorily tell the operator both to delete and to regenerate it.
+    if matches!(lock_probe, LockProbe::Absent) && accepted.is_some() {
+        findings.push(missing_lock_finding(dir));
     }
     if let (Some(lock), Some(accepted)) = (lock, accepted) {
         probe_lock_against_store(dir, lock, accepted, findings);
@@ -359,6 +380,21 @@ fn populated_unstamped_finding(dir: &str) -> Finding {
         "the store holds saved data but carries no accepted commit stamp",
         "run the program that owns this store, or remove the store to start fresh",
         doctor_command(dir),
+        serde_json::Map::new(),
+    )
+}
+
+/// A stamped store carries durable shape a committed lock must project, but no `marrow.lock` is
+/// present: the committed projection is absent, not merely stale. A CI gate that passed this would
+/// give a false green to a developer who forgot to commit or deleted the lock, so doctor surfaces
+/// it as a finding — mirroring `check`'s `check.lock_missing` gate. A uid-only store with no
+/// accepted catalog, like an absent store, has nothing to lock and stays a healthy first run.
+fn missing_lock_finding(dir: &str) -> Finding {
+    Finding::new(
+        "doctor.lock_missing",
+        "marrow.lock is missing but the live store carries saved shape",
+        "regenerate marrow.lock with a run or evolve apply, then commit it",
+        run_command(dir),
         serde_json::Map::new(),
     )
 }

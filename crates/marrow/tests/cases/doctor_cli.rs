@@ -7,7 +7,7 @@ use marrow_store::key::SavedKey;
 use support::{json, marrow};
 use support_data::{
     checked_place, delete_tree_path, field_path, integrity_problem, marrow as data_marrow,
-    seeded_project, write_orphan_cell, write_tree_values,
+    native_project, seeded_project, write_orphan_cell, write_tree_values,
 };
 
 const EXPECTED_INTEGRITY_SAMPLE_LIMIT: u64 = 64;
@@ -348,6 +348,89 @@ fn doctor_reports_a_stale_lock_against_the_live_store_without_writing() {
         lock_before,
         "doctor must not rewrite the committed lock"
     );
+}
+
+#[test]
+fn doctor_reports_a_missing_lock_over_a_stamped_store() {
+    let (project, dir) = seeded_project("doctor-missing-lock");
+
+    // Delete the committed lock while leaving the stamped store untouched: the store still carries
+    // durable shape that a committed lock must project, so an absent lock is missing, not a first
+    // run. This mirrors `check --locked`'s `check.lock_missing` gate.
+    fs::remove_file(lock_path(&project)).expect("remove committed lock");
+    let store_before = fs::read(store_path(&project)).expect("read store before doctor");
+
+    let output = marrow(&["doctor", "--format", "json", &dir]);
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let value = json(output.stdout);
+    assert_eq!(value["status"], "findings", "{value:#?}");
+    let codes = finding_codes(&value);
+    assert!(
+        codes.contains(&"doctor.lock_missing"),
+        "doctor reports the missing lock over a stamped store: {value:#?}"
+    );
+    let missing = finding(&value, "doctor.lock_missing");
+    let next = missing["next_command"]
+        .as_str()
+        .expect("next_command is a string");
+    assert!(
+        next.contains("marrow run"),
+        "lock_missing next must point at the regenerating run: {next}"
+    );
+
+    assert!(
+        !lock_path(&project).exists(),
+        "doctor must not write a marrow.lock"
+    );
+    assert_eq!(
+        fs::read(store_path(&project)).expect("read store after doctor"),
+        store_before,
+        "doctor must not rewrite the store"
+    );
+}
+
+#[test]
+fn doctor_reports_only_lock_corrupt_for_a_corrupt_lock_over_a_stamped_store() {
+    let (project, dir) = seeded_project("doctor-corrupt-lock-stamped");
+
+    // A present-but-corrupt lock over a stamped store is a present file the operator must delete
+    // and regenerate, not a missing committed projection. Doctor must report `doctor.lock_corrupt`
+    // alone, never the contradictory `doctor.lock_missing` that would tell the operator the file is
+    // both present-and-hostile and absent at once. This mirrors `check --locked`, which reports
+    // only the corrupt condition.
+    corrupt_lock(&project);
+
+    let output = marrow(&["doctor", "--format", "json", &dir]);
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let value = json(output.stdout);
+    let codes = finding_codes(&value);
+    assert!(
+        codes.contains(&"doctor.lock_corrupt"),
+        "a corrupt lock over a stamped store reports lock_corrupt: {value:#?}"
+    );
+    assert!(
+        !codes.contains(&"doctor.lock_missing"),
+        "a corrupt lock is present, not missing: doctor must not double-report lock_missing: {value:#?}"
+    );
+}
+
+#[test]
+fn doctor_reports_no_findings_for_a_true_first_run() {
+    // A native project with no run yet: no store file and no committed lock. There is no durable
+    // shape to project, so an absent lock is a legitimate first run, not a missing commit.
+    let project = native_project("doctor-first-run");
+    let dir = project.to_str().expect("project path utf8").to_string();
+    assert!(!lock_path(&project).exists(), "first run has no lock");
+    assert!(!store_path(&project).exists(), "first run has no store");
+
+    let output = marrow(&["doctor", "--format", "json", &dir]);
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let value = json(output.stdout);
+    assert_eq!(value["status"], "ok", "{value:#?}");
+    assert_eq!(value["findings"], serde_json::json!([]), "{value:#?}");
 }
 
 #[test]
