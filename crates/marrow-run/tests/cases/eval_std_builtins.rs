@@ -446,6 +446,8 @@ pub fn negative_zero_decimal(): string
         run(checked_entry!(&program, "test::negative_zero_int")),
         RUN_TYPE,
     );
+    // The integer `-0` token is no value as a decimal too, so reading it as a
+    // decimal raises run.type; only a fractional `-0.0` canonicalizes to zero.
     assert_run_error(
         run(checked_entry!(&program, "test::negative_zero_decimal")),
         RUN_TYPE,
@@ -515,6 +517,41 @@ pub fn malformed(): string
         RUN_TYPE,
     );
     assert_run_error(run(checked_entry!(&program, "test::malformed")), RUN_TYPE);
+}
+
+#[test]
+fn std_json_accepts_negative_zero_as_structurally_valid() {
+    // `-0` is an RFC-8259 integer, so the document parses and validates; the
+    // `-0`-spelling rule is an int-reader fence, not a whole-document parse fault.
+    // A sibling read of another field must be unaffected.
+    let program = checked_program(
+        r#"pub fn valid(): bool
+    return std::json::valid("{\"x\":-0,\"y\":7}")
+
+pub fn read_int(): int
+    return std::json::int("{\"x\":-0,\"y\":7}", "/x") ?? -1
+
+pub fn read_decimal(): string
+    return string(std::json::decimal("{\"x\":-0.0,\"y\":7}", "/x") ?? 9.9)
+
+pub fn sibling(): int
+    return std::json::int("{\"x\":-0,\"y\":7}", "/y") ?? -1
+"#,
+    );
+
+    assert_eq!(
+        run(checked_entry!(&program, "test::valid")).unwrap(),
+        Some(Value::Bool(true))
+    );
+    assert_run_error(run(checked_entry!(&program, "test::read_int")), RUN_TYPE);
+    assert_eq!(
+        run(checked_entry!(&program, "test::read_decimal")).unwrap(),
+        Some(Value::Str("0".into()))
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::sibling")).unwrap(),
+        Some(Value::Int(7))
+    );
 }
 
 #[test]

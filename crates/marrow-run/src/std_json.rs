@@ -95,7 +95,6 @@ fn parse_json(text: &str) -> Result<Box<RawValue>, ()> {
     if text.len() > MAX_BYTES {
         return Err(());
     }
-    reject_negative_zero_integer(text)?;
     validate_json(text)?;
     serde_json::from_str::<Box<RawValue>>(text).map_err(|_| ())
 }
@@ -265,35 +264,12 @@ impl JsonPolicySeed<'_> {
     }
 }
 
-fn reject_negative_zero_integer(text: &str) -> Result<(), ()> {
-    let mut in_string = false;
-    let mut escaped = false;
-    let bytes = text.as_bytes();
-    let mut index = 0;
-    while let Some(&byte) = bytes.get(index) {
-        if in_string {
-            if escaped {
-                escaped = false;
-            } else if byte == b'\\' {
-                escaped = true;
-            } else if byte == b'"' {
-                in_string = false;
-            }
-            index += 1;
-            continue;
-        }
-        match byte {
-            b'"' => in_string = true,
-            b'-' if bytes.get(index + 1) == Some(&b'0')
-                && !matches!(bytes.get(index + 2), Some(b'.' | b'e' | b'E' | b'0'..=b'9')) =>
-            {
-                return Err(());
-            }
-            _ => {}
-        }
-        index += 1;
-    }
-    Ok(())
+/// True for the JSON integer token `-0`. The negative-zero integer spelling is a
+/// scalar-reader fence at `json::int`, not a whole-document parse fault: `-0` is
+/// structurally valid JSON, so the document still parses and validates. A `-0.0`,
+/// `-0e1`, or `-01` token is not this case.
+fn is_negative_zero_integer(value: &str) -> bool {
+    value.trim() == "-0"
 }
 
 struct JsonLimits {
@@ -374,10 +350,18 @@ fn json_value(op: JsonScalarOp, value: &str, span: SourceSpan) -> Result<Value, 
         (JsonScalarOp::String, Some(b'"')) => serde_json::from_str::<String>(value)
             .map(Value::Str)
             .map_err(|_| type_error("JSON value is not a string", span)),
-        (JsonScalarOp::Int, Some(b'-' | b'0'..=b'9')) => parse_json_number(value, span)?
-            .as_i64()
-            .map(Value::Int)
-            .ok_or_else(|| type_error("JSON number is not an int", span)),
+        (JsonScalarOp::Int, Some(b'-' | b'0'..=b'9')) => {
+            if is_negative_zero_integer(value) {
+                return Err(type_error(
+                    "JSON integer must not be the `-0` spelling",
+                    span,
+                ));
+            }
+            parse_json_number(value, span)?
+                .as_i64()
+                .map(Value::Int)
+                .ok_or_else(|| type_error("JSON number is not an int", span))
+        }
         (JsonScalarOp::Decimal, Some(b'-' | b'0'..=b'9')) => parse_json_decimal(value, span),
         (JsonScalarOp::Bool, Some(b't' | b'f')) => serde_json::from_str::<bool>(value)
             .map(Value::Bool)
