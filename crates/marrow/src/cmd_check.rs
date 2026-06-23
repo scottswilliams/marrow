@@ -77,7 +77,7 @@ enum LockStrictness {
 /// surfaces staleness as a non-fatal advisory rather than failing. Editing source ahead of the
 /// next write path is the ordinary case, so a stale lock does not block a clean check; a later
 /// `run` or `evolve apply` re-projects the lock to converge it.
-const CHECK_STALE_LOCK: &str = "check.stale_lock";
+pub(crate) const CHECK_STALE_LOCK: &str = "check.stale_lock";
 
 /// `--locked` over a project that has durable shape to lock — any present store file, whether it
 /// opens read-only or is recovery-required after a crash — but no committed `marrow.lock` at all.

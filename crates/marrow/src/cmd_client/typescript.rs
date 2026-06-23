@@ -1,8 +1,9 @@
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use crate::{CheckFormat, report_simple_error};
+use crate::cmd_check::CHECK_STALE_LOCK;
+use crate::{CheckFormat, ClientFreshness, report_simple_error};
 
 const COMMAND: &str = "client typescript";
 const HELP: &str = "\
@@ -12,7 +13,9 @@ Usage:
 Generate a self-contained TypeScript client from the checked surface ABI.
 
 Options:
-  --out  Write the client to <path>; prints to stdout when omitted.
+  --out  Write the client to <path>, resolved against the current directory;
+         prints the written path. When omitted, refresh the marrow.json
+         `client` path if one is declared, otherwise print to stdout.
 ";
 
 pub(crate) fn typescript(args: &[String]) -> ExitCode {
@@ -93,38 +96,106 @@ fn render_client(dir: &str, out: Option<&str>) -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    let abi = marrow_json::surface::SurfaceAbiJson::from_program(&snapshot.program);
-    let routes = marrow_json::surface::SurfaceRouteManifestJson::from_abi(&abi);
-    match marrow_json::surface::render_typescript_client(&abi, &routes) {
-        Ok(client) => match out {
-            Some(out) => write_client(dir, out, &client),
-            None => {
-                print!("{client}");
+    // A committed lock the source has outrun is the `check.stale_lock` condition: the surface this
+    // client projects may not reflect the accepted catalog the lock carries, so emitting one
+    // silently would hand the developer a client whose shape they cannot trust. Warn loudly and
+    // name the run that re-projects the lock, mirroring the read-only advisory `check` reports.
+    if lock
+        .as_ref()
+        .is_some_and(|lock| lock.source_digest != snapshot.program.source_digest())
+    {
+        report_simple_error(
+            CHECK_STALE_LOCK,
+            &format!(
+                "marrow.lock is behind the current source, so this client may not reflect the \
+                 accepted catalog; run marrow run {dir} to re-project the lock before generating a \
+                 client"
+            ),
+            CheckFormat::Text,
+        );
+    }
+
+    // An explicit `--out` is the ad-hoc escape hatch: resolve it against the process cwd (POSIX
+    // convention) and report the written path. With no `--out`, a declared `client` path refreshes
+    // write-if-changed through the shared owner that run, serve, and evolve use, while a project
+    // with no declared client falls back to stdout.
+    if let Some(out) = out {
+        return match render(&snapshot.program) {
+            Ok(client) => write_explicit_out(out, &client),
+            Err(error) => render_failure(&error),
+        };
+    }
+
+    if let Some(rel) = config.client.as_deref() {
+        let path = Path::new(dir).join(rel);
+        let existed = path.exists();
+        return match crate::write_declared_client_if_changed(
+            dir,
+            &config,
+            &snapshot.program,
+            CheckFormat::Text,
+        ) {
+            Ok(verdict) => {
+                report_declared_refresh(&path, existed, verdict);
                 ExitCode::SUCCESS
             }
-        },
-        Err(error) => {
-            report_simple_error(
-                "surface.abi_mismatch",
-                &format!("surface client render failed: {error}"),
-                CheckFormat::Text,
-            );
-            ExitCode::FAILURE
+            Err(code) => code,
+        };
+    }
+
+    match render(&snapshot.program) {
+        Ok(client) => {
+            print!("{client}");
+            ExitCode::SUCCESS
         }
+        Err(error) => render_failure(&error),
     }
 }
 
-/// Write the rendered client to `out`. A relative path resolves under the
-/// project directory; an absolute path is honored as given, the ad-hoc escape
-/// hatch for emitting the client outside the project tree.
-fn write_client(dir: &str, out: &str, client: &str) -> ExitCode {
-    let path = Path::new(out);
-    let path = if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        Path::new(dir).join(path)
-    };
+/// Render the typed TypeScript client from a checked program through the surface-ABI render owner.
+/// The declared-client refresh has its own write-if-changed owner; this serves the `--out` and
+/// stdout paths that emit the freshly rendered text directly.
+fn render(
+    program: &marrow_check::CheckedProgram,
+) -> Result<String, marrow_json::surface::SurfaceClientRenderError> {
+    let abi = marrow_json::surface::SurfaceAbiJson::from_program(program);
+    let routes = marrow_json::surface::SurfaceRouteManifestJson::from_abi(&abi);
+    marrow_json::surface::render_typescript_client(&abi, &routes)
+}
+
+/// Report the outcome of refreshing the declared client to stderr, leaving stdout clean. A
+/// configured client without a surface reuses the shared surfaceless diagnostic the write owner
+/// already raises; otherwise the freshness verdict drives a wrote/updated/unchanged line.
+fn report_declared_refresh(path: &Path, existed: bool, verdict: ClientFreshness) {
+    match verdict {
+        ClientFreshness::Rewritten if existed => eprintln!("updated {}", path.display()),
+        ClientFreshness::Rewritten => eprintln!("wrote {}", path.display()),
+        ClientFreshness::AlreadyFresh => eprintln!("unchanged {}", path.display()),
+        ClientFreshness::SurfacelessConfigured => report_simple_error(
+            crate::CLIENT_WITHOUT_SURFACE_CODE,
+            crate::CLIENT_WITHOUT_SURFACE_MESSAGE,
+            CheckFormat::Text,
+        ),
+        ClientFreshness::NotConfigured => {}
+    }
+}
+
+fn render_failure(error: &impl std::fmt::Display) -> ExitCode {
+    report_simple_error(
+        "surface.abi_mismatch",
+        &format!("surface client render failed: {error}"),
+        CheckFormat::Text,
+    );
+    ExitCode::FAILURE
+}
+
+/// Write the rendered client to an explicit `--out` path, resolving a relative path against the
+/// process cwd as a POSIX CLI does. Success prints the resolved path so the write is never
+/// invisible.
+fn write_explicit_out(out: &str, client: &str) -> ExitCode {
+    let path = PathBuf::from(out);
     if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
         && let Err(error) = fs::create_dir_all(parent)
     {
         report_simple_error(
@@ -135,7 +206,13 @@ fn write_client(dir: &str, out: &str, client: &str) -> ExitCode {
         return ExitCode::FAILURE;
     }
     match fs::write(&path, client) {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(()) => {
+            let resolved = path.canonicalize().unwrap_or_else(|_| {
+                std::env::current_dir().map_or(path.clone(), |cwd| cwd.join(&path))
+            });
+            eprintln!("wrote {}", resolved.display());
+            ExitCode::SUCCESS
+        }
         Err(error) => {
             report_simple_error(
                 "io.write",

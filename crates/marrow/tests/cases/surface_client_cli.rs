@@ -246,6 +246,158 @@ fn client_typescript_uses_active_computed_read_route_tags() {
 }
 
 #[test]
+fn client_typescript_warns_on_stale_lock() {
+    // A committed lock that the source has since outrun is the `check.stale_lock` condition: the
+    // generated client may not reflect the accepted catalog the lock projects, so generating one
+    // silently would hand the developer a client whose shape they cannot trust. The command must
+    // warn loudly, naming the run that re-projects the lock.
+    let root = temp_project("surface-client-stale-lock", |root| {
+        write(root, "marrow.json", support::native_config());
+        write(root, "src/app.mw", CLIENT_SURFACE_SOURCE);
+    });
+    let seed = marrow(&["run", "--entry", "app::seed", root.to_str().unwrap()]);
+    assert_eq!(seed.status.code(), Some(0), "seed: {seed:?}");
+
+    // Drift the stored resource shape (a new field) so the committed lock's source digest falls
+    // behind the current source — the same condition `check` reports as `check.stale_lock`.
+    let changed = CLIENT_SURFACE_SOURCE.replace(
+        "    author: string\n",
+        "    author: string\n    pages: int\n",
+    );
+    assert_ne!(changed, CLIENT_SURFACE_SOURCE, "shape edit must apply");
+    write(&root, "src/app.mw", &changed);
+
+    let output = marrow(&[
+        "client",
+        "typescript",
+        root.to_str().expect("project path utf8"),
+    ]);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+    assert!(
+        stderr.contains("check.stale_lock"),
+        "a stale lock must raise the stale-lock advisory: {stderr}"
+    );
+    assert!(
+        stderr.contains(&format!("marrow run {}", root.to_str().unwrap())),
+        "the advisory must name the run that re-projects the lock: {stderr}"
+    );
+}
+
+#[test]
+fn client_typescript_relative_out_resolves_against_cwd_and_prints_path() {
+    // A relative `--out` follows the POSIX convention: it resolves against the process cwd, not the
+    // project directory, and success prints the resolved path so the write is never invisible.
+    let root = temp_project("surface-client-out-relative", |root| {
+        write(root, "marrow.json", support::native_config());
+        write(root, "src/app.mw", CLIENT_SURFACE_SOURCE);
+    });
+    let seed = marrow(&["run", "--entry", "app::seed", root.to_str().unwrap()]);
+    assert_eq!(seed.status.code(), Some(0), "seed: {seed:?}");
+
+    let cwd = support::temp_dir("surface-client-out-relative-cwd");
+    let output = Command::new(env!("CARGO_BIN_EXE_marrow"))
+        .args([
+            "client",
+            "typescript",
+            "--out",
+            "client.ts",
+            root.to_str().unwrap(),
+        ])
+        .current_dir(cwd.path())
+        .output()
+        .expect("run marrow");
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+
+    let landed = cwd.join("client.ts");
+    assert!(
+        landed.exists(),
+        "a relative --out must land under cwd, not the project dir: {output:?}"
+    );
+    assert!(
+        !root.join("client.ts").exists(),
+        "a relative --out must not resolve against the project dir"
+    );
+    let written = fs::read_to_string(&landed).expect("client file written");
+    assert!(
+        written.contains("export function createClient"),
+        "{written}"
+    );
+    assert!(
+        output.stdout.is_empty(),
+        "--out must not echo the client to stdout: {output:?}"
+    );
+    let resolved = landed.canonicalize().expect("resolve written path");
+    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+    assert!(
+        stderr.contains(&format!("wrote {}", resolved.display())),
+        "success must print the resolved output path: {stderr}"
+    );
+}
+
+#[test]
+fn client_typescript_refreshes_declared_client_when_no_out() {
+    // With a declared `client` path and no `--out`, the command must refresh the on-disk declared
+    // client write-if-changed (matching run/serve/evolve), not dump to stdout and leave the
+    // declared client to go stale.
+    let root = temp_project_uncommitted("surface-client-declared-refresh", |root| {
+        write(root, "marrow.json", &native_config_with_client());
+        write(root, "src/app.mw", CLIENT_SURFACE_SOURCE);
+    });
+    let out = root.join("generated/marrow.ts");
+    let seed = marrow(&["run", "--entry", "app::seed", root.to_str().unwrap()]);
+    assert_eq!(seed.status.code(), Some(0), "seed: {seed:?}");
+    assert!(out.exists(), "run should have written the declared client");
+
+    // Stale the declared client so a refresh must rewrite it.
+    write(&root, "generated/marrow.ts", "// stale\n");
+
+    let output = marrow(&[
+        "client",
+        "typescript",
+        root.to_str().expect("project path utf8"),
+    ]);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert!(
+        output.stdout.is_empty(),
+        "a declared client with no --out must refresh on disk, not dump to stdout: {output:?}"
+    );
+    let refreshed = fs::read_to_string(&out).expect("declared client present");
+    assert!(
+        refreshed.contains("export function createClient"),
+        "the declared client must be refreshed, not left stale: {refreshed}"
+    );
+    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+    assert!(
+        stderr.contains(out.to_str().unwrap()),
+        "refreshing the declared client must report the written path: {stderr}"
+    );
+}
+
+#[test]
+fn client_typescript_no_declared_client_still_prints_to_stdout() {
+    // With no declared `client` and no `--out`, stdout remains the correct default.
+    let root = temp_project("surface-client-no-declared", |root| {
+        write(root, "marrow.json", support::native_config());
+        write(root, "src/app.mw", CLIENT_SURFACE_SOURCE);
+    });
+    let seed = marrow(&["run", "--entry", "app::seed", root.to_str().unwrap()]);
+    assert_eq!(seed.status.code(), Some(0), "seed: {seed:?}");
+
+    let output = marrow(&[
+        "client",
+        "typescript",
+        root.to_str().expect("project path utf8"),
+    ]);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let stdout = String::from_utf8(output.stdout).expect("stdout utf8");
+    assert!(
+        stdout.contains("export function createClient"),
+        "no declared client and no --out must print to stdout: {stdout}"
+    );
+}
+
+#[test]
 fn client_typescript_reports_project_diagnostics() {
     let root = temp_project_uncommitted("surface-client-typescript-bad-check", |root| {
         write(root, "marrow.json", support::native_config());

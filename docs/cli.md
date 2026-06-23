@@ -246,9 +246,19 @@ surface-ABI change, and `marrow check --locked` keeps it honest in CI. The
 developer never has to run a separate codegen step for the declared output.
 
 - With `--out <path>`, the rendered client is written to that file and nothing
-  is echoed to stdout. A relative path resolves under the project directory; an
+  is echoed to stdout; the resolved path is reported on stderr. A relative path
+  resolves against the current working directory, the POSIX CLI convention; an
   absolute path is honored as given. Missing parent directories are created.
-- Without `--out`, a successful check prints TypeScript to stdout and diagnostics nowhere.
+- Without `--out`, when `marrow.json` declares a `client` path, that declared
+  file is refreshed write-if-changed — the same path `run`, `serve`, and
+  `evolve apply` keep current — and the outcome (wrote, updated, or unchanged)
+  is reported on stderr; nothing is echoed to stdout.
+- Without `--out` and with no declared `client`, a successful check prints
+  TypeScript to stdout and diagnostics nowhere.
+- When the committed `marrow.lock` is behind the current source (the
+  `check.stale_lock` condition), the generated client may not reflect the
+  accepted catalog, so the command warns on stderr and names the `marrow run`
+  that re-projects the lock; generation still exits `0`.
 - A failed check reports the existing text diagnostics to stderr, exits `1`,
   and prints no partial client.
 - Usage errors, including a missing project directory or unknown option, exit

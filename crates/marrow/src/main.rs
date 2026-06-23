@@ -758,6 +758,13 @@ pub(crate) fn reproject_committed_lock(
     Ok(())
 }
 
+/// The diagnostic code and prose for a `client` path declared over a project with no surface to
+/// project. The declared-client write owner and the ad-hoc `client typescript` refresh both render
+/// it, so the message lives in one place.
+pub(crate) const CLIENT_WITHOUT_SURFACE_CODE: &str = "config.client_without_surface";
+pub(crate) const CLIENT_WITHOUT_SURFACE_MESSAGE: &str =
+    "`client` is set in marrow.json but the project declares no surface; no client written";
+
 /// Outcome of regenerating a project's declared TypeScript client.
 pub(crate) enum ClientFreshness {
     /// No `client` path is configured; nothing to do.
@@ -862,8 +869,8 @@ pub(crate) fn sync_declared_client(
         write_declared_client_if_changed(dir, config, program, format)?
     {
         report_simple_error(
-            "config.client_without_surface",
-            "`client` is set in marrow.json but the project declares no surface; no client written",
+            CLIENT_WITHOUT_SURFACE_CODE,
+            CLIENT_WITHOUT_SURFACE_MESSAGE,
             format,
         );
     }
