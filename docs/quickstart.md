@@ -324,23 +324,22 @@ read-only HTTP endpoint on `127.0.0.1:8080` by default. Import the client and
 call the read:
 
 ```ts
-import { createClient } from "./generated/marrow";
+import { createClient, isMarrowSurfaceError } from "./generated/marrow";
 
 const client = createClient({ baseUrl: "http://127.0.0.1:8080" });
 
-const response = await client.shelf__books.Books.countShelf({
-  arguments: [{ name: "shelf", value: { kind: "string", value: "fiction" } }],
-});
-
-console.log(response.result.result.value); // { kind: "int", value: "2" }
+const count = await client.Books.countShelf("fiction");
+console.log(count); // 2n
 ```
 
-On success the method returns the validated response envelope. A computed read
-puts its value at `response.result.result.value`, a typed leaf such as
-`{ kind: "int", value: "2" }`; Marrow `int` values are strings on the wire to
-stay exact. A non-2xx response throws the parsed `{ code, message }` error
-instead of returning. See [Surface ABI](surface-abi.md) for the generated-client
-walkthrough, the response envelope, and how to handle errors by `code`.
+The method returns the computed read's decoded value directly — here a `bigint`,
+since Marrow `int` is an i64 that a JS `number` would truncate above 2^53.
+Methods on the typed client take native arguments (the surface name flattens to
+`client.Books`), return decoded records and values, and throw a typed
+`MarrowSurfaceError` carrying a stable `code` on a non-2xx response; narrow it
+with `isMarrowSurfaceError(err)`. See [Surface ABI](surface-abi.md) for the
+generated-client walkthrough — typed records, branded ids, and handling errors
+by `code`.
 
 ## Exit Codes
 
