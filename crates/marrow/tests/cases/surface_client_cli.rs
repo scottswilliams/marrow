@@ -614,7 +614,7 @@ fn client_typescript_generated_client_runs_against_live_surface_server() {
     // The whole point of the typed client is that it compiles in a strict TS project. Node's
     // type stripping only erases syntax, so it cannot catch an undeclared type or a bad assignment;
     // a real `tsc --strict` pass over the generated client and its consumer is the load-bearing gate.
-    type_check_strict(&app);
+    type_check_strict(&app, STRICT_CONSUMER);
 
     {
         let (_server, addr) = spawn_surface_server_with_args(&root, &["--write"]);
@@ -769,6 +769,132 @@ fn client_typescript_decode_unit_tests() {
         "decode-unit-ok"
     );
 }
+
+/// A keyless singleton surface: the read returns one record whose wire identity is `null`, and the
+/// delete carries no identity. The generated client must read the record without dereferencing the
+/// null identity and delete it without threading a phantom id.
+const SINGLETON_CLIENT_SOURCE: &str = "module app\n\
+\n\
+resource Settings\n\
+\x20\x20\x20\x20required theme: string\n\
+\x20\x20\x20\x20mode: string\n\
+store ^settings: Settings\n\
+\n\
+pub fn seed()\n\
+\x20\x20\x20\x20var settings: Settings\n\
+\x20\x20\x20\x20settings.theme = \"dark\"\n\
+\x20\x20\x20\x20transaction\n\
+\x20\x20\x20\x20\x20\x20\x20\x20^settings = settings\n\
+\n\
+surface SettingsSurface from ^settings\n\
+\x20\x20\x20\x20fields theme, mode\n\
+\x20\x20\x20\x20delete\n";
+
+#[test]
+fn client_typescript_keyless_singleton_reads_and_deletes_against_live_surface_server() {
+    let Some(node) = node_with_type_stripping() else {
+        if std::env::var_os("CI").is_some() || std::env::var_os("MARROW_TEST_NODE").is_some() {
+            panic!(
+                "generated TypeScript client singleton E2E requires Node with --experimental-strip-types"
+            );
+        }
+        eprintln!("skipping generated TypeScript client singleton E2E; compatible node not found");
+        return;
+    };
+    let root = temp_project("surface-client-singleton-e2e", |root| {
+        write(root, "marrow.json", support::native_config());
+        write(root, "src/app.mw", SINGLETON_CLIENT_SOURCE);
+    });
+    let seed = marrow(&["run", "--entry", "app::seed", root.to_str().unwrap()]);
+    assert_eq!(seed.status.code(), Some(0), "seed: {seed:?}");
+
+    let client = marrow(&[
+        "client",
+        "typescript",
+        root.to_str().expect("project path utf8"),
+    ]);
+    assert_eq!(client.status.code(), Some(0), "client: {client:?}");
+    let client_source = String::from_utf8(client.stdout).expect("client utf8");
+
+    // A keyless singleton record carries no synthetic id and its decoder never reads the null wire
+    // identity, so the raw TypeError that crashed the read can never be emitted.
+    assert!(
+        !client_source.contains("record.identity.keys"),
+        "singleton record decoder must not dereference the null identity: {client_source}"
+    );
+
+    let app = support::temp_dir("surface-client-singleton-e2e-app");
+    write(&app, "marrow-client.ts", &client_source);
+    write(&app, "app.ts", SINGLETON_CLIENT_APP);
+    type_check_strict(&app, SINGLETON_STRICT_CONSUMER);
+
+    let (_server, addr) = spawn_surface_server_with_args(&root, &["--write"]);
+    let output = Command::new(node)
+        .arg("--experimental-strip-types")
+        .arg("--no-warnings")
+        .arg(app.join("app.ts"))
+        .current_dir(&app)
+        .env("MARROW_SURFACE_BASE_URL", format!("http://{addr}"))
+        .output()
+        .expect("run singleton client app");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "singleton client app failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(output.stdout)
+            .expect("app stdout utf8")
+            .trim(),
+        "singleton-client-e2e-ok"
+    );
+}
+
+/// The singleton read returns the typed record with no `id` field and no argument; the singleton
+/// delete takes no identity. A keyed `.get(id)` here would be a type error, so this also pins that the
+/// singleton method signatures dropped identity.
+const SINGLETON_STRICT_CONSUMER: &str = r#"import {
+  createClient,
+  type SettingsSurfaceRecord,
+} from "./marrow-client.ts";
+
+export async function pinTypes(client: ReturnType<typeof createClient>): Promise<void> {
+  const record: SettingsSurfaceRecord = await client.SettingsSurface.get();
+  const theme: string = record.theme;
+  const mode: string | null = record.mode;
+  const removed: void = await client.SettingsSurface.delete();
+  void theme;
+  void mode;
+  void removed;
+}
+"#;
+
+const SINGLETON_CLIENT_APP: &str = r#"import assert from "node:assert/strict";
+import { createClient } from "./marrow-client.ts";
+
+const client = createClient({ baseUrl: process.env.MARROW_SURFACE_BASE_URL });
+
+// The singleton read decodes the record even though the server sends identity:null. Before the fix
+// this threw a raw TypeError reading `identity.keys`.
+const settings = await client.SettingsSurface.get();
+assert.equal(settings.theme, "dark");
+assert.equal(settings.mode, null);
+assert.ok(!("id" in settings));
+
+// The singleton delete takes no identity and removes the record; a second read then 404s.
+await client.SettingsSurface.delete();
+let thrown: unknown;
+try {
+  await client.SettingsSurface.get();
+} catch (error) {
+  thrown = error;
+}
+assert.ok(thrown);
+
+console.log("singleton-client-e2e-ok");
+"#;
 
 /// A store whose paged index keys on an enum then an identity, the two exact-key shapes a raw-string
 /// encoding would silently corrupt. Its generated `byStatus(status, author, limit)` must send the
@@ -1124,8 +1250,8 @@ fn node_with_type_stripping() -> Option<PathBuf> {
 /// client's types, not `@types/node`. The checker is `MARROW_TEST_TSC` if set, otherwise an
 /// `npx`-resolved `typescript@5`. When neither is reachable the gate is skipped, except under CI where
 /// a typed client that does not compile is a hard failure.
-fn type_check_strict(app_dir: &std::path::Path) {
-    write(app_dir, "strict-consumer.ts", STRICT_CONSUMER);
+fn type_check_strict(app_dir: &std::path::Path, consumer: &str) {
+    write(app_dir, "strict-consumer.ts", consumer);
     write(
         app_dir,
         "tsconfig.json",

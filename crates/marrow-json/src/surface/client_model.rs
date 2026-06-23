@@ -101,10 +101,22 @@ pub(super) struct SurfaceClientStore {
     pub key_scalars: Vec<ScalarKind>,
 }
 
+/// How a generated record type is consumed, which fixes whether and how a decoder is emitted for it.
+/// A surface read record decodes from the read envelope (and reads its identity-derived `id` only
+/// when the backing store is keyed); a resource record decodes from a computed-read resource value;
+/// a create/update body is input-only and has no decoder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum RecordDecode {
+    SurfaceRead,
+    ResourceValue,
+    InputOnly,
+}
+
 #[derive(Debug, Clone)]
 pub(super) struct SurfaceClientRecord {
     pub type_name: String,
     pub fields: Vec<SurfaceRecordField>,
+    pub decode: RecordDecode,
 }
 
 #[derive(Debug, Clone)]
@@ -147,6 +159,7 @@ pub(super) enum SurfaceMethodInput {
     Delete {
         brand: String,
     },
+    SingletonDelete,
     Create {
         brand: String,
         body_type: String,
@@ -362,10 +375,12 @@ impl ModelBuilder {
             .next();
         if let Some((store_catalog_id, identity_keys, projection)) = projection_owner {
             self.register_store(store_catalog_id, identity_keys);
-            let fields = self.record_fields(store_catalog_id, projection, &mut enums);
+            let fields =
+                self.record_fields(store_catalog_id, identity_keys, projection, &mut enums);
             records.push(SurfaceClientRecord {
                 type_name: record_type.clone(),
                 fields,
+                decode: RecordDecode::SurfaceRead,
             });
         }
 
@@ -397,13 +412,22 @@ impl ModelBuilder {
         }
         if let Some(delete) = &surface.delete {
             self.register_store(&delete.store_catalog_id, &delete.identity_keys);
-            let brand = self.store_brand(&delete.store_catalog_id);
+            let input = if matches!(
+                delete.kind,
+                super::SurfaceDeleteOperationKindJson::SingletonDelete
+            ) {
+                SurfaceMethodInput::SingletonDelete
+            } else {
+                SurfaceMethodInput::Delete {
+                    brand: self.store_brand(&delete.store_catalog_id),
+                }
+            };
             methods.push(SurfaceMethod {
                 name: "delete".into(),
                 operation_tag: delete.operation_tag.clone(),
                 result_kind: "deleted",
                 cursor_brand: format!("{surface_name}Cursor"),
-                input: SurfaceMethodInput::Delete { brand },
+                input,
                 result: SurfaceMethodResult::Deleted,
             });
         }
@@ -659,25 +683,31 @@ impl ModelBuilder {
                     member_catalog_id: None,
                 })
                 .collect(),
+            decode: RecordDecode::InputOnly,
         }
     }
 
     fn record_fields(
         &mut self,
         store_catalog_id: &str,
+        identity_keys: &[SurfaceOperationIdentityKeyJson],
         projection: &[SurfaceReadProjectionFieldJson],
         enums: &mut Vec<String>,
     ) -> Vec<SurfaceRecordField> {
         let mut fields = Vec::new();
-        fields.push(SurfaceRecordField {
-            label: "id".into(),
-            required: true,
-            ty: SurfaceFieldType::Identity {
-                brand: self.store_brand(store_catalog_id),
-                decode_fn: self.store_decode_fn(store_catalog_id),
-            },
-            member_catalog_id: None,
-        });
+        // A keyless singleton record takes no identity, so it has no synthetic `id` field; the read
+        // envelope carries `identity: null` and the client must not decode an absent identity.
+        if !identity_keys.is_empty() {
+            fields.push(SurfaceRecordField {
+                label: "id".into(),
+                required: true,
+                ty: SurfaceFieldType::Identity {
+                    brand: self.store_brand(store_catalog_id),
+                    decode_fn: self.store_decode_fn(store_catalog_id),
+                },
+                member_catalog_id: None,
+            });
+        }
         for field in projection {
             fields.push(SurfaceRecordField {
                 label: field.render_label.clone(),
@@ -877,6 +907,7 @@ impl ModelBuilder {
                     .or_insert_with(|| SurfaceClientRecord {
                         type_name: type_name.clone(),
                         fields: record_fields,
+                        decode: RecordDecode::ResourceValue,
                     });
                 SurfaceFieldType::Resource {
                     type_name,

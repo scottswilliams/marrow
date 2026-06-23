@@ -6,7 +6,7 @@ use marrow_run::{
     SURFACE_STORE, SURFACE_WRITE,
 };
 
-use super::client_model::ScalarKind;
+use super::client_model::{RecordDecode, ScalarKind};
 use super::{
     SurfaceAbiJson, SurfaceClientModel, SurfaceClientRecord, SurfaceClientStore, SurfaceFieldType,
     SurfaceMethod, SurfaceMethodInput, SurfaceMethodResult, SurfaceOperationCatalog,
@@ -108,7 +108,7 @@ fn render_model(header: &str, model: &SurfaceClientModel) -> String {
 fn render_resources(output: &mut String, model: &SurfaceClientModel) {
     for resource in &model.resources {
         render_record_type(output, resource);
-        render_record_decoder(output, resource, false);
+        render_record_decoder(output, resource);
     }
 }
 
@@ -255,20 +255,11 @@ fn render_surfaces(output: &mut String, model: &SurfaceClientModel) {
         }
         for record in &surface.records {
             render_record_type(output, record);
-            if record_has_identity(record) {
-                render_record_decoder(output, record, true);
+            if record.decode == RecordDecode::SurfaceRead {
+                render_record_decoder(output, record);
             }
         }
     }
-}
-
-/// A record decodes from the surface read envelope only when it carries the synthetic identity
-/// `id` field; create/update body records are input-only and need no decoder.
-fn record_has_identity(record: &SurfaceClientRecord) -> bool {
-    record
-        .fields
-        .iter()
-        .any(|field| field.label == "id" && field.member_catalog_id.is_none())
 }
 
 /// Emit a surface's opaque page-cursor brand. The cursor is preserved verbatim across a page round
@@ -314,15 +305,16 @@ fn render_record_type(output: &mut String, record: &SurfaceClientRecord) {
     output.push_str("};\n\n");
 }
 
-/// Emit a `decode<Type>` that maps a wire record onto the typed record. Surface records read their
-/// `id` from the record identity and their values from `record.fields`; resource records read every
-/// field from the resource value's `fields`. Both index a field by its stable catalog id and fail
-/// loud on a missing required field, so a malformed wire shape throws rather than mis-decodes.
-fn render_record_decoder(output: &mut String, record: &SurfaceClientRecord, from_identity: bool) {
-    let source_type = if from_identity {
-        "SurfaceRecordWireJson"
-    } else {
-        "SurfaceResourceWireJson"
+/// Emit a `decode<Type>` that maps a wire record onto the typed record. A keyed surface record reads
+/// its `id` from the record identity and its values from `record.fields`; a keyless singleton record
+/// reads only its values; a resource record reads every field from the resource value's `fields`.
+/// All index a field by its stable catalog id and fail loud on a missing required field, so a
+/// malformed wire shape throws rather than mis-decodes.
+fn render_record_decoder(output: &mut String, record: &SurfaceClientRecord) {
+    let source_type = match record.decode {
+        RecordDecode::SurfaceRead => "SurfaceRecordWireJson",
+        RecordDecode::ResourceValue => "SurfaceResourceWireJson",
+        RecordDecode::InputOnly => panic!("input-only body records have no decoder"),
     };
     writeln!(
         output,
@@ -333,18 +325,21 @@ fn render_record_decoder(output: &mut String, record: &SurfaceClientRecord, from
     output.push_str("  const fields = fieldsByCatalogId(record.fields);\n");
     output.push_str("  return {\n");
     for field in &record.fields {
-        let value = record_field_decode_expr(field, from_identity);
+        let value = record_field_decode_expr(field, record.decode);
         writeln!(output, "    {}: {value},", ts_property(&field.label))
             .expect("write field decode");
     }
     output.push_str("  };\n}\n\n");
 }
 
-fn record_field_decode_expr(field: &SurfaceRecordField, from_identity: bool) -> String {
+fn record_field_decode_expr(field: &SurfaceRecordField, decode: RecordDecode) -> String {
     let Some(member_catalog_id) = &field.member_catalog_id else {
-        // The synthetic identity field is the only member-less field, present only on surface
-        // records, and decodes from the record identity rather than a projected value.
-        debug_assert!(from_identity, "resource records have no identity field");
+        // The synthetic identity field is the only member-less field, present only on a keyed
+        // surface record, and decodes from the record identity rather than a projected value.
+        debug_assert!(
+            decode == RecordDecode::SurfaceRead,
+            "only a keyed surface record carries an identity field"
+        );
         let SurfaceFieldType::Identity { decode_fn, .. } = &field.ty else {
             panic!("identity field must have an identity type");
         };
@@ -397,7 +392,7 @@ fn render_method(output: &mut String, method: &SurfaceMethod) {
 
 fn method_signature(method: &SurfaceMethod) -> String {
     match &method.input {
-        SurfaceMethodInput::None => String::new(),
+        SurfaceMethodInput::None | SurfaceMethodInput::SingletonDelete => String::new(),
         SurfaceMethodInput::Identity { brand } => format!("id: {brand}"),
         SurfaceMethodInput::Delete { brand } => format!("id: {brand}"),
         SurfaceMethodInput::Create {
@@ -446,6 +441,8 @@ fn callable_signature(params: &[(String, SurfaceFieldType)]) -> String {
 fn method_request_expr(method: &SurfaceMethod) -> String {
     match &method.input {
         SurfaceMethodInput::None => "undefined".to_string(),
+        // A keyless singleton delete carries the closed empty request body, never an identity.
+        SurfaceMethodInput::SingletonDelete => "{}".to_string(),
         SurfaceMethodInput::Identity { .. } | SurfaceMethodInput::Delete { .. } => {
             "{ identity: identityFromBrand(id) }".to_string()
         }

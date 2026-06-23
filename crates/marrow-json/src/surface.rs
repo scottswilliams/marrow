@@ -1799,6 +1799,17 @@ surface SettingsSurface from ^settings
     update mode
 ";
 
+    const SINGLETON_READ_DELETE_SURFACE: &str = "\
+resource Settings
+    required theme: string
+    mode: string
+store ^settings: Settings
+
+surface SettingsSurface from ^settings
+    fields theme, mode
+    delete
+";
+
     const TEMPORAL_UPDATE_SURFACE: &str = "\
 resource Event
     required title: string
@@ -3495,6 +3506,45 @@ pub fn seed()
                 computed_route.operation_tag
             )),
             "{client}"
+        );
+    }
+
+    #[test]
+    fn client_ts_reads_and_deletes_a_keyless_singleton_without_identity() {
+        let (program, _runtime) = checked_surface_program(SINGLETON_READ_DELETE_SURFACE);
+        let abi = SurfaceAbiJson::from_program(&program);
+        let manifest = SurfaceRouteManifestJson::from_abi(&abi);
+
+        let client = render_typescript_client(&abi, &manifest).expect("typescript client renders");
+
+        // A keyless singleton record takes no identity, so the generated record type carries no
+        // synthetic `id` field and its decoder never reads `record.identity.keys` (the server sends
+        // `identity: null`, which would throw a raw TypeError on a null dereference).
+        assert!(
+            !client.contains("record.identity.keys"),
+            "singleton record decoder must not dereference a null identity: {client}"
+        );
+        assert!(
+            !client.contains("id: SettingsSurfaceId"),
+            "a keyless singleton record has no synthetic id field: {client}"
+        );
+
+        // The singleton read returns the record with no argument, decoding through the surface read
+        // envelope rather than the resource-value envelope used by computed reads.
+        assert!(
+            client.contains("get: async ()"),
+            "singleton read takes no identity argument: {client}"
+        );
+
+        // The singleton delete takes no identity and sends the closed empty request body; it must
+        // not thread a phantom `id` the server never supplies for a keyless store.
+        assert!(
+            client.contains("delete: async ()"),
+            "singleton delete takes no identity argument: {client}"
+        );
+        assert!(
+            !client.contains("delete: async (id:"),
+            "singleton delete must not take an identity: {client}"
         );
     }
 
