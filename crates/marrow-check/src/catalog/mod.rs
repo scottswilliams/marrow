@@ -1518,7 +1518,13 @@ fn apply_rename(
         entry.aliases.push(from_path.to_string());
     }
     entry.path = source.path.clone();
-    bind_source_id(ids, source_key, entry.stable_id.clone());
+    let stable_id = entry.stable_id.clone();
+    // The new canonical path is canonical again for this id, so any same-kind entry that
+    // still records it as an alias would collide a path against a live entry. Dropping it
+    // from every sibling's aliases — the single owner the new-entry path uses — clears both
+    // a round-trip rename's own redundant alias and a sibling's stale alias.
+    prepare_proposal_path(entries, source.kind, &source.path);
+    bind_source_id(ids, source_key, stable_id);
 }
 
 /// Record each store's identity-key shape into its proposal entry, once its id is bound.

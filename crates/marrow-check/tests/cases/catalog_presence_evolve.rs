@@ -182,6 +182,257 @@ fn evolve_rename_authorizes_a_saved_data_backed_member_rename() {
     );
 }
 
+/// A round-trip rename (`title` -> `name` -> `title`) carries the same stable
+/// identity back onto a path it already records as an alias from the first leg.
+/// That new canonical path is canonical again for the same id, so the now-redundant
+/// alias is dropped instead of self-colliding with the entry's own canonical path.
+#[test]
+fn evolve_rename_round_trip_onto_a_former_canonical_path_succeeds() {
+    let root = temp_project("evolve-rename-round-trip-member", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Book\n\
+             \x20   title: string\n\
+             store ^books(id: int): Book\n\
+             evolve\n\
+             \x20   rename Book.name -> Book.title\n",
+        );
+        // The accepted catalog reflects the first leg (`title` -> `name`): the member is
+        // canonical at `name` and records `title` as an alias under the preserved id.
+        let metadata = catalog(vec![
+            entry(CatalogEntryKind::Resource, "books::Book", "res-book", &[]),
+            entry(CatalogEntryKind::Store, "books::^books", "store-books", &[]),
+            entry(
+                CatalogEntryKind::ResourceMember,
+                "books::Book::name",
+                "member-title",
+                &["books::Book::title"],
+            ),
+        ]);
+        write_catalog(root, &metadata);
+    });
+
+    let (report, program) = check_with_accepted(&root);
+
+    assert!(
+        !report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == CHECK_CATALOG_INTENT),
+        "a round-trip rename onto a former canonical path must satisfy the binding: {:#?}",
+        report.diagnostics
+    );
+    let proposal = program.catalog.proposal.expect("proposal");
+    CatalogMetadata::from_json(&proposal.to_json_pretty().expect("catalog renders"))
+        .expect("proposal validates");
+    let renamed = proposal
+        .entries
+        .iter()
+        .find(|entry| {
+            entry.kind == CatalogEntryKind::ResourceMember && entry.path == "books::Book::title"
+        })
+        .expect("renamed member entry");
+    assert_eq!(renamed.stable_id, derived_id("member-title"));
+    assert_eq!(renamed.lifecycle, CatalogLifecycle::Active);
+    assert!(
+        !renamed
+            .aliases
+            .iter()
+            .any(|alias| alias == "books::Book::title"),
+        "the redundant alias equal to the new canonical path must be dropped: {renamed:#?}"
+    );
+    assert!(
+        renamed
+            .aliases
+            .iter()
+            .any(|alias| alias == "books::Book::name"),
+        "the prior canonical path must be recorded as the new alias: {renamed:#?}"
+    );
+}
+
+/// The same redundant-alias drop covers an enum member round-trip
+/// (`a` -> `grp::a` -> `a`): the new canonical enum-member path equals a recorded
+/// alias of the same identity, so the alias is dropped rather than self-colliding.
+#[test]
+fn evolve_rename_round_trip_onto_a_former_enum_member_path_succeeds() {
+    let root = temp_project("evolve-rename-round-trip-enum-member", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             enum State\n\
+             \x20   a\n\
+             \x20   b\n\
+             resource Book\n\
+             \x20   required value: State\n\
+             store ^books(id: int): Book\n\
+             evolve\n\
+             \x20   rename State::grp::a -> State::a\n",
+        );
+        // The accepted catalog reflects the first leg (`a` -> `grp::a`): the member is
+        // canonical at `grp::a` and records `a` as an alias under the preserved id.
+        let metadata = catalog(vec![
+            entry(CatalogEntryKind::Resource, "books::Book", "res-book", &[]),
+            entry(CatalogEntryKind::Store, "books::^books", "store-books", &[]),
+            entry(
+                CatalogEntryKind::ResourceMember,
+                "books::Book::value",
+                "member-value",
+                &[],
+            ),
+            entry(CatalogEntryKind::Enum, "books::State", "enum-state", &[]),
+            entry(
+                CatalogEntryKind::EnumMember,
+                "books::State::grp::a",
+                "enum-member-a",
+                &["books::State::a"],
+            ),
+            entry(
+                CatalogEntryKind::EnumMember,
+                "books::State::b",
+                "enum-member-b",
+                &[],
+            ),
+        ]);
+        write_catalog(root, &metadata);
+    });
+
+    let (report, program) = check_with_accepted(&root);
+
+    assert!(
+        !report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == CHECK_CATALOG_INTENT),
+        "an enum-member round-trip rename onto a former path must satisfy the binding: {:#?}",
+        report.diagnostics
+    );
+    let proposal = program.catalog.proposal.expect("proposal");
+    CatalogMetadata::from_json(&proposal.to_json_pretty().expect("catalog renders"))
+        .expect("proposal validates");
+    let renamed = proposal
+        .entries
+        .iter()
+        .find(|entry| entry.kind == CatalogEntryKind::EnumMember && entry.path == "books::State::a")
+        .expect("renamed enum member entry");
+    assert_eq!(renamed.stable_id, derived_id("enum-member-a"));
+    assert!(
+        !renamed
+            .aliases
+            .iter()
+            .any(|alias| alias == "books::State::a"),
+        "the redundant alias equal to the new canonical path must be dropped: {renamed:#?}"
+    );
+}
+
+/// A rename onto a path a DIFFERENT same-kind entry still records as a stale alias
+/// (Book had `a` and `b`; `a` was renamed to `c`, recording `a` as `c`'s alias;
+/// now `b` is renamed to `a`). The new canonical path `a` is live again under `b`'s
+/// identity, so the stale alias on the sibling `c` is dropped rather than colliding
+/// the path against a live entry. This is the sibling case the redundant-self-alias
+/// drop alone did not cover.
+#[test]
+fn evolve_rename_onto_a_siblings_stale_alias_path_succeeds() {
+    let root = temp_project("evolve-rename-onto-sibling-stale-alias", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Book\n\
+             \x20   c: string\n\
+             \x20   a: string\n\
+             store ^books(id: int): Book\n\
+             evolve\n\
+             \x20   rename Book.b -> Book.a\n",
+        );
+        // The accepted catalog reflects the first leg (`a` -> `c`): the member is
+        // canonical at `c` and records `a` as an alias, while the sibling stays at `b`.
+        let metadata = catalog(vec![
+            entry(CatalogEntryKind::Resource, "books::Book", "res-book", &[]),
+            entry(CatalogEntryKind::Store, "books::^books", "store-books", &[]),
+            entry(
+                CatalogEntryKind::ResourceMember,
+                "books::Book::c",
+                "member-c",
+                &["books::Book::a"],
+            ),
+            entry(
+                CatalogEntryKind::ResourceMember,
+                "books::Book::b",
+                "member-b",
+                &[],
+            ),
+        ]);
+        write_catalog(root, &metadata);
+    });
+
+    let (report, program) = check_with_accepted(&root);
+
+    assert!(
+        !report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == CHECK_CATALOG_INTENT),
+        "a rename onto a sibling's stale-alias path must satisfy the binding: {:#?}",
+        report.diagnostics
+    );
+    let proposal = program.catalog.proposal.expect("proposal");
+    CatalogMetadata::from_json(&proposal.to_json_pretty().expect("catalog renders"))
+        .expect("proposal validates");
+    let renamed = proposal
+        .entries
+        .iter()
+        .find(|entry| {
+            entry.kind == CatalogEntryKind::ResourceMember && entry.path == "books::Book::a"
+        })
+        .expect("renamed member entry now canonical at `a`");
+    assert_eq!(renamed.stable_id, derived_id("member-b"));
+    assert_eq!(renamed.lifecycle, CatalogLifecycle::Active);
+    let sibling = proposal
+        .entries
+        .iter()
+        .find(|entry| {
+            entry.kind == CatalogEntryKind::ResourceMember
+                && entry.stable_id == derived_id("member-c")
+        })
+        .expect("the renamed sibling entry");
+    assert!(
+        !sibling
+            .aliases
+            .iter()
+            .any(|alias| alias == "books::Book::a"),
+        "the sibling's stale alias equal to the new canonical path must be dropped: {sibling:#?}"
+    );
+}
+
+/// The redundant-alias drop must not paper over a genuine duplicate-path collision:
+/// two live entries that both claim the same canonical path still fail validation.
+#[test]
+fn evolve_rename_still_fails_closed_on_a_genuine_duplicate_path() {
+    let collided = catalog(vec![
+        entry(CatalogEntryKind::Resource, "books::Book", "res-book", &[]),
+        entry(
+            CatalogEntryKind::ResourceMember,
+            "books::Book::a",
+            "member-a",
+            &[],
+        ),
+        entry(
+            CatalogEntryKind::ResourceMember,
+            "books::Book::a",
+            "member-b",
+            &[],
+        ),
+    ]);
+    let rendered = collided.to_json_pretty().expect("catalog renders");
+    assert!(
+        CatalogMetadata::from_json(&rendered).is_err(),
+        "two live entries sharing a canonical path must fail validation"
+    );
+}
+
 #[test]
 fn evolve_retire_fails_closed_when_accepted_path_matches_active_and_reserved_entries() {
     let root = temp_project("evolve-retire-accepted-path-ambiguous", |root| {
