@@ -804,7 +804,9 @@ fn report_unresolved_renames(
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
     for rename in renames.values() {
-        report_unresolved_intent(&rename.file, rename.span, diagnostics);
+        if let Some((file, span)) = &rename.origin {
+            report_unresolved_intent(file, *span, diagnostics);
+        }
     }
 }
 
@@ -1257,10 +1259,16 @@ fn first_source_file(source_entries: &[SourceCatalogEntry]) -> std::path::PathBu
 /// new path. The kind is the one the source fixes for that new path, so the
 /// accepted entry behind `from_path` is matched without relying on paths being
 /// unique across kinds.
+///
+/// `origin` is the declaration to blame when the rename relocates nothing: a
+/// developer-written rename carries its file and span, while a rename derived by
+/// cascading a renamed enum category onto its descendant leaves carries `None`. An
+/// unresolved derived rename is a leaf the renamed subtree no longer declares — an
+/// ordinary member removal the accepted entry's discharge already covers — so it is
+/// dropped silently rather than reported as a malformed unplaceable intent.
 struct ResolvedRename {
     from_path: String,
-    file: std::path::PathBuf,
-    span: SourceSpan,
+    origin: Option<(std::path::PathBuf, SourceSpan)>,
 }
 
 /// Resolve the rename intents into an injective partial map `to_path -> rename`.
@@ -1280,6 +1288,7 @@ fn resolve_renames(
 ) -> HashMap<String, ResolvedRename> {
     let mut resolved: HashMap<String, ResolvedRename> = HashMap::new();
     let mut from_paths: HashSet<String> = HashSet::new();
+    let mut enum_member_renames: Vec<(String, String)> = Vec::new();
     for rename in renames {
         let kind = match source_catalog.path_kind(rename.to_path.as_str()) {
             SourcePathKind::Absent => {
@@ -1359,16 +1368,47 @@ fn resolve_renames(
             report_unresolved_intent(&rename.file, rename.span, diagnostics);
             continue;
         }
+        if kind == CatalogEntryKind::EnumMember {
+            enum_member_renames.push((rename.to_path.clone(), rename.from_path.clone()));
+        }
         resolved.insert(
             rename.to_path.clone(),
             ResolvedRename {
                 from_path: rename.from_path.clone(),
-                file: rename.file.clone(),
-                span: rename.span,
+                origin: Some((rename.file.clone(), rename.span)),
             },
         );
     }
+    cascade_enum_category_renames(accepted, &enum_member_renames, &mut resolved);
     resolved
+}
+
+/// Carry every descendant leaf's identity forward when an enum category is renamed. An
+/// enum member's saved identity is keyed on its full ancestor path, so renaming a
+/// category (`Pet::mammal` -> `Pet::beast`) must relocate each descendant leaf
+/// (`Pet::mammal::dog` -> `Pet::beast::dog`) too, or its stored values would orphan even
+/// though a member rename is identity-preserving. The explicit category rename names the
+/// node; the subtree below it travels automatically from the accepted catalog, so a
+/// developer never spells out a per-leaf rename for a structurally unchanged subtree.
+///
+/// A derived rename is skipped when its new path already has an explicit rename: an
+/// explicit member intent always wins, so reshaping a leaf out of the renamed subtree in
+/// the same evolve block is honored over the automatic carry-forward.
+fn cascade_enum_category_renames(
+    accepted: &AcceptedCatalog<'_>,
+    enum_member_renames: &[(String, String)],
+    resolved: &mut HashMap<String, ResolvedRename>,
+) {
+    for (to_path, from_path) in enum_member_renames {
+        for descendant in accepted.active_enum_member_descendants(from_path) {
+            let suffix = &descendant[from_path.len()..];
+            let new_path = format!("{to_path}{suffix}");
+            resolved.entry(new_path).or_insert_with(|| ResolvedRename {
+                from_path: descendant.to_string(),
+                origin: None,
+            });
+        }
+    }
 }
 
 fn accepted_source_path_ambiguous(
@@ -1827,6 +1867,20 @@ impl<'a> AcceptedCatalog<'a> {
 
     fn path_is_ambiguous(&self, path: &str) -> bool {
         self.path_candidates(path).len() > 1
+    }
+
+    /// The paths of every active enum-member entry strictly below `category_path` in the
+    /// member tree (each `category_path::…`). A category rename moves the whole subtree's
+    /// identity, so these descendant leaves must travel with it.
+    fn active_enum_member_descendants(&self, category_path: &str) -> Vec<&'a str> {
+        let prefix = format!("{category_path}::");
+        self.entries
+            .iter()
+            .filter_map(|((kind, path), _)| {
+                (*kind == CatalogEntryKind::EnumMember && path.starts_with(&prefix))
+                    .then_some(*path)
+            })
+            .collect()
     }
 }
 
@@ -2686,6 +2740,77 @@ mod tests {
                 }],
                 source: vec![CatalogEntryKind::EnumMember],
             })
+        );
+    }
+
+    fn rename_intent(from_path: &str, to_path: &str) -> RenameIntent {
+        RenameIntent {
+            from_path: from_path.to_string(),
+            to_path: to_path.to_string(),
+            file: std::path::PathBuf::from("src/app.mw"),
+            span: SourceSpan::default(),
+        }
+    }
+
+    /// An explicit `evolve rename` of an enum category resolves the category itself and, by
+    /// carry-forward from the accepted catalog, every descendant leaf and nested category in its
+    /// subtree — so a single category rename keeps every stored descendant value valid without a
+    /// per-leaf rename. A leaf the renamed subtree no longer declares carries no derived rename: it
+    /// is an ordinary member removal the accepted entry's own discharge covers.
+    #[test]
+    fn renaming_an_enum_category_cascades_to_its_accepted_descendants() {
+        let category = active_entry(
+            CatalogEntryKind::EnumMember,
+            "app::Pet::mammal",
+            &fixed_id(1),
+        );
+        let dog = active_entry(
+            CatalogEntryKind::EnumMember,
+            "app::Pet::mammal::dog",
+            &fixed_id(2),
+        );
+        let cat = active_entry(
+            CatalogEntryKind::EnumMember,
+            "app::Pet::mammal::cat",
+            &fixed_id(3),
+        );
+        let fish = active_entry(CatalogEntryKind::EnumMember, "app::Pet::fish", &fixed_id(4));
+        let accepted = CatalogMetadata::new(1, vec![category, dog, cat, fish]).expect("builds");
+        // Source declares the renamed subtree (`beast` with `dog`/`cat`) plus the untouched `fish`.
+        let source = vec![
+            source_entry(CatalogEntryKind::EnumMember, "app::Pet::beast"),
+            source_entry(CatalogEntryKind::EnumMember, "app::Pet::beast::dog"),
+            source_entry(CatalogEntryKind::EnumMember, "app::Pet::beast::cat"),
+            source_entry(CatalogEntryKind::EnumMember, "app::Pet::fish"),
+        ];
+        let mut diagnostics = Vec::new();
+
+        let resolved = resolve_renames(
+            &AcceptedCatalog::new(&accepted),
+            &SourceCatalog::new(&source),
+            &[rename_intent("app::Pet::mammal", "app::Pet::beast")],
+            &mut diagnostics,
+        );
+
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+        let from_for = |to_path: &str| {
+            resolved
+                .get(to_path)
+                .map(|rename| rename.from_path.as_str())
+        };
+        assert_eq!(from_for("app::Pet::beast"), Some("app::Pet::mammal"));
+        assert_eq!(
+            from_for("app::Pet::beast::dog"),
+            Some("app::Pet::mammal::dog"),
+            "the descendant leaf identity travels with the category"
+        );
+        assert_eq!(
+            from_for("app::Pet::beast::cat"),
+            Some("app::Pet::mammal::cat")
+        );
+        assert!(
+            from_for("app::Pet::fish").is_none(),
+            "a sibling outside the renamed subtree is untouched"
         );
     }
 

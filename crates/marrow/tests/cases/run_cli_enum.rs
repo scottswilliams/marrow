@@ -366,6 +366,79 @@ fn an_aliased_enum_literal_binds_to_the_imported_module_not_a_top_level_homonym(
 }
 
 #[test]
+fn renaming_an_enum_category_carries_its_descendant_leaves_stored_identity_forward() {
+    // A category member rename (`Pet::mammal` -> `Pet::beast`) is a member rename, so it
+    // is identity-preserving: a value stored under a leaf below the category
+    // (`Pet::mammal::dog`) must read back as the same leaf under the new category path
+    // (`Pet::beast::dog`) without per-leaf renames. The rename must cascade to every
+    // descendant leaf's full-path saved identity, so check does not treat the descendants
+    // as new, and a single `marrow run` reads the stored value back and exits 0.
+    let root = temp_project("run-enum-category-rename", |root| {
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".data" } }"#,
+        );
+        write(
+            root,
+            "src/app.mw",
+            "module app\n\
+             enum Pet\n    category mammal\n        dog\n        cat\n    fish\n\n\
+             resource Owner\n    required favorite: Pet\n\
+             store ^owners(id: int): Owner\n\n\
+             pub fn seed()\n    \
+             var o: Owner\n    o.favorite = Pet::dog\n    \
+             transaction\n        ^owners(1) = o\n\n\
+             pub fn show()\n    \
+             if const f = ^owners(1).favorite\n        \
+             match f\n            mammal\n                print(\"mammal\")\n            \
+             fish\n                print(\"fish\")\n",
+        );
+    });
+    let dir = root.to_str().unwrap().to_string();
+    let seed = marrow_sub("run", &["--entry", "app::seed", &dir]);
+    assert_eq!(seed.status.code(), Some(0), "seed: {seed:?}");
+
+    // Rename the category and add the single `evolve rename` of the category member.
+    write(
+        &root,
+        "src/app.mw",
+        "module app\n\
+         enum Pet\n    category beast\n        dog\n        cat\n    fish\n\n\
+         resource Owner\n    required favorite: Pet\n\
+         store ^owners(id: int): Owner\n\n\
+         evolve\n    rename Pet::mammal -> Pet::beast\n\n\
+         pub fn seed()\n    \
+         var o: Owner\n    o.favorite = Pet::dog\n    \
+         transaction\n        ^owners(1) = o\n\n\
+         pub fn show()\n    \
+         if const f = ^owners(1).favorite\n        \
+         match f\n            beast\n                print(\"beast\")\n            \
+         fish\n                print(\"fish\")\n",
+    );
+
+    // Check must not warn the descendant leaves are new and unsaved: the category rename
+    // carries their stored identity forward.
+    let (check, records) = check_diagnostics(&dir);
+    assert_eq!(check.status.code(), Some(0), "check: {check:?}");
+    assert!(
+        !records.iter().any(|record| {
+            record["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("Pet::beast::dog"))
+        }),
+        "the descendant leaf must not be reported as new: {records:#?}"
+    );
+
+    // A single run reads the stored value back as `Pet::beast::dog` and dispatches the
+    // `beast` arm; no schema drift, exit 0.
+    let show = marrow_sub("run", &["--entry", "app::show", &dir]);
+    assert_eq!(show.status.code(), Some(0), "show: {show:?}");
+    let stdout = String::from_utf8(show.stdout).expect("stdout utf8");
+    assert_eq!(stdout, "beast\n");
+}
+
+#[test]
 fn a_cross_module_same_named_enum_mismatch_names_both_modules() {
     // Two modules each declare `Status`; passing `a::Status::open` to a parameter
     // typed `b::Status` is a nominal mismatch. Both short names are `Status`, so
