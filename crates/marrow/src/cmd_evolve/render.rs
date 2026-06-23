@@ -136,7 +136,9 @@ fn scaffold_target(program: &marrow_check::CheckedProgram, path: &str) -> String
 /// `[Resource, member...]` for a member, `[^store]` for a store root, `[^store, index]` for
 /// an index. The module whose name is the longest `::`-segment prefix wins, so a nested
 /// module (`shop::books`) is not mistaken for a shorter sibling (`shop`) whose name also
-/// prefixes the path text. `None` when no module owns the path.
+/// prefixes the path text. A single-file script declares no `module`, so its module's name is
+/// empty and its catalog paths carry no prefix; that module owns the whole path as-is. `None`
+/// when no module owns the path.
 pub(super) fn owned_path<'a>(
     program: &'a marrow_check::CheckedProgram,
     path: &'a str,
@@ -144,15 +146,31 @@ pub(super) fn owned_path<'a>(
     let module = program
         .modules
         .iter()
-        .filter(|module| {
-            path == module.name
-                || path
-                    .strip_prefix(&module.name)
-                    .is_some_and(|rest| rest.starts_with("::"))
-        })
+        .filter(|module| owns_path(&module.name, path))
         .max_by_key(|module| module.name.len())?;
-    let local = path.strip_prefix(&module.name)?.strip_prefix("::")?;
-    Some((module, local.split("::").collect()))
+    let local = local_segments(&module.name, path)?;
+    Some((module, local))
+}
+
+/// Whether a module named `name` owns `path`: the unnamed module of a single-file script owns
+/// every path, and a named module owns the path it equals or `::`-prefixes.
+fn owns_path(name: &str, path: &str) -> bool {
+    name.is_empty()
+        || path == name
+        || path
+            .strip_prefix(name)
+            .is_some_and(|rest| rest.starts_with("::"))
+}
+
+/// The `::`-split segments of `path` below the prefix module `name`. The unnamed module of a
+/// single-file script contributes no prefix, so the whole path is local.
+fn local_segments<'a>(name: &str, path: &'a str) -> Option<Vec<&'a str>> {
+    let local = if name.is_empty() {
+        path
+    } else {
+        path.strip_prefix(name)?.strip_prefix("::")?
+    };
+    Some(local.split("::").collect())
 }
 
 /// The type-correct `evolve default` constant for a scalar resource member, resolved from

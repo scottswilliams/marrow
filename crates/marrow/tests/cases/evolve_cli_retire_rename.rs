@@ -284,6 +284,70 @@ fn evolve_apply_counts_and_deletes_a_retired_member_in_each_owning_root()
     Ok(())
 }
 
+// A single-file script with no `module` declaration. Its catalog paths carry no module
+// prefix (`Book::subtitle`), so the everyday `--approve-retire Book.subtitle:N` form the
+// scaffold and approval message print must resolve exactly as it does for a module-declared
+// project.
+const MODULELESS_RETIRE_BASELINE_SOURCE: &str = "resource Book\n    \
+    required title: string\n    \
+    subtitle: string\n\
+    store ^books(id: int): Book\n\
+    pub fn add(title: string): Id(^books)\n    \
+    return nextId(^books)\n";
+const MODULELESS_RETIRE_BLOCK_SOURCE: &str = "resource Book\n    \
+    required title: string\n\
+    store ^books(id: int): Book\n\
+    evolve\n    \
+    retire Book.subtitle\n\
+    pub fn add(title: string): Id(^books)\n    \
+    return nextId(^books)\n";
+
+#[test]
+fn evolve_apply_accepts_the_dotted_field_path_for_a_moduleless_script()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = native_books_project(
+        "evolve-apply-retire-moduleless-dotpath",
+        MODULELESS_RETIRE_BASELINE_SOURCE,
+    );
+    let accepted = commit_catalog(&root);
+    let accepted_place = root_place(&accepted, "books")?;
+    {
+        let store = open_native_store(&root);
+        seed_title_only(&store, &accepted_place, 1, "Dune");
+        seed_member(
+            &store,
+            &accepted_place,
+            1,
+            "subtitle",
+            Scalar::Str("Cantos".into()),
+        );
+    }
+    write(&root, "src/books.mw", MODULELESS_RETIRE_BLOCK_SOURCE);
+
+    let apply = marrow(&[
+        "evolve",
+        "apply",
+        "--maintenance",
+        "--approve-retire",
+        "Book.subtitle:1",
+        "--no-backup",
+        "--format",
+        "json",
+        root.to_str().expect("project path utf-8"),
+    ]);
+    assert_eq!(apply.status.code(), Some(0), "{apply:?}");
+    let apply_record = support::json(apply.stdout);
+    assert_eq!(apply_record["records_retired"], serde_json::json!(1));
+    let store = TreeStore::open(&native_store_path(&root)).expect("reopen native store");
+    assert_eq!(
+        read_scalar(&store, &accepted_place, 1, "subtitle", ScalarType::Str),
+        None,
+        "the dotted field path a module-less script prints deleted the populated cell"
+    );
+
+    Ok(())
+}
+
 #[test]
 fn evolve_apply_accepts_the_module_qualified_path_on_approve_retire()
 -> Result<(), Box<dyn std::error::Error>> {
