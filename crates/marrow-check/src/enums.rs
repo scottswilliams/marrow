@@ -533,32 +533,11 @@ impl ResolvedMemberPath<'_> {
     }
 }
 
-/// The relative index of the first segment that breaks a `NotFound` member walk. A
-/// qualified path walks parent→child from a top-level member, so the offending
-/// segment is the first with no member at its level: `cat::tabby` over `mammal::cat`
-/// blames `cat` (not a direct member) rather than the leaf `tabby`, which exists
-/// deeper. A bare single name that resolves nowhere blames itself.
+/// The relative index of the first segment that breaks a `NotFound` member walk,
+/// resolved by the schema's single downward walk over the borrowed segments.
 fn unresolved_member_segment(schema: &marrow_schema::EnumSchema, relative: &[String]) -> usize {
-    let [first, ..] = relative else {
-        return 0;
-    };
-    // A qualified path must start at a unique top-level member; when the first segment
-    // is not one, it is itself the offending segment.
-    if relative.len() > 1 && !is_top_level_member(schema, first) {
-        return 0;
-    }
-    // The start is valid, so the break is the first child segment with no member at
-    // its level.
-    for end in 1..relative.len() {
-        let prefix: Vec<&str> = relative[..=end].iter().map(String::as_str).collect();
-        if matches!(
-            schema.walk_member_path(&prefix),
-            MemberPathResolution::NotFound
-        ) {
-            return end;
-        }
-    }
-    relative.len().saturating_sub(1)
+    let segments: Vec<&str> = relative.iter().map(String::as_str).collect();
+    schema.first_unresolved_segment(&segments)
 }
 
 /// Build the `check.unknown_enum_member` diagnostic for a member path whose written
@@ -714,18 +693,31 @@ fn resolve_qualified_enum_member_path<'p>(
 ) -> Option<EnumMemberPathResolution<'p>> {
     // The qualified case: the enum name sits at some index, its module is every
     // segment before it, and the member path is everything after. Prefer the
-    // longest enum prefix (shortest member path), so scan the split points from the
-    // end down — the first that resolves to a known enum wins.
-    for enum_index in (1..segments.len() - 1).rev() {
-        let owner_name = segments[..=enum_index].join("::");
-        let EnumOwnerResolution::Found(owner) =
-            resolve_named_enum_owner(&owner_name, program, aliases, file)
-        else {
-            continue;
-        };
-        return Some(resolved_member_path(owner, segments, enum_index));
+    // longest enum prefix (shortest member path). Scan the split points from the
+    // front, growing the already-expanded module prefix one segment at a time so the
+    // whole scan is linear in the path length — rejoining and re-expanding the prefix
+    // at every split point is quadratic, which a pathological many-segment path would
+    // turn into a hang. Only the leading segment carries an import alias, so the
+    // prefix is expanded once at the front and extended verbatim thereafter. The last
+    // split that resolves owns the longest prefix.
+    let referencing = module_of_file(program, file);
+    let mut module_prefix = expand_module_alias(&segments[0], aliases);
+    let mut owner = None;
+    for enum_index in 1..segments.len() - 1 {
+        if enum_index > 1 {
+            module_prefix.push_str("::");
+            module_prefix.push_str(&segments[enum_index - 1]);
+        }
+        if let EnumOwnerResolution::Found(found) = resolve_expanded_enum_owner_in_modules(
+            &module_prefix,
+            &segments[enum_index],
+            &program.modules,
+            referencing,
+        ) {
+            owner = Some((found, enum_index));
+        }
     }
-    None
+    owner.map(|(owner, enum_index)| resolved_member_path(owner, segments, enum_index))
 }
 
 fn resolve_bare_foreign_member_path<'p>(
@@ -1308,18 +1300,13 @@ fn resolve_named_enum_owner_in_modules<'p>(
     referencing: Option<&str>,
 ) -> EnumOwnerResolution<'p> {
     if let Some((module, enum_name)) = name.rsplit_once("::") {
-        let module = expand_module_alias(module, aliases);
-        let Some(schema) = enum_schema_in_modules(modules, &module, enum_name) else {
-            return EnumOwnerResolution::MissingOrNonEnum;
-        };
-        let private = (!enum_visible_from_modules(modules, referencing, &module, enum_name))
-            .then(|| format!("{module}::{enum_name}"));
-        return EnumOwnerResolution::Found(ResolvedEnumOwner {
+        return resolve_qualified_enum_owner_in_modules(
             module,
-            name: enum_name.to_string(),
-            schema,
-            private,
-        });
+            enum_name,
+            modules,
+            aliases,
+            referencing,
+        );
     }
 
     if let Some(module) = referencing
@@ -1362,6 +1349,46 @@ fn resolve_named_enum_owner_in_modules<'p>(
         },
         [] => resolve_private_bare_enum_owner(modules, referencing, name),
     }
+}
+
+/// Resolve a qualified enum owner from an already-split module prefix and enum name,
+/// expanding any leading import alias on the module before lookup.
+fn resolve_qualified_enum_owner_in_modules<'p>(
+    module: &str,
+    enum_name: &str,
+    modules: &'p [CheckedModule],
+    aliases: &HashMap<String, Vec<String>>,
+    referencing: Option<&str>,
+) -> EnumOwnerResolution<'p> {
+    resolve_expanded_enum_owner_in_modules(
+        &expand_module_alias(module, aliases),
+        enum_name,
+        modules,
+        referencing,
+    )
+}
+
+/// Resolve an enum owner from a module path whose leading alias is already expanded
+/// and an enum name. A member-path scan grows the expanded prefix one segment at a
+/// time and resolves through here, so the whole scan stays linear instead of
+/// rejoining and re-expanding the prefix at every split point.
+fn resolve_expanded_enum_owner_in_modules<'p>(
+    module: &str,
+    enum_name: &str,
+    modules: &'p [CheckedModule],
+    referencing: Option<&str>,
+) -> EnumOwnerResolution<'p> {
+    let Some(schema) = enum_schema_in_modules(modules, module, enum_name) else {
+        return EnumOwnerResolution::MissingOrNonEnum;
+    };
+    let private = (!enum_visible_from_modules(modules, referencing, module, enum_name))
+        .then(|| format!("{module}::{enum_name}"));
+    EnumOwnerResolution::Found(ResolvedEnumOwner {
+        module: module.to_string(),
+        name: enum_name.to_string(),
+        schema,
+        private,
+    })
 }
 
 fn resolve_private_bare_enum_owner<'p>(

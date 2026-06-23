@@ -91,6 +91,36 @@ impl EnumSchema {
         MemberPathResolution::Found(current)
     }
 
+    /// The relative index of the first segment that breaks a [`MemberPathResolution::NotFound`]
+    /// qualified path, by one downward walk rather than re-walking each growing prefix. A
+    /// qualified path must start at a unique top-level member; when the first segment is not
+    /// one, it is itself the break (`0`). Otherwise the break is the first child segment with
+    /// no member at its level. A bare single name that resolves nowhere blames itself.
+    pub fn first_unresolved_segment(&self, path: &[&str]) -> usize {
+        let [first, rest @ ..] = path else {
+            return 0;
+        };
+        if rest.is_empty() {
+            return 0;
+        }
+        let roots: Vec<usize> = (0..self.members.len())
+            .filter(|&ordinal| {
+                self.members[ordinal].parent.is_none() && self.member_is(ordinal, first)
+            })
+            .collect();
+        let [start] = roots.as_slice() else {
+            return 0;
+        };
+        let mut current = *start;
+        for (offset, &segment) in rest.iter().enumerate() {
+            match self.child_named(current, segment) {
+                Some(child) => current = child,
+                None => return offset + 1,
+            }
+        }
+        path.len().saturating_sub(1)
+    }
+
     /// Whether the member at this traversal index has the given name.
     fn member_is(&self, ordinal: usize, name: &str) -> bool {
         self.members.get(ordinal).is_some_and(|m| m.name == name)

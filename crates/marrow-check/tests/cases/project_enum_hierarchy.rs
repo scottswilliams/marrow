@@ -790,6 +790,72 @@ fn is_with_a_full_member_path_is_exact_and_a_category_is_a_subtree_test() {
 }
 
 #[test]
+fn many_segment_is_operand_resolves_without_quadratic_blowup() {
+    // A flat `a::b::c::…` member path with thousands of `::` segments names no enum
+    // at any prefix split. Resolution must scan the split points in linear total
+    // work and reject the path, not rebuild an O(n) prefix string at each of the
+    // O(n) split points. Under the quadratic build this check never returns.
+    let segments = 20_000;
+    let path = (0..segments)
+        .map(|index| format!("seg{index}"))
+        .collect::<Vec<_>>()
+        .join("::");
+    let start = std::time::Instant::now();
+    let errors = check_module(
+        "many-segment-is",
+        &format!(
+            "{}\
+             fn f(pet: Cat): bool\n    return pet is {path}\n",
+            cat_enum()
+        ),
+        "check.is_type",
+    );
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(5),
+        "checking a {segments}-segment is operand took {:?}",
+        start.elapsed()
+    );
+    assert_eq!(errors.len(), 1, "{errors:#?}");
+}
+
+#[test]
+fn many_segment_unresolved_member_locates_the_break_without_quadratic_blowup() {
+    // A value-position path whose enum resolves but whose member path is a long run
+    // of unknown `::` segments must locate the first broken segment in one downward
+    // walk, not by re-walking each growing prefix. The diagnostic blames the first
+    // unknown member step (`Cat::seg0`), and the check returns promptly.
+    let segments = 20_000;
+    let tail = (0..segments)
+        .map(|index| format!("seg{index}"))
+        .collect::<Vec<_>>()
+        .join("::");
+    let start = std::time::Instant::now();
+    let errors = check_module(
+        "many-segment-member",
+        &format!(
+            "{}\
+             fn f(): Cat\n    return Cat::{tail}\n",
+            cat_enum()
+        ),
+        "check.unknown_enum_member",
+    );
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(5),
+        "checking a {segments}-segment member path took {:?}",
+        start.elapsed()
+    );
+    assert_eq!(errors.len(), 1, "{errors:#?}");
+    assert_enum_payload(
+        &errors[0],
+        EnumDiagnostic::UnknownMember {
+            enum_name: "Cat".into(),
+            member: "seg0".into(),
+            suggestions: vec![],
+        },
+    );
+}
+
+#[test]
 fn is_with_a_bare_duplicated_member_is_ambiguous() {
     // A bare `Cat::paw` as an `is` operand is the symmetric footgun; reject it with
     // the same enum-prefixed qualifying-path payload as value position, since the
