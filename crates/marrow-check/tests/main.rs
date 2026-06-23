@@ -30,6 +30,8 @@ mod catalog_presence_identity;
 mod catalog_presence_narrowing;
 #[path = "cases/catalog_presence_provider.rs"]
 mod catalog_presence_provider;
+#[path = "cases/check_scaling.rs"]
+mod check_scaling;
 #[path = "cases/checked_program_artifact.rs"]
 mod checked_program_artifact;
 #[path = "cases/checked_program_error_construct.rs"]

@@ -18,6 +18,10 @@ use crate::{
     CheckedSavedPlace, CheckedSavedTerminal,
 };
 
+/// The prebuilt proposal identity map the declaration collectors resolve first-run
+/// catalog ids against in O(1) per declaration.
+type CatalogProposalIds = HashMap<crate::catalog::CatalogKey, String>;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UseSite {
     pub file: PathBuf,
@@ -46,8 +50,11 @@ pub struct CatalogDeclaration {
 
 pub(super) fn collect_use_sites(program: &CheckedProgram, files: &[AnalyzedFile]) -> Vec<UseSite> {
     let mut sites = Vec::new();
+    // Resolve first-run identity for every use site against one prebuilt proposal
+    // map, so a program with many enum members stays linear here too.
+    let ids = program.proposal_id_map();
     let file_set: HashSet<&Path> = files.iter().map(|file| file.path.as_path()).collect();
-    collect_module_type_annotation_use_sites(program, files, &mut sites);
+    collect_module_type_annotation_use_sites(program, &ids, files, &mut sites);
     let runtime = program.runtime();
     for module in runtime.modules() {
         if !file_set.contains(module.source_file.as_path()) {
@@ -55,12 +62,12 @@ pub(super) fn collect_use_sites(program: &CheckedProgram, files: &[AnalyzedFile]
         }
         for constant in &module.constants {
             if let Some(value) = &constant.value {
-                collect_expr_use_sites(program, &module.source_file, value, &mut sites);
+                collect_expr_use_sites(program, &ids, &module.source_file, value, &mut sites);
             }
         }
         for function in module.functions() {
             if let Some(body) = function.body() {
-                collect_body_use_sites(program, &module.source_file, body, &mut sites);
+                collect_body_use_sites(program, &ids, &module.source_file, body, &mut sites);
             }
         }
     }
@@ -69,7 +76,7 @@ pub(super) fn collect_use_sites(program: &CheckedProgram, files: &[AnalyzedFile]
             continue;
         }
         if let Some(body) = transform.runtime_body() {
-            collect_body_use_sites(program, &transform.file, body, &mut sites);
+            collect_body_use_sites(program, &ids, &transform.file, body, &mut sites);
         }
     }
     normalize_use_sites(&mut sites);
@@ -83,6 +90,7 @@ pub(super) fn normalize_use_sites(sites: &mut Vec<UseSite>) {
 
 fn collect_module_type_annotation_use_sites(
     program: &CheckedProgram,
+    ids: &CatalogProposalIds,
     files: &[AnalyzedFile],
     sites: &mut Vec<UseSite>,
 ) {
@@ -97,7 +105,15 @@ fn collect_module_type_annotation_use_sites(
         let aliases = build_alias_map(&module.imports);
         for declaration in &file.parsed.file.declarations {
             walk_declaration_type_refs(declaration, TypeAnnotationBodies::Include, &mut |ty| {
-                collect_type_ref_use_site(program, &file.path, &file.source, &aliases, ty, sites);
+                collect_type_ref_use_site(
+                    program,
+                    ids,
+                    &file.path,
+                    &file.source,
+                    &aliases,
+                    ty,
+                    sites,
+                );
             });
         }
     }
@@ -105,6 +121,7 @@ fn collect_module_type_annotation_use_sites(
 
 fn collect_type_ref_use_site(
     program: &CheckedProgram,
+    ids: &CatalogProposalIds,
     file: &Path,
     source: &str,
     aliases: &HashMap<String, Vec<String>>,
@@ -119,7 +136,7 @@ fn collect_type_ref_use_site(
     let Some(enum_id) = enum_id_by_name(program, &resolved.module, &resolved.name) else {
         return;
     };
-    let Some(catalog_id) = enum_catalog_id(program, enum_id) else {
+    let Some(catalog_id) = enum_catalog_id(program, ids, enum_id) else {
         return;
     };
     let Some(span) = type_ref_enum_leaf_span(source, ty, &resolved.name) else {
@@ -159,12 +176,14 @@ fn use_site_kind_rank(kind: UseSiteKind) -> u8 {
 
 fn collect_body_use_sites(
     program: &CheckedProgram,
+    ids: &CatalogProposalIds,
     file: &Path,
     body: &CheckedBody,
     sites: &mut Vec<UseSite>,
 ) {
     let mut collector = UseSiteCollector {
         program,
+        ids,
         file,
         sites,
     };
@@ -173,12 +192,14 @@ fn collect_body_use_sites(
 
 fn collect_expr_use_sites(
     program: &CheckedProgram,
+    ids: &CatalogProposalIds,
     file: &Path,
     expr: &CheckedExpr,
     sites: &mut Vec<UseSite>,
 ) {
     let mut collector = UseSiteCollector {
         program,
+        ids,
         file,
         sites,
     };
@@ -187,6 +208,7 @@ fn collect_expr_use_sites(
 
 struct UseSiteCollector<'a, 's> {
     program: &'a CheckedProgram,
+    ids: &'a CatalogProposalIds,
     file: &'a Path,
     sites: &'s mut Vec<UseSite>,
 }
@@ -194,19 +216,21 @@ struct UseSiteCollector<'a, 's> {
 impl UseSiteCollector<'_, '_> {
     fn record_expr(&mut self, expr: &CheckedExpr) {
         if let Some(place) = expr.saved_place() {
-            collect_place_use_sites(self.program, self.file, place, self.sites);
+            collect_place_use_sites(self.program, self.ids, self.file, place, self.sites);
         }
 
         if let CheckedExpr::Name { enum_member, .. } = expr
             && let Some(enum_member) = enum_member
         {
-            if let Some(catalog_id) = enum_catalog_id(self.program, enum_member.enum_ref.enum_id)
+            if let Some(catalog_id) =
+                enum_catalog_id(self.program, self.ids, enum_member.enum_ref.enum_id)
                 && let Some(span) = enum_member.enum_span
             {
                 push_use_site(self.file, span, &catalog_id, UseSiteKind::Enum, self.sites);
             }
             for (member_id, span) in &enum_member.member_uses {
-                if let Some(catalog_id) = enum_member_catalog_id(self.program, *member_id) {
+                if let Some(catalog_id) = enum_member_catalog_id(self.program, self.ids, *member_id)
+                {
                     push_use_site(
                         self.file,
                         *span,
@@ -221,7 +245,7 @@ impl UseSiteCollector<'_, '_> {
 
     fn record_match_arm(&mut self, arm: &CheckedMatchArm) {
         for (member_id, span) in &arm.member_uses {
-            if let Some(catalog_id) = enum_member_catalog_id(self.program, *member_id) {
+            if let Some(catalog_id) = enum_member_catalog_id(self.program, self.ids, *member_id) {
                 push_use_site(
                     self.file,
                     *span,
@@ -248,33 +272,34 @@ impl CheckedBodyVisitor for UseSiteCollector<'_, '_> {
 
 fn collect_place_use_sites(
     program: &CheckedProgram,
+    ids: &CatalogProposalIds,
     file: &Path,
     place: &CheckedSavedPlace,
     sites: &mut Vec<UseSite>,
 ) {
     if let Some(catalog_id) = place
         .store_catalog_id
-        .as_deref()
-        .or_else(|| program.store_catalog_id(place.store_id))
+        .clone()
+        .or_else(|| program.store_catalog_id_in(ids, place.store_id))
     {
         push_use_site(
             file,
             place.root_span,
-            catalog_id,
+            &catalog_id,
             UseSiteKind::SavedRoot,
             sites,
         );
     }
     for layer in &place.layers {
-        if let Some(catalog_id) = layer.catalog_id.as_deref().or_else(|| {
+        if let Some(catalog_id) = layer.catalog_id.clone().or_else(|| {
             layer
                 .id
-                .and_then(|id| program.resource_member_catalog_id(id))
+                .and_then(|id| program.resource_member_catalog_id_in(ids, id))
         }) {
             push_use_site(
                 file,
                 layer.name_span,
-                catalog_id,
+                &catalog_id,
                 UseSiteKind::ResourceMember,
                 sites,
             );
@@ -288,12 +313,12 @@ fn collect_place_use_sites(
             catalog_id,
             ..
         } => {
-            if let Some(catalog_id) = catalog_id.as_deref().or_else(|| {
+            if let Some(catalog_id) = catalog_id.clone().or_else(|| {
                 checked_member_by_name(&place.members, name)
                     .and_then(|member| member.id)
-                    .and_then(|id| program.resource_member_catalog_id(id))
+                    .and_then(|id| program.resource_member_catalog_id_in(ids, id))
             }) {
-                push_use_site(file, *span, catalog_id, UseSiteKind::ResourceMember, sites);
+                push_use_site(file, *span, &catalog_id, UseSiteKind::ResourceMember, sites);
             }
         }
         CheckedSavedTerminal::Index {
@@ -302,32 +327,37 @@ fn collect_place_use_sites(
             catalog_id,
             ..
         } => {
-            if let Some(catalog_id) = catalog_id.as_deref().or_else(|| {
+            if let Some(catalog_id) = catalog_id.clone().or_else(|| {
                 place
                     .indexes
                     .iter()
                     .find(|index| index.name == *name)
-                    .and_then(|index| program.store_index_catalog_id(index.id))
+                    .and_then(|index| program.store_index_catalog_id_in(ids, index.id))
             }) {
-                push_use_site(file, *span, catalog_id, UseSiteKind::StoreIndex, sites);
+                push_use_site(file, *span, &catalog_id, UseSiteKind::StoreIndex, sites);
             }
         }
     }
 }
 
 pub(super) fn collect_catalog_declarations(program: &CheckedProgram) -> Vec<CatalogDeclaration> {
+    // Resolve every declaration's first-run identity against one prebuilt proposal
+    // map. A per-declaration proposal scan made one resource or enum quadratic in
+    // its member count.
+    let ids = program.proposal_id_map();
     let mut declarations = Vec::new();
-    collect_store_declarations(program, &mut declarations);
-    collect_resource_declarations(program, &mut declarations);
-    collect_resource_member_declarations(program, &mut declarations);
-    collect_store_index_declarations(program, &mut declarations);
-    collect_enum_declarations(program, &mut declarations);
-    collect_enum_member_declarations(program, &mut declarations);
+    collect_store_declarations(program, &ids, &mut declarations);
+    collect_resource_declarations(program, &ids, &mut declarations);
+    collect_resource_member_declarations(program, &ids, &mut declarations);
+    collect_store_index_declarations(program, &ids, &mut declarations);
+    collect_enum_declarations(program, &ids, &mut declarations);
+    collect_enum_member_declarations(program, &ids, &mut declarations);
     declarations
 }
 
 fn collect_store_declarations(
     program: &CheckedProgram,
+    ids: &CatalogProposalIds,
     declarations: &mut Vec<CatalogDeclaration>,
 ) {
     let modules = program.facts.modules();
@@ -335,7 +365,7 @@ fn collect_store_declarations(
         let Some(module) = modules.get(store.module.0 as usize) else {
             continue;
         };
-        let Some(catalog_id) = program.store_catalog_id(store.id) else {
+        let Some(catalog_id) = program.store_catalog_id_in(ids, store.id) else {
             continue;
         };
         let Some(span) = exact_span(store.name_span) else {
@@ -344,7 +374,7 @@ fn collect_store_declarations(
         declarations.push(CatalogDeclaration {
             file: module.source_file.clone(),
             span,
-            catalog_id: catalog_id.to_string(),
+            catalog_id,
             kind: CatalogEntryKind::Store,
             name: store.root.clone(),
         });
@@ -353,6 +383,7 @@ fn collect_store_declarations(
 
 fn collect_resource_declarations(
     program: &CheckedProgram,
+    ids: &CatalogProposalIds,
     declarations: &mut Vec<CatalogDeclaration>,
 ) {
     let modules = program.facts.modules();
@@ -360,7 +391,7 @@ fn collect_resource_declarations(
         let Some(module) = modules.get(resource.module.0 as usize) else {
             continue;
         };
-        let Some(catalog_id) = program.resource_catalog_id(resource.id) else {
+        let Some(catalog_id) = program.resource_catalog_id_in(ids, resource.id) else {
             continue;
         };
         let Some(span) = exact_span(resource.name_span) else {
@@ -369,7 +400,7 @@ fn collect_resource_declarations(
         declarations.push(CatalogDeclaration {
             file: module.source_file.clone(),
             span,
-            catalog_id: catalog_id.to_string(),
+            catalog_id,
             kind: CatalogEntryKind::Resource,
             name: resource.name.clone(),
         });
@@ -378,6 +409,7 @@ fn collect_resource_declarations(
 
 fn collect_resource_member_declarations(
     program: &CheckedProgram,
+    ids: &CatalogProposalIds,
     declarations: &mut Vec<CatalogDeclaration>,
 ) {
     let modules = program.facts.modules();
@@ -386,7 +418,7 @@ fn collect_resource_member_declarations(
         let Some(module) = modules.get(resource.module.0 as usize) else {
             continue;
         };
-        let Some(catalog_id) = program.resource_member_catalog_id(member.id) else {
+        let Some(catalog_id) = program.resource_member_catalog_id_in(ids, member.id) else {
             continue;
         };
         let Some(span) = exact_span(member.name_span) else {
@@ -395,7 +427,7 @@ fn collect_resource_member_declarations(
         declarations.push(CatalogDeclaration {
             file: module.source_file.clone(),
             span,
-            catalog_id: catalog_id.to_string(),
+            catalog_id,
             kind: CatalogEntryKind::ResourceMember,
             name: member.name.clone(),
         });
@@ -404,6 +436,7 @@ fn collect_resource_member_declarations(
 
 fn collect_store_index_declarations(
     program: &CheckedProgram,
+    ids: &CatalogProposalIds,
     declarations: &mut Vec<CatalogDeclaration>,
 ) {
     let modules = program.facts.modules();
@@ -412,7 +445,7 @@ fn collect_store_index_declarations(
         let Some(module) = modules.get(store.module.0 as usize) else {
             continue;
         };
-        let Some(catalog_id) = program.store_index_catalog_id(index.id) else {
+        let Some(catalog_id) = program.store_index_catalog_id_in(ids, index.id) else {
             continue;
         };
         let Some(span) = exact_span(index.name_span) else {
@@ -421,7 +454,7 @@ fn collect_store_index_declarations(
         declarations.push(CatalogDeclaration {
             file: module.source_file.clone(),
             span,
-            catalog_id: catalog_id.to_string(),
+            catalog_id,
             kind: CatalogEntryKind::StoreIndex,
             name: index.name.clone(),
         });
@@ -441,13 +474,17 @@ fn enum_id_by_name(
     program.facts.enum_id(module.id, enum_name)
 }
 
-fn collect_enum_declarations(program: &CheckedProgram, declarations: &mut Vec<CatalogDeclaration>) {
+fn collect_enum_declarations(
+    program: &CheckedProgram,
+    ids: &CatalogProposalIds,
+    declarations: &mut Vec<CatalogDeclaration>,
+) {
     let modules = program.facts.modules();
     for enum_fact in program.facts.enums() {
         let Some(module) = modules.get(enum_fact.module.0 as usize) else {
             continue;
         };
-        let Some(catalog_id) = enum_catalog_id(program, enum_fact.id) else {
+        let Some(catalog_id) = enum_catalog_id(program, ids, enum_fact.id) else {
             continue;
         };
         let Some(span) = exact_span(enum_fact.name_span) else {
@@ -465,6 +502,7 @@ fn collect_enum_declarations(program: &CheckedProgram, declarations: &mut Vec<Ca
 
 fn collect_enum_member_declarations(
     program: &CheckedProgram,
+    ids: &CatalogProposalIds,
     declarations: &mut Vec<CatalogDeclaration>,
 ) {
     let modules = program.facts.modules();
@@ -475,7 +513,7 @@ fn collect_enum_member_declarations(
         let Some(module) = modules.get(enum_fact.module.0 as usize) else {
             continue;
         };
-        let Some(catalog_id) = enum_member_catalog_id(program, member.id) else {
+        let Some(catalog_id) = enum_member_catalog_id(program, ids, member.id) else {
             continue;
         };
         let Some(span) = exact_span(member.name_span) else {
@@ -502,31 +540,31 @@ fn checked_member_by_name<'a>(
     members.iter().find(|member| member.name == name)
 }
 
-fn enum_catalog_id(program: &CheckedProgram, id: crate::EnumId) -> Option<String> {
+fn enum_catalog_id(
+    program: &CheckedProgram,
+    ids: &CatalogProposalIds,
+    id: crate::EnumId,
+) -> Option<String> {
     let enum_fact = program.facts.enum_(id)?;
     if let Some(catalog_id) = enum_fact.catalog_id.as_deref() {
         return Some(catalog_id.to_string());
     }
     let module = program.facts.modules().get(enum_fact.module.0 as usize)?;
     let path = crate::catalog::enum_path(&module.name, &enum_fact.name);
-    proposal_catalog_id(program, CatalogEntryKind::Enum, &path).map(ToString::to_string)
+    crate::catalog::proposal_id(ids, CatalogEntryKind::Enum, path)
 }
 
-fn enum_member_catalog_id(program: &CheckedProgram, id: crate::EnumMemberId) -> Option<String> {
+fn enum_member_catalog_id(
+    program: &CheckedProgram,
+    ids: &CatalogProposalIds,
+    id: crate::EnumMemberId,
+) -> Option<String> {
     let member = program.facts.enum_member(id)?;
     if let Some(catalog_id) = member.catalog_id.as_deref() {
         return Some(catalog_id.to_string());
     }
     let path = program.facts.enum_member_catalog_path(id)?;
-    proposal_catalog_id(program, CatalogEntryKind::EnumMember, &path).map(ToString::to_string)
-}
-
-fn proposal_catalog_id<'a>(
-    program: &'a CheckedProgram,
-    kind: CatalogEntryKind,
-    path: &str,
-) -> Option<&'a str> {
-    crate::catalog::active_program_proposal_id(program, kind, path)
+    crate::catalog::proposal_id(ids, CatalogEntryKind::EnumMember, path)
 }
 
 fn push_use_site(

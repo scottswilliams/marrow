@@ -1192,9 +1192,7 @@ fn resource_member_id(
 fn resource_member_catalog_id(program: &CheckedProgram, id: ResourceMemberId) -> Option<String> {
     program
         .facts
-        .resource_members()
-        .iter()
-        .find(|member| member.id == id)
+        .resource_member(id)
         .and_then(|member| member.catalog_id.clone())
 }
 

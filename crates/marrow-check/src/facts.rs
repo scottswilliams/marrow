@@ -11,8 +11,8 @@ use marrow_store::value::{decode_value, scalar_key_matches_type};
 use marrow_syntax::{ParsedSource, ResourceMember, SourceSpan, TypeRef};
 
 use crate::catalog::{
-    CatalogKey, DurableRendering, enum_path, resource_member_path, resource_path, store_index_path,
-    store_path,
+    CatalogKey, DurableRendering, enum_path, proposal_id, resource_member_path, resource_path,
+    store_index_path, store_path,
 };
 use crate::enums::{EnumAnnotationResolution, resolve_enum_annotation_type_for_module};
 use crate::executable::CheckedFunctionRef;
@@ -67,6 +67,7 @@ pub struct CheckedFacts {
     store_indexes: Vec<StoreIndexFact>,
     surfaces: Vec<SurfaceFact>,
     resource_members: Vec<ResourceMemberFact>,
+    member_by_path: HashMap<(ResourceId, Option<ResourceMemberId>, String), ResourceMemberId>,
     enums: Vec<EnumFact>,
     enum_members: Vec<EnumMemberFact>,
     presence_proofs: Vec<PresenceProofFact>,
@@ -114,6 +115,7 @@ impl CheckedFacts {
         for &(module_id, module, parsed) in &bindings {
             facts.collect_resource_member_facts_for_module(modules, module_id, module, parsed);
         }
+        facts.index_member_paths();
         for &(module_id, module, parsed) in &bindings {
             facts.collect_store_index_facts_for_module(modules, module_id, module, parsed);
         }
@@ -219,6 +221,10 @@ impl CheckedFacts {
 
     pub fn resource_members(&self) -> &[ResourceMemberFact] {
         &self.resource_members
+    }
+
+    pub fn resource_member(&self, id: ResourceMemberId) -> Option<&ResourceMemberFact> {
+        self.resource_members.get(id.0 as usize)
     }
 
     pub fn enums(&self) -> &[EnumFact] {
@@ -337,7 +343,8 @@ impl CheckedFacts {
             })
             .collect();
         for (resource, path) in self.resources.iter_mut().zip(resource_paths) {
-            resource.catalog_id = catalog_id(ids, marrow_catalog::CatalogEntryKind::Resource, path);
+            resource.catalog_id =
+                proposal_id(ids, marrow_catalog::CatalogEntryKind::Resource, path);
         }
     }
 
@@ -355,7 +362,7 @@ impl CheckedFacts {
             })
             .collect();
         for (store, path) in self.stores.iter_mut().zip(store_paths) {
-            store.catalog_id = catalog_id(ids, marrow_catalog::CatalogEntryKind::Store, path);
+            store.catalog_id = proposal_id(ids, marrow_catalog::CatalogEntryKind::Store, path);
         }
     }
 
@@ -398,7 +405,7 @@ impl CheckedFacts {
             })
             .collect();
         for (index, path) in self.store_indexes.iter_mut().zip(store_index_paths) {
-            index.catalog_id = catalog_id(ids, marrow_catalog::CatalogEntryKind::StoreIndex, path);
+            index.catalog_id = proposal_id(ids, marrow_catalog::CatalogEntryKind::StoreIndex, path);
         }
     }
 
@@ -410,7 +417,7 @@ impl CheckedFacts {
             .collect();
         for (member, path) in self.resource_members.iter_mut().zip(resource_member_paths) {
             member.catalog_id = path.and_then(|path| {
-                catalog_id(ids, marrow_catalog::CatalogEntryKind::ResourceMember, path)
+                proposal_id(ids, marrow_catalog::CatalogEntryKind::ResourceMember, path)
             });
         }
     }
@@ -429,7 +436,7 @@ impl CheckedFacts {
             })
             .collect();
         for (enum_fact, path) in self.enums.iter_mut().zip(enum_paths) {
-            enum_fact.catalog_id = catalog_id(ids, marrow_catalog::CatalogEntryKind::Enum, path);
+            enum_fact.catalog_id = proposal_id(ids, marrow_catalog::CatalogEntryKind::Enum, path);
         }
     }
 
@@ -445,7 +452,7 @@ impl CheckedFacts {
             .collect();
         for (member, path) in self.enum_members.iter_mut().zip(enum_member_paths) {
             member.catalog_id = path.and_then(|path| {
-                catalog_id(ids, marrow_catalog::CatalogEntryKind::EnumMember, path)
+                proposal_id(ids, marrow_catalog::CatalogEntryKind::EnumMember, path)
             });
         }
     }
@@ -872,13 +879,22 @@ impl CheckedFacts {
         nodes: &[marrow_schema::Node],
         declarations: Option<&[ResourceMember]>,
     ) {
+        // Index the sibling declarations by name once so each schema node matches
+        // its source member in O(1); a per-node linear scan made one resource with
+        // N members quadratic. A duplicate name keeps its first declaration, the
+        // same member the prior scan returned.
+        let mut declaration_by_name: HashMap<&str, &ResourceMember> = HashMap::new();
+        if let Some(declarations) = declarations {
+            for member in declarations {
+                let name = match member {
+                    ResourceMember::Field(field) => field.name.as_str(),
+                    ResourceMember::Group(group) => group.name.as_str(),
+                };
+                declaration_by_name.entry(name).or_insert(member);
+            }
+        }
         for node in nodes {
-            let declaration = declarations.and_then(|declarations| {
-                declarations.iter().find(|member| match member {
-                    ResourceMember::Field(field) => field.name == node.name,
-                    ResourceMember::Group(group) => group.name == node.name,
-                })
-            });
+            let declaration = declaration_by_name.get(node.name.as_str()).copied();
             let span = declaration
                 .map(|member| match member {
                     ResourceMember::Field(field) => field.span,
@@ -977,6 +993,7 @@ impl CheckedFacts {
             flatten_enum_member_spans(&declaration.members, &mut member_spans);
         }
         let member_start = self.enum_members.len() as u32;
+        let selectable = enum_schema.selectable_leaf_flags();
         for (index, member) in enum_schema.members.iter().enumerate() {
             self.enum_members.push(EnumMemberFact {
                 id: EnumMemberId(member_start + index as u32),
@@ -985,7 +1002,7 @@ impl CheckedFacts {
                     .parent
                     .map(|parent| EnumMemberId(member_start + parent as u32)),
                 name: member.name.clone(),
-                selectable: enum_schema.is_selectable_leaf(index),
+                selectable: selectable[index],
                 catalog_id: None,
                 name_span: member_spans
                     .get(index)
@@ -1230,6 +1247,20 @@ impl CheckedFacts {
             .collect()
     }
 
+    /// Index every resource member by its `(resource, parent, name)` triple once
+    /// so a path lookup resolves each segment in O(1); a per-segment linear scan
+    /// over all members made constructing one resource with N members quadratic.
+    fn index_member_paths(&mut self) {
+        self.member_by_path.reserve(self.resource_members.len());
+        for member in &self.resource_members {
+            // A duplicate sibling name keeps its first declaration, matching the
+            // first-match a linear scan over the members would have returned.
+            self.member_by_path
+                .entry((member.resource, member.parent, member.name.clone()))
+                .or_insert(member.id);
+        }
+    }
+
     fn member_path_ids(
         &self,
         resource: ResourceId,
@@ -1238,11 +1269,11 @@ impl CheckedFacts {
         let mut result = Vec::new();
         let mut parent = None;
         for name in path {
-            let member = self.resource_members.iter().find(|member| {
-                member.resource == resource && member.parent == parent && member.name == *name
-            })?;
-            result.push(member.id);
-            parent = Some(member.id);
+            let id = *self
+                .member_by_path
+                .get(&(resource, parent, (*name).to_string()))?;
+            result.push(id);
+            parent = Some(id);
         }
         Some(result)
     }
@@ -1755,14 +1786,6 @@ fn flatten_enum_member_spans(
         spans.push((member.name_span, member.span));
         flatten_enum_member_spans(&member.members, spans);
     }
-}
-
-fn catalog_id(
-    ids: &HashMap<CatalogKey, String>,
-    kind: marrow_catalog::CatalogEntryKind,
-    path: String,
-) -> Option<String> {
-    ids.get(&CatalogKey::new(kind, path)).cloned()
 }
 
 /// A nested fact addressable by index whose ancestry forms a name path. Resource

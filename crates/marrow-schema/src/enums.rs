@@ -138,15 +138,38 @@ impl EnumSchema {
         (0..self.members.len()).filter(move |&ordinal| self.is_descendant(ordinal, ancestor))
     }
 
+    /// Per-member selectability in traversal order. A category is never
+    /// selectable, and a member with children is a grouping node whose value is
+    /// one of its descendants, so only childless non-category members are
+    /// selectable. This derives the child-bearing set in one pass, so classifying
+    /// every member of an enum is linear rather than the quadratic a per-member
+    /// [`Self::is_selectable_leaf`] scan would cost.
+    pub fn selectable_leaf_flags(&self) -> Vec<bool> {
+        let mut has_children = vec![false; self.members.len()];
+        for member in &self.members {
+            if let Some(parent) = member.parent {
+                has_children[parent] = true;
+            }
+        }
+        self.members
+            .iter()
+            .zip(has_children)
+            .map(|(member, bears_children)| !member.category && !bears_children)
+            .collect()
+    }
+
     /// The traversal indices for concrete leaves. A category is never selectable,
     /// and a member with children is a grouping node whose value is one of its
     /// descendants, so only childless non-category members are selectable.
     pub fn selectable_leaves(&self) -> impl Iterator<Item = usize> + '_ {
-        (0..self.members.len()).filter(move |&ordinal| self.is_selectable_leaf(ordinal))
+        self.selectable_leaf_flags()
+            .into_iter()
+            .enumerate()
+            .filter_map(|(ordinal, selectable)| selectable.then_some(ordinal))
     }
 
     /// Whether a traversal index is a selectable leaf: concrete (not a category)
-    /// and with no children.
+    /// and with no children. Classifying every member at once is [`Self::selectable_leaf_flags`].
     pub fn is_selectable_leaf(&self, ordinal: usize) -> bool {
         let Some(member) = self.members.get(ordinal) else {
             return false;

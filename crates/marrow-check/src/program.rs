@@ -500,12 +500,16 @@ impl CheckedProgram {
     }
 
     pub fn store_catalog_id(&self, store_id: StoreId) -> Option<&str> {
-        let store = self.facts.stores().get(store_id.0 as usize)?;
-        if let Some(catalog_id) = store.catalog_id.as_deref() {
+        if let Some(catalog_id) = self
+            .facts
+            .stores()
+            .get(store_id.0 as usize)?
+            .catalog_id
+            .as_deref()
+        {
             return Some(catalog_id);
         }
-        let module = self.facts.modules().get(store.module.0 as usize)?;
-        let path = crate::catalog::store_path(&module.name, &store.root);
+        let path = self.store_structural_path(store_id)?;
         self.proposal_catalog_id(marrow_catalog::CatalogEntryKind::Store, &path)
     }
 
@@ -532,30 +536,43 @@ impl CheckedProgram {
         ))
     }
 
+    /// The resource's canonical catalog path (`module::Resource`).
+    pub fn resource_structural_path(&self, resource_id: ResourceId) -> Option<String> {
+        let resource = self.facts.resources().get(resource_id.0 as usize)?;
+        let module = self.facts.modules().get(resource.module.0 as usize)?;
+        Some(crate::catalog::resource_path(&module.name, &resource.name))
+    }
+
     pub fn store_index_catalog_id(&self, index_id: StoreIndexId) -> Option<&str> {
-        let index = self.facts.store_indexes().get(index_id.0 as usize)?;
-        if let Some(catalog_id) = index.catalog_id.as_deref() {
+        if let Some(catalog_id) = self
+            .facts
+            .store_indexes()
+            .get(index_id.0 as usize)?
+            .catalog_id
+            .as_deref()
+        {
             return Some(catalog_id);
         }
-        let store = self.facts.store(index.store);
-        let module = self.facts.modules().get(store.module.0 as usize)?;
-        let path = crate::catalog::store_index_path(&module.name, &store.root, &index.name);
+        let path = self.store_index_structural_path(index_id)?;
         self.proposal_catalog_id(marrow_catalog::CatalogEntryKind::StoreIndex, &path)
     }
 
     pub fn resource_catalog_id(&self, resource_id: ResourceId) -> Option<&str> {
-        let resource = self.facts.resources().get(resource_id.0 as usize)?;
-        if let Some(catalog_id) = resource.catalog_id.as_deref() {
+        if let Some(catalog_id) = self
+            .facts
+            .resources()
+            .get(resource_id.0 as usize)?
+            .catalog_id
+            .as_deref()
+        {
             return Some(catalog_id);
         }
-        let module = self.facts.modules().get(resource.module.0 as usize)?;
-        let path = crate::catalog::resource_path(&module.name, &resource.name);
+        let path = self.resource_structural_path(resource_id)?;
         self.proposal_catalog_id(marrow_catalog::CatalogEntryKind::Resource, &path)
     }
 
     pub fn resource_member_catalog_id(&self, member_id: ResourceMemberId) -> Option<&str> {
-        let member = self.facts.resource_members().get(member_id.0 as usize)?;
-        if let Some(catalog_id) = member.catalog_id.as_deref() {
+        if let Some(catalog_id) = self.facts.resource_member(member_id)?.catalog_id.as_deref() {
             return Some(catalog_id);
         }
         let path = self.facts.resource_member_catalog_path(member_id)?;
@@ -568,6 +585,102 @@ impl CheckedProgram {
         path: &str,
     ) -> Option<&str> {
         crate::catalog::active_program_proposal_id(self, kind, path)
+    }
+
+    /// The proposal identity map a batch reader resolves first-run ids against in
+    /// O(1) per entry, instead of the per-call linear scan in
+    /// [`Self::proposal_catalog_id`] that made identifying every member of one
+    /// declaration quadratic.
+    pub(crate) fn proposal_id_map(&self) -> HashMap<crate::catalog::CatalogKey, String> {
+        crate::catalog::active_proposal_id_map(self)
+    }
+
+    /// The store's catalog id, resolving a not-yet-frozen id through a prebuilt
+    /// proposal map rather than a fresh scan.
+    pub(crate) fn store_catalog_id_in(
+        &self,
+        ids: &HashMap<crate::catalog::CatalogKey, String>,
+        store_id: StoreId,
+    ) -> Option<String> {
+        let frozen = self
+            .facts
+            .stores()
+            .get(store_id.0 as usize)?
+            .catalog_id
+            .as_deref();
+        self.catalog_id_in(ids, marrow_catalog::CatalogEntryKind::Store, frozen, || {
+            self.store_structural_path(store_id)
+        })
+    }
+
+    /// The resource's catalog id, resolving through a prebuilt proposal map.
+    pub(crate) fn resource_catalog_id_in(
+        &self,
+        ids: &HashMap<crate::catalog::CatalogKey, String>,
+        resource_id: ResourceId,
+    ) -> Option<String> {
+        let frozen = self
+            .facts
+            .resources()
+            .get(resource_id.0 as usize)?
+            .catalog_id
+            .as_deref();
+        self.catalog_id_in(
+            ids,
+            marrow_catalog::CatalogEntryKind::Resource,
+            frozen,
+            || self.resource_structural_path(resource_id),
+        )
+    }
+
+    /// The resource member's catalog id, resolving through a prebuilt proposal map.
+    pub(crate) fn resource_member_catalog_id_in(
+        &self,
+        ids: &HashMap<crate::catalog::CatalogKey, String>,
+        member_id: ResourceMemberId,
+    ) -> Option<String> {
+        let frozen = self.facts.resource_member(member_id)?.catalog_id.as_deref();
+        self.catalog_id_in(
+            ids,
+            marrow_catalog::CatalogEntryKind::ResourceMember,
+            frozen,
+            || self.facts.resource_member_catalog_path(member_id),
+        )
+    }
+
+    /// The store index's catalog id, resolving through a prebuilt proposal map.
+    pub(crate) fn store_index_catalog_id_in(
+        &self,
+        ids: &HashMap<crate::catalog::CatalogKey, String>,
+        index_id: StoreIndexId,
+    ) -> Option<String> {
+        let frozen = self
+            .facts
+            .store_indexes()
+            .get(index_id.0 as usize)?
+            .catalog_id
+            .as_deref();
+        self.catalog_id_in(
+            ids,
+            marrow_catalog::CatalogEntryKind::StoreIndex,
+            frozen,
+            || self.store_index_structural_path(index_id),
+        )
+    }
+
+    /// Resolve a catalog id through a prebuilt proposal map: a frozen id wins,
+    /// otherwise the entry's structural path is looked up in `ids`.
+    fn catalog_id_in(
+        &self,
+        ids: &HashMap<crate::catalog::CatalogKey, String>,
+        kind: marrow_catalog::CatalogEntryKind,
+        frozen: Option<&str>,
+        structural_path: impl FnOnce() -> Option<String>,
+    ) -> Option<String> {
+        if let Some(catalog_id) = frozen {
+            return Some(catalog_id.to_string());
+        }
+        crate::catalog::proposal_id(ids, kind, structural_path()?)
     }
 
     pub(crate) fn lower_runtime_bodies<'a, I>(&mut self, sources: I)

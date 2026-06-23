@@ -1184,14 +1184,23 @@ pub(crate) fn active_proposal_id_map(program: &CheckedProgram) -> HashMap<Catalo
         .unwrap_or_default()
 }
 
+/// The id a structural `(kind, path)` resolves to in a prebuilt proposal map. The
+/// map already drops keys with no unique active id, so a hit is the same id the
+/// per-call proposal scan in [`active_program_proposal_id`] would return. The one
+/// owner of this lookup; batch readers resolve every member of a declaration
+/// through it instead of rescanning the proposal per member.
+pub(crate) fn proposal_id(
+    ids: &HashMap<CatalogKey, String>,
+    kind: CatalogEntryKind,
+    path: impl Into<String>,
+) -> Option<String> {
+    ids.get(&CatalogKey::new(kind, path)).cloned()
+}
+
 /// The stable id a member-target evolve path binds to, or `None` when it names no resource
 /// member (the type pass already reported it).
 fn member_target_id(path: &str, ids: &HashMap<CatalogKey, String>) -> Option<String> {
-    ids.get(&CatalogKey::new(
-        CatalogEntryKind::ResourceMember,
-        path.to_string(),
-    ))
-    .cloned()
+    proposal_id(ids, CatalogEntryKind::ResourceMember, path)
 }
 
 /// Resolve each `evolve default` to the stable id its data cells use, carrying the
