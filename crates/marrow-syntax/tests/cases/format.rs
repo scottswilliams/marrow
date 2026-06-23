@@ -524,6 +524,32 @@ fn preserves_single_intra_body_blank_line() {
     );
 }
 
+/// A `;;` doc comment attached to a member carries the member's grouping blank
+/// line: the blank above the doc comment is preserved exactly as it is for a
+/// plain member or a `;`-commented one, and the result is idempotent.
+#[test]
+fn preserves_blank_above_doc_commented_member() {
+    let source = "module app\n\
+         resource Book\n\
+         \x20   required title: string\n\
+         \n\
+         \x20   ;; Who currently holds the book.\n\
+         \x20   loanedTo: string\n";
+    let expected = "module app\n\
+         \n\
+         resource Book\n\
+         \x20   required title: string\n\
+         \n\
+         \x20   ;; Who currently holds the book.\n\
+         \x20   loanedTo: string\n";
+    assert_eq!(format_source(source), expected);
+    assert_eq!(
+        format_source(&format_source(source)),
+        expected,
+        "blank above a doc-commented member is not idempotent"
+    );
+}
+
 /// A comment that sits after a blank line stays its own line and is not pulled up
 /// into the preceding statement's line.
 #[test]

@@ -557,32 +557,61 @@ impl<'source> BlankAwareLines<'source> {
 }
 
 /// Whether the line on which `start` sits is preceded by at least one blank
-/// (whitespace-only) source line. Walking back from `start` skips this line's own
-/// leading indentation, the newline that ends the line above, and that line; a
-/// blank line above leaves a second newline immediately before it.
+/// (whitespace-only) source line, treating the `;;` doc comments that attach to a
+/// member as part of that member's visual group. A doc comment's text is rendered
+/// inline with its member, so the member's own span begins at its header line; to
+/// preserve the grouping blank line above a doc-commented member exactly as for a
+/// plain one, the walk-back steps over any run of doc-comment lines first and then
+/// looks for the blank above the comment.
 fn blank_line_precedes(source: &str, start: usize) -> bool {
-    let before = &source.as_bytes()[..start.min(source.len())];
-    let mut i = before.len();
-    // Skip the current line's leading whitespace back to the line break above it.
-    while i > 0 && before[i - 1] != b'\n' {
-        if !before[i - 1].is_ascii_whitespace() {
+    let before = source.as_bytes();
+    let mut line_start = start.min(before.len());
+    loop {
+        // Walk back over the current line's leading whitespace to its line break.
+        let mut i = line_start;
+        while i > 0 && before[i - 1] != b'\n' {
+            if !before[i - 1].is_ascii_whitespace() {
+                return false;
+            }
+            i -= 1;
+        }
+        if i == 0 {
             return false;
         }
-        i -= 1;
-    }
-    if i == 0 {
+        let above_end = i - 1; // index of the newline ending the line above
+        let above_start = line_start_byte(before, above_end);
+        if is_blank_line(&before[above_start..above_end]) {
+            return true;
+        }
+        if is_doc_comment_line(&before[above_start..above_end]) {
+            // Skip the doc comment and keep looking for the blank above the group.
+            line_start = above_start;
+            continue;
+        }
         return false;
     }
-    i -= 1; // the newline ending the line above
-    // Skip any trailing whitespace on the line above; a blank line is reached
-    // when that walk lands on another newline.
-    while i > 0 && before[i - 1] != b'\n' {
-        if !before[i - 1].is_ascii_whitespace() {
-            return false;
-        }
-        i -= 1;
-    }
-    i > 0
+}
+
+/// Byte index of the start of the line containing `pos`.
+fn line_start_byte(source: &[u8], pos: usize) -> usize {
+    source[..pos]
+        .iter()
+        .rposition(|&b| b == b'\n')
+        .map_or(0, |nl| nl + 1)
+}
+
+fn is_blank_line(line: &[u8]) -> bool {
+    line.iter().all(u8::is_ascii_whitespace)
+}
+
+/// Whether `line` (its raw bytes, without the trailing newline) is a `;;` doc
+/// comment: optional leading whitespace followed by two semicolons.
+fn is_doc_comment_line(line: &[u8]) -> bool {
+    let trimmed = line
+        .iter()
+        .position(|b| !b.is_ascii_whitespace())
+        .map_or(&[][..], |start| &line[start..]);
+    trimmed.starts_with(b";;")
 }
 
 struct FormattedBodyLine {
