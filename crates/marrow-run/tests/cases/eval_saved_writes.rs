@@ -504,6 +504,46 @@ fn transaction_commit_rejects_partial_required_record() {
 }
 
 #[test]
+fn transaction_commit_required_absent_anchors_on_the_offending_write() {
+    let source = "resource Item\n\
+         \x20   required name: string\n\
+         \x20   shelf: string\nstore ^items(id: int): Item\n\n\
+         pub fn set_shelf(id: int)\n\
+         \x20   transaction\n\
+         \x20       ^items(id).shelf = \"fiction\"\n";
+    let program = checked_program(source);
+    let store = TreeStore::memory();
+    let error = run_entry(
+        &store,
+        checked_entry!(&program, "test::set_shelf", Value::Int(1)),
+    )
+    .expect_err("missing required field rejects the commit");
+    assert_eq!(error.code(), "write.required_absent");
+
+    let transaction_offset = source.find("transaction").expect("keyword in source");
+    let write_offset = source
+        .find("^items(id).shelf")
+        .expect("the write is in the source");
+    let write_end = write_offset + "^items(id).shelf = \"fiction\"".len();
+    assert!(
+        (write_offset..write_end).contains(&error.span.start_byte),
+        "the diagnostic must point at the offending write (bytes {write_offset}..{write_end}), \
+         not the transaction keyword at {transaction_offset}: span starts at {}",
+        error.span.start_byte
+    );
+
+    let message = run_error_message(Err::<(), _>(error));
+    assert!(
+        !message.contains("in a transaction"),
+        "an in-transaction write must not be told to group its writes in a transaction: {message}"
+    );
+    assert!(
+        message.contains("name"),
+        "the remedy must name the still-absent required field: {message}"
+    );
+}
+
+#[test]
 fn transaction_required_field_checks_cross_helper_calls() {
     let program = checked_program(
         "resource Item\n\

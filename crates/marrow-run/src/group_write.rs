@@ -170,6 +170,6 @@ fn write_direct_group_entry(
     for path in created_required_paths {
         env.note_created_required_path(path);
     }
-    env.defer_required_entry_check(target.place, target.identity, &layers);
+    env.defer_required_entry_check(target.place, target.identity, &layers, target.span);
     Ok(())
 }

@@ -96,18 +96,31 @@ pub const WRITE_LAYER_KEY_ARITY: &str = "write.layer_key_arity";
 pub const WRITE_ID_OVERFLOW: &str = "write.id_overflow";
 pub const WRITE_NEXT_ID_UNSUPPORTED: &str = "write.next_id_unsupported";
 
-/// The fault raised when a managed write would leave a required field unset.
-/// A bare field assignment populates one field at a time, so the first write to
-/// a new record is rejected for the still-absent siblings; the guidance points
-/// the developer at grouping the populating writes in a transaction so every
-/// required field lands in one atomic commit.
-fn required_absent_error(name: &str) -> WriteError {
+/// Why a required field is still unset, which decides the actionable remedy.
+/// A bare single-field write outside a transaction is rejected for the
+/// still-absent siblings, so the guidance points the developer at grouping the
+/// populating writes in a transaction. A field-by-field write inside a
+/// transaction is already grouped; that same guidance would contradict itself,
+/// so the commit-time check instead asks for the missing field before commit.
+#[derive(Clone, Copy)]
+enum RequiredAbsentRemedy {
+    OutsideTransaction,
+    AtCommit,
+}
+
+fn required_absent_error(name: &str, remedy: RequiredAbsentRemedy) -> WriteError {
+    let guidance = match remedy {
+        RequiredAbsentRemedy::OutsideTransaction => {
+            "group the writes that populate this \
+             record in a transaction block so every required field is set in one commit"
+        }
+        RequiredAbsentRemedy::AtCommit => {
+            "set it before the transaction commits so the record is complete"
+        }
+    };
     WriteError {
         code: WRITE_REQUIRED_ABSENT,
-        message: format!(
-            "required field `{name}` is absent; group the writes that populate this \
-             record in a transaction block so every required field is set in one commit"
-        ),
+        message: format!("required field `{name}` is absent; {guidance}"),
     }
 }
 
@@ -375,23 +388,29 @@ pub(crate) fn validate_required_fields_after_field_write(
         let parent_members = checked_members_for_layers(place, parent)?;
         let supplied = supplied_path_from_parent(layers, parent_len, field);
         ensure_required_fields_present(
-            place,
-            identity,
-            parent,
+            RequiredFieldEntry {
+                place,
+                identity,
+                layers: parent,
+            },
             parent_members,
             Some(&supplied),
             store,
             span,
+            RequiredAbsentRemedy::OutsideTransaction,
         )?;
     }
     ensure_required_fields_present(
-        place,
-        identity,
-        layers,
+        RequiredFieldEntry {
+            place,
+            identity,
+            layers,
+        },
         members,
         Some(&[field.to_string()]),
         store,
         span,
+        RequiredAbsentRemedy::OutsideTransaction,
     )
 }
 
@@ -411,13 +430,16 @@ pub(crate) fn validate_required_fields_after_group_write(
         let parent_members = checked_members_for_layers(place, parent)?;
         let supplied = supplied_layer_path_from_parent(layers, parent_len);
         ensure_required_fields_present(
-            place,
-            identity,
-            parent,
+            RequiredFieldEntry {
+                place,
+                identity,
+                layers: parent,
+            },
             parent_members,
             Some(&supplied),
             store,
             span,
+            RequiredAbsentRemedy::OutsideTransaction,
         )?;
     }
     Ok(())
@@ -460,7 +482,18 @@ pub(crate) fn validate_required_fields_for_entry(
         let parent = &layers[..parent_len];
         if !entry_layers_exempt(exempt_layers, parent) {
             let members = checked_members_for_layers(place, parent)?;
-            ensure_required_fields_present(place, identity, parent, members, None, store, span)?;
+            ensure_required_fields_present(
+                RequiredFieldEntry {
+                    place,
+                    identity,
+                    layers: parent,
+                },
+                members,
+                None,
+                store,
+                span,
+                RequiredAbsentRemedy::AtCommit,
+            )?;
         }
     }
 
@@ -468,7 +501,18 @@ pub(crate) fn validate_required_fields_for_entry(
         return Ok(());
     }
     let members = checked_members_for_layers(place, layers)?;
-    ensure_required_fields_present(place, identity, layers, members, None, store, span)
+    ensure_required_fields_present(
+        RequiredFieldEntry {
+            place,
+            identity,
+            layers,
+        },
+        members,
+        None,
+        store,
+        span,
+        RequiredAbsentRemedy::AtCommit,
+    )
 }
 
 pub(crate) fn plan_field_delete(
@@ -724,7 +768,10 @@ fn collect_supplied_field_writes(
                 bytes,
             }),
             None if field.required => {
-                return Err(required_absent_error(&name));
+                return Err(required_absent_error(
+                    &name,
+                    RequiredAbsentRemedy::OutsideTransaction,
+                ));
             }
             None => {}
         }
@@ -864,27 +911,38 @@ fn data_address(
 }
 
 fn ensure_required_fields_present(
-    place: &CheckedSavedPlace,
-    identity: &[SavedKey],
-    layers: &[LayerAddress],
+    entry: RequiredFieldEntry<'_>,
     members: &[CheckedSavedMember],
     supplied: Option<&[String]>,
     store: &TreeStore,
     span: SourceSpan,
+    remedy: RequiredAbsentRemedy,
 ) -> Result<(), WriteError> {
     for field in materialized_plain_fields(members) {
         if !field.required || supplied.is_some_and(|supplied| supplied == field.path.as_slice()) {
             continue;
         }
-        let address = data_address(place, identity, layers, &field.path, span)?;
+        let address = data_address(entry.place, entry.identity, entry.layers, &field.path, span)?;
         if read_data(store, &address, span)
             .map_err(store_error)?
             .is_none()
         {
-            return Err(required_absent_error(&materialized_field_name(&field.path)));
+            return Err(required_absent_error(
+                &materialized_field_name(&field.path),
+                remedy,
+            ));
         }
     }
     Ok(())
+}
+
+/// The store entry a required-field check addresses: a record identity at a
+/// layer prefix.
+#[derive(Clone, Copy)]
+struct RequiredFieldEntry<'a> {
+    place: &'a CheckedSavedPlace,
+    identity: &'a [SavedKey],
+    layers: &'a [LayerAddress],
 }
 
 fn checked_members_for_layers<'a>(

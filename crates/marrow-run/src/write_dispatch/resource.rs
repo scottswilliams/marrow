@@ -59,7 +59,7 @@ pub(crate) fn write_resource(
     for path in created_required_paths {
         env.note_created_required_path(path);
     }
-    env.defer_required_entry_check(&path.place, identity, &[]);
+    env.defer_required_entry_check(&path.place, identity, &[], span);
     Ok(())
 }
 

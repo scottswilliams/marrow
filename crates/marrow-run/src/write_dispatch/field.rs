@@ -59,7 +59,7 @@ pub(crate) fn write_saved_field(
     } else {
         write_scalar_saved_field(&path, field, value, span, env)?;
     }
-    finish_saved_field_write(&path, created_required_path, env);
+    finish_saved_field_write(&path, created_required_path, span, env);
     Ok(())
 }
 
@@ -140,12 +140,13 @@ fn validate_field_plan(
 fn finish_saved_field_write(
     path: &SavedPath,
     created_required_path: Option<DataAddress>,
+    span: SourceSpan,
     env: &mut Env<'_>,
 ) {
     if let Some(path) = created_required_path {
         env.note_created_required_path(path);
     }
-    env.defer_required_entry_check(&path.place, &path.identity, &[]);
+    env.defer_required_entry_check(&path.place, &path.identity, &[], span);
 }
 
 pub(crate) fn write_nested_field(
@@ -224,6 +225,6 @@ fn finish_nested_field_write(
     if let Some(created) = created_required_path {
         env.note_created_required_path(created);
     }
-    env.defer_required_entry_check(&path.place, identity, &path.layer_addresses);
+    env.defer_required_entry_check(&path.place, identity, &path.layer_addresses, span);
     Ok(())
 }

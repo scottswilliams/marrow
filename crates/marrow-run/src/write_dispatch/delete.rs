@@ -174,7 +174,7 @@ fn delete_unkeyed_group(
         DataAddress::member_path(&path.place, identity, layers, &[field.to_string()], span)?;
     env.apply_plan(plan_data_delete(address), span)?;
     if had_required_data {
-        env.note_maintenance_required_delete(&path.place, identity, layers);
+        env.note_maintenance_required_delete(&path.place, identity, layers, span);
     }
     Ok(())
 }
@@ -251,7 +251,7 @@ fn delete_field(
         )?;
     env.apply_plan(plan, span)?;
     if had_required_data {
-        env.note_maintenance_required_delete(&path.place, identity, layers);
+        env.note_maintenance_required_delete(&path.place, identity, layers, span);
     }
     Ok(())
 }

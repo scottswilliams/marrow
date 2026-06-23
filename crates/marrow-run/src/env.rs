@@ -129,12 +129,15 @@ pub(crate) struct TransactionState {
 }
 
 /// A resource or keyed-group entry whose required fields must be checked before
-/// the surrounding transaction commits.
+/// the surrounding transaction commits. The span is the write that touched the
+/// entry, so a commit-time `write.required_absent` points at that write rather
+/// than the enclosing `transaction` statement.
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct RequiredEntryCheck {
     pub(crate) place: CheckedSavedPlace,
     pub(crate) identity: Vec<SavedKey>,
     pub(crate) layers: Vec<LayerAddress>,
+    pub(crate) span: SourceSpan,
 }
 
 impl RequiredEntryCheck {
@@ -384,6 +387,7 @@ impl<'p> Env<'p> {
         place: &CheckedSavedPlace,
         identity: &[SavedKey],
         layers: &[LayerAddress],
+        span: SourceSpan,
     ) {
         if self.transaction_depth() == 0 {
             return;
@@ -395,6 +399,7 @@ impl<'p> Env<'p> {
                 place: place.clone(),
                 identity: identity.to_vec(),
                 layers: layers.to_vec(),
+                span,
             });
     }
 
@@ -403,6 +408,7 @@ impl<'p> Env<'p> {
         place: &CheckedSavedPlace,
         identity: &[SavedKey],
         layers: &[LayerAddress],
+        span: SourceSpan,
     ) {
         if self.transaction_depth() == 0 || !self.host.maintenance {
             return;
@@ -414,6 +420,7 @@ impl<'p> Env<'p> {
                 place: place.clone(),
                 identity: identity.to_vec(),
                 layers: layers.to_vec(),
+                span,
             });
     }
 
@@ -435,10 +442,7 @@ impl<'p> Env<'p> {
             .any(|created| created.path == *path)
     }
 
-    pub(crate) fn validate_required_entry_checks(
-        &self,
-        span: SourceSpan,
-    ) -> Result<(), RuntimeError> {
+    pub(crate) fn validate_required_entry_checks(&self) -> Result<(), RuntimeError> {
         let transaction = self.transaction.borrow();
         let checks = transaction.required_entry_checks.to_vec();
         let maintenance_deletes = transaction.maintenance_required_deletes.to_vec();
@@ -464,9 +468,9 @@ impl<'p> Env<'p> {
                 &check.layers,
                 &exempt_layers,
                 self.store,
-                span,
+                check.span,
             )
-            .map_err(|error| write_fault(error, span))?;
+            .map_err(|error| write_fault(error, check.span))?;
         }
         Ok(())
     }
