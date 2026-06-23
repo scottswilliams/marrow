@@ -6,7 +6,7 @@ use marrow_syntax::SourceSpan;
 
 use crate::collection::absent_read;
 use crate::env::Env;
-use crate::error::{RuntimeError, decimal_overflow, std_arity, type_error};
+use crate::error::{RuntimeError, std_arity, type_error};
 use crate::expr::eval_int;
 use crate::stdlib::{eval_string_sequence, eval_text};
 use crate::value::Value;
@@ -241,9 +241,14 @@ fn parse_cell(op: CsvScalarOp, cell: &str, span: SourceSpan) -> Result<Value, Ru
         // A CSV cell is external data, so a non-canonical spelling such as `9.50`
         // canonicalizes to its one stored value rather than being rejected as a
         // Marrow source literal would be.
+        // A value outside the decimal scalar envelope is a scalar-reader fence, like
+        // the integer reader rejecting a cell past the int envelope, not the
+        // decimal-arithmetic overflow fault.
         CsvScalarOp::Decimal => match Decimal::parse_relaxed(cell) {
             Ok(decimal) => Ok(Value::Decimal(decimal)),
-            Err(DecimalParseError::Overflow) => Err(decimal_overflow(span)),
+            Err(DecimalParseError::Overflow) => {
+                Err(type_error("CSV cell is outside the decimal envelope", span))
+            }
             Err(DecimalParseError::Malformed) => Err(type_error("CSV cell is not a decimal", span)),
         },
         CsvScalarOp::Bool => match cell {

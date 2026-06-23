@@ -9,7 +9,7 @@ use std::result::Result as StdResult;
 
 use crate::collection::absent_read;
 use crate::env::Env;
-use crate::error::{RuntimeError, decimal_overflow, std_arity, type_error};
+use crate::error::{RuntimeError, std_arity, type_error};
 use crate::stdlib::{eval_string_sequence, eval_text};
 use crate::value::Value;
 
@@ -418,9 +418,15 @@ fn parse_json_decimal(value: &str, span: SourceSpan) -> Result<Value, RuntimeErr
     // A JSON number is external data, so a non-canonical spelling such as `9.50`
     // or `9.0` is a valid number that canonicalizes to its one stored value, not a
     // malformed literal.
+    // A value outside the decimal scalar envelope is a scalar-reader fence, like
+    // the integer reader rejecting a number past the int envelope, not the
+    // decimal-arithmetic overflow fault.
     match Decimal::parse_relaxed(value.trim()) {
         Ok(decimal) => Ok(Value::Decimal(decimal)),
-        Err(DecimalParseError::Overflow) => Err(decimal_overflow(span)),
+        Err(DecimalParseError::Overflow) => Err(type_error(
+            "JSON number is outside the decimal envelope",
+            span,
+        )),
         Err(DecimalParseError::Malformed) => Err(type_error("JSON number is not a decimal", span)),
     }
 }

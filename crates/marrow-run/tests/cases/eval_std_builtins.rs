@@ -3,9 +3,7 @@
 use crate::support;
 use support::*;
 
-use marrow_run::{
-    RUN_DECIMAL_OVERFLOW, RUN_DIVIDE_BY_ZERO, RUN_OVERFLOW, RUN_TYPE, Sequence, Value,
-};
+use marrow_run::{RUN_DIVIDE_BY_ZERO, RUN_OVERFLOW, RUN_TYPE, Sequence, Value};
 
 #[test]
 fn std_text_builtins_operate_on_strings() {
@@ -475,7 +473,7 @@ pub fn negative_zero_fraction(): string
 pub fn negative_zero_wider_fraction(): string
     return string(std::json::decimal("{\"v\":-0.00}", "/v") ?? 9.9)
 
-pub fn overflow(): string
+pub fn over_envelope(): string
     return string(std::json::decimal("{\"v\":99999999999999999999999999999999999}", "/v") ?? 0.0)
 
 pub fn malformed(): string
@@ -509,9 +507,12 @@ pub fn malformed(): string
         .unwrap(),
         Some(Value::Str("0".into()))
     );
+    // A value outside the decimal scalar envelope is a scalar-reader fence, so it
+    // raises run.type like the integer reader over its envelope, not the decimal
+    // construction fault run.decimal_overflow.
     assert_run_error(
-        run(checked_entry!(&program, "test::overflow")),
-        RUN_DECIMAL_OVERFLOW,
+        run(checked_entry!(&program, "test::over_envelope")),
+        RUN_TYPE,
     );
     assert_run_error(run(checked_entry!(&program, "test::malformed")), RUN_TYPE);
 }
@@ -531,7 +532,7 @@ pub fn negative_zero_fraction(): string
 pub fn negative_zero_wider_fraction(): string
     return string(std::csv::decimal("amount\n-0.00\n", 0, "amount") ?? 9.9)
 
-pub fn overflow(): string
+pub fn over_envelope(): string
     return string(std::csv::decimal("amount\n99999999999999999999999999999999999\n", 0, "amount") ?? 0.0)
 
 pub fn malformed(): string
@@ -560,8 +561,8 @@ pub fn malformed(): string
         Some(Value::Str("0".into()))
     );
     assert_run_error(
-        run(checked_entry!(&program, "test::overflow")),
-        RUN_DECIMAL_OVERFLOW,
+        run(checked_entry!(&program, "test::over_envelope")),
+        RUN_TYPE,
     );
     assert_run_error(run(checked_entry!(&program, "test::malformed")), RUN_TYPE);
 }
