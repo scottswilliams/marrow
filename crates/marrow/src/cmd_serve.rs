@@ -180,8 +180,10 @@ pub(crate) fn serve(args: &[String]) -> ExitCode {
     {
         return code;
     }
-    drop(session);
-    let executor = SurfaceServeExecutor::new(snapshot, mode);
+    // The session holds the native store lock for the whole server lifetime: a `--write` serve owns
+    // the writer lock and excludes any other writer or inspection, and a read-only serve holds a
+    // read-only open that excludes a writer. Requests reuse this held session rather than reopening.
+    let executor = SurfaceServeExecutor::new(session);
     let listener = match TcpListener::bind(addr) {
         Ok(listener) => listener,
         Err(error) => {
@@ -312,10 +314,12 @@ fn run_server(
 }
 
 impl SurfaceWatch {
-    /// On a changed source signature, re-open the snapshot, rewrite the declared client, and swap in
-    /// the fresh executor and routes so the next request answers over the updated surface. A
-    /// transient re-check failure logs a tooling error and leaves the last good surface serving
-    /// rather than tearing the server down.
+    /// On a changed source signature, re-check the project, rewrite the declared client, and swap in
+    /// the fresh session and routes so the next request answers over the updated surface. The held
+    /// session — and the store lock with it — is released before re-checking, because re-checking
+    /// re-opens the store and the same process cannot hold the lock against itself; the lock is
+    /// re-acquired as part of the swap. A re-check that fails logs a tooling error; the next genuine
+    /// edit retriggers it.
     fn poll(&mut self, executor: &mut SurfaceServeExecutor, routes: &mut SurfaceRoutes) {
         let signature = match source_signature(&self.dir, &self.config) {
             Ok(signature) => signature,
@@ -331,9 +335,7 @@ impl SurfaceWatch {
         // not re-attempted every cadence; the next genuine edit retriggers it.
         self.signature = signature;
         if let Err(message) = self.recheck(executor, routes) {
-            eprintln!(
-                "{SURFACE_ABI_MISMATCH}: surface re-check failed, serving last good surface: {message}"
-            );
+            eprintln!("{SURFACE_ABI_MISMATCH}: surface re-check failed: {message}");
         }
     }
 
@@ -342,20 +344,20 @@ impl SurfaceWatch {
         executor: &mut SurfaceServeExecutor,
         routes: &mut SurfaceRoutes,
     ) -> Result<(), String> {
+        executor.release();
         let snapshot = ProjectSurfaceSnapshot::open(&self.dir)
             .map_err(|error| format!("{}: {}", error.code(), error.message()))?;
-        let session = SurfaceServeSession::open(&snapshot, self.mode)
-            .map_err(|error| format!("{}: {}", error.code(), error.message()))?;
-        let fresh_routes = SurfaceRoutes::from_program(session.program(), self.mode)?;
+        let fresh_routes = SurfaceRoutes::from_program(snapshot.program(), self.mode)?;
         crate::sync_declared_client(
             &self.dir,
             &self.config,
-            session.program(),
+            snapshot.program(),
             CheckFormat::Text,
         )
         .map_err(|_| "declared client rewrite failed".to_string())?;
-        drop(session);
-        *executor = SurfaceServeExecutor::new(snapshot, self.mode);
+        executor
+            .reopen(&snapshot, self.mode)
+            .map_err(|error| format!("{}: {}", error.code(), error.message()))?;
         *routes = fresh_routes;
         Ok(())
     }
@@ -366,31 +368,47 @@ enum SurfaceServeSession {
     Write(Box<ProjectSurfaceSession>),
 }
 
+/// Owns the surface session that holds the native store lock for the server's process lifetime, so
+/// every request reuses one open session rather than re-opening (and re-locking) per request. A
+/// `--watch` re-check must `release` the session before re-opening the store, then `reopen` once the
+/// re-check succeeds; between the two the session is absent and a request reports `surface.store`.
 struct SurfaceServeExecutor {
-    snapshot: ProjectSurfaceSnapshot,
-    mode: ServeMode,
+    session: Option<SurfaceServeSession>,
 }
 
 impl SurfaceServeExecutor {
-    fn new(snapshot: ProjectSurfaceSnapshot, mode: ServeMode) -> Self {
-        Self { snapshot, mode }
+    fn new(session: SurfaceServeSession) -> Self {
+        Self {
+            session: Some(session),
+        }
     }
 
     fn execute(
         &self,
         operation: &SurfaceOperationRequestJson,
     ) -> Result<SurfaceOperationResponseJson, SurfaceOperationErrorJson> {
-        let session = SurfaceServeSession::open(&self.snapshot, self.mode).map_err(|error| {
-            surface_error(
+        let Some(session) = self.session.as_ref() else {
+            return Err(surface_error(
                 SURFACE_STORE,
-                &format!(
-                    "surface session could not open: {}: {}",
-                    error.code(),
-                    error.message()
-                ),
-            )
-        })?;
+                "surface session is not open after a failed re-check",
+            ));
+        };
         session.execute(operation)
+    }
+
+    /// Drop the held session, releasing the native store lock. A re-check re-opens the store, which
+    /// the same process cannot do while still holding the lock, so the session is released first.
+    fn release(&mut self) {
+        self.session = None;
+    }
+
+    fn reopen(
+        &mut self,
+        snapshot: &ProjectSurfaceSnapshot,
+        mode: ServeMode,
+    ) -> Result<(), ProjectSessionError> {
+        self.session = Some(SurfaceServeSession::open(snapshot, mode)?);
+        Ok(())
     }
 }
 

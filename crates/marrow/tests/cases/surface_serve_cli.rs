@@ -148,6 +148,81 @@ fn serve_startup_writes_declared_client() {
     );
 }
 
+#[test]
+fn serve_write_holds_the_store_lock_for_its_lifetime() {
+    let root = temp_project("serve-write-lock", |root| {
+        write(root, "marrow.json", support::native_config());
+        write(root, "src/app.mw", SURFACE_SOURCE);
+    });
+    let project = root.to_str().expect("project path utf8");
+    let seed = marrow(&["run", "--entry", "app::seed", project]);
+    assert_eq!(seed.status.code(), Some(0), "seed: {seed:?}");
+
+    let (_server, _addr) = spawn_surface_server_with_args(&root, &["--write"]);
+
+    // A concurrent write-capable run must be refused while the write server owns the store.
+    assert_store_locked(
+        support::marrow_bounded(
+            &["run", "--entry", "app::seed", project],
+            std::time::Duration::from_secs(15),
+        ),
+        "racing run",
+    );
+    // A read-only inspection must also be refused: the write server excludes any other open.
+    assert_store_locked(
+        support::marrow_bounded(
+            &["data", "stats", project],
+            std::time::Duration::from_secs(15),
+        ),
+        "racing stats",
+    );
+    // A second write server must fail fast rather than coexisting; bind to an ephemeral port so a
+    // regression that lets it listen forever surfaces as a bound timeout, not a passing test.
+    assert_store_locked(
+        support::marrow_bounded(
+            &["serve", "--write", "--addr", "127.0.0.1:0", project],
+            std::time::Duration::from_secs(15),
+        ),
+        "second serve --write",
+    );
+}
+
+#[test]
+fn read_only_serve_blocks_a_writer() {
+    let root = temp_project("serve-read-blocks-writer", |root| {
+        write(root, "marrow.json", support::native_config());
+        write(root, "src/app.mw", SURFACE_SOURCE);
+    });
+    let project = root.to_str().expect("project path utf8");
+    let seed = marrow(&["run", "--entry", "app::seed", project]);
+    assert_eq!(seed.status.code(), Some(0), "seed: {seed:?}");
+
+    let (_server, _addr) = spawn_surface_server(&root);
+
+    // A read-only serve holds a native read-only open, which excludes a write-capable command.
+    assert_store_locked(
+        support::marrow_bounded(
+            &["run", "--entry", "app::seed", project],
+            std::time::Duration::from_secs(15),
+        ),
+        "writer racing a read-only serve",
+    );
+}
+
+/// Assert a CLI command was refused because the serve process holds the cross-process store lock.
+/// The dotted code is read from the shared stderr fault line, the CLI's single owner of "which
+/// stderr line is the fault" across run, data, and serve.
+fn assert_store_locked(output: std::process::Output, what: &str) {
+    assert_eq!(output.status.code(), Some(1), "{what}: {output:?}");
+    let fault = support::last_fault(&output.stderr);
+    let segments: Vec<&str> = fault.split(": ").collect();
+    let (_, code) = support::find_code_segment(&segments);
+    assert_eq!(
+        code, "store.locked",
+        "{what} must be refused store.locked: {output:?}"
+    );
+}
+
 struct SurfaceFixture {
     _root: support::TempProject,
     report: Value,
@@ -1090,7 +1165,7 @@ fn surface_serve_rejects_garbage_singleton_bodies_without_mutation() {
 }
 
 #[test]
-fn surface_serve_write_mode_idle_kill_leaves_store_clean() {
+fn surface_serve_write_mode_kill_leaves_a_recoverable_store() {
     let fixture = seeded_surface_fixture("surface-serve-write-idle-kill");
     let create_route = route_by_alias(&fixture.report, "create");
     let create = create_descriptor(&fixture.report, &create_route.operation_tag);
@@ -1132,16 +1207,32 @@ fn surface_serve_write_mode_idle_kill_leaves_store_clean() {
     );
     assert_eq!(create_response.status, 200, "{:#?}", create_response.body);
 
+    // A write serve holds the native writer lock for its whole lifetime, so a SIGKILL skips redb's
+    // clean-shutdown marker: the store is left needing a write-capable recovery, not torn. The
+    // committed create must survive the replay.
     drop(server);
 
-    let dump = marrow_sub(
-        "data",
-        &["dump", "--format", "json", fixture.root().to_str().unwrap()],
+    let root = fixture.root().to_str().unwrap();
+    let locked_dump = marrow_sub("data", &["dump", "--format", "json", root]);
+    assert_eq!(
+        locked_dump.status.code(),
+        Some(1),
+        "a read-only open after a killed write serve must report recovery, not open: {locked_dump:?}"
     );
+    assert_eq!(
+        support::json(locked_dump.stdout)["code"],
+        json!("store.recovery_required"),
+        "a killed write serve must leave a recoverable store"
+    );
+
+    let recover = marrow_sub("data", &["recover", root]);
+    assert_eq!(recover.status.code(), Some(0), "data recover: {recover:?}");
+
+    let dump = marrow_sub("data", &["dump", "--format", "json", root]);
     assert_eq!(
         dump.status.code(),
         Some(0),
-        "data dump must open the store cleanly after idle serve shutdown: stdout={} stderr={}",
+        "data dump must open the store cleanly after recovery: stdout={} stderr={}",
         String::from_utf8_lossy(&dump.stdout),
         String::from_utf8_lossy(&dump.stderr)
     );
