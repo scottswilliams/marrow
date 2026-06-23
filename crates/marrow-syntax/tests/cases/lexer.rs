@@ -101,6 +101,159 @@ fn blank_lines_and_comments_do_not_close_blocks() {
 }
 
 #[test]
+fn column_zero_comment_continuing_a_body_stays_inside_the_block() {
+    // The comment outdents to column zero but the body continues with an
+    // indented line below it, so it is trailing trivia of the open block, not a
+    // top-level comment: no DEDENT precedes it.
+    let source = "fn main()\n    const a = 1\n\n; still in main\n    const b = 2\n";
+
+    assert_eq!(
+        kinds(source),
+        vec![
+            TokenKind::Keyword(Keyword::Fn),
+            TokenKind::Identifier,
+            TokenKind::LeftParen,
+            TokenKind::RightParen,
+            TokenKind::Newline,
+            TokenKind::Indent,
+            TokenKind::Keyword(Keyword::Const),
+            TokenKind::Identifier,
+            TokenKind::Equal,
+            TokenKind::Integer,
+            TokenKind::Newline,
+            TokenKind::Comment,
+            TokenKind::Newline,
+            TokenKind::Keyword(Keyword::Const),
+            TokenKind::Identifier,
+            TokenKind::Equal,
+            TokenKind::Integer,
+            TokenKind::Newline,
+            TokenKind::Dedent,
+            TokenKind::Eof,
+        ]
+    );
+}
+
+#[test]
+fn consecutive_column_zero_comments_continuing_a_body_stay_inside_the_block() {
+    // A run of two column-zero comments inside a body, followed by an indented
+    // body line, is classified by the next NON-COMMENT significant line: it
+    // continues the block, so neither comment emits a DEDENT.
+    let source = "fn main()\n    const a = 1\n\n; one\n; two\n    const b = 2\n";
+
+    assert_eq!(
+        kinds(source),
+        vec![
+            TokenKind::Keyword(Keyword::Fn),
+            TokenKind::Identifier,
+            TokenKind::LeftParen,
+            TokenKind::RightParen,
+            TokenKind::Newline,
+            TokenKind::Indent,
+            TokenKind::Keyword(Keyword::Const),
+            TokenKind::Identifier,
+            TokenKind::Equal,
+            TokenKind::Integer,
+            TokenKind::Newline,
+            TokenKind::Comment,
+            TokenKind::Newline,
+            TokenKind::Comment,
+            TokenKind::Newline,
+            TokenKind::Keyword(Keyword::Const),
+            TokenKind::Identifier,
+            TokenKind::Equal,
+            TokenKind::Integer,
+            TokenKind::Newline,
+            TokenKind::Dedent,
+            TokenKind::Eof,
+        ]
+    );
+}
+
+#[test]
+fn consecutive_column_zero_comments_before_a_top_level_decl_close_the_block() {
+    // A run of two column-zero comments whose next non-comment significant line
+    // is a top-level declaration closes the open block before the run.
+    let source = "fn one()\n    const a = 1\n\n; one\n; two\nfn two()\n    const b = 2\n";
+
+    assert_eq!(
+        kinds(source),
+        vec![
+            TokenKind::Keyword(Keyword::Fn),
+            TokenKind::Identifier,
+            TokenKind::LeftParen,
+            TokenKind::RightParen,
+            TokenKind::Newline,
+            TokenKind::Indent,
+            TokenKind::Keyword(Keyword::Const),
+            TokenKind::Identifier,
+            TokenKind::Equal,
+            TokenKind::Integer,
+            TokenKind::Newline,
+            TokenKind::Dedent,
+            TokenKind::Comment,
+            TokenKind::Newline,
+            TokenKind::Comment,
+            TokenKind::Newline,
+            TokenKind::Keyword(Keyword::Fn),
+            TokenKind::Identifier,
+            TokenKind::LeftParen,
+            TokenKind::RightParen,
+            TokenKind::Newline,
+            TokenKind::Indent,
+            TokenKind::Keyword(Keyword::Const),
+            TokenKind::Identifier,
+            TokenKind::Equal,
+            TokenKind::Integer,
+            TokenKind::Newline,
+            TokenKind::Dedent,
+            TokenKind::Eof,
+        ]
+    );
+}
+
+#[test]
+fn column_zero_comment_between_top_level_decls_closes_the_block() {
+    // The comment outdents to column zero and the next significant line is also
+    // at the top level, so the open block closes before the comment and the
+    // comment docks at the file's top level, attaching to the declaration below.
+    let source = "fn one()\n    const a = 1\n\n; about two\nfn two()\n    const b = 2\n";
+
+    assert_eq!(
+        kinds(source),
+        vec![
+            TokenKind::Keyword(Keyword::Fn),
+            TokenKind::Identifier,
+            TokenKind::LeftParen,
+            TokenKind::RightParen,
+            TokenKind::Newline,
+            TokenKind::Indent,
+            TokenKind::Keyword(Keyword::Const),
+            TokenKind::Identifier,
+            TokenKind::Equal,
+            TokenKind::Integer,
+            TokenKind::Newline,
+            TokenKind::Dedent,
+            TokenKind::Comment,
+            TokenKind::Newline,
+            TokenKind::Keyword(Keyword::Fn),
+            TokenKind::Identifier,
+            TokenKind::LeftParen,
+            TokenKind::RightParen,
+            TokenKind::Newline,
+            TokenKind::Indent,
+            TokenKind::Keyword(Keyword::Const),
+            TokenKind::Identifier,
+            TokenKind::Equal,
+            TokenKind::Integer,
+            TokenKind::Newline,
+            TokenKind::Dedent,
+            TokenKind::Eof,
+        ]
+    );
+}
+
+#[test]
 fn lexes_maybe_return_and_absent_return_keywords() {
     let source = "fn f(): maybe int\n    return absent\n";
 

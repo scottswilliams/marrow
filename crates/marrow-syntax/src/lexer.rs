@@ -63,8 +63,10 @@ impl<'a> Lexer<'a> {
             let is_doc_comment = line.doc_comment().is_some();
             if line.is_comment() || is_doc_comment {
                 let starts_in_delimiters = self.open_delimiters > 0;
+                let next_indent = self.next_significant_indent(index);
                 if !starts_in_delimiters
-                    && self.apply_comment_indent(line, is_doc_comment) == Indent::OverDeep
+                    && self.apply_comment_indent(line, is_doc_comment, next_indent)
+                        == Indent::OverDeep
                 {
                     continue;
                 }
@@ -180,13 +182,44 @@ impl<'a> Lexer<'a> {
         });
     }
 
-    fn apply_comment_indent(&mut self, line: Line<'a>, is_doc_comment: bool) -> Indent {
+    /// Decide how a comment-only line interacts with the indent stack. A doc
+    /// comment, or a comment indented at or past the current block, drives the
+    /// normal indent logic so it docks to the block it sits in. A line comment
+    /// outdented below the current block is otherwise transparent — kept inside
+    /// the open block as trailing trivia rather than closing it.
+    ///
+    /// The one exception is a column-zero line comment that introduces the next
+    /// top-level construct: a run of consecutive column-zero comments is
+    /// classified by the next NON-COMMENT significant line. When that line is at
+    /// the top level, the run sits between declarations rather than trailing the
+    /// block above, so it closes the open blocks and docks to the file's top
+    /// level. A run whose body continues with indented lines below stays
+    /// transparent.
+    fn apply_comment_indent(
+        &mut self,
+        line: Line<'a>,
+        is_doc_comment: bool,
+        next_indent: Option<usize>,
+    ) -> Indent {
         let current = self.current_indent();
-        if is_doc_comment || line.indent >= current {
+        let introduces_top_level_decl = line.indent == 0 && next_indent == Some(0) && current > 0;
+        if is_doc_comment || line.indent >= current || introduces_top_level_decl {
             self.apply_indent(line)
         } else {
             Indent::Within
         }
+    }
+
+    /// The indentation of the next non-blank, non-comment line after `index`, or
+    /// `None` when only blank or comment lines remain. A run of column-zero
+    /// comments is classified by the declaration that follows the whole run, so
+    /// comment lines are skipped: a column-zero comment followed by another
+    /// column-zero comment looks past both to whatever the run introduces.
+    fn next_significant_indent(&self, index: usize) -> Option<usize> {
+        self.lines[index + 1..]
+            .iter()
+            .find(|line| !line.is_blank() && !line.is_comment() && line.doc_comment().is_none())
+            .map(|line| line.indent)
     }
 
     fn current_indent(&self) -> usize {

@@ -544,6 +544,35 @@ fn comment_after_blank_line_stays_attached_to_following_item() {
     assert_eq!(format_source(source), expected);
 }
 
+/// A top-level `;` comment that follows a blank line stays glued to the
+/// declaration below it, with the blank line above the comment, regardless of
+/// whether the preceding declaration is block-bearing. The comment must never be
+/// re-grouped upward onto the predecessor.
+#[test]
+fn top_level_comment_after_blank_stays_with_following_decl_across_block_bearing_predecessors() {
+    let predecessors = [
+        "resource Item\n    name: text",
+        "enum Color\n    red\n    green",
+        "store ^items(id: text): Item\n    index by_name(name)",
+        "evolve\n    retire ^old",
+        "pub fn one()\n    const a = 1",
+    ];
+    for predecessor in predecessors {
+        let source =
+            format!("module app\n\n{predecessor}\n\n; about two\npub fn two()\n    const b = 2\n");
+        let once = format_source(&source);
+        assert!(
+            once.contains("\n\n; about two\npub fn two()"),
+            "comment detached from following decl after predecessor `{predecessor}`:\n{once}"
+        );
+        assert_eq!(
+            format_source(&once),
+            once,
+            "format is not idempotent after predecessor `{predecessor}`:\n{once}"
+        );
+    }
+}
+
 /// A span-independent structural fingerprint of a parsed file: the `Debug`
 /// rendering with every `SourceSpan { ... }` region removed. Two files compare
 /// equal exactly when their declarations match structurally (names, statements,
