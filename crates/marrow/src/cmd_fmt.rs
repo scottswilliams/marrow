@@ -175,6 +175,15 @@ fn fmt_one(file: &str, source: &str, mode: FmtMode) -> Result<FmtOutcome, ()> {
         FmtMode::Check => {
             if source == formatted {
                 Ok(FmtOutcome::Unchanged)
+            } else if !marrow_syntax::format_preserves_comments(source, &formatted) {
+                report_simple_error(
+                    "fmt.comment_loss",
+                    &format!(
+                        "refusing to format {file}: formatting would discard retained comments"
+                    ),
+                    CheckFormat::Text,
+                );
+                Err(())
             } else {
                 eprintln!("{file}: not formatted; run marrow fmt --write {file} to format it");
                 Ok(FmtOutcome::NeedsFormatting)

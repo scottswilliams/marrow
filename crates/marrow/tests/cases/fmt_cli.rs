@@ -94,6 +94,37 @@ fn fmt_check_fails_on_unformatted_source() {
 }
 
 #[test]
+fn fmt_check_refuses_comment_loss_rather_than_advising_write() {
+    // A comment stranded on a continuation line inside an open delimiter cannot be
+    // re-emitted, so `--check` must refuse it as fmt.comment_loss like the other
+    // modes, not misreport it as routine "not formatted" and advise a --write that
+    // would itself refuse.
+    let path = temp_source(
+        "check-commentloss",
+        "module app\n\
+         fn f(): string\n\
+         \x20   return concat(\n\
+         \x20       \"a\",  ; keep call\n\
+         \x20       \"b\",\n\
+         \x20   )\n",
+    );
+    let output = run_fmt(&["--check", path.to_str().unwrap()]);
+    fs::remove_file(&path).ok();
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert!(
+        fmt_reports_code(&output.stderr, "fmt.comment_loss"),
+        "{:?}",
+        output.stderr
+    );
+    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+    assert!(
+        !stderr.contains(NOT_FORMATTED_GOLDEN),
+        "a comment-loss file must not be misreported as routine not-formatted: {stderr}"
+    );
+}
+
+#[test]
 fn fmt_write_rewrites_the_file_in_place() {
     let path = temp_source("write", "module app\nconst Max:int=5\n");
     let output = run_fmt(&["--write", path.to_str().unwrap()]);
