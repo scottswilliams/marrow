@@ -252,7 +252,7 @@ the lock — `doctor` repairs nothing.
 
 | Code | Meaning |
 |---|---|
-| `doctor.config_invalid` | `doctor` could not load `marrow.json`. `data.underlying_code` is usually `config.missing` (no `marrow.json` at the target: not a Marrow project), `io.read`, or `config.invalid`; fix the config and rerun the printed `marrow doctor` command. |
+| `doctor.config_invalid` | `doctor` could not load `marrow.json`. `data.underlying_code` is usually `config.missing` (no `marrow.json` at the target: not a Marrow project), `config.not_a_project` (the target is a bare file, not a project directory), `io.read`, or `config.invalid`; fix the config and rerun the printed `marrow doctor` command. |
 | `doctor.lock_corrupt` | The committed `marrow.lock` projection exists but is malformed. `data.underlying_code` carries `catalog.lock_corrupt`; delete the corrupt `marrow.lock` so the next run or `evolve apply` re-projects it from the authoritative store (a run over a corrupt lock fails closed without regenerating it), then run the printed `marrow check` command. |
 | `doctor.check_failed` | The project check summary reported diagnostics or could not load source. Run the printed `marrow check` command for the full diagnostic report. |
 | `doctor.store_locked` | The configured native store exists but a read-only open reported `store.locked`. Close the process holding the store, then rerun the printed `marrow doctor` command. |
@@ -393,6 +393,7 @@ Project-loading faults from `marrow.json` and source discovery.
 | Code | Meaning |
 |---|---|
 | `config.missing` | Emitted by `check`/`run`/`doctor`/`fmt` when no `marrow.json` exists at the target directory: the path is not a Marrow project. Run `marrow init <dir>`, or run from a directory that has a `marrow.json`. |
+| `config.not_a_project` | The project path is a bare file, not a directory containing `marrow.json`. Pass the project directory, or run from a directory that has a `marrow.json`. Unlike `config.missing`, `marrow init` does not apply: a file cannot be turned into a project in place. |
 | `config.invalid` | `marrow.json` is malformed JSON, has an unknown key, is missing a required field, or names an unknown backend. |
 | `config.data_dir` | The native store `dataDir` directory could not be created: the path is occupied by a non-directory file, a parent denies access, or the filesystem is read-only. Point `dataDir` at a writable directory or remove the file occupying it. |
 | `config.client_without_surface` | A non-fatal warning: `marrow.json` sets a `client` output path, but the project declares no callable `surface`, so there is nothing to generate. `run`, `serve` startup, and `evolve apply` report it and write no client; either add a `surface` or remove the `client` line. |

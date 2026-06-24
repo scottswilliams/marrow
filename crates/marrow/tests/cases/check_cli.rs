@@ -26,7 +26,7 @@ fn assert_has_code(report: &Value, code: &str) {
 }
 
 #[test]
-fn check_rejects_file_targets_as_usage_failures() {
+fn check_rejects_a_bare_file_target_as_not_a_project() {
     let path = support::temp_source(
         "file-target",
         r#"module app
@@ -38,38 +38,140 @@ pub fn main()
     let output = support::marrow_sub("check", &[path.to_str().unwrap()]);
 
     fs::remove_file(&path).ok();
-    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    // A bare file is the same not-a-project mistake as a directory missing marrow.json: the loader
+    // owns it as `config.not_a_project` and exits 1, the same code every command uses, rather than
+    // a command-local usage failure.
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
     assert!(
         output.stdout.is_empty(),
         "unexpected stdout: {:?}",
         output.stdout
     );
     let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
-    assert!(stderr.contains("project directory"), "{stderr}");
+    assert!(
+        stderr.contains("config.not_a_project") && stderr.contains("bare file"),
+        "{stderr}"
+    );
     assert!(stderr.contains("marrow.json"), "{stderr}");
+    assert!(!stderr.contains("os error"), "{stderr}");
 }
 
 #[test]
-fn check_rejects_file_targets_before_json_diagnostics() {
+fn a_bare_file_projectdir_reads_as_not_a_project_with_one_message_across_commands() {
+    // A regular file passed where a project directory is expected is one mistake with one owner:
+    // the project loader classifies it as `config.not_a_project`, so every command emits the
+    // identical not-a-project prose at the identical exit code, naming marrow.json with no raw OS
+    // errno and no misleading `marrow init <file>` remedy (which would fail on a bare file). The
+    // commands that take extra arguments still fault at the project path before reaching them.
+    let path = support::temp_source(
+        "bare-file-projectdir",
+        r#"module app
+pub fn main()
+    print("ok")
+"#,
+    );
+    let target = path.to_str().unwrap();
+    let backup = support::unique_temp_path("bare-file-backup");
+    let backup = backup.to_str().unwrap();
+
+    let invocations: [(&str, Vec<&str>); 8] = [
+        ("run", vec![target]),
+        ("test", vec![target]),
+        ("data", vec!["stats", target]),
+        ("evolve", vec!["preview", target]),
+        ("backup", vec![target, backup]),
+        ("restore", vec![target, backup]),
+        ("check", vec![target]),
+        ("client", vec!["typescript", target]),
+    ];
+
+    let mut messages = Vec::new();
+    let mut codes = Vec::new();
+    for (command, args) in &invocations {
+        let output = support::marrow_sub(command, args);
+        let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+        assert!(
+            stderr.contains("marrow.json") && stderr.contains("bare file"),
+            "{command}: a bare-file projectdir must read as not-a-project naming marrow.json: {stderr}"
+        );
+        assert!(
+            !stderr.contains("os error"),
+            "{command}: a bare-file projectdir must not leak a raw OS errno: {stderr}"
+        );
+        assert!(
+            !stderr.contains("marrow init"),
+            "{command}: a bare file cannot be initialized in place, so no init remedy: {stderr}"
+        );
+        messages.push(stderr);
+        codes.push(output.status.code());
+    }
+
+    let first_message = messages[0].clone();
+    let first_code = codes[0];
+    for ((command, _), (message, code)) in invocations.iter().zip(messages.iter().zip(&codes)) {
+        assert_eq!(
+            *message, first_message,
+            "{command}: every command must emit the identical not-a-project prose"
+        );
+        assert_eq!(
+            *code, first_code,
+            "{command}: every command must exit with the identical code"
+        );
+    }
+
+    // `doctor` reports the same not-a-project condition as a structured finding rather than a bare
+    // stderr line, so it carries the canonical message and code in the finding payload, never a raw
+    // errno.
+    let doctor = support::marrow_sub("doctor", &["--format", "json", target]);
+    assert_eq!(doctor.status.code(), Some(1), "{doctor:?}");
+    let report: Value = serde_json::from_slice(&doctor.stdout).expect("doctor json");
+    let config_finding = report["findings"]
+        .as_array()
+        .expect("findings array")
+        .iter()
+        .find(|finding| finding["code"] == serde_json::json!("doctor.config_invalid"))
+        .expect("a config finding");
+    assert_eq!(
+        config_finding["data"]["underlying_code"],
+        serde_json::json!("config.not_a_project"),
+        "{report:#?}"
+    );
+    let doctor_stdout = String::from_utf8(doctor.stdout).expect("doctor stdout utf8");
+    assert!(
+        doctor_stdout.contains("bare file") && !doctor_stdout.contains("os error"),
+        "doctor must carry the not-a-project prose with no raw errno: {doctor_stdout}"
+    );
+
+    fs::remove_file(&path).ok();
+}
+
+#[test]
+fn check_rejects_a_bare_file_target_before_parsing_its_contents() {
     let path = support::temp_source("json-file-target", "\tbad\n");
 
     for format in ["json", "jsonl"] {
         let output = support::marrow_sub("check", &["--format", format, path.to_str().unwrap()]);
 
-        assert_eq!(output.status.code(), Some(2), "{format}: {output:?}");
-        assert!(
-            output.stdout.is_empty(),
-            "{format} unexpected stdout: {:?}",
-            output.stdout
+        // The bare file faults at the project loader, not the parser: a `config.not_a_project`
+        // envelope at exit 1, never a `parse.syntax` diagnostic over the file's bad contents.
+        assert_eq!(output.status.code(), Some(1), "{format}: {output:?}");
+        let stdout = String::from_utf8(output.stdout).expect("stdout utf8");
+        let envelope: Value = serde_json::from_str(stdout.lines().next().unwrap_or(""))
+            .unwrap_or_else(|_| panic!("{format}: json envelope: {stdout}"));
+        assert_eq!(
+            envelope["code"],
+            serde_json::json!("config.not_a_project"),
+            "{format}: {stdout}"
         );
-        let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
         assert!(
-            stderr.contains("project directory") && stderr.contains("marrow.json"),
-            "{format}: {stderr}"
+            envelope["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("marrow.json")),
+            "{format}: {stdout}"
         );
         assert!(
-            !stderr.contains("parse.syntax"),
-            "{format} should fail as usage before parsing: {stderr}"
+            !stdout.contains("parse.syntax"),
+            "{format} should fault at the loader before parsing: {stdout}"
         );
     }
 

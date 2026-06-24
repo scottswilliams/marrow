@@ -57,9 +57,6 @@ With --locked, a stale or missing marrow.lock is a fatal error for CI rather tha
         eprintln!("usage: marrow check [--format text|json|jsonl] [--locked] <projectdir>");
         return ExitCode::from(2);
     };
-    if let Err(code) = crate::reject_bare_file_target("check", &target) {
-        return code;
-    }
     check_project_dir(&target, format, locked)
 }
 

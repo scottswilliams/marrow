@@ -55,9 +55,6 @@ pub(crate) fn typescript(args: &[String]) -> ExitCode {
         eprintln!("missing project directory");
         return ExitCode::from(2);
     };
-    if let Err(code) = crate::reject_bare_file_target(COMMAND, &target) {
-        return code;
-    }
     render_client(&target, out.as_deref())
 }
 

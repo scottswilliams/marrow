@@ -15,6 +15,9 @@ pub const CONFIG_DATA_DIR: &str = "config.data_dir";
 /// No `marrow.json` was found at the project directory: the path is not a Marrow project.
 pub const CONFIG_MISSING: &str = "config.missing";
 
+/// The project path is a bare file, not a directory containing `marrow.json`.
+pub const CONFIG_NOT_A_PROJECT: &str = "config.not_a_project";
+
 #[derive(Debug)]
 pub enum ProjectIoError {
     Io {
@@ -26,6 +29,13 @@ pub enum ProjectIoError {
     /// carries a missing-project remedy rather than a raw read fault.
     ConfigMissing {
         dir: PathBuf,
+    },
+    /// The project path is a bare file, not a directory containing `marrow.json` (reading
+    /// `<file>/marrow.json` fails with a non-directory error). This is distinct from a directory
+    /// missing `marrow.json`: the `marrow init` remedy does not apply, since a bare file cannot be
+    /// turned into a project in place, so it names the mistake instead of pointing at init.
+    NotAProject {
+        path: PathBuf,
     },
     /// The native store's `dataDir` directory could not be created: the path is
     /// occupied by a non-directory file, a parent denies access, or the
@@ -95,6 +105,7 @@ impl ProjectIoError {
         match self {
             Self::Io { .. } => crate::IO_READ,
             Self::ConfigMissing { .. } => CONFIG_MISSING,
+            Self::NotAProject { .. } => CONFIG_NOT_A_PROJECT,
             Self::DataDirCreate { .. } => CONFIG_DATA_DIR,
             Self::Config { code, .. } => code,
             Self::Catalog { code, .. } => code,
@@ -112,6 +123,11 @@ impl ProjectIoError {
                  Run marrow init {}, or run from a directory containing marrow.json",
                 dir.display(),
                 dir.display()
+            ),
+            Self::NotAProject { path } => format!(
+                "{} is a bare file, not a project directory containing marrow.json; \
+                 pass the project directory, or run from a directory containing marrow.json",
+                path.display()
             ),
             Self::DataDirCreate { path, fault } => format!(
                 "cannot create the native store `dataDir` directory {}: {}; \
@@ -137,15 +153,23 @@ impl From<StoreError> for ProjectIoError {
 pub fn load_config(root: &Path) -> Result<ProjectConfig, ProjectIoError> {
     let path = root.join("marrow.json");
     let json = fs::read_to_string(&path).map_err(|error| {
-        if error.kind() == std::io::ErrorKind::NotFound {
-            ProjectIoError::ConfigMissing {
+        // Every command resolves a project through this loader, so the two everyday "not a Marrow
+        // project" mistakes are classified here once rather than re-guarded per command. A
+        // directory with no `marrow.json` carries the missing-project remedy (`marrow init`); a
+        // bare file passed where a directory is expected (the join reads through a non-directory)
+        // carries the distinct not-a-project message, since `marrow init` cannot turn a file into
+        // a project in place. Both keep the raw `ENOTDIR`/`ENOENT` errno out of an `io.read` leak.
+        match error.kind() {
+            std::io::ErrorKind::NotFound => ProjectIoError::ConfigMissing {
                 dir: root.to_path_buf(),
-            }
-        } else {
-            ProjectIoError::Io {
+            },
+            std::io::ErrorKind::NotADirectory => ProjectIoError::NotAProject {
+                path: root.to_path_buf(),
+            },
+            _ => ProjectIoError::Io {
                 path: path.clone(),
                 error,
-            }
+            },
         }
     })?;
     marrow_project::parse_config(&json).map_err(|error| ProjectIoError::Config {
@@ -571,7 +595,17 @@ fn read_lock_file(root: &Path) -> LockRead {
     let path = root.join(marrow_project::CATALOG_FILE_NAME);
     let json = match fs::read_to_string(&path) {
         Ok(json) => json,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return LockRead::Missing,
+        // A missing lock, or a project path that is itself a bare file (so the lock cannot exist
+        // under a non-directory) is an absent lock — a true first run or a not-a-project path the
+        // config loader already classifies — never a corrupt lock or a raw read fault to surface.
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+            ) =>
+        {
+            return LockRead::Missing;
+        }
         Err(error) => return LockRead::ReadError { path, error },
     };
     match marrow_catalog::CatalogLock::from_lock_json(&json) {

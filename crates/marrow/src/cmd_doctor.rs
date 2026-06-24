@@ -20,9 +20,6 @@ pub(crate) fn doctor(args: &[String]) -> ExitCode {
         Ok(parsed) => parsed,
         Err(code) => return code,
     };
-    if let Err(code) = crate::reject_bare_file_target("doctor", &dir) {
-        return code;
-    }
     run_doctor(&dir, format)
 }
 
@@ -698,6 +695,9 @@ fn project_error_finding(
         }
         ProjectIoError::ConfigMissing { dir } => {
             data.insert("path".into(), json!(dir.display().to_string()));
+        }
+        ProjectIoError::NotAProject { path } => {
+            data.insert("path".into(), json!(path.display().to_string()));
         }
         ProjectIoError::Config { .. }
         | ProjectIoError::Catalog { .. }

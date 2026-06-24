@@ -1148,20 +1148,6 @@ pub(crate) fn take_single_target(
     Ok(())
 }
 
-/// Reject a project target that names an existing non-directory (a bare `.mw`
-/// file). A missing path is left alone so the command's loader reports the
-/// accurate `io.read` failure, consistent with `run`/`test`/`data`.
-pub(crate) fn reject_bare_file_target(command: &str, target: &str) -> Result<(), ExitCode> {
-    let path = Path::new(target);
-    if path.exists() && !path.is_dir() {
-        eprintln!(
-            "marrow {command} accepts a project directory containing marrow.json, not a bare file"
-        );
-        return Err(ExitCode::from(2));
-    }
-    Ok(())
-}
-
 pub(crate) fn report_check(file: &str, parsed: &marrow_syntax::ParsedSource, format: CheckFormat) {
     match format {
         CheckFormat::Text => {

@@ -125,7 +125,7 @@ fn doctor_on_a_missing_directory_reports_a_missing_project() {
 }
 
 #[test]
-fn doctor_rejects_a_bare_file_target_as_a_usage_failure() {
+fn doctor_reports_a_bare_file_target_as_not_a_project() {
     let path = support::temp_source(
         "doctor-file-target",
         r#"module app
@@ -134,14 +134,33 @@ pub fn main()
 "#,
     );
 
-    let output = marrow(&["doctor", path.to_str().unwrap()]);
+    let output = marrow(&["doctor", "--format", "json", path.to_str().unwrap()]);
 
     fs::remove_file(&path).ok();
-    assert_eq!(output.status.code(), Some(2), "{output:?}");
-    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+    // A bare file is the same not-a-project condition run/check surface: doctor probes it like a
+    // missing directory, reporting the `config.not_a_project` finding and exiting 1, never a
+    // command-local usage failure and never a raw `os error` leaked through the lock read.
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let value = json(output.stdout);
+    let config_finding = finding(&value, "doctor.config_invalid");
+    assert_eq!(
+        config_finding["data"]["underlying_code"],
+        serde_json::json!("config.not_a_project"),
+        "{value:#?}"
+    );
+    let message = config_finding["data"]["message"]
+        .as_str()
+        .expect("finding message");
     assert!(
-        stderr.contains("accepts a project directory") && stderr.contains("marrow.json"),
-        "{stderr}"
+        message.contains("bare file")
+            && message.contains("marrow.json")
+            && !message.contains("os error")
+            && !message.contains("marrow init"),
+        "the not-a-project finding names the bare file with no errno and no init remedy: {value:#?}"
+    );
+    assert!(
+        !value.to_string().contains("os error"),
+        "no doctor finding may leak a raw OS errno for a bare-file path: {value:#?}"
     );
 }
 
