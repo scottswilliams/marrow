@@ -427,6 +427,80 @@ mod decl_parser_corpus {
         }
     }
 
+    /// An unterminated `(` or a call argument list missing its `,`/`)`, with a
+    /// complete operand present, names the missing delimiter at the gap just past
+    /// that operand — never the generic "expected a statement" at the keyword, and
+    /// never a line-0/column-0 span.
+    #[test]
+    fn unclosed_delimiter_with_a_complete_operand_names_the_delimiter() {
+        // Each case names the missing-delimiter substring and the byte the gap
+        // should sit at, just past the complete operand.
+        for (source, expected, gap_byte) in [
+            (
+                "fn f()\n    return (1\n",
+                "expected `)`",
+                "fn f()\n    return (1".len(),
+            ),
+            (
+                "fn f()\n    return g(1\n",
+                "expected `)`",
+                "fn f()\n    return g(1".len(),
+            ),
+            (
+                "fn f()\n    return g(1 2)\n",
+                "expected `,`",
+                "fn f()\n    return g(1".len(),
+            ),
+        ] {
+            let ParsedSource { diagnostics, .. } = parse_source(source);
+            let delimiter = diagnostics
+                .iter()
+                .find(|d| d.message.contains(expected))
+                .unwrap_or_else(|| {
+                    panic!("expected a {expected:?} diagnostic for {source:?}: {diagnostics:#?}")
+                });
+            assert_eq!(delimiter.code, PARSE_SYNTAX);
+            assert_eq!(
+                delimiter.span.start_byte, gap_byte,
+                "delimiter gap should sit just past the operand in {source:?}: {diagnostics:#?}"
+            );
+            assert!(
+                delimiter.span.line >= 1 && delimiter.span.column >= 1,
+                "valid 1-based span for {source:?}: {delimiter:#?}"
+            );
+            assert!(
+                !diagnostics
+                    .iter()
+                    .any(|d| d.message.contains("expected a statement")),
+                "the generic statement fallback must be suppressed for {source:?}: {diagnostics:#?}"
+            );
+        }
+    }
+
+    /// A `for` iterable with an unterminated `(` keeps its single header
+    /// diagnostic and does not also emit a separate close-delimiter gap: the
+    /// header owns recovery for everything inside it.
+    #[test]
+    fn for_header_unclosed_paren_reports_only_the_header_diagnostic() {
+        let source = "fn f()\n    for x in (1\n        x\n";
+        let ParsedSource { diagnostics, .. } = parse_source(source);
+        let header: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| d.message.contains("expected `for <binding> in <iterable>`"))
+            .collect();
+        assert_eq!(
+            header.len(),
+            1,
+            "exactly one for-header diagnostic for {source:?}: {diagnostics:#?}"
+        );
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|d| d.message.contains("expected `)`")),
+            "the for header owns recovery; no separate close-delimiter gap for {source:?}: {diagnostics:#?}"
+        );
+    }
+
     /// No empty-operand or empty-header statement form may report a diagnostic
     /// at line 0 or column 0 — those are never valid source positions (lines and
     /// columns are 1-based). Every expression-taking statement form is

@@ -192,6 +192,33 @@ impl<'a> ExprParser<'a> {
         );
     }
 
+    /// Report a missing call/group delimiter at the gap just past the last
+    /// consumed token, when a complete operand sits inside an unterminated `(` or
+    /// before a missing `,`. Suppressed inside a context that owns its own
+    /// recovery diagnostic — an outer delimiter or a `for` header — so that
+    /// caller's single diagnostic stands alone. The span is the zero-width point
+    /// after the operand, which is always a valid 1-based position.
+    fn expected_delimiter_at_gap(&mut self, expected: ExpectedSyntax, message: &str) {
+        if self.gap_suppression_depth > 0 {
+            return;
+        }
+        let Some(last) = self.pos.checked_sub(1) else {
+            return;
+        };
+        let end = self.tokens[last].span;
+        self.error(
+            SourceSpan {
+                start_byte: end.end_byte,
+                end_byte: end.end_byte,
+                line: end.line,
+                column: end.column,
+            },
+            ParseDiagnosticReason::Expected(expected),
+            message.to_string(),
+            None,
+        );
+    }
+
     fn peek(&self) -> Option<TokenKind> {
         self.peek_at(0)
     }
@@ -541,9 +568,30 @@ impl<'a> ExprParser<'a> {
                 Some(TokenKind::LeftParen) => {
                     let open = self.advance();
                     let parsed_args = self.while_caller_owns_recovery(Self::arguments)?;
-                    if !matches!(self.peek(), Some(TokenKind::RightParen)) {
-                        return None;
-                    }
+                    let Some(TokenKind::RightParen) = self.peek() else {
+                        // The argument list is unterminated: a token follows the
+                        // last argument where a `,` or `)` was expected. Name the
+                        // missing delimiter at the gap, then recover the call node
+                        // with the arguments parsed so far so downstream analysis
+                        // — callee contexts, signature help — still sees an
+                        // incomplete call rather than losing the callee.
+                        let (expected, message) = if self.peek().is_some_and(starts_expression) {
+                            (ExpectedSyntax::Comma, "expected `,`")
+                        } else {
+                            (ExpectedSyntax::CloseParen, "expected `)`")
+                        };
+                        self.expected_delimiter_at_gap(expected, message);
+                        let end = self.tokens[self.pos - 1].span;
+                        let span = join_spans(expr.span(), end);
+                        let multiline = parsed_args.trailing_comma || end.line > open.span.line;
+                        self.leave_chain(levels);
+                        return Some(Expression::Call {
+                            callee: Box::new(expr),
+                            args: parsed_args.args,
+                            multiline,
+                            span,
+                        });
+                    };
                     let close = self.advance();
                     let span = join_spans(expr.span(), close.span);
                     let multiline = parsed_args.trailing_comma || close.span.line > open.span.line;
@@ -780,7 +828,12 @@ impl<'a> ExprParser<'a> {
                 } else {
                     // A `=` before the closing `)` is the `=`-for-`==` mistake;
                     // report it pointedly rather than as an unstructured group.
-                    self.report_stray_equals();
+                    // Otherwise the group is unterminated: name the missing `)` at
+                    // the gap so the error lands on the delimiter, not on the
+                    // enclosing statement keyword.
+                    if !self.report_stray_equals() {
+                        self.expected_delimiter_at_gap(ExpectedSyntax::CloseParen, "expected `)`");
+                    }
                     None
                 }
             }

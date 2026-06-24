@@ -89,6 +89,8 @@ impl ParseDiagnosticReason {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExpectedSyntax {
+    CloseParen,
+    Comma,
     ConstName,
     ConstType,
     Declaration,
