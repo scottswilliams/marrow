@@ -11,7 +11,7 @@ use marrow_syntax::{Argument, SourceSpan};
 
 use crate::diagnostics::CHECK_SEQUENCE_POSITION;
 use crate::executable::{
-    CheckedSavedLayer, SavedKeyParamTarget, SavedPlaceResolver, lower_expr_for_file,
+    SavedKeyParamTarget, SavedPlaceResolver, is_single_int_sequence, lower_expr_for_file,
 };
 use crate::typerules::{is_ordered, marrow_type_name, type_compatible};
 use crate::{
@@ -111,8 +111,10 @@ fn static_non_positive_call_position(
 }
 
 /// Whether a write target addresses a single int-keyed sequence position, saved or
-/// local. A saved target's final layer must be single int-keyed; a local target's
-/// callee must be a `sequence[T]` or a single int-keyed tree.
+/// local. A saved target is single int-keyed when its final keyed layer is, or — for
+/// a whole-record store-root write — when the store's sole identity key is an integer;
+/// a single-integer store key is itself a 1-based sequence. A local target's callee
+/// must be a `sequence[T]` or a single int-keyed tree.
 fn target_is_single_int_sequence(
     program: &CheckedProgram,
     target: &marrow_syntax::Expression,
@@ -121,9 +123,12 @@ fn target_is_single_int_sequence(
     file: &Path,
 ) -> bool {
     if let Some(checked) = lower_expr_for_file(program, file, target, scope)
-        && let Some(layer) = checked.saved_place().and_then(|place| place.layers.last())
+        && let Some(place) = checked.saved_place()
     {
-        return single_int_key_layer(layer);
+        return match place.layers.last() {
+            Some(layer) => is_single_int_sequence(&layer.key_params),
+            None => is_single_int_sequence(&place.identity_keys),
+        };
     }
     local_single_int_key_target(program, target, scope, aliases, file)
 }
@@ -135,13 +140,6 @@ fn sequence_position_args(target: &marrow_syntax::Expression) -> Option<&[Argume
         return None;
     };
     Some(args.as_slice())
-}
-
-/// Whether a saved layer is a single int-keyed sequence position. A composite or
-/// non-int layer is not a 1-based sequence, so a zero or negative key there carries
-/// meaning in its own right.
-fn single_int_key_layer(layer: &CheckedSavedLayer) -> bool {
-    matches!(layer.key_params.as_slice(), [param] if param.scalar == Some(ScalarType::Int))
 }
 
 /// Whether a write target is a local single int-keyed collection — a `sequence[T]`

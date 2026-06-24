@@ -101,6 +101,7 @@ pub use executable::{
     CheckedSavedMember, CheckedSavedMemberKind, CheckedSavedPlace, CheckedSavedTerminal,
     CheckedStdCall, CheckedStmt, CheckedUnaryOp, checked_activation_root_places,
     checked_place_store_id, checked_saved_root_place, for_each_place_record,
+    is_single_int_sequence,
 };
 pub use facts::PresenceProofRead;
 pub use facts::{

@@ -1233,7 +1233,7 @@ fn data_integrity_reports_a_wrong_typed_record_key_as_data_key_type() {
 /// so the index family is populated exactly as a real write path leaves it.
 fn by_shelf_project(name: &str, books: i64) -> support::TempProject {
     let mut seed = String::from("pub fn seed()\n    transaction\n");
-    for id in 0..books {
+    for id in 1..=books {
         // Two shelves keep several keys per shelf so a dropped range hides many rows.
         let shelf = if id % 2 == 0 { "fiction" } else { "history" };
         seed.push_str(&format!(
@@ -1315,7 +1315,7 @@ fn data_integrity_fails_closed_when_index_entries_are_silently_dropped() {
         store.begin().expect("begin");
         // Drop the byShelf entries for several fiction records, the rows a truncated
         // range scan would hide. The data records themselves are left untouched.
-        for id in [0i64, 2, 4, 6, 8] {
+        for id in [2i64, 4, 6, 8, 10] {
             store
                 .delete_index_entry(
                     &by_shelf,
@@ -1345,7 +1345,7 @@ fn data_integrity_fails_closed_when_index_entries_are_silently_dropped() {
         let store = TreeStore::open_read_only(&store_path).expect("reopen store read-only");
         assert!(
             store
-                .read_data_value(&store_id, &[SavedKey::Int(0)], &title_path)
+                .read_data_value(&store_id, &[SavedKey::Int(2)], &title_path)
                 .expect("read record")
                 .is_some(),
             "the dropped index entry leaves its data record in place"
@@ -1381,7 +1381,7 @@ fn backup_fails_closed_when_index_entries_are_silently_dropped() {
         let store =
             TreeStore::open(&project.join(".data").join("marrow.redb")).expect("open seeded store");
         store.begin().expect("begin");
-        for id in [0i64, 2, 4] {
+        for id in [2i64, 4, 6] {
             store
                 .delete_index_entry(
                     &by_shelf,

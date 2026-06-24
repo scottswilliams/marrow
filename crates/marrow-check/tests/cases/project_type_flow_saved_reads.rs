@@ -450,6 +450,73 @@ fn a_static_non_positive_sequence_write_is_rejected_at_check() {
 }
 
 #[test]
+fn a_static_non_positive_store_root_int_key_write_is_rejected_at_check() {
+    // A store keyed by a single integer is a 1-based sequence, exactly as a member or
+    // local sequence layer is: a statically-known position below 1 addresses no node.
+    // Writing `^books(0)` or `^books(-3)` is a `check.sequence_position`, on the whole
+    // write-target span.
+    for (name, target) in [
+        ("store-root-write-zero", "^books(0)"),
+        ("store-root-write-neg", "^books(-3)"),
+    ] {
+        let src = format!(
+            "module m\n\
+             resource Book\n    required title: string\n\
+             store ^books(id: int): Book\n\n\
+             fn f()\n    {target} = Book(title: \"x\")\n"
+        );
+        let report = check_module_report(name, &src);
+        let found = with_code(&report, "check.sequence_position");
+        assert_eq!(found.len(), 1, "{name}: {:#?}", report.diagnostics);
+        let span = found[0].span;
+        assert_eq!(&src[span.start_byte..span.end_byte], target, "{name}");
+    }
+}
+
+#[test]
+fn an_in_range_store_root_int_key_write_stays_clean() {
+    // A 1-based store-root position is a legitimate write target; the non-positive
+    // guard must not sweep up positions at or above 1.
+    let src = "module m\n\
+         resource Book\n    required title: string\n\
+         store ^books(id: int): Book\n\n\
+         fn f()\n    ^books(1) = Book(title: \"one\")\n    ^books(2) = Book(title: \"two\")\n";
+    assert_clean(&check_module_report("store-root-write-in-range", src));
+}
+
+#[test]
+fn a_non_positive_string_or_composite_store_root_key_stays_clean() {
+    // The 1-based rule is the canonical single-integer-keyed shape. A string-keyed
+    // store, or a store keyed by a composite that is not a sole integer, carries zero
+    // or negative keys with meaning, so a write through such a key is never a
+    // sequence-position error.
+    let string_src = "module m\n\
+         resource Book\n    required title: string\n\
+         store ^books(name: string): Book\n\n\
+         fn f()\n    ^books(\"intro\") = Book(title: \"x\")\n";
+    assert!(
+        with_code(
+            &check_module_report("store-root-string-key", string_src),
+            "check.sequence_position"
+        )
+        .is_empty(),
+        "a string-keyed store key is not a 1-based sequence",
+    );
+    let composite_src = "module m\n\
+         resource Book\n    required title: string\n\
+         store ^books(shelf: int, slot: int): Book\n\n\
+         fn f()\n    ^books(0, -1) = Book(title: \"x\")\n";
+    assert!(
+        with_code(
+            &check_module_report("store-root-composite-key", composite_src),
+            "check.sequence_position"
+        )
+        .is_empty(),
+        "a composite-keyed store key is not a 1-based sequence",
+    );
+}
+
+#[test]
 fn a_static_non_positive_sequence_position_in_a_guarded_read_is_clean() {
     // The non-positive guard is a write-target rule. A guarded read of a below-1
     // position resolves to absent at run time through `??`, so it is not a check

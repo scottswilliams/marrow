@@ -1415,11 +1415,10 @@ fn direct_composite_identity_index_loop_yields_identities() {
 
 // --- Record-identity construction over a single int key ---
 
-/// A record identity is keyed independently of any sequence layer, so a
-/// non-positive single-int key is a valid record identity. The `Id(^store, n)`
-/// constructor only validates key arity and scalar type; the 1-based sequence
-/// rule never applies to record identity. These exercise the constructor,
-/// `key(id)` projection, and a write through the constructed identity end to end.
+/// A store keyed by a single integer is a 1-based sequence, so a non-positive key
+/// addresses no record. The `Id(^store, n)` constructor builds an identity at that
+/// key, and a positive key round-trips through `key(id)` projection and a write while
+/// a non-positive one is the catchable absent fault that persists nothing.
 const BOOK_INT_IDENTITY: &str = "\
 resource Book
     required title: string
@@ -1436,7 +1435,7 @@ pub fn titleAt(n: int): string
 ";
 
 #[test]
-fn id_constructor_accepts_a_non_positive_single_int_record_key() {
+fn id_constructor_rejects_a_non_positive_single_int_record_key() {
     let program = checked_program(BOOK_INT_IDENTITY);
     let store = TreeStore::memory();
     let id_key = |n: i64| {
@@ -1444,16 +1443,17 @@ fn id_constructor_accepts_a_non_positive_single_int_record_key() {
             &store,
             checked_entry!(&program, "test::idKey", Value::Int(n)),
         )
-        .expect("constructs and projects a record identity")
-        .value
     };
-    assert_eq!(id_key(0), Some(Value::Int(0)));
-    assert_eq!(id_key(-2), Some(Value::Int(-2)));
-    assert_eq!(id_key(7), Some(Value::Int(7)));
+    assert_eq!(
+        id_key(7).expect("a positive key projects").value,
+        Some(Value::Int(7))
+    );
+    assert_run_error(id_key(0), "run.absent_element");
+    assert_run_error(id_key(-2), "run.absent_element");
 }
 
 #[test]
-fn a_write_through_a_non_positive_record_identity_round_trips() {
+fn a_write_through_a_non_positive_record_identity_faults_and_persists_nothing() {
     let program = checked_program(BOOK_INT_IDENTITY);
     let store = TreeStore::memory();
     let save = |n: i64, t: &str| {
@@ -1461,20 +1461,25 @@ fn a_write_through_a_non_positive_record_identity_round_trips() {
             &store,
             checked_entry!(&program, "test::save", Value::Int(n), Value::Str(t.into())),
         )
-        .expect("writes a record at a non-positive record identity");
     };
     let title_at = |n: i64| {
         run_entry(
             &store,
             checked_entry!(&program, "test::titleAt", Value::Int(n)),
         )
-        .expect("reads the record back")
-        .value
     };
-    save(0, "zero");
-    save(-3, "neg");
-    assert_eq!(title_at(0), Some(Value::Str("zero".into())));
-    assert_eq!(title_at(-3), Some(Value::Str("neg".into())));
-    // An identity that was never written reads as absent, not faults.
-    assert_eq!(title_at(-9), Some(Value::Str("absent".into())));
+    // A positive identity round-trips.
+    save(1, "one").expect("writes a record at a positive identity");
+    assert_eq!(
+        title_at(1).expect("reads the record back").value,
+        Some(Value::Str("one".into()))
+    );
+    // A non-positive identity addresses no record: the write faults and persists
+    // nothing, and a guarded read of it resolves to absent through `??`.
+    assert_run_error(save(0, "zero"), "run.absent_element");
+    assert_run_error(save(-3, "neg"), "run.absent_element");
+    assert_eq!(
+        title_at(0).expect("a guarded read resolves").value,
+        Some(Value::Str("absent".into()))
+    );
 }

@@ -25,6 +25,7 @@ mod walk;
 pub use expr::{
     CheckedExpr, CheckedSavedIndex, CheckedSavedIndexKey, CheckedSavedKeyParam, CheckedSavedLayer,
     CheckedSavedMember, CheckedSavedMemberKind, CheckedSavedPlace, CheckedSavedTerminal,
+    is_single_int_sequence,
 };
 use expr::{checked_enum_member_ref_in, function_ref};
 pub(crate) use place::{

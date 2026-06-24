@@ -2,6 +2,7 @@
 
 use marrow_check::{
     CheckedFacts, CheckedSavedMember, CheckedSavedPlace, ResourceMemberId, StoreLeafKind,
+    is_single_int_sequence,
 };
 use marrow_store::key::{SavedKey, encode_identity_payload};
 use marrow_store::tree::TreeStore;
@@ -666,7 +667,7 @@ pub(crate) fn next_id(
     store: &TreeStore,
     span: SourceSpan,
 ) -> Result<i64, WriteError> {
-    if !single_int_identity(place) {
+    if !is_single_int_sequence(&place.identity_keys) {
         return Err(WriteError {
             code: WRITE_NEXT_ID_UNSUPPORTED,
             message: format!(
@@ -1040,13 +1041,6 @@ fn check_type(field: &str, leaf: &StoreLeafKind, value: &LeafValue) -> Result<()
             message: format!("field `{field}` has the wrong type"),
         }),
     }
-}
-
-fn single_int_identity(place: &CheckedSavedPlace) -> bool {
-    matches!(
-        place.identity_keys.as_slice(),
-        [key] if key.scalar == Some(marrow_schema::ScalarType::Int)
-    )
 }
 
 fn store_error(error: crate::error::RuntimeError) -> WriteError {

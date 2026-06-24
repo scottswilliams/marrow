@@ -56,6 +56,15 @@ pub struct CheckedSavedKeyParam {
     pub scalar: Option<ScalarType>,
 }
 
+/// Whether a keyspace is the canonical 1-based sequence shape: a single integer
+/// key. Its positions start at 1, so a zero or negative position addresses no
+/// node. A composite or non-integer keyspace carries such keys with meaning, so
+/// it is not a sequence. The checker, read guard, and write planner all classify
+/// the shape through this one predicate.
+pub fn is_single_int_sequence(params: &[CheckedSavedKeyParam]) -> bool {
+    matches!(params, [param] if param.scalar == Some(ScalarType::Int))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CheckedSavedLayer {
     pub id: Option<ResourceMemberId>,

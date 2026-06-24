@@ -2,7 +2,7 @@
 
 use marrow_check::{
     CheckedArg as ExecArg, CheckedExpr as ExecExpr, CheckedSavedKeyParam, CheckedSavedPlace,
-    CheckedSavedTerminal, StoreLeafKind,
+    CheckedSavedTerminal, StoreLeafKind, is_single_int_sequence,
 };
 use marrow_store::key::SavedKey;
 use marrow_syntax::SourceSpan;
@@ -303,19 +303,19 @@ pub(crate) fn saved_path_present(
     }
 }
 
-/// Which keyspace a [`lower_keys`] call addresses. The role decides two
-/// independent things: whether a sole identity-valued argument may splice its
-/// keys in (only a record-identity read carries an identity to splice), and
-/// whether the 1-based sequence-position rule applies (only a saved layer is a
-/// sequence; record identity is keyed independently and may hold any int).
+/// Which keyspace a [`lower_keys`] call addresses. The role decides whether a sole
+/// identity-valued argument may splice its keys in: only a record-identity read
+/// carries an identity to splice. The 1-based sequence-position rule is independent
+/// of the role — it is a property of any single-integer keyspace, whether a saved
+/// layer or a store-root identity.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum KeyRole {
     /// A record-identity read, whose sole identity argument may splice.
     IdentityRead,
     /// Raw record-identity key components: the `Id(^store, …)` constructor and
-    /// identity-range prefixes. No splice and no sequence guard.
+    /// identity-range prefixes. No splice.
     IdentityKeys,
-    /// A saved layer position, subject to the 1-based sequence rule.
+    /// A saved layer position.
     Layer,
 }
 
@@ -361,12 +361,11 @@ pub(crate) fn lower_keys(
                 if let Some(def) = expected.get(position) {
                     guard_key_type(def, &key, span)?;
                 }
-                // The 1-based sequence rule is a property of a saved layer, never
-                // of record identity: a non-positive single-int record key is a
-                // valid identity, so the guard fires only for a layer position.
-                if role == KeyRole::Layer {
-                    guard_sequence_position(expected, &key, span)?;
-                }
+                // A single-integer keyspace is a 1-based sequence whether it is a
+                // saved layer or a store-root identity, so a non-positive raw key
+                // addresses no node. A spliced identity returns above and never
+                // reaches here, so this never rejects keys carried by a real record.
+                guard_sequence_position(expected, &key, span)?;
                 keys.push(key);
             }
         }
@@ -400,19 +399,16 @@ pub(crate) fn check_spliced_identity(
     Ok(())
 }
 
-/// A single int-keyed layer is the canonical sequence shape, whose positions are
-/// 1-based: a position below 1 addresses no node. Reject it as absent so a read
-/// resolves it through `??`/`if const`/`exists`/`catch` and a write raises before
-/// any store mutation, never persisting an unreachable element. Only a
-/// [`KeyRole::Layer`] reaches this guard; record identity is keyed independently,
-/// so a non-positive record id stays a valid key.
+/// On a sequence keyspace, reject a position below 1 as absent so a read resolves
+/// it through `??`/`if const`/`exists`/`catch` and a write raises before any store
+/// mutation, never persisting an unreachable node.
 fn guard_sequence_position(
     expected: &[CheckedSavedKeyParam],
     key: &SavedKey,
     span: SourceSpan,
 ) -> Result<(), RuntimeError> {
-    if let ([param], SavedKey::Int(pos)) = (expected, key)
-        && param.scalar == Some(marrow_schema::ScalarType::Int)
+    if let SavedKey::Int(pos) = key
+        && is_single_int_sequence(expected)
         && *pos < 1
     {
         return Err(absent_read(

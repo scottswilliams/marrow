@@ -278,6 +278,44 @@ fn a_dynamic_non_positive_sequence_write_faults_and_persists_nothing() {
 }
 
 #[test]
+fn a_dynamic_non_positive_store_root_int_key_write_faults_and_persists_nothing() {
+    // A store keyed by a single integer is itself a 1-based sequence, so a position
+    // below 1 addresses no record. A dynamic whole-record write to such a key must
+    // raise the catchable absent fault and leave the store untouched, never persisting
+    // an unreachable record.
+    let program = checked_program(&format!(
+        "{BOOK_PRIMARY_SCHEMA}\npub fn put(id: int, t: string)\n    ^books(id) = Book(title: t)\n"
+    ));
+    for id in [0, -3] {
+        let store = TreeStore::memory();
+        assert_run_error(
+            run_entry(
+                &store,
+                checked_entry!(
+                    &program,
+                    "test::put",
+                    Value::Int(id),
+                    Value::Str("x".into())
+                ),
+            ),
+            "run.absent_element",
+        );
+        assert_eq!(
+            read_data_value(
+                &program,
+                &store,
+                "books",
+                &[SavedKey::Int(id)],
+                &data_path(&program, "books", &["title"]),
+                ScalarType::Str,
+            ),
+            None,
+            "a faulted store-root write must persist nothing at id {id}",
+        );
+    }
+}
+
+#[test]
 fn a_read_of_a_non_positive_sequence_position_is_absent() {
     // The read side resolves a below-1 position to absent, the same contract the
     // write side enforces: `??` recovers it rather than faulting fatally.
