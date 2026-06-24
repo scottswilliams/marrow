@@ -30,8 +30,8 @@ use crate::{
 };
 
 /// One declared rename: the entity is now spelled `to_path` and was formerly
-/// `from_path` (both module-qualified catalog paths), reported at `span` if either
-/// side does not resolve.
+/// `from_path` (both module-qualified catalog paths), reported at `span` (the `from`
+/// target token) if either side does not resolve.
 #[derive(Debug, Clone)]
 pub(crate) struct RenameIntent {
     pub(crate) from_path: String,
@@ -41,7 +41,7 @@ pub(crate) struct RenameIntent {
 }
 
 /// One declared retirement: the module-qualified catalog path of an entity to
-/// remove destructively, reported at `span` if it does not resolve.
+/// remove destructively, reported at `span` (the target token) if it does not resolve.
 #[derive(Debug, Clone)]
 pub(crate) struct RetireIntent {
     pub(crate) path: String,
@@ -119,19 +119,19 @@ where
                                     from_path,
                                     to_path,
                                     file: file.to_path_buf(),
-                                    span: *span,
+                                    span: target_span(from, *span),
                                 });
                             }
-                            _ => report_target(file, *span, diagnostics),
+                            _ => report_target(file, target_span(from, *span), diagnostics),
                         }
                     }
                     EvolveStep::Retire { target, span } => match target_path(module, target) {
                         Some(path) => intents.retires.push(RetireIntent {
                             path,
                             file: file.to_path_buf(),
-                            span: *span,
+                            span: target_span(target, *span),
                         }),
-                        None => report_target(file, *span, diagnostics),
+                        None => report_target(file, target_span(target, *span), diagnostics),
                     },
                     EvolveStep::Default { target, value, .. } => {
                         if let Some(path) = target_path(module, target) {

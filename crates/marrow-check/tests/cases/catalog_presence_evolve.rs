@@ -1032,6 +1032,49 @@ fn evolve_target_that_resolves_to_nothing_is_diagnosed() {
     );
 }
 
+/// An unresolved rename, retire, or transform target must anchor its diagnostic at
+/// the target token, not at the indented step keyword: a good error says where it
+/// happened. Each step keyword is indented four spaces; the target token follows the
+/// keyword and its space, so retire/rename land at column 12 and transform (a longer
+/// keyword) at column 15 — token-precise in every case, never the column-1 indent.
+#[test]
+fn unresolved_evolve_target_anchors_at_the_target_token() {
+    let root = temp_project("evolve-target-span", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Book\n\
+             \x20   title: string\n\
+             store ^books(id: int): Book\n\
+             evolve\n\
+             \x20   retire Book.ghost\n\
+             \x20   rename ^nonexistent -> ^alsoGone\n\
+             \x20   transform Book.ghostfield\n\
+             \x20       return 0\n",
+        );
+    });
+
+    let (report, _program) = check_with_accepted(&root);
+
+    let mut columns: Vec<u32> = report
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.code == marrow_check::CHECK_EVOLVE_TARGET)
+        .map(|diagnostic| diagnostic.span.column)
+        .collect();
+    columns.sort_unstable();
+
+    // `retire Book.ghost` and `rename ^nonexistent` start at column 12;
+    // `transform Book.ghostfield` (the longer keyword) starts at column 15.
+    assert_eq!(
+        columns,
+        vec![12, 12, 15],
+        "every unresolved evolve target must anchor at its target token: {:#?}",
+        report.diagnostics
+    );
+}
+
 #[test]
 fn evolve_binding_that_would_collide_identity_is_reported_at_check() {
     // A rename carries the accepted `member-a` onto `Book.c` while the source also
