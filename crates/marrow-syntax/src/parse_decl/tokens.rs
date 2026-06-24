@@ -188,6 +188,44 @@ pub(super) fn expr_of(
 ) -> Option<Expression> {
     ExprParser::new(source, tokens).parse_complete(diagnostics)
 }
+
+/// Parse the operand text that follows `anchor` — a `=`, statement keyword, or
+/// operator the caller stripped. An absent operand reports the missing
+/// expression at the gap just past `anchor`, so the diagnostic lands there
+/// rather than on the statement keyword.
+pub(super) fn expr_of_after(
+    source: &str,
+    tokens: &[Token],
+    anchor: SourceSpan,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<Expression> {
+    ExprParser::new(source, tokens)
+        .after(anchor)
+        .parse_complete(diagnostics)
+}
+
+/// Parse an assignment target that precedes `anchor` — the `=` that follows it.
+/// An absent target reports the missing expression at the gap just before `=`.
+pub(super) fn expr_of_before(
+    source: &str,
+    tokens: &[Token],
+    anchor: SourceSpan,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<Expression> {
+    ExprParser::new(source, tokens)
+        .before(anchor)
+        .parse_complete(diagnostics)
+}
+
+/// Parse an operand inside a `for` header, where a malformed or empty operand is
+/// reported once against the whole header rather than as a separate gap.
+pub(super) fn expr_of_in_header(
+    source: &str,
+    tokens: &[Token],
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<Expression> {
+    ExprParser::new(source, tokens).parse_complete_in_header(diagnostics)
+}
 pub(super) fn reject_structural_type_tokens(
     tokens: &[Token],
     expected: ExpectedSyntax,
@@ -307,10 +345,16 @@ pub(super) fn type_ref_from_tokens(source: &str, tokens: &[Token]) -> TypeRef {
         .collect();
     TypeRef { text, span }
 }
-pub(super) fn line_span(tokens: &[Token]) -> SourceSpan {
+/// The span of a token slice, falling back to `empty` when the slice holds no
+/// tokens. An empty slice has no source bytes to point at, so every caller must
+/// supply a guaranteed-valid anchor (the enclosing statement keyword or the
+/// line's first token) to keep a missing-operand diagnostic on a real 1-based
+/// position. There is no zero-argument form: the line-0/column-0 default span is
+/// never a valid source location, so it must be unreachable from any diagnostic.
+pub(super) fn line_span_or(tokens: &[Token], empty: SourceSpan) -> SourceSpan {
     match (tokens.first(), tokens.last()) {
         (Some(first), Some(last)) => join_spans(first.span, last.span),
-        _ => SourceSpan::default(),
+        _ => empty,
     }
 }
 /// Index of the layout token (`NEWLINE`/`INDENT`/`DEDENT`/`EOF`) that ends the

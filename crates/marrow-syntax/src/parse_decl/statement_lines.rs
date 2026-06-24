@@ -6,8 +6,9 @@
 use super::head::parse_key_params_tokens;
 use super::params::match_paren;
 use super::tokens::{
-    expr_of, find_top_level, find_top_level_equal, line_span, push_parse_error,
-    reject_structural_type_tokens, type_ref_from_tokens,
+    expr_of, expr_of_after, expr_of_before, expr_of_in_header, find_top_level,
+    find_top_level_equal, line_span_or, push_parse_error, reject_structural_type_tokens,
+    type_ref_from_tokens,
 };
 use super::{ParseError, ParseResult};
 use crate::PARSE_SYNTAX;
@@ -30,14 +31,14 @@ pub(super) fn parse_simple_statement(
         TokenKind::Keyword(Keyword::Var) => parse_const_or_var(source, line, true, diagnostics),
         TokenKind::Keyword(Keyword::Return) => parse_return(source, line, diagnostics),
         TokenKind::Keyword(Keyword::Delete) => {
-            let value = expr_of(source, &line[1..], diagnostics)?;
+            let value = expr_of_after(source, &line[1..], first.span, diagnostics)?;
             Some(Statement::Delete {
                 span: join_spans(first.span, value.span()),
                 path: value,
             })
         }
         TokenKind::Keyword(Keyword::Throw) => {
-            let value = expr_of(source, &line[1..], diagnostics)?;
+            let value = expr_of_after(source, &line[1..], first.span, diagnostics)?;
             Some(Statement::Throw {
                 span: join_spans(first.span, value.span()),
                 value,
@@ -52,7 +53,7 @@ pub(super) fn parse_simple_statement(
                 severity: Severity::Error,
                 message: "`merge` is reserved and is not a v0.1 statement".to_string(),
                 help: None,
-                span: line_span(line),
+                span: line_span_or(line, line[0].span),
             });
             None
         }
@@ -107,7 +108,7 @@ fn parse_const_or_var(
                 index = after;
             }
             Err(error) => {
-                push_parse_error(diagnostics, line_span(line), error);
+                push_parse_error(diagnostics, line_span_or(line, line[0].span), error);
                 return None;
             }
         }
@@ -136,7 +137,7 @@ fn parse_const_or_var(
         if let Err(error) =
             reject_structural_type_tokens(&line[type_start..type_end], expected, message)
         {
-            push_parse_error(diagnostics, line_span(line), error);
+            push_parse_error(diagnostics, line_span_or(line, line[0].span), error);
             return None;
         }
         ty = Some(type_ref_from_tokens(source, &line[type_start..type_end]));
@@ -145,7 +146,8 @@ fn parse_const_or_var(
 
     match line.get(index).map(|token| token.kind) {
         Some(TokenKind::Equal) => {
-            let value = expr_of(source, &line[index + 1..], diagnostics)?;
+            let equal = line[index];
+            let value = expr_of_after(source, &line[index + 1..], equal.span, diagnostics)?;
             let span = join_spans(keyword.span, value.span());
             Some(if is_var {
                 Statement::Var {
@@ -215,7 +217,7 @@ fn parse_return(
             span: join_spans(keyword.span, line[1].span),
         });
     }
-    let value = expr_of(source, &line[1..], diagnostics)?;
+    let value = expr_of_after(source, &line[1..], keyword.span, diagnostics)?;
     Some(Statement::Return {
         span: join_spans(keyword.span, value.span()),
         value: Some(value),
@@ -258,8 +260,9 @@ fn parse_assign_or_expr(
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<Statement> {
     if let Some(equal) = find_top_level_equal(line) {
-        let target = expr_of(source, &line[..equal], diagnostics)?;
-        let value = expr_of(source, &line[equal + 1..], diagnostics)?;
+        let equal_span = line[equal].span;
+        let target = expr_of_before(source, &line[..equal], equal_span, diagnostics)?;
+        let value = expr_of_after(source, &line[equal + 1..], equal_span, diagnostics)?;
         Some(Statement::Assign {
             span: join_spans(target.span(), value.span()),
             target,
@@ -322,7 +325,7 @@ pub(super) fn parse_if_const_head(
             ExpectedSyntax::ConstType,
             "expected const type annotation",
         ) {
-            push_parse_error(diagnostics, line_span(line), error);
+            push_parse_error(diagnostics, line_span_or(line, line[0].span), error);
             return None;
         }
         ty = Some(type_ref_from_tokens(source, &line[type_start..type_end]));
@@ -332,7 +335,8 @@ pub(super) fn parse_if_const_head(
     if line.get(index).map(|token| token.kind) != Some(TokenKind::Equal) {
         return None;
     }
-    let value = expr_of(source, &line[index + 1..], diagnostics)?;
+    let equal = line[index];
+    let value = expr_of_after(source, &line[index + 1..], equal.span, diagnostics)?;
     Some((name, ty, value))
 }
 
@@ -350,12 +354,12 @@ pub(super) fn parse_for_header(
     let after_in = &header[in_index + 1..];
     let (iterable_tokens, step) = match find_top_level_by(source, after_in) {
         Some(by_index) => {
-            let step = expr_of(source, &after_in[by_index + 1..], diagnostics)?;
+            let step = expr_of_in_header(source, &after_in[by_index + 1..], diagnostics)?;
             (&after_in[..by_index], Some(step))
         }
         None => (after_in, None),
     };
-    let iterable = expr_of(source, iterable_tokens, diagnostics)?;
+    let iterable = expr_of_in_header(source, iterable_tokens, diagnostics)?;
     Some((binding, iterable, step))
 }
 

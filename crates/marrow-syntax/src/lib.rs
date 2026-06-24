@@ -280,6 +280,208 @@ mod decl_parser_corpus {
             decl.value
         );
     }
+
+    /// A statement whose value expression is missing — a trailing `=`, statement
+    /// keyword, or operator inside a function body — reports the missing operand
+    /// at the gap just past the token that introduced it, not the generic
+    /// "expected a statement" anchored at the keyword that legitimately starts
+    /// the statement.
+    #[test]
+    fn missing_operand_reports_an_expression_gap_at_the_token() {
+        use super::{DiagnosticReason, ExpectedSyntax, ParseDiagnosticReason};
+
+        // Each case names the byte just past the `=`/operator/keyword that the
+        // operand should have followed.
+        for (source, gap_byte) in [
+            (
+                "fn f()\n    const x: int =\n",
+                "fn f()\n    const x: int =".len(),
+            ),
+            ("fn f()\n    return 1 +\n", "fn f()\n    return 1 +".len()),
+            ("fn f()\n    delete\n", "fn f()\n    delete".len()),
+            ("fn f()\n    throw\n", "fn f()\n    throw".len()),
+            ("fn f()\n    x =\n", "fn f()\n    x =".len()),
+            (
+                "fn f()\n    if const x =\n        x\n",
+                "fn f()\n    if const x =".len(),
+            ),
+            ("fn f()\n    if\n        x\n", "fn f()\n    if".len()),
+            ("fn f()\n    while\n        x\n", "fn f()\n    while".len()),
+            (
+                "fn f()\n    match\n        a\n            x\n",
+                "fn f()\n    match".len(),
+            ),
+            (
+                "fn f()\n    if true\n        x\n    else if\n        x\n",
+                "fn f()\n    if true\n        x\n    else if".len(),
+            ),
+        ] {
+            let ParsedSource { diagnostics, .. } = parse_source(source);
+            let expression = diagnostics
+                .iter()
+                .find(|d| {
+                    d.reason
+                        == DiagnosticReason::Parser(ParseDiagnosticReason::Expected(
+                            ExpectedSyntax::Expression,
+                        ))
+                })
+                .unwrap_or_else(|| {
+                    panic!("expected an expression-gap diagnostic for {source:?}: {diagnostics:#?}")
+                });
+            assert_eq!(expression.code, PARSE_SYNTAX);
+            assert_eq!(
+                expression.span.start_byte, gap_byte,
+                "gap span should sit just past the introducing token in {source:?}: {diagnostics:#?}"
+            );
+            assert!(
+                expression.message.contains("expected an expression"),
+                "{:?}",
+                expression.message
+            );
+            assert!(
+                !diagnostics
+                    .iter()
+                    .any(|d| d.message.contains("expected a statement")),
+                "the generic statement fallback must be suppressed for {source:?}: {diagnostics:#?}"
+            );
+        }
+    }
+
+    /// An empty `match` scrutinee reports the missing expression exactly once at
+    /// the gap past `match`, with no spurious second diagnostic against the first
+    /// arm header: the arms still parse cleanly as member paths.
+    #[test]
+    fn empty_match_scrutinee_reports_one_expression_gap() {
+        use super::{DiagnosticReason, ExpectedSyntax, ParseDiagnosticReason};
+
+        let source = "fn f()\n    match\n        a\n            x\n";
+        let ParsedSource { diagnostics, .. } = parse_source(source);
+        let gaps: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| {
+                d.reason
+                    == DiagnosticReason::Parser(ParseDiagnosticReason::Expected(
+                        ExpectedSyntax::Expression,
+                    ))
+            })
+            .collect();
+        assert_eq!(
+            gaps.len(),
+            1,
+            "exactly one expression gap for an empty match scrutinee: {diagnostics:#?}"
+        );
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|d| d.message.contains("match arm is a member path")),
+            "the arm `a` must parse cleanly, with no spurious arm diagnostic: {diagnostics:#?}"
+        );
+    }
+
+    /// An empty assignment target reports the missing expression just before the
+    /// `=`, at a valid source position rather than the start of input.
+    #[test]
+    fn empty_assignment_target_reports_a_gap_before_the_equals() {
+        use super::{DiagnosticReason, ExpectedSyntax, ParseDiagnosticReason};
+
+        let source = "fn f()\n    = 5\n";
+        let ParsedSource { diagnostics, .. } = parse_source(source);
+        let expression = diagnostics
+            .iter()
+            .find(|d| {
+                d.reason
+                    == DiagnosticReason::Parser(ParseDiagnosticReason::Expected(
+                        ExpectedSyntax::Expression,
+                    ))
+            })
+            .unwrap_or_else(|| panic!("expected an expression-gap diagnostic: {diagnostics:#?}"));
+        assert_eq!(expression.span.start_byte, "fn f()\n    ".len());
+        assert!(expression.message.contains("expected an expression"));
+    }
+
+    /// A malformed `for` header — an empty iterable or step — reports a single
+    /// header diagnostic at a valid position; the inner missing operand is owned
+    /// by that header, so it never adds a duplicate expression gap.
+    #[test]
+    fn empty_for_operand_reports_a_single_header_diagnostic() {
+        for source in [
+            "fn f()\n    for x in\n        x\n",
+            "fn f()\n    for x in 1..2 by\n        x\n",
+        ] {
+            let ParsedSource { diagnostics, .. } = parse_source(source);
+            let header: Vec<_> = diagnostics
+                .iter()
+                .filter(|d| d.message.contains("expected `for <binding> in <iterable>`"))
+                .collect();
+            assert_eq!(
+                header.len(),
+                1,
+                "exactly one for-header diagnostic for {source:?}: {diagnostics:#?}"
+            );
+            assert!(
+                !diagnostics
+                    .iter()
+                    .any(|d| d.message.contains("expected an expression")),
+                "the for header owns recovery; no separate expression gap for {source:?}: {diagnostics:#?}"
+            );
+        }
+    }
+
+    /// No empty-operand or empty-header statement form may report a diagnostic
+    /// at line 0 or column 0 — those are never valid source positions (lines and
+    /// columns are 1-based). Every expression-taking statement form is
+    /// enumerated: the const/var RHS, return/throw/delete value, assignment RHS
+    /// and LHS, the empty `for` header along with its empty iterable and step,
+    /// and the `if`/`else if`/`while`/`match` header expressions. The empty
+    /// header forms anchor on the consumed keyword span, so an absent operand
+    /// never falls back to the line-0/column-0 default.
+    #[test]
+    fn no_empty_operand_form_reports_a_line_or_column_zero_span() {
+        for source in [
+            "fn f()\n    const x: int =\n",
+            "fn f()\n    var x: int =\n",
+            "fn f()\n    return 1 +\n",
+            "fn f()\n    throw\n",
+            "fn f()\n    delete\n",
+            "fn f()\n    x =\n",
+            "fn f()\n    = 5\n",
+            "fn f()\n    for\n        x\n",
+            "fn f()\n    for x in\n        x\n",
+            "fn f()\n    for x in 1..2 by\n        x\n",
+            "fn f()\n    if\n        x\n",
+            "fn f()\n    if const x =\n        x\n",
+            "fn f()\n    if true\n        x\n    else if\n        x\n",
+            "fn f()\n    while\n        x\n",
+            "fn f()\n    match\n        a\n            x\n",
+        ] {
+            let ParsedSource { diagnostics, .. } = parse_source(source);
+            assert!(
+                !diagnostics.is_empty(),
+                "expected at least one diagnostic for {source:?}"
+            );
+            for diagnostic in &diagnostics {
+                assert!(
+                    diagnostic.span.line >= 1 && diagnostic.span.column >= 1,
+                    "diagnostic at line {} column {} for {source:?}: {diagnostic:#?}",
+                    diagnostic.span.line,
+                    diagnostic.span.column
+                );
+            }
+        }
+    }
+
+    /// A line that is genuinely not a statement still gets the generic
+    /// "expected a statement", so the gap diagnostic does not over-fire.
+    #[test]
+    fn a_non_statement_line_still_expects_a_statement() {
+        let ParsedSource { diagnostics, .. } = parse_source("fn f()\n    @nope\n");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.message.contains("expected a statement")),
+            "{diagnostics:#?}"
+        );
+    }
 }
 
 #[cfg(test)]

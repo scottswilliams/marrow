@@ -4,10 +4,10 @@
 
 use crate::token::is_trivia;
 use crate::{
-    Argument, BinaryOp, Diagnostic, DiagnosticReason, Expression, InterpolationPart, Keyword,
-    LiteralKind, NESTING_DEPTH_LIMIT, NESTING_LIMIT, PARSE_SYNTAX, ParseDiagnosticReason, Severity,
-    SourceSpan, Token, TokenKind, UnaryOp, UnsupportedSyntax, is_expression_callable_keyword,
-    is_expression_path_segment_keyword,
+    Argument, BinaryOp, Diagnostic, DiagnosticReason, ExpectedSyntax, Expression,
+    InterpolationPart, Keyword, LiteralKind, NESTING_DEPTH_LIMIT, NESTING_LIMIT, PARSE_SYNTAX,
+    ParseDiagnosticReason, Severity, SourceSpan, Token, TokenKind, UnaryOp, UnsupportedSyntax,
+    is_expression_callable_keyword, is_expression_path_segment_keyword,
 };
 
 /// The remedy shared by the comparison and equality non-associative levels: the
@@ -27,6 +27,19 @@ pub(crate) struct ExprParser<'a> {
     /// exceeding [`NESTING_DEPTH_LIMIT`] stops the recursion with a located
     /// [`NESTING_LIMIT`] error before the native stack can overflow.
     depth: usize,
+    /// The zero-width point where a missing operand should be reported when the
+    /// operand slice is empty — just past the `=`/operator the caller stripped,
+    /// or just before the `=` for an empty assignment target. Without it an
+    /// empty slice has no consumed token to anchor to and would report at the
+    /// start of input (line 0), which is never a valid source position.
+    gap_anchor: Option<SourceSpan>,
+    /// How many contexts that own their own recovery diagnostic are currently
+    /// open: an unterminated `(`/interpolation delimiter, whose silent `None`
+    /// bubbles to the statement parser's "expected a statement" fallback, or a
+    /// malformed `for` header, reported once against the whole header. A missing
+    /// operand inside one of these is that caller's error, so the gap diagnostic
+    /// only fires at the statement-expression top level.
+    gap_suppression_depth: usize,
     diagnostics: Vec<Diagnostic>,
 }
 
@@ -42,8 +55,57 @@ impl<'a> ExprParser<'a> {
             tokens,
             pos: 0,
             depth: 0,
+            gap_anchor: None,
+            gap_suppression_depth: 0,
             diagnostics: Vec::new(),
         }
+    }
+
+    /// Parse `inner` inside a context that owns its own recovery diagnostic, so
+    /// a missing operand within it is left to that caller rather than reported
+    /// as a statement-level expression gap.
+    fn while_caller_owns_recovery<T>(&mut self, inner: impl FnOnce(&mut Self) -> T) -> T {
+        self.gap_suppression_depth += 1;
+        let result = inner(self);
+        self.gap_suppression_depth -= 1;
+        result
+    }
+
+    /// Report a missing operand just past `anchor` — the `=` or operator the
+    /// caller stripped before handing over the operand text — when the slice is
+    /// empty, so the gap lands after that token rather than at the start of input.
+    pub(crate) fn after(mut self, anchor: SourceSpan) -> Self {
+        self.gap_anchor = Some(SourceSpan {
+            start_byte: anchor.end_byte,
+            end_byte: anchor.end_byte,
+            line: anchor.line,
+            column: anchor.column,
+        });
+        self
+    }
+
+    /// Report a missing operand just before `anchor` — the `=` that follows an
+    /// empty assignment target — so the gap lands at that token rather than at
+    /// the start of input.
+    pub(crate) fn before(mut self, anchor: SourceSpan) -> Self {
+        self.gap_anchor = Some(SourceSpan {
+            start_byte: anchor.start_byte,
+            end_byte: anchor.start_byte,
+            line: anchor.line,
+            column: anchor.column,
+        });
+        self
+    }
+
+    /// Run `parse_complete` while a missing operand is owned by a malformed-header
+    /// recovery diagnostic, so an empty `for` iterable or step does not also emit
+    /// a statement-level expression gap.
+    pub(crate) fn parse_complete_in_header(
+        mut self,
+        diagnostics: &mut Vec<Diagnostic>,
+    ) -> Option<Expression> {
+        self.gap_suppression_depth += 1;
+        self.parse_complete(diagnostics)
     }
 
     /// Returns `None` unless the whole slice parses as one expression. Syntax
@@ -52,9 +114,6 @@ impl<'a> ExprParser<'a> {
         mut self,
         diagnostics: &mut Vec<Diagnostic>,
     ) -> Option<Expression> {
-        if self.tokens.is_empty() {
-            return None;
-        }
         let expr = self.expression();
         // A `=` left where the expression should have ended is the `=`-for-`==`
         // mistake: `=` is assignment only, so it never appears mid-expression.
@@ -100,6 +159,37 @@ impl<'a> ExprParser<'a> {
             help,
             span,
         });
+    }
+
+    /// Report a missing operand at the gap where one was expected: just past a
+    /// trailing `=` or binary operator already consumed, or at the caller's gap
+    /// anchor when the operand slice is empty. Reporting is skipped inside a
+    /// context that owns its own recovery diagnostic.
+    fn expected_expression_at_gap(&mut self) {
+        if self.gap_suppression_depth > 0 {
+            return;
+        }
+        let span = match self.pos.checked_sub(1) {
+            Some(last) => {
+                let end = self.tokens[last].span;
+                SourceSpan {
+                    start_byte: end.end_byte,
+                    end_byte: end.end_byte,
+                    line: end.line,
+                    column: end.column,
+                }
+            }
+            None => match self.gap_anchor {
+                Some(anchor) => anchor,
+                None => return,
+            },
+        };
+        self.error(
+            span,
+            ParseDiagnosticReason::Expected(ExpectedSyntax::Expression),
+            "expected an expression".to_string(),
+            None,
+        );
     }
 
     fn peek(&self) -> Option<TokenKind> {
@@ -450,7 +540,7 @@ impl<'a> ExprParser<'a> {
             match self.peek() {
                 Some(TokenKind::LeftParen) => {
                     let open = self.advance();
-                    let parsed_args = self.arguments()?;
+                    let parsed_args = self.while_caller_owns_recovery(Self::arguments)?;
                     if !matches!(self.peek(), Some(TokenKind::RightParen)) {
                         return None;
                     }
@@ -610,7 +700,10 @@ impl<'a> ExprParser<'a> {
     }
 
     fn primary_expr(&mut self) -> Option<Expression> {
-        let token = *self.tokens.get(self.pos)?;
+        let Some(token) = self.tokens.get(self.pos).copied() else {
+            self.expected_expression_at_gap();
+            return None;
+        };
         let literal = |kind| {
             Some(Expression::Literal {
                 kind,
@@ -680,7 +773,7 @@ impl<'a> ExprParser<'a> {
             }
             TokenKind::LeftParen => {
                 self.advance();
-                let inner = self.expression()?;
+                let inner = self.while_caller_owns_recovery(Self::expression)?;
                 if matches!(self.peek(), Some(TokenKind::RightParen)) {
                     self.advance();
                     Some(inner)
@@ -721,7 +814,7 @@ impl<'a> ExprParser<'a> {
                 }
                 TokenKind::InterpolationExprStart => {
                     self.advance();
-                    let expr = self.expression()?;
+                    let expr = self.while_caller_owns_recovery(Self::expression)?;
                     if !matches!(self.peek(), Some(TokenKind::InterpolationExprEnd)) {
                         return None;
                     }

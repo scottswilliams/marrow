@@ -8,7 +8,7 @@ use super::statement_lines::{
     parse_catch_header, parse_for_header, parse_if_const_head, parse_simple_statement,
 };
 use super::tokens::{
-    comment_from_token, expr_of, first_line_end, is_line_comment, line_end, line_span,
+    comment_from_token, expr_of_after, first_line_end, is_line_comment, line_end, line_span_or,
 };
 use crate::ast::{
     Block, CatchClause, Comment, CommentMarker, CommentPlacement, ElseIf, Expression, MatchArm,
@@ -194,7 +194,10 @@ impl<'a> StmtParser<'a> {
         let statement = parse_simple_statement(self.source, line, &mut self.diagnostics);
         // Suppress the generic fallback when an inline syntax rule already reported.
         if statement.is_none() && self.diagnostics.len() == before {
-            let span = line_span(&self.tokens[self.pos..content_end]);
+            let span = line_span_or(
+                &self.tokens[self.pos..content_end],
+                self.tokens[self.pos].span,
+            );
             self.error_span_reason(
                 span,
                 ParseDiagnosticReason::Expected(ExpectedSyntax::Statement),
@@ -251,7 +254,7 @@ impl<'a> StmtParser<'a> {
 
     fn while_stmt(&mut self) -> Statement {
         let keyword = self.advance(); // `while`
-        let condition = self.header_expression();
+        let condition = self.header_expression(keyword.span);
         let body = self.block_body();
         Statement::While {
             condition,
@@ -265,7 +268,7 @@ impl<'a> StmtParser<'a> {
         let newline = self.find_line_end();
         let content_end = self.split_trailing_comment(newline);
         let header = &self.tokens[self.pos..content_end];
-        let header_span = line_span(header);
+        let header_span = line_span_or(header, keyword.span);
         let parsed = parse_for_header(self.source, header, &mut self.diagnostics);
         self.pos = (newline + 1).min(self.tokens.len());
         let body = self.block_body();
@@ -365,14 +368,14 @@ impl<'a> StmtParser<'a> {
     }
 
     fn catch_clause(&mut self) -> CatchClause {
-        self.advance(); // `catch`
+        let keyword = self.advance(); // `catch`
         let newline = self.find_line_end();
         let content_end = self.split_trailing_comment(newline);
         let header = &self.tokens[self.pos..content_end];
         let (name, ty) = match parse_catch_header(self.source, header) {
             Ok(parsed) => parsed,
             Err(error) => {
-                let (span, reason, message) = error.locate(line_span(header));
+                let (span, reason, message) = error.locate(line_span_or(header, keyword.span));
                 self.error_span_reason(span, reason, message);
                 (String::new(), None)
             }
@@ -384,7 +387,7 @@ impl<'a> StmtParser<'a> {
 
     fn if_stmt(&mut self) -> Statement {
         let start = self.advance().span; // `if`
-        let head = self.if_head();
+        let head = self.if_head(start);
         let then_block = self.block_body();
         let mut end = then_block.span;
         let mut else_ifs = Vec::new();
@@ -393,8 +396,8 @@ impl<'a> StmtParser<'a> {
         while matches!(self.peek(), Some(TokenKind::Keyword(Keyword::Else))) {
             self.advance(); // `else`
             if matches!(self.peek(), Some(TokenKind::Keyword(Keyword::If))) {
-                self.advance(); // `if`
-                let condition = self.header_expression();
+                let if_keyword = self.advance(); // `if`
+                let condition = self.header_expression(if_keyword.span);
                 let block = self.block_body();
                 end = block.span;
                 else_ifs.push(ElseIf { condition, block });
@@ -445,7 +448,7 @@ impl<'a> StmtParser<'a> {
     /// the parser only structures the arms.
     fn match_stmt(&mut self) -> Statement {
         let start = self.advance().span; // `match`
-        let scrutinee = self.header_expression();
+        let scrutinee = self.header_expression(start);
         let mut end = start;
         let mut arms = Vec::new();
         if matches!(self.peek(), Some(TokenKind::Indent)) {
@@ -495,7 +498,7 @@ impl<'a> StmtParser<'a> {
         let newline = self.find_line_end();
         let content_end = self.split_trailing_comment(newline);
         let header = &self.tokens[self.pos..content_end];
-        let span = line_span(header);
+        let span = line_span_or(header, self.tokens[self.pos].span);
         let Some((path, path_spans)) = arm_member_path(self.source, header) else {
             self.error_span_reason(
                 span,
@@ -525,19 +528,21 @@ impl<'a> StmtParser<'a> {
     }
 
     /// Parse the expression that ends the current header line, consuming up to
-    /// and including its `NEWLINE`.
+    /// and including its `NEWLINE`. `keyword` is the header keyword
+    /// (`while`/`if`/`match`) already consumed; an empty header reports the
+    /// missing expression at the gap just past it, never the start of input.
     /// Returns `None`, after raising a syntax error, when the header does not
     /// parse as a complete expression.
-    fn header_expression(&mut self) -> Option<Expression> {
+    fn header_expression(&mut self, keyword: SourceSpan) -> Option<Expression> {
         let newline = self.find_line_end();
         let content_end = self.split_trailing_comment(newline);
         let line = &self.tokens[self.pos..content_end];
         let before = self.diagnostics.len();
-        let expr = expr_of(self.source, line, &mut self.diagnostics);
+        let expr = expr_of_after(self.source, line, keyword, &mut self.diagnostics);
         // Suppress the generic fallback when an inline syntax rule already reported.
         if expr.is_none() && self.diagnostics.len() == before {
             self.error_span_reason(
-                line_span(&self.tokens[self.pos..content_end]),
+                line_span_or(&self.tokens[self.pos..content_end], keyword),
                 ParseDiagnosticReason::Expected(ExpectedSyntax::Expression),
                 "expected an expression",
             );
@@ -546,7 +551,7 @@ impl<'a> StmtParser<'a> {
         expr
     }
 
-    fn if_head(&mut self) -> IfHead {
+    fn if_head(&mut self, keyword: SourceSpan) -> IfHead {
         let newline = self.find_line_end();
         let content_end = self.split_trailing_comment(newline);
         let line = &self.tokens[self.pos..content_end];
@@ -560,11 +565,16 @@ impl<'a> StmtParser<'a> {
                     IfHead::ConstBinding { name, ty, value }
                 })
         } else {
-            IfHead::Expr(expr_of(self.source, line, &mut self.diagnostics))
+            IfHead::Expr(expr_of_after(
+                self.source,
+                line,
+                keyword,
+                &mut self.diagnostics,
+            ))
         };
         if matches!(head, IfHead::Expr(None)) && self.diagnostics.len() == before {
             self.error_span_reason(
-                line_span(&self.tokens[self.pos..content_end]),
+                line_span_or(&self.tokens[self.pos..content_end], keyword),
                 ParseDiagnosticReason::Expected(ExpectedSyntax::Expression),
                 "expected an expression",
             );

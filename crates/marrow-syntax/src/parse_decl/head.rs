@@ -4,7 +4,7 @@
 
 use super::params::match_paren;
 use super::tokens::{
-    line_span, reject_structural_type_tokens, split_top_level_commas, strip_comment_tokens,
+    line_span_or, reject_structural_type_tokens, split_top_level_commas, strip_comment_tokens,
     type_ref_from_tokens,
 };
 use super::{MemberHead, ParseError, ParseResult};
@@ -323,7 +323,7 @@ pub(super) fn parse_index_tokens(source: &str, tokens: &[Token]) -> ParseResult<
             "expected index field path",
         ))?;
         args.push(arg);
-        arg_spans.push(line_span(part));
+        arg_spans.push(line_span_or(part, part[0].span));
     }
     let tail = &rest[close + 1..];
     let unique = match tail {

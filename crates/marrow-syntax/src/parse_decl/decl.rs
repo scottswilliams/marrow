@@ -8,7 +8,7 @@ use super::params::parse_function_head;
 use super::stmt::StmtParser;
 use super::tokens::{
     PathNameError, comment_from_token, doc_comment_text, find_top_level_equal, import_name,
-    line_span, line_text_end_before, module_name, reject_structural_type_tokens,
+    line_span_or, line_text_end_before, module_name, reject_structural_type_tokens,
     type_ref_from_tokens,
 };
 use crate::ast::{
@@ -582,7 +582,7 @@ impl<'a> DeclParser<'a> {
         }
         self.parse_expr_with_fallback(
             tokens,
-            line_span(tokens),
+            line_span_or(tokens, tokens[0].span),
             ParseDiagnosticReason::Expected(ExpectedSyntax::Expression),
             "expected an expression",
         )
