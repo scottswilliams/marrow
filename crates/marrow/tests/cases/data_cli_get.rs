@@ -6,9 +6,10 @@ use crate::support::{self, TempProject};
 use crate::support_data;
 use marrow_store::tree::TreeStore;
 
+use marrow_store::key::SavedKey;
 use support_data::{
     assert_stable_store_snapshot_eq, assert_store_snapshot, json, marrow, native_project,
-    seeded_project,
+    seeded_project, write_record_presence,
 };
 
 /// The human-rendered placeholders `data get` prints in its default text format for a
@@ -18,6 +19,7 @@ use support_data::{
 /// of those branches, which has no typed surface of its own. Regenerate only on an
 /// intentional change to the rendered placeholders.
 const CHILDREN_ONLY_TEXT_GOLDEN: &str = "(no value; has children)";
+const EXISTS_TEXT_GOLDEN: &str = "(exists; no value or children)";
 const ABSENT_TEXT_GOLDEN: &str = "(absent)";
 
 #[test]
@@ -258,6 +260,31 @@ fn data_get_distinguishes_a_children_only_path_from_absent() {
     let value = json(children);
     assert_eq!(value["presence"], serde_json::json!("children_only"));
     assert_eq!(value["value_b64"], serde_json::Value::Null);
+}
+
+#[test]
+fn data_get_reports_a_zero_cell_identity_node_as_existing_not_has_children() {
+    // A field delete can leave a record identity node with no cells. Such a node exists
+    // structurally but has no value and no children, so `get` must report it truthfully
+    // rather than reusing the children-only placeholder, which would assert a falsehood.
+    let project = native_project("data-get-empty-identity");
+    let dir = project.to_str().unwrap().to_string();
+    write_record_presence(&project, "counter", &[SavedKey::Int(2)]);
+
+    let text = marrow(&["data", "get", &dir, "^counter(2)"]);
+    assert_eq!(text.status.code(), Some(0), "{text:?}");
+    let text_stdout = String::from_utf8(text.stdout).expect("utf8");
+    assert!(text_stdout.contains(EXISTS_TEXT_GOLDEN), "{text_stdout}");
+    assert!(
+        !text_stdout.contains(CHILDREN_ONLY_TEXT_GOLDEN),
+        "an empty identity must not claim children: {text_stdout}"
+    );
+
+    let typed = marrow(&["data", "get", "--format", "json", &dir, "^counter(2)"]);
+    assert_eq!(typed.status.code(), Some(0), "{typed:?}");
+    let typed = json(typed);
+    assert_eq!(typed["presence"], serde_json::json!("exists"));
+    assert_eq!(typed["value_b64"], serde_json::Value::Null);
 }
 
 #[test]

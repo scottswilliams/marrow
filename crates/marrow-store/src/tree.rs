@@ -709,6 +709,23 @@ impl TreeStore {
         Ok(!self.scan(prefix.as_bytes(), 1)?.entries.is_empty())
     }
 
+    /// Whether an identity node holds any cell beyond its bare existence marker. The node
+    /// marker sorts first under the node prefix; every field, sequence, and nested-tree
+    /// cell sorts strictly after it, so a scan past the marker that finds nothing proves
+    /// the node exists with zero children. Distinguishes an emptied identity from one that
+    /// genuinely has children.
+    pub fn data_node_has_children(
+        &self,
+        store: &CatalogId,
+        identity: &[SavedKey],
+    ) -> Result<bool, StoreError> {
+        let node = CellKey::node(store, identity);
+        Ok(!self
+            .scan_after(node.as_bytes(), node.as_bytes(), 1)?
+            .entries
+            .is_empty())
+    }
+
     pub fn data_next_child(
         &self,
         store: &CatalogId,

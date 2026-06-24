@@ -240,13 +240,19 @@ values are member identities. Use `--format json` when a caller needs the exact
 stored bytes.
 
 A path with no direct value but with children (a record identity node, for
-example) is distinct from a truly absent path:
+example) is distinct both from an identity that exists with neither value nor
+children and from a truly absent path. An identity can exist structurally even
+after every field is cleared, so emptiness is reported truthfully rather than as
+a has-children claim:
 
 ```
 $ marrow data get ./project '^counter(1)'
 (no value; has children)
 
-$ marrow data get ./project '^counter(2).value'
+$ marrow data get ./project '^counter(2)'
+(exists; no value or children)
+
+$ marrow data get ./project '^counter(3).value'
 (absent)
 ```
 
@@ -279,7 +285,9 @@ store and exits `2`.
 }
 ```
 
-The presence states are `absent`, `value_only`, and `children_only`. `jsonl`
+The presence states are `absent`, `exists`, `value_only`, and `children_only`;
+`exists` is a structurally-existing identity with no direct value and no
+children. `jsonl`
 emits the same single object as `json`. `store_snapshot` is `null` when the
 read has no store-backed version, such as a missing store or an uncommitted
 durable identity. Inside a present snapshot, store metadata fields such as

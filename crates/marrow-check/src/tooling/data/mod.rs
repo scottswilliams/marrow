@@ -396,6 +396,10 @@ pub enum SavedDataPathSegment {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DataPresence {
     Absent,
+    /// A structurally-existing node with no direct value and no children: an identity
+    /// whose existence is recorded but whose fields are all unpopulated. Distinct from
+    /// `ChildrenOnly`, which asserts the node actually has children.
+    Exists,
     ValueOnly,
     ChildrenOnly,
 }
@@ -405,6 +409,7 @@ impl DataPresence {
     pub fn as_label(self) -> &'static str {
         match self {
             Self::Absent => "absent",
+            Self::Exists => "exists",
             Self::ValueOnly => "value_only",
             Self::ChildrenOnly => "children_only",
         }

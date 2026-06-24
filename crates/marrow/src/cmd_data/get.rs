@@ -80,6 +80,7 @@ pub(super) fn data_get(args: &[String]) -> ExitCode {
             ),
             None => match result.presence {
                 DataPresence::ChildrenOnly => println!("(no value; has children)"),
+                DataPresence::Exists => println!("(exists; no value or children)"),
                 _ => println!("(absent)"),
             },
         },

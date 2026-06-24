@@ -152,6 +152,7 @@ pub struct DataViewWatchTargetJson {
 #[serde(rename_all = "snake_case")]
 pub enum DataPresenceJson {
     Absent,
+    Exists,
     ValueOnly,
     ChildrenOnly,
 }
@@ -541,6 +542,7 @@ impl From<DataPresence> for DataPresenceJson {
     fn from(presence: DataPresence) -> Self {
         match presence {
             DataPresence::Absent => Self::Absent,
+            DataPresence::Exists => Self::Exists,
             DataPresence::ValueOnly => Self::ValueOnly,
             DataPresence::ChildrenOnly => Self::ChildrenOnly,
         }

@@ -96,6 +96,78 @@ fn shared_data_children_returns_typed_member_segments() {
     );
 }
 
+/// `read_data_path` must tell the four presence states apart at a record identity node:
+/// a node carrying a real field child is `ChildrenOnly`, a structurally-existing node
+/// with zero cells and zero children is `Exists`, a never-written identity is `Absent`,
+/// and a populated leaf is `ValueOnly`. The zero-cell case is the regression: a deleted
+/// field can leave an identity node behind, and it must not masquerade as has-children.
+#[test]
+fn read_data_path_distinguishes_an_empty_identity_node_from_has_children() {
+    let project = native_project("data-read-empty-identity");
+    let place = checked_place(&project, "counter");
+    // `^counter(1)` carries a real `.value` child; `^counter(2)` is a bare node marker
+    // with no cells, exactly the state a field delete leaves behind.
+    write_tree_value(
+        &project,
+        "counter",
+        &[SavedKey::Int(1)],
+        &field_path(&place, "value"),
+        b"42".to_vec(),
+    );
+    write_record_presence(&project, "counter", &[SavedKey::Int(2)]);
+    let program = checked_program(&project);
+    let store =
+        TreeStore::open(&project.join(".data").join("marrow.redb")).expect("open native store");
+
+    let presence = |path_text: &[DataPathSegment]| {
+        let path = resolve_data_path(&program, path_text)
+            .expect("resolve path")
+            .expect("path");
+        read_data_path(&store, &path)
+            .expect("read presence")
+            .presence
+    };
+
+    assert_eq!(
+        presence(&[DataPathSegment::Root("counter".into())]),
+        DataPresence::ChildrenOnly,
+        "a root with record children is children-only"
+    );
+    assert_eq!(
+        presence(&[
+            DataPathSegment::Root("counter".into()),
+            DataPathSegment::Key(SavedKey::Int(1)),
+            DataPathSegment::Field("value".into()),
+        ]),
+        DataPresence::ValueOnly,
+        "a populated leaf is value-only"
+    );
+    assert_eq!(
+        presence(&[
+            DataPathSegment::Root("counter".into()),
+            DataPathSegment::Key(SavedKey::Int(1)),
+        ]),
+        DataPresence::ChildrenOnly,
+        "an identity node with a real field child is children-only"
+    );
+    assert_eq!(
+        presence(&[
+            DataPathSegment::Root("counter".into()),
+            DataPathSegment::Key(SavedKey::Int(2)),
+        ]),
+        DataPresence::Exists,
+        "a zero-cell structurally-existing identity node exists without value or children"
+    );
+    assert_eq!(
+        presence(&[
+            DataPathSegment::Root("counter".into()),
+            DataPathSegment::Key(SavedKey::Int(3)),
+        ]),
+        DataPresence::Absent,
+        "a never-written identity is absent"
+    );
+}
+
 /// The shared saved-data walk must page across record identities and resume from its
 /// own cursor without dropping or repeating an entry. A small limit forces several
 /// pages over a multi-record root; the union of the pages must be every record's

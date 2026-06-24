@@ -96,11 +96,15 @@ fn read_data_path_with<T>(
         return children_presence(record_children_present(store, path)?);
     }
     if path.storage.data_path.is_empty() {
-        return children_presence(store.data_subtree_exists(
+        let exists = store.data_subtree_exists(
             &path.storage.store,
             &path.storage.identity,
             &path.storage.data_path,
-        )?);
+        )?;
+        return identity_node_presence(
+            exists && store.data_node_has_children(&path.storage.store, &path.storage.identity)?,
+            exists,
+        );
     }
     let value = read_value(store, path)?;
     let presence = if value.is_some() {
@@ -118,6 +122,24 @@ fn children_presence<T>(has_children: bool) -> Result<ResolvedDataPathRead<T>, S
         DataPresence::ChildrenOnly
     } else {
         DataPresence::Absent
+    };
+    Ok(ResolvedDataPathRead {
+        value: None,
+        presence,
+    })
+}
+
+/// Classify a full-arity identity node: it may exist with children, exist with neither
+/// value nor children, or be absent. A node marker carries no direct value, so existence
+/// without children is its own truthful state rather than a has-children claim.
+fn identity_node_presence<T>(
+    has_children: bool,
+    exists: bool,
+) -> Result<ResolvedDataPathRead<T>, StoreError> {
+    let presence = match (has_children, exists) {
+        (true, _) => DataPresence::ChildrenOnly,
+        (false, true) => DataPresence::Exists,
+        (false, false) => DataPresence::Absent,
     };
     Ok(ResolvedDataPathRead {
         value: None,
