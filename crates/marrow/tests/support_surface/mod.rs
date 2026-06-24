@@ -9,6 +9,7 @@ use serde_json::Value;
 
 pub(crate) struct ServeProcess {
     child: Child,
+    stopped: bool,
     _stdout: BufReader<ChildStdout>,
     _stderr: ChildStderr,
 }
@@ -101,8 +102,24 @@ pub(crate) fn create_field_catalog_id(create: &Value, label: &str) -> String {
         .to_string()
 }
 
+impl ServeProcess {
+    /// Stop the server with SIGTERM — the documented foreground stop — and wait for it to exit.
+    /// SIGTERM skips the process's destructors exactly as a real operator stop does, so the
+    /// store is left in whatever on-disk state the running server held it in.
+    pub(crate) fn stop_with_sigterm(mut self) {
+        let pid = self.child.id().to_string();
+        let _ = Command::new("kill").args(["-TERM", &pid]).status();
+        let _ = self.child.wait();
+        // The wait above reaps the child; clear it so Drop does not signal a stale pid.
+        self.stopped = true;
+    }
+}
+
 impl Drop for ServeProcess {
     fn drop(&mut self) {
+        if self.stopped {
+            return;
+        }
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
@@ -176,6 +193,7 @@ pub(crate) fn spawn_surface_server_with_args(
     (
         ServeProcess {
             child,
+            stopped: false,
             _stdout: reader,
             _stderr: stderr,
         },

@@ -27,8 +27,10 @@ read-only through `ProjectSurfaceReadSession`, so it can coexist with other
 read-only opens and blocks write-capable commands while it is running. With
 `--write`, it opens `ProjectSurfaceSession`; the native writer lock makes that
 server the owning process/session and excludes another writer or read-only
-inspection handle. Neither mode auto-applies catalog drift, repairs the store,
-or creates missing data.
+inspection handle. A `--write` start replays an unclean shutdown left by a prior
+signalled writer with no interrupted commit, the same write-capable replay `run`
+and `data recover` perform; neither mode auto-applies catalog drift, repairs
+genuine corruption, or creates missing data.
 
 ## Deploying A Catalog Change
 

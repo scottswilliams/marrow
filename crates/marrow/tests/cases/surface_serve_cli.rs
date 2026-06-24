@@ -209,6 +209,212 @@ fn read_only_serve_blocks_a_writer() {
     );
 }
 
+/// The dotted fault code of a refused command, read from the shared stderr fault line.
+fn fault_code(output: &std::process::Output) -> String {
+    let fault = support::last_fault(&output.stderr);
+    let segments: Vec<&str> = fault.split(": ").collect();
+    let (_, code) = support::find_code_segment(&segments);
+    code.to_string()
+}
+
+const STORE_OP_DEADLINE: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// An idle `--write` serve killed by the documented foreground stop (SIGTERM) without ever
+/// handling a request leaves redb's on-disk recovery flag set even though no commit was in
+/// flight. The next write-capable command — `run` here — must replay that clean unclean
+/// shutdown so the store opens healthy again, with no manual `data recover` and the committed
+/// record count unchanged, after which read-only inspection sees a clean store too.
+#[test]
+fn idle_write_serve_sigterm_replays_on_the_next_write_command() {
+    let root = temp_project("serve-write-sigterm-replays", |root| {
+        write(root, "marrow.json", support::native_config());
+        write(root, "src/app.mw", SURFACE_SOURCE);
+    });
+    let project = root.to_str().expect("project path utf8");
+    let seed = marrow(&["run", "--entry", "app::seed", project]);
+    assert_eq!(seed.status.code(), Some(0), "seed: {seed:?}");
+    let cells_before = integrity_cell_count(project);
+
+    let (server, _addr) = spawn_surface_server_with_args(&root, &["--write"]);
+    // Idle: no request handled. Stop with the documented foreground stop.
+    server.stop_with_sigterm();
+
+    // A write-capable run replays the unclean shutdown and succeeds with no manual recover.
+    let recovered =
+        support::marrow_bounded(&["run", "--entry", "app::seed", project], STORE_OP_DEADLINE);
+    assert_eq!(
+        recovered.status.code(),
+        Some(0),
+        "write-capable run must replay the unclean shutdown: {recovered:?}",
+    );
+
+    // The store is now healthy for read-only inspection too, with the committed count unchanged.
+    let integrity = support::marrow_bounded(&["data", "integrity", project], STORE_OP_DEADLINE);
+    assert_eq!(
+        integrity.status.code(),
+        Some(0),
+        "data integrity must pass after the replay: {integrity:?}",
+    );
+    assert_eq!(
+        integrity_cell_count(project),
+        cells_before,
+        "the replay must not change the committed cell count",
+    );
+    let doctor = support::marrow_bounded(&["doctor", project], STORE_OP_DEADLINE);
+    assert_eq!(
+        doctor.status.code(),
+        Some(0),
+        "doctor must report a healthy store after the replay: {doctor:?}",
+    );
+}
+
+/// A `--write` serve must itself replay an unclean shutdown on open: after a prior idle write
+/// serve is stopped with SIGTERM, a fresh `serve --write` opens and starts listening rather than
+/// refusing the store as needing recovery. (`spawn_surface_server_with_args` fails the test if the
+/// server exits before printing its listen line.)
+#[test]
+fn idle_write_serve_sigterm_replays_on_the_next_write_serve() {
+    let root = temp_project("serve-write-sigterm-reserve", |root| {
+        write(root, "marrow.json", support::native_config());
+        write(root, "src/app.mw", SURFACE_SOURCE);
+    });
+    let project = root.to_str().expect("project path utf8");
+    let seed = marrow(&["run", "--entry", "app::seed", project]);
+    assert_eq!(seed.status.code(), Some(0), "seed: {seed:?}");
+
+    let (server, _addr) = spawn_surface_server_with_args(&root, &["--write"]);
+    server.stop_with_sigterm();
+
+    // The next write serve replays the unclean shutdown and starts listening.
+    let (server, _addr) = spawn_surface_server_with_args(&root, &["--write"]);
+    server.stop_with_sigterm();
+
+    // A clean-exiting write run then leaves the store healthy for read-only inspection.
+    let run = support::marrow_bounded(&["run", "--entry", "app::seed", project], STORE_OP_DEADLINE);
+    assert_eq!(run.status.code(), Some(0), "post-serve run: {run:?}");
+    let integrity = support::marrow_bounded(&["data", "integrity", project], STORE_OP_DEADLINE);
+    assert_eq!(
+        integrity.status.code(),
+        Some(0),
+        "data integrity must pass after a write serve replay: {integrity:?}",
+    );
+}
+
+/// A read-only serve never opens the store write-capable, so SIGTERM leaves no recovery flag:
+/// the store stays healthy for the next read and the next writer with no replay needed.
+#[test]
+fn read_only_serve_sigterm_leaves_the_store_healthy() {
+    let root = temp_project("serve-read-sigterm-healthy", |root| {
+        write(root, "marrow.json", support::native_config());
+        write(root, "src/app.mw", SURFACE_SOURCE);
+    });
+    let project = root.to_str().expect("project path utf8");
+    let seed = marrow(&["run", "--entry", "app::seed", project]);
+    assert_eq!(seed.status.code(), Some(0), "seed: {seed:?}");
+    let cells_before = integrity_cell_count(project);
+
+    let (server, _addr) = spawn_surface_server(&root);
+    server.stop_with_sigterm();
+
+    let integrity = support::marrow_bounded(&["data", "integrity", project], STORE_OP_DEADLINE);
+    assert_eq!(
+        integrity.status.code(),
+        Some(0),
+        "a read-only serve stop must leave the store healthy: {integrity:?}",
+    );
+    assert_eq!(
+        integrity_cell_count(project),
+        cells_before,
+        "a read-only serve stop must not change the committed cell count",
+    );
+}
+
+/// A source whose seed writes enough records that the data btree spans interior pages, so a
+/// flipped byte past the header lands in load-bearing committed data the structural digest
+/// covers rather than slack.
+const BULK_SEED_SOURCE: &str = "module app\n\
+ \n\
+ resource Note\n\
+ \x20\x20\x20\x20required title: string\n\
+ store ^notes(id: int): Note\n\
+ \n\
+pub fn seed()\n\
+\x20\x20\x20\x20transaction\n\
+\x20\x20\x20\x20\x20\x20\x20\x20for i in 1..=400\n\
+\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20var n: Note\n\
+\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20n.title = \"a note title long enough to span a cell\"\n\
+\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20^notes(i) = n\n";
+
+/// The replay path must not bless a store with a genuinely corrupted committed body: after a
+/// flipped data byte the integrity oracle rejects, a write-capable `run` and `data recover` must
+/// still fail closed as `store.corruption` rather than auto-repairing and reporting success.
+#[test]
+fn replay_does_not_bless_a_corrupted_store() {
+    let root = temp_project("serve-replay-not-bless-corrupt", |root| {
+        write(root, "marrow.json", support::native_config());
+        write(root, "src/app.mw", BULK_SEED_SOURCE);
+    });
+    let project = root.to_str().expect("project path utf8");
+    let seed = marrow(&["run", "--entry", "app::seed", project]);
+    assert_eq!(seed.status.code(), Some(0), "seed: {seed:?}");
+
+    // Flip bytes past the header until one lands in committed data the integrity oracle rejects
+    // as corruption, then prove the write-capable replay path refuses it rather than blessing it.
+    let store = support::redb_store_path(&root);
+    let clean = std::fs::read(&store).expect("read store body");
+    assert!(
+        clean.len() > 8192,
+        "seeded bulk store should span data pages"
+    );
+    let mut corrupted_at = None;
+    for offset in (8192..clean.len()).step_by(64) {
+        let mut bytes = clean.clone();
+        bytes[offset] ^= 0xff;
+        std::fs::write(&store, &bytes).expect("write corrupted store body");
+        let integrity = support::marrow_bounded(&["data", "integrity", project], STORE_OP_DEADLINE);
+        if integrity.status.code() == Some(1) && fault_code(&integrity) == "store.corruption" {
+            corrupted_at = Some(offset);
+            break;
+        }
+    }
+    let offset = corrupted_at.expect("a flipped data byte must produce store.corruption");
+
+    // The write-capable replay path must agree, never bless the corruption as a clean replay.
+    let run = support::marrow_bounded(&["run", "--entry", "app::seed", project], STORE_OP_DEADLINE);
+    assert_eq!(
+        run.status.code(),
+        Some(1),
+        "offset {offset}: the write run replay must refuse a corrupted store: {run:?}",
+    );
+    let recover = support::marrow_bounded(&["data", "recover", project], STORE_OP_DEADLINE);
+    assert_eq!(
+        recover.status.code(),
+        Some(1),
+        "offset {offset}: recover must refuse a corrupted store: {recover:?}",
+    );
+    assert_eq!(
+        fault_code(&recover),
+        "store.corruption",
+        "offset {offset}: recover must report store.corruption: {recover:?}",
+    );
+}
+
+/// The committed cell count `data integrity` reports for a healthy store, parsed from its
+/// `(N cells)` success line. Used to prove a replay does not change committed data.
+fn integrity_cell_count(project: &str) -> u64 {
+    let integrity = support::marrow_bounded(&["data", "integrity", project], STORE_OP_DEADLINE);
+    assert_eq!(
+        integrity.status.code(),
+        Some(0),
+        "expected a healthy store for the cell-count probe: {integrity:?}",
+    );
+    let text = String::from_utf8_lossy(&integrity.stdout);
+    text.rsplit_once('(')
+        .and_then(|(_, rest)| rest.split_whitespace().next())
+        .and_then(|count| count.parse().ok())
+        .unwrap_or_else(|| panic!("could not read cell count from integrity output: {text:?}"))
+}
+
 /// Assert a CLI command was refused because the serve process holds the cross-process store lock.
 /// The dotted code is read from the shared stderr fault line, the CLI's single owner of "which
 /// stderr line is the fault" across run, data, and serve.

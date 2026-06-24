@@ -645,6 +645,14 @@ impl ProjectSession {
     ) -> Result<Self, ProjectSessionError> {
         let open = mode.into();
         let root = root.as_ref().to_path_buf();
+        // A write-capable run replays an unclean shutdown before it inspects the store, so a
+        // store left flagged for recovery by a signalled writer with no interrupted commit opens
+        // clean rather than refusing the read-only catalog read it needs.
+        if matches!(open.mode, ProjectMode::Run) && open.run_store_policy == RunStorePolicy::Commit
+        {
+            let config = marrow_check::load_config(&root)?;
+            recover_store_for_write(&root, &config)?;
+        }
         let (config, checked) = match open.mode {
             ProjectMode::Test => load_checked_for_fresh_memory_session(&root)?,
             ProjectMode::Run if open.run_store_policy == RunStorePolicy::FreshMemory => {
@@ -1842,6 +1850,44 @@ fn open_store_for_inspection(
     TreeStore::open_read_only(&path)
         .map(Some)
         .map_err(ProjectSessionError::Store)
+}
+
+/// Replay an unclean shutdown before a write-capable command inspects the store.
+///
+/// A writable handle held for a process lifetime — an idle `serve --write`, or any
+/// writer killed by a signal — leaves redb's on-disk recovery flag set even when no
+/// commit was in flight, so the next read-only inspection the write command runs to
+/// read the accepted catalog refuses the store as needing recovery. The backend
+/// contract reserves that refusal for read-only opens: a write-capable open attempts
+/// the replay. This runs that write-capable open up front, so a store with no genuine
+/// interrupted commit opens clean for the rest of the command without a manual
+/// `data recover`.
+///
+/// The replay is attempted only when a read-only probe reports the store needs it, so
+/// a healthy store is never reopened for writing or modified. Genuine corruption is
+/// not blessed: the replayed handle is proven structurally readable here, and the
+/// committed-lock and per-root digest witnesses still run later in the normal pipeline.
+pub fn recover_store_for_write(
+    root: &Path,
+    config: &ProjectConfig,
+) -> Result<(), ProjectSessionError> {
+    let Some(path) = marrow_check::native_store_path(root, config)? else {
+        return Ok(());
+    };
+    if !path.exists() {
+        return Ok(());
+    }
+    match TreeStore::open_read_only(&path) {
+        Ok(_) => Ok(()),
+        Err(StoreError::RecoveryRequired) => {
+            let store = TreeStore::open_existing(&path).map_err(ProjectSessionError::Store)?;
+            store
+                .verify_readable()
+                .map_err(ProjectSessionError::Store)?;
+            Ok(())
+        }
+        Err(error) => Err(ProjectSessionError::Store(error)),
+    }
 }
 
 fn bind_proposed_catalog_identity(

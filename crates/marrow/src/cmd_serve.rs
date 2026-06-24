@@ -154,6 +154,18 @@ pub(crate) fn serve(args: &[String]) -> ExitCode {
         return ExitCode::from(2);
     }
 
+    let config = match crate::load_config_with_format(&dir, CheckFormat::Text) {
+        Ok(config) => config,
+        Err(code) => return code,
+    };
+    // A `--write` serve replays an unclean shutdown before it inspects the store, so a store left
+    // flagged for recovery by a prior signalled writer with no interrupted commit opens clean
+    // rather than refusing the read-only catalog read the snapshot needs.
+    if matches!(mode, ServeMode::Write)
+        && let Err(error) = marrow_run::recover_store_for_write(std::path::Path::new(&dir), &config)
+    {
+        return report_session_open_error(&dir, error, CheckFormat::Text);
+    }
     let snapshot = match ProjectSurfaceSnapshot::open(&dir) {
         Ok(snapshot) => snapshot,
         Err(error) => return report_session_open_error(&dir, error, CheckFormat::Text),
@@ -171,10 +183,6 @@ pub(crate) fn serve(args: &[String]) -> ExitCode {
     };
     // Startup regenerates the declared client from the opened program so a fresh `serve` always
     // hands clients the surface ABI it will answer over.
-    let config = match crate::load_config_with_format(&dir, CheckFormat::Text) {
-        Ok(config) => config,
-        Err(code) => return code,
-    };
     if let Err(code) =
         crate::sync_declared_client(&dir, &config, session.program(), CheckFormat::Text)
     {
