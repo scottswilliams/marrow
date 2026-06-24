@@ -361,6 +361,39 @@ fn formats_a_match_with_qualified_member_path_arms() {
     assert_eq!(format_function_body(source), expected);
 }
 
+/// A single blank line between sibling match arms groups them exactly as it
+/// groups statements, members, and sibling if-blocks: one blank in the source is
+/// preserved, arms with no blank stay tight, and the result is idempotent.
+#[test]
+fn preserves_grouping_blank_between_match_arms() {
+    let source = "module app\n\
+         fn label(s: Status)\n\
+         \x20   match s\n\
+         \x20       active\n\
+         \x20           print(\"a\")\n\
+         \n\
+         \x20       archived\n\
+         \x20           print(\"b\")\n\
+         \x20       deleted\n\
+         \x20           print(\"c\")\n";
+    let expected = "\
+         \x20   match s\n\
+         \x20       active\n\
+         \x20           print(\"a\")\n\
+         \n\
+         \x20       archived\n\
+         \x20           print(\"b\")\n\
+         \x20       deleted\n\
+         \x20           print(\"c\")";
+    assert_eq!(format_function_body(source), expected);
+    let once = format_source(source);
+    assert_eq!(
+        format_source(&once),
+        once,
+        "match-arm grouping blank is not idempotent"
+    );
+}
+
 #[test]
 fn formats_const_declaration_with_docs() {
     let source = "module app\n\

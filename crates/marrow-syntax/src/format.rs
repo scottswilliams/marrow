@@ -1332,7 +1332,8 @@ fn format_match(
         .filter(|comment| !trailing_comment_between(comment, span.start_byte, first_arm_start))
         .collect();
     let mut comments = arm_comments.into_iter().peekable();
-    for arm in arms {
+    for (i, arm) in arms.iter().enumerate() {
+        let mut emitted_leading = false;
         while let Some(comment) = comments.peek().copied() {
             if comment.placement == CommentPlacement::OwnLine
                 && comment.span.start_byte < arm.span.start_byte
@@ -1340,9 +1341,17 @@ fn format_match(
                 out.push('\n');
                 out.push_str(&format_block_comment(comment, ctx.level + 1));
                 comments.next();
+                emitted_leading = true;
             } else {
                 break;
             }
+        }
+        // Preserve a source blank line that groups sibling arms, just as the body
+        // emitter does for statements and members. A leading own-line comment
+        // already carries its own blank, and the first arm sits directly under
+        // the match header.
+        if i > 0 && !emitted_leading && blank_line_precedes(ctx.source, arm.span.start_byte) {
+            out.push('\n');
         }
         let mut header = format!("{arm_pad}{}", arm.path.join("::"));
         if let Some(comment) = comments.peek().copied()
