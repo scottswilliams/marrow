@@ -123,6 +123,19 @@ fn a_std_call_return_type_feeds_the_return_type_check() {
 }
 
 #[test]
+fn a_return_type_mismatch_points_at_the_returned_value_not_the_keyword() {
+    // The message blames "this value", so the span must land on the returned
+    // expression rather than the `return` keyword.
+    let src = "module m\nfn f(): int\n    return std::clock::now()\n";
+    let found = check_module("return-mismatch-span", src, "check.return_type");
+    let [diagnostic] = found.as_slice() else {
+        panic!("{found:#?}");
+    };
+    let value = src.find("std::clock").expect("returned value");
+    assert_eq!(diagnostic.span.start_byte, value, "{diagnostic:#?}");
+}
+
+#[test]
 fn a_correctly_typed_std_call_return_is_not_flagged() {
     // `std::text::length` returns `int`, matching `f`'s declared `int` return.
     let found = check_module(
@@ -177,6 +190,32 @@ fn a_conversion_into_a_mismatched_annotated_place_is_flagged() {
         "check.assignment_type",
     );
     assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn an_assignment_type_mismatch_points_at_the_value_not_the_target() {
+    // The message blames "the value", so the span must land on the assigned
+    // expression rather than the binding keyword or annotated target.
+    let src = "module m\nfn f(raw: unknown)\n    const s: string = int(raw)\n";
+    let found = check_module("assign-mismatch-span", src, "check.assignment_type");
+    let [diagnostic] = found.as_slice() else {
+        panic!("{found:#?}");
+    };
+    let value = src.find("int(raw)").expect("assigned value");
+    assert_eq!(diagnostic.span.start_byte, value, "{diagnostic:#?}");
+}
+
+#[test]
+fn a_module_const_type_mismatch_points_at_the_value_not_the_target() {
+    // A top-level const blames "the value" exactly like a local binding, so the
+    // span must land on the value expression rather than the const declaration.
+    let src = "module m\nconst N: int = \"hi\"\n";
+    let found = check_module("module-const-mismatch-span", src, "check.assignment_type");
+    let [diagnostic] = found.as_slice() else {
+        panic!("{found:#?}");
+    };
+    let value = src.find("\"hi\"").expect("const value");
+    assert_eq!(diagnostic.span.start_byte, value, "{diagnostic:#?}");
 }
 
 #[test]

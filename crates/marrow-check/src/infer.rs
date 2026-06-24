@@ -187,15 +187,24 @@ fn infer_assignment_field_type(
     use marrow_syntax::Expression;
     match expr {
         Expression::Field {
-            base, name, span, ..
+            base,
+            name,
+            name_span,
+            span,
+            ..
         }
         | Expression::OptionalField {
-            base, name, span, ..
+            base,
+            name,
+            name_span,
+            span,
+            ..
         } => infer_field_access(FieldAccessInfer {
             program,
             expr,
             base,
             name,
+            name_span: *name_span,
             span: *span,
             scope,
             aliases,
@@ -613,15 +622,24 @@ fn infer_value(
         // declared leaf type: the short-circuit only changes the read's runtime
         // behavior on absence, not the type of a populated leaf.
         Expression::Field {
-            base, name, span, ..
+            base,
+            name,
+            name_span,
+            span,
+            ..
         }
         | Expression::OptionalField {
-            base, name, span, ..
+            base,
+            name,
+            name_span,
+            span,
+            ..
         } => infer_field_access(FieldAccessInfer {
             program,
             expr,
             base,
             name,
+            name_span: *name_span,
             span: *span,
             scope,
             aliases,
@@ -658,6 +676,7 @@ struct FieldAccessInfer<'a, 'd> {
     expr: &'a marrow_syntax::Expression,
     base: &'a marrow_syntax::Expression,
     name: &'a str,
+    name_span: SourceSpan,
     span: SourceSpan,
     scope: &'a [HashMap<String, MarrowType>],
     aliases: &'a HashMap<String, Vec<String>>,
@@ -750,15 +769,19 @@ fn infer_field_access(input: FieldAccessInfer<'_, '_>) -> MarrowType {
         // assignment target is validated against the declared fields the same way the read
         // is. An intermediate navigated base stays silent for the dedicated rules to own.
         FieldResolution::UnknownField if input.context != FieldAccessContext::AssignmentBase => {
-            input
-                .diagnostics
-                .push(unknown_field_diagnostic(input.file, input.span, input.name));
+            input.diagnostics.push(unknown_field_diagnostic(
+                input.file,
+                input.name_span,
+                input.name,
+            ));
             MarrowType::Invalid
         }
         FieldResolution::NoFields if input.context == FieldAccessContext::Read => {
-            input
-                .diagnostics
-                .push(unknown_field_diagnostic(input.file, input.span, input.name));
+            input.diagnostics.push(unknown_field_diagnostic(
+                input.file,
+                input.name_span,
+                input.name,
+            ));
             MarrowType::Invalid
         }
         // A keyed child layer is reached only through its saved address, never

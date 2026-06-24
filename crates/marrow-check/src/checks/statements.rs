@@ -295,20 +295,18 @@ impl StatementCheck<'_> {
     fn check(&mut self, statement: &marrow_syntax::Statement) {
         use marrow_syntax::Statement;
         match statement {
-            Statement::Const {
-                ty, value, span, ..
-            } => self.check_binding_statement(statement, ty.as_ref(), Some(value), *span),
-            Statement::Var {
-                ty, value, span, ..
-            } => self.check_binding_statement(statement, ty.as_ref(), value.as_ref(), *span),
-            Statement::Assign {
-                target,
-                value,
-                span,
-            } => self.check_assignment_statement(target, value, *span),
+            Statement::Const { ty, value, .. } => {
+                self.check_binding_statement(statement, ty.as_ref(), Some(value))
+            }
+            Statement::Var { ty, value, .. } => {
+                self.check_binding_statement(statement, ty.as_ref(), value.as_ref())
+            }
+            Statement::Assign { target, value, .. } => {
+                self.check_assignment_statement(target, value)
+            }
             Statement::Delete { path, .. } => self.check_delete_statement(path),
-            Statement::Return { value, span } => {
-                self.check_return(value.as_ref(), *span);
+            Statement::Return { value, .. } => {
+                self.check_return(value.as_ref());
                 self.required_fields.invalidate_all();
             }
             Statement::ReturnAbsent { .. } => self.required_fields.invalidate_all(),
@@ -413,7 +411,6 @@ impl StatementCheck<'_> {
         statement: &marrow_syntax::Statement,
         annotation: Option<&marrow_syntax::TypeRef>,
         value: Option<&marrow_syntax::Expression>,
-        span: SourceSpan,
     ) {
         let value_type = match value {
             Some(value) => {
@@ -440,7 +437,7 @@ impl StatementCheck<'_> {
         if let (Some(annotation), Some(value)) = (annotation, value) {
             check_assignment(
                 self.file,
-                span,
+                value.span(),
                 &resolve_diagnosed_annotation_type(
                     annotation,
                     self.program,
@@ -594,7 +591,6 @@ impl StatementCheck<'_> {
         &mut self,
         target: &marrow_syntax::Expression,
         value: &marrow_syntax::Expression,
-        span: SourceSpan,
     ) {
         let target_type = infer_assignment_target_type_with_read_scope(
             self.program,
@@ -675,7 +671,13 @@ impl StatementCheck<'_> {
             diagnostics: self.diagnostics,
         });
         self.check_lossy_round_trip_warning(target, value);
-        check_assignment(self.file, span, &target_type, &value_type, self.diagnostics);
+        check_assignment(
+            self.file,
+            value.span(),
+            &target_type,
+            &value_type,
+            self.diagnostics,
+        );
         if assignment_target_is_error_code(
             self.program,
             target,
@@ -803,7 +805,7 @@ impl StatementCheck<'_> {
         }
     }
 
-    fn check_return(&mut self, value: Option<&marrow_syntax::Expression>, span: SourceSpan) {
+    fn check_return(&mut self, value: Option<&marrow_syntax::Expression>) {
         if let Some(value) = value {
             let value_type = self.infer(value);
             self.check_range_value(value);
@@ -818,7 +820,7 @@ impl StatementCheck<'_> {
             }
             check_return_type(
                 self.file,
-                span,
+                value.span(),
                 self.return_type,
                 &value_type,
                 self.diagnostics,
@@ -877,14 +879,13 @@ impl StatementCheck<'_> {
             then_block,
             else_ifs,
             else_block,
-            span,
+            span: _,
         } = statement
         else {
             return;
         };
         let annotation = annotation.as_ref();
         let else_block = else_block.as_ref();
-        let span = *span;
         let value_type = self.infer(value);
         self.check_range_value(value);
         self.check_if_const_value(value);
@@ -903,7 +904,7 @@ impl StatementCheck<'_> {
                 );
                 check_assignment(
                     self.file,
-                    span,
+                    value.span(),
                     &annotated_type,
                     &value_type,
                     self.diagnostics,

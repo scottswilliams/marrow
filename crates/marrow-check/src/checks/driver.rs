@@ -274,10 +274,13 @@ fn build_file_prelude(
                     diagnostics.as_deref_mut(),
                 )
             });
-            if let (Some(expected), Some(found), Some(diagnostics)) =
-                (&annotation_type, &value_type, diagnostics.as_deref_mut())
-            {
-                check_assignment(file, constant.span, expected, found, diagnostics);
+            if let (Some(value), Some(expected), Some(found), Some(diagnostics)) = (
+                constant.value.as_ref(),
+                &annotation_type,
+                &value_type,
+                diagnostics.as_deref_mut(),
+            ) {
+                check_assignment(file, value.span(), expected, found, diagnostics);
             }
             let ty = match (annotation_type, value_type) {
                 (Some(ty), _) => ty,

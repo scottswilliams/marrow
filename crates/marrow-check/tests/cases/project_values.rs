@@ -197,6 +197,19 @@ fn rejects_an_assignment_to_a_local_of_the_wrong_type() {
 }
 
 #[test]
+fn an_assignment_statement_mismatch_points_at_the_value_not_the_target() {
+    // The message blames "the value", so a reassignment mismatch must anchor on
+    // the assigned expression rather than the target place.
+    let src = "fn f()\n    var x: int = 1\n    x = \"hi\"\n";
+    let found = check_script("assign-stmt-span", src, "check.assignment_type");
+    let [diagnostic] = found.as_slice() else {
+        panic!("{found:#?}");
+    };
+    let value = src.rfind("\"hi\"").expect("assigned value");
+    assert_eq!(diagnostic.span.start_byte, value, "{diagnostic:#?}");
+}
+
+#[test]
 fn rejects_a_saved_field_write_of_the_wrong_type() {
     // `currentVersion` is `int`, so writing a string is a mismatch.
     let found = check_module(
@@ -1058,6 +1071,23 @@ fn an_unknown_field_write_on_a_local_resource_is_rejected() {
         "check.unknown_field",
     );
     assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn an_unknown_field_read_diagnostic_points_at_the_field_not_the_base() {
+    // The message names the offending field, so the span must land on that field
+    // token rather than spanning the whole `base.field` access from the base value.
+    let src = "module m\n\
+         resource R\n    a: int\n\n\
+         fn f()\n\
+         \x20   var r: R\n\
+         \x20   const x: int = r.bogus\n";
+    let found = check_module("unknown-field-read-span", src, "check.unknown_field");
+    let [diagnostic] = found.as_slice() else {
+        panic!("{found:#?}");
+    };
+    let field = src.find("bogus").expect("field token");
+    assert_eq!(diagnostic.span.start_byte, field, "{diagnostic:#?}");
 }
 
 #[test]
