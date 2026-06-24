@@ -131,6 +131,10 @@ fn duplicate_declarations(
     with_code(report, "check.duplicate_declaration")
 }
 
+fn builtin_collisions(report: &marrow_check::CheckReport) -> Vec<&marrow_check::CheckDiagnostic> {
+    with_code(report, "check.builtin_collision")
+}
+
 fn source_line_span(source: &str, line: u32) -> SourceSpan {
     let start_byte = source
         .split_inclusive('\n')
@@ -235,6 +239,35 @@ fn reports_import_short_name_collision_with_declaration() {
 }
 
 #[test]
+fn single_builtin_name_declaration_is_a_builtin_collision_not_a_duplicate() {
+    let source = "module m\npub fn count()\n    return\n";
+    let root = temp_project("builtin-name-single", |root| {
+        write(root, "src/m.mw", source);
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+
+    let collisions = builtin_collisions(&report);
+    assert_eq!(collisions.len(), 1, "{:#?}", report.diagnostics);
+    assert_eq!(collisions[0].span.line, 2, "{:#?}", collisions[0]);
+    assert_eq!(collisions[0].payload, DiagnosticPayload::None);
+    assert_eq!(
+        collisions[0].message,
+        "`count` is a builtin name and cannot be used as a module-level declaration"
+    );
+    // A single declaration is never a redeclaration.
+    assert!(
+        duplicate_declarations(&report).is_empty(),
+        "{:#?}",
+        report.diagnostics
+    );
+    assert!(
+        with_code(&report, "check.surface_collision").is_empty(),
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
 fn non_surface_builtin_name_collisions_keep_builtin_diagnostics_only() {
     let source = "module m\nfn exists()\n    return\nconst exists = 1\n";
     let root = temp_project("builtin-name-collision", |root| {
@@ -242,18 +275,23 @@ fn non_surface_builtin_name_collisions_keep_builtin_diagnostics_only() {
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
 
-    let duplicates = duplicate_declarations(&report);
-    assert_eq!(duplicates.len(), 2, "{:#?}", report.diagnostics);
+    let collisions = builtin_collisions(&report);
+    assert_eq!(collisions.len(), 2, "{:#?}", report.diagnostics);
     assert_eq!(
-        duplicates
+        collisions
             .iter()
             .map(|diagnostic| diagnostic.span.line)
             .collect::<Vec<_>>(),
         vec![2, 4]
     );
-    for diagnostic in duplicates {
+    for diagnostic in collisions {
         assert_eq!(diagnostic.payload, DiagnosticPayload::None);
     }
+    assert!(
+        duplicate_declarations(&report).is_empty(),
+        "{:#?}",
+        report.diagnostics
+    );
     assert!(
         with_code(&report, "check.surface_collision").is_empty(),
         "{:#?}",
@@ -269,10 +307,15 @@ fn import_after_builtin_declaration_does_not_add_duplicate_declaration() {
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
 
-    let duplicates = duplicate_declarations(&report);
-    assert_eq!(duplicates.len(), 1, "{:#?}", report.diagnostics);
-    assert_eq!(duplicates[0].span.line, 2, "{:#?}", duplicates[0]);
-    assert_eq!(duplicates[0].payload, DiagnosticPayload::None);
+    let collisions = builtin_collisions(&report);
+    assert_eq!(collisions.len(), 1, "{:#?}", report.diagnostics);
+    assert_eq!(collisions[0].span.line, 2, "{:#?}", collisions[0]);
+    assert_eq!(collisions[0].payload, DiagnosticPayload::None);
+    assert!(
+        duplicate_declarations(&report).is_empty(),
+        "{:#?}",
+        report.diagnostics
+    );
     assert!(
         with_code(&report, "check.surface_collision").is_empty(),
         "{:#?}",

@@ -24,6 +24,10 @@ pub const CHECK_DUPLICATE_MODULE: &str = "check.duplicate_module";
 pub const CHECK_MULTIPLE_SCRIPTS: &str = "check.multiple_scripts";
 /// A name is declared or imported more than once within a single file.
 pub const CHECK_DUPLICATE_DECLARATION: &str = "check.duplicate_declaration";
+/// A module-level declaration reuses a builtin name. Distinct from a
+/// redeclaration: a single declaration that shadows a builtin is rejected on
+/// its own, not because the name appears twice.
+pub const CHECK_BUILTIN_COLLISION: &str = "check.builtin_collision";
 /// A surface declaration name collides with a module-level name, a collection
 /// alias collides with another alias or generated operation, or a payload list
 /// repeats a name.

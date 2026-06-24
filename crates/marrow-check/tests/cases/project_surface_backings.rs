@@ -873,7 +873,7 @@ fn builtin_colliding_backing_owners_do_not_produce_surface_facts() {
     let cases = [
         InvalidSurfaceCase {
             name: "surface-builtin-resource-backing",
-            required_code: "check.duplicate_declaration",
+            required_code: "check.builtin_collision",
             expected: ExpectedSurfaceDiagnostic::Target(
                 SurfaceTargetDiagnostic::InvalidStoreResource {
                     root: "items".into(),
@@ -891,7 +891,7 @@ surface Items from ^items
         },
         InvalidSurfaceCase {
             name: "surface-builtin-enum-field",
-            required_code: "check.duplicate_declaration",
+            required_code: "check.builtin_collision",
             expected: ExpectedSurfaceDiagnostic::Field {
                 name: "kind",
                 problem: SurfaceFieldProblem::Invalid,
@@ -909,7 +909,7 @@ surface Items from ^items
         },
         InvalidSurfaceCase {
             name: "surface-builtin-enum-index",
-            required_code: "check.duplicate_declaration",
+            required_code: "check.builtin_collision",
             expected: ExpectedSurfaceDiagnostic::Target(
                 SurfaceTargetDiagnostic::InvalidCollectionIndex {
                     root: "items".into(),

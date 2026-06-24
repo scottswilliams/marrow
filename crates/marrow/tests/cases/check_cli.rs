@@ -633,5 +633,5 @@ fn check_rejects_module_declarations_named_like_builtins() {
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let report = support::json(output.stdout);
-    assert_has_code(&report, "check.duplicate_declaration");
+    assert_has_code(&report, "check.builtin_collision");
 }

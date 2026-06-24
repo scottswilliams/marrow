@@ -36,8 +36,8 @@ fn duplicate_declarations(
     with_code(report, "check.duplicate_declaration")
 }
 
-fn duplicate_declaration_lines(report: &marrow_check::CheckReport) -> Vec<u32> {
-    duplicate_declarations(report)
+fn builtin_collision_lines(report: &marrow_check::CheckReport) -> Vec<u32> {
+    with_code(report, "check.builtin_collision")
         .into_iter()
         .map(|diagnostic| diagnostic.span.line)
         .collect()
@@ -288,7 +288,7 @@ surface exists from ^books
         ),
     ];
 
-    for (index, (source, surface_line, duplicate_lines)) in cases.into_iter().enumerate() {
+    for (index, (source, surface_line, builtin_lines)) in cases.into_iter().enumerate() {
         let root = temp_project(&format!("surface-builtin-collision-{index}"), |root| {
             write(root, "src/app.mw", source);
         });
@@ -309,9 +309,16 @@ surface exists from ^books
             "{:#?}",
             collisions[0]
         );
+        // A non-surface declaration that also shadows the builtin reports its own
+        // builtin collision; the surface collision never leaks a redeclaration.
         assert_eq!(
-            duplicate_declaration_lines(&report),
-            duplicate_lines,
+            builtin_collision_lines(&report),
+            builtin_lines,
+            "{:#?}",
+            report.diagnostics
+        );
+        assert!(
+            duplicate_declarations(&report).is_empty(),
             "{:#?}",
             report.diagnostics
         );

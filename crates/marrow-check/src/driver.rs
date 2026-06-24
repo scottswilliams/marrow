@@ -17,9 +17,9 @@ use marrow_syntax::{
 use crate::analysis;
 use crate::checks;
 use crate::diagnostics::{
-    CHECK_DUPLICATE_DECLARATION, CHECK_DUPLICATE_MODULE, CHECK_MODULE_PATH,
-    CHECK_SURFACE_COLLISION, CHECK_UNKNOWN_TYPE, CheckDiagnostic, CheckReport, ConversionTarget,
-    DiagnosticPayload, IO_READ, SurfaceCollisionNameKind,
+    CHECK_BUILTIN_COLLISION, CHECK_DUPLICATE_DECLARATION, CHECK_DUPLICATE_MODULE,
+    CHECK_MODULE_PATH, CHECK_SURFACE_COLLISION, CHECK_UNKNOWN_TYPE, CheckDiagnostic, CheckReport,
+    ConversionTarget, DiagnosticPayload, IO_READ, SurfaceCollisionNameKind,
 };
 use crate::enums;
 use crate::program::{
@@ -1749,7 +1749,7 @@ fn record_top_level_owner<'a>(
 
 fn builtin_name_diagnostic(file: &Path, name: &str, span: SourceSpan) -> CheckDiagnostic {
     CheckDiagnostic::error(
-        CHECK_DUPLICATE_DECLARATION,
+        CHECK_BUILTIN_COLLISION,
         file,
         span,
         format!("`{name}` is a builtin name and cannot be used as a module-level declaration"),
