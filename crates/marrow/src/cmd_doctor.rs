@@ -93,7 +93,6 @@ fn run_doctor(dir: &str, format: CheckFormat) -> ExitCode {
             store.as_ref(),
             resolved_store_path(root, config.as_ref()).as_deref(),
             lock,
-            format,
             &mut findings,
         );
     }
@@ -362,12 +361,11 @@ fn probe_lock_root_witness(
     store: Option<&TreeStore>,
     path: Option<&Path>,
     lock: Option<&CatalogLock>,
-    format: CheckFormat,
     findings: &mut Vec<Finding>,
 ) {
-    match crate::verify_lock_roots_or_race(store, dir, path, lock, format) {
-        Ok(crate::LockRootVerdict::Clean) | Err(_) => {}
-        Ok(crate::LockRootVerdict::Lost(error)) => {
+    match crate::verify_lock_roots_or_race(store, path, lock) {
+        crate::LockRootVerdict::Clean => {}
+        crate::LockRootVerdict::Lost(error) => {
             findings.push(store_fact_error(dir, "committed roots", error));
         }
     }

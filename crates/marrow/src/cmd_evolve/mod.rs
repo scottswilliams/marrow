@@ -103,6 +103,12 @@ fn apply_cmd(raw_args: &[String]) -> ExitCode {
     if let Err(code) = guard_recovery_backup_path(&input, &config) {
         return code;
     }
+    // The store is created or baselined below, so the committed-root witness runs first: a store
+    // that lost the roots its lock recorded fails closed here rather than being re-baselined over
+    // the loss, the same verdict the read-only inspection family reaches.
+    if let Err(code) = guard_committed_lock_roots(&input.dir, &config, input.format) {
+        return code;
+    }
     let Ok(store) = store::apply_store(&input.dir, &config, input.format) else {
         return ExitCode::FAILURE;
     };
@@ -349,6 +355,75 @@ fn apply_desync_remedy(target_epoch: u64, high_water: u64) -> String {
          with the team's up-to-date store first (pull or rebuild the store that matches the \
          committed lock), then re-check; do not re-run apply against this stale store."
     )
+}
+
+/// Fail apply closed when the store has lost the committed roots its `marrow.lock` records, before
+/// `apply_store` would create or baseline a fresh store over the loss. The committed lock is the
+/// independent witness to durable identity: a store presenting fewer of its active roots than the
+/// lock recorded — rolled back, partially dropped, crashed mid-creation, or wholly deleted while
+/// its lock survives — has lost durable identity and is `store.corruption`, not a clean store to
+/// re-baseline. This is the same verdict the read-only inspection family reaches, routed through
+/// the one race-aware witness owner so a writer mid-re-creating the store yields `store.locked`
+/// rather than a false corruption. A genuine first apply records no active root in the lock, so
+/// the witness never fires and the fresh baseline path runs.
+///
+/// A store committed at an earlier epoch than the lock's high-water is a legitimately-behind local
+/// checkout — the very store apply exists to advance — so it carries every committed root but
+/// fewer member entries than the ahead lock and is left to the apply, never condemned. A rolled
+/// back, lost, or crash-mid-creation store carries no usable commit metadata, so it is not behind
+/// and the witness fires.
+fn guard_committed_lock_roots(
+    dir: &str,
+    config: &marrow_project::ProjectConfig,
+    format: CheckFormat,
+) -> Result<(), ExitCode> {
+    let Some(path) = marrow_check::native_store_path(Path::new(dir), config)
+        .map_err(|error| project_io_exit(dir, error, format))?
+    else {
+        return Ok(());
+    };
+    let Some(lock) = crate::read_committed_lock(dir, format)? else {
+        return Ok(());
+    };
+    if !lock.records_active_roots() {
+        return Ok(());
+    }
+    let store = if marrow_check::tooling::store_path_is_absent(&path) {
+        None
+    } else {
+        crate::open_store_for_inspection(dir, config, format)?
+    };
+    if let Some(store) = &store
+        && store_is_behind_lock(store, &lock, format)?
+    {
+        return Ok(());
+    }
+    match crate::verify_lock_roots_or_race(store.as_ref(), Some(&path), Some(&lock)) {
+        crate::LockRootVerdict::Clean => Ok(()),
+        crate::LockRootVerdict::Lost(error) => {
+            report_simple_error(error.code(), &error.to_string(), format);
+            Err(ExitCode::FAILURE)
+        }
+    }
+}
+
+/// Whether a present store is a legitimately-behind local checkout: it carries committed metadata
+/// at an epoch below the lock's high-water, the store-behind case apply advances. A store with no
+/// commit metadata — rolled back, wiped, or crashed mid-creation — is not behind, so the lock-root
+/// witness still condemns it.
+fn store_is_behind_lock(
+    store: &marrow_store::tree::TreeStore,
+    lock: &marrow_catalog::CatalogLock,
+    format: CheckFormat,
+) -> Result<bool, ExitCode> {
+    match store.read_commit_metadata() {
+        Ok(Some(commit)) => Ok(lock.epoch_high_water > commit.catalog_epoch),
+        Ok(None) => Ok(false),
+        Err(error) => {
+            report_simple_error(error.code(), &error.to_string(), format);
+            Err(ExitCode::FAILURE)
+        }
+    }
 }
 
 struct ManagedRecoveryPath {

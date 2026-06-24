@@ -1376,6 +1376,9 @@ fn open_run_store(
     admission: Option<&SourceAnalysisAdmission>,
     notices: &mut Vec<ProjectSessionNotice>,
 ) -> Result<OpenRunStore, ProjectSessionError> {
+    if !isolate_writes {
+        guard_committed_lock_roots(root, config)?;
+    }
     let Some(store) = open_store_file(root, config, !isolate_writes)? else {
         if isolate_writes && pending_baseline(checked.program()) {
             notices.push(ProjectSessionNotice::DryRunWouldFreeze);
@@ -2003,6 +2006,53 @@ fn store_behind_committed_lock(
     } else {
         Ok(None)
     }
+}
+
+/// Fail a write-capable run closed when the store has lost the committed roots its `marrow.lock`
+/// records, before establishing a fresh baseline would silently mask the loss. The committed lock
+/// is the independent witness to durable identity: a store that presents fewer of the lock's
+/// active roots than the lock recorded — a present store rolled back to its empty initial commit,
+/// a partial root drop, a uid-only store crashed mid-creation, or a store wholly deleted while its
+/// lock survives — has lost durable identity and is `store.corruption`, not a clean store to
+/// re-baseline. This is the same verdict the read-only inspection family reaches, routed through
+/// the one race-aware witness owner so a writer mid-re-creating the store yields `store.locked`
+/// rather than a false corruption. A genuine first run records no active root in the lock, so the
+/// witness never fires either way.
+///
+/// A store committed at an earlier epoch than the lock's high-water is a legitimately-behind local
+/// checkout, not a loss: it carries every committed root but fewer member entries than the ahead
+/// lock projected, so it is the store-behind fence's case, never corruption. A rolled-back, lost,
+/// or crash-mid-creation store carries no usable commit metadata, so it is not behind and the
+/// witness fires.
+fn guard_committed_lock_roots(
+    root: &Path,
+    config: &ProjectConfig,
+) -> Result<(), ProjectSessionError> {
+    let Some(path) = marrow_check::native_store_path(root, config)? else {
+        return Ok(());
+    };
+    let Some(lock) = marrow_check::read_committed_lock(root)? else {
+        return Ok(());
+    };
+    if !lock.records_active_roots() {
+        return Ok(());
+    }
+    let store = if marrow_check::tooling::store_path_is_absent(&path) {
+        None
+    } else {
+        Some(TreeStore::open_read_only(&path)?)
+    };
+    if let Some(store) = &store
+        && store_behind_committed_lock(root, store)?.is_some()
+    {
+        return Ok(());
+    }
+    marrow_check::tooling::verify_lock_roots_tolerating_recreation(
+        store.as_ref(),
+        Some(&path),
+        Some(&lock),
+    )
+    .map_err(ProjectSessionError::Store)
 }
 
 fn pending_baseline(program: &CheckedProgram) -> bool {

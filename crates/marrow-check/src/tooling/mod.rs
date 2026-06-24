@@ -6,6 +6,7 @@ mod completion;
 pub mod data;
 mod hover;
 pub mod integrity;
+mod lock_roots;
 mod semantic_tokens;
 pub mod signatures;
 pub mod symbols;
@@ -67,6 +68,9 @@ pub use integrity::{
     count_activation_integrity_problems, count_integrity_problems, count_orphan_cells,
     sample_integrity_problem_details, sample_integrity_problems, stamped_integrity_problem_details,
     verify_store_completeness, verify_store_roots_against_lock, visit_integrity_problems,
+};
+pub use lock_roots::{
+    store_path_is_absent, verify_lock_roots_tolerating_recreation, wait_for_store_recreation,
 };
 pub use semantic_tokens::{
     SourceSemanticTokenFact, SourceSemanticTokenModifiers, SourceSemanticTokenRole,

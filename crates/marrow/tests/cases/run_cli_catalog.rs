@@ -5,7 +5,7 @@
 //! and commit stamp.
 use crate::support;
 
-use marrow_catalog::{CatalogEntryKind, CatalogLock, CatalogMetadata};
+use marrow_catalog::{CatalogEntryKind, CatalogLock};
 use marrow_store::tree::TreeStore;
 use support::{TempProject, find_code_segment, marrow, marrow_sub, write};
 
@@ -34,14 +34,6 @@ fn pending_native_project(name: &str) -> TempProject {
 
 fn store_path(root: &std::path::Path) -> std::path::PathBuf {
     root.join(".data").join("marrow.redb")
-}
-
-fn store_snapshot(root: &std::path::Path) -> CatalogMetadata {
-    let store = TreeStore::open(&store_path(root)).expect("open store");
-    store
-        .read_catalog_snapshot()
-        .expect("read store catalog snapshot")
-        .expect("project has an accepted catalog")
 }
 
 fn committed_lock(root: &std::path::Path) -> CatalogLock {
@@ -163,58 +155,48 @@ fn a_second_run_does_not_churn_the_accepted_catalog() {
 }
 
 #[test]
-fn a_fresh_checkout_adopts_the_committed_lock_into_an_empty_store() {
-    // The committed lock is a generated source-tree projection that seeds a fresh empty
-    // store: a checkout that keeps the lock but loses the local store re-establishes the
-    // same accepted identity rather than minting fresh ids.
-    let root = pending_native_project("run-fresh-checkout-adopts-lock");
+fn run_over_a_store_lost_under_a_committed_lock_fails_closed() {
+    // The committed `marrow.lock` is the independent witness to durable identity: it records the
+    // accepted catalog roots, so a store removed from disk while the lock still records those roots
+    // has lost durable identity. A write-capable run must fail closed with `store.corruption`
+    // rather than re-create an empty store over the loss, the same verdict the read-only inspection
+    // family reaches on the same store.
+    let root = pending_native_project("run-store-lost-under-lock");
 
     let first = marrow_sub("run", &[root.to_str().unwrap()]);
     assert_eq!(first.status.code(), Some(0), "first run: {first:?}");
     let committed = committed_lock(&root);
-    let baseline_ids: Vec<String> = store_snapshot(&root)
-        .entries
-        .iter()
-        .map(|entry| entry.stable_id.clone())
-        .collect();
+    assert!(
+        committed.records_active_roots(),
+        "the committed lock records the accepted ^books root",
+    );
 
-    // Simulate a checkout with the committed lock but no local store.
-    std::fs::remove_dir_all(root.join(".data")).expect("simulate checkout without local store");
+    // The store is removed while the committed lock survives.
+    std::fs::remove_dir_all(root.join(".data")).expect("simulate a lost local store");
 
     let second = marrow_sub("run", &[root.to_str().unwrap()]);
     assert_eq!(
         second.status.code(),
-        Some(0),
-        "a fresh checkout adopts the committed lock: {second:?}"
+        Some(1),
+        "a run over a store lost under a committed lock must fail closed: {second:?}"
     );
-
-    // The re-established store carries the lock's committed identity, not freshly minted ids,
-    // and the re-projected lock is byte-identical to the committed one.
-    let snapshot = store_snapshot(&root);
-    let adopted_ids: Vec<String> = snapshot
-        .entries
-        .iter()
-        .map(|entry| entry.stable_id.clone())
-        .collect();
+    let stderr = String::from_utf8(second.stderr).expect("stderr utf8");
+    let segments: Vec<&str> = stderr.trim().split(": ").collect();
+    let (_, code) = find_code_segment(&segments);
     assert_eq!(
-        adopted_ids, baseline_ids,
-        "the empty store adopts the committed lock identity, not fresh ids"
-    );
-    assert_eq!(
-        committed_lock(&root),
-        committed,
-        "re-projecting the adopted store yields the committed lock unchanged"
+        code, "store.corruption",
+        "the lost store under a committed lock must report store.corruption: {stderr}"
     );
 }
 
 #[test]
-fn a_retired_store_index_reseeds_a_wiped_store_from_the_lock_alone() {
-    // The catastrophic store-loss path: a committed lock whose append-only ledger tombstones a
-    // retired STORE INDEX must still re-seed a fresh empty store. The lock is the sole survivor of
-    // a checkout that loses its local store, so a valid committed lock that retired an index must
-    // never brick the project on the next write-capable open, and the retired id must stay reserved
-    // rather than being reissued.
-    let root = support::temp_project_uncommitted("run-retired-index-reseeds-wiped-store", |root| {
+fn a_retired_store_index_in_the_lock_fails_a_lost_store_closed() {
+    // A committed lock whose append-only ledger tombstones a retired STORE INDEX still records the
+    // surviving accepted roots. When the local store is lost, the lock is the independent witness
+    // to that durable identity, so a write-capable open must fail closed with `store.corruption`
+    // rather than re-create an empty store from the lock — the retired-index tombstone must not be
+    // mistaken for a clean nothing-to-reseed.
+    let root = support::temp_project_uncommitted("run-retired-index-lost-store", |root| {
         write(
             root,
             "marrow.json",
@@ -285,39 +267,27 @@ fn a_retired_store_index_reseeds_a_wiped_store_from_the_lock_alone() {
         tombstoned.ledger
     );
 
-    // Store loss: a checkout that keeps the committed lock but loses the local store.
-    std::fs::remove_dir_all(root.join(".data")).expect("simulate checkout without local store");
+    // Store loss while the committed lock — still recording the surviving ^books root — survives.
+    std::fs::remove_dir_all(root.join(".data")).expect("simulate a lost local store");
+    assert!(
+        tombstoned.records_active_roots(),
+        "the committed lock still records the surviving ^books root",
+    );
 
-    // Re-seeding the fresh empty store from the lock alone must recover, not brick on a
-    // synthesized store.corruption over the shapeless reserved index row.
+    // A write-capable open over the lost store must fail closed, never synthesize a fresh store
+    // from the lock — the retired-index tombstone is no excuse to re-create over the loss.
     let reseed = marrow_sub("run", &[root.to_str().unwrap()]);
     assert_eq!(
         reseed.status.code(),
-        Some(0),
-        "a retired store index must reseed a wiped store from the lock: {reseed:?}"
+        Some(1),
+        "a lost store under a committed lock with a retired index must fail closed: {reseed:?}"
     );
-
-    // The retired id is preserved as a Reserved row in the re-seeded store and is never reissued:
-    // the re-projected lock still tombstones the same id, byte-identical to the pre-loss lock.
-    let snapshot = store_snapshot(&root);
-    let reserved = snapshot
-        .entries
-        .iter()
-        .find(|entry| entry.kind == CatalogEntryKind::StoreIndex)
-        .expect("the re-seeded store carries the reserved index row");
+    let stderr = String::from_utf8(reseed.stderr).expect("stderr utf8");
+    let segments: Vec<&str> = stderr.trim().split(": ").collect();
+    let (_, code) = find_code_segment(&segments);
     assert_eq!(
-        reserved.stable_id, index_id,
-        "the reserved index preserves the retired id, never reissues it"
-    );
-    assert_eq!(
-        reserved.lifecycle,
-        marrow_catalog::CatalogLifecycle::Reserved,
-        "the re-seeded index row is reserved, not active"
-    );
-    assert_eq!(
-        committed_lock(&root),
-        tombstoned,
-        "re-projecting the re-seeded store yields the committed lock unchanged"
+        code, "store.corruption",
+        "the lost store must report store.corruption, not a synthesized reseed: {stderr}"
     );
 }
 

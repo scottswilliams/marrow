@@ -264,13 +264,7 @@ pub(super) fn verify_lock_roots_present(target: &DataReadTarget) -> Result<(), E
         return Ok(());
     }
     let lock = crate::read_committed_lock(&target.dir, target.format)?;
-    match crate::verify_lock_roots_or_race(
-        target.store.as_ref(),
-        &target.dir,
-        None,
-        lock.as_ref(),
-        target.format,
-    )? {
+    match crate::verify_lock_roots_or_race(target.store.as_ref(), None, lock.as_ref()) {
         crate::LockRootVerdict::Clean => Ok(()),
         crate::LockRootVerdict::Lost(error) => Err(report_store_error(error, target.format)),
     }
@@ -439,18 +433,16 @@ fn data_recover(args: &[String]) -> ExitCode {
         // An absent store while the lock still records committed roots is a total loss, not
         // a clean nothing-to-recover: fail it closed through the race-aware owner, which is
         // silent when a writer is mid-re-creating the store.
-        match crate::verify_lock_roots_or_race(None, &dir, None, lock.as_ref(), format) {
-            Ok(crate::LockRootVerdict::Clean) => {}
-            Ok(crate::LockRootVerdict::Lost(error)) => return report_store_error(error, format),
-            Err(code) => return code,
+        match crate::verify_lock_roots_or_race(None, None, lock.as_ref()) {
+            crate::LockRootVerdict::Clean => {}
+            crate::LockRootVerdict::Lost(error) => return report_store_error(error, format),
         }
         return report_no_store_to_recover(&dir, None, format);
     };
     if store_path_is_absent(&path) {
-        match crate::verify_lock_roots_or_race(None, &dir, Some(&path), lock.as_ref(), format) {
-            Ok(crate::LockRootVerdict::Clean) => {}
-            Ok(crate::LockRootVerdict::Lost(error)) => return report_store_error(error, format),
-            Err(code) => return code,
+        match crate::verify_lock_roots_or_race(None, Some(&path), lock.as_ref()) {
+            crate::LockRootVerdict::Clean => {}
+            crate::LockRootVerdict::Lost(error) => return report_store_error(error, format),
         }
         return report_no_store_to_recover(&dir, Some(&path), format);
     }
@@ -469,10 +461,9 @@ fn data_recover(args: &[String]) -> ExitCode {
     // concurrent writer, which presents fewer committed roots than the lock while mid-creation.
     // Route it through the single race-aware owner so a live re-creation is left to the writer
     // rather than condemned: a settled rollback below the committed roots still fails closed.
-    match crate::verify_lock_roots_or_race(Some(&store), &dir, Some(&path), lock.as_ref(), format) {
-        Ok(crate::LockRootVerdict::Clean) => report_recovered_store(&dir, &path, format),
-        Ok(crate::LockRootVerdict::Lost(error)) => report_store_error(error, format),
-        Err(code) => code,
+    match crate::verify_lock_roots_or_race(Some(&store), Some(&path), lock.as_ref()) {
+        crate::LockRootVerdict::Clean => report_recovered_store(&dir, &path, format),
+        crate::LockRootVerdict::Lost(error) => report_store_error(error, format),
     }
 }
 

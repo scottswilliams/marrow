@@ -43,19 +43,12 @@ pub(crate) fn backup(args: &[String]) -> ExitCode {
     // through the single race-aware owner: a writer mid-re-creating the store is recognised as a
     // live race rather than condemned, while a settled absent store with committed roots — no
     // racing writer — still fails closed.
-    match crate::verify_lock_roots_or_race(
-        on_disk.as_ref(),
-        &dir,
-        store_path.as_deref(),
-        lock.as_ref(),
-        format,
-    ) {
-        Ok(crate::LockRootVerdict::Clean) => {}
-        Ok(crate::LockRootVerdict::Lost(error)) => {
+    match crate::verify_lock_roots_or_race(on_disk.as_ref(), store_path.as_deref(), lock.as_ref()) {
+        crate::LockRootVerdict::Clean => {}
+        crate::LockRootVerdict::Lost(error) => {
             report_simple_error(error.code(), &error.to_string(), format);
             return ExitCode::FAILURE;
         }
-        Err(code) => return code,
     }
 
     let store = match on_disk {

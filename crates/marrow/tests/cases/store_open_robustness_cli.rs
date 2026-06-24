@@ -243,6 +243,59 @@ fn seeded_mutable_store(name: &str, records: u32) -> (support::TempProject, Stri
     (project, dir)
 }
 
+/// A baseline declaring `^notes` over a one-field `Note` with a `seed` that writes three records.
+/// Pairs with [`EVOLVABLE_DEFAULT_SOURCE`], which adds a defaulted `pages` field plus the
+/// `default Note.pages = 0` evolution intent so `evolve apply` has a non-empty activation to run.
+const EVOLVABLE_BASELINE_SOURCE: &str = "module app\n\
+     \n\
+     resource Note\n\
+     \x20\x20\x20\x20required title: string\n\
+     store ^notes(id: int): Note\n\
+     \n\
+     pub fn seed()\n\
+     \x20\x20\x20\x20transaction\n\
+     \x20\x20\x20\x20\x20\x20\x20\x20for i in 1..=3\n\
+     \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20var n: Note\n\
+     \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20n.title = \"a note title\"\n\
+     \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20^notes(i) = n\n";
+
+/// The evolved counterpart of [`EVOLVABLE_BASELINE_SOURCE`]: a defaulted `pages` field and the
+/// `default Note.pages = 0` intent the apply activates over the committed `^notes` records.
+const EVOLVABLE_DEFAULT_SOURCE: &str = "module app\n\
+     \n\
+     resource Note\n\
+     \x20\x20\x20\x20required title: string\n\
+     \x20\x20\x20\x20required pages: int\n\
+     store ^notes(id: int): Note\n\
+     \n\
+     evolve\n\
+     \x20\x20\x20\x20default Note.pages = 0\n\
+     \n\
+     pub fn seed()\n\
+     \x20\x20\x20\x20transaction\n\
+     \x20\x20\x20\x20\x20\x20\x20\x20for i in 1..=3\n\
+     \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20var n: Note\n\
+     \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20n.title = \"a note title\"\n\
+     \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20n.pages = 1\n\
+     \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20^notes(i) = n\n";
+
+/// Seed an evolvable store: commit [`EVOLVABLE_BASELINE_SOURCE`] (three `^notes` records and a lock
+/// recording the root), returning the project so the caller can swap in [`EVOLVABLE_DEFAULT_SOURCE`]
+/// before driving `evolve apply`.
+fn seeded_evolvable_store(name: &str) -> support::TempProject {
+    let project = temp_project_uncommitted(name, |root| {
+        write(root, "marrow.json", native_config());
+        write(root, "src/app.mw", EVOLVABLE_BASELINE_SOURCE);
+    });
+    let dir = project.to_str().expect("dir utf8").to_string();
+    assert_eq!(
+        marrow(&["run", "--entry", "app::seed", &dir]).status.code(),
+        Some(0),
+        "seed an evolvable baseline store",
+    );
+    project
+}
+
 /// A normal single-record delete and a single-record overwrite must keep the durable
 /// per-root structural digest exact: the delete drops the whole record through the
 /// production resource-delete path (subtracting each dropped cell), and the overwrite
@@ -472,37 +525,36 @@ fn findings_carry_lock_root_corruption(report: &serde_json::Value) -> bool {
     })
 }
 
-/// Hammer `marrow doctor --format json` against a writer that is repeatedly removing and
-/// re-creating the store, the rm-then-recreate window a stray restart leaves. Doctor opens the
-/// store and runs the lock-root witness independently of the read-only inspections, so it must
-/// share their recreation-race tolerance: across the whole race it may report the store locked,
-/// a transient open failure carrying a non-corruption code, or a clean healthy report, but never
-/// the lock-root `store.corruption` over a store the writer provably leaves healthy.
+/// Hammer `marrow doctor --format json` against a live writer that repeatedly commits write
+/// transactions against the healthy store, holding the redb write flock across each commit window.
+/// Doctor opens the store and runs the lock-root witness independently of the read-only
+/// inspections, so it must share their live-writer tolerance: across the whole race it may report
+/// the store locked, a transient open failure carrying a non-corruption code, or a clean healthy
+/// report, but never the lock-root `store.corruption` over a store the writer provably leaves
+/// healthy. The writer never removes the committed store: deleting a store under a roots-recording
+/// lock is durable loss, which the witness must fail closed, so a legitimate race is a live writer
+/// mutating the store in place, not one re-creating it from absence.
 #[test]
-fn doctor_under_a_store_recreation_race_never_false_corrupts_a_healthy_store() {
+fn doctor_under_a_live_writer_never_false_corrupts_a_healthy_store() {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
 
-    let (project, dir) = seeded_mutable_store("cli-store-doctor-recreation-race", 64);
+    let (_project, dir) = seeded_mutable_store("cli-store-doctor-live-writer", 64);
     let deadline = std::time::Duration::from_secs(30);
-    let store = store_path(&project);
 
-    // A writer that, in a loop, removes the committed store and re-creates it through the
-    // production run path. Each iteration passes through the file-absent gap and the
-    // baseline-pending window the lock-root witness must not condemn.
+    // A writer that, in a loop, overwrites an existing record through the production run path. Each
+    // commit holds the redb write flock, so a racing doctor either wins the open or is excluded as
+    // `store.locked`; the store always presents every committed root, so the witness never fires.
     let stop = Arc::new(AtomicBool::new(false));
     let writer = {
         let stop = Arc::clone(&stop);
         let dir = dir.clone();
-        let store = store.clone();
         std::thread::spawn(move || {
             while !stop.load(Ordering::Relaxed) {
-                let _ = std::fs::remove_file(&store);
-                let run = marrow(&["run", "--entry", "app::seed", &dir]);
-                assert_eq!(
-                    run.status.code(),
-                    Some(0),
-                    "the background writer must re-create the store cleanly: {run:?}",
+                let run = marrow(&["run", "--entry", "app::overwrite_one", &dir]);
+                assert!(
+                    matches!(run.status.code(), Some(0) | Some(1)),
+                    "the background writer must commit cleanly or yield to a racing lock: {run:?}",
                 );
             }
         })
@@ -527,7 +579,7 @@ fn doctor_under_a_store_recreation_race_never_false_corrupts_a_healthy_store() {
     writer.join().expect("join the background writer");
 
     // The writer left the store committed and healthy: a settled integrity pass must verify it,
-    // proving the race tolerance never blessed a genuine loss.
+    // proving the live-writer tolerance never blessed a genuine loss.
     let integrity = marrow(&["data", "integrity", &dir]);
     assert_eq!(
         integrity.status.code(),
@@ -536,34 +588,29 @@ fn doctor_under_a_store_recreation_race_never_false_corrupts_a_healthy_store() {
     );
 }
 
-/// Hammer `marrow data recover --format json` against a writer repeatedly removing and
-/// re-creating the store. Recover opens the store write-capable and runs the lock-root witness,
-/// so it must share the recreation-race tolerance: it can win the open and bless the in-flight
+/// Hammer `marrow data recover --format json` against a live writer committing write transactions
+/// against the healthy store in place. Recover opens the store write-capable and runs the lock-root
+/// witness, so it must share the live-writer tolerance: it can win the open and bless the in-flight
 /// store, yield to the writer's lock, or hit a transient non-lock-root open failure, but it must
-/// never report `store.corruption` over a store the writer provably leaves healthy. Before this
-/// fix, recover won the flock in the baseline-pending window and condemned the healthy store.
+/// never report `store.corruption` over a store the writer provably leaves healthy.
 #[test]
-fn data_recover_under_a_store_recreation_race_never_false_corrupts_a_healthy_store() {
+fn data_recover_under_a_live_writer_never_false_corrupts_a_healthy_store() {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
 
-    let (project, dir) = seeded_mutable_store("cli-store-recover-recreation-race", 64);
+    let (_project, dir) = seeded_mutable_store("cli-store-recover-live-writer", 64);
     let deadline = std::time::Duration::from_secs(30);
-    let store = store_path(&project);
 
     let stop = Arc::new(AtomicBool::new(false));
     let writer = {
         let stop = Arc::clone(&stop);
         let dir = dir.clone();
-        let store = store.clone();
         std::thread::spawn(move || {
             while !stop.load(Ordering::Relaxed) {
-                let _ = std::fs::remove_file(&store);
-                let run = marrow(&["run", "--entry", "app::seed", &dir]);
-                assert_eq!(
-                    run.status.code(),
-                    Some(0),
-                    "the background writer must re-create the store cleanly: {run:?}",
+                let run = marrow(&["run", "--entry", "app::overwrite_one", &dir]);
+                assert!(
+                    matches!(run.status.code(), Some(0) | Some(1)),
+                    "the background writer must commit cleanly or yield to a racing lock: {run:?}",
                 );
             }
         })
@@ -590,7 +637,7 @@ fn data_recover_under_a_store_recreation_race_never_false_corrupts_a_healthy_sto
     writer.join().expect("join the background writer");
 
     // The writer left the store committed and healthy: a settled integrity pass must verify it,
-    // proving the recover race tolerance never blessed a genuine loss.
+    // proving the live-writer tolerance never blessed a genuine loss.
     let integrity = marrow(&["data", "integrity", &dir]);
     assert_eq!(
         integrity.status.code(),
@@ -667,6 +714,218 @@ fn an_absent_store_with_a_committed_lock_is_caught_by_the_lock_root_witness() {
             .iter()
             .any(|finding| finding["data"]["underlying_code"] == "store.corruption"),
         "doctor must report the deleted store with a committed lock as store.corruption: {report}"
+    );
+}
+
+/// A present store rolled back to its empty initial commit while its committed `marrow.lock` still
+/// records roots has lost durable identity. A write-capable `run` must fail closed with
+/// `store.corruption` rather than re-establish a fresh baseline over the rolled-back store and
+/// bless the loss — the same verdict the read-only inspection family reaches over this store, now
+/// shared by the writer before it would mask the rollback.
+#[test]
+fn run_over_a_rolled_back_store_with_a_committed_lock_fails_closed() {
+    let (project, dir) = seeded_mutable_store("cli-run-rolled-back-lock", 3);
+    let deadline = std::time::Duration::from_secs(30);
+
+    roll_store_back_to_empty(&project);
+    assert!(
+        project.join("marrow.lock").exists(),
+        "the committed lock must survive the rollback",
+    );
+
+    let run = marrow_bounded(&["run", "--entry", "app::seed", &dir], deadline);
+    assert_no_panic_and_bounded(&run, &["run", "--entry", "app::seed", &dir], 0);
+    assert_eq!(
+        run.status.code(),
+        Some(1),
+        "`run` re-baselined a rolled-back store under a committed lock instead of failing closed: \
+         {run:?}",
+    );
+    assert_eq!(
+        stderr_code(&run),
+        "store.corruption",
+        "`run` over a store rolled back below its committed roots must report store.corruption: \
+         {run:?}",
+    );
+}
+
+/// A uid-only store crashed between the two creation transactions, under a committed lock that
+/// records a root, has lost the committed root with no writer re-creating it. A write-capable
+/// `run` must fail it closed rather than re-baseline over the settled loss, the same verdict
+/// `data recover` reaches on this store.
+#[test]
+fn run_over_a_settled_baseline_pending_store_with_a_committed_lock_fails_closed() {
+    let (project, dir) = seeded_mutable_store("cli-run-baseline-pending-lock", 3);
+    let deadline = std::time::Duration::from_secs(30);
+
+    replace_with_baseline_pending_store(&project);
+
+    let run = marrow_bounded(&["run", "--entry", "app::seed", &dir], deadline);
+    assert_no_panic_and_bounded(&run, &["run", "--entry", "app::seed", &dir], 0);
+    assert_eq!(
+        run.status.code(),
+        Some(1),
+        "`run` re-baselined a settled crash-mid-creation store instead of failing closed: {run:?}",
+    );
+    assert_eq!(
+        stderr_code(&run),
+        "store.corruption",
+        "`run` over a settled baseline-pending store must report the lost root as store.corruption: \
+         {run:?}",
+    );
+}
+
+/// A healthy committed store keeps `run` working: the lock-root guard passes a present store that
+/// still presents every committed root, so a follow-up entry commits cleanly and the data survives.
+#[test]
+fn run_over_a_healthy_store_still_writes() {
+    let (_project, dir) = seeded_mutable_store("cli-run-healthy", 5);
+
+    assert_eq!(
+        marrow(&["run", "--entry", "app::delete_one", &dir])
+            .status
+            .code(),
+        Some(0),
+        "a follow-up run over a healthy store must commit cleanly",
+    );
+    let stats = marrow(&["data", "stats", &dir]);
+    assert_eq!(
+        reported_record_count(&stats),
+        Some(4),
+        "the healthy store must reflect the committed mutation: {stats:?}",
+    );
+}
+
+/// The store deleted from disk while its committed `marrow.lock` still records roots — the plain
+/// `rm` of the redb body — is the unambiguous data-loss repro. A write-capable `run` must fail
+/// closed with `store.corruption` rather than silently re-create an empty store and re-seed over
+/// the loss, matching the read-only inspection family on the same store. Before the fix `run`
+/// returned a fresh rc0 here, permanently discarding the committed records.
+#[test]
+fn run_over_a_deleted_store_with_a_committed_lock_fails_closed() {
+    let (project, dir) = seeded_mutable_store("cli-run-deleted-lock", 3);
+    let deadline = std::time::Duration::from_secs(30);
+
+    delete_store_file(&project);
+    assert!(
+        project.join("marrow.lock").exists(),
+        "the committed lock must survive the store deletion",
+    );
+
+    let run = marrow_bounded(&["run", "--entry", "app::seed", &dir], deadline);
+    assert_no_panic_and_bounded(&run, &["run", "--entry", "app::seed", &dir], 0);
+    assert_eq!(
+        run.status.code(),
+        Some(1),
+        "`run` silently re-created a deleted store under a committed lock instead of failing \
+         closed: {run:?}",
+    );
+    assert_eq!(
+        stderr_code(&run),
+        "store.corruption",
+        "`run` over a store deleted while its lock records committed roots must report \
+         store.corruption: {run:?}",
+    );
+}
+
+/// `evolve apply` creates or baselines the store before applying, so it carries the same write-path
+/// hole as `run`: a store deleted while its committed `marrow.lock` records roots must fail closed
+/// with `store.corruption` rather than re-baseline a fresh empty store and re-project the lock over
+/// the loss. Before the fix apply reported "Nothing to apply" rc0 and rewrote the lock to the empty
+/// store, permanently discarding the committed records.
+#[test]
+fn evolve_apply_over_a_deleted_store_with_a_committed_lock_fails_closed() {
+    let project = seeded_evolvable_store("cli-evolve-apply-deleted-lock");
+    let dir = project.to_str().expect("dir utf8").to_string();
+    let deadline = std::time::Duration::from_secs(30);
+
+    write(&project, "src/app.mw", EVOLVABLE_DEFAULT_SOURCE);
+    delete_store_file(&project);
+    assert!(
+        project.join("marrow.lock").exists(),
+        "the committed lock must survive the store deletion",
+    );
+
+    let apply = marrow_bounded(&["evolve", "apply", &dir], deadline);
+    assert_no_panic_and_bounded(&apply, &["evolve", "apply", &dir], 0);
+    assert_eq!(
+        apply.status.code(),
+        Some(1),
+        "`evolve apply` re-baselined a deleted store under a committed lock instead of failing \
+         closed: {apply:?}",
+    );
+    assert_eq!(
+        stderr_code(&apply),
+        "store.corruption",
+        "`evolve apply` over a store deleted while its lock records committed roots must report \
+         store.corruption: {apply:?}",
+    );
+}
+
+/// A genuine first run with no committed lock and no store creates the store and commits its data:
+/// the lock-root witness records no active root to contradict, so the write path proceeds. This is
+/// the missing-lock carve-out the corruption verdict must never swallow, proven through the live
+/// write path rather than only the read-only inspections.
+#[test]
+fn a_true_first_run_creates_the_store_and_commits() {
+    let (_project, dir) = seeded_mutable_store("cli-run-true-first", 4);
+    let stats = marrow(&["data", "stats", &dir]);
+    assert_eq!(
+        reported_record_count(&stats),
+        Some(4),
+        "a true first run must create the store and commit its records: {stats:?}",
+    );
+}
+
+/// A genuine first `evolve apply` with no committed lock and no store baselines the store and
+/// applies cleanly: the lock-root witness records no active root to contradict, so the fresh
+/// baseline path runs rather than failing closed. A follow-up run then commits against the
+/// baselined store, proving the first apply established a working store rather than a phantom.
+#[test]
+fn a_true_first_evolve_apply_baselines_the_store() {
+    let project = temp_project_uncommitted("cli-evolve-apply-true-first", |root| {
+        write(root, "marrow.json", native_config());
+        write(root, "src/app.mw", EVOLVABLE_DEFAULT_SOURCE);
+    });
+    let dir = project.to_str().expect("dir utf8").to_string();
+    assert!(
+        !project.join("marrow.lock").exists(),
+        "an un-applied project has no committed lock",
+    );
+
+    let apply = marrow(&["evolve", "apply", &dir]);
+    assert_eq!(
+        apply.status.code(),
+        Some(0),
+        "a true first evolve apply must baseline the store and apply cleanly: {apply:?}",
+    );
+    assert_eq!(
+        marrow(&["run", "--entry", "app::seed", &dir]).status.code(),
+        Some(0),
+        "a run after the first apply must commit against the baselined store",
+    );
+}
+
+/// A healthy committed store keeps `evolve apply` working: the lock-root guard passes a present
+/// store that still presents every committed root, so an apply that adds a defaulted field
+/// activates cleanly rather than false-corrupting.
+#[test]
+fn evolve_apply_over_a_healthy_store_still_applies() {
+    let project = seeded_evolvable_store("cli-evolve-apply-healthy");
+    let dir = project.to_str().expect("dir utf8").to_string();
+
+    write(&project, "src/app.mw", EVOLVABLE_DEFAULT_SOURCE);
+    let apply = marrow(&["evolve", "apply", &dir]);
+    assert_eq!(
+        apply.status.code(),
+        Some(0),
+        "evolve apply over a healthy store must activate the defaulted field cleanly: {apply:?}",
+    );
+    let stats = marrow(&["data", "stats", &dir]);
+    assert_eq!(
+        reported_record_count(&stats),
+        Some(3),
+        "the healthy store must keep its committed records after the apply: {stats:?}",
     );
 }
 
