@@ -1135,6 +1135,10 @@ impl Backend for RedbStore {
         })
     }
 
+    fn require_write_access(&self, op: &'static str) -> Result<(), StoreError> {
+        self.handle().require_write_access(op)
+    }
+
     fn write(&mut self, key: &[u8], value: Vec<u8>) -> Result<(), StoreError> {
         self.ensure_writable("write", StoreError::write_while_snapshot_pinned)?;
         self.mutate("write", |table| {

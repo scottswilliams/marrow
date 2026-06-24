@@ -3,7 +3,7 @@
 use std::path::Path;
 use std::process::ExitCode;
 
-use marrow_check::tooling::verify_store_index_integrity;
+use marrow_check::tooling::verify_store_completeness;
 use marrow_run::SystemNondeterminism;
 use marrow_store::tree::TreeStore;
 
@@ -18,6 +18,10 @@ pub(crate) fn backup(args: &[String]) -> ExitCode {
     let format = CheckFormat::Text;
     let (config, program) = match load_checked_project(&dir) {
         Ok(checked) => checked,
+        Err(code) => return code,
+    };
+    let lock = match crate::read_committed_lock(&dir, format) {
+        Ok(lock) => lock,
         Err(code) => return code,
     };
     let mut nondeterminism = SystemNondeterminism::new();
@@ -35,11 +39,12 @@ pub(crate) fn backup(args: &[String]) -> ExitCode {
         Err(code) => return code,
     };
 
-    // A backup carries data cells and rebuilds the index family on restore, so an
-    // index whose entries were silently dropped would be archived as if healthy and
-    // its under-read masked. Fail closed on an index-corrupt store before writing the
-    // artifact rather than propagating a store the schema can no longer fully derive.
-    if let Err(error) = verify_store_index_integrity(&store, &program) {
+    // A backup carries data cells and rebuilds the index family on restore, so data
+    // silently truncated by a damaged page, or an index whose entries were dropped,
+    // would be archived as if healthy and its under-read masked. Fail closed on an
+    // incomplete store before writing the artifact rather than propagating a store the
+    // schema can no longer fully derive.
+    if let Err(error) = verify_store_completeness(&store, &program, lock.as_ref()) {
         report_simple_error(error.code(), &error.to_string(), format);
         return ExitCode::FAILURE;
     }

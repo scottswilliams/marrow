@@ -292,10 +292,30 @@ Verifies that each checked, reachable stored value decodes against its declared
 schema type, that each canonical identity leaf points to an existing saved
 record node, that each existing record or keyed-layer entry carries its accepted
 required fields, that no stored cell is left under a root or member the schema no
-longer declares, and that typed store traversal does not report corruption. It
-is read-only and typed: it needs the checked project to know each path's type.
-The whole verdict reads one stable store snapshot, so it describes a single
-coherent version of the data.
+longer declares, that each root holds exactly the cells its commit digest
+recorded, and that typed store traversal does not report corruption. It is
+read-only and typed: it needs the checked project to know each path's type. The
+whole verdict reads one stable store snapshot, so it describes a single coherent
+version of the data.
+
+Because the data cells are their own derivation, a backend page that silently
+drops a cell, truncates a record range, or rewrites a stored value with bytes that
+still decode shifts every enumeration with no structural fault. The durable
+per-root structural digest each commit stamps is the independent oracle: it covers
+every committed cell's identity and value, so a root whose live cells disagree with
+its digest — a dropped cell, a torn value, or a moved field — is reported as
+`store.corruption`. The same digest gates `backup` and `data recover`, so neither
+archives nor blesses a truncated or tampered store.
+
+The anchor cannot witness a rollback that drops the anchor itself. The committed
+`marrow.lock` is the second, independent witness: it records the accepted catalog
+roots, so a store that presents fewer roots than its lock committed has lost data
+to a rollback and is reported as `store.corruption`. `data integrity`, `data
+stats`, `backup`, and `data recover` all run this lock-root cross-check, so none
+blesses, counts, archives, or repairs a store that rolled back below its committed
+roots. The check keys on the root set, not the epoch, so a store legitimately
+behind an ahead lock still passes, and a project with no committed lock is the
+separate missing-lock case rather than corruption.
 
 Catalog state is not store corruption. A saved root or member whose durable
 identity is still pending is treated as absent until a run or evolution apply

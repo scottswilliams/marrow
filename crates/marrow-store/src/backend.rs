@@ -137,6 +137,10 @@ pub(crate) trait Backend {
     fn read_prefix(&self, key: &[u8], limit: usize) -> Result<Option<ValuePrefix>, StoreError>;
     fn write(&mut self, key: &[u8], value: Vec<u8>) -> Result<(), StoreError>;
     fn delete(&mut self, prefix: &[u8]) -> Result<(), StoreError>;
+    /// Fail closed with the operation's [`StoreError::ReadOnly`] when the handle
+    /// cannot accept writes, so a caller can reject an unwritable mutation before
+    /// opening a transaction bracket around it.
+    fn require_write_access(&self, op: &'static str) -> Result<(), StoreError>;
     fn scan(&self, prefix: &[u8], limit: usize) -> Result<ScanPage, StoreError>;
     fn scan_after(
         &self,
@@ -306,6 +310,10 @@ pub(crate) mod counting {
             self.counts
                 .add_bytes(key.len() + value.as_ref().map_or(0, |value| value.bytes.len()));
             Ok(value)
+        }
+
+        fn require_write_access(&self, op: &'static str) -> Result<(), StoreError> {
+            self.inner.require_write_access(op)
         }
 
         fn write(&mut self, key: &[u8], value: Vec<u8>) -> Result<(), StoreError> {

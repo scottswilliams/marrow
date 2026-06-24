@@ -175,10 +175,22 @@ pub(crate) fn write_tree_value(
     let place = checked_place(project, root);
     let store = open_native_store(project);
     let store_id = checked_catalog_id(&place.store_catalog_id);
-    write_record_presence_for_store(&store, &store_id, identity);
-    store
-        .write_data_value(&store_id, identity, path, value)
-        .expect("write tree-cell value");
+    committed(&store, move |store| {
+        write_record_presence_for_store(store, &store_id, identity);
+        store
+            .write_data_value(&store_id, identity, path, value)
+            .expect("write tree-cell value");
+    });
+}
+
+/// Run direct store writes inside a real transaction bracket, so the production commit
+/// restamps each touched root's record-count anchor exactly as a managed write does.
+/// Direct test writes that auto-committed would otherwise leave the anchor stale and
+/// false-corrupt the store the next read inspects.
+fn committed(store: &TreeStore, writes: impl FnOnce(&TreeStore)) {
+    store.begin().expect("begin direct-write transaction");
+    writes(store);
+    store.commit().expect("commit direct-write transaction");
 }
 
 pub(crate) fn read_tree_value(
@@ -204,12 +216,14 @@ pub(crate) fn write_tree_values(
 ) {
     let store = open_native_store(project);
     let store_id = checked_catalog_id(&place.store_catalog_id);
-    for identity in identities {
-        write_record_presence_for_store(&store, &store_id, &identity);
-        store
-            .write_data_value(&store_id, &identity, path, value.to_vec())
-            .expect("write tree-cell value");
-    }
+    committed(&store, |store| {
+        for identity in identities {
+            write_record_presence_for_store(store, &store_id, &identity);
+            store
+                .write_data_value(&store_id, &identity, path, value.to_vec())
+                .expect("write tree-cell value");
+        }
+    });
 }
 
 pub(crate) fn write_tree_node(
@@ -221,10 +235,12 @@ pub(crate) fn write_tree_node(
     let place = checked_place(project, root);
     let store = open_native_store(project);
     let store_id = checked_catalog_id(&place.store_catalog_id);
-    write_record_presence_for_store(&store, &store_id, identity);
-    store
-        .write_data_node(&store_id, identity, path)
-        .expect("write tree-cell path node");
+    committed(&store, |store| {
+        write_record_presence_for_store(store, &store_id, identity);
+        store
+            .write_data_node(&store_id, identity, path)
+            .expect("write tree-cell path node");
+    });
 }
 
 pub(crate) fn delete_tree_path(
@@ -235,16 +251,21 @@ pub(crate) fn delete_tree_path(
 ) {
     let place = checked_place(project, root);
     let store = open_native_store(project);
-    store
-        .delete_data_subtree(&checked_catalog_id(&place.store_catalog_id), identity, path)
-        .expect("delete tree-cell path");
+    let store_id = checked_catalog_id(&place.store_catalog_id);
+    committed(&store, |store| {
+        store
+            .delete_data_subtree(&store_id, identity, path)
+            .expect("delete tree-cell path");
+    });
 }
 
 pub(crate) fn write_record_presence(project: &Path, root: &str, identity: &[SavedKey]) {
     let place = checked_place(project, root);
     let store = open_native_store(project);
     let store_id = checked_catalog_id(&place.store_catalog_id);
-    write_record_presence_for_store(&store, &store_id, identity);
+    committed(&store, |store| {
+        write_record_presence_for_store(store, &store_id, identity);
+    });
 }
 
 fn write_record_presence_for_store(store: &TreeStore, store_id: &CatalogId, identity: &[SavedKey]) {
@@ -262,14 +283,12 @@ pub(crate) fn write_tree_value_without_node(
 ) {
     let place = checked_place(project, root);
     let store = open_native_store(project);
-    store
-        .write_data_value(
-            &checked_catalog_id(&place.store_catalog_id),
-            identity,
-            path,
-            value,
-        )
-        .expect("write tree-cell value");
+    let store_id = checked_catalog_id(&place.store_catalog_id);
+    committed(&store, move |store| {
+        store
+            .write_data_value(&store_id, identity, path, value)
+            .expect("write tree-cell value");
+    });
 }
 
 pub(crate) fn encode_identity_keys(keys: &[SavedKey]) -> Vec<u8> {
@@ -282,12 +301,14 @@ pub(crate) fn encode_identity_keys(keys: &[SavedKey]) -> Vec<u8> {
 pub(crate) fn write_orphan_cell(project: &Path, store_catalog: &str, member_catalog: &str) {
     let store = open_native_store(project);
     let path = vec![DataPathSegment::Member(catalog_id(member_catalog))];
-    store
-        .write_data_value(
-            &catalog_id(store_catalog),
-            &[SavedKey::Int(1)],
-            &path,
-            b"left-behind".to_vec(),
-        )
-        .expect("write orphan tree-cell value");
+    committed(&store, |store| {
+        store
+            .write_data_value(
+                &catalog_id(store_catalog),
+                &[SavedKey::Int(1)],
+                &path,
+                b"left-behind".to_vec(),
+            )
+            .expect("write orphan tree-cell value");
+    });
 }

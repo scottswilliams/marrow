@@ -1,7 +1,9 @@
 use std::io;
 use std::process::ExitCode;
 
-use marrow_check::tooling::{count_integrity_problems, visit_integrity_problems};
+use marrow_check::tooling::{
+    count_integrity_problems, verify_store_roots_against_lock, visit_integrity_problems,
+};
 use marrow_store::StoreError;
 use marrow_store::tree::TreeStore;
 use serde_json::json;
@@ -22,11 +24,24 @@ pub(super) fn data_integrity(args: &[String]) -> ExitCode {
         Ok(snapshot) => snapshot,
         Err(code) => return code,
     };
+    // The committed lock is the independent witness for a store rolled back below its
+    // committed roots, which the in-store anchors cannot see once they roll back with the
+    // data. Read it once and cross-check before the family passes so a total-drop fails
+    // closed rather than verifying vacuously.
+    let lock = match crate::read_committed_lock(&dir, format) {
+        Ok(lock) => lock,
+        Err(code) => return code,
+    };
     let (cells, problems) = match &store {
-        Some(store) => match count_integrity_problems(store, &program) {
-            Ok((cells, problems)) => (cells, problems),
-            Err(error) => return super::report_store_error(error, format),
-        },
+        Some(store) => {
+            if let Err(error) = verify_store_roots_against_lock(store, lock.as_ref()) {
+                return super::report_store_error(error, format);
+            }
+            match count_integrity_problems(store, &program) {
+                Ok((cells, problems)) => (cells, problems),
+                Err(error) => return super::report_store_error(error, format),
+            }
+        }
         None => (0, 0),
     };
     let store_snapshot = match (&store, format) {

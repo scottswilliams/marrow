@@ -50,7 +50,10 @@ pub fn count_integrity_problems(
     // that catches a node whose damage silently truncates an index range so its
     // entries vanish from every enumeration. Both run before the data passes so an
     // index-corrupt store fails closed rather than being blessed while an index-driven
-    // read under-returns.
+    // read under-returns. The data family's own silent truncation or value tampering is
+    // caught by the structural-digest cross-check, the independent oracle a data-page
+    // flip cannot move with the cells.
+    store.verify_structural_digests()?;
     store.verify_index_readable()?;
     verify_index_completeness(store, &places)?;
     count_integrity_problems_in_places(store, program, &places, IntegrityProfile::Report)
@@ -922,17 +925,73 @@ fn collect_member_names(members: &[CheckedSavedMember], names: &mut HashMap<Stri
     }
 }
 
-/// Verify the derived index family two independent ways for a store the schema
-/// describes: the structural decode and re-descent of [`verify_index_readable`],
-/// then the completeness cross-check below. `recover` and `backup` run this so they
-/// fail closed on an index-corrupt store rather than blessing or archiving one whose
-/// index-driven reads silently under-return.
-pub fn verify_store_index_integrity(
+/// Verify both store families are complete for a store the schema describes: every
+/// committed cell against its durable per-root structural digest, the committed catalog the
+/// store presents against the independent `marrow.lock` witness, and the derived index
+/// family by structural decode and re-descent ([`verify_index_readable`]) plus the
+/// cross-check below. `recover` and `backup` run this so they fail closed on a store whose
+/// cells were silently truncated or rewritten, whose committed roots were rolled back below
+/// the lock, or whose index-driven reads under-return, rather than blessing or archiving it.
+pub fn verify_store_completeness(
     store: &TreeStore,
     program: &CheckedProgram,
+    lock: Option<&marrow_catalog::CatalogLock>,
 ) -> Result<(), StoreError> {
+    verify_store_roots_against_lock(store, lock)?;
+    store.verify_structural_digests()?;
     store.verify_index_readable()?;
     verify_index_completeness(store, &checked_places(program))
+}
+
+/// Cross-check the catalog the store presents against the committed `marrow.lock`.
+///
+/// The per-root structural digest cannot witness a corruption that drops the anchor
+/// itself: a flip in the commit metadata region that rolls the store back to its empty
+/// initial state presents zero records and zero anchors, so the anchor pass visits nothing
+/// and passes vacuously. The independent witness is the lock, a separate durable file that
+/// records the committed accepted roots. Every active accepted root the lock records must
+/// still be present in the catalog the store presents; a store that presents fewer roots
+/// than the lock committed has lost durable identity to a rollback, failed closed as
+/// corruption.
+///
+/// The check keys on the accepted-root set, not the epoch number, so a store legitimately
+/// behind an ahead lock (a teammate's committed activation seeded into a fresh checkout)
+/// still carries the same active roots and passes. When no committed lock exists the store
+/// has no recorded baseline to contradict, which is the separate missing-lock case left to
+/// the caller, not a corruption.
+pub fn verify_store_roots_against_lock(
+    store: &TreeStore,
+    lock: Option<&marrow_catalog::CatalogLock>,
+) -> Result<(), StoreError> {
+    let Some(lock) = lock else {
+        return Ok(());
+    };
+    let mut committed_roots = lock
+        .entries
+        .iter()
+        .filter(|entry| entry.lifecycle == CatalogLifecycle::Active)
+        .map(|entry| (entry.kind, entry.path.as_str()))
+        .peekable();
+    if committed_roots.peek().is_none() {
+        return Ok(());
+    }
+    let presented: HashSet<(CatalogEntryKind, String)> = store
+        .read_catalog_snapshot()?
+        .map(|snapshot| {
+            snapshot
+                .entries
+                .iter()
+                .filter(|entry| entry.lifecycle == CatalogLifecycle::Active)
+                .map(|entry| (entry.kind, entry.path.clone()))
+                .collect::<HashSet<_>>()
+        })
+        .unwrap_or_default();
+    if committed_roots.any(|(kind, path)| !presented.contains(&(kind, path.to_string()))) {
+        return Err(StoreError::Corruption {
+            message: "the store presents fewer committed roots than its lock recorded".into(),
+        });
+    }
+    Ok(())
 }
 
 /// Cross-check every declared index against the data records that derive it.

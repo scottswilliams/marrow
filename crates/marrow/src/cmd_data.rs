@@ -6,8 +6,8 @@ use std::process::ExitCode;
 use marrow_check::CheckedProgram;
 use marrow_check::tooling::{
     StampedData, count_data_records, count_orphan_cells, data_roots_in_store, data_snapshot_stamp,
-    render_data_value, stamped_data_roots_in_store, verify_store_index_integrity,
-    visit_data_records,
+    render_data_value, stamped_data_roots_in_store, verify_store_completeness,
+    verify_store_roots_against_lock, visit_data_records,
 };
 use marrow_store::StoreError;
 use marrow_store::tree::TreeStore;
@@ -399,7 +399,14 @@ fn data_recover(args: &[String]) -> ExitCode {
     // The probe is silent: a failed read-only store open or a failed check must not write
     // its own error envelope to the recover command's single structured-report object.
     let program = probe_checked_project(&dir, &config);
-    match recover_store(&path, program.as_ref()) {
+    // The committed lock is the independent witness for a store rolled back below its
+    // committed roots; probe it silently like the schema so a missing or unreadable lock
+    // never blocks a store-level repair, but a present lock fails recovery closed on a
+    // store that lost roots it committed.
+    let lock = marrow_check::read_committed_lock(std::path::Path::new(&dir))
+        .ok()
+        .flatten();
+    match recover_store(&path, program.as_ref(), lock.as_ref()) {
         Ok(()) => report_recovered_store(&dir, &path, format),
         Err(error) => report_store_error(error, format),
     }
@@ -424,20 +431,32 @@ fn data_recover(args: &[String]) -> ExitCode {
 fn recover_store(
     path: &std::path::Path,
     program: Option<&CheckedProgram>,
+    lock: Option<&marrow_catalog::CatalogLock>,
 ) -> Result<(), StoreError> {
     {
         let store = TreeStore::open_existing(path)?;
         store.verify_readable()?;
-        if let Some(program) = program {
-            verify_store_index_integrity(&store, program)?;
-        }
+        verify_store_recovered(&store, program, lock)?;
     }
     let reopened = TreeStore::open_read_only(path).map_err(recovery_not_converged)?;
     reopened.verify_readable().map_err(recovery_not_converged)?;
-    if let Some(program) = program {
-        verify_store_index_integrity(&reopened, program).map_err(recovery_not_converged)?;
-    }
+    verify_store_recovered(&reopened, program, lock).map_err(recovery_not_converged)?;
     Ok(())
+}
+
+/// Reject a store recovery left below its committed identity. The lock witness runs even
+/// when the source does not check, so a rollback to the empty store is never blessed; the
+/// data and index completeness cross-checks need the schema and run only when a checked
+/// program is available.
+fn verify_store_recovered(
+    store: &TreeStore,
+    program: Option<&CheckedProgram>,
+    lock: Option<&marrow_catalog::CatalogLock>,
+) -> Result<(), StoreError> {
+    match program {
+        Some(program) => verify_store_completeness(store, program, lock),
+        None => verify_store_roots_against_lock(store, lock),
+    }
 }
 
 /// Map a fresh-open or fresh-traversal failure after a repair attempt to the
@@ -548,8 +567,22 @@ fn data_stats(args: &[String]) -> ExitCode {
         Ok(snapshot) => snapshot,
         Err(code) => return code,
     };
+    // A store silently truncated or rewritten by a damaged page, or rolled back below its
+    // committed roots, would otherwise report a confidently wrong count. Cross-check the
+    // per-root structural digests and the committed-lock root witness before presenting any
+    // number.
+    let lock = match crate::read_committed_lock(&dir, format) {
+        Ok(lock) => lock,
+        Err(code) => return code,
+    };
     let (roots, records, cells) = match &store {
         Some(store) => {
+            if let Err(error) = verify_store_roots_against_lock(store, lock.as_ref()) {
+                return report_store_error(error, format);
+            }
+            if let Err(error) = store.verify_structural_digests() {
+                return report_store_error(error, format);
+            }
             let roots = match data_roots_in_store(&program, store) {
                 Ok(roots) => roots.len(),
                 Err(error) => return report_store_error(error, format),

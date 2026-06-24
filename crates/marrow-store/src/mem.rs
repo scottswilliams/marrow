@@ -113,6 +113,10 @@ impl Backend for MemStore {
         }))
     }
 
+    fn require_write_access(&self, _op: &'static str) -> Result<(), StoreError> {
+        Ok(())
+    }
+
     fn write(&mut self, key: &[u8], value: Vec<u8>) -> Result<(), StoreError> {
         if self.snapshot.is_some() {
             return Err(StoreError::write_while_snapshot_pinned());
@@ -245,6 +249,17 @@ impl Backend for MemStore {
 
     fn end_snapshot(&mut self) {
         self.snapshot = None;
+    }
+}
+
+#[cfg(test)]
+impl MemStore {
+    /// Mutate the committed entries out of band, modelling a backend-level corruption that
+    /// drops or rewrites a stored cell while every other cell, and the meta family, stay
+    /// intact. Used to prove the structural-digest cross-check fails closed on damage that
+    /// leaves the store fully traversable.
+    pub(crate) fn tamper(&mut self, mutate: impl FnOnce(&mut BTreeMap<Vec<u8>, Vec<u8>>)) {
+        mutate(&mut self.entries);
     }
 }
 

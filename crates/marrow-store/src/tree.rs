@@ -1,18 +1,22 @@
 //! Typed tree-cell store facade over the private ordered-byte engine.
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::ops::ControlFlow;
 
 use crate::backend::{Backend, ScanPage, StoreError, ValuePrefix};
 use crate::cell::{
     CatalogId, CellKey, MetaCell, NODE_MARKER, SequencePosition, decode_data_cell_key,
-    decode_data_child_key, decode_index_cell_key, decode_index_child_key, decode_index_entry_key,
-    decode_index_identity, prefix_successor,
+    decode_data_child_key, decode_data_family_store, decode_index_cell_key, decode_index_child_key,
+    decode_index_entry_key, decode_index_identity, decode_structural_digest_store,
+    prefix_successor,
 };
 use crate::codec::BoundedReader;
+use crate::digest::RootDigest;
 use crate::key::{KEY_INT_EXCLUSIVE_END, SavedKey, encode_key_value};
 use crate::metadata::{
-    decode_commit_metadata, decode_store_uid, encode_commit_metadata, encode_store_uid,
+    decode_commit_metadata, decode_store_uid, decode_structural_digest, encode_commit_metadata,
+    encode_store_uid, encode_structural_digest,
 };
 
 pub use crate::backup::{
@@ -34,6 +38,7 @@ const CHILD_SCAN_PAGE_LIMIT: usize = 128;
 const INDEX_IDENTITY_SCAN_PAGE: usize = 1024;
 type IndexEntryVisitor<'a> =
     dyn FnMut(&[SavedKey], &[SavedKey], &[u8]) -> Result<(), StoreError> + 'a;
+type RawCellVisitor<'a> = dyn FnMut(&[u8], &[u8]) -> Result<(), StoreError> + 'a;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IndexEntry {
@@ -118,6 +123,13 @@ impl TreeEnumMember {
 /// An owning tree-cell store handle for runtime and tooling callers.
 pub struct TreeStore {
     backend: RefCell<Box<dyn Backend>>,
+    /// The structural-digest change each touched root has accumulated since the open
+    /// transaction began: every data cell written adds its hash and every cell overwritten
+    /// or deleted subtracts the prior one, in constant time per cell. At the outermost
+    /// commit each delta is folded into the durable per-root digest the same transaction
+    /// persists, so the anchor always reflects exactly the cells the commit holds. Cleared
+    /// whenever a transaction closes.
+    digest_deltas: RefCell<HashMap<CatalogId, RootDigest>>,
 }
 
 #[derive(Clone, Copy)]
@@ -204,6 +216,7 @@ impl TreeStore {
     fn from_backend(backend: Box<dyn Backend>) -> Self {
         Self {
             backend: RefCell::new(backend),
+            digest_deltas: RefCell::new(HashMap::new()),
         }
     }
 
@@ -261,7 +274,79 @@ impl TreeStore {
         for (store, arity) in record_shapes {
             self.for_each_record(&store, arity, &mut |_| Ok(()))?;
         }
+        self.verify_structural_digests()?;
         self.verify_index_readable()
+    }
+
+    /// Cross-check every committed cell under each root against the durable per-root
+    /// structural digest the commit recorded.
+    ///
+    /// The linear and seek passes above traverse the data family, but a single damaged
+    /// page can make both read straight past a run of cells, or read a torn-but-decodable
+    /// value, with no structural fault: the data family is its own derivation, so any
+    /// expectation drawn from the live cells shifts with them. The independent oracle is
+    /// the digest the commit stamped in the meta family, which sorts ahead of the data and
+    /// survives a localized data-page flip. Re-deriving the digest from a full data-family
+    /// scan and comparing it to the stamped value catches a dropped cell, a torn value,
+    /// and a moved field alike: each changes the per-cell hash that feeds the sum. A root
+    /// that holds data but stamped no digest, or whose live digest disagrees with its
+    /// stamp, is backend damage, failed closed as corruption.
+    ///
+    /// `data integrity` runs this directly, the same way it runs [`verify_index_readable`]:
+    /// its record and orphan passes traverse the data family but would otherwise bless a
+    /// store whose cells were silently truncated or rewritten below the anchor.
+    pub fn verify_structural_digests(&self) -> Result<(), StoreError> {
+        let live = self.live_root_digests()?;
+        let mut stamped = self.stamped_root_digests()?;
+        for (store, live_digest) in &live {
+            let stamped_digest = stamped.remove(store).unwrap_or_default();
+            if *live_digest != stamped_digest {
+                return Err(StoreError::Corruption {
+                    message: "a root holds different data than its commit digest recorded".into(),
+                });
+            }
+        }
+        // A stamped digest with no live data is a root whose cells were dropped wholesale
+        // while its anchor survived; only a zero stamp (an empty root) is consistent.
+        if stamped.values().any(|digest| !digest.is_zero()) {
+            return Err(StoreError::Corruption {
+                message: "a root holds different data than its commit digest recorded".into(),
+            });
+        }
+        Ok(())
+    }
+
+    /// Re-derive each root's structural digest from a full data-family scan: the
+    /// independent recomputation the stamped digest is checked against. Roots are keyed by
+    /// the store id their cells encode, so a root with no data cells contributes nothing.
+    fn live_root_digests(&self) -> Result<HashMap<CatalogId, RootDigest>, StoreError> {
+        let mut digests: HashMap<CatalogId, RootDigest> = HashMap::new();
+        self.for_each_data_cell_raw(&mut |key, value| {
+            if let Some(store) = decode_data_family_store(key) {
+                digests.entry(store).or_default().add_cell(key, value);
+            }
+            Ok(())
+        })?;
+        Ok(digests)
+    }
+
+    /// The digest each root will carry once the current state is committed: the durable
+    /// stamp folded with any delta accumulated by writes still staged in an open
+    /// transaction. The anchors live in the meta family, sorted ahead of the data, so the
+    /// stamp enumeration is unaffected by a localized data-page corruption. Folding the
+    /// pending delta lets a mid-transaction verify — the schema check a restore replay runs
+    /// before its commit stamps the digest — compare against the cells the same transaction
+    /// already staged, rather than a stamp that has not caught up yet.
+    fn stamped_root_digests(&self) -> Result<HashMap<CatalogId, RootDigest>, StoreError> {
+        let mut digests = HashMap::new();
+        self.for_each_structural_digest_anchor(&mut |store, digest| {
+            digests.insert(store, digest);
+            Ok(())
+        })?;
+        for (store, delta) in self.digest_deltas.borrow().iter() {
+            digests.entry(store.clone()).or_default().add(*delta);
+        }
+        Ok(digests)
     }
 
     /// Verify the index family the way [`verify_readable`] verifies the data family:
@@ -356,11 +441,103 @@ impl TreeStore {
     }
 
     pub fn commit(&self) -> Result<(), StoreError> {
-        self.backend.borrow_mut().commit()
+        // Fold each touched root's accumulated digest delta into its durable anchor before
+        // the outermost commit persists it, so the stamped digest is always written in the
+        // same transaction as the cells it covers. Nested commits leave the anchor to the
+        // outer bracket; a no-op commit with no open transaction has nothing to stamp.
+        if self.transaction_depth() == 1 {
+            self.stamp_digest_deltas()?;
+        }
+        let result = self.backend.borrow_mut().commit();
+        if self.transaction_depth() == 0 {
+            self.digest_deltas.borrow_mut().clear();
+        }
+        result
     }
 
     pub fn rollback(&self) -> Result<(), StoreError> {
-        self.backend.borrow_mut().rollback()
+        let result = self.backend.borrow_mut().rollback();
+        self.digest_deltas.borrow_mut().clear();
+        result
+    }
+
+    /// Apply each touched root's accumulated delta to its durable structural digest. The
+    /// delta is the net change the transaction's writes and deletes made, so folding it
+    /// into the prior stamp yields the digest of exactly the cells the commit now holds,
+    /// without rescanning the root.
+    fn stamp_digest_deltas(&self) -> Result<(), StoreError> {
+        let deltas: Vec<(CatalogId, RootDigest)> = self
+            .digest_deltas
+            .borrow()
+            .iter()
+            .map(|(store, delta)| (store.clone(), *delta))
+            .collect();
+        for (store, delta) in deltas {
+            let mut digest = self.read_structural_digest(&store)?;
+            digest.add(delta);
+            self.write_structural_digest(&store, digest)?;
+        }
+        Ok(())
+    }
+
+    /// Read the durable structural-digest anchor for one root, or the zero digest when the
+    /// root has never stamped one.
+    fn read_structural_digest(&self, store: &CatalogId) -> Result<RootDigest, StoreError> {
+        match self.read_cell(CellKey::structural_digest(store).as_bytes())? {
+            Some(bytes) => decode_structural_digest(&bytes),
+            None => Ok(RootDigest::zero()),
+        }
+    }
+
+    /// Write the durable structural-digest anchor for one root.
+    fn write_structural_digest(
+        &self,
+        store: &CatalogId,
+        digest: RootDigest,
+    ) -> Result<(), StoreError> {
+        self.write_cell(
+            CellKey::structural_digest(store).as_bytes(),
+            encode_structural_digest(digest),
+        )
+    }
+
+    /// Visit every store root that carries a durable structural-digest anchor, paired with
+    /// its recorded digest. The anchors live in the meta family, sorted ahead of the data,
+    /// so this enumeration is unaffected by a localized data-page corruption. The scan is
+    /// raw rather than via the data-cell backup decoder, which only accepts data keys.
+    fn for_each_structural_digest_anchor(
+        &self,
+        visit: &mut dyn FnMut(CatalogId, RootDigest) -> Result<(), StoreError>,
+    ) -> Result<(), StoreError> {
+        let prefix = CellKey::structural_digest_family();
+        let prefix = prefix.as_bytes();
+        let mut page = self.scan(prefix, BACKUP_SCAN_PAGE)?;
+        let mut previous_resume: Option<Vec<u8>> = None;
+        loop {
+            for (key, value) in &page.entries {
+                let store =
+                    decode_structural_digest_store(key).ok_or_else(|| StoreError::Corruption {
+                        message: "structural-digest anchor key is malformed".into(),
+                    })?;
+                visit(store, decode_structural_digest(value)?)?;
+            }
+            if !page.truncated {
+                return Ok(());
+            }
+            let resume = page
+                .entries
+                .last()
+                .map(|(key, _)| key.clone())
+                .ok_or_else(|| StoreError::InvalidCursor {
+                    message: "structural-digest anchor scan page was truncated without a cursor"
+                        .into(),
+                })?;
+            if let Some(previous) = &previous_resume {
+                guard_page_cursor_advances(&resume, previous, std::cmp::Ordering::Greater)?;
+            }
+            page = self.scan_after(prefix, &resume, BACKUP_SCAN_PAGE)?;
+            previous_resume = Some(resume);
+        }
     }
 
     pub fn transaction_depth(&self) -> usize {
@@ -1182,6 +1359,7 @@ impl TreeStore {
         self.delete_cells(CellKey::data_family().as_bytes())?;
         self.delete_cells(CellKey::index_family().as_bytes())?;
         self.delete_cells(CellKey::catalog_family().as_bytes())?;
+        self.delete_cells(CellKey::structural_digest_family().as_bytes())?;
         self.delete_cells(CellKey::meta(MetaCell::Commit).as_bytes())?;
         self.delete_cells(CellKey::meta(MetaCell::StoreUid).as_bytes())
     }
@@ -1260,11 +1438,122 @@ impl TreeStore {
     }
 
     fn write_cell(&self, key: &[u8], value: Vec<u8>) -> Result<(), StoreError> {
-        self.backend.borrow_mut().write(key, value)
+        self.with_digest_commit(
+            "write",
+            |store| {
+                // A data-family write maintains the touched root's digest delta in constant
+                // time: subtract any value being overwritten and add the new one. The single
+                // read here is the same key the write addresses, so a write stays one logical
+                // operation.
+                if let Some(store) = store {
+                    if let Some(prior) = self.read_cell(key)? {
+                        self.adjust_digest_delta(store, |delta| delta.remove_cell(key, &prior));
+                    }
+                    self.adjust_digest_delta(store, |delta| delta.add_cell(key, &value));
+                }
+                self.backend.borrow_mut().write(key, value)
+            },
+            decode_data_family_store(key),
+        )
     }
 
     fn delete_cells(&self, prefix: &[u8]) -> Result<(), StoreError> {
-        self.backend.borrow_mut().delete(prefix)
+        self.with_digest_commit(
+            "delete",
+            |store| {
+                // A data-family delete removes a whole subtree, so the touched root's digest
+                // delta subtracts every cell the delete drops. The scan is bounded by the
+                // deleted cells, never the whole root, and routes through the single delete
+                // primitive so a new data-delete path is covered without remembering to
+                // maintain the digest.
+                if let Some(store) = store {
+                    let store = store.clone();
+                    self.for_each_cell_under(prefix, &mut |key, value| {
+                        self.adjust_digest_delta(&store, |delta| delta.remove_cell(key, value));
+                        Ok(())
+                    })?;
+                }
+                self.backend.borrow_mut().delete(prefix)
+            },
+            decode_data_family_store(prefix),
+        )
+    }
+
+    /// Run one data mutation and its digest maintenance. Inside an open transaction the
+    /// delta is accumulated and the outer commit stamps it. A bare mutation with no open
+    /// transaction auto-commits at the backend, so this brackets the mutation and its
+    /// digest stamp in one transaction, keeping the stamped digest atomic with the cells it
+    /// covers even on the unbracketed path. When the mutation does not touch the data
+    /// family there is no digest to maintain and the mutation runs directly.
+    fn with_digest_commit(
+        &self,
+        op: &'static str,
+        mutate: impl FnOnce(Option<&CatalogId>) -> Result<(), StoreError>,
+        store: Option<CatalogId>,
+    ) -> Result<(), StoreError> {
+        if store.is_none() || self.transaction_depth() > 0 {
+            return mutate(store.as_ref());
+        }
+        // Reject an unwritable handle with the mutation's own error before the
+        // self-begin bracket opens, so a read-only data mutation surfaces its
+        // contracted op rather than the bracket's, and leaves no half-open
+        // transaction behind for teardown to trip over.
+        self.backend.borrow().require_write_access(op)?;
+        self.begin()?;
+        let result = mutate(store.as_ref()).and_then(|()| self.stamp_digest_deltas());
+        match result {
+            Ok(()) => {
+                self.backend.borrow_mut().commit()?;
+                self.digest_deltas.borrow_mut().clear();
+                Ok(())
+            }
+            Err(error) => {
+                let _ = self.backend.borrow_mut().rollback();
+                self.digest_deltas.borrow_mut().clear();
+                Err(error)
+            }
+        }
+    }
+
+    fn adjust_digest_delta(&self, store: &CatalogId, adjust: impl FnOnce(&mut RootDigest)) {
+        let mut deltas = self.digest_deltas.borrow_mut();
+        adjust(deltas.entry(store.clone()).or_default());
+    }
+
+    /// Page over every cell under `prefix` in encoded order, raw key and value bytes, so a
+    /// torn-but-decodable value still contributes the bytes the store actually holds. Used
+    /// to re-derive the structural digest and to subtract a deleted subtree.
+    fn for_each_data_cell_raw(&self, visit: &mut RawCellVisitor<'_>) -> Result<(), StoreError> {
+        self.for_each_cell_under(CellKey::data_family().as_bytes(), visit)
+    }
+
+    fn for_each_cell_under(
+        &self,
+        prefix: &[u8],
+        visit: &mut RawCellVisitor<'_>,
+    ) -> Result<(), StoreError> {
+        let mut page = self.scan(prefix, BACKUP_SCAN_PAGE)?;
+        let mut previous_resume: Option<Vec<u8>> = None;
+        loop {
+            for (key, value) in &page.entries {
+                visit(key, value)?;
+            }
+            if !page.truncated {
+                return Ok(());
+            }
+            let resume = page
+                .entries
+                .last()
+                .map(|(key, _)| key.clone())
+                .ok_or_else(|| StoreError::InvalidCursor {
+                    message: "data cell scan page was truncated without a cursor".into(),
+                })?;
+            if let Some(previous) = &previous_resume {
+                guard_page_cursor_advances(&resume, previous, std::cmp::Ordering::Greater)?;
+            }
+            page = self.scan_after(prefix, &resume, BACKUP_SCAN_PAGE)?;
+            previous_resume = Some(resume);
+        }
     }
 
     fn scan(&self, prefix: &[u8], limit: usize) -> Result<ScanPage, StoreError> {
@@ -2308,6 +2597,10 @@ mod tests {
 
         fn read_prefix(&self, key: &[u8], limit: usize) -> Result<Option<ValuePrefix>, StoreError> {
             self.inner.read_prefix(key, limit)
+        }
+
+        fn require_write_access(&self, op: &'static str) -> Result<(), StoreError> {
+            self.inner.require_write_access(op)
         }
 
         fn write(&mut self, key: &[u8], value: Vec<u8>) -> Result<(), StoreError> {
@@ -3477,5 +3770,324 @@ mod tests {
 
     fn assert_corruption<T>(result: Result<T, StoreError>) {
         assert!(matches!(result, Err(StoreError::Corruption { .. })));
+    }
+
+    /// A `MemStore` shared between a `TreeStore` and the test, so the test can tamper the
+    /// committed bytes out of band after the store has stamped its digest, modelling a
+    /// backend corruption the store cannot see at write time.
+    #[derive(Clone, Default)]
+    struct SharedMem(std::rc::Rc<std::cell::RefCell<MemStore>>);
+
+    impl SharedMem {
+        fn tamper(&self, mutate: impl FnOnce(&mut std::collections::BTreeMap<Vec<u8>, Vec<u8>>)) {
+            self.0.borrow_mut().tamper(mutate);
+        }
+    }
+
+    impl Backend for SharedMem {
+        fn read(&self, key: &[u8]) -> Result<Option<Vec<u8>>, StoreError> {
+            self.0.borrow().read(key)
+        }
+        fn read_prefix(&self, key: &[u8], limit: usize) -> Result<Option<ValuePrefix>, StoreError> {
+            self.0.borrow().read_prefix(key, limit)
+        }
+        fn require_write_access(&self, op: &'static str) -> Result<(), StoreError> {
+            self.0.borrow().require_write_access(op)
+        }
+        fn write(&mut self, key: &[u8], value: Vec<u8>) -> Result<(), StoreError> {
+            self.0.borrow_mut().write(key, value)
+        }
+        fn delete(&mut self, prefix: &[u8]) -> Result<(), StoreError> {
+            self.0.borrow_mut().delete(prefix)
+        }
+        fn scan(&self, prefix: &[u8], limit: usize) -> Result<ScanPage, StoreError> {
+            self.0.borrow().scan(prefix, limit)
+        }
+        fn scan_after(
+            &self,
+            prefix: &[u8],
+            cursor: &[u8],
+            limit: usize,
+        ) -> Result<ScanPage, StoreError> {
+            self.0.borrow().scan_after(prefix, cursor, limit)
+        }
+        fn scan_between(
+            &self,
+            prefix: &[u8],
+            lower: Option<&[u8]>,
+            upper: Option<&[u8]>,
+            limit: usize,
+        ) -> Result<ScanPage, StoreError> {
+            self.0.borrow().scan_between(prefix, lower, upper, limit)
+        }
+        fn scan_between_after(
+            &self,
+            prefix: &[u8],
+            lower: Option<&[u8]>,
+            upper: Option<&[u8]>,
+            cursor: &[u8],
+            limit: usize,
+        ) -> Result<ScanPage, StoreError> {
+            self.0
+                .borrow()
+                .scan_between_after(prefix, lower, upper, cursor, limit)
+        }
+        fn scan_before(
+            &self,
+            prefix: &[u8],
+            cursor: &[u8],
+            limit: usize,
+        ) -> Result<ScanPage, StoreError> {
+            self.0.borrow().scan_before(prefix, cursor, limit)
+        }
+        fn scan_between_before(
+            &self,
+            prefix: &[u8],
+            lower: Option<&[u8]>,
+            upper: Option<&[u8]>,
+            cursor: &[u8],
+            limit: usize,
+        ) -> Result<ScanPage, StoreError> {
+            self.0
+                .borrow()
+                .scan_between_before(prefix, lower, upper, cursor, limit)
+        }
+        fn begin(&mut self) -> Result<(), StoreError> {
+            self.0.borrow_mut().begin()
+        }
+        fn commit(&mut self) -> Result<(), StoreError> {
+            self.0.borrow_mut().commit()
+        }
+        fn rollback(&mut self) -> Result<(), StoreError> {
+            self.0.borrow_mut().rollback()
+        }
+        fn transaction_depth(&self) -> usize {
+            self.0.borrow().transaction_depth()
+        }
+        fn begin_snapshot(&mut self) -> Result<(), StoreError> {
+            self.0.borrow_mut().begin_snapshot()
+        }
+        fn end_snapshot(&mut self) {
+            self.0.borrow_mut().end_snapshot();
+        }
+    }
+
+    /// Commit a few records under one root through the production write path, so the store
+    /// stamps a structural digest, then return the store and a handle to tamper the bytes.
+    fn seeded_digest_store() -> (TreeStore, SharedMem, CatalogId) {
+        let backend = SharedMem::default();
+        let store = TreeStore::from_backend(Box::new(backend.clone()));
+        let root = catalog("cat_00000000000000000000000000000001");
+        let member = catalog("cat_000000000000000000000000000000aa");
+        store.begin().expect("begin");
+        for id in 1..=3 {
+            let identity = [SavedKey::Int(id)];
+            store
+                .write_record_presence(&root, &identity)
+                .expect("presence");
+            store
+                .write_data_value(
+                    &root,
+                    &identity,
+                    &[DataPathSegment::Member(member.clone())],
+                    format!("body-{id}").into_bytes(),
+                )
+                .expect("value");
+        }
+        store.commit().expect("commit");
+        store
+            .verify_structural_digests()
+            .expect("a freshly committed store verifies clean");
+        (store, backend, root)
+    }
+
+    /// One committed value cell dropped out of band leaves the record nodes intact, so the
+    /// record and orphan passes read straight past it. The structural digest re-derived
+    /// from the surviving cells no longer matches the stamp, so the cross-check fails
+    /// closed — the completeness oracle a record count alone could not provide.
+    #[test]
+    fn a_dropped_value_cell_fails_the_structural_digest_check() {
+        let (store, backend, root) = seeded_digest_store();
+        let dropped = CellKey::data_path_value(
+            &root,
+            &[SavedKey::Int(2)],
+            &[DataPathSegment::Member(catalog(
+                "cat_000000000000000000000000000000aa",
+            ))],
+        );
+        backend.tamper(|entries| {
+            assert!(
+                entries.remove(dropped.as_bytes()).is_some(),
+                "the targeted value cell must exist before tampering"
+            );
+        });
+        assert_corruption(store.verify_structural_digests());
+    }
+
+    /// A torn-but-decodable value — the same key, different bytes — keeps the record and
+    /// cell counts unchanged, so a record-count anchor would bless it. The content-sensitive
+    /// digest changes with the value, so the cross-check fails closed.
+    #[test]
+    fn a_torn_value_fails_the_structural_digest_check() {
+        let (store, backend, root) = seeded_digest_store();
+        let torn = CellKey::data_path_value(
+            &root,
+            &[SavedKey::Int(2)],
+            &[DataPathSegment::Member(catalog(
+                "cat_000000000000000000000000000000aa",
+            ))],
+        );
+        backend.tamper(|entries| {
+            let value = entries
+                .get_mut(torn.as_bytes())
+                .expect("the targeted value cell must exist before tampering");
+            value[0] ^= 0xff;
+        });
+        assert_corruption(store.verify_structural_digests());
+    }
+
+    /// Unbracketed writes — each auto-committed at the backend with no open transaction —
+    /// must still stamp the digest, so a store seeded by direct presence-then-value writes
+    /// verifies clean. This is the shape the evolution test harness uses.
+    #[test]
+    fn unbracketed_auto_committed_writes_stamp_the_digest() {
+        let store = TreeStore::memory();
+        let root = catalog("cat_00000000000000000000000000000001");
+        let member = catalog("cat_000000000000000000000000000000aa");
+        store
+            .write_record_presence(&root, &[SavedKey::Int(1)])
+            .expect("presence");
+        store
+            .write_data_value(
+                &root,
+                &[SavedKey::Int(1)],
+                &[DataPathSegment::Member(member)],
+                b"Dune".to_vec(),
+            )
+            .expect("value");
+        store
+            .verify_structural_digests()
+            .expect("auto-committed writes must stamp a matching digest");
+    }
+
+    /// The same unbracketed-write contract over the native redb backend, where each write
+    /// auto-commits its own transaction rather than staying live in a map.
+    #[cfg(feature = "native")]
+    #[test]
+    fn unbracketed_native_writes_stamp_the_digest() {
+        let dir =
+            std::env::temp_dir().join(format!("marrow-digest-native-{}.redb", std::process::id()));
+        let _ = std::fs::remove_file(&dir);
+        let store = TreeStore::open(&dir).expect("open native store");
+        let root = catalog("cat_00000000000000000000000000000001");
+        let member = catalog("cat_000000000000000000000000000000aa");
+        store
+            .write_record_presence(&root, &[SavedKey::Int(1)])
+            .expect("presence");
+        let subtitle = catalog("cat_000000000000000000000000000000bb");
+        store
+            .write_data_value(
+                &root,
+                &[SavedKey::Int(1)],
+                &[DataPathSegment::Member(member)],
+                b"Dune".to_vec(),
+            )
+            .expect("title");
+        store
+            .write_data_value(
+                &root,
+                &[SavedKey::Int(1)],
+                &[DataPathSegment::Member(subtitle)],
+                b"Appendix".to_vec(),
+            )
+            .expect("subtitle");
+        let write_result = store.verify_structural_digests();
+        drop(store);
+        let read_result = TreeStore::open_read_only(&dir)
+            .and_then(|reopened| reopened.verify_structural_digests());
+        let _ = std::fs::remove_file(&dir);
+        write_result.expect("auto-committed native writes must stamp a matching digest");
+        read_result.expect("a read-only reopen must also see a matching digest");
+    }
+
+    /// An unbracketed data mutation on a read-only handle is rejected with the mutation's own
+    /// op before the digest-commit bracket opens, so it never leaves a half-open transaction
+    /// for teardown to abort on, and the read-only handle drops cleanly.
+    #[cfg(feature = "native")]
+    #[test]
+    fn unbracketed_writes_on_a_read_only_store_reject_without_panicking() {
+        let dir = std::env::temp_dir().join(format!(
+            "marrow-digest-readonly-{}.redb",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&dir);
+        let root = catalog("cat_00000000000000000000000000000001");
+        let member = catalog("cat_000000000000000000000000000000aa");
+        {
+            let store = TreeStore::open(&dir).expect("open native store");
+            store
+                .write_record_presence(&root, &[SavedKey::Int(1)])
+                .expect("presence");
+            store
+                .write_data_value(
+                    &root,
+                    &[SavedKey::Int(1)],
+                    &[DataPathSegment::Member(member.clone())],
+                    b"Dune".to_vec(),
+                )
+                .expect("value");
+        }
+
+        let store = TreeStore::open_read_only(&dir).expect("open read-only");
+        assert!(matches!(
+            store.write_data_value(
+                &root,
+                &[SavedKey::Int(2)],
+                &[DataPathSegment::Member(member.clone())],
+                b"Other".to_vec(),
+            ),
+            Err(StoreError::ReadOnly { op: "write" })
+        ));
+        assert!(matches!(
+            store.delete_data_subtree(
+                &root,
+                &[SavedKey::Int(1)],
+                &[DataPathSegment::Member(member)],
+            ),
+            Err(StoreError::ReadOnly { op: "delete" })
+        ));
+        drop(store);
+        let _ = std::fs::remove_file(&dir);
+    }
+
+    /// A legitimate overwrite and a legitimate delete each restamp the digest in their own
+    /// commit, so a healthy store stays healthy: no false corruption after either.
+    #[test]
+    fn a_delete_and_an_overwrite_keep_the_structural_digest_exact() {
+        let (store, _backend, root) = seeded_digest_store();
+        let member = catalog("cat_000000000000000000000000000000aa");
+
+        store.begin().expect("begin overwrite");
+        store
+            .write_data_value(
+                &root,
+                &[SavedKey::Int(1)],
+                &[DataPathSegment::Member(member.clone())],
+                b"rewritten".to_vec(),
+            )
+            .expect("overwrite value");
+        store.commit().expect("commit overwrite");
+        store
+            .verify_structural_digests()
+            .expect("an overwrite must not false-corrupt the store");
+
+        store.begin().expect("begin delete");
+        store
+            .delete_data_subtree(&root, &[SavedKey::Int(3)], &[])
+            .expect("delete record");
+        store.commit().expect("commit delete");
+        store
+            .verify_structural_digests()
+            .expect("a delete must not false-corrupt the store");
     }
 }

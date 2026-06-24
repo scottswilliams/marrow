@@ -12,6 +12,7 @@ mod catalog;
 pub mod cell;
 mod codec;
 pub mod decimal;
+mod digest;
 pub mod key;
 mod mem;
 mod metadata;

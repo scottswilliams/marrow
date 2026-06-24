@@ -1,6 +1,7 @@
 use crate::StoreError;
 use crate::cell::CatalogId;
 use crate::codec::BoundedReader;
+use crate::digest::RootDigest;
 
 const ENGINE_PROFILE_KEY_VERSION_V0: u8 = 0;
 const ENGINE_PROFILE_DIGEST_BYTES: usize = 8;
@@ -150,6 +151,16 @@ pub(crate) fn decode_commit_metadata(bytes: &[u8]) -> Result<CommitMetadata, Sto
         changed_root_catalog_ids,
         changed_index_catalog_ids,
     })
+}
+
+pub(crate) fn encode_structural_digest(digest: RootDigest) -> Vec<u8> {
+    digest.to_be_bytes().to_vec()
+}
+
+pub(crate) fn decode_structural_digest(bytes: &[u8]) -> Result<RootDigest, StoreError> {
+    let encoded: [u8; RootDigest::ENCODED_LEN] =
+        bytes.try_into().map_err(|_| corrupt_metadata(bytes))?;
+    Ok(RootDigest::from_be_bytes(encoded))
 }
 
 pub(crate) fn encode_store_uid(uid: &StoreUid) -> Vec<u8> {

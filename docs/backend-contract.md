@@ -76,6 +76,7 @@ names, member names, index names, enum member spelling, or declaration order.
 | Index cell | index family + index ID + index-key tuple + `00` + record-key tuple + `00` | Sorts by exact index tuple, then record identity. |
 | Commit metadata cell | meta family + `04` | Latest commit metadata. A store is stamped when `read_commit_metadata()` returns `Some`. |
 | Store UID cell | meta family + `05` | `store_<32 lowercase hex>` physical store identity. |
+| Structural-digest cell | meta family + `06` + store ID | 128-bit big-endian digest over every committed cell under that store root, restamped each commit that touches the root. The independent completeness anchor for the data family. |
 | Catalog cells | catalog family + `00` header row, then `10` + stable catalog ID per entry | The accepted catalog snapshot: one header row (epoch and digest), one row per entry; the entry value carries its catalog ordinal. |
 | Prefix ranges | `[prefix, successor(prefix))` | A prefix range includes exactly keys beginning with the prefix. Empty/all-`ff` prefixes have no upper bound. |
 
@@ -155,6 +156,36 @@ Store-level metadata is written through typed meta cells:
 |---|---|---|
 | Commit metadata | `04` | Commit id, catalog epoch, layout epoch, source digest, profile digest, changed root/index catalog IDs |
 | Store UID | `05` | `store_<32 lowercase hex>` physical store identity |
+| Structural digest | `06` + store ID | 128-bit big-endian digest over every committed cell under that store root |
+
+Each commit restamps the structural-digest cell of every root whose cells it
+wrote or removed. The digest is the wrapping sum of one 128-bit hash per cell,
+each hash taken over the cell's full physical key — its root, record identity,
+and field path — together with its stored value bytes. The combiner is
+commutative and associative, so the digest is order-independent and a write
+maintains it in constant time: a write adds the new cell's hash and, on overwrite
+or delete, subtracts the prior one, never rescanning the root. The digest is the
+independent completeness anchor for the data family: because the data cells are
+their own derivation, a backend page that silently drops a cell, truncates a
+record range, or rewrites a stored value with bytes that still decode shifts every
+enumeration with no structural fault. A store read re-derives each root's digest
+from a full data-family scan and cross-checks it against the stamp, failing closed
+as `store.corruption` on a mismatch — a dropped cell, a torn value, and a moved
+field each change the per-cell hash. The digest is recomputed from the replayed
+cells, not carried, on restore, so a restored store re-verifies.
+
+The anchor cannot witness a corruption that drops the anchor itself: a flip in
+the commit-metadata region that rolls the store back to its empty initial commit
+presents zero records and zero digests, so the per-anchor cross-check visits
+nothing and passes vacuously. The independent witness is the committed
+`marrow.lock`, a separate durable file recording the epoch high-water and the
+accepted catalog roots. `backup`, `data integrity`, `data stats`, and `data
+recover` cross-check the roots the store presents against the roots the lock
+records: a store that presents fewer roots than its committed lock has lost
+durable identity to a rollback and fails closed as `store.corruption`. The check
+keys on the accepted-root set, not the epoch number, so a store legitimately
+behind an ahead lock keeps the same roots and passes; with no committed lock the
+store has no recorded baseline to contradict, the separate missing-lock case.
 
 A store is stamped exactly when `TreeStore::read_commit_metadata()` returns `Some`.
 The commit stamp is the single durable owner of the stamped catalog epoch,
