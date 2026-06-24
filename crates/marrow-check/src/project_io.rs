@@ -31,9 +31,11 @@ pub enum ProjectIoError {
     /// occupied by a non-directory file, a parent denies access, or the
     /// filesystem is read-only. This is a write-path (directory-creation) fault,
     /// distinct from a read of an existing file, so it never carries `io.read`.
+    /// The fault carries a typed condition rather than the raw OS error, so the
+    /// surfaced message names what went wrong without leaking an `os error N`.
     DataDirCreate {
         path: PathBuf,
-        error: std::io::Error,
+        fault: DataDirFault,
     },
     Config {
         code: &'static str,
@@ -52,6 +54,40 @@ pub enum ProjectIoError {
         message: String,
     },
     Store(StoreError),
+}
+
+/// Why the native store's `dataDir` directory could not be created or opened, in clean
+/// prose. This classifies the underlying OS condition once so neither the write path's
+/// `create_dir_all` failure nor the read path's inspection guard surfaces a raw `os error N`:
+/// machine-readable identity is the `config.data_dir` code, and the message names the
+/// condition itself. Conditions that do not map to a known cause fall back to the generic
+/// non-directory occupant, which is the overwhelmingly common cause of a failed creation.
+#[derive(Debug, Clone, Copy)]
+pub enum DataDirFault {
+    /// The path is occupied by a file, symlink, or other non-directory entry.
+    Occupied,
+    /// A parent directory denies the access needed to create or read the directory.
+    PermissionDenied,
+    /// The filesystem holding the path is mounted read-only.
+    ReadOnly,
+}
+
+impl DataDirFault {
+    fn classify(error: &std::io::Error) -> Self {
+        match error.kind() {
+            std::io::ErrorKind::PermissionDenied => Self::PermissionDenied,
+            std::io::ErrorKind::ReadOnlyFilesystem => Self::ReadOnly,
+            _ => Self::Occupied,
+        }
+    }
+
+    fn describe(self) -> &'static str {
+        match self {
+            Self::Occupied => "the path is occupied by a non-directory file",
+            Self::PermissionDenied => "a parent directory denies access",
+            Self::ReadOnly => "the filesystem is read-only",
+        }
+    }
 }
 
 impl ProjectIoError {
@@ -77,10 +113,11 @@ impl ProjectIoError {
                 dir.display(),
                 dir.display()
             ),
-            Self::DataDirCreate { path, error } => format!(
-                "cannot create the native store `dataDir` directory {}: {error}; \
+            Self::DataDirCreate { path, fault } => format!(
+                "cannot create the native store `dataDir` directory {}: {}; \
                  point `dataDir` at a writable directory or remove the file occupying it",
-                path.display()
+                path.display(),
+                fault.describe()
             ),
             Self::Config { message, .. } => message.clone(),
             Self::Catalog { message, .. } => message.clone(),
@@ -156,7 +193,7 @@ pub fn resolve_store_path(
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|error| ProjectIoError::DataDirCreate {
             path: parent.to_path_buf(),
-            error,
+            fault: DataDirFault::classify(&error),
         })?;
     }
     Ok(Some(path))
@@ -185,12 +222,12 @@ pub fn guard_data_dir(root: &Path, config: &ProjectConfig) -> Result<(), Project
         // is itself a file: each is the directory the write path could not create.
         Ok(_) => Err(ProjectIoError::DataDirCreate {
             path: data_dir.to_path_buf(),
-            error: std::io::Error::other("the path is occupied by a non-directory file"),
+            fault: DataDirFault::Occupied,
         }),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(ProjectIoError::DataDirCreate {
             path: data_dir.to_path_buf(),
-            error,
+            fault: DataDirFault::classify(&error),
         }),
     }
 }
@@ -634,6 +671,10 @@ mod tests {
         assert!(
             message.contains("create") && message.contains("dataDir"),
             "the message names the directory it could not create: {message}"
+        );
+        assert!(
+            !message.contains("os error") && message.contains("occupied by a non-directory file"),
+            "the write path emits clean prose, never a raw OS errno: {message}"
         );
     }
 

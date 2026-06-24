@@ -91,9 +91,75 @@ fn a_data_dir_occupied_by_a_file_reports_an_accurate_directory_fault() {
         "a directory-creation failure must not render as a read failure: {stderr}"
     );
     assert!(
+        !stderr.contains("os error"),
+        "the write path must not leak a raw OS errno into the message: {stderr}"
+    );
+    assert!(
+        stderr.contains("occupied by a non-directory file"),
+        "the run write path emits the same clean prose as inspection: {stderr}"
+    );
+    assert!(
         stderr.contains(".data") && stderr.contains("create") && stderr.contains("dataDir"),
         "the fault must name the dataDir directory it could not create: {stderr}"
     );
+}
+
+#[test]
+#[cfg(unix)]
+fn a_data_dir_occupied_by_a_fifo_or_symlink_loop_reports_clean_directory_prose() {
+    // A FIFO or a self-referential symlink occupying the native `dataDir` is the same
+    // directory-creation fault as a regular file: the write path must classify it as
+    // `config.data_dir` and emit the clean non-directory prose, never a raw `os error N`.
+    use std::os::unix::fs::symlink;
+
+    for occupant in ["fifo", "symlink-loop"] {
+        let root = temp_project_uncommitted(
+            &format!("run-data-dir-{occupant}"),
+            |root: &std::path::Path| {
+                write(
+                    root,
+                    "marrow.json",
+                    r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".data" }, "run": { "defaultEntry": "app::main" } }"#,
+                );
+                write(
+                    root,
+                    "src/app.mw",
+                    "module app\n\npub fn main()\n    print(\"hi\")\n",
+                );
+                let data = root.join(".data");
+                if occupant == "fifo" {
+                    let status = std::process::Command::new("mkfifo")
+                        .arg(&data)
+                        .status()
+                        .expect("run mkfifo");
+                    assert!(status.success(), "mkfifo created the dataDir occupant");
+                } else {
+                    symlink("loop_b", root.join("loop_a")).expect("symlink loop_a");
+                    symlink("loop_a", root.join("loop_b")).expect("symlink loop_b");
+                    symlink("loop_a", &data).expect("symlink dataDir into the loop");
+                }
+            },
+        );
+
+        let output = marrow_sub("run", &[root.to_str().unwrap()]);
+
+        assert_eq!(output.status.code(), Some(1), "{occupant}: {output:?}");
+        let fault = parse_fault(&output.stderr);
+        let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+        assert_eq!(
+            fault.code.as_str(),
+            "config.data_dir",
+            "{occupant}: a non-directory dataDir is a config fault: {stderr}"
+        );
+        assert!(
+            !stderr.contains("os error"),
+            "{occupant}: the write path must not leak a raw OS errno: {stderr}"
+        );
+        assert!(
+            stderr.contains(".data") && stderr.contains("dataDir"),
+            "{occupant}: the fault must name the dataDir: {stderr}"
+        );
+    }
 }
 
 #[test]
@@ -215,6 +281,10 @@ fn a_data_dir_create_denied_by_permissions_reports_a_directory_fault_not_a_read(
     assert!(
         !stderr.contains("io.read") && !stderr.contains("failed to read"),
         "a directory-creation failure must not render as a read failure: {stderr}"
+    );
+    assert!(
+        !stderr.contains("os error"),
+        "a permission-denied directory creation must not leak a raw OS errno: {stderr}"
     );
 }
 
