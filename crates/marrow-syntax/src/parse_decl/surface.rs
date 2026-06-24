@@ -229,8 +229,9 @@ impl<'a> DeclParser<'a> {
         tokens: &[Token],
     ) -> Option<SurfaceItem> {
         surface_action(self.source, tokens)
-            .map(|(function, alias)| SurfaceItem::Action {
+            .map(|(function, function_span, alias)| SurfaceItem::Action {
                 function,
+                function_span,
                 alias,
                 span,
             })
@@ -245,8 +246,9 @@ impl<'a> DeclParser<'a> {
         tokens: &[Token],
     ) -> Option<SurfaceItem> {
         surface_read(self.source, tokens)
-            .map(|(function, alias)| SurfaceItem::Read {
+            .map(|(function, function_span, alias)| SurfaceItem::Read {
                 function,
+                function_span,
                 alias,
                 span,
             })
@@ -408,8 +410,12 @@ fn surface_collection_error() -> ParseError {
     )
 }
 
-fn surface_action(source: &str, tokens: &[Token]) -> ParseResult<(Vec<String>, String)> {
-    let (function, rest) = surface_qualified_name(source, tokens, surface_action_error)?;
+fn surface_action(
+    source: &str,
+    tokens: &[Token],
+) -> ParseResult<(Vec<String>, SourceSpan, String)> {
+    let (function, function_span, rest) =
+        surface_qualified_name(source, tokens, surface_action_error)?;
     let alias = match rest {
         [] => function.last().cloned().unwrap_or_default(),
         [as_token, alias]
@@ -429,11 +435,12 @@ fn surface_action(source: &str, tokens: &[Token]) -> ParseResult<(Vec<String>, S
         }
         _ => return Err(surface_action_error()),
     };
-    Ok((function, alias))
+    Ok((function, function_span, alias))
 }
 
-fn surface_read(source: &str, tokens: &[Token]) -> ParseResult<(Vec<String>, String)> {
-    let (function, rest) = surface_qualified_name(source, tokens, surface_read_error)?;
+fn surface_read(source: &str, tokens: &[Token]) -> ParseResult<(Vec<String>, SourceSpan, String)> {
+    let (function, function_span, rest) =
+        surface_qualified_name(source, tokens, surface_read_error)?;
     let alias = match rest {
         [] => function.last().cloned().unwrap_or_default(),
         [as_token, alias]
@@ -453,14 +460,14 @@ fn surface_read(source: &str, tokens: &[Token]) -> ParseResult<(Vec<String>, Str
         }
         _ => return Err(surface_read_error()),
     };
-    Ok((function, alias))
+    Ok((function, function_span, alias))
 }
 
 fn surface_qualified_name<'a>(
     source: &str,
     tokens: &'a [Token],
     error: fn() -> ParseError,
-) -> ParseResult<(Vec<String>, &'a [Token])> {
+) -> ParseResult<(Vec<String>, SourceSpan, &'a [Token])> {
     let Some(first) = tokens.first() else {
         return Err(error());
     };
@@ -468,17 +475,20 @@ fn surface_qualified_name<'a>(
         return Err(error());
     }
     let mut function = vec![first.text(source).to_string()];
+    let mut last_span = first.span;
     let mut index = 1;
     while matches!(tokens.get(index), Some(token) if token.kind == TokenKind::DoubleColon) {
         match tokens.get(index + 1) {
             Some(segment) if segment.kind == TokenKind::Identifier => {
                 function.push(segment.text(source).to_string());
+                last_span = segment.span;
                 index += 2;
             }
             _ => return Err(error()),
         }
     }
-    Ok((function, &tokens[index..]))
+    let span = crate::parse_expr::join_spans(first.span, last_span);
+    Ok((function, span, &tokens[index..]))
 }
 
 fn surface_action_error() -> ParseError {

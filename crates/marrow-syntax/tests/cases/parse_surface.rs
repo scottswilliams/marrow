@@ -27,6 +27,17 @@ fn collection_target_span(item: &SurfaceItem) -> marrow_syntax::SourceSpan {
     }
 }
 
+/// The function-target span an action/read item carries, for asserting
+/// structural equality without recomputing the target's column by hand.
+fn function_target_span(item: &SurfaceItem) -> marrow_syntax::SourceSpan {
+    match item {
+        SurfaceItem::Action { function_span, .. } | SurfaceItem::Read { function_span, .. } => {
+            *function_span
+        }
+        _ => panic!("not an action/read surface item: {item:?}"),
+    }
+}
+
 fn surface_decl(source: &str) -> SurfaceDecl {
     let parsed = parse_source(source);
     assert!(
@@ -122,6 +133,7 @@ fn parses_surface_declaration_with_contextual_items() {
         surface.items[6],
         SurfaceItem::Read {
             function: vec!["bookPage".into()],
+            function_span: function_target_span(&surface.items[6]),
             alias: "page".into(),
             span: surface.items[6].span(),
         }
@@ -130,6 +142,7 @@ fn parses_surface_declaration_with_contextual_items() {
         surface.items[7],
         SurfaceItem::Action {
             function: vec!["addBook".into()],
+            function_span: function_target_span(&surface.items[7]),
             alias: "addBook".into(),
             span: surface.items[7].span(),
         }
@@ -138,6 +151,7 @@ fn parses_surface_declaration_with_contextual_items() {
         surface.items[8],
         SurfaceItem::Action {
             function: vec!["shelf".into(), "loanBook".into()],
+            function_span: function_target_span(&surface.items[8]),
             alias: "loan".into(),
             span: surface.items[8].span(),
         }
@@ -170,6 +184,22 @@ fn collection_items_record_the_target_token_span() {
     );
     let span = collection_target_span(&surface.items[0]);
     assert_eq!((span.line, span.column), (3, 16));
+}
+
+#[test]
+fn action_and_read_items_record_the_function_target_token_span() {
+    // The function target of an `action`/`read` line carries its own span so a
+    // checker rejection points at the offending target rather than column 1.
+    let surface = surface_decl(
+        "module app\n\
+         surface Books from ^books\n\
+         \x20   action shelf::loanBook as loan\n\
+         \x20   read bookPage\n",
+    );
+    let action_span = function_target_span(&surface.items[0]);
+    assert_eq!((action_span.line, action_span.column), (3, 12));
+    let read_span = function_target_span(&surface.items[1]);
+    assert_eq!((read_span.line, read_span.column), (4, 10));
 }
 
 #[test]

@@ -1047,6 +1047,34 @@ surface Books from ^books
 }
 
 #[test]
+fn surface_action_and_read_diagnostics_span_the_function_target() {
+    // An unresolved action and computed-read target each anchor at the
+    // function-target token, like field items, rather than column 1 of the line.
+    let source = "\
+module app
+resource Book
+    required title: string
+store ^books(id: int): Book
+surface Books from ^books
+    fields title
+    action privateAction
+    read ghostFn
+";
+    let root = temp_project("surface-function-target-spans", |root| {
+        write(root, "src/app.mw", source);
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+
+    let actions = surface_actions(&report);
+    assert_eq!(actions.len(), 1, "{:#?}", report.diagnostics);
+    assert_eq!((actions[0].span.line, actions[0].span.column), (7, 12));
+
+    let reads = surface_computed_reads(&report);
+    assert_eq!(reads.len(), 1, "{:#?}", report.diagnostics);
+    assert_eq!((reads[0].span.line, reads[0].span.column), (8, 10));
+}
+
+#[test]
 fn surface_facts_resolve_public_action_targets() {
     let app_source = "\
 module app

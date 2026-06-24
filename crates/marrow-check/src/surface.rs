@@ -343,6 +343,7 @@ fn resolve_actions(
         .filter_map(|item| match item {
             SurfaceItem::Action {
                 function,
+                function_span,
                 alias,
                 span,
             } => resolve_action(
@@ -350,6 +351,7 @@ fn resolve_actions(
                 function,
                 alias,
                 *span,
+                *function_span,
                 suppressed_target,
                 diagnostics,
             ),
@@ -370,6 +372,7 @@ fn resolve_computed_reads(
         .filter_map(|item| match item {
             SurfaceItem::Read {
                 function,
+                function_span,
                 alias,
                 span,
             } => resolve_computed_read(
@@ -377,6 +380,7 @@ fn resolve_computed_reads(
                 function,
                 alias,
                 *span,
+                *function_span,
                 suppressed_target,
                 diagnostics,
             ),
@@ -410,6 +414,7 @@ fn resolve_action(
     function_path: &[String],
     alias: &str,
     span: SourceSpan,
+    target_span: SourceSpan,
     suppressed_target: &mut bool,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) -> Option<SurfaceActionFact> {
@@ -417,7 +422,7 @@ fn resolve_action(
         context,
         SurfaceFunctionProfile::Action,
         function_path,
-        span,
+        target_span,
         suppressed_target,
         diagnostics,
     )?;
@@ -445,7 +450,7 @@ fn resolve_action(
                 ),
             ),
         };
-        push_surface_action_diagnostic(context.file, span, payload, message, diagnostics);
+        push_surface_action_diagnostic(context.file, target_span, payload, message, diagnostics);
         return None;
     }
 
@@ -461,6 +466,7 @@ fn resolve_computed_read(
     function_path: &[String],
     alias: &str,
     span: SourceSpan,
+    target_span: SourceSpan,
     suppressed_target: &mut bool,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) -> Option<SurfaceComputedReadFact> {
@@ -468,7 +474,7 @@ fn resolve_computed_read(
         context,
         SurfaceFunctionProfile::ComputedRead,
         function_path,
-        span,
+        target_span,
         suppressed_target,
         diagnostics,
     )?;
@@ -497,7 +503,13 @@ fn resolve_computed_read(
                 ),
             ),
         };
-        push_surface_computed_read_diagnostic(context.file, span, payload, message, diagnostics);
+        push_surface_computed_read_diagnostic(
+            context.file,
+            target_span,
+            payload,
+            message,
+            diagnostics,
+        );
         return None;
     }
 

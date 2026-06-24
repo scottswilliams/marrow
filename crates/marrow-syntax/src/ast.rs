@@ -385,11 +385,13 @@ pub enum SurfaceItem {
     },
     Action {
         function: Vec<String>,
+        function_span: SourceSpan,
         alias: String,
         span: SourceSpan,
     },
     Read {
         function: Vec<String>,
+        function_span: SourceSpan,
         alias: String,
         span: SourceSpan,
     },
