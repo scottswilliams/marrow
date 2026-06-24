@@ -121,6 +121,92 @@ fn proposal_required_default_backfills_before_catalog_acceptance()
     Ok(())
 }
 
+/// A sparse field added with a same-block `default` for it is intrinsically additive:
+/// the sparse cells are legitimately absent on existing records, and discharging mutates
+/// nothing. Apply must treat the default as a clean no-op over those absent cells, stamp
+/// the proposal epoch, and never raise store corruption over the absent sparse state.
+#[test]
+fn proposal_sparse_field_with_same_block_default_is_a_clean_no_op()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = temp_project("apply-proposal-sparse-same-block-default", |root| {
+        write(
+            root,
+            "src/books.mw",
+            "module books\n\
+             resource Book\n\
+             \x20   required title: string\n\
+             store ^books(id: int): Book\n\
+             pub fn add(title: string): Id(^books)\n\
+             \x20   return nextId(^books)\n",
+        );
+    });
+    let accepted = commit_then_check(&root).expect("committed fixture");
+    let accepted_place = root_place(&accepted, "books")?;
+    let store = TreeStore::memory();
+    let seed = Seed {
+        store: &store,
+        place: &accepted_place,
+    };
+    seed.record(1);
+    seed.member(1, "title", Scalar::Str("Dune".into()));
+
+    write(
+        &root,
+        "src/books.mw",
+        "module books\n\
+         resource Book\n\
+         \x20   required title: string\n\
+         \x20   pages: int\n\
+         store ^books(id: int): Book\n\
+         evolve\n\
+         \x20   default Book.pages = 0\n\
+         pub fn add(title: string): Id(^books)\n\
+         \x20   return nextId(^books)\n",
+    );
+    let program = checked(&root).expect("checked fixture");
+    let proposal_epoch = program.catalog.proposal.as_ref().expect("proposal").epoch;
+    let pages_id = proposal_catalog_id(&program, "books::Book::pages")?;
+
+    let w = witness(&program, &store);
+    assert!(w.is_activatable(), "{w:#?}");
+    assert_eq!(
+        w.counts.records_to_backfill, 0,
+        "a sparse add mutates zero records"
+    );
+
+    let outcome = apply(&w, &program, &store, false, None).expect("apply succeeds");
+    assert_eq!(outcome.receipt.catalog_epoch, proposal_epoch);
+    assert_eq!(outcome.receipt.records_backfilled, 0);
+
+    let store_id = store_id_of(&accepted_place)?;
+    assert_eq!(
+        read_scalar(&store, &store_id, 1, &pages_id, INT),
+        None,
+        "the sparse cell stays absent; the default backfills nothing"
+    );
+    let title_id = member_catalog_id(&accepted_place, "title")?;
+    assert_eq!(
+        read_scalar(
+            &store,
+            &store_id,
+            1,
+            &title_id,
+            marrow_store::value::ScalarType::Str
+        ),
+        Some(Scalar::Str("Dune".into())),
+        "the pre-existing record keeps its title"
+    );
+    assert_eq!(
+        store
+            .read_commit_metadata()
+            .expect("commit")
+            .map(|commit| commit.catalog_epoch),
+        Some(proposal_epoch)
+    );
+
+    Ok(())
+}
+
 #[test]
 fn apply_receipt_counts_many_defaulted_records_without_persisting_evidence() {
     let (_root, _program, _place, _store, _pages_id, outcome) =

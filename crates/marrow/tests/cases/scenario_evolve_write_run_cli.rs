@@ -64,6 +64,20 @@ const EVOLVED_SOURCE: &str = "module books\n\
      \x20       ^books(2).title = \"Reaper Man\"\n\
      \x20       ^books(2).subtitle = \"a Discworld novel\"\n";
 
+/// The baseline evolved to add a sparse `pages` AND an `evolve default` for it in the
+/// same edit. The default targets the newly added sparse field, whose cells are absent on
+/// the old record; discharging it mutates nothing. `seed` still writes only `title`.
+const SPARSE_WITH_DEFAULT_SOURCE: &str = "module books\n\
+     resource Book\n\
+     \x20   required title: string\n\
+     \x20   pages: int\n\
+     store ^books(id: int): Book\n\
+     evolve\n\
+     \x20   default Book.pages = 0\n\
+     pub fn seed()\n\
+     \x20   transaction\n\
+     \x20       ^books(1).title = \"Mort\"\n";
+
 fn dir(root: &TempProject) -> &str {
     root.to_str().expect("project path utf8")
 }
@@ -145,6 +159,75 @@ fn add_a_sparse_field_through_the_evolve_cycle_keeps_old_records_and_carries_new
         get_value(&root, "^books(2).subtitle"),
         Some(b"a Discworld novel".to_vec()),
         "a write past the evolution carries the new field",
+    );
+}
+
+#[test]
+fn a_sparse_add_with_a_same_block_default_applies_and_runs_without_wedging() {
+    // Adding a sparse field and an `evolve default` for it in one edit is intrinsically
+    // additive: the default targets the new field's absent cells and discharges mutating
+    // nothing. `evolve apply` must succeed, `marrow run` must execute the entry rather than
+    // loop on schema drift, and the store must stay healthy with the sparse cell absent.
+    let root = books_project("scenario-sparse-same-block-default");
+    let first = marrow_sub("run", &[dir(&root)]);
+    assert_eq!(first.status.code(), Some(0), "first run: {first:?}");
+    assert_eq!(get_value(&root, "^books(1).title"), Some(b"Mort".to_vec()));
+    let epoch_before = accepted_epoch(&root);
+
+    write(&root, "src/books.mw", SPARSE_WITH_DEFAULT_SOURCE);
+    let preview = marrow(&["evolve", "preview", "--format", "json", dir(&root)]);
+    assert_eq!(preview.status.code(), Some(0), "preview: {preview:?}");
+    let witness = support::json(preview.stdout);
+    assert_eq!(
+        witness["status"], "activatable",
+        "a sparse add with its default is activatable with no obligation: {witness}"
+    );
+
+    // Apply must be a clean no-op, never a store-corruption fault over the absent sparse
+    // cell, and must advance the accepted epoch.
+    let apply = marrow(&["evolve", "apply", dir(&root)]);
+    assert_eq!(
+        apply.status.code(),
+        Some(0),
+        "apply must not raise store corruption over an absent sparse cell: {apply:?}"
+    );
+    assert_eq!(
+        accepted_epoch(&root),
+        epoch_before + 1,
+        "apply advanced the accepted catalog epoch by exactly one",
+    );
+
+    // The old record survives untouched and the new sparse field reads as absent, not the
+    // default value: an unpopulated sparse cell is absent, not zero.
+    assert_eq!(get_value(&root, "^books(1).title"), Some(b"Mort".to_vec()));
+    assert_eq!(
+        get_value(&root, "^books(1).pages"),
+        None,
+        "the sparse field stays absent on the old record; the default backfilled nothing",
+    );
+
+    // The store is healthy: integrity reports no problems.
+    let integrity = marrow(&["data", "integrity", "--format", "json", dir(&root)]);
+    assert_eq!(integrity.status.code(), Some(0), "integrity: {integrity:?}");
+    assert_eq!(
+        support::json(integrity.stdout)["problems"],
+        serde_json::json!([]),
+        "the store stays healthy across the sparse-default apply",
+    );
+
+    // A plain `marrow run` against the evolved source executes the entry rather than
+    // looping on `run.schema_drift`, and the write lands.
+    let rerun = marrow_sub("run", &[dir(&root)]);
+    assert_eq!(
+        rerun.status.code(),
+        Some(0),
+        "run must execute the entry, not wedge on schema drift: {rerun:?}",
+    );
+    assert_eq!(get_value(&root, "^books(1).title"), Some(b"Mort".to_vec()));
+    assert_eq!(
+        get_value(&root, "^books(1).pages"),
+        None,
+        "the sparse field is still absent after the re-run",
     );
 }
 

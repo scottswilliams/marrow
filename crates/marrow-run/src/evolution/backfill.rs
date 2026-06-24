@@ -83,20 +83,19 @@ pub(super) fn stage_default_backfill(
     Ok(())
 }
 
+/// Record the per-id receipt for an `evolve default` whose backfill verdict was a no-op:
+/// the member is already satisfied or sparse, so the default mutates no record. Sparse
+/// cells are legitimately absent, so this only counts the default's target cells; it never
+/// asserts presence, because an absent sparse cell is the spec-correct additive state, not
+/// corruption.
 pub(super) fn stage_default_presence_receipt(
     catalog_id: &CatalogId,
     places: &[CheckedSavedPlace],
     store: &TreeStore,
     staged: &mut StagedWork,
 ) -> Result<(), ApplyError> {
-    let target_count = scan_default_cells(catalog_id, places, store, |sid, identity, path| {
-        if store.read_data_value(sid, identity, path)?.is_none() {
-            return Err(StoreError::Corruption {
-                message: "default receipt target is missing before activation".to_string(),
-            });
-        }
-        Ok(())
-    })?;
+    let target_count =
+        scan_default_cells(catalog_id, places, store, |_sid, _identity, _path| Ok(()))?;
     push_default_receipt(staged, catalog_id, 0, target_count);
     Ok(())
 }
