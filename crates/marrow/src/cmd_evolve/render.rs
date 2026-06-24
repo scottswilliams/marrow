@@ -379,14 +379,54 @@ fn render_blocking_text(
     // The scaffold flag already printed the parseable evolve blocks above, so pointing back at it
     // would loop. Give the real next step instead; without the flag, point at it to get the blocks.
     if scaffold {
-        eprintln!(
-            "next: paste the evolve block above into your source, then run `marrow evolve apply {dir}`"
-        );
+        // A retire scaffold is gated on --maintenance, --approve-retire, and a recovery choice, so
+        // a flagless apply is rejected: name the same complete command the scaffold body's Step 3
+        // teaches, with the same `<count>` placeholder (the count is unknown until the retire block
+        // is in source). A non-destructive evolution applies with the bare command.
+        let next = match retire_scaffold_targets(witness, diagnostics, labels).as_slice() {
+            [] => format!("run `marrow evolve apply {dir}`"),
+            targets => format!(
+                "run `marrow evolve apply --maintenance {} (--backup <backup-file> | --no-backup) {dir}`",
+                targets
+                    .iter()
+                    .map(|target| format!("--approve-retire {target}:<count>"))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            ),
+        };
+        eprintln!("next: paste the evolve block above into your source, then {next}");
     } else {
         eprintln!(
             "hint: run `marrow evolve preview --scaffold {dir}` to print parseable evolve blocks"
         );
     }
+}
+
+/// The source-path targets whose scaffold block is a `retire` — every obligation `scaffold_block`
+/// renders as a retire. A bare drop with a same-shape rename target scaffolds the identity-keeping
+/// rename instead, so it does not appear here. The footer names these so it stays consistent with
+/// the body's Step 3, which is the gated `--maintenance --approve-retire` command, not a flagless
+/// apply the retire gates reject.
+fn retire_scaffold_targets(
+    witness: &EvolutionWitness,
+    diagnostics: &[RepairDiagnostic],
+    labels: &SourceLabels,
+) -> Vec<String> {
+    let guidance: HashMap<&str, &RepairGuidance> = diagnostics
+        .iter()
+        .map(|diagnostic| (diagnostic.catalog_id.as_str(), &diagnostic.guidance))
+        .collect();
+    witness
+        .verdicts
+        .iter()
+        .filter(|obligation| {
+            obligation_scaffolds_retire(
+                &obligation.verdict,
+                guidance.get(obligation.catalog_id.as_str()).copied(),
+            )
+        })
+        .map(|obligation| labels.scaffold_target(obligation.catalog_id.as_str()))
+        .collect()
 }
 
 #[derive(Debug, Clone)]
@@ -557,6 +597,26 @@ fn repair_scaffold(
         }
         _ => None,
     }
+}
+
+/// Whether `scaffold_block` renders an obligation as a `retire`: a destructive decision always
+/// does, and a populated drop or explicit retire-required does unless its guidance offers a
+/// same-shape rename to scaffold instead. The footer routes through this so it names the gated
+/// retire command for exactly the obligations the body scaffolds as a retire.
+fn obligation_scaffolds_retire(verdict: &Verdict, guidance: Option<&RepairGuidance>) -> bool {
+    match verdict {
+        Verdict::DestructiveDecisionRequired { .. } => true,
+        Verdict::RepairRequired {
+            reason: RepairReason::PopulatedDropRequiresRetire | RepairReason::RetireRequired { .. },
+        } => !is_rename_guidance(guidance),
+        _ => false,
+    }
+}
+
+/// Whether check-time guidance offers a same-shape rename — the signal a populated drop scaffolds
+/// the identity-preserving rename rather than a destructive retire.
+fn is_rename_guidance(guidance: Option<&RepairGuidance>) -> bool {
+    matches!(guidance, Some(RepairGuidance::RenameOrRetire { .. }))
 }
 
 /// The two-step retire scaffold. The first step is the parseable `evolve { retire ... }` block to

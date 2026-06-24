@@ -461,10 +461,20 @@ fn evolve_preview_scaffold_suppresses_the_circular_hint() -> Result<(), Box<dyn 
         !scaffold_stderr.contains("hint: run `marrow evolve preview --scaffold"),
         "the scaffold breadcrumb must not tell the dev to rerun the command they just ran: {scaffold_stderr}"
     );
+    // The drop scaffolds a retire, so its apply is gated on --maintenance, --approve-retire, and a
+    // recovery choice. The footer must name that complete command consistent with the scaffold
+    // body's Step 3 — including the same `<count>` placeholder, since the count is unknown until
+    // the retire block is in source — never a flagless `marrow evolve apply` the gates reject.
     assert!(
         scaffold_stderr.contains("next: paste the evolve block")
-            && scaffold_stderr.contains("marrow evolve apply"),
-        "the scaffold next step must point at pasting the block then applying: {scaffold_stderr}"
+            && scaffold_stderr.contains(
+                "run `marrow evolve apply --maintenance --approve-retire Book.subtitle:<count> (--backup <backup-file> | --no-backup)"
+            ),
+        "the scaffold next step must name the complete retire command: {scaffold_stderr}"
+    );
+    assert!(
+        !scaffold_stderr.contains(&format!("marrow evolve apply {}`", root.to_str().unwrap())),
+        "the footer must not name a flagless apply the retire gates reject: {scaffold_stderr}"
     );
 
     let plain = marrow(&["evolve", "preview", root.to_str().unwrap()]);
@@ -473,6 +483,42 @@ fn evolve_preview_scaffold_suppresses_the_circular_hint() -> Result<(), Box<dyn 
     assert!(
         plain_stderr.contains("hint: run `marrow evolve preview --scaffold"),
         "a blocked preview without --scaffold still points at it to print the block: {plain_stderr}"
+    );
+
+    Ok(())
+}
+
+/// A non-destructive blocked scaffold (a required member added over a populated store needs a
+/// backfill, not a retire) applies with the bare command once the default block is pasted, so its
+/// footer stays the flagless `marrow evolve apply <dir>` — only a destructive retire earns the
+/// --maintenance --approve-retire form.
+#[test]
+fn evolve_preview_scaffold_footer_for_a_backfill_stays_flagless()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = native_books_project(
+        "evolve-preview-scaffold-backfill-footer",
+        REQUIRED_NO_DEFAULT_SOURCE,
+    );
+    let program = commit_catalog(&root);
+    let place = root_place(&program, "books")?;
+    {
+        let store = open_native_store(&root);
+        seed_title_only(&store, &place, 1, "Dune");
+    }
+
+    let scaffold = marrow(&["evolve", "preview", "--scaffold", root.to_str().unwrap()]);
+    assert_eq!(scaffold.status.code(), Some(1), "{scaffold:?}");
+    let scaffold_stderr = String::from_utf8(scaffold.stderr).expect("stderr utf8");
+    assert!(
+        scaffold_stderr.contains(&format!(
+            "next: paste the evolve block above into your source, then run `marrow evolve apply {}`",
+            root.to_str().unwrap()
+        )),
+        "a non-destructive scaffold footer must stay the flagless apply: {scaffold_stderr}"
+    );
+    assert!(
+        !scaffold_stderr.contains("--approve-retire"),
+        "a non-destructive scaffold footer must not name a retire approval: {scaffold_stderr}"
     );
 
     Ok(())
