@@ -89,6 +89,12 @@ impl ParseDiagnosticReason {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExpectedSyntax {
+    /// The `,` or `)` that must follow a complete call argument: either a comma
+    /// introducing the next argument or the `)` closing the list.
+    ArgumentSeparatorOrClose,
+    /// The `)` closing a parenthesized expression whose inner operand is
+    /// complete.
+    CloseParen,
     ConstName,
     ConstType,
     Declaration,
