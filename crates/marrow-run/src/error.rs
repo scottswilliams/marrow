@@ -246,7 +246,7 @@ pub const RUN_DECIMAL_OVERFLOW: &str = "run.decimal_overflow";
 /// Temporal arithmetic exceeded the saved date, instant, or duration envelope.
 pub const RUN_TEMPORAL_OVERFLOW: &str = "run.temporal_overflow";
 
-/// Integer division or remainder by zero.
+/// Division or remainder by zero.
 pub const RUN_DIVIDE_BY_ZERO: &str = "run.divide_by_zero";
 
 /// A `break` or `continue` reached the top of a function with no loop to target.

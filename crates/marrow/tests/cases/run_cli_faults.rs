@@ -434,6 +434,32 @@ fn a_cross_module_fault_names_the_callee_file() {
 }
 
 #[test]
+fn a_decimal_divide_by_zero_raises_divide_by_zero() {
+    // The `/` operator always yields a decimal, and a zero divisor raises the same
+    // `run.divide_by_zero` code as the integer helpers, with the neutral "division by
+    // zero" message rather than an integer-specific one.
+    let root = temp_project("run-decimal-divzero", |root| {
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" }, "run": { "defaultEntry": "app::main" } }"#,
+        );
+        write(
+            root,
+            "src/app.mw",
+            "module app\n\npub fn main(): decimal\n    var a: decimal = 1.0\n    var b: decimal = 0.0\n    return a / b\n",
+        );
+    });
+    let output = marrow_sub("run", &[root.to_str().unwrap()]);
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let fault = parse_fault(&output.stderr);
+    assert_eq!(fault.code, "run.divide_by_zero");
+    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+    assert!(stderr.contains("division by zero"), "{stderr}");
+}
+
+#[test]
 fn an_overflow_fault_is_located() {
     let root = temp_project("run-located-overflow", |root| {
         write(

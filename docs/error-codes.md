@@ -285,7 +285,7 @@ code, except `run.uncaught_error` — see "Typed Errors In Running Programs".
 | `run.overflow` | Integer arithmetic overflowed the 64-bit range. |
 | `run.decimal_overflow` | Decimal arithmetic exceeded the 34-digit / 34-place envelope. |
 | `run.temporal_overflow` | Temporal arithmetic exceeded the saved RFC3339 instant envelope or the `duration` nanosecond range. |
-| `run.divide_by_zero` | Integer division or remainder by zero. |
+| `run.divide_by_zero` | Division or remainder by zero. |
 | `run.no_enclosing_loop` | A `break`/`continue` reached the top of a function with no loop to target. Fatal runtime control-flow backstop. |
 | `run.unknown_function` | A call named a function the program does not declare. Fatal runtime backstop for unchecked programs. |
 | `run.ambiguous_function` | A bare run entry name matched more than one public function. Qualify the entry as `module::function`. |
