@@ -631,7 +631,7 @@ pub(crate) fn open_store_for_inspection(
     let Some(path) = native_store_path(dir, config, format)? else {
         return Ok(None);
     };
-    if store_path_is_absent(&path) {
+    if store_path_is_absent(&path) && !await_recreating_writer(dir, &path, format)? {
         return Ok(None);
     }
     match marrow_store::tree::TreeStore::open_read_only(&path)
@@ -643,6 +643,95 @@ pub(crate) fn open_store_for_inspection(
             Err(ExitCode::FAILURE)
         }
     }
+}
+
+/// The verdict of the race-aware lock-root cross-check.
+pub(crate) enum LockRootVerdict {
+    /// The store carries every committed root, or a writer is mid-re-creating the store and the
+    /// transient shortfall is the live `store.locked` race, not a loss.
+    Clean,
+    /// The store settled below the committed roots the lock records: a genuine rollback or
+    /// deletion, failed closed as the carried store corruption.
+    Lost(marrow_store::StoreError),
+}
+
+/// The single race-aware owner of the lock-root cross-check. Every CLI driver that compares a
+/// store's committed roots against `marrow.lock` — the read-only inspections, store inspection,
+/// `doctor`, `backup`, and `data recover` — routes through here; this is the only caller of the
+/// bare, race-blind [`marrow_check::tooling::verify_store_roots_against_lock`]. A driver that
+/// called the bare witness directly would re-open the race this owner exists to close.
+///
+/// The bare witness condemns a store presenting fewer committed roots than the persisted lock as
+/// a rollback. A writer re-creating a removed store transiently presents exactly that shortfall,
+/// and the discriminator between that live race and a settled loss is the redb cross-process write
+/// lock the writer holds across the whole creation, never the store's on-disk shape:
+///
+/// - While the store file is briefly gone, after the old store was deleted and before the new one
+///   is created, the caller resolved the store absent (`None`) and [`await_recreating_writer`]
+///   waits for the file to reappear, evidence a writer is mid-re-creation.
+/// - Once the file is present the writer holds the redb write flock from minting the store uid
+///   through committing the first root in one continuous open, so a racing read-only or
+///   write-capable open is excluded as `store.locked` and never reaches this witness. A present
+///   store the caller *did* open is therefore not a live race: no writer holds the lock, so a
+///   uid-only store with no committed baseline is a settled crash between the two creation
+///   transactions — a genuine data loss that fails closed with no shape-based tolerance.
+///
+/// A first run records no active root in the lock, so the witness never fires.
+pub(crate) fn verify_lock_roots_or_race(
+    store: Option<&marrow_store::tree::TreeStore>,
+    dir: &str,
+    path: Option<&Path>,
+    lock: Option<&marrow_catalog::CatalogLock>,
+    format: CheckFormat,
+) -> Result<LockRootVerdict, ExitCode> {
+    let Err(error) = marrow_check::tooling::verify_store_roots_against_lock(store, lock) else {
+        return Ok(LockRootVerdict::Clean);
+    };
+    if lock_root_loss_is_recreation_race(store, dir, path, format)? {
+        return Ok(LockRootVerdict::Clean);
+    }
+    Ok(LockRootVerdict::Lost(error))
+}
+
+/// Whether a lock-root shortfall is a writer re-creating the removed store rather than a settled
+/// loss. The signal is the writer's redb write lock, never the store's static shape. A present
+/// store the caller opened is past the flock the writer holds across the whole creation, so it is
+/// no live race: its shortfall is a settled crash that fails closed. An absent store is a live
+/// race only while its file reappears within the wait budget; a settled deletion never does.
+fn lock_root_loss_is_recreation_race(
+    store: Option<&marrow_store::tree::TreeStore>,
+    dir: &str,
+    path: Option<&Path>,
+    format: CheckFormat,
+) -> Result<bool, ExitCode> {
+    match store {
+        Some(_) => Ok(false),
+        None => match path {
+            Some(path) => await_recreating_writer(dir, path, format),
+            None => Ok(false),
+        },
+    }
+}
+
+/// Whether an absent store reappears because a writer is re-creating it. Only a committed lock
+/// recording active roots can be contradicted by the loss, and only an actively re-created store
+/// reappears, so when both hold this briefly waits for the file to materialize, matching the
+/// store layer's creation-race tolerance. A settled deletion has no writer, so the file stays
+/// absent across the budget and the loss still fails closed.
+fn await_recreating_writer(dir: &str, path: &Path, format: CheckFormat) -> Result<bool, ExitCode> {
+    let records_roots =
+        read_committed_lock(dir, format)?.is_some_and(|lock| lock.records_active_roots());
+    if !records_roots {
+        return Ok(false);
+    }
+    const CREATION_RACE_BACKOFF: [u64; 4] = [1, 2, 4, 8];
+    for wait in CREATION_RACE_BACKOFF {
+        std::thread::sleep(std::time::Duration::from_millis(wait));
+        if !store_path_is_absent(path) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// Load `<dir>/marrow.json`, reporting an exit code if it is missing or invalid.

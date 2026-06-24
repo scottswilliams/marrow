@@ -370,6 +370,235 @@ fn a_total_drop_to_empty_is_caught_by_the_lock_root_witness() {
     }
 }
 
+/// Replace the seeded store file with a freshly minted store that carries only its store uid and
+/// no committed catalog baseline, leaving NO writer live. This is the durable shape a crash, kill,
+/// or power loss settles between the production write path's two creation transactions — the uid
+/// stamped in its own commit, then the process lost before the first root and lock baseline commit.
+/// The committed `marrow.lock` still records the root, so the store has genuinely lost a committed
+/// root with no writer re-creating it: a real data loss, not a live race.
+fn replace_with_baseline_pending_store(project: &Path) {
+    let store = store_path(project);
+    std::fs::remove_file(&store).expect("remove seeded store");
+    let pending = marrow_store::tree::TreeStore::open(&store).expect("create fresh store");
+    pending
+        .write_store_uid(&marrow_store::tree::StoreUid::from_entropy_bytes([7u8; 16]))
+        .expect("stamp store uid");
+}
+
+/// A settled uid-only store with no live writer, under a committed lock that records a root, is a
+/// crash between the two creation transactions: the store lost a committed root and nothing is
+/// re-creating it. The lock-root witness must catch that loss — never bless it. A live writer would
+/// hold the redb write lock across the whole creation, excluding any open as `store.locked`, so a
+/// store the inspection can open is provably writer-free and fails closed on every driver.
+#[test]
+fn a_settled_baseline_pending_store_under_a_committed_lock_fails_closed() {
+    let (project, dir) = seeded_mutable_store("cli-store-baseline-pending", 64);
+    let backup_target = project.join("baseline-pending.mw-backup");
+    let backup_target = backup_target
+        .to_str()
+        .expect("backup path utf8")
+        .to_string();
+    let deadline = std::time::Duration::from_secs(30);
+
+    replace_with_baseline_pending_store(&project);
+
+    for command in [
+        ["data", "integrity", &dir].as_slice(),
+        ["data", "stats", &dir].as_slice(),
+        ["data", "get", &dir, "^notes"].as_slice(),
+        ["backup", &dir, &backup_target].as_slice(),
+    ] {
+        let output = marrow_bounded(command, deadline);
+        assert_no_panic_and_bounded(&output, command, 0);
+        assert_eq!(
+            output.status.code(),
+            Some(1),
+            "`marrow {}` blessed a settled crash-mid-creation store instead of failing closed: \
+             {output:?}",
+            command.join(" "),
+        );
+        assert_eq!(
+            stderr_code(&output),
+            "store.corruption",
+            "`marrow {}` must report the lost committed root as store.corruption: {output:?}",
+            command.join(" "),
+        );
+    }
+
+    // Doctor opens the same settled store and runs the lock-root witness; its JSON envelope must
+    // carry the store.corruption finding for the lost committed root.
+    let doctor = marrow_bounded(&["doctor", &dir, "--format", "json"], deadline);
+    assert_no_panic_and_bounded(&doctor, &["doctor"], 0);
+    let report: serde_json::Value =
+        serde_json::from_slice(&doctor.stdout).expect("doctor json report");
+    assert!(
+        findings_carry_lock_root_corruption(&report),
+        "doctor blessed a settled crash-mid-creation store instead of flagging its lost root: \
+         {report}"
+    );
+}
+
+/// `data recover` opens the store write-capable and runs the same lock-root cross-check. A settled
+/// uid-only store with no live writer under a committed lock has lost a committed root, so recover
+/// must fail it closed as `store.corruption`, never bless it as a clean recovery.
+#[test]
+fn data_recover_fails_a_settled_baseline_pending_store_closed() {
+    let (project, dir) = seeded_mutable_store("cli-store-recover-baseline-pending", 64);
+    let deadline = std::time::Duration::from_secs(30);
+
+    replace_with_baseline_pending_store(&project);
+
+    let recover = marrow_bounded(&["data", "recover", &dir], deadline);
+    assert_no_panic_and_bounded(&recover, &["data", "recover", &dir], 0);
+    assert_eq!(
+        recover.status.code(),
+        Some(1),
+        "recover blessed a settled crash-mid-creation store instead of failing closed: {recover:?}"
+    );
+    assert_eq!(
+        stderr_code(&recover),
+        "store.corruption",
+        "recover must report the lost committed root as store.corruption: {recover:?}"
+    );
+}
+
+/// Whether a doctor JSON report carries a lock-root-loss `store.corruption` finding — the
+/// verdict a settled crash-mid-creation store must trigger and a live race must not.
+fn findings_carry_lock_root_corruption(report: &serde_json::Value) -> bool {
+    report["findings"].as_array().is_some_and(|findings| {
+        findings
+            .iter()
+            .any(|finding| finding["data"]["underlying_code"] == "store.corruption")
+    })
+}
+
+/// Hammer `marrow doctor --format json` against a writer that is repeatedly removing and
+/// re-creating the store, the rm-then-recreate window a stray restart leaves. Doctor opens the
+/// store and runs the lock-root witness independently of the read-only inspections, so it must
+/// share their recreation-race tolerance: across the whole race it may report the store locked,
+/// a transient open failure carrying a non-corruption code, or a clean healthy report, but never
+/// the lock-root `store.corruption` over a store the writer provably leaves healthy.
+#[test]
+fn doctor_under_a_store_recreation_race_never_false_corrupts_a_healthy_store() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let (project, dir) = seeded_mutable_store("cli-store-doctor-recreation-race", 64);
+    let deadline = std::time::Duration::from_secs(30);
+    let store = store_path(&project);
+
+    // A writer that, in a loop, removes the committed store and re-creates it through the
+    // production run path. Each iteration passes through the file-absent gap and the
+    // baseline-pending window the lock-root witness must not condemn.
+    let stop = Arc::new(AtomicBool::new(false));
+    let writer = {
+        let stop = Arc::clone(&stop);
+        let dir = dir.clone();
+        let store = store.clone();
+        std::thread::spawn(move || {
+            while !stop.load(Ordering::Relaxed) {
+                let _ = std::fs::remove_file(&store);
+                let run = marrow(&["run", "--entry", "app::seed", &dir]);
+                assert_eq!(
+                    run.status.code(),
+                    Some(0),
+                    "the background writer must re-create the store cleanly: {run:?}",
+                );
+            }
+        })
+    };
+
+    for _ in 0..360 {
+        let doctor = marrow_bounded(&["doctor", &dir, "--format", "json"], deadline);
+        assert_no_panic_and_bounded(&doctor, &["doctor"], 0);
+        let report: serde_json::Value = match serde_json::from_slice(&doctor.stdout) {
+            Ok(report) => report,
+            // A doctor that fell to the writer's lock may have emitted nothing parseable; the
+            // contract bites on the JSON envelope it does produce.
+            Err(_) => continue,
+        };
+        assert!(
+            !findings_carry_lock_root_corruption(&report),
+            "doctor false-corrupted a healthy store the writer is mid-re-creating: {report}"
+        );
+    }
+
+    stop.store(true, Ordering::Relaxed);
+    writer.join().expect("join the background writer");
+
+    // The writer left the store committed and healthy: a settled integrity pass must verify it,
+    // proving the race tolerance never blessed a genuine loss.
+    let integrity = marrow(&["data", "integrity", &dir]);
+    assert_eq!(
+        integrity.status.code(),
+        Some(0),
+        "the store the race left behind must verify clean: {integrity:?}",
+    );
+}
+
+/// Hammer `marrow data recover --format json` against a writer repeatedly removing and
+/// re-creating the store. Recover opens the store write-capable and runs the lock-root witness,
+/// so it must share the recreation-race tolerance: it can win the open and bless the in-flight
+/// store, yield to the writer's lock, or hit a transient non-lock-root open failure, but it must
+/// never report `store.corruption` over a store the writer provably leaves healthy. Before this
+/// fix, recover won the flock in the baseline-pending window and condemned the healthy store.
+#[test]
+fn data_recover_under_a_store_recreation_race_never_false_corrupts_a_healthy_store() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let (project, dir) = seeded_mutable_store("cli-store-recover-recreation-race", 64);
+    let deadline = std::time::Duration::from_secs(30);
+    let store = store_path(&project);
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let writer = {
+        let stop = Arc::clone(&stop);
+        let dir = dir.clone();
+        let store = store.clone();
+        std::thread::spawn(move || {
+            while !stop.load(Ordering::Relaxed) {
+                let _ = std::fs::remove_file(&store);
+                let run = marrow(&["run", "--entry", "app::seed", &dir]);
+                assert_eq!(
+                    run.status.code(),
+                    Some(0),
+                    "the background writer must re-create the store cleanly: {run:?}",
+                );
+            }
+        })
+    };
+
+    for _ in 0..200 {
+        let recover = marrow_bounded(&["data", "recover", "--format", "json", &dir], deadline);
+        assert_no_panic_and_bounded(&recover, &["data", "recover"], 0);
+        // `--format json` writes its single result or fault object to stdout; the contract bites
+        // on the `code` it carries, which must never be the lock-root `store.corruption` over a
+        // store the writer leaves healthy. A recover that fell to the writer's lock may emit
+        // nothing parseable.
+        let Ok(report) = serde_json::from_slice::<serde_json::Value>(&recover.stdout) else {
+            continue;
+        };
+        assert_ne!(
+            report["code"],
+            serde_json::json!("store.corruption"),
+            "recover false-corrupted a healthy store the writer is mid-re-creating: {recover:?}"
+        );
+    }
+
+    stop.store(true, Ordering::Relaxed);
+    writer.join().expect("join the background writer");
+
+    // The writer left the store committed and healthy: a settled integrity pass must verify it,
+    // proving the recover race tolerance never blessed a genuine loss.
+    let integrity = marrow(&["data", "integrity", &dir]);
+    assert_eq!(
+        integrity.status.code(),
+        Some(0),
+        "the store the race left behind must verify clean: {integrity:?}",
+    );
+}
+
 /// Delete the seeded store file outright while leaving the committed `marrow.lock`, modelling
 /// a store the developer or a stray `rm` removed. The store path resolves absent, so the
 /// read-only inspections, doctor, and recover all short-circuit as a first run unless they

@@ -5,9 +5,7 @@ use std::process::ExitCode;
 
 use marrow_catalog::{CatalogLifecycle, CatalogLock, CatalogMetadata, LockEntry};
 use marrow_check::ProjectIoError;
-use marrow_check::tooling::{
-    IntegritySample, sample_integrity_problems, verify_store_roots_against_lock,
-};
+use marrow_check::tooling::{IntegritySample, sample_integrity_problems};
 use marrow_run::evolution::{FenceError, current_engine_profile, fence};
 use marrow_store::StoreError;
 use marrow_store::tree::{CommitMetadata, TreeStore};
@@ -93,7 +91,14 @@ fn run_doctor(dir: &str, format: CheckFormat) -> ExitCode {
     // roots, has lost durable identity. An unreadable store (locked, recovery-required, or hard
     // corrupt) already carries its own finding and is not also charged this loss.
     if store.is_some() || store_is_genuinely_absent(root, config.as_ref()) {
-        probe_lock_root_witness(dir, store.as_ref(), lock, &mut findings);
+        probe_lock_root_witness(
+            dir,
+            store.as_ref(),
+            resolved_store_path(root, config.as_ref()).as_deref(),
+            lock,
+            format,
+            &mut findings,
+        );
     }
     let store_report = store.as_ref().map(|store| {
         probe_store_facts(
@@ -349,15 +354,39 @@ fn store_is_genuinely_absent(root: &Path, config: Option<&marrow_project::Projec
 /// durable identity to a rollback or deletion; doctor surfaces it as `doctor.store_unavailable`
 /// carrying the underlying `store.corruption` code, the same verdict `backup` and `data recover`
 /// reach, so a CI doctor never blesses a store the write paths reject.
+///
+/// A writer re-creating a removed store transiently presents that same shortfall, so the shared
+/// recreation-race owner is consulted before condemning: an in-flight re-creation is the
+/// `store.locked` race the writer settles, not the rollback this guards. A failure to read the
+/// store while deciding leaves the witness silent — that read fault, not a false corruption,
+/// surfaces through the store-fact probes.
 fn probe_lock_root_witness(
     dir: &str,
     store: Option<&TreeStore>,
+    path: Option<&Path>,
     lock: Option<&CatalogLock>,
+    format: CheckFormat,
     findings: &mut Vec<Finding>,
 ) {
-    if let Err(error) = verify_store_roots_against_lock(store, lock) {
-        findings.push(store_fact_error(dir, "committed roots", error));
+    match crate::verify_lock_roots_or_race(store, dir, path, lock, format) {
+        Ok(crate::LockRootVerdict::Clean) | Err(_) => {}
+        Ok(crate::LockRootVerdict::Lost(error)) => {
+            findings.push(store_fact_error(dir, "committed roots", error));
+        }
     }
+}
+
+/// The configured native store path, or `None` when no config resolves one. The recreation-race
+/// owner waits on this path for a writer mid-re-creating an absent store.
+fn resolved_store_path(
+    root: &Path,
+    config: Option<&marrow_project::ProjectConfig>,
+) -> Option<std::path::PathBuf> {
+    let config = config?;
+    if marrow_check::guard_data_dir(root, config).is_err() {
+        return None;
+    }
+    marrow_check::native_store_path(root, config).ok().flatten()
 }
 
 fn probe_store_facts(

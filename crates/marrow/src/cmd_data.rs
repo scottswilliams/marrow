@@ -6,8 +6,7 @@ use std::process::ExitCode;
 use marrow_check::CheckedProgram;
 use marrow_check::tooling::{
     StampedData, count_data_records, count_orphan_cells, data_roots_in_store, data_snapshot_stamp,
-    render_data_value, stamped_data_roots_in_store, verify_store_completeness,
-    verify_store_roots_against_lock, visit_data_records,
+    render_data_value, stamped_data_roots_in_store, verify_store_completeness, visit_data_records,
 };
 use marrow_store::StoreError;
 use marrow_store::tree::TreeStore;
@@ -253,13 +252,28 @@ fn report_store_error(error: StoreError, format: CheckFormat) -> ExitCode {
 /// while the lock records committed roots would silently report a clean empty set; the
 /// witness fails that total loss closed the same way `backup` does. `data integrity` and
 /// `data stats` read the lock once for their own passes and run the check inline.
+///
+/// A read-only inspection can race a writer re-creating a removed store, in which case the
+/// store presents fewer committed roots than the lock while the writer finishes; that window is
+/// the `store.locked` contract, not the rollback the witness guards. The shared recreation-race
+/// owner recognises it: the open already resolved the store (awaiting the file-absent gap itself),
+/// so here a present store whose baseline is still pending is left to the writer rather than
+/// condemned, while a genuine settled loss still fails closed.
 pub(super) fn verify_lock_roots_present(target: &DataReadTarget) -> Result<(), ExitCode> {
     if target.from_backup {
         return Ok(());
     }
     let lock = crate::read_committed_lock(&target.dir, target.format)?;
-    verify_store_roots_against_lock(target.store.as_ref(), lock.as_ref())
-        .map_err(|error| report_store_error(error, target.format))
+    match crate::verify_lock_roots_or_race(
+        target.store.as_ref(),
+        &target.dir,
+        None,
+        lock.as_ref(),
+        target.format,
+    )? {
+        crate::LockRootVerdict::Clean => Ok(()),
+        crate::LockRootVerdict::Lost(error) => Err(report_store_error(error, target.format)),
+    }
 }
 
 #[derive(Debug)]
@@ -423,15 +437,20 @@ fn data_recover(args: &[String]) -> ExitCode {
         Err(code) => return code,
     }) else {
         // An absent store while the lock still records committed roots is a total loss, not
-        // a clean nothing-to-recover: fail it closed with the same witness `backup` runs.
-        if let Err(error) = verify_store_roots_against_lock(None, lock.as_ref()) {
-            return report_store_error(error, format);
+        // a clean nothing-to-recover: fail it closed through the race-aware owner, which is
+        // silent when a writer is mid-re-creating the store.
+        match crate::verify_lock_roots_or_race(None, &dir, None, lock.as_ref(), format) {
+            Ok(crate::LockRootVerdict::Clean) => {}
+            Ok(crate::LockRootVerdict::Lost(error)) => return report_store_error(error, format),
+            Err(code) => return code,
         }
         return report_no_store_to_recover(&dir, None, format);
     };
     if store_path_is_absent(&path) {
-        if let Err(error) = verify_store_roots_against_lock(None, lock.as_ref()) {
-            return report_store_error(error, format);
+        match crate::verify_lock_roots_or_race(None, &dir, Some(&path), lock.as_ref(), format) {
+            Ok(crate::LockRootVerdict::Clean) => {}
+            Ok(crate::LockRootVerdict::Lost(error)) => return report_store_error(error, format),
+            Err(code) => return code,
         }
         return report_no_store_to_recover(&dir, Some(&path), format);
     }
@@ -442,14 +461,23 @@ fn data_recover(args: &[String]) -> ExitCode {
     // The probe is silent: a failed read-only store open or a failed check must not write
     // its own error envelope to the recover command's single structured-report object.
     let program = probe_checked_project(&dir, &config);
-    match recover_store(&path, program.as_ref(), lock.as_ref()) {
-        Ok(()) => report_recovered_store(&dir, &path, format),
-        Err(error) => report_store_error(error, format),
+    let store = match recover_store(&path, program.as_ref()) {
+        Ok(store) => store,
+        Err(error) => return report_store_error(error, format),
+    };
+    // The lock-root cross-check is the one witness that condemns a store re-created by a
+    // concurrent writer, which presents fewer committed roots than the lock while mid-creation.
+    // Route it through the single race-aware owner so a live re-creation is left to the writer
+    // rather than condemned: a settled rollback below the committed roots still fails closed.
+    match crate::verify_lock_roots_or_race(Some(&store), &dir, Some(&path), lock.as_ref(), format) {
+        Ok(crate::LockRootVerdict::Clean) => report_recovered_store(&dir, &path, format),
+        Ok(crate::LockRootVerdict::Lost(error)) => report_store_error(error, format),
+        Err(code) => code,
     }
 }
 
-/// Attempt a write-capable repair of the store at `path`, then prove the repair
-/// converged.
+/// Attempt a write-capable repair of the store at `path`, prove the repair converged, and
+/// return the reopened read-only handle so the caller can run the lock-root cross-check.
 ///
 /// The write-capable open replays an interrupted commit but does not traverse the
 /// data tree; a store damaged below its table roots opens cleanly and only faults
@@ -467,31 +495,28 @@ fn data_recover(args: &[String]) -> ExitCode {
 fn recover_store(
     path: &std::path::Path,
     program: Option<&CheckedProgram>,
-    lock: Option<&marrow_catalog::CatalogLock>,
-) -> Result<(), StoreError> {
+) -> Result<TreeStore, StoreError> {
     {
         let store = TreeStore::open_existing(path)?;
         store.verify_readable()?;
-        verify_store_recovered(&store, program, lock)?;
+        verify_store_recovered(&store, program)?;
     }
     let reopened = TreeStore::open_read_only(path).map_err(recovery_not_converged)?;
     reopened.verify_readable().map_err(recovery_not_converged)?;
-    verify_store_recovered(&reopened, program, lock).map_err(recovery_not_converged)?;
-    Ok(())
+    verify_store_recovered(&reopened, program).map_err(recovery_not_converged)?;
+    Ok(reopened)
 }
 
-/// Reject a store recovery left below its committed identity. The lock witness runs even
-/// when the source does not check, so a rollback to the empty store is never blessed; the
-/// data and index completeness cross-checks need the schema and run only when a checked
-/// program is available.
+/// Reject a store recovery whose data or index families did not converge. The cross-checks
+/// need the schema, so they run only when a checked program is available; the lock-root
+/// witness is a separate cross-check the caller runs through the race-aware owner.
 fn verify_store_recovered(
     store: &TreeStore,
     program: Option<&CheckedProgram>,
-    lock: Option<&marrow_catalog::CatalogLock>,
 ) -> Result<(), StoreError> {
     match program {
-        Some(program) => verify_store_completeness(store, program, lock),
-        None => verify_store_roots_against_lock(Some(store), lock),
+        Some(program) => verify_store_completeness(store, program),
+        None => Ok(()),
     }
 }
 
@@ -500,9 +525,16 @@ fn verify_store_recovered(
 /// re-open traversal faults, was not made readable: it is damaged beyond repair, not
 /// a clean recoverable store, so `store.recovery_required` would wrongly invite the
 /// developer to run recover again on a store recover cannot fix.
+///
+/// A concurrent writer re-creating the store can win the flock between the write-capable
+/// pass and this fresh read-only reopen, or remove the file outright; the reopen then fails
+/// `Locked` or `Io`, not because recovery left the store unreadable but because it raced a
+/// live writer. Those transient faults pass through as their own codes — the `store.locked`
+/// the flock settles, the `store.io` of a file in flux — never the corruption a genuine
+/// non-convergent repair earns.
 fn recovery_not_converged(error: StoreError) -> StoreError {
     match error {
-        StoreError::Corruption { .. } => error,
+        StoreError::Corruption { .. } | StoreError::Locked { .. } | StoreError::Io { .. } => error,
         _ => StoreError::Corruption {
             message: "the store could not be made readable by recovery".into(),
         },

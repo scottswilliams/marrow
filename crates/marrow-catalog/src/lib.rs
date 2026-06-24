@@ -310,6 +310,15 @@ impl CatalogLock {
         Ok(lock)
     }
 
+    /// Whether the lock records at least one active accepted root. A committed lock with no
+    /// active root has no durable baseline a store must project, so its absence over a store is
+    /// the first-run case, not a loss.
+    pub fn records_active_roots(&self) -> bool {
+        self.entries
+            .iter()
+            .any(|entry| entry.lifecycle == CatalogLifecycle::Active)
+    }
+
     fn canonical(&self) -> Self {
         let mut entries = self.entries.clone();
         entries.sort_by(|left, right| left.stable_id.cmp(&right.stable_id));

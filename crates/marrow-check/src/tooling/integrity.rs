@@ -925,25 +925,32 @@ fn collect_member_names(members: &[CheckedSavedMember], names: &mut HashMap<Stri
     }
 }
 
-/// Verify both store families are complete for a store the schema describes: every
-/// committed cell against its durable per-root structural digest, the committed catalog the
-/// store presents against the independent `marrow.lock` witness, and the derived index
+/// Verify the store's data and index families are complete for a store the schema describes:
+/// every committed cell against its durable per-root structural digest, and the derived index
 /// family by structural decode and re-descent ([`verify_index_readable`]) plus the
 /// cross-check below. `recover` and `backup` run this so they fail closed on a store whose
-/// cells were silently truncated or rewritten, whose committed roots were rolled back below
-/// the lock, or whose index-driven reads under-return, rather than blessing or archiving it.
+/// cells were silently truncated or rewritten, or whose index-driven reads under-return,
+/// rather than blessing or archiving it.
+///
+/// The committed-root cross-check against `marrow.lock` is a separate witness those callers
+/// run through the race-aware lock-root owner, so a writer mid-re-creating a removed store is
+/// recognised as a live race rather than condemned as a rollback.
 pub fn verify_store_completeness(
     store: &TreeStore,
     program: &CheckedProgram,
-    lock: Option<&marrow_catalog::CatalogLock>,
 ) -> Result<(), StoreError> {
-    verify_store_roots_against_lock(Some(store), lock)?;
     store.verify_structural_digests()?;
     store.verify_index_readable()?;
     verify_index_completeness(store, &checked_places(program))
 }
 
 /// Cross-check the catalog the store presents against the committed `marrow.lock`.
+///
+/// This is the bare, race-blind witness: a store mid-re-created by a concurrent writer
+/// transiently presents fewer committed roots than the lock, so this would condemn a healthy
+/// store as a rollback. Every CLI driver routes it through the binary's race-aware lock-root
+/// owner, the single caller that distinguishes the live re-creation race from a settled loss;
+/// no driver calls this directly.
 ///
 /// The per-root structural digest cannot witness a corruption that drops the anchor
 /// itself: a flip in the commit metadata region that rolls the store back to its empty
