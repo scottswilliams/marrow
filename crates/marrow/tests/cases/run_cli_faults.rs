@@ -118,13 +118,15 @@ fn read_only_inspection_of_a_data_dir_occupied_by_a_file_reports_a_directory_fau
     });
     let dir = root.to_str().unwrap();
 
-    // The read-only inspection family reports the occupied dataDir as the top-level
-    // `config.data_dir` fault, exactly as `run` does.
+    // The read-only inspection family and the write-capable `data recover` all report the
+    // occupied dataDir as the top-level `config.data_dir` fault, exactly as `run` does, never
+    // a `store.io` fault with a raw `ENOTDIR` errno.
     for args in [
         vec!["data", "stats", dir],
         vec!["data", "integrity", dir],
         vec!["data", "roots", dir],
         vec!["data", "dump", dir],
+        vec!["data", "recover", dir],
     ] {
         let (command, rest) = args.split_first().expect("command word");
         let output = marrow_sub(command, rest);

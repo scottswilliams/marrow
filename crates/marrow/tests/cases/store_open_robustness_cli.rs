@@ -370,6 +370,214 @@ fn a_total_drop_to_empty_is_caught_by_the_lock_root_witness() {
     }
 }
 
+/// Delete the seeded store file outright while leaving the committed `marrow.lock`, modelling
+/// a store the developer or a stray `rm` removed. The store path resolves absent, so the
+/// read-only inspections, doctor, and recover all short-circuit as a first run unless they
+/// consult the lock — which still records the dropped roots.
+fn delete_store_file(project: &Path) {
+    std::fs::remove_file(store_path(project)).expect("delete store file");
+}
+
+/// A store deleted from disk while its committed `marrow.lock` still records roots is the same
+/// loss as a rollback to empty carried to the limit: the durable file vanished but its
+/// committed identity remains. The path resolves absent, so without the lock witness every
+/// read-only inspection, `doctor`, and `recover` would bless it as a clean first run while
+/// `backup` fails it closed. All of them must agree with `backup` and report
+/// `store.corruption` rather than silently mask the loss.
+#[test]
+fn an_absent_store_with_a_committed_lock_is_caught_by_the_lock_root_witness() {
+    let (project, dir) = seeded_mutable_store("cli-store-absent-lock", 64);
+    let backup_target = project.join("absent.mw-backup");
+    let backup_target = backup_target
+        .to_str()
+        .expect("backup path utf8")
+        .to_string();
+    let deadline = std::time::Duration::from_secs(30);
+
+    delete_store_file(&project);
+
+    for command in [
+        ["data", "integrity", &dir].as_slice(),
+        ["data", "stats", &dir].as_slice(),
+        ["data", "roots", &dir].as_slice(),
+        ["data", "dump", &dir].as_slice(),
+        ["data", "get", &dir, "^notes"].as_slice(),
+        ["data", "get", &dir, "^notes(1)"].as_slice(),
+        ["backup", &dir, &backup_target].as_slice(),
+        ["data", "recover", &dir].as_slice(),
+    ] {
+        let output = marrow_bounded(command, deadline);
+        assert_no_panic_and_bounded(&output, command, 0);
+        assert_eq!(
+            output.status.code(),
+            Some(1),
+            "`marrow {}` blessed an absent store while the lock records committed roots: \
+             {output:?}",
+            command.join(" "),
+        );
+        assert_eq!(
+            stderr_code(&output),
+            "store.corruption",
+            "`marrow {}` must report store.corruption on a deleted store with a committed lock: \
+             {output:?}",
+            command.join(" "),
+        );
+    }
+
+    let doctor = marrow(&["doctor", &dir, "--format", "json"]);
+    assert_eq!(
+        doctor.status.code(),
+        Some(1),
+        "doctor blessed an absent store while the lock records committed roots: {doctor:?}",
+    );
+    let report: serde_json::Value =
+        serde_json::from_slice(&doctor.stdout).expect("doctor json report");
+    let findings = report["findings"].as_array().expect("findings array");
+    assert!(
+        findings
+            .iter()
+            .any(|finding| finding["data"]["underlying_code"] == "store.corruption"),
+        "doctor must report the deleted store with a committed lock as store.corruption: {report}"
+    );
+}
+
+/// A genuine first run with neither a committed lock nor a store has no recorded baseline to
+/// contradict, so the lock-root witness must not fire: every read-only inspection, `doctor`,
+/// and `recover` stay a clean rc0 first run. This is the separate missing-lock carve-out the
+/// corruption verdict must never swallow.
+#[test]
+fn a_true_first_run_with_no_lock_and_no_store_stays_clean() {
+    let project = native_project("cli-store-first-run");
+    let dir = project.to_str().expect("dir utf8").to_string();
+    assert!(
+        !project.join("marrow.lock").exists(),
+        "an unrun project has no committed lock",
+    );
+    assert!(
+        !store_path(&project).exists(),
+        "an unrun project has no store file",
+    );
+
+    for command in [
+        ["data", "integrity", &dir].as_slice(),
+        ["data", "stats", &dir].as_slice(),
+        ["data", "roots", &dir].as_slice(),
+        ["data", "dump", &dir].as_slice(),
+        ["data", "get", &dir, "^counter"].as_slice(),
+        ["data", "recover", &dir].as_slice(),
+    ] {
+        let output = marrow(command);
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "`marrow {}` must stay a clean first run with no lock and no store: {output:?}",
+            command.join(" "),
+        );
+    }
+    assert_eq!(
+        marrow(&["doctor", &dir]).status.code(),
+        Some(0),
+        "doctor must report a clean first run with no lock and no store",
+    );
+}
+
+/// Seed sources declaring `^notes` and, optionally, a second `^memos` root. A project built
+/// with both roots commits a lock recording both; one built with only `^notes` commits a store
+/// presenting only that root. Swapping the single-root store under the two-root lock models a
+/// partial rollback that dropped one committed root while leaving the other intact.
+fn two_root_source(with_memos: bool) -> String {
+    let memos = if with_memos {
+        "store ^memos(id: int): Note\n\
+         \n\
+         pub fn seed_memos()\n\
+         \x20\x20\x20\x20transaction\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20var n: Note\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20n.title = \"a memo title\"\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20n.body = \"the body text of this memo, long enough to span a cell\"\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20^memos(1) = n\n"
+    } else {
+        ""
+    };
+    format!(
+        "module app\n\
+         \n\
+         resource Note\n\
+         \x20\x20\x20\x20required title: string\n\
+         \x20\x20\x20\x20required body: string\n\
+         store ^notes(id: int): Note\n\
+         {memos}\n\
+         pub fn seed()\n\
+         \x20\x20\x20\x20transaction\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20var n: Note\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20n.title = \"a note title\"\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20n.body = \"the body text of this note, long enough to span a cell\"\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20^notes(1) = n\n"
+    )
+}
+
+/// A store rolled back below one of the roots its committed `marrow.lock` records — here a store
+/// presenting only `^notes` swapped under a lock that committed both `^notes` and `^memos` — is a
+/// partial durable loss, not a clean absent read. The loss makes the whole store corrupt, so
+/// `data get` fails closed under `store.corruption` whether it reads the dropped `^memos` root or
+/// the surviving `^notes`, never reporting a query against the rolled-back store as a benign
+/// absence — the same verdict its inspection siblings reach on this store.
+#[test]
+fn a_partial_root_loss_get_is_caught_by_the_lock_root_witness() {
+    let two_root = temp_project_uncommitted("cli-store-partial-loss-both", |root| {
+        write(root, "marrow.json", native_config());
+        write(root, "src/app.mw", &two_root_source(true));
+    });
+    let two_root_dir = two_root.to_str().expect("two-root dir utf8").to_string();
+    for entry in ["app::seed", "app::seed_memos"] {
+        assert_eq!(
+            marrow(&["run", "--entry", entry, &two_root_dir])
+                .status
+                .code(),
+            Some(0),
+            "seed both roots so the lock commits ^notes and ^memos",
+        );
+    }
+
+    let single_root = temp_project_uncommitted("cli-store-partial-loss-notes", |root| {
+        write(root, "marrow.json", native_config());
+        write(root, "src/app.mw", &two_root_source(false));
+    });
+    let single_root_dir = single_root
+        .to_str()
+        .expect("single-root dir utf8")
+        .to_string();
+    assert_eq!(
+        marrow(&["run", "--entry", "app::seed", &single_root_dir])
+            .status
+            .code(),
+        Some(0),
+        "seed a store presenting only ^notes",
+    );
+
+    // Drop ^memos by swapping the single-root store under the two-root lock. The lock still
+    // records both committed roots; the store now presents only ^notes.
+    std::fs::copy(store_path(&single_root), store_path(&two_root))
+        .expect("swap the single-root store under the two-root lock");
+
+    let deadline = std::time::Duration::from_secs(30);
+    for path in ["^memos", "^notes(1)"] {
+        let command = ["data", "get", &two_root_dir, path];
+        let output = marrow_bounded(&command, deadline);
+        assert_no_panic_and_bounded(&output, &command, 0);
+        assert_eq!(
+            output.status.code(),
+            Some(1),
+            "`data get {path}` blessed a store rolled back below a committed root: {output:?}",
+        );
+        assert_eq!(
+            stderr_code(&output),
+            "store.corruption",
+            "`data get {path}` over a partially rolled-back store must report store.corruption: \
+             {output:?}",
+        );
+    }
+}
+
 /// A healthy store backs up and restores into a fresh project, and the restored store
 /// re-verifies clean reporting the same record count: the structural digest and the
 /// lock-root witness both survive the round-trip.

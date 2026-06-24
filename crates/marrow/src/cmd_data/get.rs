@@ -22,11 +22,18 @@ pub(super) fn data_get(args: &[String]) -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    let super::DataReadTarget { program, store, .. } =
-        match super::load_data_read_target(dir, format, backup) {
-            Ok(target) => target,
-            Err(code) => return code,
-        };
+    let target = match super::load_data_read_target(dir, format, backup) {
+        Ok(target) => target,
+        Err(code) => return code,
+    };
+    // A store absent or rolled back below the roots its committed `marrow.lock` records is a
+    // total or partial loss, not a clean absent read. Fail it closed under the store code before
+    // the path resolution can report a missing root value as a benign absence; a backup mount is
+    // self-contained, so the witness carves it out.
+    if let Err(code) = super::verify_lock_roots_present(&target) {
+        return code;
+    }
+    let super::DataReadTarget { program, store, .. } = target;
     super::warn_on_hidden_orphans(&program, &store);
     let path = match resolve_source_text_data_path(&program, &parsed_segments) {
         Ok(Some(path)) => path,

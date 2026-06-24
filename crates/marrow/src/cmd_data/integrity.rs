@@ -1,9 +1,7 @@
 use std::io;
 use std::process::ExitCode;
 
-use marrow_check::tooling::{
-    count_integrity_problems, verify_store_roots_against_lock, visit_integrity_problems,
-};
+use marrow_check::tooling::{count_integrity_problems, visit_integrity_problems};
 use marrow_store::StoreError;
 use marrow_store::tree::TreeStore;
 use serde_json::json;
@@ -11,37 +9,34 @@ use serde_json::json;
 use crate::{CheckFormat, write_json};
 
 pub(super) fn data_integrity(args: &[String]) -> ExitCode {
+    let target = match super::load_data_read_target_from_args("data integrity", args) {
+        Ok(target) => target,
+        Err(code) => return code,
+    };
+    // The committed lock is the independent witness for a store rolled back below its
+    // committed roots, which the in-store anchors cannot see once they roll back with the
+    // data. Cross-check it before the family passes so a total drop — including an absent
+    // store while the lock records committed roots — fails closed rather than verifying
+    // vacuously. A backup mount is self-contained, so its inspection ignores the live lock.
+    if let Err(code) = super::verify_lock_roots_present(&target) {
+        return code;
+    }
     let super::DataReadTarget {
         dir,
         format,
         program,
         store,
-    } = match super::load_data_read_target_from_args("data integrity", args) {
-        Ok(target) => target,
-        Err(code) => return code,
-    };
+        from_backup: _,
+    } = target;
     let _snapshot = match super::pin_snapshot(&store, format) {
         Ok(snapshot) => snapshot,
         Err(code) => return code,
     };
-    // The committed lock is the independent witness for a store rolled back below its
-    // committed roots, which the in-store anchors cannot see once they roll back with the
-    // data. Read it once and cross-check before the family passes so a total-drop fails
-    // closed rather than verifying vacuously.
-    let lock = match crate::read_committed_lock(&dir, format) {
-        Ok(lock) => lock,
-        Err(code) => return code,
-    };
     let (cells, problems) = match &store {
-        Some(store) => {
-            if let Err(error) = verify_store_roots_against_lock(store, lock.as_ref()) {
-                return super::report_store_error(error, format);
-            }
-            match count_integrity_problems(store, &program) {
-                Ok((cells, problems)) => (cells, problems),
-                Err(error) => return super::report_store_error(error, format),
-            }
-        }
+        Some(store) => match count_integrity_problems(store, &program) {
+            Ok((cells, problems)) => (cells, problems),
+            Err(error) => return super::report_store_error(error, format),
+        },
         None => (0, 0),
     };
     let store_snapshot = match (&store, format) {

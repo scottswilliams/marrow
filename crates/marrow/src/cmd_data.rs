@@ -65,11 +65,16 @@ struct DataReadArgs {
     backup: Option<String>,
 }
 
-struct DataReadTarget {
+pub(super) struct DataReadTarget {
     dir: String,
     format: CheckFormat,
     program: CheckedProgram,
     store: Option<TreeStore>,
+    /// Whether `store` is a mounted backup artifact rather than the project's live store. The
+    /// committed `marrow.lock` records the live store's roots, so its rollback witness applies
+    /// only to the live store; a backup mount is self-contained and is inspected regardless of
+    /// the live lock's state.
+    from_backup: bool,
 }
 
 fn one_positional_with_format_and_backup(
@@ -201,6 +206,7 @@ fn load_data_read_target(
             format,
             program,
             store: Some(store),
+            from_backup: true,
         });
     }
 
@@ -211,6 +217,7 @@ fn load_data_read_target(
         format,
         program,
         store,
+        from_backup: false,
     })
 }
 
@@ -239,6 +246,20 @@ pub(super) fn warn_on_hidden_orphans(program: &CheckedProgram, store: &Option<Tr
 fn report_store_error(error: StoreError, format: CheckFormat) -> ExitCode {
     report_simple_error(error.code(), &error.to_string(), format);
     ExitCode::FAILURE
+}
+
+/// Cross-check the saved roots against the committed `marrow.lock` before reporting them.
+/// `data roots` and `data dump` enumerate only what the store presents, so an absent store
+/// while the lock records committed roots would silently report a clean empty set; the
+/// witness fails that total loss closed the same way `backup` does. `data integrity` and
+/// `data stats` read the lock once for their own passes and run the check inline.
+pub(super) fn verify_lock_roots_present(target: &DataReadTarget) -> Result<(), ExitCode> {
+    if target.from_backup {
+        return Ok(());
+    }
+    let lock = crate::read_committed_lock(&target.dir, target.format)?;
+    verify_store_roots_against_lock(target.store.as_ref(), lock.as_ref())
+        .map_err(|error| report_store_error(error, target.format))
 }
 
 #[derive(Debug)]
@@ -383,13 +404,35 @@ fn data_recover(args: &[String]) -> ExitCode {
         Ok(config) => config,
         Err(code) => return code,
     };
+    // A `dataDir` occupied by a non-directory is the same configuration fault `run` and the
+    // read-only inspections classify, so recover guards it first rather than letting the
+    // store open leak a raw `ENOTDIR` as a `store.io` fault.
+    if let Err(error) = marrow_check::guard_data_dir(std::path::Path::new(&dir), &config) {
+        report_simple_error(error.code(), &error.message(), format);
+        return ExitCode::FAILURE;
+    }
+    // The committed lock is the independent witness for a store rolled back below its
+    // committed roots; probe it silently like the schema so a missing or unreadable lock
+    // never blocks a store-level repair, but a present lock fails recovery closed on a
+    // store that lost roots it committed.
+    let lock = marrow_check::read_committed_lock(std::path::Path::new(&dir))
+        .ok()
+        .flatten();
     let Some(path) = (match native_store_path(&dir, &config, format) {
         Ok(path) => path,
         Err(code) => return code,
     }) else {
+        // An absent store while the lock still records committed roots is a total loss, not
+        // a clean nothing-to-recover: fail it closed with the same witness `backup` runs.
+        if let Err(error) = verify_store_roots_against_lock(None, lock.as_ref()) {
+            return report_store_error(error, format);
+        }
         return report_no_store_to_recover(&dir, None, format);
     };
     if store_path_is_absent(&path) {
+        if let Err(error) = verify_store_roots_against_lock(None, lock.as_ref()) {
+            return report_store_error(error, format);
+        }
         return report_no_store_to_recover(&dir, Some(&path), format);
     }
     // Recover is the repair path for a store read-only commands refuse, so it must not
@@ -399,13 +442,6 @@ fn data_recover(args: &[String]) -> ExitCode {
     // The probe is silent: a failed read-only store open or a failed check must not write
     // its own error envelope to the recover command's single structured-report object.
     let program = probe_checked_project(&dir, &config);
-    // The committed lock is the independent witness for a store rolled back below its
-    // committed roots; probe it silently like the schema so a missing or unreadable lock
-    // never blocks a store-level repair, but a present lock fails recovery closed on a
-    // store that lost roots it committed.
-    let lock = marrow_check::read_committed_lock(std::path::Path::new(&dir))
-        .ok()
-        .flatten();
     match recover_store(&path, program.as_ref(), lock.as_ref()) {
         Ok(()) => report_recovered_store(&dir, &path, format),
         Err(error) => report_store_error(error, format),
@@ -455,7 +491,7 @@ fn verify_store_recovered(
 ) -> Result<(), StoreError> {
     match program {
         Some(program) => verify_store_completeness(store, program, lock),
-        None => verify_store_roots_against_lock(store, lock),
+        None => verify_store_roots_against_lock(Some(store), lock),
     }
 }
 
@@ -509,15 +545,20 @@ fn report_recovered_store(dir: &str, path: &std::path::Path, format: CheckFormat
 }
 
 fn data_roots(args: &[String]) -> ExitCode {
+    let target = match load_data_read_target_from_args("data roots", args) {
+        Ok(target) => target,
+        Err(code) => return code,
+    };
+    if let Err(code) = verify_lock_roots_present(&target) {
+        return code;
+    }
     let DataReadTarget {
         dir,
         format,
         program,
         store,
-    } = match load_data_read_target_from_args("data roots", args) {
-        Ok(target) => target,
-        Err(code) => return code,
-    };
+        from_backup: _,
+    } = target;
     let (roots, store_snapshot) = match &store {
         Some(store) => match stamped_data_roots_in_store(&program, store) {
             Ok(StampedData { data, stamp }) => (data, Some(stamp)),
@@ -552,34 +593,33 @@ fn data_roots(args: &[String]) -> ExitCode {
 }
 
 fn data_stats(args: &[String]) -> ExitCode {
+    let target = match load_data_read_target_from_args("data stats", args) {
+        Ok(target) => target,
+        Err(code) => return code,
+    };
+    // A store silently truncated or rewritten by a damaged page, or rolled back below its
+    // committed roots, would otherwise report a confidently wrong count. Cross-check the
+    // committed-lock root witness, then the per-root structural digests, before presenting
+    // any number. An absent store while the lock records committed roots is a total loss,
+    // not a clean zero count.
+    if let Err(code) = verify_lock_roots_present(&target) {
+        return code;
+    }
     let DataReadTarget {
         dir,
         format,
         program,
         store,
-    } = match load_data_read_target_from_args("data stats", args) {
-        Ok(target) => target,
-        Err(code) => return code,
-    };
+        from_backup: _,
+    } = target;
     // One snapshot spans every pass, so the root, entity, and cell counts describe the
     // same coherent version of the store.
     let _snapshot = match pin_snapshot(&store, format) {
         Ok(snapshot) => snapshot,
         Err(code) => return code,
     };
-    // A store silently truncated or rewritten by a damaged page, or rolled back below its
-    // committed roots, would otherwise report a confidently wrong count. Cross-check the
-    // per-root structural digests and the committed-lock root witness before presenting any
-    // number.
-    let lock = match crate::read_committed_lock(&dir, format) {
-        Ok(lock) => lock,
-        Err(code) => return code,
-    };
     let (roots, records, cells) = match &store {
         Some(store) => {
-            if let Err(error) = verify_store_roots_against_lock(store, lock.as_ref()) {
-                return report_store_error(error, format);
-            }
             if let Err(error) = store.verify_structural_digests() {
                 return report_store_error(error, format);
             }
@@ -631,15 +671,20 @@ fn data_stats(args: &[String]) -> ExitCode {
 }
 
 fn data_dump(args: &[String]) -> ExitCode {
+    let target = match load_data_read_target_from_args("data dump", args) {
+        Ok(target) => target,
+        Err(code) => return code,
+    };
+    if let Err(code) = verify_lock_roots_present(&target) {
+        return code;
+    }
     let DataReadTarget {
         dir,
         format,
         program,
         store,
-    } = match load_data_read_target_from_args("data dump", args) {
-        Ok(target) => target,
-        Err(code) => return code,
-    };
+        from_backup: _,
+    } = target;
     // One snapshot spans the count and the dump traversal, so the emitted cells
     // and the trailing count describe the same coherent version of the store.
     let _snapshot = match pin_snapshot(&store, format) {

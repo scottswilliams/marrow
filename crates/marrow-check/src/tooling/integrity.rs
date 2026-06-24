@@ -937,7 +937,7 @@ pub fn verify_store_completeness(
     program: &CheckedProgram,
     lock: Option<&marrow_catalog::CatalogLock>,
 ) -> Result<(), StoreError> {
-    verify_store_roots_against_lock(store, lock)?;
+    verify_store_roots_against_lock(Some(store), lock)?;
     store.verify_structural_digests()?;
     store.verify_index_readable()?;
     verify_index_completeness(store, &checked_places(program))
@@ -948,19 +948,21 @@ pub fn verify_store_completeness(
 /// The per-root structural digest cannot witness a corruption that drops the anchor
 /// itself: a flip in the commit metadata region that rolls the store back to its empty
 /// initial state presents zero records and zero anchors, so the anchor pass visits nothing
-/// and passes vacuously. The independent witness is the lock, a separate durable file that
-/// records the committed accepted roots. Every active accepted root the lock records must
-/// still be present in the catalog the store presents; a store that presents fewer roots
-/// than the lock committed has lost durable identity to a rollback, failed closed as
-/// corruption.
+/// and passes vacuously. A store that is wholly absent on disk while its lock still records
+/// committed roots is the same loss carried to the limit: the durable file vanished entirely
+/// but its committed identity remains. The independent witness is the lock, a separate
+/// durable file that records the committed accepted roots. Every active accepted root the
+/// lock records must still be present in the catalog the store presents; a store that
+/// presents fewer roots than the lock committed — including an absent store presenting none —
+/// has lost durable identity to a rollback or deletion, failed closed as corruption.
 ///
 /// The check keys on the accepted-root set, not the epoch number, so a store legitimately
 /// behind an ahead lock (a teammate's committed activation seeded into a fresh checkout)
-/// still carries the same active roots and passes. When no committed lock exists the store
-/// has no recorded baseline to contradict, which is the separate missing-lock case left to
-/// the caller, not a corruption.
+/// still carries the same active roots and passes. When no committed lock exists, or it
+/// records no active roots, there is no recorded baseline to contradict, which is the
+/// separate missing-lock and genuine first-run case, not a corruption.
 pub fn verify_store_roots_against_lock(
-    store: &TreeStore,
+    store: Option<&TreeStore>,
     lock: Option<&marrow_catalog::CatalogLock>,
 ) -> Result<(), StoreError> {
     let Some(lock) = lock else {
@@ -975,17 +977,19 @@ pub fn verify_store_roots_against_lock(
     if committed_roots.peek().is_none() {
         return Ok(());
     }
-    let presented: HashSet<(CatalogEntryKind, String)> = store
-        .read_catalog_snapshot()?
-        .map(|snapshot| {
-            snapshot
-                .entries
-                .iter()
-                .filter(|entry| entry.lifecycle == CatalogLifecycle::Active)
-                .map(|entry| (entry.kind, entry.path.clone()))
-                .collect::<HashSet<_>>()
-        })
-        .unwrap_or_default();
+    let presented: HashSet<(CatalogEntryKind, String)> = match store {
+        Some(store) => store.read_catalog_snapshot()?,
+        None => None,
+    }
+    .map(|snapshot| {
+        snapshot
+            .entries
+            .iter()
+            .filter(|entry| entry.lifecycle == CatalogLifecycle::Active)
+            .map(|entry| (entry.kind, entry.path.clone()))
+            .collect::<HashSet<_>>()
+    })
+    .unwrap_or_default();
     if committed_roots.any(|(kind, path)| !presented.contains(&(kind, path.to_string()))) {
         return Err(StoreError::Corruption {
             message: "the store presents fewer committed roots than its lock recorded".into(),

@@ -112,7 +112,9 @@ fn seeded_project(name: &str) -> (TempProject, PathBuf) {
 /// Empty a project's saved data before a restore, leaving a truly empty store. Removing
 /// the store data dir removes the crash-bridge catalog rows too; restore replays the
 /// catalog rows the backup carries, so the target needs no re-established baseline and
-/// binds the backup's own accepted identity.
+/// binds the backup's own accepted identity. The committed `marrow.lock` is left untouched:
+/// callers that model a full first-run loss remove it explicitly, and the epoch-mismatch
+/// refusal tests rely on the advanced lock remaining as the project reference.
 fn empty_store_data(_root: &Path, data_dir: &Path) {
     fs::remove_dir_all(data_dir).expect("remove store data");
 }
@@ -759,13 +761,13 @@ fn backup_then_restore_round_trips_saved_data() {
     assert_eq!(backup.status.code(), Some(0), "backup: {backup:?}");
     assert!(archive.exists(), "backup wrote the archive file");
 
-    // Empty the store: same source and catalog, no saved data.
+    // Empty the store: same source and catalog, no saved data. The committed lock still
+    // records the dropped root, so this is the store-presents-fewer-roots loss the read-only
+    // witness fails closed; restore is the path that re-establishes the store from the backup.
     empty_store_data(&root, &data_dir);
-    let roots = marrow(&["data", "roots", "--format", "json", &dir]);
-    assert_eq!(
-        support::json(roots.stdout)["roots"],
-        serde_json::json!([]),
-        "store is empty before restore"
+    assert!(
+        !data_dir.join("marrow.redb").exists(),
+        "the store file is gone before restore",
     );
 
     let restore = marrow(&["restore", &dir, &archive_arg]);

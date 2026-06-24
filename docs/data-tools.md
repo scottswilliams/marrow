@@ -309,13 +309,17 @@ archives nor blesses a truncated or tampered store.
 
 The anchor cannot witness a rollback that drops the anchor itself. The committed
 `marrow.lock` is the second, independent witness: it records the accepted catalog
-roots, so a store that presents fewer roots than its lock committed has lost data
-to a rollback and is reported as `store.corruption`. `data integrity`, `data
-stats`, `backup`, and `data recover` all run this lock-root cross-check, so none
-blesses, counts, archives, or repairs a store that rolled back below its committed
+roots, so a store that presents fewer roots than its lock committed — including a
+store deleted from disk while its lock survives — has lost data to a rollback or
+deletion and is reported as `store.corruption`. Every read-only inspection (`data
+integrity`, `data stats`, `data roots`, `data dump`, `data get`), `doctor`,
+`backup`, and `data recover` all run this lock-root cross-check, so none blesses,
+counts, reads, archives, or repairs a store that rolled back below its committed
 roots. The check keys on the root set, not the epoch, so a store legitimately
-behind an ahead lock still passes, and a project with no committed lock is the
-separate missing-lock case rather than corruption.
+behind an ahead lock still passes, and a project with no committed lock — a
+genuine first run — is the separate missing-lock case rather than corruption. A
+backup mounted with `--backup` is self-contained and is inspected regardless of
+the live project's lock.
 
 Catalog state is not store corruption. A saved root or member whose durable
 identity is still pending is treated as absent until a run or evolution apply

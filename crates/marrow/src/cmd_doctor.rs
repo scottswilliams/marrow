@@ -5,7 +5,9 @@ use std::process::ExitCode;
 
 use marrow_catalog::{CatalogLifecycle, CatalogLock, CatalogMetadata, LockEntry};
 use marrow_check::ProjectIoError;
-use marrow_check::tooling::{IntegritySample, sample_integrity_problems};
+use marrow_check::tooling::{
+    IntegritySample, sample_integrity_problems, verify_store_roots_against_lock,
+};
 use marrow_run::evolution::{FenceError, current_engine_profile, fence};
 use marrow_store::StoreError;
 use marrow_store::tree::{CommitMetadata, TreeStore};
@@ -86,6 +88,13 @@ fn run_doctor(dir: &str, format: CheckFormat) -> ExitCode {
         Some(config) => probe_check(root, dir, config, accepted.as_ref(), lock, &mut findings),
         None => None,
     };
+    // The lock-root witness runs whether or not a store snapshot is present: a readable store
+    // rolled back below its committed roots, or an absent store while the lock records committed
+    // roots, has lost durable identity. An unreadable store (locked, recovery-required, or hard
+    // corrupt) already carries its own finding and is not also charged this loss.
+    if store.is_some() || store_is_genuinely_absent(root, config.as_ref()) {
+        probe_lock_root_witness(dir, store.as_ref(), lock, &mut findings);
+    }
     let store_report = store.as_ref().map(|store| {
         probe_store_facts(
             dir,
@@ -315,6 +324,39 @@ fn probe_store_open(
             ));
             None
         }
+    }
+}
+
+/// Whether the configured native store path is genuinely absent on disk — a true first run
+/// with no saved data yet, as opposed to a present-but-unreadable store that already carries
+/// its own finding. A `dataDir` occupied by a non-directory, a missing config, or any path
+/// resolution fault is not a clean absence and is left to the store-open probe.
+fn store_is_genuinely_absent(root: &Path, config: Option<&marrow_project::ProjectConfig>) -> bool {
+    let Some(config) = config else {
+        return false;
+    };
+    if marrow_check::guard_data_dir(root, config).is_err() {
+        return false;
+    }
+    match marrow_check::native_store_path(root, config) {
+        Ok(Some(path)) => store_path_is_absent(&path),
+        Ok(None) | Err(_) => false,
+    }
+}
+
+/// Run the committed-lock root witness over the store snapshot doctor sees. A store presenting
+/// fewer committed roots than the lock recorded — including a wholly absent store — has lost
+/// durable identity to a rollback or deletion; doctor surfaces it as `doctor.store_unavailable`
+/// carrying the underlying `store.corruption` code, the same verdict `backup` and `data recover`
+/// reach, so a CI doctor never blesses a store the write paths reject.
+fn probe_lock_root_witness(
+    dir: &str,
+    store: Option<&TreeStore>,
+    lock: Option<&CatalogLock>,
+    findings: &mut Vec<Finding>,
+) {
+    if let Err(error) = verify_store_roots_against_lock(store, lock) {
+        findings.push(store_fact_error(dir, "committed roots", error));
     }
 }
 
