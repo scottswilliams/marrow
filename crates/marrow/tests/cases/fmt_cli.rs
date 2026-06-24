@@ -742,6 +742,50 @@ fn fmt_of_a_bare_directory_requires_check_or_write() {
     assert_eq!(output.status.code(), Some(2), "{output:?}");
 }
 
+#[cfg(unix)]
+#[test]
+fn fmt_on_a_fifo_argument_fails_closed_in_bounded_time() {
+    // A writer-less FIFO read never returns, so `fmt` must reject a non-regular
+    // single-file argument before the blocking read. The whole command runs under
+    // a perl alarm: a return at all proves the read did not hang (rc 142 would be
+    // the alarm killing a hang).
+    let dir = support::temp_dir("fmt-fifo");
+    let fifo = dir.join("pipe.mw");
+    let made = Command::new("mkfifo")
+        .arg(&fifo)
+        .status()
+        .expect("invoke mkfifo");
+    assert!(made.success(), "mkfifo failed: {made:?}");
+
+    let output = Command::new("perl")
+        .args(["-e", "alarm shift @ARGV; exec @ARGV", "12"])
+        .arg(env!("CARGO_BIN_EXE_marrow"))
+        .args(["fmt", fifo.to_str().unwrap()])
+        .output()
+        .expect("run marrow fmt on a fifo under an alarm");
+
+    assert_ne!(
+        output.status.code(),
+        None,
+        "fmt on a fifo hung past the alarm (killed by signal): {output:?}"
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "fmt on a non-regular file must fail closed: {output:?}"
+    );
+    assert!(
+        fmt_reports_code(&output.stderr, "io.read"),
+        "fmt on a fifo must report a typed error: {:?}",
+        output.stderr
+    );
+    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+    assert!(
+        stderr.contains(fifo.to_str().unwrap()),
+        "the typed error must locate the rejected path: {stderr}"
+    );
+}
+
 #[test]
 fn fmt_rejects_stdin_dash_cleanly() {
     let output = run_fmt(&["-"]);

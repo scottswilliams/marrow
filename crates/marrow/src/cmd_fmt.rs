@@ -74,6 +74,10 @@ place. `marrow fmt` does not read from stdin.
     if Path::new(&target).is_dir() {
         return fmt_project_dir(&target, mode);
     }
+    if let Err(error) = guard_regular_source_file(Path::new(&target)) {
+        report_io_error(&target, &error, CheckFormat::Text);
+        return ExitCode::FAILURE;
+    }
     let source = match std::fs::read_to_string(&target) {
         Ok(source) => source,
         Err(error) => {
@@ -84,6 +88,21 @@ place. `marrow fmt` does not read from stdin.
     match fmt_one(&target, &source, mode) {
         Ok(FmtOutcome::Formatted) | Ok(FmtOutcome::Unchanged) => ExitCode::SUCCESS,
         Ok(FmtOutcome::NeedsFormatting) | Err(()) => ExitCode::FAILURE,
+    }
+}
+
+/// Reject an explicit single-file argument that resolves to an existing non-regular
+/// file before the unbounded blocking read. A FIFO with no writer never returns, and
+/// a socket or device cannot be a source body, so a non-regular target fails closed
+/// promptly with an `io.read` error located at the path. A missing path is left to the
+/// read, which surfaces its own not-found error.
+fn guard_regular_source_file(path: &Path) -> io::Result<()> {
+    match fs::metadata(path) {
+        Ok(metadata) if !metadata.file_type().is_file() => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "not a regular file",
+        )),
+        _ => Ok(()),
     }
 }
 
