@@ -3572,6 +3572,58 @@ pub fn seed()
     }
 
     #[test]
+    fn client_ts_update_body_is_sparse_with_optional_fields() {
+        let (program, _runtime) = checked_surface_program(SURFACE_UPDATE_WITH_ENUM_IDENTITY_INDEX);
+        let abi = SurfaceAbiJson::from_program(&program);
+        let manifest = SurfaceRouteManifestJson::from_abi(&abi);
+
+        let client = render_typescript_client(&abi, &manifest).expect("typescript client renders");
+
+        // The server applies a non-empty field patch and preserves omitted fields, so each updatable
+        // field is an optional body key and a partial update type-checks without the other fields.
+        assert!(
+            client.contains("export type BooksUpdateBody = {"),
+            "update body type must be generated: {client}"
+        );
+        assert!(
+            client.contains("status?:"),
+            "update body status field must be optional: {client}"
+        );
+        assert!(
+            client.contains("author?:"),
+            "update body author field must be optional: {client}"
+        );
+        // The serializer emits only the fields the caller provided, never an unconditional all-fields
+        // body that would force a whole-record read-modify-write.
+        assert!(
+            client.contains(r#"body["status"] !== undefined"#),
+            "update serializer must include a field only when present: {client}"
+        );
+        assert!(
+            client.contains(r#"body["author"] !== undefined"#),
+            "update serializer must include a field only when present: {client}"
+        );
+    }
+
+    #[test]
+    fn client_ts_singleton_update_body_is_sparse_with_optional_fields() {
+        let (program, _runtime) = checked_surface_program(SINGLETON_UPDATE_SURFACE);
+        let abi = SurfaceAbiJson::from_program(&program);
+        let manifest = SurfaceRouteManifestJson::from_abi(&abi);
+
+        let client = render_typescript_client(&abi, &manifest).expect("typescript client renders");
+
+        assert!(
+            client.contains("export type SettingsSurfaceUpdateBody = {\n  mode?:"),
+            "singleton update body field must be optional: {client}"
+        );
+        assert!(
+            client.contains(r#"body["mode"] !== undefined"#),
+            "singleton update serializer must include a field only when present: {client}"
+        );
+    }
+
+    #[test]
     fn client_ts_encodes_enum_and_identity_index_keys_in_the_request_shape() {
         let (program, _runtime) = checked_surface_program(SURFACE_WITH_ENUM_IDENTITY_INDEX);
         let abi = SurfaceAbiJson::from_program(&program);

@@ -123,6 +123,9 @@ pub(super) struct SurfaceClientRecord {
 pub(super) struct SurfaceRecordField {
     pub label: String,
     pub required: bool,
+    /// Whether the field is an optional body key (`label?: T`). Sparse update bodies set this so a
+    /// caller can omit any field; read records and exact-body create records leave it false.
+    pub optional: bool,
     pub ty: SurfaceFieldType,
     /// The stable catalog id this field decodes against: the projection/resource member id. The
     /// synthetic identity `id` field carries no member id; it decodes from the record identity.
@@ -601,7 +604,7 @@ impl ModelBuilder {
         let brand = self.store_brand(&create.store_catalog_id);
         let body_type = format!("{surface_name}CreateBody");
         let fields = self.create_fields(&create.fields, enums);
-        let body = self.body_record(&body_type, &fields);
+        let body = self.body_record(&body_type, &fields, false);
         let input = if create_is_singleton(create) {
             SurfaceMethodInput::SingletonCreate {
                 body_type: body_type.clone(),
@@ -645,7 +648,7 @@ impl ModelBuilder {
                 ty: self.value_type(&field.value, enums),
             })
             .collect::<Vec<_>>();
-        let body = self.body_record(&body_type, &fields);
+        let body = self.body_record(&body_type, &fields, true);
         let input = if matches!(
             update.kind,
             super::SurfaceUpdateOperationKindJson::SingletonUpdate
@@ -669,9 +672,16 @@ impl ModelBuilder {
         (method, body)
     }
 
-    /// The input record a create/update method binds: one required field per write plan, keyed by
-    /// render label. Write bodies are input-only, so the fields carry no decode member id.
-    fn body_record(&self, body_type: &str, fields: &[CreateFieldPlan]) -> SurfaceClientRecord {
+    /// The input record a create/update method binds: one field per write plan, keyed by render
+    /// label. A create body takes the exact declared body, so every field is required; a sparse
+    /// update body lets the caller omit any field, so every field is an optional key. Write bodies
+    /// are input-only, so the fields carry no decode member id.
+    fn body_record(
+        &self,
+        body_type: &str,
+        fields: &[CreateFieldPlan],
+        optional: bool,
+    ) -> SurfaceClientRecord {
         SurfaceClientRecord {
             type_name: body_type.into(),
             fields: fields
@@ -679,6 +689,7 @@ impl ModelBuilder {
                 .map(|field| SurfaceRecordField {
                     label: field.label.clone(),
                     required: true,
+                    optional,
                     ty: field.ty.clone(),
                     member_catalog_id: None,
                 })
@@ -701,6 +712,7 @@ impl ModelBuilder {
             fields.push(SurfaceRecordField {
                 label: "id".into(),
                 required: true,
+                optional: false,
                 ty: SurfaceFieldType::Identity {
                     brand: self.store_brand(store_catalog_id),
                     decode_fn: self.store_decode_fn(store_catalog_id),
@@ -712,6 +724,7 @@ impl ModelBuilder {
             fields.push(SurfaceRecordField {
                 label: field.render_label.clone(),
                 required: field.required,
+                optional: false,
                 ty: self.value_type(&field.value, enums),
                 member_catalog_id: Some(field.member_catalog_id.clone()),
             });
@@ -898,6 +911,7 @@ impl ModelBuilder {
                     .map(|field| SurfaceRecordField {
                         label: field.render_label.clone(),
                         required: field.required,
+                        optional: false,
                         ty: self.computed_value_type(&field.value, enums),
                         member_catalog_id: Some(field.member_catalog_id.clone()),
                     })

@@ -39,7 +39,7 @@ pub fn describe(id: int): string\n\
 surface Books from ^books\n\
 \x20\x20\x20\x20fields title, author\n\
 \x20\x20\x20\x20create title, author\n\
-\x20\x20\x20\x20update author\n\
+\x20\x20\x20\x20update title, author\n\
 \x20\x20\x20\x20delete\n\
 \x20\x20\x20\x20collection ^books.byAuthor as byAuthor\n\
 \x20\x20\x20\x20action retitle\n\
@@ -1319,7 +1319,11 @@ export async function pinTypes(client: ReturnType<typeof createClient>): Promise
   await client.Books.byAuthor("Frank Herbert", 10, cursor);
 
   const created: BooksRecord = await client.Books.create(id, { title: "a", author: "b" });
+  // Every update field is optional: a sparse one-field patch and a full patch both type-check.
   await client.Books.update(id, { author: "c" });
+  await client.Books.update(id, { title: "t" });
+  await client.Books.update(id, { title: "t", author: "c" });
+  await client.Books.update(id, {});
   const removed: void = await client.Books.delete(id);
 
   const retitled: { value: string; output: string } = await client.Books.retitle(1, "x");
@@ -1373,9 +1377,18 @@ await assert.rejects(
 const staleAfterUpdate = await client.Books.byAuthor("Frank Herbert", 1);
 assert.ok(staleAfterUpdate.next);
 
+// A sparse update over the multi-field body patches only `author`; the omitted `title` is preserved
+// rather than cleared, the exact race a whole-record read-modify-write would lose.
 await client.Books.update(booksId(1), { author: "Ursula Le Guin" });
 const updatedRead = await client.Books.get(booksId(1));
 assert.equal(updatedRead.author, "Ursula Le Guin");
+assert.equal(updatedRead.title, "Dune");
+// A full update sets both fields at once and still type-checks and applies.
+await client.Books.update(booksId(1), { title: "Dune", author: "Frank Herbert" });
+const fullUpdated = await client.Books.get(booksId(1));
+assert.equal(fullUpdated.title, "Dune");
+assert.equal(fullUpdated.author, "Frank Herbert");
+await client.Books.update(booksId(1), { author: "Ursula Le Guin" });
 await assert.rejects(
   () => client.Books.byAuthor("Frank Herbert", 10, staleAfterUpdate.next),
   (error: unknown) =>

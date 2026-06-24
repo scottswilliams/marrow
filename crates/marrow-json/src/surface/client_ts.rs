@@ -293,10 +293,11 @@ fn render_enum_type(output: &mut String, model: &SurfaceClientModel, enum_const:
 fn render_record_type(output: &mut String, record: &SurfaceClientRecord) {
     writeln!(output, "export type {} = {{", record.type_name).expect("write record type head");
     for field in &record.fields {
-        let optional = if field.required { "" } else { " | null" };
+        let nullable = if field.required { "" } else { " | null" };
+        let key_suffix = if field.optional { "?" } else { "" };
         writeln!(
             output,
-            "  {}: {}{optional};",
+            "  {}{key_suffix}: {}{nullable};",
             ts_property(&field.label),
             value_ts_type(&field.ty)
         )
@@ -455,10 +456,10 @@ fn method_request_expr(method: &SurfaceMethod) -> String {
         }
         SurfaceMethodInput::Update { fields, .. } => format!(
             "{{ identity: identityFromBrand(id), fields: {} }}",
-            create_fields_expr(fields)
+            update_fields_expr(fields)
         ),
         SurfaceMethodInput::SingletonUpdate { fields, .. } => {
-            format!("{{ fields: {} }}", create_fields_expr(fields))
+            format!("{{ fields: {} }}", update_fields_expr(fields))
         }
         SurfaceMethodInput::Page { exact_keys } => page_request_expr(exact_keys),
         SurfaceMethodInput::UniqueLookup { keys } => {
@@ -482,6 +483,25 @@ fn create_fields_expr(fields: &[CreateFieldPlan]) -> String {
                 "{{ catalog_id: {}, value: {} }}",
                 ts_string(&field.member_catalog_id),
                 request_value_expr(&field.ty, &format!("body[{}]", ts_string(&field.label)))
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("[{entries}]")
+}
+
+/// The sparse-update patch: a field is encoded into the request only when the caller provided it,
+/// so an omitted field is preserved server-side rather than forced through a read-modify-write. Each
+/// present field spreads in its single encoded entry, keeping the patch typed with no `any`.
+fn update_fields_expr(fields: &[CreateFieldPlan]) -> String {
+    let entries = fields
+        .iter()
+        .map(|field| {
+            let source = format!("body[{}]", ts_string(&field.label));
+            format!(
+                "...({source} !== undefined ? [{{ catalog_id: {}, value: {} }}] : [])",
+                ts_string(&field.member_catalog_id),
+                request_value_expr(&field.ty, &source)
             )
         })
         .collect::<Vec<_>>()
