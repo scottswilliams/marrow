@@ -188,10 +188,21 @@ fn map_open_error(path: &Path, error: DatabaseError) -> StoreError {
             }
         }
         DatabaseError::Storage(storage) => map_storage_error(storage),
-        other => StoreError::Io {
-            op: "open",
-            message: other.to_string(),
-        },
+        _ => transient_open_io(),
+    }
+}
+
+/// The store error for a transient open fault, reported in place of the OS error
+/// string the engine or filesystem produced. That string embeds the platform
+/// errno — an `ELOOP` symlink loop or a dangling `ENOENT` target each surface as a
+/// transient fault — and a surfaced `message` is render-only prose, never machine
+/// detail for a client to parse.
+fn transient_open_io() -> StoreError {
+    StoreError::Io {
+        op: "open",
+        message: "the store file could not be opened; the path may be unreachable or temporarily \
+                  unavailable"
+            .into(),
     }
 }
 
@@ -207,10 +218,7 @@ fn map_storage_error(error: StorageError) -> StoreError {
         StorageError::Io(error) if is_torn_body(&error) => StoreError::Corruption {
             message: "the store body is truncated or torn".into(),
         },
-        other => StoreError::Io {
-            op: "open",
-            message: other.to_string(),
-        },
+        _ => transient_open_io(),
     }
 }
 
@@ -516,10 +524,7 @@ fn guard_regular_store_file(path: &Path) -> Result<(), StoreError> {
                 path: path.to_path_buf(),
             })
         }
-        Err(error) => Err(StoreError::Io {
-            op: "open",
-            message: error.to_string(),
-        }),
+        Err(_) => Err(transient_open_io()),
     }
 }
 
@@ -626,12 +631,7 @@ fn read_file_prefix(path: &Path, len: usize) -> Result<Option<Vec<u8>>, StoreErr
                 path: path.to_path_buf(),
             });
         }
-        Err(error) => {
-            return Err(StoreError::Io {
-                op: "open",
-                message: error.to_string(),
-            });
-        }
+        Err(_) => return Err(transient_open_io()),
     };
     let mut buffer = vec![0u8; len];
     match file.read_exact(&mut buffer) {
@@ -642,10 +642,7 @@ fn read_file_prefix(path: &Path, len: usize) -> Result<Option<Vec<u8>>, StoreErr
                 path: path.to_path_buf(),
             })
         }
-        Err(error) => Err(StoreError::Io {
-            op: "open",
-            message: error.to_string(),
-        }),
+        Err(_) => Err(transient_open_io()),
     }
 }
 
@@ -674,10 +671,7 @@ fn prepare_new_store_file(path: &Path) -> Result<Option<std::path::PathBuf>, Sto
                 path: path.to_path_buf(),
             })
         }
-        Err(error) => Err(StoreError::Io {
-            op: "open",
-            message: error.to_string(),
-        }),
+        Err(_) => Err(transient_open_io()),
     }
 }
 
@@ -701,20 +695,12 @@ fn missing_file_or_symlink_target(path: &Path) -> Result<Option<std::path::PathB
             Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
                 return Err(StoreError::PermissionDenied { path: path.clone() });
             }
-            Err(error) => {
-                return Err(StoreError::Io {
-                    op: "open",
-                    message: error.to_string(),
-                });
-            }
+            Err(_) => return Err(transient_open_io()),
         };
         if !metadata.file_type().is_symlink() {
             return Ok(None);
         }
-        let target = fs::read_link(&path).map_err(|error| StoreError::Io {
-            op: "open",
-            message: error.to_string(),
-        })?;
+        let target = fs::read_link(&path).map_err(|_| transient_open_io())?;
         path = resolve_link_target(&path, target);
     }
     Ok(None)
@@ -1490,6 +1476,55 @@ mod tests {
         }
 
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).ok();
+    }
+
+    /// A store path that is a symlink loop (`ELOOP`) or a dangling symlink to a
+    /// missing target (`ENOENT`) fails closed as the transient `store.io` on every
+    /// open path, and the rendered message never embeds the platform errno the OS
+    /// error string carries.
+    #[cfg(unix)]
+    #[test]
+    fn opening_a_symlink_loop_or_dangling_target_is_io_without_a_raw_errno() {
+        let dir = TempDir::new("marrow-store-redb-symlink").expect("temp dir");
+
+        let loop_a = dir.path().join("loop-a.redb");
+        let loop_b = dir.path().join("loop-b.redb");
+        std::os::unix::fs::symlink(&loop_b, &loop_a).expect("link a -> b");
+        std::os::unix::fs::symlink(&loop_a, &loop_b).expect("link b -> a");
+
+        let dangling = dir.path().join("dangling.redb");
+        std::os::unix::fs::symlink(dir.path().join("absent.redb"), &dangling)
+            .expect("link to a missing target");
+
+        let expect_io = |result: Result<(), StoreError>, label: &str| match result {
+            Err(error @ StoreError::Io { .. }) => assert!(
+                !error.to_string().contains("(os error"),
+                "store.io message must not leak the OS errno ({label}): {error}"
+            ),
+            other => panic!("expected store.io ({label}), got {other:?}"),
+        };
+
+        // A symlink loop is rejected before any handle opens, on every open path.
+        expect_io(RedbStore::open(&loop_a).map(|_| ()), "loop open");
+        expect_io(
+            RedbStore::open_existing(&loop_a).map(|_| ()),
+            "loop existing",
+        );
+        expect_io(
+            RedbStore::open_read_only(&loop_a).map(|_| ()),
+            "loop read-only",
+        );
+
+        // A dangling target is a missing store to the non-creating opens; `open`
+        // creates the target, so only inspection and repair surface the fault.
+        expect_io(
+            RedbStore::open_existing(&dangling).map(|_| ()),
+            "dangling existing",
+        );
+        expect_io(
+            RedbStore::open_read_only(&dangling).map(|_| ()),
+            "dangling read-only",
+        );
     }
 
     /// The redb-error mapping is damage-faithful: a recoverable unclean shutdown, a
