@@ -192,43 +192,6 @@ impl<'a> ExprParser<'a> {
         );
     }
 
-    /// Report a missing closing delimiter or separator at the gap: the next
-    /// unconsumed token when one remains (`g(a b)` points at `b`), or just past
-    /// the last consumed token when input ran out (`(a` points after `a`). The
-    /// operand before the gap is complete, so this names the delimiter the parser
-    /// was waiting for rather than letting the silent `None` reach the statement
-    /// parser's "expected a statement" fallback. Reporting is skipped inside a
-    /// context that owns its own recovery diagnostic — chiefly a `for` header,
-    /// reported once against the whole header — so the gap does not double-report.
-    fn expected_at_delimiter_gap(&mut self, expected: ExpectedSyntax, message: &str) {
-        if self.gap_suppression_depth > 0 {
-            return;
-        }
-        let span = match self.tokens.get(self.pos) {
-            Some(token) => SourceSpan {
-                start_byte: token.span.start_byte,
-                end_byte: token.span.start_byte,
-                line: token.span.line,
-                column: token.span.column,
-            },
-            None => {
-                let last = self.tokens[self.pos - 1].span;
-                SourceSpan {
-                    start_byte: last.end_byte,
-                    end_byte: last.end_byte,
-                    line: last.line,
-                    column: last.column,
-                }
-            }
-        };
-        self.error(
-            span,
-            ParseDiagnosticReason::Expected(expected),
-            message.to_string(),
-            None,
-        );
-    }
-
     fn peek(&self) -> Option<TokenKind> {
         self.peek_at(0)
     }
@@ -579,10 +542,6 @@ impl<'a> ExprParser<'a> {
                     let open = self.advance();
                     let parsed_args = self.while_caller_owns_recovery(Self::arguments)?;
                     if !matches!(self.peek(), Some(TokenKind::RightParen)) {
-                        self.expected_at_delimiter_gap(
-                            ExpectedSyntax::ArgumentSeparatorOrClose,
-                            "expected `,` or `)`",
-                        );
                         return None;
                     }
                     let close = self.advance();
@@ -820,11 +779,8 @@ impl<'a> ExprParser<'a> {
                     Some(inner)
                 } else {
                     // A `=` before the closing `)` is the `=`-for-`==` mistake;
-                    // report it pointedly. Otherwise the operand is complete and
-                    // the `)` is simply missing.
-                    if !self.report_stray_equals() {
-                        self.expected_at_delimiter_gap(ExpectedSyntax::CloseParen, "expected `)`");
-                    }
+                    // report it pointedly rather than as an unstructured group.
+                    self.report_stray_equals();
                     None
                 }
             }

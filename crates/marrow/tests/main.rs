@@ -57,8 +57,6 @@ mod format_matrix_cli;
 mod init_cli;
 #[path = "cases/nesting_limit_cli.rs"]
 mod nesting_limit_cli;
-#[path = "cases/parse_close_delimiter_cli.rs"]
-mod parse_close_delimiter_cli;
 #[path = "cases/run_auto_apply.rs"]
 mod run_auto_apply;
 #[path = "cases/run_cli_catalog.rs"]
