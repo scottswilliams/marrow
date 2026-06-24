@@ -407,8 +407,9 @@ Ranged saved-key calls are traversal shapes, not value reads: use them as loop
 iterables, through `keys`/`values`/`entries` loop wrappers, or in supported
 cardinality/presence calls. A ranged key argument names a span of entries, not
 one entry, so it is also rejected as a write or `delete` address. In v0.1, ranged
-`exists(...)` is supported for non-unique index branches; store-root and
-keyed-layer ranges are traversed rather than tested as a single lookup value.
+`exists(...)` and `count(...)` are supported for non-unique index branches;
+store-root and keyed-layer ranges are traversed rather than tested or counted as
+a single lookup value.
 
 Index arguments may name store keys or top-level fields only. Field components
 may be orderable scalars, enums, or `Id(^store)` typed references; an identity

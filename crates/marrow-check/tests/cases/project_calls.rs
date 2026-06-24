@@ -1046,6 +1046,89 @@ fn exists_accepts_index_range_but_rejects_root_and_layer_ranges() {
 }
 
 #[test]
+fn count_accepts_index_range_but_rejects_root_and_layer_ranges_with_an_accurate_message() {
+    let clean = check_module_report(
+        "count-index-range",
+        "module m\n\
+         resource Post\n    published: int\n\
+         store ^posts(id: int): Post\n\n    index byDate(published, id)\n\n\
+         fn f(lo: int, hi: int): int\n    return count(^posts.byDate(lo..hi))\n",
+    );
+    assert_clean(&clean);
+
+    // A store-root or keyed-layer range is a traversal span, not a counted index
+    // branch. The rejection stands, but the message must name the real rule rather
+    // than the misleading range-value text that claims a range is `for`-only.
+    let expected = "`count` over a range is supported only on a non-unique index branch; store-root and keyed-layer ranges are traversed, not counted";
+
+    let root = check_module_report(
+        "count-root-range",
+        "module m\n\
+         resource Cell\n    required value: int\n\
+         store ^cells(x: int, y: int): Cell\n\n\
+         fn f(lo: int, hi: int): int\n    return count(^cells(1, lo..hi))\n",
+    );
+    let root_found = with_code(&root, "check.collection_unsupported");
+    assert_eq!(root_found.len(), 1, "{:#?}", root.diagnostics);
+    assert_eq!(root_found[0].message, expected, "{:#?}", root_found[0]);
+    assert!(
+        with_code(&root, "check.range_value").is_empty(),
+        "the accurate count message owns the rejection, not the range-value catch-all: {:#?}",
+        root.diagnostics
+    );
+
+    let layer = check_module_report(
+        "count-layer-range",
+        "module m\n\
+         resource Book\n    tags(pos: int): string\n\
+         store ^books(id: int): Book\n\n\
+         fn f(id: Id(^books), lo: int, hi: int): int\n    return count(^books(id).tags(lo..hi))\n",
+    );
+    let layer_found = with_code(&layer, "check.collection_unsupported");
+    assert_eq!(layer_found.len(), 1, "{:#?}", layer.diagnostics);
+    assert_eq!(layer_found[0].message, expected, "{:#?}", layer_found[0]);
+    assert!(
+        with_code(&layer, "check.range_value").is_empty(),
+        "the accurate count message owns the rejection, not the range-value catch-all: {:#?}",
+        layer.diagnostics
+    );
+
+    // Counting a saved traversal that a wrapper already produced is rejected by the
+    // re-materialization rule, not the index-branch rule: the inner path is a
+    // non-unique index branch, so the index-branch message would contradict itself.
+    let remat = "`count` cannot re-materialize a saved traversal; iterate it directly";
+    for wrapper in ["keys", "values", "entries", "reversed"] {
+        let report = check_module_report(
+            "count-wrapped-index-range",
+            &format!(
+                "module m\n\
+                 resource Post\n    published: int\n\
+                 store ^posts(id: int): Post\n\n    index byDate(published, id)\n\n\
+                 fn f(lo: int, hi: int): int\n    return count({wrapper}(^posts.byDate(lo..hi)))\n"
+            ),
+        );
+        let messages: Vec<&str> = with_code(&report, "check.collection_unsupported")
+            .iter()
+            .map(|d| d.message.as_str())
+            .collect();
+        assert!(
+            messages.contains(&remat),
+            "{}: expected the re-materialization message, got {:#?}",
+            wrapper,
+            report.diagnostics
+        );
+        assert!(
+            !messages
+                .iter()
+                .any(|m| m.contains("non-unique index branch")),
+            "{}: the index-branch message must not fire for a wrapped traversal: {:#?}",
+            wrapper,
+            report.diagnostics
+        );
+    }
+}
+
+#[test]
 fn inclusive_open_end_range_key_argument_is_rejected() {
     let found = check_module(
         "inclusive-open-end-key-range",

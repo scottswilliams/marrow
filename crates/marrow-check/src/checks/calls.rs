@@ -803,6 +803,27 @@ fn check_collection_combinator_args(
         ));
         return true;
     }
+    // A ranged index branch counts its matching entries, but a bare ranged store root
+    // or keyed layer names a traversal span with no single cardinality to read; reject
+    // it here with the accurate rule so the range-value catch-all does not claim the
+    // range is `for`-only. A wrapped saved traversal (`count(keys(^idx(lo..hi)))`, etc.)
+    // falls through to the re-materialization rule below, whose message is the accurate
+    // one for that shape.
+    if name == "count"
+        && !crate::rules::is_wrapped_saved_traversal(&arg.value)
+        && is_saved_key_range_path(env.program, &arg.value, env.scope, env.file)
+        && !is_saved_index_range_path(env.program, &arg.value, env.scope, env.file)
+    {
+        env.diagnostics.push(CheckDiagnostic::error(
+            CHECK_COLLECTION_UNSUPPORTED,
+            env.file,
+            env.span,
+            "`count` over a range is supported only on a non-unique index branch; \
+             store-root and keyed-layer ranges are traversed, not counted"
+                .to_string(),
+        ));
+        return true;
+    }
     let unconsumable = if name == "reversed" {
         crate::rules::is_reversed_over_saved_traversal(&arg.value)
     } else {

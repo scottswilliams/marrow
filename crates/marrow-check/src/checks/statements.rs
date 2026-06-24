@@ -28,7 +28,7 @@ use super::collections::{
     catch_frame, check_entries_value_position, check_for_collection_support,
     check_for_entries_support, check_for_scalar_iterable, for_frame, has_collection_unsupported,
     is_partial_key_layer_path, is_saved_collection_path, is_saved_index_branch_path,
-    is_saved_index_range_path, is_saved_key_range_path, is_saved_path_with_key_range_arg,
+    is_saved_key_range_path, is_saved_path_with_key_range_arg,
 };
 use super::const_int::{ConstIntScope, fold_const_int};
 use super::operators::{check_assignment, check_condition, check_return_type, check_throw_type};
@@ -1131,11 +1131,11 @@ fn allowed_saved_key_range_value_context(
     if arg.name.is_some() || !is_saved_key_range_path(program, &arg.value, scope, file) {
         return false;
     }
-    match name.as_str() {
-        "exists" => true,
-        "count" => is_saved_index_range_path(program, &arg.value, scope, file),
-        _ => false,
-    }
+    // A saved key-range argument to a cardinality or presence call is a legitimate
+    // traversal shape, not a range used outside a `for`. Whether the specific shape is
+    // supported (a store-root or keyed-layer range counts as neither) is owned by the
+    // call's own argument rule, which reports an accurate message there.
+    matches!(name.as_str(), "exists" | "count")
 }
 
 /// The local root and ordered member chain of a field write, e.g.
