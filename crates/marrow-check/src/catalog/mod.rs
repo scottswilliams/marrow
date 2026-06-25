@@ -37,11 +37,15 @@ enum CatalogProposalError {
 /// that adopts the current source cleanly is the accepted reference itself (`Accepted`); a fresh
 /// mint or a lock the source has drifted from is a pending change (`Proposal`); a corrupt lock
 /// refuses adoption (`Refused`), having already pushed the typed [`CHECK_LOCK_CORRUPT`].
+///
+/// The accepted reference is the same [`CatalogMetadata`] a live store snapshot would carry: its
+/// epoch, digest, and entries are derived through the one catalog owner, so a fresh checkout that
+/// adopts the lock binds the identical accepted digest a present store binds. A read-only context
+/// digest folds in that accepted digest, so deriving it here keeps the surface ABI stable whether
+/// a checkout reads its identity from the committed lock or from a present (or momentarily locked)
+/// store.
 enum FirstRunOutcome {
-    Accepted {
-        entries: Vec<CatalogEntry>,
-        epoch: u64,
-    },
+    Accepted(CatalogMetadata),
     Proposal(CatalogMetadata),
     Refused,
 }
@@ -395,8 +399,8 @@ fn catalog_binding(
             // A clean lock adoption with no store is the accepted reference itself, exactly as
             // the committed file once was: its committed identity binds onto facts at the lock's
             // epoch with no pending change, so a store-less surface ABI is stable.
-            Ok(FirstRunOutcome::Accepted { entries, epoch }) => {
-                return accepted_lock_binding(entries, epoch, source.duplicate_keys);
+            Ok(FirstRunOutcome::Accepted(accepted)) => {
+                return accepted_lock_binding(accepted, source.duplicate_keys);
             }
             Ok(FirstRunOutcome::Proposal(proposal)) => Ok(Some(proposal)),
             Ok(FirstRunOutcome::Refused) => Ok(None),
@@ -493,18 +497,19 @@ fn allocation_failure_binding(
 /// The binding a clean lock adoption produces with no accepted store: the committed identity
 /// binds onto facts, the lock's epoch is the accepted epoch, the adopted entries are the accepted
 /// ABI the surface binds operations against, and there is no pending proposal — the same shape a
-/// live store would bind. The accepted digest stays absent: no accepted `CatalogMetadata` was
-/// read, and the lock's source digest already proves the shape unchanged.
+/// live store would bind. The accepted digest is derived from the adopted catalog, identical to
+/// the digest a present store snapshot of the same identity carries, so a read-only context digest
+/// — and the surface computed-read tag that folds it in — is the same whether a checkout binds
+/// from the committed lock or from a present (or momentarily writer-locked) store.
 fn accepted_lock_binding(
-    entries: Vec<CatalogEntry>,
-    epoch: u64,
+    accepted: CatalogMetadata,
     duplicate_source_keys: HashSet<CatalogKey>,
 ) -> CatalogBinding {
-    let ids = proposal_id_map_without(&entries, &duplicate_source_keys);
+    let ids = proposal_id_map_without(&accepted.entries, &duplicate_source_keys);
     CatalogBinding {
-        accepted_epoch: Some(epoch),
-        accepted_digest: None,
-        accepted_entries: entries,
+        accepted_epoch: Some(accepted.epoch),
+        accepted_digest: Some(accepted.digest),
+        accepted_entries: accepted.entries,
         leaf_token_ids: ids.clone(),
         ids,
         ambiguous_source_keys: duplicate_source_keys,
@@ -893,10 +898,10 @@ fn adopt_or_mint_first_run(
     // and the proposal both carry the current shape under the committed identity.
     record_signatures_into(program, &mut proposal_entries, None);
     if !has_pending_intent && lock_adopts_source_cleanly(program, source, lock) {
-        return Ok(FirstRunOutcome::Accepted {
-            entries: proposal_entries,
-            epoch: lock.epoch_high_water,
-        });
+        return Ok(FirstRunOutcome::Accepted(CatalogMetadata::new(
+            lock.epoch_high_water,
+            proposal_entries,
+        )?));
     }
     Ok(FirstRunOutcome::Proposal(CatalogMetadata::new(
         lock.epoch_high_water,

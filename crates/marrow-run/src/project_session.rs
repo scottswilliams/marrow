@@ -774,57 +774,18 @@ impl ProjectSession {
     }
 }
 
+/// Whether the session admits a separately checked program against the same surface. A program is
+/// admitted when its source and read-only context digests both match the session's. The read-only
+/// context digest binds the canonical accepted catalog identity (epoch and order-independent
+/// digest), evolution proof, and proposal, so a committed-lock checkout and a present (or
+/// momentarily writer-locked) store bind the same digest for the same identity and admit each other
+/// directly.
 fn surface_session_admits_checked_program(
     session_program: &CheckedProgram,
     program: &CheckedProgram,
 ) -> bool {
-    if session_program.source_digest() != program.source_digest() {
-        return false;
-    }
-    if session_program.read_only_context_digest() == program.read_only_context_digest() {
-        return true;
-    }
-    lock_bound_read_only_context_matches(session_program, program)
-}
-
-fn lock_bound_read_only_context_matches(
-    session_program: &CheckedProgram,
-    program: &CheckedProgram,
-) -> bool {
-    program.catalog.accepted_digest.is_none()
-        && lock_bound_accepted_catalog_matches(session_program, program)
-        && program.evolution_digest() == session_program.evolution_digest()
-        && proposal_context(program) == proposal_context(session_program)
-}
-
-fn lock_bound_accepted_catalog_matches(
-    session_program: &CheckedProgram,
-    program: &CheckedProgram,
-) -> bool {
-    let Some(epoch) = program.catalog.accepted_epoch else {
-        return false;
-    };
-    if session_program.catalog.accepted_epoch != Some(epoch) {
-        return false;
-    }
-    let Some(session_digest) = session_program.catalog.accepted_digest.as_deref() else {
-        return false;
-    };
-    let Ok(admitted) =
-        marrow_catalog::CatalogMetadata::new(epoch, program.catalog.accepted_entries.clone())
-    else {
-        return false;
-    };
-    admitted.digest == session_digest
-}
-
-fn proposal_context(program: &CheckedProgram) -> (u64, Option<&str>) {
-    program
-        .catalog
-        .proposal
-        .as_ref()
-        .map(|proposal| (proposal.epoch, Some(proposal.digest.as_str())))
-        .unwrap_or((0, None))
+    session_program.source_digest() == program.source_digest()
+        && session_program.read_only_context_digest() == program.read_only_context_digest()
 }
 
 impl ProjectSurfaceReadSession {

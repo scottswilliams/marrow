@@ -212,6 +212,82 @@ fn read_only_serve_blocks_a_writer() {
     );
 }
 
+/// A surface whose only read is a computed `read describe`, so its sole read route carries the
+/// `read_only_context_digest` the computed-read operation tag folds in.
+const COMPUTED_READ_SURFACE_SOURCE: &str = "module app\n\
+\n\
+resource Book\n\
+\x20\x20\x20\x20required title: string\n\
+\x20\x20\x20\x20author: string\n\
+store ^books(id: int): Book\n\
+\n\
+pub fn seed()\n\
+\x20\x20\x20\x20var book: Book\n\
+\x20\x20\x20\x20book.title = \"Dune\"\n\
+\x20\x20\x20\x20book.author = \"Frank Herbert\"\n\
+\x20\x20\x20\x20transaction\n\
+\x20\x20\x20\x20\x20\x20\x20\x20^books(1) = book\n\
+\n\
+pub fn describe(id: int): string\n\
+\x20\x20\x20\x20return (^books(id).title ?? \"\") + \"|\" + (^books(id).author ?? \"\")\n\
+\n\
+surface Books from ^books\n\
+\x20\x20\x20\x20fields title, author\n\
+\x20\x20\x20\x20read describe\n";
+
+/// The `describe` computed-read route's operation tag from a `marrow check --format json` report.
+fn describe_read_tag(project: &str) -> String {
+    let output =
+        support::marrow_bounded(&["check", "--format", "json", project], STORE_OP_DEADLINE);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "check --format json must exit 0: {output:?}",
+    );
+    let report: Value = serde_json::from_slice(&output.stdout)
+        .unwrap_or_else(|error| panic!("check json parses: {error}; stdout={output:?}"));
+    route_by_alias(&report, "describe").operation_tag
+}
+
+/// A computed-read operation tag folds in the program's `read_only_context_digest`, which binds the
+/// accepted catalog identity. A momentarily writer-locked store must not divert `check` onto a
+/// divergent lock-only adoption: the tag and the `--locked` gate must be identical whether or not a
+/// concurrent `serve --write` holds the redb writer lock, so the committed client a CI checkout
+/// validates stays in step with the running server.
+#[test]
+fn computed_read_tag_is_stable_while_a_writer_holds_the_store_lock() {
+    let root = temp_project("serve-write-computed-read-tag", |root| {
+        write(root, "marrow.json", support::native_config());
+        write(root, "src/app.mw", COMPUTED_READ_SURFACE_SOURCE);
+    });
+    let project = root.to_str().expect("project path utf8");
+    let seed = marrow(&["run", "--entry", "app::seed", project]);
+    assert_eq!(seed.status.code(), Some(0), "seed: {seed:?}");
+
+    let baseline_tag = describe_read_tag(project);
+    let baseline_locked = marrow(&["check", "--locked", project]);
+    assert_eq!(
+        baseline_locked.status.code(),
+        Some(0),
+        "baseline check --locked must pass: {baseline_locked:?}",
+    );
+
+    let (_server, _addr) = spawn_surface_server_with_args(&root, &["--write"]);
+
+    let locked_tag = describe_read_tag(project);
+    assert_eq!(
+        locked_tag, baseline_tag,
+        "the computed-read operation tag must be identical whether or not a writer holds the lock",
+    );
+
+    let locked_locked = support::marrow_bounded(&["check", "--locked", project], STORE_OP_DEADLINE);
+    assert_eq!(
+        locked_locked.status.code(),
+        Some(0),
+        "check --locked must still pass while a writer holds the lock: {locked_locked:?}",
+    );
+}
+
 /// The dotted fault code of a refused command, read from the shared stderr fault line.
 fn fault_code(output: &std::process::Output) -> String {
     let fault = support::last_fault(&output.stderr);

@@ -521,13 +521,15 @@ fn surface_read_session_admits_lock_bound_checked_program() {
     drop(seed);
 
     let lock_bound = lock_bound_checked_program(root.path());
-    assert!(
-        lock_bound.catalog.accepted_digest.is_none(),
-        "committed-lock analysis has no native store digest"
-    );
 
     let read_session =
         ProjectSurfaceReadSession::open(root.path()).expect("open surface read session");
+    assert_eq!(
+        lock_bound.catalog.accepted_digest,
+        read_session.program().catalog.accepted_digest,
+        "committed-lock analysis binds the same accepted digest a present store binds, so the \
+         read-only context digest is writer-independent"
+    );
     assert!(read_session.admits_checked_program(read_session.program()));
     assert!(read_session.admits_checked_program(&lock_bound));
 }
@@ -600,10 +602,6 @@ fn surface_read_session_admits_lock_bound_program_after_non_final_retire() {
 
     let session = ProjectSurfaceReadSession::open(root.path()).expect("open surface read session");
     let lock_bound = lock_bound_checked_program(root.path());
-    assert!(
-        lock_bound.catalog.accepted_digest.is_none(),
-        "committed-lock analysis has no native store digest"
-    );
     let session_catalog = accepted_catalog_from_program(session.program());
     let lock_catalog = marrow_catalog::CatalogMetadata::new(
         lock_bound.catalog.accepted_epoch.expect("accepted epoch"),
@@ -613,6 +611,14 @@ fn surface_read_session_admits_lock_bound_program_after_non_final_retire() {
     assert_eq!(
         lock_catalog.digest, session_catalog.digest,
         "store-bound and lock-bound accepted identity must be canonical-equivalent"
+    );
+    // The bound accepted digest is the canonical catalog digest, not absent: a committed-lock
+    // analysis binds the same digest a present store binds even when accepted-entry order drifts,
+    // so the read-only context digest is writer-independent and order-independent.
+    assert_eq!(
+        lock_bound.catalog.accepted_digest.as_deref(),
+        Some(lock_catalog.digest.as_str()),
+        "committed-lock analysis binds the canonical accepted digest"
     );
     assert_ne!(
         lock_bound.catalog.accepted_entries,
