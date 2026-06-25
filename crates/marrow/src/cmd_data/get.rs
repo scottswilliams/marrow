@@ -51,12 +51,19 @@ pub(super) fn data_get(args: &[String]) -> ExitCode {
             }
             return ExitCode::SUCCESS;
         }
-        // A malformed path is a usage error; a corrupt checked catalog id is a
-        // store fault and must report under the store code, not as usage.
-        Err(ToolingError::Path(error)) => {
-            eprintln!("marrow data get: {error}");
-            return ExitCode::from(2);
-        }
+        // A path naming a saved root or member the schema does not declare is a
+        // schema-resolution failure: well-formed input the schema cannot resolve,
+        // reported as a typed located `data` diagnostic with a JSON envelope, the
+        // same way the other data path-resolution faults are. A path that is
+        // malformed or misused stays a command-line usage error; a corrupt checked
+        // catalog id is a store fault and reports under the store code.
+        Err(ToolingError::Path(error)) => match error.resolution_code() {
+            Some(code) => return super::report_unknown_path(code, &error, &path_text, format),
+            None => {
+                eprintln!("marrow data get: {error}");
+                return ExitCode::from(2);
+            }
+        },
         Err(ToolingError::Store(error)) => return super::report_store_error(error, format),
     };
     let (result, store_snapshot) = match &store {

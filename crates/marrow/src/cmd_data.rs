@@ -247,6 +247,29 @@ fn report_store_error(error: StoreError, format: CheckFormat) -> ExitCode {
     ExitCode::FAILURE
 }
 
+/// Report a path that parses but names a saved root or member the schema does not declare.
+/// This is a schema-resolution failure, not a command-line usage error, so it surfaces as a
+/// typed `data` diagnostic with the offending path located in `source_span.path` (display-only,
+/// as for the other `data.*` codes) and the recoverable-failure exit code the storage faults use.
+pub(super) fn report_unknown_path(
+    code: &str,
+    error: &marrow_check::tooling::DataPathError,
+    path_text: &str,
+    format: CheckFormat,
+) -> ExitCode {
+    match format {
+        CheckFormat::Text => eprintln!("{code}: {error}"),
+        CheckFormat::Json | CheckFormat::Jsonl => write_json(json!({
+            "code": code,
+            "kind": marrow_syntax::kind_for_code(code),
+            "message": error.to_string(),
+            "data": serde_json::Map::new(),
+            "source_span": { "path": path_text },
+        })),
+    }
+    ExitCode::FAILURE
+}
+
 /// Cross-check the saved roots against the committed `marrow.lock` before reporting them.
 /// `data roots` and `data dump` enumerate only what the store presents, so an absent store
 /// while the lock records committed roots would silently report a clean empty set; the

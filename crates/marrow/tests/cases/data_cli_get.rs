@@ -94,6 +94,54 @@ fn escaped_key_project(name: &str) -> (TempProject, String) {
 }
 
 #[test]
+fn data_get_unknown_root_and_member_emit_a_typed_diagnostic() {
+    // A path that parses but names a saved root or member the schema does not declare is a
+    // schema-resolution failure, not a command-line usage error. It must surface as a typed
+    // located `data.*` diagnostic with a JSON envelope under --format json, with an exit code
+    // consistent with the other data path-resolution diagnostics (storage faults), never the
+    // exit-2 usage channel that has no machine-readable envelope.
+    let (_project, dir) = seeded_project("data-get-unknown-path");
+
+    let unknown_root = marrow(&["data", "get", "--format", "json", &dir, "^unknownRoot"]);
+    assert_eq!(unknown_root.status.code(), Some(1), "{unknown_root:?}");
+    let unknown_root = json(unknown_root);
+    assert_eq!(
+        unknown_root["code"],
+        serde_json::json!("data.unknown_path"),
+        "{unknown_root:?}"
+    );
+    assert_eq!(unknown_root["kind"], serde_json::json!("tooling"));
+    assert_eq!(
+        unknown_root["source_span"]["path"],
+        serde_json::json!("^unknownRoot")
+    );
+
+    let unknown_member = marrow(&[
+        "data",
+        "get",
+        "--format",
+        "json",
+        &dir,
+        "^counter(1).unknownField",
+    ]);
+    assert_eq!(unknown_member.status.code(), Some(1), "{unknown_member:?}");
+    let unknown_member = json(unknown_member);
+    assert_eq!(
+        unknown_member["code"],
+        serde_json::json!("data.unknown_path"),
+        "{unknown_member:?}"
+    );
+
+    // A genuine command-line usage error -- a missing path argument -- still exits 2.
+    let missing_arg = marrow(&["data", "get", &dir]);
+    assert_eq!(missing_arg.status.code(), Some(2), "{missing_arg:?}");
+
+    // A valid get still succeeds.
+    let valid = marrow(&["data", "get", "--format", "json", &dir, "^counter(1).value"]);
+    assert_eq!(valid.status.code(), Some(0), "{valid:?}");
+}
+
+#[test]
 fn data_get_rejects_an_unrecognized_string_key_escape() {
     // The saved-path string-key decoder shares the language's five-escape vocabulary
     // (`\\ \" \n \r \t`). An unknown escape such as `\b` must fail closed with a

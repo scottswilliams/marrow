@@ -83,6 +83,41 @@ impl MemberFlavor {
     }
 }
 
+/// The stable code for a path that parses but names a saved root or member the
+/// checked schema does not declare. Such a path is well-formed input that the
+/// schema cannot resolve, so it is reported as a typed `data` diagnostic rather
+/// than a command-line usage error.
+pub const UNKNOWN_PATH_CODE: &str = "data.unknown_path";
+
+impl DataPathError {
+    /// The typed diagnostic code for a schema-resolution failure: a well-formed
+    /// path naming a saved root or member the schema does not declare. The
+    /// remaining variants describe a malformed or misused path, which the CLI
+    /// boundary reports as a usage error, so they carry no resolution code.
+    pub fn resolution_code(&self) -> Option<&'static str> {
+        match self {
+            Self::UnknownRoot { .. }
+            | Self::UnknownRootCatalogId { .. }
+            | Self::UnknownMember { .. }
+            | Self::UnknownMemberCatalogId { .. } => Some(UNKNOWN_PATH_CODE),
+            Self::MissingRoot
+            | Self::TooManyIdentityKeys { .. }
+            | Self::IdentityKeyType { .. }
+            | Self::MissingIdentityKeys { .. }
+            | Self::UnexpectedKey
+            | Self::TooManyMemberKeys { .. }
+            | Self::MemberKeyType { .. }
+            | Self::IncompleteMemberKeys { .. }
+            | Self::ZeroLimit
+            | Self::CursorOutsidePath
+            | Self::CursorNotAPosition
+            | Self::CursorNotAnEntry
+            | Self::MembersTakeNoCursor
+            | Self::NoChildScan => None,
+        }
+    }
+}
+
 impl fmt::Display for DataPathError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

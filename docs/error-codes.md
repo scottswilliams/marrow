@@ -402,8 +402,9 @@ Project-loading faults from `marrow.json` and source discovery.
 
 ### `data.*` — kind `tooling`
 
-Findings from `marrow data integrity`, which verifies saved values against the
-project schema. Read-only; it never modifies the store.
+Findings from the read-only `data` inspection commands. Most are surfaced by
+`marrow data integrity`, which verifies saved values against the project schema;
+`data.unknown_path` is surfaced by `marrow data get`. None modifies the store.
 
 | Code | Meaning |
 |---|---|
@@ -412,6 +413,7 @@ project schema. Read-only; it never modifies the store.
 | `data.dangling_ref` | A canonical stored `Id(^root)` leaf points to no saved record node in the referenced root. JSON and JSONL include `containing_identity`, `field_catalog_id`, `referenced_root`, and `referenced_identity`; `source_span.path` is display-only. |
 | `data.incomplete` | An existing record or keyed-layer entry is missing an accepted required field. JSON and JSONL include `store_catalog_id`, `record_identity`, `parent_path`, and `missing_member_catalog_id`; `source_span.path` is display-only. |
 | `data.orphan` | A stored data cell is under a saved root or member the schema no longer declares; integrity reports repair guidance for source-native evolution or maintenance repair. Derived index cells are never flagged. An actual stored cell whose key does not decode under the tree-cell key grammar is reported as `store.corruption`. |
+| `data.unknown_path` | A `data get` path parses but names a saved root or member the checked schema does not declare. The path is well-formed input the schema cannot resolve, so it is a typed resolution failure rather than a command-line usage error; `source_span.path` echoes the offending path (display-only). A path that does not parse remains a usage error (exit `2`). |
 
 ### `evolve.*` — kind `tooling`
 
