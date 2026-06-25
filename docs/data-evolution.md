@@ -146,12 +146,16 @@ recording old spellings as aliases.
 
 `marrow.lock` is a generated, committed, never-hand-edited projection of that
 accepted identity, kept in the project root and tracked in source control like
-`Cargo.lock`. Each entry projects a stable ID, lifecycle, canonical path, and a
-shape fingerprint; the lock also carries the append-only ledger of retired and
-reserved IDs and the producing source shape. Each ledger tombstone records the
-retired entity's `(kind, path)` alongside its ID, so the lock fully represents a
-reserved path: a fresh checkout that re-seeds a lost store from the lock alone
-reconstructs the reserved entries and still rejects re-declaring a retired path.
+`Cargo.lock`. Each entry projects a stable ID, lifecycle, canonical path, the old
+spellings a rename carried forward as aliases, and a shape fingerprint; the lock
+also carries the append-only ledger of retired and reserved IDs and the producing
+source shape. Each ledger tombstone records the retired entity's `(kind, path)`
+alongside its ID, so the lock fully represents a reserved path: a fresh checkout
+that re-seeds a lost store from the lock alone reconstructs the reserved entries,
+carries each renamed entry's old spelling forward as an alias, and still rejects
+re-declaring a retired path. A kept consumed rename block therefore resolves its
+old-spelling carry-forward against the seed-from-lock catalog exactly as it does
+against a present store.
 It is not Marrow language data — there is no `^catalog` root, resource,
 standard-library, or data-CLI surface that can read, scan, or mutate it.
 

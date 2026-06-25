@@ -879,14 +879,14 @@ fn adopt_or_mint_first_run(
     lock: Option<&CatalogLock>,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) -> Result<FirstRunOutcome, CatalogProposalError> {
-    let has_pending_intent = !evolve.renames.is_empty() || !evolve.retires.is_empty();
-    for rename in &evolve.renames {
-        report_unresolved_intent(&rename.file, rename.span, diagnostics);
-    }
-    for retire in &evolve.retires {
-        report_unresolved_intent(&retire.file, retire.span, diagnostics);
-    }
     let Some(lock) = lock else {
+        // With no committed identity to carry forward, every rename or retire relocates nothing.
+        for rename in &evolve.renames {
+            report_unresolved_intent(&rename.file, rename.span, diagnostics);
+        }
+        for retire in &evolve.retires {
+            report_unresolved_intent(&retire.file, retire.span, diagnostics);
+        }
         return mint_first_run(program, &source.entries, &[]).map(FirstRunOutcome::Proposal);
     };
     let Some(mut proposal_entries) =
@@ -897,7 +897,13 @@ fn adopt_or_mint_first_run(
     // Record the source shape signatures onto the adopted entries: clean or not, the accepted ABI
     // and the proposal both carry the current shape under the committed identity.
     record_signatures_into(program, &mut proposal_entries, None);
-    if !has_pending_intent && lock_adopts_source_cleanly(program, source, lock) {
+    // A kept consumed rename or retire block resolves against the seeded catalog exactly as it
+    // does against a present store: a rename whose old spelling the lock carries as an alias, and a
+    // retire whose path the lock's ledger reconstructs as a reserved row, are already recorded, not
+    // unresolved. Only an intent naming nothing the seed reconstructs is a `check.evolve_target`.
+    let unresolved_intent =
+        report_seeded_unresolved_intents(evolve, &proposal_entries, source, diagnostics);
+    if !unresolved_intent && lock_adopts_source_cleanly(program, source, lock) {
         return Ok(FirstRunOutcome::Accepted(CatalogMetadata::new(
             lock.epoch_high_water,
             proposal_entries,
@@ -907,6 +913,49 @@ fn adopt_or_mint_first_run(
         lock.epoch_high_water,
         proposal_entries,
     )?))
+}
+
+/// Resolve the evolve renames and retires against the seeded first-run catalog, reporting only
+/// those that name nothing the seed reconstructs. A kept consumed rename — its old spelling carried
+/// as an alias on the active seeded entry — and a kept consumed retire — its path reconstructed as
+/// a reserved row from the lock's ledger — are already recorded and push no diagnostic, exactly as
+/// they resolve against a present store. The seeded entries are not mutated: the lock already
+/// reflects the post-transition state, so this only classifies each intent as consumed or
+/// genuinely unresolvable. Returns whether any intent was reported unresolved.
+fn report_seeded_unresolved_intents(
+    evolve: &EvolveIntents,
+    seeded_entries: &[CatalogEntry],
+    source: &CatalogSource,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) -> bool {
+    let before = diagnostics.len();
+    let seeded = CatalogMetadata::new(0, seeded_entries.to_vec());
+    let Ok(seeded) = seeded else {
+        // A seeded catalog that fails its identity invariants is reported by the caller's
+        // proposal validation; resolution against it would be meaningless, so treat every intent
+        // as unresolved rather than silently accept it.
+        return !evolve.renames.is_empty() || !evolve.retires.is_empty();
+    };
+    let accepted_index = AcceptedCatalog::new(&seeded);
+    let source_catalog = SourceCatalog::new(&source.entries);
+    resolve_renames(
+        &accepted_index,
+        &source_catalog,
+        &evolve.renames,
+        diagnostics,
+    );
+    for retire in &evolve.retires {
+        // A `Rejected` retire has already pushed its typed diagnostic; `Consumed` and `Active`
+        // are both legitimate resolutions of a kept block against the seeded reserved row.
+        let _ = retire_target(
+            seeded_entries,
+            &accepted_index,
+            &source_catalog,
+            retire,
+            diagnostics,
+        );
+    }
+    diagnostics.len() != before
 }
 
 /// Whether the committed lock adopts the current source as its exact accepted reference. The
@@ -1000,10 +1049,10 @@ fn adopt_first_run_entries_with<E: CatalogIdEntropy>(
     mut allocator: StableIdAllocator<E>,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) -> Result<Option<Vec<CatalogEntry>>, CatalogProposalError> {
-    let committed: HashMap<(CatalogEntryKind, &str), &str> = lock
+    let committed: HashMap<(CatalogEntryKind, &str), &LockEntry> = lock
         .entries
         .iter()
-        .map(|entry| ((entry.kind, entry.path.as_str()), entry.stable_id.as_str()))
+        .map(|entry| ((entry.kind, entry.path.as_str()), entry))
         .collect();
     let reserved: HashMap<(CatalogEntryKind, &str), CatalogEntry> = ledger
         .iter()
@@ -1023,7 +1072,9 @@ fn adopt_first_run_entries_with<E: CatalogIdEntropy>(
             continue;
         }
         let entry = match committed.get(&(source.kind, source.path.as_str())) {
-            Some(stable_id) => proposed_catalog_entry_with_id(source, stable_id),
+            Some(committed) => {
+                adopted_catalog_entry(source, &committed.stable_id, &committed.aliases)
+            }
             None => proposed_catalog_entry(source, &mut allocator)?,
         };
         proposal_entries.push(entry);
@@ -1106,15 +1157,27 @@ fn lock_corrupt_diagnostic(
     )
 }
 
-/// A proposed first-run catalog entry carrying a specific stable id, whether adopted from the
-/// committed lock by `(kind, path)` or freshly minted. Shares the lifecycle and empty-signature
-/// shape [`proposed_catalog_entry`] mints.
+/// A proposed first-run catalog entry carrying a specific freshly-minted stable id. Shares the
+/// lifecycle and empty-signature shape [`proposed_catalog_entry`] mints, recording no aliases — a
+/// minted entity has no prior spelling to carry forward.
 fn proposed_catalog_entry_with_id(source: &SourceCatalogEntry, stable_id: &str) -> CatalogEntry {
+    adopted_catalog_entry(source, stable_id, &[])
+}
+
+/// A first-run catalog entry adopting a committed lock identity: the committed stable id and the
+/// rename aliases the lock records at this `(kind, path)`. Reconstructing the aliases is what lets
+/// a fresh checkout resolve a kept consumed rename block's old-spelling carry-forward against the
+/// seed-from-lock catalog exactly as it resolves against a present store.
+fn adopted_catalog_entry(
+    source: &SourceCatalogEntry,
+    stable_id: &str,
+    aliases: &[String],
+) -> CatalogEntry {
     CatalogEntry {
         kind: source.kind,
         path: source.path.clone(),
         stable_id: stable_id.to_string(),
-        aliases: Vec::new(),
+        aliases: aliases.to_vec(),
         lifecycle: CatalogLifecycle::Active,
         accepted_key_shape: None,
         accepted_index_shape: None,
@@ -2724,6 +2787,148 @@ mod tests {
             advance_epoch(9, 3),
             10,
             "max favors the larger accepted epoch"
+        );
+    }
+
+    /// A committed lock entry carrying `stable_id` and a rename `alias` for `(kind, path)`, the
+    /// fingerprint over the active shape. A fresh checkout reconstructs the alias onto the adopted
+    /// entry, so a kept consumed rename block resolves its old spelling against the seed.
+    fn committed_lock_entry_with_alias(
+        kind: CatalogEntryKind,
+        path: &str,
+        stable_id: &str,
+        alias: &str,
+    ) -> marrow_catalog::LockEntry {
+        let entry = CatalogEntry {
+            aliases: vec![alias.to_string()],
+            ..active_entry(kind, path, stable_id)
+        };
+        marrow_catalog::LockEntry::from_catalog_entry(&entry)
+    }
+
+    fn rename(from_path: &str, to_path: &str) -> RenameIntent {
+        RenameIntent {
+            from_path: from_path.to_string(),
+            to_path: to_path.to_string(),
+            file: std::path::PathBuf::from("src/books.mw"),
+            span: SourceSpan::default(),
+        }
+    }
+
+    /// A fresh checkout seeded from a lock that carries a renamed enum category's old spelling as
+    /// an alias resolves a KEPT consumed category-rename block as already-recorded, not as an
+    /// unresolvable `check.evolve_target`. The category and its descendant leaf both carry their
+    /// old spellings forward as aliases the seeded catalog reconstructs.
+    #[test]
+    fn first_run_seeds_a_kept_enum_category_rename_block_from_lock_aliases() {
+        let program = CheckedProgram::default();
+        let category_id = fixed_id(0xc1);
+        let leaf_id = fixed_id(0xc2);
+        let source_entries = vec![
+            source_entry(CatalogEntryKind::EnumMember, "pets::Pet::beast"),
+            source_entry(CatalogEntryKind::EnumMember, "pets::Pet::beast::dog"),
+        ];
+        let source = CatalogSource {
+            duplicate_keys: duplicate_source_keys(&source_entries),
+            entries: source_entries,
+        };
+        let committed = lock(
+            vec![
+                committed_lock_entry_with_alias(
+                    CatalogEntryKind::EnumMember,
+                    "pets::Pet::beast",
+                    &category_id,
+                    "pets::Pet::mammal",
+                ),
+                committed_lock_entry_with_alias(
+                    CatalogEntryKind::EnumMember,
+                    "pets::Pet::beast::dog",
+                    &leaf_id,
+                    "pets::Pet::mammal::dog",
+                ),
+            ],
+            Vec::new(),
+            4,
+        );
+        let mut evolve = EvolveIntents::default();
+        evolve
+            .renames
+            .push(rename("pets::Pet::mammal", "pets::Pet::beast"));
+
+        let mut diagnostics = Vec::new();
+        let Ok(outcome) = adopt_or_mint_first_run(
+            &program,
+            &evolve,
+            &source,
+            Some(&committed),
+            &mut diagnostics,
+        ) else {
+            panic!("seeding a kept category-rename block binds");
+        };
+        assert!(
+            matches!(
+                outcome,
+                FirstRunOutcome::Accepted(_) | FirstRunOutcome::Proposal(_)
+            ),
+            "a kept consumed category rename seeds rather than refusing"
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .all(|diagnostic| diagnostic.code != CHECK_EVOLVE_TARGET),
+            "a kept consumed category rename is already recorded, not an evolve-target failure: {diagnostics:#?}"
+        );
+    }
+
+    /// A rename whose old spelling the seeded catalog records nowhere — neither as an active alias
+    /// nor a reserved row — still fails closed `check.evolve_target`. The alias projection narrows
+    /// the consumed case; it never blesses a genuinely-unresolvable target.
+    #[test]
+    fn first_run_reports_a_genuinely_unresolvable_rename_target() {
+        let program = CheckedProgram::default();
+        let id = fixed_id(0xd1);
+        let source_entries = vec![source_entry(
+            CatalogEntryKind::ResourceMember,
+            "books::Book::label",
+        )];
+        let source = CatalogSource {
+            duplicate_keys: duplicate_source_keys(&source_entries),
+            entries: source_entries,
+        };
+        // The lock records `Book.label` with NO alias: nothing named `Book.ghost` was ever
+        // accepted, so the rename relocates nothing.
+        let committed = lock(
+            vec![committed_lock_entry(
+                CatalogEntryKind::ResourceMember,
+                "books::Book::label",
+                &id,
+                None,
+            )],
+            Vec::new(),
+            4,
+        );
+        let mut evolve = EvolveIntents::default();
+        evolve
+            .renames
+            .push(rename("books::Book::ghost", "books::Book::label"));
+
+        let mut diagnostics = Vec::new();
+        assert!(
+            adopt_or_mint_first_run(
+                &program,
+                &evolve,
+                &source,
+                Some(&committed),
+                &mut diagnostics
+            )
+            .is_ok(),
+            "an unresolvable rename still binds a proposal"
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == CHECK_EVOLVE_TARGET),
+            "a rename naming nothing the seed reconstructs fails closed: {diagnostics:#?}"
         );
     }
 

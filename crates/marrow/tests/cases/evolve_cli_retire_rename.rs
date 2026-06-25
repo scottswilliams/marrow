@@ -1295,6 +1295,67 @@ fn run_succeeds_after_rename_apply_with_block_present_or_deleted()
     Ok(())
 }
 
+// A fresh checkout that re-seeds from the committed lock must resolve a KEPT consumed rename
+// block exactly as a present store does. The committed lock projects the rename's old spelling
+// as an alias, so the seed-reconstructed accepted catalog records `Book.subtitle` as an alias of
+// `Book.blurb` and the kept block reads as already-recorded — not as an unresolvable
+// `check.evolve_target`. Deleting `.data` while keeping the source and committed lock is the
+// disposable-store case the seed path handles.
+#[test]
+fn a_fresh_checkout_seeds_a_kept_rename_block_from_the_lock()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = native_books_project("rename-block-fresh-checkout", BLOCK_BASELINE_SOURCE);
+    let accepted = commit_catalog(&root);
+    let accepted_place = root_place(&accepted, "books")?;
+
+    let baseline = marrow(&["run", "--entry", "books::seed", root.to_str().unwrap()]);
+    assert_eq!(
+        baseline.status.code(),
+        Some(0),
+        "baseline run: {baseline:?}"
+    );
+    {
+        let store = open_native_store(&root);
+        seed_member(
+            &store,
+            &accepted_place,
+            2,
+            "subtitle",
+            Scalar::Str("sub".into()),
+        );
+    }
+
+    write(&root, "src/books.mw", RENAME_BLOCK_SOURCE);
+    let apply = marrow(&["evolve", "apply", root.to_str().unwrap()]);
+    assert_eq!(apply.status.code(), Some(0), "rename apply: {apply:?}");
+
+    // Present store, kept block: the control that must already pass.
+    let present = marrow(&["check", root.to_str().unwrap()]);
+    assert_eq!(
+        present.status.code(),
+        Some(0),
+        "present-store check with the kept rename block: {present:?}"
+    );
+
+    // Fresh checkout: wipe the store body, keep the source and committed lock.
+    fs::remove_dir_all(root.join(".data")).expect("wipe the store body");
+
+    let check = marrow(&["check", root.to_str().unwrap()]);
+    assert_eq!(
+        check.status.code(),
+        Some(0),
+        "fresh-checkout check with the kept rename block must seed from the lock: {check:?}"
+    );
+    let run = marrow(&["run", "--entry", "books::seed", root.to_str().unwrap()]);
+    assert_eq!(
+        run.status.code(),
+        Some(0),
+        "fresh-checkout run with the kept rename block must seed from the lock: {run:?}"
+    );
+
+    Ok(())
+}
+
 /// Durable never-reuse survives lock loss: a retired id lives in the store catalog as a
 /// reserved entry, so the committed lock's id ledger is re-derivable from the store alone.
 /// After a retire, deleting `marrow.lock` and re-opening on a write (commit) path recovers the
@@ -1537,6 +1598,74 @@ fn run_succeeds_after_retire_apply_with_block_present_or_deleted()
         deleted.status.code(),
         Some(0),
         "run after deleting the consumed retire block: {deleted:?}"
+    );
+
+    Ok(())
+}
+
+// A fresh checkout that re-seeds from the committed lock must resolve a KEPT consumed retire
+// block exactly as a present store does. The committed lock's ledger tombstone reconstructs the
+// reserved entry at the retired path, so the kept block reads as consumed against the reserved
+// row — not as an unresolvable `check.evolve_target`.
+#[test]
+fn a_fresh_checkout_seeds_a_kept_retire_block_from_the_lock()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = native_books_project("retire-block-fresh-checkout", BLOCK_BASELINE_SOURCE);
+    let accepted = commit_catalog(&root);
+    let accepted_place = root_place(&accepted, "books")?;
+    let subtitle_id = member_catalog_id(&accepted_place, "subtitle")?;
+
+    let baseline = marrow(&["run", "--entry", "books::seed", root.to_str().unwrap()]);
+    assert_eq!(
+        baseline.status.code(),
+        Some(0),
+        "baseline run: {baseline:?}"
+    );
+    {
+        let store = open_native_store(&root);
+        seed_member(
+            &store,
+            &accepted_place,
+            2,
+            "subtitle",
+            Scalar::Str("sub".into()),
+        );
+    }
+
+    write(&root, "src/books.mw", RETIRE_BLOCK_SOURCE);
+    let apply = marrow(&[
+        "evolve",
+        "apply",
+        "--maintenance",
+        "--approve-retire",
+        &format!("{subtitle_id}:1"),
+        "--no-backup",
+        root.to_str().expect("project path utf-8"),
+    ]);
+    assert_eq!(apply.status.code(), Some(0), "retire apply: {apply:?}");
+
+    // Present store, kept block: the control that must already pass.
+    let present = marrow(&["check", root.to_str().unwrap()]);
+    assert_eq!(
+        present.status.code(),
+        Some(0),
+        "present-store check with the kept retire block: {present:?}"
+    );
+
+    // Fresh checkout: wipe the store body, keep the source and committed lock.
+    fs::remove_dir_all(root.join(".data")).expect("wipe the store body");
+
+    let check = marrow(&["check", root.to_str().unwrap()]);
+    assert_eq!(
+        check.status.code(),
+        Some(0),
+        "fresh-checkout check with the kept retire block must seed from the lock: {check:?}"
+    );
+    let run = marrow(&["run", "--entry", "books::seed", root.to_str().unwrap()]);
+    assert_eq!(
+        run.status.code(),
+        Some(0),
+        "fresh-checkout run with the kept retire block must seed from the lock: {run:?}"
     );
 
     Ok(())

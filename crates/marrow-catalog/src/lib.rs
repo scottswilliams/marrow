@@ -321,6 +321,9 @@ impl CatalogLock {
 
     fn canonical(&self) -> Self {
         let mut entries = self.entries.clone();
+        for entry in &mut entries {
+            entry.aliases.sort();
+        }
         entries.sort_by(|left, right| left.stable_id.cmp(&right.stable_id));
         let mut ledger = self.ledger.clone();
         ledger.sort_by(|left, right| left.id.cmp(&right.id));
@@ -373,12 +376,32 @@ impl CatalogLock {
             }
             // First-run adoption resolves a source declaration to its committed id by
             // `(kind, path)`, so a duplicate anchor would bind two committed ids to one
-            // declaration. Reject it here rather than silently adopt an arbitrary one.
+            // declaration. Reject it here rather than silently adopt an arbitrary one. A rename
+            // alias is a reserved old spelling at the same kind, so it shares the anchor namespace:
+            // an alias colliding with another entry's canonical path or alias is the same
+            // double-bind and is rejected here too.
             if !keys.insert((entry.kind, entry.path.as_str())) {
                 return Err(CatalogError::lock_corrupt(format!(
                     "entry path `{}` for `{:?}` appears twice",
                     entry.path, entry.kind
                 )));
+            }
+            for alias in &entry.aliases {
+                if alias.is_empty() {
+                    return Err(CatalogError::lock_corrupt("entry alias must not be empty"));
+                }
+                reject_lock_nul("entry alias", alias)?;
+                if alias == &entry.path {
+                    return Err(CatalogError::lock_corrupt(format!(
+                        "entry alias `{alias}` repeats its canonical path"
+                    )));
+                }
+                if !keys.insert((entry.kind, alias.as_str())) {
+                    return Err(CatalogError::lock_corrupt(format!(
+                        "entry alias `{}` for `{:?}` appears twice",
+                        alias, entry.kind
+                    )));
+                }
             }
         }
         Ok(ActiveLockKeys { ids, keys })
@@ -465,6 +488,13 @@ pub struct LockEntry {
     pub path: String,
     pub stable_id: String,
     pub lifecycle: CatalogLifecycle,
+    /// The old `(kind, path)` spellings a rename carried forward onto this canonical path. A fresh
+    /// checkout seeded from the lock reconstructs these aliases onto the adopted entry, so a kept
+    /// consumed rename block resolves its old-spelling carry-forward against the seed-from-lock
+    /// catalog exactly as it resolves against a present store. Empty for an entry that was never
+    /// renamed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aliases: Vec<String>,
     /// A `sha256:`-prefixed fold of the entry kind and its accepted shape fields, so two entries
     /// fingerprint identically exactly when their kind and shape match: a key-shape, struct-leaf,
     /// or index-uniqueness change shifts the fingerprint, while a pure rename preserving the shape
@@ -484,6 +514,7 @@ impl LockEntry {
             path: entry.path.clone(),
             stable_id: entry.stable_id.clone(),
             lifecycle: entry.lifecycle,
+            aliases: entry.aliases.clone(),
             shape_fingerprint: shape_fingerprint(entry),
         }
     }
