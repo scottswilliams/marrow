@@ -1409,6 +1409,11 @@ fn open_run_store(
     notices: &mut Vec<ProjectSessionNotice>,
 ) -> Result<OpenRunStore, ProjectSessionError> {
     if !isolate_writes {
+        // A `dataDir` occupied by a non-directory is a configuration fault, not a store
+        // failure. Classify it through the shared guard before any open — the lock-root
+        // witness opens the store directly, so without this the stray file's `ENOTDIR`
+        // would leak as a raw `store.io` whenever a committed lock records active roots.
+        marrow_check::guard_data_dir(root, config)?;
         guard_committed_lock_roots(root, config)?;
         if store_absent_with_committed_lock(root, config)? {
             notices.push(ProjectSessionNotice::SeededFromCommittedLock);

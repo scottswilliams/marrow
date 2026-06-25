@@ -105,6 +105,55 @@ fn a_data_dir_occupied_by_a_file_reports_an_accurate_directory_fault() {
 }
 
 #[test]
+fn a_data_dir_occupied_by_a_file_reports_a_config_fault_with_a_committed_lock() {
+    // A committed `marrow.lock` recording active roots must not change how an occupied
+    // `dataDir` is classified: replacing the store directory with a regular file is the
+    // same configuration fault whether or not a lock is present. The lock-present write
+    // path must report `config.data_dir` with the directory-creation remedy, exactly as
+    // the no-lock first run does, never leaking the store open's raw `ENOTDIR` as `store.io`.
+    let root = temp_project("run-data-dir-occupied-lock", |root| {
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".data" }, "run": { "defaultEntry": "app::main" } }"#,
+        );
+        write(
+            root,
+            "src/app.mw",
+            "module app\n\nresource Book\n    required title: string\nstore ^books(id: int): Book\n\npub fn main()\n    print(\"hi\")\n",
+        );
+    });
+    // The commit left the store under `.data`; occupy that path with a regular file so the
+    // committed lock still records active roots while the store directory cannot be created.
+    let data = root.join(".data");
+    std::fs::remove_dir_all(&data).expect("remove committed store directory");
+    write(&root, ".data", "not a directory");
+
+    let output = marrow_sub("run", &[root.to_str().unwrap()]);
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let fault = parse_fault(&output.stderr);
+    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+    assert_eq!(
+        fault.code.as_str(),
+        "config.data_dir",
+        "a committed lock must not reclassify the occupied dataDir as store.io: {stderr}"
+    );
+    assert!(
+        !stderr.contains("store.io") && !stderr.contains("os error"),
+        "the lock-present path must not leak a store.io errno: {stderr}"
+    );
+    assert!(
+        stderr.contains("occupied by a non-directory file"),
+        "the lock-present path emits the same clean prose: {stderr}"
+    );
+    assert!(
+        stderr.contains(".data") && stderr.contains("create") && stderr.contains("dataDir"),
+        "the fault must name the dataDir directory it could not create: {stderr}"
+    );
+}
+
+#[test]
 #[cfg(unix)]
 fn a_data_dir_occupied_by_a_fifo_or_symlink_loop_reports_clean_directory_prose() {
     // A FIFO or a self-referential symlink occupying the native `dataDir` is the same
