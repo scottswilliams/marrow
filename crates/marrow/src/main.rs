@@ -499,10 +499,13 @@ fn project_diagnostic_lines(report: &marrow_check::CheckReport) -> Vec<String> {
     lines
 }
 
-/// Project diagnostics carry no `help` or byte offsets: they are reported at a
-/// declaration site rather than a byte span.
+/// Project diagnostics are reported at a declaration site rather than a byte
+/// span. A typed payload that carries an actionable remedy (a suggested index)
+/// surfaces in the envelope as both the human `help` line and a structured
+/// `data` field, so a machine consumer sees the same remedy the text renderer
+/// prints.
 fn check_diagnostic_record(diagnostic: &marrow_check::CheckDiagnostic) -> serde_json::Value {
-    serde_json::Value::Object(envelope(
+    let mut record = envelope(
         diagnostic,
         json!({
             "file": diagnostic.file.display().to_string(),
@@ -510,15 +513,36 @@ fn check_diagnostic_record(diagnostic: &marrow_check::CheckDiagnostic) -> serde_
             "column": diagnostic.span.column,
         }),
         Some(diagnostic.severity.as_str()),
-        None,
-    ))
+        check_diagnostic_payload_text(diagnostic)
+            .as_deref()
+            .map(Some),
+    );
+    if let Some(data) = check_diagnostic_payload_data(diagnostic) {
+        record.insert("data".into(), serde_json::Value::Object(data));
+    }
+    serde_json::Value::Object(record)
 }
 
+/// The `help` line for a diagnostic's typed payload, owned here so the text and
+/// JSON renderers share one remedy spelling.
 fn check_diagnostic_payload_text(diagnostic: &marrow_check::CheckDiagnostic) -> Option<String> {
     match &diagnostic.payload {
         marrow_check::DiagnosticPayload::SuggestedIndex { declaration } => {
             Some(format!("add: {declaration}"))
         }
+        _ => None,
+    }
+}
+
+/// The structured `data` for a diagnostic's typed payload, so a machine consumer
+/// reads the remedy as a field rather than parsing the `help` prose.
+fn check_diagnostic_payload_data(
+    diagnostic: &marrow_check::CheckDiagnostic,
+) -> Option<serde_json::Map<String, serde_json::Value>> {
+    match &diagnostic.payload {
+        marrow_check::DiagnosticPayload::SuggestedIndex { declaration } => Some(
+            serde_json::Map::from_iter([("suggested_index".into(), json!(declaration))]),
+        ),
         _ => None,
     }
 }

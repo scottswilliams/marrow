@@ -262,6 +262,96 @@ fn check_text_renders_suggested_index_add_line() {
     );
 }
 
+fn suggested_index_diagnostic(report: &Value) -> &Value {
+    report["diagnostics"]
+        .as_array()
+        .expect("diagnostics array")
+        .iter()
+        .find(|diagnostic| diagnostic["code"] == "check.collection_unsupported")
+        .expect("collection_unsupported diagnostic")
+}
+
+#[test]
+fn check_json_carries_suggested_index_remedy() {
+    let dir = project_with_source(
+        "suggested-index-json",
+        "src/app.mw",
+        "module app\n\
+         resource Book\n\
+         \x20   shelf: string\n\
+         store ^books(id: int): Book\n\
+         pub fn countByShelf(shelf: string)\n\
+         \x20   const n = count(^books.byShelf(shelf))\n",
+    );
+
+    let output = check_json(dir.path());
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let report: Value = serde_json::from_slice(&output.stdout).expect("json envelope");
+    let diagnostic = suggested_index_diagnostic(&report);
+    assert_eq!(
+        diagnostic["help"], "add: index byShelf(shelf, id)",
+        "{report:#?}"
+    );
+    assert_eq!(
+        diagnostic["data"]["suggested_index"], "index byShelf(shelf, id)",
+        "{report:#?}"
+    );
+}
+
+#[test]
+fn check_jsonl_carries_suggested_index_remedy() {
+    let dir = project_with_source(
+        "suggested-index-jsonl",
+        "src/app.mw",
+        "module app\n\
+         resource Book\n\
+         \x20   shelf: string\n\
+         store ^books(id: int): Book\n\
+         pub fn countByShelf(shelf: string)\n\
+         \x20   const n = count(^books.byShelf(shelf))\n",
+    );
+
+    let output = check_jsonl(dir.path());
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let stdout = String::from_utf8(output.stdout).expect("stdout utf8");
+    let diagnostic = stdout
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).expect("jsonl record"))
+        .find(|record| record["code"] == "check.collection_unsupported")
+        .expect("collection_unsupported record");
+    assert_eq!(diagnostic["help"], "add: index byShelf(shelf, id)");
+    assert_eq!(
+        diagnostic["data"]["suggested_index"],
+        "index byShelf(shelf, id)"
+    );
+}
+
+#[test]
+fn check_json_omits_suggested_index_fields_for_other_diagnostics() {
+    let dir = temp_project_dir("suggested-index-json-other");
+    fs::write(
+        dir.join("marrow.json"),
+        r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" } }"#,
+    )
+    .expect("write config");
+    fs::write(
+        dir.join("src/shelf.mw"),
+        "module shelf\nresource Book\n    note: unknown\nstore ^books(id: int): Book\n",
+    )
+    .expect("write source");
+
+    let output = check_json(dir.path());
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let report: Value = serde_json::from_slice(&output.stdout).expect("json envelope");
+    for diagnostic in report["diagnostics"].as_array().expect("diagnostics array") {
+        assert!(diagnostic.get("data").is_none(), "{diagnostic:#?}");
+        assert_eq!(diagnostic["help"], Value::Null, "{diagnostic:#?}");
+    }
+}
+
 #[test]
 fn check_text_does_not_render_suggested_index_for_coalesce_value_context() {
     let dir = project_with_source(
