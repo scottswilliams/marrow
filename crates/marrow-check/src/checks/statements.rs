@@ -310,8 +310,8 @@ impl StatementCheck<'_> {
                 self.required_fields.invalidate_all();
             }
             Statement::ReturnAbsent { .. } => self.required_fields.invalidate_all(),
-            Statement::Throw { value, span } => {
-                self.check_throw(value, *span);
+            Statement::Throw { value, .. } => {
+                self.check_throw(value);
                 self.required_fields.invalidate_all();
             }
             Statement::Expr { value, .. } => {
@@ -771,7 +771,7 @@ impl StatementCheck<'_> {
         // collection-subject position surfaces its key-argument and structural
         // diagnostics while leaving the value-read partial-key gate silent, so the
         // dedicated partial-key delete rejection below is the single root cause.
-        infer_collection_subject_type_with_read_scope(
+        let subject_type = infer_collection_subject_type_with_read_scope(
             self.program,
             path,
             self.scope,
@@ -802,7 +802,41 @@ impl StatementCheck<'_> {
                 path.span(),
                 "a partially keyed layer addresses an inner sub-layer, not a deletable entry; supply every key column to delete an entry",
             ));
+        } else if !target_already_blamed(&subject_type) && !self.delete_target_is_addressable(path)
+        {
+            self.diagnostics.push(CheckDiagnostic::error(
+                crate::rules::CHECK_INVALID_ASSIGN_TARGET,
+                self.file,
+                path.span(),
+                "a delete addresses a saved path or a local collection entry; this is neither a deletable place",
+            ));
         }
+    }
+
+    /// Whether `path` names a place a delete can remove: a saved path (a record, a
+    /// keyed-layer entry, a saved field) or a positional/keyed delete on a local
+    /// collection. A resolved-but-non-saved target — a bare scalar local, a parameter,
+    /// or a literal — addresses no such place, so deleting it is a check error rather
+    /// than a deferred runtime fault. A target whose read inference already failed
+    /// (unresolved, unknown type or member) is gated out by the caller so it reports
+    /// once, not here.
+    ///
+    /// A saved store root applied to keys (`^books(1)`) does not lower to a standalone
+    /// executable expression, so a `None` lowering is treated as addressable; the
+    /// preceding saved-path branches in the caller already reject the saved shapes that
+    /// are not deletable places.
+    fn delete_target_is_addressable(&self, path: &marrow_syntax::Expression) -> bool {
+        let Some(checked) = lower_expr_for_file(self.program, self.file, path, self.scope) else {
+            return true;
+        };
+        checked.saved_place().is_some()
+            || matches!(
+                &checked,
+                crate::CheckedExpr::Call {
+                    target: crate::CheckedCallTarget::LocalCollection { .. },
+                    ..
+                }
+            )
     }
 
     fn check_return(&mut self, value: Option<&marrow_syntax::Expression>) {
@@ -828,10 +862,10 @@ impl StatementCheck<'_> {
         }
     }
 
-    fn check_throw(&mut self, value: &marrow_syntax::Expression, span: SourceSpan) {
+    fn check_throw(&mut self, value: &marrow_syntax::Expression) {
         let value_type = self.infer(value);
         self.check_range_value(value);
-        check_throw_type(self.file, span, &value_type, self.diagnostics);
+        check_throw_type(self.file, value.span(), &value_type, self.diagnostics);
     }
 
     fn check_condition_expr(&mut self, condition: &marrow_syntax::Expression) {
@@ -1415,6 +1449,16 @@ fn target_has_saved_address_diagnostic(
                     | crate::rules::CHECK_INVALID_ASSIGN_TARGET
             )
     })
+}
+
+/// Whether inferring the delete target as a read already produced a primary
+/// diagnostic for it. An unresolved name, an unknown declared type, or an unknown
+/// member each yields `Unknown` or `Invalid` here, having already blamed the target;
+/// the addressability rejection gates on this so an already-erroring target reports
+/// once, not twice. A resolved, well-formed but non-saved target keeps a concrete
+/// type and still earns the single addressability error.
+fn target_already_blamed(subject_type: &MarrowType) -> bool {
+    matches!(subject_type, MarrowType::Invalid | MarrowType::Unknown)
 }
 
 fn span_contains(outer: SourceSpan, inner: SourceSpan) -> bool {

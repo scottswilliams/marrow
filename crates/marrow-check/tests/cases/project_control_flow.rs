@@ -5,7 +5,8 @@ use marrow_check::{
 use marrow_project::parse_config;
 
 use support::{
-    assert_clean, check_module, check_module_report, check_script, temp_project, with_code, write,
+    assert_clean, check_module, check_module_report, check_script, check_script_report,
+    temp_project, with_code, write,
 };
 
 /// Check a project whose `src/app.mw` library declares `app_src` and whose
@@ -197,6 +198,99 @@ fn throwing_an_error_value_is_allowed() {
         "throw-error",
         "fn f()\n    throw Error(code: \"test.error\", message: \"oops\")\n",
         "check.throw_type",
+    );
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn throw_type_mismatch_spans_the_thrown_value_not_the_keyword() {
+    // The blamed node is the thrown value, so the diagnostic points at the literal
+    // (column 11, after `    throw `), not the `throw` keyword.
+    let found = check_script(
+        "throw-span",
+        "fn f()\n    throw \"oops\"\n",
+        "check.throw_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+    assert_eq!(found[0].span.line, 2, "{:#?}", found[0]);
+    assert_eq!(found[0].span.column, 11, "{:#?}", found[0]);
+}
+
+#[test]
+fn delete_of_a_non_saved_target_is_rejected_at_check() {
+    // A delete addresses a saved path; a bare scalar local, a parameter, or a
+    // literal is no deletable place and must fault at check, not as a deferred
+    // run.unsupported.
+    for (name, src) in [
+        ("delete-local", "fn f()\n    var x = 1\n    delete x\n"),
+        ("delete-param", "fn f(x: int)\n    delete x\n"),
+        ("delete-literal", "fn f()\n    delete 1\n"),
+    ] {
+        let found = check_script(name, src, "check.invalid_assign_target");
+        assert_eq!(found.len(), 1, "{name}: {found:#?}");
+    }
+}
+
+#[test]
+fn delete_of_an_unresolved_name_reports_only_the_resolution_error() {
+    // An unresolved delete target already carries `check.unresolved_name`; the
+    // addressability rejection must not stack a second `check.invalid_assign_target`
+    // on the same span.
+    let report = check_script_report("delete-unresolved", "fn f()\n    delete nonexistent\n");
+    let unresolved = with_code(&report, "check.unresolved_name");
+    assert_eq!(unresolved.len(), 1, "{report:#?}");
+    assert!(
+        with_code(&report, "check.invalid_assign_target").is_empty(),
+        "{report:#?}"
+    );
+}
+
+#[test]
+fn delete_of_an_already_erroring_target_reports_only_the_target_error() {
+    // A malformed delete target already carries a blaming diagnostic — an unknown
+    // member or an unknown declared type. The addressability rejection must not stack a
+    // second `check.invalid_assign_target`; the target error stands alone, just as the
+    // unresolved-name case does.
+    let cases: &[(&str, &str, &str)] = &[
+        (
+            "delete-unknown-member",
+            "module m\n\
+             resource Book\n    title: string\n\
+             fn f(b: Book)\n    delete b.bogus\n",
+            "check.unknown_field",
+        ),
+        (
+            "delete-unknown-type",
+            "module m\n\
+             fn f(b: Nope)\n    delete b.x\n",
+            "check.unknown_type",
+        ),
+    ];
+    for (name, src, blame) in cases {
+        let report = check_module_report(name, src);
+        assert_eq!(
+            with_code(&report, blame).len(),
+            1,
+            "{name}: {:#?}",
+            report.diagnostics
+        );
+        assert!(
+            with_code(&report, "check.invalid_assign_target").is_empty(),
+            "{name}: {:#?}",
+            report.diagnostics
+        );
+    }
+}
+
+#[test]
+fn delete_of_a_saved_record_is_allowed() {
+    let found = check_module(
+        "delete-saved",
+        "module books\n\
+         resource Book\n    title: string\n\
+         store ^books(id: int): Book\n\
+         pub fn f()\n    delete ^books(1)\n",
+        "check.invalid_assign_target",
     );
     assert!(found.is_empty(), "{found:#?}");
 }

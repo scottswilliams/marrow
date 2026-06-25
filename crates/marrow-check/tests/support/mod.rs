@@ -137,6 +137,12 @@ pub fn check_module_report(name: &str, src: &str) -> CheckReport {
     check_module_report_at(name, "src/m.mw", src)
 }
 
+/// Check a single script `src` placed at `src/app.mw` and return its whole report, for
+/// tests that assert across several codes rather than filtering for one.
+pub fn check_script_report(name: &str, src: &str) -> CheckReport {
+    check_module_report_at(name, "src/app.mw", src)
+}
+
 fn check_module_report_at(name: &str, relative: &str, src: &str) -> CheckReport {
     let root = temp_project(name, |root| write(root, relative, src));
     let (report, _program) = check_project(&root, &config()).expect("check");
