@@ -500,6 +500,244 @@ fn optional_enum_leaf_with_dropped_member_fails_closed() -> Result<(), Box<dyn s
     Ok(())
 }
 
+/// Re-parenting a populated enum leaf under a fresh `category` (with no `evolve rename`)
+/// is pending evolution work, not an auto-applicable change. The leaf's saved identity is
+/// keyed on its full ancestor path, so `Pet::dog` -> `Pet::mammal::dog` mints a new member
+/// identity and orphans the stored `Pet::dog`. The discharge must fail closed so a plain
+/// `run` fences to `evolve apply` rather than silently orphaning the value.
+#[test]
+fn reparenting_a_populated_enum_leaf_fails_closed() -> Result<(), Box<dyn std::error::Error>> {
+    let root = temp_project("discharge-enum-reparent", |root| {
+        write(
+            root,
+            "src/zoo.mw",
+            "module zoo\n\
+             enum Pet\n\
+             \x20   dog\n\
+             \x20   cat\n\
+             resource Animal\n\
+             \x20   required kind: Pet\n\
+             store ^animals(id: int): Animal\n\
+             pub fn add(): Id(^animals)\n\
+             \x20   return nextId(^animals)\n",
+        );
+    });
+    // Commit the flat enum, seed a record holding `Pet::dog`, then re-parent `dog`/`cat`
+    // under a new `category mammal` with no rename.
+    let program = commit_then_check(&root).expect("committed fixture");
+    let place = root_place(&program, "animals")?;
+    let kind_id = member_catalog_id(&place, "kind")?;
+    let pet_enum_id = enum_catalog_id(&program, "Pet")?;
+    let dog_member_id = enum_member_catalog_id(&program, "Pet", "dog")?;
+
+    let store = TreeStore::memory();
+    let seed = Seed::new(&store, &place);
+    seed.record(1);
+    seed.member_bytes_by_id(1, &kind_id, enum_value_bytes(&pet_enum_id, &dog_member_id));
+
+    write(
+        &root,
+        "src/zoo.mw",
+        "module zoo\n\
+         enum Pet\n\
+         \x20   category mammal\n\
+         \x20       dog\n\
+         \x20       cat\n\
+         resource Animal\n\
+         \x20   required kind: Pet\n\
+         store ^animals(id: int): Animal\n\
+         pub fn add(): Id(^animals)\n\
+         \x20   return nextId(^animals)\n",
+    );
+    let program = checked(&root).expect("checked fixture");
+
+    let (result, diagnostics) = preview(&program, &store).expect("preview");
+
+    assert_fails_closed(
+        &result,
+        &diagnostics,
+        &kind_id,
+        RepairReason::InvalidStoredValue,
+    );
+
+    Ok(())
+}
+
+/// A populated re-parent WITH an explicit `evolve rename` carrying the leaf's identity forward
+/// is how a developer activates a re-parent: the rename preserves the member's saved identity, so
+/// the stored value stays decodable and the change proves cleanly. This is the path `evolve apply`
+/// drives, the activation a plain `run` fences toward.
+#[test]
+fn reparenting_a_populated_enum_leaf_with_a_rename_proves() -> Result<(), Box<dyn std::error::Error>>
+{
+    let root = temp_project("discharge-enum-reparent-rename", |root| {
+        write(
+            root,
+            "src/zoo.mw",
+            "module zoo\n\
+             enum Pet\n\
+             \x20   dog\n\
+             \x20   cat\n\
+             resource Animal\n\
+             \x20   required kind: Pet\n\
+             store ^animals(id: int): Animal\n\
+             pub fn add(): Id(^animals)\n\
+             \x20   return nextId(^animals)\n",
+        );
+    });
+    let program = commit_then_check(&root).expect("committed fixture");
+    let place = root_place(&program, "animals")?;
+    let kind_id = member_catalog_id(&place, "kind")?;
+    let pet_enum_id = enum_catalog_id(&program, "Pet")?;
+    let dog_member_id = enum_member_catalog_id(&program, "Pet", "dog")?;
+
+    let store = TreeStore::memory();
+    let seed = Seed::new(&store, &place);
+    seed.record(1);
+    seed.member_bytes_by_id(1, &kind_id, enum_value_bytes(&pet_enum_id, &dog_member_id));
+
+    // Re-parent both members under `mammal`, naming the carry-forward explicitly.
+    write(
+        &root,
+        "src/zoo.mw",
+        "module zoo\n\
+         enum Pet\n\
+         \x20   category mammal\n\
+         \x20       dog\n\
+         \x20       cat\n\
+         resource Animal\n\
+         \x20   required kind: Pet\n\
+         store ^animals(id: int): Animal\n\
+         evolve\n\
+         \x20   rename Pet::dog -> Pet::mammal::dog\n\
+         \x20   rename Pet::cat -> Pet::mammal::cat\n\
+         pub fn add(): Id(^animals)\n\
+         \x20   return nextId(^animals)\n",
+    );
+    let program = checked(&root).expect("checked fixture");
+
+    let (result, diagnostics) = preview(&program, &store).expect("preview");
+
+    assert!(
+        result.is_activatable(),
+        "a re-parent with an identity-preserving rename must activate: {:#?}",
+        result.verdicts
+    );
+    assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+
+    Ok(())
+}
+
+/// Re-parenting an enum leaf over an EMPTY store is a free schema move: no stored value names
+/// the old identity, so there is nothing to orphan and the change stays activatable (a plain
+/// `run` auto-applies it). Only a populated re-parent is fenced.
+#[test]
+fn reparenting_an_enum_leaf_over_an_empty_store_proves() -> Result<(), Box<dyn std::error::Error>> {
+    let root = temp_project("discharge-enum-reparent-empty", |root| {
+        write(
+            root,
+            "src/zoo.mw",
+            "module zoo\n\
+             enum Pet\n\
+             \x20   dog\n\
+             \x20   cat\n\
+             resource Animal\n\
+             \x20   required kind: Pet\n\
+             store ^animals(id: int): Animal\n\
+             pub fn add(): Id(^animals)\n\
+             \x20   return nextId(^animals)\n",
+        );
+    });
+    let _program = commit_then_check(&root).expect("committed fixture");
+    write(
+        &root,
+        "src/zoo.mw",
+        "module zoo\n\
+         enum Pet\n\
+         \x20   category mammal\n\
+         \x20       dog\n\
+         \x20       cat\n\
+         resource Animal\n\
+         \x20   required kind: Pet\n\
+         store ^animals(id: int): Animal\n\
+         pub fn add(): Id(^animals)\n\
+         \x20   return nextId(^animals)\n",
+    );
+    let program = checked(&root).expect("checked fixture");
+    // An empty store: no record holds the old `Pet::dog` identity.
+    let store = TreeStore::memory();
+
+    let (result, diagnostics) = preview(&program, &store).expect("preview");
+
+    assert!(
+        result.is_activatable(),
+        "an empty-store re-parent must stay activatable: {:#?}",
+        result.verdicts
+    );
+    assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+
+    Ok(())
+}
+
+/// Reordering enum members keeps every member's full ancestor path, so each member's saved
+/// identity is unchanged and a stored value stays decodable. A populated reorder proves
+/// cleanly and a plain `run` auto-applies it.
+#[test]
+fn reordering_enum_members_over_populated_data_proves() -> Result<(), Box<dyn std::error::Error>> {
+    let root = temp_project("discharge-enum-reorder", |root| {
+        write(
+            root,
+            "src/zoo.mw",
+            "module zoo\n\
+             enum Pet\n\
+             \x20   dog\n\
+             \x20   cat\n\
+             resource Animal\n\
+             \x20   required kind: Pet\n\
+             store ^animals(id: int): Animal\n\
+             pub fn add(): Id(^animals)\n\
+             \x20   return nextId(^animals)\n",
+        );
+    });
+    let program = commit_then_check(&root).expect("committed fixture");
+    let place = root_place(&program, "animals")?;
+    let kind_id = member_catalog_id(&place, "kind")?;
+    let pet_enum_id = enum_catalog_id(&program, "Pet")?;
+    let dog_member_id = enum_member_catalog_id(&program, "Pet", "dog")?;
+
+    let store = TreeStore::memory();
+    let seed = Seed::new(&store, &place);
+    seed.record(1);
+    seed.member_bytes_by_id(1, &kind_id, enum_value_bytes(&pet_enum_id, &dog_member_id));
+
+    // Swap the member order; each member keeps its `Pet::<name>` path and stable identity.
+    write(
+        &root,
+        "src/zoo.mw",
+        "module zoo\n\
+         enum Pet\n\
+         \x20   cat\n\
+         \x20   dog\n\
+         resource Animal\n\
+         \x20   required kind: Pet\n\
+         store ^animals(id: int): Animal\n\
+         pub fn add(): Id(^animals)\n\
+         \x20   return nextId(^animals)\n",
+    );
+    let program = checked(&root).expect("checked fixture");
+
+    let (result, diagnostics) = preview(&program, &store).expect("preview");
+
+    assert!(
+        result.is_activatable(),
+        "an enum reorder over populated data must stay activatable: {:#?}",
+        result.verdicts
+    );
+    assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+
+    Ok(())
+}
+
 /// An optional enum leaf whose enum is UNCHANGED proves cleanly over a stored value: the
 /// shrank-enum trigger must not over-fire and force a scan (or a block) when no selectable
 /// member was dropped. This pins that an honest optional enum stays a no-op.

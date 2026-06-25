@@ -36,8 +36,8 @@ use crate::program::{CheckedProgram, EvolveDefault};
 
 use accepted_state::{
     accepted_member_leaves, accepted_member_structs, accepted_store_key_shapes,
-    classify_store_key_shape, enum_ids_with_renamed_member, proposal_changed_catalog_ids,
-    renamed_catalog_ids,
+    classify_store_key_shape, enum_ids_rename_covered, enum_ids_with_renamed_member,
+    proposal_changed_catalog_ids, renamed_catalog_ids,
 };
 use enum_shrink::{EnumMembers, ShrunkEnums};
 use leaf_obligations::discharge_root;
@@ -84,6 +84,7 @@ pub(crate) fn discharge(
 ) -> Result<Discharge, StoreError> {
     let renamed = renamed_catalog_ids(program);
     let renamed_enum_ids = enum_ids_with_renamed_member(program, &renamed);
+    let rename_covered_enum_ids = enum_ids_rename_covered(program, &renamed, &renamed_enum_ids);
     let mut acc = Accumulator::new(
         program.catalog.evolve_defaults.clone(),
         transforms::pending_transform_ids(program),
@@ -91,7 +92,7 @@ pub(crate) fn discharge(
         renamed_enum_ids,
         accepted_member_leaves(program),
     );
-    let enum_members = EnumMembers::collect(program);
+    let enum_members = EnumMembers::collect(program, &rename_covered_enum_ids);
     acc.set_shrunk_enums(ShrunkEnums::collect(program, &enum_members));
     acc.set_member_structs(
         accepted_member_structs(program),

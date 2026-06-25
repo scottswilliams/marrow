@@ -92,6 +92,23 @@ pub(super) fn enum_ids_with_renamed_member(
         .collect()
 }
 
+/// Enum ids whose stored values an identity-preserving rename carries forward this cycle:
+/// either the enum type itself was renamed (its own entry is in `renamed`) or one of its
+/// members was. Such an enum's stored value stays valid even though its member paths moved,
+/// so the orphaned-value check must not fail it closed.
+pub(super) fn enum_ids_rename_covered(
+    program: &CheckedProgram,
+    renamed: &HashSet<String>,
+    renamed_member_enum_ids: &HashSet<crate::facts::EnumId>,
+) -> HashSet<crate::facts::EnumId> {
+    let mut covered = renamed_member_enum_ids.clone();
+    covered.extend(program.facts.enums().iter().filter_map(|enum_fact| {
+        let catalog_id = enum_fact.catalog_id.as_ref()?;
+        renamed.contains(catalog_id).then_some(enum_fact.id)
+    }));
+    covered
+}
+
 /// Accepted identity-aware leaf token for each resource member, keyed by raw catalog id:
 /// `Some(token)` when the entry was a leaf, `None` when it was a non-leaf. A member absent
 /// from the map is brand-new. Discharge compares this against the declared token to catch a
