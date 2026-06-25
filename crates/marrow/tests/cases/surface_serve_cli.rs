@@ -300,6 +300,68 @@ fn idle_write_serve_sigterm_replays_on_the_next_write_serve() {
     );
 }
 
+/// `serve --write` is a write-capable open, so it must agree with `run` and `evolve apply`: a store
+/// lost under a committed lock that records its accepted roots has lost durable identity and must
+/// fail closed with `store.corruption` before the write-capable open seizes the writer lock. A
+/// regression that lets serve listen would leave the bound command running, so this is bounded and
+/// asserts the refused exit rather than spawning a listening server.
+#[test]
+fn write_serve_over_a_store_lost_under_a_committed_lock_fails_closed() {
+    let root = temp_project("serve-write-store-lost", |root| {
+        write(root, "marrow.json", support::native_config());
+        write(root, "src/app.mw", SURFACE_SOURCE);
+    });
+    let project = root.to_str().expect("project path utf8");
+    let seed = marrow(&["run", "--entry", "app::seed", project]);
+    assert_eq!(seed.status.code(), Some(0), "seed: {seed:?}");
+
+    // The store is removed while the committed lock survives, modelling a rollback or deletion.
+    std::fs::remove_dir_all(root.join(".data")).expect("simulate a lost local store");
+
+    let serve = support::marrow_bounded(
+        &["serve", "--write", "--addr", "127.0.0.1:0", project],
+        STORE_OP_DEADLINE,
+    );
+    assert_eq!(
+        serve.status.code(),
+        Some(1),
+        "a write serve over a store lost under a committed lock must fail closed, not listen: {serve:?}",
+    );
+    assert_eq!(
+        fault_code(&serve),
+        "store.corruption",
+        "the lost store under a committed lock must report store.corruption: {serve:?}",
+    );
+}
+
+/// A healthy store the lock-root witness does not condemn opens write-capable and listens. A first
+/// `serve --write` against a freshly seeded store passes the witness (its roots match the lock), and
+/// `spawn_surface_server_with_args` fails the test if the server exits before printing its listen
+/// line, so reaching the listen line proves the witness admitted the write open.
+#[test]
+fn first_write_serve_over_a_seeded_store_listens() {
+    let root = temp_project("serve-write-first-run", |root| {
+        write(root, "marrow.json", support::native_config());
+        write(root, "src/app.mw", SURFACE_SOURCE);
+    });
+    let project = root.to_str().expect("project path utf8");
+    let seed = marrow(&["run", "--entry", "app::seed", project]);
+    assert_eq!(seed.status.code(), Some(0), "seed: {seed:?}");
+
+    let (server, _addr) = spawn_surface_server_with_args(&root, &["--write"]);
+    server.stop_with_sigterm();
+
+    // The write serve replays its own clean unclean shutdown on the next write-capable open.
+    let run = support::marrow_bounded(&["run", "--entry", "app::seed", project], STORE_OP_DEADLINE);
+    assert_eq!(run.status.code(), Some(0), "post-serve write run: {run:?}");
+    let integrity = support::marrow_bounded(&["data", "integrity", project], STORE_OP_DEADLINE);
+    assert_eq!(
+        integrity.status.code(),
+        Some(0),
+        "a healthy store the witness admits must stay healthy: {integrity:?}",
+    );
+}
+
 /// A read-only serve never opens the store write-capable, so SIGTERM leaves no recovery flag:
 /// the store stays healthy for the next read and the next writer with no replay needed.
 #[test]

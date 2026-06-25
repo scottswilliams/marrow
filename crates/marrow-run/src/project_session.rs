@@ -1213,6 +1213,13 @@ fn open_surface_session(
     program: CheckedProgram,
     access: SurfaceStoreAccess,
 ) -> Result<OpenSurfaceSession, ProjectSessionError> {
+    // A write-capable serve is the third writer after run and evolve apply, so it routes through the
+    // same lock-root witness before the write-capable open touches the body: a store presenting
+    // fewer committed roots than its lock recorded has lost durable identity and fails closed with
+    // `store.corruption` rather than seizing the writer lock over the loss.
+    if matches!(access, SurfaceStoreAccess::Write) {
+        guard_committed_lock_roots(&root, config)?;
+    }
     let store = open_existing_surface_store(&root, config, access)?;
     if populated_unstamped_store(&program, &store.store)? {
         return Err(ProjectSessionError::UnstampedStore);
