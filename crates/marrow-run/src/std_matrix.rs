@@ -232,7 +232,7 @@ fn parse_row(row: &str, span: SourceSpan) -> Result<Vec<Decimal>, RuntimeError> 
 }
 
 fn parse_decimal(text: &str, span: SourceSpan) -> Result<Decimal, RuntimeError> {
-    match Decimal::parse_canonical(text) {
+    match Decimal::parse_relaxed(text) {
         Ok(decimal) => Ok(decimal),
         Err(DecimalParseError::Overflow) => Err(decimal_overflow(span)),
         Err(DecimalParseError::Malformed) => Err(type_error("matrix cell is not a decimal", span)),
@@ -240,7 +240,8 @@ fn parse_decimal(text: &str, span: SourceSpan) -> Result<Decimal, RuntimeError> 
 }
 
 fn dimension(value: i64, span: SourceSpan) -> Result<usize, RuntimeError> {
-    let value = index(value, span)?;
+    let value =
+        usize::try_from(value).map_err(|_| type_error("matrix size must be non-negative", span))?;
     if value == 0 {
         return Err(type_error("matrix size must be positive", span));
     }

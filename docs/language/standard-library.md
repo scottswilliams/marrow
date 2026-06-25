@@ -385,7 +385,9 @@ std::matrix::transpose(matrix: string): string
 
 Canonical matrix text is bracketed rows separated by `;`, columns separated by
 `,`, and canonical decimal cells, for example `[1,2;3.5,4]`. `parse` accepts
-spaces around cells and separators and returns canonical text. Rows and columns
+spaces around cells and separators and returns canonical text. Each decimal cell
+is ingested leniently and canonicalized, so `9.50` reads as `9.5`, consistent
+with `std::json` and `std::csv`. Rows and columns
 are zero-based. Non-rectangular or malformed text, invalid indexes, incompatible
 dimensions, and configured byte/dimension/cell/operation-limit violations raise
 `run.type`. Addition and multiplication use exact Marrow decimal arithmetic and

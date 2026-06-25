@@ -928,6 +928,50 @@ fn std_error_has_code_validates_expected_code_text() {
 }
 
 #[test]
+fn std_matrix_parse_accepts_non_canonical_decimal_cells() {
+    // The input boundary is lenient like std::json and std::csv: non-canonical
+    // spellings (trailing zeros, integer-valued decimals) parse and canonicalize.
+    let program = checked_program(
+        "pub fn parse(): string\n    return std::matrix::parse(\"[3.50, 9.50; 3.0, 4]\")\n",
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::parse")).unwrap(),
+        Some(Value::Str("[3.5,9.5;3,4]".into()))
+    );
+}
+
+#[test]
+fn std_matrix_parse_still_rejects_malformed_decimal_cells() {
+    let program = checked_program(
+        "pub fn parse(): string\n    return std::matrix::parse(\"[1, 2; not_a_number, 4]\")\n",
+    );
+    assert_run_error(run(checked_entry!(&program, "test::parse")), RUN_TYPE);
+}
+
+#[test]
+fn std_matrix_identity_negative_size_reports_a_size_error() {
+    let program =
+        checked_program("pub fn identity(): string\n    return std::matrix::identity(-5)\n");
+    let message = run_error_message(run(checked_entry!(&program, "test::identity")));
+    assert!(
+        message.contains("size") && !message.contains("index"),
+        "expected a size-noun error, got {message:?}"
+    );
+}
+
+#[test]
+fn std_matrix_get_negative_index_reports_an_index_error() {
+    let program = checked_program(
+        "pub fn get(): string\n    return string(std::matrix::get(std::matrix::parse(\"[1,2;3,4]\"), -1, 0))\n",
+    );
+    let message = run_error_message(run(checked_entry!(&program, "test::get")));
+    assert!(
+        message.contains("index"),
+        "expected an index-noun error, got {message:?}"
+    );
+}
+
+#[test]
 fn std_matrix_rejects_oversized_text_before_canonicalizing() {
     let program = checked_program(
         "pub fn parse(text: string): string\n    return std::matrix::parse(text)\n",
