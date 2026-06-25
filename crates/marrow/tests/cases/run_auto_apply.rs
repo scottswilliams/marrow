@@ -937,3 +937,146 @@ fn an_enum_member_reorder_restamps_instead_of_fencing_run() {
         "the zero-mutation auto-apply writes a fresh stamp"
     );
 }
+
+/// `Book.title` renamed to `Book.label` via an in-source `evolve rename`. Over an empty
+/// `^books` the rename re-addresses no record; over a populated `^books` it moves the
+/// stored cell's address, a non-additive identity change the run-time auto-apply set
+/// excludes.
+const RENAME_LABEL: &str = "module app\n\
+     resource Log\n\
+     \x20   note: string\n\
+     store ^log(id: int): Log\n\
+     resource Book\n\
+     \x20   required label: string\n\
+     store ^books(id: int): Book\n\
+     evolve\n\
+     \x20   rename Book.title -> Book.label\n\
+     pub fn seed()\n\
+     \x20   transaction\n\
+     \x20       ^log(1).note = \"ran\"\n\
+     pub fn seedBook()\n\
+     \x20   transaction\n\
+     \x20       ^books(1).label = \"Mort\"\n";
+
+#[test]
+fn a_rename_over_a_populated_store_fences_run_and_evolve_apply_re_addresses()
+-> Result<(), Box<dyn std::error::Error>> {
+    // A rename re-addresses a populated cell. It writes no record bytes, so the apply is
+    // catalog-only, but moving how stored data is addressed is a non-additive identity
+    // change: a bare run must not silently advance the epoch and re-spell the cell. It
+    // fences with the actionable schema-drift diagnostic, and the explicit `evolve apply`
+    // then discharges the rename and advances the epoch.
+    let root = books_and_log_project("run-rename-populated", BASELINE);
+    let first = marrow_sub("run", &[dir(&root)]);
+    assert_eq!(first.status.code(), Some(0), "first run: {first:?}");
+    let seed_book = marrow_sub("run", &["--entry", "app::seedBook", dir(&root)]);
+    assert_eq!(seed_book.status.code(), Some(0), "seed book: {seed_book:?}");
+    let epoch_before = accepted_epoch(&root);
+
+    write(&root, "src/app.mw", RENAME_LABEL);
+    let rerun = marrow_sub("run", &[dir(&root)]);
+    assert_eq!(
+        rerun.status.code(),
+        Some(1),
+        "a rename over a populated store fences: {rerun:?}",
+    );
+    let stderr = String::from_utf8(rerun.stderr).expect("stderr utf8");
+    assert!(
+        stderr.contains("run.schema_drift"),
+        "the rename fence reports the schema-drift code: {stderr}",
+    );
+    assert_eq!(
+        accepted_epoch(&root),
+        epoch_before,
+        "a fenced rename does not auto-apply or advance the epoch",
+    );
+
+    let apply = marrow(&["evolve", "apply", dir(&root)]);
+    assert_eq!(apply.status.code(), Some(0), "evolve apply: {apply:?}");
+    assert_eq!(
+        accepted_epoch(&root),
+        epoch_before + 1,
+        "explicit apply discharges the rename the fenced run left untouched",
+    );
+    // The populated cell carries over under its new spelling: the rename preserves the
+    // stored value rather than dropping it.
+    let config_text = std::fs::read_to_string(root.join("marrow.json")).expect("read config");
+    let config = marrow_project::parse_config(&config_text).expect("parse config");
+    let accepted = TreeStore::open_read_only(&native_store_path(&root))
+        .expect("open store read-only")
+        .read_catalog_snapshot()
+        .expect("read store catalog snapshot");
+    let (report, program) =
+        marrow_check::check_project_with_catalog(root.path(), &config, accepted.as_ref())
+            .expect("re-check after apply");
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    let place = root_place(&program, "books")?;
+    let store = TreeStore::open(&native_store_path(&root)).expect("reopen native store");
+    assert_eq!(
+        read_scalar(&store, &place, 1, "label", ScalarType::Str),
+        Some(Scalar::Str("Mort".to_string())),
+        "the rename carried the stored cell to its new spelling",
+    );
+    Ok(())
+}
+
+#[test]
+fn a_pending_rename_preview_reports_activatable_work_not_nothing_to_discharge() {
+    // A pending rename over a populated store is real activatable work: the lock still
+    // names the old spelling and `check` reports a stale lock, so `evolve preview` must
+    // report it as pending rather than claim the store already matches the source. A
+    // rename mutates no record bytes, so the zero-backfill/zero-transform proxy would
+    // misread it as nothing to discharge.
+    let root = books_and_log_project("preview-pending-rename", BASELINE);
+    let first = marrow_sub("run", &[dir(&root)]);
+    assert_eq!(first.status.code(), Some(0), "first run: {first:?}");
+    let seed_book = marrow_sub("run", &["--entry", "app::seedBook", dir(&root)]);
+    assert_eq!(seed_book.status.code(), Some(0), "seed book: {seed_book:?}");
+
+    write(&root, "src/app.mw", RENAME_LABEL);
+    let preview = marrow(&["evolve", "preview", "--format", "json", dir(&root)]);
+    assert_eq!(preview.status.code(), Some(0), "preview: {preview:?}");
+    let record: serde_json::Value =
+        serde_json::from_slice(&preview.stdout).expect("preview json envelope");
+    assert_eq!(
+        record.get("nothing_to_discharge"),
+        Some(&serde_json::json!(false)),
+        "a pending rename over populated data is activatable work, not nothing to discharge: {record}",
+    );
+    assert_eq!(
+        record.get("status"),
+        Some(&serde_json::json!("activatable")),
+        "the pending rename is activatable: {record}",
+    );
+}
+
+#[test]
+fn a_rename_over_an_empty_store_auto_applies_on_run() {
+    // The same rename against an empty `^books` re-addresses no record, so emptiness
+    // discharges it and the run auto-applies, advancing the epoch by one. This is the
+    // spec's empty-store auto-apply: a non-additive change against an empty store has
+    // nothing to re-address.
+    let root = books_and_log_project("run-rename-empty", BASELINE);
+    let first = marrow_sub("run", &[dir(&root)]);
+    assert_eq!(first.status.code(), Some(0), "first run: {first:?}");
+    let epoch_before = accepted_epoch(&root);
+
+    write(&root, "src/app.mw", RENAME_LABEL);
+    let rerun = marrow_sub("run", &[dir(&root)]);
+    assert_eq!(
+        rerun.status.code(),
+        Some(0),
+        "a rename over an empty store auto-applies: {rerun:?}",
+    );
+    assert!(
+        !String::from_utf8(rerun.stderr)
+            .expect("stderr utf8")
+            .contains("run.schema_drift"),
+        "an empty-store rename does not fence",
+    );
+    assert_eq!(
+        accepted_epoch(&root),
+        epoch_before + 1,
+        "the empty-store rename advanced the epoch by one",
+    );
+}

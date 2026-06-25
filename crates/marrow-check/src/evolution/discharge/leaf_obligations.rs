@@ -86,6 +86,9 @@ pub(super) fn discharge_root(
     })?;
 
     acc.counts.scanned_records += scanned;
+    if acc.place_readdresses_records(place) {
+        acc.counts.records_to_readdress += scanned;
+    }
 
     for (leaf, state) in leaves.into_iter().zip(leaf_state) {
         classify_leaf(leaf, state, acc)?;

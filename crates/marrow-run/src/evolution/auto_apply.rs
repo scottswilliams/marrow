@@ -30,6 +30,11 @@ pub enum RunObligation {
     Backfill { records: usize },
     /// A checked transform rewrites stored records.
     Transform { records: usize },
+    /// A rename re-addresses populated records: it moves a store root, member, or enum-value
+    /// spelling over a store that holds data. The change writes no record bytes but is a
+    /// non-additive identity move, so it stays an explicit `evolve apply` decision and never
+    /// auto-applies on `run`.
+    Rename { records: usize },
     /// A drop over populated data: discharging it loses `populated` stored cells. Stays
     /// explicit and confirmed; never auto-applies.
     DestructiveDrop { populated: usize },
@@ -41,9 +46,10 @@ pub enum RunObligation {
 impl RunObligation {
     /// Classify the witness by the heaviest record obligation it carries, in descending
     /// severity: repair blocks everything, a populated drop is a data-loss decision, then
-    /// record-rewriting work, and only an evolution with none of these is zero-mutation.
-    /// An empty-target drop carries a zero count and folds into the zero-mutation bucket,
-    /// recording its retire id so the auto-apply can authorize the (empty) delete.
+    /// record-rewriting work, then a populated rename's non-additive re-address, and only an
+    /// evolution with none of these is zero-mutation. An empty-target drop carries a zero
+    /// count and folds into the zero-mutation bucket, recording its retire id so the
+    /// auto-apply can authorize the (empty) delete.
     pub fn classify(witness: &EvolutionWitness) -> Self {
         if witness
             .verdicts
@@ -73,6 +79,11 @@ impl RunObligation {
         if witness.counts.records_to_transform > 0 {
             return Self::Transform {
                 records: witness.counts.records_to_transform,
+            };
+        }
+        if witness.counts.records_to_readdress > 0 {
+            return Self::Rename {
+                records: witness.counts.records_to_readdress,
             };
         }
         Self::ZeroMutation {

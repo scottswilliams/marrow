@@ -341,7 +341,13 @@ mod tests {
     }
 
     fn empty_accumulator() -> Accumulator {
-        Accumulator::new(Vec::new(), BTreeSet::new(), HashSet::new(), HashMap::new())
+        Accumulator::new(
+            Vec::new(),
+            BTreeSet::new(),
+            HashSet::new(),
+            HashSet::new(),
+            HashMap::new(),
+        )
     }
 
     // A unique index whose key resolves to a top-level plain field is probeable; one whose

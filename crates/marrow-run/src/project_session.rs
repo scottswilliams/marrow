@@ -1692,6 +1692,9 @@ fn fence_message(obligation: &RunObligation, diagnostics: &[RepairDiagnostic]) -
         RunObligation::Transform { records } => format!(
             "; the change rewrites {records} record(s). Run `marrow evolve apply` to discharge it."
         ),
+        RunObligation::Rename { records } => format!(
+            "; the change re-addresses {records} record(s) through a rename. Run `marrow evolve apply` to discharge it."
+        ),
         RunObligation::DestructiveDrop { populated } => format!(
             "; the change drops {populated} populated record(s). Run `marrow evolve apply --maintenance` and confirm the retire to discharge it."
         ),

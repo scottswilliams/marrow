@@ -215,6 +215,7 @@ fn default_literal(scalar: ScalarType) -> &'static str {
 fn nothing_to_discharge(witness: &EvolutionWitness) -> bool {
     witness.counts.records_to_backfill == 0
         && witness.counts.records_to_transform == 0
+        && witness.counts.records_to_readdress == 0
         && witness
             .verdicts
             .iter()

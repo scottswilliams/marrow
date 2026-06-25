@@ -430,8 +430,23 @@ fn renaming_an_enum_category_carries_its_descendant_leaves_stored_identity_forwa
         "the descendant leaf must not be reported as new: {records:#?}"
     );
 
-    // A single run reads the stored value back as `Pet::beast::dog` and dispatches the
-    // `beast` arm; no schema drift, exit 0.
+    // The rename re-addresses the populated stored value, a non-additive identity change,
+    // so a bare run fences rather than auto-applying it.
+    let fenced = marrow_sub("run", &["--entry", "app::show", &dir]);
+    assert_eq!(fenced.status.code(), Some(1), "fenced run: {fenced:?}");
+    assert!(
+        String::from_utf8(fenced.stderr)
+            .expect("stderr utf8")
+            .contains("run.schema_drift"),
+        "the populated category rename fences the run",
+    );
+
+    // The explicit `evolve apply` discharges the rename, carrying the descendant leaf's
+    // stored identity forward.
+    let apply = marrow_sub("evolve", &["apply", &dir]);
+    assert_eq!(apply.status.code(), Some(0), "evolve apply: {apply:?}");
+
+    // The stored value now reads back as `Pet::beast::dog` and dispatches the `beast` arm.
     let show = marrow_sub("run", &["--entry", "app::show", &dir]);
     assert_eq!(show.status.code(), Some(0), "show: {show:?}");
     let stdout = String::from_utf8(show.stdout).expect("stdout utf8");

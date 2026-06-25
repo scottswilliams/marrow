@@ -42,11 +42,13 @@ pub(super) fn proposal_changed_catalog_ids(
         .collect()
 }
 
-/// Raw catalog ids of resource members a rename moved this cycle, detected by a proposal
-/// `ResourceMember` whose alias set gained a path the accepted entry lacked. A rename moves
-/// catalog identity only — the cells stay under the same id — so these classify as
-/// `CatalogOnly` rather than re-proving data presence.
-pub(super) fn renamed_member_ids(program: &CheckedProgram) -> HashSet<String> {
+/// Stable ids of catalog entries a rename moved this cycle, of any kind — a store root, a
+/// resource member, or an enum member — detected by a proposal entry whose alias set gained
+/// a path the accepted entry lacked. A rename moves catalog identity only — the cells stay
+/// under the same stable id — but moving a populated store, member, or enum-value spelling
+/// re-addresses stored data, so this set drives both the member-rename `CatalogOnly` verdict
+/// and the re-address count the run-time auto-apply set excludes.
+pub(super) fn renamed_catalog_ids(program: &CheckedProgram) -> HashSet<String> {
     let Some(proposal) = &program.catalog.proposal else {
         return HashSet::new();
     };
@@ -59,7 +61,6 @@ pub(super) fn renamed_member_ids(program: &CheckedProgram) -> HashSet<String> {
     proposal
         .entries
         .iter()
-        .filter(|entry| entry.kind == CatalogEntryKind::ResourceMember)
         .filter(|entry| {
             let accepted = accepted_aliases
                 .get(entry.stable_id.as_str())
@@ -68,6 +69,26 @@ pub(super) fn renamed_member_ids(program: &CheckedProgram) -> HashSet<String> {
             entry.aliases.iter().any(|alias| !accepted.contains(alias))
         })
         .map(|entry| entry.stable_id.clone())
+        .collect()
+}
+
+/// Enum ids — the leaf-carried identity a [`StoreLeafKind::Enum`] holds — that gained a
+/// renamed member this cycle. An enum-member rename re-addresses the stored spelling of every
+/// record holding that enum, so a place whose leaf names one of these enums re-addresses its
+/// records. The owning enum of a renamed `EnumMember` is resolved through the member facts,
+/// the single owner of the member-id-to-enum-id mapping.
+pub(super) fn enum_ids_with_renamed_member(
+    program: &CheckedProgram,
+    renamed: &HashSet<String>,
+) -> HashSet<crate::facts::EnumId> {
+    program
+        .facts
+        .enum_members()
+        .iter()
+        .filter_map(|member| {
+            let catalog_id = member.catalog_id.as_ref()?;
+            renamed.contains(catalog_id).then_some(member.enum_id)
+        })
         .collect()
 }
 

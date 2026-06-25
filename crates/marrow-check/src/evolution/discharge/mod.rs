@@ -36,7 +36,8 @@ use crate::program::{CheckedProgram, EvolveDefault};
 
 use accepted_state::{
     accepted_member_leaves, accepted_member_structs, accepted_store_key_shapes,
-    classify_store_key_shape, proposal_changed_catalog_ids, renamed_member_ids,
+    classify_store_key_shape, enum_ids_with_renamed_member, proposal_changed_catalog_ids,
+    renamed_catalog_ids,
 };
 use enum_shrink::{EnumMembers, ShrunkEnums};
 use leaf_obligations::discharge_root;
@@ -81,10 +82,13 @@ pub(crate) fn discharge(
     program: &CheckedProgram,
     store: &TreeStore,
 ) -> Result<Discharge, StoreError> {
+    let renamed = renamed_catalog_ids(program);
+    let renamed_enum_ids = enum_ids_with_renamed_member(program, &renamed);
     let mut acc = Accumulator::new(
         program.catalog.evolve_defaults.clone(),
         transforms::pending_transform_ids(program),
-        renamed_member_ids(program),
+        renamed,
+        renamed_enum_ids,
         accepted_member_leaves(program),
     );
     let enum_members = EnumMembers::collect(program);
@@ -263,6 +267,7 @@ struct Accumulator {
     defaults: HashMap<String, marrow_syntax::Expression>,
     transforms: BTreeSet<String>,
     renamed: HashSet<String>,
+    renamed_enum_ids: HashSet<crate::facts::EnumId>,
     accepted_leaves: HashMap<String, Option<String>>,
     accepted_structs: HashMap<String, String>,
     declared_structs: HashMap<String, String>,
@@ -275,6 +280,7 @@ impl Accumulator {
         defaults: Vec<EvolveDefault>,
         transforms: BTreeSet<String>,
         renamed: HashSet<String>,
+        renamed_enum_ids: HashSet<crate::facts::EnumId>,
         accepted_leaves: HashMap<String, Option<String>>,
     ) -> Self {
         Self {
@@ -289,6 +295,7 @@ impl Accumulator {
                 .collect(),
             transforms,
             renamed,
+            renamed_enum_ids,
             accepted_leaves,
             accepted_structs: HashMap::new(),
             declared_structs: HashMap::new(),
@@ -325,6 +332,37 @@ impl Accumulator {
 
     fn is_renamed(&self, catalog_id: &str) -> bool {
         self.renamed.contains(catalog_id)
+    }
+
+    /// Whether a rename re-addresses the records under `place`: its store root, any of its
+    /// members (at any nesting), or an enum a member's value names was moved this cycle.
+    /// Moving a populated store, member, or enum-value spelling is a non-additive identity
+    /// change, so the scanned records under such a place are real re-address work the
+    /// run-time auto-apply set excludes; a rename against an empty store re-addresses nothing.
+    fn place_readdresses_records(&self, place: &CheckedSavedPlace) -> bool {
+        place
+            .store_catalog_id
+            .as_deref()
+            .is_some_and(|id| self.is_renamed(id))
+            || self.members_readdressed(&place.root_members)
+            || self.members_readdressed(&place.members)
+            || place
+                .layers
+                .iter()
+                .any(|layer| self.members_readdressed(&layer.members))
+    }
+
+    /// Whether any member in `members`, or one nested under it, is itself renamed or names a
+    /// renamed enum member as its value.
+    fn members_readdressed(&self, members: &[CheckedSavedMember]) -> bool {
+        members.iter().any(|member| {
+            member
+                .catalog_id
+                .as_deref()
+                .is_some_and(|id| self.is_renamed(id))
+                || matches!(&member.leaf, Some(StoreLeafKind::Enum { enum_id }) if self.renamed_enum_ids.contains(enum_id))
+                || self.members_readdressed(&member.group_members)
+        })
     }
 
     fn is_changed_index(&self, id: &CatalogId) -> bool {

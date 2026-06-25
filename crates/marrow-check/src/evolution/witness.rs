@@ -39,6 +39,14 @@ pub struct DischargeCounts {
     /// for every record under the place, so the count is the record total of each
     /// applyable transform's place; apply re-counts and refuses on drift.
     pub records_to_transform: usize,
+    /// Records a rename re-addresses: every stored record under a store whose root,
+    /// member, or referenced enum member a rename moves. A rename mutates no record
+    /// bytes, but moving a populated cell's address or stored spelling is a non-additive
+    /// identity change the run-time auto-apply set excludes, so it is real pending work
+    /// the run fences on and the preview reports rather than reading as nothing to
+    /// discharge. A rename against an empty store re-addresses nothing and stays a free
+    /// auto-apply.
+    pub records_to_readdress: usize,
 }
 
 /// A constant fill value for a defaulting obligation, already encoded in its
