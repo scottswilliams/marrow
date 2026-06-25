@@ -145,15 +145,38 @@ fn probe_config(
     match marrow_check::load_config(root) {
         Ok(config) => Some(config),
         Err(error) => {
+            let (remedy, next_command) = config_load_remedy(&error, dir);
             findings.push(project_error_finding(
                 "doctor.config_invalid",
                 "project configuration could not be loaded",
-                "fix marrow.json, then rerun the next command",
-                doctor_command(dir),
+                remedy,
+                next_command,
                 error,
             ));
             None
         }
+    }
+}
+
+/// The remedy and next command for a config-load failure, derived from the typed fault so each
+/// names an action that actually works rather than a single "fix marrow.json" loop. A directory
+/// with no `marrow.json` is created by `marrow init`; a bare-file path is the wrong target, so it
+/// names that mistake with no looping command; an invalid or unreadable config is fixed in place,
+/// after which re-running the probe is the genuine next step.
+fn config_load_remedy(error: &ProjectIoError, dir: &str) -> (&'static str, String) {
+    match error {
+        ProjectIoError::ConfigMissing { .. } => (
+            "create the project with marrow init",
+            format!("marrow init {dir}"),
+        ),
+        ProjectIoError::NotAProject { .. } => (
+            "pass a project directory containing marrow.json, not a bare file",
+            doctor_command("<projectdir>"),
+        ),
+        _ => (
+            "fix the reported marrow.json field, then rerun the next command",
+            doctor_command(dir),
+        ),
     }
 }
 

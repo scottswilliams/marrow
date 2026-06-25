@@ -122,6 +122,18 @@ fn doctor_on_a_missing_directory_reports_a_missing_project() {
         message.contains("marrow init") && !message.contains("os error"),
         "the missing-project finding must point at marrow init with no raw OS error: {value:#?}"
     );
+    // The remedy and next command are derived from the typed fault: a missing project is created
+    // by `marrow init`, never the self-defeating loop back through `marrow doctor`.
+    let remedy = config_finding["remedy"].as_str().expect("remedy string");
+    assert!(
+        remedy.contains("marrow init"),
+        "the missing-project remedy names the working init action: {remedy}"
+    );
+    assert_eq!(
+        config_finding["next_command"],
+        serde_json::json!(format!("marrow init {}", missing.to_str().unwrap())),
+        "the next command creates the project rather than looping doctor: {value:#?}"
+    );
 }
 
 #[test]
@@ -161,6 +173,58 @@ pub fn main()
     assert!(
         !value.to_string().contains("os error"),
         "no doctor finding may leak a raw OS errno for a bare-file path: {value:#?}"
+    );
+    // A bare file cannot be turned into a project in place, so the remedy names that mistake and
+    // the next command never loops doctor back at the same bare-file path.
+    let remedy = config_finding["remedy"].as_str().expect("remedy string");
+    assert!(
+        remedy.contains("project directory") && !remedy.contains("marrow init"),
+        "the not-a-project remedy names the bare-file mistake without an init remedy: {remedy}"
+    );
+    let next = config_finding["next_command"]
+        .as_str()
+        .expect("next_command string");
+    assert!(
+        !next.contains(path.to_str().unwrap()),
+        "the next command must not loop back at the bare-file path: {next}"
+    );
+}
+
+#[test]
+fn doctor_on_an_invalid_config_field_names_the_field_fix_not_a_loop() {
+    // A marrow.json with a field that fails validation (a `dataDir` escaping the project root)
+    // loads as `config.invalid`. The remedy must point at fixing the reported field in place, and
+    // the next command is the genuine re-run after the in-place fix — never a generic "fix
+    // marrow.json" with a command that cannot make progress.
+    let project = support::temp_project_uncommitted("doctor-invalid-config", |root| {
+        support::write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": "../escape" } }"#,
+        );
+        support::write(root, "src/app.mw", "module app\n\nfn main()\n    return\n");
+    });
+    let dir = project.path().to_str().expect("project path utf8");
+
+    let output = marrow(&["doctor", "--format", "json", dir]);
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let value = json(output.stdout);
+    let config_finding = finding(&value, "doctor.config_invalid");
+    assert_eq!(
+        config_finding["data"]["underlying_code"],
+        serde_json::json!("config.invalid"),
+        "{value:#?}"
+    );
+    let remedy = config_finding["remedy"].as_str().expect("remedy string");
+    assert!(
+        remedy.contains("field") && !remedy.contains("marrow init"),
+        "the invalid-config remedy names the field fix, not an init: {remedy}"
+    );
+    assert_eq!(
+        config_finding["next_command"],
+        serde_json::json!(format!("marrow doctor {dir}")),
+        "the next command re-runs the probe after the in-place field fix: {value:#?}"
     );
 }
 
