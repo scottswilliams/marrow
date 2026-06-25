@@ -270,24 +270,18 @@ pub(super) fn report_unknown_path(
     ExitCode::FAILURE
 }
 
-/// Cross-check the saved roots against the committed `marrow.lock` before reporting them.
-/// `data roots` and `data dump` enumerate only what the store presents, so an absent store
-/// while the lock records committed roots would silently report a clean empty set; the
-/// witness fails that total loss closed the same way `backup` does. `data integrity` and
-/// `data stats` read the lock once for their own passes and run the check inline.
-///
-/// A read-only inspection can race a writer re-creating a removed store, in which case the
-/// store presents fewer committed roots than the lock while the writer finishes; that window is
-/// the `store.locked` contract, not the rollback the witness guards. The shared recreation-race
-/// owner recognises it: the open already resolved the store (awaiting the file-absent gap itself),
-/// so here a present store whose baseline is still pending is left to the writer rather than
-/// condemned, while a genuine settled loss still fails closed.
+/// Cross-check the saved roots a PRESENT store presents against the committed `marrow.lock`
+/// before reporting them. `data roots` and `data dump` enumerate only what the store presents, so
+/// a present store rolled back below its committed roots would silently report a clean empty set;
+/// the witness fails that loss closed the same way `backup` does. `data integrity` and `data
+/// stats` read the lock once for their own passes and run the check inline. An absent store body
+/// is the disposable-store case, not a loss, so the witness leaves it to the write paths to seed.
 pub(super) fn verify_lock_roots_present(target: &DataReadTarget) -> Result<(), ExitCode> {
     if target.from_backup {
         return Ok(());
     }
     let lock = crate::read_committed_lock(&target.dir, target.format)?;
-    match crate::verify_lock_roots_or_race(target.store.as_ref(), None, lock.as_ref()) {
+    match crate::verify_lock_roots(target.store.as_ref(), lock.as_ref()) {
         crate::LockRootVerdict::Clean => Ok(()),
         crate::LockRootVerdict::Lost(error) => Err(report_store_error(error, target.format)),
     }
@@ -453,20 +447,12 @@ fn data_recover(args: &[String]) -> ExitCode {
         Ok(path) => path,
         Err(code) => return code,
     }) else {
-        // An absent store while the lock still records committed roots is a total loss, not
-        // a clean nothing-to-recover: fail it closed through the race-aware owner, which is
-        // silent when a writer is mid-re-creating the store.
-        match crate::verify_lock_roots_or_race(None, None, lock.as_ref()) {
-            crate::LockRootVerdict::Clean => {}
-            crate::LockRootVerdict::Lost(error) => return report_store_error(error, format),
-        }
+        // No native store configured: there is nothing to recover.
         return report_no_store_to_recover(&dir, None, format);
     };
     if store_path_is_absent(&path) {
-        match crate::verify_lock_roots_or_race(None, Some(&path), lock.as_ref()) {
-            crate::LockRootVerdict::Clean => {}
-            crate::LockRootVerdict::Lost(error) => return report_store_error(error, format),
-        }
+        // An absent store body is the disposable-store case, not a loss: there is no store to
+        // repair, and the next write-capable run seeds an empty store from the committed lock.
         return report_no_store_to_recover(&dir, Some(&path), format);
     }
     // Recover is the repair path for a store read-only commands refuse, so it must not
@@ -480,11 +466,10 @@ fn data_recover(args: &[String]) -> ExitCode {
         Ok(store) => store,
         Err(error) => return report_store_error(error, format),
     };
-    // The lock-root cross-check is the one witness that condemns a store re-created by a
-    // concurrent writer, which presents fewer committed roots than the lock while mid-creation.
-    // Route it through the single race-aware owner so a live re-creation is left to the writer
-    // rather than condemned: a settled rollback below the committed roots still fails closed.
-    match crate::verify_lock_roots_or_race(Some(&store), Some(&path), lock.as_ref()) {
+    // The lock-root cross-check condemns a present store rolled back below the committed roots
+    // its lock records — a settled rollback or torn baseline still fails closed even after a
+    // structural repair.
+    match crate::verify_lock_roots(Some(&store), lock.as_ref()) {
         crate::LockRootVerdict::Clean => report_recovered_store(&dir, &path, format),
         crate::LockRootVerdict::Lost(error) => report_store_error(error, format),
     }
@@ -523,7 +508,7 @@ fn recover_store(
 
 /// Reject a store recovery whose data or index families did not converge. The cross-checks
 /// need the schema, so they run only when a checked program is available; the lock-root
-/// witness is a separate cross-check the caller runs through the race-aware owner.
+/// witness is a separate cross-check the caller runs through its single owner.
 fn verify_store_recovered(
     store: &TreeStore,
     program: Option<&CheckedProgram>,

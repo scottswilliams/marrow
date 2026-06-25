@@ -180,12 +180,15 @@ presents zero records and zero digests, so the per-anchor cross-check visits
 nothing and passes vacuously. The independent witness is the committed
 `marrow.lock`, a separate durable file recording the epoch high-water and the
 accepted catalog roots. `backup`, `data integrity`, `data stats`, and `data
-recover` cross-check the roots the store presents against the roots the lock
-records: a store that presents fewer roots than its committed lock has lost
-durable identity to a rollback and fails closed as `store.corruption`. The check
-keys on the accepted-root set, not the epoch number, so a store legitimately
-behind an ahead lock keeps the same roots and passes; with no committed lock the
-store has no recorded baseline to contradict, the separate missing-lock case.
+recover` cross-check the roots a **present** store presents against the roots the
+lock records: a present store that presents fewer roots than its committed lock
+has lost durable identity to a rollback and fails closed as `store.corruption`. An
+**absent** store body is the disposable-store case, not a loss: the write paths
+(`run`, `evolve apply`, `serve --write`) seed an empty store from the committed
+identity, so an absent store is never `store.corruption`. The check keys on the
+accepted-root set, not the epoch number, so a store legitimately behind an ahead
+lock keeps the same roots and passes; with no committed lock the store has no
+recorded baseline to contradict, the separate missing-lock case.
 
 A store is stamped exactly when `TreeStore::read_commit_metadata()` returns `Some`.
 The commit stamp is the single durable owner of the stamped catalog epoch,

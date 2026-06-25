@@ -11,7 +11,7 @@ pub(crate) struct ServeProcess {
     child: Child,
     stopped: bool,
     _stdout: BufReader<ChildStdout>,
-    _stderr: ChildStderr,
+    stderr: ChildStderr,
 }
 
 pub(crate) struct SurfaceRoute {
@@ -106,12 +106,21 @@ impl ServeProcess {
     /// Stop the server with SIGTERM — the documented foreground stop — and wait for it to exit.
     /// SIGTERM skips the process's destructors exactly as a real operator stop does, so the
     /// store is left in whatever on-disk state the running server held it in.
-    pub(crate) fn stop_with_sigterm(mut self) {
+    pub(crate) fn stop_with_sigterm(self) {
+        let _ = self.stop_with_sigterm_capturing_stderr();
+    }
+
+    /// Like [`stop_with_sigterm`](Self::stop_with_sigterm), but drains and returns everything the
+    /// server wrote to stderr — startup notices included — so a test can assert a loud seed notice.
+    pub(crate) fn stop_with_sigterm_capturing_stderr(mut self) -> String {
         let pid = self.child.id().to_string();
         let _ = Command::new("kill").args(["-TERM", &pid]).status();
         let _ = self.child.wait();
         // The wait above reaps the child; clear it so Drop does not signal a stale pid.
         self.stopped = true;
+        let mut stderr = String::new();
+        let _ = self.stderr.read_to_string(&mut stderr);
+        stderr
     }
 }
 
@@ -195,7 +204,7 @@ pub(crate) fn spawn_surface_server_with_args(
             child,
             stopped: false,
             _stdout: reader,
-            _stderr: stderr,
+            stderr,
         },
         addr_text.parse().expect("listen address"),
     )

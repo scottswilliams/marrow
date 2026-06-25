@@ -596,7 +596,8 @@ fn preview_actions(notices: &[ProjectSessionNotice]) -> dry_run::PreviewActions 
             // dry-run preview actions; they surface through the run's stderr notice lines.
             ProjectSessionNotice::AutoApplied { .. }
             | ProjectSessionNotice::LockCreated
-            | ProjectSessionNotice::LockUpdated => {}
+            | ProjectSessionNotice::LockUpdated
+            | ProjectSessionNotice::SeededFromCommittedLock => {}
         }
     }
     actions

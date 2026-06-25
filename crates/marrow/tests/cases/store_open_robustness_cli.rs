@@ -227,6 +227,90 @@ fn silent_cell_loss_is_caught_by_the_structural_digest() {
     }
 }
 
+/// A seed plus a `countNotes` entry that returns `count(^notes)`. A write-capable `run`
+/// opens the store the same way the inspection family does, so a btree-corrupt store that
+/// silently drops cells from enumeration must fail the run closed rather than let
+/// `countNotes` return a truncated record set with a clean exit.
+fn counting_count_source(records: u32) -> String {
+    format!(
+        "module app\n\
+         \n\
+         resource Note\n\
+         \x20\x20\x20\x20required title: string\n\
+         \x20\x20\x20\x20required body: string\n\
+         store ^notes(id: int): Note\n\
+         \n\
+         pub fn seed()\n\
+         \x20\x20\x20\x20transaction\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20for i in 1..={records}\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20var n: Note\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20n.title = \"a note title\"\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20n.body = \"the body text of this note, long enough to span a cell\"\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20^notes(i) = n\n\
+         \n\
+         pub fn countNotes(): int\n\
+         \x20\x20\x20\x20return count(^notes)\n"
+    )
+}
+
+/// A write-capable `run` opens the store through the same family the read-only inspections
+/// do, so the runtime store-read open must run the structural-digest cross-check. A
+/// single-byte body flip that silently drops cells from enumeration — the shape `data
+/// integrity` catches as `store.corruption` — must fail the run closed, never let a
+/// `count(^notes)` entry return a truncated record set with a clean exit. The sweep proves
+/// the runtime open shares the inspection family's digest oracle rather than blessing a
+/// truncated store.
+#[test]
+fn run_over_a_btree_corrupt_store_fails_closed_rather_than_count_truncated() {
+    const SEEDED: u64 = 200;
+    let project = temp_project_uncommitted("cli-run-corrupt-count", |root| {
+        write(root, "marrow.json", native_config());
+        write(root, "src/app.mw", &counting_count_source(SEEDED as u32));
+    });
+    let dir = project.to_str().expect("dir utf8").to_string();
+    assert_eq!(
+        marrow(&["run", "--entry", "app::seed", &dir]).status.code(),
+        Some(0),
+        "seed the counting store",
+    );
+    let store = store_path(&project);
+    let clean = std::fs::read(&store).expect("read seeded store body");
+    let deadline = std::time::Duration::from_secs(30);
+
+    let mut covered = false;
+    for offset in (8192..clean.len()).step_by(256) {
+        let mut corrupt = clean.clone();
+        corrupt[offset] ^= 0xff;
+        std::fs::write(&store, &corrupt).expect("write corrupted store body");
+
+        let integrity = marrow_bounded(&["data", "integrity", &dir], deadline);
+        assert_no_panic_and_bounded(&integrity, &["data", "integrity", &dir], offset);
+        if integrity.status.code() == Some(0) || stderr_code(&integrity) != "store.corruption" {
+            continue;
+        }
+        covered = true;
+
+        let run = marrow_bounded(&["run", "--entry", "app::countNotes", &dir], deadline);
+        assert_no_panic_and_bounded(&run, &["run", "--entry", "app::countNotes", &dir], offset);
+        assert_eq!(
+            run.status.code(),
+            Some(1),
+            "offset {offset}: `run countNotes` enumerated a btree-corrupt store instead of \
+             failing closed: {run:?}",
+        );
+        assert_eq!(
+            stderr_code(&run),
+            "store.corruption",
+            "offset {offset}: a btree-corrupt store must fail `run` closed as store.corruption: \
+             {run:?}",
+        );
+    }
+    assert!(
+        covered,
+        "the sweep must reach at least one offset `data integrity` flags as store.corruption",
+    );
+}
+
 /// Seed a store of `records` records whose source also carries the single-record delete and
 /// overwrite entries, returning the project and its directory.
 fn seeded_mutable_store(name: &str, records: u32) -> (support::TempProject, String) {
@@ -647,21 +731,19 @@ fn data_recover_under_a_live_writer_never_false_corrupts_a_healthy_store() {
 }
 
 /// Delete the seeded store file outright while leaving the committed `marrow.lock`, modelling
-/// a store the developer or a stray `rm` removed. The store path resolves absent, so the
-/// read-only inspections, doctor, and recover all short-circuit as a first run unless they
-/// consult the lock — which still records the dropped roots.
+/// a store the developer or a stray `rm` removed. The store path resolves absent — the
+/// disposable-store case the next write-capable run seeds from the committed lock.
 fn delete_store_file(project: &Path) {
     std::fs::remove_file(store_path(project)).expect("delete store file");
 }
 
-/// A store deleted from disk while its committed `marrow.lock` still records roots is the same
-/// loss as a rollback to empty carried to the limit: the durable file vanished but its
-/// committed identity remains. The path resolves absent, so without the lock witness every
-/// read-only inspection, `doctor`, and `recover` would bless it as a clean first run while
-/// `backup` fails it closed. All of them must agree with `backup` and report
-/// `store.corruption` rather than silently mask the loss.
+/// A store body deleted from disk while its committed `marrow.lock` survives is the disposable-store
+/// case, not a loss: the next write-capable run seeds an empty store from the committed identity.
+/// The read-only inspections, `backup`, `recover`, and `doctor` therefore treat an absent store as
+/// a clean first run — never `store.corruption`, which is reserved for a PRESENT store that lost
+/// committed roots.
 #[test]
-fn an_absent_store_with_a_committed_lock_is_caught_by_the_lock_root_witness() {
+fn an_absent_store_with_a_committed_lock_seeds_rather_than_corrupts() {
     let (project, dir) = seeded_mutable_store("cli-store-absent-lock", 64);
     let backup_target = project.join("absent.mw-backup");
     let backup_target = backup_target
@@ -686,16 +768,9 @@ fn an_absent_store_with_a_committed_lock_is_caught_by_the_lock_root_witness() {
         assert_no_panic_and_bounded(&output, command, 0);
         assert_eq!(
             output.status.code(),
-            Some(1),
-            "`marrow {}` blessed an absent store while the lock records committed roots: \
-             {output:?}",
-            command.join(" "),
-        );
-        assert_eq!(
-            stderr_code(&output),
-            "store.corruption",
-            "`marrow {}` must report store.corruption on a deleted store with a committed lock: \
-             {output:?}",
+            Some(0),
+            "`marrow {}` must treat an absent store body as the disposable-store case, not \
+             corruption: {output:?}",
             command.join(" "),
         );
     }
@@ -703,17 +778,17 @@ fn an_absent_store_with_a_committed_lock_is_caught_by_the_lock_root_witness() {
     let doctor = marrow(&["doctor", &dir, "--format", "json"]);
     assert_eq!(
         doctor.status.code(),
-        Some(1),
-        "doctor blessed an absent store while the lock records committed roots: {doctor:?}",
+        Some(0),
+        "doctor must treat an absent store body as a clean first run: {doctor:?}",
     );
     let report: serde_json::Value =
         serde_json::from_slice(&doctor.stdout).expect("doctor json report");
     let findings = report["findings"].as_array().expect("findings array");
     assert!(
-        findings
+        !findings
             .iter()
             .any(|finding| finding["data"]["underlying_code"] == "store.corruption"),
-        "doctor must report the deleted store with a committed lock as store.corruption: {report}"
+        "doctor must not charge an absent store body as store.corruption: {report}"
     );
 }
 
@@ -796,13 +871,12 @@ fn run_over_a_healthy_store_still_writes() {
     );
 }
 
-/// The store deleted from disk while its committed `marrow.lock` still records roots — the plain
-/// `rm` of the redb body — is the unambiguous data-loss repro. A write-capable `run` must fail
-/// closed with `store.corruption` rather than silently re-create an empty store and re-seed over
-/// the loss, matching the read-only inspection family on the same store. Before the fix `run`
-/// returned a fresh rc0 here, permanently discarding the committed records.
+/// The store body deleted from disk while its committed `marrow.lock` survives — the plain `rm` of
+/// the redb body — is the disposable-store case. A write-capable `run` seeds an empty store from the
+/// committed identity and announces the seed loudly, then executes its entry over the fresh store,
+/// rather than failing closed. `store.corruption` is reserved for a PRESENT store that lost roots.
 #[test]
-fn run_over_a_deleted_store_with_a_committed_lock_fails_closed() {
+fn run_over_a_deleted_store_with_a_committed_lock_seeds_an_empty_store() {
     let (project, dir) = seeded_mutable_store("cli-run-deleted-lock", 3);
     let deadline = std::time::Duration::from_secs(30);
 
@@ -816,25 +890,28 @@ fn run_over_a_deleted_store_with_a_committed_lock_fails_closed() {
     assert_no_panic_and_bounded(&run, &["run", "--entry", "app::seed", &dir], 0);
     assert_eq!(
         run.status.code(),
-        Some(1),
-        "`run` silently re-created a deleted store under a committed lock instead of failing \
-         closed: {run:?}",
+        Some(0),
+        "`run` over a deleted store body must seed an empty store and succeed: {run:?}",
     );
+    let stderr = String::from_utf8(run.stderr.clone()).expect("stderr utf8");
+    assert!(
+        stderr.contains("initialized an empty store from marrow.lock"),
+        "the seed from the committed lock must be announced loudly: {stderr}"
+    );
+    let stats = marrow_bounded(&["data", "stats", &dir], deadline);
     assert_eq!(
-        stderr_code(&run),
-        "store.corruption",
-        "`run` over a store deleted while its lock records committed roots must report \
-         store.corruption: {run:?}",
+        reported_record_count(&stats),
+        Some(3),
+        "the seeded store must hold the records the re-run wrote: {stats:?}",
     );
 }
 
-/// `evolve apply` creates or baselines the store before applying, so it carries the same write-path
-/// hole as `run`: a store deleted while its committed `marrow.lock` records roots must fail closed
-/// with `store.corruption` rather than re-baseline a fresh empty store and re-project the lock over
-/// the loss. Before the fix apply reported "Nothing to apply" rc0 and rewrote the lock to the empty
-/// store, permanently discarding the committed records.
+/// `evolve apply` carries the same write-path seed as `run`: a store body deleted while its
+/// committed `marrow.lock` survives is the disposable-store case, so apply seeds an empty store from
+/// the committed identity and succeeds rather than failing closed. `store.corruption` is reserved
+/// for a PRESENT store that lost roots.
 #[test]
-fn evolve_apply_over_a_deleted_store_with_a_committed_lock_fails_closed() {
+fn evolve_apply_over_a_deleted_store_with_a_committed_lock_seeds_an_empty_store() {
     let project = seeded_evolvable_store("cli-evolve-apply-deleted-lock");
     let dir = project.to_str().expect("dir utf8").to_string();
     let deadline = std::time::Duration::from_secs(30);
@@ -850,15 +927,53 @@ fn evolve_apply_over_a_deleted_store_with_a_committed_lock_fails_closed() {
     assert_no_panic_and_bounded(&apply, &["evolve", "apply", &dir], 0);
     assert_eq!(
         apply.status.code(),
-        Some(1),
-        "`evolve apply` re-baselined a deleted store under a committed lock instead of failing \
-         closed: {apply:?}",
+        Some(0),
+        "`evolve apply` over a deleted store body must seed an empty store and succeed: {apply:?}",
     );
+    let stderr = String::from_utf8(apply.stderr.clone()).expect("stderr utf8");
+    assert!(
+        stderr.contains("initialized an empty store from marrow.lock"),
+        "the seed from the committed lock must be announced loudly: {stderr}"
+    );
+
+    // The seeded store must be a clean empty store carrying the adopted identity, not the bricked
+    // empty catalog against a lock recording roots that the missing seed-and-baseline produced. Both
+    // a structural integrity pass and a record-count read must succeed and report zero records.
+    let integrity = marrow_bounded(&["data", "integrity", &dir], deadline);
+    assert_no_panic_and_bounded(&integrity, &["data", "integrity"], 0);
     assert_eq!(
-        stderr_code(&apply),
-        "store.corruption",
-        "`evolve apply` over a store deleted while its lock records committed roots must report \
-         store.corruption: {apply:?}",
+        integrity.status.code(),
+        Some(0),
+        "the seeded store must verify clean rather than self-corrupt: {integrity:?}",
+    );
+    let stats = marrow_bounded(&["data", "stats", &dir], deadline);
+    assert_eq!(
+        reported_record_count(&stats),
+        Some(0),
+        "the seeded store reconstructs identity only, so it holds zero records: {stats:?}",
+    );
+
+    // A second `evolve apply` and a follow-up `run` must both succeed against the seeded store,
+    // proving the seed established a working catalog rather than a phantom the next writer rejects.
+    let reapply = marrow_bounded(&["evolve", "apply", &dir], deadline);
+    assert_no_panic_and_bounded(&reapply, &["evolve", "apply", &dir], 0);
+    assert_eq!(
+        reapply.status.code(),
+        Some(0),
+        "a second evolve apply over the seeded store must succeed: {reapply:?}",
+    );
+    let run = marrow_bounded(&["run", "--entry", "app::seed", &dir], deadline);
+    assert_no_panic_and_bounded(&run, &["run", "--entry", "app::seed", &dir], 0);
+    assert_eq!(
+        run.status.code(),
+        Some(0),
+        "a run over the seeded store must commit cleanly: {run:?}",
+    );
+    let stats = marrow_bounded(&["data", "stats", &dir], deadline);
+    assert_eq!(
+        reported_record_count(&stats),
+        Some(3),
+        "the follow-up run must write its records into the seeded store: {stats:?}",
     );
 }
 

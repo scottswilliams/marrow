@@ -8,10 +8,7 @@ use marrow_run::SystemNondeterminism;
 use marrow_store::tree::TreeStore;
 
 use crate::backup::{count_live_entities, create_backup_artifact, ensure_store_uid};
-use crate::{
-    CheckFormat, load_checked_project, native_store_path, open_store_for_inspection,
-    report_simple_error,
-};
+use crate::{CheckFormat, load_checked_project, open_store_for_inspection, report_simple_error};
 
 pub(crate) fn backup(args: &[String]) -> ExitCode {
     let (dir, output) = match backup_args(args) {
@@ -27,10 +24,6 @@ pub(crate) fn backup(args: &[String]) -> ExitCode {
         Ok(lock) => lock,
         Err(code) => return code,
     };
-    let store_path = match native_store_path(&dir, &config, format) {
-        Ok(path) => path,
-        Err(code) => return code,
-    };
     let mut nondeterminism = SystemNondeterminism::new();
     // A project with no saved data on disk yields a valid empty backup.
     let on_disk = match open_store_for_inspection(&dir, &config, format) {
@@ -38,12 +31,11 @@ pub(crate) fn backup(args: &[String]) -> ExitCode {
         Err(code) => return code,
     };
 
-    // The committed-root cross-check is the separate witness for a store rolled back below its
-    // committed identity, run against the on-disk store rather than the empty fallback. Route it
-    // through the single race-aware owner: a writer mid-re-creating the store is recognised as a
-    // live race rather than condemned, while a settled absent store with committed roots — no
-    // racing writer — still fails closed.
-    match crate::verify_lock_roots_or_race(on_disk.as_ref(), store_path.as_deref(), lock.as_ref()) {
+    // The committed-root cross-check is the separate witness for a present store rolled back below
+    // its committed identity, run against the on-disk store rather than the empty fallback. An
+    // absent store body is the disposable-store case, not a loss, so it yields an empty archive
+    // rather than failing closed.
+    match crate::verify_lock_roots(on_disk.as_ref(), lock.as_ref()) {
         crate::LockRootVerdict::Clean => {}
         crate::LockRootVerdict::Lost(error) => {
             report_simple_error(error.code(), &error.to_string(), format);

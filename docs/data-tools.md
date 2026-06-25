@@ -320,17 +320,21 @@ archives nor blesses a truncated or tampered store.
 
 The anchor cannot witness a rollback that drops the anchor itself. The committed
 `marrow.lock` is the second, independent witness: it records the accepted catalog
-roots, so a store that presents fewer roots than its lock committed — including a
-store deleted from disk while its lock survives — has lost data to a rollback or
-deletion and is reported as `store.corruption`. Every read-only inspection (`data
-integrity`, `data stats`, `data roots`, `data dump`, `data get`), `doctor`,
-`backup`, and `data recover` all run this lock-root cross-check, so none blesses,
-counts, reads, archives, or repairs a store that rolled back below its committed
-roots. The check keys on the root set, not the epoch, so a store legitimately
-behind an ahead lock still passes, and a project with no committed lock — a
-genuine first run — is the separate missing-lock case rather than corruption. A
-backup mounted with `--backup` is self-contained and is inspected regardless of
-the live project's lock.
+roots, so a **present** store that presents fewer roots than its lock committed —
+a store rolled back to its empty initial commit, a partial root drop, or a uid-only
+store crashed mid-creation — has lost data and is reported as `store.corruption`.
+An **absent** store body under a committed lock is the disposable-store case, not a
+loss: the next write-capable run, `evolve apply`, or `serve --write` seeds an empty
+store from the committed identity (announced loudly), so the read-only inspections,
+`backup`, `doctor`, and `data recover` treat it as a clean first run rather than
+corruption. Every read-only inspection (`data integrity`, `data stats`, `data
+roots`, `data dump`, `data get`), `doctor`, `backup`, and `data recover` run this
+lock-root cross-check against a present store, so none blesses, counts, reads,
+archives, or repairs a store that rolled back below its committed roots. The check
+keys on the root set, not the epoch, so a store legitimately behind an ahead lock
+still passes, and a project with no committed lock — a genuine first run — is the
+separate missing-lock case rather than corruption. A backup mounted with
+`--backup` is self-contained and is inspected regardless of the live project's lock.
 
 Catalog state is not store corruption. A saved root or member whose durable
 identity is still pending is treated as absent until a run or evolution apply

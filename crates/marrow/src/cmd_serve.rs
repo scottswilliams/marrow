@@ -181,6 +181,11 @@ pub(crate) fn serve(args: &[String]) -> ExitCode {
         Ok(session) => session,
         Err(error) => return report_session_open_error(&dir, error, CheckFormat::Text),
     };
+    // A `--write` serve over a fresh checkout seeds an empty store from the committed lock; announce
+    // it loudly at startup, exactly as the run path prints the seed notice, so it is never silent.
+    for notice in session.notices() {
+        eprintln!("{}", notice.message());
+    }
     let routes = match SurfaceRoutes::from_program(session.program(), mode) {
         Ok(routes) => routes,
         Err(message) => {
@@ -442,6 +447,15 @@ impl SurfaceServeSession {
         match self {
             Self::ReadOnly(session) => session.program(),
             Self::Write(session) => session.program(),
+        }
+    }
+
+    /// Notices raised while opening the session. A read-only serve never seeds, so only a
+    /// `--write` serve carries the `SeededFromCommittedLock` notice for a fresh checkout.
+    fn notices(&self) -> &[marrow_run::ProjectSessionNotice] {
+        match self {
+            Self::ReadOnly(_) => &[],
+            Self::Write(session) => session.notices(),
         }
     }
 

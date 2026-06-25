@@ -155,12 +155,12 @@ fn a_second_run_does_not_churn_the_accepted_catalog() {
 }
 
 #[test]
-fn run_over_a_store_lost_under_a_committed_lock_fails_closed() {
-    // The committed `marrow.lock` is the independent witness to durable identity: it records the
-    // accepted catalog roots, so a store removed from disk while the lock still records those roots
-    // has lost durable identity. A write-capable run must fail closed with `store.corruption`
-    // rather than re-create an empty store over the loss, the same verdict the read-only inspection
-    // family reaches on the same store.
+fn run_over_a_store_lost_under_a_committed_lock_seeds_an_empty_store() {
+    // An ABSENT store body is the disposable-store case: a fresh checkout or a `rm -rf .data` that
+    // leaves the committed `marrow.lock` behind. A write-capable run seeds an empty store from the
+    // committed identity in the lock — reproducing the accepted ids rather than minting fresh — and
+    // announces the seed loudly, never failing closed. Only a PRESENT store that lost roots is
+    // corruption.
     let root = pending_native_project("run-store-lost-under-lock");
 
     let first = marrow_sub("run", &[root.to_str().unwrap()]);
@@ -177,25 +177,28 @@ fn run_over_a_store_lost_under_a_committed_lock_fails_closed() {
     let second = marrow_sub("run", &[root.to_str().unwrap()]);
     assert_eq!(
         second.status.code(),
-        Some(1),
-        "a run over a store lost under a committed lock must fail closed: {second:?}"
+        Some(0),
+        "a run over an absent store under a committed lock must seed and succeed: {second:?}"
     );
     let stderr = String::from_utf8(second.stderr).expect("stderr utf8");
-    let segments: Vec<&str> = stderr.trim().split(": ").collect();
-    let (_, code) = find_code_segment(&segments);
+    assert!(
+        stderr.contains("initialized an empty store from marrow.lock"),
+        "the seed from the committed lock must be announced loudly: {stderr}"
+    );
+    // The seeded store reproduces the committed identity from the lock rather than minting fresh.
     assert_eq!(
-        code, "store.corruption",
-        "the lost store under a committed lock must report store.corruption: {stderr}"
+        committed_lock(&root),
+        committed,
+        "seeding from the lock must reproduce the committed identity, not mint a new one",
     );
 }
 
 #[test]
-fn a_retired_store_index_in_the_lock_fails_a_lost_store_closed() {
+fn a_retired_store_index_in_the_lock_seeds_a_lost_store_keeping_the_tombstone() {
     // A committed lock whose append-only ledger tombstones a retired STORE INDEX still records the
-    // surviving accepted roots. When the local store is lost, the lock is the independent witness
-    // to that durable identity, so a write-capable open must fail closed with `store.corruption`
-    // rather than re-create an empty store from the lock — the retired-index tombstone must not be
-    // mistaken for a clean nothing-to-reseed.
+    // surviving accepted roots. When the local store body is lost, the lock seeds an empty store
+    // from the committed identity. Seeding must carry the retired-index tombstone forward — the
+    // retired id stays reserved, never reissued — rather than fail closed.
     let root = support::temp_project_uncommitted("run-retired-index-lost-store", |root| {
         write(
             root,
@@ -274,20 +277,28 @@ fn a_retired_store_index_in_the_lock_fails_a_lost_store_closed() {
         "the committed lock still records the surviving ^books root",
     );
 
-    // A write-capable open over the lost store must fail closed, never synthesize a fresh store
-    // from the lock — the retired-index tombstone is no excuse to re-create over the loss.
+    // A write-capable open over the absent store seeds an empty store from the lock and succeeds,
+    // carrying the retired-index tombstone forward so the retired id stays reserved.
     let reseed = marrow_sub("run", &[root.to_str().unwrap()]);
     assert_eq!(
         reseed.status.code(),
-        Some(1),
-        "a lost store under a committed lock with a retired index must fail closed: {reseed:?}"
+        Some(0),
+        "a lost store under a committed lock with a retired index must seed and succeed: {reseed:?}"
     );
     let stderr = String::from_utf8(reseed.stderr).expect("stderr utf8");
-    let segments: Vec<&str> = stderr.trim().split(": ").collect();
-    let (_, code) = find_code_segment(&segments);
-    assert_eq!(
-        code, "store.corruption",
-        "the lost store must report store.corruption, not a synthesized reseed: {stderr}"
+    assert!(
+        stderr.contains("initialized an empty store from marrow.lock"),
+        "the seed from the committed lock must be announced loudly: {stderr}"
+    );
+    let after_seed = committed_lock(&root);
+    assert!(
+        after_seed
+            .ledger
+            .iter()
+            .any(|tombstone| tombstone.kind == CatalogEntryKind::StoreIndex
+                && tombstone.id == index_id),
+        "seeding from the lock must keep the retired index tombstoned: {:#?}",
+        after_seed.ledger
     );
 }
 

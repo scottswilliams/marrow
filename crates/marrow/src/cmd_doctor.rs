@@ -83,18 +83,12 @@ fn run_doctor(dir: &str, format: CheckFormat) -> ExitCode {
         Some(config) => probe_check(root, dir, config, accepted.as_ref(), lock, &mut findings),
         None => None,
     };
-    // The lock-root witness runs whether or not a store snapshot is present: a readable store
-    // rolled back below its committed roots, or an absent store while the lock records committed
-    // roots, has lost durable identity. An unreadable store (locked, recovery-required, or hard
-    // corrupt) already carries its own finding and is not also charged this loss.
-    if store.is_some() || store_is_genuinely_absent(root, config.as_ref()) {
-        probe_lock_root_witness(
-            dir,
-            store.as_ref(),
-            resolved_store_path(root, config.as_ref()).as_deref(),
-            lock,
-            &mut findings,
-        );
+    // The lock-root witness runs over a present store: one rolled back below its committed roots
+    // has lost durable identity. An absent store body is the disposable-store case, not a loss, so
+    // it is not charged. An unreadable store (locked, recovery-required, or hard corrupt) already
+    // carries its own finding and is not also charged this loss.
+    if let Some(store) = store.as_ref() {
+        probe_lock_root_witness(dir, store, lock, &mut findings);
     }
     let store_report = store.as_ref().map(|store| {
         probe_store_facts(
@@ -351,60 +345,24 @@ fn probe_store_open(
     }
 }
 
-/// Whether the configured native store path is genuinely absent on disk — a true first run
-/// with no saved data yet, as opposed to a present-but-unreadable store that already carries
-/// its own finding. A `dataDir` occupied by a non-directory, a missing config, or any path
-/// resolution fault is not a clean absence and is left to the store-open probe.
-fn store_is_genuinely_absent(root: &Path, config: Option<&marrow_project::ProjectConfig>) -> bool {
-    let Some(config) = config else {
-        return false;
-    };
-    if marrow_check::guard_data_dir(root, config).is_err() {
-        return false;
-    }
-    match marrow_check::native_store_path(root, config) {
-        Ok(Some(path)) => store_path_is_absent(&path),
-        Ok(None) | Err(_) => false,
-    }
-}
-
-/// Run the committed-lock root witness over the store snapshot doctor sees. A store presenting
-/// fewer committed roots than the lock recorded — including a wholly absent store — has lost
-/// durable identity to a rollback or deletion; doctor surfaces it as `doctor.store_unavailable`
-/// carrying the underlying `store.corruption` code, the same verdict `backup` and `data recover`
-/// reach, so a CI doctor never blesses a store the write paths reject.
-///
-/// A writer re-creating a removed store transiently presents that same shortfall, so the shared
-/// recreation-race owner is consulted before condemning: an in-flight re-creation is the
-/// `store.locked` race the writer settles, not the rollback this guards. A failure to read the
-/// store while deciding leaves the witness silent — that read fault, not a false corruption,
-/// surfaces through the store-fact probes.
+/// Run the committed-lock root witness over the present store snapshot doctor sees. A store
+/// presenting fewer committed roots than the lock recorded has lost durable identity to a
+/// rollback or torn baseline; doctor surfaces it as `doctor.store_unavailable` carrying the
+/// underlying `store.corruption` code, the same verdict `backup` and `data recover` reach, so a
+/// CI doctor never blesses a store the write paths reject. An absent store body never reaches
+/// here: it is the disposable-store case the write paths seed, not a loss.
 fn probe_lock_root_witness(
     dir: &str,
-    store: Option<&TreeStore>,
-    path: Option<&Path>,
+    store: &TreeStore,
     lock: Option<&CatalogLock>,
     findings: &mut Vec<Finding>,
 ) {
-    match crate::verify_lock_roots_or_race(store, path, lock) {
+    match crate::verify_lock_roots(Some(store), lock) {
         crate::LockRootVerdict::Clean => {}
         crate::LockRootVerdict::Lost(error) => {
             findings.push(store_fact_error(dir, "committed roots", error));
         }
     }
-}
-
-/// The configured native store path, or `None` when no config resolves one. The recreation-race
-/// owner waits on this path for a writer mid-re-creating an absent store.
-fn resolved_store_path(
-    root: &Path,
-    config: Option<&marrow_project::ProjectConfig>,
-) -> Option<std::path::PathBuf> {
-    let config = config?;
-    if marrow_check::guard_data_dir(root, config).is_err() {
-        return None;
-    }
-    marrow_check::native_store_path(root, config).ok().flatten()
 }
 
 fn probe_store_facts(

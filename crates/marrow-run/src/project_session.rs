@@ -156,6 +156,7 @@ pub struct ProjectSurfaceSession {
     program: CheckedProgram,
     store_path: PathBuf,
     store: TreeStore,
+    notices: Vec<ProjectSessionNotice>,
 }
 
 struct CheckedSourceProgram {
@@ -274,6 +275,10 @@ pub enum ProjectSessionNotice {
     /// A run rewrote an existing `marrow.lock` to match the current source. Announced so the
     /// developer knows the committed lock changed and must be re-committed.
     LockUpdated,
+    /// A write-capable open found no store body on disk but a committed `marrow.lock` recording
+    /// active roots, so it seeded an empty store from the committed identity. Announced loudly so
+    /// a fresh checkout or a lost local store reconstructing from the lock is never silent.
+    SeededFromCommittedLock,
     DryRunWouldFreeze,
     DryRunWouldApply {
         from_epoch: u64,
@@ -295,6 +300,9 @@ impl ProjectSessionNotice {
             }
             Self::LockUpdated => {
                 "updated marrow.lock to match current source; commit the change".to_string()
+            }
+            Self::SeededFromCommittedLock => {
+                "initialized an empty store from marrow.lock".to_string()
             }
             Self::DryRunWouldFreeze => {
                 "dry run: would freeze accepted catalog identity".to_string()
@@ -958,6 +966,7 @@ impl ProjectSurfaceSnapshot {
             program: opened.program,
             store_path: opened.store_path,
             store: opened.store,
+            notices: opened.notices,
         })
     }
 }
@@ -971,6 +980,12 @@ impl ProjectSurfaceSession {
 
     pub fn program(&self) -> &CheckedProgram {
         &self.program
+    }
+
+    /// Notices raised while opening the write session, such as seeding an empty store from the
+    /// committed lock on a fresh checkout. The serve startup prints these so a seed is never silent.
+    pub fn notices(&self) -> &[ProjectSessionNotice] {
+        &self.notices
     }
 
     pub fn store_stamp(&self) -> Result<StoreStamp, ProjectSessionError> {
@@ -1199,6 +1214,7 @@ struct OpenSurfaceSession {
     program: CheckedProgram,
     store_path: PathBuf,
     store: TreeStore,
+    notices: Vec<ProjectSessionNotice>,
 }
 
 #[derive(Clone, Copy)]
@@ -1210,15 +1226,23 @@ enum SurfaceStoreAccess {
 fn open_surface_session(
     root: PathBuf,
     config: &ProjectConfig,
-    program: CheckedProgram,
+    mut program: CheckedProgram,
     access: SurfaceStoreAccess,
 ) -> Result<OpenSurfaceSession, ProjectSessionError> {
     // A write-capable serve is the third writer after run and evolve apply, so it routes through the
-    // same lock-root witness before the write-capable open touches the body: a store presenting
-    // fewer committed roots than its lock recorded has lost durable identity and fails closed with
-    // `store.corruption` rather than seizing the writer lock over the loss.
+    // same lock-root witness before the write-capable open touches the body: a PRESENT store
+    // presenting fewer committed roots than its lock recorded has lost durable identity and fails
+    // closed with `store.corruption` rather than seizing the writer lock over the loss. An ABSENT
+    // store body is the disposable-store case: it seeds an empty store from the committed identity,
+    // then re-derives the program from the seeded store so the write open carries an accepted
+    // catalog rather than the pre-seed proposal.
+    let mut notices = Vec::new();
     if matches!(access, SurfaceStoreAccess::Write) {
         guard_committed_lock_roots(&root, config)?;
+        if let Some(seeded) = seed_absent_store_from_committed_lock(&root, config, &program)? {
+            program = seeded;
+            notices.push(ProjectSessionNotice::SeededFromCommittedLock);
+        }
     }
     let store = open_existing_surface_store(&root, config, access)?;
     if populated_unstamped_store(&program, &store.store)? {
@@ -1261,6 +1285,7 @@ fn open_surface_session(
         program,
         store_path: store.path,
         store: store.store,
+        notices,
     })
 }
 
@@ -1385,6 +1410,9 @@ fn open_run_store(
 ) -> Result<OpenRunStore, ProjectSessionError> {
     if !isolate_writes {
         guard_committed_lock_roots(root, config)?;
+        if store_absent_with_committed_lock(root, config)? {
+            notices.push(ProjectSessionNotice::SeededFromCommittedLock);
+        }
     }
     let Some(store) = open_store_file(root, config, !isolate_writes)? else {
         if isolate_writes && pending_baseline(checked.program()) {
@@ -1531,6 +1559,14 @@ fn open_store_file(
     } else {
         return Ok(None);
     };
+    // The runtime read of saved data is a store read, so it owes the same readability
+    // cross-check the inspection family runs: the data cells are their own derivation, so a
+    // backend page that silently drops a cell or truncates a record range shifts every
+    // enumeration with no structural fault, and a torn page faults only when a read walks it.
+    // Verifying the store readable here — the per-root structural digest plus the record and
+    // index re-walks — fails a btree-corrupt store closed at open rather than letting a run
+    // enumerate it truncated or fault mid-evaluation.
+    store.verify_readable()?;
     Ok(Some(NativeRunStore { path, store }))
 }
 
@@ -1879,8 +1915,9 @@ fn open_store_for_inspection(
 ///
 /// The replay is attempted only when a read-only probe reports the store needs it, so
 /// a healthy store is never reopened for writing or modified. Genuine corruption is
-/// not blessed: the replayed handle is proven structurally readable here, and the
-/// committed-lock and per-root digest witnesses still run later in the normal pipeline.
+/// not blessed: the replayed handle is proven structurally readable here, the
+/// committed-lock witness runs in the lock-root guard, and the per-root structural
+/// digest runs when the store-read open re-opens the store for the run.
 pub fn recover_store_for_write(
     root: &Path,
     config: &ProjectConfig,
@@ -2018,22 +2055,21 @@ fn store_behind_committed_lock(
     }
 }
 
-/// Fail a write-capable run closed when the store has lost the committed roots its `marrow.lock`
-/// records, before establishing a fresh baseline would silently mask the loss. The committed lock
-/// is the independent witness to durable identity: a store that presents fewer of the lock's
-/// active roots than the lock recorded — a present store rolled back to its empty initial commit,
-/// a partial root drop, a uid-only store crashed mid-creation, or a store wholly deleted while its
-/// lock survives — has lost durable identity and is `store.corruption`, not a clean store to
-/// re-baseline. This is the same verdict the read-only inspection family reaches, routed through
-/// the one race-aware witness owner so a writer mid-re-creating the store yields `store.locked`
-/// rather than a false corruption. A genuine first run records no active root in the lock, so the
-/// witness never fires either way.
+/// Fail a write-capable run closed when a PRESENT store has lost the committed roots its
+/// `marrow.lock` records, before establishing a fresh baseline would silently mask the loss. The
+/// committed lock is the independent witness to durable identity: a present store that presents
+/// fewer of the lock's active roots than the lock recorded — rolled back to its empty initial
+/// commit, a partial root drop, or a uid-only store crashed mid-creation — has lost durable
+/// identity and is `store.corruption`, not a clean store to re-baseline. An ABSENT store body is
+/// the disposable-store case, not a loss: it passes here so the open seeds an empty store from the
+/// committed identity. A genuine first run records no active root in the lock, so the witness never
+/// fires either way.
 ///
 /// A store committed at an earlier epoch than the lock's high-water is a legitimately-behind local
 /// checkout, not a loss: it carries every committed root but fewer member entries than the ahead
-/// lock projected, so it is the store-behind fence's case, never corruption. A rolled-back, lost,
-/// or crash-mid-creation store carries no usable commit metadata, so it is not behind and the
-/// witness fires.
+/// lock projected, so it is the store-behind fence's case, never corruption. A rolled-back or
+/// crash-mid-creation store carries no usable commit metadata, so it is not behind and the witness
+/// fires.
 fn guard_committed_lock_roots(
     root: &Path,
     config: &ProjectConfig,
@@ -2057,12 +2093,50 @@ fn guard_committed_lock_roots(
     {
         return Ok(());
     }
-    marrow_check::tooling::verify_lock_roots_tolerating_recreation(
-        store.as_ref(),
-        Some(&path),
-        Some(&lock),
-    )
-    .map_err(ProjectSessionError::Store)
+    marrow_check::tooling::verify_present_store_lock_roots(store.as_ref(), Some(&lock))
+        .map_err(ProjectSessionError::Store)
+}
+
+/// Whether the store body is absent on disk while a committed lock records active roots — the
+/// fresh-checkout or lost-store case the next write-capable open seeds from the committed identity.
+/// The seed is announced loudly so the developer learns an empty store was reconstructed from the
+/// lock rather than minted fresh.
+fn store_absent_with_committed_lock(
+    root: &Path,
+    config: &ProjectConfig,
+) -> Result<bool, ProjectSessionError> {
+    let Some(path) = marrow_check::native_store_path(root, config)? else {
+        return Ok(false);
+    };
+    if !marrow_check::tooling::store_path_is_absent(&path) {
+        return Ok(false);
+    }
+    Ok(marrow_check::read_committed_lock(root)?.is_some_and(|lock| lock.records_active_roots()))
+}
+
+/// Seed an empty store from the committed identity when the store body is absent on disk while a
+/// committed lock records active roots, returning the program re-derived from the seeded store. A
+/// write-capable open — `serve --write` and `evolve apply` — expects a stamped, baselined store
+/// carrying an accepted catalog, so a fresh checkout or a lost store body is materialized here
+/// through the run write path's own uid mint and catalog baseline against the lock-adopted program,
+/// then the analysis is re-projected against the seeded store's committed catalog. `Some` signals a
+/// seed happened, so the caller announces it loudly. A present store is left untouched (`None`); the
+/// run path already created it.
+pub fn seed_absent_store_from_committed_lock(
+    root: &Path,
+    config: &ProjectConfig,
+    program: &CheckedProgram,
+) -> Result<Option<CheckedProgram>, ProjectSessionError> {
+    if !store_absent_with_committed_lock(root, config)? {
+        return Ok(None);
+    }
+    let Some(NativeRunStore { store, .. }) = open_store_file(root, config, true)? else {
+        return Ok(None);
+    };
+    commit_catalog_baseline(&store, program)?;
+    let snapshot =
+        marrow_check::recheck_source_project_analysis_against_store_catalog(root, config, &store)?;
+    Ok(Some(snapshot.program))
 }
 
 fn pending_baseline(program: &CheckedProgram) -> bool {

@@ -158,13 +158,17 @@ standard-library, or data-CLI surface that can read, scan, or mutate it.
 The lock is always subordinate to a valid live store. It does two things, and only
 these two:
 
-- It **seeds** a fresh empty store. When the store is empty and a committed
-  `marrow.lock` exists, the first write adopts the committed identity from the lock
-  instead of minting fresh, so a fresh checkout reproduces the committed identity
-  exactly. Adoption fails closed: a corrupt lock refuses the command
-  (`catalog.lock_corrupt`) rather than minting around it, and an adoption that
-  would reissue a retired ID or regress the epoch is rejected. Fresh identity is
-  minted only when no lock exists.
+- It **seeds** a fresh empty store. When the store body is absent on disk — a fresh
+  checkout, or a local store lost to a `rm` — and a committed `marrow.lock` records
+  roots, the first write-capable run, `evolve apply`, or `serve --write` seeds an
+  empty store and adopts the committed identity from the lock instead of minting
+  fresh, so a fresh checkout reproduces the committed identity exactly. The seed is
+  announced loudly (`initialized an empty store from marrow.lock`), never silent.
+  Adoption fails closed: a corrupt lock refuses the command (`catalog.lock_corrupt`)
+  rather than minting around it, and an adoption that would reissue a retired ID or
+  regress the epoch is rejected. A **present** store that lost committed roots is not
+  re-seeded — it fails closed as `store.corruption`. Fresh identity is minted only
+  when no lock exists.
 - It **reports staleness**. When the lock's recorded source shape is behind the
   current source, `marrow check` reports a non-fatal `check.stale_lock` advisory
   and still passes, since a later `run` or `evolve apply` regenerates the lock.

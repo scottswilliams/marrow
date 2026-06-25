@@ -1385,17 +1385,16 @@ fn a_retired_id_is_recovered_from_the_store_after_lock_loss_and_never_reissued()
     Ok(())
 }
 
-/// Durable never-reuse survives STORE loss when only the committed lock remains: re-seeding a
-/// fresh store from the surviving lock must materialize the lock's tombstoned identity as a
-/// A store lost from disk while its committed `marrow.lock` survives — even one whose ledger
-/// tombstones a retired id — has lost durable identity and must fail a write-capable open closed
-/// as `store.corruption`, never silently re-seed a fresh store from the lock over the loss.
+/// Durable never-reuse survives an absent store body when only the committed lock remains: seeding
+/// a fresh empty store from the surviving lock carries the lock's tombstoned identity forward, so
+/// the retired id stays reserved and is never reissued. An absent store body is the disposable-store
+/// case, not a loss, so a write-capable open seeds and succeeds rather than failing closed.
 ///
 /// Retire `subtitle` so a reserved store entry and a lock ledger tombstone exist, then capture
 /// the committed lock. Carry only the post-retire source and the surviving lock into a fresh
-/// project with no store and run: the run must fail closed rather than re-create an empty store.
+/// project with no store and run: the run seeds an empty store keeping the tombstone.
 #[test]
-fn a_lost_store_with_a_retired_id_in_the_lock_fails_closed()
+fn a_lost_store_with_a_retired_id_in_the_lock_seeds_keeping_the_tombstone()
 -> Result<(), Box<dyn std::error::Error>> {
     let root = native_books_project("retire-store-loss", RETIRE_BASELINE_SOURCE);
     let accepted = commit_catalog(&root);
@@ -1463,13 +1462,22 @@ fn a_lost_store_with_a_retired_id_in_the_lock_fails_closed()
     ]);
     assert_eq!(
         run.status.code(),
-        Some(1),
-        "a run over a lost store under a committed lock must fail closed: {run:?}"
+        Some(0),
+        "a run over an absent store body under a committed lock must seed and succeed: {run:?}"
     );
     let stderr = String::from_utf8(run.stderr).expect("stderr utf8");
     assert!(
-        stderr.contains("store.corruption"),
-        "the lost store under a committed lock must report store.corruption, never reseed: {stderr}"
+        stderr.contains("initialized an empty store from marrow.lock"),
+        "the seed from the committed lock must be announced loudly: {stderr}"
+    );
+    let after_seed = support_evolve::committed_lock(&lost_root).expect("lock after seed parses");
+    assert!(
+        after_seed
+            .ledger
+            .iter()
+            .any(|tombstone| tombstone.id == subtitle_id),
+        "seeding from the lock must keep the retired id tombstoned: {:#?}",
+        after_seed.ledger
     );
 
     Ok(())

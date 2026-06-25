@@ -69,9 +69,7 @@ pub use integrity::{
     sample_integrity_problem_details, sample_integrity_problems, stamped_integrity_problem_details,
     verify_store_completeness, verify_store_roots_against_lock, visit_integrity_problems,
 };
-pub use lock_roots::{
-    store_path_is_absent, verify_lock_roots_tolerating_recreation, wait_for_store_recreation,
-};
+pub use lock_roots::{store_path_is_absent, verify_present_store_lock_roots};
 pub use semantic_tokens::{
     SourceSemanticTokenFact, SourceSemanticTokenModifiers, SourceSemanticTokenRole,
     source_semantic_token_facts, source_semantic_token_facts_for_file,

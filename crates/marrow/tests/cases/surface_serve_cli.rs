@@ -357,13 +357,14 @@ fn serve_over_a_healthy_data_dir_still_listens() {
     server.stop_with_sigterm();
 }
 
-/// `serve --write` is a write-capable open, so it must agree with `run` and `evolve apply`: a store
-/// lost under a committed lock that records its accepted roots has lost durable identity and must
-/// fail closed with `store.corruption` before the write-capable open seizes the writer lock. A
-/// regression that lets serve listen would leave the bound command running, so this is bounded and
-/// asserts the refused exit rather than spawning a listening server.
+/// `serve --write` is a write-capable open, so it agrees with `run` and `evolve apply`: an absent
+/// store body under a committed lock is the disposable-store case, so the open seeds an empty store
+/// from the committed identity and listens rather than failing closed. `store.corruption` is
+/// reserved for a PRESENT store that lost roots. `spawn_surface_server_with_args` fails the test if
+/// the server exits before printing its listen line, so reaching the listen line proves the write
+/// open seeded and admitted the absent store.
 #[test]
-fn write_serve_over_a_store_lost_under_a_committed_lock_fails_closed() {
+fn write_serve_over_an_absent_store_seeds_and_listens() {
     let root = temp_project("serve-write-store-lost", |root| {
         write(root, "marrow.json", support::native_config());
         write(root, "src/app.mw", SURFACE_SOURCE);
@@ -372,22 +373,24 @@ fn write_serve_over_a_store_lost_under_a_committed_lock_fails_closed() {
     let seed = marrow(&["run", "--entry", "app::seed", project]);
     assert_eq!(seed.status.code(), Some(0), "seed: {seed:?}");
 
-    // The store is removed while the committed lock survives, modelling a rollback or deletion.
+    // The store body is removed while the committed lock survives, modelling a fresh checkout.
     std::fs::remove_dir_all(root.join(".data")).expect("simulate a lost local store");
 
-    let serve = support::marrow_bounded(
-        &["serve", "--write", "--addr", "127.0.0.1:0", project],
-        STORE_OP_DEADLINE,
+    let (server, _addr) = spawn_surface_server_with_args(&root, &["--write"]);
+    let stderr = server.stop_with_sigterm_capturing_stderr();
+    assert!(
+        stderr.contains("initialized an empty store from marrow.lock"),
+        "the absent-store serve seed must be announced loudly at startup: {stderr}"
     );
+
+    // The write serve replays its own clean unclean shutdown on the next write-capable open.
+    let run = support::marrow_bounded(&["run", "--entry", "app::seed", project], STORE_OP_DEADLINE);
+    assert_eq!(run.status.code(), Some(0), "post-serve write run: {run:?}");
+    let integrity = support::marrow_bounded(&["data", "integrity", project], STORE_OP_DEADLINE);
     assert_eq!(
-        serve.status.code(),
-        Some(1),
-        "a write serve over a store lost under a committed lock must fail closed, not listen: {serve:?}",
-    );
-    assert_eq!(
-        fault_code(&serve),
-        "store.corruption",
-        "the lost store under a committed lock must report store.corruption: {serve:?}",
+        integrity.status.code(),
+        Some(0),
+        "the store the absent-store seed materialized must verify clean: {integrity:?}",
     );
 }
 

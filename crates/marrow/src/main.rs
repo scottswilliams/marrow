@@ -619,10 +619,7 @@ pub(crate) fn open_store_for_inspection(
         return Ok(None);
     };
     if store_path_is_absent(&path) {
-        let lock = read_committed_lock(dir, format)?;
-        if !marrow_check::tooling::wait_for_store_recreation(&path, lock.as_ref()) {
-            return Ok(None);
-        }
+        return Ok(None);
     }
     match marrow_store::tree::TreeStore::open_read_only(&path)
         .and_then(|store| store.verify_readable().map(|()| store))
@@ -635,27 +632,26 @@ pub(crate) fn open_store_for_inspection(
     }
 }
 
-/// The verdict of the race-aware lock-root cross-check.
+/// The verdict of the lock-root cross-check.
 pub(crate) enum LockRootVerdict {
-    /// The store carries every committed root, or a writer is mid-re-creating the store and the
-    /// transient shortfall is the live `store.locked` race, not a loss.
+    /// The store carries every committed root, or its body is absent — the disposable-store case
+    /// that seeds an empty store from the committed identity rather than a loss.
     Clean,
-    /// The store settled below the committed roots the lock records: a genuine rollback or
-    /// deletion, failed closed as the carried store corruption.
+    /// A present store settled below the committed roots the lock records: a genuine rollback or
+    /// torn baseline, failed closed as the carried store corruption.
     Lost(marrow_store::StoreError),
 }
 
 /// Compare a store's committed roots against `marrow.lock` for a CLI driver, mapping the shared
-/// race-aware verdict to the CLI's [`LockRootVerdict`]. Every driver that runs this check — the
-/// read-only inspections, `doctor`, `backup`, and `data recover` — routes through the one
-/// race-aware owner in `marrow_check::tooling` rather than the bare witness, so a live store
-/// recreation is tolerated while a settled rollback or deletion still fails closed.
-pub(crate) fn verify_lock_roots_or_race(
+/// verdict to the CLI's [`LockRootVerdict`]. Every driver that runs this check — the read-only
+/// inspections, `doctor`, `backup`, and `data recover` — routes through the one owner in
+/// `marrow_check::tooling`, which condemns only a present store presenting fewer committed roots
+/// and treats an absent store body as the disposable-store case.
+pub(crate) fn verify_lock_roots(
     store: Option<&marrow_store::tree::TreeStore>,
-    path: Option<&Path>,
     lock: Option<&marrow_catalog::CatalogLock>,
 ) -> LockRootVerdict {
-    match marrow_check::tooling::verify_lock_roots_tolerating_recreation(store, path, lock) {
+    match marrow_check::tooling::verify_present_store_lock_roots(store, lock) {
         Ok(()) => LockRootVerdict::Clean,
         Err(error) => LockRootVerdict::Lost(error),
     }

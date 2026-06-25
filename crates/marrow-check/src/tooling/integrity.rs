@@ -933,8 +933,8 @@ fn collect_member_names(members: &[CheckedSavedMember], names: &mut HashMap<Stri
 /// rather than blessing or archiving it.
 ///
 /// The committed-root cross-check against `marrow.lock` is a separate witness those callers
-/// run through the race-aware lock-root owner, so a writer mid-re-creating a removed store is
-/// recognised as a live race rather than condemned as a rollback.
+/// run through the lock-root owner, which condemns only a present store presenting fewer roots
+/// and treats an absent store body as the disposable-store case the write paths seed.
 pub fn verify_store_completeness(
     store: &TreeStore,
     program: &CheckedProgram,
@@ -944,24 +944,17 @@ pub fn verify_store_completeness(
     verify_index_completeness(store, &checked_places(program))
 }
 
-/// Cross-check the catalog the store presents against the committed `marrow.lock`.
-///
-/// This is the bare, race-blind witness: a store mid-re-created by a concurrent writer
-/// transiently presents fewer committed roots than the lock, so this would condemn a healthy
-/// store as a rollback. Every CLI driver routes it through the binary's race-aware lock-root
-/// owner, the single caller that distinguishes the live re-creation race from a settled loss;
-/// no driver calls this directly.
+/// Cross-check the catalog a PRESENT store presents against the committed `marrow.lock`.
 ///
 /// The per-root structural digest cannot witness a corruption that drops the anchor
 /// itself: a flip in the commit metadata region that rolls the store back to its empty
 /// initial state presents zero records and zero anchors, so the anchor pass visits nothing
-/// and passes vacuously. A store that is wholly absent on disk while its lock still records
-/// committed roots is the same loss carried to the limit: the durable file vanished entirely
-/// but its committed identity remains. The independent witness is the lock, a separate
-/// durable file that records the committed accepted roots. Every active accepted root the
-/// lock records must still be present in the catalog the store presents; a store that
-/// presents fewer roots than the lock committed — including an absent store presenting none —
-/// has lost durable identity to a rollback or deletion, failed closed as corruption.
+/// and passes vacuously. The independent witness is the lock, a separate durable file that
+/// records the committed accepted roots. Every active accepted root the lock records must
+/// still be present in the catalog the store presents; a present store that presents fewer
+/// roots than the lock committed has lost durable identity to a rollback or a torn baseline,
+/// failed closed as corruption. An absent store body never reaches here: the lock-root owner
+/// treats it as the disposable-store case the write paths seed, not a loss.
 ///
 /// The check keys on the accepted-root set, not the epoch number, so a store legitimately
 /// behind an ahead lock (a teammate's committed activation seeded into a fresh checkout)
@@ -969,7 +962,7 @@ pub fn verify_store_completeness(
 /// records no active roots, there is no recorded baseline to contradict, which is the
 /// separate missing-lock and genuine first-run case, not a corruption.
 pub fn verify_store_roots_against_lock(
-    store: Option<&TreeStore>,
+    store: &TreeStore,
     lock: Option<&marrow_catalog::CatalogLock>,
 ) -> Result<(), StoreError> {
     let Some(lock) = lock else {
@@ -984,19 +977,17 @@ pub fn verify_store_roots_against_lock(
     if committed_roots.peek().is_none() {
         return Ok(());
     }
-    let presented: HashSet<(CatalogEntryKind, String)> = match store {
-        Some(store) => store.read_catalog_snapshot()?,
-        None => None,
-    }
-    .map(|snapshot| {
-        snapshot
-            .entries
-            .iter()
-            .filter(|entry| entry.lifecycle == CatalogLifecycle::Active)
-            .map(|entry| (entry.kind, entry.path.clone()))
-            .collect::<HashSet<_>>()
-    })
-    .unwrap_or_default();
+    let presented: HashSet<(CatalogEntryKind, String)> = store
+        .read_catalog_snapshot()?
+        .map(|snapshot| {
+            snapshot
+                .entries
+                .iter()
+                .filter(|entry| entry.lifecycle == CatalogLifecycle::Active)
+                .map(|entry| (entry.kind, entry.path.clone()))
+                .collect::<HashSet<_>>()
+        })
+        .unwrap_or_default();
     if committed_roots.any(|(kind, path)| !presented.contains(&(kind, path.to_string()))) {
         return Err(StoreError::Corruption {
             message: "the store presents fewer committed roots than its lock recorded".into(),

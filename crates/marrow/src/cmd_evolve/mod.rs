@@ -109,6 +109,14 @@ fn apply_cmd(raw_args: &[String]) -> ExitCode {
     if let Err(code) = guard_committed_lock_roots(&input.dir, &config, input.format) {
         return code;
     }
+    // An absent store body against a committed lock recording roots is the disposable-store case:
+    // seed and baseline an empty store from the committed identity through the shared run-path owner
+    // before apply opens it, so a fresh checkout does not leave an empty catalog against a lock
+    // recording roots, and announce the seed loudly exactly as the run path does.
+    let program = match seed_absent_store(&input.dir, &config, program, input.format) {
+        Ok(program) => program,
+        Err(code) => return code,
+    };
     let Ok(store) = store::apply_store(&input.dir, &config, input.format) else {
         return ExitCode::FAILURE;
     };
@@ -357,21 +365,20 @@ fn apply_desync_remedy(target_epoch: u64, high_water: u64) -> String {
     )
 }
 
-/// Fail apply closed when the store has lost the committed roots its `marrow.lock` records, before
-/// `apply_store` would create or baseline a fresh store over the loss. The committed lock is the
-/// independent witness to durable identity: a store presenting fewer of its active roots than the
-/// lock recorded — rolled back, partially dropped, crashed mid-creation, or wholly deleted while
-/// its lock survives — has lost durable identity and is `store.corruption`, not a clean store to
-/// re-baseline. This is the same verdict the read-only inspection family reaches, routed through
-/// the one race-aware witness owner so a writer mid-re-creating the store yields `store.locked`
-/// rather than a false corruption. A genuine first apply records no active root in the lock, so
-/// the witness never fires and the fresh baseline path runs.
+/// Fail apply closed when a PRESENT store has lost the committed roots its `marrow.lock` records,
+/// before `apply_store` would baseline a fresh store over the loss. The committed lock is the
+/// independent witness to durable identity: a present store presenting fewer of its active roots
+/// than the lock recorded — rolled back, partially dropped, or crashed mid-creation — has lost
+/// durable identity and is `store.corruption`, not a clean store to re-baseline. An ABSENT store
+/// body is the disposable-store case, not a loss: apply seeds an empty store from the committed
+/// identity. A genuine first apply records no active root in the lock, so the witness never fires
+/// and the fresh baseline path runs.
 ///
 /// A store committed at an earlier epoch than the lock's high-water is a legitimately-behind local
 /// checkout — the very store apply exists to advance — so it carries every committed root but
 /// fewer member entries than the ahead lock and is left to the apply, never condemned. A rolled
-/// back, lost, or crash-mid-creation store carries no usable commit metadata, so it is not behind
-/// and the witness fires.
+/// back or crash-mid-creation store carries no usable commit metadata, so it is not behind and the
+/// witness fires.
 fn guard_committed_lock_roots(
     dir: &str,
     config: &marrow_project::ProjectConfig,
@@ -398,12 +405,40 @@ fn guard_committed_lock_roots(
     {
         return Ok(());
     }
-    match crate::verify_lock_roots_or_race(store.as_ref(), Some(&path), Some(&lock)) {
+    match crate::verify_lock_roots(store.as_ref(), Some(&lock)) {
         crate::LockRootVerdict::Clean => Ok(()),
         crate::LockRootVerdict::Lost(error) => {
             report_simple_error(error.code(), &error.to_string(), format);
             Err(ExitCode::FAILURE)
         }
+    }
+}
+
+/// Seed and baseline an empty store from the committed identity when the store body is absent, then
+/// return the program re-derived from the seeded store so apply runs against the now-accepted
+/// catalog. Without this an absent-store apply over a fresh checkout would create an empty store and
+/// never write the committed roots into its catalog (the lock-adopted program already carries an
+/// accepted epoch, so the fresh-baseline path is skipped), leaving an empty catalog against a lock
+/// recording roots — a self-corrupting store. The seed reuses the run path's owner and is announced
+/// loudly. A present store is left untouched, returning the program unchanged.
+fn seed_absent_store(
+    dir: &str,
+    config: &marrow_project::ProjectConfig,
+    program: marrow_check::CheckedProgram,
+    format: CheckFormat,
+) -> Result<marrow_check::CheckedProgram, ExitCode> {
+    match marrow_run::seed_absent_store_from_committed_lock(Path::new(dir), config, &program) {
+        Ok(Some(seeded)) => {
+            eprintln!(
+                "{}",
+                marrow_run::ProjectSessionNotice::SeededFromCommittedLock.message()
+            );
+            Ok(seeded)
+        }
+        Ok(None) => Ok(program),
+        Err(error) => Err(crate::cmd_run::report_session_open_error(
+            dir, error, format,
+        )),
     }
 }
 
