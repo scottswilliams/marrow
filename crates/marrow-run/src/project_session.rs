@@ -1359,6 +1359,13 @@ fn open_existing_surface_store(
         SurfaceStoreAccess::Write => TreeStore::open_existing(&path)
             .map_err(|error| surface_store_open_error(&path, error))?,
     };
+    // Serving saved data is a store read, so it owes the same readability cross-check the runtime
+    // and inspection families run: the data cells are their own derivation, so a backend page that
+    // silently drops a cell or rewrites a stored value shifts every enumeration with no structural
+    // fault until a read walks the damaged page. Verifying the per-root structural digest here fails
+    // a btree-corrupt store closed at open rather than letting the server admit it and stream a
+    // truncated prefix until a page reaches the corrupt cell.
+    store.verify_readable()?;
     Ok(NativeRunStore { path, store })
 }
 

@@ -10,7 +10,10 @@ use std::net::{SocketAddr, TcpStream};
 use std::path::Path;
 use std::time::Duration;
 
-use support::{marrow, marrow_sub, temp_project, write};
+use support::{
+    marrow, marrow_bounded, marrow_sub, redb_store_path, temp_project, temp_project_uncommitted,
+    write,
+};
 
 const SURFACE_SOURCE: &str = "module app\n\
  \n\
@@ -2141,4 +2144,118 @@ fn field_value(record: &Value, label: &str) -> Value {
         .find(|field| field["render_label"] == label)
         .and_then(|field| field["value"].as_object().map(|_| field["value"].clone()))
         .unwrap_or_else(|| panic!("field {label} in {record:#?}"))
+}
+
+/// A 200-record `surface Library from ^books` store, large enough that its data btree spans
+/// interior pages so a single-byte flip can silently drop or rewrite one cell.
+fn bulk_book_surface_source(records: u32) -> String {
+    format!(
+        "module app\n\
+         \n\
+         resource Book\n\
+         \x20\x20\x20\x20required title: string\n\
+         \x20\x20\x20\x20required author: string\n\
+         store ^books(id: int): Book\n\
+         \n\
+         pub fn seed()\n\
+         \x20\x20\x20\x20transaction\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20for i in 1..={records}\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20var b: Book\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20b.title = \"a book title long enough to span a cell\"\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20b.author = \"an author name\"\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20\x20^books(i) = b\n\
+         \n\
+         surface Library from ^books\n\
+         \x20\x20\x20\x20fields title, author\n"
+    )
+}
+
+/// `serve` performs a store read, so its store-open must run the same data-family structural-digest
+/// cross-check the inspection and runtime families run: a present btree-corrupt store fails closed
+/// as `store.corruption` at open. A regression that skipped the check would admit the store and
+/// stream a truncated prefix over HTTP until a page reached the corrupt cell. The sweep flips one
+/// byte at a time, and at every offset `data integrity` flags `store.corruption`, both the
+/// read-only and the `--write` serve open must exit `store.corruption` rather than ever printing a
+/// listen line. The bound turns a regression that lets serve listen into a clear failure.
+#[test]
+fn serve_over_a_btree_corrupt_store_fails_closed_rather_than_listen() {
+    const SEEDED: u32 = 200;
+    let project = temp_project_uncommitted("cli-serve-corrupt-store", |root| {
+        write(root, "marrow.json", support::native_config());
+        write(root, "src/app.mw", &bulk_book_surface_source(SEEDED));
+    });
+    let dir = project.to_str().expect("dir utf8").to_string();
+    assert_eq!(
+        marrow(&["run", "--entry", "app::seed", &dir]).status.code(),
+        Some(0),
+        "seed the bulk book surface store",
+    );
+    let store = redb_store_path(&project);
+    let clean = std::fs::read(&store).expect("read seeded store body");
+
+    let mut covered = false;
+    for offset in (8192..clean.len()).step_by(256) {
+        let mut corrupt = clean.clone();
+        corrupt[offset] ^= 0xff;
+        std::fs::write(&store, &corrupt).expect("write corrupted store body");
+
+        let integrity = marrow_bounded(&["data", "integrity", &dir], STORE_OP_DEADLINE);
+        if integrity.status.code() == Some(0) || fault_code(&integrity) != "store.corruption" {
+            continue;
+        }
+        covered = true;
+
+        for extra in [&[][..], &["--write"][..]] {
+            let mut args = vec!["serve", "--addr", "127.0.0.1:0"];
+            args.extend_from_slice(extra);
+            args.push(&dir);
+            let serve = marrow_bounded(&args, STORE_OP_DEADLINE);
+            assert!(
+                !String::from_utf8_lossy(&serve.stdout).contains("serve listening"),
+                "offset {offset}: `marrow {}` listened over a btree-corrupt store: {serve:?}",
+                args.join(" "),
+            );
+            assert_eq!(
+                serve.status.code(),
+                Some(1),
+                "offset {offset}: `marrow {}` admitted a btree-corrupt store instead of failing \
+                 closed: {serve:?}",
+                args.join(" "),
+            );
+            assert_eq!(
+                fault_code(&serve),
+                "store.corruption",
+                "offset {offset}: a btree-corrupt store must fail `marrow {}` closed as \
+                 store.corruption: {serve:?}",
+                args.join(" "),
+            );
+        }
+    }
+    assert!(
+        covered,
+        "the sweep must reach at least one offset `data integrity` flags as store.corruption",
+    );
+}
+
+/// A healthy 200-record `surface ... from ^books` store still serves: serve must reach its listen
+/// line. The digest cross-check at open guards against corruption, not a clean store, and
+/// `spawn_surface_server` fails the test if serve exits before printing its listen line.
+#[test]
+fn serve_over_a_healthy_surface_store_still_listens() {
+    const SEEDED: u32 = 200;
+    let root = temp_project("cli-serve-healthy-store", |root| {
+        write(root, "marrow.json", support::native_config());
+        write(root, "src/app.mw", &bulk_book_surface_source(SEEDED));
+    });
+    let project = root.to_str().expect("project path utf8");
+    assert_eq!(
+        marrow(&["run", "--entry", "app::seed", project])
+            .status
+            .code(),
+        Some(0),
+        "seed the bulk book surface store",
+    );
+
+    let (server, _addr) = spawn_surface_server(&root);
+    server.stop_with_sigterm();
 }
