@@ -37,7 +37,7 @@ use crate::program::{CheckedProgram, EvolveDefault};
 use accepted_state::{
     accepted_member_leaves, accepted_member_structs, accepted_store_key_shapes,
     classify_store_key_shape, enum_ids_rename_covered, enum_ids_with_renamed_member,
-    proposal_changed_catalog_ids, renamed_catalog_ids,
+    plausible_enum_member_renames, proposal_changed_catalog_ids, renamed_catalog_ids,
 };
 use enum_shrink::{EnumMembers, ShrunkEnums};
 use leaf_obligations::discharge_root;
@@ -90,6 +90,7 @@ pub(crate) fn discharge(
         transforms::pending_transform_ids(program),
         renamed,
         renamed_enum_ids,
+        plausible_enum_member_renames(program),
         accepted_member_leaves(program),
     );
     let enum_members = EnumMembers::collect(program, &rename_covered_enum_ids);
@@ -269,6 +270,7 @@ struct Accumulator {
     transforms: BTreeSet<String>,
     renamed: HashSet<String>,
     renamed_enum_ids: HashSet<crate::facts::EnumId>,
+    enum_member_renames: HashMap<crate::facts::EnumId, (String, String)>,
     accepted_leaves: HashMap<String, Option<String>>,
     accepted_structs: HashMap<String, String>,
     declared_structs: HashMap<String, String>,
@@ -282,6 +284,7 @@ impl Accumulator {
         transforms: BTreeSet<String>,
         renamed: HashSet<String>,
         renamed_enum_ids: HashSet<crate::facts::EnumId>,
+        enum_member_renames: HashMap<crate::facts::EnumId, (String, String)>,
         accepted_leaves: HashMap<String, Option<String>>,
     ) -> Self {
         Self {
@@ -297,6 +300,7 @@ impl Accumulator {
             transforms,
             renamed,
             renamed_enum_ids,
+            enum_member_renames,
             accepted_leaves,
             accepted_structs: HashMap::new(),
             declared_structs: HashMap::new(),
@@ -537,14 +541,41 @@ impl Accumulator {
 
     /// Fail a leaf closed because a record's stored value is not valid under its current type.
     /// The required and optional arms share this so the verdict construction lives in one place.
-    fn invalid_stored_value(&mut self, id: CatalogId, message: String) -> Result<(), StoreError> {
-        self.diagnostic(id.clone(), message);
+    /// When the leaf is an enum whose member was renamed by a single-candidate same-shape rename,
+    /// the guidance names that rename so the scaffold can offer the identity-preserving block.
+    fn invalid_stored_value(
+        &mut self,
+        id: CatalogId,
+        leaf: Option<&StoreLeafKind>,
+        message: String,
+    ) -> Result<(), StoreError> {
+        let guidance = self.enum_member_rename_guidance(leaf);
+        self.diagnostic_with_guidance(id.clone(), message, guidance);
         self.push_leaf(
             id,
             Verdict::RepairRequired {
                 reason: RepairReason::InvalidStoredValue,
             },
         )
+    }
+
+    /// The same-shape enum-member rename inferred for an enum leaf, as rename-or-retire guidance
+    /// keyed on the leaf's enum id; `None` for a non-enum leaf or an enum with no single-candidate
+    /// rename, where the value is a genuine orphan with no identity-preserving fix.
+    fn enum_member_rename_guidance(&self, leaf: Option<&StoreLeafKind>) -> RepairGuidance {
+        match leaf {
+            Some(StoreLeafKind::Enum { enum_id }) => {
+                self.enum_member_renames
+                    .get(enum_id)
+                    .map_or(RepairGuidance::None, |(from, to)| {
+                        RepairGuidance::RenameOrRetire {
+                            from: from.clone(),
+                            to: to.clone(),
+                        }
+                    })
+            }
+            _ => RepairGuidance::None,
+        }
     }
 
     fn changed_set(&mut self, is_index: bool) -> &mut BTreeSet<CatalogId> {

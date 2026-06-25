@@ -158,7 +158,7 @@ fn accepted_selectable_enum_members(program: &CheckedProgram) -> HashMap<String,
         else {
             continue;
         };
-        if accepted_member_is_selectable(member, &members) {
+        if member_is_selectable(member, &members) {
             by_enum
                 .entry((*enum_catalog_id).to_string())
                 .or_default()
@@ -168,17 +168,18 @@ fn accepted_selectable_enum_members(program: &CheckedProgram) -> HashMap<String,
     by_enum
 }
 
-/// Whether an accepted member is a leaf of the member-path tree — no other member's path
+/// Whether an enum member is a leaf of the member-path tree — no other member's path
 /// extends it. This mirrors the source rule that a member is a category iff it has children,
-/// and is the one home for the accepted-side selectability derivation.
-fn accepted_member_is_selectable(member: &CatalogEntry, members: &[&CatalogEntry]) -> bool {
+/// and is the one home for the enum-member selectability derivation: the shrink scan and the
+/// scaffold-rename inference both read selectability through here.
+pub(super) fn member_is_selectable(member: &CatalogEntry, members: &[&CatalogEntry]) -> bool {
     !members
         .iter()
         .any(|other| !std::ptr::eq(*other, member) && is_member_path_of(&other.path, &member.path))
 }
 
 /// Whether `path` starts with `ancestor::` and adds at least one segment.
-fn is_member_path_of(path: &str, ancestor: &str) -> bool {
+pub(super) fn is_member_path_of(path: &str, ancestor: &str) -> bool {
     path.strip_prefix(ancestor)
         .and_then(|tail| tail.strip_prefix("::"))
         .is_some_and(|rest| !rest.is_empty())

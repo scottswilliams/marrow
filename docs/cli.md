@@ -442,15 +442,19 @@ memory, and derives the witness from that point-in-time data instead of opening
 the configured store; the mount is read-only and does not restore, activate, or
 write to the store or lock. With `--scaffold`, text output is formatter-produced `.mw`
 source containing one `evolve` block per repairable obligation, each naming its
-target in the resource-qualified form the checker resolves (`Book.pages`). A
-newly-required member gets a ready-to-paste `default` body with a type-correct
-constant of its leaf type; a bare same-shape rename gets the identity-preserving
-`rename` block, not a destructive drop; and a populated leaf retype — which cannot
-be reinterpreted in place without losing data — gets a commented migration
-skeleton that points at adding a member of the new type, transforming it from the
-old member, then retiring the old member, never a runnable in-place transform. It
-never edits project source. JSON and JSONL keep the preview envelope and include
-the scaffold string.
+target in the source form the checker resolves (`Book.pages` for a member,
+`Status::archived` for an enum value). A newly-required member gets a ready-to-paste
+`default` body with a type-correct constant of its leaf type; a bare same-shape
+rename — a resource member or an enum member moved with a single plausible
+candidate — gets the identity-preserving `rename` block, not a destructive drop;
+and a populated leaf retype — which cannot be reinterpreted in place without losing
+data — gets a commented migration skeleton that points at adding a member of the new
+type, transforming it from the old member, then retiring the old member, never a
+runnable in-place transform. An orphaned value with no single rename candidate — a
+removed enum member, for instance — synthesizes no block, since its repair is
+record-specific source the author must write, and the paste-the-block footer is then
+omitted rather than naming a block that does not exist. It never edits project
+source. JSON and JSONL keep the preview envelope and include the scaffold string.
 
 `evolve apply` recomputes that preview witness over the live project and store,
 requires an exact match, checks the activation window, and commits the data work

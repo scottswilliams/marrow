@@ -5,7 +5,7 @@ use crate::support;
 use crate::support_evolve;
 use marrow_store::tree::TreeStore;
 use marrow_store::value::Scalar;
-use support::{marrow, write};
+use support::{marrow, marrow_sub, write};
 use support_evolve::{
     REQUIRED_BASELINE_SOURCE, REQUIRED_DEFAULT_SOURCE, REQUIRED_NO_DEFAULT_SOURCE, commit_catalog,
     member_catalog_id, native_books_project, native_store_path, open_native_store, root_place,
@@ -962,6 +962,147 @@ fn evolve_preview_scaffold_for_a_bare_rename_emits_a_rename_block()
         !scaffold.contains("default Book.tagline"),
         "a bare rename must not scaffold a data-clobbering default for the renamed-to field, \
          which would wipe the records the rename carries over: {scaffold}"
+    );
+
+    Ok(())
+}
+
+/// A bare same-shape enum-member rename — drop `Status::archived`, add `Status::retired` under
+/// the same enum, with no `evolve rename` intent declared — must scaffold the identity-preserving
+/// `rename Status::archived -> Status::retired`, exactly as a field rename does. A drop+add would
+/// orphan the stored value; the rename carries it forward. Pasting the scaffolded block and
+/// applying must migrate the populated value to the new spelling.
+#[test]
+fn evolve_preview_scaffold_for_a_bare_enum_member_rename_emits_a_rename_block()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = native_books_project(
+        "evolve-preview-scaffold-enum-rename",
+        "module books\n\
+         enum Status\n\
+         \x20   active\n\
+         \x20   archived\n\
+         resource Book\n\
+         \x20   required title: string\n\
+         \x20   required state: Status\n\
+         store ^books(id: int): Book\n\
+         pub fn seed()\n\
+         \x20   transaction\n\
+         \x20       ^books(1).title = \"Dune\"\n\
+         \x20       ^books(1).state = Status::archived\n",
+    );
+    let seed = marrow_sub("run", &["--entry", "books::seed", root.to_str().unwrap()]);
+    assert_eq!(seed.status.code(), Some(0), "seed run: {seed:?}");
+
+    // Rename the stored member `archived` to `retired` in source, with no `evolve rename`: a bare
+    // same-shape enum-member rename the checker resolves as a single plausible rename candidate.
+    let renamed_source = "module books\n\
+         enum Status\n\
+         \x20   active\n\
+         \x20   retired\n\
+         resource Book\n\
+         \x20   required title: string\n\
+         \x20   required state: Status\n\
+         store ^books(id: int): Book\n\
+         pub fn seed()\n\
+         \x20   transaction\n\
+         \x20       ^books(1).title = \"Dune\"\n\
+         \x20       ^books(1).state = Status::retired\n";
+    write(&root, "src/books.mw", renamed_source);
+
+    let output = marrow(&["evolve", "preview", "--scaffold", root.to_str().unwrap()]);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let scaffold = String::from_utf8(output.stdout).expect("scaffold utf8");
+
+    let parsed = marrow_syntax::parse_source(&scaffold);
+    assert!(
+        !parsed.has_errors(),
+        "bare enum-rename scaffold must parse through the production parser: {:#?}\n{scaffold}",
+        parsed.diagnostics
+    );
+    assert!(
+        scaffold.contains("rename Status::archived -> Status::retired"),
+        "a bare enum-member rename must scaffold the explicit rename, preserving identity: \
+         {scaffold}"
+    );
+
+    // The footer must not falsely claim a block exists when one was synthesized: it does exist,
+    // so the paste-the-block footer is correct here. Pasting the block and applying migrates the
+    // stored value to the new spelling, so a follow-up preview is clean.
+    let with_rename = format!(
+        "{}\nevolve\n    rename Status::archived -> Status::retired\n",
+        renamed_source
+    );
+    write(&root, "src/books.mw", &with_rename);
+
+    let apply = marrow_sub("evolve", &["apply", root.to_str().unwrap()]);
+    assert_eq!(
+        apply.status.code(),
+        Some(0),
+        "apply migrated rename: {apply:?}"
+    );
+
+    let reverified = marrow(&["evolve", "preview", root.to_str().unwrap()]);
+    assert_eq!(
+        reverified.status.code(),
+        Some(0),
+        "after applying the scaffolded rename, preview must be safe-to-apply: {reverified:?}"
+    );
+
+    Ok(())
+}
+
+/// A non-repairable obligation — a removed enum member with no rename candidate — must not print
+/// the "paste the evolve block above" footer, since no block was synthesized for it. Claiming a
+/// pasteable block exists when the scaffold emitted none misleads the developer.
+#[test]
+fn evolve_preview_scaffold_omits_the_paste_footer_when_no_block_is_synthesized()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = native_books_project(
+        "evolve-preview-scaffold-no-block",
+        "module books\n\
+         enum Status\n\
+         \x20   active\n\
+         \x20   archived\n\
+         resource Book\n\
+         \x20   required title: string\n\
+         \x20   required state: Status\n\
+         store ^books(id: int): Book\n\
+         pub fn seed()\n\
+         \x20   transaction\n\
+         \x20       ^books(1).title = \"Dune\"\n\
+         \x20       ^books(1).state = Status::archived\n",
+    );
+    let seed = marrow_sub("run", &["--entry", "books::seed", root.to_str().unwrap()]);
+    assert_eq!(seed.status.code(), Some(0), "seed run: {seed:?}");
+
+    // Remove `archived` entirely with no replacement member: the stored value orphans with no
+    // single plausible rename target, so the scaffold has no rename block to synthesize.
+    write(
+        &root,
+        "src/books.mw",
+        "module books\n\
+         enum Status\n\
+         \x20   active\n\
+         resource Book\n\
+         \x20   required title: string\n\
+         \x20   required state: Status\n\
+         store ^books(id: int): Book\n\
+         pub fn seed()\n\
+         \x20   transaction\n\
+         \x20       ^books(1).title = \"Dune\"\n",
+    );
+
+    let output = marrow(&["evolve", "preview", "--scaffold", root.to_str().unwrap()]);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let scaffold = String::from_utf8(output.stdout).expect("scaffold utf8");
+    assert!(
+        scaffold.trim().is_empty(),
+        "a non-repairable obligation must not synthesize an evolve block: {scaffold}"
+    );
+    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+    assert!(
+        !stderr.contains("paste the evolve block above"),
+        "the paste-the-block footer must not appear when no block was synthesized: {stderr}"
     );
 
     Ok(())

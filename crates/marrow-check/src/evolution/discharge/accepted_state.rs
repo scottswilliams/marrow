@@ -7,6 +7,7 @@ use crate::evolution::witness::{RepairReason, Verdict};
 use crate::executable::CheckedSavedPlace;
 use crate::program::CheckedProgram;
 
+use super::enum_shrink::{is_member_path_of, member_is_selectable};
 use super::{Accumulator, required_catalog_id};
 
 /// Stable ids of catalog entries the proposal changes (new, retired, moved, or a store-index
@@ -107,6 +108,94 @@ pub(super) fn enum_ids_rename_covered(
         renamed.contains(catalog_id).then_some(enum_fact.id)
     }));
     covered
+}
+
+/// A single plausible same-shape enum-member rename per enum: an enum that lost exactly one
+/// selectable member from acceptance and gained exactly one new selectable member in source,
+/// with no explicit `evolve rename`. Keyed by the [`facts::EnumId`] a [`StoreLeafKind::Enum`]
+/// leaf carries, the value is `(from, to)` catalog paths of the dropped accepted member and the
+/// added source member. A stored value naming the dropped member fails closed as an orphaned
+/// value, and this single-candidate inference lets the scaffold offer the identity-preserving
+/// `rename` that carries it forward — mirroring the one-drop/one-add resource-member rename.
+/// Ambiguity (more than one drop or add) or an enum a rename already covers yields no entry.
+pub(super) fn plausible_enum_member_renames(
+    program: &CheckedProgram,
+) -> HashMap<crate::facts::EnumId, (String, String)> {
+    let Some(proposal) = &program.catalog.proposal else {
+        return HashMap::new();
+    };
+    let accepted_member_ids: HashSet<&str> =
+        enum_member_stable_ids(&program.catalog.accepted_entries);
+    let enum_id_by_stable: HashMap<&str, crate::facts::EnumId> = program
+        .facts
+        .enums()
+        .iter()
+        .filter_map(|enum_fact| {
+            enum_fact
+                .catalog_id
+                .as_deref()
+                .map(|catalog_id| (catalog_id, enum_fact.id))
+        })
+        .collect();
+    let mut renames = HashMap::new();
+    for enum_entry in program
+        .catalog
+        .accepted_entries
+        .iter()
+        .filter(|entry| entry.kind == CatalogEntryKind::Enum)
+    {
+        let Some(&enum_id) = enum_id_by_stable.get(enum_entry.stable_id.as_str()) else {
+            continue;
+        };
+        let dropped: Vec<&str> =
+            selectable_member_paths(&program.catalog.accepted_entries, &enum_entry.path)
+                .into_iter()
+                .filter(|(stable_id, _)| {
+                    !proposal
+                        .entries
+                        .iter()
+                        .any(|entry| entry.stable_id == *stable_id)
+                })
+                .map(|(_, path)| path)
+                .collect();
+        let added: Vec<&str> = selectable_member_paths(&proposal.entries, &enum_entry.path)
+            .into_iter()
+            .filter(|(stable_id, _)| !accepted_member_ids.contains(stable_id))
+            .map(|(_, path)| path)
+            .collect();
+        if let ([from], [to]) = (dropped.as_slice(), added.as_slice()) {
+            renames.insert(enum_id, (from.to_string(), to.to_string()));
+        }
+    }
+    renames
+}
+
+fn enum_member_stable_ids(entries: &[CatalogEntry]) -> HashSet<&str> {
+    entries
+        .iter()
+        .filter(|entry| entry.kind == CatalogEntryKind::EnumMember)
+        .map(|entry| entry.stable_id.as_str())
+        .collect()
+}
+
+/// Selectable members of one enum within a catalog entry set as `(stable_id, path)` pairs,
+/// reading selectability through the [`enum_shrink`] owner so the scaffold-rename inference and
+/// the shrink scan derive it the same way.
+fn selectable_member_paths<'a>(
+    entries: &'a [CatalogEntry],
+    enum_path: &str,
+) -> Vec<(&'a str, &'a str)> {
+    let members: Vec<&CatalogEntry> = entries
+        .iter()
+        .filter(|entry| {
+            entry.kind == CatalogEntryKind::EnumMember && is_member_path_of(&entry.path, enum_path)
+        })
+        .collect();
+    members
+        .iter()
+        .filter(|member| member_is_selectable(member, &members))
+        .map(|member| (member.stable_id.as_str(), member.path.as_str()))
+        .collect()
 }
 
 /// Accepted identity-aware leaf token for each resource member, keyed by raw catalog id:

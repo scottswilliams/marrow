@@ -347,6 +347,7 @@ mod tests {
             HashSet::new(),
             HashSet::new(),
             HashMap::new(),
+            HashMap::new(),
         )
     }
 

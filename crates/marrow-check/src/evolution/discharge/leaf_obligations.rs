@@ -676,6 +676,7 @@ fn classify_leaf(
             acc.counts.records_lacking_member += state.invalid_count;
             return acc.invalid_stored_value(
                 id,
+                leaf.leaf.as_ref(),
                 invalid_member_message(&leaf.subject, state.invalid_count, &state.sample),
             );
         }
@@ -700,6 +701,7 @@ fn classify_leaf(
     if state.invalid_count > 0 {
         return acc.invalid_stored_value(
             id,
+            leaf.leaf.as_ref(),
             invalid_member_message(&leaf.subject, state.invalid_count, &state.sample),
         );
     }

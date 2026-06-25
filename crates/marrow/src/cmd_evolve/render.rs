@@ -42,7 +42,7 @@ impl SourceLabels {
             );
             by_source_path
                 .entry(entry.path.clone())
-                .or_insert_with(|| scaffold_target(program, &entry.path));
+                .or_insert_with(|| entry_source_spelling(program, entry));
         }
         if let Some(proposal) = &program.catalog.proposal {
             for entry in &proposal.entries {
@@ -51,7 +51,7 @@ impl SourceLabels {
                     .or_insert_with(|| SourceTarget::new(program, &entry.path));
                 by_source_path
                     .entry(entry.path.clone())
-                    .or_insert_with(|| scaffold_target(program, &entry.path));
+                    .or_insert_with(|| entry_source_spelling(program, entry));
             }
         }
         Self {
@@ -116,6 +116,29 @@ impl SourceTarget {
 
 fn source_label(path: &str) -> String {
     path.replace("::", ".")
+}
+
+/// The source spelling of a catalog entry. An enum member reads as `Enum::member` (its value
+/// surface form), every other entry as the dotted resource/store form. The kind is the one signal
+/// that distinguishes an `Enum::member` value path from a dotted `Resource.member` path, since
+/// both carry the same module prefix.
+fn entry_source_spelling(
+    program: &marrow_check::CheckedProgram,
+    entry: &marrow_catalog::CatalogEntry,
+) -> String {
+    match entry.kind {
+        marrow_catalog::CatalogEntryKind::EnumMember => enum_member_spelling(program, &entry.path),
+        _ => scaffold_target(program, &entry.path),
+    }
+}
+
+/// The `Enum::member` source spelling of an enum-member catalog path, dropping the owning module
+/// prefix. Falls back to the dotted path when no module owns it.
+fn enum_member_spelling(program: &marrow_check::CheckedProgram, path: &str) -> String {
+    match owned_path(program, path) {
+        Some((_, local)) if !local.is_empty() => local.join("::"),
+        _ => source_label(path),
+    }
 }
 
 /// Source spelling for an evolve scaffold target: the resource-qualified member path the
@@ -239,15 +262,21 @@ pub(super) fn preview(
 ) {
     match format {
         CheckFormat::Text if scaffold => {
-            print!("{}", scaffold_source(witness, diagnostics, labels));
+            let body = scaffold_source(witness, diagnostics, labels);
+            print!("{body}");
             if !witness.is_activatable() {
-                render_blocking_text(witness, diagnostics, labels, scaffold, dir);
+                let footer = if body.is_empty() {
+                    ScaffoldFooter::NoBlock
+                } else {
+                    ScaffoldFooter::PasteBlock
+                };
+                render_blocking_text(witness, diagnostics, labels, footer, dir);
             }
         }
         CheckFormat::Text => {
             if !witness.is_activatable() {
                 println!("This evolution cannot be applied yet:");
-                render_blocking_text(witness, diagnostics, labels, scaffold, dir);
+                render_blocking_text(witness, diagnostics, labels, ScaffoldFooter::Hint, dir);
             } else if nothing_to_discharge(witness) {
                 // The store already matches the source, so a repeat apply would be a no-op.
                 // The text surface must agree with the JSON surface's `nothing_to_discharge`
@@ -340,7 +369,7 @@ pub(super) fn blocked(
 ) {
     match format {
         CheckFormat::Text => {
-            render_blocking_text(witness, diagnostics, labels, false, dir);
+            render_blocking_text(witness, diagnostics, labels, ScaffoldFooter::Hint, dir);
         }
         CheckFormat::Json | CheckFormat::Jsonl => {
             write_json(report_envelope(&first_blocking_report(
@@ -367,39 +396,51 @@ fn report_envelope(report: &BlockingReport) -> serde_json::Value {
     })
 }
 
+/// The footer a blocked preview prints after its blocking reports. `--scaffold` that emitted a
+/// block points the developer at pasting it; `--scaffold` that synthesized nothing prints no
+/// footer, since there is no block to paste and re-suggesting the flag would loop; a flagless
+/// preview points at `--scaffold` to print the blocks.
+enum ScaffoldFooter {
+    PasteBlock,
+    NoBlock,
+    Hint,
+}
+
 fn render_blocking_text(
     witness: &EvolutionWitness,
     diagnostics: &[RepairDiagnostic],
     labels: &SourceLabels,
-    scaffold: bool,
+    footer: ScaffoldFooter,
     dir: &str,
 ) {
     for report in blocking_reports(witness, diagnostics, labels) {
         eprintln!("{}: {}", report.code, report.message);
     }
-    // The scaffold flag already printed the parseable evolve blocks above, so pointing back at it
-    // would loop. Give the real next step instead; without the flag, point at it to get the blocks.
-    if scaffold {
+    match footer {
         // A retire scaffold is gated on --maintenance, --approve-retire, and a recovery choice, so
         // a flagless apply is rejected: name the same complete command the scaffold body's Step 3
         // teaches, with the same `<count>` placeholder (the count is unknown until the retire block
         // is in source). A non-destructive evolution applies with the bare command.
-        let next = match retire_scaffold_targets(witness, diagnostics, labels).as_slice() {
-            [] => format!("run `marrow evolve apply {dir}`"),
-            targets => format!(
-                "run `marrow evolve apply --maintenance {} (--backup <backup-file> | --no-backup) {dir}`",
-                targets
-                    .iter()
-                    .map(|target| format!("--approve-retire {target}:<count>"))
-                    .collect::<Vec<_>>()
-                    .join(" ")
-            ),
-        };
-        eprintln!("next: paste the evolve block above into your source, then {next}");
-    } else {
-        eprintln!(
-            "hint: run `marrow evolve preview --scaffold {dir}` to print parseable evolve blocks"
-        );
+        ScaffoldFooter::PasteBlock => {
+            let next = match retire_scaffold_targets(witness, diagnostics, labels).as_slice() {
+                [] => format!("run `marrow evolve apply {dir}`"),
+                targets => format!(
+                    "run `marrow evolve apply --maintenance {} (--backup <backup-file> | --no-backup) {dir}`",
+                    targets
+                        .iter()
+                        .map(|target| format!("--approve-retire {target}:<count>"))
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                ),
+            };
+            eprintln!("next: paste the evolve block above into your source, then {next}");
+        }
+        ScaffoldFooter::NoBlock => {}
+        ScaffoldFooter::Hint => {
+            eprintln!(
+                "hint: run `marrow evolve preview --scaffold {dir}` to print parseable evolve blocks"
+            );
+        }
     }
 }
 
@@ -596,6 +637,16 @@ fn repair_scaffold(
                 _ => Some(retire_scaffold(catalog_id, labels)),
             }
         }
+        // A stored enum value naming a member the enum renamed away scaffolds the
+        // identity-preserving rename when the check inferred a single same-shape candidate.
+        // With no rename candidate the orphaned value has no paste-ready block — a transform
+        // is record-specific source the developer must write — so it synthesizes nothing.
+        RepairReason::InvalidStoredValue => match guidance {
+            Some(RepairGuidance::RenameOrRetire { from, to }) => {
+                Some(rename_scaffold(from, to, labels))
+            }
+            _ => None,
+        },
         _ => None,
     }
 }
