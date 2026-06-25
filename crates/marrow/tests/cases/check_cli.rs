@@ -307,6 +307,61 @@ fn check_allows_out_as_an_ordinary_binding_name() {
 }
 
 #[test]
+fn check_reports_one_diagnostic_for_a_multi_positional_constructor_call() {
+    // A constructor that takes named fields, called with several positional args, is one mistake
+    // with one owner: the checker emits the `takes named fields` diagnostic once per call, located
+    // on the first offending positional arg, not once per arg.
+    let dir = project_with_source(
+        "ctor-positional-dup",
+        "src/app.mw",
+        "module app\nfn f()\n    throw Error(\"a\", \"b\", \"c\")\n",
+    );
+
+    let output = check_json(dir.path());
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let report = support::json(output.stdout);
+    let named_field_diagnostics: Vec<&Value> = report["diagnostics"]
+        .as_array()
+        .expect("diagnostics array")
+        .iter()
+        .filter(|diagnostic| {
+            diagnostic["code"] == "check.call_argument"
+                && diagnostic["message"]
+                    .as_str()
+                    .is_some_and(|message| message.contains("takes named fields"))
+        })
+        .collect();
+    assert_eq!(
+        named_field_diagnostics.len(),
+        1,
+        "exactly one `takes named fields` diagnostic per call: {report:#?}"
+    );
+    // The span locates the first positional arg `"a"` on line 3, not the whole call.
+    assert_eq!(
+        named_field_diagnostics[0]["source_span"]["line"], 3,
+        "{report:#?}"
+    );
+    assert_eq!(
+        named_field_diagnostics[0]["source_span"]["column"], 17,
+        "the span locates the first offending positional arg: {report:#?}"
+    );
+}
+
+#[test]
+fn check_accepts_a_valid_named_field_constructor_call() {
+    let dir = project_with_source(
+        "ctor-named-ok",
+        "src/app.mw",
+        "module app\nfn f()\n    throw Error(code: \"x.y\", message: \"oops\")\n",
+    );
+
+    let output = check_json(dir.path());
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+}
+
+#[test]
 fn check_reports_obsolete_operators_in_function_bodies() {
     let dir = project_with_source(
         "obsolete-op-body",

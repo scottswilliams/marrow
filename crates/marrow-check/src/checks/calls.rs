@@ -605,13 +605,19 @@ fn check_named_field_args<F>(
         diagnostics,
     } = call;
     let mut supplied = vec![false; fields.len()];
+    let mut reported_positional = false;
     for (arg, arg_type) in args.iter().zip(arg_types) {
         let Some(name) = &arg.name else {
-            diagnostics.push(call_diagnostic(
-                file,
-                span,
-                format!("`{label}` constructor takes named fields"),
-            ));
+            // Positional args are one mistake per call: report the named-field requirement once,
+            // located on the first offending arg, rather than repeating it for each.
+            if !reported_positional {
+                reported_positional = true;
+                diagnostics.push(call_diagnostic(
+                    file,
+                    arg.value.span(),
+                    format!("`{label}` constructor takes named fields"),
+                ));
+            }
             continue;
         };
         let Some(index) = fields.iter().position(|field| field_name(field) == name) else {
