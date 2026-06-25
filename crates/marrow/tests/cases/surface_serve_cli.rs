@@ -300,6 +300,63 @@ fn idle_write_serve_sigterm_replays_on_the_next_write_serve() {
     );
 }
 
+/// A native `dataDir` occupied by a non-directory file is the same configuration fault `serve`
+/// must report as `run`, `evolve apply`, and the read-only inspections: the precise
+/// `config.data_dir` code with the remedy, never the generic `store.io` open failure the bare
+/// redb open would leak. Both serve modes open the store, so both must guard the directory first.
+/// Bounded and asserts the refused exit rather than spawning a listening server.
+#[test]
+fn serve_over_a_data_dir_occupied_by_a_file_reports_a_config_fault() {
+    for mode_args in [&["serve"][..], &["serve", "--write"][..]] {
+        let root = temp_project("serve-data-dir-occupied", |root| {
+            write(root, "marrow.json", support::native_config());
+            write(root, "src/app.mw", SURFACE_SOURCE);
+        });
+        // A regular file occupies the native `dataDir` the store would open under.
+        std::fs::remove_dir_all(root.join(".data")).expect("clear seeded dataDir");
+        write(&root, ".data", "not a directory");
+        let project = root.to_str().expect("project path utf8");
+
+        let mut args = mode_args.to_vec();
+        args.extend_from_slice(&["--addr", "127.0.0.1:0", project]);
+        let serve = support::marrow_bounded(&args, STORE_OP_DEADLINE);
+        assert_eq!(
+            serve.status.code(),
+            Some(1),
+            "{mode_args:?}: an occupied dataDir must refuse, not listen: {serve:?}",
+        );
+        assert_eq!(
+            fault_code(&serve),
+            "config.data_dir",
+            "{mode_args:?}: an occupied dataDir is a config fault, not store.io: {serve:?}",
+        );
+        let stderr = String::from_utf8_lossy(&serve.stderr);
+        assert!(
+            stderr.contains("occupied by a non-directory file")
+                && stderr.contains(".data")
+                && stderr.contains("dataDir"),
+            "{mode_args:?}: the fault must name the dataDir and its remedy: {stderr}",
+        );
+    }
+}
+
+/// A normal `serve` over a healthy project still reaches its listen line: the dataDir guard admits
+/// a present directory and the store opens as before. `spawn_surface_server` fails the test if the
+/// server exits before printing its listen line, so reaching it proves the guard is non-intrusive.
+#[test]
+fn serve_over_a_healthy_data_dir_still_listens() {
+    let root = temp_project("serve-data-dir-healthy", |root| {
+        write(root, "marrow.json", support::native_config());
+        write(root, "src/app.mw", SURFACE_SOURCE);
+    });
+    let project = root.to_str().expect("project path utf8");
+    let seed = marrow(&["run", "--entry", "app::seed", project]);
+    assert_eq!(seed.status.code(), Some(0), "seed: {seed:?}");
+
+    let (server, _addr) = spawn_surface_server(&root);
+    server.stop_with_sigterm();
+}
+
 /// `serve --write` is a write-capable open, so it must agree with `run` and `evolve apply`: a store
 /// lost under a committed lock that records its accepted roots has lost durable identity and must
 /// fail closed with `store.corruption` before the write-capable open seizes the writer lock. A

@@ -158,6 +158,13 @@ pub(crate) fn serve(args: &[String]) -> ExitCode {
         Ok(config) => config,
         Err(code) => return code,
     };
+    // A `dataDir` occupied by a non-directory is the same configuration fault `run` and the
+    // inspections classify, so serve guards it first rather than letting either session open leak a
+    // raw `ENOTDIR` as a generic `store.io` fault. Both modes open the store, so both are covered.
+    if let Err(error) = marrow_check::guard_data_dir(std::path::Path::new(&dir), &config) {
+        report_simple_error(error.code(), &error.message(), CheckFormat::Text);
+        return ExitCode::FAILURE;
+    }
     // A `--write` serve replays an unclean shutdown before it inspects the store, so a store left
     // flagged for recovery by a prior signalled writer with no interrupted commit opens clean
     // rather than refusing the read-only catalog read the snapshot needs.
