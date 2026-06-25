@@ -1447,7 +1447,10 @@ fn check_neighbor(
             if composite_identity(env.program, name) {
                 return neighbor_unsupported(
                     which,
-                    "a composite-identity root (scope a single key level)",
+                    &format!(
+                        "a composite-identity root (iterate it whole with \
+                         `for id in ^{name}` or `reversed(^{name})`)"
+                    ),
                     env.span,
                     env.file,
                     env.diagnostics,

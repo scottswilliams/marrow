@@ -442,6 +442,76 @@ fn next_over_a_bare_composite_identity_root_is_flagged() {
     );
 }
 
+/// The composite store root is traversed whole, with no single key level to seek,
+/// so its `next`/`prev` remedy must name the working traversal — `for id in ^r` or
+/// `reversed(^r)` — not "scope a single key level", which only applies to a
+/// composite child layer.
+#[test]
+fn neighbor_over_a_composite_store_root_names_the_iteration_remedy() {
+    for which in ["next", "prev"] {
+        let root = temp_project(&format!("program-{which}-composite-root-remedy"), |root| {
+            write(
+                root,
+                "src/shelf/enroll.mw",
+                &format!(
+                    "module shelf::enroll\n\
+                     resource Enrollment\n\
+                     \x20   required grade: string\n\
+                     store ^enrollments(studentId: string, courseId: string): Enrollment\n\
+                     fn step()\n\
+                     \x20   const n = {which}(^enrollments)\n"
+                ),
+            );
+        });
+        let (report, _) = check_project(&root, &config()).expect("check");
+
+        let diagnostics = with_code(&report, CHECK_NEIGHBOR_UNSUPPORTED);
+        let [diagnostic] = diagnostics.as_slice() else {
+            panic!("{:#?}", report.diagnostics);
+        };
+        assert!(
+            diagnostic.message.contains("for id in ^enrollments")
+                && diagnostic.message.contains("reversed"),
+            "{}",
+            diagnostic.message
+        );
+        assert!(
+            !diagnostic.message.contains("scope a single key level"),
+            "{}",
+            diagnostic.message
+        );
+    }
+}
+
+/// A fully-keyed composite record is a single identity, so its `next`/`prev` remedy
+/// stays "scope a single key level" — descend to a single-key child layer to seek.
+#[test]
+fn neighbor_over_a_composite_record_keeps_the_key_level_remedy() {
+    let root = temp_project("program-next-composite-record-remedy", |root| {
+        write(
+            root,
+            "src/shelf/enroll.mw",
+            "module shelf::enroll\n\
+             resource Enrollment\n\
+             \x20   required grade: string\n\
+             store ^enrollments(studentId: string, courseId: string): Enrollment\n\
+             fn step(s: string, c: string)\n\
+             \x20   const n = next(^enrollments(s, c))\n",
+        );
+    });
+    let (report, _) = check_project(&root, &config()).expect("check");
+
+    let diagnostics = with_code(&report, CHECK_NEIGHBOR_UNSUPPORTED);
+    let [diagnostic] = diagnostics.as_slice() else {
+        panic!("{:#?}", report.diagnostics);
+    };
+    assert!(
+        diagnostic.message.contains("scope a single key level"),
+        "{}",
+        diagnostic.message
+    );
+}
+
 #[test]
 fn next_over_a_bare_identity_value_is_flagged() {
     let root = temp_project("program-next-identity-value", |root| {
