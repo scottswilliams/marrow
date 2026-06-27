@@ -7,6 +7,9 @@ use marrow_syntax::{
     SourceFile, SourceSpan, StoreDecl, TokenKind, lex_source,
 };
 
+use super::signatures::{
+    CallableSignature, callable_callee_contexts, intrinsic_callable_signature_for_file,
+};
 use crate::{
     AnalysisSnapshot, BindingIndex, CheckedConst, CheckedFunction, DirectEffectFacts, FunctionFact,
     MarrowType, ModuleFact, ModuleId, ResourceMemberKind, StoreFact, SymbolKind, SymbolOccurrence,
@@ -20,6 +23,7 @@ pub struct SourceSymbolDocs {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SourceCallableHoverFact {
+    Intrinsic(CallableSignature),
     Function(Box<SourceCallableFunctionFact>),
     Parameter(SourceCallableParamFact),
     ModuleConst {
@@ -159,6 +163,12 @@ pub enum SourceEnumMemberStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceOperatorHoverFact {
+    pub spelling: String,
+    pub description: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SavedPlaceHoverFact {
     Field {
         name: String,
@@ -249,6 +259,9 @@ pub fn source_callable_hover_fact_at(
     file: &Path,
     offset: usize,
 ) -> Option<SourceCallableHoverFact> {
+    if let Some(fact) = intrinsic_source_callable_hover_fact_at(snapshot, file, offset) {
+        return Some(fact);
+    }
     let occurrence = index.occurrence(file, offset)?;
     match occurrence.definition.kind {
         SymbolKind::Function => function_source_callable_hover_fact(
@@ -266,6 +279,111 @@ pub fn source_callable_hover_fact_at(
         }
         _ => None,
     }
+}
+
+pub fn source_operator_hover_fact_at(
+    snapshot: &AnalysisSnapshot,
+    file: &Path,
+    offset: usize,
+) -> Option<SourceOperatorHoverFact> {
+    let analyzed = snapshot.files.iter().find(|f| f.path == file)?;
+    let tokens = lex_source(&analyzed.source).tokens;
+    let (index, token) = tokens
+        .iter()
+        .enumerate()
+        .find(|(_, token)| token.span.start_byte <= offset && offset < token.span.end_byte)?;
+    crate::type_at(&snapshot.program, file, &analyzed.parsed, offset)?;
+    if is_operator_keyword_non_expression(&tokens, index) {
+        return None;
+    }
+    operator_fact(operator_spelling(token.kind, token.text(&analyzed.source))?)
+}
+
+fn intrinsic_source_callable_hover_fact_at(
+    snapshot: &AnalysisSnapshot,
+    file: &Path,
+    offset: usize,
+) -> Option<SourceCallableHoverFact> {
+    let analyzed = snapshot.files.iter().find(|f| f.path == file)?;
+    let lexed = lex_source(&analyzed.source);
+    callable_callee_contexts(&analyzed.source, &lexed, &analyzed.parsed)
+        .into_iter()
+        .find(|context| {
+            offset_in_name(
+                context.callee_leaf_span.start_byte,
+                context.callee_leaf_span.end_byte,
+                offset,
+            )
+        })
+        .and_then(|context| {
+            intrinsic_callable_signature_for_file(snapshot, file, &context.callee_path_segments)
+        })
+        .map(SourceCallableHoverFact::Intrinsic)
+}
+
+fn is_operator_keyword_non_expression(tokens: &[marrow_syntax::Token], index: usize) -> bool {
+    matches!(
+        tokens[index].kind,
+        TokenKind::Keyword(Keyword::Not | Keyword::And | Keyword::Or | Keyword::Is)
+    ) && {
+        let (previous, next) = significant_neighbors(tokens, index);
+        previous.is_some_and(|kind| kind == TokenKind::DoubleColon)
+            || next.is_some_and(|kind| kind == TokenKind::DoubleColon)
+            || previous.is_some_and(|kind| {
+                matches!(kind, TokenKind::Keyword(Keyword::Module | Keyword::Use))
+            })
+    }
+}
+
+fn operator_spelling(kind: TokenKind, text: &str) -> Option<&str> {
+    match kind {
+        TokenKind::Keyword(Keyword::Not | Keyword::And | Keyword::Or | Keyword::Is)
+        | TokenKind::DotDot
+        | TokenKind::DotDotEqual
+        | TokenKind::EqualEqual
+        | TokenKind::BangEqual
+        | TokenKind::QuestionDot
+        | TokenKind::QuestionQuestion
+        | TokenKind::Less
+        | TokenKind::LessEqual
+        | TokenKind::Greater
+        | TokenKind::GreaterEqual
+        | TokenKind::Plus
+        | TokenKind::Minus
+        | TokenKind::Star
+        | TokenKind::Slash
+        | TokenKind::Percent => Some(text),
+        _ => None,
+    }
+}
+
+fn operator_fact(spelling: &str) -> Option<SourceOperatorHoverFact> {
+    let description = match spelling {
+        "not" => "logical negation.",
+        "and" => "logical conjunction.",
+        "or" => "logical disjunction.",
+        "is" => "type test.",
+        "==" => "equality comparison.",
+        "!=" => "inequality comparison.",
+        "<" => "less-than comparison.",
+        "<=" => "less-than-or-equal comparison.",
+        ">" => "greater-than comparison.",
+        ">=" => "greater-than-or-equal comparison.",
+        "+" => "addition.",
+        "-" => "subtraction or numeric negation.",
+        "*" => "multiplication.",
+        "/" => "division.",
+        "%" => "remainder.",
+        "??" => "fallback value selection.",
+        "?." => "optional member access.",
+        ".." => "exclusive range.",
+        "..=" => "inclusive range.",
+        _ => return None,
+    };
+    Some(SourceOperatorHoverFact {
+        spelling: spelling.to_string(),
+        description: description.to_string(),
+    })
 }
 
 pub fn source_module_path_hover_fact_at(

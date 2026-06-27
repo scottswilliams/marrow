@@ -82,6 +82,15 @@ from the checked program or snapshot:
   qualified container paths with deterministic ranking.
 - `tooling::source_symbol_docs_at(snapshot, binding_index, file, offset)`
   returns docs attached to the source symbol resolved by the binding index.
+- `tooling::source_callable_hover_fact_at(snapshot, binding_index, file,
+  offset)` returns callable hover facts for user functions, parameters, module
+  constants, and intrinsic callable leaves. Intrinsic facts carry the canonical
+  callable signature after file-context import expansion, so transport callers
+  do not classify default-library calls from token spelling.
+- `tooling::source_operator_hover_fact_at(snapshot, file, offset)` returns a
+  language-operator hover fact only when the checked cursor position is an
+  operator expression. Keyword path/declaration positions and other
+  non-expression uses return no fact, including in broken-buffer snapshots.
 - `tooling::document_symbols(file, source)` returns parsed document-outline
   facts with Marrow-owned kind, detail, full span, selection span, and nested
   children. It accepts a parsed `SourceFile` plus source text, so editor callers

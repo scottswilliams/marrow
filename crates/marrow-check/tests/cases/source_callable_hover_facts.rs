@@ -2,8 +2,8 @@ use std::path::{Path, PathBuf};
 
 use crate::support;
 use marrow_check::tooling::{
-    SourceCallableHoverFact, SourceCallableParamFact, source_callable_hover_fact_at,
-    source_symbol_docs_at,
+    CallableSignatureKind, SourceCallableHoverFact, SourceCallableParamFact,
+    source_callable_hover_fact_at, source_symbol_docs_at,
 };
 use marrow_check::{AnalysisSnapshot, BindingIndex, MarrowType, ScalarType, build_binding_index};
 
@@ -43,6 +43,166 @@ fn int_ty() -> MarrowType {
 
 fn string_ty() -> MarrowType {
     MarrowType::Primitive(ScalarType::Str)
+}
+
+#[test]
+fn source_callable_hover_fact_refuses_intrinsic_saved_root_declaration_headers() {
+    let source = "\
+module a
+
+resource Book
+    required title: string
+
+store ^exists(id: int): Book
+";
+    let (snapshot, index, file) = analyze("source-callable-hover-store-root-header", source);
+    let root_offset = offset(source, "exists(id");
+
+    assert_eq!(fact_at(&snapshot, &index, &file, root_offset), None);
+}
+
+#[test]
+fn source_callable_hover_fact_refuses_intrinsic_keyed_resource_member_headers() {
+    let source = "\
+module a
+
+resource Book
+    exists(pos: int): string
+
+store ^books(id: int): Book
+";
+    let (snapshot, index, file) = analyze("source-callable-hover-keyed-member-header", source);
+    let member_offset = offset(source, "exists(pos");
+
+    assert_eq!(fact_at(&snapshot, &index, &file, member_offset), None);
+}
+
+#[test]
+fn source_callable_hover_fact_refuses_intrinsic_type_annotations() {
+    let source = "\
+module a
+
+resource Book
+    required title: string
+
+store ^books(id: int): Book
+
+pub fn f(id: Id(^books)): Id(^books)
+    return id
+";
+    let (snapshot, index, file) = analyze("source-callable-hover-type-annotations", source);
+    let parameter_offset = offset(source, "Id(^books");
+    let return_offset = offset(source, "): Id(^books") + "): ".len();
+
+    assert_eq!(fact_at(&snapshot, &index, &file, parameter_offset), None);
+    assert_eq!(fact_at(&snapshot, &index, &file, return_offset), None);
+}
+
+#[test]
+fn source_callable_hover_fact_covers_intrinsic_builtin_call_leaf() {
+    let source = "\
+module a
+
+resource Book
+    required title: string
+
+store ^books(id: int): Book
+
+pub fn f(): bool
+    return exists(^books(1))
+";
+    let (snapshot, index, file) = analyze("source-callable-hover-intrinsic-builtin", source);
+    let fact = fact_at(
+        &snapshot,
+        &index,
+        &file,
+        offset(source, "exists(^books") + 1,
+    )
+    .expect("intrinsic builtin hover fact");
+
+    let SourceCallableHoverFact::Intrinsic(signature) = fact else {
+        panic!("expected intrinsic callable fact");
+    };
+    assert_eq!(signature.path, vec!["exists".to_string()]);
+    assert_eq!(signature.kind, CallableSignatureKind::Builtin);
+    assert!(
+        signature
+            .docs
+            .iter()
+            .any(|line| line.contains("Returns true when the saved path exists.")),
+        "intrinsic hover fact should carry canonical docs: {signature:#?}"
+    );
+}
+
+#[test]
+fn source_callable_hover_fact_expands_imported_std_intrinsic_call_leaf() {
+    let source = "\
+module a
+
+use std::text
+
+pub fn f(): int
+    return text::length(\"abc\")
+";
+    let (snapshot, index, file) = analyze("source-callable-hover-imported-std", source);
+    let fact = fact_at(&snapshot, &index, &file, offset(source, "length(\"abc") + 1)
+        .expect("import-expanded std hover fact");
+
+    let SourceCallableHoverFact::Intrinsic(signature) = fact else {
+        panic!("expected intrinsic callable fact");
+    };
+    assert_eq!(
+        signature.path,
+        vec!["std".to_string(), "text".to_string(), "length".to_string()]
+    );
+    assert_eq!(signature.kind, CallableSignatureKind::StandardLibrary);
+}
+
+#[test]
+fn source_callable_hover_fact_keeps_intrinsic_precedence_over_same_named_project_std_call() {
+    let std_text = "\
+module std::text
+
+pub fn length(value: string): bool
+    return false
+";
+    let app = "\
+module app
+
+pub fn f(): int
+    return std::text::length(\"abc\")
+";
+    let (snapshot, index, paths) = analyze_files(
+        "source-callable-hover-intrinsic-precedence",
+        &[("src/std/text.mw", std_text), ("src/app.mw", app)],
+    );
+
+    let declaration = fact_at(
+        &snapshot,
+        &index,
+        &paths[0],
+        offset(std_text, "fn length") + "fn ".len(),
+    )
+    .expect("project declaration hover fact");
+    assert!(
+        matches!(declaration, SourceCallableHoverFact::Function(_)),
+        "declaration hover should stay on the project function: {declaration:#?}"
+    );
+
+    let call = fact_at(
+        &snapshot,
+        &index,
+        &paths[1],
+        offset(app, "length(\"abc") + 1,
+    )
+    .expect("intrinsic call hover fact");
+    let SourceCallableHoverFact::Intrinsic(signature) = call else {
+        panic!("expected intrinsic callable fact at call");
+    };
+    assert_eq!(
+        signature.path,
+        vec!["std".to_string(), "text".to_string(), "length".to_string()]
+    );
 }
 
 #[test]

@@ -150,6 +150,8 @@ mod source_module_path_definition_facts;
 mod source_module_path_hover_facts;
 #[path = "cases/source_namespace_completion_facts.rs"]
 mod source_namespace_completion_facts;
+#[path = "cases/source_operator_hover_facts.rs"]
+mod source_operator_hover_facts;
 #[path = "cases/source_saved_root_completion_facts.rs"]
 mod source_saved_root_completion_facts;
 #[path = "cases/source_schema_hover_facts.rs"]
