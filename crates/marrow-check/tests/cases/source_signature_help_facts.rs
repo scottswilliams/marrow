@@ -185,6 +185,130 @@ pub fn run(): books::Review
 }
 
 #[test]
+fn source_signature_help_fact_recovers_current_source_resource_constructor_fields() {
+    let books = "\
+module shelf::books
+
+pub enum Status
+    active
+";
+    let app = "\
+module shelf::app
+
+use shelf::books
+
+resource Local
+    required state: books::Status
+
+pub fn run()
+    const draft = Local(state: )
+";
+    let (snapshot, paths) = analyze_files_with_diagnostics(
+        "source-signature-help-current-source-resource-constructor",
+        &[("src/shelf/books.mw", books), ("src/shelf/app.mw", app)],
+    );
+    let file = &paths[1];
+
+    let fact = fact_at(
+        &snapshot,
+        file,
+        "module shelf::app\n\nuse shelf::books\n\nresource Local\n    required state: books::Status\n\npub fn run()\n    const draft = Local(state: |\n",
+    )
+    .expect("signature help fact");
+
+    assert_eq!(fact.active_argument, 0);
+    assert_eq!(fact.named_argument, Some("state".to_string()));
+    assert_eq!(
+        fact.callable,
+        SourceSignatureHelpCallable::ResourceConstructor {
+            name: "Local".to_string(),
+            docs: Vec::new(),
+            params: vec![SourceSignatureHelpParameter {
+                name: Some("state".to_string()),
+                label: "state".to_string(),
+                required: true,
+                repeat: false,
+                ty: Some(MarrowType::Enum {
+                    module: "shelf::books".to_string(),
+                    name: "Status".to_string(),
+                }),
+                shape: None,
+                docs: Vec::new(),
+            }],
+            return_type: MarrowType::Resource("shelf::app::Local".to_string()),
+        }
+    );
+}
+
+#[test]
+fn source_signature_help_fact_fails_closed_for_duplicate_current_source_resources() {
+    let books = "\
+module shelf::books
+
+pub enum Status
+    active
+";
+    let app = "\
+module shelf::app
+
+use shelf::books
+
+resource Local
+    required state: books::Status
+
+resource Local
+    required title: string
+
+pub fn run()
+    const draft = Local(state: )
+";
+    let (snapshot, paths) = analyze_files_with_diagnostics(
+        "source-signature-help-duplicate-current-source-resource",
+        &[("src/shelf/books.mw", books), ("src/shelf/app.mw", app)],
+    );
+
+    assert_no_fact(
+        &snapshot,
+        &paths[1],
+        "module shelf::app\n\nuse shelf::books\n\nresource Local\n    required state: books::Status\n\nresource Local\n    required title: string\n\npub fn run()\n    const draft = Local(state: |\n",
+    );
+}
+
+#[test]
+fn source_signature_help_fact_fails_closed_for_current_source_resource_name_collision() {
+    let books = "\
+module shelf::books
+
+pub enum Status
+    active
+";
+    let app = "\
+module shelf::app
+
+use shelf::books
+
+resource Local
+    required state: books::Status
+
+fn Local(value: string): string
+    return value
+
+pub fn run()
+    const draft = Local(state: )
+";
+    let (snapshot, paths) = analyze_files_with_diagnostics(
+        "source-signature-help-current-source-resource-name-collision",
+        &[("src/shelf/books.mw", books), ("src/shelf/app.mw", app)],
+    );
+
+    assert_no_fact(
+        &snapshot,
+        &paths[1],
+        "module shelf::app\n\nuse shelf::books\n\nresource Local\n    required state: books::Status\n\nfn Local(value: string): string\n    return value\n\npub fn run()\n    const draft = Local(state: |\n",
+    );
+}
+
+#[test]
 fn source_signature_help_fact_fails_closed_for_mixed_std_project_duplicate_alias() {
     let text = "\
 module my::text

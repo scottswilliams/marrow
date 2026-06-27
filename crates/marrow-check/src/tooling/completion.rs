@@ -10,7 +10,7 @@ use marrow_syntax::{
 use super::data::{
     DeclaredDataChild, DeclaredDataChildKind, declared_source_receiver_data_children_fact,
 };
-use super::expected::{ExpectedEnum, expected_enum_at};
+use super::expected::{ExpectedEnum, ExpectedEnumContext, expected_enum_at};
 use super::render::{render_callable_signature, render_marrow_type};
 use super::signatures::{CallableSignature, active_callable_context, intrinsic_callable_signature};
 use crate::{
@@ -735,18 +735,52 @@ fn bare_completion_items(
 }
 
 fn expected_enum_member_items(expected: &ExpectedEnum<'_>) -> Vec<SourceCompletionItem> {
+    match &expected.context {
+        ExpectedEnumContext::Value { prefix } => expected_enum_value_items(expected, prefix),
+        ExpectedEnumContext::MatchArm => expected_enum_match_arm_items(expected),
+    }
+}
+
+fn expected_enum_value_items(
+    expected: &ExpectedEnum<'_>,
+    prefix: &str,
+) -> Vec<SourceCompletionItem> {
+    expected_enum_items_matching(expected, |schema, ordinal| {
+        schema.is_selectable_leaf(ordinal).then(|| {
+            let path = schema.member_path(ordinal).join("::");
+            (format!("{prefix}::{path}"), schema.name.clone())
+        })
+    })
+}
+
+fn expected_enum_match_arm_items(expected: &ExpectedEnum<'_>) -> Vec<SourceCompletionItem> {
+    expected_enum_items_matching(expected, |schema, ordinal| {
+        schema
+            .subtree_ordinals(ordinal)
+            .any(|candidate| schema.is_selectable_leaf(candidate))
+            .then(|| {
+                let path = schema.member_path(ordinal).join("::");
+                (path, format!("{} match arm", schema.name))
+            })
+    })
+}
+
+fn expected_enum_items_matching(
+    expected: &ExpectedEnum<'_>,
+    mut label_and_detail: impl FnMut(&EnumSchema, usize) -> Option<(String, String)>,
+) -> Vec<SourceCompletionItem> {
     expected
         .schema
         .members
         .iter()
         .enumerate()
-        .filter(|(ordinal, _)| expected.schema.is_selectable_leaf(*ordinal))
-        .map(|(ordinal, member)| {
-            let path = expected.schema.member_path(ordinal).join("::");
-            let label = format!("{}::{path}", expected.value_prefix);
-            source_completion_item(&label, SourceCompletionItemKind::EnumMember)
-                .detail(expected.schema.name.clone())
-                .docs_from(&member.docs)
+        .filter_map(|(ordinal, member)| {
+            let (label, detail) = label_and_detail(expected.schema, ordinal)?;
+            Some(
+                source_completion_item(&label, SourceCompletionItemKind::EnumMember)
+                    .detail(detail)
+                    .docs_from(&member.docs),
+            )
         })
         .collect()
 }

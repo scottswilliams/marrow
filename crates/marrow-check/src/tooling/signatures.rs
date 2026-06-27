@@ -8,7 +8,10 @@ use crate::diagnostics::ConversionTarget;
 use crate::executable::{CheckedBuiltinCall, CheckedBuiltinReturnShape, CheckedBuiltinValueShape};
 use crate::program::{CheckedFunction, CheckedModule, CheckedProgram, MarrowType, TypeNames};
 use crate::resolve::{Def, DefItem, Resolution, ResolvableKind};
-use marrow_syntax::{Declaration, FunctionDecl, LexedSource, SourceFile, SourceSpan};
+use marrow_syntax::{
+    Declaration, FunctionDecl, LexedSource, ParsedSource, ResourceDecl, ResourceMember, SourceFile,
+    SourceSpan,
+};
 
 pub use marrow_syntax::{
     ActiveCallableContext, CallableCalleeContext, active_callable_context, callable_callee_contexts,
@@ -127,13 +130,18 @@ pub fn source_signature_help_fact_at(
     lexed: &LexedSource,
     offset: usize,
 ) -> Option<SourceSignatureHelpFact> {
+    if let Some(snapshot) = snapshot
+        && !snapshot.files.iter().any(|analyzed| analyzed.path == file)
+    {
+        return None;
+    }
     let parsed = marrow_syntax::parse_source(source);
     let context = active_callable_context(source, lexed, &parsed, offset)?;
     let callable = source_signature_help_callable(
         program,
         snapshot,
         file,
-        &parsed.file,
+        &parsed,
         &context.callee_path_segments,
     )?;
     Some(SourceSignatureHelpFact {
@@ -284,19 +292,28 @@ fn source_signature_help_callable(
     program: &CheckedProgram,
     snapshot: Option<&AnalysisSnapshot>,
     file: &Path,
-    source_file: &SourceFile,
+    parsed: &ParsedSource,
     segments: &[String],
 ) -> Option<SourceSignatureHelpCallable> {
-    let from_module = crate::module_of_file(program, file)?;
+    let source_file = &parsed.file;
+    let from_module = crate::module_of_file(program, file);
     let segments = signature_help_segments(source_file, segments)?;
-    if let Some(callable) = intrinsic_callable_signature(&segments) {
-        return Some(source_intrinsic_signature(callable));
+    if let Some(from_module) = from_module {
+        if let Some(callable) = intrinsic_callable_signature(&segments) {
+            return Some(source_intrinsic_signature(callable));
+        }
+        if let Some(resource) =
+            resource_constructor_signature_from_module(program, from_module, &segments)
+        {
+            return Some(source_resource_constructor_signature(resource));
+        }
     }
     if let Some(resource) =
-        resource_constructor_signature_from_module(program, from_module, &segments)
+        source_file_resource_constructor_signature(program, file, parsed, &segments)
     {
         return Some(source_resource_constructor_signature(resource));
     }
+    let from_module = from_module?;
     source_function_signature(program, snapshot, from_module, &segments)
 }
 
@@ -310,6 +327,90 @@ fn intrinsic_callable_signature_for_source_file(
 
 fn signature_help_segments(source_file: &SourceFile, segments: &[String]) -> Option<Vec<String>> {
     crate::expand_unique_import_alias(source_file, segments).ok()
+}
+
+fn source_file_resource_constructor_signature(
+    program: &CheckedProgram,
+    file: &Path,
+    parsed: &ParsedSource,
+    segments: &[String],
+) -> Option<ResourceConstructorSignature> {
+    let source_file = &parsed.file;
+    let resource_name = current_source_resource_name(source_file, segments)?;
+    let resource = unique_source_resource(source_file, resource_name)?;
+    let module_name = &source_file.module.as_ref()?.name;
+    let prelude = crate::checks::file_prelude(program, file, parsed);
+    let ty = MarrowType::Resource(crate::resource_type_name(module_name, &resource.name));
+    let fields = resource
+        .members
+        .iter()
+        .filter_map(|member| {
+            let ResourceMember::Field(field) = member else {
+                return None;
+            };
+            if !field.keys.is_empty() {
+                return None;
+            }
+            Some(ResourceConstructorField {
+                name: field.name.clone(),
+                required: field.required,
+                ty: crate::enums::resolve_type(&field.ty, program, &prelude.aliases, file),
+                docs: field.docs.clone(),
+            })
+        })
+        .collect();
+
+    Some(ResourceConstructorSignature {
+        name: resource.name.clone(),
+        ty,
+        docs: resource.docs.clone(),
+        fields,
+    })
+}
+
+fn unique_source_resource<'a>(source_file: &'a SourceFile, name: &str) -> Option<&'a ResourceDecl> {
+    let mut declarations = source_file
+        .declarations
+        .iter()
+        .filter(|declaration| source_declaration_name(declaration) == Some(name));
+    let declaration = declarations.next()?;
+    if declarations.next().is_some() {
+        return None;
+    }
+    match declaration {
+        Declaration::Resource(resource) => Some(resource),
+        _ => None,
+    }
+}
+
+fn source_declaration_name(declaration: &Declaration) -> Option<&str> {
+    match declaration {
+        Declaration::Const(decl) => Some(decl.name.as_str()),
+        Declaration::Resource(decl) => Some(decl.name.as_str()),
+        Declaration::Store(_) => None,
+        Declaration::Surface(decl) => Some(decl.name.as_str()),
+        Declaration::Function(decl) => Some(decl.name.as_str()),
+        Declaration::Enum(decl) => Some(decl.name.as_str()),
+        Declaration::Evolve(_) => None,
+    }
+}
+
+fn current_source_resource_name<'a>(
+    source_file: &SourceFile,
+    segments: &'a [String],
+) -> Option<&'a str> {
+    match segments {
+        [name] => Some(name.as_str()),
+        [module_segments @ .., name] => {
+            let module_name = source_file.module.as_ref()?.name.as_str();
+            module_segments
+                .iter()
+                .map(String::as_str)
+                .eq(module_name.split("::"))
+                .then_some(name.as_str())
+        }
+        [] => None,
+    }
 }
 
 fn source_intrinsic_signature(callable: CallableSignature) -> SourceSignatureHelpCallable {

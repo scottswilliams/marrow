@@ -290,6 +290,18 @@ fn source_completion_fact_adds_expected_enum_members_for_annotated_const_var_and
             "Status",
             false,
         ),
+        (
+            "local enum assignment",
+            "module shelf::app\n\nuse shelf::books\n\npub fn f()\n    var state: Status = Status::active\n    state = a|\n",
+            "Status",
+            true,
+        ),
+        (
+            "resource field enum assignment",
+            "module shelf::app\n\nuse shelf::books\n\nresource Draft\n    required state: books::Status\n\npub fn f()\n    var draft: Draft\n    draft.state = a|\n",
+            "Status",
+            false,
+        ),
     ] {
         let items = completion_items(program, app, source);
         let active_label = format!("{prefix}::active");
@@ -339,6 +351,134 @@ fn source_completion_fact_adds_expected_enum_members_for_annotated_const_var_and
         "string arguments must not receive enum value completions: {first_arg_items:?}"
     );
 
+    let annotated_first_arg_items = completion_items(
+        program,
+        app,
+        "module shelf::app\n\nuse shelf::books\n\npub fn f()\n    const state: Status = books::chooseStatus(a|, Status::active)\n",
+    );
+    assert!(
+        !annotated_first_arg_items
+            .iter()
+            .any(|item| item.label == "Status::active"),
+        "outer annotated expected types must not leak into string call arguments: {annotated_first_arg_items:?}"
+    );
+
+    let assignment_first_arg_items = completion_items(
+        program,
+        app,
+        "module shelf::app\n\nuse shelf::books\n\npub fn f()\n    var state: Status = Status::active\n    state = books::chooseStatus(a|, Status::active)\n",
+    );
+    assert!(
+        !assignment_first_arg_items
+            .iter()
+            .any(|item| item.label == "Status::active"),
+        "outer assignment expected types must not leak into string call arguments: {assignment_first_arg_items:?}"
+    );
+
+    for (label, source) in [
+        (
+            "empty string argument in annotated const initializer",
+            "module shelf::app\n\nuse shelf::books\n\npub fn f()\n    const state: Status = books::chooseStatus(|, Status::active)\n",
+        ),
+        (
+            "empty string argument in assignment value",
+            "module shelf::app\n\nuse shelf::books\n\npub fn f()\n    var state: Status = Status::active\n    state = books::chooseStatus(|, Status::active)\n",
+        ),
+        (
+            "empty string argument in return value",
+            "module shelf::app\n\nuse shelf::books\n\npub fn f(): Status\n    return books::chooseStatus(|, Status::active)\n",
+        ),
+        (
+            "unresolved empty call argument in annotated const initializer",
+            "module shelf::app\n\nuse shelf::books\n\npub fn f()\n    const state: Status = missing(|, Status::active)\n",
+        ),
+        (
+            "unresolved empty call argument in assignment value",
+            "module shelf::app\n\nuse shelf::books\n\npub fn f()\n    var state: Status = Status::active\n    state = missing(|, Status::active)\n",
+        ),
+        (
+            "unresolved empty call argument in return value",
+            "module shelf::app\n\nuse shelf::books\n\npub fn f(): Status\n    return missing(|, Status::active)\n",
+        ),
+    ] {
+        let items = completion_items(program, app, source);
+        assert!(
+            !items.iter().any(|item| item.label == "Status::active"),
+            "{label}: outer expected enum values must not leak into empty string call arguments: {items:?}"
+        );
+    }
+
+    for (label, source) in [
+        (
+            "empty annotated const initializer",
+            "module shelf::app\n\nuse shelf::books\n\npub fn f()\n    const state: Status = |\n",
+        ),
+        (
+            "empty assignment value",
+            "module shelf::app\n\nuse shelf::books\n\npub fn f()\n    var state: Status = Status::active\n    state = |\n",
+        ),
+        (
+            "empty return expression",
+            "module shelf::app\n\nuse shelf::books\n\npub fn f(): Status\n    return |\n",
+        ),
+        (
+            "empty resource constructor enum field",
+            "module shelf::app\n\nuse shelf::books\n\nresource Draft\n    required state: books::Status\n\npub fn f()\n    const draft = Draft(state: |)\n",
+        ),
+    ] {
+        let items = completion_items(program, app, source);
+        assert_eq!(
+            item_named(&items, "Status::active").kind,
+            SourceCompletionItemKind::EnumMember,
+            "{label}"
+        );
+        assert!(
+            !items.iter().any(|item| item.label == "Status::archived"),
+            "{label}: value positions must not offer category members: {items:?}"
+        );
+    }
+
+    let duplicate_resource_items = completion_items(
+        program,
+        app,
+        "module shelf::app\n\nuse shelf::books\n\nresource Local\n    required state: books::Status\n\nresource Local\n    required title: string\n\npub fn f()\n    const draft = Local(state: |)\n",
+    );
+    assert!(
+        !duplicate_resource_items
+            .iter()
+            .any(|item| item.label == "Status::active"),
+        "duplicate current-source resources must fail closed instead of offering enum completions: {duplicate_resource_items:?}"
+    );
+
+    let resource_function_collision_items = completion_items(
+        program,
+        app,
+        "module shelf::app\n\nuse shelf::books\n\nresource Local\n    required state: books::Status\n\nfn Local(value: string): string\n    return value\n\npub fn f()\n    const draft = Local(state: |)\n",
+    );
+    assert!(
+        !resource_function_collision_items
+            .iter()
+            .any(|item| item.label == "Status::active"),
+        "current-source resource names colliding with another top-level declaration must fail closed: {resource_function_collision_items:?}"
+    );
+
+    for (label, source) in [
+        (
+            "before annotated binding name",
+            "module shelf::app\n\nuse shelf::books\n\npub fn f()\n    const |state: Status = Status::active\n",
+        ),
+        (
+            "before return keyword",
+            "module shelf::app\n\nuse shelf::books\n\npub fn f(): Status\n    |return Status::active\n",
+        ),
+    ] {
+        let items = completion_items(program, app, source);
+        assert!(
+            !items.iter().any(|item| item.label == "Status::active"),
+            "{label}: expected enum values must not be offered before the value position: {items:?}"
+        );
+    }
+
     let constructor_field_name_items = completion_items(
         program,
         app,
@@ -366,6 +506,71 @@ fn source_completion_fact_adds_expected_enum_members_for_annotated_const_var_and
             .iter()
             .any(|item| item.label == "books::Status::active"),
         "ambiguous import aliases must not be used as enum value prefixes: {ambiguous_items:?}"
+    );
+}
+
+#[test]
+fn source_completion_fact_adds_expected_enum_members_for_match_arms() {
+    let project = CompletionProject::new();
+    let program = project.program();
+    let app = project.app_file();
+
+    let items = completion_items(
+        program,
+        app,
+        "module shelf::app\n\nuse shelf::books\n\npub fn f(state: Status)\n    match state\n        a|\n            return\n",
+    );
+    let active = item_named(&items, "active");
+    assert_eq!(active.kind, SourceCompletionItemKind::EnumMember);
+    assert_eq!(active.detail.as_deref(), Some("Status match arm"));
+    assert_eq!(active.docs, ["Ready for use."]);
+
+    let archived = item_named(&items, "archived");
+    assert_eq!(archived.kind, SourceCompletionItemKind::EnumMember);
+    assert_eq!(archived.detail.as_deref(), Some("Status match arm"));
+
+    let retired = item_named(&items, "archived::retired");
+    assert_eq!(retired.kind, SourceCompletionItemKind::EnumMember);
+    assert_eq!(retired.detail.as_deref(), Some("Status match arm"));
+    assert_eq!(retired.docs, ["No longer active."]);
+
+    assert!(
+        !items.iter().any(|item| item.label == "Status::active"),
+        "match arm completions are relative to the scrutinee enum: {items:?}"
+    );
+    project.assert_app_source_has_no_app_errors(
+        "module shelf::app\n\nuse shelf::books\n\npub fn f(state: Status)\n    match state\n        active\n            return\n        archived\n            return\n",
+    );
+    project.assert_app_source_has_no_app_errors(
+        "module shelf::app\n\nuse shelf::books\n\npub fn f(state: Status)\n    match state\n        active\n            return\n        archived::retired\n            return\n",
+    );
+
+    let empty_items = completion_items(
+        program,
+        app,
+        "module shelf::app\n\nuse shelf::books\n\npub fn f(state: Status)\n    match state\n        |\n",
+    );
+    assert_eq!(
+        item_named(&empty_items, "active").kind,
+        SourceCompletionItemKind::EnumMember,
+        "empty match arm header should offer relative enum members"
+    );
+    assert!(
+        !empty_items
+            .iter()
+            .any(|item| item.label == "Status::active"),
+        "empty match arm completions stay relative: {empty_items:?}"
+    );
+
+    let separated_items = completion_items(
+        program,
+        app,
+        "module shelf::app\n\nuse shelf::books\n\npub fn f(state: Status)\n    match state\n\n        |\n",
+    );
+    assert_eq!(
+        item_named(&separated_items, "active").kind,
+        SourceCompletionItemKind::EnumMember,
+        "blank separator lines should not hide the enclosing match"
     );
 }
 
