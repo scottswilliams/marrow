@@ -49,7 +49,10 @@ pub(crate) fn walk_declaration_type_refs(
                 }
             }
         }
-        Declaration::Enum(_) | Declaration::Surface(_) => {}
+        Declaration::Surface(surface) => {
+            walk_key_type_refs(&surface.store.keys, visit);
+        }
+        Declaration::Enum(_) => {}
     }
 }
 

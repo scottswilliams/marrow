@@ -97,7 +97,10 @@ pub use symbols::{
     DocumentSymbol, DocumentSymbolKind, SourceSymbol, SourceSymbolKind, document_symbols,
     source_symbols, source_symbols_matching,
 };
-pub use type_annotations::{IdentityTypeAnnotation, identity_type_annotations};
+pub use type_annotations::{
+    IdentityTypeAnnotation, SourceTypeAnnotationCursorFact, identity_type_annotations,
+    source_type_annotation_cursor_fact_at,
+};
 
 #[derive(Debug)]
 pub enum ToolingError {

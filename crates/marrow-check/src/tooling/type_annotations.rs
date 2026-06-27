@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use marrow_syntax::{Keyword, SourceSpan, Token, TokenKind};
+use marrow_syntax::{Keyword, SourceSpan, Token, TokenKind, TypeRef};
 
 use crate::analysis::AnalysisSnapshot;
 use crate::annotation_refs::{TypeAnnotationBodies, walk_declaration_type_refs};
@@ -14,6 +14,12 @@ pub struct IdentityTypeAnnotation {
     pub constructor_span: SourceSpan,
     pub root_span: SourceSpan,
     pub store_root: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceTypeAnnotationCursorFact {
+    pub span: SourceSpan,
+    pub text: String,
 }
 
 pub fn identity_type_annotations(
@@ -50,6 +56,39 @@ pub fn identity_type_annotations(
     }
 
     facts
+}
+
+pub fn source_type_annotation_cursor_fact_at(
+    snapshot: &AnalysisSnapshot,
+    file: &Path,
+    offset: usize,
+) -> Option<SourceTypeAnnotationCursorFact> {
+    let analyzed = snapshot
+        .files
+        .iter()
+        .find(|analyzed| analyzed.path == file)?;
+    let mut best = None;
+
+    for declaration in &analyzed.parsed.file.declarations {
+        walk_declaration_type_refs(declaration, TypeAnnotationBodies::Include, &mut |ty| {
+            if !span_covers(ty.span, offset) {
+                return;
+            }
+            let Some(fact) = type_annotation_cursor_fact(&analyzed.source, ty) else {
+                return;
+            };
+            if best
+                .as_ref()
+                .is_none_or(|current: &SourceTypeAnnotationCursorFact| {
+                    span_width(fact.span) < span_width(current.span)
+                })
+            {
+                best = Some(fact);
+            }
+        });
+    }
+
+    best
 }
 
 fn tokens_in_span(tokens: &[Token], span: SourceSpan) -> Vec<&Token> {
@@ -102,6 +141,25 @@ fn collect_identity_annotations(
         }
         _ => {}
     }
+}
+
+fn type_annotation_cursor_fact(
+    source: &str,
+    ty: &TypeRef,
+) -> Option<SourceTypeAnnotationCursorFact> {
+    let text = source.get(ty.span.start_byte..ty.span.end_byte)?;
+    Some(SourceTypeAnnotationCursorFact {
+        span: ty.span,
+        text: text.to_string(),
+    })
+}
+
+fn span_covers(span: SourceSpan, offset: usize) -> bool {
+    span.start_byte <= offset && offset <= span.end_byte
+}
+
+fn span_width(span: SourceSpan) -> usize {
+    span.end_byte.saturating_sub(span.start_byte)
 }
 
 fn identity_type_spans(

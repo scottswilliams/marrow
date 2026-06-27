@@ -166,6 +166,8 @@ mod source_signature_help_facts;
 mod source_symbol_docs;
 #[path = "cases/source_symbols.rs"]
 mod source_symbols;
+#[path = "cases/source_type_annotation_cursor_facts.rs"]
+mod source_type_annotation_cursor_facts;
 #[path = "cases/source_type_completion_facts.rs"]
 mod source_type_completion_facts;
 #[path = "cases/surface_abi.rs"]

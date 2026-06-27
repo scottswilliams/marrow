@@ -53,6 +53,12 @@ from the checked program or snapshot:
   checker, requires the store root to exist in the checked program, and recurses
   through `sequence[...]` annotations, so editor callers do not classify
   identity type constructors from token spelling alone.
+- `tooling::source_type_annotation_cursor_fact_at(snapshot, file, offset)`
+  returns the parsed source type-annotation span under `offset`, including
+  declaration and checked-body annotations retained in broken-buffer snapshots.
+  The fact carries source text and span only; resolved enum/resource/catalog
+  identity stays in the use-site, declaration, binding, and hover facts that own
+  those semantics.
 - `tooling::source_semantic_token_facts(source, lexed, parsed)` returns
   syntax/parse-only source-token facts with token-tight `SourceSpan`,
   Marrow-owned `SourceSemanticTokenRole`, and typed presentation modifiers.
