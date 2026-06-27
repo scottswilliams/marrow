@@ -10,7 +10,7 @@ use marrow_store::StoreError;
 use marrow_store::key::SavedKey;
 use marrow_store::tree::DataPathSegment;
 use serde::{Deserialize, Serialize};
-use serde_json::Value as Json;
+use serde_json::{Value as Json, json};
 
 use crate::run::EntryRunAnalysisJson;
 use crate::{DataGenerationJson, SavedKeyJson};
@@ -48,6 +48,49 @@ pub struct DataReadRequestJson {
     pub segments: Vec<DataPathSegmentJson>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preview_limit: Option<usize>,
+}
+
+pub fn data_key_input_schema(description: &str) -> Json {
+    json!({
+        "description": description,
+        "oneOf": [
+            { "type": "object", "properties": { "kind": { "const": "int" }, "value": { "type": "integer" } }, "required": ["kind", "value"] },
+            { "type": "object", "properties": { "kind": { "const": "bool" }, "value": { "type": "boolean" } }, "required": ["kind", "value"] },
+            { "type": "object", "properties": { "kind": { "const": "string" }, "value": { "type": "string" } }, "required": ["kind", "value"] },
+            { "type": "object", "properties": { "kind": { "const": "date" }, "value": { "type": "integer" } }, "required": ["kind", "value"] },
+            { "type": "object", "properties": { "kind": { "const": "instant" }, "value": { "type": "string" } }, "required": ["kind", "value"] },
+            { "type": "object", "properties": { "kind": { "const": "duration" }, "value": { "type": "string" } }, "required": ["kind", "value"] },
+            { "type": "object", "properties": { "kind": { "const": "bytes" }, "value": { "type": "array", "items": { "type": "integer", "minimum": 0, "maximum": 255 } } }, "required": ["kind", "value"] },
+        ],
+    })
+}
+
+pub fn data_path_segment_input_schema() -> Json {
+    let catalog_segment = |kind: &str, authority: &str| {
+        json!({
+            "type": "object",
+            "properties": {
+                "kind": { "const": kind },
+                authority: { "type": "string" },
+            },
+            "required": ["kind", authority],
+        })
+    };
+    json!({
+        "oneOf": [
+            catalog_segment("root", "store_catalog_id"),
+            catalog_segment("field", "member_catalog_id"),
+            catalog_segment("layer", "member_catalog_id"),
+            {
+                "type": "object",
+                "properties": {
+                    "kind": { "const": "key" },
+                    "value": data_key_input_schema("Typed saved-data key segment."),
+                },
+                "required": ["kind", "value"],
+            },
+        ],
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -858,6 +901,45 @@ mod tests {
             })
         );
         assert_eq!(read.data_view_boundary, None);
+    }
+
+    #[test]
+    fn saved_data_input_schema_helpers_match_catalog_bound_dtos() {
+        let key = data_key_input_schema("Typed cursor.");
+        assert_eq!(key["description"], "Typed cursor.");
+        let key_kinds: Vec<_> = key["oneOf"]
+            .as_array()
+            .expect("key alternatives")
+            .iter()
+            .map(|schema| schema["properties"]["kind"]["const"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            key_kinds,
+            vec![
+                "int", "bool", "string", "date", "instant", "duration", "bytes"
+            ]
+        );
+
+        let segment = data_path_segment_input_schema();
+        let segment_kinds: Vec<_> = segment["oneOf"]
+            .as_array()
+            .expect("segment alternatives")
+            .iter()
+            .map(|schema| schema["properties"]["kind"]["const"].as_str().unwrap())
+            .collect();
+        assert_eq!(segment_kinds, vec!["root", "field", "layer", "key"]);
+        assert_eq!(
+            segment["oneOf"][0]["required"],
+            json!(["kind", "store_catalog_id"])
+        );
+        assert_eq!(
+            segment["oneOf"][1]["required"],
+            json!(["kind", "member_catalog_id"])
+        );
+        assert_eq!(
+            segment["oneOf"][3]["properties"]["value"]["description"],
+            "Typed saved-data key segment."
+        );
     }
 
     #[test]
