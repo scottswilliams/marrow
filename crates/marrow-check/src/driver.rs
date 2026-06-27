@@ -1222,6 +1222,24 @@ pub(crate) fn expand_unique_import_alias(
         .collect())
 }
 
+pub(crate) fn unique_import_alias_for_module(
+    source: &marrow_syntax::SourceFile,
+    module_name: &str,
+) -> Result<Option<String>, AmbiguousImportAlias> {
+    let alias = short_name(module_name);
+    let mut import_matches = source
+        .uses
+        .iter()
+        .filter(|use_decl| short_name(&use_decl.name) == alias);
+    let Some(import) = import_matches.next() else {
+        return Ok(None);
+    };
+    if import_matches.next().is_some() || source_declares_top_level_name(source, alias) {
+        return Err(AmbiguousImportAlias);
+    }
+    Ok((import.name == module_name).then(|| alias.to_string()))
+}
+
 pub(crate) struct AmbiguousImportAlias;
 
 pub(crate) fn import_alias_head_is_file_shadowed(source: &SourceFile, name: &str) -> bool {

@@ -12,7 +12,7 @@ use super::data::{
 };
 use super::expected::{ExpectedEnum, expected_enum_at};
 use super::render::{render_callable_signature, render_marrow_type};
-use super::signatures::{CallableSignature, intrinsic_callable_signature};
+use super::signatures::{CallableSignature, active_callable_context, intrinsic_callable_signature};
 use crate::{
     CheckedFunction, CheckedModule, CheckedProgram, CheckedSavedKeyParam, CheckedSavedPlace,
     MarrowType, ResourceMemberId, ScalarType, StoreId, StoreLeafKind, scope_at,
@@ -309,7 +309,8 @@ pub fn source_completion_context(
     lexed: &LexedSource,
     offset: usize,
 ) -> SourceCompletionContext {
-    match completion_cursor_context(source, lexed, offset) {
+    let parsed = marrow_syntax::parse_source(source);
+    match completion_cursor_context(source, lexed, &parsed, offset) {
         CompletionCursorContext::Root => SourceCompletionContext::Root,
         CompletionCursorContext::SavedPath { span, .. } => SourceCompletionContext::SavedPath {
             receiver_span: span,
@@ -326,6 +327,7 @@ pub fn source_completion_context(
 fn completion_cursor_context(
     source: &str,
     lexed: &LexedSource,
+    parsed: &ParsedSource,
     offset: usize,
 ) -> CompletionCursorContext {
     let tokens = significant_tokens(lexed);
@@ -370,7 +372,7 @@ fn completion_cursor_context(
             }
         }
         TokenKind::Colon => {
-            if introduces_type(&tokens, anchor) {
+            if introduces_type(source, lexed, parsed, &tokens, anchor, offset) {
                 CompletionCursorContext::Type
             } else {
                 CompletionCursorContext::Bare
@@ -391,7 +393,7 @@ pub fn source_completion_fact(
     lexed: &LexedSource,
     offset: usize,
 ) -> SourceCompletionFact {
-    let items = match completion_cursor_context(source, lexed, offset) {
+    let items = match completion_cursor_context(source, lexed, parsed, offset) {
         CompletionCursorContext::Root => root_completion_items(program),
         CompletionCursorContext::SavedPath { receiver, span } => {
             let fact = source_saved_path_completion_fact_from_receiver(
@@ -406,7 +408,9 @@ pub fn source_completion_fact(
             namespace_completion_items(program, file, &parsed.file, &qualifier)
         }
         CompletionCursorContext::Type => type_completion_items(program, file, &parsed.file),
-        CompletionCursorContext::Bare => bare_completion_items(program, file, parsed, offset),
+        CompletionCursorContext::Bare => {
+            bare_completion_items(program, file, source, parsed, lexed, offset)
+        }
     };
     SourceCompletionFact { items }
 }
@@ -419,7 +423,7 @@ pub fn source_saved_path_completion_fact_at(
     lexed: &LexedSource,
     offset: usize,
 ) -> Option<SourceSavedPathCompletionFact> {
-    match completion_cursor_context(source, lexed, offset) {
+    match completion_cursor_context(source, lexed, parsed, offset) {
         CompletionCursorContext::SavedPath { receiver, span } => {
             source_saved_path_completion_fact_from_receiver(program, file, parsed, &receiver, span)
         }
@@ -698,7 +702,9 @@ fn source_type_path_label(path: &[String]) -> String {
 fn bare_completion_items(
     program: &CheckedProgram,
     file: &Path,
+    source: &str,
     parsed: &ParsedSource,
+    lexed: &LexedSource,
     offset: usize,
 ) -> Vec<SourceCompletionItem> {
     let mut items = Vec::new();
@@ -722,7 +728,7 @@ fn bare_completion_items(
                 .docs_from(&callable.docs),
         );
     }
-    if let Some(expected) = expected_enum_at(program, file, parsed, offset) {
+    if let Some(expected) = expected_enum_at(program, file, source, parsed, lexed, offset) {
         items.extend(expected_enum_member_items(&expected));
     }
     dedup_completion_items(items)
@@ -1060,10 +1066,25 @@ fn matching_open_bracket(tokens: &[Token], close_index: usize) -> Option<usize> 
     }
 }
 
-fn introduces_type(tokens: &[Token], colon_index: usize) -> bool {
+fn introduces_type(
+    source: &str,
+    lexed: &LexedSource,
+    parsed: &ParsedSource,
+    tokens: &[Token],
+    colon_index: usize,
+    offset: usize,
+) -> bool {
     let Some(before) = colon_index.checked_sub(1) else {
         return false;
     };
+    if active_callable_context(source, lexed, parsed, offset).is_some_and(|context| {
+        context
+            .named_argument
+            .as_deref()
+            .is_some_and(|name| tokens[before].text(source) == name)
+    }) {
+        return false;
+    }
     matches!(
         tokens[before].kind,
         TokenKind::Identifier | TokenKind::RightParen

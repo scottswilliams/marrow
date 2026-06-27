@@ -162,7 +162,7 @@ pub(crate) use driver::{
     is_resolved_import, is_unknown_std_operation, module_of_file, module_path_error,
     push_schema_error, read_source, resolve_function_in_module, resolve_resource_schema_type,
     resolve_resource_type, resource_type_name, short_name, source_declares_top_level_name,
-    split_type_path, std_call_params, std_call_return_type,
+    split_type_path, std_call_params, std_call_return_type, unique_import_alias_for_module,
 };
 pub(crate) use program::TypeNames;
 pub(crate) use rejected_surface::check_rejected_surface;

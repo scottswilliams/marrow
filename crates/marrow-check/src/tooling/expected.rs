@@ -1,13 +1,18 @@
 use std::path::Path;
 
 use marrow_schema::EnumSchema;
-use marrow_syntax::{Block, Declaration, ElseIf, Expression, ParsedSource, Statement, TypeRef};
+use marrow_syntax::{
+    Block, Declaration, ElseIf, Expression, LexedSource, ParsedSource, SourceFile, Statement,
+    TypeRef,
+};
 
 use crate::analysis::span_covers;
 use crate::checks::file_prelude;
 use crate::enums::{enum_schema_in, resolve_type};
 use crate::walk::for_each_child_expr;
-use crate::{CheckedProgram, MarrowType};
+use crate::{CheckedModule, CheckedProgram, MarrowType};
+
+use super::signatures::{active_signature_help_parameter, source_signature_help_fact_at};
 
 pub(super) struct ExpectedEnum<'a> {
     pub schema: &'a EnumSchema,
@@ -17,11 +22,13 @@ pub(super) struct ExpectedEnum<'a> {
 pub(super) fn expected_enum_at<'a>(
     program: &'a CheckedProgram,
     file: &Path,
+    source: &str,
     parsed: &ParsedSource,
+    lexed: &LexedSource,
     offset: usize,
 ) -> Option<ExpectedEnum<'a>> {
     let prelude = file_prelude(program, file, parsed);
-    let ty = parsed
+    if let Some(ty) = parsed
         .file
         .declarations
         .iter()
@@ -30,15 +37,119 @@ pub(super) fn expected_enum_at<'a>(
                 expected_type_ref_in_block(&function.body, function.return_type.as_ref(), offset)
             }
             _ => None,
-        })?;
-    let MarrowType::Enum { module, name } = resolve_type(ty, program, &prelude.aliases, file)
-    else {
+        })
+    {
+        let resolved = resolve_type(ty, program, &prelude.aliases, file);
+        return expected_enum_from_type(program, file, &resolved, ty.text.clone());
+    }
+
+    let ty = expected_call_argument_type(program, file, source, lexed, offset)?;
+    let prefix = enum_value_prefix_for_type(program, file, &parsed.file, &ty)?;
+    expected_enum_from_type(program, file, &ty, prefix)
+}
+
+fn expected_enum_from_type<'a>(
+    program: &'a CheckedProgram,
+    file: &Path,
+    ty: &MarrowType,
+    value_prefix: String,
+) -> Option<ExpectedEnum<'a>> {
+    let MarrowType::Enum { module, name } = ty else {
         return None;
     };
+    let schema = enum_schema_in(program, module, name)?;
+    if !enum_visible_from_file(program, file, module, name) {
+        return None;
+    }
     Some(ExpectedEnum {
-        schema: enum_schema_in(program, &module, &name)?,
-        value_prefix: ty.text.clone(),
+        schema,
+        value_prefix,
     })
+}
+
+fn expected_call_argument_type(
+    program: &CheckedProgram,
+    file: &Path,
+    source: &str,
+    lexed: &LexedSource,
+    offset: usize,
+) -> Option<MarrowType> {
+    let fact = source_signature_help_fact_at(program, None, file, source, lexed, offset)?;
+    active_signature_help_parameter(&fact).and_then(|parameter| parameter.ty.clone())
+}
+
+fn enum_value_prefix_for_type(
+    program: &CheckedProgram,
+    file: &Path,
+    source_file: &SourceFile,
+    ty: &MarrowType,
+) -> Option<String> {
+    let MarrowType::Enum { module, name } = ty else {
+        return None;
+    };
+    if current_module(program, file).is_some_and(|current| current.name == *module) {
+        return Some(name.clone());
+    }
+    if bare_enum_path_resolves_to(program, file, source_file, module, name) {
+        return Some(name.clone());
+    }
+    crate::unique_import_alias_for_module(source_file, module)
+        .ok()
+        .flatten()
+        .map_or_else(
+            || Some(format!("{module}::{name}")),
+            |alias| Some(format!("{alias}::{name}")),
+        )
+}
+
+fn bare_enum_path_resolves_to(
+    program: &CheckedProgram,
+    file: &Path,
+    source_file: &SourceFile,
+    target_module: &str,
+    enum_name: &str,
+) -> bool {
+    if current_module(program, file).is_none_or(|current| current.name != target_module)
+        && crate::source_declares_top_level_name(source_file, enum_name)
+    {
+        return false;
+    }
+    let mut matches = program.modules.iter().filter(|module| {
+        module
+            .enums
+            .iter()
+            .any(|enum_schema| enum_schema.name == enum_name)
+            && module_enum_visible_from_file(module, enum_name, file)
+    });
+    let Some(module) = matches.next() else {
+        return false;
+    };
+    matches.next().is_none() && module.name == target_module
+}
+
+fn enum_visible_from_file(
+    program: &CheckedProgram,
+    file: &Path,
+    module_name: &str,
+    enum_name: &str,
+) -> bool {
+    current_module(program, file).is_some_and(|module| module.name == module_name)
+        || program
+            .modules
+            .iter()
+            .find(|module| module.name == module_name)
+            .is_some_and(|module| module_enum_visible_from_file(module, enum_name, file))
+}
+
+fn module_enum_visible_from_file(module: &CheckedModule, enum_name: &str, file: &Path) -> bool {
+    module.source_file == file || module.enum_public.get(enum_name).copied().unwrap_or(false)
+}
+
+fn current_module<'a>(program: &'a CheckedProgram, file: &Path) -> Option<&'a CheckedModule> {
+    program
+        .modules
+        .iter()
+        .find(|module| module.source_file == file)
 }
 
 fn expected_type_ref_in_block<'a>(

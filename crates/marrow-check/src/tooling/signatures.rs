@@ -143,6 +143,53 @@ pub fn source_signature_help_fact_at(
     })
 }
 
+pub(super) fn active_signature_help_parameter(
+    fact: &SourceSignatureHelpFact,
+) -> Option<&SourceSignatureHelpParameter> {
+    match &fact.callable {
+        SourceSignatureHelpCallable::Intrinsic {
+            argument_style,
+            params,
+            ..
+        } => active_parameter_for_style(
+            params,
+            *argument_style,
+            fact.active_argument,
+            fact.named_argument.as_deref(),
+        ),
+        SourceSignatureHelpCallable::ResourceConstructor { params, .. } => {
+            named_active_parameter(params, fact.named_argument.as_deref())
+        }
+        SourceSignatureHelpCallable::Function { params, .. } => fact
+            .named_argument
+            .as_deref()
+            .and_then(|name| named_active_parameter(params, Some(name)))
+            .or_else(|| params.get(fact.active_argument)),
+    }
+}
+
+fn active_parameter_for_style<'a>(
+    params: &'a [SourceSignatureHelpParameter],
+    style: CallableArgumentStyle,
+    active_argument: usize,
+    named_argument: Option<&str>,
+) -> Option<&'a SourceSignatureHelpParameter> {
+    match style {
+        CallableArgumentStyle::Positional => params.get(active_argument),
+        CallableArgumentStyle::NamedFields => named_active_parameter(params, named_argument),
+    }
+}
+
+fn named_active_parameter<'a>(
+    params: &'a [SourceSignatureHelpParameter],
+    name: Option<&str>,
+) -> Option<&'a SourceSignatureHelpParameter> {
+    let name = name?;
+    params
+        .iter()
+        .find(|parameter| parameter.name.as_deref() == Some(name))
+}
+
 pub fn intrinsic_callable_signature(segments: &[String]) -> Option<CallableSignature> {
     match segments {
         [first, module, op] if first == "std" => std_signature(module, op),

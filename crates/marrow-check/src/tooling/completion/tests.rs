@@ -44,6 +44,10 @@ fn classifies_source_completion_cursor_contexts() {
 
     let (_, context) = context_at("module shelf::app\n\npub fn f(total: int)\n    return t|\n");
     assert_eq!(context, SourceCompletionContext::Bare);
+
+    let (_, context) =
+        context_at("module shelf::app\n\npub fn f()\n    const draft = Draft(state: a|)\n");
+    assert_eq!(context, SourceCompletionContext::Bare);
 }
 
 fn assert_receiver_span(source: &str, span: SourceSpan, receiver: &str) {
@@ -243,31 +247,48 @@ fn source_completion_fact_adds_expected_enum_members_for_annotated_const_var_and
     let program = project.program();
     let app = project.app_file();
 
-    for (label, source, prefix) in [
+    for (label, source, prefix, assert_replacement) in [
         (
             "annotated const initializer",
             "module shelf::app\n\nuse shelf::books\n\npub fn f()\n    const state: Status = a|\n",
             "Status",
+            true,
         ),
         (
             "annotated var initializer",
             "module shelf::app\n\nuse shelf::books\n\npub fn f()\n    var state: Status = a|\n",
             "Status",
+            true,
         ),
         (
             "qualified annotated const initializer",
             "module shelf::app\n\nuse shelf::books\n\npub fn f()\n    const state: books::Status = a|\n",
             "books::Status",
+            true,
         ),
         (
             "enum return expression",
             "module shelf::app\n\nuse shelf::books\n\npub fn f(): Status\n    return a|\n",
             "Status",
+            true,
         ),
         (
             "nested enum return expression",
             "module shelf::app\n\nuse shelf::books\n\npub fn f(): Status\n    if true\n        return a|\n    return Status::active\n",
             "Status",
+            true,
+        ),
+        (
+            "function enum argument",
+            "module shelf::app\n\nuse shelf::books\n\npub fn f()\n    const state = books::chooseStatus(\"current\", a|)\n",
+            "Status",
+            true,
+        ),
+        (
+            "resource constructor enum field",
+            "module shelf::app\n\nuse shelf::books\n\nresource Draft\n    required state: books::Status\n\npub fn f()\n    const draft = Draft(state: a|)\n",
+            "Status",
+            false,
         ),
     ] {
         let items = completion_items(program, app, source);
@@ -300,9 +321,52 @@ fn source_completion_fact_adds_expected_enum_members_for_annotated_const_var_and
             items.iter().any(|item| item.label == "return"),
             "{label}: expected enum completions should stay additive with bare completions"
         );
-        project.assert_app_source_has_no_app_errors(&source.replacen("a|", &active_label, 1));
-        project.assert_app_source_has_no_app_errors(&source.replacen("a|", &retired_label, 1));
+        if assert_replacement {
+            project.assert_app_source_has_no_app_errors(&source.replacen("a|", &active_label, 1));
+            project.assert_app_source_has_no_app_errors(&source.replacen("a|", &retired_label, 1));
+        }
     }
+
+    let first_arg_items = completion_items(
+        program,
+        app,
+        "module shelf::app\n\nuse shelf::books\n\npub fn f()\n    const state = books::chooseStatus(a|, Status::active)\n",
+    );
+    assert!(
+        !first_arg_items
+            .iter()
+            .any(|item| item.label == "Status::active"),
+        "string arguments must not receive enum value completions: {first_arg_items:?}"
+    );
+
+    let constructor_field_name_items = completion_items(
+        program,
+        app,
+        "module shelf::app\n\nuse shelf::books\n\npub fn f()\n    const draft = Draft(st|)\n",
+    );
+    assert!(
+        !constructor_field_name_items
+            .iter()
+            .any(|item| item.label == "Status::active"),
+        "constructor field-name positions must not receive enum value completions: {constructor_field_name_items:?}"
+    );
+
+    let ambiguous_project = CompletionProject::with_archive_books();
+    let ambiguous_items = completion_items(
+        ambiguous_project.program(),
+        ambiguous_project.app_file(),
+        "module shelf::app\n\nuse shelf::books\nuse archive::books\n\nenum Status\n    local\n\nresource Draft\n    required state: shelf::books::Status\n\npub fn f()\n    const draft = Draft(state: a|)\n",
+    );
+    assert_eq!(
+        item_named(&ambiguous_items, "shelf::books::Status::active").kind,
+        SourceCompletionItemKind::EnumMember,
+    );
+    assert!(
+        !ambiguous_items
+            .iter()
+            .any(|item| item.label == "books::Status::active"),
+        "ambiguous import aliases must not be used as enum value prefixes: {ambiguous_items:?}"
+    );
 }
 
 fn completion_items(
@@ -337,14 +401,29 @@ struct CompletionProject {
 
 impl CompletionProject {
     fn new() -> Self {
+        Self::new_with_archive_books(false)
+    }
+
+    fn with_archive_books() -> Self {
+        Self::new_with_archive_books(true)
+    }
+
+    fn new_with_archive_books(include_archive_books: bool) -> Self {
         let root = unique_temp_dir();
         std::fs::create_dir_all(root.join("src/shelf")).expect("create project dirs");
+        if include_archive_books {
+            std::fs::create_dir_all(root.join("src/archive")).expect("create archive project dirs");
+        }
         std::fs::write(
             root.join("marrow.json"),
             r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" } }"#,
         )
         .expect("write config");
         std::fs::write(root.join("src/shelf/books.mw"), BOOKS).expect("write books");
+        if include_archive_books {
+            std::fs::write(root.join("src/archive/books.mw"), ARCHIVE_BOOKS)
+                .expect("write archive books");
+        }
         let app = root.join("src/shelf/app.mw");
         std::fs::write(&app, APP).expect("write app");
         let config =
@@ -435,12 +514,26 @@ enum Secret
 ;; Returns a book title.
 pub fn titleOf(id: Id(^books)): string
     return ^books(id).title
+
+;; Keeps a lifecycle state.
+pub fn chooseStatus(label: string, state: Status): Status
+    return state
+";
+
+const ARCHIVE_BOOKS: &str = "\
+module archive::books
+
+pub enum Status
+    inactive
 ";
 
 const APP: &str = "\
 module shelf::app
 
 use shelf::books
+
+resource Draft
+    required state: books::Status
 
 pub fn run(count: int): int
     const total: int = count
