@@ -120,6 +120,18 @@ fn source_completion_fact_returns_protocol_free_items_for_current_contexts() {
         app,
         "module shelf::app\n\nuse shelf::books\n\npub fn f(count: int)\n    const total: int = count\n    return t|\n",
     );
+    let books = item_named(&bare, "books");
+    assert_eq!(books.kind, SourceCompletionItemKind::Module);
+    assert_eq!(books.detail.as_deref(), Some("module shelf::books"));
+    let std = item_named(&bare, "std");
+    assert_eq!(std.kind, SourceCompletionItemKind::Module);
+    assert_eq!(std.detail.as_deref(), Some("standard library"));
+    let draft = item_named(&bare, "Draft");
+    assert_eq!(draft.kind, SourceCompletionItemKind::Resource);
+    assert_eq!(draft.detail.as_deref(), Some("resource"));
+    let run = item_named(&bare, "run");
+    assert_eq!(run.kind, SourceCompletionItemKind::Function);
+    assert_eq!(run.detail.as_deref(), Some("fn run(count: int): int"));
     assert_eq!(
         item_named(&bare, "total").kind,
         SourceCompletionItemKind::Local
@@ -138,6 +150,47 @@ fn source_completion_fact_returns_protocol_free_items_for_current_contexts() {
         Some("key(id): value")
     );
 
+    let shadowed_alias = completion_items(
+        program,
+        app,
+        "module shelf::app\n\nuse shelf::books\n\npub fn f()\n    const books = 1\n    return b|\n",
+    );
+    let books = item_named(&shadowed_alias, "books");
+    assert_eq!(books.kind, SourceCompletionItemKind::Local);
+    assert_eq!(books.detail.as_deref(), Some("int"));
+
+    let duplicate_alias = completion_items(
+        program,
+        app,
+        "module shelf::app\n\nuse shelf::books\nuse other::books\n\npub fn f()\n    return b|\n",
+    );
+    assert!(
+        !duplicate_alias
+            .iter()
+            .any(|item| item.label == "books" && item.kind == SourceCompletionItemKind::Module),
+        "duplicate import aliases must not expose an arbitrary module owner: {duplicate_alias:?}"
+    );
+
+    let shadowed_namespace = completion_items(
+        program,
+        app,
+        "module shelf::app\n\nuse shelf::books\n\npub fn f()\n    const books = 1\n    const x = books::|\n",
+    );
+    assert!(
+        shadowed_namespace.is_empty(),
+        "a visible value binding must shadow namespace completion: {shadowed_namespace:?}"
+    );
+
+    let duplicate_namespace = completion_items(
+        program,
+        app,
+        "module shelf::app\n\nuse shelf::books\nuse other::books\n\npub fn f()\n    const x = books::|\n",
+    );
+    assert!(
+        duplicate_namespace.is_empty(),
+        "duplicate import aliases must fail closed for namespace completion: {duplicate_namespace:?}"
+    );
+
     let local_tree = completion_items(
         program,
         app,
@@ -147,6 +200,114 @@ fn source_completion_fact_returns_protocol_free_items_for_current_contexts() {
         item_named(&local_tree, "scores").detail.as_deref(),
         Some("tree[int]")
     );
+
+    let (source, offset) =
+        source_with_cursor("module shelf::app\n\nuse shelf::books\n\npub fn f()\n    return |\n");
+    let parsed = parse_source(&source);
+    let lexed = lex_source(&source);
+    let fact = source_completion_fact(program, app, &source, &parsed, &lexed, offset);
+    assert_eq!(fact.profile_version, SOURCE_COMPLETION_PROFILE_VERSION);
+}
+
+#[test]
+fn source_completion_fact_keeps_raw_std_before_import_alias() {
+    let root = unique_temp_dir();
+    std::fs::create_dir_all(root.join("src/app")).expect("create app dir");
+    std::fs::create_dir_all(root.join("src/foo")).expect("create foo dir");
+    std::fs::write(
+        root.join("marrow.json"),
+        r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" } }"#,
+    )
+    .expect("write config");
+    let std_module = root.join("src/foo/std.mw");
+    let std_module_source = "\
+module foo::std
+
+pub fn projectOnly(): string
+    return \"project\"
+";
+    std::fs::write(&std_module, std_module_source).expect("write project std module");
+    let app = root.join("src/app/main.mw");
+    let app_source = "\
+module app::main
+
+use foo::std
+
+pub fn f()
+    return
+";
+    std::fs::write(&app, app_source).expect("write app module");
+    let config = parse_config(r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" } }"#)
+        .expect("parse config");
+    let sources = ProjectSources::new()
+        .with(&std_module, std_module_source)
+        .with(&app, app_source);
+    let snapshot = analyze_project(&root, &config, &sources, None, None).expect("analyze");
+    let errors = snapshot
+        .report
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.severity == Severity::Error)
+        .collect::<Vec<_>>();
+    assert!(errors.is_empty(), "unexpected diagnostics: {errors:?}");
+
+    let bare = completion_items(
+        &snapshot.program,
+        &app,
+        "module app::main\n\nuse foo::std\n\npub fn f()\n    return |\n",
+    );
+    let std_item = item_named(&bare, "std");
+    assert_eq!(std_item.kind, SourceCompletionItemKind::Module);
+    assert_eq!(std_item.detail.as_deref(), Some("standard library"));
+
+    let std_root = completion_items(
+        &snapshot.program,
+        &app,
+        "module app::main\n\nuse foo::std\n\npub fn f()\n    const x = std::|\n",
+    );
+    assert_eq!(
+        item_named(&std_root, "clock").kind,
+        SourceCompletionItemKind::Module
+    );
+    assert!(
+        !std_root.iter().any(|item| item.label == "projectOnly"),
+        "raw std root completion must not expand through the import alias: {std_root:?}"
+    );
+
+    let std_clock = completion_items(
+        &snapshot.program,
+        &app,
+        "module app::main\n\nuse foo::std\n\npub fn f()\n    const x = std::clock::|\n",
+    );
+    assert_eq!(
+        item_named(&std_clock, "now").kind,
+        SourceCompletionItemKind::Function
+    );
+    assert!(
+        !std_clock.iter().any(|item| item.label == "projectOnly"),
+        "raw std module completion must not expand through the import alias: {std_clock:?}"
+    );
+
+    let shadowed_std = completion_items(
+        &snapshot.program,
+        &app,
+        "module app::main\n\nuse foo::std\n\npub fn f()\n    const std = 1\n    const x = std::|\n",
+    );
+    assert!(
+        shadowed_std.is_empty(),
+        "a visible value binding named std must shadow raw std namespace completion: {shadowed_std:?}"
+    );
+
+    let shadowed_std_bare = completion_items(
+        &snapshot.program,
+        &app,
+        "module app::main\n\nuse foo::std\n\npub fn f()\n    const std = 1\n    return |\n",
+    );
+    let std_item = item_named(&shadowed_std_bare, "std");
+    assert_eq!(std_item.kind, SourceCompletionItemKind::Local);
+    assert_eq!(std_item.detail.as_deref(), Some("int"));
+
+    let _ = std::fs::remove_dir_all(root);
 }
 
 #[test]

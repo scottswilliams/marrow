@@ -15,13 +15,14 @@ pub mod symbols;
 mod type_annotations;
 
 pub use completion::{
-    SourceCompletionContext, SourceCompletionFact, SourceCompletionItem, SourceCompletionItemKind,
-    SourceEnumNamespaceCompletionFact, SourceModuleNamespaceCompletionFact,
-    SourceNamespaceCompletionFact, SourceNamespaceEnumCompletion,
-    SourceNamespaceEnumMemberCompletion, SourceNamespaceEnumMemberStatus,
-    SourceNamespaceFunctionCompletion, SourceNamespaceFunctionParamCompletion,
-    SourceNamespaceResourceCompletion, SourceSavedPathCompletionContextFact,
-    SourceSavedPathCompletionFact, SourceSavedPathCompletionRoot, SourceSavedPathCompletionSegment,
+    SOURCE_COMPLETION_PROFILE_VERSION, SourceCompletionContext, SourceCompletionFact,
+    SourceCompletionItem, SourceCompletionItemKind, SourceEnumNamespaceCompletionFact,
+    SourceModuleNamespaceCompletionFact, SourceNamespaceCompletionFact,
+    SourceNamespaceEnumCompletion, SourceNamespaceEnumMemberCompletion,
+    SourceNamespaceEnumMemberStatus, SourceNamespaceFunctionCompletion,
+    SourceNamespaceFunctionParamCompletion, SourceNamespaceResourceCompletion,
+    SourceSavedPathCompletionContextFact, SourceSavedPathCompletionFact,
+    SourceSavedPathCompletionRoot, SourceSavedPathCompletionSegment,
     SourceSavedRootCompletionCandidate, SourceSavedRootCompletionFact,
     SourceStandardLibraryModuleCompletion, SourceStandardLibraryModuleNamespaceCompletionFact,
     SourceStandardLibraryOperationCompletion, SourceStandardLibraryRootNamespaceCompletionFact,

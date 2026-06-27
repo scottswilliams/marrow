@@ -27,7 +27,10 @@ mod catalog_nav;
 mod cursor;
 
 pub use catalog_nav::{CatalogDeclaration, UseSite, UseSiteKind};
-pub(crate) use cursor::{debug_expression_scope_before, span_covers};
+pub(crate) use cursor::{
+    ScopeCompletionBindingKind, debug_expression_scope_before, scope_completion_bindings_at,
+    span_covers,
+};
 pub use cursor::{scope_at, type_at};
 
 pub const ANALYSIS_GENERATION_PROFILE_VERSION: &str = "analysis.generation.v1";

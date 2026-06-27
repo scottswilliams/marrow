@@ -14,6 +14,18 @@ use crate::infer::{bind, infer_only, infer_type, local_binding};
 use crate::walk::for_each_child_expr;
 use crate::{CheckedProgram, MarrowType};
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ScopeCompletionBinding {
+    pub(crate) name: String,
+    pub(crate) kind: ScopeCompletionBindingKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ScopeCompletionBindingKind {
+    Value { ty: MarrowType },
+    ModuleAlias { module: Vec<String> },
+}
+
 /// The type of the expression at byte `offset` in `parsed` (a file of `program`),
 /// or `None` when no expression covers the offset. Editor tooling uses this for
 /// hover and type-aware actions. It reconstructs the cursor's lexical scope
@@ -55,13 +67,13 @@ pub fn type_at(
     ))
 }
 
-/// The bindings visible at byte `offset` in `parsed` (a file of `program`), as
-/// `(name, type)` pairs, for completion. The reconstructed scope is the same one
-/// [`type_at`] infers against: module constants and imports, then — when the
-/// offset is inside a function — that function's parameters, the `const`/`var`
-/// locals declared before the cursor, and any loop or catch binding in scope.
-/// Import aliases are surfaced with [`MarrowType::Unknown`] (they name modules,
-/// not values). Inner bindings shadow outer ones. It records no diagnostics.
+/// The visible typed bindings at byte `offset` in `parsed`, as `(name, type)`
+/// pairs. The reconstructed scope is the same one [`type_at`] infers against:
+/// module constants and imports, then — when the offset is inside a function —
+/// that function's parameters, the `const`/`var` locals declared before the
+/// cursor, and any loop or catch binding in scope. Import aliases are surfaced
+/// with [`MarrowType::Unknown`] (they name modules, not values). Inner bindings
+/// shadow outer ones. It records no diagnostics.
 pub fn scope_at(
     program: &CheckedProgram,
     file: &Path,
@@ -69,8 +81,6 @@ pub fn scope_at(
     offset: usize,
 ) -> Vec<(String, MarrowType)> {
     let prelude = file_prelude(program, file, parsed);
-    // Imports and module constants are the outermost frame; a later frame's
-    // binding shadows them. Imports name modules, so they carry no value type.
     let function = enclosing_function(parsed, offset);
     let module_constants = if function.is_some() {
         prelude.module_constants.clone()
@@ -102,14 +112,68 @@ pub fn scope_at(
             &mut scope,
         );
     }
-    // Flatten outermost-first so an inner binding overwrites a shadowed outer one,
-    // leaving each visible name once with the type that actually applies.
     let mut visible: HashMap<String, MarrowType> = HashMap::new();
     for frame in scope {
         visible.extend(frame);
     }
     let mut bindings: Vec<(String, MarrowType)> = visible.into_iter().collect();
-    bindings.sort_by(|a, b| a.0.cmp(&b.0));
+    bindings.sort_by(|(left, _), (right, _)| left.cmp(right));
+    bindings
+}
+
+pub(crate) fn scope_completion_bindings_at(
+    program: &CheckedProgram,
+    file: &Path,
+    parsed: &marrow_syntax::ParsedSource,
+    offset: usize,
+) -> Vec<ScopeCompletionBinding> {
+    let prelude = file_prelude(program, file, parsed);
+    let function = enclosing_function(parsed, offset);
+    let module_constants = if function.is_some() {
+        prelude.module_constants.clone()
+    } else {
+        visible_module_constants_before(parsed, &prelude.module_constants, offset)
+    };
+    let mut value_scope: Vec<HashMap<String, MarrowType>> = vec![
+        prelude
+            .aliases
+            .keys()
+            .map(|alias| (alias.clone(), MarrowType::Unknown))
+            .collect(),
+        module_constants.clone(),
+    ];
+    let mut completion_scope: Vec<HashMap<String, ScopeCompletionBindingKind>> = vec![
+        import_alias_completion_frame(&parsed.file),
+        completion_frame_from_values(&module_constants),
+    ];
+    if let Some(function) = function {
+        let base = function_base_scope(
+            program,
+            function,
+            &prelude.module_constants,
+            &prelude.aliases,
+            file,
+        );
+        push_value_frames(&mut value_scope, &mut completion_scope, base);
+        walk_block_to_offset_with_completion(
+            program,
+            &function.body,
+            offset,
+            &prelude.aliases,
+            file,
+            &mut value_scope,
+            Some(&mut completion_scope),
+        );
+    }
+    let mut visible: HashMap<String, ScopeCompletionBindingKind> = HashMap::new();
+    for frame in completion_scope {
+        visible.extend(frame);
+    }
+    let mut bindings: Vec<ScopeCompletionBinding> = visible
+        .into_iter()
+        .map(|(name, kind)| ScopeCompletionBinding { name, kind })
+        .collect();
+    bindings.sort_by(|a, b| a.name.cmp(&b.name));
     bindings
 }
 
@@ -223,7 +287,22 @@ fn walk_block_to_offset(
     file: &Path,
     scope: &mut Vec<HashMap<String, MarrowType>>,
 ) {
+    walk_block_to_offset_with_completion(program, block, offset, aliases, file, scope, None);
+}
+
+fn walk_block_to_offset_with_completion(
+    program: &CheckedProgram,
+    block: &marrow_syntax::Block,
+    offset: usize,
+    aliases: &HashMap<String, Vec<String>>,
+    file: &Path,
+    scope: &mut Vec<HashMap<String, MarrowType>>,
+    mut completion_scope: Option<&mut Vec<HashMap<String, ScopeCompletionBindingKind>>>,
+) {
     scope.push(HashMap::new());
+    if let Some(completion_scope) = completion_scope.as_deref_mut() {
+        completion_scope.push(HashMap::new());
+    }
     for statement in &block.statements {
         // A binding declared at or after the cursor is not yet in scope. Compared
         // against the statement's start so the cursor on a `const`'s own line does
@@ -239,13 +318,32 @@ fn walk_block_to_offset(
         if !in_initializer
             && let Some((name, ty)) = local_binding(program, statement, scope, aliases, file)
         {
-            bind(scope, &name, ty);
+            bind(scope, &name, ty.clone());
+            if let Some(completion_scope) = completion_scope.as_deref_mut() {
+                bind_completion_value(completion_scope, name, ty);
+            }
         }
         // Descend into the nested block (and its loop/catch frame) that the cursor
         // sits in. Only one statement can cover the cursor, so the walk stops here.
         if statement_covers_offset {
-            if let Some(body) = descend_target(program, statement, offset, aliases, file, scope) {
-                walk_block_to_offset(program, body, offset, aliases, file, scope);
+            if let Some(body) = descend_target(
+                program,
+                statement,
+                offset,
+                aliases,
+                file,
+                scope,
+                completion_scope.as_deref_mut(),
+            ) {
+                walk_block_to_offset_with_completion(
+                    program,
+                    body,
+                    offset,
+                    aliases,
+                    file,
+                    scope,
+                    completion_scope,
+                );
             }
             return;
         }
@@ -272,6 +370,7 @@ fn descend_target<'b>(
     aliases: &HashMap<String, Vec<String>>,
     file: &Path,
     scope: &mut Vec<HashMap<String, MarrowType>>,
+    mut completion_scope: Option<&mut Vec<HashMap<String, ScopeCompletionBindingKind>>>,
 ) -> Option<&'b marrow_syntax::Block> {
     use marrow_syntax::Statement;
     match statement {
@@ -302,12 +401,15 @@ fn descend_target<'b>(
             ..
         } => {
             if span_covers(then_block.span, offset) {
+                let ty = infer_only(program, value, scope, aliases, file);
                 let mut frame = HashMap::new();
-                frame.insert(
-                    name.clone(),
-                    infer_only(program, value, scope, aliases, file),
-                );
+                frame.insert(name.clone(), ty.clone());
                 scope.push(frame);
+                if let Some(completion_scope) = completion_scope.as_deref_mut() {
+                    let mut frame = HashMap::new();
+                    frame.insert(name.clone(), ScopeCompletionBindingKind::Value { ty });
+                    completion_scope.push(frame);
+                }
                 return Some(then_block);
             }
             for else_if in else_ifs {
@@ -332,7 +434,10 @@ fn descend_target<'b>(
                 return None;
             }
             let frame = for_frame(program, binding, iterable, scope, aliases, file);
-            scope.push(frame);
+            scope.push(frame.clone());
+            if let Some(completion_scope) = completion_scope.as_deref_mut() {
+                completion_scope.push(completion_frame_from_values(&frame));
+            }
             Some(body)
         }
         Statement::Try { body, catch, .. } => {
@@ -342,7 +447,11 @@ fn descend_target<'b>(
             if let Some(clause) = catch
                 && span_covers(clause.block.span, offset)
             {
-                scope.push(catch_frame(clause));
+                let frame = catch_frame(clause);
+                scope.push(frame.clone());
+                if let Some(completion_scope) = completion_scope {
+                    completion_scope.push(completion_frame_from_values(&frame));
+                }
                 return Some(&clause.block);
             }
             None
@@ -352,6 +461,61 @@ fn descend_target<'b>(
             .find(|arm| span_covers(arm.block.span, offset))
             .map(|arm| &arm.block),
         _ => None,
+    }
+}
+
+fn push_value_frames(
+    scope: &mut Vec<HashMap<String, MarrowType>>,
+    completion_scope: &mut Vec<HashMap<String, ScopeCompletionBindingKind>>,
+    frames: Vec<HashMap<String, MarrowType>>,
+) {
+    for frame in frames {
+        completion_scope.push(completion_frame_from_values(&frame));
+        scope.push(frame);
+    }
+}
+
+fn completion_frame_from_values(
+    frame: &HashMap<String, MarrowType>,
+) -> HashMap<String, ScopeCompletionBindingKind> {
+    frame
+        .iter()
+        .map(|(name, ty)| {
+            (
+                name.clone(),
+                ScopeCompletionBindingKind::Value { ty: ty.clone() },
+            )
+        })
+        .collect()
+}
+
+fn import_alias_completion_frame(
+    source_file: &marrow_syntax::SourceFile,
+) -> HashMap<String, ScopeCompletionBindingKind> {
+    let mut frame = HashMap::new();
+    for use_decl in &source_file.uses {
+        let alias = crate::short_name(&use_decl.name);
+        if frame.contains_key(alias) {
+            continue;
+        }
+        if let Ok(Some(module)) = crate::driver::unique_import_module_alias_path(source_file, alias)
+        {
+            frame.insert(
+                alias.to_string(),
+                ScopeCompletionBindingKind::ModuleAlias { module },
+            );
+        }
+    }
+    frame
+}
+
+fn bind_completion_value(
+    scope: &mut [HashMap<String, ScopeCompletionBindingKind>],
+    name: String,
+    ty: MarrowType,
+) {
+    if let Some(frame) = scope.last_mut() {
+        frame.insert(name, ScopeCompletionBindingKind::Value { ty });
     }
 }
 
@@ -498,4 +662,164 @@ fn collect_expression<'e>(
         *best = Some(expr);
     }
     for_each_child_expr(expr, |child| collect_expression(child, offset, best));
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    use marrow_project::parse_config;
+    use marrow_syntax::parse_source;
+
+    use super::*;
+    use crate::{ProjectSources, analyze_project};
+
+    static NEXT_TEMP_DIR_ID: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn scope_at_preserves_ambiguous_import_aliases_for_legacy_callers() {
+        let project = ScopeProject::new();
+        let (source, offset) = source_with_cursor(
+            "\
+module app::main
+
+use shelf::books
+use archive::books
+
+pub fn f()
+    return |
+",
+        );
+        let parsed = parse_source(&source);
+
+        assert_eq!(
+            type_of(
+                scope_at(project.program(), project.app_file(), &parsed, offset),
+                "books"
+            ),
+            Some(MarrowType::Unknown)
+        );
+        assert!(
+            !scope_completion_bindings_at(project.program(), project.app_file(), &parsed, offset)
+                .iter()
+                .any(|binding| matches!(
+                    (&*binding.name, &binding.kind),
+                    ("books", ScopeCompletionBindingKind::ModuleAlias { .. })
+                ))
+        );
+    }
+
+    #[test]
+    fn scope_at_preserves_top_level_shadowed_import_alias_before_declaration() {
+        let project = ScopeProject::new();
+        let (source, offset) = source_with_cursor(
+            "\
+module app::main
+
+use shelf::books
+
+const books = |1
+",
+        );
+        let parsed = parse_source(&source);
+
+        assert_eq!(
+            type_of(
+                scope_at(project.program(), project.app_file(), &parsed, offset),
+                "books"
+            ),
+            Some(MarrowType::Unknown)
+        );
+        assert!(
+            !scope_completion_bindings_at(project.program(), project.app_file(), &parsed, offset)
+                .iter()
+                .any(|binding| matches!(
+                    (&*binding.name, &binding.kind),
+                    ("books", ScopeCompletionBindingKind::ModuleAlias { .. })
+                ))
+        );
+    }
+
+    fn type_of(bindings: Vec<(String, MarrowType)>, name: &str) -> Option<MarrowType> {
+        bindings
+            .into_iter()
+            .find_map(|(binding, ty)| (binding == name).then_some(ty))
+    }
+
+    fn source_with_cursor(source: &str) -> (String, usize) {
+        let offset = source.find('|').expect("cursor marker");
+        let source = source.replacen('|', "", 1);
+        (source, offset)
+    }
+
+    struct ScopeProject {
+        root: PathBuf,
+        program: CheckedProgram,
+        app: PathBuf,
+    }
+
+    impl ScopeProject {
+        fn new() -> Self {
+            let root = unique_temp_dir();
+            std::fs::create_dir_all(root.join("src/app")).expect("create app dir");
+            std::fs::create_dir_all(root.join("src/shelf")).expect("create shelf dir");
+            std::fs::create_dir_all(root.join("src/archive")).expect("create archive dir");
+            std::fs::write(
+                root.join("marrow.json"),
+                r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" } }"#,
+            )
+            .expect("write config");
+            let shelf = root.join("src/shelf/books.mw");
+            let shelf_source = "module shelf::books\n\npub fn shelfOnly(): int\n    return 1\n";
+            std::fs::write(&shelf, shelf_source).expect("write shelf module");
+            let archive = root.join("src/archive/books.mw");
+            let archive_source =
+                "module archive::books\n\npub fn archiveOnly(): int\n    return 2\n";
+            std::fs::write(&archive, archive_source).expect("write archive module");
+            let app = root.join("src/app/main.mw");
+            let app_source = "module app::main\n\npub fn f()\n    return\n";
+            std::fs::write(&app, app_source).expect("write app module");
+            let config =
+                parse_config(r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" } }"#)
+                    .expect("parse config");
+            let sources = ProjectSources::new()
+                .with(&shelf, shelf_source)
+                .with(&archive, archive_source)
+                .with(&app, app_source);
+            let snapshot = analyze_project(&root, &config, &sources, None, None).expect("analyze");
+            Self {
+                root,
+                program: snapshot.program,
+                app,
+            }
+        }
+
+        fn program(&self) -> &CheckedProgram {
+            &self.program
+        }
+
+        fn app_file(&self) -> &Path {
+            &self.app
+        }
+    }
+
+    impl Drop for ScopeProject {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
+    fn unique_temp_dir() -> PathBuf {
+        let name = format!(
+            "marrow-cursor-scope-{}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time")
+                .as_nanos(),
+            NEXT_TEMP_DIR_ID.fetch_add(1, Ordering::Relaxed)
+        );
+        std::env::temp_dir().join(name)
+    }
 }

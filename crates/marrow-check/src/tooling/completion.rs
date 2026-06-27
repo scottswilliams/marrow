@@ -13,10 +13,13 @@ use super::data::{
 use super::expected::{ExpectedEnum, ExpectedEnumContext, expected_enum_at};
 use super::render::{render_callable_signature, render_marrow_type};
 use super::signatures::{CallableSignature, active_callable_context, intrinsic_callable_signature};
+use crate::analysis::{ScopeCompletionBindingKind, scope_completion_bindings_at};
 use crate::{
     CheckedFunction, CheckedModule, CheckedProgram, CheckedSavedKeyParam, CheckedSavedPlace,
-    MarrowType, ResourceMemberId, ScalarType, StoreId, StoreLeafKind, scope_at,
+    MarrowType, ResourceMemberId, ScalarType, StoreId, StoreLeafKind,
 };
+
+pub const SOURCE_COMPLETION_PROFILE_VERSION: &str = "source.completion.v1";
 
 const BUILTIN_TYPE_COMPLETIONS: &[SourceTypeBuiltin] = &[
     SourceTypeBuiltin::Int,
@@ -59,6 +62,7 @@ const KEYWORDS: &[&str] = &[
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceCompletionFact {
+    pub profile_version: &'static str,
     pub items: Vec<SourceCompletionItem>,
 }
 
@@ -405,14 +409,17 @@ pub fn source_completion_fact(
         }
         CompletionCursorContext::InvalidSavedPath => Vec::new(),
         CompletionCursorContext::Namespace { qualifier } => {
-            namespace_completion_items(program, file, &parsed.file, &qualifier)
+            namespace_completion_items(program, file, parsed, offset, &qualifier)
         }
         CompletionCursorContext::Type => type_completion_items(program, file, &parsed.file),
         CompletionCursorContext::Bare => {
             bare_completion_items(program, file, source, parsed, lexed, offset)
         }
     };
-    SourceCompletionFact { items }
+    SourceCompletionFact {
+        profile_version: SOURCE_COMPLETION_PROFILE_VERSION,
+        items,
+    }
 }
 
 pub fn source_saved_path_completion_fact_at(
@@ -567,10 +574,11 @@ fn store_leaf_detail(leaf: &StoreLeafKind) -> Option<String> {
 fn namespace_completion_items(
     program: &CheckedProgram,
     file: &Path,
-    source_file: &SourceFile,
+    parsed: &ParsedSource,
+    offset: usize,
     qualifier: &[String],
 ) -> Vec<SourceCompletionItem> {
-    match source_namespace_completion_fact(program, file, source_file, qualifier) {
+    match source_namespace_completion_fact_at(program, file, parsed, offset, qualifier) {
         Some(SourceNamespaceCompletionFact::Module(fact)) => module_namespace_items(&fact),
         Some(SourceNamespaceCompletionFact::Enum(fact)) => enum_member_items(&fact),
         Some(SourceNamespaceCompletionFact::StandardLibraryRoot(fact)) => {
@@ -708,12 +716,28 @@ fn bare_completion_items(
     offset: usize,
 ) -> Vec<SourceCompletionItem> {
     let mut items = Vec::new();
-    for (name, ty) in scope_at(program, file, parsed, offset) {
-        items.push(
-            source_completion_item(&name, SourceCompletionItemKind::Local)
-                .detail(render_marrow_type(&ty)),
-        );
+    let scope_bindings = scope_completion_bindings_at(program, file, parsed, offset);
+    for binding in &scope_bindings {
+        if let ScopeCompletionBindingKind::Value { ty } = &binding.kind {
+            items.push(
+                source_completion_item(&binding.name, SourceCompletionItemKind::Local)
+                    .detail(render_marrow_type(ty)),
+            );
+        }
     }
+    items.push(
+        source_completion_item("std", SourceCompletionItemKind::Module).detail("standard library"),
+    );
+    for binding in scope_bindings {
+        match binding.kind {
+            ScopeCompletionBindingKind::ModuleAlias { module } => items.push(
+                source_completion_item(&binding.name, SourceCompletionItemKind::Module)
+                    .detail(format!("module {}", module.join("::"))),
+            ),
+            ScopeCompletionBindingKind::Value { .. } => {}
+        }
+    }
+    items.extend(current_module_bare_items(program, file, &parsed.file));
     for keyword in KEYWORDS {
         items.push(source_completion_item(
             keyword,
@@ -732,6 +756,37 @@ fn bare_completion_items(
         items.extend(expected_enum_member_items(&expected));
     }
     dedup_completion_items(items)
+}
+
+fn current_module_bare_items(
+    program: &CheckedProgram,
+    file: &Path,
+    source_file: &SourceFile,
+) -> Vec<SourceCompletionItem> {
+    let Some(module) = current_module(program, file) else {
+        return Vec::new();
+    };
+    let mut items = Vec::new();
+    items.extend(module.resources.iter().map(|resource| {
+        source_completion_item(&resource.name, SourceCompletionItemKind::Resource)
+            .detail("resource")
+            .docs_from(&resource.docs)
+    }));
+    items.extend(module.enums.iter().map(|enum_schema| {
+        source_completion_item(&enum_schema.name, SourceCompletionItemKind::Enum)
+            .detail("enum")
+            .docs_from(&enum_schema.docs)
+    }));
+    items.extend(
+        function_completions(program, file, source_file, module)
+            .into_iter()
+            .map(|function| {
+                source_completion_item(&function.name, SourceCompletionItemKind::Function)
+                    .detail(source_function_signature(&function))
+                    .docs_from(&function.docs)
+            }),
+    );
+    items
 }
 
 fn expected_enum_member_items(expected: &ExpectedEnum<'_>) -> Vec<SourceCompletionItem> {
@@ -1212,6 +1267,20 @@ pub fn source_namespace_completion_fact(
     namespace_completion_fact_for_expanded_qualifier(program, file, source_file, &expanded)
 }
 
+fn source_namespace_completion_fact_at(
+    program: &CheckedProgram,
+    file: &Path,
+    parsed: &ParsedSource,
+    offset: usize,
+    qualifier: &[String],
+) -> Option<SourceNamespaceCompletionFact> {
+    let expanded = expand_visible_namespace_qualifier(program, file, parsed, offset, qualifier)?;
+    if let Some(fact) = standard_library_namespace_completion_fact(&expanded) {
+        return Some(fact);
+    }
+    namespace_completion_fact_for_expanded_qualifier(program, file, &parsed.file, &expanded)
+}
+
 pub fn source_namespace_completion_file_fact(
     program: &CheckedProgram,
     file: &Path,
@@ -1516,6 +1585,45 @@ fn expand_namespace_qualifier(
     }
 }
 
+fn expand_visible_namespace_qualifier(
+    program: &CheckedProgram,
+    file: &Path,
+    parsed: &ParsedSource,
+    offset: usize,
+    qualifier: &[String],
+) -> Option<Vec<String>> {
+    let head = qualifier.first()?;
+    let binding = scope_completion_bindings_at(program, file, parsed, offset)
+        .into_iter()
+        .find(|binding| binding.name == *head);
+    if binding
+        .as_ref()
+        .is_some_and(|binding| matches!(binding.kind, ScopeCompletionBindingKind::Value { .. }))
+    {
+        return None;
+    }
+    if head == "std" {
+        return Some(qualifier.to_vec());
+    }
+    if crate::driver::unique_import_module_alias_path(&parsed.file, head)
+        .err()
+        .is_some()
+    {
+        return None;
+    }
+    if let Some(binding) = binding
+        && let ScopeCompletionBindingKind::ModuleAlias { module } = binding.kind
+    {
+        return Some(
+            module
+                .into_iter()
+                .chain(qualifier[1..].iter().cloned())
+                .collect(),
+        );
+    }
+    Some(qualifier.to_vec())
+}
+
 fn expand_file_namespace_qualifier(
     source_file: &SourceFile,
     qualifier: &[String],
@@ -1531,17 +1639,11 @@ fn expand_unique_import_module_alias(
     source_file: &SourceFile,
     segment: &str,
 ) -> Option<Vec<String>> {
-    let mut matches = source_file
-        .uses
-        .iter()
-        .filter(|use_decl| crate::short_name(&use_decl.name) == segment);
-    let Some(import) = matches.next() else {
-        return Some(vec![segment.to_string()]);
-    };
-    if matches.next().is_some() || crate::source_declares_top_level_name(source_file, segment) {
-        return None;
+    match crate::driver::unique_import_module_alias_path(source_file, segment) {
+        Ok(Some(module)) => Some(module),
+        Ok(None) => Some(vec![segment.to_string()]),
+        Err(_) => None,
     }
-    Some(crate::split_type_path(&import.name))
 }
 
 fn expand_unique_file_import_module_alias(

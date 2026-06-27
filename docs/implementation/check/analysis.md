@@ -165,6 +165,13 @@ from the checked program or snapshot:
   stdlib table; known std modules carry `CallableSignature` values for their
   operations. `source_namespace_completion_file_fact(...)` remains project/file
   namespace only for MCP.
+- `tooling::source_completion_fact(...)` returns the `source.completion.v1`
+  source-completion profile for one checked file and cursor position. The fact
+  carries protocol-free item kinds, labels, detail text, and docs for saved
+  paths, namespace members, type positions, typed scope values, module aliases,
+  raw `std`, current-module declarations, expected enum members, and intrinsic
+  callables. Editor and tool callers map those semantic items into their own
+  transport shapes instead of reconstructing completion candidates locally.
 - `CheckedProgram::checked_read_only_expression` parses and checks an injected
   expression against one checked module, rejects writes, host effects, and
   unindexed saved collection lookups with source-level diagnostic codes, and

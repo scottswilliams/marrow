@@ -1206,20 +1206,30 @@ pub(crate) fn expand_unique_import_alias(
     let Some(head) = segments.first() else {
         return Ok(segments.to_vec());
     };
+    let Some(alias) = unique_import_module_alias_path(source, head)? else {
+        return Ok(segments.to_vec());
+    };
+    Ok(alias
+        .into_iter()
+        .chain(segments[1..].iter().cloned())
+        .collect())
+}
+
+pub(crate) fn unique_import_module_alias_path(
+    source: &marrow_syntax::SourceFile,
+    head: &str,
+) -> Result<Option<Vec<String>>, AmbiguousImportAlias> {
     let mut import_matches = source
         .uses
         .iter()
-        .filter(|use_decl| short_name(&use_decl.name) == head.as_str());
+        .filter(|use_decl| short_name(&use_decl.name) == head);
     let Some(import) = import_matches.next() else {
-        return Ok(segments.to_vec());
+        return Ok(None);
     };
     if import_matches.next().is_some() || source_declares_top_level_name(source, head) {
         return Err(AmbiguousImportAlias);
     }
-    Ok(split_type_path(&import.name)
-        .into_iter()
-        .chain(segments[1..].iter().cloned())
-        .collect())
+    Ok(Some(split_type_path(&import.name)))
 }
 
 pub(crate) fn unique_import_alias_for_module(
@@ -1227,17 +1237,9 @@ pub(crate) fn unique_import_alias_for_module(
     module_name: &str,
 ) -> Result<Option<String>, AmbiguousImportAlias> {
     let alias = short_name(module_name);
-    let mut import_matches = source
-        .uses
-        .iter()
-        .filter(|use_decl| short_name(&use_decl.name) == alias);
-    let Some(import) = import_matches.next() else {
-        return Ok(None);
-    };
-    if import_matches.next().is_some() || source_declares_top_level_name(source, alias) {
-        return Err(AmbiguousImportAlias);
-    }
-    Ok((import.name == module_name).then(|| alias.to_string()))
+    Ok(unique_import_module_alias_path(source, alias)?
+        .is_some_and(|path| path.join("::") == module_name)
+        .then(|| alias.to_string()))
 }
 
 pub(crate) struct AmbiguousImportAlias;
