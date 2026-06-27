@@ -4,6 +4,7 @@ use marrow_store::StoreError;
 
 mod completion;
 pub mod data;
+mod expected;
 mod hover;
 pub mod integrity;
 mod lock_roots;

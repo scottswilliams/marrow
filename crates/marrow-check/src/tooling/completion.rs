@@ -9,6 +9,7 @@ use marrow_syntax::{
 use super::data::{
     DeclaredDataChild, DeclaredDataChildKind, declared_source_receiver_data_children,
 };
+use super::expected::{ExpectedEnum, expected_enum_at};
 use super::render::{render_callable_signature, render_marrow_type};
 use super::signatures::{CallableSignature, intrinsic_callable_signature};
 use crate::{CheckedFunction, CheckedModule, CheckedProgram, MarrowType, StoreLeafKind, scope_at};
@@ -571,7 +572,27 @@ fn bare_completion_items(
                 .docs_from(&callable.docs),
         );
     }
-    items
+    if let Some(expected) = expected_enum_at(program, file, parsed, offset) {
+        items.extend(expected_enum_member_items(&expected));
+    }
+    dedup_completion_items(items)
+}
+
+fn expected_enum_member_items(expected: &ExpectedEnum<'_>) -> Vec<SourceCompletionItem> {
+    expected
+        .schema
+        .members
+        .iter()
+        .enumerate()
+        .filter(|(ordinal, _)| expected.schema.is_selectable_leaf(*ordinal))
+        .map(|(ordinal, member)| {
+            let path = expected.schema.member_path(ordinal).join("::");
+            let label = format!("{}::{path}", expected.value_prefix);
+            source_completion_item(&label, SourceCompletionItemKind::EnumMember)
+                .detail(expected.schema.name.clone())
+                .docs_from(&member.docs)
+        })
+        .collect()
 }
 
 trait SourceCompletionItemExt {

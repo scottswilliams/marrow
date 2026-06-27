@@ -1,8 +1,11 @@
 use super::*;
 use crate::{ProjectSources, analyze_project};
 use marrow_project::parse_config;
-use marrow_syntax::{SourceSpan, lex_source, parse_source};
+use marrow_syntax::{Severity, SourceSpan, lex_source, parse_source};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static NEXT_TEMP_DIR_ID: AtomicU64 = AtomicU64::new(0);
 
 fn context_at(source: &str) -> (String, SourceCompletionContext) {
     let offset = source.find('|').expect("cursor marker");
@@ -143,6 +146,74 @@ fn source_completion_fact_returns_protocol_free_items_for_current_contexts() {
     );
 }
 
+#[test]
+fn source_completion_fact_adds_expected_enum_members_for_annotated_const_var_and_return() {
+    let project = CompletionProject::new();
+    let program = project.program();
+    let app = project.app_file();
+
+    for (label, source, prefix) in [
+        (
+            "annotated const initializer",
+            "module shelf::app\n\nuse shelf::books\n\npub fn f()\n    const state: Status = a|\n",
+            "Status",
+        ),
+        (
+            "annotated var initializer",
+            "module shelf::app\n\nuse shelf::books\n\npub fn f()\n    var state: Status = a|\n",
+            "Status",
+        ),
+        (
+            "qualified annotated const initializer",
+            "module shelf::app\n\nuse shelf::books\n\npub fn f()\n    const state: books::Status = a|\n",
+            "books::Status",
+        ),
+        (
+            "enum return expression",
+            "module shelf::app\n\nuse shelf::books\n\npub fn f(): Status\n    return a|\n",
+            "Status",
+        ),
+        (
+            "nested enum return expression",
+            "module shelf::app\n\nuse shelf::books\n\npub fn f(): Status\n    if true\n        return a|\n    return Status::active\n",
+            "Status",
+        ),
+    ] {
+        let items = completion_items(program, app, source);
+        let active_label = format!("{prefix}::active");
+        let active = item_named(&items, &active_label);
+        assert_eq!(active.kind, SourceCompletionItemKind::EnumMember, "{label}");
+        assert_eq!(active.detail.as_deref(), Some("Status"), "{label}");
+        assert_eq!(active.docs, ["Ready for use."], "{label}");
+
+        let retired_label = format!("{prefix}::archived::retired");
+        let retired = item_named(&items, &retired_label);
+        assert_eq!(
+            retired.kind,
+            SourceCompletionItemKind::EnumMember,
+            "{label}"
+        );
+        assert_eq!(retired.detail.as_deref(), Some("Status"), "{label}");
+        assert_eq!(retired.docs, ["No longer active."], "{label}");
+
+        let category_label = format!("{prefix}::archived");
+        assert!(
+            !items.iter().any(|item| item.label == category_label),
+            "{label}: expected enum completions must not include category members: {items:?}"
+        );
+        assert!(
+            !items.iter().any(|item| item.label.ends_with("hidden")),
+            "{label}: expected enum completions must not include private sibling enum members: {items:?}"
+        );
+        assert!(
+            items.iter().any(|item| item.label == "return"),
+            "{label}: expected enum completions should stay additive with bare completions"
+        );
+        project.assert_app_source_has_no_app_errors(&source.replacen("a|", &active_label, 1));
+        project.assert_app_source_has_no_app_errors(&source.replacen("a|", &retired_label, 1));
+    }
+}
+
 fn completion_items(
     program: &CheckedProgram,
     file: &Path,
@@ -199,6 +270,27 @@ impl CompletionProject {
     fn app_file(&self) -> &Path {
         &self.app
     }
+
+    fn assert_app_source_has_no_app_errors(&self, source: &str) {
+        std::fs::write(&self.app, source).expect("write app source");
+        let config =
+            parse_config(r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" } }"#)
+                .expect("parse config");
+        let snapshot = analyze_project(&self.root, &config, &ProjectSources::new(), None, None)
+            .expect("analyze completed source");
+        let app_errors = snapshot
+            .report
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| {
+                diagnostic.file == self.app && diagnostic.severity == Severity::Error
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            app_errors.is_empty(),
+            "unexpected app errors: {app_errors:?}"
+        );
+    }
 }
 
 impl Drop for CompletionProject {
@@ -209,12 +301,13 @@ impl Drop for CompletionProject {
 
 fn unique_temp_dir() -> PathBuf {
     let name = format!(
-        "marrow-completion-fact-{}-{}",
+        "marrow-completion-fact-{}-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .expect("system time")
-            .as_nanos()
+            .as_nanos(),
+        NEXT_TEMP_DIR_ID.fetch_add(1, Ordering::Relaxed)
     );
     std::env::temp_dir().join(name)
 }
@@ -234,7 +327,14 @@ store ^books(id: int): Book
 
 ;; Lifecycle state.
 pub enum Status
+    ;; Ready for use.
     active
+    category archived
+        ;; No longer active.
+        retired
+
+enum Secret
+    hidden
 
 ;; Returns a book title.
 pub fn titleOf(id: Id(^books)): string
