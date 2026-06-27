@@ -7,22 +7,24 @@ pub mod data;
 mod hover;
 pub mod integrity;
 mod lock_roots;
+mod render;
 mod semantic_tokens;
 pub mod signatures;
 pub mod symbols;
 mod type_annotations;
 
 pub use completion::{
-    SourceCompletionContext, SourceEnumNamespaceCompletionFact,
-    SourceModuleNamespaceCompletionFact, SourceNamespaceCompletionFact,
-    SourceNamespaceEnumCompletion, SourceNamespaceEnumMemberCompletion,
-    SourceNamespaceEnumMemberStatus, SourceNamespaceFunctionCompletion,
-    SourceNamespaceFunctionParamCompletion, SourceNamespaceResourceCompletion,
-    SourceSavedRootCompletionCandidate, SourceSavedRootCompletionFact,
-    SourceStandardLibraryModuleCompletion, SourceStandardLibraryModuleNamespaceCompletionFact,
-    SourceStandardLibraryOperationCompletion, SourceStandardLibraryRootNamespaceCompletionFact,
-    SourceTypeBuiltin, SourceTypeCompletionCandidate, SourceTypeCompletionFact,
-    source_completion_context, source_namespace_completion_fact,
+    SourceCompletionContext, SourceCompletionFact, SourceCompletionItem, SourceCompletionItemKind,
+    SourceEnumNamespaceCompletionFact, SourceModuleNamespaceCompletionFact,
+    SourceNamespaceCompletionFact, SourceNamespaceEnumCompletion,
+    SourceNamespaceEnumMemberCompletion, SourceNamespaceEnumMemberStatus,
+    SourceNamespaceFunctionCompletion, SourceNamespaceFunctionParamCompletion,
+    SourceNamespaceResourceCompletion, SourceSavedRootCompletionCandidate,
+    SourceSavedRootCompletionFact, SourceStandardLibraryModuleCompletion,
+    SourceStandardLibraryModuleNamespaceCompletionFact, SourceStandardLibraryOperationCompletion,
+    SourceStandardLibraryRootNamespaceCompletionFact, SourceTypeBuiltin,
+    SourceTypeCompletionCandidate, SourceTypeCompletionFact, source_completion_context,
+    source_completion_fact, source_namespace_completion_fact,
     source_namespace_completion_file_fact, source_saved_root_completion_fact,
     source_type_completion_fact,
 };
@@ -70,6 +72,7 @@ pub use integrity::{
     verify_store_completeness, verify_store_roots_against_lock, visit_integrity_problems,
 };
 pub use lock_roots::{store_path_is_absent, verify_present_store_lock_roots};
+pub use render::{render_callable_shape, render_callable_signature, render_marrow_type};
 pub use semantic_tokens::{
     SourceSemanticTokenFact, SourceSemanticTokenModifiers, SourceSemanticTokenRole,
     source_semantic_token_facts, source_semantic_token_facts_for_file,

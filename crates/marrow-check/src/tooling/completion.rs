@@ -3,11 +3,15 @@ use std::path::Path;
 
 use marrow_schema::{EnumSchema, ResourceSchema, StoreSchema, stdlib};
 use marrow_syntax::{
-    Declaration, FunctionDecl, LexedSource, SourceFile, SourceSpan, Token, TokenKind,
+    Declaration, FunctionDecl, LexedSource, ParsedSource, SourceFile, SourceSpan, Token, TokenKind,
 };
 
+use super::data::{
+    DeclaredDataChild, DeclaredDataChildKind, declared_source_receiver_data_children,
+};
+use super::render::{render_callable_signature, render_marrow_type};
 use super::signatures::{CallableSignature, intrinsic_callable_signature};
-use crate::{CheckedFunction, CheckedModule, CheckedProgram, MarrowType};
+use crate::{CheckedFunction, CheckedModule, CheckedProgram, MarrowType, StoreLeafKind, scope_at};
 
 const BUILTIN_TYPE_COMPLETIONS: &[SourceTypeBuiltin] = &[
     SourceTypeBuiltin::Int,
@@ -23,6 +27,58 @@ const BUILTIN_TYPE_COMPLETIONS: &[SourceTypeBuiltin] = &[
     SourceTypeBuiltin::Unknown,
     SourceTypeBuiltin::Error,
 ];
+
+const KEYWORDS: &[&str] = &[
+    "const",
+    "var",
+    "if",
+    "else",
+    "while",
+    "for",
+    "in",
+    "break",
+    "continue",
+    "return",
+    "delete",
+    "transaction",
+    "try",
+    "catch",
+    "throw",
+    "match",
+    "true",
+    "false",
+    "not",
+    "and",
+    "or",
+];
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceCompletionFact {
+    pub items: Vec<SourceCompletionItem>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceCompletionItem {
+    pub label: String,
+    pub kind: SourceCompletionItemKind,
+    pub detail: Option<String>,
+    pub docs: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SourceCompletionItemKind {
+    Keyword,
+    Local,
+    Function,
+    Resource,
+    SavedRoot,
+    Field,
+    Layer,
+    Enum,
+    EnumMember,
+    Module,
+    StoreIdentity,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceTypeCompletionFact {
@@ -253,6 +309,303 @@ pub fn source_completion_context(
         }
         _ => SourceCompletionContext::Bare,
     }
+}
+
+pub fn source_completion_fact(
+    program: &CheckedProgram,
+    file: &Path,
+    source: &str,
+    parsed: &ParsedSource,
+    lexed: &LexedSource,
+    offset: usize,
+) -> SourceCompletionFact {
+    let items = match source_completion_context(source, lexed, offset) {
+        SourceCompletionContext::Root => root_completion_items(program),
+        SourceCompletionContext::SavedPath { receiver, span } => {
+            saved_path_completion_items(program, file, parsed, &receiver, span)
+        }
+        SourceCompletionContext::InvalidSavedPath => Vec::new(),
+        SourceCompletionContext::Namespace { qualifier } => {
+            namespace_completion_items(program, file, &parsed.file, &qualifier)
+        }
+        SourceCompletionContext::Type => type_completion_items(program, file, &parsed.file),
+        SourceCompletionContext::Bare => bare_completion_items(program, file, parsed, offset),
+    };
+    SourceCompletionFact { items }
+}
+
+fn root_completion_items(program: &CheckedProgram) -> Vec<SourceCompletionItem> {
+    source_saved_root_completion_fact(program)
+        .candidates
+        .iter()
+        .map(saved_root_completion_item)
+        .collect()
+}
+
+fn saved_root_completion_item(
+    candidate: &SourceSavedRootCompletionCandidate,
+) -> SourceCompletionItem {
+    source_completion_item(&candidate.root, SourceCompletionItemKind::SavedRoot)
+        .detail(format!("saved root of {}", candidate.resource_name))
+        .docs_from(&candidate.docs)
+}
+
+fn saved_path_completion_items(
+    program: &CheckedProgram,
+    file: &Path,
+    parsed: &ParsedSource,
+    receiver: &str,
+    span: SourceSpan,
+) -> Vec<SourceCompletionItem> {
+    declared_source_receiver_data_children(program, file, parsed, receiver, span)
+        .iter()
+        .map(declared_data_child_completion_item)
+        .collect()
+}
+
+fn declared_data_child_completion_item(child: &DeclaredDataChild) -> SourceCompletionItem {
+    let kind = match child.kind {
+        DeclaredDataChildKind::Field { .. } => SourceCompletionItemKind::Field,
+        DeclaredDataChildKind::Layer => SourceCompletionItemKind::Layer,
+    };
+    source_completion_item(&child.name, kind).detail(declared_data_child_detail(child))
+}
+
+fn declared_data_child_detail(child: &DeclaredDataChild) -> String {
+    let mut detail = match child.kind {
+        DeclaredDataChildKind::Field { required: true } => "required field".to_string(),
+        DeclaredDataChildKind::Field { required: false } => "field".to_string(),
+        DeclaredDataChildKind::Layer => "layer".to_string(),
+    };
+    if !child.key_params.is_empty() {
+        detail.push('(');
+        detail.push_str(&declared_key_params_detail(child));
+        detail.push(')');
+    }
+    if let Some(leaf) = child.leaf.as_ref().and_then(store_leaf_detail) {
+        detail.push_str(": ");
+        detail.push_str(&leaf);
+    }
+    detail
+}
+
+fn declared_key_params_detail(child: &DeclaredDataChild) -> String {
+    child
+        .key_params
+        .iter()
+        .map(|param| match param.scalar {
+            Some(scalar) => format!("{}: {}", param.name, scalar.name()),
+            None => param.name.clone(),
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn store_leaf_detail(leaf: &StoreLeafKind) -> Option<String> {
+    match leaf {
+        StoreLeafKind::Scalar(scalar) => Some(scalar.name().to_string()),
+        StoreLeafKind::Identity { store_root, .. } => Some(format!("Id(^{store_root})")),
+        StoreLeafKind::Enum { .. } => None,
+    }
+}
+
+fn namespace_completion_items(
+    program: &CheckedProgram,
+    file: &Path,
+    source_file: &SourceFile,
+    qualifier: &[String],
+) -> Vec<SourceCompletionItem> {
+    match source_namespace_completion_fact(program, file, source_file, qualifier) {
+        Some(SourceNamespaceCompletionFact::Module(fact)) => module_namespace_items(&fact),
+        Some(SourceNamespaceCompletionFact::Enum(fact)) => enum_member_items(&fact),
+        Some(SourceNamespaceCompletionFact::StandardLibraryRoot(fact)) => {
+            standard_library_root_items(&fact)
+        }
+        Some(SourceNamespaceCompletionFact::StandardLibraryModule(fact)) => {
+            standard_library_module_items(&fact)
+        }
+        None => Vec::new(),
+    }
+}
+
+fn standard_library_root_items(
+    fact: &SourceStandardLibraryRootNamespaceCompletionFact,
+) -> Vec<SourceCompletionItem> {
+    fact.modules
+        .iter()
+        .map(|module| {
+            source_completion_item(&module.name, SourceCompletionItemKind::Module)
+                .detail("std module")
+        })
+        .collect()
+}
+
+fn standard_library_module_items(
+    fact: &SourceStandardLibraryModuleNamespaceCompletionFact,
+) -> Vec<SourceCompletionItem> {
+    fact.operations
+        .iter()
+        .map(|operation| {
+            source_completion_item(&operation.name, SourceCompletionItemKind::Function)
+                .detail(render_callable_signature(&operation.signature))
+                .docs_from(&operation.signature.docs)
+        })
+        .collect()
+}
+
+fn module_namespace_items(fact: &SourceModuleNamespaceCompletionFact) -> Vec<SourceCompletionItem> {
+    let mut items = Vec::new();
+    items.extend(fact.resources.iter().map(|resource| {
+        source_completion_item(&resource.name, SourceCompletionItemKind::Resource)
+            .detail("resource")
+            .docs_from(&resource.docs)
+    }));
+    items.extend(fact.enums.iter().map(|enum_schema| {
+        source_completion_item(&enum_schema.name, SourceCompletionItemKind::Enum)
+            .detail("enum")
+            .docs_from(&enum_schema.docs)
+    }));
+    items.extend(fact.functions.iter().map(|function| {
+        source_completion_item(&function.name, SourceCompletionItemKind::Function)
+            .detail(source_function_signature(function))
+            .docs_from(&function.docs)
+    }));
+    dedup_completion_items(items)
+}
+
+fn enum_member_items(fact: &SourceEnumNamespaceCompletionFact) -> Vec<SourceCompletionItem> {
+    fact.members
+        .iter()
+        .map(|member| {
+            source_completion_item(&member.name, SourceCompletionItemKind::EnumMember)
+                .detail(fact.enum_name.clone())
+                .docs_from(&member.docs)
+        })
+        .collect()
+}
+
+fn source_function_signature(function: &SourceNamespaceFunctionCompletion) -> String {
+    let params = function
+        .params
+        .iter()
+        .map(|param| format!("{}: {}", param.name, render_marrow_type(&param.ty)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    match &function.return_type {
+        Some(return_type) => format!(
+            "fn {}({params}): {}",
+            function.name,
+            render_marrow_type(return_type)
+        ),
+        None => format!("fn {}({params})", function.name),
+    }
+}
+
+fn type_completion_items(
+    program: &CheckedProgram,
+    file: &Path,
+    source_file: &SourceFile,
+) -> Vec<SourceCompletionItem> {
+    source_type_completion_fact(program, file, source_file)
+        .candidates
+        .iter()
+        .map(type_completion_item)
+        .collect()
+}
+
+fn type_completion_item(candidate: &SourceTypeCompletionCandidate) -> SourceCompletionItem {
+    match candidate {
+        SourceTypeCompletionCandidate::Builtin { spelling } => {
+            source_completion_item(spelling.spelling(), SourceCompletionItemKind::Keyword)
+                .detail("type")
+        }
+        SourceTypeCompletionCandidate::Resource { path, docs, .. } => source_completion_item(
+            &source_type_path_label(path),
+            SourceCompletionItemKind::Resource,
+        )
+        .detail("resource")
+        .docs_from(docs),
+        SourceTypeCompletionCandidate::StoreIdentity { root, docs } => source_completion_item(
+            &format!("Id(^{root})"),
+            SourceCompletionItemKind::StoreIdentity,
+        )
+        .detail(format!("identity of ^{root}"))
+        .docs_from(docs),
+        SourceTypeCompletionCandidate::Enum { path, docs, .. } => source_completion_item(
+            &source_type_path_label(path),
+            SourceCompletionItemKind::Enum,
+        )
+        .detail("enum")
+        .docs_from(docs),
+    }
+}
+
+fn source_type_path_label(path: &[String]) -> String {
+    path.join("::")
+}
+
+fn bare_completion_items(
+    program: &CheckedProgram,
+    file: &Path,
+    parsed: &ParsedSource,
+    offset: usize,
+) -> Vec<SourceCompletionItem> {
+    let mut items = Vec::new();
+    for (name, ty) in scope_at(program, file, parsed, offset) {
+        items.push(
+            source_completion_item(&name, SourceCompletionItemKind::Local)
+                .detail(render_marrow_type(&ty)),
+        );
+    }
+    for keyword in KEYWORDS {
+        items.push(source_completion_item(
+            keyword,
+            SourceCompletionItemKind::Keyword,
+        ));
+    }
+    for callable in super::signatures::intrinsic_completion_callables() {
+        let label = callable.path.join("::");
+        items.push(
+            source_completion_item(&label, SourceCompletionItemKind::Function)
+                .detail(render_callable_signature(&callable))
+                .docs_from(&callable.docs),
+        );
+    }
+    items
+}
+
+trait SourceCompletionItemExt {
+    fn detail(self, detail: impl Into<String>) -> Self;
+    fn docs_from(self, docs: &[String]) -> Self;
+}
+
+impl SourceCompletionItemExt for SourceCompletionItem {
+    fn detail(mut self, detail: impl Into<String>) -> Self {
+        self.detail = Some(detail.into());
+        self
+    }
+
+    fn docs_from(mut self, docs: &[String]) -> Self {
+        self.docs = docs.to_vec();
+        self
+    }
+}
+
+fn source_completion_item(label: &str, kind: SourceCompletionItemKind) -> SourceCompletionItem {
+    SourceCompletionItem {
+        label: label.to_string(),
+        kind,
+        detail: None,
+        docs: Vec::new(),
+    }
+}
+
+fn dedup_completion_items(items: Vec<SourceCompletionItem>) -> Vec<SourceCompletionItem> {
+    let mut seen = HashSet::new();
+    items
+        .into_iter()
+        .filter(|item| seen.insert(item.label.clone()))
+        .collect()
 }
 
 fn qualifier_before(source: &str, tokens: &[Token], colon_index: usize) -> Option<Vec<String>> {
