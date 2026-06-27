@@ -11,6 +11,7 @@ mod lock_roots;
 mod render;
 mod semantic_tokens;
 pub mod signatures;
+mod source_roots;
 pub mod symbols;
 mod type_annotations;
 
@@ -88,6 +89,9 @@ pub use signatures::{
     SourceSignatureHelpParameter, active_callable_context, callable_callee_contexts,
     intrinsic_callable_signature, intrinsic_callable_signature_for_file,
     intrinsic_completion_callables, resource_constructor_signature, source_signature_help_fact_at,
+};
+pub use source_roots::{
+    SourceSavedRootCursorFact, SourceSavedRootCursorKind, source_saved_root_cursor_fact_at,
 };
 pub use symbols::{
     DocumentSymbol, DocumentSymbolKind, SourceSymbol, SourceSymbolKind, document_symbols,

@@ -154,6 +154,8 @@ mod source_namespace_completion_facts;
 mod source_operator_hover_facts;
 #[path = "cases/source_saved_root_completion_facts.rs"]
 mod source_saved_root_completion_facts;
+#[path = "cases/source_saved_root_cursor_facts.rs"]
+mod source_saved_root_cursor_facts;
 #[path = "cases/source_schema_hover_facts.rs"]
 mod source_schema_hover_facts;
 #[path = "cases/source_semantic_token_facts.rs"]

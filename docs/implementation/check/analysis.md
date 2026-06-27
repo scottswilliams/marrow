@@ -82,6 +82,12 @@ from the checked program or snapshot:
   qualified container paths with deterministic ranking.
 - `tooling::source_symbol_docs_at(snapshot, binding_index, file, offset)`
   returns docs attached to the source symbol resolved by the binding index.
+- `tooling::source_saved_root_cursor_fact_at(snapshot, file, offset)` returns
+  the parsed source saved-root cursor span under `offset`, including store
+  declarations, surface targets, type annotations, expression roots, and evolve
+  targets. The fact carries the root segment and source role, but no catalog
+  identity; catalog-backed definition and references continue to use
+  `AnalysisSnapshot` use-site and declaration tables when resolution succeeds.
 - `tooling::source_callable_hover_fact_at(snapshot, binding_index, file,
   offset)` returns callable hover facts for user functions, parameters, module
   constants, and intrinsic callable leaves. Intrinsic facts carry the canonical
