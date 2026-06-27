@@ -180,6 +180,30 @@ pub struct RenameAction {
     pub evolve_rename: Option<String>,
 }
 
+/// A source-only renameable occurrence at a cursor position.
+///
+/// The `reference` span is the token-tight occurrence the editor should
+/// pre-select for `prepareRename`; `definition` is the binding whose source-only
+/// rename action edits every occurrence.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceRenameOccurrence {
+    pub definition: SymbolRef,
+    pub reference: SymbolRef,
+}
+
+/// Why a source-only rename cannot be produced at a cursor position.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SourceRenameError {
+    /// The cursor is not on a known binding-index symbol.
+    NoSymbol,
+    /// The cursor is on a symbol with no independent source rename action.
+    NotRenameable,
+    /// The requested replacement is not one Marrow identifier.
+    InvalidName,
+    /// The symbol names saved data and needs catalog evolution intent.
+    SavedDataBacked,
+}
+
 /// Checked identity for a parameter symbol recorded by the binding index.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ParameterDefinition {
@@ -287,6 +311,55 @@ impl BindingIndex {
             edits,
             evolve_rename,
         })
+    }
+
+    /// Return the token-tight source occurrence the editor should pre-select for
+    /// source-only rename at `offset`.
+    ///
+    /// This refuses saved-data-backed symbols and imports that cannot be renamed
+    /// without retargeting the import path.
+    pub fn source_only_rename_occurrence_at(
+        &self,
+        file: &Path,
+        offset: usize,
+    ) -> Result<SourceRenameOccurrence, SourceRenameError> {
+        let (binding, reference) = self
+            .binding_reference_at(file, offset)
+            .ok_or(SourceRenameError::NoSymbol)?;
+        if binding.safety == RenameSafety::SavedDataBacked {
+            return Err(SourceRenameError::SavedDataBacked);
+        }
+        if binding.definition.kind == SymbolKind::ModuleRef {
+            return Err(SourceRenameError::NotRenameable);
+        }
+        Ok(SourceRenameOccurrence {
+            definition: binding.definition.clone(),
+            reference: reference.clone(),
+        })
+    }
+
+    /// Build source edits for a source-only rename at `offset`.
+    ///
+    /// The replacement must be one valid Marrow identifier. Saved-data-backed
+    /// symbols are refused here even though [`rename_action`](Self::rename_action)
+    /// can describe their source edits and catalog evolution fragment.
+    pub fn source_only_rename_action_at(
+        &self,
+        file: &Path,
+        offset: usize,
+        new_name: &str,
+    ) -> Result<RenameAction, SourceRenameError> {
+        if !is_valid_source_rename(new_name) {
+            return Err(SourceRenameError::InvalidName);
+        }
+        let occurrence = self.source_only_rename_occurrence_at(file, offset)?;
+        let action = self
+            .rename_action(&occurrence.definition, new_name)
+            .ok_or(SourceRenameError::NotRenameable)?;
+        if action.evolve_rename.is_some() {
+            return Err(SourceRenameError::SavedDataBacked);
+        }
+        Ok(action)
     }
 
     /// The binding whose definition span or any reference span covers `offset` in
@@ -1873,6 +1946,26 @@ fn match_arm_header_span(arm: &MatchArm) -> SourceSpan {
 
 fn span_width(span: SourceSpan) -> usize {
     span.end_byte.saturating_sub(span.start_byte)
+}
+
+fn is_valid_source_rename(name: &str) -> bool {
+    let lexed = marrow_syntax::lex_source(name);
+    if !lexed.diagnostics.is_empty() {
+        return false;
+    }
+
+    let mut tokens = lexed
+        .tokens
+        .iter()
+        .filter(|token| token.kind != TokenKind::Eof);
+    let Some(token) = tokens.next() else {
+        return false;
+    };
+
+    tokens.next().is_none()
+        && token.kind == TokenKind::Identifier
+        && token.span.start_byte == 0
+        && token.span.end_byte == name.len()
 }
 
 fn renamed_evolve_path(path: &str, new_name: &str) -> String {

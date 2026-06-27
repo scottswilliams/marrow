@@ -6,7 +6,7 @@ use crate::support;
 use crate::support_binding;
 use std::path::Path;
 
-use marrow_check::binding::{RenameSafety, SourceEdit, SymbolKind};
+use marrow_check::binding::{RenameSafety, SourceEdit, SourceRenameError, SymbolKind};
 
 use support_binding::analyze;
 
@@ -311,6 +311,88 @@ fn a_source_only_symbol_is_safe_to_rename() {
 }
 
 #[test]
+fn source_only_rename_occurrence_returns_the_selected_reference_span() {
+    let source = "module m\n\
+        fn add(count: int): int\n    \
+        return count\n\
+        fn call(): int\n    \
+        const local: int = add(1)\n    \
+        return local\n";
+    let (index, paths) = analyze("source-rename-occurrence", &[("src/m.mw", source)]);
+    let file = &paths[0];
+
+    let local_use = source.find("return local").expect("local use") + "return ".len();
+    let local = index
+        .source_only_rename_occurrence_at(file, local_use)
+        .expect("local use is a source-only rename occurrence");
+    assert_eq!(local.definition.kind, SymbolKind::Local, "{local:#?}");
+    assert_eq!(span_text(source, local.reference.span), "local");
+    assert_eq!(span_text(source, local.definition.span), "local");
+
+    let function_use = source.find("add(1)").expect("function use");
+    let function = index
+        .source_only_rename_occurrence_at(file, function_use + 1)
+        .expect("function call leaf is a source-only rename occurrence");
+    assert_eq!(
+        function.definition.kind,
+        SymbolKind::Function,
+        "{function:#?}"
+    );
+    assert_eq!(span_text(source, function.reference.span), "add");
+    assert_eq!(span_text(source, function.definition.span), "add");
+}
+
+#[test]
+fn source_only_rename_action_rejects_invalid_replacement_text_in_marrow() {
+    let source = "module m\nfn f(): int\n    const n: int = 1\n    return n\n";
+    let (index, paths) = analyze("source-rename-invalid-name", &[("src/m.mw", source)]);
+    let file = &paths[0];
+    let offset = source.find("return n").expect("local use") + "return ".len();
+
+    assert!(
+        index
+            .source_only_rename_action_at(file, offset, "count2")
+            .is_ok(),
+        "ordinary Marrow identifiers remain valid rename targets"
+    );
+    assert_eq!(
+        index.source_only_rename_action_at(file, offset, "two words"),
+        Err(SourceRenameError::InvalidName)
+    );
+    assert_eq!(
+        index.source_only_rename_action_at(file, offset, "return"),
+        Err(SourceRenameError::InvalidName)
+    );
+}
+
+#[test]
+fn source_only_rename_facts_return_typed_refusals() {
+    let source = "module m\n\
+        resource Book\n    \
+        required title: string\n\
+        store ^books(id: int): Book\n\
+        fn peek(id: int): string\n    \
+        return ^books(id).title ?? \"\"\n";
+    let (index, paths) = analyze("source-rename-refusals", &[("src/m.mw", source)]);
+    let file = &paths[0];
+
+    let saved_field = source.find("required title").expect("field") + "required ".len();
+    assert_eq!(
+        index.source_only_rename_occurrence_at(file, saved_field),
+        Err(SourceRenameError::SavedDataBacked)
+    );
+    assert_eq!(
+        index.source_only_rename_action_at(file, saved_field, "name"),
+        Err(SourceRenameError::SavedDataBacked)
+    );
+
+    assert_eq!(
+        index.source_only_rename_action_at(file, 0, "name"),
+        Err(SourceRenameError::NoSymbol)
+    );
+}
+
+#[test]
 fn a_source_only_parameter_rename_edits_only_identifier_tokens() {
     let source = "module m\nfn greet(title: string)\n    print(title)\n";
     let renamed = rename_at("rename-param", source, "print(title)", "title", "label");
@@ -483,6 +565,10 @@ fn apply_edits(source: &str, file: &Path, edits: &[SourceEdit]) -> String {
         edited.replace_range(edit.span.start_byte..edit.span.end_byte, &edit.replacement);
     }
     edited
+}
+
+fn span_text(source: &str, span: marrow_syntax::SourceSpan) -> &str {
+    &source[span.start_byte..span.end_byte]
 }
 
 fn rename_at(name: &str, source: &str, marker: &str, symbol: &str, new_name: &str) -> String {

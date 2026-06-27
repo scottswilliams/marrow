@@ -163,6 +163,11 @@ from the checked program or snapshot:
   do not synthesize catalog paths or formatter output themselves. Imported
   module references remain navigation facts only because imports have no alias
   syntax to edit independently of the module path.
+- `BindingIndex::source_only_rename_occurrence_at` and
+  `BindingIndex::source_only_rename_action_at` expose token-tight source-only
+  rename facts for editor `prepareRename` and rename edits. Marrow validates the
+  replacement as one identifier and returns typed refusal reasons for no symbol,
+  uneditable imports, invalid names, and saved-data-backed symbols.
 - `BindingIndex::parameter_definition` maps a parameter definition or use back
   to its checked `FunctionFact`, `LocalFact`, and parameter ordinal. Editor
   callers use that identity to join token-tight source spans to signature facts

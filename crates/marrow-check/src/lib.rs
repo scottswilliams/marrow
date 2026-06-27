@@ -48,8 +48,8 @@ pub use analysis::{
     analyze_project, scope_at, type_at,
 };
 pub use binding::{
-    BindingIndex, ParameterDefinition, RenameAction, RenameSafety, SourceEdit, SymbolKind,
-    SymbolOccurrence, SymbolRef, build_binding_index,
+    BindingIndex, ParameterDefinition, RenameAction, RenameSafety, SourceEdit, SourceRenameError,
+    SourceRenameOccurrence, SymbolKind, SymbolOccurrence, SymbolRef, build_binding_index,
 };
 pub use diagnostics::{
     AppendTargetDiagnostic, CHECK_AMBIGUOUS_CALL, CHECK_AMBIGUOUS_MATCH_ARM,
