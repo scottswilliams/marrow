@@ -8,6 +8,7 @@ mod expected;
 mod hover;
 pub mod integrity;
 mod lock_roots;
+mod navigation;
 mod render;
 mod semantic_tokens;
 pub mod signatures;
@@ -77,6 +78,9 @@ pub use integrity::{
     verify_store_completeness, verify_store_roots_against_lock, visit_integrity_problems,
 };
 pub use lock_roots::{store_path_is_absent, verify_present_store_lock_roots};
+pub use navigation::{
+    SourceCatalogLocationFact, source_catalog_definition_fact_at, source_catalog_reference_facts_at,
+};
 pub use render::{render_callable_shape, render_callable_signature, render_marrow_type};
 pub use semantic_tokens::{
     SourceSemanticTokenFact, SourceSemanticTokenModifiers, SourceSemanticTokenRole,

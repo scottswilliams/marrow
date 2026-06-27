@@ -144,6 +144,8 @@ mod saved_place_owner_architecture;
 mod saved_root_hover_facts;
 #[path = "cases/source_callable_hover_facts.rs"]
 mod source_callable_hover_facts;
+#[path = "cases/source_catalog_navigation_facts.rs"]
+mod source_catalog_navigation_facts;
 #[path = "cases/source_module_path_definition_facts.rs"]
 mod source_module_path_definition_facts;
 #[path = "cases/source_module_path_hover_facts.rs"]
