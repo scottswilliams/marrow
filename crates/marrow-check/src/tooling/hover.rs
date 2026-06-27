@@ -22,6 +22,12 @@ pub struct SourceSymbolDocs {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceTypeHoverFact {
+    pub ty: MarrowType,
+    pub docs: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SourceCallableHoverFact {
     Intrinsic(CallableSignature),
     Function(Box<SourceCallableFunctionFact>),
@@ -251,6 +257,20 @@ pub fn source_symbol_docs_at(
     (!lines.is_empty()).then(|| SourceSymbolDocs {
         lines: lines.to_vec(),
     })
+}
+
+pub fn source_type_hover_fact_at(
+    snapshot: &AnalysisSnapshot,
+    index: &BindingIndex,
+    file: &Path,
+    offset: usize,
+) -> Option<SourceTypeHoverFact> {
+    let analyzed = snapshot.files.iter().find(|f| f.path == file)?;
+    let ty = crate::type_at(&snapshot.program, file, &analyzed.parsed, offset)?;
+    let docs = source_symbol_docs_at(snapshot, index, file, offset)
+        .map(|docs| docs.lines)
+        .unwrap_or_default();
+    Some(SourceTypeHoverFact { ty, docs })
 }
 
 pub fn source_callable_hover_fact_at(

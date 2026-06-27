@@ -88,6 +88,10 @@ from the checked program or snapshot:
   qualified container paths with deterministic ranking.
 - `tooling::source_symbol_docs_at(snapshot, binding_index, file, offset)`
   returns docs attached to the source symbol resolved by the binding index.
+- `tooling::source_type_hover_fact_at(snapshot, binding_index, file, offset)`
+  returns the checker-owned cursor type plus any source-symbol docs attached at
+  that cursor. Editor callers render the DTO instead of combining `type_at` and
+  symbol docs themselves.
 - `tooling::source_saved_root_cursor_fact_at(snapshot, file, offset)` returns
   the parsed source saved-root cursor span under `offset`, including store
   declarations, surface targets, type annotations, expression roots, and evolve

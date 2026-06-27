@@ -64,11 +64,11 @@ pub use hover::{
     SourceResourceHoverMemberKind, SourceResourceHoverPathSegment, SourceSchemaHoverFact,
     SourceSchemaHoverKeyParam, SourceStandardLibraryCapability,
     SourceStandardLibraryModuleHoverFact, SourceStandardLibraryNamespaceHoverFact,
-    SourceStandardLibraryOperationHoverFact, SourceSymbolDocs, StoreRootHoverFact,
-    StoreRootHoverMember, StoreRootHoverPathSegment, saved_place_hover_fact_at,
+    SourceStandardLibraryOperationHoverFact, SourceSymbolDocs, SourceTypeHoverFact,
+    StoreRootHoverFact, StoreRootHoverMember, StoreRootHoverPathSegment, saved_place_hover_fact_at,
     source_callable_hover_fact_at, source_module_path_definition_fact_at,
     source_module_path_hover_fact_at, source_operator_hover_fact_at, source_schema_hover_fact_at,
-    source_symbol_docs_at, store_root_hover_fact_at,
+    source_symbol_docs_at, source_type_hover_fact_at, store_root_hover_fact_at,
 };
 pub use integrity::{
     IntegrityOutcome, IntegrityProblem, IntegrityProblemSample, IntegritySample,
