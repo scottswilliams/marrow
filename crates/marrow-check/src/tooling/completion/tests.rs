@@ -1,5 +1,5 @@
 use super::*;
-use crate::{ProjectSources, analyze_project};
+use crate::{ProjectSources, ScalarType, analyze_project};
 use marrow_project::parse_config;
 use marrow_syntax::{Severity, SourceSpan, lex_source, parse_source};
 use std::path::{Path, PathBuf};
@@ -30,11 +30,10 @@ fn classifies_source_completion_cursor_contexts() {
 
     let (source, context) =
         context_at("module shelf::app\n\npub fn f(id: int)\n    const x = ^books(id).|\n");
-    let SourceCompletionContext::SavedPath { receiver, span } = context else {
+    let SourceCompletionContext::SavedPath { receiver_span } = context else {
         panic!("expected saved-path context, got {context:?}");
     };
-    assert_eq!(receiver, "^books(id)");
-    assert_receiver_span(&source, span, "^books(id)");
+    assert_receiver_span(&source, receiver_span, "^books(id)");
 
     let (_, context) =
         context_at("module shelf::app\n\npub fn f(id: int)\n    const x = ^books(id)..|\n");
@@ -147,6 +146,98 @@ fn source_completion_fact_returns_protocol_free_items_for_current_contexts() {
 }
 
 #[test]
+fn source_saved_path_completion_fact_returns_active_context_and_declared_children() {
+    let project = CompletionProject::new();
+    let program = project.program();
+    let app = project.app_file();
+
+    let (source, offset) = source_with_cursor(
+        "module shelf::app\n\nuse shelf::books\n\npub fn f(id: int)\n    const x = ^books(id).|\n",
+    );
+    let parsed = parse_source(&source);
+    let lexed = lex_source(&source);
+    let fact = source_saved_path_completion_fact_at(program, app, &source, &parsed, &lexed, offset)
+        .expect("saved-path completion fact");
+
+    assert_receiver_span(&source, fact.context.receiver_span, "^books(id)");
+    assert_eq!(fact.context.root.name, "books");
+    let root_id = fact.context.root.store_id;
+    assert_eq!(fact.context.segments.len(), 2);
+    match &fact.context.segments[0] {
+        SourceSavedPathCompletionSegment::Root {
+            name,
+            store_id,
+            store_catalog_id,
+        } => {
+            assert_eq!(name, "books");
+            assert_eq!(*store_id, root_id);
+            assert_eq!(store_catalog_id.as_ref().map(|id| id.as_str()), None);
+        }
+        segment => panic!("expected root segment, got {segment:?}"),
+    }
+    match &fact.context.segments[1] {
+        SourceSavedPathCompletionSegment::KeySlot { name, scalar } => {
+            assert_eq!(name, "id");
+            assert_eq!(*scalar, Some(ScalarType::Int));
+        }
+        segment => panic!("expected root key slot, got {segment:?}"),
+    }
+    assert_eq!(
+        fact.children
+            .iter()
+            .map(|child| child.name.as_str())
+            .collect::<Vec<_>>(),
+        ["title", "notes"]
+    );
+
+    let (source, offset) = source_with_cursor(
+        "module shelf::app\n\nuse shelf::books\n\npub fn f(id: int, n: string)\n    const x = ^books(id).notes(n).|\n",
+    );
+    let parsed = parse_source(&source);
+    let lexed = lex_source(&source);
+    let fact = source_saved_path_completion_fact_at(program, app, &source, &parsed, &lexed, offset)
+        .expect("saved-layer completion fact");
+    assert_eq!(fact.context.segments.len(), 4);
+    match &fact.context.segments[2] {
+        SourceSavedPathCompletionSegment::Layer {
+            name,
+            member_id,
+            member_catalog_id,
+        } => {
+            assert_eq!(name, "notes");
+            assert!(member_id.is_some());
+            assert_eq!(member_catalog_id.as_ref().map(|id| id.as_str()), None);
+        }
+        segment => panic!("expected layer segment, got {segment:?}"),
+    }
+    match &fact.context.segments[3] {
+        SourceSavedPathCompletionSegment::KeySlot { name, scalar } => {
+            assert_eq!(name, "noteId");
+            assert_eq!(*scalar, Some(ScalarType::Str));
+        }
+        segment => panic!("expected layer key slot, got {segment:?}"),
+    }
+    assert_eq!(
+        fact.children
+            .iter()
+            .map(|child| child.name.as_str())
+            .collect::<Vec<_>>(),
+        ["text"]
+    );
+
+    let (source, offset) = source_with_cursor(
+        "module shelf::app\n\nuse shelf::books\n\npub fn f(id: int)\n    const x = ^books(id)..|\n",
+    );
+    let parsed = parse_source(&source);
+    let lexed = lex_source(&source);
+    assert!(
+        source_saved_path_completion_fact_at(program, app, &source, &parsed, &lexed, offset)
+            .is_none(),
+        "malformed saved-path context must not expose a declared-child fact"
+    );
+}
+
+#[test]
 fn source_completion_fact_adds_expected_enum_members_for_annotated_const_var_and_return() {
     let project = CompletionProject::new();
     let program = project.program();
@@ -219,11 +310,16 @@ fn completion_items(
     file: &Path,
     source: &str,
 ) -> Vec<SourceCompletionItem> {
-    let offset = source.find('|').expect("cursor marker");
-    let source = source.replacen('|', "", 1);
+    let (source, offset) = source_with_cursor(source);
     let parsed = parse_source(&source);
     let lexed = lex_source(&source);
     source_completion_fact(program, file, &source, &parsed, &lexed, offset).items
+}
+
+fn source_with_cursor(source: &str) -> (String, usize) {
+    let offset = source.find('|').expect("cursor marker");
+    let source = source.replacen('|', "", 1);
+    (source, offset)
 }
 
 fn item_named<'a>(items: &'a [SourceCompletionItem], label: &str) -> &'a SourceCompletionItem {

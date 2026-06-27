@@ -4,8 +4,8 @@ use marrow_syntax::{Argument, Expression, ParsedSource, Severity, SourceSpan};
 
 use crate::tooling::ToolingError;
 use crate::{
-    CheckedProgram, CheckedSavedKeyParam, CheckedSavedMember, CheckedSavedMemberKind, ScalarType,
-    StoreLeafKind,
+    CheckedProgram, CheckedSavedKeyParam, CheckedSavedMember, CheckedSavedMemberKind,
+    CheckedSavedPlace, ScalarType, StoreLeafKind,
 };
 use crate::{analysis::debug_expression_scope_before, checks::saved_root_args_address_record};
 use crate::{
@@ -43,6 +43,11 @@ pub struct DeclaredDataKeyParam {
     pub scalar: Option<ScalarType>,
 }
 
+pub(crate) struct DeclaredSourceReceiverDataChildren {
+    pub(crate) place: CheckedSavedPlace,
+    pub(crate) children: Vec<DeclaredDataChild>,
+}
+
 pub fn declared_data_children(
     program: &CheckedProgram,
     segments: &[DataPathSegment],
@@ -59,24 +64,13 @@ pub fn declared_source_data_children(
     declared_data_children_steps(program, &steps)
 }
 
-pub fn declared_source_receiver_data_children(
+pub(crate) fn declared_source_receiver_data_children_fact(
     program: &CheckedProgram,
     file: &Path,
     parsed: &ParsedSource,
     receiver: &str,
     scope_span: SourceSpan,
-) -> Vec<DeclaredDataChild> {
-    declared_source_receiver_data_children_impl(program, file, parsed, receiver, scope_span)
-        .unwrap_or_default()
-}
-
-fn declared_source_receiver_data_children_impl(
-    program: &CheckedProgram,
-    file: &Path,
-    parsed: &ParsedSource,
-    receiver: &str,
-    scope_span: SourceSpan,
-) -> Option<Vec<DeclaredDataChild>> {
+) -> Option<DeclaredSourceReceiverDataChildren> {
     let module = program
         .modules
         .iter()
@@ -125,9 +119,10 @@ fn declared_source_receiver_data_children_impl(
         return None;
     }
     let checked = lower_expr_for_file(program, file, &expr, &scope)?;
-    let place = checked.saved_place()?;
-    let members = SavedPlaceResolver::new(program).record_replacement_members(place)?;
-    Some(declared_data_child_vec(members))
+    let place = checked.saved_place()?.clone();
+    let members = SavedPlaceResolver::new(program).record_replacement_members(&place)?;
+    let children = declared_data_child_vec(members);
+    Some(DeclaredSourceReceiverDataChildren { place, children })
 }
 
 fn source_receiver_root_args(expr: &Expression) -> Option<(&str, &[Argument])> {

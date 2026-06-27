@@ -2,17 +2,21 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use marrow_schema::{EnumSchema, ResourceSchema, StoreSchema, stdlib};
+use marrow_store::cell::CatalogId;
 use marrow_syntax::{
     Declaration, FunctionDecl, LexedSource, ParsedSource, SourceFile, SourceSpan, Token, TokenKind,
 };
 
 use super::data::{
-    DeclaredDataChild, DeclaredDataChildKind, declared_source_receiver_data_children,
+    DeclaredDataChild, DeclaredDataChildKind, declared_source_receiver_data_children_fact,
 };
 use super::expected::{ExpectedEnum, expected_enum_at};
 use super::render::{render_callable_signature, render_marrow_type};
 use super::signatures::{CallableSignature, intrinsic_callable_signature};
-use crate::{CheckedFunction, CheckedModule, CheckedProgram, MarrowType, StoreLeafKind, scope_at};
+use crate::{
+    CheckedFunction, CheckedModule, CheckedProgram, CheckedSavedKeyParam, CheckedSavedPlace,
+    MarrowType, ResourceMemberId, ScalarType, StoreId, StoreLeafKind, scope_at,
+};
 
 const BUILTIN_TYPE_COMPLETIONS: &[SourceTypeBuiltin] = &[
     SourceTypeBuiltin::Int,
@@ -89,6 +93,44 @@ pub struct SourceTypeCompletionFact {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceSavedRootCompletionFact {
     pub candidates: Vec<SourceSavedRootCompletionCandidate>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceSavedPathCompletionFact {
+    pub context: SourceSavedPathCompletionContextFact,
+    pub children: Vec<DeclaredDataChild>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceSavedPathCompletionContextFact {
+    pub receiver_span: SourceSpan,
+    pub root: SourceSavedPathCompletionRoot,
+    pub segments: Vec<SourceSavedPathCompletionSegment>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceSavedPathCompletionRoot {
+    pub name: String,
+    pub store_id: StoreId,
+    pub store_catalog_id: Option<CatalogId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SourceSavedPathCompletionSegment {
+    Root {
+        name: String,
+        store_id: StoreId,
+        store_catalog_id: Option<CatalogId>,
+    },
+    KeySlot {
+        name: String,
+        scalar: Option<ScalarType>,
+    },
+    Layer {
+        name: String,
+        member_id: Option<ResourceMemberId>,
+        member_catalog_id: Option<CatalogId>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -245,6 +287,16 @@ pub enum SourceNamespaceEnumMemberStatus {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SourceCompletionContext {
     Root,
+    SavedPath { receiver_span: SourceSpan },
+    InvalidSavedPath,
+    Namespace { qualifier: Vec<String> },
+    Type,
+    Bare,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CompletionCursorContext {
+    Root,
     SavedPath { receiver: String, span: SourceSpan },
     InvalidSavedPath,
     Namespace { qualifier: Vec<String> },
@@ -257,12 +309,31 @@ pub fn source_completion_context(
     lexed: &LexedSource,
     offset: usize,
 ) -> SourceCompletionContext {
+    match completion_cursor_context(source, lexed, offset) {
+        CompletionCursorContext::Root => SourceCompletionContext::Root,
+        CompletionCursorContext::SavedPath { span, .. } => SourceCompletionContext::SavedPath {
+            receiver_span: span,
+        },
+        CompletionCursorContext::InvalidSavedPath => SourceCompletionContext::InvalidSavedPath,
+        CompletionCursorContext::Namespace { qualifier } => {
+            SourceCompletionContext::Namespace { qualifier }
+        }
+        CompletionCursorContext::Type => SourceCompletionContext::Type,
+        CompletionCursorContext::Bare => SourceCompletionContext::Bare,
+    }
+}
+
+fn completion_cursor_context(
+    source: &str,
+    lexed: &LexedSource,
+    offset: usize,
+) -> CompletionCursorContext {
     let tokens = significant_tokens(lexed);
     let Some(driver) = tokens
         .iter()
         .rposition(|token| token.span.start_byte < offset)
     else {
-        return SourceCompletionContext::Bare;
+        return CompletionCursorContext::Bare;
     };
 
     let anchor =
@@ -273,42 +344,42 @@ pub fn source_completion_context(
         };
 
     let Some(anchor) = anchor else {
-        return SourceCompletionContext::Bare;
+        return CompletionCursorContext::Bare;
     };
 
     match tokens[anchor].kind {
-        TokenKind::Caret => SourceCompletionContext::Root,
+        TokenKind::Caret => CompletionCursorContext::Root,
         TokenKind::DoubleColon => match qualifier_before(source, &tokens, anchor) {
-            Some(qualifier) => SourceCompletionContext::Namespace { qualifier },
-            None => SourceCompletionContext::Bare,
+            Some(qualifier) => CompletionCursorContext::Namespace { qualifier },
+            None => CompletionCursorContext::Bare,
         },
         TokenKind::Dot | TokenKind::QuestionDot => {
             match saved_path_before_dot(source, &tokens, anchor) {
                 SavedPathRecovery::Complete { receiver, span } => {
-                    SourceCompletionContext::SavedPath { receiver, span }
+                    CompletionCursorContext::SavedPath { receiver, span }
                 }
-                SavedPathRecovery::Invalid => SourceCompletionContext::InvalidSavedPath,
-                SavedPathRecovery::NotSavedPath => SourceCompletionContext::Bare,
+                SavedPathRecovery::Invalid => CompletionCursorContext::InvalidSavedPath,
+                SavedPathRecovery::NotSavedPath => CompletionCursorContext::Bare,
             }
         }
         TokenKind::DotDot | TokenKind::DotDotEqual => {
             if saved_path_attempt_before_dot(&tokens, anchor) {
-                SourceCompletionContext::InvalidSavedPath
+                CompletionCursorContext::InvalidSavedPath
             } else {
-                SourceCompletionContext::Bare
+                CompletionCursorContext::Bare
             }
         }
         TokenKind::Colon => {
             if introduces_type(&tokens, anchor) {
-                SourceCompletionContext::Type
+                CompletionCursorContext::Type
             } else {
-                SourceCompletionContext::Bare
+                CompletionCursorContext::Bare
             }
         }
         _ if malformed_saved_member_receiver(&tokens, anchor) => {
-            SourceCompletionContext::InvalidSavedPath
+            CompletionCursorContext::InvalidSavedPath
         }
-        _ => SourceCompletionContext::Bare,
+        _ => CompletionCursorContext::Bare,
     }
 }
 
@@ -320,19 +391,40 @@ pub fn source_completion_fact(
     lexed: &LexedSource,
     offset: usize,
 ) -> SourceCompletionFact {
-    let items = match source_completion_context(source, lexed, offset) {
-        SourceCompletionContext::Root => root_completion_items(program),
-        SourceCompletionContext::SavedPath { receiver, span } => {
-            saved_path_completion_items(program, file, parsed, &receiver, span)
+    let items = match completion_cursor_context(source, lexed, offset) {
+        CompletionCursorContext::Root => root_completion_items(program),
+        CompletionCursorContext::SavedPath { receiver, span } => {
+            let fact = source_saved_path_completion_fact_from_receiver(
+                program, file, parsed, &receiver, span,
+            );
+            fact.as_ref()
+                .map(saved_path_completion_items)
+                .unwrap_or_default()
         }
-        SourceCompletionContext::InvalidSavedPath => Vec::new(),
-        SourceCompletionContext::Namespace { qualifier } => {
+        CompletionCursorContext::InvalidSavedPath => Vec::new(),
+        CompletionCursorContext::Namespace { qualifier } => {
             namespace_completion_items(program, file, &parsed.file, &qualifier)
         }
-        SourceCompletionContext::Type => type_completion_items(program, file, &parsed.file),
-        SourceCompletionContext::Bare => bare_completion_items(program, file, parsed, offset),
+        CompletionCursorContext::Type => type_completion_items(program, file, &parsed.file),
+        CompletionCursorContext::Bare => bare_completion_items(program, file, parsed, offset),
     };
     SourceCompletionFact { items }
+}
+
+pub fn source_saved_path_completion_fact_at(
+    program: &CheckedProgram,
+    file: &Path,
+    source: &str,
+    parsed: &ParsedSource,
+    lexed: &LexedSource,
+    offset: usize,
+) -> Option<SourceSavedPathCompletionFact> {
+    match completion_cursor_context(source, lexed, offset) {
+        CompletionCursorContext::SavedPath { receiver, span } => {
+            source_saved_path_completion_fact_from_receiver(program, file, parsed, &receiver, span)
+        }
+        _ => None,
+    }
 }
 
 fn root_completion_items(program: &CheckedProgram) -> Vec<SourceCompletionItem> {
@@ -351,17 +443,75 @@ fn saved_root_completion_item(
         .docs_from(&candidate.docs)
 }
 
-fn saved_path_completion_items(
+fn saved_path_completion_items(fact: &SourceSavedPathCompletionFact) -> Vec<SourceCompletionItem> {
+    fact.children
+        .iter()
+        .map(declared_data_child_completion_item)
+        .collect()
+}
+
+fn source_saved_path_completion_fact_from_receiver(
     program: &CheckedProgram,
     file: &Path,
     parsed: &ParsedSource,
     receiver: &str,
     span: SourceSpan,
-) -> Vec<SourceCompletionItem> {
-    declared_source_receiver_data_children(program, file, parsed, receiver, span)
-        .iter()
-        .map(declared_data_child_completion_item)
-        .collect()
+) -> Option<SourceSavedPathCompletionFact> {
+    let receiver_fact =
+        declared_source_receiver_data_children_fact(program, file, parsed, receiver, span)?;
+    Some(SourceSavedPathCompletionFact {
+        context: source_saved_path_completion_context_fact(&receiver_fact.place, span),
+        children: receiver_fact.children,
+    })
+}
+
+fn source_saved_path_completion_context_fact(
+    place: &CheckedSavedPlace,
+    receiver_span: SourceSpan,
+) -> SourceSavedPathCompletionContextFact {
+    SourceSavedPathCompletionContextFact {
+        receiver_span,
+        root: SourceSavedPathCompletionRoot {
+            name: place.root.clone(),
+            store_id: place.store_id,
+            store_catalog_id: catalog_id(&place.store_catalog_id),
+        },
+        segments: source_saved_path_completion_segments(place),
+    }
+}
+
+fn source_saved_path_completion_segments(
+    place: &CheckedSavedPlace,
+) -> Vec<SourceSavedPathCompletionSegment> {
+    let mut segments = vec![SourceSavedPathCompletionSegment::Root {
+        name: place.root.clone(),
+        store_id: place.store_id,
+        store_catalog_id: catalog_id(&place.store_catalog_id),
+    }];
+    segments.extend(key_slot_segments(&place.identity_keys));
+    for layer in &place.layers {
+        segments.push(SourceSavedPathCompletionSegment::Layer {
+            name: layer.name.clone(),
+            member_id: layer.id,
+            member_catalog_id: catalog_id(&layer.catalog_id),
+        });
+        segments.extend(key_slot_segments(&layer.key_params));
+    }
+    segments
+}
+
+fn key_slot_segments(
+    keys: &[CheckedSavedKeyParam],
+) -> impl Iterator<Item = SourceSavedPathCompletionSegment> + '_ {
+    keys.iter()
+        .map(|key| SourceSavedPathCompletionSegment::KeySlot {
+            name: key.name.clone(),
+            scalar: key.scalar,
+        })
+}
+
+fn catalog_id(raw: &Option<String>) -> Option<CatalogId> {
+    CatalogId::new(raw.as_ref()?.clone()).ok()
 }
 
 fn declared_data_child_completion_item(child: &DeclaredDataChild) -> SourceCompletionItem {

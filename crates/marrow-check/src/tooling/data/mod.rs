@@ -26,7 +26,7 @@ pub use children::{
 };
 pub use declared::{
     DeclaredDataChild, DeclaredDataChildKind, DeclaredDataKeyParam, SourceDataPathSegment,
-    declared_data_children, declared_source_data_children, declared_source_receiver_data_children,
+    declared_data_children, declared_source_data_children,
 };
 pub use path::{
     data_path_under_prefix, resolve_data_path, resolve_runtime_data_path,
@@ -41,6 +41,7 @@ pub use traversal::{
 };
 pub use walk::walk_data;
 
+pub(crate) use declared::declared_source_receiver_data_children_fact;
 pub(crate) use path::StorageDataPath;
 pub(crate) use program::{DataProgram, checked_places};
 pub(crate) use render::{push_key, render_data_path};

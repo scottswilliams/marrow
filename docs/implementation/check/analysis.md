@@ -154,6 +154,11 @@ from the checked program or snapshot:
   saved-root completion candidates with root segment, owning module, resource
   name, and declaration docs. Editor callers render protocol items from those
   semantic fields instead of walking module stores.
+- `tooling::source_saved_path_completion_fact_at(...)` returns a checked
+  saved-path completion context for an active saved receiver, including the
+  receiver span, checked root identity, completed key/layer segments, and
+  declared child facts. Editor callers do not parse or retain raw saved-path
+  strings.
 - `tooling::source_namespace_completion_fact(...)` returns editor namespace
   candidates for project modules, enum members, and the standard-library
   namespace. The std root carries first-seen module names from the canonical

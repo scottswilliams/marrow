@@ -11,15 +11,15 @@ use marrow_check::tooling::{
     CallableSignature, CallableSignatureKind, CallableValueShape, DataChild, DataChildView,
     DataPathError, DataPathSegment, DataPresence, DeclaredDataChild, DeclaredDataChildKind,
     DeclaredDataKeyParam, IdentityTypeAnnotation, MAX_VALUE_PREVIEW_LIMIT, MemberFlavor,
-    ResourceConstructorField, SavedDataPathSegment, SourceDataPathSegment, ToolingError,
-    active_callable_context, callable_callee_contexts, declared_data_children,
-    declared_source_data_children, declared_source_receiver_data_children,
+    ResourceConstructorField, SavedDataPathSegment, SourceDataPathSegment,
+    SourceSavedPathCompletionSegment, ToolingError, active_callable_context,
+    callable_callee_contexts, declared_data_children, declared_source_data_children,
     identity_type_annotations, intrinsic_callable_signature, intrinsic_callable_signature_for_file,
     intrinsic_completion_callables, resolve_data_path, resolve_saved_data_path,
     resource_constructor_signature, sample_integrity_problem_details, sample_integrity_problems,
-    stamped_data_children, stamped_data_roots_in_store, stamped_integrity_problem_details,
-    stamped_preview_data_path, stamped_read_data_path, stamped_saved_data_child_views,
-    stamped_saved_data_root_views_in_store,
+    source_saved_path_completion_fact_at, stamped_data_children, stamped_data_roots_in_store,
+    stamped_integrity_problem_details, stamped_preview_data_path, stamped_read_data_path,
+    stamped_saved_data_child_views, stamped_saved_data_root_views_in_store,
 };
 use marrow_check::{
     CHECK_READ_ONLY_EXPRESSION_HOST_EFFECT, CHECK_READ_ONLY_EXPRESSION_UNINDEXED_LOOKUP,
@@ -148,12 +148,21 @@ fn declared_receiver_children(
     receiver: &str,
     scope_marker: &str,
 ) -> Vec<DeclaredDataChild> {
-    let (snapshot, paths) = analyze_overlay(test_name, &[("src/m.mw", source)]);
-    assert!(
-        !snapshot.report.has_errors(),
-        "{:#?}",
-        snapshot.report.diagnostics
+    let source = source.replacen(
+        scope_marker,
+        &format!("const __completion = {receiver}.|candidate"),
+        1,
     );
+    saved_path_completion_children_at_cursor(test_name, &source)
+}
+
+fn saved_path_completion_children_at_cursor(
+    test_name: &str,
+    source: &str,
+) -> Vec<DeclaredDataChild> {
+    let offset = source.find('|').expect("cursor marker");
+    let source = source.replacen('|', "", 1);
+    let (snapshot, paths) = analyze_overlay(test_name, &[("src/m.mw", &source)]);
     let path = paths.into_iter().next().expect("source path");
     let parsed = snapshot
         .files
@@ -163,13 +172,35 @@ fn declared_receiver_children(
         .parsed
         .clone();
 
-    declared_source_receiver_data_children(
-        &snapshot.program,
-        &path,
-        &parsed,
-        receiver,
-        stop_span(source, scope_marker),
-    )
+    let lexed = marrow_syntax::lex_source(&source);
+    source_saved_path_completion_fact_at(&snapshot.program, &path, &source, &parsed, &lexed, offset)
+        .map(|fact| fact.children)
+        .unwrap_or_default()
+}
+
+fn saved_path_completion_children_at_error_cursor(
+    test_name: &str,
+    source: &str,
+) -> Vec<DeclaredDataChild> {
+    let offset = source.find('|').expect("cursor marker");
+    let source = source.replacen('|', "", 1);
+    let (snapshot, paths) = analyze_overlay(test_name, &[("src/m.mw", &source)]);
+    assert!(
+        snapshot.report.has_errors(),
+        "source should not type-check cleanly"
+    );
+    let path = paths.into_iter().next().expect("source path");
+    let parsed = snapshot
+        .files
+        .iter()
+        .find(|file| file.path == path)
+        .expect("analyzed source")
+        .parsed
+        .clone();
+    let lexed = marrow_syntax::lex_source(&source);
+    source_saved_path_completion_fact_at(&snapshot.program, &path, &source, &parsed, &lexed, offset)
+        .map(|fact| fact.children)
+        .unwrap_or_default()
 }
 
 fn path_segments(segments: &[&str]) -> Vec<String> {
@@ -3770,6 +3801,56 @@ fn declared_source_receiver_children_keyed_layer_entry() {
 }
 
 #[test]
+fn saved_path_completion_context_segments_are_public_tooling_types() {
+    let source = "module m\n\
+        resource Book\n    \
+        notes(noteId: string)\n        \
+        required text: string\n\
+        store ^books(id: int): Book\n\
+        fn f(id: int, noteId: string)\n    \
+        const value = ^books(id).notes(noteId).|candidate\n";
+    let offset = source.find('|').expect("cursor marker");
+    let source = source.replacen('|', "", 1);
+    let (snapshot, paths) = analyze_overlay(
+        "analysis-saved-path-completion-context-public-segments",
+        &[("src/m.mw", &source)],
+    );
+    let path = paths.into_iter().next().expect("source path");
+    let parsed = snapshot
+        .files
+        .iter()
+        .find(|file| file.path == path)
+        .expect("analyzed source")
+        .parsed
+        .clone();
+    let lexed = marrow_syntax::lex_source(&source);
+    let fact = source_saved_path_completion_fact_at(
+        &snapshot.program,
+        &path,
+        &source,
+        &parsed,
+        &lexed,
+        offset,
+    )
+    .expect("saved-path completion fact");
+
+    let labels = fact
+        .context
+        .segments
+        .iter()
+        .map(|segment| match segment {
+            SourceSavedPathCompletionSegment::Root { name, .. } => format!("root:{name}"),
+            SourceSavedPathCompletionSegment::KeySlot { name, .. } => format!("key:{name}"),
+            SourceSavedPathCompletionSegment::Layer { name, .. } => format!("layer:{name}"),
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        labels,
+        ["root:books", "key:id", "layer:notes", "key:noteId"]
+    );
+}
+
+#[test]
 fn declared_source_receiver_children_empty_for_partial_identity() {
     let source = "module m\n\
         resource Pair\n    \
@@ -3837,30 +3918,10 @@ fn declared_source_receiver_children_empty_for_self_referential_initializer() {
         required title: string\n\
         store ^books(id: int): Book\n\
         fn f()\n    \
-        const id: Id(^books) = ^books(id).title\n";
-    let (snapshot, paths) = analyze_overlay(
+        const id: Id(^books) = ^books(id).|title\n";
+    let children = saved_path_completion_children_at_error_cursor(
         "analysis-source-receiver-self-referential-initializer",
-        &[("src/m.mw", source)],
-    );
-    assert!(
-        snapshot.report.has_errors(),
-        "self-referential initializer should not type-check"
-    );
-    let path = paths.into_iter().next().expect("source path");
-    let parsed = snapshot
-        .files
-        .iter()
-        .find(|file| file.path == path)
-        .expect("analyzed source")
-        .parsed
-        .clone();
-
-    let children = declared_source_receiver_data_children(
-        &snapshot.program,
-        &path,
-        &parsed,
-        "^books(id)",
-        stop_span(source, "^books(id)"),
+        source,
     );
 
     assert_eq!(children, Vec::<DeclaredDataChild>::new());
@@ -3872,30 +3933,10 @@ fn declared_source_receiver_children_empty_for_module_const_self_reference() {
         resource Book\n    \
         required title: string\n\
         store ^books(id: int): Book\n\
-        const id: Id(^books) = ^books(id).title\n";
-    let (snapshot, paths) = analyze_overlay(
+        const id: Id(^books) = ^books(id).|title\n";
+    let children = saved_path_completion_children_at_error_cursor(
         "analysis-source-receiver-module-const-self-reference",
-        &[("src/m.mw", source)],
-    );
-    assert!(
-        snapshot.report.has_errors(),
-        "self-referential module const should not type-check"
-    );
-    let path = paths.into_iter().next().expect("source path");
-    let parsed = snapshot
-        .files
-        .iter()
-        .find(|file| file.path == path)
-        .expect("analyzed source")
-        .parsed
-        .clone();
-
-    let children = declared_source_receiver_data_children(
-        &snapshot.program,
-        &path,
-        &parsed,
-        "^books(id)",
-        stop_span(source, "^books(id)"),
+        source,
     );
 
     assert_eq!(children, Vec::<DeclaredDataChild>::new());
