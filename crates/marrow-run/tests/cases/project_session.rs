@@ -521,6 +521,36 @@ fn surface_serve_boundary_reports_mode_store_watch_targets_and_process_control()
     assert_eq!(invoke(&seed, "shelf::seed"), "");
     drop(seed);
 
+    let run_session = ProjectSession::open(root.path(), ProjectOpen::run().with_isolated_writes())
+        .expect("open isolated run session");
+    let run_boundary = run_session
+        .surface_serve_boundary()
+        .expect("run serve boundary");
+    assert_eq!(run_boundary.mode, SurfaceServeMode::Write);
+    assert_eq!(
+        run_boundary
+            .data_view_boundary
+            .source_analysis_generation
+            .checked_source_digest,
+        run_session.program().source_digest()
+    );
+    assert_eq!(
+        run_boundary
+            .data_view_boundary
+            .store_snapshot
+            .checked_source_digest,
+        run_session.program().source_digest()
+    );
+    assert_eq!(
+        run_boundary.process_control,
+        SurfaceServeProcessControl::NotExposed
+    );
+    assert!(
+        run_boundary.data_view_boundary.watch_targets.is_empty(),
+        "isolated run sessions must not publish live store watch targets"
+    );
+    drop(run_session);
+
     let read_session =
         ProjectSurfaceReadSession::open(root.path()).expect("open surface read session");
     let read_boundary = read_session

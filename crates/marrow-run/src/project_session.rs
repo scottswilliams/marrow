@@ -773,6 +773,36 @@ impl ProjectSession {
         self.execution_boundary.clone()
     }
 
+    pub fn surface_serve_boundary(&self) -> Result<SurfaceServeBoundary, ProjectSessionError> {
+        let (store, watch_targets) = match &self.kind {
+            SessionKind::Run {
+                store: RunStore::Memory(store),
+                ..
+            }
+            | SessionKind::Run {
+                store: RunStore::Isolated(IsolatedStore { store, .. }),
+                ..
+            } => (store, Vec::new()),
+            SessionKind::Run {
+                store: RunStore::Native { store, .. },
+                ..
+            } => (
+                store,
+                data_view_watch_targets_for_config(&self.root, &self.config)?,
+            ),
+            SessionKind::Test { .. } => return Err(ProjectSessionError::DurableStoreRequired),
+        };
+        let data_view_boundary = DataViewBoundary {
+            source_analysis_generation: self.analysis_snapshot.generation(),
+            store_snapshot: tooling::data_snapshot_stamp(self.program(), store)?,
+            watch_targets,
+        };
+        Ok(SurfaceServeBoundary::new(
+            SurfaceServeMode::Write,
+            data_view_boundary,
+        ))
+    }
+
     pub fn invoke(&self, invocation: SessionEntry<'_>) -> Result<RunOutput, ProjectInvokeError> {
         let call = match &invocation.invocation {
             SessionInvocation::Text { name, args } => {

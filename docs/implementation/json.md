@@ -186,7 +186,7 @@ that same preflight as `surface.request`; cursor mismatches stay on the existing
 cursor error path.
 
 `serve.rs` renders the already admitted `SurfaceServeBoundary` fact from
-`marrow-run` into JSON: the read-only or write serve mode, the shared
+`marrow-run` into JSON: the read-only or write serve mode, the admitted
 data-view boundary for source/store/watch identity, and the current
 process-control status. A `not_exposed` process-control status is intentionally
 not a listener, served-process identity, debugger attach target, or control
