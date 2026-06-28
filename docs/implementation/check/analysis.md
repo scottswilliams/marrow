@@ -43,10 +43,11 @@ from the checked program or snapshot:
 - `AnalysisSnapshot::sites_for(catalog_id)` filters the snapshot's `UseSite`
   table, which is built from two checker-owned sources: lowered catalog-bearing
   expressions in module constants, function bodies, and evolve transform
-  bodies, plus checker-resolved enum type annotations from analyzed source
-  and configured test files. Use sites are keyed by accepted or proposal catalog
-  ids and typed as saved roots, resource members, store indexes, enums, or enum
-  members.
+  bodies, checker-resolved store resource bindings, and checker-resolved
+  resource and enum type annotations from analyzed source and configured test
+  files. Use sites are keyed by accepted or proposal catalog ids and typed as
+  saved roots, resource type annotations, resource constructors, resource
+  members, store indexes, enums, or enum members.
 - `tooling::identity_type_annotations(snapshot, file)` returns token-tight
   spans for checked `Id(^root)` type annotations in the requested analyzed
   source file. It walks parsed type annotations, resolves them through the
@@ -62,10 +63,11 @@ from the checked program or snapshot:
 - `tooling::source_catalog_definition_fact_at(snapshot, file, offset)` and
   `tooling::source_catalog_reference_facts_at(snapshot, file, offset,
   include_declaration)` return checker-owned catalog navigation facts for saved
-  roots, resource constructors, resource members, store indexes, enums, and
-  enum members. Enum type-annotation references are filtered through the source
-  type-annotation cursor fact, so editor callers do not decide whether an enum
-  use belongs to a type annotation, enum literal, or declaration.
+  roots, store resource leaves, resource type-annotation leaves, resource
+  constructors, resource declarations, resource members, store indexes, enums,
+  and enum members. Enum type-annotation references are filtered through the
+  source type-annotation cursor fact, so editor callers do not decide whether an
+  enum use belongs to a type annotation, enum literal, or declaration.
 - `tooling::source_semantic_token_facts(source, lexed, parsed)` returns
   syntax/parse-only source-token facts with token-tight `SourceSpan`,
   Marrow-owned `SourceSemanticTokenRole`, and typed presentation modifiers.
@@ -242,10 +244,10 @@ segments, saved roots, and match-arm member path segments. Lowering copies those
 spans into checked saved places, layers, terminals, and enum-member references;
 checked facts copy declaration name spans. The analysis use-site and declaration
 tables consume those exact spans for lowered expressions, saved paths, match
-arms, and declarations. Type annotations currently carry a whole-annotation span,
-so enum annotation use-sites recover the resolved enum leaf inside that bounded
-annotation text. No use-site falls back to whole expressions, calls, match arms,
-layers, or broad declaration spans.
+arms, and declarations. Type annotations currently carry a whole-annotation
+span, so resource and enum annotation use-sites recover the resolved leaf inside
+that bounded annotation text. No use-site falls back to whole expressions,
+calls, match arms, layers, or broad declaration spans.
 
 ## Tooling facts
 

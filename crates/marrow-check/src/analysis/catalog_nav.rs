@@ -2,19 +2,22 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use marrow_catalog::CatalogEntryKind;
-use marrow_syntax::{SourceSpan, TypeRef};
+use marrow_syntax::{Declaration, SourceSpan, StoreDecl, TypeRef};
 
 use super::AnalyzedFile;
 use crate::annotation_refs::{
-    TypeAnnotationBodies, type_ref_enum_leaf_span, walk_declaration_type_refs,
+    TypeAnnotationBodies, type_ref_path_leaf_span, walk_declaration_type_refs,
 };
 use crate::build_alias_map;
-use crate::enums::{EnumAnnotationResolution, resolve_enum_annotation};
+use crate::enums::{
+    EnumAnnotationResolution, ResolvedResourceAnnotation, resolve_enum_annotation,
+    resolve_resource_annotation,
+};
 use crate::executable::{
     CheckedBodyVisitor, walk_checked_body, walk_checked_expr, walk_checked_match_arm,
 };
 use crate::facts::ModuleId;
-use crate::source_spans::last_identifier_span_in;
+use crate::source_spans::{last_identifier_span_in, source_span_at};
 use crate::{
     CheckedBody, CheckedCallTarget, CheckedExpr, CheckedMatchArm, CheckedProgram,
     CheckedResourceConstructor, CheckedSavedMember, CheckedSavedPlace, CheckedSavedTerminal,
@@ -35,6 +38,7 @@ pub struct UseSite {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UseSiteKind {
     SavedRoot,
+    Resource,
     ResourceConstructor,
     ResourceMember,
     StoreIndex,
@@ -131,6 +135,17 @@ fn collect_module_type_annotation_use_sites(
         };
         let aliases = build_alias_map(&module.imports);
         for declaration in &file.parsed.file.declarations {
+            if let Declaration::Store(store) = declaration {
+                collect_store_resource_use_site(
+                    program,
+                    ids,
+                    &file.path,
+                    &file.source,
+                    module.name.as_str(),
+                    store,
+                    sites,
+                );
+            }
             walk_declaration_type_refs(declaration, TypeAnnotationBodies::Include, &mut |ty| {
                 collect_type_ref_use_site(
                     program,
@@ -155,6 +170,18 @@ fn collect_type_ref_use_site(
     ty: &TypeRef,
     sites: &mut Vec<UseSite>,
 ) {
+    if let Some(resolved) = resolve_resource_annotation(ty, program, aliases, file) {
+        let Some(resource_id) = resolved_resource_id(program, &resolved) else {
+            return;
+        };
+        if let Some(catalog_id) = program.resource_catalog_id_in(ids, resource_id)
+            && let Some(span) = type_ref_path_leaf_span(source, ty, &resolved.name)
+        {
+            push_use_site(file, span, &catalog_id, UseSiteKind::Resource, sites);
+        }
+        return;
+    }
+
     let EnumAnnotationResolution::Visible(resolved) =
         resolve_enum_annotation(ty, program, aliases, file)
     else {
@@ -166,10 +193,85 @@ fn collect_type_ref_use_site(
     let Some(catalog_id) = enum_catalog_id(program, ids, enum_id) else {
         return;
     };
-    let Some(span) = type_ref_enum_leaf_span(source, ty, &resolved.name) else {
+    let Some(span) = type_ref_path_leaf_span(source, ty, &resolved.name) else {
         return;
     };
     push_use_site(file, span, &catalog_id, UseSiteKind::Enum, sites);
+}
+
+fn collect_store_resource_use_site(
+    program: &CheckedProgram,
+    ids: &CatalogProposalIds,
+    file: &Path,
+    source: &str,
+    module_name: &str,
+    store: &StoreDecl,
+    sites: &mut Vec<UseSite>,
+) {
+    let Some(module_id) = program.facts.module_id(module_name) else {
+        return;
+    };
+    let Some(resource_id) = program.facts.resource_id(module_id, &store.resource) else {
+        return;
+    };
+    let resource = program.facts.resource(resource_id);
+    let Some(catalog_id) = program.resource_catalog_id_in(ids, resource_id) else {
+        return;
+    };
+    let Some(span) = store_resource_span(source, store, &resource.name) else {
+        return;
+    };
+    push_use_site(file, span, &catalog_id, UseSiteKind::Resource, sites);
+}
+
+fn store_resource_span(source: &str, store: &StoreDecl, resource_name: &str) -> Option<SourceSpan> {
+    if store.root.span.end_byte < store.span.start_byte
+        || store.root.span.end_byte > store.span.end_byte
+    {
+        return None;
+    }
+
+    let header = source.get(store.root.span.end_byte..store.span.end_byte)?;
+    let mut depth = 0usize;
+    let colon = header.bytes().enumerate().find_map(|(offset, byte)| {
+        match byte {
+            b'(' => depth += 1,
+            b')' => depth = depth.saturating_sub(1),
+            b':' if depth == 0 => return Some(store.root.span.end_byte + offset),
+            _ => {}
+        }
+        None
+    })?;
+
+    let mut start = colon + 1;
+    while source
+        .as_bytes()
+        .get(start)
+        .is_some_and(u8::is_ascii_whitespace)
+    {
+        start += 1;
+    }
+
+    let end = start.checked_add(resource_name.len())?;
+    if source.get(start..end)? != resource_name {
+        return None;
+    }
+    if source
+        .as_bytes()
+        .get(end)
+        .is_some_and(|byte| byte.is_ascii_alphanumeric() || *byte == b'_')
+    {
+        return None;
+    }
+    Some(source_span_at(source, start, end))
+}
+
+fn resolved_resource_id(
+    program: &CheckedProgram,
+    resolved: &ResolvedResourceAnnotation,
+) -> Option<crate::ResourceId> {
+    let module_id = program.facts.module_id(&resolved.module)?;
+    program.facts.resource_id(module_id, &resolved.name)
 }
 
 fn sort_use_sites(sites: &mut [UseSite]) {
@@ -194,11 +296,12 @@ fn sort_use_sites(sites: &mut [UseSite]) {
 fn use_site_kind_rank(kind: UseSiteKind) -> u8 {
     match kind {
         UseSiteKind::SavedRoot => 0,
-        UseSiteKind::ResourceConstructor => 1,
-        UseSiteKind::ResourceMember => 2,
-        UseSiteKind::StoreIndex => 3,
-        UseSiteKind::Enum => 4,
-        UseSiteKind::EnumMember => 5,
+        UseSiteKind::Resource => 1,
+        UseSiteKind::ResourceConstructor => 2,
+        UseSiteKind::ResourceMember => 3,
+        UseSiteKind::StoreIndex => 4,
+        UseSiteKind::Enum => 5,
+        UseSiteKind::EnumMember => 6,
     }
 }
 

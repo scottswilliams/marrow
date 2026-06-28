@@ -27,7 +27,7 @@ use marrow_syntax::{
 use crate::MarrowType;
 use crate::analysis::span_covers;
 use crate::annotation_refs::{
-    TypeAnnotationBodies, type_ref_enum_leaf_span, walk_declaration_type_refs,
+    TypeAnnotationBodies, type_ref_path_leaf_span, walk_declaration_type_refs,
 };
 use crate::checks::{catch_frame, file_prelude, for_frame};
 use crate::enums::{
@@ -932,7 +932,7 @@ impl<'p> IndexBuilder<'p> {
             else {
                 return;
             };
-            if let Some(span) = type_ref_enum_leaf_span(source, ty, &resolved.name) {
+            if let Some(span) = type_ref_path_leaf_span(source, ty, &resolved.name) {
                 self.use_of(def, file, span, SymbolKind::Enum);
             }
             return;

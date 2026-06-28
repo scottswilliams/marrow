@@ -159,6 +159,8 @@ module shelf::library
 
 resource Book
     required title: string
+
+store ^library_books(id: int): Book
 ";
     let app = "\
 module shelf::app
@@ -193,6 +195,288 @@ fn local()
         source_catalog_definition_fact_at(&snapshot, app_file, local_use + 1),
         Some(fact(app_file, span(app, local_decl, "Book")))
     );
+}
+
+#[test]
+fn source_catalog_definition_fact_covers_resource_type_annotations() {
+    let library = "\
+module shelf::library
+
+resource Book
+    required title: string
+
+store ^library_books(id: int): Book ;; Book
+";
+    let app = "\
+module shelf::app
+use shelf::library
+
+resource Book
+    required label: string
+
+fn imported()
+    const imported: library::Book = library::Book(title: \"Dune\")
+
+fn local()
+    const local: Book = Book(label: \"local\")
+";
+    let (snapshot, paths) = analyze_files(
+        "source-catalog-definition-resource-annotation",
+        &[("src/shelf/library.mw", library), ("src/shelf/app.mw", app)],
+    );
+    let library_file = &paths[0];
+    let app_file = &paths[1];
+
+    let imported_annotation =
+        offset(app, "const imported: library::Book") + "const imported: library::".len();
+    let imported_decl = offset(library, "resource Book") + "resource ".len();
+    assert_eq!(
+        source_catalog_definition_fact_at(&snapshot, app_file, imported_annotation + 1),
+        Some(fact(library_file, span(library, imported_decl, "Book")))
+    );
+
+    let store_resource = offset(library, "store ^library_books(id: int): Book")
+        + "store ^library_books(id: int): ".len();
+    assert_eq!(
+        source_catalog_definition_fact_at(&snapshot, library_file, store_resource + 1),
+        Some(fact(library_file, span(library, imported_decl, "Book")))
+    );
+
+    let trailing_comment = offset(library, ";; Book") + ";; ".len();
+    assert_eq!(
+        source_catalog_definition_fact_at(&snapshot, library_file, trailing_comment + 1),
+        None
+    );
+}
+
+#[test]
+fn source_catalog_definition_fact_keeps_duplicate_root_resource_leaves_separate() {
+    let source = "\
+module shelf
+
+resource Book
+    required title: string
+
+resource Magazine
+    required issue: int
+
+store ^items(id: int): Book
+store ^items(id: int): Magazine
+";
+    let (snapshot, paths) = support::analyze_overlay(
+        "source-catalog-duplicate-root-resource-leaves",
+        &[("src/a.mw", source)],
+    );
+    assert!(snapshot.report.has_errors());
+    let file = &paths[0];
+
+    let book_use = offset(source, "store ^items(id: int): Book") + "store ^items(id: int): ".len();
+    assert_eq!(
+        source_catalog_definition_fact_at(&snapshot, file, book_use + 1),
+        None
+    );
+
+    let magazine_use =
+        offset(source, "store ^items(id: int): Magazine") + "store ^items(id: int): ".len();
+    assert_eq!(
+        source_catalog_definition_fact_at(&snapshot, file, magazine_use + 1),
+        None
+    );
+}
+
+#[test]
+fn source_catalog_reference_facts_cover_resource_type_annotations() {
+    let library = "\
+module shelf::library
+
+resource Book
+    required title: string
+
+store ^library_books(id: int): Book
+
+fn template()
+    const template: Book = Book(title: \"Catalog\")
+";
+    let app = "\
+module shelf::app
+use shelf::library
+
+resource Book
+    required label: string
+
+fn imported()
+    const imported: library::Book = library::Book(title: \"Dune\")
+
+fn local()
+    const local: Book = Book(label: \"local\")
+";
+    let archive = "\
+module shelf::archive
+
+resource Book
+    required code: string
+
+fn archived()
+    const archived: Book = Book(code: \"old\")
+";
+    let (snapshot, paths) = analyze_files(
+        "source-catalog-references-resource-annotation",
+        &[
+            ("src/shelf/library.mw", library),
+            ("src/shelf/app.mw", app),
+            ("src/shelf/archive.mw", archive),
+        ],
+    );
+    let library_file = &paths[0];
+    let app_file = &paths[1];
+    let archive_file = &paths[2];
+
+    let refs = source_catalog_reference_facts_at(
+        &snapshot,
+        app_file,
+        offset(app, "const imported: library::Book") + "const imported: library::".len() + 1,
+        true,
+    )
+    .expect("resource annotation references");
+
+    assert!(refs.contains(&fact(
+        library_file,
+        span(
+            library,
+            offset(library, "resource Book") + "resource ".len(),
+            "Book",
+        ),
+    )));
+    assert!(refs.contains(&fact(
+        library_file,
+        span(
+            library,
+            offset(library, "const template: Book") + "const template: ".len(),
+            "Book"
+        ),
+    )));
+    assert!(refs.contains(&fact(
+        library_file,
+        span(
+            library,
+            offset(library, "store ^library_books(id: int): Book")
+                + "store ^library_books(id: int): ".len(),
+            "Book"
+        ),
+    )));
+    assert!(refs.contains(&fact(
+        library_file,
+        span(library, offset(library, "Book(title: \"Catalog\")"), "Book"),
+    )));
+    assert!(refs.contains(&fact(
+        app_file,
+        span(
+            app,
+            offset(app, "const imported: library::Book") + "const imported: library::".len(),
+            "Book"
+        ),
+    )));
+    assert!(refs.contains(&fact(
+        app_file,
+        span(
+            app,
+            offset(app, "library::Book(title") + "library::".len(),
+            "Book"
+        ),
+    )));
+
+    for excluded in [
+        fact(
+            app_file,
+            span(
+                app,
+                offset(app, "resource Book") + "resource ".len(),
+                "Book",
+            ),
+        ),
+        fact(
+            app_file,
+            span(
+                app,
+                offset(app, "const local: Book") + "const local: ".len(),
+                "Book",
+            ),
+        ),
+        fact(
+            app_file,
+            span(app, offset(app, "Book(label: \"local\")"), "Book"),
+        ),
+        fact(
+            archive_file,
+            span(
+                archive,
+                offset(archive, "resource Book") + "resource ".len(),
+                "Book",
+            ),
+        ),
+        fact(
+            archive_file,
+            span(
+                archive,
+                offset(archive, "const archived: Book") + "const archived: ".len(),
+                "Book",
+            ),
+        ),
+        fact(
+            archive_file,
+            span(archive, offset(archive, "Book(code: \"old\")"), "Book"),
+        ),
+    ] {
+        assert!(!refs.contains(&excluded));
+    }
+}
+
+#[test]
+fn source_catalog_reference_facts_from_resource_declarations_use_catalog_resource() {
+    let library = "\
+module shelf::library
+
+resource Book
+    required title: string
+
+store ^library_books(id: int): Book
+
+fn template()
+    const template: Book = Book(title: \"Catalog\")
+";
+    let app = "\
+module shelf::app
+use shelf::library
+
+resource Book
+    required label: string
+
+fn imported()
+    const imported: library::Book = library::Book(title: \"Dune\")
+
+fn local()
+    const local: Book = Book(label: \"local\")
+";
+    let (snapshot, paths) = analyze_files(
+        "source-catalog-references-resource-declaration",
+        &[("src/shelf/library.mw", library), ("src/shelf/app.mw", app)],
+    );
+    let library_file = &paths[0];
+    let app_file = &paths[1];
+    let declaration = offset(library, "resource Book") + "resource ".len();
+
+    let from_declaration =
+        source_catalog_reference_facts_at(&snapshot, library_file, declaration + 1, true)
+            .expect("resource declaration references");
+    let from_annotation = source_catalog_reference_facts_at(
+        &snapshot,
+        app_file,
+        offset(app, "const imported: library::Book") + "const imported: library::".len() + 1,
+        true,
+    )
+    .expect("resource annotation references");
+
+    assert_eq!(from_declaration, from_annotation);
 }
 
 #[test]

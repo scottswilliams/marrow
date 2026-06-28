@@ -98,6 +98,7 @@ fn supported_use_site(site: &UseSite) -> Option<&UseSite> {
     matches!(
         site.kind,
         UseSiteKind::SavedRoot
+            | UseSiteKind::Resource
             | UseSiteKind::ResourceConstructor
             | UseSiteKind::ResourceMember
             | UseSiteKind::StoreIndex
@@ -124,6 +125,7 @@ fn cursor_declaration(declaration: &CatalogDeclaration) -> Option<&CatalogDeclar
     matches!(
         declaration.kind,
         CatalogEntryKind::Store
+            | CatalogEntryKind::Resource
             | CatalogEntryKind::ResourceMember
             | CatalogEntryKind::StoreIndex
             | CatalogEntryKind::Enum

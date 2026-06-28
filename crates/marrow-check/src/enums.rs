@@ -1034,6 +1034,54 @@ pub(crate) fn resolve_type(
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ResolvedResourceAnnotation {
+    pub(crate) module: String,
+    pub(crate) name: String,
+}
+
+pub(crate) fn resolve_resource_annotation(
+    ty: &marrow_syntax::TypeRef,
+    program: &CheckedProgram,
+    aliases: &HashMap<String, Vec<String>>,
+    file: &Path,
+) -> Option<ResolvedResourceAnnotation> {
+    resolve_resource_annotation_type(
+        &Type::resolve(ty),
+        program,
+        aliases,
+        module_of_file(program, file).unwrap_or_default(),
+    )
+}
+
+fn resolve_resource_annotation_type(
+    ty: &Type,
+    program: &CheckedProgram,
+    aliases: &HashMap<String, Vec<String>>,
+    module_name: &str,
+) -> Option<ResolvedResourceAnnotation> {
+    match ty {
+        Type::Sequence(element) => {
+            resolve_resource_annotation_type(element, program, aliases, module_name)
+        }
+        Type::Named(name) => {
+            let segments = split_type_path(name);
+            resolve_resource_path_in_module(
+                program,
+                aliases,
+                module_name,
+                &segments,
+                ResolvableKind::Resource,
+            )
+            .map(|(resource, module)| ResolvedResourceAnnotation {
+                module: module.to_string(),
+                name: resource.name.clone(),
+            })
+        }
+        _ => None,
+    }
+}
+
 pub(crate) fn resolve_schema_type_for_module(
     ty: &Type,
     program: &CheckedProgram,
@@ -1095,17 +1143,9 @@ fn resolve_resource_type_ref_in_module(
         }
         Type::Identity(store_root) => resolve_store_by_root(program, store_root)
             .map(|_| MarrowType::Identity(store_root.clone())),
-        Type::Named(name) => {
-            let segments = split_type_path(name);
-            resolve_resource_path_in_module(
-                program,
-                aliases,
-                module_name,
-                &segments,
-                ResolvableKind::Resource,
-            )
-            .map(|(resource, module)| {
-                MarrowType::Resource(resource_type_name(module, &resource.name))
+        Type::Named(_) => {
+            resolve_resource_annotation_type(ty, program, aliases, module_name).map(|resolved| {
+                MarrowType::Resource(resource_type_name(&resolved.module, &resolved.name))
             })
         }
         _ => None,

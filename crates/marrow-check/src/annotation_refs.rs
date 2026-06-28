@@ -161,18 +161,14 @@ fn walk_statement_type_refs(statement: &Statement, visit: &mut impl FnMut(&TypeR
     }
 }
 
-pub(crate) fn type_ref_enum_leaf_span(
+pub(crate) fn type_ref_path_leaf_span(
     source: &str,
     ty: &TypeRef,
-    enum_name: &str,
+    leaf: &str,
 ) -> Option<SourceSpan> {
     let end_byte = ty.span.end_byte.min(source.len());
     let text = source.get(ty.span.start_byte..end_byte)?;
-    let offset = text.rfind(enum_name)?;
+    let offset = text.rfind(leaf)?;
     let start_byte = ty.span.start_byte + offset;
-    Some(source_span_at(
-        source,
-        start_byte,
-        start_byte + enum_name.len(),
-    ))
+    Some(source_span_at(source, start_byte, start_byte + leaf.len()))
 }
