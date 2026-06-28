@@ -38,7 +38,7 @@ use crate::enums::{
 use crate::executable::{SavedMemberRefKind, SavedPlaceResolver, lower_expr_for_file};
 use crate::facts::{FunctionId, LocalId};
 use crate::infer::{infer_only, local_binding};
-use crate::source_spans::source_span_at;
+use crate::source_spans::{identifier_span_in, last_identifier_span_in, source_span_at};
 use crate::{
     AnalysisSnapshot, CheckedProgram, Def, DefItem, Resolution, ResolvableKind, expand_alias,
     resolve, resolve_function_in_module, short_name, split_type_path,
@@ -1862,71 +1862,11 @@ fn first_line_span(source: &str, span: SourceSpan) -> Option<SourceSpan> {
 }
 
 fn name_span(source: &str, span: SourceSpan, name: &str) -> Option<SourceSpan> {
-    let (start, end) = find_identifier_in_span(source, span, name)?;
-    Some(source_span_at(source, start, end))
+    identifier_span_in(source, span, name)
 }
 
 fn last_name_span(source: &str, span: SourceSpan, name: &str) -> Option<SourceSpan> {
-    let (start, end) = find_last_identifier_in_span(source, span, name)?;
-    Some(source_span_at(source, start, end))
-}
-
-fn find_identifier_in_span(source: &str, span: SourceSpan, name: &str) -> Option<(usize, usize)> {
-    let end_byte = span.end_byte.saturating_add(1).min(source.len());
-    if span.start_byte > end_byte {
-        return None;
-    }
-    let text = source.get(span.start_byte..end_byte)?;
-    let mut cursor = 0;
-    while cursor <= text.len() {
-        let offset = text.get(cursor..)?.find(name)?;
-        let start = span.start_byte + cursor + offset;
-        let end = start + name.len();
-        if identifier_boundary(source.as_bytes(), start, end) {
-            return Some((start, end));
-        }
-        cursor += offset + name.len();
-    }
-    None
-}
-
-fn find_last_identifier_in_span(
-    source: &str,
-    span: SourceSpan,
-    name: &str,
-) -> Option<(usize, usize)> {
-    let end_byte = span.end_byte.min(source.len());
-    if span.start_byte > end_byte {
-        return None;
-    }
-    let text = source.get(span.start_byte..end_byte)?;
-    let mut cursor = 0;
-    let mut last = None;
-    while let Some(rest) = text.get(cursor..) {
-        let Some(offset) = rest.find(name) else {
-            break;
-        };
-        let start = span.start_byte + cursor + offset;
-        let end = start + name.len();
-        if identifier_boundary(source.as_bytes(), start, end) {
-            last = Some((start, end));
-        }
-        cursor += offset + name.len();
-    }
-    last
-}
-
-fn identifier_boundary(bytes: &[u8], start: usize, end: usize) -> bool {
-    let before = start
-        .checked_sub(1)
-        .and_then(|index| bytes.get(index))
-        .is_some_and(|byte| is_identifier_byte(*byte));
-    let after = bytes.get(end).is_some_and(|byte| is_identifier_byte(*byte));
-    !before && !after
-}
-
-fn is_identifier_byte(byte: u8) -> bool {
-    byte.is_ascii_alphanumeric() || byte == b'_'
+    last_identifier_span_in(source, span, name)
 }
 
 fn match_arm_header_span(arm: &MatchArm) -> SourceSpan {

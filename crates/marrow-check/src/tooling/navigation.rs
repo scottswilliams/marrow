@@ -16,7 +16,7 @@ pub fn source_catalog_definition_fact_at(
     offset: usize,
 ) -> Option<SourceCatalogLocationFact> {
     let target = catalog_target_at(snapshot, file, offset)?;
-    let declaration = supported_declaration(snapshot.catalog_declaration(target.catalog_id)?)?;
+    let declaration = target_declaration(snapshot.catalog_declaration(target.catalog_id)?)?;
     Some(location_fact(&declaration.file, declaration.span))
 }
 
@@ -27,7 +27,7 @@ pub fn source_catalog_reference_facts_at(
     include_declaration: bool,
 ) -> Option<Vec<SourceCatalogLocationFact>> {
     let target = catalog_target_at(snapshot, file, offset)?;
-    let declaration = supported_declaration(snapshot.catalog_declaration(target.catalog_id)?)?;
+    let declaration = target_declaration(snapshot.catalog_declaration(target.catalog_id)?)?;
 
     let mut locations = Vec::new();
     if include_declaration {
@@ -83,7 +83,7 @@ fn declaration_at<'a>(
     snapshot
         .catalog_declarations()
         .iter()
-        .filter_map(supported_declaration)
+        .filter_map(cursor_declaration)
         .filter(|declaration| declaration.file == file && span_covers(declaration.span, offset))
         .map(|declaration| CatalogTarget {
             file: declaration.file.as_path(),
@@ -98,6 +98,7 @@ fn supported_use_site(site: &UseSite) -> Option<&UseSite> {
     matches!(
         site.kind,
         UseSiteKind::SavedRoot
+            | UseSiteKind::ResourceConstructor
             | UseSiteKind::ResourceMember
             | UseSiteKind::StoreIndex
             | UseSiteKind::Enum
@@ -106,7 +107,20 @@ fn supported_use_site(site: &UseSite) -> Option<&UseSite> {
     .then_some(site)
 }
 
-fn supported_declaration(declaration: &CatalogDeclaration) -> Option<&CatalogDeclaration> {
+fn target_declaration(declaration: &CatalogDeclaration) -> Option<&CatalogDeclaration> {
+    matches!(
+        declaration.kind,
+        CatalogEntryKind::Store
+            | CatalogEntryKind::Resource
+            | CatalogEntryKind::ResourceMember
+            | CatalogEntryKind::StoreIndex
+            | CatalogEntryKind::Enum
+            | CatalogEntryKind::EnumMember
+    )
+    .then_some(declaration)
+}
+
+fn cursor_declaration(declaration: &CatalogDeclaration) -> Option<&CatalogDeclaration> {
     matches!(
         declaration.kind,
         CatalogEntryKind::Store

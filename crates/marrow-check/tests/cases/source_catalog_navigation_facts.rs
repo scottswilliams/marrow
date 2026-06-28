@@ -153,6 +153,85 @@ fn current(): status::Status
 }
 
 #[test]
+fn source_catalog_definition_fact_covers_resource_constructors() {
+    let library = "\
+module shelf::library
+
+resource Book
+    required title: string
+";
+    let app = "\
+module shelf::app
+use shelf::library
+
+resource Book
+    required subtitle: string
+
+fn imported()
+    const book = library::Book(title: \"Dune\")
+
+fn local()
+    const book = Book(subtitle: \"Appendix\")
+";
+    let (snapshot, paths) = analyze_files(
+        "source-catalog-definition-resource-constructor",
+        &[("src/shelf/library.mw", library), ("src/shelf/app.mw", app)],
+    );
+    let library_file = &paths[0];
+    let app_file = &paths[1];
+
+    let imported_use = offset(app, "library::Book") + "library::".len();
+    let imported_decl = offset(library, "resource Book") + "resource ".len();
+    assert_eq!(
+        source_catalog_definition_fact_at(&snapshot, app_file, imported_use + 1),
+        Some(fact(library_file, span(library, imported_decl, "Book")))
+    );
+
+    let local_use = offset(app, "Book(subtitle");
+    let local_decl = offset(app, "resource Book") + "resource ".len();
+    assert_eq!(
+        source_catalog_definition_fact_at(&snapshot, app_file, local_use + 1),
+        Some(fact(app_file, span(app, local_decl, "Book")))
+    );
+}
+
+#[test]
+fn source_catalog_reference_facts_cover_resource_constructors() {
+    let source = "\
+module a
+
+resource Book
+    required title: string
+
+fn first()
+    const book = Book(title: \"Dune\")
+
+fn second()
+    const book = Book(title: \"Foundation\")
+";
+    let (snapshot, file) = analyze("source-catalog-references-resource-constructor", source);
+
+    let with = references_at(&snapshot, &file, source, "Book(title: \"Dune\")", 1, true)
+        .expect("resource constructor references");
+    let without = references_at(&snapshot, &file, source, "Book(title: \"Dune\")", 1, false)
+        .expect("resource constructor references");
+
+    assert_eq!(
+        fact_texts(source, &with, &file),
+        vec!["Book", "Book", "Book"]
+    );
+    assert_eq!(fact_texts(source, &without, &file), vec!["Book", "Book"]);
+
+    let declaration = span(
+        source,
+        offset(source, "resource Book") + "resource ".len(),
+        "Book",
+    );
+    assert!(with.iter().any(|fact| fact.span == declaration));
+    assert!(without.iter().all(|fact| fact.span != declaration));
+}
+
+#[test]
 fn source_catalog_reference_facts_honor_include_declaration_for_saved_roots() {
     let source = "\
 module a

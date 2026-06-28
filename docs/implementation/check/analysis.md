@@ -62,10 +62,10 @@ from the checked program or snapshot:
 - `tooling::source_catalog_definition_fact_at(snapshot, file, offset)` and
   `tooling::source_catalog_reference_facts_at(snapshot, file, offset,
   include_declaration)` return checker-owned catalog navigation facts for saved
-  roots, resource members, store indexes, enums, and enum members. Enum
-  type-annotation references are filtered through the source type-annotation
-  cursor fact, so editor callers do not decide whether an enum use belongs to a
-  type annotation, enum literal, or declaration.
+  roots, resource constructors, resource members, store indexes, enums, and
+  enum members. Enum type-annotation references are filtered through the source
+  type-annotation cursor fact, so editor callers do not decide whether an enum
+  use belongs to a type annotation, enum literal, or declaration.
 - `tooling::source_semantic_token_facts(source, lexed, parsed)` returns
   syntax/parse-only source-token facts with token-tight `SourceSpan`,
   Marrow-owned `SourceSemanticTokenRole`, and typed presentation modifiers.
@@ -305,7 +305,7 @@ add only transport availability and request-envelope concerns around those DTOs.
 | `crates/marrow-check/src/tooling/semantic_tokens/references.rs` | Binding-index reference roles for checked source occurrences and qualified namespace prefixes. |
 | `crates/marrow-check/src/tooling/semantic_tokens/identity_annotations.rs` | Checked `Id(^root)` type-constructor roles from identity type annotation facts. |
 | `crates/marrow-check/src/tooling/signatures.rs` | Editor callable facts and renderable signature inputs: active/batch callee context re-exports, intrinsic callable signatures, and resource constructors. |
-| `crates/marrow-check/src/tooling/navigation.rs` | Source catalog navigation facts for definition/reference locations over saved roots, resource members, store indexes, enums, enum members, and enum type-annotation filtering. |
+| `crates/marrow-check/src/tooling/navigation.rs` | Source catalog navigation facts for definition/reference locations over saved roots, resource constructors, resource members, store indexes, enums, enum members, and enum type-annotation filtering. |
 | `crates/marrow-check/src/tooling/symbols.rs` | Source-symbol facts for editor outlines and workspace search: parsed document-outline DTOs plus checked functions/constants and catalog-backed declarations with Marrow-owned kind, display name, file/span, and container ownership. |
 | `crates/marrow-check/src/tooling/data/mod.rs` | Data tooling root and shared value types (`ResolvedDataPath`, `DataChild`, `DeclaredDataChild`, `SourceDataPathSegment`, `DataEntry`, `DataWalkPage`, `DataReadResult`, `DataRecord`, `StampedData`, `DataSnapshotStamp`, `DataCommitStamp`, `KeyMismatch`, `MAX_PREVIEW_ITEMS`, `DEFAULT_VALUE_PREVIEW_LIMIT`, `MAX_VALUE_PREVIEW_LIMIT`). |
 | `crates/marrow-check/src/tooling/data/declared.rs` | Schema-only declared child lookup for saved source paths and concrete data paths through the shared checked path walk; opens no store. |

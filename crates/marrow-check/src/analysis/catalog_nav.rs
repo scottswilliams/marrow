@@ -13,9 +13,11 @@ use crate::enums::{EnumAnnotationResolution, resolve_enum_annotation};
 use crate::executable::{
     CheckedBodyVisitor, walk_checked_body, walk_checked_expr, walk_checked_match_arm,
 };
+use crate::facts::ModuleId;
+use crate::source_spans::last_identifier_span_in;
 use crate::{
-    CheckedBody, CheckedExpr, CheckedMatchArm, CheckedProgram, CheckedSavedMember,
-    CheckedSavedPlace, CheckedSavedTerminal,
+    CheckedBody, CheckedCallTarget, CheckedExpr, CheckedMatchArm, CheckedProgram,
+    CheckedResourceConstructor, CheckedSavedMember, CheckedSavedPlace, CheckedSavedTerminal,
 };
 
 /// The prebuilt proposal identity map the declaration collectors resolve first-run
@@ -33,6 +35,7 @@ pub struct UseSite {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UseSiteKind {
     SavedRoot,
+    ResourceConstructor,
     ResourceMember,
     StoreIndex,
     Enum,
@@ -54,20 +57,41 @@ pub(super) fn collect_use_sites(program: &CheckedProgram, files: &[AnalyzedFile]
     // map, so a program with many enum members stays linear here too.
     let ids = program.proposal_id_map();
     let file_set: HashSet<&Path> = files.iter().map(|file| file.path.as_path()).collect();
+    let sources: HashMap<&Path, &str> = files
+        .iter()
+        .map(|file| (file.path.as_path(), file.source.as_str()))
+        .collect();
     collect_module_type_annotation_use_sites(program, &ids, files, &mut sites);
     let runtime = program.runtime();
     for module in runtime.modules() {
         if !file_set.contains(module.source_file.as_path()) {
             continue;
         }
+        let Some(source) = sources.get(module.source_file.as_path()).copied() else {
+            continue;
+        };
         for constant in &module.constants {
             if let Some(value) = &constant.value {
-                collect_expr_use_sites(program, &ids, &module.source_file, value, &mut sites);
+                collect_expr_use_sites(
+                    program,
+                    &ids,
+                    &module.source_file,
+                    source,
+                    value,
+                    &mut sites,
+                );
             }
         }
         for function in module.functions() {
             if let Some(body) = function.body() {
-                collect_body_use_sites(program, &ids, &module.source_file, body, &mut sites);
+                collect_body_use_sites(
+                    program,
+                    &ids,
+                    &module.source_file,
+                    source,
+                    body,
+                    &mut sites,
+                );
             }
         }
     }
@@ -75,8 +99,11 @@ pub(super) fn collect_use_sites(program: &CheckedProgram, files: &[AnalyzedFile]
         if !file_set.contains(transform.file.as_path()) {
             continue;
         }
+        let Some(source) = sources.get(transform.file.as_path()).copied() else {
+            continue;
+        };
         if let Some(body) = transform.runtime_body() {
-            collect_body_use_sites(program, &ids, &transform.file, body, &mut sites);
+            collect_body_use_sites(program, &ids, &transform.file, source, body, &mut sites);
         }
     }
     normalize_use_sites(&mut sites);
@@ -167,10 +194,11 @@ fn sort_use_sites(sites: &mut [UseSite]) {
 fn use_site_kind_rank(kind: UseSiteKind) -> u8 {
     match kind {
         UseSiteKind::SavedRoot => 0,
-        UseSiteKind::ResourceMember => 1,
-        UseSiteKind::StoreIndex => 2,
-        UseSiteKind::Enum => 3,
-        UseSiteKind::EnumMember => 4,
+        UseSiteKind::ResourceConstructor => 1,
+        UseSiteKind::ResourceMember => 2,
+        UseSiteKind::StoreIndex => 3,
+        UseSiteKind::Enum => 4,
+        UseSiteKind::EnumMember => 5,
     }
 }
 
@@ -178,6 +206,7 @@ fn collect_body_use_sites(
     program: &CheckedProgram,
     ids: &CatalogProposalIds,
     file: &Path,
+    source: &str,
     body: &CheckedBody,
     sites: &mut Vec<UseSite>,
 ) {
@@ -185,6 +214,7 @@ fn collect_body_use_sites(
         program,
         ids,
         file,
+        source,
         sites,
     };
     walk_checked_body(&mut collector, body);
@@ -194,6 +224,7 @@ fn collect_expr_use_sites(
     program: &CheckedProgram,
     ids: &CatalogProposalIds,
     file: &Path,
+    source: &str,
     expr: &CheckedExpr,
     sites: &mut Vec<UseSite>,
 ) {
@@ -201,6 +232,7 @@ fn collect_expr_use_sites(
         program,
         ids,
         file,
+        source,
         sites,
     };
     collector.visit_expr(expr);
@@ -210,6 +242,7 @@ struct UseSiteCollector<'a, 's> {
     program: &'a CheckedProgram,
     ids: &'a CatalogProposalIds,
     file: &'a Path,
+    source: &'a str,
     sites: &'s mut Vec<UseSite>,
 }
 
@@ -217,6 +250,20 @@ impl UseSiteCollector<'_, '_> {
     fn record_expr(&mut self, expr: &CheckedExpr) {
         if let Some(place) = expr.saved_place() {
             collect_place_use_sites(self.program, self.ids, self.file, place, self.sites);
+        }
+
+        if let CheckedExpr::Call { callee, target, .. } = expr
+            && let CheckedCallTarget::ResourceConstructor(resource) = target
+        {
+            collect_resource_constructor_use_site(
+                self.program,
+                self.ids,
+                self.file,
+                self.source,
+                callee,
+                resource,
+                self.sites,
+            );
         }
 
         if let CheckedExpr::Name { enum_member, .. } = expr
@@ -256,6 +303,48 @@ impl UseSiteCollector<'_, '_> {
             }
         }
     }
+}
+
+fn collect_resource_constructor_use_site(
+    program: &CheckedProgram,
+    ids: &CatalogProposalIds,
+    file: &Path,
+    source: &str,
+    callee: &CheckedExpr,
+    resource: &CheckedResourceConstructor,
+    sites: &mut Vec<UseSite>,
+) {
+    let Some(catalog_id) = resource_ref_catalog_id(program, ids, resource) else {
+        return;
+    };
+    let Some(span) = constructor_leaf_span(source, callee) else {
+        return;
+    };
+    push_use_site(
+        file,
+        span,
+        &catalog_id,
+        UseSiteKind::ResourceConstructor,
+        sites,
+    );
+}
+
+fn resource_ref_catalog_id(
+    program: &CheckedProgram,
+    ids: &CatalogProposalIds,
+    resource: &CheckedResourceConstructor,
+) -> Option<String> {
+    let module_id = ModuleId(resource.resource.module);
+    let resource_id = program.facts.resource_id(module_id, &resource.name)?;
+    program.resource_catalog_id_in(ids, resource_id)
+}
+
+fn constructor_leaf_span(source: &str, callee: &CheckedExpr) -> Option<SourceSpan> {
+    let CheckedExpr::Name { segments, span, .. } = callee else {
+        return None;
+    };
+    let segment = segments.last()?;
+    last_identifier_span_in(source, *span, segment)
 }
 
 impl CheckedBodyVisitor for UseSiteCollector<'_, '_> {
