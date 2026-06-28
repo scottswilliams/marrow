@@ -911,6 +911,7 @@ fn frame_debug_data_reads_the_paused_run_store() {
 
     struct DebugDataProbe<'a> {
         program: &'a CheckedRuntimeProgram,
+        snapshot: Option<tooling::DataSnapshotStamp>,
         preview: Option<tooling::StampedData<tooling::DataPreviewReadResult>>,
         children: Option<tooling::StampedData<tooling::DataChildrenPage>>,
     }
@@ -923,6 +924,7 @@ fn frame_debug_data_reads_the_paused_run_store() {
             frame: Frame<'_, '_>,
         ) -> Result<(), RuntimeError> {
             if span.line == RETURN_LINE {
+                self.snapshot = Some(frame.debug_data_snapshot().expect("debug data snapshot"));
                 let record = [
                     tooling::DataPathSegment::Root("accts".into()),
                     tooling::DataPathSegment::Key(SavedKey::Int(1)),
@@ -960,6 +962,7 @@ fn frame_debug_data_reads_the_paused_run_store() {
 
     let mut hook = DebugDataProbe {
         program: &program,
+        snapshot: None,
         preview: None,
         children: None,
     };
@@ -972,6 +975,10 @@ fn frame_debug_data_reads_the_paused_run_store() {
     .expect("debugged run completes");
 
     let preview = hook.preview.expect("preview captured");
+    let snapshot = hook.snapshot.expect("snapshot captured");
+    assert_eq!(snapshot.checked_source_digest, hook.program.source_digest());
+    assert_eq!(snapshot.store_commit, preview.stamp.store_commit);
+    assert_eq!(snapshot.open_transaction, None);
     assert_eq!(
         preview.stamp.checked_source_digest,
         hook.program.source_digest()
@@ -1102,6 +1109,7 @@ fn frame_debug_data_reads_open_transaction_store_with_transaction_stamp() {
     run_entry(&store, checked_entry!(&program, "test::init")).expect("initial write commits");
 
     struct TransactionProbe {
+        snapshot: Option<tooling::DataSnapshotStamp>,
         preview: Option<tooling::StampedData<tooling::DataPreviewReadResult>>,
         children: Option<tooling::StampedData<tooling::DataChildrenPage>>,
     }
@@ -1114,6 +1122,11 @@ fn frame_debug_data_reads_open_transaction_store_with_transaction_stamp() {
             frame: Frame<'_, '_>,
         ) -> Result<(), RuntimeError> {
             if span.line == RETURN_LINE {
+                self.snapshot = Some(
+                    frame
+                        .debug_data_snapshot()
+                        .expect("debug data snapshot inside transaction"),
+                );
                 let balance = [
                     tooling::DataPathSegment::Root("accts".into()),
                     tooling::DataPathSegment::Key(SavedKey::Int(1)),
@@ -1137,6 +1150,7 @@ fn frame_debug_data_reads_open_transaction_store_with_transaction_stamp() {
     }
 
     let mut hook = TransactionProbe {
+        snapshot: None,
         preview: None,
         children: None,
     };
@@ -1149,6 +1163,12 @@ fn frame_debug_data_reads_open_transaction_store_with_transaction_stamp() {
     .expect("debugged run completes");
 
     let preview = hook.preview.expect("preview captured");
+    let snapshot = hook.snapshot.expect("snapshot captured");
+    assert_eq!(snapshot.store_commit, None);
+    assert_eq!(
+        snapshot.open_transaction.expect("transaction stamp").depth,
+        NonZeroUsize::new(1).expect("nonzero depth")
+    );
     assert_eq!(preview.data.presence, tooling::DataPresence::ValueOnly);
     assert_eq!(preview.data.preview.expect("value preview").text, "7");
     assert_eq!(preview.stamp.store_commit, None);
@@ -1175,6 +1195,24 @@ fn frame_debug_data_reads_open_transaction_store_with_transaction_stamp() {
             .depth,
         NonZeroUsize::new(1).expect("nonzero depth")
     );
+}
+
+#[test]
+fn runtime_open_transaction_data_snapshot_requires_open_store_transaction() {
+    let program = checked_program(
+        "resource Account\n\
+         \x20\x20\x20\x20balance: int\nstore ^accts(id: int): Account\n",
+    );
+    let store = TreeStore::memory();
+
+    let error = tooling::runtime_open_transaction_data_snapshot_stamp(
+        &program,
+        &store,
+        NonZeroUsize::new(1).expect("nonzero depth"),
+    )
+    .expect_err("open transaction snapshots require an open store transaction");
+
+    assert_eq!(error.code(), "store.transaction");
 }
 
 #[test]

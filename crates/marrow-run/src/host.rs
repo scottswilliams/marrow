@@ -384,6 +384,19 @@ impl<'e, 'p> Frame<'e, 'p> {
         .map_err(|error| self.debug_tooling_error(error))
     }
 
+    pub fn debug_data_snapshot(&self) -> Result<tooling::DataSnapshotStamp, RuntimeError> {
+        if let Some(depth) = self.source_transaction_depth() {
+            return tooling::runtime_open_transaction_data_snapshot_stamp(
+                self.env.program,
+                self.env.store,
+                depth,
+            )
+            .map_err(|error| error.located(self.span));
+        }
+        tooling::runtime_data_snapshot_stamp(self.env.program, self.env.store)
+            .map_err(|error| error.located(self.span))
+    }
+
     pub fn debug_data_preview(
         &self,
         segments: &[tooling::DataPathSegment],

@@ -81,6 +81,11 @@ impl DataSnapshotStamp {
         store: &TreeStore,
         depth: NonZeroUsize,
     ) -> Result<Self, StoreError> {
+        if store.transaction_depth() == 0 {
+            return Err(StoreError::InvalidTransaction {
+                message: "expected an open write transaction".to_string(),
+            });
+        }
         Self::read_with_open_transaction(program, store, Some(DataTransactionStamp { depth }))
     }
 
@@ -298,6 +303,21 @@ pub fn data_snapshot_stamp(
     store: &TreeStore,
 ) -> Result<DataSnapshotStamp, StoreError> {
     DataSnapshotStamp::read(program, store)
+}
+
+pub fn runtime_data_snapshot_stamp(
+    program: &CheckedRuntimeProgram,
+    store: &TreeStore,
+) -> Result<DataSnapshotStamp, StoreError> {
+    DataSnapshotStamp::read(program, store)
+}
+
+pub fn runtime_open_transaction_data_snapshot_stamp(
+    program: &CheckedRuntimeProgram,
+    store: &TreeStore,
+    source_transaction_depth: NonZeroUsize,
+) -> Result<DataSnapshotStamp, StoreError> {
+    DataSnapshotStamp::read_open_transaction(program, store, source_transaction_depth)
 }
 
 pub(crate) fn with_stamped_read<T, E>(
