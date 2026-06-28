@@ -4,8 +4,8 @@
 //! shape, and data generation shape used in tooling reports, plus checked surface
 //! ABI descriptor DTOs, read request/result DTOs, generated write
 //! request/result DTOs, surface action request/result DTOs, operation
-//! envelopes, and descriptor-derived surface route manifests. Surface read DTOs
-//! can execute against a
+//! envelopes, descriptor-derived surface route manifests, and admitted serve
+//! boundary facts. Surface read DTOs can execute against a
 //! `marrow_run::ProjectSurfaceReadSession`, and point/singleton
 //! create/update/delete and action DTOs can execute against a
 //! `marrow_run::ProjectSurfaceSession`, without exposing the backing store. The
@@ -21,6 +21,7 @@ use serde::Serialize;
 pub mod resource_schema;
 pub mod run;
 pub mod saved_data;
+pub mod serve;
 pub mod surface;
 
 pub use run::{
@@ -29,6 +30,9 @@ pub use run::{
     run_session_error_to_json,
 };
 pub use saved_data::data_view_boundary_to_json;
+pub use serve::{
+    SurfaceServeBoundaryJson, SurfaceServeProcessControlJson, surface_serve_boundary_to_json,
+};
 
 const LOWER_HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
 const ENTRY_RETURN_JSON_NODE_CAP: usize = 256;
@@ -361,6 +365,7 @@ mod tests {
         DATA_GENERATION_PROFILE_VERSION, DataGenerationJson, data_generation_stamp_to_json,
         data_view_boundary_to_json, entry_run_facts_to_json, execution_boundary_to_json,
         run_error_to_json, run_output_to_json, run_session_error_to_json, saved_key_to_json,
+        surface_serve_boundary_to_json,
     };
     use std::fs;
     use std::num::NonZeroUsize;
@@ -370,7 +375,8 @@ mod tests {
     use marrow_check::tooling::{DataCommitStamp, DataSnapshotStamp, DataTransactionStamp};
     use marrow_run::{
         Host, LocalTree, ProjectInvokeError, ProjectOpen, ProjectSession, ProjectSessionError,
-        ProjectSurfaceReadSession, RunOutput, RuntimeError, Sequence, SessionEntry, Value,
+        ProjectSurfaceReadSession, ProjectSurfaceSession, RunOutput, RuntimeError, Sequence,
+        SessionEntry, Value,
     };
     use marrow_store::Decimal;
     use marrow_store::key::SavedKey;
@@ -1003,6 +1009,77 @@ mod tests {
                 }
             ]),
             "{rendered}"
+        );
+        fs::remove_dir_all(&root).expect("remove temp project");
+    }
+
+    #[test]
+    fn surface_serve_boundary_json_projects_read_and_write_sessions() {
+        let root = temp_project(
+            "surface-serve-boundary-json",
+            "module m\n\
+            resource Book\n    \
+            required title: string\n\
+            store ^books(id: int): Book\n\
+            pub fn seed()\n    \
+            transaction\n        \
+            ^books(1).title = \"Dune\"\n",
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".data" } }"#,
+        );
+        let seed = ProjectSession::open(&root, ProjectOpen::run().with_entry_override("m::seed"))
+            .expect("seed session opens");
+        let mut output = String::new();
+        seed.invoke(SessionEntry::new("m::seed", &Host::new(), &mut output))
+            .expect("seed native store");
+        drop(seed);
+
+        let read_session =
+            ProjectSurfaceReadSession::open(&root).expect("surface read session opens");
+        let read_boundary = read_session
+            .surface_serve_boundary()
+            .expect("read serve boundary");
+        let read_rendered = dto_json(surface_serve_boundary_to_json(&read_boundary));
+
+        assert_eq!(read_rendered["serveMode"], "read_only", "{read_rendered}");
+        assert_eq!(
+            read_rendered["dataViewBoundary"]["sourceAnalysisGeneration"]["profileVersion"],
+            "analysis.generation.v1",
+            "{read_rendered}"
+        );
+        assert_eq!(
+            read_rendered["dataViewBoundary"]["storeSnapshot"]["profile_version"],
+            DATA_GENERATION_PROFILE_VERSION,
+            "{read_rendered}"
+        );
+        assert_eq!(
+            read_rendered["dataViewBoundary"]["compatibility"],
+            json!({ "verdict": "admitted" }),
+            "{read_rendered}"
+        );
+        assert_eq!(
+            read_rendered["processControl"],
+            json!({ "kind": "not_exposed" }),
+            "{read_rendered}"
+        );
+        drop(read_session);
+
+        let write_session =
+            ProjectSurfaceSession::open(&root).expect("surface write session opens");
+        let write_boundary = write_session
+            .surface_serve_boundary()
+            .expect("write serve boundary");
+        let write_rendered = dto_json(surface_serve_boundary_to_json(&write_boundary));
+
+        assert_eq!(write_rendered["serveMode"], "write", "{write_rendered}");
+        assert_eq!(
+            write_rendered["dataViewBoundary"]["storeSnapshot"]["profile_version"],
+            DATA_GENERATION_PROFILE_VERSION,
+            "{write_rendered}"
+        );
+        assert_eq!(
+            write_rendered["processControl"],
+            json!({ "kind": "not_exposed" }),
+            "{write_rendered}"
         );
         fs::remove_dir_all(&root).expect("remove temp project");
     }

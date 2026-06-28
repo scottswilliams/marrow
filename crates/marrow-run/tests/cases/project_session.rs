@@ -13,7 +13,8 @@ use marrow_run::{
     EntryDescriptor, EntryInvocation, EntryScalarArgument, ExecutionBoundaryStoreKind,
     ExecutionSessionKind, Host, ProjectMode, ProjectOpen, ProjectSession,
     ProjectSurfaceReadSession, ProjectSurfaceSession, RUN_ENTRY_ARGUMENT, SURFACE_ABI_MISMATCH,
-    SessionEntry, SurfaceCollectionPageRequest, SurfaceReadInput, SurfaceUpdateField, SurfaceValue,
+    SessionEntry, SurfaceCollectionPageRequest, SurfaceReadInput, SurfaceServeMode,
+    SurfaceServeProcessControl, SurfaceUpdateField, SurfaceValue,
     data_view_unavailable_reason_for_config,
 };
 use marrow_store::cell::CatalogId;
@@ -500,6 +501,125 @@ fn data_view_unavailable_reason_follows_project_store_config() {
         data_view_unavailable_reason_for_config(root.path(), &config)
             .expect("classify missing native store"),
         Some(DataViewUnavailableReason::NativeStoreMissing)
+    );
+}
+
+#[test]
+fn surface_serve_boundary_reports_mode_store_watch_targets_and_process_control() {
+    let root = TempDir::new("marrow-run-surface-serve-boundary").expect("create project");
+    write_native_config(root.path());
+    write_temp_source(
+        root.path(),
+        Path::new("src/shelf.mw"),
+        surface_counter_source(),
+    );
+    let seed = ProjectSession::open(
+        root.path(),
+        ProjectOpen::run().with_entry_override("shelf::seed"),
+    )
+    .expect("open seed session");
+    assert_eq!(invoke(&seed, "shelf::seed"), "");
+    drop(seed);
+
+    let read_session =
+        ProjectSurfaceReadSession::open(root.path()).expect("open surface read session");
+    let read_boundary = read_session
+        .surface_serve_boundary()
+        .expect("read serve boundary");
+
+    assert_eq!(read_boundary.mode, SurfaceServeMode::ReadOnly);
+    assert_eq!(
+        read_boundary
+            .data_view_boundary
+            .source_analysis_generation
+            .checked_source_digest,
+        read_session.program().source_digest()
+    );
+    assert_eq!(
+        read_boundary
+            .data_view_boundary
+            .store_snapshot
+            .checked_source_digest,
+        read_session.program().source_digest()
+    );
+    assert_eq!(
+        read_boundary
+            .data_view_boundary
+            .watch_targets
+            .iter()
+            .map(|target| (target.kind, target.path.clone()))
+            .collect::<Vec<_>>(),
+        vec![
+            (
+                DataViewWatchTargetKind::StoreFile,
+                root.path().join(".data").join("marrow.redb"),
+            ),
+            (DataViewWatchTargetKind::CatalogLock, lock_path(root.path())),
+        ]
+    );
+    assert_eq!(
+        read_boundary.process_control,
+        SurfaceServeProcessControl::NotExposed
+    );
+    drop(read_session);
+
+    let write_session =
+        ProjectSurfaceSession::open(root.path()).expect("open surface write session");
+    let write_boundary = write_session
+        .surface_serve_boundary()
+        .expect("write serve boundary");
+    let before_write_commit = write_boundary
+        .data_view_boundary
+        .store_snapshot
+        .store_commit
+        .as_ref()
+        .expect("write boundary carries committed store metadata")
+        .commit_id;
+
+    assert_eq!(write_boundary.mode, SurfaceServeMode::Write);
+    assert_eq!(
+        write_boundary
+            .data_view_boundary
+            .source_analysis_generation
+            .checked_source_digest,
+        write_session.program().source_digest()
+    );
+    assert_eq!(
+        write_boundary
+            .data_view_boundary
+            .store_snapshot
+            .checked_source_digest,
+        write_session.program().source_digest()
+    );
+    assert_eq!(
+        write_boundary.process_control,
+        SurfaceServeProcessControl::NotExposed
+    );
+
+    let update_tag = update_operation_tag(write_session.program(), "Counters");
+    write_session
+        .admit_update_by_operation_tag(&update_tag)
+        .expect("admit point update")
+        .update_point(
+            &[SavedKey::Int(1)],
+            &[SurfaceUpdateField {
+                catalog_id: update_field_catalog_id(write_session.program(), "Counters", "value"),
+                value: SurfaceValue::Int(11),
+            }],
+        )
+        .expect("execute point update");
+    let after_write_commit = write_session
+        .surface_serve_boundary()
+        .expect("write serve boundary after update")
+        .data_view_boundary
+        .store_snapshot
+        .store_commit
+        .as_ref()
+        .expect("write boundary carries committed store metadata after update")
+        .commit_id;
+    assert!(
+        after_write_commit > before_write_commit,
+        "write serve boundary must report the current store snapshot after admitted writes"
     );
 }
 

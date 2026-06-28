@@ -99,9 +99,9 @@ pub use project_session::{
     ExecutionBoundary, ExecutionBoundaryStoreKind, ExecutionSessionKind, ExecutionStoreBoundary,
     ProjectInvokeError, ProjectMode, ProjectOpen, ProjectSession, ProjectSessionError,
     ProjectSessionNotice, ProjectSurfaceReadSession, ProjectSurfaceSession, ProjectSurfaceSnapshot,
-    ProjectTestCase, SessionEntry, SourceAnalysisAdmission, StoreStamp,
-    data_view_unavailable_reason_for_config, data_view_watch_targets, recover_store_for_write,
-    seed_absent_store_from_committed_lock,
+    ProjectTestCase, SessionEntry, SourceAnalysisAdmission, StoreStamp, SurfaceServeBoundary,
+    SurfaceServeMode, SurfaceServeProcessControl, data_view_unavailable_reason_for_config,
+    data_view_watch_targets, recover_store_for_write, seed_absent_store_from_committed_lock,
 };
 pub use surface::{
     SURFACE_ABI_MISMATCH, SURFACE_ABSENT, SURFACE_ACTION, SURFACE_COMPUTED, SURFACE_CONFLICT,

@@ -128,7 +128,7 @@ pub struct ProjectSession {
 pub struct ProjectSurfaceReadSession {
     root: PathBuf,
     program: CheckedProgram,
-    data_view_boundary: DataViewBoundary,
+    surface_serve_boundary: SurfaceServeBoundary,
     store_path: PathBuf,
     store: TreeStore,
 }
@@ -153,7 +153,9 @@ pub struct ProjectSurfaceSnapshot {
 /// handle and must not grow hidden open-time repair behavior.
 pub struct ProjectSurfaceSession {
     root: PathBuf,
+    config: ProjectConfig,
     program: CheckedProgram,
+    source_analysis_generation: AnalysisGeneration,
     store_path: PathBuf,
     store: TreeStore,
     notices: Vec<ProjectSessionNotice>,
@@ -502,6 +504,34 @@ pub enum DataViewWatchTargetKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SurfaceServeBoundary {
+    pub mode: SurfaceServeMode,
+    pub data_view_boundary: DataViewBoundary,
+    pub process_control: SurfaceServeProcessControl,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SurfaceServeMode {
+    ReadOnly,
+    Write,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SurfaceServeProcessControl {
+    NotExposed,
+}
+
+impl SurfaceServeBoundary {
+    fn new(mode: SurfaceServeMode, data_view_boundary: DataViewBoundary) -> Self {
+        Self {
+            mode,
+            data_view_boundary,
+            process_control: SurfaceServeProcessControl::NotExposed,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExecutionBoundary {
     pub session_kind: ExecutionSessionKind,
     pub source_analysis_generation: AnalysisGeneration,
@@ -804,7 +834,11 @@ impl ProjectSurfaceReadSession {
     }
 
     pub fn data_view_boundary(&self) -> &DataViewBoundary {
-        &self.data_view_boundary
+        &self.surface_serve_boundary.data_view_boundary
+    }
+
+    pub fn surface_serve_boundary(&self) -> Result<SurfaceServeBoundary, ProjectSessionError> {
+        Ok(self.surface_serve_boundary.clone())
     }
 
     pub fn store_stamp(&self) -> Result<StoreStamp, ProjectSessionError> {
@@ -909,7 +943,10 @@ impl ProjectSurfaceSnapshot {
         Ok(ProjectSurfaceReadSession {
             root: opened.root,
             program: opened.program,
-            data_view_boundary,
+            surface_serve_boundary: SurfaceServeBoundary::new(
+                SurfaceServeMode::ReadOnly,
+                data_view_boundary,
+            ),
             store_path: opened.store_path,
             store: opened.store,
         })
@@ -924,7 +961,9 @@ impl ProjectSurfaceSnapshot {
         )?;
         Ok(ProjectSurfaceSession {
             root: opened.root,
+            config: self.config.clone(),
             program: opened.program,
+            source_analysis_generation: self.source_analysis_generation.clone(),
             store_path: opened.store_path,
             store: opened.store,
             notices: opened.notices,
@@ -947,6 +986,20 @@ impl ProjectSurfaceSession {
     /// committed lock on a fresh checkout. The serve startup prints these so a seed is never silent.
     pub fn notices(&self) -> &[ProjectSessionNotice] {
         &self.notices
+    }
+
+    pub fn surface_serve_boundary(&self) -> Result<SurfaceServeBoundary, ProjectSessionError> {
+        let data_view_boundary = data_view_boundary_for_opened_session(
+            &self.root,
+            &self.config,
+            &self.program,
+            &self.store,
+            self.source_analysis_generation.clone(),
+        )?;
+        Ok(SurfaceServeBoundary::new(
+            SurfaceServeMode::Write,
+            data_view_boundary,
+        ))
     }
 
     pub fn store_stamp(&self) -> Result<StoreStamp, ProjectSessionError> {

@@ -185,6 +185,13 @@ read/computed-read/create/update/delete/action shape requests are rejected by
 that same preflight as `surface.request`; cursor mismatches stay on the existing
 cursor error path.
 
+`serve.rs` renders the already admitted `SurfaceServeBoundary` fact from
+`marrow-run` into JSON: the read-only or write serve mode, the shared
+data-view boundary for source/store/watch identity, and the current
+process-control status. A `not_exposed` process-control status is intentionally
+not a listener, served-process identity, debugger attach target, or control
+channel.
+
 ## Read next
 
 - `crates/marrow-json/src/run.rs` — bounded run result, run diagnostic, and
@@ -193,6 +200,8 @@ cursor error path.
   `data_generation_stamp_to_json`, `DataGenerationJson`, and `DataCommitJson`.
 - `crates/marrow-json/src/saved_data.rs` — saved-data request/result DTOs and
   `data_view_boundary` rendering for admitted read-only project data views.
+- `crates/marrow-json/src/serve.rs` — admitted serve-boundary rendering for
+  read-only and write surface sessions.
 - `crates/marrow-json/src/surface.rs` and `crates/marrow-json/src/surface/` —
   surface ABI descriptor DTOs, operation catalog and route binding validation,
   surface read and computed-read result DTOs, checked surface read/computed-read
