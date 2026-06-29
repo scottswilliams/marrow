@@ -15,6 +15,9 @@ use marrow_store::tree::decode_tree_enum_member;
 use marrow_store::value::{SavedValue, ScalarType, decode_value, encode_value};
 use marrow_syntax::SourceSpan;
 use serde_json::json;
+
+use crate::term_style::{self, Stream, Style};
+
 /// Observes a run and reports each statement and managed write. `label` prefixes
 /// each event so `test --trace` can attribute a trace to its test; a plain `run`
 /// passes an empty label.
@@ -84,10 +87,11 @@ impl StepHook for TraceHook {
         value: Option<&[u8]>,
         depth: usize,
     ) {
-        let op_name = match op {
-            WriteOp::Write => "write",
-            WriteOp::Delete => "delete",
+        let (op_name, op_style) = match op {
+            WriteOp::Write => ("write", Style::Success),
+            WriteOp::Delete => ("delete", Style::Warning),
         };
+        let op_name = term_style::paint(Stream::Stderr, op_style, op_name);
         let rendered_target = render_write_target(target, &self.names);
         let line = match value {
             Some(bytes) => {

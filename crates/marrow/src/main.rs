@@ -6,6 +6,8 @@ pub(crate) use marrow_check::tooling::store_path_is_absent;
 use marrow_syntax::Diagnose;
 use serde_json::json;
 
+use crate::term_style::{Stream, Style};
+
 mod backup;
 mod cmd_backup;
 mod cmd_check;
@@ -20,6 +22,7 @@ mod cmd_run;
 mod cmd_serve;
 mod cmd_test;
 mod dry_run;
+mod term_style;
 mod trace;
 
 const HELP: &str = "\
@@ -52,7 +55,7 @@ fn main() -> ExitCode {
     let Some((command, rest)) = args.split_first() else {
         // A bare `marrow` is a usage error, not success: it ran no command. Printing usage to
         // stderr and exiting 2 keeps a forgotten subcommand from passing a CI gate green.
-        eprint!("{HELP}");
+        eprint!("{}", term_style::render_help(Stream::Stderr, HELP));
         return ExitCode::from(2);
     };
     // Every command that parses, checks, or runs untrusted `.mw` source recurses
@@ -106,13 +109,14 @@ fn dispatch(command: &str, rest: &[String]) -> ExitCode {
         "backup" => cmd_backup::backup(rest),
         "restore" => cmd_restore::restore(rest),
         "--help" | "-h" | "help" => {
-            print!("{HELP}");
+            print!("{}", term_style::render_help(Stream::Stdout, HELP));
             ExitCode::SUCCESS
         }
         "--version" | "-V" | "version" => {
             let profile = marrow_run::evolution::current_engine_profile();
             println!(
-                "marrow {} engine-profile=(key=v{}, layout-epoch={}, digest={})",
+                "{} {} engine-profile=(key=v{}, layout-epoch={}, digest={})",
+                term_style::paint(Stream::Stdout, Style::Code, "marrow"),
                 env!("CARGO_PKG_VERSION"),
                 profile.key_profile_version(),
                 profile.layout_epoch(),
@@ -221,13 +225,22 @@ pub(crate) fn report_project_failed_with_diagnostic(
             }
             // The unspanned fatal condition carries an explicit severity that the text line must
             // surface, so an exit-1 error reads as `error:` rather than an unlabeled note.
-            let label = match diagnostic["severity"].as_str() {
-                Some("warning") => "warning: ",
-                _ => "error: ",
+            let severity = match diagnostic["severity"].as_str() {
+                Some("warning") => "warning",
+                _ => "error",
             };
-            eprintln!(
-                "{label}{}: {}",
+            let label = term_style::paint(
+                Stream::Stderr,
+                severity_style(severity),
+                format!("{severity}:"),
+            );
+            let code = term_style::paint(
+                Stream::Stderr,
+                Style::Code,
                 diagnostic["code"].as_str().unwrap_or_default(),
+            );
+            eprintln!(
+                "{label} {code}: {}",
                 diagnostic["message"].as_str().unwrap_or_default()
             );
         }
@@ -308,8 +321,9 @@ fn warning_count(report: &marrow_check::CheckReport) -> usize {
 /// warning count when any warning or advisory applies, and each advisory summary appended after the
 /// count so a stale lock or client is visible without reading stderr.
 fn success_line(target: &str, warnings: usize, advisory_summaries: &[&str]) -> String {
+    let ok = term_style::paint(Stream::Stdout, Style::Success, "ok:");
     if warnings == 0 {
-        return format!("ok: {target} checked");
+        return format!("{ok} {target} checked");
     }
     let suffix = if warnings == 1 { "warning" } else { "warnings" };
     let mut detail = format!("{warnings} {suffix}");
@@ -317,7 +331,7 @@ fn success_line(target: &str, warnings: usize, advisory_summaries: &[&str]) -> S
         detail.push_str("; ");
         detail.push_str(summary);
     }
-    format!("ok: {target} checked ({detail})")
+    format!("{ok} {target} checked ({detail})")
 }
 
 fn report_project_with_footprints(
@@ -483,14 +497,20 @@ pub(crate) fn envelope(
 fn project_diagnostic_lines(report: &marrow_check::CheckReport) -> Vec<String> {
     let mut lines = Vec::new();
     for diagnostic in &report.diagnostics {
+        let file = term_style::paint(
+            Stream::Stderr,
+            Style::Muted,
+            diagnostic.file.display().to_string(),
+        );
+        let severity = term_style::paint(
+            Stream::Stderr,
+            severity_style(diagnostic.severity.as_str()),
+            diagnostic.severity.as_str(),
+        );
+        let code = term_style::paint(Stream::Stderr, Style::Code, diagnostic.code);
         lines.push(format!(
             "{}:{}:{}: {}: {}: {}",
-            diagnostic.file.display(),
-            diagnostic.span.line,
-            diagnostic.span.column,
-            diagnostic.severity.as_str(),
-            diagnostic.code,
-            diagnostic.message
+            file, diagnostic.span.line, diagnostic.span.column, severity, code, diagnostic.message
         ));
         if let Some(line) = check_diagnostic_payload_text(diagnostic) {
             lines.push(line);
@@ -558,7 +578,10 @@ pub(crate) fn report_simple_error_with_data(
     format: CheckFormat,
 ) {
     match format {
-        CheckFormat::Text => eprintln!("{code}: {message}"),
+        CheckFormat::Text => eprintln!(
+            "{}: {message}",
+            term_style::paint(Stream::Stderr, Style::Code, code)
+        ),
         CheckFormat::Json | CheckFormat::Jsonl => write_json(json!({
             "code": code,
             "kind": marrow_syntax::kind_for_code(code),
@@ -1100,7 +1123,8 @@ pub(crate) fn report_check(file: &str, parsed: &marrow_syntax::ParsedSource, for
         CheckFormat::Text => {
             if parsed.diagnostics.is_empty() {
                 println!(
-                    "ok: {file} parsed ({} declaration{})",
+                    "{} {file} parsed ({} declaration{})",
+                    term_style::paint(Stream::Stdout, Style::Success, "ok:"),
                     parsed.file.declarations.len(),
                     if parsed.file.declarations.len() == 1 {
                         ""
@@ -1110,9 +1134,12 @@ pub(crate) fn report_check(file: &str, parsed: &marrow_syntax::ParsedSource, for
                 );
             } else {
                 for diagnostic in &parsed.diagnostics {
-                    eprintln!("{file}:{diagnostic}");
+                    eprintln!("{}", syntax_diagnostic_line(file, diagnostic));
                     if let Some(help) = &diagnostic.help {
-                        eprintln!("help: {help}");
+                        eprintln!(
+                            "{} {help}",
+                            term_style::paint(Stream::Stderr, Style::Code, "help:")
+                        );
                     }
                 }
             }
@@ -1137,7 +1164,10 @@ pub(crate) fn report_check(file: &str, parsed: &marrow_syntax::ParsedSource, for
 
 pub(crate) fn report_io_error(file: &str, error: &std::io::Error, format: CheckFormat) {
     match format {
-        CheckFormat::Text => eprintln!("io.read: failed to read {file}: {error}"),
+        CheckFormat::Text => eprintln!(
+            "{}: failed to read {file}: {error}",
+            term_style::paint(Stream::Stderr, Style::Code, "io.read")
+        ),
         CheckFormat::Json | CheckFormat::Jsonl => {
             write_json(json!({
                 "code": "io.read",
@@ -1147,6 +1177,29 @@ pub(crate) fn report_io_error(file: &str, error: &std::io::Error, format: CheckF
             }));
         }
     }
+}
+
+fn severity_style(severity: &str) -> Style {
+    match severity {
+        "warning" => Style::Warning,
+        _ => Style::Error,
+    }
+}
+
+fn syntax_diagnostic_line(file: &str, diagnostic: &marrow_syntax::Diagnostic) -> String {
+    format!(
+        "{}:{}:{}: {}: {}: {}",
+        term_style::paint(Stream::Stderr, Style::Muted, file),
+        diagnostic.span.line,
+        diagnostic.span.column,
+        term_style::paint(
+            Stream::Stderr,
+            severity_style(diagnostic.severity.as_str()),
+            diagnostic.severity.as_str(),
+        ),
+        term_style::paint(Stream::Stderr, Style::Code, diagnostic.code),
+        diagnostic.message
+    )
 }
 
 fn diagnostic_record(file: &str, diagnostic: &marrow_syntax::Diagnostic) -> serde_json::Value {

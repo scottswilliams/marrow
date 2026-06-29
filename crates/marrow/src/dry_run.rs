@@ -13,6 +13,7 @@ use marrow_run::{Frame, RuntimeError, StepHook, WriteOp, WriteTarget};
 use marrow_syntax::SourceSpan;
 use serde_json::json;
 
+use crate::term_style::{self, Stream, Style};
 use crate::trace::{TraceHook, WriteTargetNames, render_write_target, write_target_json};
 
 /// One managed operation a dry run would have committed; `value` is `None` for a
@@ -152,20 +153,32 @@ pub(crate) fn report(
             for step in planned {
                 match (step.op, &step.value) {
                     (WriteOp::Write, Some(value)) => eprintln!(
-                        "would write {}\t{}",
+                        "{} {}\t{}",
+                        label(Style::Success, "would write"),
                         render_write_target(&step.target, &names),
                         names.render_leaf_value(&step.target, value)
                     ),
                     (WriteOp::Write, None) => {
-                        eprintln!("would write {}", render_write_target(&step.target, &names))
+                        eprintln!(
+                            "{} {}",
+                            label(Style::Success, "would write"),
+                            render_write_target(&step.target, &names)
+                        )
                     }
                     (WriteOp::Delete, _) => {
-                        eprintln!("would delete {}", render_write_target(&step.target, &names))
+                        eprintln!(
+                            "{} {}",
+                            label(Style::Warning, "would delete"),
+                            render_write_target(&step.target, &names)
+                        )
                     }
                 }
             }
             write_counts.render_text();
-            eprintln!("dry run: {writes} write(s), {deletes} delete(s) (not committed)");
+            eprintln!(
+                "{} {writes} write(s), {deletes} delete(s) (not committed)",
+                label(Style::Warning, "dry run:")
+            );
         }
         ReportFormat::Json => {
             let records: Vec<serde_json::Value> = planned
@@ -185,6 +198,10 @@ pub(crate) fn report(
             }));
         }
     }
+}
+
+fn label(style: Style, text: &str) -> String {
+    term_style::paint(Stream::Stderr, style, text)
 }
 
 #[derive(Default)]
@@ -218,14 +235,20 @@ impl WriteCounts {
     fn render_text(&self) {
         for (root, counts) in &self.roots {
             eprintln!(
-                "would touch root {root}: {} create(s), {} write(s), {} delete(s)",
-                counts.creates, counts.writes, counts.deletes
+                "{} {root}: {} create(s), {} write(s), {} delete(s)",
+                label(Style::Code, "would touch root"),
+                counts.creates,
+                counts.writes,
+                counts.deletes
             );
         }
         for (index, counts) in &self.indexes {
             eprintln!(
-                "would touch index {index}: {} create(s), {} write(s), {} delete(s)",
-                counts.creates, counts.writes, counts.deletes
+                "{} {index}: {} create(s), {} write(s), {} delete(s)",
+                label(Style::Code, "would touch index"),
+                counts.creates,
+                counts.writes,
+                counts.deletes
             );
         }
     }
