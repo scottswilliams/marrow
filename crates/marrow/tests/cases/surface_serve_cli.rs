@@ -298,14 +298,12 @@ fn fault_code(output: &std::process::Output) -> String {
 
 const STORE_OP_DEADLINE: std::time::Duration = std::time::Duration::from_secs(15);
 
-/// An idle `--write` serve killed by the documented foreground stop (SIGTERM) without ever
-/// handling a request leaves redb's on-disk recovery flag set even though no commit was in
-/// flight. The next write-capable command — `run` here — must replay that clean unclean
-/// shutdown so the store opens healthy again, with no manual `data recover` and the committed
-/// record count unchanged, after which read-only inspection sees a clean store too.
+/// An idle `--write` serve stopped by the documented foreground stop (SIGTERM) closes the
+/// held store handle on the normal stack, so the next read-only inspection and write-capable
+/// command both open the store cleanly with the committed record count unchanged.
 #[test]
-fn idle_write_serve_sigterm_replays_on_the_next_write_command() {
-    let root = temp_project("serve-write-sigterm-replays", |root| {
+fn idle_write_serve_sigterm_closes_the_store_cleanly() {
+    let root = temp_project("serve-write-sigterm-clean", |root| {
         write(root, "marrow.json", support::native_config());
         write(root, "src/app.mw", SURFACE_SOURCE);
     });
@@ -318,42 +316,40 @@ fn idle_write_serve_sigterm_replays_on_the_next_write_command() {
     // Idle: no request handled. Stop with the documented foreground stop.
     server.stop_with_sigterm();
 
-    // A write-capable run replays the unclean shutdown and succeeds with no manual recover.
+    let integrity = support::marrow_bounded(&["data", "integrity", project], STORE_OP_DEADLINE);
+    assert_eq!(
+        integrity.status.code(),
+        Some(0),
+        "data integrity must pass after a graceful serve stop: {integrity:?}",
+    );
+
+    // A write-capable run also opens the store without requiring manual recovery.
     let recovered =
         support::marrow_bounded(&["run", "--entry", "app::seed", project], STORE_OP_DEADLINE);
     assert_eq!(
         recovered.status.code(),
         Some(0),
-        "write-capable run must replay the unclean shutdown: {recovered:?}",
-    );
-
-    // The store is now healthy for read-only inspection too, with the committed count unchanged.
-    let integrity = support::marrow_bounded(&["data", "integrity", project], STORE_OP_DEADLINE);
-    assert_eq!(
-        integrity.status.code(),
-        Some(0),
-        "data integrity must pass after the replay: {integrity:?}",
+        "write-capable run must open after a graceful serve stop: {recovered:?}",
     );
     assert_eq!(
         integrity_cell_count(project),
         cells_before,
-        "the replay must not change the committed cell count",
+        "the graceful stop must not change the committed cell count",
     );
     let doctor = support::marrow_bounded(&["doctor", project], STORE_OP_DEADLINE);
     assert_eq!(
         doctor.status.code(),
         Some(0),
-        "doctor must report a healthy store after the replay: {doctor:?}",
+        "doctor must report a healthy store after a graceful serve stop: {doctor:?}",
     );
 }
 
-/// A `--write` serve must itself replay an unclean shutdown on open: after a prior idle write
-/// serve is stopped with SIGTERM, a fresh `serve --write` opens and starts listening rather than
-/// refusing the store as needing recovery. (`spawn_surface_server_with_args` fails the test if the
+/// After a prior idle write serve is stopped with SIGTERM, a fresh `serve --write` opens and starts
+/// listening without requiring recovery. (`spawn_surface_server_with_args` fails the test if the
 /// server exits before printing its listen line.)
 #[test]
-fn idle_write_serve_sigterm_replays_on_the_next_write_serve() {
-    let root = temp_project("serve-write-sigterm-reserve", |root| {
+fn idle_write_serve_sigterm_allows_the_next_write_serve() {
+    let root = temp_project("serve-write-sigterm-next-serve", |root| {
         write(root, "marrow.json", support::native_config());
         write(root, "src/app.mw", SURFACE_SOURCE);
     });
@@ -364,18 +360,18 @@ fn idle_write_serve_sigterm_replays_on_the_next_write_serve() {
     let (server, _addr) = spawn_surface_server_with_args(&root, &["--write"]);
     server.stop_with_sigterm();
 
-    // The next write serve replays the unclean shutdown and starts listening.
+    // The next write serve starts listening over the cleanly closed store.
     let (server, _addr) = spawn_surface_server_with_args(&root, &["--write"]);
     server.stop_with_sigterm();
 
-    // A clean-exiting write run then leaves the store healthy for read-only inspection.
+    // A write run then leaves the store healthy for read-only inspection.
     let run = support::marrow_bounded(&["run", "--entry", "app::seed", project], STORE_OP_DEADLINE);
     assert_eq!(run.status.code(), Some(0), "post-serve run: {run:?}");
     let integrity = support::marrow_bounded(&["data", "integrity", project], STORE_OP_DEADLINE);
     assert_eq!(
         integrity.status.code(),
         Some(0),
-        "data integrity must pass after a write serve replay: {integrity:?}",
+        "data integrity must pass after a graceful write serve stop: {integrity:?}",
     );
 }
 
@@ -462,7 +458,7 @@ fn write_serve_over_an_absent_store_seeds_and_listens() {
         "the absent-store serve seed must be announced loudly at startup: {stderr}"
     );
 
-    // The write serve replays its own clean unclean shutdown on the next write-capable open.
+    // The write serve closes cleanly on the documented foreground stop.
     let run = support::marrow_bounded(&["run", "--entry", "app::seed", project], STORE_OP_DEADLINE);
     assert_eq!(run.status.code(), Some(0), "post-serve write run: {run:?}");
     let integrity = support::marrow_bounded(&["data", "integrity", project], STORE_OP_DEADLINE);
@@ -490,7 +486,7 @@ fn first_write_serve_over_a_seeded_store_listens() {
     let (server, _addr) = spawn_surface_server_with_args(&root, &["--write"]);
     server.stop_with_sigterm();
 
-    // The write serve replays its own clean unclean shutdown on the next write-capable open.
+    // The write serve closes cleanly on the documented foreground stop.
     let run = support::marrow_bounded(&["run", "--entry", "app::seed", project], STORE_OP_DEADLINE);
     assert_eq!(run.status.code(), Some(0), "post-serve write run: {run:?}");
     let integrity = support::marrow_bounded(&["data", "integrity", project], STORE_OP_DEADLINE);
@@ -601,7 +597,7 @@ fn replay_does_not_bless_a_corrupted_store() {
 }
 
 /// The committed cell count `data integrity` reports for a healthy store, parsed from its
-/// `(N cells)` success line. Used to prove a replay does not change committed data.
+/// `(N cells)` success line. Used to prove serve shutdown does not change committed data.
 fn integrity_cell_count(project: &str) -> u64 {
     let integrity = support::marrow_bounded(&["data", "integrity", project], STORE_OP_DEADLINE);
     assert_eq!(
@@ -1070,6 +1066,142 @@ fn surface_serve_fails_closed_on_request_shape_mismatches() {
         delete_route_response.body
     );
     assert_eq!(delete_route_response.body["code"], "surface.abi_mismatch");
+}
+
+#[cfg(unix)]
+#[test]
+fn surface_serve_write_closes_store_cleanly_on_sigterm() {
+    surface_serve_signal_closes_store_cleanly("surface-serve-sigterm", "TERM", 15);
+}
+
+#[cfg(unix)]
+#[test]
+fn surface_serve_write_closes_store_cleanly_on_sigint() {
+    surface_serve_signal_closes_store_cleanly("surface-serve-sigint", "INT", 2);
+}
+
+#[cfg(unix)]
+fn surface_serve_signal_closes_store_cleanly(name: &str, signal: &str, signum: i32) {
+    let fixture = seeded_surface_fixture(name);
+    let create_route = route_by_alias(&fixture.report, "create");
+    let create = create_descriptor(&fixture.report, &create_route.operation_tag);
+    let store_catalog_id = create["store_catalog_id"]
+        .as_str()
+        .expect("create store catalog id")
+        .to_string();
+    let title_catalog_id = create_field_catalog_id(create, "title");
+    let author_catalog_id = create_field_catalog_id(create, "author");
+    let (server, addr) = spawn_surface_server_with_args(fixture.root(), &["--write"]);
+
+    let create_response = post_json(
+        addr,
+        &create_route.path,
+        json!({
+            "profile_version": "surface.operation.v1",
+            "operation_tag": create_route.operation_tag,
+            "request": {
+                "kind": "point_create",
+                "request": {
+                    "identity": {
+                        "store_catalog_id": store_catalog_id,
+                        "keys": [{ "kind": "int", "value": "3" }]
+                    },
+                    "fields": [
+                        {
+                            "catalog_id": title_catalog_id,
+                            "value": { "kind": "string", "value": "Children of Dune" }
+                        },
+                        {
+                            "catalog_id": author_catalog_id,
+                            "value": { "kind": "string", "value": "Frank Herbert" }
+                        }
+                    ]
+                }
+            }
+        }),
+        &[("Content-Type", "application/json")],
+    );
+    assert_eq!(create_response.status, 200, "{:#?}", create_response.body);
+
+    let status = server.signal_and_wait(signal);
+    assert_eq!(
+        status.code(),
+        Some(128 + signum),
+        "serve should exit with the conventional signal status on SIG{signal}: {status:?}"
+    );
+
+    let dump = marrow_sub(
+        "data",
+        &["dump", "--format", "json", fixture.root().to_str().unwrap()],
+    );
+    assert_eq!(
+        dump.status.code(),
+        Some(0),
+        "data dump must open the store cleanly after SIG{signal}: stdout={} stderr={}",
+        String::from_utf8_lossy(&dump.stdout),
+        String::from_utf8_lossy(&dump.stderr)
+    );
+    let dumped: Value = support::json(dump.stdout);
+    assert!(
+        dumped["code"].is_null(),
+        "store must not surface an open fault after SIG{signal}: {dumped:#?}"
+    );
+    let titles: Vec<&str> = dumped["cells"]
+        .as_array()
+        .expect("dump cells")
+        .iter()
+        .filter(|cell| cell["path"] == "^books(3).title")
+        .filter_map(|cell| cell["value_b64"].as_str())
+        .collect();
+    assert_eq!(
+        titles,
+        ["Q2hpbGRyZW4gb2YgRHVuZQ=="],
+        "committed record must survive SIG{signal}: {dumped:#?}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn surface_serve_shutdown_is_prompt_with_a_stalled_in_flight_request() {
+    let fixture = seeded_surface_fixture("surface-serve-stalled-shutdown");
+    let create_route = route_by_alias(&fixture.report, "create");
+    let (server, addr) = spawn_surface_server_with_args(fixture.root(), &["--write"]);
+
+    let mut stalled = TcpStream::connect(addr).expect("connect stalled client");
+    write!(
+        stalled,
+        "POST {} HTTP/1.1\r\nHost: {addr}\r\nContent-Type: application/json\r\nContent-Length: 4096\r\n\r\n",
+        create_route.path
+    )
+    .expect("write stalled request head");
+    stalled.flush().expect("flush stalled head");
+    std::thread::sleep(Duration::from_millis(200));
+
+    let start = std::time::Instant::now();
+    let status = server.signal_and_wait("TERM");
+    let elapsed = start.elapsed();
+    drop(stalled);
+
+    assert_eq!(
+        status.code(),
+        Some(143),
+        "stalled shutdown status: {status:?}"
+    );
+    assert!(
+        elapsed < Duration::from_secs(5),
+        "signal must abandon the stalled request promptly, took {elapsed:?}"
+    );
+
+    let dump = marrow_sub(
+        "data",
+        &["dump", "--format", "json", fixture.root().to_str().unwrap()],
+    );
+    assert_eq!(
+        dump.status.code(),
+        Some(0),
+        "store must open cleanly after a stalled-request shutdown: stderr={}",
+        String::from_utf8_lossy(&dump.stderr)
+    );
 }
 
 #[test]

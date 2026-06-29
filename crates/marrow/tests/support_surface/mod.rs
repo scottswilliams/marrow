@@ -1,7 +1,7 @@
 use std::io::{BufRead, BufReader, Read};
 use std::net::SocketAddr;
 use std::path::Path;
-use std::process::{Child, ChildStderr, ChildStdout, Command, Stdio};
+use std::process::{Child, ChildStderr, ChildStdout, Command, ExitStatus, Stdio};
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -103,9 +103,20 @@ pub(crate) fn create_field_catalog_id(create: &Value, label: &str) -> String {
 }
 
 impl ServeProcess {
+    #[cfg(unix)]
+    pub(crate) fn signal_and_wait(mut self, signal: &str) -> ExitStatus {
+        let pid = self.child.id().to_string();
+        let killed = Command::new("kill")
+            .args([&format!("-{signal}"), &pid])
+            .status()
+            .expect("send signal to surface server");
+        assert!(killed.success(), "kill -{signal} {pid} failed: {killed:?}");
+        let status = self.child.wait().expect("wait for signaled surface server");
+        self.stopped = true;
+        status
+    }
+
     /// Stop the server with SIGTERM — the documented foreground stop — and wait for it to exit.
-    /// SIGTERM skips the process's destructors exactly as a real operator stop does, so the
-    /// store is left in whatever on-disk state the running server held it in.
     pub(crate) fn stop_with_sigterm(self) {
         let _ = self.stop_with_sigterm_capturing_stderr();
     }

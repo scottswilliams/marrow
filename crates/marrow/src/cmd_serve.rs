@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
-use std::io::{Read, Write};
+use std::io::{ErrorKind, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::process::ExitCode;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use marrow_check::CheckedProgram;
 use marrow_json::surface::{
@@ -23,12 +23,15 @@ use crate::term_style::{self, Stream};
 use crate::{CheckFormat, report_simple_error};
 
 mod cors;
+mod shutdown;
 use cors::CorsPolicy;
 
 const DEFAULT_PORT: u16 = 8080;
 const MAX_HEADER_BYTES: usize = 16 * 1024;
 const MAX_BODY_BYTES: usize = 1024 * 1024;
 const STREAM_TIMEOUT: Duration = Duration::from_secs(15);
+const READ_POLL_INTERVAL: Duration = Duration::from_millis(250);
+const ACCEPT_POLL: Duration = Duration::from_millis(10);
 
 #[derive(Clone, Copy)]
 enum ServeMode {
@@ -166,6 +169,17 @@ pub(crate) fn serve(args: &[String]) -> ExitCode {
         report_simple_error(error.code(), &error.message(), CheckFormat::Text);
         return ExitCode::FAILURE;
     }
+    let shutdown = match shutdown::install() {
+        Ok(shutdown) => shutdown,
+        Err(error) => {
+            report_simple_error(
+                "io.signal",
+                &format!("failed to install surface shutdown handler: {error}"),
+                CheckFormat::Text,
+            );
+            return ExitCode::FAILURE;
+        }
+    };
     // A `--write` serve replays an unclean shutdown before it inspects the store, so a store left
     // flagged for recovery by a prior signalled writer with no interrupted commit opens clean
     // rather than refusing the read-only catalog read the snapshot needs.
@@ -174,14 +188,23 @@ pub(crate) fn serve(args: &[String]) -> ExitCode {
     {
         return report_session_open_error(&dir, error, CheckFormat::Text);
     }
+    if let Some(code) = shutdown_exit_code(&shutdown) {
+        return code;
+    }
     let snapshot = match ProjectSurfaceSnapshot::open(&dir) {
         Ok(snapshot) => snapshot,
         Err(error) => return report_session_open_error(&dir, error, CheckFormat::Text),
     };
+    if let Some(code) = shutdown_exit_code(&shutdown) {
+        return code;
+    }
     let session = match SurfaceServeSession::open(&snapshot, mode) {
         Ok(session) => session,
         Err(error) => return report_session_open_error(&dir, error, CheckFormat::Text),
     };
+    if let Some(code) = shutdown_exit_code(&shutdown) {
+        return code;
+    }
     // A `--write` serve over a fresh checkout seeds an empty store from the committed lock; announce
     // it loudly at startup, exactly as the run path prints the seed notice, so it is never silent.
     for notice in session.notices() {
@@ -194,11 +217,17 @@ pub(crate) fn serve(args: &[String]) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    if let Some(code) = shutdown_exit_code(&shutdown) {
+        return code;
+    }
     // Startup regenerates the declared client from the opened program so a fresh `serve` always
     // hands clients the surface ABI it will answer over.
     if let Err(code) =
         crate::sync_declared_client(&dir, &config, session.program(), CheckFormat::Text)
     {
+        return code;
+    }
+    if let Some(code) = shutdown_exit_code(&shutdown) {
         return code;
     }
     // The session holds the native store lock for the whole server lifetime: a `--write` serve owns
@@ -246,7 +275,7 @@ pub(crate) fn serve(args: &[String]) -> ExitCode {
             signature,
         }
     });
-    run_server(listener, executor, routes, cors.as_ref(), watch)
+    run_server(listener, executor, routes, cors.as_ref(), watch, &shutdown)
 }
 
 /// The state `serve --watch` re-checks on a source change: where to re-open the snapshot, the
@@ -292,70 +321,42 @@ fn run_server(
     mut routes: SurfaceRoutes,
     cors: Option<&CorsPolicy>,
     mut watch: Option<SurfaceWatch>,
+    shutdown: &shutdown::Shutdown,
 ) -> ExitCode {
-    // Without `--watch` the accept loop blocks; with it the listener is nonblocking so the loop can
-    // recompute the source signature on each idle cadence and re-check when a source file changes.
-    if watch.is_some()
-        && let Err(error) = listener.set_nonblocking(true)
-    {
+    if let Err(error) = listener.set_nonblocking(true) {
         eprintln!(
             "{}",
             server_code_message(
                 "io.listen",
-                format!("failed to set surface watch poll: {error}")
+                format!("failed to set surface accept poll: {error}")
             )
         );
         return ExitCode::FAILURE;
     }
+    let mut next_watch = Instant::now();
     loop {
+        if let Some(code) = shutdown_exit_code(shutdown) {
+            return code;
+        }
         match listener.accept() {
-            Ok((mut stream, _)) => {
-                if let Err(error) = stream.set_nonblocking(false) {
-                    eprintln!(
-                        "{}",
-                        server_code_message(
-                            "io.read",
-                            format!("failed to set surface connection blocking: {error}")
-                        )
-                    );
-                    continue;
+            Ok((stream, _)) => {
+                if let Some(code) = shutdown_exit_code(shutdown) {
+                    return code;
                 }
-                if let Err(error) = stream.set_read_timeout(Some(STREAM_TIMEOUT)) {
-                    eprintln!(
-                        "{}",
-                        server_code_message(
-                            "io.read",
-                            format!("failed to set surface read timeout: {error}")
-                        )
-                    );
-                    continue;
-                }
-                if let Err(error) = stream.set_write_timeout(Some(STREAM_TIMEOUT)) {
-                    eprintln!(
-                        "{}",
-                        server_code_message(
-                            "io.write",
-                            format!("failed to set surface write timeout: {error}")
-                        )
-                    );
-                    continue;
-                }
-                let response = handle_connection(&mut stream, &executor, &routes, cors);
-                if let Err(error) = write_response(&mut stream, &response) {
-                    eprintln!(
-                        "{}",
-                        server_code_message(
-                            "io.write",
-                            format!("failed to write surface response: {error}")
-                        )
-                    );
-                }
+                serve_connection(stream, &executor, &routes, cors, shutdown);
             }
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                if let Some(watch) = watch.as_mut() {
-                    watch.poll(&mut executor, &mut routes);
+                if let Some(code) = shutdown_exit_code(shutdown) {
+                    return code;
                 }
-                std::thread::sleep(WATCH_POLL);
+                if let Some(watch) = watch.as_mut() {
+                    let now = Instant::now();
+                    if now >= next_watch {
+                        watch.poll(&mut executor, &mut routes);
+                        next_watch = now + WATCH_POLL;
+                    }
+                }
+                std::thread::sleep(ACCEPT_POLL);
             }
             Err(error) => {
                 eprintln!(
@@ -368,6 +369,63 @@ fn run_server(
             }
         }
     }
+}
+
+fn serve_connection(
+    mut stream: TcpStream,
+    executor: &SurfaceServeExecutor,
+    routes: &SurfaceRoutes,
+    cors: Option<&CorsPolicy>,
+    shutdown: &shutdown::Shutdown,
+) {
+    if let Err(error) = stream.set_nonblocking(false) {
+        eprintln!(
+            "{}",
+            server_code_message(
+                "io.read",
+                format!("failed to set surface connection blocking: {error}")
+            )
+        );
+        return;
+    }
+    if let Err(error) = stream.set_read_timeout(Some(READ_POLL_INTERVAL)) {
+        eprintln!(
+            "{}",
+            server_code_message(
+                "io.read",
+                format!("failed to set surface read timeout: {error}")
+            )
+        );
+        return;
+    }
+    if let Err(error) = stream.set_write_timeout(Some(STREAM_TIMEOUT)) {
+        eprintln!(
+            "{}",
+            server_code_message(
+                "io.write",
+                format!("failed to set surface write timeout: {error}")
+            )
+        );
+        return;
+    }
+    let response = handle_connection(&mut stream, executor, routes, cors, shutdown);
+    if let Err(error) = write_response(&mut stream, &response) {
+        eprintln!(
+            "{}",
+            server_code_message(
+                "io.write",
+                format!("failed to write surface response: {error}")
+            )
+        );
+    }
+}
+
+fn shutdown_exit_code(shutdown: &shutdown::Shutdown) -> Option<ExitCode> {
+    shutdown.requested().map(signal_exit_code)
+}
+
+fn signal_exit_code(signal: i32) -> ExitCode {
+    ExitCode::from(128 + signal as u8)
 }
 
 fn server_code_message(code: &str, message: impl std::fmt::Display) -> String {
@@ -554,8 +612,9 @@ fn handle_connection(
     executor: &SurfaceServeExecutor,
     routes: &SurfaceRoutes,
     cors: Option<&CorsPolicy>,
+    shutdown: &shutdown::Shutdown,
 ) -> SurfaceHttpResponse {
-    match read_http_request(stream) {
+    match read_http_request(stream, shutdown) {
         Ok(request) => execute_http_request(request, executor, routes, cors),
         Err(failure) => SurfaceHttpResponse::error(failure.status, failure.error),
     }
@@ -728,9 +787,12 @@ struct HttpRequest {
     body: Vec<u8>,
 }
 
-fn read_http_request(stream: &mut TcpStream) -> Result<HttpRequest, HttpFailure> {
+fn read_http_request(
+    stream: &mut TcpStream,
+    shutdown: &shutdown::Shutdown,
+) -> Result<HttpRequest, HttpFailure> {
     let mut buffer = Vec::new();
-    let header_end = read_until_header_end(stream, &mut buffer)?;
+    let header_end = read_until_header_end(stream, &mut buffer, shutdown)?;
     let parsed = parse_head(&buffer[..header_end])?;
     let content_length = match parsed.content_length {
         Some(content_length) => content_length,
@@ -775,9 +837,12 @@ fn read_http_request(stream: &mut TcpStream) -> Result<HttpRequest, HttpFailure>
         let remaining = body_end - buffer.len();
         let mut chunk = [0; 4096];
         let limit = remaining.min(chunk.len());
-        let read = stream
-            .read(&mut chunk[..limit])
-            .map_err(|_| request_failure("surface request body could not be read"))?;
+        let read = read_with_shutdown_poll(
+            stream,
+            &mut chunk[..limit],
+            shutdown,
+            "surface request body could not be read",
+        )?;
         if read == 0 {
             return Err(request_failure("surface request body ended early"));
         }
@@ -796,6 +861,7 @@ fn read_http_request(stream: &mut TcpStream) -> Result<HttpRequest, HttpFailure>
 fn read_until_header_end(
     stream: &mut TcpStream,
     buffer: &mut Vec<u8>,
+    shutdown: &shutdown::Shutdown,
 ) -> Result<usize, HttpFailure> {
     loop {
         if let Some(index) = find_header_end(buffer) {
@@ -816,15 +882,41 @@ fn read_until_header_end(
             ));
         }
         let mut chunk = [0; 1024];
-        let read = stream
-            .read(&mut chunk)
-            .map_err(|_| request_failure("surface request headers could not be read"))?;
+        let read = read_with_shutdown_poll(
+            stream,
+            &mut chunk,
+            shutdown,
+            "surface request headers could not be read",
+        )?;
         if read == 0 {
             return Err(request_failure(
                 "surface request ended before headers completed",
             ));
         }
         buffer.extend_from_slice(&chunk[..read]);
+    }
+}
+
+fn read_with_shutdown_poll(
+    stream: &mut TcpStream,
+    buffer: &mut [u8],
+    shutdown: &shutdown::Shutdown,
+    failure: &'static str,
+) -> Result<usize, HttpFailure> {
+    let idle_start = Instant::now();
+    loop {
+        if shutdown.requested().is_some() {
+            return Err(request_failure("surface server is shutting down"));
+        }
+        match stream.read(buffer) {
+            Ok(read) => return Ok(read),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    ErrorKind::WouldBlock | ErrorKind::TimedOut | ErrorKind::Interrupted
+                ) && idle_start.elapsed() < STREAM_TIMEOUT => {}
+            Err(_) => return Err(request_failure(failure)),
+        }
     }
 }
 
