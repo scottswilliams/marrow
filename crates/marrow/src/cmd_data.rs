@@ -263,7 +263,9 @@ fn hidden_orphan_warning_with_palette(
     );
     match format {
         CheckFormat::Text => palette.code_message(DATA_ORPHAN_CODE, message),
-        CheckFormat::Json | CheckFormat::Jsonl => format!("{DATA_ORPHAN_CODE}: {message}"),
+        CheckFormat::Json | CheckFormat::Jsonl => {
+            term_style::plain_code_message(DATA_ORPHAN_CODE, message)
+        }
     }
 }
 
@@ -366,7 +368,9 @@ fn data_output_io_error_message_with_palette(
     let message = format!("failed to write data output: {error}");
     match format {
         CheckFormat::Text => palette.code_message("io.write", message),
-        CheckFormat::Json | CheckFormat::Jsonl => format!("io.write: {message}"),
+        CheckFormat::Json | CheckFormat::Jsonl => {
+            term_style::plain_code_message("io.write", message)
+        }
     }
 }
 

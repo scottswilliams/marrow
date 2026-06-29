@@ -334,13 +334,15 @@ where
 
 struct ProgramOutputSink {
     json_envelope: bool,
+    format: CheckFormat,
     captured: String,
 }
 
 impl ProgramOutputSink {
-    fn new(json_envelope: bool) -> Self {
+    fn new(json_envelope: bool, format: CheckFormat) -> Self {
         Self {
             json_envelope,
+            format,
             captured: String::new(),
         }
     }
@@ -354,30 +356,44 @@ impl RunOutputSink for ProgramOutputSink {
         }
         let mut stdout = std::io::stdout();
         if let Err(error) = stdout.write_all(text.as_bytes()) {
-            exit_after_program_stdout_error(error);
+            exit_after_program_stdout_error(error, self.format);
         }
         if let Err(error) = stdout.flush() {
-            exit_after_program_stdout_error(error);
+            exit_after_program_stdout_error(error, self.format);
         }
     }
 }
 
-fn exit_after_program_stdout_error(error: std::io::Error) -> ! {
+fn exit_after_program_stdout_error(error: std::io::Error, format: CheckFormat) -> ! {
     match error.kind() {
         std::io::ErrorKind::BrokenPipe => std::process::exit(0),
         _ => {
-            eprintln!("{}", program_stdout_error_message(&error));
+            eprintln!("{}", program_stdout_error_message(&error, format));
             std::process::exit(1);
         }
     }
 }
 
-fn program_stdout_error_message(error: &std::io::Error) -> String {
-    term_style::code_message(
-        Stream::Stderr,
-        "io.write",
-        format!("failed to write program stdout: {error}"),
+fn program_stdout_error_message(error: &std::io::Error, format: CheckFormat) -> String {
+    program_stdout_error_message_with_palette(
+        term_style::Palette::for_stream(Stream::Stderr),
+        error,
+        format,
     )
+}
+
+fn program_stdout_error_message_with_palette(
+    palette: term_style::Palette,
+    error: &std::io::Error,
+    format: CheckFormat,
+) -> String {
+    let message = format!("failed to write program stdout: {error}");
+    match format {
+        CheckFormat::Text => palette.code_message("io.write", message),
+        CheckFormat::Json | CheckFormat::Jsonl => {
+            term_style::plain_code_message("io.write", message)
+        }
+    }
 }
 
 /// Run `entry` through an admitted session, printing its output to stdout and
@@ -412,17 +428,18 @@ fn execute(request: RunExecution<'_>, nondeterminism: &impl Nondeterminism) -> E
     let program = session.runtime_program();
     let log = std::rc::Rc::new(RefCell::new(String::new()));
     let mut host = base_host(std::rc::Rc::clone(&log), nondeterminism);
-    let json_envelope = matches!(output_format, CheckFormat::Json) && !observe.isolates_writes();
-    let program_output = std::rc::Rc::new(RefCell::new(ProgramOutputSink::new(json_envelope)));
-    host = host.with_output_sink(std::rc::Rc::clone(&program_output));
-    if maintenance {
-        host = host.with_maintenance();
-    }
     let format = if observe.isolates_writes() {
         observe.format()
     } else {
         output_format
     };
+    let json_envelope = matches!(output_format, CheckFormat::Json) && !observe.isolates_writes();
+    let program_output =
+        std::rc::Rc::new(RefCell::new(ProgramOutputSink::new(json_envelope, format)));
+    host = host.with_output_sink(std::rc::Rc::clone(&program_output));
+    if maintenance {
+        host = host.with_maintenance();
+    }
 
     // A dry run executes on the store selected by `run_project_dir`; for native
     // stores that is a disposable copy, so user transactions cannot consume the
@@ -660,5 +677,43 @@ fn report_runtime_fault_with_run_state(
                 serde_json::to_value(envelope).expect("run error DTO serializes"),
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io;
+
+    use super::program_stdout_error_message_with_palette;
+    use crate::{CheckFormat, term_style};
+
+    #[test]
+    fn program_stdout_error_styles_only_text_format() {
+        let error = io::Error::other("writer failed");
+
+        assert_eq!(
+            program_stdout_error_message_with_palette(
+                term_style::Palette::for_test(true),
+                &error,
+                CheckFormat::Text,
+            ),
+            "\x1b[36mio.write\x1b[0m: failed to write program stdout: writer failed"
+        );
+        assert_eq!(
+            program_stdout_error_message_with_palette(
+                term_style::Palette::for_test(true),
+                &error,
+                CheckFormat::Json,
+            ),
+            "io.write: failed to write program stdout: writer failed"
+        );
+        assert_eq!(
+            program_stdout_error_message_with_palette(
+                term_style::Palette::for_test(true),
+                &error,
+                CheckFormat::Jsonl,
+            ),
+            "io.write: failed to write program stdout: writer failed"
+        );
     }
 }

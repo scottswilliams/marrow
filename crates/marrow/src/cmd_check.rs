@@ -212,7 +212,6 @@ fn check_project_dir(dir: &str, format: CheckFormat, locked: bool) -> ExitCode {
     let mut advisories = Vec::new();
     if stale_lock {
         advisories.push(crate::ProjectAdvisory {
-            diagnostic: stale_lock_advisory_diagnostic(),
             code: CHECK_STALE_LOCK,
             message: STALE_LOCK_MESSAGE,
             summary: format!("marrow.lock is stale - run marrow run {dir} to refresh"),
@@ -220,7 +219,6 @@ fn check_project_dir(dir: &str, format: CheckFormat, locked: bool) -> ExitCode {
     }
     if missing_lock {
         advisories.push(crate::ProjectAdvisory {
-            diagnostic: missing_lock_advisory_diagnostic(),
             code: CHECK_LOCK_MISSING,
             message: MISSING_LOCK_MESSAGE,
             summary: format!("marrow.lock is missing - run marrow run {dir} to regenerate it"),
@@ -228,7 +226,6 @@ fn check_project_dir(dir: &str, format: CheckFormat, locked: bool) -> ExitCode {
     }
     if stale_client {
         advisories.push(crate::ProjectAdvisory {
-            diagnostic: stale_client_advisory_diagnostic(),
             code: CHECK_STALE_CLIENT,
             message: STALE_CLIENT_MESSAGE,
             summary: format!("the declared client is stale - run marrow run {dir} to refresh"),
@@ -283,34 +280,6 @@ fn missing_lock_diagnostic() -> serde_json::Value {
     })
 }
 
-/// The non-fatal missing-lock advisory as a structured diagnostic for the success envelope. It is
-/// a warning, not an error, so a plain check over a project whose lock is absent but whose store
-/// carries durable shape still passes while surfacing the absence; `--locked` makes the same
-/// condition fatal.
-fn missing_lock_advisory_diagnostic() -> serde_json::Value {
-    serde_json::json!({
-        "code": CHECK_LOCK_MISSING,
-        "kind": marrow_syntax::kind_for_code(CHECK_LOCK_MISSING),
-        "message": MISSING_LOCK_MESSAGE,
-        "severity": "warning",
-        "source_span": null,
-    })
-}
-
-/// The non-fatal stale-lock advisory as a structured diagnostic for the success envelope. It is
-/// a warning, not an error, so a clean check still passes; carrying it in the stdout envelope
-/// lets a machine consumer see the advisory without parsing stderr. A later `run` or
-/// `evolve apply` re-projects the lock to converge it.
-fn stale_lock_advisory_diagnostic() -> serde_json::Value {
-    serde_json::json!({
-        "code": CHECK_STALE_LOCK,
-        "kind": marrow_syntax::kind_for_code(CHECK_STALE_LOCK),
-        "message": STALE_LOCK_MESSAGE,
-        "severity": "warning",
-        "source_span": null,
-    })
-}
-
 /// The stale-client condition as a structured diagnostic for the failed-check envelope. Like the
 /// lock diagnostics it carries no source span: it compares the committed client against the whole
 /// projected surface rather than faulting at a single declaration.
@@ -320,20 +289,6 @@ fn stale_client_diagnostic() -> serde_json::Value {
         "kind": marrow_syntax::kind_for_code(CHECK_STALE_CLIENT),
         "message": STALE_CLIENT_MESSAGE,
         "severity": "error",
-        "source_span": null,
-    })
-}
-
-/// The non-fatal stale-client advisory as a structured diagnostic for the success envelope. It is
-/// a warning, not an error, so a clean check still passes; carrying it in the stdout envelope lets
-/// a machine consumer see the advisory without parsing stderr. A later `run` or `evolve apply`
-/// rewrites the client to converge it.
-fn stale_client_advisory_diagnostic() -> serde_json::Value {
-    serde_json::json!({
-        "code": CHECK_STALE_CLIENT,
-        "kind": marrow_syntax::kind_for_code(CHECK_STALE_CLIENT),
-        "message": STALE_CLIENT_MESSAGE,
-        "severity": "warning",
         "source_span": null,
     })
 }
@@ -352,7 +307,13 @@ pub(crate) fn report_runtime_fault(
         CheckFormat::Text => match error.origin.and_then(|id| program.file_path(id)) {
             Some(path) => eprintln!(
                 "{}",
-                located_runtime_fault_line(path, error.span, error.code(), &error.message)
+                located_runtime_fault_line(
+                    Stream::Stderr,
+                    path,
+                    error.span,
+                    error.code(),
+                    &error.message,
+                )
             ),
             None => report_simple_error(error.code(), &error.message, CheckFormat::Text),
         },
@@ -365,13 +326,14 @@ pub(crate) fn report_runtime_fault(
 }
 
 pub(crate) fn located_runtime_fault_line(
+    stream: Stream,
     path: &Path,
     span: SourceSpan,
     code: &str,
     message: &str,
 ) -> String {
     located_runtime_fault_line_with_palette(
-        term_style::Palette::for_stream(Stream::Stderr),
+        term_style::Palette::for_stream(stream),
         path,
         span,
         code,

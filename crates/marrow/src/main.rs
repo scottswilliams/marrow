@@ -257,11 +257,9 @@ pub(crate) fn report_project_failed_with_diagnostic(
 }
 
 /// A CLI-level advisory the checker itself does not raise — a stale `marrow.lock` or a stale
-/// declared client. Each carries the structured diagnostic for the JSON envelope, a typed code and
-/// message for stderr, and a short human `summary` folded into the stdout success line so the happy
-/// path (which never reads stderr) still sees the advisory and counts it.
+/// declared client. The code and message render both the stderr note and the structured diagnostic;
+/// the summary is folded into the stdout success line so the happy path still sees the advisory.
 pub(crate) struct ProjectAdvisory {
-    pub diagnostic: serde_json::Value,
     pub code: &'static str,
     pub message: &'static str,
     pub summary: String,
@@ -304,10 +302,20 @@ pub(crate) fn report_project_ok_with_advisories(
                 .diagnostics
                 .iter()
                 .map(check_diagnostic_record)
-                .chain(advisories.into_iter().map(|advisory| advisory.diagnostic)),
+                .chain(advisories.iter().map(project_advisory_diagnostic)),
             project_envelope(target, "ok", Some(program)),
         ),
     }
+}
+
+fn project_advisory_diagnostic(advisory: &ProjectAdvisory) -> serde_json::Value {
+    json!({
+        "code": advisory.code,
+        "kind": marrow_syntax::kind_for_code(advisory.code),
+        "message": advisory.message,
+        "severity": "warning",
+        "source_span": null,
+    })
 }
 
 fn project_advisory_note(advisory: &ProjectAdvisory) -> String {
@@ -1278,7 +1286,8 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        ProjectAdvisory, project_advisory_note_with_palette, project_json_path, run_worker_thread,
+        ProjectAdvisory, project_advisory_diagnostic, project_advisory_note_with_palette,
+        project_json_path, run_worker_thread,
     };
 
     #[test]
@@ -1303,7 +1312,6 @@ mod tests {
     #[test]
     fn project_advisory_note_styles_its_diagnostic_code() {
         let advisory = ProjectAdvisory {
-            diagnostic: json!({ "code": "check.lock_stale" }),
             code: "check.lock_stale",
             message: "marrow.lock is stale",
             summary: String::new(),
@@ -1315,6 +1323,26 @@ mod tests {
                 &advisory
             ),
             "\x1b[36mcheck.lock_stale\x1b[0m: marrow.lock is stale"
+        );
+    }
+
+    #[test]
+    fn project_advisory_diagnostic_uses_the_same_code_and_message_as_text() {
+        let advisory = ProjectAdvisory {
+            code: "check.lock_stale",
+            message: "marrow.lock is stale",
+            summary: String::new(),
+        };
+
+        assert_eq!(
+            project_advisory_diagnostic(&advisory),
+            json!({
+                "code": "check.lock_stale",
+                "kind": "check",
+                "message": "marrow.lock is stale",
+                "severity": "warning",
+                "source_span": null,
+            })
         );
     }
 

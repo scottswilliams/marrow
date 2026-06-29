@@ -9,6 +9,7 @@ use marrow_syntax::SourceSpan;
 use serde_json::{Value, json};
 
 use crate::cmd_check::located_runtime_fault_line;
+use crate::term_style::{self, Stream, Style};
 use crate::trace::TraceHook;
 use crate::{CheckFormat, report_simple_error, write_json};
 
@@ -170,7 +171,8 @@ fn test_project_dir(dir: &str, trace: bool, format: CheckFormat, filter: Option<
         match result {
             Ok(_) => {
                 if matches!(format, CheckFormat::Text) {
-                    println!("ok    {}", test.name);
+                    let label = term_style::paint(Stream::Stdout, Style::Success, "ok");
+                    println!("{label}    {}", test.name);
                 }
                 record_test_result(
                     format,
@@ -196,16 +198,23 @@ fn test_project_dir(dir: &str, trace: bool, format: CheckFormat, filter: Option<
                     .unwrap_or(test.source_file.as_path());
                 // An assertion is a test FAIL; any other fault is an ERROR. The
                 // labels are column-aligned with the `ok` line.
-                let (label, status, counter) = if error.code() == marrow_run::RUN_ASSERT {
-                    ("FAIL ", "failed", &mut failed)
+                let (label, padding, status, counter) = if error.code() == marrow_run::RUN_ASSERT {
+                    ("FAIL", "  ", "failed", &mut failed)
                 } else {
-                    ("ERROR", "errored", &mut errored)
+                    ("ERROR", " ", "errored", &mut errored)
                 };
                 if matches!(format, CheckFormat::Text) {
-                    println!("{label} {}", test.name);
+                    let label = term_style::paint(Stream::Stdout, Style::Error, label);
+                    println!("{label}{padding}{}", test.name);
                     println!(
                         "      {}",
-                        located_runtime_fault_line(file, error.span, error.code(), &error.message)
+                        located_runtime_fault_line(
+                            Stream::Stdout,
+                            file,
+                            error.span,
+                            error.code(),
+                            &error.message,
+                        )
                     );
                 }
                 record_test_result(
