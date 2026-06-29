@@ -15,6 +15,7 @@ use crate::backup::{
     BackupError, BackupPrologue, CatalogFingerprintRef, RestoreTargetMode, read_backup_prologue,
     restore_backup_with_prologue,
 };
+use crate::term_style::{self, Stream, Style};
 use crate::{
     CheckFormat, load_config_with_format, native_store_path, report_project, report_simple_error,
     resolve_store_path,
@@ -304,7 +305,10 @@ fn parse_count_value(value: &str) -> Result<u64, ExitCode> {
 }
 
 fn report_restore_text(input: &str, records: u64) {
-    println!("ok: restored {records} record(s) from {input}");
+    println!(
+        "{} restored {records} record(s) from {input}",
+        term_style::paint(Stream::Stdout, Style::Success, "ok:")
+    );
 }
 
 fn report_backup_error(error: BackupError, format: CheckFormat) -> ExitCode {

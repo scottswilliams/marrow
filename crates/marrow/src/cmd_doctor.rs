@@ -11,6 +11,7 @@ use marrow_store::StoreError;
 use marrow_store::tree::{CommitMetadata, TreeStore};
 use serde_json::{Value, json};
 
+use crate::term_style::{self, Stream, Style};
 use crate::{CheckFormat, store_path_is_absent, write_json};
 
 pub(crate) const DOCTOR_INTEGRITY_SAMPLE_LIMIT: usize = 64;
@@ -842,12 +843,17 @@ fn render_report(
 
 fn render_text(dir: &str, findings: &[Finding], integrity_sample: Option<IntegritySample>) {
     if findings.is_empty() {
-        println!("ok: {dir} is healthy (no issues found)");
+        println!(
+            "{} {dir} is healthy (no issues found)",
+            term_style::paint(Stream::Stdout, Style::Success, "ok:")
+        );
     } else {
         for finding in findings {
+            let code = term_style::paint(Stream::Stdout, Style::Code, finding.code);
+            let next = term_style::paint(Stream::Stdout, Style::Warning, "next:");
             println!(
-                "{}: {}; remedy: {}; next: `{}`",
-                finding.code, finding.message, finding.remedy, finding.next_command
+                "{code}: {}; remedy: {}; {next} `{}`",
+                finding.message, finding.remedy, finding.next_command
             );
         }
     }

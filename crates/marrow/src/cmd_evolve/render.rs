@@ -6,6 +6,7 @@ use marrow_check::evolution::{
 use marrow_check::{CheckedModule, ResourceSchema, ScalarType, Type};
 use marrow_run::evolution::{ApplyError, ApplyOutcome};
 
+use crate::term_style::{self, Stream, Style};
 use crate::{CheckFormat, report_simple_error, report_simple_error_with_data, write_json};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -288,7 +289,10 @@ pub(super) fn preview(
                 println!("This evolution is safe to apply.");
                 println!("records to backfill: {backfill}");
                 println!("records to transform: {transform}");
-                println!("Next: marrow evolve apply {dir}");
+                println!(
+                    "{} marrow evolve apply {dir}",
+                    term_style::paint(Stream::Stdout, Style::Warning, "Next:")
+                );
             }
         }
         CheckFormat::Json | CheckFormat::Jsonl => {
@@ -414,7 +418,11 @@ fn render_blocking_text(
     dir: &str,
 ) {
     for report in blocking_reports(witness, diagnostics, labels) {
-        eprintln!("{}: {}", report.code, report.message);
+        eprintln!(
+            "{}: {}",
+            term_style::paint(Stream::Stderr, Style::Code, report.code),
+            report.message
+        );
     }
     match footer {
         // A retire scaffold is gated on --maintenance, --approve-retire, and a recovery choice, so
@@ -433,12 +441,16 @@ fn render_blocking_text(
                         .join(" ")
                 ),
             };
-            eprintln!("next: paste the evolve block above into your source, then {next}");
+            eprintln!(
+                "{} paste the evolve block above into your source, then {next}",
+                term_style::paint(Stream::Stderr, Style::Warning, "next:")
+            );
         }
         ScaffoldFooter::NoBlock => {}
         ScaffoldFooter::Hint => {
             eprintln!(
-                "hint: run `marrow evolve preview --scaffold {dir}` to print parseable evolve blocks"
+                "{} run `marrow evolve preview --scaffold {dir}` to print parseable evolve blocks",
+                term_style::paint(Stream::Stderr, Style::Warning, "hint:")
             );
         }
     }

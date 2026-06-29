@@ -8,6 +8,7 @@ use marrow_run::SystemNondeterminism;
 use marrow_store::tree::TreeStore;
 
 use crate::backup::{count_live_entities, create_backup_artifact, ensure_store_uid};
+use crate::term_style::{self, Stream, Style};
 use crate::{CheckFormat, load_checked_project, open_store_for_inspection, report_simple_error};
 
 pub(crate) fn backup(args: &[String]) -> ExitCode {
@@ -78,7 +79,10 @@ pub(crate) fn backup(args: &[String]) -> ExitCode {
                     return ExitCode::FAILURE;
                 }
             };
-            println!("ok: backed up {records} record(s) to {output}");
+            println!(
+                "{} backed up {records} record(s) to {output}",
+                term_style::paint(Stream::Stdout, Style::Success, "ok:")
+            );
             ExitCode::SUCCESS
         }
         Err(error) => {

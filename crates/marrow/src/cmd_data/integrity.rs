@@ -6,6 +6,7 @@ use marrow_store::StoreError;
 use marrow_store::tree::TreeStore;
 use serde_json::json;
 
+use crate::term_style::{self, Stream, Style};
 use crate::{CheckFormat, write_json};
 
 pub(super) fn data_integrity(args: &[String]) -> ExitCode {
@@ -83,7 +84,10 @@ fn report_integrity(
     match format {
         CheckFormat::Text => {
             if problems == 0 {
-                println!("ok: {dir} integrity verified ({cells} cells)");
+                println!(
+                    "{} {dir} integrity verified ({cells} cells)",
+                    term_style::paint(Stream::Stdout, Style::Success, "ok:")
+                );
             } else {
                 write_integrity_problems_text(store, program)
                     .map_err(super::DataOutputError::from)?;
@@ -110,7 +114,10 @@ fn report_empty_integrity(
     store_snapshot: Option<&marrow_check::tooling::DataSnapshotStamp>,
 ) {
     match format {
-        CheckFormat::Text => println!("ok: {dir} integrity verified (0 cells)"),
+        CheckFormat::Text => println!(
+            "{} {dir} integrity verified (0 cells)",
+            term_style::paint(Stream::Stdout, Style::Success, "ok:")
+        ),
         CheckFormat::Json => write_json(json!({
             "project": crate::project_json_path(dir),
             "cells": 0,
@@ -134,9 +141,14 @@ fn write_integrity_problems_text(
 ) -> Result<(), StoreError> {
     visit_integrity_problems(store, program, |outcome| {
         if let Some(problem) = outcome.problem {
-            eprintln!("{}: {}: {}", problem.path, problem.code, problem.message);
+            let path = term_style::paint(Stream::Stderr, Style::Muted, problem.path);
+            let code = term_style::paint(Stream::Stderr, Style::Code, problem.code);
+            eprintln!("{path}: {code}: {}", problem.message);
             if let Some(help) = problem.help {
-                eprintln!("help: {help}");
+                eprintln!(
+                    "{} {help}",
+                    term_style::paint(Stream::Stderr, Style::Code, "help:")
+                );
             }
         }
         Ok(())
