@@ -27,8 +27,38 @@ impl Style {
     }
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct Palette {
+    enabled: bool,
+}
+
+impl Palette {
+    pub(crate) fn for_stream(stream: Stream) -> Self {
+        Self {
+            enabled: color_enabled(stream),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_test(enabled: bool) -> Self {
+        Self { enabled }
+    }
+
+    pub(crate) fn paint(self, style: Style, text: impl AsRef<str>) -> String {
+        paint_if(self.enabled, style, text.as_ref())
+    }
+
+    pub(crate) fn code_message(self, code: &str, message: impl std::fmt::Display) -> String {
+        format!("{}: {message}", self.paint(Style::Code, code))
+    }
+}
+
 pub(crate) fn paint(stream: Stream, style: Style, text: impl AsRef<str>) -> String {
-    paint_if(color_enabled(stream), style, text.as_ref())
+    Palette::for_stream(stream).paint(style, text)
+}
+
+pub(crate) fn code_message(stream: Stream, code: &str, message: impl std::fmt::Display) -> String {
+    Palette::for_stream(stream).code_message(code, message)
 }
 
 pub(crate) fn render_help(stream: Stream, text: &str) -> String {
@@ -98,6 +128,18 @@ mod tests {
     #[test]
     fn paint_disabled_returns_plain_text() {
         assert_eq!(paint_if(false, Style::Success, "ok:"), "ok:");
+    }
+
+    #[test]
+    fn code_message_styles_only_the_code_token() {
+        assert_eq!(
+            Palette::for_test(true).code_message("io.write", "failed to write output"),
+            "\x1b[36mio.write\x1b[0m: failed to write output"
+        );
+        assert_eq!(
+            Palette::for_test(false).code_message("io.write", "failed to write output"),
+            "io.write: failed to write output"
+        );
     }
 
     #[test]

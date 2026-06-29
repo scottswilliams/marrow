@@ -8,6 +8,7 @@ use marrow_run::{ProjectInvokeError, ProjectMode, ProjectSession, RunOutputSink,
 use marrow_syntax::SourceSpan;
 use serde_json::{Value, json};
 
+use crate::cmd_check::located_runtime_fault_line;
 use crate::trace::TraceHook;
 use crate::{CheckFormat, report_simple_error, write_json};
 
@@ -203,12 +204,8 @@ fn test_project_dir(dir: &str, trace: bool, format: CheckFormat, filter: Option<
                 if matches!(format, CheckFormat::Text) {
                     println!("{label} {}", test.name);
                     println!(
-                        "      {}:{}:{}: {}: {}",
-                        file.display(),
-                        error.span.line,
-                        error.span.column,
-                        error.code(),
-                        error.message
+                        "      {}",
+                        located_runtime_fault_line(file, error.span, error.code(), &error.message)
                     );
                 }
                 record_test_result(

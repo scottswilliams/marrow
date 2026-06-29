@@ -12,6 +12,7 @@ use marrow_run::{
 
 use crate::cmd_check::report_runtime_fault;
 use crate::dry_run::{self, DryRunHook};
+use crate::term_style::{self, Stream};
 use crate::trace::TraceHook;
 use crate::{CheckFormat, report_io_error, report_project, report_simple_error};
 
@@ -365,10 +366,18 @@ fn exit_after_program_stdout_error(error: std::io::Error) -> ! {
     match error.kind() {
         std::io::ErrorKind::BrokenPipe => std::process::exit(0),
         _ => {
-            eprintln!("io.write: failed to write program stdout: {error}");
+            eprintln!("{}", program_stdout_error_message(&error));
             std::process::exit(1);
         }
     }
+}
+
+fn program_stdout_error_message(error: &std::io::Error) -> String {
+    term_style::code_message(
+        Stream::Stderr,
+        "io.write",
+        format!("failed to write program stdout: {error}"),
+    )
 }
 
 /// Run `entry` through an admitted session, printing its output to stdout and

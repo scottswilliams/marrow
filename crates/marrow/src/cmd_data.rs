@@ -12,6 +12,7 @@ use marrow_store::StoreError;
 use marrow_store::tree::TreeStore;
 use serde_json::json;
 
+use crate::term_style::{self, Stream};
 use crate::{
     CheckFormat, load_checked_project_with_format, load_config_with_format, native_store_path,
     open_store_for_inspection, probe_checked_project, report_simple_error, store_path_is_absent,
@@ -231,14 +232,38 @@ const DATA_ORPHAN_CODE: &str = "data.orphan";
 /// could not see the cells under undeclared members. Counting them silently would under-report
 /// intact data; the exit status stays unchanged because the cells are durable and the inspection
 /// is read-only. A store the schema fully declares has no orphans and stays silent.
-pub(super) fn warn_on_hidden_orphans(program: &CheckedProgram, store: &Option<TreeStore>) {
+pub(super) fn warn_on_hidden_orphans(
+    program: &CheckedProgram,
+    store: &Option<TreeStore>,
+    format: CheckFormat,
+) {
     let Some(store) = store else {
         return;
     };
     if let Ok(orphans @ 1..) = count_orphan_cells(store, program) {
-        eprintln!(
-            "{DATA_ORPHAN_CODE}: {orphans} stored cell(s) under members the current source no longer declares are hidden from this view; run `marrow data integrity` to see them"
-        );
+        eprintln!("{}", hidden_orphan_warning(orphans, format));
+    }
+}
+
+fn hidden_orphan_warning(orphans: usize, format: CheckFormat) -> String {
+    hidden_orphan_warning_with_palette(
+        term_style::Palette::for_stream(Stream::Stderr),
+        orphans,
+        format,
+    )
+}
+
+fn hidden_orphan_warning_with_palette(
+    palette: term_style::Palette,
+    orphans: usize,
+    format: CheckFormat,
+) -> String {
+    let message = format!(
+        "{orphans} stored cell(s) under members the current source no longer declares are hidden from this view; run `marrow data integrity` to see them"
+    );
+    match format {
+        CheckFormat::Text => palette.code_message(DATA_ORPHAN_CODE, message),
+        CheckFormat::Json | CheckFormat::Jsonl => format!("{DATA_ORPHAN_CODE}: {message}"),
     }
 }
 
@@ -258,7 +283,7 @@ pub(super) fn report_unknown_path(
     format: CheckFormat,
 ) -> ExitCode {
     match format {
-        CheckFormat::Text => eprintln!("{code}: {error}"),
+        CheckFormat::Text => eprintln!("{}", term_style::code_message(Stream::Stderr, code, error)),
         CheckFormat::Json | CheckFormat::Jsonl => write_json(json!({
             "code": code,
             "kind": marrow_syntax::kind_for_code(code),
@@ -319,9 +344,29 @@ fn report_data_output_error(error: DataOutputError, format: CheckFormat) -> Exit
             ExitCode::SUCCESS
         }
         DataOutputError::Io(error) => {
-            eprintln!("io.write: failed to write data output: {error}");
+            eprintln!("{}", data_output_io_error_message(&error, format));
             ExitCode::FAILURE
         }
+    }
+}
+
+fn data_output_io_error_message(error: &io::Error, format: CheckFormat) -> String {
+    data_output_io_error_message_with_palette(
+        term_style::Palette::for_stream(Stream::Stderr),
+        error,
+        format,
+    )
+}
+
+fn data_output_io_error_message_with_palette(
+    palette: term_style::Palette,
+    error: &io::Error,
+    format: CheckFormat,
+) -> String {
+    let message = format!("failed to write data output: {error}");
+    match format {
+        CheckFormat::Text => palette.code_message("io.write", message),
+        CheckFormat::Json | CheckFormat::Jsonl => format!("io.write: {message}"),
     }
 }
 
@@ -597,7 +642,7 @@ fn data_roots(args: &[String]) -> ExitCode {
         },
         None => (Vec::new(), None),
     };
-    warn_on_hidden_orphans(&program, &store);
+    warn_on_hidden_orphans(&program, &store, format);
     match format {
         CheckFormat::Text => {
             if roots.is_empty() {
@@ -670,7 +715,7 @@ fn data_stats(args: &[String]) -> ExitCode {
         }
         None => (0, 0, 0),
     };
-    warn_on_hidden_orphans(&program, &store);
+    warn_on_hidden_orphans(&program, &store, format);
     let store_snapshot = match (&store, format) {
         (Some(store), CheckFormat::Json | CheckFormat::Jsonl) => {
             match data_snapshot_stamp(&program, store) {
@@ -729,7 +774,7 @@ fn data_dump(args: &[String]) -> ExitCode {
         },
         None => 0,
     };
-    warn_on_hidden_orphans(&program, &store);
+    warn_on_hidden_orphans(&program, &store, format);
     let store_snapshot = match (&store, format) {
         (Some(store), CheckFormat::Json | CheckFormat::Jsonl) => {
             match data_snapshot_stamp(&program, store) {
@@ -951,6 +996,67 @@ mod tests {
         let result = write_json_array_envelope(&mut out, write_test_prefix, "items", |_| Ok(()));
 
         assert_io_error(result);
+    }
+
+    #[test]
+    fn data_output_io_error_styles_the_code() {
+        let error = io::Error::other("writer failed");
+
+        assert_eq!(
+            data_output_io_error_message_with_palette(
+                term_style::Palette::for_test(true),
+                &error,
+                CheckFormat::Text,
+            ),
+            "\x1b[36mio.write\x1b[0m: failed to write data output: writer failed"
+        );
+    }
+
+    #[test]
+    fn data_output_io_error_keeps_structured_formats_plain() {
+        let error = io::Error::other("writer failed");
+
+        assert_eq!(
+            data_output_io_error_message_with_palette(
+                term_style::Palette::for_test(true),
+                &error,
+                CheckFormat::Json,
+            ),
+            "io.write: failed to write data output: writer failed"
+        );
+        assert_eq!(
+            data_output_io_error_message_with_palette(
+                term_style::Palette::for_test(true),
+                &error,
+                CheckFormat::Jsonl,
+            ),
+            "io.write: failed to write data output: writer failed"
+        );
+    }
+
+    #[test]
+    fn hidden_orphan_warning_colors_only_text_format() {
+        let text = hidden_orphan_warning_with_palette(
+            term_style::Palette::for_test(true),
+            3,
+            CheckFormat::Text,
+        );
+        let json = hidden_orphan_warning_with_palette(
+            term_style::Palette::for_test(true),
+            3,
+            CheckFormat::Json,
+        );
+        let jsonl = hidden_orphan_warning_with_palette(
+            term_style::Palette::for_test(true),
+            3,
+            CheckFormat::Jsonl,
+        );
+
+        assert!(text.starts_with("\x1b[36mdata.orphan\x1b[0m: 3 stored cell(s)"));
+        assert!(json.starts_with("data.orphan: 3 stored cell(s)"));
+        assert!(jsonl.starts_with("data.orphan: 3 stored cell(s)"));
+        assert!(!json.contains("\x1b"));
+        assert!(!jsonl.contains("\x1b"));
     }
 
     #[test]

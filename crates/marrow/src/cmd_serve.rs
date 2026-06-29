@@ -19,6 +19,7 @@ use marrow_run::{
 };
 
 use crate::cmd_run::report_session_open_error;
+use crate::term_style::{self, Stream};
 use crate::{CheckFormat, report_simple_error};
 
 mod cors;
@@ -297,27 +298,57 @@ fn run_server(
     if watch.is_some()
         && let Err(error) = listener.set_nonblocking(true)
     {
-        eprintln!("io.listen: failed to set surface watch poll: {error}");
+        eprintln!(
+            "{}",
+            server_code_message(
+                "io.listen",
+                format!("failed to set surface watch poll: {error}")
+            )
+        );
         return ExitCode::FAILURE;
     }
     loop {
         match listener.accept() {
             Ok((mut stream, _)) => {
                 if let Err(error) = stream.set_nonblocking(false) {
-                    eprintln!("io.read: failed to set surface connection blocking: {error}");
+                    eprintln!(
+                        "{}",
+                        server_code_message(
+                            "io.read",
+                            format!("failed to set surface connection blocking: {error}")
+                        )
+                    );
                     continue;
                 }
                 if let Err(error) = stream.set_read_timeout(Some(STREAM_TIMEOUT)) {
-                    eprintln!("io.read: failed to set surface read timeout: {error}");
+                    eprintln!(
+                        "{}",
+                        server_code_message(
+                            "io.read",
+                            format!("failed to set surface read timeout: {error}")
+                        )
+                    );
                     continue;
                 }
                 if let Err(error) = stream.set_write_timeout(Some(STREAM_TIMEOUT)) {
-                    eprintln!("io.write: failed to set surface write timeout: {error}");
+                    eprintln!(
+                        "{}",
+                        server_code_message(
+                            "io.write",
+                            format!("failed to set surface write timeout: {error}")
+                        )
+                    );
                     continue;
                 }
                 let response = handle_connection(&mut stream, &executor, &routes, cors);
                 if let Err(error) = write_response(&mut stream, &response) {
-                    eprintln!("io.write: failed to write surface response: {error}");
+                    eprintln!(
+                        "{}",
+                        server_code_message(
+                            "io.write",
+                            format!("failed to write surface response: {error}")
+                        )
+                    );
                 }
             }
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
@@ -327,10 +358,20 @@ fn run_server(
                 std::thread::sleep(WATCH_POLL);
             }
             Err(error) => {
-                eprintln!("io.listen: failed to accept surface connection: {error}");
+                eprintln!(
+                    "{}",
+                    server_code_message(
+                        "io.listen",
+                        format!("failed to accept surface connection: {error}")
+                    )
+                );
             }
         }
     }
+}
+
+fn server_code_message(code: &str, message: impl std::fmt::Display) -> String {
+    term_style::code_message(Stream::Stderr, code, message)
 }
 
 impl SurfaceWatch {
@@ -344,7 +385,13 @@ impl SurfaceWatch {
         let signature = match source_signature(&self.dir, &self.config) {
             Ok(signature) => signature,
             Err(error) => {
-                eprintln!("{SURFACE_STORE}: failed to read project sources for watch: {error}");
+                eprintln!(
+                    "{}",
+                    server_code_message(
+                        SURFACE_STORE,
+                        format!("failed to read project sources for watch: {error}")
+                    )
+                );
                 return;
             }
         };
@@ -355,7 +402,13 @@ impl SurfaceWatch {
         // not re-attempted every cadence; the next genuine edit retriggers it.
         self.signature = signature;
         if let Err(message) = self.recheck(executor, routes) {
-            eprintln!("{SURFACE_ABI_MISMATCH}: surface re-check failed: {message}");
+            eprintln!(
+                "{}",
+                server_code_message(
+                    SURFACE_ABI_MISMATCH,
+                    format!("surface re-check failed: {message}")
+                )
+            );
         }
     }
 
@@ -1068,5 +1121,14 @@ mod tests {
     fn abi_mismatch_is_the_not_found_wrong_route_class() {
         assert_eq!(status_for_surface_error(SURFACE_ABI_MISMATCH).code(), 404);
         assert_eq!(status_for_surface_error(SURFACE_ABSENT).code(), 404);
+    }
+
+    #[test]
+    fn server_code_message_styles_the_code() {
+        assert_eq!(
+            term_style::Palette::for_test(true)
+                .code_message(SURFACE_ABI_MISMATCH, "surface re-check failed"),
+            "\x1b[36msurface.abi_mismatch\x1b[0m: surface re-check failed"
+        );
     }
 }

@@ -34,7 +34,7 @@ pub(super) fn data_get(args: &[String]) -> ExitCode {
         return code;
     }
     let super::DataReadTarget { program, store, .. } = target;
-    super::warn_on_hidden_orphans(&program, &store);
+    super::warn_on_hidden_orphans(&program, &store, format);
     let path = match resolve_source_text_data_path(&program, &parsed_segments) {
         Ok(Some(path)) => path,
         // Durable identity that was never committed — a never-run project or a

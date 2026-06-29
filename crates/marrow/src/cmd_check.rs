@@ -4,6 +4,9 @@
 use std::path::Path;
 use std::process::ExitCode;
 
+use marrow_syntax::SourceSpan;
+
+use crate::term_style::{self, Stream};
 use crate::{CheckFormat, report_simple_error, write_json_err};
 
 pub(crate) fn check(args: &[String]) -> ExitCode {
@@ -210,21 +213,24 @@ fn check_project_dir(dir: &str, format: CheckFormat, locked: bool) -> ExitCode {
     if stale_lock {
         advisories.push(crate::ProjectAdvisory {
             diagnostic: stale_lock_advisory_diagnostic(),
-            note: format!("{CHECK_STALE_LOCK}: {STALE_LOCK_MESSAGE}"),
+            code: CHECK_STALE_LOCK,
+            message: STALE_LOCK_MESSAGE,
             summary: format!("marrow.lock is stale - run marrow run {dir} to refresh"),
         });
     }
     if missing_lock {
         advisories.push(crate::ProjectAdvisory {
             diagnostic: missing_lock_advisory_diagnostic(),
-            note: format!("{CHECK_LOCK_MISSING}: {MISSING_LOCK_MESSAGE}"),
+            code: CHECK_LOCK_MISSING,
+            message: MISSING_LOCK_MESSAGE,
             summary: format!("marrow.lock is missing - run marrow run {dir} to regenerate it"),
         });
     }
     if stale_client {
         advisories.push(crate::ProjectAdvisory {
             diagnostic: stale_client_advisory_diagnostic(),
-            note: format!("{CHECK_STALE_CLIENT}: {STALE_CLIENT_MESSAGE}"),
+            code: CHECK_STALE_CLIENT,
+            message: STALE_CLIENT_MESSAGE,
             summary: format!("the declared client is stale - run marrow run {dir} to refresh"),
         });
     }
@@ -345,12 +351,8 @@ pub(crate) fn report_runtime_fault(
     match format {
         CheckFormat::Text => match error.origin.and_then(|id| program.file_path(id)) {
             Some(path) => eprintln!(
-                "{}:{}:{}: {}: {}",
-                path.display(),
-                error.span.line,
-                error.span.column,
-                error.code(),
-                error.message
+                "{}",
+                located_runtime_fault_line(path, error.span, error.code(), &error.message)
             ),
             None => report_simple_error(error.code(), &error.message, CheckFormat::Text),
         },
@@ -360,6 +362,38 @@ pub(crate) fn report_runtime_fault(
             )));
         }
     }
+}
+
+pub(crate) fn located_runtime_fault_line(
+    path: &Path,
+    span: SourceSpan,
+    code: &str,
+    message: &str,
+) -> String {
+    located_runtime_fault_line_with_palette(
+        term_style::Palette::for_stream(Stream::Stderr),
+        path,
+        span,
+        code,
+        message,
+    )
+}
+
+fn located_runtime_fault_line_with_palette(
+    palette: term_style::Palette,
+    path: &Path,
+    span: SourceSpan,
+    code: &str,
+    message: &str,
+) -> String {
+    format!(
+        "{}:{}:{}: {}: {}",
+        path.display(),
+        span.line,
+        span.column,
+        palette.paint(term_style::Style::Code, code),
+        message
+    )
 }
 
 pub(crate) fn runtime_fault_json(
@@ -400,4 +434,33 @@ pub(crate) fn runtime_fault_json(
         ("data".to_string(), serde_json::Value::Object(data)),
         ("source_span".to_string(), source_span),
     ])
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use marrow_syntax::SourceSpan;
+
+    use super::located_runtime_fault_line_with_palette;
+
+    #[test]
+    fn located_runtime_fault_line_styles_only_the_code() {
+        let span = SourceSpan {
+            line: 7,
+            column: 9,
+            ..SourceSpan::default()
+        };
+
+        assert_eq!(
+            located_runtime_fault_line_with_palette(
+                crate::term_style::Palette::for_test(true),
+                Path::new("src/app.mw"),
+                span,
+                "run.divide_by_zero",
+                "division by zero",
+            ),
+            "src/app.mw:7:9: \x1b[36mrun.divide_by_zero\x1b[0m: division by zero"
+        );
+    }
 }

@@ -850,9 +850,10 @@ fn render_text(dir: &str, findings: &[Finding], integrity_sample: Option<Integri
     } else {
         for finding in findings {
             let code = term_style::paint(Stream::Stdout, Style::Code, finding.code);
+            let remedy = term_style::paint(Stream::Stdout, Style::Warning, "remedy:");
             let next = term_style::paint(Stream::Stdout, Style::Warning, "next:");
             println!(
-                "{code}: {}; remedy: {}; {next} `{}`",
+                "{code}: {}; {remedy} {}; {next} `{}`",
                 finding.message, finding.remedy, finding.next_command
             );
         }

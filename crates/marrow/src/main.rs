@@ -257,12 +257,13 @@ pub(crate) fn report_project_failed_with_diagnostic(
 }
 
 /// A CLI-level advisory the checker itself does not raise — a stale `marrow.lock` or a stale
-/// declared client. Each carries the structured diagnostic for the JSON envelope, the full
-/// `code: message` note for stderr, and a short human `summary` folded into the stdout success
-/// line so the happy path (which never reads stderr) still sees the advisory and counts it.
+/// declared client. Each carries the structured diagnostic for the JSON envelope, a typed code and
+/// message for stderr, and a short human `summary` folded into the stdout success line so the happy
+/// path (which never reads stderr) still sees the advisory and counts it.
 pub(crate) struct ProjectAdvisory {
     pub diagnostic: serde_json::Value,
-    pub note: String,
+    pub code: &'static str,
+    pub message: &'static str,
     pub summary: String,
 }
 
@@ -288,7 +289,7 @@ pub(crate) fn report_project_ok_with_advisories(
                 eprintln!("{line}");
             }
             for advisory in &advisories {
-                eprintln!("{}", advisory.note);
+                eprintln!("{}", project_advisory_note(advisory));
             }
             let warnings = warning_count(report) + advisories.len();
             let summaries: Vec<&str> = advisories
@@ -307,6 +308,17 @@ pub(crate) fn report_project_ok_with_advisories(
             project_envelope(target, "ok", Some(program)),
         ),
     }
+}
+
+fn project_advisory_note(advisory: &ProjectAdvisory) -> String {
+    project_advisory_note_with_palette(term_style::Palette::for_stream(Stream::Stderr), advisory)
+}
+
+fn project_advisory_note_with_palette(
+    palette: term_style::Palette,
+    advisory: &ProjectAdvisory,
+) -> String {
+    palette.code_message(advisory.code, advisory.message)
 }
 
 fn warning_count(report: &marrow_check::CheckReport) -> usize {
@@ -579,8 +591,8 @@ pub(crate) fn report_simple_error_with_data(
 ) {
     match format {
         CheckFormat::Text => eprintln!(
-            "{}: {message}",
-            term_style::paint(Stream::Stderr, Style::Code, code)
+            "{}",
+            term_style::code_message(Stream::Stderr, code, message)
         ),
         CheckFormat::Json | CheckFormat::Jsonl => write_json(json!({
             "code": code,
@@ -1165,8 +1177,12 @@ pub(crate) fn report_check(file: &str, parsed: &marrow_syntax::ParsedSource, for
 pub(crate) fn report_io_error(file: &str, error: &std::io::Error, format: CheckFormat) {
     match format {
         CheckFormat::Text => eprintln!(
-            "{}: failed to read {file}: {error}",
-            term_style::paint(Stream::Stderr, Style::Code, "io.read")
+            "{}",
+            term_style::code_message(
+                Stream::Stderr,
+                "io.read",
+                format!("failed to read {file}: {error}")
+            )
         ),
         CheckFormat::Json | CheckFormat::Jsonl => {
             write_json(json!({
@@ -1259,7 +1275,11 @@ pub(crate) fn render_value_bytes(bytes: &[u8]) -> String {
 mod tests {
     use std::process::ExitCode;
 
-    use super::{project_json_path, run_worker_thread};
+    use serde_json::json;
+
+    use super::{
+        ProjectAdvisory, project_advisory_note_with_palette, project_json_path, run_worker_thread,
+    };
 
     #[test]
     fn project_json_path_keeps_missing_absolute_path() {
@@ -1278,6 +1298,24 @@ mod tests {
     #[test]
     fn project_json_path_keeps_empty_path_when_absolute_path_fails() {
         assert_eq!(project_json_path(""), "");
+    }
+
+    #[test]
+    fn project_advisory_note_styles_its_diagnostic_code() {
+        let advisory = ProjectAdvisory {
+            diagnostic: json!({ "code": "check.lock_stale" }),
+            code: "check.lock_stale",
+            message: "marrow.lock is stale",
+            summary: String::new(),
+        };
+
+        assert_eq!(
+            project_advisory_note_with_palette(
+                crate::term_style::Palette::for_test(true),
+                &advisory
+            ),
+            "\x1b[36mcheck.lock_stale\x1b[0m: marrow.lock is stale"
+        );
     }
 
     #[test]
