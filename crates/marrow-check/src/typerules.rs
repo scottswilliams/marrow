@@ -250,18 +250,18 @@ pub(crate) fn is_steppable(scalar: ScalarType) -> bool {
     )
 }
 
-/// Whether a value of type `ty` renders to text directly through `print`,
-/// interpolation, and `string(...)`. Every scalar, every enum, and a saved
-/// identity render; the collection and resource shapes do not and are rejected at
-/// check. `None` defers the unknown and recovery types to the value-conversion path.
+/// Whether a value of type `ty` renders to text directly through `print` and
+/// interpolation. Every scalar, every enum, a saved identity, and a sequence
+/// whose element type renders can render; local trees and resources are rejected
+/// at check. `None` defers the unknown and recovery types to the runtime value.
 pub(crate) fn type_renderable_at_runtime(ty: &MarrowType) -> Option<bool> {
     match ty {
         MarrowType::Primitive(_) | MarrowType::Identity(_) | MarrowType::Enum { .. } => Some(true),
+        MarrowType::Sequence(element) => type_renderable_at_runtime(element),
         MarrowType::Unknown | MarrowType::Invalid => None,
         MarrowType::Error
         | MarrowType::Resource(_)
         | MarrowType::GroupEntry { .. }
-        | MarrowType::Sequence(_)
         | MarrowType::LocalTree { .. } => Some(false),
     }
 }

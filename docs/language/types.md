@@ -566,11 +566,13 @@ At run time the value must actually convert: `bool(...)` accepts only the
 canonical boolean values `false`, `true`, `0`, and `1`; `int(...)` accepts a
 decimal only when it is integral; numeric text and `date(...)` text must be
 canonical Marrow spelling. Over its accepted sources `string(...)` is total,
-rendering each as `print` does: a temporal as its canonical text, `bytes` as
-`0x`-prefixed lowercase hex, and an enum as its `Enum::member` spelling.
-`string(...)` does not accept a saved identity (`Id(^...)`) — that is rejected at
-check; `print` and interpolation render an identity by its key directly. Decode
-bytes as UTF-8 text through `std::bytes::toText`, not `string(...)`.
+rendering each with the same scalar and enum text that `print` uses: a temporal
+as its canonical text, `bytes` as `0x`-prefixed lowercase hex, and an enum as its
+`Enum::member` spelling. `string(...)` does not accept a saved identity
+(`Id(^...)`) or a sequence — those are rejected at check; `print` and
+interpolation render an identity by its key directly and render sequences whose
+element type renders. Decode bytes as UTF-8 text through `std::bytes::toText`,
+not `string(...)`.
 `instant(...)` and `duration(...)` accept standard RFC-3339/ISO-8601 spelling,
 which normalizes to the canonical value (see
 [Standard Library](standard-library.md)). `instant(...)` accepts trailing-zero

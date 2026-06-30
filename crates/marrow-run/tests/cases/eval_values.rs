@@ -327,6 +327,30 @@ fn iterates_a_sequence_binding_its_positions() {
 }
 
 #[test]
+fn print_renders_local_sequences() {
+    let program = checked_program(
+        "pub fn show()\n\
+         \x20   var empty: sequence[int]\n\
+         \x20   var words = std::text::split(\"a,b\", \",\")\n\
+         \x20   var sparse: sequence[int]\n\
+         \x20   append(sparse, 1)\n\
+         \x20   sparse(4) = 4\n\
+         \x20   var inner: sequence[int]\n\
+         \x20   append(inner, 7)\n\
+         \x20   append(inner, 8)\n\
+         \x20   var nested: sequence[sequence[int]]\n\
+         \x20   append(nested, inner)\n\
+         \x20   print(empty)\n\
+         \x20   print(words)\n\
+         \x20   print(sparse)\n\
+         \x20   print(nested)\n",
+    );
+    let outcome = run_full(checked_entry!(&program, "test::show")).expect("run");
+
+    assert_eq!(outcome.output, "[]\n[a, b]\n[1, 4]\n[[7, 8]]\n");
+}
+
+#[test]
 fn two_name_loop_over_a_range_is_unsupported() {
     let program = checked_program(
         "pub fn f()\n\

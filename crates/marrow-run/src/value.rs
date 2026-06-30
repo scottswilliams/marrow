@@ -913,12 +913,12 @@ pub(crate) fn saved_value_to_value(value: SavedValue) -> Value {
 
 /// The one renderer for `print`, interpolation, and `string(...)`: scalars in their
 /// canonical form, an enum as its `Enum::member` source spelling, bytes as
-/// `0x`-prefixed lowercase hex, and a saved identity by its key(s). `print` and
-/// interpolation render every shape reaching here; `string(...)` narrows the saved
-/// identity out before calling, so its acceptance is decided by the conversion
-/// matrix, not by this function. The non-renderable shapes — sequences, local trees,
-/// and resources — are rejected at check for a statically-typed argument, so they
-/// reach here only through an `unknown`-typed value, which faults at run.
+/// `0x`-prefixed lowercase hex, a saved identity by its key(s), and sequences as
+/// bracketed rendered elements. `string(...)` narrows the saved identity and
+/// sequence shapes out before calling, so its acceptance is decided by the
+/// conversion matrix, not by this function. The non-renderable shapes — local
+/// trees and resources — are rejected at check for a statically-typed argument, so
+/// they reach here only through an `unknown`-typed value, which faults at run.
 pub(crate) fn render(value: Value, span: SourceSpan) -> Result<String, RuntimeError> {
     match value {
         Value::Int(n) => Ok(n.to_string()),
@@ -931,10 +931,22 @@ pub(crate) fn render(value: Value, span: SourceSpan) -> Result<String, RuntimeEr
         Value::Instant(nanos) => canonical_scalar_text(SavedValue::Instant(nanos), span),
         Value::Date(days) => canonical_scalar_text(SavedValue::Date(days), span),
         Value::Duration(nanos) => canonical_scalar_text(SavedValue::Duration(nanos), span),
-        Value::Sequence(_) => Err(unsupported("rendering a sequence value", span)),
+        Value::Sequence(sequence) => render_sequence(sequence, span),
         Value::LocalTree(_) => Err(unsupported("rendering a local tree value", span)),
         Value::Resource(_) => Err(unsupported("rendering a resource value", span)),
     }
+}
+
+fn render_sequence(sequence: Sequence, span: SourceSpan) -> Result<String, RuntimeError> {
+    let mut text = String::from("[");
+    for (index, value) in sequence.into_values().into_iter().enumerate() {
+        if index > 0 {
+            text.push_str(", ");
+        }
+        text.push_str(&render(value, span)?);
+    }
+    text.push(']');
+    Ok(text)
 }
 
 /// The `0x`-prefixed lowercase hex a bytes value renders as, matching `data dump`.

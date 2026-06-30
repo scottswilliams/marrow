@@ -402,23 +402,36 @@ fn print_renders_temporals_bytes_and_enums_at_check() {
 }
 
 #[test]
+fn print_and_interpolation_render_sequences_when_elements_render() {
+    let report = check_module_report(
+        "output-renderable-sequence",
+        "module m\n\
+         fn f(items: sequence[string], counts: sequence[int], nested: sequence[sequence[int]]): string\n\
+         \x20   print(items)\n\
+         \x20   print(counts)\n\
+         \x20   print(nested)\n\
+         \x20   return $\"{items}{counts}{nested}\"\n",
+    );
+    assert_clean(&report);
+}
+
+#[test]
 fn print_rejects_non_renderable_values_at_check() {
-    // The genuinely non-renderable shapes — sequences, local trees, and resources —
-    // are a check error at the `print` argument, the same rejection interpolation
-    // makes, so a `run.unsupported` never surfaces at runtime.
+    // A sequence only renders when its element type renders, so resource-shaped
+    // values still fail at check before a runtime unsupported fault can surface.
     let found = check_module(
         "output-non-renderable",
         "module m\n\
          resource Book\n    required title: string\n\
          store ^books(id: int): Book\n\n\
-         fn f(items: sequence[string], book: Book)\n\
+         fn f(items: sequence[Book], book: Book)\n\
          \x20   print(items)\n\
          \x20   print(book)\n",
         "check.operator_type",
     );
     assert_eq!(found.len(), 2, "{found:#?}");
     for source in [
-        MarrowType::Sequence(Box::new(MarrowType::Primitive(ScalarType::Str))),
+        MarrowType::Sequence(Box::new(MarrowType::Resource("m::Book".into()))),
         MarrowType::Resource("m::Book".into()),
     ] {
         assert!(
@@ -434,15 +447,16 @@ fn print_rejects_non_renderable_values_at_check() {
 #[test]
 fn print_and_interpolation_reject_the_same_non_renderable_set() {
     // Static parity: every value type interpolation rejects, `print` also rejects,
-    // and vice versa. The two render surfaces accept and reject in lockstep.
+    // and vice versa. Renderable sequences are accepted by both surfaces.
     let non_renderable = "module m\n\
          resource Book\n    required title: string\n\
          store ^books(id: int): Book\n\n\
-         fn viaPrint(items: sequence[string], book: Book)\n\
+         fn viaPrint(words: sequence[string], items: sequence[Book], book: Book)\n\
+         \x20   print(words)\n\
          \x20   print(items)\n\
          \x20   print(book)\n\
-         fn viaInterp(items: sequence[string], book: Book): string\n\
-         \x20   return $\"{items}{book}\"\n";
+         fn viaInterp(words: sequence[string], items: sequence[Book], book: Book): string\n\
+         \x20   return $\"{words}{items}{book}\"\n";
     let found = check_module("render-parity", non_renderable, "check.operator_type");
     // Two rejections from each surface over the same two source types, in source order.
     assert_eq!(found.len(), 4, "{found:#?}");

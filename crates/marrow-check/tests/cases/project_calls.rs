@@ -73,6 +73,25 @@ fn the_string_conversion_accepts_an_enum_source() {
 }
 
 #[test]
+fn the_string_conversion_rejects_sequence_sources() {
+    let found = check_module(
+        "convert-string-from-sequence",
+        "module m\n\
+         fn caller(items: sequence[int]): string\n    return string(items)\n",
+        "check.call_argument",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+    assert_eq!(
+        found[0].payload,
+        conversion_source_payload(
+            ConversionTarget::Str,
+            MarrowType::Sequence(Box::new(MarrowType::Primitive(ScalarType::Int)))
+        ),
+        "{found:#?}"
+    );
+}
+
+#[test]
 fn a_builtin_call_is_not_arity_checked_and_an_unknown_call_is_not_a_mismatch() {
     // `print` is a builtin (dispatched before user functions) and `mystery` does
     // not resolve to a declared function; neither is an arity/argument mismatch.

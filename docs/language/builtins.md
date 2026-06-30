@@ -204,16 +204,29 @@ newline to the default output stream:
 print($"saved {id}")
 ```
 
-It renders every scalar, every enum, and a saved identity. Scalars render in
-their canonical form: an `instant`, `date`, or `duration` as its canonical text,
-and `bytes` as `0x`-prefixed lowercase hex (matching `data dump`). An enum
-renders as its `Enum::member` source spelling. A single-key identity renders as
-its key, and a composite identity renders as `identity(k1, k2)`.
+It renders every scalar, every enum, a saved identity, and any sequence whose
+element type also renders. Scalars render in their canonical form: an `instant`,
+`date`, or `duration` as its canonical text, and `bytes` as `0x`-prefixed
+lowercase hex (matching `data dump`). An enum renders as its `Enum::member`
+source spelling. A single-key identity renders as its key, and a composite
+identity renders as `identity(k1, k2)`. A sequence renders as bracketed elements
+in sequence order:
+
+```mw
+print(std::text::split("a,b", ","))
+```
+
+This writes:
+
+```text
+[a, b]
+```
 
 `print` and string interpolation render the same set and reject the same set: a
-sequence, local tree, or resource has no direct text form and is a check error at
-the `print` argument when its type is statically known. `print` produces no value. Complex
-IO belongs in `std::io`.
+local tree, resource, saved collection path, or sequence whose element type does
+not render has no direct text form and is a check error at the render argument
+when its type is statically known. `print` produces no value. Complex IO belongs
+in `std::io`.
 
 ## Delete
 
@@ -252,11 +265,12 @@ Date, instant, and duration conversions validate canonical Marrow values. Use
 `std::clock` helpers for parsing or formatting text at user and host
 boundaries.
 
-`string(...)` renders any scalar plus an enum, each as the text `print` does: a
-temporal as its canonical text, `bytes` as `0x`-prefixed lowercase hex, and an
-enum as its `Enum::member` spelling. It does not accept a saved identity, which
-`print` renders directly. UTF-8 decoding of bytes is the separate
-`std::bytes::toText` path; `string(bytes)` never depends on valid UTF-8.
+`string(...)` renders any scalar plus an enum, using the same scalar and enum
+text that `print` uses: a temporal as its canonical text, `bytes` as
+`0x`-prefixed lowercase hex, and an enum as its `Enum::member` spelling. It does
+not accept a saved identity or a sequence, which `print` and interpolation render
+directly when the value is otherwise renderable. UTF-8 decoding of bytes is the
+separate `std::bytes::toText` path; `string(bytes)` never depends on valid UTF-8.
 
 ## IDs
 
