@@ -8,7 +8,7 @@
 //! only the outermost `commit` persists it, and any `rollback` aborts it.
 
 use std::fs;
-use std::ops::Bound;
+use std::ops::{Bound, Range};
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
 use std::panic::AssertUnwindSafe;
@@ -206,6 +206,19 @@ fn transient_open_io() -> StoreError {
     }
 }
 
+/// Map a filesystem error met while probing a store file to a typed store error
+/// without surfacing the platform errno. A denied path is its own path-bearing state;
+/// anything else — including a concurrent delete that races the open as `NotFound` —
+/// is a transient fault, never the raw `os error` string a client could not parse.
+fn classify_store_io_error(path: &Path, error: &std::io::Error) -> StoreError {
+    match error.kind() {
+        std::io::ErrorKind::PermissionDenied => StoreError::PermissionDenied {
+            path: path.to_path_buf(),
+        },
+        _ => transient_open_io(),
+    }
+}
+
 /// Classify a redb storage error surfaced while opening or probing a store:
 /// reported corruption and a torn or truncated body (an I/O `InvalidData` or
 /// unexpected EOF as redb walks the file) are hard corruption; anything else is
@@ -252,8 +265,11 @@ struct RecoveryProbeBackend {
 
 impl RecoveryProbeBackend {
     fn open(path: &Path) -> Result<Self, StoreError> {
-        let file = fs::File::open(path).map_err(io("open"))?;
-        let file_len = file.metadata().map_err(io("open"))?.len();
+        let file = fs::File::open(path).map_err(|error| classify_store_io_error(path, &error))?;
+        let file_len = file
+            .metadata()
+            .map_err(|error| classify_store_io_error(path, &error))?
+            .len();
         Ok(Self {
             file: Mutex::new(file),
             file_len,
@@ -348,13 +364,20 @@ fn verify_committed_recoverable(path: &Path) -> Result<(), StoreError> {
         .map_err(|error| map_open_error(path, error))
 }
 
-/// Run a read-only or existing-store open, absorbing the brief window in which a
-/// concurrent first-run writer has created the store file but not yet written its
-/// header under the lock. A store this build committed is never zero-length, so a
-/// torn-body corruption reported while the file is still empty is a creation race,
-/// not a settled fault: the open retries until the writer's header and lock appear.
-/// A file that stays empty across the budget is genuinely truncated and its
-/// corruption surfaces, so a settled writer-free empty file is still rejected.
+/// redb writes its magic number last when creating a store, after the header is laid
+/// down under the lock, so a file the magic has not yet reached is one a concurrent
+/// first-run writer is still forming.
+const REDB_MAGIC: [u8; 9] = [b'r', b'e', b'd', b'b', 0x1A, 0x0A, 0xA9, 0x0D, 0x0A];
+
+/// Run a read-only or existing-store open, absorbing the window in which a concurrent
+/// first-run writer has created the store file but not yet finished writing it under
+/// the lock. A store this build committed always carries redb's magic number, so a
+/// torn-body corruption reported while the magic is still absent — an empty
+/// placeholder, or a partially written header before the magic lands — is a creation
+/// race, not a settled fault: the open retries until the writer's magic and lock
+/// appear. A file whose magic never arrives across the budget is genuinely truncated
+/// and its corruption surfaces, so a settled writer-free incomplete file is still
+/// rejected, as is a torn body that already carries the magic.
 fn open_tolerating_creation_race(
     path: &Path,
     open: impl Fn() -> Result<DatabaseHandle, StoreError>,
@@ -364,7 +387,7 @@ fn open_tolerating_creation_race(
     loop {
         match open() {
             Err(StoreError::Corruption { .. })
-                if attempt < CREATION_RACE_BACKOFF.len() && store_file_is_empty(path) =>
+                if attempt < CREATION_RACE_BACKOFF.len() && store_file_is_forming(path) =>
             {
                 std::thread::sleep(std::time::Duration::from_millis(
                     CREATION_RACE_BACKOFF[attempt],
@@ -376,13 +399,27 @@ fn open_tolerating_creation_race(
     }
 }
 
-/// Whether the store file is currently zero-length: a header-less body that a
-/// concurrent creator is still filling, or a truncated file. A missing file is not
-/// empty; its open reports its own not-found error.
-fn store_file_is_empty(path: &Path) -> bool {
-    fs::metadata(path)
-        .map(|metadata| metadata.len() == 0)
-        .unwrap_or(false)
+/// Whether the store file is still being formed by a concurrent creator: its leading
+/// bytes are not yet redb's magic number, whether because it is an empty placeholder,
+/// a partial header the magic has not reached, or a torn write mid-creation. A missing
+/// file is not forming; its open reports its own not-found error.
+fn store_file_is_forming(path: &Path) -> bool {
+    use std::io::Read;
+    // Only a regular file can be a store under construction; statting first also keeps
+    // the open from blocking on a FIFO left at the path, which the regular-file guard
+    // rejects on its own.
+    match fs::metadata(path) {
+        Ok(metadata) if metadata.file_type().is_file() => {}
+        _ => return false,
+    }
+    let Ok(mut file) = fs::File::open(path) else {
+        return false;
+    };
+    let mut head = [0u8; REDB_MAGIC.len()];
+    match file.read_exact(&mut head) {
+        Ok(()) => head != REDB_MAGIC,
+        Err(_) => true,
+    }
 }
 
 /// Run a store open and its structural probe under the panic backstop.
@@ -532,86 +569,226 @@ fn guard_regular_store_file(path: &Path) -> Result<(), StoreError> {
 /// spans the layout fields and both 128-byte commit slots.
 const SUPERBLOCK_PREFIX_LEN: usize = 320;
 
-/// Reject a store whose super-header points a committed btree root at a page lying
-/// beyond the file, before redb maps that page.
+/// redb's node tags: the first byte of a btree page.
+const REDB_LEAF: u8 = 1;
+const REDB_BRANCH: u8 = 2;
+
+/// Reject a store whose committed page graph points any reachable page beyond the
+/// file, before redb maps that page.
 ///
-/// redb reads a page by computing its byte range from the page number and reading
-/// that span, so a root page number clobbered toward a huge region, index, or order
-/// makes the open allocate a span far past the file — gigabytes of zeroes, an OOM or
-/// hang — before any data is traversed. The engine's own length check guards the
-/// region-layout fields but not the committed root, so this validates each non-null
-/// root in both commit slots against the actual file length and reports a body that
-/// over-reaches as corruption. A header shorter than the prefix is left to redb,
-/// which rejects a truncated body itself.
+/// redb sizes a page read straight from the page number — `2^order` pages at a
+/// region/index it never checks against the file — and allocates that span before
+/// examining the page, so one clobbered length or order field drives the open or a
+/// traversal into a multi-gigabyte allocation and an out-of-memory kill the panic
+/// backstop cannot intercept. This is the only place that allocation can be
+/// prevented rather than survived: every page reachable from the live committed
+/// roots is mapped to its byte range and rejected as corruption if it over-reaches,
+/// before the engine touches it. The walk follows the table tree to each table
+/// definition's root and on through the data subtrees' interior branch pages, so an
+/// interior child pointer is validated as strictly as the committed root. A header
+/// shorter than the prefix, or a degenerate geometry, is left to redb, which rejects
+/// a truncated or foreign body itself.
 fn guard_superblock_header(path: &Path) -> Result<(), StoreError> {
     let header = match read_file_prefix(path, SUPERBLOCK_PREFIX_LEN)? {
         Some(header) => header,
         None => return Ok(()),
     };
-    let file_len = fs::metadata(path)
-        .map_err(io("open"))
-        .map(|meta| meta.len())?;
-
-    let page_size = u64::from(read_u32(&header, 12));
-    let region_header_pages = u64::from(read_u32(&header, 16));
-    let region_max_data_pages = u64::from(read_u32(&header, 20));
-    if page_size == 0 {
-        return Ok(());
-    }
-    let region_size = region_header_pages
-        .checked_add(region_max_data_pages)
-        .and_then(|pages| pages.checked_mul(page_size));
-    let region_pages_start = region_header_pages.checked_mul(page_size);
-    let (Some(region_size), Some(region_pages_start)) = (region_size, region_pages_start) else {
+    let mut file = match fs::File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(classify_store_io_error(path, &error)),
+    };
+    let file_len = file
+        .metadata()
+        .map_err(|error| classify_store_io_error(path, &error))?
+        .len();
+    let Some(geometry) = RedbGeometry::parse(&header) else {
         return Ok(());
     };
+    guard_committed_page_graph(&mut file, &header, &geometry, file_len)
+}
 
-    // Each commit slot holds a user root at slot+8 and a system root at slot+40; a
-    // root is live only when its non-null flag (slot+1, slot+2) is set.
-    for slot in [64usize, 192] {
-        for (flag_offset, root_offset) in [(slot + 1, slot + 8), (slot + 2, slot + 40)] {
-            if header[flag_offset] == 0 {
-                continue;
-            }
+/// The region geometry redb records in the super-header, enough to map any page
+/// number to its byte range.
+struct RedbGeometry {
+    page_size: u64,
+    region_size: u64,
+    region_pages_start: u64,
+}
+
+impl RedbGeometry {
+    /// Parse the geometry from the super-header prefix, or `None` when a field is
+    /// degenerate or its arithmetic overflows — a truncated or foreign body redb
+    /// rejects on its own.
+    fn parse(header: &[u8]) -> Option<Self> {
+        let page_size = u64::from(read_u32(header, 12));
+        let region_header_pages = u64::from(read_u32(header, 16));
+        let region_max_data_pages = u64::from(read_u32(header, 20));
+        if page_size == 0 {
+            return None;
+        }
+        let region_size = region_header_pages
+            .checked_add(region_max_data_pages)?
+            .checked_mul(page_size)?;
+        let region_pages_start = region_header_pages.checked_mul(page_size)?;
+        Some(Self {
+            page_size,
+            region_size,
+            region_pages_start,
+        })
+    }
+
+    /// The byte range a redb page number occupies, or `None` when it falls outside
+    /// the file or any step overflows. The number packs an order in its top bits and
+    /// a region/index below; its span is `2^order` pages, laid after the super-header
+    /// page.
+    fn page_byte_range(&self, raw: u64, file_len: u64) -> Option<Range<u64>> {
+        let order = (raw >> 59) as u32;
+        let region = (raw >> 20) & 0x000F_FFFF;
+        let page_index = raw & (0x000F_FFFF >> order);
+        let page_bytes = 1u64.checked_shl(order)?.checked_mul(self.page_size)?;
+        let start = region
+            .checked_mul(self.region_size)?
+            .checked_add(self.region_pages_start)?
+            .checked_add(page_index.checked_mul(page_bytes)?)?
+            .checked_add(self.page_size)?;
+        let end = start.checked_add(page_bytes)?;
+        (end <= file_len).then_some(start..end)
+    }
+}
+
+/// The role a page plays in the walk: a table tree's leaves carry table definitions
+/// whose roots open data subtrees, whereas a data subtree's leaves hold user values
+/// and reference no further pages.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PageRole {
+    TableTree,
+    DataTree,
+}
+
+/// Walk the live committed page graph, rejecting any page whose byte range leaves the
+/// file before the engine could allocate against it. Only the primary commit slot's
+/// roots are followed: redb reads the primary on a clean open, and a stale secondary
+/// slot can reference pages a later commit has reused, whose bytes no longer parse as
+/// the nodes they once were.
+fn guard_committed_page_graph(
+    file: &mut fs::File,
+    header: &[u8],
+    geometry: &RedbGeometry,
+    file_len: u64,
+) -> Result<(), StoreError> {
+    let primary_slot = if header[9] & 1 == 0 { 64usize } else { 192 };
+    let mut pending: Vec<(u64, PageRole)> = Vec::new();
+    for (flag_offset, root_offset) in [
+        (primary_slot + 1, primary_slot + 8),
+        (primary_slot + 2, primary_slot + 40),
+    ] {
+        if header[flag_offset] != 0 {
             let root = u64::from_le_bytes(header[root_offset..root_offset + 8].try_into().unwrap());
-            if root_page_overreaches(root, page_size, region_size, region_pages_start, file_len) {
-                return Err(StoreError::Corruption {
-                    message: "store header points a committed root page beyond the file".into(),
-                });
+            pending.push((root, PageRole::TableTree));
+        }
+    }
+
+    let page_budget = file_len / geometry.page_size + 16;
+    let mut visited = std::collections::HashSet::new();
+    while let Some((raw, role)) = pending.pop() {
+        if !visited.insert(raw) {
+            continue;
+        }
+        if visited.len() as u64 > page_budget {
+            return Err(corruption(
+                "store page graph exceeds the file's page capacity",
+            ));
+        }
+        let Some(range) = geometry.page_byte_range(raw, file_len) else {
+            return Err(corruption("store points a btree page beyond the file"));
+        };
+        let span = (range.end - range.start) as usize;
+        let tag = read_store_span(file, range.start, span.min(4))?;
+        if tag.len() < 4 {
+            continue;
+        }
+        match tag[0] {
+            REDB_BRANCH => {
+                let children = usize::from(u16::from_le_bytes([tag[2], tag[3]])) + 1;
+                let needed = (8 + 24 * children).min(span);
+                let page = read_store_span(file, range.start, needed)?;
+                for child in 0..children {
+                    let offset = 8 + 16 * children + 8 * child;
+                    let Some(bytes) = page.get(offset..offset + 8) else {
+                        break;
+                    };
+                    pending.push((u64::from_le_bytes(bytes.try_into().unwrap()), role));
+                }
             }
+            REDB_LEAF if role == PageRole::TableTree => {
+                let page = read_store_span(file, range.start, span)?;
+                for root in table_definition_roots(&page) {
+                    pending.push((root, PageRole::DataTree));
+                }
+            }
+            _ => {}
         }
     }
     Ok(())
 }
 
-/// Whether the byte range of a redb root page number falls outside the file. The
-/// page number packs an order in its top bits and a region/index below; its span is
-/// `2^order` pages. Any arithmetic that overflows a `u64` is itself out of range.
-fn root_page_overreaches(
-    root: u64,
-    page_size: u64,
-    region_size: u64,
-    region_pages_start: u64,
-    file_len: u64,
-) -> bool {
-    let order = (root >> 59) as u32;
-    let region = (root >> 20) & 0x000F_FFFF;
-    let page_index = root & (0x000F_FFFF >> order);
-    let Some(page_bytes) = 1u64
-        .checked_shl(order)
-        .and_then(|p| p.checked_mul(page_size))
-    else {
-        return true;
+/// The non-null table-definition roots stored in a table-tree leaf. redb lays a
+/// variable-key, variable-value leaf as a u16 pair count, a `key_end` then a
+/// `value_end` offset array, then the key and value bytes; each value is an encoded
+/// table definition whose root page number sits at a fixed offset behind a non-null
+/// flag. A pair that does not parse is skipped rather than treated as damage: the
+/// page is already known to lie within the file, so the engine handles a genuinely
+/// malformed leaf.
+fn table_definition_roots(page: &[u8]) -> Vec<u64> {
+    let mut roots = Vec::new();
+    if page.len() < 4 {
+        return roots;
+    }
+    let pairs = usize::from(u16::from_le_bytes([page[2], page[3]]));
+    let value_ends = 4 + 4 * pairs;
+    let read_u32_at = |offset: usize| -> Option<usize> {
+        page.get(offset..offset + 4)
+            .map(|bytes| u32::from_le_bytes(bytes.try_into().unwrap()) as usize)
     };
-    let end = region
-        .checked_mul(region_size)
-        .and_then(|base| base.checked_add(region_pages_start))
-        .and_then(|start| start.checked_add(page_index.checked_mul(page_bytes)?))
-        .and_then(|start| start.checked_add(page_size)) // data section begins after the super-header page
-        .and_then(|start| start.checked_add(page_bytes));
-    match end {
-        Some(end) => end > file_len,
-        None => true,
+    for pair in 0..pairs {
+        let start = if pair == 0 {
+            read_u32_at(4 + 4 * (pairs - 1))
+        } else {
+            read_u32_at(value_ends + 4 * (pair - 1))
+        };
+        let (Some(start), Some(end)) = (start, read_u32_at(value_ends + 4 * pair)) else {
+            continue;
+        };
+        let Some(value) = page.get(start..end) else {
+            continue;
+        };
+        // A table definition is a type byte, an 8-byte length, then a non-null flag
+        // guarding the root's page number.
+        if value.len() >= 18 && value[9] != 0 {
+            roots.push(u64::from_le_bytes(value[10..18].try_into().unwrap()));
+        }
+    }
+    roots
+}
+
+/// Read `len` bytes at `offset` from a store file whose range is already known to lie
+/// within the file. A short read means the file shrank under a concurrent writer; that
+/// is a transient fault, not corruption.
+fn read_store_span(file: &mut fs::File, offset: u64, len: usize) -> Result<Vec<u8>, StoreError> {
+    use std::io::{Read, Seek, SeekFrom};
+    file.seek(SeekFrom::Start(offset))
+        .map_err(|_| transient_open_io())?;
+    let mut buffer = vec![0u8; len];
+    match file.read_exact(&mut buffer) {
+        Ok(()) => Ok(buffer),
+        Err(_) => Err(transient_open_io()),
+    }
+}
+
+fn corruption(message: &'static str) -> StoreError {
+    StoreError::Corruption {
+        message: message.into(),
     }
 }
 
@@ -2083,6 +2260,208 @@ mod tests {
                     ),
                 }
             }
+        }
+    }
+
+    /// An interior btree page number — a branch child pointer below the committed
+    /// root — clobbered toward a huge page order would drive redb's traversal into a
+    /// multi-gigabyte page allocation and an out-of-memory kill the panic backstop
+    /// cannot intercept. The structural guard maps every reachable page to its byte
+    /// range and rejects an over-reaching one as corruption before the engine reads
+    /// it, so every open path fails closed in bounded memory rather than ballooning.
+    /// Each open runs on a worker thread with a deadline so a regression surfaces as a
+    /// timeout instead of an OOM-killed suite.
+    #[test]
+    fn open_rejects_a_corrupt_interior_page_without_unbounded_allocation() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let dir = TempDir::new("marrow-store-redb-interior").expect("temp dir");
+        let seed = dir.path().join("seed.redb");
+        {
+            let mut store = RedbStore::open(&seed).expect("open fresh");
+            for n in 0..8000u32 {
+                let key = format!("k/{n:08}").into_bytes();
+                Backend::write(&mut store, &key, vec![0u8; 48]).expect("write");
+            }
+        }
+        let body = std::fs::read(&seed).expect("read store body");
+        let page_size = u32::from_le_bytes(body[12..16].try_into().unwrap()) as usize;
+        let region_header_pages = u32::from_le_bytes(body[16..20].try_into().unwrap()) as usize;
+        let data_start = (1 + region_header_pages) * page_size;
+
+        // Branch pages carry the tag byte 2; corrupt each one's first child pointer to
+        // a huge page order so its byte span runs far past the file.
+        let mut branch_offsets = Vec::new();
+        let mut offset = data_start;
+        while offset + page_size <= body.len() {
+            if body[offset] == super::REDB_BRANCH {
+                branch_offsets.push(offset);
+            }
+            offset += page_size;
+        }
+        assert!(
+            !branch_offsets.is_empty(),
+            "the seed must build interior branch pages"
+        );
+
+        let mut rejected_any = false;
+        for branch in branch_offsets {
+            let children = usize::from(u16::from_le_bytes(
+                body[branch + 2..branch + 4].try_into().unwrap(),
+            )) + 1;
+            let child0_msb = branch + 8 + 16 * children + 7;
+            let mut bytes = body.clone();
+            bytes[child0_msb] = 0xF8; // a page order far past any region
+            let path = dir.path().join(format!("interior-{branch}.redb"));
+            std::fs::write(&path, &bytes).expect("write corrupted body");
+
+            for label in ["open", "open_existing", "open_read_only"] {
+                let path = path.clone();
+                let (sender, receiver) = mpsc::channel();
+                std::thread::spawn(move || {
+                    let result = match label {
+                        "open" => RedbStore::open(&path).map(|_| ()),
+                        "open_existing" => RedbStore::open_existing(&path).map(|_| ()),
+                        _ => RedbStore::open_read_only(&path).map(|_| ()),
+                    };
+                    let _ = sender.send(result);
+                });
+                match receiver.recv_timeout(Duration::from_secs(20)) {
+                    // A branch below a page the live graph never reaches opens cleanly;
+                    // what matters is that no path ever over-allocates.
+                    Ok(Ok(())) => {}
+                    Ok(Err(StoreError::Corruption { .. })) => rejected_any = true,
+                    Ok(Err(other)) => {
+                        panic!("branch {branch} {label}: unexpected error {other:?}")
+                    }
+                    Err(_) => panic!(
+                        "branch {branch} {label}: open did not return (unbounded allocation on a corrupt interior page)"
+                    ),
+                }
+            }
+        }
+        assert!(
+            rejected_any,
+            "a corrupt interior branch child must be rejected as corruption"
+        );
+    }
+
+    /// A reader opening a store that a concurrent writer is deleting and recreating
+    /// must never see a false corruption: it observes the healthy store, the writer's
+    /// lock, a transient fault, or a not-yet-created store, but never `store.corruption`
+    /// from the partial-superblock window the creator writes incrementally before its
+    /// magic lands.
+    #[test]
+    fn read_only_open_racing_store_recreation_never_false_corrupts() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let dir = TempDir::new("marrow-store-redb-recreate").expect("temp dir");
+        let path = dir.path().join("marrow.redb");
+        {
+            let mut store = RedbStore::open(&path).expect("seed store");
+            store.write(b"k", b"v".to_vec()).expect("seed value");
+        }
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let writer_path = path.clone();
+        let writer_stop = Arc::clone(&stop);
+        let writer = std::thread::spawn(move || {
+            while !writer_stop.load(Ordering::Relaxed) {
+                let _ = std::fs::remove_file(&writer_path);
+                if let Ok(mut store) = RedbStore::open(&writer_path) {
+                    let _ = store.write(b"k", b"v".to_vec());
+                }
+            }
+        });
+
+        for _ in 0..4000 {
+            match RedbStore::open_read_only(&path) {
+                Ok(_) | Err(StoreError::Locked { .. }) | Err(StoreError::Io { .. }) => {}
+                Err(StoreError::Corruption { message }) => {
+                    stop.store(true, Ordering::Relaxed);
+                    writer.join().expect("writer thread");
+                    panic!("reader saw false corruption mid-recreation: {message}");
+                }
+                Err(other) => {
+                    if !format!("{other:?}").contains("NotFound")
+                        && !format!("{other:?}").contains("not found")
+                    {
+                        stop.store(true, Ordering::Relaxed);
+                        writer.join().expect("writer thread");
+                        panic!("reader saw unexpected error mid-recreation: {other:?}");
+                    }
+                }
+            }
+        }
+        stop.store(true, Ordering::Relaxed);
+        writer.join().expect("writer thread");
+    }
+
+    /// A settled, writer-free store whose body is torn but still carries redb's magic
+    /// number is genuine corruption and must surface promptly, not be mistaken for a
+    /// store still being formed: the creation-race tolerance retries only while the
+    /// magic is absent.
+    #[test]
+    fn read_only_open_rejects_a_settled_torn_store_bearing_the_magic() {
+        let dir = TempDir::new("marrow-store-redb-torn").expect("temp dir");
+        let path = dir.path().join("marrow.redb");
+        {
+            let mut store = RedbStore::open(&path).expect("seed store");
+            store.write(b"k", b"v".to_vec()).expect("seed value");
+        }
+        // Truncate to just past the magic number: the magic is intact, but the header
+        // is gone, so this is a settled torn body, not a creation race.
+        let body = std::fs::read(&path).expect("read store body");
+        std::fs::write(&path, &body[..64]).expect("truncate store");
+
+        match RedbStore::open_read_only(&path).map(|_| ()) {
+            Err(StoreError::Corruption { .. }) => {}
+            other => {
+                panic!("a settled torn store bearing the magic must be corruption, got {other:?}")
+            }
+        }
+    }
+
+    /// The recovery probe's file open maps a vanished store — a delete that races the
+    /// open after the header was read — to the typed transient store error, never the
+    /// raw OS errno string.
+    #[test]
+    fn recovery_probe_open_on_a_missing_file_is_io_without_a_raw_errno() {
+        let dir = TempDir::new("marrow-store-redb-probe-missing").expect("temp dir");
+        let path = dir.path().join("absent.redb");
+        match super::RecoveryProbeBackend::open(&path) {
+            Err(error @ StoreError::Io { .. }) => assert!(
+                !error.to_string().contains("(os error"),
+                "the probe-open message must not leak the OS errno: {error}"
+            ),
+            other => panic!("a missing probe target must be store.io, got {other:?}"),
+        }
+    }
+
+    /// A store-file probe maps a denied path to `store.permission_denied` and any other
+    /// fault — a concurrent delete races the open as `NotFound` — to the transient
+    /// `store.io`, never embedding the platform errno.
+    #[test]
+    fn classify_store_io_error_never_leaks_the_errno() {
+        let path = std::path::Path::new("/tmp/marrow-store-classify.redb");
+        match super::classify_store_io_error(
+            path,
+            &std::io::Error::from(std::io::ErrorKind::NotFound),
+        ) {
+            error @ StoreError::Io { .. } => assert!(
+                !error.to_string().contains("(os error"),
+                "a not-found probe must not leak the errno: {error}"
+            ),
+            other => panic!("not-found must map to store.io, got {other:?}"),
+        }
+        match super::classify_store_io_error(
+            path,
+            &std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+        ) {
+            StoreError::PermissionDenied { path: reported } => assert_eq!(reported, path),
+            other => panic!("permission denied must map to store.permission_denied, got {other:?}"),
         }
     }
 
