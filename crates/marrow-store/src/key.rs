@@ -32,6 +32,22 @@ impl SavedKey {
         }
     }
 
+    /// Payload bytes this key contributes to a staged write's in-memory
+    /// footprint: the fixed scalar width, or the variable-length content of a
+    /// string or byte key. A keyed write buffers this in the pending tree (and
+    /// again in each plan step that carries the identity), so the
+    /// transaction-breadth budget charges it to bound real key memory.
+    pub fn byte_len(&self) -> usize {
+        match self {
+            SavedKey::Bool(_) => 1,
+            SavedKey::Date(_) => 4,
+            SavedKey::Int(_) => 8,
+            SavedKey::Duration(_) | SavedKey::Instant(_) => 16,
+            SavedKey::Str(value) => value.len(),
+            SavedKey::Bytes(value) => value.len(),
+        }
+    }
+
     fn kind(&self) -> KeyKind {
         match self {
             SavedKey::Bool(_) => KeyKind::Bool,

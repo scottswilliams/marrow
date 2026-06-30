@@ -130,13 +130,17 @@ how much work a loop may do.
   `run.depth`, whose payload reports the callee name, `budget=256`, and the
   observed attempted depth.
 - **Transaction-breadth budget (64 MiB).** A `transaction` buffers its whole
-  pending write set in memory until it commits. Once that staged write payload
-  passes 64 MiB, the next write stops at its span with
-  `write.transaction_too_large`. This is generous — far above any ordinary atomic
-  seed or migration — and the cap trips while the buffer is still bounded, so a
-  large transaction fails closed instead of being OOM-killed. Like every fault, a
-  surrounding `catch` can bind it, and the aborted transaction commits nothing.
-  Split an oversized atomic write into smaller transactions.
+  pending write set in memory until it commits. The budget measures that real
+  buffered footprint — each staged cell's value bytes, its key, path, and
+  index-key bytes, plus the fixed per-cell memory it pins — not the logical
+  serialized payload, so a flood of tiny writes and a few large-keyed writes are
+  bounded as tightly as a few large values. Once the buffered footprint passes
+  64 MiB, the next write stops at its span with `write.transaction_too_large`.
+  This is generous — far above any ordinary atomic seed or migration — and the cap
+  trips while the buffer is still bounded, so a large transaction fails closed
+  instead of being OOM-killed. Like every fault, a surrounding `catch` can bind
+  it, and the aborted transaction commits nothing. Split an oversized atomic write
+  into smaller transactions.
 
 These ceilings are fixed in v0.1 and not configurable. The user-visible contract
 is the diagnostic: deeply nested source, unbounded recursion, or an unbounded

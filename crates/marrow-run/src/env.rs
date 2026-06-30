@@ -883,26 +883,80 @@ fn build_commit_metadata_stamp(
     )))
 }
 
-/// Bytes a plan's steps add to the open transaction's in-memory write buffer.
-/// Value payloads dominate, but every step also pins keys and bookkeeping, so
-/// each carries a fixed overhead and a flood of tiny writes still counts. The
-/// metadata stamp is store-internal and excluded.
+/// Real buffered memory a plan's steps add to the open transaction. Each staged
+/// cell pins a fixed per-cell footprint (keyed value allocation, redb pending-tree
+/// pages, allocator slack) plus its payload bytes plus its variable-length key
+/// and path bytes, so a large value or a large composite key is dominated by its
+/// bytes while a flood of tiny single-int writes is dominated by the per-cell
+/// footprint. The key bytes ride every step that carries the identity, so a
+/// multi-kilobyte key scales the charge linearly rather than hiding under the
+/// flat per-cell constant. The metadata stamp is store-internal and excluded.
 fn plan_staged_bytes(plan: &WritePlan) -> usize {
-    plan.steps
+    plan.steps.iter().map(step_staged_bytes).sum()
+}
+
+fn step_staged_bytes(step: &PlanStep) -> usize {
+    match step {
+        PlanStep::WriteData { address, value } => data_address_bytes(address)
+            .saturating_add(value.len())
+            .saturating_add(TRANSACTION_WRITE_STEP_OVERHEAD),
+        PlanStep::WriteRecordPresence { address }
+        | PlanStep::WriteDataNode { address }
+        | PlanStep::DeleteData { address }
+        | PlanStep::DeleteRecordSubtree { address } => {
+            data_address_bytes(address).saturating_add(TRANSACTION_WRITE_STEP_OVERHEAD)
+        }
+        PlanStep::WriteIndex {
+            address,
+            identity,
+            value,
+        } => index_address_bytes(address)
+            .saturating_add(saved_keys_bytes(identity))
+            .saturating_add(value.len())
+            .saturating_add(TRANSACTION_WRITE_STEP_OVERHEAD),
+        PlanStep::DeleteIndex { address, identity } => index_address_bytes(address)
+            .saturating_add(saved_keys_bytes(identity))
+            .saturating_add(TRANSACTION_WRITE_STEP_OVERHEAD),
+        PlanStep::DeleteIndexSubtree { address } => {
+            index_address_bytes(address).saturating_add(TRANSACTION_WRITE_STEP_OVERHEAD)
+        }
+        PlanStep::StampMetadata { .. } => 0,
+    }
+}
+
+/// Variable-length address bytes a data step buffers: the store id, the identity
+/// keys, and the path segments. Each is held by the plan step and re-encoded into
+/// the pending tree key, so a large composite key counts toward the budget.
+fn data_address_bytes(address: &DataAddress) -> usize {
+    let path_bytes: usize = address
+        .path
         .iter()
-        .map(|step| match step {
-            PlanStep::WriteData { value, .. } | PlanStep::WriteIndex { value, .. } => {
-                value.len().saturating_add(TRANSACTION_WRITE_STEP_OVERHEAD)
-            }
-            PlanStep::WriteRecordPresence { .. }
-            | PlanStep::WriteDataNode { .. }
-            | PlanStep::DeleteData { .. }
-            | PlanStep::DeleteRecordSubtree { .. }
-            | PlanStep::DeleteIndex { .. }
-            | PlanStep::DeleteIndexSubtree { .. } => TRANSACTION_WRITE_STEP_OVERHEAD,
-            PlanStep::StampMetadata { .. } => 0,
+        .map(|segment| match segment {
+            DataPathSegment::Member(member) => member.as_str().len(),
+            DataPathSegment::Key(key) => key.byte_len(),
         })
-        .sum()
+        .sum();
+    address
+        .store
+        .as_str()
+        .len()
+        .saturating_add(saved_keys_bytes(&address.identity))
+        .saturating_add(path_bytes)
+}
+
+/// Variable-length address bytes an index step buffers: the index id and its key
+/// tuple. `WriteIndex`/`DeleteIndex` also carry the record identity, charged by
+/// the caller.
+fn index_address_bytes(address: &IndexAddress) -> usize {
+    address
+        .index
+        .as_str()
+        .len()
+        .saturating_add(saved_keys_bytes(&address.keys))
+}
+
+fn saved_keys_bytes(keys: &[SavedKey]) -> usize {
+    keys.iter().map(SavedKey::byte_len).sum()
 }
 
 fn changed_catalog_ids(steps: &[PlanStep]) -> (Vec<CatalogId>, Vec<CatalogId>) {

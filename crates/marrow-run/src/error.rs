@@ -327,11 +327,19 @@ pub const WRITE_TRANSACTION_TOO_LARGE: &str = "write.transaction_too_large";
 /// the buffer would exhaust host memory. Fixed in v0.1, not configurable.
 pub const TRANSACTION_WRITE_BYTE_BUDGET: usize = 64 * 1024 * 1024;
 
-/// Each staged step also pins keys and bookkeeping the payload byte count alone
-/// misses, so every step counts at least this much toward the budget. It keeps a
-/// flood of tiny writes (record presence, deletes) from buffering without bound
-/// under the byte ceiling.
-pub(crate) const TRANSACTION_WRITE_STEP_OVERHEAD: usize = 64;
+/// Fixed real memory a single staged cell pins regardless of how few bytes it
+/// serializes: the plan-step and pending-tree node allocations, the redb
+/// leaf/branch pages it dirties, and allocator slack. The breadth budget charges
+/// this on top of each cell's variable value bytes and its variable key, path,
+/// and index-key bytes, so the metered total tracks real buffered memory for both
+/// large-value and large-key writes. Without the fixed charge a flood of tiny
+/// single-int writes would buffer gigabytes while staying nominally under the
+/// byte ceiling. Calibrated against measured peak RSS: a transaction of
+/// single-int records (two staged cells apiece) holds about four kibibytes of
+/// real memory per record, so each staged cell is charged about two kibibytes,
+/// rounded up for a margin that trips before real memory reaches the budget
+/// without refusing ordinary moderate transactions.
+pub(crate) const TRANSACTION_WRITE_STEP_OVERHEAD: usize = 2560;
 
 fn reject_public_depth_code(code: &'static str) {
     assert_ne!(code, RUN_DEPTH, "use the runtime call-depth constructor");
