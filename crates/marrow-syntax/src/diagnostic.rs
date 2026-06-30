@@ -151,6 +151,7 @@ pub enum ReservedSyntax {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnsupportedSyntax {
+    BracketCollectionLiterals,
     Finally,
     LoopLabels,
     ParameterModes,

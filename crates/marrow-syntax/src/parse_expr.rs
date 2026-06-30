@@ -838,6 +838,21 @@ impl<'a> ExprParser<'a> {
                 }
             }
             TokenKind::InterpolationStart => self.interpolation_expr(),
+            TokenKind::LeftBracket => {
+                self.error(
+                    token.span,
+                    ParseDiagnosticReason::Unsupported(
+                        UnsupportedSyntax::BracketCollectionLiterals,
+                    ),
+                    "bracket collection literals are not part of expression grammar".to_string(),
+                    Some(
+                        "build a local sequence with `var xs: sequence[T]` and \
+                        `append(xs, value)`, or call a function that returns a sequence"
+                            .to_string(),
+                    ),
+                );
+                None
+            }
             TokenKind::Keyword(_) => {
                 let keyword = token.text(self.source);
                 self.error(

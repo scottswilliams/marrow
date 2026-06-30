@@ -5,7 +5,8 @@ use crate::common;
 use common::{has_reason, lexer_reason, parse_reason};
 use marrow_syntax::{
     CompoundAssignOp, Diagnose, ExpectedSyntax, Expression, LexerDiagnosticReason,
-    ObsoleteOperator, ParseDiagnosticReason, ReservedSyntax, Statement, parse_source,
+    ObsoleteOperator, ParseDiagnosticReason, ReservedSyntax, Statement, UnsupportedSyntax,
+    parse_source,
 };
 
 #[test]
@@ -302,6 +303,42 @@ fn keyed_var_rejects_structural_equal_inside_key_type_annotations() {
             parse_reason(ParseDiagnosticReason::Expected(ExpectedSyntax::Statement))
         ),
         "keyed-var errors should not fall back to statement recovery for {source}: {:#?}",
+        parsed.diagnostics
+    );
+}
+
+#[test]
+fn bracket_collection_literal_inside_call_does_not_fall_back_to_expected_statement() {
+    let source = "module app\n\
+         fn main()\n\
+         \x20   print(two_num([1,2,3], 3))\n\
+         fn two_num(nums: sequence[int], target: int): sequence[int]\n\
+         \x20   return nums\n";
+    let parsed = parse_source(source);
+
+    assert!(parsed.has_errors(), "expected error for:\n{source}");
+    assert!(
+        !has_reason(
+            &parsed.diagnostics,
+            parse_reason(ParseDiagnosticReason::Expected(ExpectedSyntax::Statement))
+        ),
+        "bracket literal errors should not fall back to statement recovery: {:#?}",
+        parsed.diagnostics
+    );
+    let diagnostic = parsed
+        .diagnostics
+        .iter()
+        .find(|diagnostic| {
+            diagnostic.reason
+                == parse_reason(ParseDiagnosticReason::Unsupported(
+                    UnsupportedSyntax::BracketCollectionLiterals,
+                ))
+        })
+        .expect("expected bracket collection literal diagnostic");
+    assert_eq!(
+        (diagnostic.span.line, diagnostic.span.column),
+        (3, 19),
+        "{:#?}",
         parsed.diagnostics
     );
 }
