@@ -970,6 +970,27 @@ fn store_commit_identity(
     (uid, commit)
 }
 
+/// A fresh active store-root lock entry, cloned from a real committed store entry so it carries a
+/// valid shape fingerprint, then re-pathed and re-identified to a `(path, stable_id)` the store
+/// does not present — the way a teammate's committed activation would have added a saved root.
+fn fresh_active_store_root(
+    lock: &marrow_catalog::CatalogLock,
+    path: &str,
+    id: u64,
+) -> marrow_catalog::LockEntry {
+    let mut entry = lock
+        .entries
+        .iter()
+        .find(|entry| entry.kind == marrow_catalog::CatalogEntryKind::Store)
+        .cloned()
+        .expect("the committed lock records a store root to clone");
+    entry.path = path.to_string();
+    entry.stable_id = format!("cat_{id:032x}");
+    entry.aliases = Vec::new();
+    entry.lifecycle = marrow_catalog::CatalogLifecycle::Active;
+    entry
+}
+
 fn seed_surface_counter_store(root: &Path) {
     write_native_config(root);
     write_temp_source(root, Path::new("src/shelf.mw"), surface_counter_source());
@@ -1194,26 +1215,29 @@ fn surface_read_session_fails_closed_on_a_corrupt_lock() {
     assert_eq!(invoke(&seed, "shelf::seed"), "");
     drop(seed);
 
-    // The live store is the sole accepted authority and a valid stamped store wins
-    // unconditionally, even against a corrupt committed lock: the read binds from the store and
-    // leaves the corrupt lock exactly as found, neither repairing it nor failing on it.
+    // The committed lock is the independent witness to durable identity. A corrupt, unparseable
+    // lock is a present durable artifact the operator must delete, not a witness to ignore: a
+    // missing lock is the genuine-absence case the store wins over, but a present corrupt lock
+    // fails read serving closed exactly as doctor, data stats, backup, and serve --write do. The
+    // refused open neither repairs the corrupt lock nor writes the store.
     let lock_path = lock_path(root.path());
     fs::write(&lock_path, "not a valid lock").expect("corrupt the committed lock");
+    let store_path = root.path().join(".data").join("marrow.redb");
+    let before = store_commit_identity(&store_path);
 
-    let session = ProjectSurfaceReadSession::open(root.path())
-        .expect("a valid stamped store wins over a corrupt lock");
-    let point_tag = point_read_operation_tag(session.program(), "Counters");
-    session
-        .admit_read_by_operation_tag(&point_tag)
-        .expect("admit point read against the store-bound surface")
-        .point_read()
-        .expect("point read shape");
-    drop(session);
+    let error = ProjectSurfaceReadSession::open(root.path())
+        .expect_err("a corrupt committed lock must fail read serving closed");
+    assert_eq!(error.code(), "catalog.lock_corrupt");
 
     assert_eq!(
         fs::read_to_string(&lock_path).expect("read corrupt lock"),
         "not a valid lock",
-        "read-only surface session must not repair a corrupt lock when the store wins"
+        "a refused read-only open must not repair the corrupt lock"
+    );
+    assert_eq!(
+        before,
+        store_commit_identity(&store_path),
+        "a refused read-only open must commit no write"
     );
 }
 
@@ -1325,6 +1349,137 @@ fn surface_read_session_fences_drift_without_auto_apply() {
         fs::read(&lock_path).expect("read committed lock after fenced serving open"),
         "read serving must not rewrite the committed lock"
     );
+}
+
+/// A fresh native-backed checkout is the exact git-clone shape: `marrow.lock` is committed and
+/// records the saved roots, but the gitignored `.data` body is absent. Read-only `serve` must
+/// present the empty committed identity the lock determines — zero records — exactly as the
+/// read-only inspection family does on the same checkout, and it must never write the store body.
+#[test]
+fn surface_read_session_serves_empty_committed_identity_on_a_fresh_checkout() {
+    let root = TempDir::new("marrow-run-surface-read-fresh-checkout").expect("create project");
+    write_native_config(root.path());
+    write_temp_source(
+        root.path(),
+        Path::new("src/shelf.mw"),
+        surface_counter_source(),
+    );
+
+    // Establish the committed identity (catalog plus a lock recording the ^counter root) with zero
+    // records, then delete the store body so only the committed lock survives.
+    drop(ProjectSession::open(root.path(), ProjectOpen::run()).expect("establish baseline"));
+    let data_dir = root.path().join(".data");
+    let store_path = data_dir.join("marrow.redb");
+    assert!(store_path.exists(), "baseline run stamps the native store");
+    assert!(
+        lock_path(root.path()).exists(),
+        "baseline run projects the committed lock",
+    );
+    fs::remove_dir_all(&data_dir).expect("remove the store body for the fresh checkout");
+    assert!(!store_path.exists());
+
+    let session = ProjectSurfaceReadSession::open(root.path())
+        .expect("read-only serve must serve the empty committed identity on a fresh checkout");
+
+    let page_tag = root_page_operation_tag(session.program(), "Counters");
+    let page = session
+        .admit_read_by_operation_tag(&page_tag)
+        .expect("admit root page")
+        .page_read()
+        .expect("page read shape")
+        .page(SurfaceCollectionPageRequest {
+            exact_keys: &[],
+            limit: 10,
+            cursor: None,
+        })
+        .expect("read surface page");
+    assert!(
+        page.rows.is_empty(),
+        "the empty committed identity serves zero records",
+    );
+    drop(session);
+
+    assert!(
+        !store_path.exists(),
+        "read-only serve must not write the store body on a fresh checkout",
+    );
+    assert!(
+        !data_dir.exists(),
+        "read-only serve must not create the data dir",
+    );
+}
+
+/// A present store that no longer presents a root its committed lock records, at the same epoch as
+/// the lock, has lost durable identity: the store-behind carve-out does not apply because the store
+/// is caught up to the lock high-water. Read-only `serve` must fail closed `store.corruption`,
+/// identically to `serve --write` and the inspection family, rather than misreport the loss as
+/// schema drift, and it must commit no write.
+#[test]
+fn surface_read_session_fails_closed_on_a_store_missing_a_committed_root() {
+    let root = TempDir::new("marrow-run-surface-read-lost-root").expect("create project");
+    seed_surface_counter_store(root.path());
+
+    let lock = marrow_check::read_committed_lock(root.path())
+        .expect("read committed lock")
+        .expect("committed lock");
+    let mut entries = lock.entries.clone();
+    entries.push(fresh_active_store_root(&lock, "shelf::^ghost", 0x6057));
+    let lost_root_lock = marrow_catalog::CatalogLock::new(
+        entries,
+        lock.ledger.clone(),
+        lock.epoch_high_water,
+        lock.source_digest.clone(),
+    )
+    .expect("the lost-root lock validates");
+    fs::write(
+        lock_path(root.path()),
+        lost_root_lock.to_lock_json_pretty().expect("render lock"),
+    )
+    .expect("publish the lost-root committed lock");
+
+    let store_path = root.path().join(".data").join("marrow.redb");
+    let before = store_commit_identity(&store_path);
+
+    let error = ProjectSurfaceReadSession::open(root.path())
+        .expect_err("read-only serve must fail closed on a store missing a committed root");
+    assert_eq!(error.code(), "store.corruption");
+
+    assert_eq!(
+        before,
+        store_commit_identity(&store_path),
+        "a refused read-only open must commit no write",
+    );
+}
+
+/// A store committed below the lock's epoch high-water that also presents fewer roots is a
+/// legitimately-behind local checkout whose missing root is a later activation's addition, not a
+/// loss. The lock-root witness honors that carve-out for read-only serve exactly as for the
+/// inspection family, so the open is admitted rather than falsely corrupted.
+#[test]
+fn surface_read_session_admits_an_epoch_behind_store_missing_an_added_root() {
+    let root = TempDir::new("marrow-run-surface-read-behind-added-root").expect("create project");
+    seed_surface_counter_store(root.path());
+
+    let lock = marrow_check::read_committed_lock(root.path())
+        .expect("read committed lock")
+        .expect("committed lock");
+    let mut entries = lock.entries.clone();
+    entries.push(fresh_active_store_root(&lock, "shelf::^ghost", 0x6058));
+    let ahead_lock = marrow_catalog::CatalogLock::new(
+        entries,
+        lock.ledger.clone(),
+        lock.epoch_high_water + 1,
+        lock.source_digest.clone(),
+    )
+    .expect("the ahead lock validates");
+    fs::write(
+        lock_path(root.path()),
+        ahead_lock.to_lock_json_pretty().expect("render lock"),
+    )
+    .expect("publish the ahead committed lock");
+
+    ProjectSurfaceReadSession::open(root.path())
+        .expect("read-only serve must admit a legitimately epoch-behind store");
 }
 
 #[test]

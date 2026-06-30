@@ -469,6 +469,36 @@ fn write_serve_over_an_absent_store_seeds_and_listens() {
     );
 }
 
+/// Default read-only `serve` is a read-only sibling of doctor and `data stats`: an absent store
+/// body under a committed lock is the fresh-checkout shape, so the read-only open serves the empty
+/// committed identity the lock determines and reaches its listen line, without ever writing the
+/// store body. `store.corruption` is reserved for a PRESENT store that lost roots, and seeding the
+/// body is reserved for the write paths.
+#[test]
+fn read_only_serve_over_an_absent_store_serves_the_empty_committed_identity() {
+    let root = temp_project("serve-read-store-lost", |root| {
+        write(root, "marrow.json", support::native_config());
+        write(root, "src/app.mw", SURFACE_SOURCE);
+    });
+    let project = root.to_str().expect("project path utf8");
+    let seed = marrow(&["run", "--entry", "app::seed", project]);
+    assert_eq!(seed.status.code(), Some(0), "seed: {seed:?}");
+
+    // The store body is removed while the committed lock survives, modelling a fresh checkout.
+    let data_dir = root.join(".data");
+    std::fs::remove_dir_all(&data_dir).expect("simulate a fresh checkout");
+
+    // Reaching the listen line proves the read-only open served the empty committed identity rather
+    // than refusing the absent store; `spawn_surface_server` fails the test if it exits first.
+    let (server, _addr) = spawn_surface_server(&root);
+    server.stop_with_sigterm();
+
+    assert!(
+        !data_dir.exists(),
+        "read-only serve must not write the store body on a fresh checkout",
+    );
+}
+
 /// A healthy store the lock-root witness does not condemn opens write-capable and listens. A first
 /// `serve --write` against a freshly seeded store passes the witness (its roots match the lock), and
 /// `spawn_surface_server_with_args` fails the test if the server exits before printing its listen

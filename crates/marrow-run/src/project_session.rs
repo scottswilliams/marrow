@@ -1273,22 +1273,39 @@ fn open_surface_session(
     mut program: CheckedProgram,
     access: SurfaceStoreAccess,
 ) -> Result<OpenSurfaceSession, ProjectSessionError> {
-    // A write-capable serve is the third writer after run and evolve apply, so it routes through the
-    // same lock-root witness before the write-capable open touches the body: a PRESENT store
-    // presenting fewer committed roots than its lock recorded has lost durable identity and fails
-    // closed with `store.corruption` rather than seizing the writer lock over the loss. An ABSENT
-    // store body is the disposable-store case: it seeds an empty store from the committed identity,
-    // then re-derives the program from the seeded store so the write open carries an accepted
-    // catalog rather than the pre-seed proposal.
+    // The committed `marrow.lock` is the independent witness to durable identity for both access
+    // modes: a PRESENT store presenting fewer committed roots than its lock recorded has lost
+    // durable identity and fails closed with `store.corruption`, identically to run, evolve apply,
+    // and the read-only inspection family, rather than admitting the loss. An ABSENT body is the
+    // disposable-store case, not a loss, and passes here.
     let mut notices = Vec::new();
-    if matches!(access, SurfaceStoreAccess::Write) {
-        guard_committed_lock_roots(&root, config)?;
-        if let Some(seeded) = seed_absent_store_from_committed_lock(&root, config, &program)? {
-            program = seeded;
-            notices.push(ProjectSessionNotice::SeededFromCommittedLock);
+    guard_committed_lock_roots(&root, config)?;
+
+    // An absent body under a roots-recording lock is the fresh-checkout (or lost-body) case: the
+    // committed lock fully determines the surface ABI. A write-capable open seeds an on-disk store
+    // from the committed identity so subsequent writes commit there; a read-only open materializes
+    // that empty committed identity in memory and never writes the body, serving the empty
+    // committed identity exactly as the read-only inspections report it. Either way the program is
+    // re-derived from the resulting store so the open carries an accepted catalog rather than the
+    // pre-seed proposal.
+    let store = match access {
+        SurfaceStoreAccess::Write => {
+            if let Some(seeded) = seed_absent_store_from_committed_lock(&root, config, &program)? {
+                program = seeded;
+                notices.push(ProjectSessionNotice::SeededFromCommittedLock);
+            }
+            open_existing_surface_store(&root, config, access)?
         }
-    }
-    let store = open_existing_surface_store(&root, config, access)?;
+        SurfaceStoreAccess::ReadOnly => {
+            match read_only_empty_committed_identity(&root, config, &program)? {
+                Some((seeded, store)) => {
+                    program = seeded;
+                    store
+                }
+                None => open_existing_surface_store(&root, config, access)?,
+            }
+        }
+    };
     if populated_unstamped_store(&program, &store.store)? {
         return Err(ProjectSessionError::UnstampedStore);
     }
@@ -2212,6 +2229,34 @@ pub fn seed_absent_store_from_committed_lock(
     let snapshot =
         marrow_check::recheck_source_project_analysis_against_store_catalog(root, config, &store)?;
     Ok(Some(snapshot.program))
+}
+
+/// Materialize the empty committed identity in memory for a read-only open over an absent store
+/// body. A fresh checkout (or a deleted body) carries no on-disk store, but the committed lock
+/// fully determines the surface ABI, so a read-only serve presents the empty committed identity —
+/// zero records — without ever writing the body. The write paths own the on-disk seed; a read must
+/// not mutate the store. The in-memory store is minted, baselined from the lock-adopted program,
+/// and the analysis re-projected against its committed catalog, so it satisfies the shared identity
+/// and digest checks by construction exactly as an on-disk seed would. A present store, or a true
+/// first run with no roots-recording lock, returns `None` and opens the on-disk body as usual.
+fn read_only_empty_committed_identity(
+    root: &Path,
+    config: &ProjectConfig,
+    program: &CheckedProgram,
+) -> Result<Option<(CheckedProgram, NativeRunStore)>, ProjectSessionError> {
+    if !store_absent_with_committed_lock(root, config)? {
+        return Ok(None);
+    }
+    let Some(path) = marrow_check::native_store_path(root, config)? else {
+        return Ok(None);
+    };
+    let store = TreeStore::memory();
+    let mut nondeterminism = SystemNondeterminism::new();
+    ensure_store_uid(&store, &mut nondeterminism)?;
+    commit_catalog_baseline(&store, program)?;
+    let snapshot =
+        marrow_check::recheck_source_project_analysis_against_store_catalog(root, config, &store)?;
+    Ok(Some((snapshot.program, NativeRunStore { path, store })))
 }
 
 fn pending_baseline(program: &CheckedProgram) -> bool {

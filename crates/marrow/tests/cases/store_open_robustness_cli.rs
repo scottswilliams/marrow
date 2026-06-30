@@ -781,9 +781,18 @@ fn a_same_epoch_store_missing_a_committed_root_fails_closed() {
         ["data", "get", &dir, "^notes(1)"].as_slice(),
         ["backup", &dir, &backup_target].as_slice(),
         ["data", "recover", &dir].as_slice(),
+        // Default read-only and `--write` serve share the lock-root witness with the rest of the
+        // family: each must exit `store.corruption` at open rather than listen over the loss.
+        ["serve", "--addr", "127.0.0.1:0", &dir].as_slice(),
+        ["serve", "--addr", "127.0.0.1:0", "--write", &dir].as_slice(),
     ] {
         let output = marrow_bounded(command, deadline);
         assert_no_panic_and_bounded(&output, command, 0);
+        assert!(
+            !String::from_utf8_lossy(&output.stdout).contains("serve listening"),
+            "`marrow {}` listened over a store missing a committed root: {output:?}",
+            command.join(" "),
+        );
         assert_eq!(
             output.status.code(),
             Some(1),
