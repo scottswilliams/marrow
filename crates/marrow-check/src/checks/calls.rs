@@ -32,7 +32,7 @@ use super::collections::{
     is_saved_unique_index_branch_path, saved_path_key_type,
 };
 use super::diagnostics::{call_diagnostic, key_type_diagnostic};
-use super::saved_keys::check_keys_against;
+use super::saved_keys::{check_identity_sequence_position, check_keys_against};
 
 pub(crate) struct CallCheck<'a> {
     pub(crate) program: &'a CheckedProgram,
@@ -40,6 +40,7 @@ pub(crate) struct CallCheck<'a> {
     pub(crate) args: &'a [marrow_syntax::Argument],
     pub(crate) arg_types: &'a [MarrowType],
     pub(crate) scope: &'a [HashMap<String, MarrowType>],
+    pub(crate) const_ints: &'a [HashMap<String, Option<i64>>],
     pub(crate) aliases: &'a HashMap<String, Vec<String>>,
     pub(crate) span: SourceSpan,
     pub(crate) file: &'a Path,
@@ -50,6 +51,7 @@ pub(crate) struct CallCheck<'a> {
 struct CallEnv<'a> {
     program: &'a CheckedProgram,
     scope: &'a [HashMap<String, MarrowType>],
+    const_ints: &'a [HashMap<String, Option<i64>>],
     aliases: &'a HashMap<String, Vec<String>>,
     span: SourceSpan,
     file: &'a Path,
@@ -67,6 +69,7 @@ pub(crate) fn check_call(input: CallCheck<'_>) -> MarrowType {
         args,
         arg_types,
         scope,
+        const_ints,
         aliases,
         span,
         file,
@@ -76,6 +79,7 @@ pub(crate) fn check_call(input: CallCheck<'_>) -> MarrowType {
     let mut env = CallEnv {
         program,
         scope,
+        const_ints,
         aliases,
         span,
         file,
@@ -130,6 +134,7 @@ fn check_special_single_name_call(
             env.program,
             args,
             arg_types,
+            env.const_ints,
             env.span,
             env.file,
             env.diagnostics,
@@ -1280,6 +1285,7 @@ fn check_identity_constructor(
     program: &CheckedProgram,
     args: &[marrow_syntax::Argument],
     arg_types: &[MarrowType],
+    const_ints: &[HashMap<String, Option<i64>>],
     span: SourceSpan,
     file: &Path,
     diagnostics: &mut Vec<CheckDiagnostic>,
@@ -1325,6 +1331,7 @@ fn check_identity_constructor(
         ));
         return MarrowType::Unknown;
     }
+    let key_args = args.get(1..).unwrap_or(&[]);
     check_keys_against(
         &store.store.identity_keys,
         arg_types.get(1..).unwrap_or(&[]),
@@ -1332,6 +1339,7 @@ fn check_identity_constructor(
         file,
         diagnostics,
     );
+    check_identity_sequence_position(store.store, key_args, const_ints, span, file, diagnostics);
     identity_type_for_store(store.store)
 }
 

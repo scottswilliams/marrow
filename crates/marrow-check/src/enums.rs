@@ -8,8 +8,8 @@ use marrow_schema::{MemberPathResolution, ResourceSchema, Type};
 use marrow_store::value::ScalarType;
 use marrow_syntax::SourceSpan;
 
-use crate::checks::check_block_types;
-use crate::infer::infer_type;
+use crate::checks::{ConstIntScope, check_block_types};
+use crate::infer::infer_type_with_read_scope;
 use crate::resolve::resolve_store_by_root;
 use crate::typerules::marrow_type_name;
 use crate::{
@@ -240,6 +240,7 @@ pub(crate) struct MatchCheck<'a> {
     pub(crate) arms: &'a [marrow_syntax::MatchArm],
     pub(crate) span: SourceSpan,
     pub(crate) scope: &'a mut Vec<HashMap<String, MarrowType>>,
+    pub(crate) const_ints: &'a mut ConstIntScope,
     pub(crate) aliases: &'a HashMap<String, Vec<String>>,
     pub(crate) diagnostics: &'a mut Vec<CheckDiagnostic>,
 }
@@ -249,6 +250,7 @@ struct MatchEnv<'a> {
     file: &'a Path,
     return_type: &'a MarrowType,
     scope: &'a mut Vec<HashMap<String, MarrowType>>,
+    const_ints: &'a mut ConstIntScope,
     aliases: &'a HashMap<String, Vec<String>>,
     diagnostics: &'a mut Vec<CheckDiagnostic>,
 }
@@ -263,6 +265,7 @@ pub(crate) fn check_match(input: MatchCheck<'_>) {
         arms,
         span,
         scope,
+        const_ints,
         aliases,
         diagnostics,
     } = input;
@@ -271,18 +274,21 @@ pub(crate) fn check_match(input: MatchCheck<'_>) {
         file,
         return_type,
         scope,
+        const_ints,
         aliases,
         diagnostics,
     };
     let scrutinee_type = scrutinee
         .map(|expr| {
-            infer_type(
+            infer_type_with_read_scope(
                 env.program,
                 expr,
                 env.scope,
                 env.aliases,
                 env.file,
                 env.diagnostics,
+                env.const_ints,
+                None,
             )
         })
         .unwrap_or(MarrowType::Unknown);
@@ -319,6 +325,7 @@ fn check_match_arm_bodies(env: &mut MatchEnv<'_>, arms: &[marrow_syntax::MatchAr
             env.return_type,
             &arm.block,
             env.scope,
+            env.const_ints,
             env.aliases,
             env.diagnostics,
         );

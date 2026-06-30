@@ -474,6 +474,345 @@ fn a_static_non_positive_store_root_int_key_write_is_rejected_at_check() {
 }
 
 #[test]
+fn a_static_non_positive_identity_constructor_key_is_rejected_at_check() {
+    // `Id(^books, key)` names a record by its identity. A store keyed by a single
+    // integer is a 1-based sequence, so a statically-known position below 1 names no
+    // record, exactly as the `^books(0)` write address does. The literal `0`, the
+    // negated `-3`, and arithmetic over literals are all caught at check as
+    // `check.sequence_position` rather than escaping to a `run.absent_element` fault.
+    for (name, key) in [
+        ("id-ctor-zero", "0"),
+        ("id-ctor-neg", "-3"),
+        ("id-ctor-arith-zero", "1 - 1"),
+    ] {
+        let src = format!(
+            "module m\n\
+             resource Book\n    required title: string\n\
+             store ^books(id: int): Book\n\n\
+             fn f(): Id(^books)\n    return Id(^books, {key})\n"
+        );
+        let report = check_module_report(name, &src);
+        let found = with_code(&report, "check.sequence_position");
+        assert_eq!(found.len(), 1, "{name}: {:#?}", report.diagnostics);
+    }
+}
+
+#[test]
+fn a_const_bound_non_positive_identity_constructor_key_is_rejected_at_check() {
+    // A `const` binding folds to a known integer at check exactly as the write address
+    // does, so `Id(^books, ZERO)` and `Id(^books, NEG)` name no record and are caught as
+    // `check.sequence_position`, never escaping to a `run.absent_element` fault.
+    for (name, decl, key) in [
+        ("id-ctor-const-zero", "const ZERO: int = 0", "ZERO"),
+        ("id-ctor-const-neg", "const NEG: int = -2", "NEG"),
+    ] {
+        let src = format!(
+            "module m\n\
+             resource Book\n    required title: string\n\
+             store ^books(id: int): Book\n\
+             {decl}\n\n\
+             fn f(): Id(^books)\n    return Id(^books, {key})\n"
+        );
+        let report = check_module_report(name, &src);
+        let found = with_code(&report, "check.sequence_position");
+        assert_eq!(found.len(), 1, "{name}: {:#?}", report.diagnostics);
+    }
+}
+
+#[test]
+fn a_const_bound_non_positive_key_gives_the_same_verdict_on_both_addressing_forms() {
+    // The identity constructor and the store-root write address the same single-int
+    // sequence, so a const-bound non-positive key folds to one `check.sequence_position`
+    // verdict on either form.
+    let decls = "module m\n\
+         resource Book\n    required title: string\n\
+         store ^books(id: int): Book\n\
+         const ZERO: int = 0\n\n";
+    let write_src = format!("{decls}fn f()\n    ^books(ZERO) = Book(title: \"x\")\n");
+    let ctor_src = format!("{decls}fn f(): Id(^books)\n    return Id(^books, ZERO)\n");
+    assert_eq!(
+        with_code(
+            &check_module_report("const-write", &write_src),
+            "check.sequence_position"
+        )
+        .len(),
+        1,
+        "write-side const key stays rejected",
+    );
+    assert_eq!(
+        with_code(
+            &check_module_report("const-ctor", &ctor_src),
+            "check.sequence_position"
+        )
+        .len(),
+        1,
+        "identity-constructor const key is rejected to match the write address",
+    );
+}
+
+#[test]
+fn an_in_range_or_dynamic_identity_constructor_key_stays_clean() {
+    // A 1-based identity position is a legitimate record name, and a dynamic key folds
+    // to nothing and validates at run time, so neither is a sequence-position error.
+    let src = "module m\n\
+         resource Book\n    required title: string\n\
+         store ^books(id: int): Book\n\n\
+         fn f(n: int): Id(^books)\n    \
+         var a: Id(^books) = Id(^books, 1)\n    \
+         var b: Id(^books) = Id(^books, 999999)\n    \
+         return Id(^books, n)\n";
+    assert!(
+        with_code(
+            &check_module_report("id-ctor-clean", src),
+            "check.sequence_position"
+        )
+        .is_empty(),
+        "in-range and dynamic identity keys must stay clean",
+    );
+}
+
+#[test]
+fn a_non_positive_composite_identity_constructor_key_stays_clean() {
+    // The 1-based rule is the single-integer-keyed shape only. A composite identity
+    // carries zero or negative key columns with meaning, so `Id(^cells, 0, 4)` is never
+    // a sequence-position error.
+    let src = "module m\n\
+         resource Cell\n    required value: string\n\
+         store ^cells(row: int, col: int): Cell\n\n\
+         fn f(): Id(^cells)\n    return Id(^cells, 0, 4)\n";
+    assert!(
+        with_code(
+            &check_module_report("id-ctor-composite", src),
+            "check.sequence_position"
+        )
+        .is_empty(),
+        "a composite identity key is not a 1-based sequence",
+    );
+}
+
+#[test]
+fn a_function_local_const_non_positive_identity_constructor_key_is_rejected_at_check() {
+    // A `const` bound inside the function body folds to its value through the same
+    // live const-int scope the write address uses, so `Id(^books, ZERO)` names no
+    // record and is caught at check, never escaping to a `run.absent_element` fault.
+    // Arithmetic over function-local constants folds identically.
+    for (name, body) in [
+        (
+            "id-ctor-local-zero",
+            "    const ZERO: int = 0\n    return Id(^books, ZERO)\n",
+        ),
+        (
+            "id-ctor-local-arith",
+            "    const A: int = 2\n    const B: int = A - 5\n    return Id(^books, B)\n",
+        ),
+    ] {
+        let src = format!(
+            "module m\n\
+             resource Book\n    required title: string\n\
+             store ^books(id: int): Book\n\n\
+             fn f(): Id(^books)\n{body}"
+        );
+        let report = check_module_report(name, &src);
+        let found = with_code(&report, "check.sequence_position");
+        assert_eq!(found.len(), 1, "{name}: {:#?}", report.diagnostics);
+    }
+}
+
+#[test]
+fn a_function_local_const_key_gives_the_same_verdict_on_both_addressing_forms() {
+    // The identity constructor and the store-root write address the same single-int
+    // sequence, so a function-local `const` key that folds non-positive yields one
+    // `check.sequence_position` verdict on either form, and an in-range one yields
+    // none on either.
+    let header = "module m\n\
+         resource Book\n    required title: string\n\
+         store ^books(id: int): Book\n\n";
+    for (label, key, expected) in [("zero", "0", 1usize), ("one", "1", 0usize)] {
+        let write_src = format!(
+            "{header}fn f()\n    const K: int = {key}\n    ^books(K) = Book(title: \"x\")\n"
+        );
+        let ctor_src = format!(
+            "{header}fn f(): Id(^books)\n    const K: int = {key}\n    return Id(^books, K)\n"
+        );
+        let write_found = with_code(
+            &check_module_report(&format!("local-write-{label}"), &write_src),
+            "check.sequence_position",
+        )
+        .len();
+        let ctor_found = with_code(
+            &check_module_report(&format!("local-ctor-{label}"), &ctor_src),
+            "check.sequence_position",
+        )
+        .len();
+        assert_eq!(write_found, expected, "{label}: write-side verdict");
+        assert_eq!(
+            ctor_found, expected,
+            "{label}: identity-constructor verdict"
+        );
+        assert_eq!(
+            write_found, ctor_found,
+            "{label}: `^books(K)` and `Id(^books, K)` must agree",
+        );
+    }
+}
+
+#[test]
+fn sequence_position_is_uniform_across_every_block_position_and_key_form() {
+    // One const-int scope discipline, exercised as a parity matrix. A statically
+    // foldable non-positive key is a `check.sequence_position` in every block position,
+    // and a valid or dynamic key is clean in every position, with the `^books(K)` write
+    // address and the `Id(^books, K)` identity constructor always agreeing. The local
+    // `const` forms are declared in the enclosing function body and used inside the
+    // nested block, so each block checker must fold the enclosing scope rather than a
+    // module-only rebuild or a dropped masking frame.
+    let header = "module m\n\
+        resource Book\n    required title: string\n\
+        store ^books(id: int): Book\n\
+        resource Counter\n    required n: int\n\
+        store ^counts(id: int): Counter\n\
+        enum Color\n    red\n    blue\n\
+        const MZERO: int = 0\n\n";
+    let key_forms: [(&str, &[&str], &str, usize); 7] = [
+        ("literal-zero", &[], "0", 1),
+        ("literal-neg3", &[], "-3", 1),
+        ("module-const", &[], "MZERO", 1),
+        ("local-const", &["const LZERO: int = 0"], "LZERO", 1),
+        (
+            "local-arith",
+            &["const A: int = 2", "const B: int = A - 5"],
+            "B",
+            1,
+        ),
+        ("valid-one", &[], "1", 0),
+        ("dynamic-param", &[], "p", 0),
+    ];
+    type Wrap = fn(&str) -> String;
+    let positions: [(&str, Wrap); 7] = [
+        ("top", |main| format!("    {main}\n")),
+        ("if", |main| format!("    if g\n        {main}\n")),
+        ("while", |main| format!("    while g\n        {main}\n")),
+        ("for", |main| format!("    for i in 1..3\n        {main}\n")),
+        ("try", |main| {
+            format!("    try\n        {main}\n    catch err: Error\n        print(1)\n")
+        }),
+        ("match-arm", |main| {
+            format!(
+                "    match c\n        red\n            {main}\n        blue\n            print(1)\n"
+            )
+        }),
+        ("if-const", |main| {
+            format!("    if const gate = ^counts(1).n\n        {main}\n")
+        }),
+    ];
+    for (kf, decls, key, expect) in key_forms {
+        let decl_block: String = decls.iter().map(|line| format!("    {line}\n")).collect();
+        for (pos, wrap) in positions {
+            let write_body = format!(
+                "{decl_block}{}",
+                wrap(&format!("^books({key}) = Book(title: \"x\")"))
+            );
+            let ctor_body = format!("{decl_block}{}", wrap(&format!("return Id(^books, {key})")));
+            let write_src = format!("{header}fn f(g: bool, c: Color, p: int)\n{write_body}");
+            let ctor_src =
+                format!("{header}fn f(g: bool, c: Color, p: int): Id(^books)\n{ctor_body}");
+            let write_n = with_code(
+                &check_module_report(&format!("seqpar-write-{pos}-{kf}"), &write_src),
+                "check.sequence_position",
+            )
+            .len();
+            let ctor_n = with_code(
+                &check_module_report(&format!("seqpar-ctor-{pos}-{kf}"), &ctor_src),
+                "check.sequence_position",
+            )
+            .len();
+            assert_eq!(write_n, expect, "write {pos}/{kf}:\n{write_src}");
+            assert_eq!(ctor_n, expect, "ctor {pos}/{kf}:\n{ctor_src}");
+            assert_eq!(
+                write_n, ctor_n,
+                "`^books(K)` and `Id(^books, K)` must agree at {pos}/{kf}",
+            );
+        }
+    }
+}
+
+#[test]
+fn a_function_local_const_key_inside_a_match_arm_is_rejected_at_check() {
+    // A `const` bound in the enclosing function body folds inside a `match` arm through
+    // the same live const-int scope a top-level body uses, so the `^books(ZERO)` write
+    // and the `Id(^books, ZERO)` constructor both name no record and are caught at check
+    // rather than escaping to a `run.absent_element` fault.
+    let header = "module m\n\
+        resource Book\n    required title: string\n\
+        store ^books(id: int): Book\n\
+        enum Color\n    red\n    blue\n\n";
+    let ctor_src = format!(
+        "{header}fn f(c: Color): Id(^books)\n    const ZERO: int = 0\n    \
+         match c\n        red\n            return Id(^books, ZERO)\n        \
+         blue\n            return Id(^books, 1)\n"
+    );
+    let write_src = format!(
+        "{header}fn f(c: Color)\n    const ZERO: int = 0\n    \
+         match c\n        red\n            ^books(ZERO) = Book(title: \"x\")\n        \
+         blue\n            print(1)\n"
+    );
+    assert_eq!(
+        with_code(
+            &check_module_report("matcharm-local-ctor", &ctor_src),
+            "check.sequence_position"
+        )
+        .len(),
+        1,
+        "{ctor_src}"
+    );
+    assert_eq!(
+        with_code(
+            &check_module_report("matcharm-local-write", &write_src),
+            "check.sequence_position"
+        )
+        .len(),
+        1,
+        "{write_src}"
+    );
+}
+
+#[test]
+fn an_if_const_binding_shadowing_a_constant_key_is_dynamic_not_falsely_rejected() {
+    // `if const K = <saved int read>` rebinds `K` to a dynamic value, masking the module
+    // `const K: int = 0`. Inside the then-block the fold must see the dynamic binding,
+    // not the shadowed constant, so a `^books(K)` write and an `Id(^books, K)`
+    // constructor both stay clean rather than being falsely rejected as
+    // `check.sequence_position`.
+    let header = "module m\n\
+        resource Book\n    required title: string\n\
+        store ^books(id: int): Book\n\
+        resource Counter\n    required n: int\n\
+        store ^counts(id: int): Counter\n\
+        const K: int = 0\n\n";
+    let write_src = format!(
+        "{header}fn f()\n    if const K = ^counts(1).n\n        ^books(K) = Book(title: \"x\")\n"
+    );
+    let ctor_src = format!(
+        "{header}fn f(): Id(^books)\n    if const K = ^counts(1).n\n        return Id(^books, K)\n"
+    );
+    assert!(
+        with_code(
+            &check_module_report("ifconst-shadow-write", &write_src),
+            "check.sequence_position"
+        )
+        .is_empty(),
+        "a shadowing if-const binding is dynamic, not the outer zero (write):\n{write_src}",
+    );
+    assert!(
+        with_code(
+            &check_module_report("ifconst-shadow-ctor", &ctor_src),
+            "check.sequence_position"
+        )
+        .is_empty(),
+        "a shadowing if-const binding is dynamic, not the outer zero (ctor):\n{ctor_src}",
+    );
+}
+
+#[test]
 fn an_in_range_store_root_int_key_write_stays_clean() {
     // A 1-based store-root position is a legitimate write target; the non-positive
     // guard must not sweep up positions at or above 1.

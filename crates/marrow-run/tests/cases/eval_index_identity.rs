@@ -1014,7 +1014,7 @@ fn unique_index_rejects_physical_identity_payload_mismatch() {
          \x20   index byIsbn(isbn) unique\n\
          \n\
          pub fn idByIsbn(isbn: string): Id(^books)\n\
-         \x20   return ^books.byIsbn(isbn) ?? Id(^books, 0)\n\
+         \x20   return ^books.byIsbn(isbn) ?? Id(^books, 1)\n\
          \n\
          pub fn hasIsbn(isbn: string): bool\n\
          \x20   return exists(^books.byIsbn(isbn))\n\
@@ -1062,7 +1062,7 @@ fn unique_index_rejects_duplicate_physical_entries_for_one_tuple() {
          \x20   index byIsbn(isbn) unique\n\
          \n\
          pub fn idByIsbn(isbn: string): Id(^books)\n\
-         \x20   return ^books.byIsbn(isbn) ?? Id(^books, 0)\n\
+         \x20   return ^books.byIsbn(isbn) ?? Id(^books, 1)\n\
          \n\
          pub fn hasIsbn(isbn: string): bool\n\
          \x20   return exists(^books.byIsbn(isbn))\n",

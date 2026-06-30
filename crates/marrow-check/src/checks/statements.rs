@@ -134,18 +134,22 @@ fn collapse_repeated_unresolved_names(diagnostics: &mut Vec<CheckDiagnostic>, bo
     }
 }
 
-/// Type-check a block under a fresh scope frame for its `const`/`var` bindings.
+/// Type-check a block under a fresh scope frame for its `const`/`var` bindings,
+/// folding its integer keys in the caller's live const-int scope. The caller threads
+/// the enclosing function- and block-local constants so a body nested in a `match`
+/// arm folds a local `const` exactly as a top-level body does.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn check_block_types(
     program: &CheckedProgram,
     file: &Path,
     return_type: &MarrowType,
     block: &marrow_syntax::Block,
     scope: &mut Vec<HashMap<String, MarrowType>>,
+    const_ints: &mut ConstIntScope,
     aliases: &HashMap<String, Vec<String>>,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
     let mut required_fields = RequiredFieldAssignments::inactive();
-    let mut const_ints: ConstIntScope = vec![module_const_ints(program, file)];
     check_block_types_with_read_scope(
         BlockTypeContext {
             program,
@@ -156,7 +160,7 @@ pub(crate) fn check_block_types(
         },
         block,
         scope,
-        &mut const_ints,
+        const_ints,
         diagnostics,
         &mut required_fields,
     );
@@ -194,7 +198,13 @@ pub(crate) fn check_transform_block_types(check: TransformBlockTypeCheck<'_>) {
             });
     check_return_values(file, block, true, ReturnPresence::Always, diagnostics);
     let mut required_fields = RequiredFieldAssignments::inactive();
+    // Mirror the caller's scope: the module constants seed the fold, and every frame
+    // the caller already bound (the transform's `old`) masks its names as dynamic, so
+    // a binding that shadows a like-named module constant cannot fold to it.
     let mut const_ints: ConstIntScope = vec![module_const_ints(program, file)];
+    for frame in scope.iter().skip(1) {
+        const_ints.push(frame.keys().map(|name| (name.clone(), None)).collect());
+    }
     check_block_types_with_read_scope(
         BlockTypeContext {
             program,
@@ -374,6 +384,7 @@ impl StatementCheck<'_> {
             self.aliases,
             self.file,
             self.diagnostics,
+            self.const_ints,
             self.transform_old,
         );
         check_entries_value_position(self.file, expr, self.diagnostics);
@@ -579,10 +590,10 @@ impl StatementCheck<'_> {
         }
     }
 
-    /// Check `body` under a scope frame that binds the loop or catch variables in
-    /// `frame`. The const-int environment masks every bound name as dynamic, so a loop
-    /// or catch variable shadowing an outer constant does not fold to the shadowed
-    /// value.
+    /// Check `body` under a scope frame that binds the names in `frame` — a loop or
+    /// catch variable, or an `if const` unwrapped binding. The const-int environment
+    /// masks every bound name as dynamic, so a binding that shadows an outer constant
+    /// does not fold to the shadowed value.
     fn check_block_under_frame(
         &mut self,
         frame: HashMap<String, MarrowType>,
@@ -605,6 +616,7 @@ impl StatementCheck<'_> {
             self.program,
             target,
             self.scope,
+            self.const_ints,
             self.aliases,
             self.file,
             self.diagnostics,
@@ -668,6 +680,7 @@ impl StatementCheck<'_> {
             self.program,
             target,
             self.scope,
+            self.const_ints,
             self.aliases,
             self.file,
             self.diagnostics,
@@ -826,6 +839,7 @@ impl StatementCheck<'_> {
             self.program,
             path,
             self.scope,
+            self.const_ints,
             self.aliases,
             self.file,
             self.diagnostics,
@@ -925,6 +939,7 @@ impl StatementCheck<'_> {
             self.file,
             condition,
             self.scope,
+            self.const_ints,
             self.aliases,
             self.transform_old,
             self.diagnostics,
@@ -1000,9 +1015,7 @@ impl StatementCheck<'_> {
         };
         let mut frame = HashMap::new();
         frame.insert(name.to_string(), binding_type);
-        self.scope.push(frame);
-        self.check_inconclusive_block(then_block);
-        self.scope.pop();
+        self.check_block_under_frame(frame, then_block);
         for else_if in else_ifs {
             if let Some(condition) = &else_if.condition {
                 self.check_condition_expr(condition);
@@ -1087,6 +1100,7 @@ impl StatementCheck<'_> {
             self.program,
             iterable,
             self.scope,
+            self.const_ints,
             self.aliases,
             self.file,
             self.diagnostics,
@@ -1178,6 +1192,7 @@ impl StatementCheck<'_> {
             arms,
             span,
             scope: self.scope,
+            const_ints: self.const_ints,
             aliases: self.aliases,
             diagnostics: self.diagnostics,
         });
@@ -1478,6 +1493,7 @@ fn target_arg_types(
                 check.aliases,
                 check.file,
                 &mut diagnostics,
+                &[],
                 check.transform_old,
             )
         })

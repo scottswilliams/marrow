@@ -164,6 +164,40 @@ fn local_single_int_key_target(
     }
 }
 
+/// Reject an `Id(^store, key)` whose statically-known single-int key names no record.
+/// A store with one `int` identity key is a 1-based sequence, identical to the
+/// `^store(0)` write address, so a folded zero or negative key addresses no record and
+/// is caught here rather than faulting `run.absent_element`. The key folds in the same
+/// const-int environment as the write address: a literal, a `const` binding, or integer
+/// arithmetic over either resolves at check, while a dynamic key folds to nothing and
+/// stays a run fault; a composite or non-`int` identity carries such keys with meaning
+/// and is unaffected.
+pub(crate) fn check_identity_sequence_position(
+    store: &StoreSchema,
+    key_args: &[Argument],
+    const_ints: &[HashMap<String, Option<i64>>],
+    span: SourceSpan,
+    file: &Path,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    if !store.single_int_root() {
+        return;
+    }
+    let [key] = key_args else {
+        return;
+    };
+    let Some(position) = fold_const_int(&key.value, const_ints).filter(|position| *position < 1)
+    else {
+        return;
+    };
+    diagnostics.push(CheckDiagnostic::error(
+        CHECK_SEQUENCE_POSITION,
+        file,
+        span,
+        format!("sequence positions are 1-based, so position `{position}` addresses no node"),
+    ));
+}
+
 /// Type-check the key arguments of a saved access against the keys it addresses.
 /// A foreign identity spliced into a keyspace, or a scalar of the wrong type, is a
 /// `check.key_type`. Non-saved callees and unresolved roots are left alone.

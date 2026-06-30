@@ -23,11 +23,13 @@ use super::diagnostics::operator_diagnostic;
 /// Type-check an `if`/`while` condition (must be `bool`). Inferring it also
 /// operator-checks it. An unknown type — an unresolved call, a saved-data read — is
 /// left alone, so the check never fires on an uncertain condition.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn check_condition(
     program: &CheckedProgram,
     file: &Path,
     condition: &marrow_syntax::Expression,
     scope: &[HashMap<String, MarrowType>],
+    const_ints: &[HashMap<String, Option<i64>>],
     aliases: &HashMap<String, Vec<String>>,
     transform_old: Option<crate::presence::TransformOldReadScope<'_>>,
     diagnostics: &mut Vec<CheckDiagnostic>,
@@ -39,6 +41,7 @@ pub(crate) fn check_condition(
         aliases,
         file,
         diagnostics,
+        const_ints,
         transform_old,
     );
     let span = condition.span();

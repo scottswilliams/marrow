@@ -43,6 +43,12 @@ pub(crate) fn infer_only(
     infer_type(program, expr, scope, aliases, file, &mut Vec::new())
 }
 
+/// An empty const-int environment for inference outside a statement walk, where no
+/// function- or block-local `const` bindings are in scope. The statement checker
+/// threads its live const-int scope instead so an `Id` key folds against the same
+/// constants the write path sees.
+const NO_CONST_INTS: &[HashMap<String, Option<i64>>] = &[];
+
 /// The declared type of a binding: its annotation when written, otherwise the
 /// inferred type of its initializer.
 fn binding_type(
@@ -103,6 +109,7 @@ pub(crate) fn local_binding_with_read_scope(
                 aliases,
                 file,
                 &mut sink,
+                NO_CONST_INTS,
                 transform_old,
             ),
         ),
@@ -121,6 +128,7 @@ pub(crate) fn local_binding_with_read_scope(
                     aliases,
                     file,
                     &mut sink,
+                    NO_CONST_INTS,
                     transform_old,
                 ),
                 None => MarrowType::Unknown,
@@ -149,13 +157,24 @@ pub(crate) fn infer_type(
     file: &Path,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) -> MarrowType {
-    infer_type_with_read_scope(program, expr, scope, aliases, file, diagnostics, None)
+    infer_type_with_read_scope(
+        program,
+        expr,
+        scope,
+        aliases,
+        file,
+        diagnostics,
+        NO_CONST_INTS,
+        None,
+    )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn infer_assignment_target_type_with_read_scope(
     program: &CheckedProgram,
     expr: &marrow_syntax::Expression,
     scope: &[HashMap<String, MarrowType>],
+    const_ints: &[HashMap<String, Option<i64>>],
     aliases: &HashMap<String, Vec<String>>,
     file: &Path,
     diagnostics: &mut Vec<CheckDiagnostic>,
@@ -165,6 +184,7 @@ pub(crate) fn infer_assignment_target_type_with_read_scope(
         program,
         expr,
         scope,
+        const_ints,
         aliases,
         file,
         diagnostics,
@@ -178,6 +198,7 @@ fn infer_assignment_field_type(
     program: &CheckedProgram,
     expr: &marrow_syntax::Expression,
     scope: &[HashMap<String, MarrowType>],
+    const_ints: &[HashMap<String, Option<i64>>],
     aliases: &HashMap<String, Vec<String>>,
     file: &Path,
     diagnostics: &mut Vec<CheckDiagnostic>,
@@ -207,6 +228,7 @@ fn infer_assignment_field_type(
             name_span: *name_span,
             span: *span,
             scope,
+            const_ints,
             aliases,
             file,
             diagnostics,
@@ -223,6 +245,7 @@ fn infer_assignment_field_type(
             program,
             expr,
             scope,
+            const_ints,
             aliases,
             file,
             diagnostics,
@@ -242,6 +265,7 @@ enum ValuePosition {
     CollectionSubject,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn infer_type_with_read_scope(
     program: &CheckedProgram,
     expr: &marrow_syntax::Expression,
@@ -249,6 +273,7 @@ pub(crate) fn infer_type_with_read_scope(
     aliases: &HashMap<String, Vec<String>>,
     file: &Path,
     diagnostics: &mut Vec<CheckDiagnostic>,
+    const_ints: &[HashMap<String, Option<i64>>],
     transform_old: Option<crate::presence::TransformOldReadScope<'_>>,
 ) -> MarrowType {
     infer_value(
@@ -256,6 +281,7 @@ pub(crate) fn infer_type_with_read_scope(
         expr,
         ValuePosition::Value,
         scope,
+        const_ints,
         aliases,
         file,
         diagnostics,
@@ -268,10 +294,12 @@ pub(crate) fn infer_type_with_read_scope(
 /// replaced by the builtin's own type; this surfaces the subject's key-argument and
 /// structural diagnostics without the value-position partial-key rejection, since a
 /// partially keyed composite layer is a valid inner sub-layer to stream.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn infer_collection_subject_type_with_read_scope(
     program: &CheckedProgram,
     expr: &marrow_syntax::Expression,
     scope: &[HashMap<String, MarrowType>],
+    const_ints: &[HashMap<String, Option<i64>>],
     aliases: &HashMap<String, Vec<String>>,
     file: &Path,
     diagnostics: &mut Vec<CheckDiagnostic>,
@@ -282,6 +310,7 @@ pub(crate) fn infer_collection_subject_type_with_read_scope(
         expr,
         ValuePosition::CollectionSubject,
         scope,
+        const_ints,
         aliases,
         file,
         diagnostics,
@@ -295,6 +324,7 @@ fn infer_value(
     expr: &marrow_syntax::Expression,
     position: ValuePosition,
     scope: &[HashMap<String, MarrowType>],
+    const_ints: &[HashMap<String, Option<i64>>],
     aliases: &HashMap<String, Vec<String>>,
     file: &Path,
     diagnostics: &mut Vec<CheckDiagnostic>,
@@ -333,6 +363,7 @@ fn infer_value(
                             aliases,
                             file,
                             diagnostics,
+                            const_ints,
                             transform_old,
                         );
                         if saved_collection_render_unowned(
@@ -394,6 +425,7 @@ fn infer_value(
                     aliases,
                     file,
                     diagnostics,
+                    const_ints,
                     transform_old,
                 )
             };
@@ -428,6 +460,7 @@ fn infer_value(
                 aliases,
                 file,
                 diagnostics,
+                const_ints,
                 transform_old,
             );
             // `is` is the enum-subtree predicate: its right is a member-path naming a
@@ -452,6 +485,7 @@ fn infer_value(
                 aliases,
                 file,
                 diagnostics,
+                const_ints,
                 transform_old,
             );
             // `??` only defaults an absent path read, so its left operand must be a
@@ -487,6 +521,7 @@ fn infer_value(
                     aliases,
                     file,
                     diagnostics,
+                    const_ints,
                     transform_old,
                 )
             });
@@ -498,6 +533,7 @@ fn infer_value(
                     aliases,
                     file,
                     diagnostics,
+                    const_ints,
                     transform_old,
                 )
             });
@@ -509,6 +545,7 @@ fn infer_value(
                     aliases,
                     file,
                     diagnostics,
+                    const_ints,
                     transform_old,
                 );
             }
@@ -542,6 +579,7 @@ fn infer_value(
                     program,
                     callee,
                     scope,
+                    const_ints,
                     aliases,
                     file,
                     diagnostics,
@@ -560,6 +598,7 @@ fn infer_value(
                     arg_name: arg.name.as_deref(),
                     arg: &arg.value,
                     scope,
+                    const_ints,
                     aliases,
                     file,
                     diagnostics,
@@ -592,6 +631,7 @@ fn infer_value(
                 args,
                 arg_types: &arg_types,
                 scope,
+                const_ints,
                 aliases,
                 span: *span,
                 file,
@@ -642,6 +682,7 @@ fn infer_value(
             name_span: *name_span,
             span: *span,
             scope,
+            const_ints,
             aliases,
             file,
             diagnostics,
@@ -679,6 +720,7 @@ struct FieldAccessInfer<'a, 'd> {
     name_span: SourceSpan,
     span: SourceSpan,
     scope: &'a [HashMap<String, MarrowType>],
+    const_ints: &'a [HashMap<String, Option<i64>>],
     aliases: &'a HashMap<String, Vec<String>>,
     file: &'a Path,
     diagnostics: &'d mut Vec<CheckDiagnostic>,
@@ -718,6 +760,7 @@ fn infer_field_access(input: FieldAccessInfer<'_, '_>) -> MarrowType {
             input.aliases,
             input.file,
             input.diagnostics,
+            input.const_ints,
             input.transform_old,
         ),
         // The base of a write target is navigated, not itself written, so resolve it
@@ -728,6 +771,7 @@ fn infer_field_access(input: FieldAccessInfer<'_, '_>) -> MarrowType {
                 input.program,
                 input.base,
                 input.scope,
+                input.const_ints,
                 input.aliases,
                 input.file,
                 input.diagnostics,
@@ -886,6 +930,7 @@ struct CallArgInfer<'a, 'd> {
     arg_name: Option<&'a str>,
     arg: &'a marrow_syntax::Expression,
     scope: &'a [HashMap<String, MarrowType>],
+    const_ints: &'a [HashMap<String, Option<i64>>],
     aliases: &'a HashMap<String, Vec<String>>,
     file: &'a Path,
     diagnostics: &'d mut Vec<CheckDiagnostic>,
@@ -911,6 +956,7 @@ fn infer_call_arg_type(input: CallArgInfer<'_, '_>) -> MarrowType {
             input.program,
             input.arg,
             input.scope,
+            input.const_ints,
             input.aliases,
             input.file,
             input.diagnostics,
@@ -925,6 +971,7 @@ fn infer_call_arg_type(input: CallArgInfer<'_, '_>) -> MarrowType {
             input.program,
             input.arg,
             input.scope,
+            input.const_ints,
             input.aliases,
             input.file,
             input.diagnostics,
@@ -938,6 +985,7 @@ fn infer_call_arg_type(input: CallArgInfer<'_, '_>) -> MarrowType {
         input.aliases,
         input.file,
         input.diagnostics,
+        input.const_ints,
         input.transform_old,
     )
 }
@@ -976,10 +1024,12 @@ fn callee_streams_collection_argument(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn infer_saved_key_range_arg_type(
     program: &CheckedProgram,
     arg: &marrow_syntax::Expression,
     scope: &[HashMap<String, MarrowType>],
+    const_ints: &[HashMap<String, Option<i64>>],
     aliases: &HashMap<String, Vec<String>>,
     file: &Path,
     diagnostics: &mut Vec<CheckDiagnostic>,
@@ -994,6 +1044,7 @@ fn infer_saved_key_range_arg_type(
             aliases,
             file,
             diagnostics,
+            const_ints,
             transform_old,
         );
     }
@@ -1005,6 +1056,7 @@ fn infer_saved_key_range_arg_type(
             aliases,
             file,
             diagnostics,
+            const_ints,
             transform_old,
         )
     });
@@ -1016,6 +1068,7 @@ fn infer_saved_key_range_arg_type(
             aliases,
             file,
             diagnostics,
+            const_ints,
             transform_old,
         )
     });
@@ -1508,6 +1561,7 @@ pub(crate) fn assignment_target_is_error_code(
         program,
         base,
         scope,
+        NO_CONST_INTS,
         aliases,
         file,
         &mut sink,
