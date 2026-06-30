@@ -241,7 +241,7 @@ then iterate that local and mutate the layer:
 var ids: sequence[Id(^books)]
 for id in keys(^books)
     append(ids, id)
-for id in ids
+for id in values(ids)
     delete ^books(id)
 ```
 
