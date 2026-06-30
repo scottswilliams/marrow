@@ -562,28 +562,6 @@ pub(crate) fn plan_layer_leaf_write(
     Ok(WritePlan { steps })
 }
 
-pub(crate) fn plan_layer_identity_leaf_write(
-    context: IndexWriteContext<'_>,
-    layers: &[LayerAddress],
-    value: ReferencedIdentity<'_>,
-) -> Result<WritePlan, WriteError> {
-    let place = context.place();
-    let layer = leaf_layer(place, layers)?;
-    let Some((leaf, _)) = layer.field() else {
-        return Err(WriteError {
-            code: WRITE_NOT_A_LEAF_LAYER,
-            message: format!("keyed layer `{}` is a group, not a leaf", layer.name),
-        });
-    };
-    let mut steps = record_establishing_steps(context)?;
-    steps.push(PlanStep::WriteData {
-        address: DataAddress::layer_prefix(place, context.identity(), layers, context.span())
-            .map_err(store_error)?,
-        value: staged_identity_value(&layer.name, leaf, value.keys, value.referenced_arity)?,
-    });
-    Ok(WritePlan { steps })
-}
-
 pub(crate) fn plan_nested_field_write(
     context: IndexWriteContext<'_>,
     layers: &[LayerAddress],
@@ -1034,6 +1012,11 @@ fn check_type(field: &str, leaf: &StoreLeafKind, value: &LeafValue) -> Result<()
     match (leaf, value) {
         (StoreLeafKind::Enum { .. }, value) if value.is_enum() => Ok(()),
         (StoreLeafKind::Scalar(expected), LeafValue::Scalar(value)) if *expected == value.ty() => {
+            Ok(())
+        }
+        (StoreLeafKind::Identity { arity, .. }, LeafValue::Identity { keys })
+            if keys.len() == *arity =>
+        {
             Ok(())
         }
         _ => Err(WriteError {

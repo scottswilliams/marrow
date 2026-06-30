@@ -8,7 +8,7 @@ use evolution_apply_support::*;
 
 use marrow_run::evolution::{Approval, apply};
 use marrow_store::cell::CatalogId;
-use marrow_store::key::SavedKey;
+use marrow_store::key::{SavedKey, encode_identity_payload};
 use marrow_store::tree::{DataPathSegment, TreeStore};
 use marrow_store::value::{Scalar, ScalarType};
 
@@ -72,6 +72,90 @@ fn proposal_transform_writes_target_before_catalog_acceptance()
         Some(Scalar::Int(700))
     );
 
+    Ok(())
+}
+
+#[test]
+fn proposal_transform_writes_an_identity_target_leaf() -> Result<(), Box<dyn std::error::Error>> {
+    // A transform whose target member is `Id(^owners)` recomputes an identity per record
+    // by copying the accepted identity field of `old`. The encode path is the same
+    // `value_to_leaf` the append and direct positional writes use, so the recomputed
+    // leaf stores the canonical identity payload, byte-identical to the source.
+    let baseline = "module app\n\
+         resource Owner\n\
+         \x20   name: string\n\
+         store ^owners(id: int): Owner\n\
+         resource Item\n\
+         \x20   required ownerRef: Id(^owners)\n\
+         store ^items(id: int): Item\n\
+         pub fn add(): Id(^items)\n\
+         \x20   return nextId(^items)\n";
+    let root = temp_project("apply-proposal-identity-transform", |root| {
+        write(root, "src/app.mw", baseline);
+    });
+    let accepted = commit_then_check(&root).expect("committed fixture");
+    let items_place = root_place(&accepted, "items")?;
+    let store_id = store_id_of(&items_place)?;
+    let owner_ref_accepted = CatalogId::new(
+        member_catalog_id(&items_place, "ownerRef").expect("accepted ownerRef catalog id"),
+    )
+    .expect("ownerRef catalog id");
+    let store = TreeStore::memory();
+    let seed = Seed {
+        store: &store,
+        place: &items_place,
+    };
+    // Seed the accepted identity field directly with its canonical payload.
+    let seed_owner_ref = |id: i64, key: i64| {
+        seed.record(id);
+        store
+            .write_data_value(
+                &store_id,
+                &[SavedKey::Int(id)],
+                &[DataPathSegment::Member(owner_ref_accepted.clone())],
+                encode_identity_payload(&[SavedKey::Int(key)]),
+            )
+            .expect("seed ownerRef identity leaf");
+    };
+    seed_owner_ref(1, 7);
+    seed_owner_ref(2, 9);
+
+    write(
+        &root,
+        "src/app.mw",
+        "module app\n\
+         resource Owner\n\
+         \x20   name: string\n\
+         store ^owners(id: int): Owner\n\
+         resource Item\n\
+         \x20   required ownerRef: Id(^owners)\n\
+         \x20   ownerMirror: Id(^owners)\n\
+         store ^items(id: int): Item\n\
+         evolve\n\
+         \x20   transform Item.ownerMirror\n\
+         \x20       return old.ownerRef\n\
+         pub fn add(): Id(^items)\n\
+         \x20   return nextId(^items)\n",
+    );
+    let program = checked(&root).expect("checked fixture");
+    let mirror_id = CatalogId::new(proposal_catalog_id(&program, "app::Item::ownerMirror")?)
+        .expect("ownerMirror catalog id");
+    let w = witness(&program, &store);
+    assert!(w.is_activatable(), "{w:#?}");
+    let outcome = apply(&w, &program, &store, false, None).expect("apply succeeds");
+    assert_eq!(outcome.receipt.records_transformed, 2);
+
+    let read = |id: i64| {
+        store
+            .read_data_value(
+                &store_id,
+                &[SavedKey::Int(id)],
+                &[DataPathSegment::Member(mirror_id.clone())],
+            )
+            .expect("read ownerMirror")
+    };
+    assert_eq!(read(1), Some(encode_identity_payload(&[SavedKey::Int(7)])));
+    assert_eq!(read(2), Some(encode_identity_payload(&[SavedKey::Int(9)])));
     Ok(())
 }
 

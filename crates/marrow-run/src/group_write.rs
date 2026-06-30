@@ -14,10 +14,9 @@ use crate::index_maintenance::IndexWriteContext;
 use crate::path::{KeyRole, SavedPath, lower, lower_keys};
 use crate::statement::coerce_error_code_value;
 use crate::store::{DataAddress, LayerAddress};
-use crate::value::{Value, identity_keys_of, value_to_leaf};
+use crate::value::{Value, value_to_leaf};
 use crate::write::{
-    ReferencedIdentity, plan_layer_group_write, plan_layer_identity_leaf_write,
-    plan_layer_leaf_write, validate_required_fields_after_group_write,
+    plan_layer_group_write, plan_layer_leaf_write, validate_required_fields_after_group_write,
 };
 use crate::write_dispatch::{created_required_paths_for_value, resource_value_of};
 
@@ -183,23 +182,8 @@ fn write_layer_leaf_at(
         env.program.facts(),
         target.span,
     );
-    let plan = match leaf {
-        StoreLeafKind::Identity { store_root, arity } => {
-            let keys = identity_keys_of(value, store_root, target.span)?;
-            plan_layer_identity_leaf_write(
-                context,
-                &layers,
-                ReferencedIdentity {
-                    keys: &keys,
-                    referenced_arity: *arity,
-                },
-            )
-        }
-        StoreLeafKind::Scalar(_) | StoreLeafKind::Enum { .. } => {
-            let saved = value_to_leaf(value, leaf, target.span)?;
-            plan_layer_leaf_write(context, &layers, &saved)
-        }
-    };
+    let saved = value_to_leaf(value, leaf, target.span)?;
+    let plan = plan_layer_leaf_write(context, &layers, &saved);
     env.apply_plan(plan, target.span)
 }
 

@@ -4,6 +4,7 @@ use marrow_store::Decimal;
 use marrow_store::cell::CatalogId;
 use marrow_store::key::{
     SavedKey, decode_identity_index_key, decode_identity_payload_arity, encode_identity_index_key,
+    encode_identity_payload,
 };
 use marrow_store::tree::{TreeEnumMember, decode_tree_enum_member, encode_tree_enum_member};
 use marrow_store::value::{
@@ -282,6 +283,12 @@ pub(crate) enum LeafValue {
         /// enum key by its member name rather than its opaque stored catalog id.
         display_name: String,
     },
+    /// A typed-reference leaf: the key segments of an `Id(^store)`, stored as the
+    /// canonical identity payload. Identity leaves are not value-derived index keys,
+    /// so they have no `as_key`.
+    Identity {
+        keys: Vec<SavedKey>,
+    },
 }
 
 impl LeafValue {
@@ -289,6 +296,7 @@ impl LeafValue {
         match self {
             Self::Scalar(value) => encode_value(value),
             Self::Enum { bytes, .. } => Ok(bytes.clone()),
+            Self::Identity { keys } => Ok(encode_identity_payload(keys)),
         }
     }
 
@@ -296,6 +304,7 @@ impl LeafValue {
         match self {
             Self::Scalar(value) => value.as_key(),
             Self::Enum { index_key, .. } => Ok(Some(index_key.clone())),
+            Self::Identity { .. } => Ok(None),
         }
     }
 
@@ -308,7 +317,7 @@ impl LeafValue {
     pub(crate) fn enum_display_name(&self) -> Option<&str> {
         match self {
             Self::Enum { display_name, .. } => Some(display_name),
-            Self::Scalar(_) => None,
+            Self::Scalar(_) | Self::Identity { .. } => None,
         }
     }
 }
@@ -737,7 +746,9 @@ pub(crate) fn validate_place_identity_keys(
 
 /// Lower a runtime value to the [`LeafValue`] a managed write stores for `leaf`: a
 /// scalar leaf through [`value_to_saved`], an enum leaf through `enum_value_to_leaf`,
-/// identity leaves rejected. Errors (not `None`) on a value the leaf cannot accept.
+/// an identity leaf through its checked key segments. The single owner of value-to-leaf
+/// lowering, so the append, group, evolution, and direct positional write paths encode a
+/// leaf identically. Errors (not `None`) on a value the leaf cannot accept.
 pub(crate) fn value_to_leaf(
     value: Value,
     leaf: &StoreLeafKind,
@@ -748,7 +759,16 @@ pub(crate) fn value_to_leaf(
             .map(LeafValue::Scalar)
             .ok_or_else(|| unsupported("writing this value to a scalar field", span)),
         StoreLeafKind::Enum { enum_id } => enum_value_to_leaf(value, *enum_id, span),
-        StoreLeafKind::Identity { .. } => Err(unsupported("writing this identity field", span)),
+        StoreLeafKind::Identity { store_root, arity } => {
+            let keys = identity_keys_of(value, store_root, span)?;
+            if keys.len() != *arity {
+                return Err(type_error(
+                    "this identity has the wrong number of keys for the field",
+                    span,
+                ));
+            }
+            Ok(LeafValue::Identity { keys })
+        }
     }
 }
 

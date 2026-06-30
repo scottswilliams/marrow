@@ -372,3 +372,198 @@ fn string_of_a_saved_identity_is_rejected_at_check() {
         "check.call_argument",
     );
 }
+
+/// Two `^aa` records and a `Bag` whose `refs` is a `sequence[Id(^aa)]`. Append, the
+/// direct positional keyed-leaf write, and a read-back all flow through one
+/// identity-leaf encoder.
+const ID_SEQUENCE_SCHEMA: &str = "\
+resource A
+    name: string
+store ^aa(id: int): A
+
+resource Bag
+    refs: sequence[Id(^aa)]
+store ^bags(id: int): Bag
+
+pub fn seed()
+    ^aa(1).name = \"a\"
+    ^aa(2).name = \"b\"
+
+pub fn appendRef(key: int): int
+    return append(^bags(1).refs, Id(^aa, key))
+
+pub fn writeRef(bag: int, pos: int, key: int)
+    ^bags(bag).refs(pos) = Id(^aa, key)
+
+pub fn refAt(bag: int, pos: int): Id(^aa)
+    return ^bags(bag).refs(pos) ?? Id(^aa, 1)
+";
+
+#[test]
+fn appending_an_identity_into_a_saved_sequence_round_trips_like_the_direct_write() {
+    let program = checked_program(ID_SEQUENCE_SCHEMA);
+    let store = TreeStore::memory();
+    run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed runs");
+
+    // Successive appends take positions 1 then 2 and read back as the same identities.
+    assert_eq!(
+        run_entry(
+            &store,
+            checked_entry!(&program, "test::appendRef", Value::Int(1))
+        )
+        .expect("append runs")
+        .value,
+        Some(Value::Int(1)),
+    );
+    assert_eq!(
+        run_entry(
+            &store,
+            checked_entry!(&program, "test::appendRef", Value::Int(2))
+        )
+        .expect("append runs")
+        .value,
+        Some(Value::Int(2)),
+    );
+    assert_identity_value(
+        run_entry(
+            &store,
+            checked_entry!(&program, "test::refAt", Value::Int(1), Value::Int(1)),
+        )
+        .expect("read back")
+        .value,
+        "aa",
+        &[SavedKey::Int(1)],
+    );
+    assert_identity_value(
+        run_entry(
+            &store,
+            checked_entry!(&program, "test::refAt", Value::Int(1), Value::Int(2)),
+        )
+        .expect("read back")
+        .value,
+        "aa",
+        &[SavedKey::Int(2)],
+    );
+
+    // The direct positional write of the same identity into a sibling bag stores the
+    // byte-identical canonical payload: append and the keyed-leaf write share one
+    // identity-leaf encoder.
+    run_entry(
+        &store,
+        checked_entry!(
+            &program,
+            "test::writeRef",
+            Value::Int(2),
+            Value::Int(1),
+            Value::Int(1)
+        ),
+    )
+    .expect("direct positional write runs");
+    let appended = read_data_bytes(
+        &program,
+        &store,
+        "bags",
+        &[SavedKey::Int(1)],
+        &keyed_data_path(&program, "bags", &[("refs", vec![SavedKey::Int(1)])], &[]),
+    );
+    let direct = read_data_bytes(
+        &program,
+        &store,
+        "bags",
+        &[SavedKey::Int(2)],
+        &keyed_data_path(&program, "bags", &[("refs", vec![SavedKey::Int(1)])], &[]),
+    );
+    assert_eq!(appended, Some(encode_identity_payload(&[SavedKey::Int(1)])));
+    assert_eq!(
+        appended, direct,
+        "append and the direct positional write encode an identity leaf identically"
+    );
+}
+
+#[test]
+fn appending_a_dangling_identity_stores_and_reads_back_per_the_identity_contract() {
+    // Appending `Id(^aa, 99)` when `^aa(99)` was never created mirrors the direct
+    // positional write: an identity leaf carries the referenced key, and resolving the
+    // target is the reader's concern, so the append persists and reads back unchanged.
+    let program = checked_program(ID_SEQUENCE_SCHEMA);
+    let store = TreeStore::memory();
+    run_entry(&store, checked_entry!(&program, "test::seed")).expect("seed runs");
+    run_entry(
+        &store,
+        checked_entry!(&program, "test::appendRef", Value::Int(99)),
+    )
+    .expect("dangling append runs");
+    assert_identity_value(
+        run_entry(
+            &store,
+            checked_entry!(&program, "test::refAt", Value::Int(1), Value::Int(1)),
+        )
+        .expect("read back")
+        .value,
+        "aa",
+        &[SavedKey::Int(99)],
+    );
+}
+
+#[test]
+fn enum_and_int_sequence_appends_still_persist_alongside_identity_support() {
+    // Identity-leaf support in `value_to_leaf` must leave the enum-leaf and scalar-leaf
+    // append branches intact.
+    let program = checked_program(
+        "enum Status\n\
+         \x20   active\n\
+         \x20   archived\n\
+         \n\
+         resource Log\n\
+         \x20   states: sequence[Status]\n\
+         \x20   vals: sequence[int]\n\
+         store ^logs(id: int): Log\n\
+         \n\
+         pub fn addState(): int\n\
+         \x20   return append(^logs(1).states, Status::active)\n\
+         \n\
+         pub fn addVal(v: int): int\n\
+         \x20   return append(^logs(1).vals, v)\n\
+         \n\
+         pub fn isActiveAt(pos: int): bool\n\
+         \x20   const s: Status = ^logs(1).states(pos) ?? Status::archived\n\
+         \x20   return s == Status::active\n\
+         \n\
+         pub fn valAt(pos: int): int\n\
+         \x20   return ^logs(1).vals(pos) ?? 0\n",
+    );
+    let store = TreeStore::memory();
+    assert_eq!(
+        run_entry(&store, checked_entry!(&program, "test::addState"))
+            .expect("enum append runs")
+            .value,
+        Some(Value::Int(1)),
+    );
+    assert_eq!(
+        run_entry(
+            &store,
+            checked_entry!(&program, "test::addVal", Value::Int(7))
+        )
+        .expect("int append runs")
+        .value,
+        Some(Value::Int(1)),
+    );
+    assert_eq!(
+        run_entry(
+            &store,
+            checked_entry!(&program, "test::isActiveAt", Value::Int(1))
+        )
+        .expect("enum read back")
+        .value,
+        Some(Value::Bool(true)),
+    );
+    assert_eq!(
+        run_entry(
+            &store,
+            checked_entry!(&program, "test::valAt", Value::Int(1))
+        )
+        .expect("int read back")
+        .value,
+        Some(Value::Int(7)),
+    );
+}
