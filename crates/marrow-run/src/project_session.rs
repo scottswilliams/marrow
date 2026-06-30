@@ -2147,10 +2147,9 @@ fn store_behind_committed_lock(
 /// fires either way.
 ///
 /// A store committed at an earlier epoch than the lock's high-water is a legitimately-behind local
-/// checkout, not a loss: it carries every committed root but fewer member entries than the ahead
-/// lock projected, so it is the store-behind fence's case, never corruption. A rolled-back or
-/// crash-mid-creation store carries no usable commit metadata, so it is not behind and the witness
-/// fires.
+/// checkout, not a loss: the witness honors that store-behind carve-out itself, so the write path
+/// reaches the store-behind fence rather than a corruption verdict. A rolled-back or
+/// crash-mid-creation store carries no committed catalog, so it is not behind and the witness fires.
 fn guard_committed_lock_roots(
     root: &Path,
     config: &ProjectConfig,
@@ -2169,11 +2168,6 @@ fn guard_committed_lock_roots(
     } else {
         Some(TreeStore::open_read_only(&path)?)
     };
-    if let Some(store) = &store
-        && store_behind_committed_lock(root, store)?.is_some()
-    {
-        return Ok(());
-    }
     marrow_check::tooling::verify_present_store_lock_roots(store.as_ref(), Some(&lock))
         .map_err(ProjectSessionError::Store)
 }

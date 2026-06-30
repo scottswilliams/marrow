@@ -6,6 +6,8 @@
 
 use crate::support;
 use crate::support_data;
+use crate::support_evolve;
+use marrow_catalog::{CatalogEntryKind, CatalogLifecycle, CatalogLock, LockEntry};
 use std::path::Path;
 use support::{
     corrupt_primary_slot_selector, find_code_segment, is_code, last_fault, marrow, marrow_bounded,
@@ -607,6 +609,203 @@ fn findings_carry_lock_root_corruption(report: &serde_json::Value) -> bool {
             .iter()
             .any(|finding| finding["data"]["underlying_code"] == "store.corruption")
     })
+}
+
+/// The committed lock the seeded project wrote, parsed to its typed form.
+fn committed_lock(project: &Path) -> CatalogLock {
+    let bytes = std::fs::read_to_string(project.join("marrow.lock")).expect("read committed lock");
+    CatalogLock::from_lock_json(&bytes).expect("parse committed lock")
+}
+
+/// Overwrite the committed lock with `lock`'s canonical projection.
+fn write_committed_lock(project: &Path, lock: &CatalogLock) {
+    write(
+        project,
+        "marrow.lock",
+        &lock.to_lock_json_pretty().expect("render lock"),
+    );
+}
+
+/// A fresh active lock entry of `kind`, cloned from a real committed entry of the same kind so it
+/// carries a valid shape fingerprint and the kind's field conventions, then re-pathed and
+/// re-identified to a `(path, stable_id)` the store does not present. Used to assemble an ahead lock
+/// the way a teammate's committed activation would have advanced it.
+fn fresh_active_entry(
+    lock: &CatalogLock,
+    kind: CatalogEntryKind,
+    path: &str,
+    id: u64,
+) -> LockEntry {
+    let mut entry = lock
+        .entries
+        .iter()
+        .find(|entry| entry.kind == kind)
+        .cloned()
+        .unwrap_or_else(|| panic!("the committed lock records a {kind:?} entry to clone"));
+    entry.path = path.to_string();
+    entry.stable_id = format!("cat_{id:032x}");
+    entry.aliases = Vec::new();
+    entry.lifecycle = CatalogLifecycle::Active;
+    entry
+}
+
+/// A healthy store legitimately behind an ahead committed `marrow.lock` — the git-pull state in
+/// which a teammate committed an evolution that added an optional member and advanced the epoch
+/// high-water, while this checkout's store stays at the earlier epoch with the same saved roots —
+/// must read, back up, and recover as the behind store it is, never as `store.corruption`. The
+/// lock-root witness keys on saved-root identity alone and honors the store-behind epoch carve-out,
+/// so the additive pending member the ahead lock lists does not condemn the store.
+#[test]
+fn an_epoch_behind_store_under_an_additive_ahead_lock_reads_clean() {
+    let (project, dir) = seeded_mutable_store("cli-store-epoch-behind-additive", 3);
+    let backup_target = project.join("epoch-behind.mw-backup");
+    let backup_target = backup_target
+        .to_str()
+        .expect("backup path utf8")
+        .to_string();
+    let deadline = std::time::Duration::from_secs(30);
+
+    assert_eq!(
+        support_evolve::store_epoch(&project),
+        Some(1),
+        "the seeded store baselines at epoch 1",
+    );
+    let real_lock = committed_lock(&project);
+    assert_eq!(
+        real_lock.epoch_high_water, 1,
+        "the baseline lock is at epoch 1",
+    );
+
+    // A teammate's committed activation added an optional member and advanced the lock to epoch 2;
+    // this local store stays at epoch 1 carrying the same `^notes` saved root.
+    let mut entries = real_lock.entries.clone();
+    entries.push(fresh_active_entry(
+        &real_lock,
+        CatalogEntryKind::ResourceMember,
+        "app::Note::pending_optional",
+        0x2906,
+    ));
+    let ahead_lock = CatalogLock::new(
+        entries,
+        real_lock.ledger.clone(),
+        2,
+        real_lock.source_digest,
+    )
+    .expect("the additive ahead lock validates");
+    write_committed_lock(&project, &ahead_lock);
+
+    for command in [
+        ["data", "stats", &dir].as_slice(),
+        ["data", "roots", &dir].as_slice(),
+        ["data", "dump", &dir].as_slice(),
+        ["data", "get", &dir, "^notes(1)"].as_slice(),
+        ["backup", &dir, &backup_target].as_slice(),
+        ["data", "recover", &dir].as_slice(),
+    ] {
+        let output = marrow_bounded(command, deadline);
+        assert_no_panic_and_bounded(&output, command, 0);
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "`marrow {}` false-corrupted a healthy epoch-behind store: {output:?}",
+            command.join(" "),
+        );
+    }
+
+    let stats = marrow_bounded(&["data", "stats", &dir], deadline);
+    assert_eq!(
+        reported_record_count(&stats),
+        Some(3),
+        "the epoch-behind store still reports its real records: {stats:?}",
+    );
+
+    let doctor = marrow_bounded(&["doctor", &dir, "--format", "json"], deadline);
+    assert_no_panic_and_bounded(&doctor, &["doctor"], 0);
+    let report: serde_json::Value =
+        serde_json::from_slice(&doctor.stdout).expect("doctor json report");
+    assert!(
+        !findings_carry_lock_root_corruption(&report),
+        "doctor false-corrupted a healthy epoch-behind store: {report}"
+    );
+}
+
+/// A present store that holds a different saved root than its committed `marrow.lock` records, at
+/// the same epoch as the lock, has lost durable identity — the lock recorded a root this store no
+/// longer presents and the store is not behind. The lock-root witness must still fail this closed as
+/// `store.corruption` on every driver: the epoch carve-out excuses a behind store, never a
+/// same-epoch root loss.
+#[test]
+fn a_same_epoch_store_missing_a_committed_root_fails_closed() {
+    let (project, dir) = seeded_mutable_store("cli-store-same-epoch-root-loss", 3);
+    let backup_target = project.join("root-loss.mw-backup");
+    let backup_target = backup_target
+        .to_str()
+        .expect("backup path utf8")
+        .to_string();
+    let deadline = std::time::Duration::from_secs(30);
+
+    assert_eq!(
+        support_evolve::store_epoch(&project),
+        Some(1),
+        "the seeded store baselines at epoch 1",
+    );
+    let real_lock = committed_lock(&project);
+    assert_eq!(
+        real_lock.epoch_high_water, 1,
+        "the baseline lock is at epoch 1",
+    );
+
+    // Record a second committed saved root in the lock at the SAME epoch the store sits at. The
+    // store presents only `^notes`, so it has genuinely lost the recorded `^ghost` root; the
+    // store-behind carve-out does not apply because the store is caught up to the lock's high-water.
+    let mut entries = real_lock.entries.clone();
+    entries.push(fresh_active_entry(
+        &real_lock,
+        CatalogEntryKind::Store,
+        "app::^ghost",
+        0x6057,
+    ));
+    let lost_root_lock = CatalogLock::new(
+        entries,
+        real_lock.ledger.clone(),
+        real_lock.epoch_high_water,
+        real_lock.source_digest,
+    )
+    .expect("the lost-root lock validates");
+    write_committed_lock(&project, &lost_root_lock);
+
+    for command in [
+        ["data", "stats", &dir].as_slice(),
+        ["data", "roots", &dir].as_slice(),
+        ["data", "dump", &dir].as_slice(),
+        ["data", "get", &dir, "^notes(1)"].as_slice(),
+        ["backup", &dir, &backup_target].as_slice(),
+        ["data", "recover", &dir].as_slice(),
+    ] {
+        let output = marrow_bounded(command, deadline);
+        assert_no_panic_and_bounded(&output, command, 0);
+        assert_eq!(
+            output.status.code(),
+            Some(1),
+            "`marrow {}` blessed a store missing a committed root: {output:?}",
+            command.join(" "),
+        );
+        assert_eq!(
+            stderr_code(&output),
+            "store.corruption",
+            "`marrow {}` must report the lost committed root as store.corruption: {output:?}",
+            command.join(" "),
+        );
+    }
+
+    let doctor = marrow_bounded(&["doctor", &dir, "--format", "json"], deadline);
+    assert_no_panic_and_bounded(&doctor, &["doctor"], 0);
+    let report: serde_json::Value =
+        serde_json::from_slice(&doctor.stdout).expect("doctor json report");
+    assert!(
+        findings_carry_lock_root_corruption(&report),
+        "doctor blessed a store missing a committed root instead of flagging its loss: {report}"
+    );
 }
 
 /// Hammer `marrow doctor --format json` against a live writer that repeatedly commits write

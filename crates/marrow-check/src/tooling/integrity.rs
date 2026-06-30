@@ -944,23 +944,37 @@ pub fn verify_store_completeness(
     verify_index_completeness(store, &checked_places(program))
 }
 
+/// Whether a catalog entry is an active saved root — a live `Store` whose identity the witness
+/// guards. Resource members, indexes, and other shape entries the catalog also records are not
+/// saved roots: the store and lock advance them through evolution, so the cross-check ignores them.
+fn is_active_store_root(kind: CatalogEntryKind, lifecycle: CatalogLifecycle) -> bool {
+    kind == CatalogEntryKind::Store && lifecycle == CatalogLifecycle::Active
+}
+
 /// Cross-check the catalog a PRESENT store presents against the committed `marrow.lock`.
 ///
 /// The per-root structural digest cannot witness a corruption that drops the anchor
 /// itself: a flip in the commit metadata region that rolls the store back to its empty
 /// initial state presents zero records and zero anchors, so the anchor pass visits nothing
 /// and passes vacuously. The independent witness is the lock, a separate durable file that
-/// records the committed accepted roots. Every active accepted root the lock records must
-/// still be present in the catalog the store presents; a present store that presents fewer
-/// roots than the lock committed has lost durable identity to a rollback or a torn baseline,
-/// failed closed as corruption. An absent store body never reaches here: the lock-root owner
-/// treats it as the disposable-store case the write paths seed, not a loss.
+/// records the committed saved roots. Every active saved root the lock records must still be
+/// present in the catalog the store presents; a present store that presents fewer roots than
+/// the lock committed has lost durable identity to a rollback or a torn baseline, failed
+/// closed as corruption. An absent store body never reaches this witness — the caller's
+/// disposable-store carve-out returns before it opens. A present store that opens to an empty
+/// catalog records no root either, and is condemned all the same: that is the rollback-to-empty
+/// this witness exists to catch.
 ///
-/// The check keys on the accepted-root set, not the epoch number, so a store legitimately
-/// behind an ahead lock (a teammate's committed activation seeded into a fresh checkout)
-/// still carries the same active roots and passes. When no committed lock exists, or it
-/// records no active roots, there is no recorded baseline to contradict, which is the
-/// separate missing-lock and genuine first-run case, not a corruption.
+/// The comparison keys on saved-root identity alone — the `Store` entries — never the resource
+/// members or indexes the catalog also records. Those are additive shape the store and lock
+/// advance through evolution, so an ahead lock that added a member legitimately lists more than
+/// a behind store presents. The epoch carve-out makes that precise: a store committed below the
+/// lock's epoch high-water is a legitimately-behind local checkout that carries every root it
+/// recorded at its own epoch but not a root or member a later activation added; it is the
+/// store-behind fence's case, not a loss. A store with no committed catalog has no epoch and
+/// cannot be behind, so it falls through to the present-shortfall check. When no committed lock
+/// exists, or it records no saved root, there is no recorded baseline to contradict — the
+/// separate missing-lock and genuine first-run case.
 pub fn verify_store_roots_against_lock(
     store: &TreeStore,
     lock: Option<&marrow_catalog::CatalogLock>,
@@ -968,32 +982,43 @@ pub fn verify_store_roots_against_lock(
     let Some(lock) = lock else {
         return Ok(());
     };
-    let mut committed_roots = lock
+    let committed_roots: HashSet<&str> = lock
         .entries
         .iter()
-        .filter(|entry| entry.lifecycle == CatalogLifecycle::Active)
-        .map(|entry| (entry.kind, entry.path.as_str()))
-        .peekable();
-    if committed_roots.peek().is_none() {
+        .filter(|entry| is_active_store_root(entry.kind, entry.lifecycle))
+        .map(|entry| entry.path.as_str())
+        .collect();
+    if committed_roots.is_empty() {
         return Ok(());
     }
-    let presented: HashSet<(CatalogEntryKind, String)> = store
-        .read_catalog_snapshot()?
+    let snapshot = store.read_catalog_snapshot()?;
+    let presented: HashSet<&str> = snapshot
+        .as_ref()
         .map(|snapshot| {
             snapshot
                 .entries
                 .iter()
-                .filter(|entry| entry.lifecycle == CatalogLifecycle::Active)
-                .map(|entry| (entry.kind, entry.path.clone()))
-                .collect::<HashSet<_>>()
+                .filter(|entry| is_active_store_root(entry.kind, entry.lifecycle))
+                .map(|entry| entry.path.as_str())
+                .collect()
         })
         .unwrap_or_default();
-    if committed_roots.any(|(kind, path)| !presented.contains(&(kind, path.to_string()))) {
-        return Err(StoreError::Corruption {
-            message: "the store presents fewer committed roots than its lock recorded".into(),
-        });
+    if committed_roots.is_subset(&presented) {
+        return Ok(());
     }
-    Ok(())
+    // The store presents fewer saved roots than the lock recorded. That is a loss only if the
+    // store is caught up: a store committed below the lock's epoch high-water is a legitimately
+    // behind local checkout whose missing roots are a later activation's pending additions, the
+    // store-behind fence's case. A store with no committed catalog has no epoch and cannot be
+    // behind, so it is a genuine loss.
+    if let Some(snapshot) = &snapshot
+        && snapshot.epoch < lock.epoch_high_water
+    {
+        return Ok(());
+    }
+    Err(StoreError::Corruption {
+        message: "the store presents fewer committed roots than its lock recorded".into(),
+    })
 }
 
 /// Cross-check every declared index against the data records that derive it.
