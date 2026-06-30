@@ -410,3 +410,94 @@ fn shape_digest_is_a_frozen_golden() {
          durable-rendering change"
     );
 }
+
+/// A doc comment is prose, not durable shape: the catalog a stored snapshot must satisfy
+/// is unchanged whether a `resource`, `store`, `enum`, `const`, field, member, or `fn`
+/// carries documentation or not. So adding, editing, or removing a `;;` doc comment must
+/// leave the shape digest exactly where it was, while a real shape edit — a field's type,
+/// a const value — still drifts it. A `;` line comment above a declaration is not attached
+/// to it and a pure whitespace reformat is layout, so neither moves the digest either.
+#[test]
+fn doc_comment_edit_does_not_drift_shape_digest() {
+    let with_docs = "module books\n\
+         ;; The catalog scale factor.\n\
+         const Scale: int = 1\n\
+         ;; A book's lifecycle status.\n\
+         enum Status\n\
+         \x20   ;; Currently for sale.\n\
+         \x20   active\n\
+         \x20   archived\n\
+         ;; A book in the catalog.\n\
+         resource Book\n\
+         \x20   ;; The unique ISBN.\n\
+         \x20   required isbn: string\n\
+         \x20   pages: int\n\
+         ;; Durable books, keyed by id.\n\
+         store ^books(id: int): Book\n\
+         ;; Allocate a fresh book id.\n\
+         pub fn add(isbn: string): Id(^books)\n\
+         \x20   return nextId(^books)\n";
+    let base_digest = source_digest("doc-with", with_docs);
+
+    let without_docs = "module books\n\
+         const Scale: int = 1\n\
+         enum Status\n\
+         \x20   active\n\
+         \x20   archived\n\
+         resource Book\n\
+         \x20   required isbn: string\n\
+         \x20   pages: int\n\
+         store ^books(id: int): Book\n\
+         pub fn add(isbn: string): Id(^books)\n\
+         \x20   return nextId(^books)\n";
+    assert_eq!(
+        base_digest,
+        source_digest("doc-without", without_docs),
+        "removing every doc comment must not drift the shape digest"
+    );
+
+    let edited_docs = with_docs
+        .replace("The catalog scale factor.", "An entirely rewritten note.")
+        .replace(
+            "Currently for sale.",
+            "Still on the shelves and orderable today.",
+        )
+        .replace("The unique ISBN.", "Reworded ISBN documentation prose.");
+    assert_eq!(
+        base_digest,
+        source_digest("doc-edited", &edited_docs),
+        "rewording doc comments must not drift the shape digest"
+    );
+
+    // A real shape edit at a documented declaration still drifts the digest.
+    let retyped_field = without_docs.replace("pages: int", "pages: string");
+    assert_ne!(
+        base_digest,
+        source_digest("doc-retyped-field", &retyped_field),
+        "a field type change must still drift the shape digest"
+    );
+    let changed_const = without_docs.replace("const Scale: int = 1", "const Scale: int = 2");
+    assert_ne!(
+        base_digest,
+        source_digest("doc-changed-const", &changed_const),
+        "a const value change must still drift the shape digest"
+    );
+
+    // A `;` line comment above a declaration is not attached to it, and a pure reformat is
+    // layout; neither is durable shape.
+    let line_commented = without_docs.replace(
+        "resource Book\n",
+        "; an ordinary line comment\nresource Book\n",
+    );
+    assert_eq!(
+        base_digest,
+        source_digest("doc-line-comment", &line_commented),
+        "a plain line comment must not drift the shape digest"
+    );
+    let reformatted = marrow_syntax::format_source(without_docs);
+    assert_eq!(
+        base_digest,
+        source_digest("doc-reformatted", &reformatted),
+        "a pure reformat must not drift the shape digest"
+    );
+}

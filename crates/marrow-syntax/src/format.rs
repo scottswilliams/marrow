@@ -256,6 +256,21 @@ pub fn strip_layout_blanks(rendering: &str) -> String {
         .join("\n")
 }
 
+/// The layout- and documentation-independent rendering that identifies a declaration's
+/// durable shape, the text the activation fence's source digest hashes. Blank lines are
+/// grouping and doc comments are prose; neither changes the schema a stored snapshot
+/// must satisfy, so both are dropped while every shape-bearing line — fields, types,
+/// keys, enum members, const values, store paths — is preserved. Because the formatter
+/// owns where doc comments and grouping blanks enter the rendering, it also owns their
+/// removal here, so a pure-documentation or whitespace edit never reads as drift.
+pub fn durable_shape_rendering(source: &str, declaration: &Declaration) -> String {
+    let rendered = format_declaration(source, declaration);
+    let shape = rendered
+        .lines()
+        .filter(|line| !line.trim_start().starts_with(";;"));
+    strip_layout_blanks(&shape.collect::<Vec<_>>().join("\n"))
+}
+
 fn format_evolve(source: &str, decl: &EvolveDecl) -> String {
     let mut out = String::from("evolve");
     let body = format_body_lines(

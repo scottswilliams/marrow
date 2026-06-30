@@ -144,10 +144,7 @@ pub(crate) fn durable_renderings_for_source(
                 module: module.to_string(),
                 kind,
                 name: declaration_name(declaration),
-                text: marrow_syntax::strip_layout_blanks(&marrow_syntax::format_declaration(
-                    source,
-                    declaration,
-                )),
+                text: marrow_syntax::durable_shape_rendering(source, declaration),
             })
         })
         .collect()
