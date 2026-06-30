@@ -152,19 +152,26 @@ impl From<StoreError> for ProjectIoError {
 
 pub fn load_config(root: &Path) -> Result<ProjectConfig, ProjectIoError> {
     let path = root.join("marrow.json");
-    let json = fs::read_to_string(&path).map_err(|error| {
+    let json = read_project_file(&path).map_err(|error| {
         // Every command resolves a project through this loader, so the two everyday "not a Marrow
         // project" mistakes are classified here once rather than re-guarded per command. A
         // directory with no `marrow.json` carries the missing-project remedy (`marrow init`); a
         // bare file passed where a directory is expected (the join reads through a non-directory)
         // carries the distinct not-a-project message, since `marrow init` cannot turn a file into
-        // a project in place. Both keep the raw `ENOTDIR`/`ENOENT` errno out of an `io.read` leak.
+        // a project in place. A `marrow.json` that exists but is not a regular file (a FIFO,
+        // socket, or device the read would block on forever) is a config the developer must fix,
+        // so it carries the typed `config.invalid` code naming the bad file type. Each keeps the
+        // raw errno out of an `io.read` leak.
         match error.kind() {
             std::io::ErrorKind::NotFound => ProjectIoError::ConfigMissing {
                 dir: root.to_path_buf(),
             },
             std::io::ErrorKind::NotADirectory => ProjectIoError::NotAProject {
                 path: root.to_path_buf(),
+            },
+            std::io::ErrorKind::InvalidInput => ProjectIoError::Config {
+                code: marrow_project::CONFIG_INVALID,
+                message: error.to_string(),
             },
             _ => ProjectIoError::Io {
                 path: path.clone(),
@@ -176,6 +183,57 @@ pub fn load_config(root: &Path) -> Result<ProjectConfig, ProjectIoError> {
         code: error.code,
         message: error.message,
     })
+}
+
+/// Read a tracked project file (`marrow.json`, `marrow.lock`) as a regular file, never
+/// blocking on a special file. A writer-less FIFO never returns from a `read_to_string`, and
+/// a character device such as `/dev/zero` never ends, so a non-blocking `metadata` stat
+/// verifies the regular-file type before the blocking read. The stat follows symlinks, so a
+/// symlink to a regular file still reads while a symlink to a device is rejected. A
+/// non-regular file fails fast as `InvalidInput`, naming its type for the caller to classify;
+/// a missing path or a non-directory component surfaces its own error kind unchanged.
+fn read_project_file(path: &Path) -> std::io::Result<String> {
+    let metadata = fs::metadata(path)?;
+    if !metadata.is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!(
+                "{} is {}, not a regular file",
+                path.display(),
+                describe_non_regular(&metadata.file_type())
+            ),
+        ));
+    }
+    fs::read_to_string(path)
+}
+
+/// Name a non-regular file's type so a rejection diagnostic says what was found rather than
+/// only that it was not a regular file.
+#[cfg(unix)]
+fn describe_non_regular(file_type: &fs::FileType) -> &'static str {
+    use std::os::unix::fs::FileTypeExt;
+    if file_type.is_dir() {
+        "a directory"
+    } else if file_type.is_fifo() {
+        "a FIFO"
+    } else if file_type.is_socket() {
+        "a socket"
+    } else if file_type.is_char_device() {
+        "a character device"
+    } else if file_type.is_block_device() {
+        "a block device"
+    } else {
+        "a non-regular file"
+    }
+}
+
+#[cfg(not(unix))]
+fn describe_non_regular(file_type: &fs::FileType) -> &'static str {
+    if file_type.is_dir() {
+        "a directory"
+    } else {
+        "a non-regular file"
+    }
 }
 
 pub fn native_store_path(
@@ -458,7 +516,7 @@ pub fn project_store_lock(
             message: error.message,
         })?;
     let path = root.join(marrow_project::CATALOG_FILE_NAME);
-    let projection = match fs::read_to_string(&path) {
+    let projection = match read_project_file(&path) {
         Ok(current) if current == desired => return Ok(LockProjection::Unchanged),
         Ok(_) => LockProjection::Updated,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => LockProjection::Created,
@@ -593,11 +651,13 @@ enum LockRead {
 
 fn read_lock_file(root: &Path) -> LockRead {
     let path = root.join(marrow_project::CATALOG_FILE_NAME);
-    let json = match fs::read_to_string(&path) {
+    let json = match read_project_file(&path) {
         Ok(json) => json,
         // A missing lock, or a project path that is itself a bare file (so the lock cannot exist
         // under a non-directory) is an absent lock — a true first run or a not-a-project path the
         // config loader already classifies — never a corrupt lock or a raw read fault to surface.
+        // A non-regular lock (a FIFO the read would block on forever) is a present-but-unreadable
+        // artifact, surfaced as a typed read fault rather than silently treated as absent.
         Err(error)
             if matches!(
                 error.kind(),
@@ -621,8 +681,96 @@ mod tests {
     use marrow_project::{ProjectConfig, StoreBackend, StoreConfig};
 
     use super::{
-        CONFIG_DATA_DIR, ProjectIoError, guard_data_dir, native_store_path, resolve_store_path,
+        CONFIG_DATA_DIR, ProjectIoError, guard_data_dir, load_config, native_store_path,
+        resolve_store_path,
     };
+
+    fn unique_root(name: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "marrow-{name}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&root).expect("create project root");
+        root
+    }
+
+    const VALID_CONFIG: &str = r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" } }"#;
+
+    #[test]
+    fn load_config_rejects_a_directory_marrow_json_with_a_typed_fault() {
+        // A `marrow.json` that is itself a directory cannot be a config; the loader rejects it
+        // with the typed `config.invalid` code naming the bad file type, not a raw OS error.
+        let root = unique_root("load-config-dir");
+        std::fs::create_dir(root.join("marrow.json")).expect("create marrow.json directory");
+
+        let error = load_config(&root).unwrap_err();
+        std::fs::remove_dir_all(&root).ok();
+
+        assert_eq!(error.code(), marrow_project::CONFIG_INVALID);
+        let message = error.message();
+        assert!(
+            message.contains("a directory")
+                && message.contains("not a regular file")
+                && !message.contains("os error"),
+            "the fault names the bad file type and leaks no errno: {message}"
+        );
+    }
+
+    #[test]
+    fn load_config_reads_a_regular_marrow_json() {
+        let root = unique_root("load-config-regular");
+        std::fs::write(root.join("marrow.json"), VALID_CONFIG).expect("write config");
+
+        let config = load_config(&root).expect("a regular config loads");
+        std::fs::remove_dir_all(&root).ok();
+
+        assert_eq!(config.source_roots, vec!["src".to_string()]);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn load_config_follows_a_symlink_to_a_regular_marrow_json() {
+        // The guard stats through symlinks, so a `marrow.json` symlinked to a regular file still
+        // loads — only the resolved file type matters, not the link itself.
+        let root = unique_root("load-config-symlink");
+        let target = root.join("config-target.json");
+        std::fs::write(&target, VALID_CONFIG).expect("write target config");
+        std::os::unix::fs::symlink(&target, root.join("marrow.json")).expect("link config");
+
+        let config = load_config(&root).expect("a symlink to a regular config loads");
+        std::fs::remove_dir_all(&root).ok();
+
+        assert_eq!(config.source_roots, vec!["src".to_string()]);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn load_config_rejects_a_fifo_marrow_json_without_blocking() {
+        // A writer-less FIFO `marrow.json` would block `read_to_string` forever. The guard
+        // rejects it via a non-blocking stat, so this test returns rather than hanging; reaching
+        // the assertion at all proves the read never ran.
+        let root = unique_root("load-config-fifo");
+        let fifo = root.join("marrow.json");
+        let made = std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .expect("invoke mkfifo");
+        assert!(made.success(), "mkfifo failed: {made:?}");
+
+        let error = load_config(&root).unwrap_err();
+        std::fs::remove_dir_all(&root).ok();
+
+        assert_eq!(error.code(), marrow_project::CONFIG_INVALID);
+        let message = error.message();
+        assert!(
+            message.contains("a FIFO") && !message.contains("os error"),
+            "the fault names the FIFO and leaks no errno: {message}"
+        );
+    }
 
     fn native_config(data_dir: Option<&str>) -> ProjectConfig {
         ProjectConfig {

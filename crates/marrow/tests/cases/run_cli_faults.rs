@@ -217,6 +217,55 @@ fn a_data_dir_occupied_by_a_fifo_or_symlink_loop_reports_clean_directory_prose()
 }
 
 #[test]
+#[cfg(unix)]
+fn a_fifo_marrow_json_fails_closed_in_bounded_time() {
+    // A writer-less FIFO `marrow.json` never returns from a blocking read, so every
+    // config-loading command must reject the non-regular config before the read rather than
+    // hang forever. The command runs under a perl alarm: a return at all proves the read did
+    // not hang (a signal-kill with no exit code would be the alarm firing on a hang).
+    let root = support::temp_dir("fifo-marrow-json");
+    write(
+        &root,
+        "src/app.mw",
+        "module app\n\npub fn main()\n    print(\"hi\")\n",
+    );
+    let config = root.as_ref().join("marrow.json");
+    let made = std::process::Command::new("mkfifo")
+        .arg(&config)
+        .status()
+        .expect("invoke mkfifo");
+    assert!(made.success(), "mkfifo failed: {made:?}");
+
+    let output = std::process::Command::new("perl")
+        .args(["-e", "alarm shift @ARGV; exec @ARGV", "15"])
+        .arg(env!("CARGO_BIN_EXE_marrow"))
+        .args(["check", root.as_ref().to_str().unwrap()])
+        .output()
+        .expect("run marrow check on a fifo marrow.json under an alarm");
+
+    assert_ne!(
+        output.status.code(),
+        None,
+        "check on a fifo marrow.json hung past the alarm (killed by signal): {output:?}"
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "a non-regular marrow.json must fail closed: {output:?}"
+    );
+    let fault = parse_fault(&output.stderr);
+    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+    assert!(
+        fault.code.starts_with("config."),
+        "a non-regular marrow.json is a config fault: {stderr}"
+    );
+    assert!(
+        stderr.contains("FIFO") && !stderr.contains("os error"),
+        "the fault names the bad file type and leaks no errno: {stderr}"
+    );
+}
+
+#[test]
 fn read_only_inspection_of_a_data_dir_occupied_by_a_file_reports_a_directory_fault() {
     // A regular file occupying the native `dataDir` is the same configuration fault on
     // a read-only inspection as it is on `run`: it must carry the `config.data_dir`
