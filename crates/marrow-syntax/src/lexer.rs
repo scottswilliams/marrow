@@ -652,7 +652,6 @@ impl<'a> Lexer<'a> {
             '/' => TokenKind::Slash,
             '%' => TokenKind::Percent,
             '^' => TokenKind::Caret,
-            '@' => TokenKind::At,
             _ => return None,
         };
         Some((kind, ch.len_utf8()))

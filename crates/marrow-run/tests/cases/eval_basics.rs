@@ -19,6 +19,32 @@ fn evaluates_locals_and_reassignment() {
 }
 
 #[test]
+fn formatted_nested_trailing_comma_call_still_evaluates() {
+    // A trailing comma makes the inner call format multiline inside single-line
+    // enclosing calls. Formatting must preserve meaning: the formatted program
+    // still checks and evaluates to the same value.
+    let source = "module test\n\nfn g(a: int, b: int): int\n    return a + b\n\nfn h(x: int): int\n    return x\n\npub fn run(): int\n    return h(g(a: 1, b: 2,))\n";
+    let formatted = marrow_syntax::format_source(source);
+    assert_eq!(
+        eval_source(&formatted, "run", vec![]),
+        Ok(Some(Value::Int(3)))
+    );
+}
+
+#[test]
+fn formatted_trailing_comma_call_inside_interpolation_still_evaluates() {
+    // A string interpolation cannot host newlines, so the trailing-comma call
+    // inside it must format inline. Formatting must preserve meaning: the
+    // formatted program still checks and evaluates to the same string.
+    let source = "module test\n\nfn g(a: int, b: int): int\n    return a + b\n\npub fn run(): string\n    return $\"x{g(a: 1, b: 2,)}y\"\n";
+    let formatted = marrow_syntax::format_source(source);
+    assert_eq!(
+        eval_source(&formatted, "run", vec![]),
+        Ok(Some(Value::Str("x3y".to_string())))
+    );
+}
+
+#[test]
 fn evaluates_boolean_logic() {
     let source = "pub fn f(a: bool, b: bool): bool\n    return a and not b\n";
     assert_eq!(

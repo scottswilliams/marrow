@@ -1413,6 +1413,21 @@ pub fn format_expression(expression: &Expression) -> String {
 }
 
 fn format_expression_at(expression: &Expression, level: usize) -> String {
+    format_expression_layout(expression, level, Layout::Block)
+}
+
+/// Where an expression is rendered. A statement body can host its own lines, so
+/// a multiline call expands there. A string interpolation is lexed within a
+/// single source line, so an embedded expression must stay on one physical
+/// line; `Inline` forces nested calls into their single-line form regardless of
+/// the multiline flag, so the formatted text re-parses to the same tree.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Layout {
+    Block,
+    Inline,
+}
+
+fn format_expression_layout(expression: &Expression, level: usize, layout: Layout) -> String {
     match expression {
         Expression::Literal { text, .. } => text.clone(),
         Expression::Name { segments, .. } => segments.join("::"),
@@ -1423,15 +1438,27 @@ fn format_expression_at(expression: &Expression, level: usize) -> String {
             multiline,
             ..
         } => {
-            let callee = format_child_at(callee, PREC_ATOM, level);
-            if *multiline {
+            let callee = format_child_at(callee, PREC_ATOM, level, layout);
+            let rendered: Vec<String> = args
+                .iter()
+                .map(|arg| format_argument_at(arg, level + 1, layout))
+                .collect();
+            // A trailing comma requests the expanded form, and a wrapped argument
+            // that itself spans lines forces it: the parser reads any call whose
+            // parentheses span more than one line as multiline, so an inline
+            // parent around a multiline child would not survive a re-parse. Inside
+            // a string interpolation no newline can survive at all, so inline
+            // layout overrides both and keeps the call on one line.
+            let expand = matches!(layout, Layout::Block)
+                && (*multiline || rendered.iter().any(|arg| arg.contains('\n')));
+            if expand {
                 let arg_pad = INDENT.repeat(level + 1);
                 let close_pad = INDENT.repeat(level);
                 let mut out = format!("{callee}(");
-                for arg in args {
+                for arg in &rendered {
                     out.push('\n');
                     out.push_str(&arg_pad);
-                    out.push_str(&format_argument_at(arg, level + 1));
+                    out.push_str(arg);
                     out.push(',');
                 }
                 out.push('\n');
@@ -1439,30 +1466,25 @@ fn format_expression_at(expression: &Expression, level: usize) -> String {
                 out.push(')');
                 out
             } else {
-                let args = args
-                    .iter()
-                    .map(format_argument)
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                format!("{callee}({args})")
+                format!("{callee}({})", rendered.join(", "))
             }
         }
         Expression::Field {
             base, name, quoted, ..
         } => format!(
             "{}.{}",
-            format_child_at(base, PREC_ATOM, level),
+            format_child_at(base, PREC_ATOM, level, layout),
             field_segment(name, *quoted)
         ),
         Expression::OptionalField {
             base, name, quoted, ..
         } => format!(
             "{}?.{}",
-            format_child_at(base, PREC_ATOM, level),
+            format_child_at(base, PREC_ATOM, level, layout),
             field_segment(name, *quoted)
         ),
         Expression::Unary { op, operand, .. } => {
-            let operand = format_child_at(operand, PREC_UNARY, level);
+            let operand = format_child_at(operand, PREC_UNARY, level, layout);
             match op {
                 UnaryOp::Neg => format!("-{operand}"),
                 UnaryOp::Not => format!("not {operand}"),
@@ -1470,7 +1492,7 @@ fn format_expression_at(expression: &Expression, level: usize) -> String {
         }
         Expression::Binary {
             op, left, right, ..
-        } => format_binary_at(*op, left, right, level),
+        } => format_binary_at(*op, left, right, level, layout),
         Expression::Range {
             start,
             end,
@@ -1483,16 +1505,16 @@ fn format_expression_at(expression: &Expression, level: usize) -> String {
                 "{}{}{}",
                 start
                     .as_ref()
-                    .map(|start| format_child_at(start, PREC_ATOM, level))
+                    .map(|start| format_child_at(start, PREC_ATOM, level, layout))
                     .unwrap_or_default(),
                 op,
                 end.as_ref()
-                    .map(|end| format_child_at(end, PREC_ATOM, level))
+                    .map(|end| format_child_at(end, PREC_ATOM, level, layout))
                     .unwrap_or_default()
             );
             if let Some(step) = step {
                 out.push_str(" by ");
-                out.push_str(&format_child_at(step, PREC_ATOM, level));
+                out.push_str(&format_child_at(step, PREC_ATOM, level, layout));
             }
             out
         }
@@ -1508,7 +1530,13 @@ fn format_opt_expression_at(expression: Option<&Expression>, level: usize) -> St
         .unwrap_or_default()
 }
 
-fn format_binary_at(op: BinaryOp, left: &Expression, right: &Expression, level: usize) -> String {
+fn format_binary_at(
+    op: BinaryOp,
+    left: &Expression,
+    right: &Expression,
+    level: usize,
+    layout: Layout,
+) -> String {
     let precedence = binary_precedence(op);
     // A left-associative operator keeps an equal-precedence left operand bare but
     // parenthesizes an equal right operand; a non-associative one parenthesizes
@@ -1518,8 +1546,8 @@ fn format_binary_at(op: BinaryOp, left: &Expression, right: &Expression, level: 
     } else {
         (precedence + 1, precedence + 1)
     };
-    let left = format_child_at(left, left_min, level);
-    let right = format_child_at(right, right_min, level);
+    let left = format_child_at(left, left_min, level, layout);
+    let right = format_child_at(right, right_min, level, layout);
     match op {
         BinaryOp::RangeExclusive => format!("{left}..{right}"),
         BinaryOp::RangeInclusive => format!("{left}..={right}"),
@@ -1527,8 +1555,8 @@ fn format_binary_at(op: BinaryOp, left: &Expression, right: &Expression, level: 
     }
 }
 
-fn format_child_at(child: &Expression, min_precedence: u8, level: usize) -> String {
-    let rendered = format_expression_at(child, level);
+fn format_child_at(child: &Expression, min_precedence: u8, level: usize, layout: Layout) -> String {
+    let rendered = format_expression_layout(child, level, layout);
     if precedence(child) < min_precedence {
         format!("({rendered})")
     } else {
@@ -1546,17 +1574,13 @@ fn field_segment(name: &str, quoted: bool) -> String {
     }
 }
 
-fn format_argument(argument: &Argument) -> String {
-    format_argument_at(argument, 0)
-}
-
-fn format_argument_at(argument: &Argument, level: usize) -> String {
+fn format_argument_at(argument: &Argument, level: usize, layout: Layout) -> String {
     let mut out = String::new();
     if let Some(name) = &argument.name {
         out.push_str(name);
         out.push_str(": ");
     }
-    out.push_str(&format_expression_at(&argument.value, level));
+    out.push_str(&format_expression_layout(&argument.value, level, layout));
     out
 }
 
@@ -1568,7 +1592,7 @@ fn format_interpolation_at(parts: &[InterpolationPart], level: usize) -> String 
             InterpolationPart::Text { text, .. } => out.push_str(text),
             InterpolationPart::Expr(expression) => {
                 out.push('{');
-                out.push_str(&format_expression_at(expression, level));
+                out.push_str(&format_expression_layout(expression, level, Layout::Inline));
                 out.push('}');
             }
         }

@@ -68,7 +68,6 @@ pub enum TokenKind {
     Slash,
     Percent,
     Caret,
-    At,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

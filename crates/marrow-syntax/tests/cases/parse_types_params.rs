@@ -185,7 +185,7 @@ fn rejects_malformed_type_annotations() {
 
 #[test]
 fn rejects_trailing_tokens_after_a_complete_type_annotation() {
-    // A complete type ends at its canonical word; a following token (`in`, `@`,
+    // A complete type ends at its canonical word; a following token (`in`,
     // `where`, or a second bare word) is not part of the type. The parser must
     // point at that token rather than gluing it into a fabricated type spelling.
     for (source, expected, offender) in [
@@ -198,11 +198,6 @@ fn rejects_trailing_tokens_after_a_complete_type_annotation() {
             "module app\nfn f()\n    var x: int in 0..=5 = 1\n",
             ExpectedSyntax::ParameterType,
             "in",
-        ),
-        (
-            "module app\nresource Book\n    pages: int @ 0..150\n",
-            ExpectedSyntax::FieldType,
-            "@",
         ),
         (
             "module app\nfn f(x: int where y): int\n    return 1\n",

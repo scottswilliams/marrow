@@ -808,6 +808,31 @@ fn rejects_a_bare_question_mark() {
     );
 }
 
+#[test]
+fn rejects_an_at_sign_at_its_own_column() {
+    // `@` is not part of any operator or grammar production, so it is an
+    // unexpected character reported at its own column, exactly like `?`/`#`/`!`,
+    // rather than deferred to a downstream statement-level diagnostic.
+    let lexed = lex_source("print(a @ b)\n");
+    let diagnostic = lexed
+        .diagnostics
+        .iter()
+        .find(|diagnostic| {
+            diagnostic.reason
+                == DiagnosticReason::Lexer(LexerDiagnosticReason::UnexpectedCharacter('@'))
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "expected a bare `@` to be rejected, got {:#?}",
+                lexed.diagnostics
+            )
+        });
+    assert_eq!(
+        diagnostic.span.column, 9,
+        "the `@` diagnostic must point at the `@`, not a later token"
+    );
+}
+
 /// Corpus smoke test (one owner): every fenced `mw` block in the language
 /// reference lexes without errors and ends with EOF. It guards the documented
 /// examples as a whole; the per-token and per-error lexer contracts are owned by

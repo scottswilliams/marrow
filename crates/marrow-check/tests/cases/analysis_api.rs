@@ -687,7 +687,6 @@ fn active_callable_context_ignores_non_expression_path_prefixes_and_headers() {
         "module app\nevolve\n    retire Book(|)\n",
         "module app\nevolve\n    transform Book(|)\n        return old\n",
         "module app\nevolve\n    transform Book(|\n        return old\n",
-        "module app\nfn run()\n    return @name(|\n",
     ] {
         assert_eq!(active_context_at_marker(source), None, "{source}");
     }

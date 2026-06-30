@@ -689,7 +689,7 @@ fn starts_after_non_call_path_operator(tokens: &[Token], root: usize) -> bool {
     previous_significant_token(tokens, root).is_some_and(|previous| {
         matches!(
             tokens[previous].kind,
-            TokenKind::Dot | TokenKind::QuestionDot | TokenKind::Caret | TokenKind::At
+            TokenKind::Dot | TokenKind::QuestionDot | TokenKind::Caret
         )
     })
 }

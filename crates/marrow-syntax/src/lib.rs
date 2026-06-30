@@ -548,7 +548,7 @@ mod decl_parser_corpus {
     /// "expected a statement", so the gap diagnostic does not over-fire.
     #[test]
     fn a_non_statement_line_still_expects_a_statement() {
-        let ParsedSource { diagnostics, .. } = parse_source("fn f()\n    @nope\n");
+        let ParsedSource { diagnostics, .. } = parse_source("fn f()\n    * nope\n");
         assert!(
             diagnostics
                 .iter()

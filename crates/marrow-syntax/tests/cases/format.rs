@@ -533,6 +533,68 @@ fn canonical_sample_is_already_fmt_canonical() {
     );
 }
 
+/// A trailing comma forces the inner call multiline, and a call that wraps a
+/// multiline argument must expand too: the parser reads any call whose
+/// parentheses span more than one line as multiline, so an inline parent would
+/// not survive a re-parse. A single pass must already be a fixed point, and a
+/// comment-free program must never trip a false comment-loss.
+#[test]
+fn single_line_call_wrapping_a_trailing_comma_call_is_idempotent() {
+    let source = "module app\n\npub fn run()\n    print(h(g(a: 1, b: 2,)))\n";
+    let once = format_source(source);
+    assert_eq!(
+        format_source(&once),
+        once,
+        "a single-line call wrapping a trailing-comma call is not idempotent:\n{once}"
+    );
+    assert!(
+        format_preserves_comments(source, &once),
+        "a comment-free program must never trip comment-loss:\n{once}"
+    );
+}
+
+/// A string interpolation is lexed within one source line, so an embedded call
+/// can never expand across lines no matter what trailing comma or wrapped child
+/// it carries. The formatter keeps it inline, so a single pass is a fixed point
+/// and a comment-free program never trips a false comment-loss.
+#[test]
+fn trailing_comma_call_inside_interpolation_is_idempotent() {
+    let cases = [
+        // Bare interpolation: no outer call wraps it.
+        (
+            "module app\n\npub fn run()\n    x = $\"a{g(a: 1,)}b\"\n",
+            "$\"a{g(a: 1)}b\"",
+        ),
+        // Interpolation wrapped by an outer call argument.
+        (
+            "module app\n\npub fn run()\n    print($\"a{g(a: 1, b: 2,)}b\")\n",
+            "$\"a{g(a: 1, b: 2)}b\"",
+        ),
+    ];
+    for (source, inline_interp) in cases {
+        let once = format_source(source);
+        assert!(
+            once.contains(inline_interp),
+            "the embedded call must render inline, leaving the interpolation on one line:\n{once}"
+        );
+        assert_eq!(
+            format_source(&once),
+            once,
+            "a trailing-comma call inside an interpolation is not idempotent:\n{once}"
+        );
+        assert!(
+            format_preserves_comments(source, &once),
+            "a comment-free program must never trip comment-loss:\n{once}"
+        );
+        let parsed = parse_source(&once);
+        assert!(
+            parsed.diagnostics.is_empty(),
+            "formatted interpolation must re-parse cleanly:\n{once}\n{:#?}",
+            parsed.diagnostics
+        );
+    }
+}
+
 /// A single blank line between statements or members is preserved, two or more
 /// consecutive blank lines collapse to one, and a leading or trailing blank line
 /// inside a body is dropped.

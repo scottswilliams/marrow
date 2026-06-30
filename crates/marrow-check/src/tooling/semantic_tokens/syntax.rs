@@ -38,8 +38,7 @@ pub(super) fn syntax_style(kind: TokenKind) -> Option<SourceSemanticTokenStyle> 
         | TokenKind::Minus
         | TokenKind::Star
         | TokenKind::Slash
-        | TokenKind::Percent
-        | TokenKind::At => SourceSemanticTokenRole::Operator,
+        | TokenKind::Percent => SourceSemanticTokenRole::Operator,
         _ => return None,
     };
     Some(SourceSemanticTokenStyle::plain(role))
