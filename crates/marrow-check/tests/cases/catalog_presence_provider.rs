@@ -3,8 +3,8 @@
 //! prove that identity binds against it: the accepted ids carry forward onto live facts, and
 //! a source-only check proposes a first epoch while writing nothing.
 use crate::support;
-use marrow_catalog::{CatalogEntryKind, CatalogLock, CatalogMetadata, LockEntry};
-use marrow_check::{CHECK_LOCK_CORRUPT, ProjectSources, analyze_project};
+use marrow_catalog::{CatalogEntryKind, CatalogLifecycle, CatalogLock, CatalogMetadata, LockEntry};
+use marrow_check::{CHECK_EVOLVE_TARGET, CHECK_LOCK_CORRUPT, ProjectSources, analyze_project};
 
 use support::catalog::{catalog, derived_id, entry_for_label as entry};
 use support::{config, temp_root, write};
@@ -388,5 +388,151 @@ fn proposal_only_member_binds_activation_default_not_ordinary_facts() {
             .iter()
             .any(|entry| entry.stable_id == pages_proposal_id),
         "a proposal-only id is not an accepted entry"
+    );
+}
+
+#[test]
+fn first_run_seeds_a_pending_member_rename_against_the_committed_old_name() {
+    // A fresh checkout: the committed lock still records `books::Book::title` as the canonical
+    // member identity, the store body is gone (no accepted snapshot), and the source carries a
+    // pending (unapplied) rename to `Book.subtitle`. The present store resolves this rename
+    // against its live accepted catalog and advances a proposal; the seed-from-lock path must do
+    // the same, carrying the committed identity forward under the new path with the old path as an
+    // alias — not fail `check.evolve_target` because the empty store could not be seeded.
+    let root = temp_root("provider-pending-rename");
+    write(
+        &root,
+        "src/books.mw",
+        "module books\n\
+         resource Book\n\
+         \x20   subtitle: string\n\
+         store ^books(id: int): Book\n\
+         evolve\n\
+         \x20   rename Book.title -> Book.subtitle\n",
+    );
+    let lock = books_committed_lock(12);
+
+    let snapshot = analyze_project(&root, &config(), &ProjectSources::new(), None, Some(&lock))
+        .expect("analyze");
+
+    assert!(
+        !snapshot.report.has_errors(),
+        "a pending rename resolves against the committed old name on a fresh checkout: {:#?}",
+        snapshot.report.diagnostics
+    );
+    let proposal = snapshot
+        .program
+        .catalog
+        .proposal
+        .expect("first-run proposal");
+    let renamed = proposal
+        .entries
+        .iter()
+        .find(|entry| {
+            entry.kind == CatalogEntryKind::ResourceMember && entry.path == "books::Book::subtitle"
+        })
+        .expect("proposal carries the renamed member");
+    assert_eq!(
+        renamed.stable_id,
+        derived_id("member-title"),
+        "the renamed member carries the committed identity forward, not a fresh mint"
+    );
+    assert!(
+        renamed
+            .aliases
+            .iter()
+            .any(|alias| alias == "books::Book::title"),
+        "the committed old path is recorded as an alias: {renamed:#?}"
+    );
+    assert!(
+        !proposal
+            .entries
+            .iter()
+            .any(|entry| entry.path == "books::Book::title"),
+        "no stale entry lingers at the renamed-from path: {:#?}",
+        proposal.entries
+    );
+}
+
+#[test]
+fn first_run_seeds_a_pending_member_retire_as_a_reserved_row() {
+    // A fresh checkout whose committed lock records `books::Book::title`, with a pending
+    // (unapplied) retire of that member. The present store reserves the retired identity; the
+    // seed-from-lock path must reconstruct the same reserved row from the committed identity
+    // rather than fail `check.evolve_target`.
+    let root = temp_root("provider-pending-retire");
+    write(
+        &root,
+        "src/books.mw",
+        "module books\n\
+         resource Book\n\
+         \x20   isbn: string\n\
+         store ^books(id: int): Book\n\
+         evolve\n\
+         \x20   retire Book.title\n",
+    );
+    let lock = books_committed_lock(12);
+
+    let snapshot = analyze_project(&root, &config(), &ProjectSources::new(), None, Some(&lock))
+        .expect("analyze");
+
+    assert!(
+        !snapshot.report.has_errors(),
+        "a pending retire resolves against the committed identity on a fresh checkout: {:#?}",
+        snapshot.report.diagnostics
+    );
+    let proposal = snapshot
+        .program
+        .catalog
+        .proposal
+        .expect("first-run proposal");
+    let reserved = proposal
+        .entries
+        .iter()
+        .find(|entry| {
+            entry.kind == CatalogEntryKind::ResourceMember && entry.path == "books::Book::title"
+        })
+        .expect("proposal reserves the retired member");
+    assert_eq!(
+        reserved.lifecycle,
+        CatalogLifecycle::Reserved,
+        "the retired member is reserved, not active: {reserved:#?}"
+    );
+    assert_eq!(
+        reserved.stable_id,
+        derived_id("member-title"),
+        "the reserved row carries the committed identity"
+    );
+}
+
+#[test]
+fn first_run_still_fails_an_unresolvable_evolve_target_on_a_fresh_checkout() {
+    // The fix must not blanket-accept every evolve intent on a fresh checkout: a rename whose
+    // old name names nothing the lock records and no source path still fails `check.evolve_target`,
+    // exactly as it does against a present store.
+    let root = temp_root("provider-unresolvable-evolve");
+    write(
+        &root,
+        "src/books.mw",
+        "module books\n\
+         resource Book\n\
+         \x20   title: string\n\
+         store ^books(id: int): Book\n\
+         evolve\n\
+         \x20   rename Book.ghost -> Book.title\n",
+    );
+    let lock = books_committed_lock(12);
+
+    let snapshot = analyze_project(&root, &config(), &ProjectSources::new(), None, Some(&lock))
+        .expect("analyze");
+
+    assert!(
+        snapshot
+            .report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == CHECK_EVOLVE_TARGET),
+        "an evolve target naming nothing in the lock or source still fails closed: {:#?}",
+        snapshot.report.diagnostics
     );
 }

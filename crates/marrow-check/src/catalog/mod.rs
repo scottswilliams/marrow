@@ -880,7 +880,7 @@ fn adopt_or_mint_first_run(
         return mint_first_run(program, &source.entries, &[]).map(FirstRunOutcome::Proposal);
     };
     let Some(mut proposal_entries) =
-        adopt_first_run_entries(&source.entries, lock, &lock.ledger, diagnostics)?
+        adopt_first_run_entries(&source.entries, lock, &lock.ledger, evolve, diagnostics)?
     else {
         return Ok(FirstRunOutcome::Refused);
     };
@@ -995,8 +995,12 @@ fn mint_first_run(
 
 /// Build the first-run proposal entries for a present lock: materialize the lock's ledger
 /// tombstones as Reserved entries, carry a committed id forward onto each source entity whose
-/// `(kind, path)` the lock records, and mint a fresh id (seeded never to reuse a committed or
-/// tombstoned id) for an entity the lock does not record. Materializing the tombstones is what
+/// `(kind, path)` the lock records — or whose pending evolve rename names a committed old path,
+/// recording that old spelling as an alias — reserve the committed entry a pending retire names,
+/// and mint a fresh id (seeded never to reuse a committed or tombstoned id) for a genuinely new
+/// entity the lock records nowhere. Resolving the pending intents against the lock's committed
+/// identity is what makes a fresh checkout carry the same identity forward a present store would.
+/// Materializing the tombstones is what
 /// makes the never-reuse defense survive store loss: a fresh checkout seeded from the lock alone
 /// commits these reserved rows into its baseline store, so a later projection re-derives the same
 /// ledger and re-declaring a retired path still fails closed.
@@ -1015,6 +1019,7 @@ fn adopt_first_run_entries(
     source_entries: &[SourceCatalogEntry],
     lock: &CatalogLock,
     ledger: &[LockLedgerTombstone],
+    evolve: &EvolveIntents,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) -> Result<Option<Vec<CatalogEntry>>, CatalogProposalError> {
     // Seed the never-reuse set, through the allocator's single never-reuse owner, with the ledger
@@ -1023,7 +1028,7 @@ fn adopt_first_run_entries(
     // because the allocator seeds from catalog entries.
     let committed_stubs = committed_id_stubs(&lock.entries);
     let allocator = StableIdAllocator::over(ledger, &committed_stubs);
-    adopt_first_run_entries_with(source_entries, lock, ledger, allocator, diagnostics)
+    adopt_first_run_entries_with(source_entries, lock, ledger, evolve, allocator, diagnostics)
 }
 
 /// The adoption body, generic over the allocator's entropy so a fault-injecting test can drive the
@@ -1036,6 +1041,7 @@ fn adopt_first_run_entries_with<E: CatalogIdEntropy>(
     source_entries: &[SourceCatalogEntry],
     lock: &CatalogLock,
     ledger: &[LockLedgerTombstone],
+    evolve: &EvolveIntents,
     mut allocator: StableIdAllocator<E>,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) -> Result<Option<Vec<CatalogEntry>>, CatalogProposalError> {
@@ -1053,6 +1059,21 @@ fn adopt_first_run_entries_with<E: CatalogIdEntropy>(
             )
         })
         .collect();
+    // The accepted catalog the committed lock represents. A pending (unapplied) rename or retire
+    // names its old `(kind, path)` against this committed identity, so resolving the intent here
+    // carries the committed id forward exactly as a present store does against its live accepted
+    // catalog. The resolution only seeds identity; report_seeded_unresolved_intents is the single
+    // authoritative reporter, so these diagnostics are discarded.
+    let lock_accepted = lock_accepted_catalog(lock)?;
+    let accepted_index = AcceptedCatalog::new(&lock_accepted);
+    let source_catalog = SourceCatalog::new(source_entries);
+    let mut discarded = Vec::new();
+    let renames = resolve_renames(
+        &accepted_index,
+        &source_catalog,
+        &evolve.renames,
+        &mut discarded,
+    );
     let mut proposal_entries = Vec::with_capacity(source_entries.len() + reserved.len());
     for source in source_entries {
         if let Some(reserved_entry) = reserved.get(&(source.kind, source.path.as_str())) {
@@ -1061,20 +1082,116 @@ fn adopt_first_run_entries_with<E: CatalogIdEntropy>(
             push_reserved_reuse(source, reserved_entry, diagnostics);
             continue;
         }
-        let entry = match committed.get(&(source.kind, source.path.as_str())) {
-            Some(committed) => {
-                adopted_catalog_entry(source, &committed.stable_id, &committed.aliases)
-            }
-            None => proposed_catalog_entry(source, &mut allocator)?,
+        let entry = if let Some(committed) = committed.get(&(source.kind, source.path.as_str())) {
+            adopted_catalog_entry(source, &committed.stable_id, &committed.aliases)
+        } else if let Some(carried) = renamed_carry_forward(source, &renames, &committed) {
+            carried
+        } else {
+            proposed_catalog_entry(source, &mut allocator)?
         };
         proposal_entries.push(entry);
     }
+    reserve_retired_committed_entries(
+        &lock_accepted.entries,
+        &accepted_index,
+        &source_catalog,
+        &evolve.retires,
+        &mut proposal_entries,
+    );
     if let Some(reissued) = tombstone_reissue(&proposal_entries, ledger) {
         diagnostics.push(lock_corrupt_diagnostic(source_entries, reissued));
         return Ok(None);
     }
     proposal_entries.extend(reserved.into_values());
     Ok(Some(proposal_entries))
+}
+
+/// The accepted catalog the committed lock represents: its committed entries at their recorded
+/// identity, aliases, and lifecycle, plus the reserved rows its ledger tombstones reconstruct.
+/// A fresh checkout resolves a pending evolve rename or retire against this exactly as a present
+/// store resolves it against its live accepted catalog, so the carry-forward the present store
+/// performs is performed identically on the seed. Shape signatures stay `None`: the lock records
+/// them only as fingerprints, and intent resolution reads identity and lifecycle, never shape.
+fn lock_accepted_catalog(lock: &CatalogLock) -> Result<CatalogMetadata, CatalogProposalError> {
+    let mut entries: Vec<CatalogEntry> = lock
+        .entries
+        .iter()
+        .map(lock_entry_to_catalog_entry)
+        .collect();
+    entries.extend(
+        lock.ledger
+            .iter()
+            .map(LockLedgerTombstone::reserved_catalog_entry),
+    );
+    Ok(CatalogMetadata::new(0, entries)?)
+}
+
+fn lock_entry_to_catalog_entry(entry: &LockEntry) -> CatalogEntry {
+    CatalogEntry {
+        kind: entry.kind,
+        path: entry.path.clone(),
+        stable_id: entry.stable_id.clone(),
+        aliases: entry.aliases.clone(),
+        lifecycle: entry.lifecycle,
+        accepted_key_shape: None,
+        accepted_index_shape: None,
+        accepted_struct: None,
+        applied_transform: None,
+    }
+}
+
+/// Carry the committed identity a pending rename relocates onto this source path. When the source
+/// entity is a resolved rename target whose old `(kind, path)` the lock records as a committed
+/// active entry, adopt that committed id and record the old spelling as an alias, mirroring the
+/// present store's `apply_rename`. Returns `None` when the source path is not a rename target or
+/// the lock records no committed active entry at the old path, so the caller mints a fresh id.
+fn renamed_carry_forward(
+    source: &SourceCatalogEntry,
+    renames: &HashMap<String, ResolvedRename>,
+    committed: &HashMap<(CatalogEntryKind, &str), &LockEntry>,
+) -> Option<CatalogEntry> {
+    let rename = renames.get(&source.path)?;
+    let committed_entry = committed.get(&(source.kind, rename.from_path.as_str()))?;
+    if committed_entry.lifecycle != CatalogLifecycle::Active {
+        return None;
+    }
+    let mut aliases = committed_entry.aliases.clone();
+    if !aliases.iter().any(|alias| alias == &rename.from_path) {
+        aliases.push(rename.from_path.clone());
+    }
+    Some(adopted_catalog_entry(
+        source,
+        &committed_entry.stable_id,
+        &aliases,
+    ))
+}
+
+/// Reserve each pending retire's committed active entry. A retire whose path names a committed
+/// active entry the source no longer declares reconstructs the reserved row the present store's
+/// `apply_retires` would leave, carrying the committed identity and aliases at the retired path so
+/// the seed reconstructs the never-reuse reservation. A retire naming a ledger-reserved path, a
+/// still-declared source entity, or nothing is left to the authoritative reporter.
+fn reserve_retired_committed_entries(
+    lock_entries: &[CatalogEntry],
+    accepted_index: &AcceptedCatalog<'_>,
+    source_catalog: &SourceCatalog<'_>,
+    retires: &[RetireIntent],
+    proposal_entries: &mut Vec<CatalogEntry>,
+) {
+    let mut discarded = Vec::new();
+    for retire in retires {
+        if let RetireTarget::Active(index) = retire_target(
+            lock_entries,
+            accepted_index,
+            source_catalog,
+            retire,
+            &mut discarded,
+        ) {
+            let mut reserved_row = lock_entries[index].clone();
+            reserved_row.lifecycle = CatalogLifecycle::Reserved;
+            proposal_entries.push(reserved_row);
+        }
+    }
 }
 
 /// Adopt a committed lock id onto an unkeyed source view directly, for the binding's
@@ -1088,7 +1205,13 @@ fn adopt_first_run(
     ledger: &[LockLedgerTombstone],
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) -> Option<CatalogMetadata> {
-    let entries = match adopt_first_run_entries(source_entries, lock, ledger, diagnostics) {
+    let entries = match adopt_first_run_entries(
+        source_entries,
+        lock,
+        ledger,
+        &EvolveIntents::default(),
+        diagnostics,
+    ) {
         Ok(entries) => entries?,
         Err(_) => panic!("adoption mints without an entropy fault in these fixtures"),
     };
@@ -2577,6 +2700,7 @@ mod tests {
             &source_entries,
             &committed,
             &committed.ledger,
+            &EvolveIntents::default(),
             allocator,
             &mut diagnostics,
         );
@@ -2919,6 +3043,95 @@ mod tests {
                 .iter()
                 .any(|diagnostic| diagnostic.code == CHECK_EVOLVE_TARGET),
             "a rename naming nothing the seed reconstructs fails closed: {diagnostics:#?}"
+        );
+    }
+
+    /// A fresh checkout whose committed lock still records an enum category at its OLD spelling,
+    /// with a pending (unapplied) category rename in source. The seed must carry the committed
+    /// identity of the category and every descendant leaf forward under the new spelling — exactly
+    /// as a present store relocates them — and resolve the kept rename block against that, not fail
+    /// `check.evolve_target` because the empty store could not be seeded.
+    #[test]
+    fn first_run_seeds_a_pending_enum_category_rename_against_the_committed_old_name() {
+        let program = CheckedProgram::default();
+        let category_id = fixed_id(0xe1);
+        let leaf_id = fixed_id(0xe2);
+        let source_entries = vec![
+            source_entry(CatalogEntryKind::EnumMember, "pets::Pet::beast"),
+            source_entry(CatalogEntryKind::EnumMember, "pets::Pet::beast::dog"),
+        ];
+        let source = CatalogSource {
+            duplicate_keys: duplicate_source_keys(&source_entries),
+            entries: source_entries,
+        };
+        // The lock records the OLD spellings as canonical with NO aliases: the rename is pending,
+        // never applied, so the committed identity rests at `Pet::mammal` and `Pet::mammal::dog`.
+        let committed = lock(
+            vec![
+                committed_lock_entry(
+                    CatalogEntryKind::EnumMember,
+                    "pets::Pet::mammal",
+                    &category_id,
+                    None,
+                ),
+                committed_lock_entry(
+                    CatalogEntryKind::EnumMember,
+                    "pets::Pet::mammal::dog",
+                    &leaf_id,
+                    None,
+                ),
+            ],
+            Vec::new(),
+            4,
+        );
+        let mut evolve = EvolveIntents::default();
+        evolve
+            .renames
+            .push(rename("pets::Pet::mammal", "pets::Pet::beast"));
+
+        let mut diagnostics = Vec::new();
+        let Ok(outcome) = adopt_or_mint_first_run(
+            &program,
+            &evolve,
+            &source,
+            Some(&committed),
+            &mut diagnostics,
+        ) else {
+            panic!("a pending category rename binds");
+        };
+        assert!(
+            diagnostics
+                .iter()
+                .all(|diagnostic| diagnostic.code != CHECK_EVOLVE_TARGET),
+            "a pending category rename resolves against the committed old spelling: {diagnostics:#?}"
+        );
+        let FirstRunOutcome::Proposal(proposal) = outcome else {
+            panic!("a pending rename drifts the source from the lock, so it is a proposal");
+        };
+        let category = proposal
+            .entries
+            .iter()
+            .find(|entry| entry.path == "pets::Pet::beast")
+            .expect("proposal carries the renamed category");
+        assert_eq!(category.stable_id, category_id, "category carries its id");
+        assert!(
+            category
+                .aliases
+                .iter()
+                .any(|alias| alias == "pets::Pet::mammal"),
+            "the category's old spelling is recorded as an alias: {category:#?}"
+        );
+        let leaf = proposal
+            .entries
+            .iter()
+            .find(|entry| entry.path == "pets::Pet::beast::dog")
+            .expect("proposal carries the cascaded descendant leaf");
+        assert_eq!(leaf.stable_id, leaf_id, "descendant leaf carries its id");
+        assert!(
+            leaf.aliases
+                .iter()
+                .any(|alias| alias == "pets::Pet::mammal::dog"),
+            "the descendant leaf's old spelling is recorded as an alias: {leaf:#?}"
         );
     }
 
