@@ -43,19 +43,11 @@ pub fn count_integrity_problems(
     store: &TreeStore,
     program: &CheckedProgram,
 ) -> Result<(usize, usize), StoreError> {
+    // The record and orphan passes below traverse only the data family, so they would bless a
+    // store whose cells were silently truncated or rewritten below the anchor or whose index
+    // reads under-return. The structural witness runs first and fails such a store closed.
+    verify_store_completeness(store, program)?;
     let places = checked_places(program);
-    // The record and orphan passes below traverse only the data family. The derived
-    // index family is verified two independent ways: a structural decode and seek
-    // re-descent that catches a malformed index node, and a completeness cross-check
-    // that catches a node whose damage silently truncates an index range so its
-    // entries vanish from every enumeration. Both run before the data passes so an
-    // index-corrupt store fails closed rather than being blessed while an index-driven
-    // read under-returns. The data family's own silent truncation or value tampering is
-    // caught by the structural-digest cross-check, the independent oracle a data-page
-    // flip cannot move with the cells.
-    store.verify_structural_digests()?;
-    store.verify_index_readable()?;
-    verify_index_completeness(store, &places)?;
     count_integrity_problems_in_places(store, program, &places, IntegrityProfile::Report)
 }
 
@@ -63,6 +55,11 @@ pub fn count_activation_integrity_problems(
     store: &TreeStore,
     program: &CheckedProgram,
 ) -> Result<(usize, usize), StoreError> {
+    // The activation profile drops the dangling-ref pass but is no weaker on store damage: the
+    // same structural witness `data integrity` runs guards the count and the destructive
+    // `restore --replace` gate, so a digest- or index-class corruption fails closed before a
+    // truncated count is reported or the target is overwritten.
+    verify_store_completeness(store, program)?;
     let places = checked_activation_root_places(program);
     count_integrity_problems_in_places(store, program, &places, IntegrityProfile::Activation)
 }
@@ -928,9 +925,10 @@ fn collect_member_names(members: &[CheckedSavedMember], names: &mut HashMap<Stri
 /// Verify the store's data and index families are complete for a store the schema describes:
 /// every committed cell against its durable per-root structural digest, and the derived index
 /// family by structural decode and re-descent ([`verify_index_readable`]) plus the
-/// cross-check below. `recover` and `backup` run this so they fail closed on a store whose
-/// cells were silently truncated or rewritten, or whose index-driven reads under-return,
-/// rather than blessing or archiving it.
+/// cross-check below. The single owner of that structural witness: the integrity counts,
+/// `recover`, and `backup` all run it so they fail closed on a store whose cells were silently
+/// truncated or rewritten, or whose index-driven reads under-return, rather than blessing,
+/// counting, or archiving it.
 ///
 /// The committed-root cross-check against `marrow.lock` is a separate witness those callers
 /// run through the lock-root owner, which condemns only a present store presenting fewer roots

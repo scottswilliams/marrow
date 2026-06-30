@@ -11,7 +11,7 @@ use marrow_catalog::{CatalogEntryKind, CatalogLifecycle, CatalogLock, LockEntry}
 use std::path::Path;
 use support::{
     corrupt_primary_slot_selector, find_code_segment, is_code, last_fault, marrow, marrow_bounded,
-    native_config, redb_store_path as store_path, temp_project_uncommitted, write,
+    native_config, redb_store_path as store_path, temp_project, temp_project_uncommitted, write,
 };
 use support_data::{native_project, seeded_project};
 
@@ -310,6 +310,100 @@ fn run_over_a_btree_corrupt_store_fails_closed_rather_than_count_truncated() {
     assert!(
         covered,
         "the sweep must reach at least one offset `data integrity` flags as store.corruption",
+    );
+}
+
+/// The destructive `restore --replace --count N` gate counts and clears the live target before
+/// overwriting it, so it must open that target through the same structural-digest oracle the
+/// inspection family runs. A single byte flipped inside one committed `body` value leaves the
+/// store fully readable — the cell still reads through and the record count is unchanged — so a
+/// count-only gate would bless the tampered store and overwrite it behind a fabricated count;
+/// only the content-sensitive digest moves with the bytes. `data integrity` reports
+/// `store.corruption` on exactly this damage, and the replace gate must agree, refusing the
+/// destructive replace before counting. The same gate still admits the intact store under its
+/// true live count.
+#[test]
+fn restore_replace_over_a_torn_value_store_fails_closed_rather_than_overwrite() {
+    const SEEDED: u64 = 32;
+    let unique_body = "tornsentinelbodyrestorereplaceXYZ";
+    let project = temp_project("cli-restore-replace-torn", |root| {
+        write(root, "marrow.json", native_config());
+        let source = mutable_count_source(SEEDED as u32).replace(
+            "the body text of this note, long enough to span a cell",
+            unique_body,
+        );
+        write(root, "src/app.mw", &source);
+    });
+    let dir = project.to_str().expect("dir utf8").to_string();
+    assert_eq!(
+        marrow(&["run", "--entry", "app::seed", &dir]).status.code(),
+        Some(0),
+        "seed a store with a locatable body value",
+    );
+
+    let archive = project.join("notes.mwbackup");
+    let archive_arg = archive.to_str().expect("archive utf8").to_string();
+    assert_eq!(
+        marrow(&["backup", &dir, &archive_arg]).status.code(),
+        Some(0),
+        "back up the healthy store",
+    );
+    let count_arg = SEEDED.to_string();
+
+    let store = store_path(&project);
+    let clean = std::fs::read(&store).expect("read seeded store body");
+    let token = unique_body.as_bytes();
+    let at = clean
+        .windows(token.len())
+        .position(|window| window == token)
+        .expect("the unique body token must appear verbatim in the store body");
+
+    // Flip the first byte of one stored body. The store still reads through the cell and holds
+    // the same record count, but the bytes no longer match the digest the commit stamped.
+    let mut corrupt = clean.clone();
+    corrupt[at] ^= 0xff;
+    std::fs::write(&store, &corrupt).expect("write the torn store body");
+
+    // `data integrity` is the oracle: it reports store.corruption on this torn value.
+    let integrity = marrow(&["data", "integrity", &dir]);
+    assert_eq!(integrity.status.code(), Some(1), "integrity: {integrity:?}");
+    assert_eq!(
+        stderr_code(&integrity),
+        "store.corruption",
+        "the torn value must read as store.corruption: {integrity:?}",
+    );
+
+    // The replace gate must agree with the oracle: fail closed before counting or overwriting,
+    // never report a fabricated count or proceed.
+    let command = [
+        "restore",
+        "--replace",
+        "--count",
+        &count_arg,
+        &dir,
+        &archive_arg,
+    ];
+    let restore = marrow(&command);
+    assert_eq!(
+        restore.status.code(),
+        Some(1),
+        "`restore --replace` overwrote or miscounted a torn-value store: {restore:?}",
+    );
+    assert_eq!(
+        stderr_code(&restore),
+        "store.corruption",
+        "the replace gate must fail closed as store.corruption, never proceed or report a \
+         fabricated count: {restore:?}",
+    );
+
+    // The operator's true live count restores the intact store: restore the clean body and prove
+    // the same gate that refuses the torn target accepts the healthy one under its true count.
+    std::fs::write(&store, &clean).expect("restore the clean store body");
+    let healthy = marrow(&command);
+    assert_eq!(
+        healthy.status.code(),
+        Some(0),
+        "a healthy store restores under its true live count: {healthy:?}",
     );
 }
 

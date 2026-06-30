@@ -959,11 +959,13 @@ it (`restore.source_mismatch`, `restore.catalog_mismatch`,
 `restore.engine_recompile_required`). By default it refuses a target that
 already holds saved data, generated indexes, or an accepted catalog
 (`restore.not_empty`), so a normal restore writes into an empty store only.
-`--replace --count N` is the explicit destructive mode: restore counts the live
-target's saved records (entities, the same count `data stats records:` reports)
-before mutation and proceeds only when that count equals `N`. A mismatch reports
-`restore.not_empty` with the expected and found record counts and leaves the
-target data and catalog unchanged. `--replace`
+`--replace --count N` is the explicit destructive mode: restore first verifies
+the live target through the same structural-digest integrity witness `data
+integrity` runs, refusing a corrupt target as `store.corruption` before counting
+or overwriting, then counts the live target's saved records (entities, the same
+count `data stats records:` reports) and proceeds only when that count equals
+`N`. A mismatch reports `restore.not_empty` with the expected and found record
+counts and leaves the target data and catalog unchanged. `--replace`
 without `--count`, `--count` without `--replace`, negative or non-integer counts,
 and duplicate restore flags are usage errors.
 
