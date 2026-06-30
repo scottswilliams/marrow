@@ -1429,14 +1429,8 @@ fn check_neighbor(
         return MarrowType::Unknown;
     };
     let Some(checked) = lower_expr_for_file(env.program, env.file, &arg.value, env.scope) else {
-        if matches!(arg_types.first(), Some(MarrowType::Identity(_))) {
-            return neighbor_unsupported(
-                which,
-                "an identity value (use a saved place)",
-                env.span,
-                env.file,
-                env.diagnostics,
-            );
+        if let Some(MarrowType::Identity(root)) = arg_types.first() {
+            return neighbor_unsupported_bare_identity(env, which, root);
         }
         return MarrowType::Unknown;
     };
@@ -1485,14 +1479,12 @@ fn check_neighbor(
         crate::CheckedExpr::Call { .. } | crate::CheckedExpr::Field { .. } => resolver
             .neighbor_key_type(&checked)
             .unwrap_or(MarrowType::Unknown),
-        _ if matches!(arg_types.first(), Some(MarrowType::Identity(_))) => neighbor_unsupported(
-            which,
-            "an identity value (use a saved place)",
-            env.span,
-            env.file,
-            env.diagnostics,
-        ),
-        _ => MarrowType::Unknown,
+        _ => match arg_types.first() {
+            Some(MarrowType::Identity(root)) => {
+                neighbor_unsupported_bare_identity(env, which, root)
+            }
+            _ => MarrowType::Unknown,
+        },
     }
 }
 
@@ -1619,6 +1611,28 @@ pub(crate) fn neighbor_unsupported(
         format!("`{which}` cannot navigate {shape}"),
     ));
     MarrowType::Invalid
+}
+
+/// Report `check.neighbor_unsupported` for a bare identity *value* (a value typed
+/// `Id(^root)` with no saved-place expression to navigate from), branching the
+/// remedy on identity arity. A single-key sequence is navigable from a saved
+/// place, so its remedy names that construct; a composite identity has no single
+/// key level to seek, so the saved-place remedy would dead-end into a second
+/// neighbor error — the only working construct is whole-store iteration.
+fn neighbor_unsupported_bare_identity(
+    env: &mut CallEnv<'_>,
+    which: &str,
+    root: &str,
+) -> MarrowType {
+    let shape = if composite_identity(env.program, root) {
+        format!(
+            "a composite-identity value (iterate the store whole with \
+             `for id in ^{root}` or `reversed(^{root})`)"
+        )
+    } else {
+        "an identity value (use a saved place)".to_string()
+    };
+    neighbor_unsupported(which, &shape, env.span, env.file, env.diagnostics)
 }
 
 /// Report a `check.call_argument` arity diagnostic when a fixed-arity builtin is

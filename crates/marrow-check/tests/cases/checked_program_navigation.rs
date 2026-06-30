@@ -512,6 +512,8 @@ fn neighbor_over_a_composite_record_keeps_the_key_level_remedy() {
     );
 }
 
+/// A bare single-key identity value is navigable from a saved place, so its
+/// remedy keeps the "use a saved place" guidance.
 #[test]
 fn next_over_a_bare_identity_value_is_flagged() {
     let root = temp_project("program-next-identity-value", |root| {
@@ -528,14 +530,80 @@ fn next_over_a_bare_identity_value_is_flagged() {
     });
     let (report, _) = check_project(&root, &config()).expect("check");
 
+    let diagnostics = with_code(&report, CHECK_NEIGHBOR_UNSUPPORTED);
+    let [diagnostic] = diagnostics.as_slice() else {
+        panic!("{:#?}", report.diagnostics);
+    };
     assert!(
-        report
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == CHECK_NEIGHBOR_UNSUPPORTED),
-        "{:#?}",
-        report.diagnostics
+        diagnostic.message.contains("use a saved place"),
+        "{}",
+        diagnostic.message
     );
+}
+
+/// A bare *composite* identity value has no single key level to seek, so the
+/// saved-place remedy would dead-end into a second neighbor error. The remedy
+/// must instead name whole-store iteration, the construct that actually works.
+#[test]
+fn next_over_a_bare_composite_identity_value_names_the_iteration_remedy() {
+    for which in ["next", "prev"] {
+        let root = temp_project(
+            &format!("program-{which}-composite-identity-value"),
+            |root| {
+                write(
+                    root,
+                    "src/grid/cells.mw",
+                    &format!(
+                        "module grid::cells\n\
+                         resource Cell\n\
+                         \x20   required value: int\n\
+                         store ^grid(row: int, col: int): Cell\n\
+                         fn step(id: Id(^grid))\n\
+                         \x20   const n = {which}(id)\n"
+                    ),
+                );
+            },
+        );
+        let (report, _) = check_project(&root, &config()).expect("check");
+
+        let diagnostics = with_code(&report, CHECK_NEIGHBOR_UNSUPPORTED);
+        let [diagnostic] = diagnostics.as_slice() else {
+            panic!("{:#?}", report.diagnostics);
+        };
+        assert!(
+            diagnostic.message.contains("for id in ^grid")
+                && diagnostic.message.contains("reversed"),
+            "{}",
+            diagnostic.message
+        );
+        assert!(
+            !diagnostic.message.contains("use a saved place"),
+            "{}",
+            diagnostic.message
+        );
+    }
+}
+
+/// Following the composite-identity remedy — iterating the store whole — reaches a
+/// working program, so the guidance does not dead-end into a second neighbor error.
+#[test]
+fn iterating_a_composite_store_whole_checks_clean() {
+    let root = temp_project("program-composite-iterate-whole", |root| {
+        write(
+            root,
+            "src/grid/cells.mw",
+            "module grid::cells\n\
+             resource Cell\n\
+             \x20   required value: int\n\
+             store ^grid(row: int, col: int): Cell\n\
+             fn step()\n\
+             \x20   for id in ^grid\n\
+             \x20       const c = ^grid(id).value ?? 0\n",
+        );
+    });
+    let (report, _) = check_project(&root, &config()).expect("check");
+
+    support::assert_clean(&report);
 }
 
 /// `next`/`prev` over an index branch is statically unsupported the same way: an
