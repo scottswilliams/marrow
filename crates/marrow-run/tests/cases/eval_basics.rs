@@ -4,7 +4,8 @@
 use crate::support;
 use support::*;
 
-use marrow_run::{RUN_DIVIDE_BY_ZERO, RUN_OVERFLOW, RUN_TYPE, Value};
+use marrow_run::{RUN_DECIMAL_OVERFLOW, RUN_DIVIDE_BY_ZERO, RUN_OVERFLOW, RUN_TYPE, Value};
+use marrow_store::Decimal;
 
 #[test]
 fn evaluates_locals_and_reassignment() {
@@ -93,6 +94,36 @@ fn rejects_division_by_zero() {
         vec![Value::Int(10)],
     );
     assert_run_error(result, RUN_DIVIDE_BY_ZERO);
+}
+
+#[test]
+fn division_half_even_rounds_an_inexact_quotient_into_the_envelope() {
+    // `/` always yields a decimal. An inexact quotient is rounded half-to-even to
+    // the 34-significant-digit / 34-fractional-place envelope rather than faulting.
+    let div = "pub fn f(a: decimal, b: decimal): decimal\n    return a / b\n";
+    let dec = |raw: &str| Value::Decimal(Decimal::parse(raw).expect("canonical decimal"));
+
+    assert_eq!(
+        eval_source(div, "f", vec![dec("1"), dec("3")]),
+        Ok(Some(dec("0.3333333333333333333333333333333333")))
+    );
+    assert_eq!(
+        eval_source(div, "f", vec![dec("2"), dec("3")]),
+        Ok(Some(dec("0.6666666666666666666666666666666667")))
+    );
+
+    // An exact quotient is exact, with no rounding artifact.
+    assert_eq!(
+        eval_source(div, "f", vec![dec("6"), dec("2")]),
+        Ok(Some(dec("3")))
+    );
+
+    // Only a quotient whose magnitude leaves the envelope faults.
+    let huge = "9999999999999999999999999999999999";
+    assert_run_error(
+        eval_source(div, "f", vec![dec(huge), dec("0.1")]),
+        RUN_DECIMAL_OVERFLOW,
+    );
 }
 
 #[test]

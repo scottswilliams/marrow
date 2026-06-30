@@ -224,7 +224,9 @@ std::math::clampDecimal(value: decimal, min: decimal, max: decimal): decimal
 ```
 
 The `%` operator is remainder, and `/` always yields a decimal, so integer
-division is a named helper rather than an operator. `quotient` truncates toward
+division is a named helper rather than an operator. `/` rounds an inexact
+quotient half-to-even into the 34-digit decimal envelope; only a quotient whose
+magnitude leaves the envelope raises `run.decimal_overflow`. `quotient` truncates toward
 zero and pairs with `remainder` (and `%`): for nonzero `b`,
 `a == quotient(a, b) * b + remainder(a, b)`. `divFloor` floors toward minus
 infinity and pairs with `modulo`: `a == divFloor(a, b) * b + modulo(a, b)`. The

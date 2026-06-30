@@ -20,8 +20,10 @@ saved data access before code runs whenever the schema is known.
 | `unknown` | Dynamic boundary value that must be checked before typed use |
 
 `decimal` is exact within Marrow's decimal envelope. It is not a binary
-floating-point value. Numeric overflow, division results that cannot fit, and
-invalid numeric conversions raise typed numeric errors.
+floating-point value. Addition, subtraction, and multiplication are exact; the
+`/` operator rounds an inexact quotient half-to-even into the envelope, so
+`1.0 / 3.0` is `0.3333…` to 34 fractional digits. A result that does not fit the
+envelope, and invalid numeric conversions, raise typed numeric errors.
 
 `string` values are valid UTF-8. Marrow does not normalize Unicode text.
 Equality and ordering use the exact UTF-8 text stored in the value. Use host
@@ -634,8 +636,11 @@ the backend:
 - store identities save as canonical encodings of their declared key values.
 
 The `decimal` envelope is a signed coefficient of up to 34 significant digits,
-with up to 34 of them after the decimal point. Values outside the envelope, and
-arithmetic that cannot fit, raise typed numeric errors.
+with up to 34 of them after the decimal point. A value or arithmetic result that
+does not fit the envelope raises a typed numeric error. An inexact `/` quotient
+is rounded half-to-even into the envelope rather than raising; addition,
+subtraction, and multiplication are exact, so an exact result that needs more
+than 34 significant digits raises rather than rounding.
 
 Saved keys are also bytes, ordered by Marrow's key ordering rules. Typed key
 layers validate and canonicalize keys before traversal.
