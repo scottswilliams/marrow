@@ -247,6 +247,28 @@ pub(crate) const RENAME_BLOCK_DELETED_SOURCE: &str = include_str!(concat!(
     "/../../fixtures/v01/evolution/books_seed_rename_block_deleted.mw"
 ));
 
+// The onward rename that turns the already-recorded `blurb` into `tagline`, applied after the
+// first `subtitle -> blurb` rename so the lock flattens both prior spellings onto `tagline`.
+pub(crate) const RENAME_CHAIN_TARGET_SOURCE: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/v01/evolution/books_seed_rename_chain_target.mw"
+));
+
+// The depth>1 chain with BOTH consumed rename blocks kept: `subtitle -> blurb` whose `blurb`
+// target was itself renamed onward to `tagline`. The stale first block names a path the source no
+// longer declares, yet both spellings already collapse onto the current `tagline` identity.
+pub(crate) const RENAME_CHAIN_KEPT_SOURCE: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/v01/evolution/books_seed_rename_chain_kept.mw"
+));
+
+// The same renamed shape with both consumed rename blocks removed: the control the kept-chain case
+// must match command-for-command.
+pub(crate) const RENAME_CHAIN_DELETED_SOURCE: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/v01/evolution/books_seed_rename_chain_deleted.mw"
+));
+
 // The retired source with the consumed retire block present.
 pub(crate) const RETIRE_BLOCK_SOURCE: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),

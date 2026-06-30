@@ -1,0 +1,12 @@
+module books
+resource Book
+    required title: string
+    tagline: string
+store ^books(id: int): Book
+evolve
+    rename Book.blurb -> Book.tagline
+pub fn seed()
+    var b: Book
+    b.title = "Dune"
+    transaction
+        ^books(2) = b

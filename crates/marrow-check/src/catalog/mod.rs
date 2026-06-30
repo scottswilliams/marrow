@@ -1482,7 +1482,13 @@ fn resolve_renames(
     for rename in renames {
         let kind = match source_catalog.path_kind(rename.to_path.as_str()) {
             SourcePathKind::Absent => {
-                report_unresolved_intent(&rename.file, rename.span, diagnostics);
+                // A kept consumed rename whose target was itself renamed onward names a path the
+                // source no longer declares, yet the active catalog still carries both spellings on
+                // one current identity. That block only describes work already applied, so it stays
+                // inert exactly as deleting it would, rather than failing as an unresolved intent.
+                if !rename_consumed(accepted, rename) {
+                    report_unresolved_intent(&rename.file, rename.span, diagnostics);
+                }
                 continue;
             }
             SourcePathKind::Ambiguous => {
@@ -1542,8 +1548,8 @@ fn resolve_renames(
                 continue;
             }
         }
-        if rename_already_recorded(accepted, kind, rename) {
-            // The accepted catalog already carries this entity at `to_path` with
+        if rename_consumed(accepted, rename) {
+            // The accepted catalog already carries this entity's identity at `to_path` with
             // `from_path` recorded as an alias. The intent has no relocation work left
             // to perform and is not unresolved.
             continue;
@@ -1618,22 +1624,13 @@ fn accepted_source_path_ambiguous(
             .any(|kind| *kind != source_kind)
 }
 
-/// Whether the accepted catalog already carries this identity at `to_path` while
-/// preserving `from_path` as an alias, leaving no relocation work for the intent.
-fn rename_already_recorded(
-    accepted: &AcceptedCatalog<'_>,
-    kind: CatalogEntryKind,
-    rename: &RenameIntent,
-) -> bool {
-    accepted
-        .active_entry(kind, &rename.to_path)
-        .is_some_and(|binding| {
-            binding
-                .entry
-                .aliases
-                .iter()
-                .any(|alias| alias == &rename.from_path)
-        })
+/// Whether a kept `rename from_path -> to_path` block has no relocation work left: the owning
+/// active entry already records `from_path` as a rename alias (it has moved off that spelling)
+/// while still owning `to_path`, so the block only describes work already applied. A rename whose
+/// `from_path` is the entry's current canonical path is live relocation work — including a
+/// round-trip back onto a former alias — and is not consumed.
+fn rename_consumed(accepted: &AcceptedCatalog<'_>, rename: &RenameIntent) -> bool {
+    accepted.rename_already_applied(&rename.from_path, &rename.to_path)
 }
 
 struct SourceCatalog<'a> {
@@ -2048,6 +2045,23 @@ impl<'a> AcceptedCatalog<'a> {
 
     fn active_entry(&self, kind: CatalogEntryKind, path: &str) -> Option<AcceptedEntry<'a>> {
         self.entries.get(&(kind, path)).copied()
+    }
+
+    /// Whether a kept `rename from -> to` has already been applied: one active entry records `from`
+    /// as a rename alias — it has moved off that spelling — while still owning `to` as its canonical
+    /// path or another alias. Requiring `from` to be a historical alias, not the entry's current
+    /// canonical path, separates consumed work from a live round-trip relocation back onto a former
+    /// spelling, which still has work to perform. An onward rename flattens every prior spelling
+    /// onto the entry's new canonical path, so this single pass resolves a consumed chain of
+    /// arbitrary depth: `from` an alias and `to` either the current canonical (one hop) or another
+    /// alias (a deeper chain).
+    fn rename_already_applied(&self, from: &str, to: &str) -> bool {
+        self.entries.values().any(|binding| {
+            let from_is_alias = binding.entry.aliases.iter().any(|alias| alias == from);
+            let owns_to =
+                binding.entry.path == to || binding.entry.aliases.iter().any(|alias| alias == to);
+            from_is_alias && owns_to
+        })
     }
 
     fn reserved_entry(&self, kind: CatalogEntryKind, path: &str) -> Option<AcceptedEntry<'a>> {
@@ -3268,6 +3282,89 @@ mod tests {
         assert!(
             from_for("app::Pet::fish").is_none(),
             "a sibling outside the renamed subtree is untouched"
+        );
+    }
+
+    /// A kept consumed rename whose target was itself renamed onward — a depth>1 alias chain
+    /// (`title -> label -> name`) — is recognized as already-applied against the present accepted
+    /// catalog, not as an unresolvable `check.evolve_target`. The active entry carries every prior
+    /// spelling as a flattened alias, so the stale `rename title -> label` block, whose `label`
+    /// target the source no longer declares, resolves inert exactly as deleting it would.
+    #[test]
+    fn a_kept_rename_through_an_onward_alias_chain_is_recognized_as_consumed() {
+        let current = CatalogEntry {
+            aliases: vec![
+                "books::Book::label".to_string(),
+                "books::Book::title".to_string(),
+            ],
+            ..active_entry(
+                CatalogEntryKind::ResourceMember,
+                "books::Book::name",
+                &fixed_id(1),
+            )
+        };
+        let accepted = CatalogMetadata::new(1, vec![current]).expect("builds");
+        let source = vec![source_entry(
+            CatalogEntryKind::ResourceMember,
+            "books::Book::name",
+        )];
+        let mut diagnostics = Vec::new();
+
+        let resolved = resolve_renames(
+            &AcceptedCatalog::new(&accepted),
+            &SourceCatalog::new(&source),
+            &[
+                rename_intent("books::Book::title", "books::Book::label"),
+                rename_intent("books::Book::label", "books::Book::name"),
+            ],
+            &mut diagnostics,
+        );
+
+        assert!(
+            diagnostics.is_empty(),
+            "both consumed renames in the chain are inert: {diagnostics:#?}"
+        );
+        assert!(
+            resolved.is_empty(),
+            "a fully-consumed rename chain leaves no relocation work"
+        );
+    }
+
+    /// A rename whose target names nothing the accepted catalog carries — neither a canonical entry
+    /// nor any recorded alias — still fails closed `check.evolve_target`. The onward-chain
+    /// recognition narrows the consumed case; it never blesses a genuinely-unresolvable target.
+    #[test]
+    fn a_rename_onto_an_unrecorded_target_still_fails_evolve_target() {
+        let current = CatalogEntry {
+            aliases: vec![
+                "books::Book::label".to_string(),
+                "books::Book::title".to_string(),
+            ],
+            ..active_entry(
+                CatalogEntryKind::ResourceMember,
+                "books::Book::name",
+                &fixed_id(1),
+            )
+        };
+        let accepted = CatalogMetadata::new(1, vec![current]).expect("builds");
+        let source = vec![source_entry(
+            CatalogEntryKind::ResourceMember,
+            "books::Book::name",
+        )];
+        let mut diagnostics = Vec::new();
+
+        resolve_renames(
+            &AcceptedCatalog::new(&accepted),
+            &SourceCatalog::new(&source),
+            &[rename_intent("books::Book::ghost", "books::Book::phantom")],
+            &mut diagnostics,
+        );
+
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == CHECK_EVOLVE_TARGET),
+            "a target the accepted catalog never carried fails closed: {diagnostics:#?}"
         );
     }
 

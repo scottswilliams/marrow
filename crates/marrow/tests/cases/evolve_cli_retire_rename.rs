@@ -8,10 +8,12 @@ use marrow_store::tree::TreeStore;
 use marrow_store::value::{Scalar, ScalarType};
 use support::{TempProject, marrow, unique_temp_path, write};
 use support_evolve::{
-    BLOCK_BASELINE_SOURCE, RENAME_BLOCK_DELETED_SOURCE, RENAME_BLOCK_SOURCE, RENAME_SOURCE,
-    RETIRE_BASELINE_SOURCE, RETIRE_BLOCK_DELETED_SOURCE, RETIRE_BLOCK_SOURCE, RETIRE_SOURCE,
-    accepted_catalog, commit_catalog, member_catalog_id, native_books_project, native_store_path,
-    open_native_store, read_scalar, root_place, seed_member, seed_title_only, store_epoch,
+    BLOCK_BASELINE_SOURCE, RENAME_BLOCK_DELETED_SOURCE, RENAME_BLOCK_SOURCE,
+    RENAME_CHAIN_DELETED_SOURCE, RENAME_CHAIN_KEPT_SOURCE, RENAME_CHAIN_TARGET_SOURCE,
+    RENAME_SOURCE, RETIRE_BASELINE_SOURCE, RETIRE_BLOCK_DELETED_SOURCE, RETIRE_BLOCK_SOURCE,
+    RETIRE_SOURCE, accepted_catalog, commit_catalog, member_catalog_id, native_books_project,
+    native_store_path, open_native_store, read_scalar, root_place, seed_member, seed_title_only,
+    store_epoch,
 };
 
 struct RetireBackupFixture {
@@ -1351,6 +1353,194 @@ fn a_fresh_checkout_seeds_a_kept_rename_block_from_the_lock()
         run.status.code(),
         Some(0),
         "fresh-checkout run with the kept rename block must seed from the lock: {run:?}"
+    );
+
+    Ok(())
+}
+
+// A kept consumed rename whose target was itself renamed onward (`subtitle -> blurb -> tagline`)
+// names a path the source no longer declares, yet both prior spellings already collapse onto the
+// current `tagline` identity. The stale `subtitle -> blurb` block describes work already applied,
+// so every catalog-binding command must succeed exactly as it does with the block deleted — never
+// failing `check.evolve_target`.
+#[test]
+fn a_kept_rename_through_an_onward_alias_chain_binds_like_the_deleted_block()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = native_books_project("rename-chain-kept", BLOCK_BASELINE_SOURCE);
+    let accepted = commit_catalog(&root);
+    let accepted_place = root_place(&accepted, "books")?;
+
+    let baseline = marrow(&["run", "--entry", "books::seed", root.to_str().unwrap()]);
+    assert_eq!(
+        baseline.status.code(),
+        Some(0),
+        "baseline run: {baseline:?}"
+    );
+    {
+        let store = open_native_store(&root);
+        seed_member(
+            &store,
+            &accepted_place,
+            2,
+            "subtitle",
+            Scalar::Str("sub".into()),
+        );
+    }
+
+    // First rename: subtitle -> blurb. The lock records `subtitle` as an alias of `blurb`.
+    write(&root, "src/books.mw", RENAME_BLOCK_SOURCE);
+    let first = marrow(&["evolve", "apply", root.to_str().unwrap()]);
+    assert_eq!(
+        first.status.code(),
+        Some(0),
+        "first rename apply: {first:?}"
+    );
+
+    // Onward rename: blurb -> tagline. The lock now flattens both `blurb` and `subtitle` onto
+    // `tagline`, so `blurb` is no longer a canonical entry — it is an alias of `tagline`.
+    write(&root, "src/books.mw", RENAME_CHAIN_TARGET_SOURCE);
+    let onward = marrow(&["evolve", "apply", root.to_str().unwrap()]);
+    assert_eq!(
+        onward.status.code(),
+        Some(0),
+        "onward rename apply: {onward:?}"
+    );
+
+    // The kept depth-2 chain: both consumed blocks present, the stale `subtitle -> blurb` naming a
+    // target the source dropped. Every catalog-binding command must bind it as already-applied.
+    write(&root, "src/books.mw", RENAME_CHAIN_KEPT_SOURCE);
+    let dir = root.to_str().unwrap();
+    for command in [
+        vec!["check", dir],
+        vec!["run", "--entry", "books::seed", dir],
+        vec!["evolve", "preview", "--format", "json", dir],
+        vec!["data", "stats", "--format", "json", dir],
+        vec!["data", "get", "--format", "json", dir, "^books(2)"],
+    ] {
+        let output = marrow(&command);
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "kept onward-chain `{}` must bind: {output:?}",
+            command.join(" ")
+        );
+    }
+    let archive = root.join("books.mwbackup");
+    let backup = marrow(&["backup", dir, archive.to_str().unwrap()]);
+    assert_eq!(
+        backup.status.code(),
+        Some(0),
+        "kept onward-chain backup must bind: {backup:?}"
+    );
+
+    // The control: deleting both consumed blocks binds identically.
+    write(&root, "src/books.mw", RENAME_CHAIN_DELETED_SOURCE);
+    let deleted_check = marrow(&["check", dir]);
+    assert_eq!(
+        deleted_check.status.code(),
+        Some(0),
+        "deleting the consumed blocks binds the same: {deleted_check:?}"
+    );
+
+    // A genuinely-unresolvable target still fails closed: a kept block onto a path no accepted
+    // entry carries names nothing the chain can resolve.
+    const UNRESOLVABLE_SOURCE: &str = "module books\n\
+         resource Book\n\
+         \x20   required title: string\n\
+         \x20   tagline: string\n\
+         store ^books(id: int): Book\n\
+         evolve\n\
+         \x20   rename Book.blurb -> Book.ghost\n\
+         pub fn seed()\n\
+         \x20   var b: Book\n\
+         \x20   b.title = \"Dune\"\n\
+         \x20   transaction\n\
+         \x20       ^books(2) = b\n";
+    write(&root, "src/books.mw", UNRESOLVABLE_SOURCE);
+    let unresolvable = marrow(&["check", "--format", "json", dir]);
+    assert_eq!(
+        unresolvable.status.code(),
+        Some(1),
+        "an unresolvable target fails: {unresolvable:?}"
+    );
+    let stderr = String::from_utf8(unresolvable.stderr).expect("stderr utf8");
+    let stdout = String::from_utf8(unresolvable.stdout).expect("stdout utf8");
+    assert!(
+        stderr.contains("check.evolve_target") || stdout.contains("check.evolve_target"),
+        "an unresolvable target fails check.evolve_target: stdout={stdout}, stderr={stderr}"
+    );
+
+    Ok(())
+}
+
+/// A fresh checkout that re-seeds from the committed lock must resolve a KEPT depth-2 rename chain
+/// exactly as a present store does. The committed lock projects every prior spelling as an alias of
+/// the current `tagline`, so the seed-reconstructed accepted catalog records both `subtitle` and
+/// `blurb` as aliases, and the stale `subtitle -> blurb` block reads as already-recorded — not as
+/// an unresolvable `check.evolve_target` — with no store on disk.
+#[test]
+fn a_fresh_checkout_seeds_a_kept_rename_chain_from_the_lock()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = native_books_project("rename-chain-fresh-checkout", BLOCK_BASELINE_SOURCE);
+    let accepted = commit_catalog(&root);
+    let accepted_place = root_place(&accepted, "books")?;
+
+    let baseline = marrow(&["run", "--entry", "books::seed", root.to_str().unwrap()]);
+    assert_eq!(
+        baseline.status.code(),
+        Some(0),
+        "baseline run: {baseline:?}"
+    );
+    {
+        let store = open_native_store(&root);
+        seed_member(
+            &store,
+            &accepted_place,
+            2,
+            "subtitle",
+            Scalar::Str("sub".into()),
+        );
+    }
+
+    write(&root, "src/books.mw", RENAME_BLOCK_SOURCE);
+    assert_eq!(
+        marrow(&["evolve", "apply", root.to_str().unwrap()])
+            .status
+            .code(),
+        Some(0),
+        "first rename apply"
+    );
+    write(&root, "src/books.mw", RENAME_CHAIN_TARGET_SOURCE);
+    assert_eq!(
+        marrow(&["evolve", "apply", root.to_str().unwrap()])
+            .status
+            .code(),
+        Some(0),
+        "onward rename apply"
+    );
+
+    write(&root, "src/books.mw", RENAME_CHAIN_KEPT_SOURCE);
+    let present = marrow(&["check", root.to_str().unwrap()]);
+    assert_eq!(
+        present.status.code(),
+        Some(0),
+        "present-store check with the kept onward chain: {present:?}"
+    );
+
+    // Fresh checkout: wipe the store body, keep the source and committed lock.
+    fs::remove_dir_all(root.join(".data")).expect("wipe the store body");
+
+    let check = marrow(&["check", root.to_str().unwrap()]);
+    assert_eq!(
+        check.status.code(),
+        Some(0),
+        "fresh-checkout check with the kept onward chain must seed from the lock: {check:?}"
+    );
+    let run = marrow(&["run", "--entry", "books::seed", root.to_str().unwrap()]);
+    assert_eq!(
+        run.status.code(),
+        Some(0),
+        "fresh-checkout run with the kept onward chain must seed from the lock: {run:?}"
     );
 
     Ok(())
