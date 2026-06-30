@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use marrow_check::CheckedArg as ExecArg;
+use marrow_store::value::{SavedValue, ScalarType, decode_value};
 use marrow_store::{Decimal, DecimalParseError};
 use marrow_syntax::SourceSpan;
 
@@ -234,10 +235,13 @@ fn row_index(arg: &ExecArg, env: &mut Env<'_>, span: SourceSpan) -> Result<usize
 fn parse_cell(op: CsvScalarOp, cell: &str, span: SourceSpan) -> Result<Value, RuntimeError> {
     match op {
         CsvScalarOp::String => Ok(Value::Str(cell.to_string())),
-        CsvScalarOp::Int => cell
-            .parse::<i64>()
-            .map(Value::Int)
-            .map_err(|_| type_error("CSV cell is not an int", span)),
+        // An integer cell must be the one canonical spelling, the same rule the
+        // `int()` builtin and `std::json::int` enforce: `-0`, leading zeros, and a
+        // `+` sign are rejected rather than silently normalized.
+        CsvScalarOp::Int => match decode_value(cell.as_bytes(), ScalarType::Int) {
+            Some(SavedValue::Int(value)) => Ok(Value::Int(value)),
+            _ => Err(type_error("CSV cell is not an int", span)),
+        },
         // A CSV cell is external data, so a non-canonical spelling such as `9.50`
         // canonicalizes to its one stored value rather than being rejected as a
         // Marrow source literal would be.

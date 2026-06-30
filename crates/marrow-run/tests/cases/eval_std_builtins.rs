@@ -605,6 +605,88 @@ pub fn malformed(): string
 }
 
 #[test]
+fn std_csv_int_enforces_the_canonical_integer_spelling() {
+    // A non-canonical integer cell is a scalar-reader fault, the same `run.type`
+    // class `int()` and `std::json::int` raise on the same text, not an absence
+    // that `??` recovers.
+    let program = checked_program(
+        r#"pub fn csv_neg_zero(): int
+    return std::csv::int("n\n-0\n", 0, "n") ?? 9
+
+pub fn int_neg_zero(): int
+    return int("-0")
+
+pub fn json_neg_zero(): int
+    return std::json::int("{\"n\":-0}", "/n") ?? 9
+
+pub fn csv_leading_zero(): int
+    return std::csv::int("n\n007\n", 0, "n") ?? 9
+
+pub fn int_leading_zero(): int
+    return int("007")
+
+pub fn csv_plus(): int
+    return std::csv::int("n\n+5\n", 0, "n") ?? 9
+
+pub fn int_plus(): int
+    return int("+5")
+
+pub fn csv_not_int(): int
+    return std::csv::int("n\nx\n", 0, "n") ?? 9
+
+pub fn int_not_int(): int
+    return int("x")
+
+pub fn csv_zero(): int
+    return std::csv::int("n\n0\n", 0, "n") ?? -1
+
+pub fn csv_five(): int
+    return std::csv::int("n\n5\n", 0, "n") ?? -1
+
+pub fn csv_neg_five(): int
+    return std::csv::int("n\n-5\n", 0, "n") ?? -1
+
+pub fn csv_large(): int
+    return std::csv::int("n\n9223372036854775807\n", 0, "n") ?? -1
+"#,
+    );
+
+    // `std::csv::int` rejects each non-canonical cell with the same `run.type`
+    // class `int()` and `std::json::int` raise on the same text.
+    for entry in [
+        "test::csv_neg_zero",
+        "test::int_neg_zero",
+        "test::json_neg_zero",
+        "test::csv_leading_zero",
+        "test::int_leading_zero",
+        "test::csv_plus",
+        "test::int_plus",
+        "test::csv_not_int",
+        "test::int_not_int",
+    ] {
+        assert_run_error(run(checked_entry!(&program, entry)), RUN_TYPE);
+    }
+
+    // Every canonical integer still parses.
+    assert_eq!(
+        run(checked_entry!(&program, "test::csv_zero")).unwrap(),
+        Some(Value::Int(0))
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::csv_five")).unwrap(),
+        Some(Value::Int(5))
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::csv_neg_five")).unwrap(),
+        Some(Value::Int(-5))
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::csv_large")).unwrap(),
+        Some(Value::Int(9223372036854775807))
+    );
+}
+
+#[test]
 fn std_csv_scalar_helpers_read_present_absent_and_invalid_values() {
     let program = checked_program(
         r#"pub fn rows(): int
