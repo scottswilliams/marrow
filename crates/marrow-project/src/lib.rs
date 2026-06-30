@@ -1,10 +1,9 @@
 //! The Marrow project configuration file, `marrow.json`, and the mapping from
 //! source-root-relative paths to module names.
 //!
-//! A project is source plus an explicit storage selection. The file stays
-//! small enough for the CLI, language services, and editors to agree on it: it
-//! holds project choices only, never compiled schemas, index metadata, or
-//! secrets.
+//! A project is source plus optional storage selection. The file stays small
+//! enough for the CLI, language services, and editors to agree on it: it holds
+//! project choices only, never compiled schemas, index metadata, or secrets.
 
 use std::fmt;
 use std::path::{Component, Path, PathBuf};
@@ -66,7 +65,7 @@ impl StoreBackend {
 }
 
 /// An invalid `marrow.json`: malformed JSON, an unknown key, a missing required
-/// field, or an unknown backend.
+/// source root field, or an unknown backend.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConfigError {
     pub code: &'static str,
@@ -80,7 +79,6 @@ pub enum ConfigErrorKind {
     InvalidJson,
     MissingSourceRoots,
     EmptySourceRoots,
-    MissingStore,
     UnknownStoreBackend {
         backend: String,
     },
@@ -175,12 +173,6 @@ pub fn parse_config(json: &str) -> Result<ProjectConfig, ConfigError> {
             "`sourceRoots` must list at least one source directory",
         ));
     }
-    let raw_store = raw.store.ok_or_else(|| {
-        ConfigError::new(
-            ConfigErrorKind::MissingStore,
-            "`store` must select either \"native\" or \"memory\"; for a one-line memory store use \"store\": { \"backend\": \"memory\" }",
-        )
-    })?;
     if let Some(default_entry) = raw
         .run
         .as_ref()
@@ -196,7 +188,28 @@ pub fn parse_config(json: &str) -> Result<ProjectConfig, ConfigError> {
         check_plain_test_path(test_path)?;
         check_disjoint_from_source_roots(test_path, &raw.source_roots)?;
     }
+    let store = match raw.store {
+        Some(raw_store) => parse_store_config(raw_store)?,
+        None => StoreConfig {
+            backend: StoreBackend::Memory,
+            data_dir: None,
+        },
+    };
 
+    if let Some(client) = &raw.client {
+        check_under_root(ConfigPathField::Client, client)?;
+    }
+
+    Ok(ProjectConfig {
+        source_roots: raw.source_roots,
+        default_entry: raw.run.and_then(|run| run.default_entry),
+        store,
+        tests: raw.tests,
+        client: raw.client,
+    })
+}
+
+fn parse_store_config(raw_store: RawStore) -> Result<StoreConfig, ConfigError> {
     check_no_nul("store.backend", &raw_store.backend)?;
     let backend = StoreBackend::parse(&raw_store.backend).ok_or_else(|| {
         ConfigError::new(
@@ -233,18 +246,7 @@ pub fn parse_config(json: &str) -> Result<ProjectConfig, ConfigError> {
         backend,
         data_dir: raw_store.data_dir,
     };
-
-    if let Some(client) = &raw.client {
-        check_under_root(ConfigPathField::Client, client)?;
-    }
-
-    Ok(ProjectConfig {
-        source_roots: raw.source_roots,
-        default_entry: raw.run.and_then(|run| run.default_entry),
-        store,
-        tests: raw.tests,
-        client: raw.client,
-    })
+    Ok(store)
 }
 
 /// Reject a configured path that would not stay under the project root: every

@@ -1,5 +1,5 @@
 use crate::support;
-use support::{marrow_sub, native_config, temp_project, write};
+use support::{marrow_sub, native_config, temp_project, temp_project_uncommitted, write};
 
 #[test]
 fn native_store_persists_writes_across_runs() {
@@ -38,6 +38,68 @@ fn native_store_persists_writes_across_runs() {
     assert_eq!(second.status.code(), Some(0), "show: {second:?}");
     let stdout = String::from_utf8(second.stdout).expect("stdout utf8");
     assert_eq!(stdout, "value=1\n");
+}
+
+#[test]
+fn native_storeless_run_does_not_create_store_artifacts() {
+    let root = temp_project_uncommitted("run-native-storeless", |root| {
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".data" }, "run": { "defaultEntry": "app::main" } }"#,
+        );
+        write(
+            root,
+            "src/app.mw",
+            "module app\n\npub fn main()\n    print(\"hi\")\n",
+        );
+    });
+    let output = marrow_sub("run", &[root.to_str().unwrap()]);
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert_eq!(
+        String::from_utf8(output.stdout).expect("stdout utf8"),
+        "hi\n"
+    );
+    assert!(
+        !root.join(".data").exists(),
+        "a native-configured pure run should not create the data directory"
+    );
+    assert!(
+        !root.join("marrow.lock").exists(),
+        "a pure run should not create a committed catalog lock"
+    );
+}
+
+#[test]
+fn omitted_store_run_uses_memory_without_artifacts() {
+    let root = temp_project_uncommitted("run-omitted-store", |root| {
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "run": { "defaultEntry": "app::main" } }"#,
+        );
+        write(
+            root,
+            "src/app.mw",
+            "module app\n\npub fn main()\n    print(\"hi\")\n",
+        );
+    });
+    let output = marrow_sub("run", &[root.to_str().unwrap()]);
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert_eq!(
+        String::from_utf8(output.stdout).expect("stdout utf8"),
+        "hi\n"
+    );
+    assert!(
+        !root.join(".data").exists(),
+        "omitting store selects memory and should not create native data"
+    );
+    assert!(
+        !root.join("marrow.lock").exists(),
+        "memory/no-store runs should not create a committed catalog lock"
+    );
 }
 
 #[test]

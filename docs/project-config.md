@@ -4,11 +4,10 @@ A Marrow project is described by a single file, `marrow.json`, at the project
 root. Every command that takes a project directory — `check`, `run`, `test`,
 `fmt`, `data`, `evolve`, `backup`, and `restore` — reads
 `<projectdir>/marrow.json` first. The file
-holds project choices only: source roots, a default entrypoint, the store
-backend and its data directory, test paths, and an optional generated-client
-output path. It does not hold compiled
-schemas, the accepted catalog, index metadata, data-evolution history,
-permissions, connection strings, or secrets.
+holds project choices only: source roots, a default entrypoint, optional store
+backend and data directory, test paths, and an optional generated-client output
+path. It does not hold compiled schemas, the accepted catalog, index metadata,
+data-evolution history, permissions, connection strings, or secrets.
 
 Unknown keys are rejected, so a typo is an error rather than a silently ignored
 setting.
@@ -24,16 +23,16 @@ setting.
 }
 ```
 
-The minimal valid file selects a source root and a store backend:
+The minimal valid file selects a source root:
 
 ```json
-{ "sourceRoots": ["src"], "store": { "backend": "memory" } }
+{ "sourceRoots": ["src"] }
 ```
 
 With this minimal file there is no default entry (you must pass `--entry` to
-`run`), the explicit store is in-memory (nothing is persisted), and no tests are
-discovered. The memory backend admits a `run` only for a program with no
-durable declarations — see
+`run`), no durable store is configured, and no tests are discovered. Omitted
+`store` defaults to the memory/no-store backend, which admits a `run` only for a
+program with no durable declarations — see
 [`store.backend`](#storebackend-and-storedatadir).
 
 ## Fields
@@ -42,7 +41,7 @@ durable declarations — see
 |---|---|---|---|
 | `sourceRoots` | array of strings | yes | — |
 | `run.defaultEntry` | string | no | none |
-| `store.backend` | `"memory"` \| `"native"` | yes | — |
+| `store.backend` | `"memory"` \| `"native"` | no | `"memory"` |
 | `store.dataDir` | string | only when `backend` is `"native"` | — |
 | `tests` | array of strings | no | `[]` |
 | `client` | string | no | none |
@@ -99,14 +98,15 @@ value does not print it.
 
 ### `store.backend` and `store.dataDir`
 
-The required storage selection. `marrow test` always runs each test on a fresh
-in-memory store. The memory backend admits only a program with no durable
-declarations; a program that declares a durable surface (a `resource`, a saved
-`store`, or an `enum`) needs a native store. The backend is statically known, so
-`marrow check` rejects a durable program under the memory backend with
-`check.durable_store_required`; `marrow run` enforces the same contract as
-`run.durable_store_required`. The supported production saved-data backend is the
-native redb store.
+The optional storage selection. When `store` is omitted, Marrow selects the
+memory/no-store backend and creates no store files. `marrow test` always runs
+each test on a fresh in-memory store. The memory backend admits only a program
+with no durable declarations; a program that declares a durable surface (a
+`resource`, a saved `store`, or an `enum`) needs a native store. The backend is
+statically known, so `marrow check` rejects a durable program without native
+storage with `check.durable_store_required`; `marrow run` enforces the same
+contract as `run.durable_store_required`. The supported production saved-data
+backend is the native redb store.
 
 - `memory` — an in-memory store. Creates no files. `dataDir` is ignored if
   present (and may be omitted). This backend is not a production `^` durability
@@ -118,9 +118,10 @@ native redb store.
 
 - `native` — the persistent on-disk store. Requires a non-empty `dataDir`,
   a relative path under the project root. The store file is created at
-  `<dataDir>/marrow.redb`. The data directory is created on first use by a
-  command that writes (such as `run`); read-only inspection (`data`) never
-  creates it.
+  `<dataDir>/marrow.redb`. The data directory is created only when a command
+  needs durable state, such as the first `run` of a project with durable
+  declarations or a run against an existing store; read-only inspection (`data`)
+  never creates it.
 
   ```json
   {
@@ -188,7 +189,8 @@ reports the `config.invalid` code (kind `tooling`) and exits with code `1`. The
 rules:
 
 - `sourceRoots` must list at least one directory.
-- `store` is required and must be an object.
+- When present, `store` must be an object. When omitted, it defaults to
+  `{ "backend": "memory" }`.
 - `store.backend` must be `"memory"` or `"native"`; any other value is
   rejected and the unknown name is named in the message.
 - A `native` store must have a non-empty `dataDir`. (A `native` store cannot
@@ -223,9 +225,6 @@ config.invalid: the `native` store backend requires a non-empty `dataDir`
 
 $ marrow check ./proj          # sourceRoots missing or empty
 config.invalid: `sourceRoots` must list at least one source directory
-
-$ marrow check ./proj          # store missing
-config.invalid: `store` must select either "native" or "memory"; for a one-line memory store use "store": { "backend": "memory" }
 
 $ marrow check ./proj          # unknown top-level key "globals"
 config.invalid: unknown field `globals`, expected one of `sourceRoots`, `run`, `store`, `tests`, `client` at line 1 column 35

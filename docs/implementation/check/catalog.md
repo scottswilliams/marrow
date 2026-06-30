@@ -19,7 +19,7 @@ Identity is path-independent. A stable id is a random 128-bit `cat_<32hex>` mint
 | File | Responsibility |
 | --- | --- |
 | `crates/marrow-catalog/src/lib.rs` | The accepted-snapshot model: `CatalogMetadata`/`CatalogEntry`/`CatalogEntryKind`/`CatalogLifecycle`, catalog digest and validation, store-index shape and structural-signature decode. |
-| `crates/marrow-check/src/catalog/mod.rs` | Reconcile source vs accepted catalog; carry-forward, rename, retire, mint; record store-key, store-index, and member signatures; build and bind the proposal; `require_durable_store` rejects a durable proposal under a `memory` backend. |
+| `crates/marrow-check/src/catalog/mod.rs` | Reconcile source vs accepted catalog; carry-forward, rename, retire, mint; record store-key, store-index, and member signatures; build and bind the proposal; `require_durable_store` rejects any durable source declaration under a memory/no-store backend. |
 | `crates/marrow-check/src/catalog/source_digest.rs` | Compute shape and shape-plus-evolve sha256 digests by rendering durable declarations through the canonical formatter. |
 | `crates/marrow-check/src/catalog/stable_id.rs` | `StableIdAllocator`: random `cat_<32hex>` ids from OS entropy, collision-retried against recorded ids. |
 | `crates/marrow-check/src/rejected_surface.rs` | Reject v0.1-forbidden saved-traversal method calls, emitting `check.rejected_surface`. |

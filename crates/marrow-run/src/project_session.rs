@@ -1459,6 +1459,11 @@ fn open_run_store(
     admission: Option<&SourceAnalysisAdmission>,
     notices: &mut Vec<ProjectSessionNotice>,
 ) -> Result<OpenRunStore, ProjectSessionError> {
+    if !isolate_writes && !commit_run_needs_native_store(root, config, checked.program())? {
+        return open_memory_store(validate_checked_source_analysis_admission(
+            checked, admission,
+        )?);
+    }
     if !isolate_writes {
         // A `dataDir` occupied by a non-directory is a configuration fault, not a store
         // failure. Classify it through the shared guard before any open — the lock-root
@@ -1528,6 +1533,26 @@ fn open_run_store(
         ),
         Err(error) => Err(ProjectSessionError::Fence(error)),
     }
+}
+
+fn commit_run_needs_native_store(
+    root: &Path,
+    config: &ProjectConfig,
+    program: &CheckedProgram,
+) -> Result<bool, ProjectSessionError> {
+    if config.store.backend == StoreBackend::Memory {
+        return Ok(false);
+    }
+    if pending_baseline(program) {
+        return Ok(true);
+    }
+    let Some(path) = marrow_check::native_store_path(root, config)? else {
+        return Ok(false);
+    };
+    if marrow_check::read_committed_lock(root)?.is_some_and(|lock| lock.records_active_roots()) {
+        return Ok(true);
+    }
+    Ok(!marrow_check::tooling::store_path_is_absent(&path))
 }
 
 /// Discharge a pending evolution on the run path: auto-apply it when it mutates no stored

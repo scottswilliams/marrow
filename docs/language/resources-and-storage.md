@@ -8,10 +8,10 @@ the project's typed tree store. Local data has no `^` and exists only while code
 runs.
 The `^` sigil is a semantic lifetime marker, not a promise that the bytes live
 on disk. The supported production saved-data backend is the native redb backend;
-the in-memory store backs tests and programs with no durable declarations, and
-`marrow run` refuses a durable program on it. Future backends may choose
-different physical residency while still satisfying the backend contract;
-source remains `^`.
+the memory/no-store backend backs tests and programs with no durable
+declarations, and `marrow run` refuses a durable program on it. Future backends
+may choose different physical residency while still satisfying the backend
+contract; source remains `^`.
 
 Ordinary application code declares stores for saved roots. Inspection, data
 evolution, backup, and restore tools operate through the checked tree

@@ -82,10 +82,10 @@ fn rejects_empty_source_roots() {
 }
 
 #[test]
-fn rejects_missing_store_block() {
-    let error = parse_config(r#"{ "sourceRoots": ["src"] }"#).expect_err("should reject");
-    assert_eq!(error.code, "config.invalid");
-    assert_eq!(error.kind, ConfigErrorKind::MissingStore);
+fn omitted_store_defaults_to_memory() {
+    let config = parse_config(r#"{ "sourceRoots": ["src"] }"#).expect("valid config");
+    assert_eq!(config.store.backend, StoreBackend::Memory);
+    assert_eq!(config.store.data_dir, None);
 }
 
 #[test]

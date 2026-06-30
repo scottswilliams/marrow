@@ -232,6 +232,26 @@ pub fn main()
 }
 
 #[test]
+fn omitted_store_rejects_durable_declarations() {
+    let dir = temp_project_dir("omitted-store-durable");
+    fs::write(dir.join("marrow.json"), r#"{ "sourceRoots": ["src"] }"#).expect("write config");
+    support::write(
+        dir.path(),
+        "src/app.mw",
+        "module app\n\
+         resource Book\n\
+         \x20\x20\x20\x20required title: string\n\
+         store ^books(id: int): Book\n",
+    );
+
+    let output = check_json(dir.path());
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let report = support::json(output.stdout);
+    assert_has_code(&report, "check.durable_store_required");
+}
+
+#[test]
 fn check_text_renders_suggested_index_add_line() {
     let dir = project_with_source(
         "suggested-index-add-line",

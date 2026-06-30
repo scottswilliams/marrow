@@ -1,4 +1,3 @@
-use crate::checked_entry;
 use crate::support::{assert_run_error, checked_program, run, run_entry};
 use marrow_run::{RUN_TRAVERSAL, Value};
 use marrow_store::tree::TreeStore;

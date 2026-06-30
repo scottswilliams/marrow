@@ -40,7 +40,7 @@ call.
 
 A value stores as the selected member's stable saved-data identity, not its position
 in source. Because an enum carries saved-data identity, declaring one makes a program
-durable: it requires a native store, and a `memory` backend is rejected at check.
+durable: it requires a native store, and a memory/no-store backend is rejected at check.
 Reordering the members in the declaration does not change what stored
 data means: each stored value decodes back to the member it named. At the language
 level a `state: Status` field reads back as its member: a read of `state` is a

@@ -35,9 +35,9 @@ The generated `marrow.json` is:
   unique.
 - `store` selects where saved data lives. `native` is the persistent on-disk
   store and requires a `dataDir`. This project declares saved data, so it needs
-  one: selecting the explicit memory backend would make `marrow run` refuse
-  with `check.durable_store_required` (the run checks the project first).
-  (Tests always run in-memory.)
+  one: omitting `store` or selecting the explicit memory backend would make
+  `marrow run` refuse with `check.durable_store_required` (the run checks the
+  project first). (Tests always run in-memory.)
 - `tests` lists plain paths to test files or test directories.
 
 A module's name must match its path under the source root. Because the file
@@ -140,10 +140,10 @@ marrow run .
 4: Sourcery by Terry Pratchett
 ```
 
-(If `marrow.json` selected `"store": { "backend": "memory" }`, the run would
-refuse with `check.durable_store_required`: a program that declares saved data
-requires a native store, and `marrow run` checks the project before running.
-Omitting `store` is a `config.invalid` error.)
+(If `marrow.json` omitted `store` or selected
+`"store": { "backend": "memory" }`, the run would refuse with
+`check.durable_store_required`: a program that declares saved data requires a
+native store, and `marrow run` checks the project before running.)
 
 ## 4. Inspect The Saved Data
 

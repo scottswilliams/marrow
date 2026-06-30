@@ -42,6 +42,26 @@ fn committed_lock(root: &std::path::Path) -> CatalogLock {
         .expect("project has a committed lock")
 }
 
+fn committed_native_project(name: &str) -> TempProject {
+    let root = pending_native_project(name);
+    let output = marrow_sub("run", &[root.to_str().unwrap()]);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    root
+}
+
+fn write_no_store_config(root: &std::path::Path, store: &str) {
+    let config = match store {
+        "omitted" => {
+            r#"{ "sourceRoots": ["src"], "run": { "defaultEntry": "app::main" } }"#.to_string()
+        }
+        "memory" => {
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "memory" }, "run": { "defaultEntry": "app::main" } }"#.to_string()
+        }
+        other => panic!("unknown store case {other}"),
+    };
+    write(root, "marrow.json", &config);
+}
+
 #[test]
 fn run_commits_the_pending_catalog_into_the_store_and_reprojects_the_lock() {
     let root = pending_native_project("run-pending-commit");
@@ -300,6 +320,46 @@ fn a_retired_store_index_in_the_lock_seeds_a_lost_store_keeping_the_tombstone() 
         "seeding from the lock must keep the retired index tombstoned: {:#?}",
         after_seed.ledger
     );
+}
+
+#[test]
+fn no_store_check_rejects_durable_source_even_with_a_committed_lock() {
+    for store in ["omitted", "memory"] {
+        let root = committed_native_project(&format!("check-lock-bound-{store}"));
+        write_no_store_config(&root, store);
+
+        let output = marrow_sub("check", &["--format", "json", root.to_str().unwrap()]);
+
+        assert_eq!(output.status.code(), Some(1), "{store}: {output:?}");
+        let report = support::json(output.stdout);
+        assert!(
+            report["diagnostics"]
+                .as_array()
+                .expect("diagnostics")
+                .iter()
+                .any(|diagnostic| diagnostic["code"] == "check.durable_store_required"),
+            "{store}: {report:#?}"
+        );
+    }
+}
+
+#[test]
+fn no_store_run_rejects_durable_source_even_with_a_committed_lock() {
+    for store in ["omitted", "memory"] {
+        let root = committed_native_project(&format!("run-lock-bound-{store}"));
+        write_no_store_config(&root, store);
+
+        let output = marrow_sub("run", &[root.to_str().unwrap()]);
+
+        assert_eq!(output.status.code(), Some(1), "{store}: {output:?}");
+        let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+        let segments: Vec<&str> = stderr.trim().split(": ").collect();
+        let (_, code) = find_code_segment(&segments);
+        assert_eq!(
+            code, "check.durable_store_required",
+            "{store}: lock-bound durable source without native storage reports the typed check error: {stderr}"
+        );
+    }
 }
 
 #[test]

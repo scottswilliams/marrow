@@ -71,7 +71,12 @@ fn a_data_dir_occupied_by_a_file_reports_an_accurate_directory_fault() {
         write(
             root,
             "src/app.mw",
-            "module app\n\npub fn main()\n    print(\"hi\")\n",
+            "module app\n\
+             resource Book\n\
+             \x20   title: string\n\
+             store ^books(id: int): Book\n\
+             pub fn main()\n\
+             \x20   print(\"hi\")\n",
         );
         write(root, ".data", "not a directory");
     });
@@ -306,7 +311,12 @@ fn a_data_dir_create_denied_by_permissions_reports_a_directory_fault_not_a_read(
         write(
             root,
             "src/app.mw",
-            "module app\n\npub fn main()\n    print(\"hi\")\n",
+            "module app\n\
+             resource Book\n\
+             \x20   title: string\n\
+             store ^books(id: int): Book\n\
+             pub fn main()\n\
+             \x20   print(\"hi\")\n",
         );
         let locked = root.join("ro");
         std::fs::create_dir(&locked).expect("create read-only parent");

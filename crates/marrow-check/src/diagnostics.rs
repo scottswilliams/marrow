@@ -170,11 +170,10 @@ pub const CHECK_CATALOG_INTENT: &str = "check.catalog_intent";
 /// [`marrow_catalog::LOCK_CORRUPT`] names the same condition at the projection
 /// boundary, coordinated by name across the two layers rather than shared.
 pub const CHECK_LOCK_CORRUPT: &str = "check.lock_corrupt";
-/// The program declares a durable surface — a store, enum, or resource that needs
-/// committed catalog identity — but the configured store backend is `memory`, which
-/// has no durable identity. The runtime would reject the program as
-/// `run.durable_store_required`; the checker rejects it earlier because the backend
-/// is statically known.
+/// The program declares a durable surface — a store, enum, or resource that needs committed
+/// catalog identity — but the configured store backend has no durable identity. The runtime would
+/// reject the program as `run.durable_store_required`; the checker rejects it earlier because the
+/// backend is statically known.
 pub const CHECK_DURABLE_STORE_REQUIRED: &str = "check.durable_store_required";
 /// An `evolve` step names a target that does not resolve to a catalog-addressable
 /// entity: a resource member, saved root, store index, enum, or enum member that
