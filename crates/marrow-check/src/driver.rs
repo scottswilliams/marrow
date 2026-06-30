@@ -1066,6 +1066,7 @@ fn check_block_local_key_types(
             }
             Statement::Const { .. }
             | Statement::Assign { .. }
+            | Statement::CompoundAssign { .. }
             | Statement::Delete { .. }
             | Statement::Return { .. }
             | Statement::ReturnAbsent { .. }
@@ -1352,6 +1353,7 @@ fn statement_child_blocks_declare_local_name(statement: &Statement, name: &str) 
         Statement::Const { .. }
         | Statement::Var { .. }
         | Statement::Assign { .. }
+        | Statement::CompoundAssign { .. }
         | Statement::Delete { .. }
         | Statement::Return { .. }
         | Statement::ReturnAbsent { .. }

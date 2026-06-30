@@ -38,7 +38,8 @@ where
                 visitor.visit_expr(value);
             }
         }
-        CheckedStmt::Assign { target, value, .. } => {
+        CheckedStmt::Assign { target, value, .. }
+        | CheckedStmt::CompoundAssign { target, value, .. } => {
             visitor.visit_expr(target);
             visitor.visit_expr(value);
         }

@@ -61,6 +61,11 @@ fn collect_statement_effects(
             collect_saved_path_key_reads(facts, target, effects);
             collect_expr_reads(facts, value, effects);
         }
+        CheckedStmt::CompoundAssign { target, value, .. } => {
+            collect_saved_write(facts, target, effects);
+            collect_expr_reads(facts, target, effects);
+            collect_expr_reads(facts, value, effects);
+        }
         CheckedStmt::Delete { path, .. } => {
             collect_saved_write(facts, path, effects);
             collect_saved_path_key_reads(facts, path, effects);

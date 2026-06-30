@@ -242,7 +242,7 @@ fn walk_statement(
     out: &mut Vec<CheckDiagnostic>,
 ) {
     match statement {
-        Statement::Assign { target, .. } => {
+        Statement::Assign { target, .. } | Statement::CompoundAssign { target, .. } => {
             check_assignment_target(file, target, immutable, local_collections, out);
         }
         Statement::If {
@@ -454,6 +454,7 @@ fn walk_loop_control_flow(
             Statement::Const { .. }
             | Statement::Var { .. }
             | Statement::Assign { .. }
+            | Statement::CompoundAssign { .. }
             | Statement::Delete { .. }
             | Statement::Return { .. }
             | Statement::ReturnAbsent { .. }
@@ -556,6 +557,7 @@ fn walk_loop_layer_mutations(
             Statement::Const { .. }
             | Statement::Var { .. }
             | Statement::Assign { .. }
+            | Statement::CompoundAssign { .. }
             | Statement::Delete { .. }
             | Statement::Return { .. }
             | Statement::ReturnAbsent { .. }
@@ -633,6 +635,7 @@ fn walk_commit_amplification(
             Statement::Const { .. }
             | Statement::Var { .. }
             | Statement::Assign { .. }
+            | Statement::CompoundAssign { .. }
             | Statement::Delete { .. }
             | Statement::Return { .. }
             | Statement::ReturnAbsent { .. }
@@ -650,7 +653,8 @@ fn push_commit_amplification_warnings(
     out: &mut Vec<CheckDiagnostic>,
 ) {
     match statement {
-        Statement::Assign { target, value, .. } => {
+        Statement::Assign { target, value, .. }
+        | Statement::CompoundAssign { target, value, .. } => {
             if is_saved_path(target) {
                 push_commit_amplification_warning(file, statement.span(), out);
             }
@@ -781,7 +785,9 @@ fn traversal_argument(expr: &Expression) -> Option<&Expression> {
 /// entry, may insert a sibling into an enclosing layer just like a write.
 fn loop_layer_mutation(statement: &Statement, traversed: &[TraversedLayer]) -> bool {
     match statement {
-        Statement::Assign { target, .. } => place_inserts_into(target, true, traversed),
+        Statement::Assign { target, .. } | Statement::CompoundAssign { target, .. } => {
+            place_inserts_into(target, true, traversed)
+        }
         Statement::Delete { path, .. } => place_inserts_into(path, true, traversed),
         Statement::Expr {
             value: Expression::Call { callee, args, .. },
@@ -835,7 +841,9 @@ fn keyed_step_unsafe(
 fn rebound_name(statement: &Statement) -> Option<&str> {
     match statement {
         Statement::Const { name, .. } | Statement::Var { name, .. } => Some(name),
-        Statement::Assign { target, .. } => place_root_name(target),
+        Statement::Assign { target, .. } | Statement::CompoundAssign { target, .. } => {
+            place_root_name(target)
+        }
         _ => None,
     }
 }

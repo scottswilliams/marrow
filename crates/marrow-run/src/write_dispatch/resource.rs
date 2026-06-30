@@ -23,6 +23,19 @@ pub(crate) fn eval_resource_write(
     write_resource(path, value, span, env)
 }
 
+pub(crate) fn eval_resource_write_value(
+    target: &ExecExpr,
+    value: Value,
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<(), RuntimeError> {
+    let path = lower(target, env)?;
+    if !path.layers.is_empty() || !matches!(path.terminal, Terminal::Record) {
+        return Err(unsupported("this saved path", target.span()));
+    }
+    write_resource(path, value, span, env)
+}
+
 pub(crate) fn write_resource(
     path: SavedPath,
     value: Value,

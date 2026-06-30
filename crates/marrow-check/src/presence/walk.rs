@@ -210,6 +210,11 @@ fn collect_statement(
         CheckedStmt::Assign { target, value, .. } => {
             collect_assignment_statement(program, target, value, narrowed, scope, recorder, events);
         }
+        CheckedStmt::CompoundAssign { target, value, .. } => {
+            collect_compound_assignment_statement(
+                program, target, value, narrowed, scope, recorder, events,
+            );
+        }
         CheckedStmt::Delete { path, .. } => {
             collect_delete_statement(program, path, narrowed, scope, recorder, events);
         }
@@ -405,6 +410,25 @@ fn collect_assignment_statement(
     let assigned = super::keys::assigned_bindings(target, scope);
     let written = read_target_with_scope(program, target, scope);
     collect_write_target(program, target, narrowed, scope, recorder, events);
+    collect_bare_expr(program, value, narrowed, scope, recorder, events);
+    invalidate_key_bindings(narrowed, events, &assigned);
+    if let Some(written) = written {
+        invalidate_written_target(narrowed, events, &written);
+    }
+}
+
+fn collect_compound_assignment_statement(
+    program: &CheckedProgram,
+    target: &CheckedExpr,
+    value: &CheckedExpr,
+    narrowed: &mut Vec<ReadTarget>,
+    scope: &mut NameScope,
+    recorder: &mut PresenceRecorder<'_>,
+    events: &mut InvalidationLog,
+) {
+    let assigned = super::keys::assigned_bindings(target, scope);
+    let written = read_target_with_scope(program, target, scope);
+    collect_bare_expr(program, target, narrowed, scope, recorder, events);
     collect_bare_expr(program, value, narrowed, scope, recorder, events);
     invalidate_key_bindings(narrowed, events, &assigned);
     if let Some(written) = written {
@@ -633,6 +657,7 @@ fn statement_prevents_fallthrough(statement: &CheckedStmt) -> bool {
         CheckedStmt::Const { .. }
         | CheckedStmt::Var { .. }
         | CheckedStmt::Assign { .. }
+        | CheckedStmt::CompoundAssign { .. }
         | CheckedStmt::Delete { .. }
         | CheckedStmt::Expr { .. }
         | CheckedStmt::While { .. }

@@ -556,7 +556,8 @@ fn collect_block_expression<'b>(
                     collect_expression(value, offset, best);
                 }
             }
-            Statement::Assign { target, value, .. } => {
+            Statement::Assign { target, value, .. }
+            | Statement::CompoundAssign { target, value, .. } => {
                 collect_expression(target, offset, best);
                 collect_expression(value, offset, best);
             }

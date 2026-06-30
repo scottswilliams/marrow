@@ -15,6 +15,14 @@ The orchestration that sequences the passes lives in `analysis.rs`, outside this
 
 `CheckedProgram` (`program.rs`) is the artifact: a `Vec<CheckedModule>` aligned 1:1 with files, plus `CheckedFacts` and `ProgramCatalog`. Checked functions carry both their return type and the typed `marrow_schema::ReturnPresence` marker that tells downstream passes whether a value-returning call can be absent. Checked functions, facts, and parse declarations align *positionally* in source order (a by-name lookup would mis-attribute a duplicate-named function's body); `lower_runtime_bodies` guards this with a `debug_assert_eq`.
 
+Compound assignment is checked as one statement, not parser desugaring. The
+statement checker validates the target with the same assignable-place rules as
+plain assignment, infers the target again as a read operand, checks the matching
+binary operator (`+=` uses `+`, `*=` uses `*`, and so on), then applies ordinary
+assignment compatibility from the computed type back into the target type.
+Lowering preserves the statement as `CheckedStmt::CompoundAssign` with a typed
+`CheckedBinaryOp` so runtime can resolve the mutation target once.
+
 ## Modules
 
 | File | Responsibility |

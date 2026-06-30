@@ -311,6 +311,7 @@ statement       =
       const_stmt
     | var_stmt
     | assignment_stmt
+    | compound_assignment_stmt
     | delete_stmt
     | if_stmt
     | if_const_stmt
@@ -332,6 +333,9 @@ var_stmt        =
     "var" identifier key_params? type_annotation? ("=" expression)? NEWLINE ;
 
 assignment_stmt = assignable "=" expression NEWLINE ;
+compound_assignment_stmt =
+    assignable compound_assign_op expression NEWLINE ;
+compound_assign_op = "+=" | "-=" | "*=" | "/=" | "%=" ;
 delete_stmt     = "delete" path_expr NEWLINE ;
 return_stmt     = "return" ("absent" | expression)? NEWLINE ;
 break_stmt      = "break" NEWLINE ;
@@ -342,8 +346,10 @@ expression_stmt = expression NEWLINE ;
 ```
 
 Field and path assignments preserve omitted fields and children at the written
-entry. `if exists(place)` narrows a maybe-present read inside the guarded
-block.
+entry. The parser also accepts compound assignment when the operator and `=` are
+lexed separately by whitespace (`x * = y`); the AST and formatter canonicalize
+that spelling to `x *= y`. `if exists(place)` narrows a maybe-present read inside
+the guarded block.
 
 ## Conditionals And Loops
 

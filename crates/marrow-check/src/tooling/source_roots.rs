@@ -249,7 +249,8 @@ fn collect_statement_roots(
                 collect_expr_roots(source, value, SourceSavedRootCursorKind::Expression, facts);
             }
         }
-        Statement::Assign { target, value, .. } => {
+        Statement::Assign { target, value, .. }
+        | Statement::CompoundAssign { target, value, .. } => {
             collect_expr_roots(source, target, SourceSavedRootCursorKind::Expression, facts);
             collect_expr_roots(source, value, SourceSavedRootCursorKind::Expression, facts);
         }

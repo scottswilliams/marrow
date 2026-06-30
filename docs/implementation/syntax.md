@@ -32,9 +32,19 @@ A value the grammar cannot structure yields `None` plus a `parse.syntax` diagnos
 
 `ParsedSource = { file: SourceFile, diagnostics }`. `SourceFile` holds the optional `module`, `uses`, ordered `declarations`, and file-level `comments`, with name-lookup accessors downstream crates use. The AST records no parentheses — the formatter re-derives the minimum from a precedence table that must stay in sync with `parse_expr.rs`. `TypeRef` stores verbatim whitespace-stripped source text and is never resolved here. Function declarations split `: maybe T` into a `FunctionReturnPresence::MaybePresent` marker plus the underlying `TypeRef` for `T`; `maybe` is rejected in every other type position. `return absent` is a distinct statement node, not an expression containing a normal `absent` name. Comments are retained as file, declaration-body, evolve-body, and statement-block trivia with `placement` and column so `parse -> format` round-trips losslessly. `SourceSpan` (file-absolute byte range plus 1-based line/column) is on every token, node, and diagnostic.
 
+Compound assignment is represented as its own `Statement::CompoundAssign` with a
+typed `CompoundAssignOp`; the parser does not desugar it into a binary expression
+plus assignment. Statement parsing recognizes both adjacent operator tokens
+(`x+=1`) and the whitespace-separated token sequence (`x + = 1`) for the five
+arithmetic compound operators, leaving equality and comparison operators
+unchanged.
+
 ## Formatter
 
 `format_source` re-parses the source string (it does not take an AST) then renders canonical `.mw`; it is idempotent. It re-emits retained comments from the AST and keeps a parse/format structural fingerprint over the documented corpus. Within a body it preserves a single grouping blank line wherever the source held one or more (collapsing runs and dropping leading/trailing blanks), read from the source layout rather than the AST; the shape digest in `marrow-check` strips these blanks because they are layout, not durable shape. `format_preserves_comments` is the losslessness predicate the CLI applies before emitting in any `fmt` mode (stdout, `--check`, `--write`). `format_declaration` and `format_expression` are public node-level renderers; note `format_declaration(source, decl)` still also takes the source `&str` for any statement body it carries, while only `format_expression(expr)` renders from an AST node alone.
+
+Compound assignment formats canonically as `target op= value`, so `x*=1` and
+`x * = 1` both render as `x *= 1`.
 
 ## Modules
 

@@ -277,6 +277,18 @@ fn formats_statement_blocks_with_indentation() {
 }
 
 #[test]
+fn formats_compound_assignment_canonically() {
+    let source = "module app\n\
+         fn run()\n\
+         \x20   count*=3\n\
+         \x20   total + = count\n";
+    let expected = "\
+         \x20   count *= 3\n\
+         \x20   total += count";
+    assert_eq!(format_function_body(source), expected);
+}
+
+#[test]
 fn formats_loops_and_unlabeled_break() {
     let source = "module app\n\
          fn run()\n\

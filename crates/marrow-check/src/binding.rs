@@ -1121,7 +1121,8 @@ impl UseWalker<'_, '_> {
                 }
                 self.bind_local(statement, name, *span, scope, type_scope);
             }
-            Statement::Assign { target, value, .. } => {
+            Statement::Assign { target, value, .. }
+            | Statement::CompoundAssign { target, value, .. } => {
                 self.walk_expr(target, scope, type_scope);
                 self.walk_expr(value, scope, type_scope);
             }

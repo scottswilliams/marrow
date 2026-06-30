@@ -10,6 +10,11 @@ One run is a tree of activations. `run_entry` resolves the entry, builds an `Env
 - **Dispatch.** `eval_call` routes every `CheckedCallTarget` variant — saved reads, constructors, builtins, std capabilities, local collections, program functions. `eval_expr` and `eval_statement` are the two recursive walkers everything flows through; sibling modules re-enter `eval_expr` for argument and key evaluation.
 - **Control flow.** `Flow` (Normal/Return/ReturnAbsent/Break/Continue/Throw) is the result of a statement or block. `ReturnAbsent` is only produced by checked maybe-returning functions and becomes an absent call result, not a runtime `Value`. `eval_block` pushes/pops a scope balanced on every exit including faults; `loop_exec` maps innermost-loop Break/Continue to a `LoopStep`.
 - **Values and saved data.** `Value` is the one owner of value-to-saved/key/leaf conversion and scalar-type classification. `SavedPath` (root, identity keys, layer chain, `Terminal`) is lowered once and is the consumption point for every saved read, write, delete, and exists.
+- **Compound assignment.** `statement.rs` evaluates `target op= value` by
+  resolving and reading the target first, evaluating the right-hand expression
+  through the shared binary-operator implementation, then writing the computed
+  value back through the same resolved target. Saved paths use one `SavedPath`;
+  local collection targets use one resolved position/key tuple.
 - **Errors, host, and debugger facts.** `error` defines catchable-vs-fatal throw semantics and the stable `run.*` codes. `Host` is the capability gate (clock/env/log/filesystem/maintenance); `StepHook` is the opt-in debugger observer over a read-only `Frame`, and `Frame::debug_snapshot` captures bounded Marrow-owned debugger facts for stopped frames.
 
 ## Modules
@@ -23,7 +28,7 @@ One run is a tree of activations. `run_entry` resolves the entry, builds an `Env
 | `crates/marrow-run/src/call.rs` | `eval_call` dispatches `CheckedCallTarget` variants; `function_by_ref` resolves module/function by index; `invoke_function` runs a child activation inheriting traversed layers and moving the debugger hook in and out. |
 | `crates/marrow-run/src/call_args.rs` | Argument binding (positional/named/duplicate/missing), resource- and identity-constructor evaluation, `default_value` for uninitialized `var`. |
 | `crates/marrow-run/src/expr.rs` | Pure-expression evaluation: literals, names/enum members, unary/binary operators with checked-overflow numeric and temporal arithmetic, string concatenation, comparison/equality, `is`, `??`, interpolation, field and optional-field dispatch. |
-| `crates/marrow-run/src/statement.rs` | Statement execution: const/var binding, assignment dispatch, delete/return/throw/expr, control statements (if/match/break/continue/while/for/transaction/try); fires the before-statement hook. |
+| `crates/marrow-run/src/statement.rs` | Statement execution: const/var binding, assignment and compound-assignment dispatch, delete/return/throw/expr, control statements (if/match/break/continue/while/for/transaction/try); fires the before-statement hook. |
 | `crates/marrow-run/src/exec.rs` | Block and match primitives: `eval_block` (balanced scope), `eval_statements` (stop at first non-Normal `Flow`), `eval_match` (enum-fact-driven, descendant matching), `local_target`. |
 | `crates/marrow-run/src/loop_exec.rs` | Loops and iteration: `while`, `for` over ranges, single/two-name `for` over sequences, local trees, and streamed saved layers; `classify` maps `Flow` to `LoopStep`. |
 | `crates/marrow-run/src/range_expr.rs` | Shared recognition of checked range expressions for loop execution and saved-range reads. |

@@ -4,8 +4,8 @@
 use crate::common;
 use common::{has_reason, lexer_reason, parse_reason};
 use marrow_syntax::{
-    Diagnose, ExpectedSyntax, Expression, LexerDiagnosticReason, ObsoleteOperator,
-    ParseDiagnosticReason, ReservedSyntax, Statement, parse_source,
+    CompoundAssignOp, Diagnose, ExpectedSyntax, Expression, LexerDiagnosticReason,
+    ObsoleteOperator, ParseDiagnosticReason, ReservedSyntax, Statement, parse_source,
 };
 
 #[test]
@@ -712,4 +712,47 @@ fn finally_is_an_ordinary_variable_name() {
     );
 
     assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+}
+
+#[test]
+fn parses_compound_assignment_with_adjacent_or_spaced_operator() {
+    for (source, expected_op) in [
+        ("module app\nfn f()\n    i*=3\n", CompoundAssignOp::Multiply),
+        (
+            "module app\nfn f()\n    i * = 3\n",
+            CompoundAssignOp::Multiply,
+        ),
+    ] {
+        let parsed = parse_source(source);
+        assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+        let f = parsed.file.function("f").expect("function");
+        assert!(
+            matches!(
+                &f.body.statements[0],
+                Statement::CompoundAssign {
+                    target: Expression::Name { segments, .. },
+                    op,
+                    value: Expression::Literal { .. },
+                    ..
+                } if segments == &["i"] && *op == expected_op
+            ),
+            "{:#?}",
+            f.body.statements[0]
+        );
+    }
+}
+
+#[test]
+fn spaced_compound_assignment_does_not_generalize_to_comparisons() {
+    let parsed = parse_source("module app\nfn f()\n    i <= 3\n");
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let f = parsed.file.function("f").expect("function");
+    assert!(
+        matches!(&f.body.statements[0], Statement::Expr { .. }),
+        "{:#?}",
+        f.body.statements[0]
+    );
+
+    let spaced = parse_source("module app\nfn f()\n    i < = 3\n");
+    assert!(spaced.has_errors(), "{:#?}", spaced.diagnostics);
 }

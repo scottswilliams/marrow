@@ -14,32 +14,10 @@ pub(crate) fn eval_local_collection_read(
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<Option<Value>, RuntimeError> {
-    // Resolve the key against the environment first, then borrow the binding to read
-    // a single element. Only that one value is cloned, never the whole collection.
-    match env.lookup(name) {
-        Some(Value::Sequence(_)) => {
-            let position = eval_local_sequence_position(args, span, env)?;
-            let Some(Value::Sequence(items)) = env.lookup(name) else {
-                return Ok(None);
-            };
-            items
-                .get(position)
-                .cloned()
-                .ok_or_else(|| absent_read("`local sequence` is absent".into(), span))
-                .map(Some)
-        }
-        Some(Value::LocalTree(_)) => {
-            let keys = eval_local_keys(args, span, env)?;
-            let Some(Value::LocalTree(tree)) = env.lookup(name) else {
-                return Ok(None);
-            };
-            tree.get(&keys)
-                .cloned()
-                .ok_or_else(|| absent_read("`local tree` is absent".into(), span))
-                .map(Some)
-        }
-        _ => Ok(None),
-    }
+    let Some(target) = resolve_local_collection_target(name, args, span, env)? else {
+        return Ok(None);
+    };
+    target.read(env).map(Some)
 }
 
 pub(crate) fn eval_local_collection_write(
@@ -49,30 +27,113 @@ pub(crate) fn eval_local_collection_write(
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<bool, RuntimeError> {
-    // Resolve the key and the right-hand value before borrowing the binding, since
-    // both evaluate against the environment. The binding is then mutated in place so
-    // a write costs one node, not a deep copy of the whole collection.
+    let Some(target) = resolve_local_collection_target(name, args, span, env)? else {
+        return Ok(false);
+    };
+    let value = eval_expr(value, env)?;
+    target.write(value, env)?;
+    Ok(true)
+}
+
+pub(crate) fn eval_local_collection_write_value(
+    name: &str,
+    args: &[ExecArg],
+    value: Value,
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<bool, RuntimeError> {
+    let Some(target) = resolve_local_collection_target(name, args, span, env)? else {
+        return Ok(false);
+    };
+    target.write(value, env)?;
+    Ok(true)
+}
+
+pub(crate) enum LocalCollectionTarget {
+    Sequence {
+        name: String,
+        position: i64,
+        span: SourceSpan,
+    },
+    Tree {
+        name: String,
+        keys: Vec<SavedKey>,
+        span: SourceSpan,
+    },
+}
+
+pub(crate) fn resolve_local_collection_target(
+    name: &str,
+    args: &[ExecArg],
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Option<LocalCollectionTarget>, RuntimeError> {
     match env.lookup(name) {
-        Some(Value::Sequence(_)) => {
-            let position = eval_local_sequence_position(args, span, env)?;
-            let value = eval_expr(value, env)?;
-            let Value::Sequence(items) = mutable_local_collection(name, span, env)? else {
-                return Ok(true);
-            };
-            items.set(position, value);
-            Ok(true)
-        }
+        Some(Value::Sequence(_)) => Ok(Some(LocalCollectionTarget::Sequence {
+            name: name.to_string(),
+            position: eval_local_sequence_position(args, span, env)?,
+            span,
+        })),
         Some(Value::LocalTree(_)) => {
             let keys = eval_local_keys(args, span, env)?;
             reject_non_positive_sequence_key(&keys, span)?;
-            let value = eval_expr(value, env)?;
-            let Value::LocalTree(tree) = mutable_local_collection(name, span, env)? else {
-                return Ok(true);
-            };
-            tree.insert(keys, value);
-            Ok(true)
+            Ok(Some(LocalCollectionTarget::Tree {
+                name: name.to_string(),
+                keys,
+                span,
+            }))
         }
-        _ => Ok(false),
+        _ => Ok(None),
+    }
+}
+
+impl LocalCollectionTarget {
+    pub(crate) fn read(&self, env: &Env<'_>) -> Result<Value, RuntimeError> {
+        match self {
+            Self::Sequence {
+                name,
+                position,
+                span,
+            } => {
+                let Some(Value::Sequence(items)) = env.lookup(name) else {
+                    return Err(unsupported("reading this local collection", *span));
+                };
+                items
+                    .get(*position)
+                    .cloned()
+                    .ok_or_else(|| absent_read("`local sequence` is absent".into(), *span))
+            }
+            Self::Tree { name, keys, span } => {
+                let Some(Value::LocalTree(tree)) = env.lookup(name) else {
+                    return Err(unsupported("reading this local collection", *span));
+                };
+                tree.get(keys)
+                    .cloned()
+                    .ok_or_else(|| absent_read("`local tree` is absent".into(), *span))
+            }
+        }
+    }
+
+    pub(crate) fn write(self, value: Value, env: &mut Env<'_>) -> Result<(), RuntimeError> {
+        match self {
+            Self::Sequence {
+                name,
+                position,
+                span,
+            } => {
+                let Value::Sequence(items) = mutable_local_collection(&name, span, env)? else {
+                    return Err(unsupported("writing this local collection", span));
+                };
+                items.set(position, value);
+            }
+            Self::Tree { name, keys, span } => {
+                let Value::LocalTree(tree) = mutable_local_collection(&name, span, env)? else {
+                    return Err(unsupported("writing this local collection", span));
+                };
+                tree.insert(keys, value);
+            }
+        }
+        Ok(())
     }
 }
 

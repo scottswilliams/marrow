@@ -1,8 +1,8 @@
 //! Checked statement execution.
 
 use marrow_check::{
-    CheckedBody as ExecBody, CheckedCallTarget, CheckedCatchClause, CheckedElseIf,
-    CheckedExpr as ExecExpr, CheckedStmt as ExecStmt,
+    CheckedBinaryOp as BinaryOp, CheckedBody as ExecBody, CheckedCallTarget, CheckedCatchClause,
+    CheckedElseIf, CheckedExpr as ExecExpr, CheckedStmt as ExecStmt,
 };
 use marrow_schema::Type;
 use marrow_syntax::SourceSpan;
@@ -15,17 +15,20 @@ use crate::durable_read::read_saved_value_if_present;
 use crate::env::{Env, Flow};
 use crate::error::{RuntimeError, assign_error, type_error, unsupported};
 use crate::exec::{eval_block, eval_match, local_target};
-use crate::expr::{eval_condition, eval_expr};
-use crate::group_write::eval_group_entry_write;
+use crate::expr::{eval_arithmetic_with_left_value, eval_condition, eval_expr};
+use crate::group_write::{eval_group_entry_write, eval_group_entry_write_value};
 use crate::host::Frame;
-use crate::local_collection::eval_local_collection_write;
+use crate::local_collection::{
+    eval_local_collection_write, eval_local_collection_write_value, resolve_local_collection_target,
+};
 use crate::loop_exec::{eval_for, eval_while};
-use crate::path::direct_root_place;
+use crate::path::{direct_root_place, lower};
 use crate::stdlib::convert_to_error_code;
 use crate::transaction::eval_transaction;
 use crate::value::{LocalTree, Value};
 use crate::write_dispatch::{
-    eval_delete, eval_local_field_set, eval_resource_write, eval_saved_field_write,
+    eval_delete, eval_local_field_set, eval_local_field_set_value, eval_resource_write,
+    eval_resource_write_value, eval_saved_field_write, eval_saved_field_write_value,
 };
 
 pub(crate) fn eval_statement(
@@ -72,6 +75,16 @@ pub(crate) fn eval_statement(
             span,
         } => {
             eval_assignment(target, value, *coerce_error_code, *span, env)?;
+            Ok(Flow::Normal)
+        }
+        ExecStmt::CompoundAssign {
+            target,
+            op,
+            value,
+            coerce_error_code,
+            span,
+        } => {
+            eval_compound_assignment(target, *op, value, *coerce_error_code, *span, env)?;
             Ok(Flow::Normal)
         }
         ExecStmt::Delete { path, span, .. } => {
@@ -231,6 +244,73 @@ fn eval_assignment(
     }
 }
 
+fn eval_assignment_value(
+    target: &ExecExpr,
+    evaluated: Value,
+    coerce_error_code: bool,
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<(), RuntimeError> {
+    if let ExecExpr::Field { base, name, .. } = target {
+        if base.saved_place().is_some() {
+            eval_saved_field_write_value(target, evaluated, coerce_error_code, span, env)
+        } else {
+            eval_local_field_set_value(base, name, evaluated, coerce_error_code, span, env)
+        }
+    } else if direct_root_place(target).is_some() {
+        eval_resource_write_value(target, evaluated, span, env)
+    } else if let ExecExpr::Call {
+        callee,
+        args,
+        target: call_target,
+        ..
+    } = target
+    {
+        eval_call_assignment_value(target, callee, args, call_target, evaluated, span, env)
+    } else {
+        let name = local_target(target, span)?;
+        env.assign(name, evaluated)
+            .map_err(|error| assign_error(name, error, span))
+    }
+}
+
+fn eval_compound_assignment(
+    target: &ExecExpr,
+    op: BinaryOp,
+    value: &ExecExpr,
+    coerce_error_code: bool,
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<(), RuntimeError> {
+    if target.saved_place().is_some() {
+        let path = lower(target, env)?;
+        let current = path.read(span, env)?;
+        let evaluated = eval_arithmetic_with_left_value(op, current, value, span, env)?;
+        let evaluated = coerce_error_code_value(evaluated, coerce_error_code, span)?;
+        return path.write(evaluated, span, env);
+    }
+
+    if let ExecExpr::Call {
+        args,
+        target: CheckedCallTarget::LocalCollection { name },
+        ..
+    } = target
+    {
+        let Some(collection_target) = resolve_local_collection_target(name, args, span, env)?
+        else {
+            return Err(unsupported("a checked local collection write", span));
+        };
+        let current = collection_target.read(env)?;
+        let evaluated = eval_arithmetic_with_left_value(op, current, value, span, env)?;
+        let evaluated = coerce_error_code_value(evaluated, coerce_error_code, span)?;
+        return collection_target.write(evaluated, env);
+    }
+
+    let current = eval_expr(target, env)?;
+    let evaluated = eval_arithmetic_with_left_value(op, current, value, span, env)?;
+    eval_assignment_value(target, evaluated, coerce_error_code, span, env)
+}
+
 fn eval_call_assignment(
     target: &ExecExpr,
     callee: &ExecExpr,
@@ -253,6 +333,31 @@ fn eval_call_assignment(
         eval_group_entry_write(target, value, span, env)
     } else {
         eval_resource_write(target, value, span, env)
+    }
+}
+
+fn eval_call_assignment_value(
+    target: &ExecExpr,
+    callee: &ExecExpr,
+    args: &[marrow_check::CheckedArg],
+    call_target: &CheckedCallTarget,
+    evaluated: Value,
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<(), RuntimeError> {
+    if let CheckedCallTarget::LocalCollection { name } = call_target {
+        return if eval_local_collection_write_value(name, args, evaluated, span, env)? {
+            Ok(())
+        } else {
+            Err(unsupported("a checked local collection write", span))
+        };
+    }
+    if let ExecExpr::Field { base, .. } = callee
+        && base.saved_place().is_some()
+    {
+        eval_group_entry_write_value(target, evaluated, span, env)
+    } else {
+        eval_resource_write_value(target, evaluated, span, env)
     }
 }
 

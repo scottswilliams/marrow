@@ -667,7 +667,8 @@ fn walk_statement_expressions(statement: &Statement, visit: &mut impl FnMut(&Exp
             }
         }
         Statement::ReturnAbsent { .. } => {}
-        Statement::Assign { target, value, .. } => {
+        Statement::Assign { target, value, .. }
+        | Statement::CompoundAssign { target, value, .. } => {
             walk_expression(target, visit);
             walk_expression(value, visit);
         }

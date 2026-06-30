@@ -342,6 +342,37 @@ pub enum BinaryOp {
     Or,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompoundAssignOp {
+    Add,
+    Subtract,
+    Multiply,
+    Divide,
+    Remainder,
+}
+
+impl CompoundAssignOp {
+    pub fn binary(self) -> BinaryOp {
+        match self {
+            Self::Add => BinaryOp::Add,
+            Self::Subtract => BinaryOp::Subtract,
+            Self::Multiply => BinaryOp::Multiply,
+            Self::Divide => BinaryOp::Divide,
+            Self::Remainder => BinaryOp::Remainder,
+        }
+    }
+
+    pub fn symbol(self) -> &'static str {
+        match self {
+            Self::Add => "+=",
+            Self::Subtract => "-=",
+            Self::Multiply => "*=",
+            Self::Divide => "/=",
+            Self::Remainder => "%=",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResourceDecl {
     pub docs: Vec<String>,
@@ -605,6 +636,13 @@ pub enum Statement {
         value: Expression,
         span: SourceSpan,
     },
+    CompoundAssign {
+        target: Expression,
+        op: CompoundAssignOp,
+        op_span: SourceSpan,
+        value: Expression,
+        span: SourceSpan,
+    },
     Delete {
         path: Expression,
         span: SourceSpan,
@@ -729,6 +767,7 @@ impl Statement {
             Self::Const { span, .. }
             | Self::Var { span, .. }
             | Self::Assign { span, .. }
+            | Self::CompoundAssign { span, .. }
             | Self::Delete { span, .. }
             | Self::Return { span, .. }
             | Self::ReturnAbsent { span }

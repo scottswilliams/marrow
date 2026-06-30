@@ -108,6 +108,13 @@ pub enum CheckedStmt {
         coerce_error_code: bool,
         span: SourceSpan,
     },
+    CompoundAssign {
+        target: CheckedExpr,
+        op: super::CheckedBinaryOp,
+        value: CheckedExpr,
+        coerce_error_code: bool,
+        span: SourceSpan,
+    },
     Delete {
         path: CheckedExpr,
         span: SourceSpan,
@@ -235,6 +242,26 @@ impl CheckedStmt {
                 span,
             } => Self::Assign {
                 target: CheckedExpr::lower(target, context, scope)?,
+                value: CheckedExpr::lower(value, context, scope)?,
+                coerce_error_code: crate::infer::assignment_target_is_error_code(
+                    context.program,
+                    target,
+                    scope,
+                    &context.aliases,
+                    context.source_file,
+                    None,
+                ),
+                span: *span,
+            },
+            syntax::Statement::CompoundAssign {
+                target,
+                op,
+                value,
+                span,
+                ..
+            } => Self::CompoundAssign {
+                target: CheckedExpr::lower(target, context, scope)?,
+                op: super::CheckedBinaryOp::lower(op.binary()),
                 value: CheckedExpr::lower(value, context, scope)?,
                 coerce_error_code: crate::infer::assignment_target_is_error_code(
                     context.program,
@@ -460,6 +487,7 @@ impl CheckedStmt {
             Self::Const { span, .. }
             | Self::Var { span, .. }
             | Self::Assign { span, .. }
+            | Self::CompoundAssign { span, .. }
             | Self::Delete { span, .. }
             | Self::Return { span, .. }
             | Self::ReturnAbsent { span }

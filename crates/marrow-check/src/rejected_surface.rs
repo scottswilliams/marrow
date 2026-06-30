@@ -63,7 +63,8 @@ fn check_statement(
                 check_expr(program, file, value, diagnostics);
             }
         }
-        Statement::Assign { target, value, .. } => {
+        Statement::Assign { target, value, .. }
+        | Statement::CompoundAssign { target, value, .. } => {
             check_expr(program, file, target, diagnostics);
             check_expr(program, file, value, diagnostics);
         }

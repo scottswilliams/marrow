@@ -309,6 +309,66 @@ fn rejects_an_operator_on_wrongly_typed_operands() {
 }
 
 #[test]
+fn compound_assignment_reuses_assignment_and_operator_rules() {
+    let report = check_module_report(
+        "compound-ok",
+        "module m\n\
+         fn f(): int\n    var i: int = 2\n    i *= 3\n    return i\n",
+    );
+    assert_clean(&report);
+
+    let readonly = check_script(
+        "compound-readonly",
+        "fn f()\n    const i: int = 2\n    i *= 3\n",
+        "check.invalid_assign_target",
+    );
+    assert_eq!(readonly.len(), 1, "{readonly:#?}");
+
+    let operator = check_script(
+        "compound-op",
+        "fn f()\n    var s: string = \"a\"\n    s -= \"b\"\n",
+        "check.operator_type",
+    );
+    assert_eq!(operator.len(), 1, "{operator:#?}");
+
+    let assignment = check_script(
+        "compound-divide",
+        "fn f()\n    var i: int = 4\n    i /= 2\n",
+        "check.assignment_type",
+    );
+    assert_eq!(assignment.len(), 1, "{assignment:#?}");
+}
+
+#[test]
+fn compound_assignment_target_read_must_be_present() {
+    let saved = check_module(
+        "compound-saved-read",
+        "module m\n\
+         resource Book\n    pages: int\n\
+         store ^books(id: int): Book\n\
+         fn f()\n    ^books(1).pages += 1\n",
+        "check.bare_maybe_present_read",
+    );
+    assert_eq!(saved.len(), 1, "{saved:#?}");
+
+    let local = check_script(
+        "compound-local-read",
+        "fn f()\n    var xs: sequence[int]\n    xs(1) += 1\n",
+        "check.bare_maybe_present_read",
+    );
+    assert_eq!(local.len(), 1, "{local:#?}");
+
+    let guarded_saved = check_module_report(
+        "compound-saved-guarded",
+        "module m\n\
+         resource Book\n    pages: int\n\
+         store ^books(id: int): Book\n\
+         fn f()\n    if const pages = ^books(1).pages\n        ^books(1).pages += 1\n",
+    );
+    assert_clean(&guarded_saved);
+}
+
+#[test]
 fn bytes_interpolation_renders_as_hex() {
     // A `bytes` value renders directly in interpolation as `0x`-prefixed hex, so it
     // is an accepted render source rather than a check error.

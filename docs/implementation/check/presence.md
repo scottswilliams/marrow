@@ -6,6 +6,13 @@ Maybe-present call results use the same typed resolution-site check as saved rea
 
 Two read shapes are resolvable maybe-present reads that carry no persisted proof: a local-collection indexed read of a bound name (`xs(pos)`, `counts(k)`) and a sparse-field read of a *bound* materialized resource value. That base must be a bound name (`book.subtitle`, a caught `err.help`, a loop-bound group entry) or a chained unkeyed group layer rooted at one (`person.address.zip`) — never a call or constructor in the read place. A call or constructor result is guardable only after it is bound to a name (`const b = makeBook()` then `b.subtitle ?? d`), because evaluating an inline call as the guard base would run its body, which may write saved data, open a transaction, call a host capability, or throw. `target.rs::local_maybe_present_read` recognizes the bound shapes for the type-check predicates, and `walk.rs` raises the bare diagnostic for an unguarded one. The runtime resolves these at the read site by catching the absent fault, so the checker records no saved-data proof. The guardable set is widened strictly by construction. The base is a bound name with no call in the read place, so it carries no effect; a local-collection read's key sub-expressions are screened through `read_only.rs::guard_subexpr_admissible`. That screen rejects a write, an allocation (`append`/`nextId`), a host call, a throw, or any user-function call — opaque before per-function closures exist — so `exists(append(xs, v))`, `exists(nextId(^s))`, and a guard keyed by `nextId(^s)` or any effectful function all stay rejected.
 
+Compound assignment is a read-modify-write statement. `walk.rs` records its
+target as a normal bare read, so maybe-present saved and local collection reads
+must already be discharged by narrowing; it then records the right-hand
+expression as a normal bare expression and invalidates the written target just
+like plain assignment. `direct.rs` still reports both the saved read and saved
+write effects for effect summaries.
+
 The pass runs near the end of `analyze_source_project` (`analysis.rs`, after lowering runtime bodies and the evolution transform-effects check). It mutates `program.facts` and pushes diagnostics; it owns no store access of its own.
 
 ## The big idea

@@ -12,6 +12,7 @@ use crate::durable_read::{LayerEntryAddress, read_layer_entry_at, read_resource}
 use crate::env::Env;
 use crate::error::{RUN_ABSENT, RUN_TYPE, RuntimeError, key_type_fault, type_error, unsupported};
 use crate::expr::eval_expr;
+use crate::group_write::write_group_path;
 use crate::read::{
     iterable_index_branch_present, root_identity_present, validated_data_layer_present,
 };
@@ -179,7 +180,8 @@ impl SavedPath {
                 write_saved_field(self, &field, value, span, env)
             }
             Some(field) => write_nested_field(self, &field, value, span, env),
-            None => write_resource(self, value, span, env),
+            None if self.layer_addresses.is_empty() => write_resource(self, value, span, env),
+            None => write_group_path(self, value, span, env),
         }
     }
 }

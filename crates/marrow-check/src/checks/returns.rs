@@ -107,6 +107,7 @@ pub(crate) fn check_return_values(
             Statement::Const { .. }
             | Statement::Var { .. }
             | Statement::Assign { .. }
+            | Statement::CompoundAssign { .. }
             | Statement::Delete { .. }
             | Statement::Break { .. }
             | Statement::Continue { .. }
@@ -164,6 +165,7 @@ fn statement_returns(statement: &marrow_syntax::Statement) -> bool {
         Statement::Const { .. }
         | Statement::Var { .. }
         | Statement::Assign { .. }
+        | Statement::CompoundAssign { .. }
         | Statement::Delete { .. }
         | Statement::Break { .. }
         | Statement::Continue { .. } => false,

@@ -15,10 +15,22 @@ pub(crate) fn eval_local_field_set(
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<(), RuntimeError> {
+    let new_value = eval_expr(value, env)?;
+    eval_local_field_set_value(base, field, new_value, coerce_error_code, span, env)
+}
+
+pub(crate) fn eval_local_field_set_value(
+    base: &ExecExpr,
+    field: &str,
+    value: Value,
+    coerce_error_code: bool,
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<(), RuntimeError> {
     let Some((name, groups)) = local_field_target(base) else {
         return Err(unsupported("setting a field of this value", span));
     };
-    let new_value = coerce_error_code_value(eval_expr(value, env)?, coerce_error_code, span)?;
+    let new_value = coerce_error_code_value(value, coerce_error_code, span)?;
     write_local_field(&name, &groups, field, new_value, span, env)
 }
 

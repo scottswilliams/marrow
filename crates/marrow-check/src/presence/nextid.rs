@@ -165,7 +165,8 @@ impl<'a> Guard<'a> {
                     self.record_allocation(binding, value);
                 }
             }
-            CheckedStmt::Assign { target, value, .. } => {
+            CheckedStmt::Assign { target, value, .. }
+            | CheckedStmt::CompoundAssign { target, value, .. } => {
                 self.observe_writes(value, scope);
                 self.observe_saved_write(target, scope);
             }

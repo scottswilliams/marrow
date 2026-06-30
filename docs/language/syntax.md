@@ -201,7 +201,21 @@ print($"created {id}")
 
 Assignment is a statement only. It cannot appear as a subexpression, cannot be
 chained, and does not return a value.
-The right-hand expression is evaluated before the target is changed.
+For plain `=` assignment, the right-hand expression is evaluated before the
+target is changed.
+
+Compound assignment is available for the arithmetic operators: `+=`, `-=`,
+`*=`, `/=`, and `%=`. The compact spelling (`i*=3`) and the whitespace-separated
+spelling (`i * = 3`) parse the same way; the formatter writes the compact
+operator with spaces around it (`i *= 3`). A compound assignment resolves and
+reads the target, evaluates the right-hand expression, applies the corresponding
+binary operator, then writes the result back through the same target. Type
+checking is the same as writing `target = target op value`: the target must be
+assignable, the binary operator must be valid for the operands, and the computed
+value must fit the target. Since `/` produces a decimal, `/=` into an `int`
+target is rejected unless the target itself accepts decimals. When the target
+read is maybe-present, the checker rejects the compound assignment unless that
+same read has a reusable presence proof in scope.
 
 `print(...)` uses call syntax, but it is a statement: it performs output and
 produces no value. User-defined functions may still be effectful and return

@@ -1014,6 +1014,14 @@ fn format_statement_with_comments(
             format_expression_at(target, level),
             format_expression_at(value, level)
         ),
+        Statement::CompoundAssign {
+            target, op, value, ..
+        } => format!(
+            "{pad}{} {} {}",
+            format_expression_at(target, level),
+            op.symbol(),
+            format_expression_at(value, level)
+        ),
         Statement::Delete { path, .. } => {
             format!("{pad}delete {}", format_expression_at(path, level))
         }

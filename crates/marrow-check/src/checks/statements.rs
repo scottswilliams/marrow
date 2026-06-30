@@ -31,7 +31,9 @@ use super::collections::{
     is_saved_key_range_path, is_saved_path_with_key_range_arg,
 };
 use super::const_int::{ConstIntScope, fold_const_int};
-use super::operators::{check_assignment, check_condition, check_return_type, check_throw_type};
+use super::operators::{
+    check_assignment, check_binary, check_condition, check_return_type, check_throw_type,
+};
 use super::ranges::{
     check_range_header, check_range_iterable_value_parts, check_range_value_guarded,
 };
@@ -304,6 +306,13 @@ impl StatementCheck<'_> {
             Statement::Assign { target, value, .. } => {
                 self.check_assignment_statement(target, value)
             }
+            Statement::CompoundAssign {
+                target,
+                op,
+                op_span,
+                value,
+                ..
+            } => self.check_compound_assignment_statement(target, *op, *op_span, value),
             Statement::Delete { path, .. } => self.check_delete_statement(path),
             Statement::Return { value, .. } => {
                 self.check_return(value.as_ref());
@@ -609,6 +618,84 @@ impl StatementCheck<'_> {
         if self.value_is_saved_collection(value) && !self.target_is_saved_place(target) {
             self.reject_saved_collection_materialization(value);
         }
+        self.check_assignment_target(target);
+        if let Some(store) = saved_root_replacement(TargetCheck {
+            program: self.program,
+            target,
+            scope: self.scope,
+            aliases: self.aliases,
+            file: self.file,
+            diagnostics: self.diagnostics,
+            transform_old: self.transform_old,
+        }) {
+            self.required_fields
+                .check_whole_root_write(self.file, value, store, self.diagnostics);
+        }
+        self.check_lossy_round_trip_warning(target, value);
+        check_assignment(
+            self.file,
+            value.span(),
+            &target_type,
+            &value_type,
+            self.diagnostics,
+        );
+        if assignment_target_is_error_code(
+            self.program,
+            target,
+            self.scope,
+            self.aliases,
+            self.file,
+            self.transform_old,
+        ) {
+            super::calls::check_error_code_literal(
+                value,
+                "an `ErrorCode` field",
+                self.file,
+                self.diagnostics,
+            );
+        }
+        self.required_fields.assign_target(target);
+    }
+
+    fn check_compound_assignment_statement(
+        &mut self,
+        target: &marrow_syntax::Expression,
+        op: marrow_syntax::CompoundAssignOp,
+        op_span: SourceSpan,
+        value: &marrow_syntax::Expression,
+    ) {
+        let target_type = infer_assignment_target_type_with_read_scope(
+            self.program,
+            target,
+            self.scope,
+            self.aliases,
+            self.file,
+            self.diagnostics,
+            self.transform_old,
+        );
+        let left_type = self.infer(target);
+        let right_type = self.infer(value);
+        self.check_range_value(value);
+        self.check_assignment_target(target);
+        let computed_type = check_binary(
+            op.binary(),
+            &left_type,
+            &right_type,
+            op_span,
+            self.file,
+            self.diagnostics,
+        );
+        check_assignment(
+            self.file,
+            op_span,
+            &target_type,
+            &computed_type,
+            self.diagnostics,
+        );
+        self.required_fields.assign_target(target);
+    }
+
+    fn check_assignment_target(&mut self, target: &marrow_syntax::Expression) {
         if is_saved_index_branch_path(self.program, target, self.scope, self.file) {
             self.diagnostics.push(CheckDiagnostic::error(
                 crate::rules::CHECK_INVALID_ASSIGN_TARGET,
@@ -648,18 +735,6 @@ impl StatementCheck<'_> {
                 "a nested write on a local resource must descend its declared groups; a keyed layer, a scalar field, or an undeclared member is not a place to write through",
             ));
         }
-        if let Some(store) = saved_root_replacement(TargetCheck {
-            program: self.program,
-            target,
-            scope: self.scope,
-            aliases: self.aliases,
-            file: self.file,
-            diagnostics: self.diagnostics,
-            transform_old: self.transform_old,
-        }) {
-            self.required_fields
-                .check_whole_root_write(self.file, value, store, self.diagnostics);
-        }
         check_sequence_position_write(SequencePositionWrite {
             program: self.program,
             target,
@@ -670,30 +745,6 @@ impl StatementCheck<'_> {
             file: self.file,
             diagnostics: self.diagnostics,
         });
-        self.check_lossy_round_trip_warning(target, value);
-        check_assignment(
-            self.file,
-            value.span(),
-            &target_type,
-            &value_type,
-            self.diagnostics,
-        );
-        if assignment_target_is_error_code(
-            self.program,
-            target,
-            self.scope,
-            self.aliases,
-            self.file,
-            self.transform_old,
-        ) {
-            super::calls::check_error_code_literal(
-                value,
-                "an `ErrorCode` field",
-                self.file,
-                self.diagnostics,
-            );
-        }
-        self.required_fields.assign_target(target);
     }
 
     fn check_lossy_round_trip_warning(

@@ -26,6 +26,8 @@ mod entry_args;
 mod eval_asserts_groups;
 #[path = "cases/eval_basics.rs"]
 mod eval_basics;
+#[path = "cases/eval_compound_assignment.rs"]
+mod eval_compound_assignment;
 #[path = "cases/eval_count.rs"]
 mod eval_count;
 #[path = "cases/eval_debugger_hook.rs"]

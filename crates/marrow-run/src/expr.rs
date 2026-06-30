@@ -329,20 +329,13 @@ pub(crate) fn eval_binary(
         // the left does not already decide the result.
         BinaryOp::And => Ok(Value::Bool(eval_bool(left, env)? && eval_bool(right, env)?)),
         BinaryOp::Or => Ok(Value::Bool(eval_bool(left, env)? || eval_bool(right, env)?)),
-        BinaryOp::Add => add_values(left, right, env, span),
-        BinaryOp::Subtract => subtract_values(left, right, env, span),
-        BinaryOp::Multiply => numeric_op(
-            left,
-            right,
-            env,
-            span,
-            i64::checked_mul,
-            Decimal::checked_mul,
-        ),
-        // `/` always yields a decimal, so integer operands divide as decimals
-        // too: `1 / 2` is `0.5`.
-        BinaryOp::Divide => decimal_div(left, right, env, span),
-        BinaryOp::Remainder => int_remainder_op(left, right, env, span),
+        BinaryOp::Add
+        | BinaryOp::Subtract
+        | BinaryOp::Multiply
+        | BinaryOp::Divide
+        | BinaryOp::Remainder => {
+            eval_arithmetic_with_left_value(op, eval_expr(left, env)?, right, span, env)
+        }
         BinaryOp::Less => compare_values(left, right, env, span, |o| o == Ordering::Less),
         BinaryOp::LessEqual => compare_values(left, right, env, span, |o| o != Ordering::Greater),
         BinaryOp::Greater => compare_values(left, right, env, span, |o| o == Ordering::Greater),
@@ -354,6 +347,26 @@ pub(crate) fn eval_binary(
         BinaryOp::RangeExclusive | BinaryOp::RangeInclusive => {
             Err(unsupported("this operator", span))
         }
+    }
+}
+
+pub(crate) fn eval_arithmetic_with_left_value(
+    op: BinaryOp,
+    left: Value,
+    right: &ExecExpr,
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Value, RuntimeError> {
+    let right = eval_expr(right, env)?;
+    match op {
+        BinaryOp::Add => add_value_pair(left, right, span),
+        BinaryOp::Subtract => subtract_value_pair(left, right, span),
+        BinaryOp::Multiply => {
+            numeric_value_pair(left, right, span, i64::checked_mul, Decimal::checked_mul)
+        }
+        BinaryOp::Divide => decimal_div_values(left, right, span),
+        BinaryOp::Remainder => int_remainder_values(left, right, span),
+        _ => Err(unsupported("this compound assignment operator", span)),
     }
 }
 
@@ -391,13 +404,8 @@ pub(crate) fn eval_is(
     )))
 }
 
-pub(crate) fn add_values(
-    left: &ExecExpr,
-    right: &ExecExpr,
-    env: &mut Env<'_>,
-    span: SourceSpan,
-) -> Result<Value, RuntimeError> {
-    match (eval_expr(left, env)?, eval_expr(right, env)?) {
+fn add_value_pair(left: Value, right: Value, span: SourceSpan) -> Result<Value, RuntimeError> {
+    match (left, right) {
         (Value::Int(a), Value::Int(b)) => a
             .checked_add(b)
             .map(Value::Int)
@@ -413,13 +421,8 @@ pub(crate) fn add_values(
     }
 }
 
-pub(crate) fn subtract_values(
-    left: &ExecExpr,
-    right: &ExecExpr,
-    env: &mut Env<'_>,
-    span: SourceSpan,
-) -> Result<Value, RuntimeError> {
-    match (eval_expr(left, env)?, eval_expr(right, env)?) {
+fn subtract_value_pair(left: Value, right: Value, span: SourceSpan) -> Result<Value, RuntimeError> {
+    match (left, right) {
         (Value::Int(a), Value::Int(b)) => a
             .checked_sub(b)
             .map(Value::Int)
@@ -456,15 +459,14 @@ fn instant_in_saved_range(nanos: i128) -> bool {
 
 /// The checker rejects mixed int/decimal operands, so a mismatch here is
 /// defensive; overflow maps to a typed runtime fault.
-pub(crate) fn numeric_op(
-    left: &ExecExpr,
-    right: &ExecExpr,
-    env: &mut Env<'_>,
+fn numeric_value_pair(
+    left: Value,
+    right: Value,
     span: SourceSpan,
     int_op: fn(i64, i64) -> Option<i64>,
     decimal_op: fn(Decimal, Decimal) -> Option<Decimal>,
 ) -> Result<Value, RuntimeError> {
-    match (eval_expr(left, env)?, eval_expr(right, env)?) {
+    match (left, right) {
         (Value::Int(a), Value::Int(b)) => {
             int_op(a, b).map(Value::Int).ok_or_else(|| overflow(span))
         }
@@ -481,14 +483,9 @@ pub(crate) fn numeric_op(
 /// Divide two numeric operands as decimals: a zero divisor faults as
 /// `run.divide_by_zero`, a result outside the decimal envelope as
 /// `run.decimal_overflow`.
-pub(crate) fn decimal_div(
-    left: &ExecExpr,
-    right: &ExecExpr,
-    env: &mut Env<'_>,
-    span: SourceSpan,
-) -> Result<Value, RuntimeError> {
-    let dividend = to_decimal(eval_expr(left, env)?, span)?;
-    let divisor = to_decimal(eval_expr(right, env)?, span)?;
+fn decimal_div_values(left: Value, right: Value, span: SourceSpan) -> Result<Value, RuntimeError> {
+    let dividend = to_decimal(left, span)?;
+    let divisor = to_decimal(right, span)?;
     if divisor.is_zero() {
         return Err(divide_by_zero("division by zero", span));
     }
@@ -512,14 +509,17 @@ pub(crate) fn to_decimal(value: Value, span: SourceSpan) -> Result<Decimal, Runt
 /// The only integer division-family operator (division yields decimals via
 /// `decimal_div`). Shares the integer-remainder path and zero-divisor message
 /// with `std::math::remainder`.
-pub(crate) fn int_remainder_op(
-    left: &ExecExpr,
-    right: &ExecExpr,
-    env: &mut Env<'_>,
+fn int_remainder_values(
+    left: Value,
+    right: Value,
     span: SourceSpan,
 ) -> Result<Value, RuntimeError> {
-    let a = eval_int(left, env)?;
-    let b = eval_int(right, env)?;
+    let Value::Int(a) = left else {
+        return Err(type_error("expected an integer", span));
+    };
+    let Value::Int(b) = right else {
+        return Err(type_error("expected an integer", span));
+    };
     int_remainder(a, b, span).map(Value::Int)
 }
 

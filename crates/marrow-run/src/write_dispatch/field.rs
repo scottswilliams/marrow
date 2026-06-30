@@ -25,11 +25,22 @@ pub(crate) fn eval_saved_field_write(
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<(), RuntimeError> {
+    let value = eval_expr(value, env)?;
+    eval_saved_field_write_value(target, value, coerce_error_code, span, env)
+}
+
+pub(crate) fn eval_saved_field_write_value(
+    target: &ExecExpr,
+    value: Value,
+    coerce_error_code: bool,
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<(), RuntimeError> {
     let path = lower(target, env)?;
     if !matches!(path.terminal, crate::path::Terminal::Field { .. }) {
         return Err(unsupported("writing this saved path", span));
     }
-    let value = coerce_error_code_value(eval_expr(value, env)?, coerce_error_code, span)?;
+    let value = coerce_error_code_value(value, coerce_error_code, span)?;
     path.write(value, span, env)
 }
 
