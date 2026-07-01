@@ -36,4 +36,4 @@ jobs:
         run: cargo test --workspace --all-targets --locked
 
       - name: Clippy and unsafe check
-        run: cargo clippy --workspace --all-targets --locked -- -D warnings -D unsafe-code
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings -F unsafe-code
