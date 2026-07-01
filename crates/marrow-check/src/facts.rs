@@ -1471,6 +1471,7 @@ pub struct SurfaceComputedReadFact {
     pub path: String,
     pub function: CheckedFunctionRef,
     pub span: SourceSpan,
+    pub target_span: SourceSpan,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -1522,6 +1522,44 @@ surface Books from ^books
 }
 
 #[test]
+fn surface_computed_read_effect_diagnostics_anchor_at_the_target_token() {
+    // A computed read whose function throws is rejected by the effect-closure pass. The diagnostic
+    // must point at the read's target token, matching the resolution and signature variants, not at
+    // column 1 of the surface item line.
+    let source = "\
+module app
+resource Book
+    title: string
+store ^books(id: int): Book
+pub fn fails(): string
+    throw Error(code: \"app.error\", message: \"hidden\")
+surface Books from ^books
+    fields title
+    read fails
+";
+    let root = temp_project("surface-computed-read-effect-span", |root| {
+        write(root, "src/app.mw", source);
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+
+    let diagnostics = surface_computed_reads(&report);
+    assert_eq!(diagnostics.len(), 1, "{:#?}", report.diagnostics);
+    assert_eq!(
+        diagnostics[0].payload,
+        DiagnosticPayload::SurfaceComputedRead(SurfaceComputedReadDiagnostic::Throws {
+            path: "fails".into(),
+        })
+    );
+    // `read fails` is on line 9; the target token `fails` starts at column 10.
+    assert_eq!(
+        (diagnostics[0].span.line, diagnostics[0].span.column),
+        (9, 10),
+        "the effect-closure diagnostic must anchor at the computed-read target token: {:#?}",
+        diagnostics[0]
+    );
+}
+
+#[test]
 fn surface_computed_read_unindexed_scan_spans_the_traversal_not_the_surface_decl() {
     // The computed read `summary` is clean itself; it calls `tally`, whose `for` loop scans the
     // whole `^books` collection unindexed. The diagnostic must point at that traversal so the dev

@@ -515,6 +515,7 @@ fn resolve_computed_read(
         path: target.path,
         function: target.function,
         span,
+        target_span,
     })
 }
 
@@ -648,7 +649,8 @@ fn push_surface_function_diagnostic(
 /// The span a computed-read effect diagnostic points at. An unindexed-collection rejection points
 /// at the offending traversal site inside the read's function body (or a transitive callee), so
 /// the developer fixes the loop rather than the surface declaration that names the read. Every
-/// other rejection stays anchored at the surface read declaration.
+/// other rejection anchors at the read's target token, matching the resolution and signature
+/// variants.
 fn computed_read_effect_span(
     program: &CheckedProgram,
     read: &SurfaceComputedReadFact,
@@ -656,9 +658,9 @@ fn computed_read_effect_span(
 ) -> SourceSpan {
     match payload {
         SurfaceComputedReadDiagnostic::UnindexedCollectionRead { .. } => {
-            transitive_unindexed_lookup_span(program, read.function).unwrap_or(read.span)
+            transitive_unindexed_lookup_span(program, read.function).unwrap_or(read.target_span)
         }
-        _ => read.span,
+        _ => read.target_span,
     }
 }
 
