@@ -6,12 +6,12 @@ use marrow_store::tree::{EngineProfile, TreeStore};
 use marrow_store::value::Scalar;
 use support::{marrow_sub, temp_project, temp_project_uncommitted, write};
 
-/// A store stamped at a catalog epoch newer than the project's accepted epoch was
-/// evolved by a newer binary. `marrow run` fences itself before any execution: it
-/// reports `run.store_evolved` and never runs the entry, so no program output reaches
-/// stdout.
+/// A store whose commit metadata records a different catalog epoch than its accepted
+/// catalog snapshot is internally inconsistent: every write path stamps both together in
+/// one transaction, so no commit or evolution can produce this state. `marrow run` fails
+/// closed as `store.corruption` before any execution, so no program output reaches stdout.
 #[test]
-fn run_is_fenced_when_store_evolved_past_the_project_epoch() {
+fn commit_metadata_epoch_ahead_of_the_snapshot_fails_closed_as_corruption() {
     let root = temp_project("run-fence-stale", |root| {
         write(
             root,
@@ -31,8 +31,9 @@ fn run_is_fenced_when_store_evolved_past_the_project_epoch() {
              \x20\x20\x20\x20print(\"ran the entry\")\n",
         );
     });
-    // The accepted catalog the fixture wrote sits at epoch 1; stamp the on-disk store
-    // one epoch ahead, with this binary's engine profile so only the epoch fences.
+    // The accepted catalog the fixture wrote sits at epoch 1; stamp the commit metadata one
+    // epoch ahead of it, with this binary's engine profile, so the store is internally
+    // inconsistent (a state no real commit or evolution produces).
     let store_path = root.join(".data").join("marrow.redb");
     fs::create_dir_all(store_path.parent().unwrap()).expect("create data dir");
     {
@@ -57,7 +58,7 @@ fn run_is_fenced_when_store_evolved_past_the_project_epoch() {
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
-    assert!(stderr.contains("run.store_evolved"), "{stderr}");
+    assert!(stderr.contains("store.corruption"), "{stderr}");
     // The entry never ran: the fence fires before execution, so nothing prints.
     let stdout = String::from_utf8(output.stdout).expect("stdout utf8");
     assert_eq!(stdout, "");

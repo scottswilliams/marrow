@@ -772,10 +772,18 @@ fn data_dump(args: &[String]) -> ExitCode {
         Err(code) => return code,
     };
     let records = match &store {
-        Some(store) => match count_data_records(&program, store) {
-            Ok(records) => records,
-            Err(error) => return report_store_error(error, format),
-        },
+        Some(store) => {
+            // Dump reads through the data family, so it owes the same store-open witness stats
+            // and integrity run: a corrupt commit stamp or a committed cell no read can reach is
+            // a store fault the text dump must fail closed on, not silently render around.
+            if let Err(error) = store.verify_structural_digests() {
+                return report_store_error(error, format);
+            }
+            match count_data_records(&program, store) {
+                Ok(records) => records,
+                Err(error) => return report_store_error(error, format),
+            }
+        }
         None => 0,
     };
     warn_on_hidden_orphans(&program, &store, format);

@@ -292,10 +292,24 @@ impl TreeStore {
     /// that holds data but stamped no digest, or whose live digest disagrees with its
     /// stamp, is backend damage, failed closed as corruption.
     ///
+    /// Two independent witnesses run first, so a store no digest comparison can condemn still
+    /// fails closed. The catalog/meta family — the store uid, the accepted commit stamp, and the
+    /// accepted catalog snapshot — is decoded and value-validated the way the runtime store-open
+    /// and the json snapshot stamp read it, so a present-but-undecodable cell there is backend
+    /// damage every store-open verdict rejects, making that verdict a property of the store rather
+    /// than of a particular caller or output format; an absent cell is the empty/first-run store
+    /// and decodes as nothing. And redb positions a range scan by walking leaf pages while a point
+    /// lookup navigates interior branch separators, so a flipped separator can misroute a lookup
+    /// past a committed cell the range scan — and therefore the digest — still covers:
+    /// `verify_data_cells_seek_reachable` reconciles the two and fails a store holding a committed
+    /// cell no read can reach.
+    ///
     /// `data integrity` runs this directly, the same way it runs [`verify_index_readable`]:
     /// its record and orphan passes traverse the data family but would otherwise bless a
     /// store whose cells were silently truncated or rewritten below the anchor.
     pub fn verify_structural_digests(&self) -> Result<(), StoreError> {
+        self.verify_meta_family_decodes()?;
+        self.verify_data_cells_seek_reachable()?;
         let live = self.live_root_digests()?;
         let mut stamped = self.stamped_root_digests()?;
         for (store, live_digest) in &live {
@@ -328,6 +342,57 @@ impl TreeStore {
             Ok(())
         })?;
         Ok(digests)
+    }
+
+    /// Decode and value-validate every committed cell of the catalog/meta family the runtime
+    /// store-open and the json snapshot stamp read: the store uid, the accepted commit stamp,
+    /// and the accepted catalog snapshot. This family sorts ahead of the data and carries no
+    /// structural digest, so a flip there leaves the data digests intact and would slip past a
+    /// digest comparison; only re-decoding each cell catches it. Each read reconstructs its cell
+    /// and fails closed — the catalog read additionally recomputes the snapshot digest from the
+    /// stored rows and rejects a header that no longer matches — so a store the runtime refuses is
+    /// refused here too. An absent cell is the empty/first-run store and decodes as nothing.
+    ///
+    /// Decoding each cell alone still admits a store whose cells are individually valid but
+    /// mutually inconsistent. The commit stamp records the accepted catalog epoch, and the
+    /// catalog snapshot carries its own epoch; the two describe one accepted catalog and must
+    /// agree. A flip of the stamped `catalog_epoch` leaves both cells decodable while the store
+    /// now claims two different accepted epochs — the internal contradiction backup rejects at
+    /// write and the runtime fence rejects at open. Cross-checking the two here fails such a
+    /// store closed, so this store-open witness owns the binding for integrity and recover just
+    /// as backup and the fence own it on their paths.
+    fn verify_meta_family_decodes(&self) -> Result<(), StoreError> {
+        self.read_store_uid()?;
+        let commit = self.read_commit_metadata()?;
+        let snapshot = self.read_catalog_snapshot()?;
+        if let (Some(commit), Some(snapshot)) = (&commit, &snapshot)
+            && commit.catalog_epoch != snapshot.epoch
+        {
+            return Err(StoreError::Corruption {
+                message:
+                    "commit metadata catalog epoch disagrees with the accepted catalog snapshot"
+                        .into(),
+            });
+        }
+        Ok(())
+    }
+
+    /// Every committed data cell the linear scan yields must also be reachable by the
+    /// point-lookup descent typed reads use. A range scan iterates leaf pages while a point
+    /// lookup navigates interior branch separators, so a flipped separator can misroute a
+    /// lookup past a committed cell the range scan still yields: the cell reads absent though
+    /// its bytes — and the structural digest derived from the scan — are intact. Re-reading each
+    /// scanned cell through the production point read fails such a store closed rather than
+    /// blessing a committed cell no `read_data_value` or record descent can reach.
+    fn verify_data_cells_seek_reachable(&self) -> Result<(), StoreError> {
+        self.for_each_data_cell_raw(&mut |key, _value| {
+            if self.read_cell(key)?.is_none() {
+                return Err(StoreError::Corruption {
+                    message: "a committed data cell is unreachable by point lookup".into(),
+                });
+            }
+            Ok(())
+        })
     }
 
     /// The digest each root will carry once the current state is committed: the durable
@@ -2344,13 +2409,13 @@ mod tests {
 
     use super::{
         CellKey, CommitMetadata, DataPathSegment, IndexCursor, IndexCursorScope, IndexRangeBounds,
-        NODE_MARKER, TREE_BACKUP_MAX_CELL_BYTES, TreeBackupCellBuf, TreeBackupCellReadError,
-        TreeStore,
+        NODE_MARKER, StoreUid, TREE_BACKUP_MAX_CELL_BYTES, TreeBackupCellBuf,
+        TreeBackupCellReadError, TreeStore,
     };
     use crate::StoreError;
     use crate::backend::counting::{BackendCounts, CountingBackend};
     use crate::backend::{Backend, ScanPage, ValuePrefix};
-    use crate::cell::{CatalogId, DataCellKind};
+    use crate::cell::{CatalogId, DataCellKind, MetaCell};
     use crate::key::SavedKey;
     use crate::mem::MemStore;
     use crate::metadata::{decode_commit_metadata, encode_commit_metadata};
@@ -2388,6 +2453,12 @@ mod tests {
         /// must catch even though the data records are intact.
         CorruptIndexScan {
             cells: Vec<Vec<u8>>,
+        },
+        /// Model an interior-separator flip that misroutes a point lookup: `read` reads
+        /// absent for a key a range scan still yields, so the committed cell is invisible to
+        /// a seek yet intact in the raw scan and the structural digest.
+        SeekMisroute {
+            hidden: std::rc::Rc<std::cell::RefCell<std::collections::HashSet<Vec<u8>>>>,
         },
     }
 
@@ -2549,6 +2620,28 @@ mod tests {
             }
         }
 
+        /// A backend whose point `read` reads absent for any key the returned handle lists,
+        /// while every scan still yields it. Seed the store through it with the handle empty,
+        /// then add committed cell keys to model the interior-separator flip that hides them
+        /// from a seek.
+        #[allow(clippy::type_complexity)]
+        fn seek_misroute() -> (
+            Self,
+            std::rc::Rc<std::cell::RefCell<std::collections::HashSet<Vec<u8>>>>,
+        ) {
+            let hidden =
+                std::rc::Rc::new(std::cell::RefCell::new(std::collections::HashSet::new()));
+            (
+                Self {
+                    inner: MemStore::default(),
+                    fault: BackendFault::SeekMisroute {
+                        hidden: hidden.clone(),
+                    },
+                },
+                hidden,
+            )
+        }
+
         fn injected_page(&self, prefix: &[u8]) -> Option<ScanPage> {
             match &self.fault {
                 BackendFault::CorruptIndexScan { cells }
@@ -2610,6 +2703,11 @@ mod tests {
 
     impl Backend for FaultingBackend {
         fn read(&self, key: &[u8]) -> Result<Option<Vec<u8>>, StoreError> {
+            if let BackendFault::SeekMisroute { hidden } = &self.fault
+                && hidden.borrow().contains(key)
+            {
+                return Ok(None);
+            }
             self.inner.read(key)
         }
 
@@ -4157,5 +4255,181 @@ mod tests {
         store
             .verify_structural_digests()
             .expect("a delete must not false-corrupt the store");
+    }
+
+    /// An interior-separator flip can misroute a point lookup past a committed cell a range
+    /// scan still yields: the cell reads absent though the raw scan and the structural digest
+    /// still cover it, so a digest comparison alone blesses a committed cell no read can reach.
+    /// The store-open witness reconciles the point-lookup descent against the raw scan and fails
+    /// closed, and it does so for a hidden identity node or member value alike, on many cells
+    /// rather than one offset.
+    #[test]
+    fn a_seek_unreachable_cell_fails_the_store_open_witness() {
+        let root = catalog("cat_00000000000000000000000000000001");
+        let member = catalog("cat_000000000000000000000000000000aa");
+        let (backend, hidden) = FaultingBackend::seek_misroute();
+        let store = TreeStore::from_backend(Box::new(backend));
+        store.begin().expect("begin");
+        for id in 1..=5 {
+            let identity = [SavedKey::Int(id)];
+            store
+                .write_record_presence(&root, &identity)
+                .expect("presence");
+            store
+                .write_data_value(
+                    &root,
+                    &identity,
+                    &[DataPathSegment::Member(member.clone())],
+                    format!("body-{id}").into_bytes(),
+                )
+                .expect("value");
+        }
+        store.commit().expect("commit");
+        store
+            .verify_structural_digests()
+            .expect("a freshly committed store verifies clean");
+
+        // Hide each committed cell from point lookup one at a time — member values and identity
+        // nodes across several records — the way an interior flip misroutes a seek while the
+        // range scan still yields the cell. Every one must fail both store-open witnesses.
+        for id in [1i64, 3, 5] {
+            for hidden_key in [
+                CellKey::data_path_value(
+                    &root,
+                    &[SavedKey::Int(id)],
+                    &[DataPathSegment::Member(member.clone())],
+                )
+                .into_bytes(),
+                CellKey::node(&root, &[SavedKey::Int(id)]).into_bytes(),
+            ] {
+                hidden.borrow_mut().insert(hidden_key);
+                assert_corruption(store.verify_structural_digests());
+                assert_corruption(store.verify_readable());
+                hidden.borrow_mut().clear();
+            }
+        }
+
+        // With nothing hidden the store verifies clean again: the witness condemns only an
+        // unreachable committed cell, never a healthy one.
+        store
+            .verify_structural_digests()
+            .expect("the store verifies clean once every cell is reachable again");
+        store
+            .verify_readable()
+            .expect("the store is readable once every cell is reachable again");
+    }
+
+    /// A present-but-undecodable cell in the catalog/meta family — the store uid, the accepted
+    /// commit stamp, or a catalog snapshot row — is backend damage the runtime store-open refuses,
+    /// so the store-open witness `data integrity`, `data stats`, `data dump`, `backup`, and
+    /// `data recover` share must refuse it too, regardless of who runs it or in what output format.
+    /// This family sorts ahead of the data and carries no per-cell structural digest, so the data
+    /// cells and their digests stay intact under the tamper; only a witness that re-decodes each
+    /// cell catches it. A catalog row is caught at every byte offset because the read recomputes the
+    /// snapshot digest from the stored rows, so any change to an entry or the header contradicts it.
+    /// A healthy family still passes both witnesses.
+    #[test]
+    fn a_corrupt_catalog_or_meta_family_cell_fails_the_store_open_witness() {
+        let backend = SharedMem::default();
+        let store = TreeStore::from_backend(Box::new(backend.clone()));
+        let root = catalog("cat_00000000000000000000000000000009");
+        let member = catalog("cat_000000000000000000000000000000aa");
+        store.begin().expect("begin");
+        store
+            .write_store_uid(&StoreUid::from_entropy_bytes([7; 16]))
+            .expect("store uid");
+        for id in 1..=3 {
+            let identity = [SavedKey::Int(id)];
+            store
+                .write_record_presence(&root, &identity)
+                .expect("presence");
+            store
+                .write_data_value(
+                    &root,
+                    &identity,
+                    &[DataPathSegment::Member(member.clone())],
+                    format!("body-{id}").into_bytes(),
+                )
+                .expect("value");
+        }
+        store
+            .replace_catalog_snapshot(&sample_catalog())
+            .expect("publish catalog");
+        store
+            .write_commit_metadata(&empty_commit_metadata(1))
+            .expect("commit metadata");
+        store.commit().expect("commit");
+        store
+            .verify_structural_digests()
+            .expect("a healthy catalog/meta family verifies clean");
+        store
+            .verify_readable()
+            .expect("a healthy catalog/meta family is readable");
+
+        // Capture the healthy committed bytes so each tamper can be reverted, isolating the one
+        // cell under test and proving the witness condemns only the damaged one.
+        let mut healthy = std::collections::BTreeMap::new();
+        backend.tamper(|entries| healthy = entries.clone());
+        let fail_closed = |key: Vec<u8>, value: Vec<u8>| {
+            backend.tamper(|entries| {
+                entries.insert(key, value);
+            });
+            assert_corruption(store.verify_structural_digests());
+            assert_corruption(store.verify_readable());
+            backend.tamper(|entries| *entries = healthy.clone());
+        };
+
+        // The store-uid cell: several byte patterns that no longer decode as `store_<32 hex>` —
+        // an empty value, a stray byte, a dropped prefix, a truncated hex run, and a non-hex
+        // character — each fail both witnesses closed.
+        let uid_key = CellKey::meta(MetaCell::StoreUid).into_bytes();
+        for value in [
+            Vec::new(),
+            vec![0xff],
+            b"nostoreprefix00000000000000000000000000".to_vec(),
+            b"store_00".to_vec(),
+            b"store_zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz".to_vec(),
+        ] {
+            fail_closed(uid_key.clone(), value);
+        }
+
+        // The accepted commit stamp: an empty value, a stray byte, and a truncated header each
+        // fail to decode and are refused.
+        let commit_key = CellKey::meta(MetaCell::Commit).into_bytes();
+        for value in [Vec::new(), vec![0xff], vec![0x00, 0x00, 0x00]] {
+            fail_closed(commit_key.clone(), value);
+        }
+
+        // The commit stamp and the catalog snapshot both name the accepted epoch, so a
+        // decodable commit whose `catalog_epoch` no longer matches the snapshot's epoch is an
+        // internally-inconsistent store — the binding backup and the runtime fence reject. The
+        // snapshot here holds epoch 1; several disagreeing stamped epochs each fail closed while
+        // remaining a valid commit encoding.
+        for epoch in [0, 2, 4278190081, u64::MAX] {
+            let mismatched = encode_commit_metadata(&empty_commit_metadata(epoch))
+                .expect("commit metadata encodes");
+            fail_closed(commit_key.clone(), mismatched);
+        }
+
+        // The catalog snapshot: flip every byte of every catalog-family row in turn. Each flip
+        // either breaks a row's decode or shifts the digest the read recomputes from the entries
+        // away from the stored header, so all of them fail closed — many offsets across the family.
+        let catalog_prefix = CellKey::catalog_family().into_bytes();
+        let catalog_rows: Vec<(Vec<u8>, Vec<u8>)> = healthy
+            .iter()
+            .filter(|(key, _)| key.starts_with(&catalog_prefix))
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect();
+        assert!(
+            !catalog_rows.is_empty(),
+            "the committed store must hold catalog rows to tamper",
+        );
+        for (key, value) in &catalog_rows {
+            for offset in 0..value.len() {
+                let mut flipped = value.clone();
+                flipped[offset] ^= 0xff;
+                fail_closed(key.clone(), flipped);
+            }
+        }
     }
 }

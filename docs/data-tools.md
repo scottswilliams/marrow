@@ -318,6 +318,16 @@ its digest — a dropped cell, a torn value, or a moved field — is reported as
 `store.corruption`. The same digest gates `backup` and `data recover`, so neither
 archives nor blesses a truncated or tampered store.
 
+Because a range scan and a point lookup take different paths through the store's
+btree, the same store-open witness also re-reads every committed cell through the
+point-lookup descent typed reads use, so an interior-node flip that misroutes a
+lookup past a committed cell the scan — and the digest — still cover is reported as
+`store.corruption` rather than read absent, and it decodes the accepted
+commit-metadata cell so a present-but-corrupt commit stamp fails closed regardless
+of which command reads it or in which output format. `data integrity`, `data
+stats`, `data dump`, `backup`, `data recover`, and the runtime store-open share this
+one witness.
+
 The anchor cannot witness a rollback that drops the anchor itself. The committed
 `marrow.lock` is the second, independent witness: it records the accepted catalog
 roots, so a **present** store that presents fewer roots than its lock committed —

@@ -174,6 +174,15 @@ as `store.corruption` on a mismatch — a dropped cell, a torn value, and a move
 field each change the per-cell hash. The digest is recomputed from the replayed
 cells, not carried, on restore, so a restored store re-verifies.
 
+Because a range scan iterates leaf pages while a point lookup navigates interior
+branch separators, the same store-open witness also re-reads every scanned cell
+through the point-lookup descent typed reads use, failing closed when an
+interior-separator flip misroutes a lookup past a committed cell the scan — and
+therefore the digest — still covers, and decodes the commit-metadata cell so a
+present-but-undecodable stamp fails closed independent of the reading command or
+output format. `data integrity`, `data stats`, `data dump`, `backup`, `data
+recover`, and the runtime store-open share this one witness.
+
 The anchor cannot witness a corruption that drops the anchor itself: a flip in
 the commit-metadata region that rolls the store back to its empty initial commit
 presents zero records and zero digests, so the per-anchor cross-check visits

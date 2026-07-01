@@ -229,6 +229,260 @@ fn silent_cell_loss_is_caught_by_the_structural_digest() {
     }
 }
 
+/// A single-byte data-btree flip can misroute a point lookup past a committed member cell a
+/// range scan still yields, so `data get ^notes(k).body` reads absent though the raw scan and the
+/// structural digest still cover it. The store-open witness reconciles the point-lookup descent
+/// against the raw scan, so whenever `data integrity` blesses a store, no committed member cell it
+/// holds may read absent through the point-lookup `data get` performs. A bounded flip sample
+/// across the body probes the seeded body cells at every offset integrity verifies; the forbidden
+/// outcome is a silent absent read — `data get` failing the flip closed is the stricter,
+/// acceptable verdict. The deterministic class-closure counterpart is the store's
+/// `a_seek_unreachable_cell_fails_the_store_open_witness`.
+#[test]
+fn integrity_never_blesses_a_seek_unreachable_member_cell() {
+    const SEEDED: u64 = 60;
+    let (project, dir) = seeded_fixed_store("cli-store-seek-unreachable", SEEDED as u32);
+    let store = store_path(&project);
+    let clean = std::fs::read(&store).expect("read seeded store body");
+    let len = clean.len();
+    assert!(
+        len > 8192,
+        "a seeded store spans several pages: {len} bytes"
+    );
+    let deadline = std::time::Duration::from_secs(30);
+    let probes = [1u64, SEEDED / 2, SEEDED];
+
+    // Sample offsets across the body past the header page rather than every byte, so the sweep
+    // reaches the data page-structure region in bounded time.
+    let body = len - 8192;
+    let offsets: Vec<usize> = (0..24).map(|i| 8192 + body * i / 24).collect();
+    for offset in offsets {
+        for bit in [0x01u8, 0x80] {
+            let mut corrupt = clean.clone();
+            corrupt[offset] ^= bit;
+            std::fs::write(&store, &corrupt).expect("write corrupted store body");
+
+            let integrity = marrow_bounded(&["data", "integrity", &dir], deadline);
+            assert_no_panic_and_bounded(&integrity, &["data", "integrity", &dir], offset);
+            if integrity.status.code() != Some(0) {
+                continue;
+            }
+            // A store integrity blesses must not hold a committed body cell that reads absent
+            // through a point lookup. `data get` failing the flip closed is acceptable; a silent
+            // absent read over a blessed store is the seek-unreachable cell the witness must catch.
+            for id in probes {
+                let path = format!("^notes({id}).body");
+                let command = ["data", "get", &dir, &path];
+                let get = marrow_bounded(&command, deadline);
+                assert_no_panic_and_bounded(&get, &command, offset);
+                let stdout = String::from_utf8(get.stdout.clone()).expect("get stdout utf8");
+                assert!(
+                    !(get.status.code() == Some(0) && stdout.trim() == "(absent)"),
+                    "offset {offset}: `data integrity` verified the store yet `data get {path}` \
+                     reads absent — a committed cell no point lookup can reach: {get:?}"
+                );
+            }
+        }
+    }
+    std::fs::write(&store, &clean).expect("restore pristine store");
+}
+
+/// A store-open corruption verdict is a property of the store, never of the command or the output
+/// format. A single flipped byte in the catalog/meta family — here the store-uid cell, which sorts
+/// ahead of the data and carries no structural digest, so every data cell and per-root digest stays
+/// intact — must fail EVERY store-opening command closed with `store.corruption`, in text and json
+/// alike, and `data recover` must refuse it rather than report a completed repair. This is the
+/// divergence the fix closes: text `integrity`, `stats`, and `dump` once blessed a meta-corrupt
+/// store that json `integrity`, `get`, `roots`, `backup`, and `recover` failed closed on. A healthy
+/// store passes every command in both formats, recover converges, and a backup round-trips through
+/// restore. The deterministic store-level counterpart sweeps every offset of the uid, commit-stamp,
+/// and catalog cells: `a_corrupt_catalog_or_meta_family_cell_fails_the_store_open_witness`.
+#[test]
+fn a_meta_family_flip_fails_every_command_closed_in_either_format() {
+    const SEEDED: u64 = 40;
+    let (project, dir) = seeded_fixed_store("cli-store-meta-family-uniform", SEEDED as u32);
+    let store = store_path(&project);
+    let clean = std::fs::read(&store).expect("read seeded store body");
+    let archive = project.join("meta-family.mwbackup");
+    let archive = archive.to_str().expect("archive utf8").to_string();
+    let deadline = std::time::Duration::from_secs(30);
+
+    // Healthy: every command verifies clean in both formats, recover converges, and a backup
+    // round-trips through a replace restore under the true live count.
+    assert_meta_family_store_healthy(&dir, &archive, SEEDED, deadline);
+
+    // Locate the store-uid cell value verbatim in the redb file. Flip each byte of its `store_`
+    // prefix in turn: every flip makes the cell no longer decode as a store uid, so the store-open
+    // witness every command shares must fail the store closed the same way regardless of who opens
+    // it or in what format.
+    let uid_at = find_store_uid_offset(&clean);
+    for prefix_byte in 0..b"store_".len() {
+        let offset = uid_at + prefix_byte;
+        let mut corrupt = clean.clone();
+        corrupt[offset] ^= 0xff;
+        std::fs::write(&store, &corrupt).expect("write the meta-corrupt store body");
+        assert_meta_family_store_corrupt(&dir, &archive, offset, deadline);
+    }
+    std::fs::write(&store, &clean).expect("restore the pristine store");
+}
+
+/// The byte offset of the store-uid cell value in a redb store file: the verbatim `store_` prefix
+/// followed by 32 lowercase hex digits, a pattern the meta cell alone carries.
+fn find_store_uid_offset(bytes: &[u8]) -> usize {
+    let prefix = b"store_";
+    bytes
+        .windows(prefix.len() + 32)
+        .position(|window| {
+            window.starts_with(prefix)
+                && window[prefix.len()..]
+                    .iter()
+                    .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        })
+        .expect("the store-uid cell must appear verbatim in the store body")
+}
+
+/// Every store-opening command verifies a healthy store rc0 in both formats, recover converges, and
+/// a backup round-trips through a replace restore under the true live count.
+fn assert_meta_family_store_healthy(
+    dir: &str,
+    archive: &str,
+    records: u64,
+    deadline: std::time::Duration,
+) {
+    for command in [
+        ["data", "integrity", dir].as_slice(),
+        ["data", "integrity", "--format", "json", dir].as_slice(),
+        ["data", "stats", dir].as_slice(),
+        ["data", "stats", "--format", "json", dir].as_slice(),
+        ["data", "dump", dir].as_slice(),
+        ["data", "roots", dir].as_slice(),
+        ["data", "get", dir, "^notes(1).body"].as_slice(),
+        ["data", "recover", dir].as_slice(),
+        ["backup", dir, archive].as_slice(),
+    ] {
+        let output = marrow_bounded(command, deadline);
+        assert_no_panic_and_bounded(&output, command, 0);
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "`marrow {}` must verify a healthy store: {output:?}",
+            command.join(" "),
+        );
+    }
+    // The backup the battery wrote round-trips: a replace restore under the true live count
+    // succeeds and the store still holds every seeded record.
+    let count = records.to_string();
+    let restore = marrow_bounded(
+        &["restore", "--replace", "--count", &count, dir, archive],
+        deadline,
+    );
+    assert_no_panic_and_bounded(&restore, &["restore"], 0);
+    assert_eq!(
+        restore.status.code(),
+        Some(0),
+        "a healthy store round-trips through restore: {restore:?}",
+    );
+    let stats = marrow_bounded(&["data", "stats", dir], deadline);
+    assert_eq!(
+        reported_record_count(&stats),
+        Some(records),
+        "the restored store holds every seeded record: {stats:?}",
+    );
+    let doctor = marrow_bounded(&["doctor", dir, "--format", "json"], deadline);
+    assert_no_panic_and_bounded(&doctor, &["doctor"], 0);
+    let report: serde_json::Value =
+        serde_json::from_slice(&doctor.stdout).expect("doctor json report");
+    assert!(
+        !findings_carry_lock_root_corruption(&report),
+        "doctor must verify a healthy store: {report}"
+    );
+}
+
+/// Every store-opening command fails a meta-corrupt store closed with `store.corruption`: the text
+/// verbs on stderr, json `integrity` on its fault object, `recover` in both formats (never a
+/// completed repair), and `doctor` in its findings envelope.
+fn assert_meta_family_store_corrupt(
+    dir: &str,
+    archive: &str,
+    offset: usize,
+    deadline: std::time::Duration,
+) {
+    for command in [
+        ["data", "integrity", dir].as_slice(),
+        ["data", "stats", dir].as_slice(),
+        ["data", "dump", dir].as_slice(),
+        ["data", "roots", dir].as_slice(),
+        ["data", "get", dir, "^notes(1).body"].as_slice(),
+        ["backup", dir, archive].as_slice(),
+        ["data", "recover", dir].as_slice(),
+    ] {
+        let output = marrow_bounded(command, deadline);
+        assert_no_panic_and_bounded(&output, command, offset);
+        assert_eq!(
+            output.status.code(),
+            Some(1),
+            "offset {offset}: `marrow {}` blessed a meta-corrupt store: {output:?}",
+            command.join(" "),
+        );
+        assert_eq!(
+            stderr_code(&output),
+            "store.corruption",
+            "offset {offset}: `marrow {}` must report store.corruption: {output:?}",
+            command.join(" "),
+        );
+    }
+
+    // json `integrity` reports the same verdict on its fault object: a corruption result is not a
+    // rendering choice.
+    let integrity_json = marrow_bounded(&["data", "integrity", "--format", "json", dir], deadline);
+    assert_no_panic_and_bounded(
+        &integrity_json,
+        &["data", "integrity", "--format", "json"],
+        offset,
+    );
+    assert_eq!(
+        integrity_json.status.code(),
+        Some(1),
+        "offset {offset}: json integrity blessed a meta-corrupt store: {integrity_json:?}",
+    );
+    assert_eq!(
+        json_fault_code(&integrity_json).as_deref(),
+        Some("store.corruption"),
+        "offset {offset}: json integrity must carry store.corruption: {integrity_json:?}",
+    );
+
+    // json `recover` must refuse rather than report a completed repair.
+    let recover_json = marrow_bounded(&["data", "recover", "--format", "json", dir], deadline);
+    assert_no_panic_and_bounded(
+        &recover_json,
+        &["data", "recover", "--format", "json"],
+        offset,
+    );
+    assert_eq!(
+        json_fault_code(&recover_json).as_deref(),
+        Some("store.corruption"),
+        "offset {offset}: json recover must fail closed, not report a completed repair: \
+         {recover_json:?}",
+    );
+
+    // doctor surfaces the store fault in its findings envelope rather than blessing the store.
+    let doctor = marrow_bounded(&["doctor", dir, "--format", "json"], deadline);
+    assert_no_panic_and_bounded(&doctor, &["doctor"], offset);
+    let report: serde_json::Value =
+        serde_json::from_slice(&doctor.stdout).expect("doctor json report");
+    assert!(
+        findings_carry_lock_root_corruption(&report),
+        "offset {offset}: doctor blessed a meta-corrupt store instead of flagging it: {report}"
+    );
+}
+
+/// The `code` a `--format json` command carried on its single fault object, or `None` when the
+/// stdout was not a JSON object with a string `code`.
+fn json_fault_code(output: &std::process::Output) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
+    value["code"].as_str().map(str::to_string)
+}
+
 /// A seed plus a `countNotes` entry that returns `count(^notes)`. A write-capable `run`
 /// opens the store the same way the inspection family does, so a btree-corrupt store that
 /// silently drops cells from enumeration must fail the run closed rather than let

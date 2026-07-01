@@ -2435,8 +2435,8 @@ fn fresh_memory_run_does_not_read_or_advance_an_existing_native_store() {
 }
 
 #[test]
-fn opening_a_store_behind_the_accepted_catalog_returns_the_typed_fence_code() {
-    let root = TempDir::new("marrow-run-session-behind").expect("create project");
+fn opening_a_store_whose_snapshot_outran_its_commit_stamp_fails_closed_as_corruption() {
+    let root = TempDir::new("marrow-run-session-inconsistent").expect("create project");
     write_native_config(root.path());
     write_temp_source(root.path(), Path::new("src/shelf.mw"), baseline_source());
     let config = native_config();
@@ -2460,10 +2460,12 @@ fn opening_a_store_behind_the_accepted_catalog_returns_the_typed_fence_code() {
             .expect("baseline catalog")
     };
 
-    // The store is the accepted authority, so a store behind its own published catalog is one
-    // whose catalog snapshot was advanced past its commit stamp: the program binds the advanced
-    // accepted epoch from the snapshot, while the stamp still records the older epoch. Publishing
-    // the advanced snapshot without re-stamping reproduces exactly that state.
+    // The commit stamp and the accepted catalog snapshot both name one accepted epoch and are
+    // stamped together in a single transaction, so no production write leaves them disagreeing.
+    // Publishing an advanced snapshot without re-stamping the commit fabricates that impossible
+    // state: the store now claims two different accepted epochs at once. That internal
+    // contradiction is backend corruption, not a legitimately-behind checkout, so the store-open
+    // readability cross-check fails it closed with `store.corruption`.
     write_temp_source(root.path(), Path::new("src/shelf.mw"), advanced_source());
     let (report, advanced) =
         marrow_check::check_project_with_catalog(root.path(), &config, Some(&baseline))
@@ -2486,8 +2488,39 @@ fn opening_a_store_behind_the_accepted_catalog_returns_the_typed_fence_code() {
         store.commit().expect("commit");
     }
 
-    let error =
-        ProjectSession::open(root.path(), ProjectMode::Run).expect_err("store behind is fenced");
+    let error = ProjectSession::open(root.path(), ProjectMode::Run)
+        .expect_err("an inconsistent store fails closed");
+
+    assert_eq!(error.code(), "store.corruption");
+}
+
+#[test]
+fn run_over_a_store_behind_the_committed_lock_high_water_is_fenced() {
+    // The legitimate store-behind: a locally-consistent store (its commit stamp and catalog
+    // snapshot agree) whose committed lock a teammate advanced one epoch past the local commit.
+    // The store is not corrupt, so the cross-check admits it; the lock high-water is the
+    // independent witness that a write here would commit against an epoch the shared source tree
+    // has left behind, so run fails closed with `run.store_behind`.
+    let root = TempDir::new("marrow-run-behind-committed-lock").expect("create project");
+    write_native_config(root.path());
+    write_temp_source(
+        root.path(),
+        Path::new("src/shelf.mw"),
+        persistent_counter_source(),
+    );
+
+    let seed = ProjectSession::open(
+        root.path(),
+        ProjectOpen::run().with_entry_override("shelf::bump"),
+    )
+    .expect("open seed session");
+    assert_eq!(invoke(&seed, "shelf::bump"), "");
+    drop(seed);
+
+    advance_committed_lock_one_epoch_ahead_of_store(root.path());
+
+    let error = ProjectSession::open(root.path(), ProjectMode::Run)
+        .expect_err("a store behind the committed lock high-water is fenced");
 
     assert_eq!(error.code(), "run.store_behind");
 }
