@@ -23,7 +23,8 @@ use crate::facts::{
     StoreIndexId, StoreIndexKeyFact, StoreIndexKeySource, StoredValueMeaning, SurfaceActionFact,
     SurfaceCatalogBlocker, SurfaceCatalogStatus, SurfaceCollectionFact, SurfaceCollectionTarget,
     SurfaceComputedReadFact, SurfaceDeleteFact, SurfaceFact, SurfaceFieldFact, SurfaceId,
-    SurfaceReadFootprint, SurfaceReadOperationFact, SurfaceReadOperationKind,
+    SurfaceIndexRangeCollection, SurfaceReadFootprint, SurfaceReadOperationFact,
+    SurfaceReadOperationKind,
 };
 use crate::presence::transitive_unindexed_lookup_span;
 use crate::surface_abi::surface_read_operation_tag;
@@ -881,6 +882,14 @@ fn collection_read_operation_kind(
                 }
             }
         }
+        SurfaceCollectionTarget::StoreIndexRange(range) => {
+            SurfaceReadOperationKind::PagedIndexRangeCollection {
+                index: range.index,
+                exact_key_count: range.exact_key_count,
+                range_key_index: range.range_key_index,
+                identity_key_count: range.identity_key_count,
+            }
+        }
     }
 }
 
@@ -1457,6 +1466,18 @@ fn resolve_collection(
             index,
             target_span,
         )?,
+        SurfaceTarget::IndexRange { root, index, .. } => resolve_index_range_collection(
+            CollectionResolveContext {
+                program,
+                file,
+                store,
+                backing_validity,
+                diagnostics,
+            },
+            root,
+            index,
+            target_span,
+        )?,
     };
     Some(SurfaceCollectionFact {
         alias: item.alias.to_string(),
@@ -1502,11 +1523,50 @@ struct CollectionResolveContext<'a> {
 }
 
 fn resolve_index_collection(
-    context: CollectionResolveContext<'_>,
+    mut context: CollectionResolveContext<'_>,
     root: &str,
     index: &str,
     span: SourceSpan,
 ) -> Option<SurfaceCollectionTarget> {
+    let index_id = resolve_collection_index_id(&mut context, root, index, span)?;
+    validate_collection_index_backing(&mut context, root, index, span, index_id)?;
+    Some(SurfaceCollectionTarget::StoreIndex(index_id))
+}
+
+fn resolve_index_range_collection(
+    mut context: CollectionResolveContext<'_>,
+    root: &str,
+    index: &str,
+    span: SourceSpan,
+) -> Option<SurfaceCollectionTarget> {
+    let index_id = resolve_collection_index_id(&mut context, root, index, span)?;
+    let index_fact = context.program.facts.store_index(index_id);
+    let range = range_collection_shape(context.store, index_fact).map_err(|problem| {
+        push_invalid_range_collection_index_diagnostic(
+            context.file,
+            span,
+            root,
+            index,
+            index_fact
+                .keys
+                .get(problem.key_index())
+                .map(|key| key.name.as_str()),
+            problem,
+            context.diagnostics,
+        );
+    });
+    if range.is_ok() {
+        validate_collection_index_backing(&mut context, root, index, span, index_id)?;
+    }
+    Some(SurfaceCollectionTarget::StoreIndexRange(range.ok()?))
+}
+
+fn resolve_collection_index_id(
+    context: &mut CollectionResolveContext<'_>,
+    root: &str,
+    index: &str,
+    span: SourceSpan,
+) -> Option<StoreIndexId> {
     if root != context.store.root {
         push_foreign_unknown_or_ambiguous_root(
             context.program,
@@ -1542,6 +1602,16 @@ fn resolve_index_collection(
             return None;
         }
     };
+    Some(index_id)
+}
+
+fn validate_collection_index_backing(
+    context: &mut CollectionResolveContext<'_>,
+    root: &str,
+    index: &str,
+    span: SourceSpan,
+    index_id: StoreIndexId,
+) -> Option<()> {
     if context
         .backing_validity
         .index_is_invalid(context.program, index_id)
@@ -1555,7 +1625,55 @@ fn resolve_index_collection(
         );
         return None;
     }
-    Some(SurfaceCollectionTarget::StoreIndex(index_id))
+    Some(())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RangeCollectionIndexProblem {
+    Unique,
+    MissingIdentitySuffix,
+    MissingRangeKey,
+    UnsupportedRangeKey { key_index: usize },
+}
+
+impl RangeCollectionIndexProblem {
+    fn key_index(self) -> usize {
+        match self {
+            Self::UnsupportedRangeKey { key_index } => key_index,
+            Self::Unique | Self::MissingIdentitySuffix | Self::MissingRangeKey => usize::MAX,
+        }
+    }
+}
+
+fn range_collection_shape(
+    store: &StoreFact,
+    index: &StoreIndexFact,
+) -> Result<SurfaceIndexRangeCollection, RangeCollectionIndexProblem> {
+    if index.unique {
+        return Err(RangeCollectionIndexProblem::Unique);
+    }
+    let identity_key_count = full_identity_suffix_count(store, index);
+    if !store.identity_keys.is_empty() && identity_key_count != store.identity_keys.len() {
+        return Err(RangeCollectionIndexProblem::MissingIdentitySuffix);
+    }
+    if index.keys.len() <= identity_key_count {
+        return Err(RangeCollectionIndexProblem::MissingRangeKey);
+    }
+    let range_key_index = index.keys.len() - identity_key_count - 1;
+    if !matches!(
+        index.keys[range_key_index].value_meaning,
+        StoredValueMeaning::Scalar(_)
+    ) {
+        return Err(RangeCollectionIndexProblem::UnsupportedRangeKey {
+            key_index: range_key_index,
+        });
+    }
+    Ok(SurfaceIndexRangeCollection {
+        index: index.id,
+        exact_key_count: range_key_index,
+        range_key_index,
+        identity_key_count,
+    })
 }
 
 enum StoreIndexResolution {
@@ -1650,6 +1768,63 @@ fn push_invalid_collection_index_diagnostic(
                 index: index.to_string(),
             },
         )),
+    );
+}
+
+fn push_invalid_range_collection_index_diagnostic(
+    file: &Path,
+    span: SourceSpan,
+    root: &str,
+    index: &str,
+    key: Option<&str>,
+    problem: RangeCollectionIndexProblem,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    let payload = match problem {
+        RangeCollectionIndexProblem::Unique => {
+            SurfaceTargetDiagnostic::RangeCollectionUniqueIndex {
+                root: root.to_string(),
+                index: index.to_string(),
+            }
+        }
+        RangeCollectionIndexProblem::MissingIdentitySuffix => {
+            SurfaceTargetDiagnostic::RangeCollectionMissingIdentitySuffix {
+                root: root.to_string(),
+                index: index.to_string(),
+            }
+        }
+        RangeCollectionIndexProblem::MissingRangeKey => {
+            SurfaceTargetDiagnostic::RangeCollectionMissingRangeKey {
+                root: root.to_string(),
+                index: index.to_string(),
+            }
+        }
+        RangeCollectionIndexProblem::UnsupportedRangeKey { .. } => {
+            SurfaceTargetDiagnostic::RangeCollectionUnsupportedRangeKey {
+                root: root.to_string(),
+                index: index.to_string(),
+                key: key.unwrap_or("<unknown>").to_string(),
+            }
+        }
+    };
+    let message = match problem {
+        RangeCollectionIndexProblem::Unique => {
+            format!("surface range collection targets unique index `{index}` on `^{root}`")
+        }
+        RangeCollectionIndexProblem::MissingIdentitySuffix => format!(
+            "surface range collection index `{index}` on `^{root}` does not end with the store identity"
+        ),
+        RangeCollectionIndexProblem::MissingRangeKey => format!(
+            "surface range collection index `{index}` on `^{root}` has no non-identity range key"
+        ),
+        RangeCollectionIndexProblem::UnsupportedRangeKey { .. } => format!(
+            "surface range collection index `{index}` on `^{root}` ranges over non-scalar key `{}`",
+            key.unwrap_or("<unknown>")
+        ),
+    };
+    diagnostics.push(
+        CheckDiagnostic::error(CHECK_SURFACE_TARGET, file, span, message)
+            .with_payload(DiagnosticPayload::SurfaceTarget(payload)),
     );
 }
 
@@ -1850,14 +2025,21 @@ fn collection_has_catalog_ids(
     match collection.target {
         SurfaceCollectionTarget::StoreRoot(_) => true,
         SurfaceCollectionTarget::StoreIndex(index) => {
-            let index = program.facts.store_index(index);
-            index.catalog_id.is_some()
-                && index
-                    .keys
-                    .iter()
-                    .all(|key| index_key_has_catalog_ids(program, key))
+            collection_index_has_catalog_ids(program, index)
+        }
+        SurfaceCollectionTarget::StoreIndexRange(range) => {
+            collection_index_has_catalog_ids(program, range.index)
         }
     }
+}
+
+fn collection_index_has_catalog_ids(program: &CheckedProgram, index: StoreIndexId) -> bool {
+    let index = program.facts.store_index(index);
+    index.catalog_id.is_some()
+        && index
+            .keys
+            .iter()
+            .all(|key| index_key_has_catalog_ids(program, key))
 }
 
 fn index_key_has_catalog_ids(program: &CheckedProgram, key: &StoreIndexKeyFact) -> bool {

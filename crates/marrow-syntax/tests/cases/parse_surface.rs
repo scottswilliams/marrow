@@ -64,6 +64,7 @@ fn parses_surface_declaration_with_contextual_items() {
          \x20   fields title, author, blurb\n\
          \x20   collection ^books as list\n\
          \x20   collection ^books.byAuthor as byAuthor\n\
+         \x20   collection ^books.byPublished range as byPublished\n\
          \x20   create title, author, blurb\n\
          \x20   update title, blurb\n\
          \x20   delete\n\
@@ -75,7 +76,7 @@ fn parses_surface_declaration_with_contextual_items() {
     assert_eq!(surface.name, "Books");
     assert_eq!(surface.store.root, "books");
     assert!(surface.store.keys.is_empty());
-    assert_eq!(surface.items.len(), 9);
+    assert_eq!(surface.items.len(), 10);
     assert_eq!(
         surface.items[0],
         SurfaceItem::Fields {
@@ -109,51 +110,63 @@ fn parses_surface_declaration_with_contextual_items() {
     );
     assert_eq!(
         surface.items[3],
-        SurfaceItem::Create {
-            names: vec!["title".into(), "author".into(), "blurb".into()],
-            name_spans: field_name_spans(&surface.items[3]),
+        SurfaceItem::Collection {
+            target: SurfaceTarget::IndexRange {
+                root: "books".into(),
+                index: "byPublished".into(),
+                span: collection_target_span(&surface.items[3]),
+            },
+            alias: "byPublished".into(),
             span: surface.items[3].span(),
         }
     );
     assert_eq!(
         surface.items[4],
-        SurfaceItem::Update {
-            names: vec!["title".into(), "blurb".into()],
+        SurfaceItem::Create {
+            names: vec!["title".into(), "author".into(), "blurb".into()],
             name_spans: field_name_spans(&surface.items[4]),
             span: surface.items[4].span(),
         }
     );
     assert_eq!(
         surface.items[5],
-        SurfaceItem::Delete {
+        SurfaceItem::Update {
+            names: vec!["title".into(), "blurb".into()],
+            name_spans: field_name_spans(&surface.items[5]),
             span: surface.items[5].span(),
         }
     );
     assert_eq!(
         surface.items[6],
-        SurfaceItem::Read {
-            function: vec!["bookPage".into()],
-            function_span: function_target_span(&surface.items[6]),
-            alias: "page".into(),
+        SurfaceItem::Delete {
             span: surface.items[6].span(),
         }
     );
     assert_eq!(
         surface.items[7],
-        SurfaceItem::Action {
-            function: vec!["addBook".into()],
+        SurfaceItem::Read {
+            function: vec!["bookPage".into()],
             function_span: function_target_span(&surface.items[7]),
-            alias: "addBook".into(),
+            alias: "page".into(),
             span: surface.items[7].span(),
         }
     );
     assert_eq!(
         surface.items[8],
         SurfaceItem::Action {
-            function: vec!["shelf".into(), "loanBook".into()],
+            function: vec!["addBook".into()],
             function_span: function_target_span(&surface.items[8]),
-            alias: "loan".into(),
+            alias: "addBook".into(),
             span: surface.items[8].span(),
+        }
+    );
+    assert_eq!(
+        surface.items[9],
+        SurfaceItem::Action {
+            function: vec!["shelf".into(), "loanBook".into()],
+            function_span: function_target_span(&surface.items[9]),
+            alias: "loan".into(),
+            span: surface.items[9].span(),
         }
     );
 }
@@ -231,6 +244,29 @@ fn surface_collection_index_can_be_named_as() {
             target: SurfaceTarget::Index {
                 root: "books".into(),
                 index: "as".into(),
+                span: collection_target_span(&surface.items[0]),
+            },
+            alias: "byAs".into(),
+            span: surface.items[0].span(),
+        }
+    );
+}
+
+#[test]
+fn surface_collection_index_range_can_be_named_as() {
+    let surface = surface_decl(
+        "module app\n\
+         surface Books from ^books\n\
+         \x20   collection ^books.byAs range as byAs\n",
+    );
+
+    assert_eq!(surface.items.len(), 1);
+    assert_eq!(
+        surface.items[0],
+        SurfaceItem::Collection {
+            target: SurfaceTarget::IndexRange {
+                root: "books".into(),
+                index: "byAs".into(),
                 span: collection_target_span(&surface.items[0]),
             },
             alias: "byAs".into(),

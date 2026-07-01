@@ -243,7 +243,10 @@ impl SurfaceClientModel {
             .map(|binding| SurfaceOperationRoute {
                 operation_tag: binding.operation_tag.clone(),
                 request_kind: binding.kind.operation_request_kind(),
-                route_prefix: binding.kind.route_prefix(),
+                route_prefix: binding
+                    .kind
+                    .route_prefix(binding.operation_profile)
+                    .expect("route binding profile admits operation"),
             })
             .collect();
         model
@@ -398,6 +401,12 @@ impl ModelBuilder {
         }
 
         for read in &surface.read {
+            if matches!(
+                read.kind,
+                SurfaceReadOperationKindJson::PagedIndexRangeCollection { .. }
+            ) {
+                continue;
+            }
             self.register_store(&read.store_catalog_id, &read.identity_keys);
             let brand = self.store_brand(&read.store_catalog_id);
             let cursor_brand = format!("{surface_name}Cursor");
@@ -574,12 +583,18 @@ impl ModelBuilder {
                     record: record_type.into(),
                 },
             ),
+            SurfaceReadOperationKindJson::PagedIndexRangeCollection { .. } => {
+                unreachable!("range read descriptors are omitted from TypeScript client methods")
+            }
         };
         let result_kind = match read.kind {
             SurfaceReadOperationKindJson::SingletonRead
             | SurfaceReadOperationKindJson::PointRead => "record",
             SurfaceReadOperationKindJson::PagedRootCollection
             | SurfaceReadOperationKindJson::PagedIndexCollection { .. } => "page",
+            SurfaceReadOperationKindJson::PagedIndexRangeCollection { .. } => {
+                unreachable!("range read descriptors are omitted from TypeScript client methods")
+            }
             SurfaceReadOperationKindJson::UniqueIndexLookup { .. } => "optional_record",
         };
         SurfaceMethod {
@@ -607,6 +622,7 @@ impl ModelBuilder {
             } => self.index_exact_key_params(read, *exact_key_count, enums),
             SurfaceReadOperationKindJson::SingletonRead
             | SurfaceReadOperationKindJson::PointRead
+            | SurfaceReadOperationKindJson::PagedIndexRangeCollection { .. }
             | SurfaceReadOperationKindJson::UniqueIndexLookup { .. } => return None,
         };
         Some(SurfaceMethod {

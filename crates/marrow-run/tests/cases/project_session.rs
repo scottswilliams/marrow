@@ -345,6 +345,7 @@ fn surface_read_session_serves_existing_native_store_without_advancing_it() {
         .expect("page read shape")
         .page(SurfaceCollectionPageRequest {
             exact_keys: &[],
+            range: None,
             limit: 10,
             cursor: None,
         })
@@ -1389,6 +1390,7 @@ fn surface_read_session_serves_empty_committed_identity_on_a_fresh_checkout() {
         .expect("page read shape")
         .page(SurfaceCollectionPageRequest {
             exact_keys: &[],
+            range: None,
             limit: 10,
             cursor: None,
         })

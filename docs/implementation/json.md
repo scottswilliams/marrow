@@ -10,13 +10,13 @@ read/computed-read request decode, generated write request-body decode, and
 action argument/result rendering. Surface descriptors
 include checked read/computed-read/action aliases as labels for later route or
 client renderers; those aliases are not operation identity. For surfaces it also
-renders the `surface.route.v1` manifest from the active descriptor export and
+renders profile-aware route manifests from the active descriptor export and
 provides an in-process operation-tag execution boundary over caller-supplied
 `CheckedProgram` and `TreeStore` references, read-only execution helpers over
 `ProjectSurfaceReadSession`, point/singleton create/update/delete and action
-execution helpers over `ProjectSurfaceSession`, and `surface.operation.v1`
-request/response/error envelope DTOs over project surface sessions; it does not
-own HTTP serving or process lifetime policy.
+execution helpers over `ProjectSurfaceSession`, and `surface.operation.v1` /
+`surface.operation.v2` request/response/error envelope DTOs over project surface
+sessions; it does not own HTTP serving or process lifetime policy.
 
 The crate deliberately does not define a general `Value` JSON ABI. Its run DTOs
 own the `result`/`output`/`diagnostics` envelope, bounded return-value surface,
@@ -67,14 +67,17 @@ descriptors for stable surfaces with a `delete` declaration, and action
 descriptors that reuse `entry.invoke.v1` identity, parameter shapes, and result
 shape, but only when their operation tags are callable through runtime tag
 admission. `SurfaceOperationCatalog` derives the operation tag, request kind,
-path, surface labels, and alias from that already-curated descriptor export.
-`SurfaceRouteManifestJson` renders the companion `surface_routes` object from
-the same ABI, and `SurfaceRouteBindings` validates a manifest against the
-catalog before serving consumes it. Each route row is a JSON `POST` path under
+profile-aware path, surface labels, and alias from that already-curated
+descriptor export. `SurfaceRouteManifestJson` renders companion
+`surface_routes` objects from the same ABI, and `SurfaceRouteBindings` validates
+a manifest against the matching catalog/profile before serving consumes it. V1
+route rows are JSON `POST` paths under
 `/surface/v1/{read|create|update|delete|action}/` with the admitted operation
 tag in the path, the operation alias as a render label, and the request-body
-kind expected by `surface.operation.v1`. Computed reads use the read route
-prefix. Duplicate stable operation tags are omitted from all read,
+kind expected by `surface.operation.v1`. V2 currently adds ranged index page
+reads under `/surface/v2/read/` with `surface.operation.v2` envelopes; v1
+catalogs and manifests omit those range operations. Computed reads use the read
+route prefix for their profile. Duplicate stable operation tags are omitted from all read,
 computed-read, create, update, delete, or action descriptors that share the tag,
 and therefore from the route manifest.
 Source-only surfaces serialize blocker strings and no operation descriptors or
@@ -89,8 +92,11 @@ Inbound surface request parameters and generated write bodies are checked agains
 the admitted runtime surface shape. `SurfacePointRequestJson`,
 `SurfacePageRequestJson`, `SurfaceUniqueLookupRequestJson`,
 `SurfaceArgumentJson`, and `SurfaceCursorJson` decode read identities, exact
-index arguments, unique lookup keys, limits, and commit-bound typed cursor
-boundaries into runtime `SavedKey` and cursor values.
+index arguments, range bounds for ranged index pages, unique lookup keys,
+limits, and commit-bound typed cursor boundaries into runtime `SavedKey` and
+cursor values. Range page requests require a non-empty scalar `range` object;
+ordinary page requests reject that field, and range cursors bind the exact keys,
+the normalized range, the last full index tuple, and the last identity.
 `SurfacePointCreateRequestJson`,
 `SurfaceSingletonCreateRequestJson`, and `SurfaceCreateFieldJson` decode create
 identities, field catalog IDs, and canonical scalar/enum/identity values into
@@ -119,7 +125,9 @@ and member catalog IDs from the descriptor rather than source labels or
 checker-local IDs.
 `SurfaceOperationRequestJson`, `SurfaceOperationResponseJson`,
 `SurfaceOperationResultJson`, and `SurfaceOperationErrorJson` wrap those same
-typed request and result bodies in the active `surface.operation.v1` profile.
+typed request and result bodies in the active operation profile. V1 is the
+default profile used by current generated TypeScript clients; v2 admits only
+ranged index page reads.
 JSON decode is structural and canonical only: runtime `SurfaceUpdate` owns
 declared update-set authorization, duplicate and non-empty patch validation,
 exact value shape checks, enum membership and selectability, identity store,
@@ -181,12 +189,13 @@ Actions admit stable action tags, decode entry arguments through
 action value. Runtime action failures are sanitized as `surface.action`;
 argument decode failures are `surface.request`.
 
-The operation envelope functions compose those same typed bodies into a single
-project-session dispatch profile. They derive the active operation kind from the
-current checked program, validate the request body kind against the operation
-tag, and only then admit the matching runtime handle. `execute_project_surface_operation_read_only`
-accepts read and computed-read bodies through `ProjectSurfaceReadSession` and
-rejects create, update, delete, or action bodies as an ABI mismatch.
+The operation envelope functions compose those same typed bodies into
+profile-specific project-session dispatch. They derive the active operation kind
+from the current checked program and the requested operation profile, validate
+the request body kind against the operation tag, and only then admit the matching
+runtime handle. `execute_project_surface_operation_read_only` accepts read and
+computed-read bodies through `ProjectSurfaceReadSession` and rejects create,
+update, delete, or action bodies as an ABI mismatch.
 `execute_project_surface_operation` accepts read, computed-read, create,
 sparse-update, delete, and action bodies through `ProjectSurfaceSession`, using
 a zero-capability `Host::new()` for actions. Callers that need clock, context,

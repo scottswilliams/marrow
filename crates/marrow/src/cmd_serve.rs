@@ -64,10 +64,12 @@ Usage:
 
 Run an HTTP surface endpoint. The default profile is loopback-only. The server
 accepts one JSON POST per connection and closes the response on descriptor-derived
-/surface/v1/{read|create|update|delete|action}/<operation-tag> routes.
+/surface/v1/{read|create|update|delete|action}/<operation-tag> routes, plus
+/surface/v2/read/<operation-tag> range page routes.
 
   --write  Expose create/update/delete/action routes and open a writable surface session.
-           Defaults to read-only mode, serving read routes including computed reads.
+           Defaults to read-only mode, serving v1 read routes including computed reads
+           and v2 range page read routes.
   --cors-origin
            Allow one exact browser Origin such as http://localhost:5173.
            No CORS headers are emitted unless this option is present.
@@ -767,16 +769,30 @@ impl SurfaceRoutes {
         mode: ServeMode,
         remote: bool,
     ) -> Result<Self, String> {
-        let abi = SurfaceAbiJson::from_program(program);
-        let manifest = SurfaceRouteManifestJson::from_abi(&abi);
-        let catalog = SurfaceOperationCatalog::from_abi(&abi).map_err(|error| error.to_string())?;
-        let bindings = SurfaceRouteBindings::from_manifest(&manifest, &catalog)
+        let abi_v1 = SurfaceAbiJson::from_program(program);
+        let manifest_v1 = SurfaceRouteManifestJson::from_abi(&abi_v1);
+        let catalog_v1 =
+            SurfaceOperationCatalog::from_abi(&abi_v1).map_err(|error| error.to_string())?;
+        let bindings_v1 = SurfaceRouteBindings::from_manifest(&manifest_v1, &catalog_v1)
             .map_err(|error| error.to_string())?;
-        let routes = bindings
+        let mut routes = bindings_v1
             .iter()
             .filter(|binding| remote || mode.allows(binding))
             .map(|binding| (binding.path.clone(), binding.clone()))
-            .collect();
+            .collect::<BTreeMap<_, _>>();
+
+        let abi_v2 = SurfaceAbiJson::from_program_v2(program);
+        let manifest_v2 = SurfaceRouteManifestJson::from_abi_v2(&abi_v2);
+        let catalog_v2 =
+            SurfaceOperationCatalog::from_abi_v2(&abi_v2).map_err(|error| error.to_string())?;
+        let bindings_v2 = SurfaceRouteBindings::from_manifest(&manifest_v2, &catalog_v2)
+            .map_err(|error| error.to_string())?;
+        for binding in bindings_v2
+            .iter()
+            .filter(|binding| remote || mode.allows(binding))
+        {
+            routes.insert(binding.path.clone(), binding.clone());
+        }
         Ok(Self {
             routes,
             mode,
@@ -802,7 +818,30 @@ fn surface_error(code: &str, message: &str) -> SurfaceOperationErrorJson {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
     use super::*;
+    use marrow_check::{ProjectConfig, StoreBackend, StoreConfig, check_project};
+    use marrow_json::surface::SurfaceOperationKind;
+    use marrow_store::tree::TreeStore;
+
+    const RANGE_SURFACE: &str = "\
+module test
+
+resource Post
+    required title: string
+    required category: string
+    required publishedOn: date
+store ^posts(id: int): Post
+    index byCategoryDate(category, publishedOn, id)
+
+surface Posts from ^posts
+    fields title, category, publishedOn
+    collection ^posts.byCategoryDate as byCategoryDate
+    collection ^posts.byCategoryDate range as byCategoryDateRange
+";
 
     #[test]
     fn server_code_message_styles_the_code() {
@@ -811,5 +850,123 @@ mod tests {
                 .code_message(SURFACE_ABI_MISMATCH, "surface re-check failed"),
             "\x1b[36msurface.abi_mismatch\x1b[0m: surface re-check failed"
         );
+    }
+
+    #[test]
+    fn serve_routes_mount_v1_existing_routes_and_v2_range_routes() {
+        let project = TempProject::new("marrow-serve-range-routes");
+        fs::create_dir(project.path().join("src")).expect("create src");
+        fs::write(project.path().join("src/test.mw"), RANGE_SURFACE).expect("write source");
+        let config = ProjectConfig {
+            source_roots: vec!["src".into()],
+            default_entry: None,
+            store: StoreConfig {
+                backend: StoreBackend::Native,
+                data_dir: Some(".marrow/data".into()),
+            },
+            tests: Vec::new(),
+            client: None,
+        };
+        let (report, program) = check_project(project.path(), &config).expect("check project");
+        assert!(
+            !report.has_errors(),
+            "route fixture checks cleanly: {:#?}",
+            report.diagnostics
+        );
+        let program = commit_catalog(project.path(), &config, program);
+
+        let routes =
+            SurfaceRoutes::from_program(&program, ServeMode::ReadOnly, false).expect("routes");
+        let paths = routes.routes.keys().cloned().collect::<Vec<_>>();
+        assert!(
+            paths
+                .iter()
+                .any(|path| path.starts_with("/surface/v1/read/")),
+            "v1 read route is mounted: {paths:?}"
+        );
+        assert!(
+            paths
+                .iter()
+                .any(|path| path.starts_with("/surface/v2/read/")),
+            "v2 range route is mounted: {paths:?}"
+        );
+        assert!(
+            !paths
+                .iter()
+                .any(|path| path.starts_with("/surface/v2/update/")),
+            "serve only adds v2 range read routes: {paths:?}"
+        );
+        let range = routes
+            .routes
+            .values()
+            .find(|binding| binding.alias == "byCategoryDateRange")
+            .expect("range binding");
+        assert_eq!(range.kind, SurfaceOperationKind::RangePage);
+        assert_eq!(
+            range.operation_profile,
+            marrow_json::surface::SurfaceOperationProfile::V2
+        );
+        let exact = routes
+            .routes
+            .values()
+            .find(|binding| binding.alias == "byCategoryDate")
+            .expect("exact binding");
+        assert_eq!(exact.kind, SurfaceOperationKind::Page);
+        assert_eq!(
+            exact.operation_profile,
+            marrow_json::surface::SurfaceOperationProfile::V1
+        );
+    }
+
+    fn commit_catalog(
+        root: &Path,
+        config: &ProjectConfig,
+        program: CheckedProgram,
+    ) -> CheckedProgram {
+        let store = TreeStore::memory();
+        if !marrow_run::evolution::commit_catalog_baseline(&store, &program)
+            .expect("commit catalog baseline")
+        {
+            return program;
+        }
+        let accepted = store
+            .read_catalog_snapshot()
+            .expect("read catalog snapshot");
+        let (report, program) =
+            marrow_check::check_project_with_catalog(root, config, accepted.as_ref())
+                .expect("re-check with accepted catalog");
+        assert!(
+            !report.has_errors(),
+            "accepted route fixture checks cleanly: {:#?}",
+            report.diagnostics
+        );
+        program
+    }
+
+    struct TempProject {
+        root: PathBuf,
+    }
+
+    impl TempProject {
+        fn new(prefix: &str) -> Self {
+            let nanos = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock after epoch")
+                .as_nanos();
+            let root =
+                std::env::temp_dir().join(format!("{prefix}-{}-{nanos}", std::process::id()));
+            fs::create_dir(&root).expect("create temp project");
+            Self { root }
+        }
+
+        fn path(&self) -> &Path {
+            &self.root
+        }
+    }
+
+    impl Drop for TempProject {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.root);
+        }
     }
 }

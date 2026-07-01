@@ -730,6 +730,10 @@ fn help_advertises_top_level_serve() {
         serve_stdout.contains("/surface/v1/{read|create|update|delete|action}/<operation-tag>"),
         "{serve_stdout}"
     );
+    assert!(
+        serve_stdout.contains("/surface/v2/read/<operation-tag> range page routes"),
+        "{serve_stdout}"
+    );
 }
 
 #[test]

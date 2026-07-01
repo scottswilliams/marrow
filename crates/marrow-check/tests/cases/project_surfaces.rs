@@ -1927,6 +1927,72 @@ surface MissingIndex from ^books
 }
 
 #[test]
+fn surface_target_diagnostics_reject_invalid_range_collection_indexes() {
+    let source = "\
+module app
+enum Status
+    draft
+    published
+resource Post
+    title: string
+    category: string
+    publishedOn: date
+    status: Status
+store ^posts(id: int): Post
+    index byTitle(title) unique
+    index byCategoryDate(category, publishedOn)
+    index byId(id)
+    index byStatus(status, id)
+surface Posts from ^posts
+    fields title
+    collection ^posts.byTitle range as byTitle
+    collection ^posts.byCategoryDate range as byCategoryDate
+    collection ^posts.byId range as byId
+    collection ^posts.byStatus range as byStatus
+";
+    let root = temp_project("surface-range-target-diagnostics", |root| {
+        write(root, "src/app.mw", source);
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+
+    let diagnostics = surface_targets(&report);
+    assert_eq!(diagnostics.len(), 4, "{:#?}", report.diagnostics);
+    assert_eq!(
+        diagnostics[0].payload,
+        DiagnosticPayload::SurfaceTarget(SurfaceTargetDiagnostic::RangeCollectionUniqueIndex {
+            root: "posts".into(),
+            index: "byTitle".into(),
+        })
+    );
+    assert_eq!(
+        diagnostics[1].payload,
+        DiagnosticPayload::SurfaceTarget(
+            SurfaceTargetDiagnostic::RangeCollectionMissingIdentitySuffix {
+                root: "posts".into(),
+                index: "byCategoryDate".into(),
+            }
+        )
+    );
+    assert_eq!(
+        diagnostics[2].payload,
+        DiagnosticPayload::SurfaceTarget(SurfaceTargetDiagnostic::RangeCollectionMissingRangeKey {
+            root: "posts".into(),
+            index: "byId".into(),
+        })
+    );
+    assert_eq!(
+        diagnostics[3].payload,
+        DiagnosticPayload::SurfaceTarget(
+            SurfaceTargetDiagnostic::RangeCollectionUnsupportedRangeKey {
+                root: "posts".into(),
+                index: "byStatus".into(),
+                key: "status".into(),
+            }
+        )
+    );
+}
+
+#[test]
 fn surface_field_diagnostics_reject_unsupported_and_unprojected_payloads() {
     let source = "\
 module app

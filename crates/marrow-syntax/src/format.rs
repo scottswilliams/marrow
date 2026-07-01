@@ -848,6 +848,7 @@ fn format_surface_target(target: &SurfaceTarget) -> String {
     match target {
         SurfaceTarget::Root { root, .. } => format!("^{root}"),
         SurfaceTarget::Index { root, index, .. } => format!("^{root}.{index}"),
+        SurfaceTarget::IndexRange { root, index, .. } => format!("^{root}.{index} range"),
     }
 }
 

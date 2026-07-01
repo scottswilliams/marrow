@@ -113,7 +113,8 @@ pub use facts::{
     StoreIndexKeyFact, StoreIndexKeySource, StoredValueMeaning, SurfaceActionFact,
     SurfaceCatalogBlocker, SurfaceCatalogStatus, SurfaceCollectionFact, SurfaceCollectionTarget,
     SurfaceComputedReadFact, SurfaceDeleteFact, SurfaceFact, SurfaceFieldFact, SurfaceId,
-    SurfaceReadFootprint, SurfaceReadOperationFact, SurfaceReadOperationKind, WorkShapeClass,
+    SurfaceIndexRangeCollection, SurfaceReadFootprint, SurfaceReadOperationFact,
+    SurfaceReadOperationKind, WorkShapeClass,
 };
 pub use marrow_catalog::{CatalogEntryKind, CatalogLifecycle};
 pub use marrow_project::{ProjectConfig, StoreBackend, StoreConfig};

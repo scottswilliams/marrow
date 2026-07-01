@@ -141,15 +141,15 @@ fn collect_surface_target_root(
     facts: &mut Vec<SourceSavedRootCursorFact>,
 ) {
     match target {
-        SurfaceTarget::Root { root, span } | SurfaceTarget::Index { root, span, .. } => {
-            collect_saved_root(
-                source,
-                root,
-                *span,
-                SourceSavedRootCursorKind::SurfaceTarget,
-                facts,
-            );
-        }
+        SurfaceTarget::Root { root, span }
+        | SurfaceTarget::Index { root, span, .. }
+        | SurfaceTarget::IndexRange { root, span, .. } => collect_saved_root(
+            source,
+            root,
+            *span,
+            SourceSavedRootCursorKind::SurfaceTarget,
+            facts,
+        ),
     }
 }
 

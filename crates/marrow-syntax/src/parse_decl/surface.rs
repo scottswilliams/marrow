@@ -331,7 +331,26 @@ fn surface_name_list(
 }
 
 fn surface_collection(source: &str, tokens: &[Token]) -> ParseResult<(SurfaceTarget, String)> {
-    let (target, rest) = surface_collection_target(source, tokens)?;
+    let (mut target, rest) = surface_collection_target(source, tokens)?;
+    let rest = match rest {
+        [range_token, rest @ ..]
+            if range_token.kind == TokenKind::Identifier && range_token.text(source) == "range" =>
+        {
+            match target {
+                SurfaceTarget::Index { root, index, span } => {
+                    target = SurfaceTarget::IndexRange { root, index, span };
+                    rest
+                }
+                SurfaceTarget::Root { .. } | SurfaceTarget::IndexRange { .. } => {
+                    return Err(ParseError::new(
+                        ParseDiagnosticReason::Expected(ExpectedSyntax::SurfaceCollectionTarget),
+                        "expected range collection target `^root.index range`",
+                    ));
+                }
+            }
+        }
+        _ => rest,
+    };
     let Some((as_token, alias_tokens)) = rest.split_first() else {
         return Err(surface_collection_error());
     };

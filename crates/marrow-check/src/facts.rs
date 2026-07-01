@@ -1464,6 +1464,15 @@ pub struct SurfaceDeleteFact {
 pub enum SurfaceCollectionTarget {
     StoreRoot(StoreId),
     StoreIndex(StoreIndexId),
+    StoreIndexRange(SurfaceIndexRangeCollection),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SurfaceIndexRangeCollection {
+    pub index: StoreIndexId,
+    pub exact_key_count: usize,
+    pub range_key_index: usize,
+    pub identity_key_count: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1490,6 +1499,12 @@ pub enum SurfaceReadOperationKind {
     PagedIndexCollection {
         index: StoreIndexId,
         exact_key_count: usize,
+        identity_key_count: usize,
+    },
+    PagedIndexRangeCollection {
+        index: StoreIndexId,
+        exact_key_count: usize,
+        range_key_index: usize,
         identity_key_count: usize,
     },
     UniqueIndexLookup {

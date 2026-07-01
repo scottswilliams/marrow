@@ -314,10 +314,11 @@ marrow serve --remote --addr <addr> [--write] \
 
 Run the HTTP serving profile for checked application surfaces. By default the
 command binds loopback only, opens the project through `ProjectSurfaceReadSession`,
-and serves read routes, including computed reads. With `--write`, it opens
-`ProjectSurfaceSession` and also exposes create, sparse-update, delete, and
-action routes. Both modes require an already accepted native store and never
-create, freeze, migrate, repair, or auto-apply saved data.
+and serves v1 read routes, including computed reads, plus v2 ranged index page
+read routes. With `--write`, it opens `ProjectSurfaceSession` and also exposes
+v1 create, sparse-update, delete, and action routes. Both modes require an
+already accepted native store and never create, freeze, migrate, repair, or
+auto-apply saved data.
 
 - Without `--remote`, the listener binds only loopback addresses. The default is
   `127.0.0.1:8080`; tests and tooling can pass `--addr 127.0.0.1:0` to let the
@@ -361,10 +362,10 @@ create, freeze, migrate, repair, or auto-apply saved data.
 - On startup the command prints
   `serve listening on http://<addr>` to stdout, then handles requests until the
   process exits.
-- The active route set is derived from the same `surface.route.v1` manifest
-  exported by `marrow check --format json|jsonl`. Default mode serves only
-  `/surface/v1/read/<operation-tag>` rows, including computed reads; `--write`
-  additionally serves
+- The active route set is derived from descriptor route manifests. Default mode
+  serves `/surface/v1/read/<operation-tag>` rows, including computed reads, and
+  `/surface/v2/read/<operation-tag>` ranged index page rows that require
+  `surface.operation.v2` envelopes; `--write` additionally serves
   `/surface/v1/create/<operation-tag>`,
   `/surface/v1/update/<operation-tag>` and
   `/surface/v1/delete/<operation-tag>`, and
@@ -391,10 +392,10 @@ create, freeze, migrate, repair, or auto-apply saved data.
 - Operation requests must be HTTP/1.0 or HTTP/1.1 `POST` with
   `Content-Type: application/json`, exactly one `Content-Length`, no
   `Transfer-Encoding`, bounded headers/body, no query string, and an exact
-  operation-tag path. The JSON body is a `surface.operation.v1` envelope whose
-  `operation_tag` and request kind must match the selected route. Unknown fields
-  in the operation envelope or surface-owned request DTOs are rejected as
-  `surface.request`.
+  operation-tag path. The JSON body uses the selected route's operation envelope
+  profile; `profile_version`, `operation_tag`, and request kind must match that
+  route. Unknown fields in the operation envelope or surface-owned request DTOs
+  are rejected as `surface.request`.
 - With `--cors-origin`, matching browser preflight `OPTIONS` requests over a
   served route return `204` and `Access-Control-Allow-Origin` for that exact
   origin. Mismatched origins return `403` and no CORS allow-origin header.

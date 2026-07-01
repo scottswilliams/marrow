@@ -8,10 +8,10 @@ use marrow_check::{
 use marrow_run::{
     SURFACE_ABI_MISMATCH, SURFACE_ABSENT, SURFACE_CURSOR, SURFACE_INVALID_DATA, SURFACE_LIMIT,
     SURFACE_REQUEST, SURFACE_STALE_CURSOR, SURFACE_STORE, SurfaceCollectionPageRequest,
-    SurfaceCollectionRead, SurfaceCollectionReadShape, SurfaceEnumValue, SurfaceNodeRead,
-    SurfaceNodeReadShape, SurfacePageBoundary, SurfaceReadError, SurfaceReadIdentity,
-    SurfaceReadOperationRef, SurfaceReadRecord, SurfaceUpdate, SurfaceUpdateField, SurfaceValue,
-    read_surface_point, read_surface_singleton,
+    SurfaceCollectionRead, SurfaceCollectionReadShape, SurfaceEnumValue, SurfaceIndexRangeRequest,
+    SurfaceNodeRead, SurfaceNodeReadShape, SurfacePageBoundary, SurfaceReadError,
+    SurfaceReadIdentity, SurfaceReadOperationRef, SurfaceReadRecord, SurfaceUpdate,
+    SurfaceUpdateField, SurfaceValue, read_surface_point, read_surface_singleton,
 };
 use marrow_store::cell::CatalogId;
 use marrow_store::key::{SavedKey, encode_identity_payload};
@@ -121,6 +121,19 @@ surface Books from ^books
     fields title, author, isbn
     update author
     collection ^books as list
+";
+
+const RANGE_COLLECTION_SURFACE: &str = "\
+resource Post
+    required title: string
+    required category: string
+    required publishedOn: date
+store ^posts(id: int): Post
+    index byCategoryDate(category, publishedOn, id)
+
+surface Posts from ^posts
+    fields title, category, publishedOn
+    collection ^posts.byCategoryDate range as byCategoryDate
 ";
 
 const DUPLICATE_NODE_TAG_SURFACES: &str = "\
@@ -695,6 +708,7 @@ fn root_collection_pages_records_in_identity_order_with_typed_cursor() {
     let first = read
         .page(SurfaceCollectionPageRequest {
             exact_keys: &[],
+            range: None,
             limit: 2,
             cursor: None,
         })
@@ -712,6 +726,7 @@ fn root_collection_pages_records_in_identity_order_with_typed_cursor() {
     let second = read
         .page(SurfaceCollectionPageRequest {
             exact_keys: &[],
+            range: None,
             limit: 2,
             cursor: Some(next),
         })
@@ -747,6 +762,7 @@ fn collection_cursor_stales_after_committed_surface_update() {
     let first = read
         .page(SurfaceCollectionPageRequest {
             exact_keys: &[],
+            range: None,
             limit: 1,
             cursor: None,
         })
@@ -777,6 +793,7 @@ fn collection_cursor_stales_after_committed_surface_update() {
     assert_surface_error(
         read.page(SurfaceCollectionPageRequest {
             exact_keys: &[],
+            range: None,
             limit: 10,
             cursor: Some(cursor),
         }),
@@ -803,6 +820,7 @@ fn index_collection_pages_exact_tuple_in_identity_suffix_order() {
     let first = read
         .page(SurfaceCollectionPageRequest {
             exact_keys: &[SavedKey::Str("Frank".into())],
+            range: None,
             limit: 2,
             cursor: None,
         })
@@ -819,6 +837,7 @@ fn index_collection_pages_exact_tuple_in_identity_suffix_order() {
     let second = read
         .page(SurfaceCollectionPageRequest {
             exact_keys: &[SavedKey::Str("Frank".into())],
+            range: None,
             limit: 2,
             cursor: first.next.as_ref(),
         })
@@ -828,6 +847,203 @@ fn index_collection_pages_exact_tuple_in_identity_suffix_order() {
         vec![vec![SavedKey::Str("b".into()), SavedKey::Int(1)]]
     );
     assert_eq!(second.next, None);
+}
+
+#[test]
+fn index_range_collection_pages_bounds_and_cursor() {
+    let (program, runtime) = committed_program_and_runtime(RANGE_COLLECTION_SURFACE);
+    let store = admitted_store(&program);
+    write_post(&runtime, &store, 1, "Old Fantasy", "fantasy", 10);
+    write_post(&runtime, &store, 2, "First Match", "fantasy", 20);
+    write_post(&runtime, &store, 3, "Second Match", "fantasy", 20);
+    write_post(&runtime, &store, 4, "Too New", "fantasy", 30);
+    write_post(&runtime, &store, 5, "Other Category", "news", 20);
+
+    let surface = surface_id(&program, "Posts");
+    let read = SurfaceCollectionRead::admit(
+        &program,
+        &store,
+        range_collection_ref(&program, surface, "byCategoryDate"),
+    )
+    .expect("admit range collection");
+    assert_eq!(read.shape(), SurfaceCollectionReadShape::IndexRangePage);
+
+    let range = SurfaceIndexRangeRequest {
+        lower: Some(SavedKey::Date(10)),
+        lower_inclusive: false,
+        upper: Some(SavedKey::Date(20)),
+        upper_inclusive: true,
+    };
+    let first = read
+        .page(SurfaceCollectionPageRequest {
+            exact_keys: &[SavedKey::Str("fantasy".into())],
+            range: Some(&range),
+            limit: 1,
+            cursor: None,
+        })
+        .expect("first range page");
+
+    assert_eq!(record_identities(&first.rows), vec![vec![SavedKey::Int(2)]]);
+    let cursor = first.next.as_ref().expect("first range page cursor");
+
+    let second = read
+        .page(SurfaceCollectionPageRequest {
+            exact_keys: &[SavedKey::Str("fantasy".into())],
+            range: Some(&range),
+            limit: 10,
+            cursor: Some(cursor),
+        })
+        .expect("second range page");
+    assert_eq!(
+        record_identities(&second.rows),
+        vec![vec![SavedKey::Int(3)]]
+    );
+    assert_eq!(second.next, None);
+}
+
+#[test]
+fn index_range_collection_single_sided_ranges_page_with_canonical_cursor_bounds() {
+    let (program, runtime) = committed_program_and_runtime(RANGE_COLLECTION_SURFACE);
+    let store = admitted_store(&program);
+    write_post(&runtime, &store, 1, "Old Fantasy", "fantasy", 10);
+    write_post(&runtime, &store, 2, "First Match", "fantasy", 20);
+    write_post(&runtime, &store, 3, "Second Match", "fantasy", 30);
+
+    let surface = surface_id(&program, "Posts");
+    let read = SurfaceCollectionRead::admit(
+        &program,
+        &store,
+        range_collection_ref(&program, surface, "byCategoryDate"),
+    )
+    .expect("admit range collection");
+
+    let lower_only = SurfaceIndexRangeRequest {
+        lower: Some(SavedKey::Date(10)),
+        lower_inclusive: false,
+        upper: None,
+        upper_inclusive: true,
+    };
+    let first_lower = read
+        .page(SurfaceCollectionPageRequest {
+            exact_keys: &[SavedKey::Str("fantasy".into())],
+            range: Some(&lower_only),
+            limit: 1,
+            cursor: None,
+        })
+        .expect("first lower-only range page");
+    assert_eq!(
+        record_identities(&first_lower.rows),
+        vec![vec![SavedKey::Int(2)]]
+    );
+    let canonical_lower_only = SurfaceIndexRangeRequest {
+        upper_inclusive: false,
+        ..lower_only
+    };
+    let second_lower = read
+        .page(SurfaceCollectionPageRequest {
+            exact_keys: &[SavedKey::Str("fantasy".into())],
+            range: Some(&canonical_lower_only),
+            limit: 10,
+            cursor: first_lower.next.as_ref(),
+        })
+        .expect("second lower-only range page");
+    assert_eq!(
+        record_identities(&second_lower.rows),
+        vec![vec![SavedKey::Int(3)]]
+    );
+
+    let upper_only = SurfaceIndexRangeRequest {
+        lower: None,
+        lower_inclusive: true,
+        upper: Some(SavedKey::Date(30)),
+        upper_inclusive: false,
+    };
+    let first_upper = read
+        .page(SurfaceCollectionPageRequest {
+            exact_keys: &[SavedKey::Str("fantasy".into())],
+            range: Some(&upper_only),
+            limit: 1,
+            cursor: None,
+        })
+        .expect("first upper-only range page");
+    assert_eq!(
+        record_identities(&first_upper.rows),
+        vec![vec![SavedKey::Int(1)]]
+    );
+    let canonical_upper_only = SurfaceIndexRangeRequest {
+        lower_inclusive: false,
+        ..upper_only
+    };
+    let second_upper = read
+        .page(SurfaceCollectionPageRequest {
+            exact_keys: &[SavedKey::Str("fantasy".into())],
+            range: Some(&canonical_upper_only),
+            limit: 10,
+            cursor: first_upper.next.as_ref(),
+        })
+        .expect("second upper-only range page");
+    assert_eq!(
+        record_identities(&second_upper.rows),
+        vec![vec![SavedKey::Int(2)]]
+    );
+}
+
+#[test]
+fn index_range_collection_cursor_is_bound_to_exact_keys_and_range() {
+    let (program, runtime) = committed_program_and_runtime(RANGE_COLLECTION_SURFACE);
+    let store = admitted_store(&program);
+    write_post(&runtime, &store, 1, "Old Fantasy", "fantasy", 10);
+    write_post(&runtime, &store, 2, "First Match", "fantasy", 20);
+    write_post(&runtime, &store, 3, "Other Category", "news", 20);
+    write_post(&runtime, &store, 4, "Second Match", "fantasy", 20);
+
+    let surface = surface_id(&program, "Posts");
+    let read = SurfaceCollectionRead::admit(
+        &program,
+        &store,
+        range_collection_ref(&program, surface, "byCategoryDate"),
+    )
+    .expect("admit range collection");
+    let range = SurfaceIndexRangeRequest {
+        lower: Some(SavedKey::Date(10)),
+        lower_inclusive: false,
+        upper: Some(SavedKey::Date(20)),
+        upper_inclusive: true,
+    };
+    let page = read
+        .page(SurfaceCollectionPageRequest {
+            exact_keys: &[SavedKey::Str("fantasy".into())],
+            range: Some(&range),
+            limit: 1,
+            cursor: None,
+        })
+        .expect("range page");
+    let cursor = page.next.as_ref().expect("range cursor");
+
+    let different_range = SurfaceIndexRangeRequest {
+        lower: Some(SavedKey::Date(10)),
+        lower_inclusive: true,
+        upper: Some(SavedKey::Date(20)),
+        upper_inclusive: true,
+    };
+    assert_surface_error(
+        read.page(SurfaceCollectionPageRequest {
+            exact_keys: &[SavedKey::Str("fantasy".into())],
+            range: Some(&different_range),
+            limit: 10,
+            cursor: Some(cursor),
+        }),
+        SURFACE_CURSOR,
+    );
+    assert_surface_error(
+        read.page(SurfaceCollectionPageRequest {
+            exact_keys: &[SavedKey::Str("news".into())],
+            range: Some(&range),
+            limit: 10,
+            cursor: Some(cursor),
+        }),
+        SURFACE_CURSOR,
+    );
 }
 
 #[test]
@@ -943,6 +1159,7 @@ fn collection_page_fails_instead_of_skipping_a_corrupt_row() {
     assert_surface_error(
         read.page(SurfaceCollectionPageRequest {
             exact_keys: &[SavedKey::Str("Frank".into())],
+            range: None,
             limit: 10,
             cursor: None,
         }),
@@ -975,6 +1192,7 @@ fn collection_page_enforces_total_materialization_byte_budget() {
     assert_surface_error(
         read.page(SurfaceCollectionPageRequest {
             exact_keys: &[],
+            range: None,
             limit: 9,
             cursor: None,
         }),
@@ -1003,6 +1221,7 @@ fn collection_requests_validate_limits_exact_keys_and_cursor_binding() {
     assert_surface_error(
         root.page(SurfaceCollectionPageRequest {
             exact_keys: &[],
+            range: None,
             limit: 0,
             cursor: None,
         }),
@@ -1011,6 +1230,7 @@ fn collection_requests_validate_limits_exact_keys_and_cursor_binding() {
     assert_surface_error(
         root.page(SurfaceCollectionPageRequest {
             exact_keys: &[],
+            range: None,
             limit: marrow_run::SURFACE_MAX_PAGE_LIMIT + 1,
             cursor: None,
         }),
@@ -1019,6 +1239,7 @@ fn collection_requests_validate_limits_exact_keys_and_cursor_binding() {
     assert_surface_error(
         by_author.page(SurfaceCollectionPageRequest {
             exact_keys: &[SavedKey::Int(1)],
+            range: None,
             limit: 1,
             cursor: None,
         }),
@@ -1028,6 +1249,7 @@ fn collection_requests_validate_limits_exact_keys_and_cursor_binding() {
     let root_page = root
         .page(SurfaceCollectionPageRequest {
             exact_keys: &[],
+            range: None,
             limit: 1,
             cursor: None,
         })
@@ -1036,6 +1258,7 @@ fn collection_requests_validate_limits_exact_keys_and_cursor_binding() {
     assert_surface_error(
         by_author.page(SurfaceCollectionPageRequest {
             exact_keys: &[SavedKey::Str("Frank".into())],
+            range: None,
             limit: 1,
             cursor: Some(cursor),
         }),
@@ -1045,6 +1268,7 @@ fn collection_requests_validate_limits_exact_keys_and_cursor_binding() {
     let index_page = by_author
         .page(SurfaceCollectionPageRequest {
             exact_keys: &[SavedKey::Str("Frank".into())],
+            range: None,
             limit: 1,
             cursor: None,
         })
@@ -1053,6 +1277,7 @@ fn collection_requests_validate_limits_exact_keys_and_cursor_binding() {
     assert_surface_error(
         by_author.page(SurfaceCollectionPageRequest {
             exact_keys: &[SavedKey::Str("Octavia".into())],
+            range: None,
             limit: 1,
             cursor: Some(cursor),
         }),
@@ -1069,6 +1294,7 @@ fn collection_requests_validate_limits_exact_keys_and_cursor_binding() {
     assert_surface_error(
         by_author.page(SurfaceCollectionPageRequest {
             exact_keys: &[SavedKey::Str("Frank".into())],
+            range: None,
             limit: 1,
             cursor: Some(&forged),
         }),
@@ -1120,6 +1346,19 @@ fn index_collection_ref(
     operation_ref(program, surface, |kind| match *kind {
         SurfaceReadOperationKind::PagedIndexCollection { index, .. }
         | SurfaceReadOperationKind::UniqueIndexLookup { index, .. } => {
+            program.facts.store_index(index).name == index_name
+        }
+        _ => false,
+    })
+}
+
+fn range_collection_ref(
+    program: &CheckedProgram,
+    surface: SurfaceId,
+    index_name: &str,
+) -> SurfaceReadOperationRef {
+    operation_ref(program, surface, |kind| match *kind {
+        SurfaceReadOperationKind::PagedIndexRangeCollection { index, .. } => {
             program.facts.store_index(index).name == index_name
         }
         _ => false,
@@ -1209,6 +1448,53 @@ fn write_book(
     );
 }
 
+fn write_post(
+    program: &CheckedRuntimeProgram,
+    store: &TreeStore,
+    id: i64,
+    title: &str,
+    category: &str,
+    published_on: i32,
+) {
+    let identity = [SavedKey::Int(id)];
+    write_data_value(
+        program,
+        store,
+        "posts",
+        &identity,
+        &data_path(program, "posts", &["title"]),
+        SavedValue::Str(title.into()),
+    );
+    write_data_value(
+        program,
+        store,
+        "posts",
+        &identity,
+        &data_path(program, "posts", &["category"]),
+        SavedValue::Str(category.into()),
+    );
+    write_data_value(
+        program,
+        store,
+        "posts",
+        &identity,
+        &data_path(program, "posts", &["publishedOn"]),
+        SavedValue::Date(published_on),
+    );
+    store
+        .write_index_entry(
+            &index_catalog_id(program, "posts", "byCategoryDate"),
+            &[
+                SavedKey::Str(category.into()),
+                SavedKey::Date(published_on),
+                SavedKey::Int(id),
+            ],
+            &identity,
+            Vec::new(),
+        )
+        .expect("range index entry write succeeds");
+}
+
 fn write_non_unique_index_entry(
     program: &CheckedRuntimeProgram,
     store: &TreeStore,
@@ -1261,6 +1547,7 @@ fn collect_page_identities(
         let page = read
             .page(SurfaceCollectionPageRequest {
                 exact_keys,
+                range: None,
                 limit,
                 cursor: cursor.as_ref(),
             })

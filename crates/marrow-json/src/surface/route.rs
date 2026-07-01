@@ -1,11 +1,12 @@
 use serde::Serialize;
 
 use super::{
-    SURFACE_OPERATION_PROFILE_VERSION, SurfaceAbiJson, SurfaceOperationCatalog,
+    SurfaceAbiJson, SurfaceOperationCatalog, SurfaceOperationProfile,
     operation_catalog::SurfaceOperationBinding,
 };
 
 pub const SURFACE_ROUTE_PROFILE_VERSION: &str = "surface.route.v1";
+pub const SURFACE_ROUTE_PROFILE_VERSION_V2: &str = "surface.route.v2";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SurfaceRouteManifestJson {
@@ -42,6 +43,7 @@ pub enum SurfaceRouteRequestJson {
     SingletonRead,
     PointRead,
     Page,
+    RangePage,
     UniqueLookup,
     SingletonUpdate,
     PointUpdate,
@@ -55,7 +57,15 @@ pub enum SurfaceRouteRequestJson {
 
 impl SurfaceRouteManifestJson {
     pub fn from_abi(abi: &SurfaceAbiJson) -> Self {
-        let catalog = SurfaceOperationCatalog::from_abi(abi)
+        Self::from_abi_for_profile(abi, SurfaceOperationProfile::V1)
+    }
+
+    pub fn from_abi_v2(abi: &SurfaceAbiJson) -> Self {
+        Self::from_abi_for_profile(abi, SurfaceOperationProfile::V2)
+    }
+
+    pub fn from_abi_for_profile(abi: &SurfaceAbiJson, profile: SurfaceOperationProfile) -> Self {
+        let catalog = SurfaceOperationCatalog::from_abi_for_profile(abi, profile)
             .expect("surface route manifest requires unique ABI operation tags");
         let mut routes = Vec::new();
         for surface in &abi.surfaces {
@@ -63,48 +73,53 @@ impl SurfaceRouteManifestJson {
                 module: surface.module.clone(),
                 name: surface.name.clone(),
             };
-            routes.extend(surface.read.iter().map(|read| {
-                let binding = catalog
-                    .binding(&read.operation_tag)
-                    .expect("read descriptor has catalog binding");
-                route_from_binding(binding, route_surface.clone())
-            }));
+            for read in &surface.read {
+                push_route_for_tag(&mut routes, &catalog, &route_surface, &read.operation_tag);
+            }
             if let Some(create) = &surface.create {
-                let binding = catalog
-                    .binding(&create.operation_tag)
-                    .expect("create descriptor has catalog binding");
-                routes.push(route_from_binding(binding, route_surface.clone()));
+                push_route_for_tag(&mut routes, &catalog, &route_surface, &create.operation_tag);
             }
             if let Some(update) = &surface.update {
-                let binding = catalog
-                    .binding(&update.operation_tag)
-                    .expect("update descriptor has catalog binding");
-                routes.push(route_from_binding(binding, route_surface.clone()));
+                push_route_for_tag(&mut routes, &catalog, &route_surface, &update.operation_tag);
             }
             if let Some(delete) = &surface.delete {
-                let binding = catalog
-                    .binding(&delete.operation_tag)
-                    .expect("delete descriptor has catalog binding");
-                routes.push(route_from_binding(binding, route_surface.clone()));
+                push_route_for_tag(&mut routes, &catalog, &route_surface, &delete.operation_tag);
             }
-            routes.extend(surface.actions.iter().map(|action| {
-                let binding = catalog
-                    .binding(&action.operation_tag)
-                    .expect("action descriptor has catalog binding");
-                route_from_binding(binding, route_surface.clone())
-            }));
-            routes.extend(surface.computed_reads.iter().map(|computed_read| {
-                let binding = catalog
-                    .binding(&computed_read.operation_tag)
-                    .expect("computed-read descriptor has catalog binding");
-                route_from_binding(binding, route_surface.clone())
-            }));
+            for action in &surface.actions {
+                push_route_for_tag(&mut routes, &catalog, &route_surface, &action.operation_tag);
+            }
+            for computed_read in &surface.computed_reads {
+                push_route_for_tag(
+                    &mut routes,
+                    &catalog,
+                    &route_surface,
+                    &computed_read.operation_tag,
+                );
+            }
         }
         Self {
-            profile_version: SURFACE_ROUTE_PROFILE_VERSION.into(),
-            operation_profile_version: SURFACE_OPERATION_PROFILE_VERSION.into(),
+            profile_version: route_profile_version(profile).into(),
+            operation_profile_version: profile.version().into(),
             routes,
         }
+    }
+}
+
+fn push_route_for_tag(
+    routes: &mut Vec<SurfaceRouteJson>,
+    catalog: &SurfaceOperationCatalog,
+    surface: &SurfaceRouteSurfaceJson,
+    operation_tag: &str,
+) {
+    if let Some(binding) = catalog.binding(operation_tag) {
+        routes.push(route_from_binding(binding, surface.clone()));
+    }
+}
+
+pub(crate) fn route_profile_version(profile: SurfaceOperationProfile) -> &'static str {
+    match profile {
+        SurfaceOperationProfile::V1 => SURFACE_ROUTE_PROFILE_VERSION,
+        SurfaceOperationProfile::V2 => SURFACE_ROUTE_PROFILE_VERSION_V2,
     }
 }
 

@@ -1,9 +1,10 @@
 use marrow_run::{
     SurfaceCollectionPage, SurfaceCollectionPageRequest, SurfaceCollectionRead, SurfaceCreate,
     SurfaceCreateField, SurfaceCreateInput, SurfaceCursorBoundaryInputShape, SurfaceDelete,
-    SurfaceDeleteInput, SurfaceIdentityInputShape, SurfaceInputKeyShape, SurfaceNodeRead,
-    SurfaceNodeReadShape, SurfacePageBoundary, SurfacePageCursor, SurfaceReadError,
-    SurfaceReadIdentity, SurfaceUpdate, SurfaceUpdateField, SurfaceUpdateInput, SurfaceValue,
+    SurfaceDeleteInput, SurfaceIdentityInputShape, SurfaceIndexRangeRequest, SurfaceInputKeyShape,
+    SurfaceNodeRead, SurfaceNodeReadShape, SurfacePageBoundary, SurfacePageCursor,
+    SurfaceReadError, SurfaceReadIdentity, SurfaceUpdate, SurfaceUpdateField, SurfaceUpdateInput,
+    SurfaceValue,
 };
 use marrow_store::Decimal;
 use marrow_store::cell::CatalogId;
@@ -30,10 +31,101 @@ pub struct SurfacePointRequestJson {
 pub struct SurfacePageRequestJson {
     #[serde(default)]
     pub exact_keys: Vec<SurfaceArgumentJson>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_page_range",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub range: Option<SurfacePageRangeJson>,
     #[serde(deserialize_with = "deserialize_page_limit")]
     pub limit: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cursor: Option<SurfaceCursorJson>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SurfacePageRangeJson {
+    pub lower: Option<SurfaceArgumentJson>,
+    pub lower_inclusive: bool,
+    pub upper: Option<SurfaceArgumentJson>,
+    pub upper_inclusive: bool,
+}
+
+impl Serialize for SurfacePageRangeJson {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeStruct;
+
+        let len = usize::from(self.lower.is_some()) * 2 + usize::from(self.upper.is_some()) * 2;
+        let mut state = serializer.serialize_struct("SurfacePageRangeJson", len)?;
+        if let Some(lower) = &self.lower {
+            state.serialize_field("lower", lower)?;
+            state.serialize_field("lower_inclusive", &self.lower_inclusive)?;
+        }
+        if let Some(upper) = &self.upper {
+            state.serialize_field("upper", upper)?;
+            state.serialize_field("upper_inclusive", &self.upper_inclusive)?;
+        }
+        state.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for SurfacePageRangeJson {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct RawRange {
+            #[serde(default)]
+            lower: Option<SurfaceArgumentJson>,
+            #[serde(default)]
+            lower_inclusive: Option<bool>,
+            #[serde(default)]
+            upper: Option<SurfaceArgumentJson>,
+            #[serde(default)]
+            upper_inclusive: Option<bool>,
+        }
+
+        let raw = RawRange::deserialize(deserializer)?;
+        if raw.lower.is_some() && raw.lower_inclusive.is_none() {
+            return Err(serde::de::Error::missing_field("lower_inclusive"));
+        }
+        if raw.lower.is_none() && raw.lower_inclusive.is_some() {
+            return Err(serde::de::Error::custom(
+                "`lower_inclusive` requires `lower`",
+            ));
+        }
+        if raw.upper.is_some() && raw.upper_inclusive.is_none() {
+            return Err(serde::de::Error::missing_field("upper_inclusive"));
+        }
+        if raw.upper.is_none() && raw.upper_inclusive.is_some() {
+            return Err(serde::de::Error::custom(
+                "`upper_inclusive` requires `upper`",
+            ));
+        }
+        Ok(Self {
+            lower: raw.lower,
+            lower_inclusive: raw.lower_inclusive.unwrap_or(false),
+            upper: raw.upper,
+            upper_inclusive: raw.upper_inclusive.unwrap_or(false),
+        })
+    }
+}
+
+fn deserialize_optional_page_range<'de, D>(
+    deserializer: D,
+) -> Result<Option<SurfacePageRangeJson>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    match Option::<SurfacePageRangeJson>::deserialize(deserializer)? {
+        Some(range) => Ok(Some(range)),
+        None => Err(serde::de::Error::custom("`range` must be an object")),
+    }
 }
 
 /// Accept any JSON integer for `limit`, clamping a non-positive value to zero so a negative
@@ -144,6 +236,7 @@ pub struct DecodedSurfacePointRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DecodedSurfacePageRequest {
     exact_keys: Vec<SavedKey>,
+    range: Option<SurfaceIndexRangeRequest>,
     limit: usize,
     cursor: Option<SurfacePageCursor>,
 }
@@ -215,21 +308,40 @@ impl SurfacePageRequestJson {
         read: &SurfaceCollectionRead<'_>,
     ) -> Result<DecodedSurfacePageRequest, SurfaceReadError> {
         let exact_key_shapes = read.page_exact_key_shapes()?;
+        let range_key_shape = read.page_range_key_shape()?;
         let cursor_boundary_shape = read.cursor_boundary_shape()?;
-        self.decode_with_shapes(&exact_key_shapes, &cursor_boundary_shape)
+        self.decode_with_shapes(
+            &exact_key_shapes,
+            range_key_shape.as_ref(),
+            &cursor_boundary_shape,
+        )
     }
 
     fn decode_with_shapes(
         &self,
         exact_key_shapes: &[SurfaceInputKeyShape],
+        range_key_shape: Option<&SurfaceInputKeyShape>,
         cursor_boundary_shape: &SurfaceCursorBoundaryInputShape,
     ) -> Result<DecodedSurfacePageRequest, SurfaceReadError> {
+        let range = match (range_key_shape, &self.range) {
+            (Some(shape), Some(range)) => Some(range.decode_with_shape(shape)?),
+            (Some(_), None) => {
+                return Err(SurfaceJsonErrorContext::Request
+                    .error("surface range page request requires a range"));
+            }
+            (None, Some(_)) => {
+                return Err(SurfaceJsonErrorContext::Request
+                    .error("surface page request does not take a range"));
+            }
+            (None, None) => None,
+        };
         Ok(DecodedSurfacePageRequest {
             exact_keys: decode_argument_tuple(
                 &self.exact_keys,
                 exact_key_shapes,
                 SurfaceJsonErrorContext::Request,
             )?,
+            range,
             limit: self.limit,
             cursor: self
                 .cursor
@@ -254,9 +366,67 @@ impl DecodedSurfacePageRequest {
     pub fn as_page_request(&self) -> SurfaceCollectionPageRequest<'_> {
         SurfaceCollectionPageRequest {
             exact_keys: &self.exact_keys,
+            range: self.range.as_ref(),
             limit: self.limit,
             cursor: self.cursor.as_ref(),
         }
+    }
+}
+
+impl SurfacePageRangeJson {
+    fn decode_with_shape(
+        &self,
+        shape: &SurfaceInputKeyShape,
+    ) -> Result<SurfaceIndexRangeRequest, SurfaceReadError> {
+        self.decode_with_shape_in_context(shape, SurfaceJsonErrorContext::Request)
+    }
+
+    fn decode_with_shape_in_context(
+        &self,
+        shape: &SurfaceInputKeyShape,
+        context: SurfaceJsonErrorContext,
+    ) -> Result<SurfaceIndexRangeRequest, SurfaceReadError> {
+        if !matches!(shape, SurfaceInputKeyShape::Scalar(_)) {
+            return Err(context.error("surface range page bounds must target a scalar key"));
+        }
+        if self.lower.is_none() && self.upper.is_none() {
+            return Err(context.error("surface range page request requires at least one bound"));
+        }
+        Ok(SurfaceIndexRangeRequest {
+            lower: self
+                .lower
+                .as_ref()
+                .map(|lower| decode_argument_json(lower, shape, context))
+                .transpose()?,
+            lower_inclusive: self.lower_inclusive,
+            upper: self
+                .upper
+                .as_ref()
+                .map(|upper| decode_argument_json(upper, shape, context))
+                .transpose()?,
+            upper_inclusive: self.upper_inclusive,
+        })
+    }
+
+    fn from_range(
+        range: &SurfaceIndexRangeRequest,
+        shape: &SurfaceInputKeyShape,
+        context: SurfaceJsonErrorContext,
+    ) -> Result<Self, SurfaceReadError> {
+        Ok(Self {
+            lower: range
+                .lower
+                .as_ref()
+                .map(|lower| render_argument_json(lower, shape, context))
+                .transpose()?,
+            lower_inclusive: range.lower_inclusive,
+            upper: range
+                .upper
+                .as_ref()
+                .map(|upper| render_argument_json(upper, shape, context))
+                .transpose()?,
+            upper_inclusive: range.upper_inclusive,
+        })
     }
 }
 
@@ -860,6 +1030,41 @@ fn render_cursor_boundary_json(
                 SurfaceJsonErrorContext::Cursor,
             )?,
         }),
+        (
+            SurfaceCursorBoundaryInputShape::IndexRange {
+                exact_keys: exact_key_shapes,
+                range_key,
+                index_keys: index_key_shapes,
+                identity: identity_shape,
+            },
+            SurfacePageBoundary::IndexRange {
+                exact_keys,
+                range,
+                index_keys,
+                identity,
+            },
+        ) => Ok(SurfaceCursorBoundaryJson::IndexRange {
+            exact_keys: render_argument_tuple(
+                exact_keys,
+                exact_key_shapes,
+                SurfaceJsonErrorContext::Cursor,
+            )?,
+            range: SurfacePageRangeJson::from_range(
+                range,
+                range_key,
+                SurfaceJsonErrorContext::Cursor,
+            )?,
+            index_keys: render_argument_tuple(
+                index_keys,
+                index_key_shapes,
+                SurfaceJsonErrorContext::Cursor,
+            )?,
+            identity: render_identity_json(
+                identity,
+                identity_shape,
+                SurfaceJsonErrorContext::Cursor,
+            )?,
+        }),
         _ => Err(SurfaceJsonErrorContext::Cursor
             .error("surface cursor boundary does not match the collection shape")),
     }
@@ -888,6 +1093,25 @@ fn decode_cursor_boundary_json(
             },
         ) => Ok(SurfacePageBoundary::IndexIdentity {
             exact_keys: decode_argument_tuple(exact_keys, exact_key_shapes, context)?,
+            identity: decode_identity_json(identity, identity_shape, context)?,
+        }),
+        (
+            SurfaceCursorBoundaryInputShape::IndexRange {
+                exact_keys: exact_key_shapes,
+                range_key,
+                index_keys: index_key_shapes,
+                identity: identity_shape,
+            },
+            SurfaceCursorBoundaryJson::IndexRange {
+                exact_keys,
+                range,
+                index_keys,
+                identity,
+            },
+        ) => Ok(SurfacePageBoundary::IndexRange {
+            exact_keys: decode_argument_tuple(exact_keys, exact_key_shapes, context)?,
+            range: range.decode_with_shape_in_context(range_key, context)?,
+            index_keys: decode_argument_tuple(index_keys, index_key_shapes, context)?,
             identity: decode_identity_json(identity, identity_shape, context)?,
         }),
         _ => Err(context.error("surface cursor boundary does not match the collection shape")),

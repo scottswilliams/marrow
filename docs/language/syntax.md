@@ -112,6 +112,7 @@ surface Books from ^books
     fields title, author, blurb
     collection ^books as list
     collection ^books.byAuthor as byAuthor
+    collection ^books.byPublished range as byPublished
     action addBook
     read bookPage as page
     create title, author, blurb
@@ -120,8 +121,9 @@ surface Books from ^books
 ```
 
 `fields`, `create`, and `update` take comma-separated field names. `delete`
-takes no fields. `collection` targets either the root (`^books`) or one index
-path (`^books.byAuthor`) and then names the alias after `as`. `action` exposes a
+takes no fields. `collection` targets the root (`^books`), one exact index path
+(`^books.byAuthor`), or one ranged index path
+(`^books.byPublished range`), and then names the alias after `as`. `action` exposes a
 public function by bare same-module name or qualified module path; omitting `as`
 uses the function leaf as the alias. `read` exposes a public read-only function
 as a computed read through the same alias form. If the index itself is named
@@ -143,7 +145,10 @@ an exact-body create operation and must cover required top-level backing fields
 that have no default. A stable non-empty `update` declares a sparse-update
 operation. `delete` declares a reject-absent full-subtree delete operation.
 `collection` names either the same backing root or one index declared on that
-backing store. `read` names a public read-only function; it is rejected if its
+backing store. A ranged `collection ^root.index range as alias` requires a
+non-unique index whose final components are the complete store identity suffix
+and whose ranged component immediately before that suffix is scalar. `read`
+names a public read-only function; it is rejected if its
 checked effect closure writes saved data, opens a transaction, performs host
 effects, throws, or uses an unindexed collection read. Nested projections,
 keyed-child reads and writes are deferred. Opaque cursor-token codecs and remote

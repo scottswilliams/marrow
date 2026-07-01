@@ -486,6 +486,11 @@ pub enum SurfaceTarget {
         index: String,
         span: SourceSpan,
     },
+    IndexRange {
+        root: String,
+        index: String,
+        span: SourceSpan,
+    },
 }
 
 impl SurfaceTarget {
@@ -493,7 +498,9 @@ impl SurfaceTarget {
     /// offending target rather than column 1 of the `collection` line.
     pub fn span(&self) -> SourceSpan {
         match self {
-            Self::Root { span, .. } | Self::Index { span, .. } => *span,
+            Self::Root { span, .. } | Self::Index { span, .. } | Self::IndexRange { span, .. } => {
+                *span
+            }
         }
     }
 }

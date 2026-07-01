@@ -4,8 +4,8 @@ use std::time::Instant;
 
 use marrow_json::surface::{
     SurfaceCursorJson, SurfaceCursorTokenCodec, SurfaceCursorTokenError,
-    SurfaceCursorTokenErrorKind, SurfaceOperationErrorJson, SurfaceOperationKind,
-    SurfaceOperationRequestJson, SurfaceOperationResponseJson,
+    SurfaceCursorTokenErrorKind, SurfaceOperationErrorJson, SurfaceOperationRequestJson,
+    SurfaceOperationResponseJson,
 };
 use marrow_run::{
     SURFACE_ABI_MISMATCH, SURFACE_ABSENT, SURFACE_ACTION, SURFACE_COMPUTED, SURFACE_CONFLICT,
@@ -295,6 +295,13 @@ fn execute_http_request_body(
         )
         .with_cors_match(cors_match);
     }
+    if operation.profile_version != route.operation_profile.version() {
+        return SurfaceHttpResponse::error(
+            HttpStatus::NotFound,
+            surface_error(SURFACE_ABI_MISMATCH, "surface operation is not active"),
+        )
+        .with_cors_match(cors_match);
+    }
     if !route.kind.matches_operation_body(&operation.request) {
         return SurfaceHttpResponse::error(
             HttpStatus::BadRequest,
@@ -327,7 +334,7 @@ fn operation_from_http_body(
         return serde_json::from_slice::<SurfaceOperationRequestJson>(body)
             .map_err(|_| request_body_error());
     };
-    if route.kind != SurfaceOperationKind::Page {
+    if !route.kind.is_page_cursor_operation() {
         return serde_json::from_slice::<SurfaceOperationRequestJson>(body)
             .map_err(|_| request_body_error());
     }
@@ -337,6 +344,15 @@ fn operation_from_http_body(
         return serde_json::from_value(value).map_err(|_| request_body_error());
     };
     if operation_tag != route.operation_tag {
+        return Err(surface_error(
+            SURFACE_ABI_MISMATCH,
+            "surface operation is not active",
+        ));
+    }
+    let Some(profile_version) = value.get("profile_version").and_then(Json::as_str) else {
+        return serde_json::from_value(value).map_err(|_| request_body_error());
+    };
+    if profile_version != route.operation_profile.version() {
         return Err(surface_error(
             SURFACE_ABI_MISMATCH,
             "surface operation is not active",
@@ -392,7 +408,7 @@ fn response_value_for_route(
     let Some(cursor_token) = remote_cursor_token else {
         return Ok(response_value(response));
     };
-    if route.kind != SurfaceOperationKind::Page {
+    if !route.kind.is_page_cursor_operation() {
         return Ok(response_value(response));
     }
     let mut value = serde_json::to_value(response)
@@ -1015,7 +1031,13 @@ fn error_value(value: SurfaceOperationErrorJson) -> serde_json::Value {
 
 #[cfg(test)]
 mod tests {
+    use super::super::cursor_token::CursorTokenKeySource;
     use super::*;
+    use marrow_json::surface::{
+        SurfaceOperationKind, SurfaceOperationProfile, SurfaceRouteBinding,
+    };
+
+    const VALID_CURSOR_TOKEN_KEY: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 
     #[test]
     fn computed_read_execution_faults_are_server_faults() {
@@ -1027,6 +1049,54 @@ mod tests {
     fn abi_mismatch_is_the_not_found_wrong_route_class() {
         assert_eq!(status_for_surface_error(SURFACE_ABI_MISMATCH).code(), 404);
         assert_eq!(status_for_surface_error(SURFACE_ABSENT).code(), 404);
+    }
+
+    #[test]
+    fn cursor_token_route_body_profile_mismatch_stays_abi_mismatch() {
+        let key_path = std::env::temp_dir().join(format!(
+            "marrow-cursor-token-key-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock after epoch")
+                .as_nanos()
+        ));
+        std::fs::write(&key_path, VALID_CURSOR_TOKEN_KEY).expect("write cursor token key");
+        let remote_cursor_token =
+            RemoteCursorToken::load("kid_1", &CursorTokenKeySource::File(key_path.clone()))
+                .expect("load cursor token key");
+        let _ = std::fs::remove_file(&key_path);
+        let route = SurfaceRouteBinding {
+            path: "/surface/v2/read/op_tag".into(),
+            operation_tag: "op_tag".into(),
+            kind: SurfaceOperationKind::RangePage,
+            operation_profile: SurfaceOperationProfile::V2,
+            surface_module: "test".into(),
+            surface_name: "Posts".into(),
+            alias: "byDate".into(),
+        };
+        let body = serde_json::to_vec(&serde_json::json!({
+            "profile_version": "surface.operation.v1",
+            "operation_tag": "op_tag",
+            "request": {
+                "kind": "page",
+                "request": {
+                    "exact_keys": [],
+                    "range": {
+                        "lower": { "kind": "date", "days_since_epoch": 10 },
+                        "lower_inclusive": false
+                    },
+                    "limit": 1,
+                    "cursor": "not-a-cursor-token"
+                }
+            }
+        }))
+        .expect("encode operation body");
+
+        let error = operation_from_http_body(&body, &route, Some(&remote_cursor_token))
+            .expect_err("profile mismatch fails before cursor token decode");
+
+        assert_eq!(error.code, SURFACE_ABI_MISMATCH);
     }
 
     #[test]

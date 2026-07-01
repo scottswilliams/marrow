@@ -43,12 +43,12 @@ pub use execute::{
     execute_surface_singleton_update_by_tag, execute_surface_unique_lookup_by_tag,
 };
 pub use operation::{
-    SURFACE_OPERATION_PROFILE_VERSION, SurfaceActionRequestJson, SurfaceActionResultJson,
-    SurfaceComputedReadInvocationResultJson, SurfaceComputedReadRequestJson,
-    SurfaceEmptyRequestJson, SurfaceOperationErrorJson, SurfaceOperationRequestBodyJson,
-    SurfaceOperationRequestJson, SurfaceOperationResponseJson, SurfaceOperationResultJson,
-    execute_project_surface_operation, execute_project_surface_operation_read_only,
-    execute_project_surface_operation_with_host,
+    SURFACE_OPERATION_PROFILE_VERSION, SURFACE_OPERATION_PROFILE_VERSION_V2,
+    SurfaceActionRequestJson, SurfaceActionResultJson, SurfaceComputedReadInvocationResultJson,
+    SurfaceComputedReadRequestJson, SurfaceEmptyRequestJson, SurfaceOperationErrorJson,
+    SurfaceOperationProfile, SurfaceOperationRequestBodyJson, SurfaceOperationRequestJson,
+    SurfaceOperationResponseJson, SurfaceOperationResultJson, execute_project_surface_operation,
+    execute_project_surface_operation_read_only, execute_project_surface_operation_with_host,
 };
 pub use operation_catalog::{
     SurfaceOperationBinding, SurfaceOperationCatalog, SurfaceOperationCatalogError,
@@ -58,15 +58,16 @@ pub use request::{
     DecodedSurfacePageRequest, DecodedSurfacePointCreateRequest, DecodedSurfacePointDeleteRequest,
     DecodedSurfacePointRequest, DecodedSurfacePointUpdateRequest,
     DecodedSurfaceSingletonCreateRequest, DecodedSurfaceSingletonUpdateRequest,
-    DecodedSurfaceUniqueLookupRequest, SurfaceCreateFieldJson, SurfacePageRequestJson,
-    SurfacePointCreateRequestJson, SurfacePointDeleteRequestJson, SurfacePointRequestJson,
-    SurfacePointUpdateRequestJson, SurfaceSingletonCreateRequestJson,
+    DecodedSurfaceUniqueLookupRequest, SurfaceCreateFieldJson, SurfacePageRangeJson,
+    SurfacePageRequestJson, SurfacePointCreateRequestJson, SurfacePointDeleteRequestJson,
+    SurfacePointRequestJson, SurfacePointUpdateRequestJson, SurfaceSingletonCreateRequestJson,
     SurfaceSingletonUpdateRequestJson, SurfaceUniqueLookupRequestJson, SurfaceUpdateFieldJson,
     SurfaceWriteValueJson,
 };
 pub use route::{
-    SURFACE_ROUTE_PROFILE_VERSION, SurfaceRouteJson, SurfaceRouteManifestJson,
-    SurfaceRouteMethodJson, SurfaceRouteRequestJson, SurfaceRouteSurfaceJson,
+    SURFACE_ROUTE_PROFILE_VERSION, SURFACE_ROUTE_PROFILE_VERSION_V2, SurfaceRouteJson,
+    SurfaceRouteManifestJson, SurfaceRouteMethodJson, SurfaceRouteRequestJson,
+    SurfaceRouteSurfaceJson,
 };
 pub use route_binding::{
     SurfaceRouteBinding, SurfaceRouteBindingError, SurfaceRouteBindingErrorKind,
@@ -123,6 +124,12 @@ pub enum SurfaceReadOperationKindJson {
     PagedIndexCollection {
         index_catalog_id: String,
         exact_key_count: usize,
+        identity_key_count: usize,
+    },
+    PagedIndexRangeCollection {
+        index_catalog_id: String,
+        exact_key_count: usize,
+        range_key_index: usize,
         identity_key_count: usize,
     },
     UniqueIndexLookup {
@@ -472,13 +479,24 @@ pub struct SurfacePageJson {
 
 impl SurfaceAbiJson {
     pub fn from_program(program: &marrow_check::CheckedProgram) -> Self {
+        Self::from_program_for_profile(program, SurfaceOperationProfile::V1)
+    }
+
+    pub fn from_program_v2(program: &marrow_check::CheckedProgram) -> Self {
+        Self::from_program_for_profile(program, SurfaceOperationProfile::V2)
+    }
+
+    pub fn from_program_for_profile(
+        program: &marrow_check::CheckedProgram,
+        profile: SurfaceOperationProfile,
+    ) -> Self {
         let mut surfaces = program
             .facts
             .surfaces()
             .iter()
             .map(|surface| {
                 let module = &program.facts.modules()[surface.module.0 as usize];
-                SurfaceDescriptorJson::from_surface(program, &module.name, surface)
+                SurfaceDescriptorJson::from_surface(program, &module.name, surface, profile)
             })
             .collect::<Vec<_>>();
         omit_uncallable_operation_tags(&mut surfaces);
@@ -496,6 +514,7 @@ impl SurfaceDescriptorJson {
         program: &marrow_check::CheckedProgram,
         module: &str,
         surface: &marrow_check::SurfaceFact,
+        profile: SurfaceOperationProfile,
     ) -> Self {
         let stable = matches!(
             surface.catalog_status,
@@ -513,6 +532,7 @@ impl SurfaceDescriptorJson {
                         marrow_check::SurfaceReadOperationDescriptor::from_operation(
                             program, surface, operation,
                         )
+                        .filter(|descriptor| read_descriptor_in_profile(&descriptor.kind, profile))
                         .map(SurfaceReadOperationDescriptorJson::from)
                     })
                     .collect()
@@ -651,6 +671,16 @@ fn duplicate_operation_tags<'a>(tags: impl Iterator<Item = &'a str>) -> BTreeSet
         .collect()
 }
 
+fn read_descriptor_in_profile(
+    kind: &marrow_check::SurfaceReadOperationDescriptorKind,
+    profile: SurfaceOperationProfile,
+) -> bool {
+    !matches!(
+        kind,
+        marrow_check::SurfaceReadOperationDescriptorKind::PagedIndexRangeCollection { .. }
+    ) || profile.includes_range_pages()
+}
+
 impl From<&marrow_check::SurfaceCatalogStatus> for SurfaceCatalogStatusJson {
     fn from(status: &marrow_check::SurfaceCatalogStatus) -> Self {
         match status {
@@ -716,6 +746,17 @@ impl From<marrow_check::SurfaceReadOperationDescriptorKind> for SurfaceReadOpera
             } => Self::PagedIndexCollection {
                 index_catalog_id: index_catalog_id.as_str().to_string(),
                 exact_key_count,
+                identity_key_count,
+            },
+            marrow_check::SurfaceReadOperationDescriptorKind::PagedIndexRangeCollection {
+                index_catalog_id,
+                exact_key_count,
+                range_key_index,
+                identity_key_count,
+            } => Self::PagedIndexRangeCollection {
+                index_catalog_id: index_catalog_id.as_str().to_string(),
+                exact_key_count,
+                range_key_index,
                 identity_key_count,
             },
             marrow_check::SurfaceReadOperationDescriptorKind::UniqueIndexLookup {
@@ -1248,6 +1289,12 @@ pub enum SurfaceCursorBoundaryJson {
         exact_keys: Vec<SurfaceArgumentJson>,
         identity: SurfaceIdentityJson,
     },
+    IndexRange {
+        exact_keys: Vec<SurfaceArgumentJson>,
+        range: SurfacePageRangeJson,
+        index_keys: Vec<SurfaceArgumentJson>,
+        identity: SurfaceIdentityJson,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1748,7 +1795,8 @@ mod tests {
 
     use crate::surface::{
         SURFACE_CLIENT_DIGEST_PREFIX, SURFACE_CLIENT_DO_NOT_EDIT, SURFACE_CLIENT_PROFILE_PREFIX,
-        SURFACE_OPERATION_PROFILE_VERSION, SurfaceAbiJson, SurfaceActionRequestJson,
+        SURFACE_OPERATION_PROFILE_VERSION, SURFACE_OPERATION_PROFILE_VERSION_V2,
+        SURFACE_ROUTE_PROFILE_VERSION_V2, SurfaceAbiJson, SurfaceActionRequestJson,
         SurfaceActionResultJson, SurfaceActionValueJson, SurfaceArgumentJson,
         SurfaceCallableArgumentShapeJson, SurfaceCallableParameterPresenceJson,
         SurfaceCatalogStatusJson, SurfaceClientCursorProfile, SurfaceClientRenderErrorKind,
@@ -1758,13 +1806,14 @@ mod tests {
         SurfaceCursorBoundaryJson, SurfaceCursorJson, SurfaceDeleteOperationKindJson,
         SurfaceEmptyRequestJson, SurfaceIdentityJson, SurfaceKeyJson, SurfaceOperationCatalog,
         SurfaceOperationCatalogErrorKind, SurfaceOperationErrorJson, SurfaceOperationKind,
-        SurfaceOperationRequestBodyJson, SurfaceOperationRequestJson, SurfaceOperationResultJson,
-        SurfacePageJson, SurfacePageRequestJson, SurfacePointCreateRequestJson,
-        SurfacePointDeleteRequestJson, SurfacePointRequestJson, SurfacePointUpdateRequestJson,
-        SurfaceReadOperationKindJson, SurfaceRecordJson, SurfaceRouteBindingErrorKind,
-        SurfaceRouteBindings, SurfaceRouteManifestJson, SurfaceRouteMethodJson,
-        SurfaceRouteRequestJson, SurfaceSingletonUpdateRequestJson, SurfaceUniqueLookupRequestJson,
-        SurfaceUpdateFieldJson, SurfaceValueJson, SurfaceWriteValueJson, render_typescript_client,
+        SurfaceOperationProfile, SurfaceOperationRequestBodyJson, SurfaceOperationRequestJson,
+        SurfaceOperationResultJson, SurfacePageJson, SurfacePageRangeJson, SurfacePageRequestJson,
+        SurfacePointCreateRequestJson, SurfacePointDeleteRequestJson, SurfacePointRequestJson,
+        SurfacePointUpdateRequestJson, SurfaceReadOperationKindJson, SurfaceRecordJson,
+        SurfaceRouteBindingErrorKind, SurfaceRouteBindings, SurfaceRouteManifestJson,
+        SurfaceRouteMethodJson, SurfaceRouteRequestJson, SurfaceSingletonUpdateRequestJson,
+        SurfaceUniqueLookupRequestJson, SurfaceUpdateFieldJson, SurfaceValueJson,
+        SurfaceWriteValueJson, render_typescript_client,
         render_typescript_client_with_cursor_profile, surface_abi_digest, surface_client_digest,
         surface_client_digest_with_cursor_profile, surface_client_header,
         surface_client_header_digest,
@@ -1792,6 +1841,20 @@ surface Books from ^books
     fields title
     collection ^books as list
     collection ^books.byStatusAuthor as byStatusAuthor
+";
+
+    const SURFACE_WITH_INDEX_RANGE_COLLECTION: &str = "\
+resource Post
+    required title: string
+    required category: string
+    required publishedOn: date
+store ^posts(id: int): Post
+    index byCategoryDate(category, publishedOn, id)
+
+surface Posts from ^posts
+    fields title, category, publishedOn
+    collection ^posts.byCategoryDate as byCategoryDate
+    collection ^posts.byCategoryDate range as byCategoryDateRange
 ";
 
     const SURFACE_UPDATE_WITH_ENUM_IDENTITY_INDEX: &str = "\
@@ -2798,6 +2861,53 @@ pub fn seed()
             .expect("index entry write succeeds");
     }
 
+    fn write_surface_post(
+        program: &CheckedRuntimeProgram,
+        store: &TreeStore,
+        id: i64,
+        title: &str,
+        category: &str,
+        published_on: i32,
+    ) {
+        let identity = [SavedKey::Int(id)];
+        write_data_value(
+            program,
+            store,
+            "posts",
+            &identity,
+            &data_path(program, "posts", &["title"]),
+            SavedValue::Str(title.into()),
+        );
+        write_data_value(
+            program,
+            store,
+            "posts",
+            &identity,
+            &data_path(program, "posts", &["category"]),
+            SavedValue::Str(category.into()),
+        );
+        write_data_value(
+            program,
+            store,
+            "posts",
+            &identity,
+            &data_path(program, "posts", &["publishedOn"]),
+            SavedValue::Date(published_on),
+        );
+        store
+            .write_index_entry(
+                &index_catalog_id(program, "posts", "byCategoryDate"),
+                &[
+                    SavedKey::Str(category.into()),
+                    SavedKey::Date(published_on),
+                    SavedKey::Int(id),
+                ],
+                &identity,
+                Vec::new(),
+            )
+            .expect("index entry write succeeds");
+    }
+
     fn write_surface_book_private_code(
         program: &CheckedRuntimeProgram,
         store: &TreeStore,
@@ -2928,6 +3038,7 @@ pub fn seed()
                     }],
                 },
             ],
+            range: None,
             limit,
             cursor: None,
         }
@@ -3225,6 +3336,142 @@ pub fn seed()
                 .map(|read| read.alias.as_str())
                 .collect::<Vec<_>>(),
             vec!["get", "byStatusAuthor"]
+        );
+    }
+
+    #[test]
+    fn surface_operation_profiles_expose_range_reads_only_in_v2() {
+        let (program, runtime) = checked_surface_program(SURFACE_WITH_INDEX_RANGE_COLLECTION);
+        let v1 = SurfaceAbiJson::from_program(&program);
+        let v2 = SurfaceAbiJson::from_program_v2(&program);
+        let v1_posts = v1
+            .surfaces
+            .iter()
+            .find(|surface| surface.name == "Posts")
+            .expect("v1 Posts descriptor");
+        let v2_posts = v2
+            .surfaces
+            .iter()
+            .find(|surface| surface.name == "Posts")
+            .expect("v2 Posts descriptor");
+
+        assert_eq!(
+            v1_posts
+                .read
+                .iter()
+                .map(|read| read.alias.as_str())
+                .collect::<Vec<_>>(),
+            vec!["get", "byCategoryDate"]
+        );
+        let range = v2_posts
+            .read
+            .iter()
+            .find(|read| read.alias == "byCategoryDateRange")
+            .expect("v2 range descriptor");
+        assert_eq!(range.profile_version, "surface.read.v1");
+        assert_eq!(
+            range.kind,
+            SurfaceReadOperationKindJson::PagedIndexRangeCollection {
+                index_catalog_id: index_catalog_id(&runtime, "posts", "byCategoryDate")
+                    .as_str()
+                    .into(),
+                exact_key_count: 1,
+                range_key_index: 1,
+                identity_key_count: 1,
+            }
+        );
+
+        let v1_catalog = SurfaceOperationCatalog::from_abi(&v1).expect("v1 catalog");
+        assert_eq!(v1_catalog.profile(), SurfaceOperationProfile::V1);
+        assert!(v1_catalog.binding(&range.operation_tag).is_none());
+        let v2_catalog = SurfaceOperationCatalog::from_abi_v2(&v2).expect("v2 catalog");
+        assert!(
+            v2_posts
+                .read
+                .iter()
+                .filter(|read| read.operation_tag != range.operation_tag)
+                .all(|read| v2_catalog.binding(&read.operation_tag).is_none())
+        );
+        let binding = v2_catalog
+            .binding(&range.operation_tag)
+            .expect("v2 range binding");
+        assert_eq!(binding.kind, SurfaceOperationKind::RangePage);
+        assert_eq!(binding.profile, SurfaceOperationProfile::V2);
+        assert!(binding.path.starts_with("/surface/v2/read/"));
+
+        let v1_routes = SurfaceRouteManifestJson::from_abi(&v1);
+        assert!(
+            !v1_routes
+                .routes
+                .iter()
+                .any(|route| route.operation_tag == range.operation_tag)
+        );
+        let v2_routes = SurfaceRouteManifestJson::from_abi_v2(&v2);
+        assert_eq!(v2_routes.profile_version, SURFACE_ROUTE_PROFILE_VERSION_V2);
+        assert_eq!(
+            v2_routes.operation_profile_version,
+            SURFACE_OPERATION_PROFILE_VERSION_V2
+        );
+        let route = v2_routes
+            .routes
+            .iter()
+            .find(|route| route.operation_tag == range.operation_tag)
+            .expect("v2 range route");
+        assert_eq!(route.request, SurfaceRouteRequestJson::RangePage);
+        assert!(route.path.starts_with("/surface/v2/read/"));
+        assert!(
+            v2_routes
+                .routes
+                .iter()
+                .all(|route| route.request == SurfaceRouteRequestJson::RangePage)
+        );
+
+        SurfaceRouteBindings::from_manifest(&v1_routes, &v1_catalog).expect("v1 routes bind");
+        SurfaceRouteBindings::from_manifest(&v2_routes, &v2_catalog).expect("v2 routes bind");
+        assert_eq!(
+            SurfaceRouteBindings::from_manifest(&v2_routes, &v1_catalog)
+                .expect_err("mixed route/catalog profiles are rejected")
+                .kind(),
+            SurfaceRouteBindingErrorKind::InactiveOperationProfile
+        );
+    }
+
+    #[test]
+    fn surface_operation_v2_admits_only_range_pages() {
+        let (write_program, _runtime) = checked_surface_program(SURFACE_ACTION_UPDATE);
+        let write_abi = SurfaceAbiJson::from_program_v2(&write_program);
+        let write_catalog = SurfaceOperationCatalog::from_abi_v2(&write_abi).expect("v2 catalog");
+        let update_tag = update_operation_tag(&write_program, "Books");
+        let action_tag = checker_action_operation_tag(&write_program, "Books", "addBook");
+        assert!(write_catalog.binding(&update_tag).is_none());
+        assert!(write_catalog.binding(&action_tag).is_none());
+
+        let (create_program, _runtime) = checked_surface_program(SURFACE_CREATE_DELETE);
+        let create_abi = SurfaceAbiJson::from_program_v2(&create_program);
+        let create_catalog = SurfaceOperationCatalog::from_abi_v2(&create_abi).expect("v2 catalog");
+        assert!(
+            create_catalog
+                .binding(&create_operation_tag(&create_program, "Books"))
+                .is_none()
+        );
+        assert!(
+            create_catalog
+                .binding(&delete_operation_tag(&create_program, "Books"))
+                .is_none()
+        );
+
+        let (computed_program, _runtime) = checked_surface_program(SURFACE_COMPUTED_READ);
+        let computed_abi = SurfaceAbiJson::from_program_v2(&computed_program);
+        let computed_catalog =
+            SurfaceOperationCatalog::from_abi_v2(&computed_abi).expect("v2 catalog");
+        assert!(
+            computed_catalog
+                .binding(&checker_computed_read_operation_tag(
+                    &computed_program,
+                    "Books",
+                    "page"
+                ))
+                .is_none()
         );
     }
 
@@ -4225,7 +4472,8 @@ pub fn seed()
                 },
             ),
             (SurfaceOperationKind::PointRead, point_read),
-            (SurfaceOperationKind::Page, page),
+            (SurfaceOperationKind::Page, page.clone()),
+            (SurfaceOperationKind::RangePage, page.clone()),
             (SurfaceOperationKind::UniqueLookup, unique_lookup),
             (SurfaceOperationKind::SingletonUpdate, singleton_update),
             (SurfaceOperationKind::PointUpdate, point_update),
@@ -4241,6 +4489,7 @@ pub fn seed()
         assert!(SurfaceOperationKind::SingletonRead.is_read());
         assert!(SurfaceOperationKind::PointRead.is_read());
         assert!(SurfaceOperationKind::Page.is_read());
+        assert!(SurfaceOperationKind::RangePage.is_read());
         assert!(SurfaceOperationKind::UniqueLookup.is_read());
         assert!(!SurfaceOperationKind::SingletonUpdate.is_read());
         assert!(!SurfaceOperationKind::PointUpdate.is_read());
@@ -4324,6 +4573,7 @@ pub fn seed()
                     }
                     SurfaceReadOperationKindJson::PagedRootCollection
                     | SurfaceReadOperationKindJson::PagedIndexCollection { .. }
+                    | SurfaceReadOperationKindJson::PagedIndexRangeCollection { .. }
                     | SurfaceReadOperationKindJson::UniqueIndexLookup { .. } => {
                         SurfaceCollectionRead::admit_by_operation_tag(
                             &program,
@@ -4430,6 +4680,7 @@ pub fn seed()
             &root_page_tag,
             &SurfacePageRequestJson {
                 exact_keys: Vec::new(),
+                range: None,
                 limit: 1,
                 cursor: None,
             },
@@ -5173,11 +5424,12 @@ pub fn seed()
                 profile_version: SURFACE_OPERATION_PROFILE_VERSION.into(),
                 operation_tag: page_tag.clone(),
                 request: SurfaceOperationRequestBodyJson::Page {
-                    request: SurfacePageRequestJson {
+                    request: Box::new(SurfacePageRequestJson {
                         exact_keys: Vec::new(),
+                        range: None,
                         limit: 1,
                         cursor: None,
-                    },
+                    }),
                 },
             },
         )
@@ -5220,11 +5472,12 @@ pub fn seed()
                     profile_version: SURFACE_OPERATION_PROFILE_VERSION.into(),
                     operation_tag: page_tag,
                     request: SurfaceOperationRequestBodyJson::Page {
-                        request: SurfacePageRequestJson {
+                        request: Box::new(SurfacePageRequestJson {
                             exact_keys: Vec::new(),
+                            range: None,
                             limit: 10,
                             cursor: Some(cursor),
-                        },
+                        }),
                     },
                 },
             ),
@@ -5492,11 +5745,12 @@ pub fn seed()
                     profile_version: SURFACE_OPERATION_PROFILE_VERSION.into(),
                     operation_tag: point_tag,
                     request: SurfaceOperationRequestBodyJson::Page {
-                        request: SurfacePageRequestJson {
+                        request: Box::new(SurfacePageRequestJson {
                             exact_keys: Vec::new(),
+                            range: None,
                             limit: 1,
                             cursor: None,
-                        },
+                        }),
                     },
                 },
             ),
@@ -5550,11 +5804,12 @@ pub fn seed()
                     profile_version: SURFACE_OPERATION_PROFILE_VERSION.into(),
                     operation_tag: point_tag,
                     request: SurfaceOperationRequestBodyJson::Page {
-                        request: SurfacePageRequestJson {
+                        request: Box::new(SurfacePageRequestJson {
                             exact_keys: Vec::new(),
+                            range: None,
                             limit: 1,
                             cursor: None,
-                        },
+                        }),
                     },
                 },
             ),
@@ -6051,6 +6306,7 @@ pub fn seed()
             &root_tag,
             &SurfacePageRequestJson {
                 exact_keys: Vec::new(),
+                range: None,
                 limit: 1,
                 cursor: None,
             },
@@ -6816,6 +7072,7 @@ pub fn seed()
             exact_keys: vec![SurfaceArgumentJson::Bytes {
                 value_b64: "!!!!".into(),
             }],
+            range: None,
             limit: 1,
             cursor: None,
         };
@@ -6840,9 +7097,225 @@ pub fn seed()
                     keys: vec![SurfaceKeyJson::Int { value: "1".into() }],
                 },
             ],
+            range: None,
             limit: 1,
             cursor: None,
         };
         assert_surface_error(wrong_brand.decode(&read), SURFACE_REQUEST);
+    }
+
+    #[test]
+    fn range_page_request_requires_non_empty_range_and_rejects_range_on_non_range_pages() {
+        let (program, _runtime) = checked_surface_program(SURFACE_WITH_INDEX_RANGE_COLLECTION);
+        let store = admitted_store(&program);
+        let surface = surface_id(&program, "Posts");
+        let range_tag = read_operation_tag_matching(&program, surface, |kind| {
+            matches!(
+                kind,
+                SurfaceReadOperationKind::PagedIndexRangeCollection { .. }
+            )
+        });
+        let range_read =
+            SurfaceCollectionRead::admit_by_operation_tag(&program, &store, &range_tag)
+                .expect("admit range page read");
+        let exact_tag = read_operation_tag_matching(&program, surface, |kind| {
+            matches!(kind, SurfaceReadOperationKind::PagedIndexCollection { .. })
+        });
+        let exact_read =
+            SurfaceCollectionRead::admit_by_operation_tag(&program, &store, &exact_tag)
+                .expect("admit exact index page read");
+        let exact_keys = vec![SurfaceArgumentJson::String {
+            value: "fantasy".into(),
+        }];
+
+        assert_surface_error(
+            SurfacePageRequestJson {
+                exact_keys: exact_keys.clone(),
+                range: None,
+                limit: 1,
+                cursor: None,
+            }
+            .decode(&range_read),
+            SURFACE_REQUEST,
+        );
+        serde_json::from_value::<SurfacePageRequestJson>(json!({
+            "exact_keys": exact_keys,
+            "range": null,
+            "limit": 1
+        }))
+        .expect_err("null range request is rejected");
+        let empty_range = serde_json::from_value::<SurfacePageRequestJson>(json!({
+            "exact_keys": [{ "kind": "string", "value": "fantasy" }],
+            "range": {},
+            "limit": 1
+        }))
+        .expect("empty range request parses");
+        assert_surface_error(empty_range.decode(&range_read), SURFACE_REQUEST);
+        serde_json::from_value::<SurfacePageRequestJson>(json!({
+            "exact_keys": [{ "kind": "string", "value": "fantasy" }],
+            "range": null,
+            "limit": 1
+        }))
+        .expect_err("null range request is rejected before non-range decode");
+        serde_json::from_value::<SurfacePageRequestJson>(json!({
+            "exact_keys": [{ "kind": "string", "value": "fantasy" }],
+            "range": {
+                "upper": { "kind": "date", "days_since_epoch": 20 },
+                "lower_inclusive": true,
+                "upper_inclusive": false
+            },
+            "limit": 1
+        }))
+        .expect_err("lower inclusivity without lower bound is rejected");
+        serde_json::from_value::<SurfacePageRequestJson>(json!({
+            "exact_keys": [{ "kind": "string", "value": "fantasy" }],
+            "range": {
+                "lower": { "kind": "date", "days_since_epoch": 10 },
+                "lower_inclusive": true,
+                "upper_inclusive": false
+            },
+            "limit": 1
+        }))
+        .expect_err("upper inclusivity without upper bound is rejected");
+        let lower_only = SurfacePageRangeJson {
+            lower: Some(SurfaceArgumentJson::Date {
+                days_since_epoch: 10,
+            }),
+            lower_inclusive: false,
+            upper: None,
+            upper_inclusive: true,
+        };
+        assert_eq!(
+            serde_json::to_value(&lower_only).expect("lower-only range encodes"),
+            json!({
+                "lower": { "kind": "date", "days_since_epoch": 10 },
+                "lower_inclusive": false
+            })
+        );
+        assert_eq!(
+            serde_json::from_value::<SurfacePageRangeJson>(json!({
+                "upper": { "kind": "date", "days_since_epoch": 20 },
+                "upper_inclusive": true
+            }))
+            .expect("upper-only range decodes"),
+            SurfacePageRangeJson {
+                lower: None,
+                lower_inclusive: false,
+                upper: Some(SurfaceArgumentJson::Date {
+                    days_since_epoch: 20
+                }),
+                upper_inclusive: true,
+            }
+        );
+
+        let range = SurfacePageRangeJson {
+            lower: Some(SurfaceArgumentJson::Date {
+                days_since_epoch: 10,
+            }),
+            lower_inclusive: false,
+            upper: Some(SurfaceArgumentJson::Date {
+                days_since_epoch: 20,
+            }),
+            upper_inclusive: true,
+        };
+        assert_surface_error(
+            SurfacePageRequestJson {
+                exact_keys: Vec::new(),
+                range: Some(range),
+                limit: 1,
+                cursor: None,
+            }
+            .decode(&exact_read),
+            SURFACE_REQUEST,
+        );
+    }
+
+    #[test]
+    fn range_page_request_decodes_bounds_and_cursor_boundary() {
+        let (program, runtime) = checked_surface_program(SURFACE_WITH_INDEX_RANGE_COLLECTION);
+        let store = admitted_store(&program);
+        write_surface_post(&runtime, &store, 1, "Old Fantasy", "fantasy", 10);
+        write_surface_post(&runtime, &store, 2, "First Match", "fantasy", 20);
+        write_surface_post(&runtime, &store, 3, "Second Match", "fantasy", 20);
+        let surface = surface_id(&program, "Posts");
+        let range_tag = read_operation_tag_matching(&program, surface, |kind| {
+            matches!(
+                kind,
+                SurfaceReadOperationKind::PagedIndexRangeCollection { .. }
+            )
+        });
+        let read = SurfaceCollectionRead::admit_by_operation_tag(&program, &store, &range_tag)
+            .expect("admit range page read");
+        let request = SurfacePageRequestJson {
+            exact_keys: vec![SurfaceArgumentJson::String {
+                value: "fantasy".into(),
+            }],
+            range: Some(SurfacePageRangeJson {
+                lower: Some(SurfaceArgumentJson::Date {
+                    days_since_epoch: 10,
+                }),
+                lower_inclusive: false,
+                upper: Some(SurfaceArgumentJson::Date {
+                    days_since_epoch: 20,
+                }),
+                upper_inclusive: true,
+            }),
+            limit: 1,
+            cursor: None,
+        };
+        let decoded = request.decode(&read).expect("range page request decodes");
+        let page = read.page(decoded.as_page_request()).expect("range page");
+        assert_eq!(
+            page.rows[0].identity.as_ref().expect("identity").keys,
+            vec![SavedKey::Int(2)]
+        );
+        let cursor_json =
+            SurfaceCursorJson::from_cursor(&read, page.next.as_ref().expect("range cursor"))
+                .expect("range cursor json");
+        let SurfaceCursorBoundaryJson::IndexRange {
+            exact_keys,
+            range,
+            index_keys,
+            identity,
+        } = &cursor_json.boundary
+        else {
+            panic!("expected range cursor boundary: {cursor_json:?}");
+        };
+        assert_eq!(
+            exact_keys,
+            &vec![SurfaceArgumentJson::String {
+                value: "fantasy".into()
+            }]
+        );
+        assert!(!range.lower_inclusive);
+        assert_eq!(
+            range.lower,
+            Some(SurfaceArgumentJson::Date {
+                days_since_epoch: 10
+            })
+        );
+        assert_eq!(
+            index_keys,
+            &vec![
+                SurfaceArgumentJson::String {
+                    value: "fantasy".into()
+                },
+                SurfaceArgumentJson::Date {
+                    days_since_epoch: 20
+                },
+                SurfaceArgumentJson::Int { value: "2".into() },
+            ]
+        );
+        assert_eq!(
+            identity,
+            &SurfaceIdentityJson {
+                store_catalog_id: store_catalog_id(&runtime, "posts").as_str().into(),
+                keys: vec![SurfaceKeyJson::Int { value: "2".into() }],
+            }
+        );
+        assert_eq!(
+            cursor_json.decode(&read).expect("range cursor decodes"),
+            page.next.expect("range cursor")
+        );
     }
 }

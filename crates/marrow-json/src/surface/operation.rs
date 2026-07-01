@@ -22,6 +22,41 @@ use super::{
 };
 
 pub const SURFACE_OPERATION_PROFILE_VERSION: &str = "surface.operation.v1";
+pub const SURFACE_OPERATION_PROFILE_VERSION_V2: &str = "surface.operation.v2";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SurfaceOperationProfile {
+    V1,
+    V2,
+}
+
+impl SurfaceOperationProfile {
+    pub fn version(self) -> &'static str {
+        match self {
+            Self::V1 => SURFACE_OPERATION_PROFILE_VERSION,
+            Self::V2 => SURFACE_OPERATION_PROFILE_VERSION_V2,
+        }
+    }
+
+    pub fn parse(version: &str) -> Option<Self> {
+        match version {
+            SURFACE_OPERATION_PROFILE_VERSION => Some(Self::V1),
+            SURFACE_OPERATION_PROFILE_VERSION_V2 => Some(Self::V2),
+            _ => None,
+        }
+    }
+
+    pub fn includes_range_pages(self) -> bool {
+        matches!(self, Self::V2)
+    }
+
+    pub fn admits_operation_kind(self, kind: SurfaceOperationKind) -> bool {
+        match self {
+            Self::V1 => kind != SurfaceOperationKind::RangePage,
+            Self::V2 => kind == SurfaceOperationKind::RangePage,
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -41,7 +76,7 @@ pub enum SurfaceOperationRequestBodyJson {
         request: SurfacePointRequestJson,
     },
     Page {
-        request: SurfacePageRequestJson,
+        request: Box<SurfacePageRequestJson>,
     },
     UniqueLookup {
         request: SurfaceUniqueLookupRequestJson,
@@ -136,7 +171,7 @@ pub enum SurfaceOperationResultJson {
         record: SurfaceRecordJson,
     },
     Page {
-        page: SurfacePageJson,
+        page: Box<SurfacePageJson>,
     },
     OptionalRecord {
         record: Option<SurfaceRecordJson>,
@@ -188,8 +223,8 @@ pub fn execute_project_surface_operation_read_only(
     session: &ProjectSurfaceReadSession,
     request: &SurfaceOperationRequestJson,
 ) -> Result<SurfaceOperationResponseJson, SurfaceOperationErrorJson> {
-    validate_profile(request)?;
-    let kind = request_kind(session.program(), request)?;
+    let profile = validate_profile(request)?;
+    let kind = request_kind(session.program(), request, profile)?;
     if kind.requires_write_session() {
         return Err(abi_mismatch(
             "surface operation request requires a writable project surface session",
@@ -213,6 +248,7 @@ pub fn execute_project_surface_operation_read_only(
         SurfaceOperationKind::SingletonRead
         | SurfaceOperationKind::PointRead
         | SurfaceOperationKind::Page
+        | SurfaceOperationKind::RangePage
         | SurfaceOperationKind::UniqueLookup => {
             let operation = session
                 .admit_read_by_operation_tag(&request.operation_tag)
@@ -248,8 +284,8 @@ pub fn execute_project_surface_operation_with_host(
     request: &SurfaceOperationRequestJson,
     host: &Host,
 ) -> Result<SurfaceOperationResponseJson, SurfaceOperationErrorJson> {
-    validate_profile(request)?;
-    let kind = request_kind(session.program(), request)?;
+    let profile = validate_profile(request)?;
+    let kind = request_kind(session.program(), request, profile)?;
     let result = match kind {
         SurfaceOperationKind::SingletonUpdate | SurfaceOperationKind::PointUpdate => {
             execute_update_for_session(session, request)?
@@ -273,6 +309,7 @@ pub fn execute_project_surface_operation_with_host(
         SurfaceOperationKind::SingletonRead
         | SurfaceOperationKind::PointRead
         | SurfaceOperationKind::Page
+        | SurfaceOperationKind::RangePage
         | SurfaceOperationKind::UniqueLookup => execute_read_for_session(session, request)?,
         SurfaceOperationKind::ComputedRead => match &request.request {
             SurfaceOperationRequestBodyJson::ComputedRead {
@@ -323,22 +360,19 @@ fn public_fault_message(code: &str) -> Option<&'static str> {
 
 fn validate_profile(
     request: &SurfaceOperationRequestJson,
-) -> Result<(), SurfaceOperationErrorJson> {
-    if request.profile_version == SURFACE_OPERATION_PROFILE_VERSION {
-        Ok(())
-    } else {
-        Err(abi_mismatch(
-            "surface operation profile version is not active",
-        ))
-    }
+) -> Result<SurfaceOperationProfile, SurfaceOperationErrorJson> {
+    SurfaceOperationProfile::parse(&request.profile_version)
+        .ok_or_else(|| abi_mismatch("surface operation profile version is not active"))
 }
 
 fn request_kind(
     program: &marrow_check::CheckedProgram,
     request: &SurfaceOperationRequestJson,
+    profile: SurfaceOperationProfile,
 ) -> Result<SurfaceOperationKind, SurfaceOperationErrorJson> {
-    let Some(kind) = SurfaceOperationKind::from_program_tag(program, &request.operation_tag)
-        .map_err(|error| abi_mismatch(error.to_string()))?
+    let Some(kind) =
+        SurfaceOperationKind::from_program_tag(program, profile, &request.operation_tag)
+            .map_err(|error| abi_mismatch(error.to_string()))?
     else {
         return Err(abi_mismatch("surface operation is not active"));
     };
@@ -408,7 +442,7 @@ fn execute_read_operation(
             })
         }
         SurfaceOperationRequestBodyJson::Page { request } => Ok(SurfaceOperationResultJson::Page {
-            page: execute_page(operation, operation_tag, request)?,
+            page: Box::new(execute_page(operation, operation_tag, request)?),
         }),
         SurfaceOperationRequestBodyJson::UniqueLookup { request } => {
             Ok(SurfaceOperationResultJson::OptionalRecord {
@@ -597,7 +631,7 @@ fn operation_response(
     result: SurfaceOperationResultJson,
 ) -> SurfaceOperationResponseJson {
     SurfaceOperationResponseJson {
-        profile_version: SURFACE_OPERATION_PROFILE_VERSION.to_string(),
+        profile_version: request.profile_version.clone(),
         operation_tag: request.operation_tag.clone(),
         result,
     }

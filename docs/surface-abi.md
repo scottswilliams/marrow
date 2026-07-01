@@ -122,7 +122,9 @@ The active surface foundation has these owners:
   HTTP parser over
   descriptor-derived
   `/surface/v1/{read|create|update|delete|action}/<operation-tag>` routes and
-  `surface.operation.v1` envelopes. Computed reads use the read route prefix. It
+  `surface.operation.v1` envelopes, plus explicit
+  `surface.route.v2`/`surface.operation.v2` range page routes under
+  `/surface/v2/read/<operation-tag>`. Computed reads use the read route prefix. It
   defaults to read-only serving and exposes create/update/delete/action routes
   only with `--write`. The remote profile can wrap page cursors in
   `surface.cursor_token.v1` tokens without changing checker or runtime cursor
@@ -143,11 +145,15 @@ profile version and accept stale cached operation identity.
 
 ## Operation Envelope Profile
 
-The active JSON operation envelope is `surface.operation.v1`. It is
+The default JSON operation envelope is `surface.operation.v1`. It is
 transport-neutral: callers supply a profile version, an operation tag, and one
 typed request body; `marrow-json` admits the tag through `marrow-run` and then
 lets the admitted read, computed-read, create, update, delete, or action handle
 validate the requested body shape.
+`surface.operation.v2` admits ranged index page reads only, using the same page
+request/result envelope shape as v1 page reads. V1 intentionally omits range
+operations so existing route manifests and generated TypeScript clients stay
+stable.
 
 The operation envelope and the surface-owned request DTOs are closed JSON
 objects. Unknown fields are request errors rather than extension points; new
@@ -172,10 +178,13 @@ carry captured program output and an optional computed-read value DTO. Resource
 computed-read results carry the accepted result resource catalog ID and accepted
 resource-member catalog IDs for declared result fields. Page cursors carry the
 producing operation tag, store UID, store commit ID, accepted-catalog digest,
-source digest, engine-profile digest, and typed boundary. A cursor is valid only
-while the current store commit still matches that lineage; a committed write
-between page requests makes the cursor stale instead of silently continuing
-against a different saved-data snapshot.
+source digest, engine-profile digest, and typed boundary. Exact index page
+cursors bind the exact keys plus the last identity. Range page cursors bind the
+exact keys, normalized range bounds, the last full index tuple, and the last
+identity, so a cursor for one range or exact-key tuple cannot resume another.
+A cursor is valid only while the current store commit still matches that
+lineage; a committed write between page requests makes the cursor stale instead
+of silently continuing against a different saved-data snapshot.
 The remote cursor-token profile encrypts that typed cursor JSON inside a closed
 `surface.cursor_token.v1` plaintext and authenticates the profile, key id,
 request operation tag, and token mode as AEAD associated data. The token form is
@@ -275,6 +284,42 @@ render/client labels; they are not route identity or operation equality.
 Source-only surfaces and duplicate-tag operations have no route rows because
 they have no callable descriptor rows.
 
+`surface.operation.v2` and `surface.route.v2` are explicit profile-aware
+constructors over the same checked descriptors. V2 includes
+`paged_index_range_collection` read descriptors as `range_page` routes under
+`/surface/v2/read/{operation_tag}`. The descriptor carries the index catalog id,
+`exact_key_count`, `range_key_index`, `identity_key_count`, and the existing
+`index_keys` array so clients can identify the exact, ranged, and identity
+components without reclassifying the index. V1 constructors keep omitting these
+range operations.
+
+Range page request bodies use the normal page body plus a required `range`
+object:
+
+```json
+{
+  "exact_keys": [{ "kind": "string", "value": "fantasy" }],
+  "range": {
+    "lower": { "kind": "date", "days_since_epoch": 19723 },
+    "lower_inclusive": false,
+    "upper": { "kind": "date", "days_since_epoch": 19754 },
+    "upper_inclusive": true
+  },
+  "limit": 20,
+  "cursor": null
+}
+```
+
+At least one bound is required. Bounds decode against the ranged scalar key
+shape. `lower_inclusive` is required exactly when `lower` is present, and
+`upper_inclusive` is required exactly when `upper` is present; omitting a side
+leaves that side unbounded and carries no inclusivity flag. `lower_inclusive:
+false` starts strictly after the lower key, `upper_inclusive: false` stops
+strictly before the upper key, and the `true` form includes the matching
+endpoint. Missing, `null`, empty range objects, or orphan inclusivity flags are
+`surface.request`. Non-range page operations reject a `range` field as
+`surface.request`.
+
 `surface.create.v1` tags include the profile domain, store catalog ID, backing
 resource footprint catalog ID, singleton-vs-point shape, identity-key value
 shapes, exact declared-body semantics, singleton or caller-supplied identity
@@ -322,16 +367,21 @@ stable equality values.
 `marrow serve` maps the active route manifest and operation envelope to
 a local HTTP process:
 
-- serving routes are taken from `surface.route.v1`, not source names or ordinals;
+- serving routes are taken from explicit route profiles, not source names or
+  ordinals;
 - default mode exposes only descriptor-derived
   `/surface/v1/read/<operation-tag>` paths, including computed reads;
+- range page operations are exposed through descriptor-derived
+  `/surface/v2/read/<operation-tag>` paths and require
+  `surface.operation.v2` request envelopes;
 - `--write` additionally exposes descriptor-derived
   `/surface/v1/create/<operation-tag>`,
   `/surface/v1/update/<operation-tag>` and
   `/surface/v1/delete/<operation-tag>`, and
   `/surface/v1/action/<operation-tag>` paths;
-- the transport is JSON-only around the active `surface.operation.v1` envelope;
-- route operation tag, body operation tag, and body request kind must agree;
+- the transport is JSON-only around the route's operation envelope profile;
+- route operation profile, route operation tag, body operation tag, and body
+  request kind must agree;
 - errors use sanitized `surface.*` code/message envelopes with no raw store
   details;
 - binding is loopback-only by default; `--remote` is an explicit authenticated
@@ -362,6 +412,8 @@ manifest to a self-contained TypeScript operation client. It validates route/ABI
 agreement before rendering and requires a bijection: every exported operation
 descriptor must have exactly one route row. It does not read or open the
 saved-data store.
+Range page helpers are not generated in this profile; they require a later
+client profile over `surface.operation.v2`/`surface.route.v2`.
 
 The exported factory is `createClient`. Every generated file begins with a
 do-not-edit header, `// marrow-client-profile: typescript.v2`,

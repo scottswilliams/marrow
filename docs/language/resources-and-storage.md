@@ -236,6 +236,11 @@ public-function reads:
   the singleton record.
 - `collection ^root as alias` names the backing store root.
 - `collection ^root.index as alias` names an index declared on the backing store.
+- `collection ^root.index range as alias` names a ranged page over a non-unique
+  index declared on the backing store. The index must end with the complete
+  store identity suffix, must have one scalar non-identity component immediately
+  before that suffix, and must not be unique. Components before the ranged key
+  are exact request keys.
 - `action functionName` or `action module::functionName as alias` exposes an
   ordinary public Marrow function through the surface operation namespace. A
   bare action target resolves only in the declaring module; cross-module actions
@@ -259,6 +264,28 @@ public-function reads:
   scalar, enum, or identity leaves. A computed read is rejected if its effect
   closure writes saved data, opens a transaction, calls a host-effecting
   operation, throws, or performs an unindexed collection read.
+
+For example:
+
+```mw
+resource Post
+    required title: string
+    required category: string
+    required publishedOn: date
+
+store ^posts(id: int): Post
+    index byCategoryDate(category, publishedOn, id)
+
+surface Posts from ^posts
+    fields title, category, publishedOn
+    collection ^posts.byCategoryDate range as byCategoryDate
+```
+
+The range operation takes `category` as the exact key, ranges over
+`publishedOn`, and uses `id` as the identity suffix. An index such as
+`byDay(day, id)` on `store ^events(day: date, id: int)` is not a valid range
+surface because the full index tuple is the store identity suffix; there is no
+non-identity component to range over.
 
 Generated operation names, collection aliases, action aliases, and computed-read
 aliases share one surface operation namespace. An alias such as `get`, `update`,
@@ -291,12 +318,13 @@ them, not language constructs. Stable surface reads, computed reads, creates,
 sparse updates, deletes, and actions have
 checker-owned descriptors and operation tags. `marrow-json` can render a
 `surface.route.v1` manifest from those descriptors, using operation-tag paths
-and aliases as labels. `marrow serve` is loopback-only by default over manifest
-routes and `surface.operation.v1` envelopes; `--remote` is the explicit
+and aliases as labels; `surface.route.v2` adds ranged index page routes under
+`/surface/v2/read/` with `surface.operation.v2` envelopes. `marrow serve` is
+loopback-only by default over manifest routes; `--remote` is the explicit
 authenticated remote profile, and remote page routes may opt into opaque cursor
 tokens at the HTTP boundary. Default mode serves read routes, including computed
-reads, while `--write` also serves create, sparse-update, delete, and action
-routes through the writable project surface session. The
+reads and ranged pages, while `--write` also serves create, sparse-update,
+delete, and action routes through the writable project surface session. The
 manifest is still not a generated-client contract by itself. Read descriptors
 carry the generated `get` alias or declared collection alias as render metadata;
 computed-read and action descriptors carry their declared aliases. Create,

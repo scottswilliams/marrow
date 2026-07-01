@@ -15,7 +15,7 @@ use marrow_store::StoreError;
 use marrow_store::cell::CatalogId;
 use marrow_store::key::{SavedKey, decode_identity_index_key, decode_identity_payload_arity};
 use marrow_store::tree::{
-    DataPathSegment, EngineProfileDigest, StoreUid, TreeEnumMember, TreeStore,
+    DataPathSegment, EngineProfileDigest, IndexRangeBounds, StoreUid, TreeEnumMember, TreeStore,
     decode_tree_enum_member, encode_tree_enum_member,
 };
 use marrow_store::value::{
@@ -254,15 +254,36 @@ pub struct SurfaceReadOperationRef {
 pub enum SurfaceCollectionReadShape {
     RootPage,
     IndexPage,
+    IndexRangePage,
     UniqueLookup,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SurfaceCollectionPageRequest<'a> {
     pub exact_keys: &'a [SavedKey],
+    pub range: Option<&'a SurfaceIndexRangeRequest>,
     pub limit: usize,
     pub cursor: Option<&'a SurfacePageCursor>,
 }
+
+#[derive(Debug, Clone)]
+pub struct SurfaceIndexRangeRequest {
+    pub lower: Option<SavedKey>,
+    pub lower_inclusive: bool,
+    pub upper: Option<SavedKey>,
+    pub upper_inclusive: bool,
+}
+
+impl PartialEq for SurfaceIndexRangeRequest {
+    fn eq(&self, other: &Self) -> bool {
+        self.lower == other.lower
+            && self.upper == other.upper
+            && (self.lower.is_none() || self.lower_inclusive == other.lower_inclusive)
+            && (self.upper.is_none() || self.upper_inclusive == other.upper_inclusive)
+    }
+}
+
+impl Eq for SurfaceIndexRangeRequest {}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SurfaceCollectionPage {
@@ -286,6 +307,12 @@ pub enum SurfacePageBoundary {
     RootIdentity(Vec<SavedKey>),
     IndexIdentity {
         exact_keys: Vec<SavedKey>,
+        identity: Vec<SavedKey>,
+    },
+    IndexRange {
+        exact_keys: Vec<SavedKey>,
+        range: SurfaceIndexRangeRequest,
+        index_keys: Vec<SavedKey>,
         identity: Vec<SavedKey>,
     },
 }
@@ -342,6 +369,12 @@ pub enum SurfaceCursorBoundaryInputShape {
     },
     IndexIdentity {
         exact_keys: Vec<SurfaceInputKeyShape>,
+        identity: SurfaceIdentityInputShape,
+    },
+    IndexRange {
+        exact_keys: Vec<SurfaceInputKeyShape>,
+        range_key: SurfaceInputKeyShape,
+        index_keys: Vec<SurfaceInputKeyShape>,
         identity: SurfaceIdentityInputShape,
     },
 }
@@ -566,6 +599,10 @@ impl<'a> SurfaceCollectionRead<'a> {
         self.plan.page_exact_key_shapes()
     }
 
+    pub fn page_range_key_shape(&self) -> Result<Option<SurfaceInputKeyShape>, SurfaceReadError> {
+        self.plan.page_range_key_shape()
+    }
+
     pub fn unique_lookup_key_shapes(&self) -> Result<Vec<SurfaceInputKeyShape>, SurfaceReadError> {
         self.plan.unique_lookup_key_shapes()
     }
@@ -589,21 +626,40 @@ impl<'a> SurfaceCollectionRead<'a> {
             .map_err(|error| surface_store_error(error, self.plan.span))?;
         let lineage = read_current_cursor_lineage(self.store, &self.lineage, self.plan.span)?;
         self.validate_cursor_lineage(request.cursor, &lineage)?;
-        let identities = match &self.plan.kind {
+        let anchors = match &self.plan.kind {
             SurfaceCollectionPlanKind::Root => {
                 let cursor = self.plan.root_cursor_boundary(request.cursor)?;
-                self.plan.root_identities_after(
-                    self.store,
-                    cursor.as_deref(),
-                    request.limit.saturating_add(1),
-                )?
+                self.plan
+                    .root_identities_after(
+                        self.store,
+                        cursor.as_deref(),
+                        request.limit.saturating_add(1),
+                    )?
+                    .into_iter()
+                    .map(SurfacePageRowAnchor::identity)
+                    .collect::<Vec<_>>()
             }
             SurfaceCollectionPlanKind::Index(index) => {
                 let cursor = self.plan.index_cursor_boundary(request.cursor)?;
-                index.identities_after(
+                index
+                    .identities_after(
+                        self.store,
+                        &self.plan.record,
+                        request.exact_keys,
+                        cursor.as_ref(),
+                        request.limit.saturating_add(1),
+                    )?
+                    .into_iter()
+                    .map(SurfacePageRowAnchor::identity)
+                    .collect::<Vec<_>>()
+            }
+            SurfaceCollectionPlanKind::Range(range) => {
+                let cursor = self.plan.range_cursor_boundary(request.cursor)?;
+                range.anchors_after(
                     self.store,
                     &self.plan.record,
                     request.exact_keys,
+                    request.range.expect("range page request validated"),
                     cursor.as_ref(),
                     request.limit.saturating_add(1),
                 )?
@@ -616,26 +672,26 @@ impl<'a> SurfaceCollectionRead<'a> {
             }
         };
 
-        let has_more = identities.len() > request.limit;
-        let page_identities = identities
+        let has_more = anchors.len() > request.limit;
+        let page_anchors = anchors
             .iter()
             .take(request.limit)
             .cloned()
             .collect::<Vec<_>>();
-        let mut rows = Vec::with_capacity(page_identities.len());
+        let mut rows = Vec::with_capacity(page_anchors.len());
         let mut budget = SurfaceMaterializationBudget::new();
-        for identity in &page_identities {
+        for anchor in &page_anchors {
             rows.push(
                 self.plan
-                    .materialize_row(self.store, identity, &mut budget)?,
+                    .materialize_row(self.store, &anchor.identity, &mut budget)?,
             );
         }
         let next = if has_more {
-            page_identities
+            page_anchors
                 .last()
-                .map(|identity| {
+                .map(|anchor| {
                     self.plan
-                        .page_cursor(&lineage, request.exact_keys, identity)
+                        .page_cursor(&lineage, request.exact_keys, request.range, anchor)
                 })
                 .transpose()?
         } else {
@@ -739,7 +795,9 @@ impl<'a> SurfaceReadOperation<'a> {
             plan,
         };
         let kind = match shape {
-            SurfaceCollectionReadShape::RootPage | SurfaceCollectionReadShape::IndexPage => {
+            SurfaceCollectionReadShape::RootPage
+            | SurfaceCollectionReadShape::IndexPage
+            | SurfaceCollectionReadShape::IndexRangePage => {
                 AdmittedSurfaceReadOperationKind::Page(read)
             }
             SurfaceCollectionReadShape::UniqueLookup => {
@@ -963,6 +1021,7 @@ struct SurfaceRecordReadPlan<'a> {
 enum SurfaceCollectionPlanKind {
     Root,
     Index(SurfaceIndexPagePlan),
+    Range(SurfaceIndexRangePagePlan),
     Unique(SurfaceUniqueLookupPlan),
 }
 
@@ -970,6 +1029,14 @@ struct SurfaceIndexPagePlan {
     index_catalog_id: CatalogId,
     key_meanings: Vec<StoredValueMeaning>,
     exact_key_count: usize,
+    identity_key_count: usize,
+}
+
+struct SurfaceIndexRangePagePlan {
+    index_catalog_id: CatalogId,
+    key_meanings: Vec<StoredValueMeaning>,
+    exact_key_count: usize,
+    range_key_index: usize,
     identity_key_count: usize,
 }
 
@@ -1006,6 +1073,41 @@ struct SurfaceReadOperationMatch<'a> {
     surface: &'a SurfaceFact,
     operation: &'a SurfaceReadOperationFact,
     operation_ref: SurfaceReadOperationRef,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SurfacePageRowAnchor {
+    identity: Vec<SavedKey>,
+    index_keys: Option<Vec<SavedKey>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SurfaceIndexRangeAnchor {
+    index_keys: Vec<SavedKey>,
+    identity: Vec<SavedKey>,
+}
+
+struct SurfaceIndexRangeEntry<'a> {
+    exact_keys: &'a [SavedKey],
+    range: &'a SurfaceIndexRangeRequest,
+    index_keys: &'a [SavedKey],
+    identity: &'a [SavedKey],
+}
+
+impl SurfacePageRowAnchor {
+    fn identity(identity: Vec<SavedKey>) -> Self {
+        Self {
+            identity,
+            index_keys: None,
+        }
+    }
+
+    fn index_range(index_keys: Vec<SavedKey>, identity: Vec<SavedKey>) -> Self {
+        Self {
+            identity,
+            index_keys: Some(index_keys),
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -1210,6 +1312,7 @@ impl<'a> SurfaceCollectionReadPlan<'a> {
         match self.kind {
             SurfaceCollectionPlanKind::Root => SurfaceCollectionReadShape::RootPage,
             SurfaceCollectionPlanKind::Index(_) => SurfaceCollectionReadShape::IndexPage,
+            SurfaceCollectionPlanKind::Range(_) => SurfaceCollectionReadShape::IndexRangePage,
             SurfaceCollectionPlanKind::Unique(_) => SurfaceCollectionReadShape::UniqueLookup,
         }
     }
@@ -1222,6 +1325,12 @@ impl<'a> SurfaceCollectionReadPlan<'a> {
         self.validate_cursor(request.cursor)?;
         match &self.kind {
             SurfaceCollectionPlanKind::Root => {
+                if request.range.is_some() {
+                    return Err(request_at(
+                        "root collection pages do not take an index range",
+                        self.span,
+                    ));
+                }
                 if !request.exact_keys.is_empty() {
                     return Err(request_at(
                         "root collection pages do not take exact index keys",
@@ -1231,6 +1340,12 @@ impl<'a> SurfaceCollectionReadPlan<'a> {
                 Ok(())
             }
             SurfaceCollectionPlanKind::Index(index) => {
+                if request.range.is_some() {
+                    return Err(request_at(
+                        "exact index collection pages do not take an index range",
+                        self.span,
+                    ));
+                }
                 index.validate_request_exact_keys(&self.record, request.exact_keys, self.span)?;
                 if let Some(cursor) = request.cursor {
                     let SurfacePageBoundary::IndexIdentity { exact_keys, .. } = &cursor.boundary
@@ -1243,6 +1358,38 @@ impl<'a> SurfaceCollectionReadPlan<'a> {
                     if exact_keys.as_slice() != request.exact_keys {
                         return Err(cursor_error(
                             "surface cursor exact arguments do not match the request",
+                            self.span,
+                        ));
+                    }
+                }
+                Ok(())
+            }
+            SurfaceCollectionPlanKind::Range(range) => {
+                let Some(request_range) = request.range else {
+                    return Err(request_at(
+                        "range index collection pages require an index range",
+                        self.span,
+                    ));
+                };
+                range.validate_request(
+                    &self.record,
+                    request.exact_keys,
+                    request_range,
+                    self.span,
+                )?;
+                if let Some(cursor) = request.cursor {
+                    let SurfacePageBoundary::IndexRange {
+                        exact_keys, range, ..
+                    } = &cursor.boundary
+                    else {
+                        return Err(cursor_error(
+                            "surface cursor boundary does not match the range index collection",
+                            self.span,
+                        ));
+                    };
+                    if exact_keys.as_slice() != request.exact_keys || range != request_range {
+                        return Err(cursor_error(
+                            "surface cursor range arguments do not match the request",
                             self.span,
                         ));
                     }
@@ -1264,6 +1411,26 @@ impl<'a> SurfaceCollectionReadPlan<'a> {
                 &index.key_meanings[..index.exact_key_count],
                 self.span,
             ),
+            SurfaceCollectionPlanKind::Range(range) => input_key_shapes(
+                self.record.facts,
+                &range.key_meanings[..range.exact_key_count],
+                self.span,
+            ),
+            SurfaceCollectionPlanKind::Unique(_) => Err(request_at(
+                "unique surface collection operations are lookups, not pages",
+                self.span,
+            )),
+        }
+    }
+
+    fn page_range_key_shape(&self) -> Result<Option<SurfaceInputKeyShape>, SurfaceReadError> {
+        match &self.kind {
+            SurfaceCollectionPlanKind::Root | SurfaceCollectionPlanKind::Index(_) => Ok(None),
+            SurfaceCollectionPlanKind::Range(range) => Ok(Some(input_key_shape(
+                self.record.facts,
+                &range.key_meanings[range.range_key_index],
+                self.span,
+            )?)),
             SurfaceCollectionPlanKind::Unique(_) => Err(request_at(
                 "unique surface collection operations are lookups, not pages",
                 self.span,
@@ -1298,6 +1465,26 @@ impl<'a> SurfaceCollectionReadPlan<'a> {
                     identity: self.record.identity_input_shape()?,
                 })
             }
+            SurfaceCollectionPlanKind::Range(range) => {
+                Ok(SurfaceCursorBoundaryInputShape::IndexRange {
+                    exact_keys: input_key_shapes(
+                        self.record.facts,
+                        &range.key_meanings[..range.exact_key_count],
+                        self.span,
+                    )?,
+                    range_key: input_key_shape(
+                        self.record.facts,
+                        &range.key_meanings[range.range_key_index],
+                        self.span,
+                    )?,
+                    index_keys: input_key_shapes(
+                        self.record.facts,
+                        &range.key_meanings,
+                        self.span,
+                    )?,
+                    identity: self.record.identity_input_shape()?,
+                })
+            }
             SurfaceCollectionPlanKind::Unique(_) => Err(request_at(
                 "unique lookup operations do not produce page cursors",
                 self.span,
@@ -1326,6 +1513,22 @@ impl<'a> SurfaceCollectionReadPlan<'a> {
                     identity,
                 },
             ) => index.validate_cursor_boundary(&self.record, exact_keys, identity, self.span),
+            (
+                SurfaceCollectionPlanKind::Range(range),
+                SurfacePageBoundary::IndexRange {
+                    exact_keys,
+                    range: request_range,
+                    index_keys,
+                    identity,
+                },
+            ) => range.validate_cursor_boundary(
+                &self.record,
+                exact_keys,
+                request_range,
+                index_keys,
+                identity,
+                self.span,
+            ),
             _ => Err(cursor_error(
                 "surface cursor boundary does not match the collection shape",
                 self.span,
@@ -1363,6 +1566,30 @@ impl<'a> SurfaceCollectionReadPlan<'a> {
             ));
         };
         Ok(Some(identity.clone()))
+    }
+
+    fn range_cursor_boundary(
+        &self,
+        cursor: Option<&SurfacePageCursor>,
+    ) -> Result<Option<SurfaceIndexRangeAnchor>, SurfaceReadError> {
+        let Some(cursor) = cursor else {
+            return Ok(None);
+        };
+        let SurfacePageBoundary::IndexRange {
+            index_keys,
+            identity,
+            ..
+        } = &cursor.boundary
+        else {
+            return Err(cursor_error(
+                "surface cursor boundary does not match the range index collection",
+                self.span,
+            ));
+        };
+        Ok(Some(SurfaceIndexRangeAnchor {
+            index_keys: index_keys.clone(),
+            identity: identity.clone(),
+        }))
     }
 
     fn root_identities_after(
@@ -1430,14 +1657,34 @@ impl<'a> SurfaceCollectionReadPlan<'a> {
         &self,
         lineage: &SurfaceStoreLineage,
         exact_keys: &[SavedKey],
-        identity: &[SavedKey],
+        range: Option<&SurfaceIndexRangeRequest>,
+        anchor: &SurfacePageRowAnchor,
     ) -> Result<SurfacePageCursor, SurfaceReadError> {
         let boundary = match &self.kind {
-            SurfaceCollectionPlanKind::Root => SurfacePageBoundary::RootIdentity(identity.to_vec()),
+            SurfaceCollectionPlanKind::Root => {
+                SurfacePageBoundary::RootIdentity(anchor.identity.clone())
+            }
             SurfaceCollectionPlanKind::Index(_) => SurfacePageBoundary::IndexIdentity {
                 exact_keys: exact_keys.to_vec(),
-                identity: identity.to_vec(),
+                identity: anchor.identity.clone(),
             },
+            SurfaceCollectionPlanKind::Range(_) => {
+                let range = range.ok_or_else(|| {
+                    abi_mismatch("range page cursor requires range arguments", self.span)
+                })?;
+                let index_keys = anchor.index_keys.clone().ok_or_else(|| {
+                    abi_mismatch(
+                        "range page cursor requires an index tuple anchor",
+                        self.span,
+                    )
+                })?;
+                SurfacePageBoundary::IndexRange {
+                    exact_keys: exact_keys.to_vec(),
+                    range: range.clone(),
+                    index_keys,
+                    identity: anchor.identity.clone(),
+                }
+            }
             SurfaceCollectionPlanKind::Unique(_) => {
                 return Err(abi_mismatch(
                     "unique lookup operations do not produce page cursors",
@@ -1728,6 +1975,217 @@ impl SurfaceIndexPagePlan {
         )?;
         Ok(identities)
     }
+}
+
+impl SurfaceIndexRangePagePlan {
+    fn validate_request(
+        &self,
+        record: &SurfaceRecordReadPlan<'_>,
+        exact_keys: &[SavedKey],
+        range: &SurfaceIndexRangeRequest,
+        span: SourceSpan,
+    ) -> Result<(), SurfaceReadError> {
+        self.validate_exact_keys(record, exact_keys, span, key_request_error)?;
+        self.validate_range_bounds(record, range, span, key_request_error)
+    }
+
+    fn validate_cursor_boundary(
+        &self,
+        record: &SurfaceRecordReadPlan<'_>,
+        exact_keys: &[SavedKey],
+        range: &SurfaceIndexRangeRequest,
+        index_keys: &[SavedKey],
+        identity: &[SavedKey],
+        span: SourceSpan,
+    ) -> Result<(), SurfaceReadError> {
+        self.validate_exact_keys(record, exact_keys, span, key_cursor_error)?;
+        self.validate_range_bounds(record, range, span, key_cursor_error)?;
+        self.validate_entry(
+            record,
+            SurfaceIndexRangeEntry {
+                exact_keys,
+                range,
+                index_keys,
+                identity,
+            },
+            span,
+            key_cursor_error,
+        )
+    }
+
+    fn anchors_after(
+        &self,
+        store: &TreeStore,
+        record: &SurfaceRecordReadPlan<'_>,
+        exact_keys: &[SavedKey],
+        range: &SurfaceIndexRangeRequest,
+        after: Option<&SurfaceIndexRangeAnchor>,
+        limit: usize,
+    ) -> Result<Vec<SurfacePageRowAnchor>, SurfaceReadError> {
+        let bounds = range_bounds(range);
+        let page = match after {
+            Some(anchor) => store.scan_index_range_after_entry(
+                &self.index_catalog_id,
+                exact_keys,
+                &bounds,
+                &anchor.index_keys,
+                &anchor.identity,
+                limit,
+            ),
+            None => store.scan_index_range(&self.index_catalog_id, exact_keys, &bounds, limit),
+        }
+        .map_err(|error| surface_scan_error(error, record.span))?;
+        let mut anchors = Vec::with_capacity(page.entries.len());
+        for entry in page.entries {
+            self.validate_entry(
+                record,
+                SurfaceIndexRangeEntry {
+                    exact_keys,
+                    range,
+                    index_keys: &entry.index_keys,
+                    identity: &entry.identity,
+                },
+                record.span,
+                key_data_error,
+            )?;
+            record.validate_identity_data(&entry.identity)?;
+            anchors.push(SurfacePageRowAnchor::index_range(
+                entry.index_keys,
+                entry.identity,
+            ));
+        }
+        Ok(anchors)
+    }
+
+    fn validate_exact_keys(
+        &self,
+        record: &SurfaceRecordReadPlan<'_>,
+        exact_keys: &[SavedKey],
+        span: SourceSpan,
+        error: fn(String, SourceSpan) -> SurfaceReadError,
+    ) -> Result<(), SurfaceReadError> {
+        if exact_keys.len() != self.exact_key_count {
+            return Err(error(
+                format!(
+                    "surface range index page expects {} exact key(s), got {}",
+                    self.exact_key_count,
+                    exact_keys.len()
+                ),
+                span,
+            ));
+        }
+        validate_index_keys(
+            record.facts,
+            exact_keys,
+            &self.key_meanings[..self.exact_key_count],
+            span,
+            error,
+        )
+    }
+
+    fn validate_range_bounds(
+        &self,
+        record: &SurfaceRecordReadPlan<'_>,
+        range: &SurfaceIndexRangeRequest,
+        span: SourceSpan,
+        error: fn(String, SourceSpan) -> SurfaceReadError,
+    ) -> Result<(), SurfaceReadError> {
+        if range.lower.is_none() && range.upper.is_none() {
+            return Err(error(
+                "surface range page requires at least one bound".into(),
+                span,
+            ));
+        }
+        let meaning = &self.key_meanings[self.range_key_index];
+        for bound in range.lower.iter().chain(range.upper.iter()) {
+            validate_index_key(record.facts, bound, meaning, span, error)?;
+        }
+        Ok(())
+    }
+
+    fn validate_entry(
+        &self,
+        record: &SurfaceRecordReadPlan<'_>,
+        entry: SurfaceIndexRangeEntry<'_>,
+        span: SourceSpan,
+        error: fn(String, SourceSpan) -> SurfaceReadError,
+    ) -> Result<(), SurfaceReadError> {
+        validate_index_keys(
+            record.facts,
+            entry.index_keys,
+            &self.key_meanings,
+            span,
+            error,
+        )?;
+        if !entry.index_keys.starts_with(entry.exact_keys) {
+            return Err(error(
+                "surface range index entry does not match exact key prefix".into(),
+                span,
+            ));
+        }
+        let range_key = entry.index_keys.get(self.range_key_index).ok_or_else(|| {
+            error(
+                "surface range index entry is missing the range key".into(),
+                span,
+            )
+        })?;
+        if !range_contains_key(entry.range, range_key) {
+            return Err(error(
+                "surface range index entry is outside the requested bounds".into(),
+                span,
+            ));
+        }
+        let identity_suffix_start = entry
+            .index_keys
+            .len()
+            .checked_sub(self.identity_key_count)
+            .ok_or_else(|| {
+                error(
+                    "surface range index entry is missing the identity suffix".into(),
+                    span,
+                )
+            })?;
+        if entry.index_keys[identity_suffix_start..] != *entry.identity {
+            return Err(error(
+                "surface range index entry identity suffix does not match the row identity".into(),
+                span,
+            ));
+        }
+        record.validate_identity_with(entry.identity, error)
+    }
+}
+
+fn range_bounds(range: &SurfaceIndexRangeRequest) -> IndexRangeBounds {
+    IndexRangeBounds {
+        lower: range.lower.clone(),
+        lower_inclusive: range.lower_inclusive,
+        upper: range.upper.clone(),
+        upper_inclusive: range.upper_inclusive,
+    }
+}
+
+fn range_contains_key(range: &SurfaceIndexRangeRequest, key: &SavedKey) -> bool {
+    if let Some(lower) = &range.lower {
+        let above_lower = if range.lower_inclusive {
+            key >= lower
+        } else {
+            key > lower
+        };
+        if !above_lower {
+            return false;
+        }
+    }
+    if let Some(upper) = &range.upper {
+        let below_upper = if range.upper_inclusive {
+            key <= upper
+        } else {
+            key < upper
+        };
+        if !below_upper {
+            return false;
+        }
+    }
+    true
 }
 
 fn input_key_shapes(
@@ -2501,6 +2959,53 @@ fn collection_plan_kind(
                 exact_key_count,
                 identity_key_count,
             }))
+        }
+        SurfaceReadOperationKind::PagedIndexRangeCollection {
+            index,
+            exact_key_count,
+            range_key_index,
+            identity_key_count,
+        } => {
+            let fact = surface_index_fact(facts, surface, index, span)?;
+            let index_catalog_id = catalog_id(&fact.catalog_id, "store index", span)?;
+            if fact.unique {
+                return Err(abi_mismatch(
+                    "checked range collection operation names a unique index",
+                    span,
+                ));
+            }
+            let store = facts.store(surface.store);
+            if exact_key_count + 1 + identity_key_count != fact.keys.len()
+                || range_key_index != exact_key_count
+                || identity_key_count != store.identity_keys.len()
+            {
+                return Err(abi_mismatch(
+                    "checked range collection operation does not match the index key shape",
+                    span,
+                ));
+            }
+            if !matches!(
+                fact.keys[range_key_index].value_meaning,
+                StoredValueMeaning::Scalar(_)
+            ) {
+                return Err(abi_mismatch(
+                    "checked range collection operation has a non-scalar range key",
+                    span,
+                ));
+            }
+            Ok(SurfaceCollectionPlanKind::Range(
+                SurfaceIndexRangePagePlan {
+                    index_catalog_id,
+                    key_meanings: fact
+                        .keys
+                        .iter()
+                        .map(|key| key.value_meaning.clone())
+                        .collect(),
+                    exact_key_count,
+                    range_key_index,
+                    identity_key_count,
+                },
+            ))
         }
         SurfaceReadOperationKind::UniqueIndexLookup { index, key_count } => {
             let fact = surface_index_fact(facts, surface, index, span)?;

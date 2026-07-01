@@ -580,6 +580,79 @@ surface Books from ^books
 }
 
 #[test]
+fn stable_read_operation_descriptor_exports_range_collection_shape() {
+    let source = "\
+module app
+resource Post
+    required title: string
+    required category: string
+    required publishedOn: date
+store ^posts(id: int): Post
+    index byCategoryDate(category, publishedOn, id)
+surface Posts from ^posts
+    fields title, category, publishedOn
+    collection ^posts.byCategoryDate as byCategoryDate
+    collection ^posts.byCategoryDate range as byCategoryDateRange
+";
+    let (_root, snapshot) = stable_snapshot("surface-read-abi-range-shape", source);
+    let descriptors = snapshot
+        .surface_read_operations()
+        .map(|operation| operation.stable_descriptor().expect("stable descriptor"))
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        descriptors
+            .iter()
+            .map(|descriptor| descriptor.alias.as_str())
+            .collect::<Vec<_>>(),
+        vec!["get", "byCategoryDate", "byCategoryDateRange"]
+    );
+
+    let exact = descriptors
+        .iter()
+        .find(|descriptor| descriptor.alias == "byCategoryDate")
+        .expect("exact index descriptor");
+    assert!(matches!(
+        exact.kind,
+        SurfaceReadOperationDescriptorKind::PagedIndexCollection {
+            exact_key_count: 2,
+            identity_key_count: 1,
+            ..
+        }
+    ));
+
+    let range = descriptors
+        .iter()
+        .find(|descriptor| descriptor.alias == "byCategoryDateRange")
+        .expect("range index descriptor");
+    let SurfaceReadOperationDescriptorKind::PagedIndexRangeCollection {
+        exact_key_count,
+        range_key_index,
+        identity_key_count,
+        ..
+    } = &range.kind
+    else {
+        panic!("expected range index descriptor, got {:#?}", range.kind);
+    };
+    assert_eq!(
+        (*exact_key_count, *range_key_index, *identity_key_count),
+        (1, 1, 1)
+    );
+    assert_eq!(
+        range
+            .index_keys
+            .iter()
+            .map(|key| key.render_label.as_str())
+            .collect::<Vec<_>>(),
+        vec!["category", "publishedOn", "id"]
+    );
+    assert_ne!(
+        exact.operation_tag, range.operation_tag,
+        "range and exact index pages must have distinct operation tags"
+    );
+}
+
+#[test]
 fn source_only_surface_analysis_has_no_stable_descriptor() {
     let root = temp_project("surface-read-abi-source-only", |root| {
         write(

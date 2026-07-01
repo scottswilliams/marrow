@@ -692,6 +692,7 @@ fn collect_page_identities(
         let page = read
             .page(SurfaceCollectionPageRequest {
                 exact_keys,
+                range: None,
                 limit,
                 cursor: cursor.as_ref(),
             })

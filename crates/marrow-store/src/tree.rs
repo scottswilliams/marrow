@@ -81,6 +81,7 @@ pub struct IndexPage {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IndexRangeBounds {
     pub lower: Option<SavedKey>,
+    pub lower_inclusive: bool,
     pub upper: Option<SavedKey>,
     pub upper_inclusive: bool,
 }
@@ -1363,6 +1364,45 @@ impl TreeStore {
         self.scan_index_range_from(index, exact_prefix, range, Some(cursor), limit)
     }
 
+    pub fn scan_index_range_after_entry(
+        &self,
+        index: &CatalogId,
+        exact_prefix: &[SavedKey],
+        range: &IndexRangeBounds,
+        after_index_keys: &[SavedKey],
+        after_identity: &[SavedKey],
+        limit: usize,
+    ) -> Result<IndexPage, StoreError> {
+        if !after_index_keys.starts_with(exact_prefix) {
+            return Err(StoreError::InvalidCursor {
+                message: "index entry cursor does not match bounded index range".into(),
+            });
+        }
+        let prefix = CellKey::index_key_prefix(index, exact_prefix);
+        let Some(bounds) = normalized_index_range(prefix.as_bytes(), range) else {
+            return Err(StoreError::InvalidCursor {
+                message: "index entry cursor does not match bounded index range".into(),
+            });
+        };
+        let last_key = CellKey::index(index, after_index_keys, after_identity).into_bytes();
+        if last_key < bounds.lower
+            || bounds
+                .upper
+                .as_ref()
+                .is_some_and(|upper| last_key >= *upper)
+        {
+            return Err(StoreError::InvalidCursor {
+                message: "index entry cursor does not match bounded index range".into(),
+            });
+        }
+        let cursor = IndexCursor {
+            prefix: prefix.as_bytes().to_vec(),
+            last_key,
+            scope: bounds.cursor_scope(),
+        };
+        self.scan_index_range_from(index, exact_prefix, range, Some(&cursor), limit)
+    }
+
     pub fn scan_index_range_reverse(
         &self,
         index: &CatalogId,
@@ -2260,6 +2300,9 @@ fn index_range_lower_bound(prefix: &[u8], range: &IndexRangeBounds) -> Vec<u8> {
     let mut bytes = prefix.to_vec();
     if let Some(lower) = &range.lower {
         bytes.extend_from_slice(&encode_key_value(lower));
+        if !range.lower_inclusive {
+            return prefix_successor(&bytes).unwrap_or(bytes);
+        }
     }
     bytes
 }
@@ -3049,6 +3092,7 @@ mod tests {
         let prefix = CellKey::index_key_prefix(&index, &[]);
         let range = IndexRangeBounds {
             lower: Some(SavedKey::Int(10)),
+            lower_inclusive: true,
             upper: Some(SavedKey::Int(30)),
             upper_inclusive: false,
         };
@@ -3066,11 +3110,55 @@ mod tests {
     }
 
     #[test]
+    fn bounded_index_range_lower_exclusive_skips_equal_range_key_entries() {
+        let index = catalog("cat_00000000000000000000000000000001");
+        let store = TreeStore::memory();
+        store
+            .write_index_entry(
+                &index,
+                &[
+                    SavedKey::Str("fiction".into()),
+                    SavedKey::Int(10),
+                    SavedKey::Int(1),
+                ],
+                &[SavedKey::Int(1)],
+                Vec::new(),
+            )
+            .expect("write lower equal entry");
+        store
+            .write_index_entry(
+                &index,
+                &[
+                    SavedKey::Str("fiction".into()),
+                    SavedKey::Int(11),
+                    SavedKey::Int(2),
+                ],
+                &[SavedKey::Int(2)],
+                Vec::new(),
+            )
+            .expect("write greater entry");
+        let range = IndexRangeBounds {
+            lower: Some(SavedKey::Int(10)),
+            lower_inclusive: false,
+            upper: Some(SavedKey::Int(11)),
+            upper_inclusive: true,
+        };
+
+        let page = store
+            .scan_index_range(&index, &[SavedKey::Str("fiction".into())], &range, 10)
+            .expect("exclusive lower range scan");
+
+        assert_eq!(page.entries.len(), 1, "{page:#?}");
+        assert_eq!(page.entries[0].identity, vec![SavedKey::Int(2)]);
+    }
+
+    #[test]
     fn reverse_bounded_index_range_reports_empty_truncated_page_as_invalid_cursor() {
         let index = catalog("cat_00000000000000000000000000000001");
         let prefix = CellKey::index_key_prefix(&index, &[]);
         let range = IndexRangeBounds {
             lower: Some(SavedKey::Int(10)),
+            lower_inclusive: true,
             upper: Some(SavedKey::Int(30)),
             upper_inclusive: false,
         };

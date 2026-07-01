@@ -196,6 +196,7 @@ fn formats_surface_declaration_with_canonical_items() {
          \x20   fields title,author, blurb\n\
          \x20   collection ^books as list\n\
          \x20   collection ^books.byAuthor as byAuthor\n\
+         \x20   collection ^books.byPublished range as byPublished\n\
          \x20   create title,author\n\
          \x20   update title,blurb\n\
          \x20   action addBook\n\
@@ -206,6 +207,7 @@ fn formats_surface_declaration_with_canonical_items() {
          \x20   fields title, author, blurb\n\
          \x20   collection ^books as list\n\
          \x20   collection ^books.byAuthor as byAuthor\n\
+         \x20   collection ^books.byPublished range as byPublished\n\
          \x20   create title, author\n\
          \x20   update title, blurb\n\
          \x20   action addBook\n\

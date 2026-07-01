@@ -303,6 +303,7 @@ fn index_range_bounds(
     };
     Ok(Some(IndexRange::Scalar(IndexRangeBounds {
         lower,
+        lower_inclusive: true,
         upper,
         upper_inclusive: range.inclusive_end,
     })))
@@ -396,6 +397,7 @@ pub(crate) fn key_range_bounds(
     };
     Ok(Some(IndexRangeBounds {
         lower,
+        lower_inclusive: true,
         upper,
         upper_inclusive: range.inclusive_end,
     }))

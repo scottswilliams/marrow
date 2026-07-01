@@ -601,6 +601,23 @@ pub enum SurfaceTargetDiagnostic {
         root: String,
         index: String,
     },
+    RangeCollectionUniqueIndex {
+        root: String,
+        index: String,
+    },
+    RangeCollectionMissingIdentitySuffix {
+        root: String,
+        index: String,
+    },
+    RangeCollectionMissingRangeKey {
+        root: String,
+        index: String,
+    },
+    RangeCollectionUnsupportedRangeKey {
+        root: String,
+        index: String,
+        key: String,
+    },
 }
 
 /// The payload list that produced a `check.surface_field` diagnostic.

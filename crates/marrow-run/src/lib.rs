@@ -111,11 +111,12 @@ pub use surface::{
     SurfaceCollectionPageRequest, SurfaceCollectionRead, SurfaceCollectionReadShape,
     SurfaceComputedReadInvocation, SurfaceCreate, SurfaceCreateField, SurfaceCreateInput,
     SurfaceCursorBoundaryInputShape, SurfaceDelete, SurfaceDeleteInput, SurfaceEnumValue,
-    SurfaceError, SurfaceIdentityInputShape, SurfaceInputKeyShape, SurfaceNodeRead,
-    SurfaceNodeReadShape, SurfacePageBoundary, SurfacePageCursor, SurfaceReadError,
-    SurfaceReadField, SurfaceReadIdentity, SurfaceReadInput, SurfaceReadOperation,
-    SurfaceReadOperationRef, SurfaceReadRecord, SurfaceUpdate, SurfaceUpdateField,
-    SurfaceUpdateInput, SurfaceValue, read_surface_point, read_surface_singleton,
+    SurfaceError, SurfaceIdentityInputShape, SurfaceIndexRangeRequest, SurfaceInputKeyShape,
+    SurfaceNodeRead, SurfaceNodeReadShape, SurfacePageBoundary, SurfacePageCursor,
+    SurfaceReadError, SurfaceReadField, SurfaceReadIdentity, SurfaceReadInput,
+    SurfaceReadOperation, SurfaceReadOperationRef, SurfaceReadRecord, SurfaceUpdate,
+    SurfaceUpdateField, SurfaceUpdateInput, SurfaceValue, read_surface_point,
+    read_surface_singleton,
 };
 pub use value::{IdentityValue, LocalTree, RunOutput, RunOutputSink, Sequence, Value};
 pub use write_plan::{WriteDataSegment, WriteOp, WriteTarget};

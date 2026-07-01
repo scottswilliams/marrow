@@ -282,6 +282,7 @@ fn bounded_index_range_empty_when_bounds_are_inverted() {
     }
     let inverted = marrow_store::tree::IndexRangeBounds {
         lower: Some(SavedKey::Int(30)),
+        lower_inclusive: true,
         upper: Some(SavedKey::Int(20)),
         upper_inclusive: false,
     };
@@ -317,11 +318,13 @@ fn bounded_index_range_cursor_is_bound_to_range_bounds() {
     }
     let first_range = marrow_store::tree::IndexRangeBounds {
         lower: Some(SavedKey::Int(10)),
+        lower_inclusive: true,
         upper: Some(SavedKey::Int(35)),
         upper_inclusive: false,
     };
     let second_range = marrow_store::tree::IndexRangeBounds {
         lower: Some(SavedKey::Int(20)),
+        lower_inclusive: true,
         upper: Some(SavedKey::Int(45)),
         upper_inclusive: false,
     };

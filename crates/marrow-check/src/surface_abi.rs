@@ -71,6 +71,12 @@ pub enum SurfaceReadOperationDescriptorKind {
         exact_key_count: usize,
         identity_key_count: usize,
     },
+    PagedIndexRangeCollection {
+        index_catalog_id: CatalogId,
+        exact_key_count: usize,
+        range_key_index: usize,
+        identity_key_count: usize,
+    },
     UniqueIndexLookup {
         index_catalog_id: CatalogId,
         key_count: usize,
@@ -514,6 +520,19 @@ fn descriptor_kind(
             exact_key_count,
             identity_key_count,
         }),
+        SurfaceReadOperationKind::PagedIndexRangeCollection {
+            index,
+            exact_key_count,
+            range_key_index,
+            identity_key_count,
+        } => Some(
+            SurfaceReadOperationDescriptorKind::PagedIndexRangeCollection {
+                index_catalog_id: index_catalog_id(program, index)?,
+                exact_key_count,
+                range_key_index,
+                identity_key_count,
+            },
+        ),
         SurfaceReadOperationKind::UniqueIndexLookup { index, key_count } => {
             Some(SurfaceReadOperationDescriptorKind::UniqueIndexLookup {
                 index_catalog_id: index_catalog_id(program, index)?,
@@ -632,6 +651,7 @@ fn index_key_descriptors_for_operation(
 ) -> Option<Vec<SurfaceReadOperationIndexKey>> {
     let index = match kind {
         SurfaceReadOperationKind::PagedIndexCollection { index, .. }
+        | SurfaceReadOperationKind::PagedIndexRangeCollection { index, .. }
         | SurfaceReadOperationKind::UniqueIndexLookup { index, .. } => Some(index),
         SurfaceReadOperationKind::SingletonRead { .. }
         | SurfaceReadOperationKind::PointRead { .. }
@@ -787,6 +807,18 @@ fn push_read_operation_payload(
             push_tag_part(payload, "kind", "paged-index");
             push_index_tag_parts(program, payload, program.facts.store_index(index))?;
             push_tag_part(payload, "exact", &exact_key_count.to_string());
+            push_tag_part(payload, "identity", &identity_key_count.to_string());
+        }
+        SurfaceReadOperationKind::PagedIndexRangeCollection {
+            index,
+            exact_key_count,
+            range_key_index,
+            identity_key_count,
+        } => {
+            push_tag_part(payload, "kind", "paged-index-range");
+            push_index_tag_parts(program, payload, program.facts.store_index(index))?;
+            push_tag_part(payload, "exact", &exact_key_count.to_string());
+            push_tag_part(payload, "range", &range_key_index.to_string());
             push_tag_part(payload, "identity", &identity_key_count.to_string());
         }
         SurfaceReadOperationKind::UniqueIndexLookup { index, key_count } => {

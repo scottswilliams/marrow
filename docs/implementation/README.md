@@ -39,11 +39,12 @@ Nine crates stacked in dependency order, lowest first:
   request decode, project create/update/delete/action execution wrappers,
   accepted-catalog surface action and computed-read value rendering,
   read/computed-read/action alias descriptor rendering, and
-  context-aware cursor-boundary rendering. It also renders the
-  descriptor-derived `surface.route.v1` manifest for check JSON output and the
-  thin TypeScript operation client over ABI plus routes, including the explicit
-  cursor-token client profile. It owns the opaque cursor-token codec over the
-  existing typed cursor DTO; HTTP serving is owned by the CLI.
+  context-aware cursor-boundary rendering. It also renders descriptor-derived
+  route manifests, including `surface.route.v1` and range-only
+  `surface.route.v2`, and the thin TypeScript operation client over v1 ABI plus
+  routes, including the explicit cursor-token client profile. It owns the opaque
+  cursor-token codec over the existing typed cursor DTO; HTTP serving is owned
+  by the CLI.
 - **project / cli** — `marrow.json`, discovery, and the operator binary that
   wires the above together, renders results, owns `marrow client typescript`,
   and owns the local/remote `marrow serve` HTTP process around checked surface
