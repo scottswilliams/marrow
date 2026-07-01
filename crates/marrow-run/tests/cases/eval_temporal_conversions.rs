@@ -55,6 +55,10 @@ fn instant_input_accepts_standard_rfc3339_and_normalizes_to_canonical() {
         ("2024-01-01T00:00:00.500Z", "2024-01-01T00:00:00.5Z"),
         ("2024-01-01T00:00:00.000Z", "2024-01-01T00:00:00Z"),
         ("2024-01-01T00:00:00.100000000Z", "2024-01-01T00:00:00.1Z"),
+        // Cosmetic zero-padding past nanosecond width is significant-nanosecond-exact
+        // and normalizes to the same canonical value as the 9-digit form.
+        ("2026-06-20T12:00:00.5000000000Z", "2026-06-20T12:00:00.5Z"),
+        ("2024-01-01T00:00:00.0000000000Z", "2024-01-01T00:00:00Z"),
         // An explicit UTC offset is equivalent to `Z`.
         ("2024-01-01T00:00:00+00:00", "2024-01-01T00:00:00Z"),
         ("2024-01-01T00:00:00-00:00", "2024-01-01T00:00:00Z"),
@@ -100,6 +104,8 @@ fn duration_input_accepts_iso8601_time_subset_and_normalizes() {
         ("PT1.500S", "PT1.5S"),
         ("PT1.000S", "PT1S"),
         ("PT0.100000000S", "PT0.1S"),
+        // Cosmetic zero-padding past nanosecond width stays significant-exact.
+        ("PT1.5000000000S", "PT1.5S"),
         ("PT1H0.5S", "PT3600.5S"),
         // The canonical store spelling still parses unchanged.
         ("PT90S", "PT90S"),
@@ -148,7 +154,16 @@ fn duration_input_still_rejects_malformed_forms() {
     let program =
         checked_program("pub fn f(t: string): duration\n    return std::clock::parseDuration(t)\n");
     for input in [
-        "PT01S", "-PT0S", "PT1", "1.5S", "PTS", "P", "PT", "nonsense",
+        "PT01S",
+        "-PT0S",
+        "PT1",
+        "1.5S",
+        "PTS",
+        "P",
+        "PT",
+        "nonsense",
+        // Real sub-nanosecond fractional precision exceeds the nanosecond cap.
+        "PT1.1234567891S",
     ] {
         assert_eq!(
             run(checked_entry!(
@@ -176,6 +191,9 @@ fn instant_input_still_rejects_malformed_text() {
         "2024-01-01T00:00:00+5",     // malformed offset
         "2024-01-01T00:00:00.Z",     // empty fraction
         "2024-01-01T00:00:00+24:00", // offset hour out of range
+        // Real sub-nanosecond precision (10 significant fractional digits) exceeds the
+        // nanosecond cap even after trailing zeros are trimmed.
+        "2024-01-01T00:00:00.1234567891Z",
     ] {
         assert_eq!(
             run(checked_entry!(

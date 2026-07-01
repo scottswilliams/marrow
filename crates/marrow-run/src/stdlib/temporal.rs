@@ -241,14 +241,19 @@ fn add_component(magnitude: i128, count: i128, width: i128) -> Result<i128, Dura
         .ok_or(DurationParseError::Malformed)
 }
 
-/// Parses one to nine fractional-second digits to nanoseconds. Unlike the canonical
-/// store decoder, trailing zeros are accepted here and normalized away on output.
+/// Parses a fractional-second field to nanoseconds. RFC-3339 secfrac is unbounded, so
+/// cosmetic trailing zeros are trimmed before the nanosecond cap applies: only the
+/// significant fraction must fit nine digits. Real sub-nanosecond precision — more than
+/// nine significant digits — is refused, and the value normalizes away on output.
 fn parse_fraction_nanos(digits: &[u8]) -> Option<i128> {
-    if digits.is_empty() || digits.len() > 9 || !digits.iter().all(u8::is_ascii_digit) {
+    if digits.is_empty() || !digits.iter().all(u8::is_ascii_digit) {
         return None;
     }
-    let padded = format!("{:0<9}", std::str::from_utf8(digits).ok()?);
-    padded.parse().ok()
+    let significant = std::str::from_utf8(digits).ok()?.trim_end_matches('0');
+    if significant.len() > 9 {
+        return None;
+    }
+    format!("{significant:0<9}").parse().ok()
 }
 
 /// Parses an RFC-3339 zone designator to its offset from UTC in nanoseconds: `Z`
