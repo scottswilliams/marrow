@@ -222,6 +222,60 @@ fn evolve_preview_reports_repair_required_from_attached_store()
     Ok(())
 }
 
+/// A PRESENT store that lost the committed roots its `marrow.lock` records is
+/// `store.corruption`, not fixable evolve drift. `evolve preview` must route its store-open
+/// through the lock-root witness exactly as `evolve apply`, `run`, and the data inspections do,
+/// so a store rolled back below its committed roots fails closed rather than being misclassified
+/// as `evolve.repair_required`.
+#[test]
+fn evolve_preview_over_a_present_lost_roots_store_reports_store_corruption()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = native_books_project("evolve-preview-lost-roots", REQUIRED_NO_DEFAULT_SOURCE);
+    let program = commit_catalog(&root);
+    let place = root_place(&program, "books")?;
+    {
+        let store = open_native_store(&root);
+        seed_title_only(&store, &place, 1, "Dune");
+    }
+    assert!(
+        support_evolve::committed_lock(&root)
+            .expect("committed lock")
+            .records_active_roots(),
+        "precondition: the committed lock records the ^books root"
+    );
+
+    // Roll the store back to an empty body while the committed lock still records ^books: a
+    // present store that presents fewer committed roots than the lock recorded has lost durable
+    // identity. This is the state a commit-metadata rollback or a torn baseline settles at.
+    {
+        let scratch = root.join(".data").join("empty-scratch.redb");
+        {
+            let _empty = TreeStore::open(&scratch).expect("create empty store");
+        }
+        fs::copy(&scratch, native_store_path(&root)).expect("overwrite store with empty body");
+        fs::remove_file(&scratch).expect("remove scratch store");
+    }
+
+    let output = marrow(&[
+        "evolve",
+        "preview",
+        "--format",
+        "json",
+        root.to_str().expect("project path utf-8"),
+    ]);
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let value = support::json(output.stdout);
+    assert_eq!(
+        value["code"],
+        serde_json::json!("store.corruption"),
+        "preview over a present lost-roots store must fail closed as store.corruption, not \
+         evolve.repair_required: {value:#?}"
+    );
+
+    Ok(())
+}
+
 #[test]
 fn evolve_preview_reports_when_there_is_nothing_to_discharge() {
     let root = native_books_project("evolve-preview-no-work", REQUIRED_BASELINE_SOURCE);

@@ -62,6 +62,12 @@ fn preview_cmd(raw_args: &[String]) -> ExitCode {
         else {
             return ExitCode::FAILURE;
         };
+        // A present store that lost the committed roots its lock records has lost durable
+        // identity: fail closed here as store.corruption rather than previewing it as fixable
+        // drift, the same verdict apply, run, and the data inspections reach.
+        if let Err(code) = guard_committed_lock_roots(&input.dir, &config, input.format) {
+            return code;
+        }
         let Ok(store) = store::preview_store(&input.dir, &config, input.format) else {
             return ExitCode::FAILURE;
         };
@@ -195,7 +201,7 @@ fn apply_cmd(raw_args: &[String]) -> ExitCode {
 /// the resource-qualified field path (`Book.pages`), the module-qualified catalog path, or the
 /// internal catalog id. The field path is the everyday form the approval message and scaffold teach;
 /// the other two still resolve so scripts that already pass them keep working. A target that matches
-/// none of these is a usage error naming the unresolved target. One approval covers a multi-id
+/// none of these is a typed tooling failure naming the unresolved target. One approval covers a multi-id
 /// destructive evolution, and admission still matches each id and count against the witness exactly.
 fn resolve_approval(
     retires: &[args::RetireSpec],
@@ -217,7 +223,7 @@ fn resolve_approval(
                 ),
                 format,
             );
-            ExitCode::from(2)
+            ExitCode::FAILURE
         })?;
         resolved.push((id, spec.populated));
     }
@@ -365,8 +371,10 @@ fn apply_desync_remedy(target_epoch: u64, high_water: u64) -> String {
     )
 }
 
-/// Fail apply closed when a PRESENT store has lost the committed roots its `marrow.lock` records,
-/// before `apply_store` would baseline a fresh store over the loss. The committed lock is the
+/// Fail evolve closed when a PRESENT store has lost the committed roots its `marrow.lock` records.
+/// Apply runs this before `apply_store` would baseline a fresh store over the loss; preview runs it
+/// before opening the inspection store so a lost-roots store is never previewed as fixable drift.
+/// The committed lock is the
 /// independent witness to durable identity: a present store presenting fewer of its active roots
 /// than the lock recorded — rolled back, partially dropped, or crashed mid-creation — has lost
 /// durable identity and is `store.corruption`, not a clean store to re-baseline. An ABSENT store

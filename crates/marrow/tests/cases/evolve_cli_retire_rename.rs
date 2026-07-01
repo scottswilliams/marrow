@@ -425,12 +425,12 @@ fn evolve_apply_rejects_an_unknown_approve_retire_target() -> Result<(), Box<dyn
         "--no-backup",
         root.to_str().expect("project path utf-8"),
     ]);
-    assert_eq!(apply.status.code(), Some(2), "{apply:?}");
+    assert_eq!(apply.status.code(), Some(1), "{apply:?}");
     let stderr = String::from_utf8(apply.stderr).expect("stderr utf8");
     assert!(
         stderr.contains("evolve.approval_target_unknown")
             && stderr.contains("marrow evolve preview"),
-        "an unknown approve-retire target is a usage error pointing at preview: {stderr}"
+        "an unknown approve-retire target is a typed tooling failure pointing at preview: {stderr}"
     );
 
     Ok(())

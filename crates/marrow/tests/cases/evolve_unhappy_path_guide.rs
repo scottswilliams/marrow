@@ -153,7 +153,7 @@ fn worked_leaf_retype_migrates_then_retires_old_leaf_bytes() {
 /// The worked example in the data-evolution reference spells the destructive approval with the
 /// resource-qualified field path (`--approve-retire Book.pages:<count>`), so the binary must accept
 /// that surface form and not only the module-qualified path or the internal catalog id. A field
-/// path that names no member is still a usage error.
+/// path that names no member is a typed tooling failure.
 #[test]
 fn approve_retire_accepts_the_documented_resource_qualified_field_path() {
     let root = native_books_project(
@@ -182,7 +182,7 @@ fn approve_retire_accepts_the_documented_resource_qualified_field_path() {
         "json",
         dir,
     ]);
-    assert_eq!(unknown.status.code(), Some(2), "{unknown:?}");
+    assert_eq!(unknown.status.code(), Some(1), "{unknown:?}");
     assert_eq!(
         support::json(unknown.stdout)["code"],
         serde_json::json!("evolve.approval_target_unknown"),
