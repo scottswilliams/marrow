@@ -1083,7 +1083,12 @@ fn adopt_first_run_entries_with<E: CatalogIdEntropy>(
             continue;
         }
         let entry = if let Some(committed) = committed.get(&(source.kind, source.path.as_str())) {
-            adopted_catalog_entry(source, &committed.stable_id, &committed.aliases)
+            adopted_catalog_entry(
+                source,
+                &committed.stable_id,
+                &committed.aliases,
+                committed.applied_transform.as_deref(),
+            )
         } else if let Some(carried) = renamed_carry_forward(source, &renames, &committed) {
             carried
         } else {
@@ -1107,11 +1112,13 @@ fn adopt_first_run_entries_with<E: CatalogIdEntropy>(
 }
 
 /// The accepted catalog the committed lock represents: its committed entries at their recorded
-/// identity, aliases, and lifecycle, plus the reserved rows its ledger tombstones reconstruct.
-/// A fresh checkout resolves a pending evolve rename or retire against this exactly as a present
-/// store resolves it against its live accepted catalog, so the carry-forward the present store
-/// performs is performed identically on the seed. Shape signatures stay `None`: the lock records
-/// them only as fingerprints, and intent resolution reads identity and lifecycle, never shape.
+/// identity, aliases, lifecycle, and consumed-transform mark, plus the reserved rows its ledger
+/// tombstones reconstruct. A fresh checkout resolves a pending evolve rename or retire against
+/// this exactly as a present store resolves it against its live accepted catalog, so the
+/// carry-forward the present store performs is performed identically on the seed; carrying the
+/// discharge mark likewise lets a kept consumed transform be recognized as already applied rather
+/// than re-fired. Shape signatures stay `None`: the lock records them only as fingerprints, and
+/// intent resolution reads identity, lifecycle, and the discharge mark, never shape.
 fn lock_accepted_catalog(lock: &CatalogLock) -> Result<CatalogMetadata, CatalogProposalError> {
     let mut entries: Vec<CatalogEntry> = lock
         .entries
@@ -1136,7 +1143,7 @@ fn lock_entry_to_catalog_entry(entry: &LockEntry) -> CatalogEntry {
         accepted_key_shape: None,
         accepted_index_shape: None,
         accepted_struct: None,
-        applied_transform: None,
+        applied_transform: entry.applied_transform.clone(),
     }
 }
 
@@ -1163,6 +1170,7 @@ fn renamed_carry_forward(
         source,
         &committed_entry.stable_id,
         &aliases,
+        committed_entry.applied_transform.as_deref(),
     ))
 }
 
@@ -1271,20 +1279,23 @@ fn lock_corrupt_diagnostic(
 }
 
 /// A proposed first-run catalog entry carrying a specific freshly-minted stable id. Shares the
-/// lifecycle and empty-signature shape [`proposed_catalog_entry`] mints, recording no aliases — a
-/// minted entity has no prior spelling to carry forward.
+/// lifecycle and empty-signature shape [`proposed_catalog_entry`] mints, recording no aliases and
+/// no discharge mark — a minted entity has no prior spelling or applied transform to carry forward.
 fn proposed_catalog_entry_with_id(source: &SourceCatalogEntry, stable_id: &str) -> CatalogEntry {
-    adopted_catalog_entry(source, stable_id, &[])
+    adopted_catalog_entry(source, stable_id, &[], None)
 }
 
-/// A first-run catalog entry adopting a committed lock identity: the committed stable id and the
-/// rename aliases the lock records at this `(kind, path)`. Reconstructing the aliases is what lets
-/// a fresh checkout resolve a kept consumed rename block's old-spelling carry-forward against the
-/// seed-from-lock catalog exactly as it resolves against a present store.
+/// A first-run catalog entry adopting a committed lock identity: the committed stable id, the
+/// rename aliases the lock records at this `(kind, path)`, and the consumed-transform mark a
+/// discharged `evolve transform` stamped. Reconstructing the aliases lets a fresh checkout resolve
+/// a kept consumed rename block's old-spelling carry-forward against the seed-from-lock catalog
+/// exactly as it resolves against a present store; reconstructing the discharge mark likewise lets
+/// a kept consumed transform block be recognized as already applied rather than re-fired.
 fn adopted_catalog_entry(
     source: &SourceCatalogEntry,
     stable_id: &str,
     aliases: &[String],
+    applied_transform: Option<&str>,
 ) -> CatalogEntry {
     CatalogEntry {
         kind: source.kind,
@@ -1295,7 +1306,7 @@ fn adopted_catalog_entry(
         accepted_key_shape: None,
         accepted_index_shape: None,
         accepted_struct: None,
-        applied_transform: None,
+        applied_transform: applied_transform.map(str::to_string),
     }
 }
 

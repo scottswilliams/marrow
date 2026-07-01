@@ -650,6 +650,137 @@ fn a_discharged_transform_survives_backup_and_restore() -> Result<(), Box<dyn st
 }
 
 #[test]
+fn a_kept_consumed_transform_does_not_re_fire_on_a_fresh_checkout()
+-> Result<(), Box<dyn std::error::Error>> {
+    // A consumed transform's discharge mark is durable catalog identity, so a fresh checkout
+    // that re-seeds a wiped store from the committed `marrow.lock` must recognize the
+    // transform as already applied and not re-execute it. Losing the mark would let the seed
+    // re-derive the settled transform as a fresh obligation and auto-apply it over the empty
+    // seed, advancing the epoch and diverging the catalog digest from the committed identity.
+    let root = books_and_log_project("transform-kept-fresh-checkout", TRANSFORM_BASELINE);
+    let first = marrow_sub("run", &[dir(&root)]);
+    assert_eq!(first.status.code(), Some(0), "first run: {first:?}");
+    let seed_book = marrow_sub("run", &["--entry", "app::seedBook", dir(&root)]);
+    assert_eq!(seed_book.status.code(), Some(0), "seed book: {seed_book:?}");
+
+    write(&root, "src/app.mw", TRANSFORM_IN_PLACE);
+    let apply = marrow(&["evolve", "apply", dir(&root)]);
+    assert_eq!(apply.status.code(), Some(0), "evolve apply: {apply:?}");
+    assert_code(&root, 4, "apply ran the transform once")?;
+    let accepted = support_evolve::accepted_catalog(&root);
+    let epoch_after_apply = accepted.epoch;
+    let digest_after_apply = accepted.digest.clone();
+
+    // The committed lock projects the consumed-transform mark, so a seed reconstructed from it
+    // alone carries the discharged state. Without the mark the fresh checkout re-fires.
+    let target_id = accepted
+        .entries
+        .iter()
+        .find(|entry| entry.applied_transform.is_some())
+        .expect("the accepted catalog records the discharged transform")
+        .stable_id
+        .clone();
+    let lock = committed_lock(&root);
+    let target_lock = lock
+        .entries
+        .iter()
+        .find(|entry| entry.stable_id == target_id)
+        .expect("the committed lock records the transform target");
+    assert!(
+        target_lock.applied_transform.is_some(),
+        "the committed lock projects the consumed-transform mark: {target_lock:?}",
+    );
+
+    // A fresh checkout: the store body is gone, but the committed lock remains. The kept
+    // transform block still describes the completed migration.
+    std::fs::remove_dir_all(root.join(".data")).expect("remove store data");
+    let reseed = marrow_sub("run", &[dir(&root)]);
+    assert_eq!(
+        reseed.status.code(),
+        Some(0),
+        "a fresh checkout seeds and runs cleanly: {reseed:?}",
+    );
+    assert!(
+        !String::from_utf8(reseed.stderr)
+            .expect("stderr utf8")
+            .contains("run.schema_drift"),
+        "a consumed transform seeded from the lock does not re-fence",
+    );
+    let reseeded = support_evolve::accepted_catalog(&root);
+    assert_eq!(
+        reseeded.epoch, epoch_after_apply,
+        "seeding a consumed transform from the lock does not re-fire or advance the epoch",
+    );
+    assert_eq!(
+        reseeded.digest, digest_after_apply,
+        "the seeded catalog digest matches the committed identity exactly",
+    );
+
+    // The block-deleted control: with the block removed, the fresh checkout has nothing to
+    // discharge and settles at the same epoch, so the kept block behaves as the deleted one.
+    let control = books_and_log_project("transform-deleted-fresh-checkout", TRANSFORM_BASELINE);
+    let first = marrow_sub("run", &[dir(&control)]);
+    assert_eq!(first.status.code(), Some(0), "control first run: {first:?}");
+    let seed_book = marrow_sub("run", &["--entry", "app::seedBook", dir(&control)]);
+    assert_eq!(
+        seed_book.status.code(),
+        Some(0),
+        "control seed: {seed_book:?}"
+    );
+    write(&control, "src/app.mw", TRANSFORM_IN_PLACE);
+    let apply = marrow(&["evolve", "apply", dir(&control)]);
+    assert_eq!(apply.status.code(), Some(0), "control apply: {apply:?}");
+    let control_epoch = accepted_epoch(&control);
+    write(&control, "src/app.mw", TRANSFORM_BASELINE);
+    std::fs::remove_dir_all(control.join(".data")).expect("remove control store data");
+    let reseed = marrow_sub("run", &[dir(&control)]);
+    assert_eq!(
+        reseed.status.code(),
+        Some(0),
+        "block-deleted fresh checkout runs cleanly: {reseed:?}",
+    );
+    assert_eq!(
+        accepted_epoch(&control),
+        control_epoch,
+        "the block-deleted control settles at the same epoch the kept block does",
+    );
+    assert_eq!(
+        reseeded.epoch, control_epoch,
+        "kept and deleted consumed transforms reproduce the same committed epoch",
+    );
+
+    Ok(())
+}
+
+#[test]
+fn a_genuinely_pending_transform_still_fires_on_a_fresh_checkout() {
+    // Seeding from the lock must not blanket-suppress transforms: a transform the committed
+    // lock never recorded as applied is a real pending obligation. Over the empty seed it
+    // rewrites zero records, so the seed auto-applies it and advances the epoch — the same
+    // outcome the transform would produce over any empty store.
+    let root = books_and_log_project("transform-pending-fresh-checkout", TRANSFORM_BASELINE);
+    let first = marrow_sub("run", &[dir(&root)]);
+    assert_eq!(first.status.code(), Some(0), "first run: {first:?}");
+    let epoch_before = accepted_epoch(&root);
+
+    // The lock committed by the baseline run records no transform mark. Wipe the store and
+    // introduce a transform block that was never applied: it is genuinely pending.
+    std::fs::remove_dir_all(root.join(".data")).expect("remove store data");
+    write(&root, "src/app.mw", TRANSFORM_IN_PLACE);
+    let reseed = marrow_sub("run", &[dir(&root)]);
+    assert_eq!(
+        reseed.status.code(),
+        Some(0),
+        "a pending transform over an empty seed auto-applies: {reseed:?}",
+    );
+    assert_eq!(
+        accepted_epoch(&root),
+        epoch_before + 1,
+        "a genuinely pending transform still fires on a fresh checkout and advances the epoch",
+    );
+}
+
+#[test]
 fn a_drop_against_an_empty_target_auto_applies_but_a_populated_drop_fences() {
     // A retire whose target carries no stored cells drops nothing, so the run auto-applies
     // it. The same retire against records that carry the subtitle is a destructive drop:

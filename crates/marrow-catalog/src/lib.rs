@@ -495,6 +495,13 @@ pub struct LockEntry {
     /// renamed.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub aliases: Vec<String>,
+    /// The consumed-transform mark a discharged `evolve transform` stamped on this entry: a hash
+    /// of the target's stable id and the transform body. A fresh checkout seeded from the lock
+    /// reconstructs this onto the adopted entry, so a kept consumed transform block is recognized
+    /// as already applied and does not re-fire against the empty seed. `None` for an entry no
+    /// transform has discharged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub applied_transform: Option<String>,
     /// A `sha256:`-prefixed fold of the entry kind and its accepted shape fields, so two entries
     /// fingerprint identically exactly when their kind and shape match: a key-shape, struct-leaf,
     /// or index-uniqueness change shifts the fingerprint, while a pure rename preserving the shape
@@ -515,6 +522,7 @@ impl LockEntry {
             stable_id: entry.stable_id.clone(),
             lifecycle: entry.lifecycle,
             aliases: entry.aliases.clone(),
+            applied_transform: entry.applied_transform.clone(),
             shape_fingerprint: shape_fingerprint(entry),
         }
     }
@@ -579,7 +587,6 @@ struct FingerprintPreimage<'a> {
     key_shape: &'a Option<String>,
     index_shape: &'a Option<String>,
     struct_signature: &'a Option<String>,
-    applied_transform: &'a Option<String>,
 }
 
 fn shape_fingerprint(entry: &CatalogEntry) -> String {
@@ -588,7 +595,6 @@ fn shape_fingerprint(entry: &CatalogEntry) -> String {
         key_shape: &entry.accepted_key_shape,
         index_shape: &entry.accepted_index_shape,
         struct_signature: &entry.accepted_struct,
-        applied_transform: &entry.applied_transform,
     };
     let json = serde_json::to_string(&preimage)
         .expect("a fingerprint pre-image of owned shape fields serializes");
