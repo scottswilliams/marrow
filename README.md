@@ -21,6 +21,18 @@ pub fn complete(id: Id(^tasks)): bool
 Marrow has one data model: a resource is a typed tree. The same resource shape
 can be local or saved, and `^` marks saved data.
 
+## Start Here
+
+- [Install](docs/install.md) covers the source-install path and supported
+  platforms.
+- [Quickstart](docs/quickstart.md) creates a project, runs it, and inspects
+  saved data.
+- [Stability Contract](docs/stability.md) names the v0.1 release surfaces and
+  non-stable surfaces.
+- [Reference Index](docs/README.md) links the language, tooling, and
+  architecture docs.
+- [Changelog](CHANGELOG.md) tracks v0.1.0 release notes and later unreleased changes.
+
 ## References
 
 - [Language](docs/language/) defines `.mw` syntax, types, resources, saved
