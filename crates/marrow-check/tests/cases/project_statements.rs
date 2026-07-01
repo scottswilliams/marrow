@@ -871,6 +871,39 @@ fn rejects_duplicate_named_arguments() {
 }
 
 #[test]
+fn a_duplicate_named_argument_does_not_also_report_arity() {
+    // `add(a: 1, a: 2, b: 3)` duplicates `a` and overshoots the two-parameter count;
+    // the arity mismatch is a consequence of the duplicate, so only the duplicate
+    // diagnostic is reported.
+    let found = check_module(
+        "call-duplicate-named-arity",
+        "module m\n\
+         fn add(a: int, b: int): int\n    return a\n\n\
+         fn caller()\n    var x = add(a: 1, a: 2, b: 3)\n",
+        "check.call_argument",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+    assert_eq!(
+        found[0].payload,
+        DiagnosticPayload::DuplicateNamedArgument("a".into())
+    );
+}
+
+#[test]
+fn an_unknown_named_argument_does_not_also_report_arity() {
+    // `f(a: 1, c: 2)` names an unknown parameter and overshoots the count; only the
+    // unknown-parameter diagnostic is reported, not a separate arity error.
+    let found = check_module(
+        "call-unknown-named-arity",
+        "module m\n\
+         fn f(a: int): int\n    return a\n\n\
+         fn caller()\n    var x = f(a: 1, c: 2)\n",
+        "check.call_argument",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
 fn correct_calls_are_not_flagged() {
     // Positional and named calls that match the signature are accepted.
     let found = check_module(

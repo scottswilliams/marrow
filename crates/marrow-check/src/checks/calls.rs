@@ -384,23 +384,17 @@ fn check_user_function_call(
     };
 
     let callee = segments.join("::");
-    if args.len() != function.params.len() {
-        env.diagnostics.push(call_diagnostic(
-            env.file,
-            env.span,
-            format!(
-                "function `{callee}` expects {} argument(s), but {} were given",
-                function.params.len(),
-                args.len(),
-            ),
-        ));
-    }
     let mut supplied = vec![false; function.params.len()];
+    // A malformed named argument (unknown or duplicated) also perturbs the count.
+    // Report that per-argument fault alone; the arity mismatch is its consequence,
+    // not a separate error, matching the constructor named-field checker.
+    let mut named_argument_fault = false;
     for (index, (arg, arg_type)) in args.iter().zip(arg_types).enumerate() {
         let param_index = match &arg.name {
             Some(name) => {
                 let param_index = function.params.iter().position(|param| &param.name == name);
                 if param_index.is_none() {
+                    named_argument_fault = true;
                     env.diagnostics.push(call_diagnostic(
                         env.file,
                         env.span,
@@ -414,6 +408,7 @@ fn check_user_function_call(
         if let Some(param_index) = param_index {
             let param = &function.params[param_index];
             if supplied[param_index] {
+                named_argument_fault = true;
                 env.diagnostics.push(
                     CheckDiagnostic::error(
                         CHECK_CALL_ARGUMENT,
@@ -452,6 +447,17 @@ fn check_user_function_call(
                 env.diagnostics,
             );
         }
+    }
+    if args.len() != function.params.len() && !named_argument_fault {
+        env.diagnostics.push(call_diagnostic(
+            env.file,
+            env.span,
+            format!(
+                "function `{callee}` expects {} argument(s), but {} were given",
+                function.params.len(),
+                args.len(),
+            ),
+        ));
     }
     function.return_type.clone().unwrap_or(MarrowType::Unknown)
 }
