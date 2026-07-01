@@ -16,7 +16,8 @@ use crate::statement::coerce_error_code_value;
 use crate::store::{DataAddress, LayerAddress};
 use crate::value::{Value, value_to_leaf};
 use crate::write::{
-    plan_layer_group_write, plan_layer_leaf_write, validate_required_fields_after_group_write,
+    RequiredEnforcement, plan_layer_group_write, plan_layer_leaf_write,
+    validate_required_fields_after_group_write,
 };
 use crate::write_dispatch::{created_required_paths_for_value, resource_value_of};
 
@@ -230,7 +231,12 @@ fn write_direct_group_entry_at(
         env.program.facts(),
         target.span,
     );
-    let plan = plan_layer_group_write(context, &layers, &value);
+    let plan = plan_layer_group_write(
+        context,
+        &layers,
+        &value,
+        RequiredEnforcement::for_transaction_depth(env.transaction_depth()),
+    );
     let plan = if env.transaction_depth() == 0 {
         plan.and_then(|plan| {
             validate_required_fields_after_group_write(

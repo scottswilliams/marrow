@@ -21,6 +21,117 @@ pub fn title_of(id: int): string
     return ^books(id).title ?? \"\"
 ";
 
+/// A resource whose whole-value assignment can omit the required `name` while
+/// still supplying the optional `shelf`. The value flows through a function
+/// return so completeness is not statically provable at the write site, and the
+/// required-field remedy is exercised through the runtime whole-value write path
+/// rather than a single-field write.
+const ITEM_WHOLE_VALUE: &str = "\
+resource Item
+    required name: string
+    shelf: string
+store ^items(id: int): Item
+
+fn partial_item(): Item
+    var item: Item
+    item.shelf = \"fiction\"
+    return item
+
+pub fn save_whole_outside(id: int)
+    ^items(id) = partial_item()
+
+pub fn save_whole_inside(id: int)
+    transaction
+        ^items(id) = partial_item()
+
+pub fn save_whole_inside_then_populate(id: int)
+    transaction
+        ^items(id) = partial_item()
+        ^items(id).name = \"Sam\"
+
+pub fn name_of(id: int): string
+    return ^items(id).name ?? \"\"
+
+pub fn has_item(id: int): bool
+    return exists(^items(id))
+";
+
+#[test]
+fn whole_value_write_outside_transaction_points_at_grouping_in_a_transaction() {
+    let program = checked_program(ITEM_WHOLE_VALUE);
+    let store = TreeStore::memory();
+    let message = run_error_message(run_entry(
+        &store,
+        checked_entry!(&program, "test::save_whole_outside", Value::Int(1)),
+    ));
+    assert!(
+        message.contains("transaction"),
+        "outside a transaction the whole-value remedy points at grouping the writes: {message}"
+    );
+    assert_eq!(
+        run_entry(
+            &store,
+            checked_entry!(&program, "test::has_item", Value::Int(1))
+        )
+        .expect("presence check")
+        .value,
+        Some(Value::Bool(false)),
+        "the rejected whole-value write must leave no partial record"
+    );
+}
+
+#[test]
+fn whole_value_write_inside_transaction_asks_to_complete_before_commit_not_regroup() {
+    let program = checked_program(ITEM_WHOLE_VALUE);
+    let store = TreeStore::memory();
+    let message = run_error_message(run_entry(
+        &store,
+        checked_entry!(&program, "test::save_whole_inside", Value::Int(1)),
+    ));
+    assert!(
+        message.contains("before the transaction commits"),
+        "inside a transaction the remedy asks to complete the record before commit: {message}"
+    );
+    assert!(
+        !message.contains("group the writes"),
+        "the remedy must not tell the developer to group writes they already grouped: {message}"
+    );
+    assert_eq!(
+        run_entry(
+            &store,
+            checked_entry!(&program, "test::has_item", Value::Int(1))
+        )
+        .expect("presence check")
+        .value,
+        Some(Value::Bool(false)),
+        "the rejected transaction rolls back the partial record"
+    );
+}
+
+#[test]
+fn whole_value_write_inside_transaction_resolves_when_completed_before_commit() {
+    let program = checked_program(ITEM_WHOLE_VALUE);
+    let store = TreeStore::memory();
+    run_entry(
+        &store,
+        checked_entry!(
+            &program,
+            "test::save_whole_inside_then_populate",
+            Value::Int(1)
+        ),
+    )
+    .expect("populating the required field before commit resolves the error");
+    assert_eq!(
+        run_entry(
+            &store,
+            checked_entry!(&program, "test::name_of", Value::Int(1))
+        )
+        .expect("read")
+        .value,
+        Some(Value::Str("Sam".into())),
+    );
+}
+
 #[test]
 fn a_field_write_updates_saved_data() {
     let program = checked_program(BOOK_WRITER);

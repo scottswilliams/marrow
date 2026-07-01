@@ -9,7 +9,9 @@ use marrow_store::key::SavedKey;
 use marrow_store::tree::TreeStore;
 use marrow_syntax::SourceSpan;
 
-use crate::write::{ResourceValue, SuppliedIdentity, plan_resource_delete, plan_resource_write};
+use crate::write::{
+    RequiredEnforcement, ResourceValue, SuppliedIdentity, plan_resource_delete, plan_resource_write,
+};
 
 use super::{
     MissingRecord, PlannedSurfaceWriteValue, SurfaceError, SurfaceIdentityInputShape,
@@ -371,6 +373,7 @@ impl<'a> SurfaceCreatePlan<'a> {
             store,
             self.record.facts,
             self.span,
+            RequiredEnforcement::Immediate,
         )
         .map_err(map_surface_write_plan_error)
     }

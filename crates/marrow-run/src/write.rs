@@ -109,6 +109,31 @@ enum RequiredAbsentRemedy {
     AtCommit,
 }
 
+/// Whether a whole-value or group write enforces its required fields as it lands
+/// or leaves the check to transaction commit. A write that commits on its own is
+/// rejected immediately, since a missing required field can never be filled by a
+/// later independent write. Inside a transaction the record can still be
+/// completed before commit, so enforcement defers to the commit-time entry check,
+/// which reports the actionable at-commit remedy rather than telling the developer
+/// to group writes they have already grouped.
+#[derive(Clone, Copy)]
+pub(crate) enum RequiredEnforcement {
+    Immediate,
+    DeferToCommit,
+}
+
+impl RequiredEnforcement {
+    /// A source write inside a `transaction` block defers its required-field check
+    /// to commit; a write that commits on its own enforces immediately.
+    pub(crate) fn for_transaction_depth(depth: usize) -> Self {
+        if depth > 0 {
+            RequiredEnforcement::DeferToCommit
+        } else {
+            RequiredEnforcement::Immediate
+        }
+    }
+}
+
 fn required_absent_error(name: &str, remedy: RequiredAbsentRemedy) -> WriteError {
     let guidance = match remedy {
         RequiredAbsentRemedy::OutsideTransaction => {
@@ -150,10 +175,11 @@ pub(crate) fn plan_resource_write(
     store: &TreeStore,
     facts: &CheckedFacts,
     span: SourceSpan,
+    enforcement: RequiredEnforcement,
 ) -> Result<WritePlan, WriteError> {
     resolve_store_identity(place, identity)?;
     let index_context = IndexWriteContext::new(place, identity, store, facts, span);
-    let to_write = collect_supplied_field_writes(&place.root_members, value)?;
+    let to_write = collect_supplied_field_writes(&place.root_members, value, enforcement)?;
 
     reject_resource_unique_conflicts(index_context, value)?;
 
@@ -619,12 +645,13 @@ pub(crate) fn plan_layer_group_write(
     context: IndexWriteContext<'_>,
     layers: &[LayerAddress],
     value: &ResourceValue,
+    enforcement: RequiredEnforcement,
 ) -> Result<WritePlan, WriteError> {
     let place = context.place();
     let identity = context.identity();
     let span = context.span();
     let group = group_layer(place, layers)?;
-    let to_write = collect_supplied_field_writes(&group.group_members, value)?;
+    let to_write = collect_supplied_field_writes(&group.group_members, value, enforcement)?;
     let entry = DataAddress::layer_prefix(place, identity, layers, span).map_err(store_error)?;
     let mut steps = vec![PlanStep::DeleteData {
         address: entry.clone(),
@@ -732,11 +759,15 @@ fn record_establishing_steps(context: IndexWriteContext<'_>) -> Result<Vec<PlanS
 }
 
 /// Resolve every materialized plain field of `members` against the supplied
-/// value, returning the field paths whose bytes must be written and rejecting a
-/// required field that has no supplied value.
+/// value, returning the field paths whose bytes must be written. A required field
+/// with no supplied value is rejected only when enforcement is immediate; inside a
+/// transaction the missing field is left for the commit-time entry check, which
+/// still catches an incomplete record but lets a later write in the same
+/// transaction complete it first.
 fn collect_supplied_field_writes(
     members: &[CheckedSavedMember],
     value: &ResourceValue,
+    enforcement: RequiredEnforcement,
 ) -> Result<Vec<FieldWrite>, WriteError> {
     let mut to_write = Vec::new();
     for field in materialized_plain_fields(members) {
@@ -746,7 +777,7 @@ fn collect_supplied_field_writes(
                 path: field.path,
                 bytes,
             }),
-            None if field.required => {
+            None if field.required && matches!(enforcement, RequiredEnforcement::Immediate) => {
                 return Err(required_absent_error(
                     &name,
                     RequiredAbsentRemedy::OutsideTransaction,

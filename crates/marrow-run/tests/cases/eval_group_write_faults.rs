@@ -258,6 +258,84 @@ fn keyed_group_entry_read_materializes_unkeyed_group_descendants() {
     assert_eq!(outcome.value, Some(Value::Str("Sam".into())));
 }
 
+const REPLY_GROUP_WHOLE_VALUE: &str = "\
+module test
+resource Reply
+    required body: string
+resource Post
+    replies(seq: int): Reply
+store ^posts(id: int): Post
+
+pub fn save_group_inside(id: int)
+    transaction
+        var reply: Reply
+        ^posts(id).replies(1) = reply
+
+pub fn save_group_inside_then_populate(id: int)
+    transaction
+        var reply: Reply
+        ^posts(id).replies(1) = reply
+        ^posts(id).replies(1).body = \"hi\"
+
+pub fn reply_body(id: int): string
+    return ^posts(id).replies(1).body ?? \"\"
+
+pub fn has_reply(id: int): bool
+    return exists(^posts(id).replies(1))
+";
+
+#[test]
+fn group_entry_whole_value_write_inside_transaction_defers_to_commit_remedy() {
+    let program = checked_program(REPLY_GROUP_WHOLE_VALUE);
+    let store = TreeStore::memory();
+    let message = run_error_message(run_entry(
+        &store,
+        checked_entry!(&program, "test::save_group_inside", Value::Int(1)),
+    ));
+    assert!(
+        message.contains("before the transaction commits"),
+        "inside a transaction the group-entry remedy asks to complete before commit: {message}"
+    );
+    assert!(
+        !message.contains("group the writes"),
+        "the remedy must not tell the developer to group writes they already grouped: {message}"
+    );
+    assert_eq!(
+        run_entry(
+            &store,
+            checked_entry!(&program, "test::has_reply", Value::Int(1))
+        )
+        .expect("presence check")
+        .value,
+        Some(Value::Bool(false)),
+        "the rejected transaction rolls back the partial entry"
+    );
+}
+
+#[test]
+fn group_entry_whole_value_write_resolves_when_completed_before_commit() {
+    let program = checked_program(REPLY_GROUP_WHOLE_VALUE);
+    let store = TreeStore::memory();
+    run_entry(
+        &store,
+        checked_entry!(
+            &program,
+            "test::save_group_inside_then_populate",
+            Value::Int(1)
+        ),
+    )
+    .expect("populating the required field before commit resolves the error");
+    assert_eq!(
+        run_entry(
+            &store,
+            checked_entry!(&program, "test::reply_body", Value::Int(1))
+        )
+        .expect("read")
+        .value,
+        Some(Value::Str("hi".into())),
+    );
+}
+
 #[test]
 fn typed_keyed_resource_entry_write_requires_required_fields() {
     let program = checked_program(POST_TYPED_KEYED_COMMENTS);
