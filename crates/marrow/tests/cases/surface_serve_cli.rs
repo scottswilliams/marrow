@@ -1109,6 +1109,97 @@ fn surface_serve_executes_manifest_point_read_over_http() {
     );
 }
 
+/// The operational readiness probe answers `GET /health` with a store/catalog readiness verdict. A
+/// normally-serving read-only server holds an open session, so the probe reports ready with 200.
+#[test]
+fn surface_serve_health_endpoint_reports_ready() {
+    let fixture = seeded_surface_fixture("surface-serve-health-ready");
+    let (_server, addr) = spawn_surface_server(fixture.root());
+
+    let response = raw_http(
+        addr,
+        b"GET /health HTTP/1.1\r\nHost: health\r\n\r\n".to_vec(),
+        b"",
+    );
+
+    assert_eq!(response.status, 200, "{:#?}", response.body);
+    assert_eq!(response.body, json!({ "status": "ready" }));
+}
+
+/// Every request emits exactly one access-log line to stderr carrying the method, path, status,
+/// latency, and resolved operation tag — and never any request or response payload.
+#[test]
+fn surface_serve_logs_one_line_per_request_without_payloads() {
+    let fixture = seeded_surface_fixture("surface-serve-request-log");
+    let point_route = route_by_alias(&fixture.report, "get");
+    let store_catalog_id =
+        read_descriptor(&fixture.report, &point_route.operation_tag)["store_catalog_id"]
+            .as_str()
+            .expect("point read store catalog id")
+            .to_string();
+    let (server, addr) = spawn_surface_server(fixture.root());
+
+    let health = raw_http(
+        addr,
+        b"GET /health HTTP/1.1\r\nHost: health\r\n\r\n".to_vec(),
+        b"",
+    );
+    assert_eq!(health.status, 200, "{:#?}", health.body);
+
+    let read = post_json(
+        addr,
+        &point_route.path,
+        json!({
+            "profile_version": "surface.operation.v1",
+            "operation_tag": point_route.operation_tag,
+            "request": {
+                "kind": "point_read",
+                "request": {
+                    "identity": {
+                        "store_catalog_id": store_catalog_id,
+                        "keys": [{ "kind": "int", "value": "1" }]
+                    }
+                }
+            }
+        }),
+        &[("Content-Type", "application/json")],
+    );
+    assert_eq!(read.status, 200, "{:#?}", read.body);
+
+    let stderr = server.stop_with_sigterm_capturing_stderr();
+    let log_lines: Vec<&str> = stderr
+        .lines()
+        .filter(|line| line.starts_with("serve "))
+        .collect();
+    assert_eq!(
+        log_lines.len(),
+        2,
+        "one access-log line per request, no more: {stderr:?}"
+    );
+    let health_line = log_lines
+        .iter()
+        .find(|line| line.contains("GET /health"))
+        .unwrap_or_else(|| panic!("health request logged: {stderr:?}"));
+    assert!(
+        health_line.contains(" 200 ") && health_line.contains("ms"),
+        "health log carries status and latency: {health_line}"
+    );
+    let read_line = log_lines
+        .iter()
+        .find(|line| line.contains(&format!("POST {}", point_route.path)))
+        .unwrap_or_else(|| panic!("read request logged: {stderr:?}"));
+    assert!(
+        read_line.contains(" 200 ")
+            && read_line.contains("ms")
+            && read_line.contains(&format!("op={}", point_route.operation_tag)),
+        "read log carries status, latency, and operation tag: {read_line}"
+    );
+    assert!(
+        !stderr.contains("Frank Herbert") && !stderr.contains("store_catalog_id"),
+        "access log must never carry request or response payloads: {stderr:?}"
+    );
+}
+
 #[test]
 fn surface_serve_cursor_token_remote_pages_with_opaque_cursor_strings() {
     let fixture = seeded_surface_fixture("surface-serve-cursor-token-roundtrip");

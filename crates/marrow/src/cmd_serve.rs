@@ -64,7 +64,9 @@ Usage:
 Run an HTTP surface endpoint. The default profile is loopback-only. The server
 accepts one JSON POST per connection and closes the response on descriptor-derived
 /surface/v1/{read|create|update|delete|action}/<operation-tag> routes, plus
-/surface/v2/read/<operation-tag> range page routes.
+/surface/v2/read/<operation-tag> range page routes. It also answers an
+unauthenticated GET /health readiness probe and logs one line per request to
+stderr.
 
   --write  Expose create/update/delete/action routes and open a writable surface session.
            Defaults to read-only mode, serving v1 read routes including computed reads
@@ -698,6 +700,14 @@ impl SurfaceServeExecutor {
             ));
         };
         session.execute(operation)
+    }
+
+    /// Whether the store and catalog are ready to answer requests. A held session owns the store
+    /// lock and the checked program, so `is_some` is exactly readiness; the only unready window is
+    /// between a `--watch` re-check releasing the session and re-opening it, or after a re-check
+    /// that failed. `/health` reports this so an orchestrator can gate traffic on it.
+    fn is_ready(&self) -> bool {
+        self.session.is_some()
     }
 
     /// Drop the held session, releasing the native store lock. A re-check re-opens the store, which

@@ -362,6 +362,15 @@ auto-apply saved data.
 - On startup the command prints
   `serve listening on http://<addr>` to stdout, then handles requests until the
   process exits.
+- Each request emits one access-log line to stderr carrying the method, request
+  path, HTTP status, latency in milliseconds, and the resolved operation tag
+  (`op=-` when no surface route matched). The line never contains request or
+  response payloads, so logs are safe to retain.
+- `GET /health` reports store and catalog readiness for orchestration probes. It
+  is unauthenticated and emits no CORS headers so a load balancer can poll it
+  directly. It returns `200 {"status":"ready"}` while a surface session is held,
+  and `503 {"status":"unavailable"}` during the brief `--watch` re-check window
+  or after a re-check fails. Any method other than `GET` returns `405`.
 - The active route set is derived from descriptor route manifests. Default mode
   serves `/surface/v1/read/<operation-tag>` rows, including computed reads, and
   `/surface/v2/read/<operation-tag>` ranged index page rows that require

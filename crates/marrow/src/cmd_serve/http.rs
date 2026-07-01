@@ -1,6 +1,6 @@
 use std::io::{ErrorKind, Read, Write};
 use std::net::TcpStream;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use marrow_json::surface::{
     SurfaceCursorJson, SurfaceCursorTokenCodec, SurfaceCursorTokenError,
@@ -31,6 +31,7 @@ pub(super) fn serve_connection(
     remote_cursor_token: Option<&RemoteCursorToken>,
     shutdown: &shutdown::Shutdown,
 ) {
+    let started = Instant::now();
     if let Err(error) = stream.set_nonblocking(false) {
         eprintln!(
             "{}",
@@ -70,6 +71,7 @@ pub(super) fn serve_connection(
         remote_cursor_token,
         shutdown,
     );
+    let status = outcome.response.status;
     match write_response(&mut stream, &outcome.response) {
         Ok(()) => {
             if let Some(remaining) = outcome.drain_body {
@@ -86,6 +88,57 @@ pub(super) fn serve_connection(
             );
         }
     }
+    eprintln!(
+        "{}",
+        request_log_line(&outcome.log, status, started.elapsed())
+    );
+}
+
+/// The single access-log line's fields for one connection: the routing identity, never any request
+/// or response payload. The status and latency are supplied at emit time. `method` and `target` are
+/// absent only when the request head could not be parsed; `operation_tag` is present only once a
+/// route matched, distinguishing a confirmed operation from a rejected or non-surface path.
+struct RequestLog {
+    method: Option<String>,
+    target: Option<String>,
+    operation_tag: Option<String>,
+}
+
+impl RequestLog {
+    fn unparsed() -> Self {
+        Self {
+            method: None,
+            target: None,
+            operation_tag: None,
+        }
+    }
+
+    fn from_head(head: &ParsedHead) -> Self {
+        // Log the path only, dropping any query string, so a rejected target can never carry data
+        // into the log.
+        let path = head.target.split('?').next().unwrap_or_default();
+        Self {
+            method: Some(head.method.clone()),
+            target: Some(path.to_string()),
+            operation_tag: None,
+        }
+    }
+
+    fn with_operation_tag(mut self, tag: &str) -> Self {
+        self.operation_tag = Some(tag.to_string());
+        self
+    }
+}
+
+fn request_log_line(log: &RequestLog, status: HttpStatus, elapsed: Duration) -> String {
+    format!(
+        "serve {} {} {} {}ms op={}",
+        log.method.as_deref().unwrap_or("-"),
+        log.target.as_deref().unwrap_or("-"),
+        status.code(),
+        elapsed.as_millis(),
+        log.operation_tag.as_deref().unwrap_or("-"),
+    )
 }
 
 /// A head-level error responds before the request body is read. The response is written first, then
@@ -94,15 +147,7 @@ pub(super) fn serve_connection(
 struct ConnectionOutcome {
     response: SurfaceHttpResponse,
     drain_body: Option<usize>,
-}
-
-impl ConnectionOutcome {
-    fn respond(response: SurfaceHttpResponse) -> Self {
-        Self {
-            response,
-            drain_body: None,
-        }
-    }
+    log: RequestLog,
 }
 
 fn handle_connection(
@@ -122,20 +167,35 @@ fn handle_connection(
     let partial = match read_http_request_head(stream, shutdown, header_read_mode) {
         Ok(partial) => partial,
         Err(failure) => {
-            return ConnectionOutcome::respond(
-                SurfaceHttpResponse::error(failure.status, failure.error).with_cors_vary(cors),
-            );
+            return ConnectionOutcome {
+                response: SurfaceHttpResponse::error(failure.status, failure.error)
+                    .with_cors_vary(cors),
+                drain_body: None,
+                log: RequestLog::unparsed(),
+            };
         }
     };
+    let log = RequestLog::from_head(&partial.head);
+    // The readiness probe is answered before routing and auth so an orchestrator can poll it
+    // directly; it never reflects request data and never reaches a surface session.
+    if partial.head.target == HEALTH_PATH {
+        return ConnectionOutcome {
+            drain_body: pending_body_len(&partial),
+            response: health_response(&partial.head.method, executor.is_ready()),
+            log,
+        };
+    }
     let (route, cors_match) = match decide_http_head(&partial.head, routes, cors, remote_auth) {
         HeadDecision::Respond(response) => {
             return ConnectionOutcome {
-                response,
                 drain_body: pending_body_len(&partial),
+                response,
+                log,
             };
         }
         HeadDecision::ReadBody { route, cors_match } => (route, cors_match),
     };
+    let log = log.with_operation_tag(&route.operation_tag);
     let response = match read_http_request_body(stream, partial, shutdown) {
         Ok(request) => {
             execute_http_request_body(request, executor, &route, cors_match, remote_cursor_token)
@@ -144,7 +204,31 @@ fn handle_connection(
             SurfaceHttpResponse::error(failure.status, failure.error).with_cors_match(cors_match)
         }
     };
-    ConnectionOutcome::respond(response)
+    ConnectionOutcome {
+        response,
+        drain_body: None,
+        log,
+    }
+}
+
+const HEALTH_PATH: &str = "/health";
+
+/// The operational readiness probe. It is unauthenticated and CORS-neutral so an orchestrator can
+/// poll it directly, and it never reflects request data. GET reports store and catalog readiness;
+/// any other method is rejected so the probe cannot be mistaken for a surface route.
+fn health_response(method: &str, ready: bool) -> SurfaceHttpResponse {
+    if method != "GET" {
+        return SurfaceHttpResponse::error(
+            HttpStatus::MethodNotAllowed,
+            surface_error(SURFACE_REQUEST, "surface health probe accepts GET only"),
+        );
+    }
+    let (status, state) = if ready {
+        (HttpStatus::Ok, "ready")
+    } else {
+        (HttpStatus::ServiceUnavailable, "unavailable")
+    };
+    SurfaceHttpResponse::json(status, serde_json::json!({ "status": state }))
 }
 
 enum HeadDecision {
@@ -1001,6 +1085,7 @@ enum HttpStatus {
     PayloadTooLarge,
     UnsupportedMediaType,
     InternalServerError,
+    ServiceUnavailable,
     RequestHeaderFieldsTooLarge,
 }
 
@@ -1018,6 +1103,7 @@ impl HttpStatus {
             Self::PayloadTooLarge => 413,
             Self::UnsupportedMediaType => 415,
             Self::InternalServerError => 500,
+            Self::ServiceUnavailable => 503,
             Self::RequestHeaderFieldsTooLarge => 431,
         }
     }
@@ -1035,6 +1121,7 @@ impl HttpStatus {
             Self::PayloadTooLarge => "Payload Too Large",
             Self::UnsupportedMediaType => "Unsupported Media Type",
             Self::InternalServerError => "Internal Server Error",
+            Self::ServiceUnavailable => "Service Unavailable",
             Self::RequestHeaderFieldsTooLarge => "Request Header Fields Too Large",
         }
     }
@@ -1117,6 +1204,73 @@ mod tests {
     fn abi_mismatch_is_the_not_found_wrong_route_class() {
         assert_eq!(status_for_surface_error(SURFACE_ABI_MISMATCH).code(), 404);
         assert_eq!(status_for_surface_error(SURFACE_ABSENT).code(), 404);
+    }
+
+    #[test]
+    fn health_probe_maps_readiness_and_rejects_non_get() {
+        let ready = health_response("GET", true);
+        assert_eq!(ready.status.code(), 200);
+        assert_eq!(ready.body, Some(serde_json::json!({ "status": "ready" })));
+
+        let unavailable = health_response("GET", false);
+        assert_eq!(unavailable.status.code(), 503);
+        assert_eq!(
+            unavailable.body,
+            Some(serde_json::json!({ "status": "unavailable" }))
+        );
+
+        assert_eq!(health_response("POST", true).status.code(), 405);
+    }
+
+    #[test]
+    fn request_log_line_carries_identity_status_and_latency() {
+        let matched = RequestLog::from_head(&ParsedHead {
+            method: "POST".into(),
+            target: "/surface/v1/read/tag".into(),
+            origin: HeaderOccurrence::Missing,
+            access_control_request_method: HeaderOccurrence::Missing,
+            access_control_request_headers: HeaderOccurrence::Missing,
+            authorization: HeaderOccurrence::Missing,
+            content_length: None,
+            content_type_is_json: false,
+        })
+        .with_operation_tag("tag");
+        assert_eq!(
+            request_log_line(&matched, HttpStatus::Ok, Duration::from_millis(4)),
+            "serve POST /surface/v1/read/tag 200 4ms op=tag"
+        );
+
+        assert_eq!(
+            request_log_line(
+                &RequestLog::unparsed(),
+                HttpStatus::BadRequest,
+                Duration::from_millis(0)
+            ),
+            "serve - - 400 0ms op=-"
+        );
+    }
+
+    #[test]
+    fn request_log_drops_query_string_from_the_target() {
+        let log = RequestLog::from_head(&ParsedHead {
+            method: "POST".into(),
+            target: "/surface/v1/read/tag?token=secret".into(),
+            origin: HeaderOccurrence::Missing,
+            access_control_request_method: HeaderOccurrence::Missing,
+            access_control_request_headers: HeaderOccurrence::Missing,
+            authorization: HeaderOccurrence::Missing,
+            content_length: None,
+            content_type_is_json: false,
+        });
+        let line = request_log_line(&log, HttpStatus::NotFound, Duration::from_millis(1));
+        assert!(
+            !line.contains("secret"),
+            "query must not reach the log: {line}"
+        );
+        assert!(
+            line.contains("/surface/v1/read/tag "),
+            "path is logged: {line}"
+        );
     }
 
     #[test]
