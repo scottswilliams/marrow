@@ -2607,4 +2607,128 @@ mod tests {
             }
         }
     }
+
+    /// Frozen redb files, minted at the pinned engine version, that pin the byte
+    /// offsets the open-time shadow parsers read.
+    const REDB_CORPUS_DIR: &str = "tests/fixtures/redb_corpus";
+
+    /// Record count the corpus seeds: enough that the committed data btree spans
+    /// several pages, so the frozen valid store carries interior branch pages.
+    const SEED_RECORDS: u32 = 300;
+
+    fn redb_corpus_path(name: &str) -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join(REDB_CORPUS_DIR)
+            .join(name)
+    }
+
+    /// The super-header parsers (`guard_superblock_header`, `RedbGeometry`,
+    /// `guard_committed_page_graph`) read redb's on-disk layout at fixed byte
+    /// offsets, so they are locked to the pinned redb version. This gate replays
+    /// them over a committed corpus frozen at that version: the geometry must parse
+    /// to redb's region constants, a valid store must be admitted and readable, an
+    /// over-reaching committed page must be rejected, and a torn commit slot must
+    /// defer to redb. A redb bump that shifts any offset moves one of these verdicts
+    /// and trips the gate loudly instead of silently disarming the parsers.
+    #[test]
+    fn redb_layout_corpus_pins_the_shadow_parsers() {
+        let valid = std::fs::read(redb_corpus_path("valid.redb")).expect("read valid fixture");
+        let geometry = super::RedbGeometry::parse(&valid).expect("valid geometry parses");
+        assert_eq!(geometry.page_size, 4096, "pinned redb page size");
+        assert_eq!(
+            geometry.region_size, 4_294_967_296,
+            "pinned redb region size"
+        );
+        assert_eq!(geometry.region_pages_start, 0, "pinned redb region layout");
+
+        let dir = TempDir::new("redb-corpus").expect("temp dir");
+        let materialize = |name: &str| {
+            let bytes = std::fs::read(redb_corpus_path(name))
+                .unwrap_or_else(|e| panic!("read {name}: {e}"));
+            let path = dir.path().join(name);
+            std::fs::write(&path, &bytes).expect("materialize fixture");
+            path
+        };
+
+        let valid_path = materialize("valid.redb");
+        super::guard_superblock_header(&valid_path).expect("the guard admits a valid store");
+        let store = RedbStore::open_read_only(&valid_path).expect("valid store opens read-only");
+        assert_eq!(
+            Backend::read(&store, b"k/00000001").expect("read seeded key"),
+            Some(vec![0xAB; 64]),
+            "the valid fixture reads back its seeded value",
+        );
+        drop(store);
+
+        // The page-graph walk maps every committed page to its byte range and rejects
+        // one that leaves the file: a truncated body drops the page's tail, a damaged
+        // page redirects a root beyond the file.
+        for name in ["truncated.redb", "damaged_page.redb"] {
+            let path = materialize(name);
+            match super::guard_superblock_header(&path) {
+                Err(StoreError::Corruption { .. }) => {}
+                other => {
+                    panic!("{name}: the guard must reject an over-reaching page, got {other:?}")
+                }
+            }
+        }
+
+        // A torn commit slot carries no over-reaching page, so the guard admits it and
+        // leaves slot integrity to redb, which reports the tear as a recoverable open.
+        let torn = materialize("torn_slot.redb");
+        super::guard_superblock_header(&torn).expect("the guard defers slot tears to redb");
+        match RedbStore::open_read_only(&torn).map(|_| ()) {
+            Err(StoreError::RecoveryRequired) => {}
+            other => panic!("torn_slot: expected recovery_required, got {other:?}"),
+        }
+    }
+
+    /// Mint the frozen `redb_layout_corpus` fixtures. Ignored in normal runs because
+    /// it writes into the source tree; it is the sanctioned refresh after an
+    /// intentional, reviewed redb bump. Run
+    /// `cargo test -p marrow-store --features native regenerate_redb_layout_corpus -- --ignored`
+    /// then review the fixture diff and update the pinned constants above to match.
+    #[test]
+    #[ignore = "writes fixtures into the source tree; run only to refresh the corpus"]
+    fn regenerate_redb_layout_corpus() {
+        let out = Path::new(env!("CARGO_MANIFEST_DIR")).join(REDB_CORPUS_DIR);
+        std::fs::create_dir_all(&out).expect("create corpus dir");
+
+        let dir = TempDir::new("redb-corpus-gen").expect("temp dir");
+        let seed = dir.path().join("seed.redb");
+        {
+            // Enough records to build a multi-level committed btree (interior branch
+            // pages the page-graph walk must descend), seeded per-write so redb grows
+            // the file incrementally to the data rather than pre-sizing a large region.
+            let mut store = RedbStore::open(&seed).expect("open fresh store");
+            for n in 0..SEED_RECORDS {
+                let key = format!("k/{n:08}").into_bytes();
+                Backend::write(&mut store, &key, vec![0xAB; 64]).expect("seed record");
+            }
+        }
+        let body = std::fs::read(&seed).expect("read seeded body");
+        std::fs::write(out.join("valid.redb"), &body).expect("write valid fixture");
+
+        // Keep the super-header and both commit slots, drop the committed page extent
+        // past the midpoint so a committed root's page leaves the file.
+        std::fs::write(out.join("truncated.redb"), &body[..body.len() / 2])
+            .expect("write truncated fixture");
+
+        // Redirect the primary slot's first committed root beyond the file by maxing
+        // its region field, the exact over-reach the page-graph walk must catch.
+        let primary = if body[9] & 1 == 0 { 64usize } else { 192 };
+        let mut damaged = body.clone();
+        let root = primary + 8;
+        let mut raw = u64::from_le_bytes(damaged[root..root + 8].try_into().unwrap());
+        raw |= 0x000F_FFFF_u64 << 20;
+        damaged[root..root + 8].copy_from_slice(&raw.to_le_bytes());
+        std::fs::write(out.join("damaged_page.redb"), &damaged)
+            .expect("write damaged_page fixture");
+
+        // Flip the commit-tracker god byte so redb reads the stale slot and reports a
+        // torn commit needing recovery, while every committed page still lies in-file.
+        let mut torn = body.clone();
+        torn[9] ^= 1;
+        std::fs::write(out.join("torn_slot.redb"), &torn).expect("write torn_slot fixture");
+    }
 }
