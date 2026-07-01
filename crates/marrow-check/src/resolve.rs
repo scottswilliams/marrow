@@ -92,7 +92,7 @@ fn resolve_bare<'p>(
     kind: ResolvableKind,
 ) -> Resolution<'p> {
     if let Some((module_index, module)) = find_module_indexed(program, from_module)
-        && let Some(item) = lookup_in_module(module, leaf, kind)
+        && let Some(item) = lookup_in_module(program, module_index, module, leaf, kind)
     {
         return Resolution::Found(Def {
             module,
@@ -114,7 +114,7 @@ fn resolve_bare<'p>(
         if module.name == from_module || module.name.is_empty() {
             continue;
         }
-        if let Some(item) = lookup_in_module(module, leaf, kind) {
+        if let Some(item) = lookup_in_module(program, module_index, module, leaf, kind) {
             if is_public(&item) {
                 public.push(module.name.clone());
             } else {
@@ -152,7 +152,7 @@ fn resolve_qualified<'p>(
     let Some((module_index, module)) = find_module_indexed(program, module_name) else {
         return Resolution::Unresolved;
     };
-    let Some(item) = lookup_in_module(module, leaf, kind) else {
+    let Some(item) = lookup_in_module(program, module_index, module, leaf, kind) else {
         return Resolution::Unresolved;
     };
     if module_name == from_module || is_public(&item) {
@@ -191,23 +191,24 @@ pub fn resolve_store_by_root<'p>(
     })
 }
 
-/// Look up `leaf` in `module` for `kind`, returning the matching declaration.
-/// Functions and resources each live in their own table.
+/// Look up `leaf` in the module at `module_index` for `kind`, returning the matching
+/// declaration. Functions and resources each live in their own table, resolved O(1)
+/// through the program's per-module name index rather than a per-reference scan.
 fn lookup_in_module<'p>(
+    program: &'p CheckedProgram,
+    module_index: usize,
     module: &'p CheckedModule,
     leaf: &str,
     kind: ResolvableKind,
 ) -> Option<DefItem<'p>> {
     match kind {
-        ResolvableKind::Function => module
-            .functions
-            .iter()
-            .find(|function| function.name == leaf)
+        ResolvableKind::Function => program
+            .function_index_in_module(module_index, leaf)
+            .and_then(|index| module.functions.get(index))
             .map(DefItem::Function),
-        ResolvableKind::Resource => module
-            .resources
-            .iter()
-            .find(|resource| resource.name == leaf)
+        ResolvableKind::Resource => program
+            .resource_index_in_module(module_index, leaf)
+            .and_then(|index| module.resources.get(index))
             .map(DefItem::Resource),
     }
 }

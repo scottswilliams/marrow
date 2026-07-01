@@ -190,6 +190,13 @@ struct ModuleLookupSnapshot {
     function_modules: HashMap<String, Vec<u32>>,
     resource_modules: HashMap<String, Vec<u32>>,
     enum_modules: HashMap<String, Vec<u32>>,
+    /// For each module position, its functions and resources by name to their
+    /// position within that module. Bare and qualified name resolution looks up a
+    /// leaf in exactly one module through these, so the per-module linear scan it
+    /// replaces no longer makes resolving a call in a many-function module quadratic.
+    /// First declaration wins, matching the former `iter().find`.
+    function_in_module: HashMap<u32, HashMap<String, u32>>,
+    resource_in_module: HashMap<u32, HashMap<String, u32>>,
 }
 
 impl Clone for ModuleLookupIndex {
@@ -480,6 +487,54 @@ impl CheckedProgram {
             .unwrap_or_default()
     }
 
+    /// The position within module `module_index` of the function named `name`,
+    /// resolved O(1) through the per-module name index. Name resolution looks up a
+    /// leaf in one module on nearly every call reference, so the per-module linear
+    /// scan it replaces made resolving calls in a many-function module quadratic.
+    pub(crate) fn function_index_in_module(
+        &self,
+        module_index: usize,
+        name: &str,
+    ) -> Option<usize> {
+        let function_index = self.with_lookup_index(|snapshot| {
+            snapshot
+                .function_in_module
+                .get(&(module_index as u32))
+                .and_then(|by_name| by_name.get(name).copied())
+        })? as usize;
+        (self
+            .modules
+            .get(module_index)?
+            .functions
+            .get(function_index)?
+            .name
+            == name)
+            .then_some(function_index)
+    }
+
+    /// The position within module `module_index` of the resource named `name`,
+    /// resolved O(1) through the same per-module name index.
+    pub(crate) fn resource_index_in_module(
+        &self,
+        module_index: usize,
+        name: &str,
+    ) -> Option<usize> {
+        let resource_index = self.with_lookup_index(|snapshot| {
+            snapshot
+                .resource_in_module
+                .get(&(module_index as u32))
+                .and_then(|by_name| by_name.get(name).copied())
+        })? as usize;
+        (self
+            .modules
+            .get(module_index)?
+            .resources
+            .get(resource_index)?
+            .name
+            == name)
+            .then_some(resource_index)
+    }
+
     /// Query the module lookup index, rebuilding it first when it was built for a
     /// different module count. The resolved index is verified against `modules` by the
     /// caller, so a rebuild is never required for correctness, only to keep lookups
@@ -512,6 +567,8 @@ impl CheckedProgram {
             let mut function_modules: HashMap<String, Vec<u32>> = HashMap::new();
             let mut resource_modules: HashMap<String, Vec<u32>> = HashMap::new();
             let mut enum_modules: HashMap<String, Vec<u32>> = HashMap::new();
+            let mut function_in_module: HashMap<u32, HashMap<String, u32>> = HashMap::new();
+            let mut resource_in_module: HashMap<u32, HashMap<String, u32>> = HashMap::new();
             // A module is recorded at most once per name even when it declares that
             // name twice, matching the former one-candidate-per-module scan; a module's
             // declarations are contiguous here, so a duplicate is the one just pushed.
@@ -529,12 +586,24 @@ impl CheckedProgram {
                 by_file
                     .entry(module.source_file.clone())
                     .or_insert(module_index);
-                for function in &module.functions {
+                let mut module_functions: HashMap<String, u32> =
+                    HashMap::with_capacity(module.functions.len());
+                for (function_index, function) in module.functions.iter().enumerate() {
                     push_declarer(&mut function_modules, &function.name, module_index);
+                    module_functions
+                        .entry(function.name.clone())
+                        .or_insert(function_index as u32);
                 }
-                for resource in &module.resources {
+                function_in_module.insert(module_index, module_functions);
+                let mut module_resources: HashMap<String, u32> =
+                    HashMap::with_capacity(module.resources.len());
+                for (resource_index, resource) in module.resources.iter().enumerate() {
                     push_declarer(&mut resource_modules, &resource.name, module_index);
+                    module_resources
+                        .entry(resource.name.clone())
+                        .or_insert(resource_index as u32);
                 }
+                resource_in_module.insert(module_index, module_resources);
                 for enum_schema in &module.enums {
                     push_declarer(&mut enum_modules, &enum_schema.name, module_index);
                 }
@@ -548,6 +617,8 @@ impl CheckedProgram {
                 function_modules,
                 resource_modules,
                 enum_modules,
+                function_in_module,
+                resource_in_module,
             });
         }
         cache.as_ref().and_then(query)

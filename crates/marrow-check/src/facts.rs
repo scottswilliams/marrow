@@ -173,10 +173,25 @@ impl CheckedFacts {
             facts.collect_store_index_facts_for_module(program, module_id, module, parsed);
         }
         for &(module_id, module, parsed) in &bindings {
+            // The checked functions are built one per function declaration in
+            // source order, so the declaration carrying a function's annotations
+            // is the one at the same ordinal — not the first declaration of its
+            // name, which a by-name lookup would wrongly pick for a duplicate.
+            // Index the declarations by that ordinal once so each function
+            // resolves its own in O(1); the per-function scan it replaces made
+            // checking one module with N functions quadratic.
+            let function_declarations = parsed
+                .map(collect_function_declarations)
+                .unwrap_or_default();
             for (source_index, function) in module.functions.iter().enumerate() {
-                if let Some(function) =
-                    facts.function_fact(module_id, module, function, source_index as u32, parsed)
-                {
+                let declaration = function_declarations.get(source_index).copied();
+                if let Some(function) = facts.function_fact(
+                    module_id,
+                    module,
+                    function,
+                    source_index as u32,
+                    declaration,
+                ) {
                     facts.functions.push(function);
                 }
             }
@@ -639,23 +654,8 @@ impl CheckedFacts {
         module: &CheckedModule,
         function: &crate::CheckedFunction,
         source_index: u32,
-        parsed: Option<&ParsedSource>,
+        declaration: Option<&marrow_syntax::FunctionDecl>,
     ) -> Option<FunctionFact> {
-        // The checked functions are built one per function declaration in source
-        // order, so the declaration carrying this function's annotations is the
-        // one at the same position — not the first declaration of this name, which
-        // a by-name lookup would wrongly pick for a duplicate-named function.
-        let declaration = parsed.and_then(|parsed| {
-            parsed
-                .file
-                .declarations
-                .iter()
-                .filter_map(|declaration| match declaration {
-                    marrow_syntax::Declaration::Function(function) => Some(function),
-                    _ => None,
-                })
-                .nth(source_index as usize)
-        });
         let aliases = build_alias_map(&module.imports);
 
         let params = function
@@ -1880,6 +1880,20 @@ fn member_name_path<M: MemberNode>(members: &[M], index: usize) -> Option<Vec<St
     };
     path.push(member.name().to_string());
     Some(path)
+}
+
+/// The function declarations of one parsed source, in source order. The ordinal of
+/// each is the position of the checked function it carries the annotations for.
+fn collect_function_declarations(parsed: &ParsedSource) -> Vec<&marrow_syntax::FunctionDecl> {
+    parsed
+        .file
+        .declarations
+        .iter()
+        .filter_map(|declaration| match declaration {
+            marrow_syntax::Declaration::Function(function) => Some(function),
+            _ => None,
+        })
+        .collect()
 }
 
 /// Build a first-binding-wins lookup from a fact table, so it returns the same id the

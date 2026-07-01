@@ -288,6 +288,44 @@ fn duplicate_named_functions_keep_their_own_direct_effects() {
     }
 }
 
+/// Each function fact resolves its declaration by source ordinal, so the return
+/// annotation it reads is the one written on the function at that position. The
+/// facts pass indexes the parsed function declarations by ordinal once; a fencepost
+/// or by-name mis-index would attach a neighbor's `Id(^sN)` annotation to the wrong
+/// function, which distinct per-function return identities catch.
+#[test]
+fn checked_facts_resolve_each_function_signature_by_source_ordinal() {
+    const FUNCTION_COUNT: usize = 6;
+    let root = temp_project("program-fact-function-ordinal", |root| {
+        let mut source = String::from("module m\nresource R\n    required v: int\n");
+        for index in 0..FUNCTION_COUNT {
+            source.push_str(&format!("store ^s{index}(id: int): R\n"));
+        }
+        for index in 0..FUNCTION_COUNT {
+            source.push_str(&format!(
+                "fn f{index}(): Id(^s{index})\n    return nextId(^s{index})\n"
+            ));
+        }
+        write(root, "src/m.mw", &source);
+    });
+    let (report, program) = check_project(&root, &config()).expect("check");
+
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    let facts = &program.facts;
+    let module = facts.module_id("m").expect("module m");
+
+    for index in 0..FUNCTION_COUNT {
+        let store = facts.store_id(module, &format!("s{index}")).expect("store");
+        let function = facts.function(facts.function_id(module, &format!("f{index}")).expect("fn"));
+        assert_eq!(function.source_index, index as u32);
+        assert_eq!(
+            function.return_type,
+            Some(CheckedType::Identity(store)),
+            "f{index} must read its own return annotation, not a neighbor's",
+        );
+    }
+}
+
 #[test]
 fn checked_facts_resolve_qualified_resource_annotations_to_the_owner() {
     let root = temp_project("program-fact-resource-owner", |root| {
