@@ -117,13 +117,15 @@ fn adopted_id(proposal: &CatalogMetadata, kind: CatalogEntryKind, path: &str) ->
 }
 
 #[test]
-fn first_run_with_present_lock_adopts_committed_identity_and_epoch_high_water() {
+fn first_run_with_present_lock_adopts_committed_identity_across_the_advanced_proposal() {
     // A wiped store with no accepted catalog, but the source tree still carries the committed
-    // lock. First-run binding adopts the lock's epoch high-water and the committed id for every
-    // entity by its `(kind, path)` — including the SHAPED store and member, whose freshly built
-    // source pre-image records none of the accepted shapes the committed entries fingerprint
-    // under. Shape-fingerprint adoption silently mints fresh ids for these, diverging identity on
-    // an ordinary fresh checkout; path-keyed adoption carries them forward. This proves the
+    // lock. First-run binding adopts the committed id for every entity by its `(kind, path)` —
+    // including the SHAPED store and member, whose freshly built source pre-image records none of
+    // the accepted shapes the committed entries fingerprint under. Shape-fingerprint adoption
+    // silently mints fresh ids for these, diverging identity on an ordinary fresh checkout;
+    // path-keyed adoption carries them forward. The placeholder lock digest cannot confirm a clean
+    // adoption, so the binding is a drifted proposal, which advances one epoch past the lock's
+    // high-water exactly as a present store discharging the same change would. This proves the
     // adoption reaches the production pipeline through `analyze_project`, not only the in-module
     // binding test.
     let root = temp_root("provider-lock-adoption");
@@ -145,8 +147,9 @@ fn first_run_with_present_lock_adopts_committed_identity_and_epoch_high_water() 
         .proposal
         .expect("first-run proposal");
     assert_eq!(
-        proposal.epoch, high_water,
-        "first-run adoption seeds the proposal epoch from the lock high-water, not epoch 1"
+        proposal.epoch,
+        high_water + 1,
+        "a drifted first-run proposal advances one epoch past the lock high-water, not to epoch 1"
     );
     assert_eq!(snapshot.program.catalog.accepted_epoch, None);
 

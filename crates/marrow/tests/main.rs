@@ -41,6 +41,8 @@ mod evolve_cli_atomic_publish;
 mod evolve_cli_client_sync;
 #[path = "cases/evolve_cli_default_backfill.rs"]
 mod evolve_cli_default_backfill;
+#[path = "cases/evolve_cli_fresh_checkout_seed.rs"]
+mod evolve_cli_fresh_checkout_seed;
 #[path = "cases/evolve_cli_preview.rs"]
 mod evolve_cli_preview;
 #[path = "cases/evolve_cli_retire_rename.rs"]

@@ -899,8 +899,21 @@ fn adopt_or_mint_first_run(
             proposal_entries,
         )?));
     }
+    // Source has drifted from the committed lock: a fresh checkout carries the same pending evolution
+    // a present store would discharge. A present store advances that change past its accepted epoch,
+    // so the fresh-checkout proposal must advance past the lock's epoch high-water too — freezing it
+    // AT the high-water would fold the delta into the committed epoch and under-advance, diverging
+    // from the present-store path on identical committed inputs. A pending shape-neutral transform
+    // carried alongside the drift records its consuming mark here, exactly as `bind_against_accepted`
+    // does, so a later apply recognizes it as already applied rather than re-firing it against the
+    // empty seed.
+    record_transform_marks(
+        &mut proposal_entries,
+        &evolve.transforms,
+        &lock_accepted_catalog(lock)?,
+    );
     Ok(FirstRunOutcome::Proposal(CatalogMetadata::new(
-        lock.epoch_high_water,
+        advance_epoch(lock.epoch_high_water, lock.epoch_high_water),
         proposal_entries,
     )?))
 }
@@ -2854,11 +2867,13 @@ mod tests {
     }
 
     /// First-run binding with a present committed lock adopts the lock's identity by `(kind,
-    /// path)` and its epoch high-water instead of minting fresh ids at epoch 1, even for a SHAPED
-    /// entity whose committed fingerprint a fresh source pre-image cannot reproduce; it refuses an
-    /// adopted id that would reissue a tombstone, and advances re-bind from the high-water.
+    /// path)` instead of minting fresh ids at epoch 1, even for a SHAPED entity whose committed
+    /// fingerprint a fresh source pre-image cannot reproduce. When the drifted source carries a
+    /// pending change, the proposal advances PAST the lock's epoch high-water — the same epoch a
+    /// present store reaches — rather than folding the change into the committed epoch; it refuses
+    /// an adopted id that would reissue a tombstone, and advances re-bind from the high-water.
     #[test]
-    fn first_run_with_present_lock_adopts_lock_identity_and_epoch_high_water() {
+    fn first_run_with_present_lock_adopts_lock_identity_and_advances_past_the_high_water() {
         let program = CheckedProgram::default();
         let evolve = EvolveIntents::default();
 
@@ -2885,10 +2900,11 @@ mod tests {
             high_water,
         );
 
-        // Oracle 1 + 2: the first-run binding adopts the committed id and the lock's epoch
-        // high-water rather than minting fresh at epoch 1. The fixture program captures no source
-        // renderings, so its shape digest cannot match the lock's recorded digest: the lock does
-        // not adopt cleanly here, so the binding is a proposal carrying the adopted identity.
+        // Oracle 1 + 2: the first-run binding adopts the committed id and advances the drifted
+        // proposal one epoch past the lock's high-water rather than minting fresh at epoch 1. The
+        // fixture program captures no source renderings, so its shape digest cannot match the lock's
+        // recorded digest: the lock does not adopt cleanly here, so the binding is a pending proposal
+        // carrying the adopted identity at the epoch a present store would discharge to.
         let mut diagnostics = Vec::new();
         let Ok(FirstRunOutcome::Proposal(proposal)) = adopt_or_mint_first_run(
             &program,
@@ -2900,8 +2916,9 @@ mod tests {
             panic!("a present lock carries an adopting first-run proposal");
         };
         assert_eq!(
-            proposal.epoch, high_water,
-            "adopts the lock epoch high-water"
+            proposal.epoch,
+            high_water + 1,
+            "a drifted proposal advances one epoch past the lock high-water, as a present store does"
         );
         let adopted = proposal
             .entries
