@@ -1,0 +1,26 @@
+name: Documentation report
+description: Report confusing, missing, or stale Marrow documentation.
+title: "Docs: "
+body:
+  - type: input
+    id: page
+    attributes:
+      label: Page
+      description: Which documentation page, section, or link needs attention?
+      placeholder: "docs/install.md, docs/language/..., README.md"
+    validations:
+      required: true
+  - type: textarea
+    id: confusing-or-missing-content
+    attributes:
+      label: Confusing or missing content
+      description: What was hard to understand, missing, outdated, or contradictory?
+    validations:
+      required: true
+  - type: textarea
+    id: expected-clarification
+    attributes:
+      label: Expected clarification
+      description: What should the documentation explain or correct?
+    validations:
+      required: true

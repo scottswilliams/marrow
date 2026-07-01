@@ -1,0 +1,66 @@
+name: Bug report
+description: Report a reproducible problem with Marrow.
+title: "Bug: "
+body:
+  - type: input
+    id: marrow-version
+    attributes:
+      label: Marrow version or commit
+      description: Include the release version, tag, or commit SHA you are using.
+      placeholder: "0.1.0, v0.1.0, or 81640e88"
+    validations:
+      required: true
+  - type: input
+    id: operating-system
+    attributes:
+      label: Operating system
+      description: Include the OS name and version.
+      placeholder: "macOS 15.5, Ubuntu 24.04, ..."
+    validations:
+      required: true
+  - type: textarea
+    id: command
+    attributes:
+      label: Command
+      description: Paste the exact command or tool action that showed the problem.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: project-shape
+    attributes:
+      label: Project shape
+      description: Describe the relevant files, package layout, saved data, and command context.
+      placeholder: "Single .mw file, workspace layout, saved resources involved, ..."
+    validations:
+      required: true
+  - type: textarea
+    id: expected-behavior
+    attributes:
+      label: Expected behavior
+      description: What did you expect Marrow to do?
+    validations:
+      required: true
+  - type: textarea
+    id: actual-behavior
+    attributes:
+      label: Actual behavior
+      description: What happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: minimal-repro
+    attributes:
+      label: Minimal repro
+      description: Paste the smallest source or project steps that reproduce the issue.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics-output
+    attributes:
+      label: Diagnostics or output
+      description: Paste any compiler diagnostics, runtime output, logs, or panic text.
+      render: shell
+    validations:
+      required: false

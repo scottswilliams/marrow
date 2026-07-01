@@ -1,0 +1,50 @@
+name: Feature request
+description: Suggest an ordinary product, language, tooling, or workflow improvement.
+title: "Feature: "
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What user problem or workflow gap should this solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposed-workflow
+    attributes:
+      label: Proposed workflow
+      description: Describe how you would expect to use the feature.
+      placeholder: "When I run ..., Marrow should ..."
+    validations:
+      required: true
+  - type: dropdown
+    id: affected-surface
+    attributes:
+      label: Affected surface
+      description: Which part of Marrow would this change?
+      multiple: true
+      options:
+        - Language syntax or semantics
+        - Type checker
+        - Runtime
+        - Saved data or storage
+        - CLI
+        - Project configuration
+        - Documentation
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives
+      description: What existing workflow or different design have you considered?
+    validations:
+      required: false
+  - type: textarea
+    id: release-compatibility
+    attributes:
+      label: Release compatibility
+      description: Describe any expected impact on existing source files, saved data, commands, or documented behavior.
+    validations:
+      required: true
