@@ -1429,7 +1429,7 @@ impl TreeStore {
                 .last()
                 .map(|(key, _)| key.clone())
                 .ok_or_else(|| StoreError::InvalidCursor {
-                    message: "backup scan page was truncated without a cursor".into(),
+                    message: "data-family scan page was truncated without a cursor".into(),
                 })?;
             if let Some(previous) = &previous_resume {
                 guard_page_cursor_advances(&resume, previous, std::cmp::Ordering::Greater)?;
@@ -2344,7 +2344,8 @@ mod tests {
 
     use super::{
         CellKey, CommitMetadata, DataPathSegment, IndexCursor, IndexCursorScope, IndexRangeBounds,
-        NODE_MARKER, TreeBackupCellBuf, TreeStore,
+        NODE_MARKER, TREE_BACKUP_MAX_CELL_BYTES, TreeBackupCellBuf, TreeBackupCellReadError,
+        TreeStore,
     };
     use crate::StoreError;
     use crate::backend::counting::{BackendCounts, CountingBackend};
@@ -2890,10 +2891,17 @@ mod tests {
 
         let error = store
             .visit_backup_cells(|_| Ok(()))
-            .expect_err("empty truncated backup scan should return an error");
+            .expect_err("empty truncated data-family scan should return an error");
 
         assert!(matches!(error, StoreError::InvalidCursor { .. }));
         assert_eq!(error.code(), "store.cursor");
+        let StoreError::InvalidCursor { message } = &error else {
+            unreachable!("matched above");
+        };
+        assert!(
+            message.contains("data") && !message.contains("backup"),
+            "a live-store scan names a data scan, not a backup scan: {message}"
+        );
     }
 
     #[test]
@@ -3571,6 +3579,42 @@ mod tests {
         assert_corruption(TreeBackupCellBuf::from_raw(index_key, b"1".to_vec()));
     }
 
+    /// A torn on-disk data cell surfaces through the shared data-family walk that
+    /// backs `data integrity`/`get`/`stats`/`dump`/`roots` and `run`. The corruption
+    /// prose must name a stored data cell; no archive is involved, so it must not
+    /// leak the word "backup".
+    #[test]
+    fn torn_live_store_data_cell_names_a_data_cell_not_a_backup() {
+        let (store, backend, _root) = seeded_digest_store();
+        let mut torn = CellKey::data_family().into_bytes();
+        torn.extend_from_slice(b"\xff\xff");
+        backend.tamper(|map| {
+            map.insert(torn, b"x".to_vec());
+        });
+        let message = corruption_message(store.visit_backup_cells(|_| Ok(())));
+        assert!(
+            message.contains("data cell") && !message.contains("backup"),
+            "a live-store decode failure names a data cell, not a backup cell: {message}"
+        );
+    }
+
+    /// A genuinely malformed backup archive cell keeps the backup-domain wording:
+    /// here an archive frame really is at fault.
+    #[test]
+    fn corrupt_backup_archive_frame_names_a_backup_cell() {
+        let mut archive = Vec::new();
+        archive.extend_from_slice(&1u32.to_be_bytes());
+        archive.push(0xff);
+        let error =
+            TreeBackupCellBuf::read_framed(&mut archive.as_slice(), TREE_BACKUP_MAX_CELL_BYTES)
+                .expect_err("a malformed target frame is rejected");
+        assert_eq!(error, TreeBackupCellReadError::MalformedCell);
+        assert!(
+            error.to_string().contains("backup cell"),
+            "a backup archive fault names a backup cell: {error}"
+        );
+    }
+
     /// A pinned read snapshot owns the handle's read view, so the same handle cannot
     /// publish writes until the snapshot is released.
     #[test]
@@ -3787,6 +3831,13 @@ mod tests {
 
     fn assert_corruption<T>(result: Result<T, StoreError>) {
         assert!(matches!(result, Err(StoreError::Corruption { .. })));
+    }
+
+    fn corruption_message<T: std::fmt::Debug>(result: Result<T, StoreError>) -> String {
+        match result {
+            Err(StoreError::Corruption { message }) => message,
+            other => panic!("expected corruption, got {other:?}"),
+        }
     }
 
     /// A `MemStore` shared between a `TreeStore` and the test, so the test can tamper the

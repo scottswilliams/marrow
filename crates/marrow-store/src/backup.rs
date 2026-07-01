@@ -283,7 +283,7 @@ fn malformed_frame(_: &[u8]) -> TreeBackupCellReadError {
 /// the persisted bytes are corrupt, not merely an early end of a backup stream.
 fn decode_and_validate(key: &[u8], value: &[u8]) -> Result<DataCellKey, StoreError> {
     let target = decode_data_cell_key(key).ok_or_else(|| StoreError::Corruption {
-        message: "backup cell key is not a well-formed data cell".into(),
+        message: "stored key does not decode as a data cell".into(),
     })?;
     validate_target_value(&target, value).map_err(|message| StoreError::Corruption {
         message: message.to_string(),
@@ -294,7 +294,7 @@ fn decode_and_validate(key: &[u8], value: &[u8]) -> Result<DataCellKey, StoreErr
 fn validate_target_value(target: &DataCellKey, value: &[u8]) -> Result<(), &'static str> {
     match target.kind {
         DataCellKind::Node | DataCellKind::PathNode { .. } if value != NODE_MARKER => {
-            return Err("backup node cell has a malformed marker");
+            return Err("data node cell has a malformed marker");
         }
         _ => {}
     }
