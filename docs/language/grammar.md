@@ -253,9 +253,12 @@ evolve_target   = saved_path | qualified_name | local_path ;
 ```
 
 An `evolve` block declares durable intent about addressable durable entities: a
-resource member, a saved root, a store index, an enum, or an enum member. Each
-target is written in the same surface form the language already uses to reference
-that entity (`Book.title`, `^books`, `^books.byTitle`, `Status::archived`).
+resource, a resource member, a saved root, a store index, an enum, or an enum
+member. Each target is written in the same surface form the language already uses
+to reference that entity (`Book`, `Book.title`, `^books`, `^books.byTitle`,
+`Status::archived`). Renaming a resource carries its whole member subtree forward,
+so a single `rename Book -> Volume` keeps every stored member value attached
+without a per-member rename.
 
 `rename`, `default`, `retire`, and `transform` are contextual: they are step lead
 words recognized only inside an `evolve` block, so they remain valid identifiers

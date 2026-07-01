@@ -28,6 +28,7 @@ schema does not fully describe until explicit data-evolution work runs.
 | Add a sparse field | Existing records stay valid; the field reads as absent until written. It changes the durable shape, so a populated store is re-stamped, but discharging the change mutates no stored record: a `marrow run` auto-applies it (see [Run-Time Auto-Apply](#run-time-auto-apply)), and `marrow evolve apply` discharges it explicitly. |
 | Add a `required` field | `evolve default` or checked `evolve transform`, proven by `marrow evolve preview` and applied by `marrow evolve apply`. |
 | Rename a field | `evolve rename`, applied with `marrow evolve apply`; the stable identity moves with the rename, and stored cells addressed by that identity remain attached. A bare source rename over populated data still fails closed, but when exactly one populated dropped field and one same-resource added field share a durable leaf shape, the repair guidance points at `evolve rename` before destructive retirement. |
+| Rename a resource | `evolve rename Book -> Volume`, applied with `marrow evolve apply`. A member's saved identity is keyed on its full ancestor path, so the rename cascades to every member of the resource, carrying each member's stable identity forward and keeping its stored cells attached — no per-member rename is needed. A bare source rename over populated members fails closed as `run.schema_drift`/`evolve.repair_required`, exactly like a bare field or enum-member rename. |
 | Change a leaf's type | A populated leaf-type change fails closed; `marrow evolve preview` reports it. Add a new field of the new type, populate it with an `evolve transform` from the old field, then retire the old field. An empty leaf changes freely. |
 | Remove or unselect an enum member | Fails closed while saved data still selects the member (removal, marking it `category`, and giving it children all unselect it); migrate affected records to a current member first. Reordering members preserves every identity, mutates nothing, and auto-applies. Rename a member with `evolve rename`; a bare source rename reads as remove-plus-add and fails closed. |
 | Add an index | `marrow evolve preview` proves the rebuild and `marrow evolve apply` publishes index entries atomically. |
@@ -132,6 +133,21 @@ intent. When the source diff has exactly one populated dropped field and one
 same-resource added field with the same durable leaf shape, check-time repair
 guidance names `evolve rename` first; otherwise it points at the destructive
 retire path.
+
+Renaming a whole resource is the same explicit decision at the resource level:
+
+```mw
+evolve
+    rename Book -> Volume
+```
+
+A member's saved identity is keyed on its full ancestor path, so renaming the
+resource cascades to every member, carrying each member's stable ID and stored
+cells forward under the new resource name. One `rename Book -> Volume` keeps every
+member value attached — a per-member rename is neither needed nor written. A bare
+source rename of a resource with populated members fails closed exactly as a bare
+field rename does; a rename that also drops a populated member still fences the
+drop through `evolve.repair_required` and the retire gate.
 
 ## Saved-Data Identity And `marrow.lock`
 

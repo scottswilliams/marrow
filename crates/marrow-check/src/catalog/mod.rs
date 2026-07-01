@@ -1478,7 +1478,7 @@ fn resolve_renames(
 ) -> HashMap<String, ResolvedRename> {
     let mut resolved: HashMap<String, ResolvedRename> = HashMap::new();
     let mut from_paths: HashSet<String> = HashSet::new();
-    let mut enum_member_renames: Vec<(String, String)> = Vec::new();
+    let mut cascading_renames: Vec<(CatalogEntryKind, String, String)> = Vec::new();
     for rename in renames {
         let kind = match source_catalog.path_kind(rename.to_path.as_str()) {
             SourcePathKind::Absent => {
@@ -1564,8 +1564,12 @@ fn resolve_renames(
             report_unresolved_intent(&rename.file, rename.span, diagnostics);
             continue;
         }
-        if kind == CatalogEntryKind::EnumMember {
-            enum_member_renames.push((rename.to_path.clone(), rename.from_path.clone()));
+        if let Some(descendant_kind) = cascade_descendant_kind(kind) {
+            cascading_renames.push((
+                descendant_kind,
+                rename.to_path.clone(),
+                rename.from_path.clone(),
+            ));
         }
         resolved.insert(
             rename.to_path.clone(),
@@ -1575,28 +1579,43 @@ fn resolve_renames(
             },
         );
     }
-    cascade_enum_category_renames(accepted, &enum_member_renames, &mut resolved);
+    cascade_subtree_renames(accepted, &cascading_renames, &mut resolved);
     resolved
 }
 
-/// Carry every descendant leaf's identity forward when an enum category is renamed. An
-/// enum member's saved identity is keyed on its full ancestor path, so renaming a
-/// category (`Pet::mammal` -> `Pet::beast`) must relocate each descendant leaf
-/// (`Pet::mammal::dog` -> `Pet::beast::dog`) too, or its stored values would orphan even
-/// though a member rename is identity-preserving. The explicit category rename names the
-/// node; the subtree below it travels automatically from the accepted catalog, so a
-/// developer never spells out a per-leaf rename for a structurally unchanged subtree.
+/// The descendant kind a rename of `kind` carries its whole accepted subtree forward for, or
+/// `None` when a rename relocates only the named entry. An entry's saved-data identity is keyed
+/// on its full ancestor path, so renaming an ancestor must relocate every descendant too or its
+/// stored values would orphan even though a rename is identity-preserving: renaming an enum
+/// category (`Pet::mammal`) carries its descendant enum members, and renaming a resource (`Book`)
+/// carries its resource members (`Book::note`).
+fn cascade_descendant_kind(kind: CatalogEntryKind) -> Option<CatalogEntryKind> {
+    match kind {
+        CatalogEntryKind::EnumMember => Some(CatalogEntryKind::EnumMember),
+        CatalogEntryKind::Resource => Some(CatalogEntryKind::ResourceMember),
+        _ => None,
+    }
+}
+
+/// Carry every descendant's identity forward when its ancestor is renamed. A saved leaf's
+/// identity is keyed on its full ancestor path, so renaming an enum category
+/// (`Pet::mammal` -> `Pet::beast`) or a resource (`Book` -> `Volume`) must relocate each
+/// descendant (`Pet::mammal::dog` -> `Pet::beast::dog`, `Book::note` -> `Volume::note`) too, or
+/// its stored values would orphan even though a rename is identity-preserving. The explicit
+/// rename names the ancestor; the subtree below it travels automatically from the accepted
+/// catalog, so a developer never spells out a per-descendant rename for a structurally unchanged
+/// subtree.
 ///
-/// A derived rename is skipped when its new path already has an explicit rename: an
-/// explicit member intent always wins, so reshaping a leaf out of the renamed subtree in
-/// the same evolve block is honored over the automatic carry-forward.
-fn cascade_enum_category_renames(
+/// A derived rename is skipped when its new path already has an explicit rename: an explicit
+/// intent always wins, so reshaping a descendant out of the renamed subtree in the same evolve
+/// block is honored over the automatic carry-forward.
+fn cascade_subtree_renames(
     accepted: &AcceptedCatalog<'_>,
-    enum_member_renames: &[(String, String)],
+    cascading_renames: &[(CatalogEntryKind, String, String)],
     resolved: &mut HashMap<String, ResolvedRename>,
 ) {
-    for (to_path, from_path) in enum_member_renames {
-        for descendant in accepted.active_enum_member_descendants(from_path) {
+    for (descendant_kind, to_path, from_path) in cascading_renames {
+        for descendant in accepted.active_descendants(*descendant_kind, from_path) {
             let suffix = &descendant[from_path.len()..];
             let new_path = format!("{to_path}{suffix}");
             resolved.entry(new_path).or_insert_with(|| ResolvedRename {
@@ -2079,16 +2098,16 @@ impl<'a> AcceptedCatalog<'a> {
         self.path_candidates(path).len() > 1
     }
 
-    /// The paths of every active enum-member entry strictly below `category_path` in the
-    /// member tree (each `category_path::…`). A category rename moves the whole subtree's
-    /// identity, so these descendant leaves must travel with it.
-    fn active_enum_member_descendants(&self, category_path: &str) -> Vec<&'a str> {
-        let prefix = format!("{category_path}::");
+    /// The paths of every active entry of `kind` strictly below `ancestor_path` in the tree
+    /// (each `ancestor_path::…`). A rename moves the whole subtree's identity, so these
+    /// descendants must travel with it: enum members under a renamed category, resource members
+    /// under a renamed resource.
+    fn active_descendants(&self, kind: CatalogEntryKind, ancestor_path: &str) -> Vec<&'a str> {
+        let prefix = format!("{ancestor_path}::");
         self.entries
             .iter()
-            .filter_map(|((kind, path), _)| {
-                (*kind == CatalogEntryKind::EnumMember && path.starts_with(&prefix))
-                    .then_some(*path)
+            .filter_map(|((entry_kind, path), _)| {
+                (*entry_kind == kind && path.starts_with(&prefix)).then_some(*path)
             })
             .collect()
     }
@@ -3282,6 +3301,65 @@ mod tests {
         assert!(
             from_for("app::Pet::fish").is_none(),
             "a sibling outside the renamed subtree is untouched"
+        );
+    }
+
+    /// An explicit `evolve rename` of a resource resolves the resource itself and, by
+    /// carry-forward from the accepted catalog, every resource member in its subtree — so a single
+    /// resource rename keeps every stored member value valid without a per-member rename, exactly
+    /// as an enum-category rename cascades to its descendant leaves. A member's saved identity is
+    /// keyed on its full ancestor path (which includes the resource), so the rename must travel.
+    #[test]
+    fn renaming_a_resource_cascades_to_its_accepted_members() {
+        let book = active_entry(CatalogEntryKind::Resource, "app::Book", &fixed_id(1));
+        let note = active_entry(
+            CatalogEntryKind::ResourceMember,
+            "app::Book::note",
+            &fixed_id(2),
+        );
+        let nested = active_entry(
+            CatalogEntryKind::ResourceMember,
+            "app::Book::name::first",
+            &fixed_id(3),
+        );
+        let other = active_entry(CatalogEntryKind::Resource, "app::Author", &fixed_id(4));
+        let accepted = CatalogMetadata::new(1, vec![book, note, nested, other]).expect("builds");
+        // Source declares the renamed resource (`Volume` with `note`/`name::first`) plus `Author`.
+        let source = vec![
+            source_entry(CatalogEntryKind::Resource, "app::Volume"),
+            source_entry(CatalogEntryKind::ResourceMember, "app::Volume::note"),
+            source_entry(CatalogEntryKind::ResourceMember, "app::Volume::name::first"),
+            source_entry(CatalogEntryKind::Resource, "app::Author"),
+        ];
+        let mut diagnostics = Vec::new();
+
+        let resolved = resolve_renames(
+            &AcceptedCatalog::new(&accepted),
+            &SourceCatalog::new(&source),
+            &[rename_intent("app::Book", "app::Volume")],
+            &mut diagnostics,
+        );
+
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+        let from_for = |to_path: &str| {
+            resolved
+                .get(to_path)
+                .map(|rename| rename.from_path.as_str())
+        };
+        assert_eq!(from_for("app::Volume"), Some("app::Book"));
+        assert_eq!(
+            from_for("app::Volume::note"),
+            Some("app::Book::note"),
+            "the member identity travels with the resource"
+        );
+        assert_eq!(
+            from_for("app::Volume::name::first"),
+            Some("app::Book::name::first"),
+            "a nested member identity travels with the resource"
+        );
+        assert!(
+            from_for("app::Author").is_none(),
+            "a sibling resource outside the rename is untouched"
         );
     }
 

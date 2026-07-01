@@ -1080,3 +1080,404 @@ fn a_rename_over_an_empty_store_auto_applies_on_run() {
         "the empty-store rename advanced the epoch by one",
     );
 }
+
+/// A `Book` carrying a populated `note` member. Renaming the resource `Book` -> `Volume` moves
+/// its members' catalog paths (`Book::note` -> `Volume::note`); since a member's saved identity
+/// is keyed on its full ancestor path, the rename must cascade to the members or their stored
+/// cells orphan. `seedBook` populates `note` so a test can hold the store populated.
+const RESOURCE_BASELINE: &str = "module app\n\
+     resource Log\n\
+     \x20   note: string\n\
+     store ^log(id: int): Log\n\
+     resource Book\n\
+     \x20   title: string\n\
+     \x20   note: string\n\
+     store ^books(id: int): Book\n\
+     pub fn seed()\n\
+     \x20   transaction\n\
+     \x20       ^log(1).note = \"ran\"\n\
+     pub fn seedBook()\n\
+     \x20   transaction\n\
+     \x20       ^books(1).title = \"Mort\"\n\
+     \x20       ^books(1).note = \"keepme\"\n";
+
+/// The resource renamed `Book` -> `Volume` with the surviving store repointed, and NO
+/// `evolve rename` intent. A bare source rename is ambiguous against delete-and-add, so over
+/// populated data it must fence rather than mint a fresh member identity and orphan the cells.
+const RESOURCE_RENAME_BARE: &str = "module app\n\
+     resource Log\n\
+     \x20   note: string\n\
+     store ^log(id: int): Log\n\
+     resource Volume\n\
+     \x20   title: string\n\
+     \x20   note: string\n\
+     store ^books(id: int): Volume\n\
+     pub fn seed()\n\
+     \x20   transaction\n\
+     \x20       ^log(1).note = \"ran\"\n";
+
+/// The same resource rename with the stated `evolve rename Book -> Volume` intent, so the
+/// member identity cascades forward and the populated cells stay attached under the renamed
+/// resource.
+const RESOURCE_RENAME_EVOLVE: &str = "module app\n\
+     resource Log\n\
+     \x20   note: string\n\
+     store ^log(id: int): Log\n\
+     resource Volume\n\
+     \x20   title: string\n\
+     \x20   note: string\n\
+     store ^books(id: int): Volume\n\
+     evolve\n\
+     \x20   rename Book -> Volume\n\
+     pub fn seed()\n\
+     \x20   transaction\n\
+     \x20       ^log(1).note = \"ran\"\n";
+
+/// The resource rename plus an additive sparse `tag` member. The rename cascades the populated
+/// `note` forward while the new `tag` is intrinsically additive, so apply discharges both and
+/// preserves the stored `note`.
+const RESOURCE_RENAME_ADD_MEMBER: &str = "module app\n\
+     resource Log\n\
+     \x20   note: string\n\
+     store ^log(id: int): Log\n\
+     resource Volume\n\
+     \x20   title: string\n\
+     \x20   note: string\n\
+     \x20   tag: string\n\
+     store ^books(id: int): Volume\n\
+     evolve\n\
+     \x20   rename Book -> Volume\n\
+     pub fn seed()\n\
+     \x20   transaction\n\
+     \x20       ^log(1).note = \"ran\"\n";
+
+/// The resource rename plus a populated member drop: `Volume` no longer declares `note`, whose
+/// cells are populated. The rename cascades the resource, but the dropped populated member is a
+/// destructive change that must fence `evolve.repair_required` and the retire gate.
+const RESOURCE_RENAME_DROP_MEMBER: &str = "module app\n\
+     resource Log\n\
+     \x20   note: string\n\
+     store ^log(id: int): Log\n\
+     resource Volume\n\
+     \x20   title: string\n\
+     store ^books(id: int): Volume\n\
+     evolve\n\
+     \x20   rename Book -> Volume\n\
+     pub fn seed()\n\
+     \x20   transaction\n\
+     \x20       ^log(1).note = \"ran\"\n";
+
+fn recheck_against_accepted(root: &TempProject) -> marrow_check::CheckedProgram {
+    let config_text = std::fs::read_to_string(root.join("marrow.json")).expect("read config");
+    let config = marrow_project::parse_config(&config_text).expect("parse config");
+    let accepted = TreeStore::open_read_only(&native_store_path(root))
+        .expect("open store read-only")
+        .read_catalog_snapshot()
+        .expect("read store catalog snapshot");
+    let (report, program) =
+        marrow_check::check_project_with_catalog(root.path(), &config, accepted.as_ref())
+            .expect("re-check project");
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+    program
+}
+
+#[test]
+fn a_bare_resource_rename_over_populated_data_fences_run_not_orphan()
+-> Result<(), Box<dyn std::error::Error>> {
+    // Renaming `resource Book` -> `Volume` with no `evolve rename` intent re-paths the member
+    // `Book::note` -> `Volume::note`. Since a member's saved identity is keyed on its ancestor
+    // path, minting a fresh identity for `Volume::note` would orphan the populated `note` cell.
+    // A bare rename over populated data must fence, exactly like a bare member rename.
+    let root = books_and_log_project("run-resource-rename-populated", RESOURCE_BASELINE);
+    let first = marrow_sub("run", &[dir(&root)]);
+    assert_eq!(first.status.code(), Some(0), "first run: {first:?}");
+    let seed_book = marrow_sub("run", &["--entry", "app::seedBook", dir(&root)]);
+    assert_eq!(seed_book.status.code(), Some(0), "seed book: {seed_book:?}");
+    let epoch_before = accepted_epoch(&root);
+    let note_id = support_evolve::accepted_catalog_entry_id(&root, "app::Book::note");
+
+    write(&root, "src/app.mw", RESOURCE_RENAME_BARE);
+    let rerun = marrow_sub("run", &[dir(&root)]);
+    assert_eq!(
+        rerun.status.code(),
+        Some(1),
+        "a bare resource rename over populated data fences: {rerun:?}",
+    );
+    let stderr = String::from_utf8(rerun.stderr).expect("stderr utf8");
+    assert!(
+        stderr.contains("run.schema_drift"),
+        "the bare resource rename reports the schema-drift code: {stderr}",
+    );
+    assert_eq!(
+        accepted_epoch(&root),
+        epoch_before,
+        "a fenced bare resource rename does not auto-apply or advance the epoch",
+    );
+
+    // The populated cell survives under its accepted member id: the fence prevented the silent
+    // orphan a fresh member identity would have caused.
+    let program = recheck_against_accepted(&root);
+    let place = root_place(&program, "books")?;
+    let store = TreeStore::open(&native_store_path(&root)).expect("reopen native store");
+    assert_eq!(
+        support_evolve::read_scalar_by_catalog_id(&store, &place, 1, &note_id, ScalarType::Str),
+        Some(Scalar::Str("keepme".to_string())),
+        "the fenced run preserves the populated member cell under its accepted id",
+    );
+    Ok(())
+}
+
+#[test]
+fn a_bare_resource_rename_over_an_empty_store_auto_applies() {
+    // The same bare resource rename against an empty `^books` re-addresses no record, so
+    // emptiness discharges it and the run auto-applies: an unpopulated resource renames freely.
+    let root = books_and_log_project("run-resource-rename-empty", RESOURCE_BASELINE);
+    let first = marrow_sub("run", &[dir(&root)]);
+    assert_eq!(first.status.code(), Some(0), "first run: {first:?}");
+    let epoch_before = accepted_epoch(&root);
+
+    write(&root, "src/app.mw", RESOURCE_RENAME_BARE);
+    let rerun = marrow_sub("run", &[dir(&root)]);
+    assert_eq!(
+        rerun.status.code(),
+        Some(0),
+        "a bare resource rename over an empty store auto-applies: {rerun:?}",
+    );
+    assert!(
+        !String::from_utf8(rerun.stderr)
+            .expect("stderr utf8")
+            .contains("run.schema_drift"),
+        "an empty-store resource rename does not fence",
+    );
+    assert_eq!(
+        accepted_epoch(&root),
+        epoch_before + 1,
+        "the empty-store resource rename advanced the epoch by one",
+    );
+}
+
+#[test]
+fn an_evolve_resource_rename_relocates_populated_members_not_orphan()
+-> Result<(), Box<dyn std::error::Error>> {
+    // With the stated `evolve rename Book -> Volume`, the resource rename cascades to its
+    // members, carrying each member's stable id forward. Preview reports real activatable work
+    // (not a false nothing-to-discharge), apply relocates the identity, and the populated `note`
+    // cell stays attached under the renamed resource — never a silent orphan.
+    let root = books_and_log_project("evolve-resource-rename-populated", RESOURCE_BASELINE);
+    let first = marrow_sub("run", &[dir(&root)]);
+    assert_eq!(first.status.code(), Some(0), "first run: {first:?}");
+    let seed_book = marrow_sub("run", &["--entry", "app::seedBook", dir(&root)]);
+    assert_eq!(seed_book.status.code(), Some(0), "seed book: {seed_book:?}");
+    let epoch_before = accepted_epoch(&root);
+    let note_id = support_evolve::accepted_catalog_entry_id(&root, "app::Book::note");
+
+    write(&root, "src/app.mw", RESOURCE_RENAME_EVOLVE);
+    let preview = marrow(&["evolve", "preview", "--format", "json", dir(&root)]);
+    assert_eq!(preview.status.code(), Some(0), "preview: {preview:?}");
+    let record: serde_json::Value =
+        serde_json::from_slice(&preview.stdout).expect("preview json envelope");
+    assert_eq!(
+        record.get("nothing_to_discharge"),
+        Some(&serde_json::json!(false)),
+        "a resource rename over populated data is activatable work, not nothing to discharge: {record}",
+    );
+    assert_eq!(
+        record.get("status"),
+        Some(&serde_json::json!("activatable")),
+        "the resource rename is activatable: {record}",
+    );
+
+    let apply = marrow(&["evolve", "apply", dir(&root)]);
+    assert_eq!(apply.status.code(), Some(0), "evolve apply: {apply:?}");
+    assert_eq!(
+        accepted_epoch(&root),
+        epoch_before + 1,
+        "the explicit apply discharges the resource rename",
+    );
+
+    // The renamed member carries its stable id forward, so its populated cell stays attached.
+    let carried_note_id = support_evolve::accepted_catalog_entry_id(&root, "app::Volume::note");
+    assert_eq!(
+        carried_note_id, note_id,
+        "the cascaded member keeps its stable id across the resource rename",
+    );
+    let integrity = marrow(&["data", "integrity", "--format", "json", dir(&root)]);
+    assert_eq!(
+        integrity.status.code(),
+        Some(0),
+        "integrity is clean after the resource rename, no orphan: {integrity:?}",
+    );
+    let program = recheck_against_accepted(&root);
+    let place = root_place(&program, "books")?;
+    let store = TreeStore::open(&native_store_path(&root)).expect("reopen native store");
+    assert_eq!(
+        read_scalar(&store, &place, 1, "note", ScalarType::Str),
+        Some(Scalar::Str("keepme".to_string())),
+        "the renamed member's populated cell stays attached under the renamed resource",
+    );
+    Ok(())
+}
+
+#[test]
+fn an_evolve_resource_rename_with_an_added_member_relocates_and_adds()
+-> Result<(), Box<dyn std::error::Error>> {
+    // A resource rename alongside an additive sparse member: the rename cascades the populated
+    // `note` forward while the new `tag` is intrinsically additive. Apply discharges both and
+    // preserves the stored `note`.
+    let root = books_and_log_project("evolve-resource-rename-add", RESOURCE_BASELINE);
+    let first = marrow_sub("run", &[dir(&root)]);
+    assert_eq!(first.status.code(), Some(0), "first run: {first:?}");
+    let seed_book = marrow_sub("run", &["--entry", "app::seedBook", dir(&root)]);
+    assert_eq!(seed_book.status.code(), Some(0), "seed book: {seed_book:?}");
+
+    write(&root, "src/app.mw", RESOURCE_RENAME_ADD_MEMBER);
+    let apply = marrow(&["evolve", "apply", dir(&root)]);
+    assert_eq!(apply.status.code(), Some(0), "evolve apply: {apply:?}");
+
+    let integrity = marrow(&["data", "integrity", "--format", "json", dir(&root)]);
+    assert_eq!(
+        integrity.status.code(),
+        Some(0),
+        "integrity is clean after the rename-plus-add: {integrity:?}",
+    );
+    let program = recheck_against_accepted(&root);
+    let place = root_place(&program, "books")?;
+    let store = TreeStore::open(&native_store_path(&root)).expect("reopen native store");
+    assert_eq!(
+        read_scalar(&store, &place, 1, "note", ScalarType::Str),
+        Some(Scalar::Str("keepme".to_string())),
+        "the rename carries the populated member forward while the additive member is added",
+    );
+    Ok(())
+}
+
+#[test]
+fn an_evolve_resource_rename_that_drops_a_populated_member_still_fences_repair()
+-> Result<(), Box<dyn std::error::Error>> {
+    // A rename that also drops a populated member is a genuinely destructive change: the rename
+    // cascades the resource, but the dropped `note` — still holding data — cannot be silently
+    // discharged. Preview must fence `evolve.repair_required` and the retire gate, and the data
+    // stays intact under its accepted id.
+    let root = books_and_log_project("evolve-resource-rename-drop", RESOURCE_BASELINE);
+    let first = marrow_sub("run", &[dir(&root)]);
+    assert_eq!(first.status.code(), Some(0), "first run: {first:?}");
+    let seed_book = marrow_sub("run", &["--entry", "app::seedBook", dir(&root)]);
+    assert_eq!(seed_book.status.code(), Some(0), "seed book: {seed_book:?}");
+    let epoch_before = accepted_epoch(&root);
+    let note_id = support_evolve::accepted_catalog_entry_id(&root, "app::Book::note");
+
+    write(&root, "src/app.mw", RESOURCE_RENAME_DROP_MEMBER);
+    let preview = marrow(&["evolve", "preview", "--format", "json", dir(&root)]);
+    assert_eq!(
+        preview.status.code(),
+        Some(1),
+        "a rename dropping a populated member fences: {preview:?}",
+    );
+    let record: serde_json::Value =
+        serde_json::from_slice(&preview.stdout).expect("preview json envelope");
+    assert_eq!(
+        record.get("status"),
+        Some(&serde_json::json!("blocked")),
+        "the dropped populated member blocks activation: {record}",
+    );
+    let blocking_codes: Vec<&str> = record["blocking"]
+        .as_array()
+        .expect("blocking array")
+        .iter()
+        .filter_map(|item| item["code"].as_str())
+        .collect();
+    assert!(
+        blocking_codes.contains(&"evolve.repair_required"),
+        "the dropped populated member fences repair-required: {record}",
+    );
+    assert_eq!(
+        accepted_epoch(&root),
+        epoch_before,
+        "the fenced destructive rename does not advance the epoch",
+    );
+
+    // The populated cell is untouched under its accepted member id: the fence prevented loss.
+    let program = recheck_against_accepted(&root);
+    let place = root_place(&program, "books")?;
+    let store = TreeStore::open(&native_store_path(&root)).expect("reopen native store");
+    assert_eq!(
+        support_evolve::read_scalar_by_catalog_id(&store, &place, 1, &note_id, ScalarType::Str),
+        Some(Scalar::Str("keepme".to_string())),
+        "the fenced destructive rename preserves the dropped member's data",
+    );
+    Ok(())
+}
+
+/// A resource shared by two stores. Renaming `Book` -> `Volume` must carry the member identity
+/// forward for the records in both `^books` and `^archive`.
+const SHARED_RESOURCE_BASELINE: &str = "module app\n\
+     resource Log\n\
+     \x20   note: string\n\
+     store ^log(id: int): Log\n\
+     resource Book\n\
+     \x20   title: string\n\
+     \x20   note: string\n\
+     store ^books(id: int): Book\n\
+     store ^archive(id: int): Book\n\
+     pub fn seed()\n\
+     \x20   transaction\n\
+     \x20       ^log(1).note = \"ran\"\n\
+     pub fn seedBook()\n\
+     \x20   transaction\n\
+     \x20       ^books(1).title = \"Mort\"\n\
+     \x20       ^books(1).note = \"keepme\"\n\
+     \x20       ^archive(1).title = \"Reaper\"\n\
+     \x20       ^archive(1).note = \"archived\"\n";
+
+const SHARED_RESOURCE_RENAME_EVOLVE: &str = "module app\n\
+     resource Log\n\
+     \x20   note: string\n\
+     store ^log(id: int): Log\n\
+     resource Volume\n\
+     \x20   title: string\n\
+     \x20   note: string\n\
+     store ^books(id: int): Volume\n\
+     store ^archive(id: int): Volume\n\
+     evolve\n\
+     \x20   rename Book -> Volume\n\
+     pub fn seed()\n\
+     \x20   transaction\n\
+     \x20       ^log(1).note = \"ran\"\n";
+
+#[test]
+fn an_evolve_resource_rename_carries_members_in_every_owning_store()
+-> Result<(), Box<dyn std::error::Error>> {
+    // The renamed resource backs two stores. The cascade must carry the member identity forward
+    // for both, so the populated `note` in `^books` and in `^archive` both stay attached.
+    let root = books_and_log_project("evolve-resource-rename-shared", SHARED_RESOURCE_BASELINE);
+    let first = marrow_sub("run", &[dir(&root)]);
+    assert_eq!(first.status.code(), Some(0), "first run: {first:?}");
+    let seed_book = marrow_sub("run", &["--entry", "app::seedBook", dir(&root)]);
+    assert_eq!(seed_book.status.code(), Some(0), "seed book: {seed_book:?}");
+
+    write(&root, "src/app.mw", SHARED_RESOURCE_RENAME_EVOLVE);
+    let apply = marrow(&["evolve", "apply", dir(&root)]);
+    assert_eq!(apply.status.code(), Some(0), "evolve apply: {apply:?}");
+
+    let integrity = marrow(&["data", "integrity", "--format", "json", dir(&root)]);
+    assert_eq!(
+        integrity.status.code(),
+        Some(0),
+        "integrity is clean across both stores after the shared-resource rename: {integrity:?}",
+    );
+    let program = recheck_against_accepted(&root);
+    let store = TreeStore::open(&native_store_path(&root)).expect("reopen native store");
+    let books = root_place(&program, "books")?;
+    let archive = root_place(&program, "archive")?;
+    assert_eq!(
+        read_scalar(&store, &books, 1, "note", ScalarType::Str),
+        Some(Scalar::Str("keepme".to_string())),
+        "the shared-resource rename carries the `^books` member forward",
+    );
+    assert_eq!(
+        read_scalar(&store, &archive, 1, "note", ScalarType::Str),
+        Some(Scalar::Str("archived".to_string())),
+        "the shared-resource rename carries the `^archive` member forward",
+    );
+    Ok(())
+}

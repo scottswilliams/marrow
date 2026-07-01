@@ -405,7 +405,7 @@ fn populated_member_records(
     let member_id = catalog_id(&entry.stable_id)?;
     let path = [DataPathSegment::Member(member_id)];
     let mut populated = 0;
-    for place in places_owning_resource(program, resource_prefix) {
+    for place in places_holding_member(program, resource_prefix) {
         let store_id = required_catalog_id(&place.store_catalog_id)?;
         for_each_place_record(store, &place, &mut |identity| {
             if store.data_subtree_exists(&store_id, identity, &path)? {
@@ -415,6 +415,25 @@ fn populated_member_records(
         })?;
     }
     Ok(populated)
+}
+
+/// The activation places whose records may hold a dropped member's cells. When current source
+/// still declares the member's resource, its own stores own the data. When the resource itself
+/// is gone — a bare resource rename repointed its surviving store at the renamed resource, or the
+/// resource was dropped outright — the member's cells still live under its unique stable id in
+/// whatever store carried the records forward, so every activation root is a candidate and the
+/// member-id probe matches only the store that actually holds them. Without this, a bare resource
+/// rename would classify its populated members as empty and silently orphan them on a plain run.
+fn places_holding_member(
+    program: &CheckedProgram,
+    resource_prefix: &str,
+) -> Vec<crate::CheckedSavedPlace> {
+    let owning = places_owning_resource(program, resource_prefix);
+    if owning.is_empty() {
+        checked_activation_root_places(program)
+    } else {
+        owning
+    }
 }
 
 fn dropped_member_resource_prefix(entry: &CatalogEntry) -> Option<&str> {
