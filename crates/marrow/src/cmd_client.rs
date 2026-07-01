@@ -4,12 +4,13 @@ mod typescript;
 
 const HELP: &str = "\
 Usage:
-  marrow client typescript [--out <path>] <projectdir>
+  marrow client typescript [--cursor-token] [--out <path>] <projectdir>
   marrow client --help
 
 Generate descriptor-derived application-surface clients.
 
-  --out  Write the client to <path>; prints to stdout when omitted.
+  --cursor-token  Generate the remote cursor-token client profile.
+  --out           Write the client to <path>; prints to stdout when omitted.
 ";
 
 pub(crate) fn client(args: &[String]) -> ExitCode {

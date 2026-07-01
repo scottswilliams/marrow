@@ -146,13 +146,14 @@ operation. `delete` declares a reject-absent full-subtree delete operation.
 backing store. `read` names a public read-only function; it is rejected if its
 checked effect closure writes saved data, opens a transaction, performs host
 effects, throws, or uses an unindexed collection read. Nested projections,
-keyed-child reads and writes, opaque cursor-token codecs, and remote serving
-are later boundary-profile work over the checked surface facts and operation
-facts. `marrow-run` owns the admitted transport-neutral node and collection
-read executors plus admitted computed-read, create, sparse update, delete, and
-action executors, and `marrow-json` owns checked read/computed-read
-request-parameter, generated write request-body, action argument/result, and
-computed-read result DTOs plus result DTO rendering over those executor outputs,
+keyed-child reads and writes are deferred. Opaque cursor-token codecs and remote
+serving are boundary profiles over the checked surface facts and operation
+facts, not extra language constructs. `marrow-run` owns the admitted
+transport-neutral node and collection read executors plus admitted computed-read,
+create, sparse update, delete, and action executors, and `marrow-json` owns
+checked read/computed-read request-parameter, generated write request-body,
+action argument/result, and computed-read result DTOs plus result DTO rendering
+over those executor outputs,
 as described in
 [Surface ABI](../surface-abi.md).
 

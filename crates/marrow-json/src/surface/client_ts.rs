@@ -26,6 +26,21 @@ pub enum SurfaceClientRenderErrorKind {
     RouteBinding,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SurfaceClientCursorProfile {
+    Typed,
+    Token,
+}
+
+impl SurfaceClientCursorProfile {
+    fn client_profile(self) -> &'static str {
+        match self {
+            Self::Typed => SURFACE_CLIENT_PROFILE,
+            Self::Token => SURFACE_CLIENT_TOKEN_CURSOR_PROFILE,
+        }
+    }
+}
+
 /// The closed set of public `surface.*` error codes a generated client may surface, sourced from the
 /// runtime constants so the union never drifts from the wire codes the server emits.
 const SURFACE_ERROR_CODES: &[&str] = &[
@@ -47,16 +62,25 @@ pub fn render_typescript_client(
     abi: &SurfaceAbiJson,
     routes: &SurfaceRouteManifestJson,
 ) -> Result<String, SurfaceClientRenderError> {
+    render_typescript_client_with_cursor_profile(abi, routes, SurfaceClientCursorProfile::Typed)
+}
+
+pub fn render_typescript_client_with_cursor_profile(
+    abi: &SurfaceAbiJson,
+    routes: &SurfaceRouteManifestJson,
+    cursor_profile: SurfaceClientCursorProfile,
+) -> Result<String, SurfaceClientRenderError> {
     let catalog = SurfaceOperationCatalog::from_abi(abi).map_err(SurfaceClientRenderError::from)?;
     let bindings = SurfaceRouteBindings::from_manifest_for_client(routes, &catalog)
         .map_err(SurfaceClientRenderError::from)?;
     let model = SurfaceClientModel::build(abi, &bindings);
     let surface_digest = surface_abi_digest(abi, routes);
-    let header = surface_client_header(
+    let header = surface_client_header_with_cursor_profile(
         &surface_digest,
-        &surface_client_digest_from_surface(&surface_digest),
+        &surface_client_digest_from_surface(&surface_digest, cursor_profile),
+        cursor_profile,
     );
-    Ok(render_model(&header, &model))
+    Ok(render_model(&header, &model, cursor_profile))
 }
 
 impl SurfaceClientRenderError {
@@ -95,7 +119,11 @@ impl From<SurfaceRouteBindingError> for SurfaceClientRenderError {
     }
 }
 
-fn render_model(header: &str, model: &SurfaceClientModel) -> String {
+fn render_model(
+    header: &str,
+    model: &SurfaceClientModel,
+    cursor_profile: SurfaceClientCursorProfile,
+) -> String {
     let mut output = String::new();
     output.push_str(header);
     output.push_str(CLIENT_PREAMBLE);
@@ -103,7 +131,7 @@ fn render_model(header: &str, model: &SurfaceClientModel) -> String {
     render_route_tables(&mut output, model);
     render_catalog_constants(&mut output, model);
     render_stores(&mut output, model);
-    render_surfaces(&mut output, model);
+    render_surfaces(&mut output, model, cursor_profile);
     render_resources(&mut output, model);
     render_create_client(&mut output, model);
     output
@@ -249,10 +277,14 @@ fn render_store(output: &mut String, store: &SurfaceClientStore) {
     .expect("write brand decoder");
 }
 
-fn render_surfaces(output: &mut String, model: &SurfaceClientModel) {
+fn render_surfaces(
+    output: &mut String,
+    model: &SurfaceClientModel,
+    cursor_profile: SurfaceClientCursorProfile,
+) {
     for surface in &model.surfaces {
         if let Some(cursor_brand) = &surface.page_cursor_brand {
-            render_cursor_brand(output, cursor_brand);
+            render_cursor_brand(output, cursor_brand, cursor_profile);
         }
         for enumeration in surface.enums.iter() {
             render_enum_type(output, model, enumeration);
@@ -268,10 +300,18 @@ fn render_surfaces(output: &mut String, model: &SurfaceClientModel) {
 
 /// Emit a surface's opaque page-cursor brand. The cursor is preserved verbatim across a page round
 /// trip, so the brand is a distinct nominal alias over the wire cursor shape, not a decoded value.
-fn render_cursor_brand(output: &mut String, cursor_brand: &str) {
+fn render_cursor_brand(
+    output: &mut String,
+    cursor_brand: &str,
+    cursor_profile: SurfaceClientCursorProfile,
+) {
+    let base = match cursor_profile {
+        SurfaceClientCursorProfile::Typed => "SurfaceCursorJson",
+        SurfaceClientCursorProfile::Token => "string",
+    };
     writeln!(
         output,
-        "export type {cursor_brand} = SurfaceCursorJson & {{ readonly __brand: \"{cursor_brand}\" }};\n"
+        "export type {cursor_brand} = {base} & {{ readonly __brand: \"{cursor_brand}\" }};\n"
     )
     .expect("write cursor brand");
 }
@@ -880,12 +920,23 @@ pub fn surface_abi_digest(abi: &SurfaceAbiJson, routes: &SurfaceRouteManifestJso
 
 /// The deterministic freshness key for the generated TypeScript client profile over a surface.
 pub fn surface_client_digest(abi: &SurfaceAbiJson, routes: &SurfaceRouteManifestJson) -> String {
-    surface_client_digest_from_surface(&surface_abi_digest(abi, routes))
+    surface_client_digest_with_cursor_profile(abi, routes, SurfaceClientCursorProfile::Typed)
 }
 
-fn surface_client_digest_from_surface(surface_digest: &str) -> String {
+pub fn surface_client_digest_with_cursor_profile(
+    abi: &SurfaceAbiJson,
+    routes: &SurfaceRouteManifestJson,
+    cursor_profile: SurfaceClientCursorProfile,
+) -> String {
+    surface_client_digest_from_surface(&surface_abi_digest(abi, routes), cursor_profile)
+}
+
+fn surface_client_digest_from_surface(
+    surface_digest: &str,
+    cursor_profile: SurfaceClientCursorProfile,
+) -> String {
     let mut bytes = Vec::new();
-    bytes.extend_from_slice(SURFACE_CLIENT_PROFILE.as_bytes());
+    bytes.extend_from_slice(cursor_profile.client_profile().as_bytes());
     bytes.push(b'\n');
     bytes.extend_from_slice(surface_digest.as_bytes());
     marrow_project::sha256_digest(&bytes)
@@ -893,8 +944,21 @@ fn surface_client_digest_from_surface(surface_digest: &str) -> String {
 
 /// The do-not-edit + profile/digest header prepended to every generated client.
 pub fn surface_client_header(surface_digest: &str, client_digest: &str) -> String {
+    surface_client_header_with_cursor_profile(
+        surface_digest,
+        client_digest,
+        SurfaceClientCursorProfile::Typed,
+    )
+}
+
+fn surface_client_header_with_cursor_profile(
+    surface_digest: &str,
+    client_digest: &str,
+    cursor_profile: SurfaceClientCursorProfile,
+) -> String {
+    let client_profile = cursor_profile.client_profile();
     format!(
-        "{SURFACE_CLIENT_DO_NOT_EDIT}\n{SURFACE_CLIENT_PROFILE_PREFIX}{SURFACE_CLIENT_PROFILE}\n{SURFACE_ABI_DIGEST_PREFIX}{surface_digest}\n{SURFACE_CLIENT_DIGEST_PREFIX}{client_digest}\n\n"
+        "{SURFACE_CLIENT_DO_NOT_EDIT}\n{SURFACE_CLIENT_PROFILE_PREFIX}{client_profile}\n{SURFACE_ABI_DIGEST_PREFIX}{surface_digest}\n{SURFACE_CLIENT_DIGEST_PREFIX}{client_digest}\n\n"
     )
 }
 
@@ -908,6 +972,7 @@ pub fn surface_client_header_digest(contents: &str) -> Option<String> {
 
 pub const SURFACE_CLIENT_DO_NOT_EDIT: &str = "// Generated by marrow — do not edit.";
 pub const SURFACE_CLIENT_PROFILE: &str = "typescript.v2";
+pub const SURFACE_CLIENT_TOKEN_CURSOR_PROFILE: &str = "typescript.v2+surface.cursor_token.v1";
 pub const SURFACE_CLIENT_PROFILE_PREFIX: &str = "// marrow-client-profile: ";
 pub const SURFACE_ABI_DIGEST_PREFIX: &str = "// marrow-surface-digest: ";
 pub const SURFACE_CLIENT_DIGEST_PREFIX: &str = "// marrow-client-digest: ";

@@ -3,16 +3,20 @@ use std::net::TcpStream;
 use std::time::Instant;
 
 use marrow_json::surface::{
-    SurfaceOperationErrorJson, SurfaceOperationRequestJson, SurfaceOperationResponseJson,
+    SurfaceCursorJson, SurfaceCursorTokenCodec, SurfaceCursorTokenError,
+    SurfaceCursorTokenErrorKind, SurfaceOperationErrorJson, SurfaceOperationKind,
+    SurfaceOperationRequestJson, SurfaceOperationResponseJson,
 };
 use marrow_run::{
     SURFACE_ABI_MISMATCH, SURFACE_ABSENT, SURFACE_ACTION, SURFACE_COMPUTED, SURFACE_CONFLICT,
-    SURFACE_INVALID_DATA, SURFACE_LIMIT, SURFACE_REQUEST, SURFACE_STALE_CURSOR, SURFACE_STORE,
-    SURFACE_WRITE,
+    SURFACE_CURSOR, SURFACE_INVALID_DATA, SURFACE_LIMIT, SURFACE_REQUEST, SURFACE_STALE_CURSOR,
+    SURFACE_STORE, SURFACE_WRITE,
 };
+use serde_json::Value as Json;
 
 use super::auth::RemoteAuthToken;
 use super::cors::{CorsMatch, CorsPolicy};
+use super::cursor_token::RemoteCursorToken;
 use super::{
     MAX_BODY_BYTES, MAX_HEADER_BYTES, READ_POLL_INTERVAL, STREAM_TIMEOUT, SURFACE_AUTH,
     SurfaceRoutes, SurfaceServeExecutor, server_code_message, shutdown, surface_error,
@@ -24,6 +28,7 @@ pub(super) fn serve_connection(
     routes: &SurfaceRoutes,
     cors: Option<&CorsPolicy>,
     remote_auth: Option<&RemoteAuthToken>,
+    remote_cursor_token: Option<&RemoteCursorToken>,
     shutdown: &shutdown::Shutdown,
 ) {
     if let Err(error) = stream.set_nonblocking(false) {
@@ -56,7 +61,15 @@ pub(super) fn serve_connection(
         );
         return;
     }
-    let response = handle_connection(&mut stream, executor, routes, cors, remote_auth, shutdown);
+    let response = handle_connection(
+        &mut stream,
+        executor,
+        routes,
+        cors,
+        remote_auth,
+        remote_cursor_token,
+        shutdown,
+    );
     if let Err(error) = write_response(&mut stream, &response) {
         eprintln!(
             "{}",
@@ -74,6 +87,7 @@ fn handle_connection(
     routes: &SurfaceRoutes,
     cors: Option<&CorsPolicy>,
     remote_auth: Option<&RemoteAuthToken>,
+    remote_cursor_token: Option<&RemoteCursorToken>,
     shutdown: &shutdown::Shutdown,
 ) -> SurfaceHttpResponse {
     let header_read_mode = if remote_auth.is_some() {
@@ -92,7 +106,9 @@ fn handle_connection(
         HeadDecision::ReadBody { route, cors_match } => (route, cors_match),
     };
     match read_http_request_body(stream, partial, shutdown) {
-        Ok(request) => execute_http_request_body(request, executor, &route, cors_match),
+        Ok(request) => {
+            execute_http_request_body(request, executor, &route, cors_match, remote_cursor_token)
+        }
         Err(failure) => {
             SurfaceHttpResponse::error(failure.status, failure.error).with_cors_match(cors_match)
         }
@@ -263,18 +279,13 @@ fn execute_http_request_body(
     executor: &SurfaceServeExecutor,
     route: &marrow_json::surface::SurfaceRouteBinding,
     cors_match: Option<CorsMatch>,
+    remote_cursor_token: Option<&RemoteCursorToken>,
 ) -> SurfaceHttpResponse {
-    let operation = match serde_json::from_slice::<SurfaceOperationRequestJson>(&request.body) {
+    let operation = match operation_from_http_body(&request.body, route, remote_cursor_token) {
         Ok(operation) => operation,
-        Err(_) => {
-            return SurfaceHttpResponse::error(
-                HttpStatus::BadRequest,
-                surface_error(
-                    SURFACE_REQUEST,
-                    "surface request body is not a valid operation",
-                ),
-            )
-            .with_cors_match(cors_match);
+        Err(error) => {
+            return SurfaceHttpResponse::error(status_for_surface_error(&error.code), error)
+                .with_cors_match(cors_match);
         }
     };
     if operation.operation_tag != route.operation_tag {
@@ -295,10 +306,139 @@ fn execute_http_request_body(
         .with_cors_match(cors_match);
     }
     match executor.execute(&operation) {
-        Ok(response) => SurfaceHttpResponse::json(HttpStatus::Ok, response_value(response))
-            .with_cors_match(cors_match),
+        Ok(response) => match response_value_for_route(response, route, remote_cursor_token) {
+            Ok(value) => {
+                SurfaceHttpResponse::json(HttpStatus::Ok, value).with_cors_match(cors_match)
+            }
+            Err(error) => SurfaceHttpResponse::error(status_for_surface_error(&error.code), error)
+                .with_cors_match(cors_match),
+        },
         Err(error) => SurfaceHttpResponse::error(status_for_surface_error(&error.code), error)
             .with_cors_match(cors_match),
+    }
+}
+
+fn operation_from_http_body(
+    body: &[u8],
+    route: &marrow_json::surface::SurfaceRouteBinding,
+    remote_cursor_token: Option<&RemoteCursorToken>,
+) -> Result<SurfaceOperationRequestJson, SurfaceOperationErrorJson> {
+    let Some(cursor_token) = remote_cursor_token else {
+        return serde_json::from_slice::<SurfaceOperationRequestJson>(body)
+            .map_err(|_| request_body_error());
+    };
+    if route.kind != SurfaceOperationKind::Page {
+        return serde_json::from_slice::<SurfaceOperationRequestJson>(body)
+            .map_err(|_| request_body_error());
+    }
+
+    let mut value = serde_json::from_slice::<Json>(body).map_err(|_| request_body_error())?;
+    let Some(operation_tag) = value.get("operation_tag").and_then(Json::as_str) else {
+        return serde_json::from_value(value).map_err(|_| request_body_error());
+    };
+    if operation_tag != route.operation_tag {
+        return Err(surface_error(
+            SURFACE_ABI_MISMATCH,
+            "surface operation is not active",
+        ));
+    }
+    if value.pointer("/request/kind").and_then(Json::as_str) != Some("page") {
+        return serde_json::from_value(value).map_err(|_| request_body_error());
+    }
+    decrypt_page_request_cursor(&mut value, &route.operation_tag, cursor_token.codec())?;
+    serde_json::from_value(value).map_err(|_| request_body_error())
+}
+
+fn decrypt_page_request_cursor(
+    value: &mut Json,
+    operation_tag: &str,
+    codec: &SurfaceCursorTokenCodec,
+) -> Result<(), SurfaceOperationErrorJson> {
+    let Some(request) = value
+        .get_mut("request")
+        .and_then(|request| request.get_mut("request"))
+    else {
+        return Ok(());
+    };
+    let Some(cursor) = request.get_mut("cursor") else {
+        return Ok(());
+    };
+    if cursor.is_null() {
+        return Ok(());
+    }
+    let Some(token) = cursor.as_str() else {
+        return Err(surface_error(
+            SURFACE_CURSOR,
+            "surface cursor token mode requires cursor strings",
+        ));
+    };
+    let typed = codec
+        .decode(operation_tag, token)
+        .map_err(cursor_token_surface_error)?;
+    *cursor = serde_json::to_value(typed).map_err(|_| {
+        surface_error(
+            SURFACE_STORE,
+            "surface cursor token could not be converted to a typed cursor",
+        )
+    })?;
+    Ok(())
+}
+
+fn response_value_for_route(
+    response: SurfaceOperationResponseJson,
+    route: &marrow_json::surface::SurfaceRouteBinding,
+    remote_cursor_token: Option<&RemoteCursorToken>,
+) -> Result<Json, SurfaceOperationErrorJson> {
+    let Some(cursor_token) = remote_cursor_token else {
+        return Ok(response_value(response));
+    };
+    if route.kind != SurfaceOperationKind::Page {
+        return Ok(response_value(response));
+    }
+    let mut value = serde_json::to_value(response)
+        .map_err(|_| surface_error(SURFACE_STORE, "surface response could not be encoded"))?;
+    encrypt_page_response_cursor(&mut value, &route.operation_tag, cursor_token.codec())?;
+    Ok(value)
+}
+
+fn encrypt_page_response_cursor(
+    value: &mut Json,
+    operation_tag: &str,
+    codec: &SurfaceCursorTokenCodec,
+) -> Result<(), SurfaceOperationErrorJson> {
+    let Some(next) = value.pointer_mut("/result/page/next") else {
+        return Err(surface_error(
+            SURFACE_STORE,
+            "surface page response cursor is missing",
+        ));
+    };
+    if next.is_null() {
+        return Ok(());
+    }
+    let cursor = serde_json::from_value::<SurfaceCursorJson>(next.take())
+        .map_err(|_| surface_error(SURFACE_STORE, "surface page response cursor is malformed"))?;
+    let token = codec
+        .encode(operation_tag, &cursor)
+        .map_err(cursor_token_surface_error)?;
+    *next = Json::String(token);
+    Ok(())
+}
+
+fn request_body_error() -> SurfaceOperationErrorJson {
+    surface_error(
+        SURFACE_REQUEST,
+        "surface request body is not a valid operation",
+    )
+}
+
+fn cursor_token_surface_error(error: SurfaceCursorTokenError) -> SurfaceOperationErrorJson {
+    match error.kind() {
+        SurfaceCursorTokenErrorKind::StaleCursor => {
+            surface_error(SURFACE_STALE_CURSOR, "surface cursor token is stale")
+        }
+        SurfaceCursorTokenErrorKind::Cursor | SurfaceCursorTokenErrorKind::Key => {
+            surface_error(SURFACE_CURSOR, "surface cursor token is malformed")
+        }
     }
 }
 

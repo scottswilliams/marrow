@@ -286,16 +286,17 @@ source-level name collisions, but only source-root declarations resolve into
 application surface facts.
 
 Those facts are transport-neutral: opaque cursor-token codecs, TypeScript
-names, generated clients, and remote serving are boundary profiles layered
-later. Stable surface reads, computed reads, creates, sparse updates, deletes,
-and actions have
+names, generated clients, and remote serving are boundary profiles layered over
+them, not language constructs. Stable surface reads, computed reads, creates,
+sparse updates, deletes, and actions have
 checker-owned descriptors and operation tags. `marrow-json` can render a
 `surface.route.v1` manifest from those descriptors, using operation-tag paths
-and aliases as labels. `marrow serve` is the local loopback serving
-profile over manifest routes and `surface.operation.v1` envelopes: default mode
-serves read routes, including computed reads, while `--write` also serves
-create, sparse-update, delete, and action routes through the writable project
-surface session. The
+and aliases as labels. `marrow serve` is loopback-only by default over manifest
+routes and `surface.operation.v1` envelopes; `--remote` is the explicit
+authenticated remote profile, and remote page routes may opt into opaque cursor
+tokens at the HTTP boundary. Default mode serves read routes, including computed
+reads, while `--write` also serves create, sparse-update, delete, and action
+routes through the writable project surface session. The
 manifest is still not a generated-client contract by itself. Read descriptors
 carry the generated `get` alias or declared collection alias as render metadata;
 computed-read and action descriptors carry their declared aliases. Create,

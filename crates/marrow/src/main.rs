@@ -40,8 +40,9 @@ Usage:
   marrow test [--trace] [--format text|json|jsonl] [--filter <substring>] <projectdir>
   marrow serve [--write] [--watch] [--cors-origin <loopback-origin>] [--addr <loopback:port>] <projectdir>
   marrow serve --remote --addr <addr> [--write] (--auth-token-env NAME | --auth-token-file PATH)
+    [--cursor-token-key-id <kid> (--cursor-token-key-env NAME | --cursor-token-key-file PATH)]
     [--remote-cors-origin <origin>] <projectdir>
-  marrow client typescript [--out <path>] <projectdir>
+  marrow client typescript [--cursor-token] [--out <path>] <projectdir>
   marrow data <roots|stats|dump|integrity> [--backup <artifact>] [--format text|json|jsonl] <projectdir>
   marrow data recover [--format text|json|jsonl] <projectdir>
   marrow data get [--backup <artifact>] [--format text|json|jsonl] <projectdir> <path>

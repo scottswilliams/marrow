@@ -23,10 +23,12 @@ use crate::{CheckFormat, report_simple_error};
 
 mod auth;
 mod cors;
+mod cursor_token;
 mod http;
 mod shutdown;
 use auth::{AuthTokenSource, RemoteAuthToken};
 use cors::CorsPolicy;
+use cursor_token::{CursorTokenKeySource, RemoteCursorToken};
 
 const DEFAULT_PORT: u16 = 8080;
 const MAX_HEADER_BYTES: usize = 16 * 1024;
@@ -57,6 +59,7 @@ Usage:
   marrow serve [--write] [--watch] [--cors-origin <loopback-origin>] [--addr <loopback:port>] <projectdir>
   marrow serve --remote --addr <addr> [--write]
     (--auth-token-env NAME | --auth-token-file PATH)
+    [--cursor-token-key-id <kid> (--cursor-token-key-env NAME | --cursor-token-key-file PATH)]
     [--remote-cors-origin <origin>] <projectdir>
 
 Run an HTTP surface endpoint. The default profile is loopback-only. The server
@@ -77,6 +80,12 @@ accepts one JSON POST per connection and closes the response on descriptor-deriv
            Read the remote Bearer token from NAME.
   --auth-token-file PATH
            Read the remote Bearer token from a UTF-8 regular file.
+  --cursor-token-key-id
+           Enable opaque page cursor tokens for the remote profile with this key id.
+  --cursor-token-key-env NAME
+           Read the remote cursor token key from NAME.
+  --cursor-token-key-file PATH
+           Read the remote cursor token key from a UTF-8 regular file.
   --remote-cors-origin
            Allow one exact http/https browser Origin for the remote profile.
 ";
@@ -87,9 +96,12 @@ pub(crate) fn serve(args: &[String]) -> ExitCode {
     let mut cors = None;
     let mut remote_cors = None;
     let mut remote_auth_source = None;
+    let mut cursor_token_key_id = None;
+    let mut cursor_token_key_source = None;
     let mut saw_addr = false;
     let mut saw_cors_origin = false;
     let mut saw_remote_cors_origin = false;
+    let mut saw_cursor_token_flag = false;
     let mut saw_write = false;
     let mut remote = false;
     let mut watch = false;
@@ -181,6 +193,48 @@ pub(crate) fn serve(args: &[String]) -> ExitCode {
                 }
                 remote_auth_source = Some(AuthTokenSource::File(PathBuf::from(value)));
             }
+            "--cursor-token-key-id" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    eprintln!("missing value for --cursor-token-key-id");
+                    return ExitCode::from(2);
+                };
+                if cursor_token_key_id.replace(value.clone()).is_some() {
+                    eprintln!("duplicate --cursor-token-key-id");
+                    return ExitCode::from(2);
+                }
+                saw_cursor_token_flag = true;
+            }
+            "--cursor-token-key-env" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    eprintln!("missing value for --cursor-token-key-env");
+                    return ExitCode::from(2);
+                };
+                if cursor_token_key_source.is_some() {
+                    eprintln!(
+                        "remote serve cursor token mode requires exactly one cursor token key source"
+                    );
+                    return ExitCode::from(2);
+                }
+                cursor_token_key_source = Some(CursorTokenKeySource::Env(value.clone()));
+                saw_cursor_token_flag = true;
+            }
+            "--cursor-token-key-file" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    eprintln!("missing value for --cursor-token-key-file");
+                    return ExitCode::from(2);
+                };
+                if cursor_token_key_source.is_some() {
+                    eprintln!(
+                        "remote serve cursor token mode requires exactly one cursor token key source"
+                    );
+                    return ExitCode::from(2);
+                }
+                cursor_token_key_source = Some(CursorTokenKeySource::File(PathBuf::from(value)));
+                saw_cursor_token_flag = true;
+            }
             "--addr" => {
                 index += 1;
                 let Some(value) = args.get(index) else {
@@ -235,6 +289,18 @@ pub(crate) fn serve(args: &[String]) -> ExitCode {
             eprintln!("--cors-origin is local-only; use --remote-cors-origin with --remote");
             return ExitCode::from(2);
         }
+        if saw_cursor_token_flag {
+            if cursor_token_key_id.is_none() {
+                eprintln!("remote serve cursor token mode requires --cursor-token-key-id");
+                return ExitCode::from(2);
+            }
+            if cursor_token_key_source.is_none() {
+                eprintln!(
+                    "remote serve cursor token mode requires exactly one cursor token key source"
+                );
+                return ExitCode::from(2);
+            }
+        }
     } else {
         if remote_auth_source.is_some() {
             eprintln!("auth token sources require --remote");
@@ -244,6 +310,10 @@ pub(crate) fn serve(args: &[String]) -> ExitCode {
             eprintln!("--remote-cors-origin requires --remote");
             return ExitCode::from(2);
         }
+        if saw_cursor_token_flag {
+            eprintln!("cursor-token flags require --remote");
+            return ExitCode::from(2);
+        }
     }
     let remote_auth = if remote {
         let Some(source) = remote_auth_source else {
@@ -251,6 +321,24 @@ pub(crate) fn serve(args: &[String]) -> ExitCode {
             return ExitCode::from(2);
         };
         match RemoteAuthToken::load(&source) {
+            Ok(token) => Some(token),
+            Err(message) => {
+                eprintln!("{message}");
+                return ExitCode::from(2);
+            }
+        }
+    } else {
+        None
+    };
+    let remote_cursor_token = if saw_cursor_token_flag {
+        match RemoteCursorToken::load(
+            cursor_token_key_id
+                .as_deref()
+                .expect("cursor token key id checked"),
+            cursor_token_key_source
+                .as_ref()
+                .expect("cursor token key source checked"),
+        ) {
             Ok(token) => Some(token),
             Err(message) => {
                 eprintln!("{message}");
@@ -388,15 +476,18 @@ pub(crate) fn serve(args: &[String]) -> ExitCode {
             signature,
         }
     });
-    run_server(
-        listener,
-        executor,
-        routes,
+    let server_http = SurfaceServerHttp {
         cors,
-        remote_auth.as_ref(),
-        watch,
-        &shutdown,
-    )
+        remote_auth: remote_auth.as_ref(),
+        remote_cursor_token: remote_cursor_token.as_ref(),
+    };
+    run_server(listener, executor, routes, server_http, watch, &shutdown)
+}
+
+struct SurfaceServerHttp<'a> {
+    cors: Option<&'a CorsPolicy>,
+    remote_auth: Option<&'a RemoteAuthToken>,
+    remote_cursor_token: Option<&'a RemoteCursorToken>,
 }
 
 /// The state `serve --watch` re-checks on a source change: where to re-open the snapshot, the
@@ -441,8 +532,7 @@ fn run_server(
     listener: TcpListener,
     mut executor: SurfaceServeExecutor,
     mut routes: SurfaceRoutes,
-    cors: Option<&CorsPolicy>,
-    remote_auth: Option<&RemoteAuthToken>,
+    server_http: SurfaceServerHttp<'_>,
     mut watch: Option<SurfaceWatch>,
     shutdown: &shutdown::Shutdown,
 ) -> ExitCode {
@@ -466,7 +556,15 @@ fn run_server(
                 if let Some(code) = shutdown_exit_code(shutdown) {
                     return code;
                 }
-                http::serve_connection(stream, &executor, &routes, cors, remote_auth, shutdown);
+                http::serve_connection(
+                    stream,
+                    &executor,
+                    &routes,
+                    server_http.cors,
+                    server_http.remote_auth,
+                    server_http.remote_cursor_token,
+                    shutdown,
+                );
             }
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                 if let Some(code) = shutdown_exit_code(shutdown) {

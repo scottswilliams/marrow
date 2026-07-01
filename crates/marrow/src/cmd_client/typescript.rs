@@ -8,19 +8,24 @@ use crate::{CheckFormat, ClientFreshness, report_simple_error};
 const COMMAND: &str = "client typescript";
 const HELP: &str = "\
 Usage:
-  marrow client typescript [--out <path>] <projectdir>
+  marrow client typescript [--cursor-token] [--out <path>] <projectdir>
 
 Generate a self-contained TypeScript client from the checked surface ABI.
 
 Options:
-  --out  Write the client to <path>, resolved against the current directory;
-         prints the written path. When omitted, refresh the marrow.json
-         `client` path if one is declared, otherwise print to stdout.
+  --cursor-token  Generate the remote cursor-token profile, where page cursors are
+                  opaque strings. Declared clients remain the default typed profile.
+  --out           Write the client to <path>, resolved against the current directory;
+                  prints the written path. When omitted, the default typed profile
+                  refreshes the marrow.json `client` path if one is declared;
+                  cursor-token output and projects without a declared client print
+                  to stdout.
 ";
 
 pub(crate) fn typescript(args: &[String]) -> ExitCode {
     let mut target = None;
     let mut out: Option<String> = None;
+    let mut cursor_profile = marrow_json::surface::SurfaceClientCursorProfile::Typed;
     let mut args = args.iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -37,6 +42,13 @@ pub(crate) fn typescript(args: &[String]) -> ExitCode {
                     eprintln!("marrow {COMMAND} accepts one --out path");
                     return ExitCode::from(2);
                 }
+            }
+            "--cursor-token" => {
+                if cursor_profile == marrow_json::surface::SurfaceClientCursorProfile::Token {
+                    eprintln!("marrow {COMMAND} accepts one --cursor-token flag");
+                    return ExitCode::from(2);
+                }
+                cursor_profile = marrow_json::surface::SurfaceClientCursorProfile::Token;
             }
             value if value.starts_with('-') => {
                 return crate::unknown_option(COMMAND, value);
@@ -55,10 +67,14 @@ pub(crate) fn typescript(args: &[String]) -> ExitCode {
         eprintln!("missing project directory");
         return ExitCode::from(2);
     };
-    render_client(&target, out.as_deref())
+    render_client(&target, out.as_deref(), cursor_profile)
 }
 
-fn render_client(dir: &str, out: Option<&str>) -> ExitCode {
+fn render_client(
+    dir: &str,
+    out: Option<&str>,
+    cursor_profile: marrow_json::surface::SurfaceClientCursorProfile,
+) -> ExitCode {
     let config = match crate::load_config_with_format(dir, CheckFormat::Text) {
         Ok(config) => config,
         Err(code) => return code,
@@ -113,17 +129,19 @@ fn render_client(dir: &str, out: Option<&str>) -> ExitCode {
     }
 
     // An explicit `--out` is the ad-hoc escape hatch: resolve it against the process cwd (POSIX
-    // convention) and report the written path. With no `--out`, a declared `client` path refreshes
-    // write-if-changed through the shared owner that run, serve, and evolve use, while a project
-    // with no declared client falls back to stdout.
+    // convention) and report the written path. With no `--out`, the default typed profile refreshes
+    // a declared `client` path through the shared owner that run, serve, and evolve use. The
+    // cursor-token profile is emitted explicitly, so it falls back to stdout unless `--out` is set.
     if let Some(out) = out {
-        return match render(&snapshot.program) {
+        return match render(&snapshot.program, cursor_profile) {
             Ok(client) => write_explicit_out(out, &client),
             Err(error) => render_failure(&error),
         };
     }
 
-    if let Some(rel) = config.client.as_deref() {
+    if cursor_profile == marrow_json::surface::SurfaceClientCursorProfile::Typed
+        && let Some(rel) = config.client.as_deref()
+    {
         let path = Path::new(dir).join(rel);
         let existed = path.exists();
         return match crate::write_declared_client_if_changed(
@@ -140,7 +158,7 @@ fn render_client(dir: &str, out: Option<&str>) -> ExitCode {
         };
     }
 
-    match render(&snapshot.program) {
+    match render(&snapshot.program, cursor_profile) {
         Ok(client) => {
             print!("{client}");
             ExitCode::SUCCESS
@@ -154,10 +172,15 @@ fn render_client(dir: &str, out: Option<&str>) -> ExitCode {
 /// stdout paths that emit the freshly rendered text directly.
 fn render(
     program: &marrow_check::CheckedProgram,
+    cursor_profile: marrow_json::surface::SurfaceClientCursorProfile,
 ) -> Result<String, marrow_json::surface::SurfaceClientRenderError> {
     let abi = marrow_json::surface::SurfaceAbiJson::from_program(program);
     let routes = marrow_json::surface::SurfaceRouteManifestJson::from_abi(&abi);
-    marrow_json::surface::render_typescript_client(&abi, &routes)
+    marrow_json::surface::render_typescript_client_with_cursor_profile(
+        &abi,
+        &routes,
+        cursor_profile,
+    )
 }
 
 /// Report the outcome of refreshing the declared client to stderr, leaving stdout clean. A

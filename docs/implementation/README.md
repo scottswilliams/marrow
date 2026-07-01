@@ -41,12 +41,13 @@ Nine crates stacked in dependency order, lowest first:
   read/computed-read/action alias descriptor rendering, and
   context-aware cursor-boundary rendering. It also renders the
   descriptor-derived `surface.route.v1` manifest for check JSON output and the
-  thin TypeScript operation client over ABI plus routes; HTTP serving and opaque
-  cursor tokens are not owned here.
+  thin TypeScript operation client over ABI plus routes, including the explicit
+  cursor-token client profile. It owns the opaque cursor-token codec over the
+  existing typed cursor DTO; HTTP serving is owned by the CLI.
 - **project / cli** — `marrow.json`, discovery, and the operator binary that
   wires the above together, renders results, owns `marrow client typescript`,
-  and owns the local loopback `marrow serve` HTTP process around checked
-  surface DTOs.
+  and owns the local/remote `marrow serve` HTTP process around checked surface
+  DTOs.
 
 `check` is the spine. It is the one owner of resolution, types, facts, identity,
 and lowering; `run`, the CLI, editor tooling, and backup/restore are all

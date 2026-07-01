@@ -8,6 +8,7 @@ use serde_json::{Value, json};
 use std::io::{ErrorKind, Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::path::Path;
+use std::process::Command;
 use std::time::Duration;
 
 use support::{
@@ -299,6 +300,9 @@ fn fault_code(output: &std::process::Output) -> String {
 const STORE_OP_DEADLINE: std::time::Duration = std::time::Duration::from_secs(15);
 const REMOTE_AUTH_ENV: &str = "MARROW_TEST_SURFACE_TOKEN";
 const REMOTE_AUTH_TOKEN: &str = "remote-token-123";
+const REMOTE_AUTH_HEADER: &str = "Bearer remote-token-123";
+const REMOTE_CURSOR_TOKEN_ENV: &str = "MARROW_TEST_SURFACE_CURSOR_TOKEN_KEY";
+const REMOTE_CURSOR_TOKEN_KEY: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 
 /// An idle `--write` serve stopped by the documented foreground stop (SIGTERM) closes the
 /// held store handle on the normal stack, so the next read-only inspection and write-capable
@@ -934,6 +938,129 @@ fn surface_serve_remote_cors_validation_fails_before_project_load() {
 }
 
 #[test]
+fn surface_serve_cursor_token_cli_validation_fails_before_project_load() {
+    let dir = support::temp_dir("surface-serve-cursor-token-cli-validation");
+    write(&dir, "marrow.json", support::native_config());
+    write(&dir, "src/app.mw", "module app\npub fn broken(\n");
+    let project = dir.to_str().unwrap();
+
+    let without_remote = marrow(&[
+        "serve",
+        "--addr",
+        "127.0.0.1:0",
+        "--cursor-token-key-id",
+        "kid-1",
+        "--cursor-token-key-env",
+        REMOTE_CURSOR_TOKEN_ENV,
+        project,
+    ]);
+    assert_eq!(without_remote.status.code(), Some(2), "{without_remote:?}");
+    let stderr = String::from_utf8(without_remote.stderr).expect("stderr utf8");
+    assert!(
+        stderr.contains("cursor-token") && stderr.contains("--remote"),
+        "{stderr}"
+    );
+    assert!(
+        !stderr.contains("parse."),
+        "cursor token usage validation should fail before source loading: {stderr}"
+    );
+
+    let missing_key_id = marrow(&[
+        "serve",
+        "--remote",
+        "--addr",
+        "0.0.0.0:0",
+        "--auth-token-env",
+        REMOTE_AUTH_ENV,
+        "--cursor-token-key-env",
+        REMOTE_CURSOR_TOKEN_ENV,
+        project,
+    ]);
+    assert_eq!(missing_key_id.status.code(), Some(2), "{missing_key_id:?}");
+    let stderr = String::from_utf8(missing_key_id.stderr).expect("stderr utf8");
+    assert!(
+        stderr.contains("cursor-token-key-id") && !stderr.contains("parse."),
+        "{stderr}"
+    );
+
+    let missing_key_source = marrow(&[
+        "serve",
+        "--remote",
+        "--addr",
+        "0.0.0.0:0",
+        "--auth-token-env",
+        REMOTE_AUTH_ENV,
+        "--cursor-token-key-id",
+        "kid-1",
+        project,
+    ]);
+    assert_eq!(
+        missing_key_source.status.code(),
+        Some(2),
+        "{missing_key_source:?}"
+    );
+    let stderr = String::from_utf8(missing_key_source.stderr).expect("stderr utf8");
+    assert!(
+        stderr.contains("exactly one") && stderr.contains("cursor token key source"),
+        "{stderr}"
+    );
+
+    let duplicate_key_source = marrow(&[
+        "serve",
+        "--remote",
+        "--addr",
+        "0.0.0.0:0",
+        "--auth-token-env",
+        REMOTE_AUTH_ENV,
+        "--cursor-token-key-id",
+        "kid-1",
+        "--cursor-token-key-env",
+        REMOTE_CURSOR_TOKEN_ENV,
+        "--cursor-token-key-file",
+        "cursor.key",
+        project,
+    ]);
+    assert_eq!(
+        duplicate_key_source.status.code(),
+        Some(2),
+        "{duplicate_key_source:?}"
+    );
+    let stderr = String::from_utf8(duplicate_key_source.stderr).expect("stderr utf8");
+    assert!(
+        stderr.contains("exactly one") && stderr.contains("cursor token key source"),
+        "{stderr}"
+    );
+
+    let invalid_key = Command::new(env!("CARGO_BIN_EXE_marrow"))
+        .args([
+            "serve",
+            "--remote",
+            "--addr",
+            "0.0.0.0:0",
+            "--auth-token-env",
+            REMOTE_AUTH_ENV,
+            "--cursor-token-key-id",
+            "kid-1",
+            "--cursor-token-key-env",
+            REMOTE_CURSOR_TOKEN_ENV,
+            project,
+        ])
+        .env(REMOTE_AUTH_ENV, REMOTE_AUTH_TOKEN)
+        .env(
+            REMOTE_CURSOR_TOKEN_ENV,
+            format!(" {REMOTE_CURSOR_TOKEN_KEY}"),
+        )
+        .output()
+        .expect("run marrow serve");
+    assert_eq!(invalid_key.status.code(), Some(2), "{invalid_key:?}");
+    let stderr = String::from_utf8(invalid_key.stderr).expect("stderr utf8");
+    assert!(
+        stderr.contains("whitespace") && !stderr.contains("parse."),
+        "{stderr}"
+    );
+}
+
+#[test]
 fn surface_serve_executes_manifest_point_read_over_http() {
     let fixture = seeded_surface_fixture("surface-serve-point-read");
     let point_route = route_by_alias(&fixture.report, "get");
@@ -975,6 +1102,223 @@ fn surface_serve_executes_manifest_point_read_over_http() {
     assert_eq!(
         field_value(record, "author"),
         json!({ "kind": "string", "value": "Frank Herbert" })
+    );
+}
+
+#[test]
+fn surface_serve_cursor_token_remote_pages_with_opaque_cursor_strings() {
+    let fixture = seeded_surface_fixture("surface-serve-cursor-token-roundtrip");
+    let page_route = route_by_alias(&fixture.report, "byAuthor");
+    let (_server, addr) = spawn_surface_server_with_env_args(
+        fixture.root(),
+        &[
+            (REMOTE_AUTH_ENV, REMOTE_AUTH_TOKEN),
+            (REMOTE_CURSOR_TOKEN_ENV, REMOTE_CURSOR_TOKEN_KEY),
+        ],
+        &[
+            "--remote",
+            "--auth-token-env",
+            REMOTE_AUTH_ENV,
+            "--cursor-token-key-id",
+            "kid-1",
+            "--cursor-token-key-env",
+            REMOTE_CURSOR_TOKEN_ENV,
+        ],
+    );
+
+    let first_page = post_json(
+        addr,
+        &page_route.path,
+        page_request(&page_route.operation_tag, None),
+        &remote_headers(),
+    );
+    assert_eq!(first_page.status, 200, "{:#?}", first_page.body);
+    let token = first_page.body["result"]["page"]["next"]
+        .as_str()
+        .unwrap_or_else(|| panic!("token cursor string in {:#?}", first_page.body))
+        .to_string();
+    assert!(
+        token.starts_with("mct1.kid-1."),
+        "token must carry the key id without revealing cursor JSON: {token}"
+    );
+
+    let second_page = post_json(
+        addr,
+        &page_route.path,
+        page_request(&page_route.operation_tag, Some(json!(token))),
+        &remote_headers(),
+    );
+    assert_eq!(second_page.status, 200, "{:#?}", second_page.body);
+    assert_eq!(
+        field_value(&second_page.body["result"]["page"]["rows"][0], "title"),
+        json!({ "kind": "string", "value": "Dune Messiah" })
+    );
+    assert_eq!(second_page.body["result"]["page"]["next"], Value::Null);
+}
+
+#[test]
+fn surface_serve_cursor_token_remote_rejects_tamper_and_typed_cursor_objects() {
+    let fixture = seeded_surface_fixture("surface-serve-cursor-token-rejects");
+    let page_route = route_by_alias(&fixture.report, "byAuthor");
+    let (_server, addr) = spawn_surface_server_with_env_args(
+        fixture.root(),
+        &[
+            (REMOTE_AUTH_ENV, REMOTE_AUTH_TOKEN),
+            (REMOTE_CURSOR_TOKEN_ENV, REMOTE_CURSOR_TOKEN_KEY),
+        ],
+        &[
+            "--remote",
+            "--auth-token-env",
+            REMOTE_AUTH_ENV,
+            "--cursor-token-key-id",
+            "kid-1",
+            "--cursor-token-key-env",
+            REMOTE_CURSOR_TOKEN_ENV,
+        ],
+    );
+    let first_page = post_json(
+        addr,
+        &page_route.path,
+        page_request(&page_route.operation_tag, None),
+        &remote_headers(),
+    );
+    assert_eq!(first_page.status, 200, "{:#?}", first_page.body);
+    let token = first_page.body["result"]["page"]["next"]
+        .as_str()
+        .expect("token cursor string");
+    let mut tampered = token.as_bytes().to_vec();
+    let last = tampered.last_mut().expect("token has bytes");
+    *last = if *last == b'A' { b'B' } else { b'A' };
+    let tampered = String::from_utf8(tampered).expect("tampered token utf8");
+
+    let tampered_response = post_json(
+        addr,
+        &page_route.path,
+        page_request(&page_route.operation_tag, Some(json!(tampered))),
+        &remote_headers(),
+    );
+    assert_eq!(
+        tampered_response.status, 400,
+        "{:#?}",
+        tampered_response.body
+    );
+    assert_eq!(tampered_response.body["code"], "surface.cursor");
+
+    let object_response = post_json(
+        addr,
+        &page_route.path,
+        page_request(
+            &page_route.operation_tag,
+            Some(json!({ "operation_tag": page_route.operation_tag })),
+        ),
+        &remote_headers(),
+    );
+    assert_eq!(object_response.status, 400, "{:#?}", object_response.body);
+    assert_eq!(object_response.body["code"], "surface.cursor");
+}
+
+#[test]
+fn surface_serve_cursor_token_route_body_tag_mismatch_stays_abi_mismatch() {
+    let fixture = seeded_surface_fixture("surface-serve-cursor-token-abi-mismatch");
+    let page_route = route_by_alias(&fixture.report, "byAuthor");
+    let (_server, addr) = spawn_surface_server_with_env_args(
+        fixture.root(),
+        &[
+            (REMOTE_AUTH_ENV, REMOTE_AUTH_TOKEN),
+            (REMOTE_CURSOR_TOKEN_ENV, REMOTE_CURSOR_TOKEN_KEY),
+        ],
+        &[
+            "--remote",
+            "--auth-token-env",
+            REMOTE_AUTH_ENV,
+            "--cursor-token-key-id",
+            "kid-1",
+            "--cursor-token-key-env",
+            REMOTE_CURSOR_TOKEN_ENV,
+        ],
+    );
+    let first_page = post_json(
+        addr,
+        &page_route.path,
+        page_request(&page_route.operation_tag, None),
+        &remote_headers(),
+    );
+    assert_eq!(first_page.status, 200, "{:#?}", first_page.body);
+    let token = first_page.body["result"]["page"]["next"]
+        .as_str()
+        .expect("token cursor string");
+
+    let response = post_json(
+        addr,
+        &page_route.path,
+        page_request(
+            "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+            Some(json!(token)),
+        ),
+        &remote_headers(),
+    );
+    assert_eq!(response.status, 404, "{:#?}", response.body);
+    assert_eq!(response.body["code"], "surface.abi_mismatch");
+}
+
+#[test]
+fn surface_serve_cursor_token_wrong_body_kind_stays_request_mismatch() {
+    let fixture = seeded_surface_fixture("surface-serve-cursor-token-kind-mismatch");
+    let page_route = route_by_alias(&fixture.report, "byAuthor");
+    let (_server, addr) = spawn_surface_server_with_env_args(
+        fixture.root(),
+        &[
+            (REMOTE_AUTH_ENV, REMOTE_AUTH_TOKEN),
+            (REMOTE_CURSOR_TOKEN_ENV, REMOTE_CURSOR_TOKEN_KEY),
+        ],
+        &[
+            "--remote",
+            "--auth-token-env",
+            REMOTE_AUTH_ENV,
+            "--cursor-token-key-id",
+            "kid-1",
+            "--cursor-token-key-env",
+            REMOTE_CURSOR_TOKEN_ENV,
+        ],
+    );
+
+    let response = post_json(
+        addr,
+        &page_route.path,
+        json!({
+            "profile_version": "surface.operation.v1",
+            "operation_tag": page_route.operation_tag,
+            "request": {
+                "kind": "point_read",
+                "request": {
+                    "cursor": "not-a-token"
+                }
+            }
+        }),
+        &remote_headers(),
+    );
+    assert_eq!(response.status, 400, "{:#?}", response.body);
+    assert_eq!(response.body["code"], "surface.request");
+}
+
+#[test]
+fn surface_serve_default_page_cursor_stays_typed_json() {
+    let fixture = seeded_surface_fixture("surface-serve-default-typed-cursor");
+    let page_route = route_by_alias(&fixture.report, "byAuthor");
+    let (_server, addr) = spawn_surface_server(fixture.root());
+
+    let first_page = post_json(
+        addr,
+        &page_route.path,
+        page_request(&page_route.operation_tag, None),
+        &[("Content-Type", "application/json")],
+    );
+
+    assert_eq!(first_page.status, 200, "{:#?}", first_page.body);
+    assert!(
+        first_page.body["result"]["page"]["next"].is_object(),
+        "local/default serve must keep typed cursor objects: {:#?}",
+        first_page.body
     );
 }
 
@@ -2663,6 +3007,31 @@ fn point_read_request(report: &Value, operation_tag: &str, id: i64) -> Value {
             }
         }
     })
+}
+
+fn page_request(operation_tag: &str, cursor: Option<Value>) -> Value {
+    let mut request = json!({
+        "profile_version": "surface.operation.v1",
+        "operation_tag": operation_tag,
+        "request": {
+            "kind": "page",
+            "request": {
+                "exact_keys": [{ "kind": "string", "value": "Frank Herbert" }],
+                "limit": 1
+            }
+        }
+    });
+    if let Some(cursor) = cursor {
+        request["request"]["request"]["cursor"] = cursor;
+    }
+    request
+}
+
+fn remote_headers() -> [(&'static str, &'static str); 2] {
+    [
+        ("Content-Type", "application/json"),
+        ("Authorization", REMOTE_AUTH_HEADER),
+    ]
 }
 
 fn post_json(addr: SocketAddr, path: &str, body: Value, headers: &[(&str, &str)]) -> HttpResponse {

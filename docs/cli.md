@@ -16,8 +16,10 @@ marrow run [--entry <entry>] [--arg name=value]... [--maintenance] \
 marrow test [--trace] [--format text|json|jsonl] [--filter <substring>] <projectdir>
 marrow serve [--write] [--watch] [--cors-origin <loopback-origin>] [--addr <loopback:port>] <projectdir>
 marrow serve --remote --addr <addr> [--write] \
-  (--auth-token-env NAME | --auth-token-file PATH) [--remote-cors-origin <origin>] <projectdir>
-marrow client typescript [--out <path>] <projectdir>
+  (--auth-token-env NAME | --auth-token-file PATH) \
+  [--cursor-token-key-id <kid> (--cursor-token-key-env NAME | --cursor-token-key-file PATH)] \
+  [--remote-cors-origin <origin>] <projectdir>
+marrow client typescript [--cursor-token] [--out <path>] <projectdir>
 marrow data <roots|stats|dump|integrity> [--backup <artifact>] [--format text|json|jsonl] <projectdir>
 marrow data recover [--format text|json|jsonl] <projectdir>
 marrow data get [--backup <artifact>] [--format text|json|jsonl] <projectdir> <path>
@@ -39,7 +41,8 @@ $ marrow run .
 $ marrow serve .
 $ marrow serve --write --cors-origin http://localhost:5173 .
 $ MARROW_SURFACE_TOKEN=secret marrow serve --remote --addr 0.0.0.0:8080 --auth-token-env MARROW_SURFACE_TOKEN .
-$ marrow client typescript . > marrow-client.ts
+$ marrow client typescript .
+$ marrow client typescript --cursor-token --out remote-client.ts .
 ```
 
 Use `marrow check` before deployment or generation, `marrow run` for entry
@@ -205,7 +208,8 @@ Check a project directory containing `marrow.json` and report diagnostics.
   JSON `POST` operation-tag paths plus render aliases and request-body kinds.
   The manifest is data; `marrow serve` is the serving profile that consumes it,
   and `marrow client typescript` renders a thin TypeScript operation-envelope
-  client from it. Opaque cursor tokens remain out of scope.
+  client from it. Remote opaque cursor tokens are a serve/client profile over
+  the same typed cursor DTOs, not part of the route manifest.
 
 Exits `0` when there are no errors, `1` when there are diagnostics or
 `marrow.json` cannot be read, and `2` for usage errors such as a non-directory
@@ -233,7 +237,7 @@ $ echo $?
 ## `marrow client typescript`
 
 ```
-marrow client typescript [--out <path>] <projectdir>
+marrow client typescript [--cursor-token] [--out <path>] <projectdir>
 ```
 
 Generate a self-contained TypeScript client for the checked application surface
@@ -252,6 +256,11 @@ developer never has to run a separate codegen step for the declared output.
   is echoed to stdout; the resolved path is reported on stderr. A relative path
   resolves against the current working directory, the POSIX CLI convention; an
   absolute path is honored as given. Missing parent directories are created.
+- `--cursor-token` renders the remote cursor-token client profile. Page cursor
+  brands are opaque strings for a remote server started with cursor-token mode,
+  the header profile is `typescript.v2+surface.cursor_token.v1`, and the client
+  digest is distinct from the default typed-cursor client. It does not refresh a
+  declared `marrow.json` `client` path unless `--out` names a destination.
 - Without `--out`, when `marrow.json` declares a `client` path, that declared
   file is refreshed write-if-changed — the same path `run`, `serve`, and
   `evolve apply` keep current — and the outcome (wrote, updated, or unchanged)
@@ -272,7 +281,8 @@ developer never has to run a separate codegen step for the declared output.
   `// marrow-client-digest: sha256:<hex>` lines. The surface digest is the
   ABI/route identity; the client digest is the deterministic freshness key the
   declared-output lifecycle and `check --locked` compare against the current
-  generator profile and surface.
+  generator profile and surface. The explicit cursor-token profile changes the
+  profile line and digest without changing the surface digest.
 - The generated client uses the exported `surface_abi` descriptors and
   `surface.route.v1` manifest as inputs. It validates route/ABI agreement before
   rendering, stores operation tags and route paths as constants in method bodies,
@@ -297,7 +307,9 @@ that bypass the generated client.
 ```
 marrow serve [--write] [--watch] [--cors-origin <loopback-origin>] [--addr <loopback:port>] <projectdir>
 marrow serve --remote --addr <addr> [--write] \
-  (--auth-token-env NAME | --auth-token-file PATH) [--remote-cors-origin <origin>] <projectdir>
+  (--auth-token-env NAME | --auth-token-file PATH) \
+  [--cursor-token-key-id <kid> (--cursor-token-key-env NAME | --cursor-token-key-file PATH)] \
+  [--remote-cors-origin <origin>] <projectdir>
 ```
 
 Run the HTTP serving profile for checked application surfaces. By default the
@@ -323,6 +335,21 @@ create, freeze, migrate, repair, or auto-apply saved data.
   `Bearer ` followed by the configured token, with one space and case-sensitive
   scheme. Missing, malformed, duplicate, or wrong auth returns HTTP `401` with
   code `surface.auth` before the request body is read.
+- Remote serve can enable opaque page cursor tokens with
+  `--cursor-token-key-id <kid>` and exactly one key source:
+  `--cursor-token-key-env NAME` or `--cursor-token-key-file PATH`. Any
+  cursor-token flag without `--remote` is a usage error. The key id is 1-32
+  characters from `[A-Za-z0-9_-]`. The key source is one UTF-8 line after
+  removing one trailing LF or CRLF, with no other leading or trailing
+  whitespace, and must be unpadded base64url for exactly 32 bytes. Key values
+  and issued cursor tokens are never printed.
+- In cursor-token mode, page responses return `page.next` as
+  `mct1.<kid>.<nonce>.<ciphertext>` instead of the typed cursor object.
+  Follow-up page requests must send that string as `cursor`; `null` or an
+  omitted cursor starts a page stream. Typed cursor objects are rejected as
+  `surface.cursor`. Malformed, tampered, wrong-key, or authenticated-context
+  mismatches are also `surface.cursor`; stale typed cursor lineage after a
+  successful decrypt remains `surface.stale_cursor`.
 - `--remote-cors-origin` is separate from local `--cors-origin`, requires
   `--remote`, and accepts one exact `http` or `https` origin. It rejects
   wildcards, `null`, paths, queries, and fragments. Remote preflight is
@@ -385,10 +412,9 @@ create, freeze, migrate, repair, or auto-apply saved data.
   return a sanitized `{ "code": "surface.*", "message": "..." }` envelope with
   no source path, store path, or raw backend detail.
 
-This is a dependency-free serving profile; opaque cursor tokens remain future
-transport work. Exits `2` for usage errors such as missing remote auth,
-non-loopback local `--addr`, or invalid CORS origins, `1` for
-project/session/listener failures, and otherwise runs until killed.
+Exits `2` for usage errors such as missing remote auth, invalid cursor-token
+key configuration, non-loopback local `--addr`, or invalid CORS origins, `1`
+for project/session/listener failures, and otherwise runs until killed.
 
 ---
 

@@ -1,6 +1,7 @@
 use crate::support;
 use crate::support_surface::{
     route_by_alias, spawn_surface_server, spawn_surface_server_with_args,
+    spawn_surface_server_with_env_args,
 };
 
 use std::fs;
@@ -8,6 +9,11 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use support::{marrow, temp_project, temp_project_uncommitted, write};
+
+const REMOTE_AUTH_ENV: &str = "MARROW_TEST_SURFACE_TOKEN";
+const REMOTE_AUTH_TOKEN: &str = "remote-token-123";
+const REMOTE_CURSOR_TOKEN_ENV: &str = "MARROW_TEST_SURFACE_CURSOR_TOKEN_KEY";
+const REMOTE_CURSOR_TOKEN_KEY: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 
 const CLIENT_SURFACE_SOURCE: &str = "module app\n\
 \n\
@@ -179,6 +185,58 @@ fn client_typescript_uses_lock_projection_when_store_is_absent() {
     assert!(
         !store_path.exists(),
         "client generation must not recreate the native store"
+    );
+}
+
+#[test]
+fn client_typescript_cursor_token_profile_uses_string_cursor_brand_and_distinct_digest() {
+    let root = temp_project("surface-client-typescript-cursor-token", |root| {
+        write(root, "marrow.json", support::native_config());
+        write(root, "src/app.mw", CLIENT_SURFACE_SOURCE);
+    });
+    let seed = marrow(&["run", "--entry", "app::seed", root.to_str().unwrap()]);
+    assert_eq!(seed.status.code(), Some(0), "seed: {seed:?}");
+
+    let typed = marrow(&[
+        "client",
+        "typescript",
+        root.to_str().expect("project path utf8"),
+    ]);
+    assert_eq!(typed.status.code(), Some(0), "typed client: {typed:?}");
+    let typed_stdout = String::from_utf8(typed.stdout).expect("typed client utf8");
+
+    let token = marrow(&[
+        "client",
+        "typescript",
+        "--cursor-token",
+        root.to_str().expect("project path utf8"),
+    ]);
+    assert_eq!(token.status.code(), Some(0), "token client: {token:?}");
+    let token_stdout = String::from_utf8(token.stdout).expect("token client utf8");
+
+    assert!(
+        typed_stdout.contains("// marrow-client-profile: typescript.v2"),
+        "{typed_stdout}"
+    );
+    assert!(
+        token_stdout.contains("// marrow-client-profile: typescript.v2+surface.cursor_token.v1"),
+        "{token_stdout}"
+    );
+    assert_ne!(
+        client_digest_header(&typed_stdout),
+        client_digest_header(&token_stdout),
+        "cursor token profile must have separate freshness"
+    );
+    assert!(
+        typed_stdout.contains(
+            "export type BooksCursor = SurfaceCursorJson & { readonly __brand: \"BooksCursor\" };"
+        ),
+        "{typed_stdout}"
+    );
+    assert!(
+        token_stdout
+            .contains("export type BooksCursor = string & { readonly __brand: \"BooksCursor\" };"),
+        "{token_stdout}"
     );
 }
 
@@ -596,6 +654,14 @@ fn client_typescript_usage_failures_exit_two() {
     assert!(stderr.contains("missing project directory"), "{stderr}");
 }
 
+fn client_digest_header(client: &str) -> String {
+    client
+        .lines()
+        .find_map(|line| line.strip_prefix("// marrow-client-digest: "))
+        .expect("client digest header")
+        .to_string()
+}
+
 #[test]
 fn client_typescript_generated_client_runs_against_live_surface_server() {
     let Some(node) = node_with_type_stripping() else {
@@ -695,6 +761,102 @@ fn client_typescript_generated_client_runs_against_live_surface_server() {
     ]);
     assert_eq!(integrity.status.code(), Some(0), "integrity: {integrity:?}");
 }
+
+#[test]
+fn client_typescript_cursor_token_client_pages_against_remote_token_serve() {
+    let Some(node) = node_with_type_stripping() else {
+        if std::env::var_os("CI").is_some() || std::env::var_os("MARROW_TEST_NODE").is_some() {
+            panic!(
+                "generated TypeScript cursor-token E2E requires Node with --experimental-strip-types"
+            );
+        }
+        eprintln!("skipping generated TypeScript cursor-token E2E; compatible node not found");
+        return;
+    };
+    let root = temp_project("surface-client-cursor-token-e2e", |root| {
+        write(root, "marrow.json", support::native_config());
+        write(root, "src/app.mw", CLIENT_SURFACE_SOURCE);
+    });
+    let seed = marrow(&["run", "--entry", "app::seed", root.to_str().unwrap()]);
+    assert_eq!(seed.status.code(), Some(0), "seed: {seed:?}");
+
+    let client = marrow(&[
+        "client",
+        "typescript",
+        "--cursor-token",
+        root.to_str().expect("project path utf8"),
+    ]);
+    assert_eq!(client.status.code(), Some(0), "client: {client:?}");
+    assert!(client.stderr.is_empty(), "client: {client:?}");
+    let app = support::temp_dir("surface-client-cursor-token-e2e-app");
+    write(
+        &app,
+        "marrow-client.ts",
+        &String::from_utf8(client.stdout).expect("client utf8"),
+    );
+    write(&app, "cursor-token.ts", CURSOR_TOKEN_CLIENT_APP);
+
+    let (_server, addr) = spawn_surface_server_with_env_args(
+        &root,
+        &[
+            (REMOTE_AUTH_ENV, REMOTE_AUTH_TOKEN),
+            (REMOTE_CURSOR_TOKEN_ENV, REMOTE_CURSOR_TOKEN_KEY),
+        ],
+        &[
+            "--remote",
+            "--auth-token-env",
+            REMOTE_AUTH_ENV,
+            "--cursor-token-key-id",
+            "kid-1",
+            "--cursor-token-key-env",
+            REMOTE_CURSOR_TOKEN_ENV,
+        ],
+    );
+    let output = Command::new(node)
+        .arg("--experimental-strip-types")
+        .arg("--no-warnings")
+        .arg(app.join("cursor-token.ts"))
+        .current_dir(&app)
+        .env("MARROW_SURFACE_BASE_URL", format!("http://{addr}"))
+        .env("MARROW_SURFACE_AUTH_TOKEN", REMOTE_AUTH_TOKEN)
+        .output()
+        .expect("run generated cursor-token app");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "cursor-token app failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(output.stdout)
+            .expect("cursor-token stdout utf8")
+            .trim(),
+        "cursor-token-e2e-ok"
+    );
+}
+
+const CURSOR_TOKEN_CLIENT_APP: &str = r#"import assert from "node:assert/strict";
+import { createClient } from "./marrow-client.ts";
+
+const token = process.env.MARROW_SURFACE_AUTH_TOKEN;
+assert.ok(token);
+const client = createClient({
+  baseUrl: process.env.MARROW_SURFACE_BASE_URL,
+  headers: { Authorization: `Bearer ${token}` },
+});
+
+const first = await client.Books.byAuthor("Frank Herbert", 1);
+assert.equal(first.rows[0].title, "Dune");
+assert.equal(typeof first.next, "string");
+assert.ok(first.next?.startsWith("mct1.kid-1."));
+
+const second = await client.Books.byAuthor("Frank Herbert", 10, first.next);
+assert.deepEqual(second.rows.map((record) => record.title), ["Dune Messiah"]);
+assert.equal(second.next, null);
+
+console.log("cursor-token-e2e-ok");
+"#;
 
 /// A composite-key store with an enum and an optional field, exercising every decode path the unit
 /// test probes against real saved data: a non-int multi-key brand, an i64 above 2^53 round-tripping

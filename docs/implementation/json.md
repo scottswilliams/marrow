@@ -50,6 +50,12 @@ enum and identity-typed index arguments render as branded surface arguments
 instead of raw saved key bytes or plain member strings. Cursor decode preserves
 the producing commit boundary so runtime page execution can reject stale
 continuations after intervening writes.
+`surface/cursor_token.rs` owns the `surface.cursor_token.v1` profile over those
+typed cursor DTOs: key id and key-source validation, canonical unpadded
+base64url key/token parts, XChaCha20Poly1305 sealing/opening, bounded plaintext
+and token sizes, and the error distinction between malformed tokens
+(`surface.cursor`) and successfully decrypted stale typed cursor lineage
+(`surface.stale_cursor` downstream).
 
 `SurfaceAbiJson` renders the successful `marrow check --format json|jsonl`
 `surface_abi` object from checker-owned facts. It includes display-only module
@@ -120,26 +126,36 @@ exact value shape checks, enum membership and selectability, identity store,
 arity, and key-scalar validation, record presence, and post-patch footprint
 validation. The linked-Rust `entry.invoke.v1` descriptor and `EntryInvocation`
 path is owned by `marrow-check` and `marrow-run`; this crate only embeds that
-argument JSON shape for surface action and computed-read request bodies. HTTP
-listeners, opaque cursor tokens, and remote serving remain outside this crate's
-current profile.
-The route manifest is a descriptor over the operation envelope, not a listener,
-router implementation, or opaque-token codec. `surface/client_model.rs` lowers
+argument JSON shape for surface action and computed-read request bodies. It owns
+the `surface.cursor_token.v1` codec over typed cursor DTOs, while HTTP listeners
+and remote serving process policy remain outside this crate.
+The route manifest is a descriptor over the operation envelope, not a listener
+or router implementation. `surface/client_model.rs` lowers
 the ABI plus route bindings into a typed `SurfaceClientModel` (stores as branded
 ids, enums as member-id tables, surface records, per-operation methods, and
 client-only page-iteration helpers for paged reads);
 `surface/client_ts.rs` renders that model into the typed TypeScript surface
-client, with the runtime decode/encode helpers in `surface/client_ts_preamble.ts`.
+client and explicit cursor-token client profile, with the runtime decode/encode
+helpers in `surface/client_ts_preamble.ts`.
 The client decodes response values against the descriptor as a convenience
 projection that fails loud on a malformed field — it is not a second validation
 authority. It validates route/ABI agreement before rendering. It also owns the
 client freshness key: `surface_abi_digest` is a
 `sha256:` digest over the canonically serialized ABI and route manifest (stable
 across checkouts of the same surface shape), while `surface_client_digest`
-combines that identity with the TypeScript client generator profile.
+combines that identity with the TypeScript client generator profile. The
+cursor-token TypeScript profile uses the same surface digest and a distinct
+client digest.
 `surface_client_header` / `surface_client_header_digest` write and parse the
 do-not-edit, profile, surface-digest, and client-digest header prepended to every
 generated client.
+
+Cursor-token codec decision: `marrow-json` depends on `chacha20poly1305 0.11.0`
+for XChaCha20Poly1305 and OS CSPRNG-backed nonce generation, and `base64ct 1.8.3`
+for canonical `Base64UrlUnpadded` encoding/decoding. Both crates are
+Apache-2.0 OR MIT, satisfy the workspace Rust version, and keep token sealing
+inside the JSON/profile crate rather than adding cryptographic code to the CLI
+or changing runtime cursor semantics.
 
 The operation-tag execution functions compose those DTOs with `marrow-run`
 admission. Reads admit stable read tags, decode the point/page/unique request
@@ -181,7 +197,7 @@ the checker before export. Both helpers return a standard response envelope with
 record, page, optional-record, created, updated, deleted, action, or
 computed-read results. Error envelopes contain only a stable code and public
 message. The project helpers use the session's private store handle and do not
-add HTTP serving or opaque cursor token codecs.
+add HTTP serving.
 Wrong profile versions fail before tag admission; unknown tags and duplicate
 tags fail through operation-kind preflight over checked facts; wrong
 read/computed-read/create/update/delete/action shape requests are rejected by

@@ -10,8 +10,10 @@
 //! create/update/delete and action DTOs can execute against a
 //! `marrow_run::ProjectSurfaceSession`, without exposing the backing store. The
 //! zero-capability project operation helper uses `Host::new()`; callers that
-//! need host capabilities use the explicit-host helper. It is not a general
-//! `Value` codec, and it does not define HTTP serving or opaque cursor tokens.
+//! need host capabilities use the explicit-host helper. It also owns the
+//! `surface.cursor_token.v1` codec that seals typed cursor DTOs for remote
+//! serving. It is not a general `Value` codec, and it does not define HTTP
+//! serving.
 
 use marrow_check::tooling::{DataCommitStamp, DataSnapshotStamp, DataTransactionStamp};
 use marrow_run::Value;

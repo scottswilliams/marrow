@@ -501,16 +501,16 @@ action APIs can emit the active codes below. `marrow serve` emits
 sanitized code/message envelopes for HTTP serving in both default read-only mode
 and `--write` mode, and adds `surface.auth` for remote HTTP authorization and
 mode denial before request-body decoding.
-Cursor strings remain future transport work; the active runtime cursor is a
-typed continuation value.
+Remote cursor-token mode maps opaque cursor strings onto the same active typed
+runtime continuation value at the HTTP boundary.
 
 | Code | Meaning |
 |---|---|
 | `surface.request` | A request parameter, identity, index argument, generated write field catalog ID, generated write value, empty update patch, action/computed-read argument, or limit cannot decode to the checked surface operation input shape; cursor tokens use `surface.cursor`. |
 | `surface.auth` | Remote HTTP authorization failed, or a known write route was requested from a read-only remote serve. The server returns this before reading the request body. |
 | `surface.absent` | A requested record identity is well-formed but no record node exists, or a requested singleton node is absent. |
-| `surface.cursor` | A typed cursor boundary or future cursor token is malformed, does not decode under its codec, or is well-formed but bound to normalized parameters that do not match the current request. |
-| `surface.stale_cursor` | A typed cursor boundary or future cursor token is well-formed, but its operation equality tag, profile tag, or store lineage no longer matches the active surface operation facts. |
+| `surface.cursor` | A typed cursor boundary or cursor token is malformed, does not decode under its codec, or is well-formed but bound to normalized parameters that do not match the current request. |
+| `surface.stale_cursor` | A typed cursor boundary or cursor token is well-formed, but its operation equality tag, profile tag, or store lineage no longer matches the active surface operation facts. |
 | `surface.abi_mismatch` | A generated client or transport request targets a surface ABI or profile slice that is no longer active. |
 | `surface.invalid_data` | Backing saved data reached by a surface read, create result validation, or update validation cannot be decoded under the checked footprint, including required backing-field absence, malformed materialized values, malformed stored values needed to maintain generated indexes, corrupt traversed identity/key bytes, or an index row whose identity points at no record. Public envelopes are sanitized service faults; repair details stay in operator tooling. |
 | `surface.limit` | A well-formed surface operation would exceed its materialization, row, or decoded-byte budget. |

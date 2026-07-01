@@ -108,10 +108,10 @@ facts, run sessions, and these project surface slices, not a stable app-data
 contract. Computed reads always run with a zero-capability host, and
 host-effecting computed reads are rejected by the checker. The default project
 operation envelope helper also runs actions with a zero-capability host; callers
-that need action host capabilities use the explicit-host helper. The only
-shipped HTTP profile is `marrow serve` for loopback operation envelopes.
-Opaque cursor tokens and remote serving remain future profiles.
-Linked-Rust surface
+that need action host capabilities use the explicit-host helper. The shipped
+HTTP profile is `marrow serve` for loopback operation envelopes, plus the
+explicit remote authenticated profile and its optional opaque cursor-token
+transport profile. Linked-Rust surface
 helpers, route manifest rows, and typed entry invocation remain implementation
 profiles.
 The linked-Rust entry descriptor profile is an unstable implementation surface:

@@ -15,7 +15,8 @@ executes admitted transport-neutral reads, computed reads, creates, sparse
 updates, deletes, and actions, and `marrow-json` owns the current check-output
 descriptor DTOs, request/result DTOs, typed cursor-boundary DTOs, a
 transport-neutral JSON operation envelope over those DTOs, and the thin
-TypeScript client renderer over ABI plus routes.
+TypeScript client renderer over ABI plus routes. The remote cursor-token
+profile is a transport/profile layer over the existing typed cursor DTO.
 
 This page owns the active ABI and the explicitly deferred profiles that must
 build on it. Deferred profiles must not introduce a second saved-data access
@@ -117,16 +118,20 @@ The active surface foundation has these owners:
   reads are rejected by the checker. The default project operation helper runs
   actions with a zero-capability host; callers that need action host
   capabilities use the explicit-host helper. `marrow serve` is the first
-  HTTP serving profile: a loopback-only, dependency-free local endpoint over
+  HTTP serving profile: a loopback-first endpoint with a hand-rolled bounded
+  HTTP parser over
   descriptor-derived
   `/surface/v1/{read|create|update|delete|action}/<operation-tag>` routes and
   `surface.operation.v1` envelopes. Computed reads use the read route prefix. It
   defaults to read-only serving and exposes create/update/delete/action routes
-  only with `--write`.
+  only with `--write`. The remote profile can wrap page cursors in
+  `surface.cursor_token.v1` tokens without changing checker or runtime cursor
+  semantics.
   `marrow client typescript` is the first generated-client profile: a
   self-contained TypeScript wrapper over the same route manifest and operation
-  envelope. Opaque cursor tokens, remote binding, and authentication remain
-  separate profiles. Serialized ABI export includes only callable
+  envelope. Its default profile keeps typed cursor DTOs; `--cursor-token`
+  renders the remote cursor-token profile with string cursor brands and a
+  distinct client digest. Serialized ABI export includes only callable
   read, computed-read, create, update, delete, and action operation tags and
   routes derived from those exported descriptors.
 
@@ -171,6 +176,15 @@ source digest, engine-profile digest, and typed boundary. A cursor is valid only
 while the current store commit still matches that lineage; a committed write
 between page requests makes the cursor stale instead of silently continuing
 against a different saved-data snapshot.
+The remote cursor-token profile encrypts that typed cursor JSON inside a closed
+`surface.cursor_token.v1` plaintext and authenticates the profile, key id,
+request operation tag, and token mode as AEAD associated data. The token form is
+`mct1.<kid>.<nonce>.<ciphertext>`, where nonce and ciphertext are canonical
+unpadded base64url. A malformed token, wrong key id, tamper, or operation-tag
+AAD mismatch is reported as `surface.cursor` because those cases are
+indistinguishable from authenticated data failure. If decrypt succeeds and the
+typed cursor lineage is stale, the existing runtime path reports
+`surface.stale_cursor`.
 This is a managed surface contract over store commits. Raw `TreeStore`
 mutation without a commit metadata stamp is not a production surface write path
 and does not preserve cursor semantics.
@@ -320,8 +334,8 @@ a local HTTP process:
 - route operation tag, body operation tag, and body request kind must agree;
 - errors use sanitized `surface.*` code/message envelopes with no raw store
   details;
-- binding is loopback-only because Marrow has no users, roles, or authorization
-  model yet;
+- binding is loopback-only by default; `--remote` is an explicit authenticated
+  profile with an external TLS expectation and no Marrow user/role model;
 - `--cors-origin` optionally emits CORS headers for one exact loopback browser
   origin and never emits wildcard CORS;
 - store admission uses `ProjectSurfaceReadSession` in default mode and
@@ -334,10 +348,12 @@ a local HTTP process:
   `Transfer-Encoding` and already-buffered trailing bytes, caps headers and
   bodies, and closes every response.
 
-The serving profile intentionally reuses the active commit-bound typed cursor
-DTOs in read responses and page requests. A separate opaque cursor-token profile
-remains future work. Remote serving, authn/authz, and an HTTP dependency also
-remain future architecture decisions.
+The default serving profile intentionally reuses the active commit-bound typed
+cursor DTOs in read responses and page requests. Remote serving can opt into
+`surface.cursor_token.v1`, which seals those typed cursor DTOs into opaque
+tokens at the HTTP boundary and opens them back into typed DTOs before runtime
+admission. This profile does not add a saved-data access language or change
+checker/runtime cursor semantics.
 
 ## TypeScript Client Profile
 
@@ -354,7 +370,10 @@ do-not-edit header, `// marrow-client-profile: typescript.v2`,
 deterministic ABI/route identity over the serialized surface ABI plus route
 manifest, so two checkouts of the same surface shape produce the same surface
 header. The client digest combines that identity with the TypeScript generator
-profile.
+profile. `marrow client typescript --cursor-token` uses
+`// marrow-client-profile: typescript.v2+surface.cursor_token.v1` and a
+different client digest over the same surface digest; declared client freshness
+uses the default typed profile.
 
 The client is a declared compile-fresh output, not a file the developer
 regenerates by hand. A project names one output path in `marrow.json`'s `client`
@@ -437,6 +456,11 @@ page returns `{ rows, next }` whose `next` cursor is preserved verbatim and
 passed straight back as the next request cursor, a computed read returns the
 decoded value directly, and an action returns `{ value, output }` (the `output`
 string carries anything the action printed).
+In the default client profile that cursor brand is the typed cursor DTO. In the
+cursor-token client profile it is a branded string intended for a remote
+`marrow serve` started with cursor-token mode. Both profiles use the same
+method names, route manifest, operation tags, and `headers` option for remote
+auth.
 
 ### Handling Errors
 
@@ -471,6 +495,7 @@ The codes a client author branches on:
 |---|---|---|---|
 | `surface.absent` | 404 | The requested record or singleton does not exist. | Treat as not found. |
 | `surface.request` | 400 | The request parameters, fields, or arguments did not decode to the operation's input shape. | Fix the request shape; do not retry unchanged. |
+| `surface.cursor` | 400 | A page cursor is malformed, tampered, wrong for the token context, or otherwise not decodable. | Discard the cursor and refetch from the start. |
 | `surface.conflict` | 409 | A write conflicts with existing data, such as creating a record that already exists or violating a unique index. | Resolve the conflict (read first, or use update). |
 | `surface.stale_cursor` | 409 | A page cursor is well-formed but a committed write moved the store past it. | Discard the cursor and refetch from the start. |
 | `surface.abi_mismatch` | 404 | The operation the client targeted is no longer active — usually a stale client after a surface change. | Regenerate the client. |
@@ -522,5 +547,4 @@ lockstep with docs, checker facts, runtime behavior, and JSON/tooling surfaces:
 - operation curation syntax;
 - reachable throw-set descriptors;
 - dry-run operation previews;
-- opaque cursor token codecs;
 - historical snapshot pagination across old commits.

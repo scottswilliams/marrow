@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 
 mod client_model;
 mod client_ts;
+mod cursor_token;
 mod execute;
 mod operation;
 mod operation_catalog;
@@ -20,9 +21,14 @@ use client_model::{
 };
 pub use client_ts::{
     SURFACE_ABI_DIGEST_PREFIX, SURFACE_CLIENT_DIGEST_PREFIX, SURFACE_CLIENT_DO_NOT_EDIT,
-    SURFACE_CLIENT_PROFILE, SURFACE_CLIENT_PROFILE_PREFIX, SurfaceClientRenderError,
-    SurfaceClientRenderErrorKind, render_typescript_client, surface_abi_digest,
-    surface_client_digest, surface_client_header, surface_client_header_digest,
+    SURFACE_CLIENT_PROFILE, SURFACE_CLIENT_PROFILE_PREFIX, SurfaceClientCursorProfile,
+    SurfaceClientRenderError, SurfaceClientRenderErrorKind, render_typescript_client,
+    render_typescript_client_with_cursor_profile, surface_abi_digest, surface_client_digest,
+    surface_client_digest_with_cursor_profile, surface_client_header, surface_client_header_digest,
+};
+pub use cursor_token::{
+    SURFACE_CURSOR_TOKEN_PROFILE_VERSION, SurfaceCursorTokenCodec, SurfaceCursorTokenError,
+    SurfaceCursorTokenErrorKind, SurfaceCursorTokenKey, SurfaceCursorTokenKeyId,
 };
 pub use execute::{
     execute_project_surface_page_by_tag, execute_project_surface_point_create_by_tag,
@@ -1745,21 +1751,23 @@ mod tests {
         SURFACE_OPERATION_PROFILE_VERSION, SurfaceAbiJson, SurfaceActionRequestJson,
         SurfaceActionResultJson, SurfaceActionValueJson, SurfaceArgumentJson,
         SurfaceCallableArgumentShapeJson, SurfaceCallableParameterPresenceJson,
-        SurfaceCatalogStatusJson, SurfaceClientRenderErrorKind, SurfaceComputedReadFieldValueJson,
-        SurfaceComputedReadPresenceJson, SurfaceComputedReadRequestJson,
-        SurfaceComputedReadValueJson, SurfaceComputedReadValueShapeJson, SurfaceCreateFieldJson,
-        SurfaceCreateOperationKindJson, SurfaceCursorBoundaryJson, SurfaceCursorJson,
-        SurfaceDeleteOperationKindJson, SurfaceEmptyRequestJson, SurfaceIdentityJson,
-        SurfaceKeyJson, SurfaceOperationCatalog, SurfaceOperationCatalogErrorKind,
-        SurfaceOperationErrorJson, SurfaceOperationKind, SurfaceOperationRequestBodyJson,
-        SurfaceOperationRequestJson, SurfaceOperationResultJson, SurfacePageJson,
-        SurfacePageRequestJson, SurfacePointCreateRequestJson, SurfacePointDeleteRequestJson,
-        SurfacePointRequestJson, SurfacePointUpdateRequestJson, SurfaceReadOperationKindJson,
-        SurfaceRecordJson, SurfaceRouteBindingErrorKind, SurfaceRouteBindings,
-        SurfaceRouteManifestJson, SurfaceRouteMethodJson, SurfaceRouteRequestJson,
-        SurfaceSingletonUpdateRequestJson, SurfaceUniqueLookupRequestJson, SurfaceUpdateFieldJson,
-        SurfaceValueJson, SurfaceWriteValueJson, render_typescript_client, surface_abi_digest,
-        surface_client_digest, surface_client_header, surface_client_header_digest,
+        SurfaceCatalogStatusJson, SurfaceClientCursorProfile, SurfaceClientRenderErrorKind,
+        SurfaceComputedReadFieldValueJson, SurfaceComputedReadPresenceJson,
+        SurfaceComputedReadRequestJson, SurfaceComputedReadValueJson,
+        SurfaceComputedReadValueShapeJson, SurfaceCreateFieldJson, SurfaceCreateOperationKindJson,
+        SurfaceCursorBoundaryJson, SurfaceCursorJson, SurfaceDeleteOperationKindJson,
+        SurfaceEmptyRequestJson, SurfaceIdentityJson, SurfaceKeyJson, SurfaceOperationCatalog,
+        SurfaceOperationCatalogErrorKind, SurfaceOperationErrorJson, SurfaceOperationKind,
+        SurfaceOperationRequestBodyJson, SurfaceOperationRequestJson, SurfaceOperationResultJson,
+        SurfacePageJson, SurfacePageRequestJson, SurfacePointCreateRequestJson,
+        SurfacePointDeleteRequestJson, SurfacePointRequestJson, SurfacePointUpdateRequestJson,
+        SurfaceReadOperationKindJson, SurfaceRecordJson, SurfaceRouteBindingErrorKind,
+        SurfaceRouteBindings, SurfaceRouteManifestJson, SurfaceRouteMethodJson,
+        SurfaceRouteRequestJson, SurfaceSingletonUpdateRequestJson, SurfaceUniqueLookupRequestJson,
+        SurfaceUpdateFieldJson, SurfaceValueJson, SurfaceWriteValueJson, render_typescript_client,
+        render_typescript_client_with_cursor_profile, surface_abi_digest, surface_client_digest,
+        surface_client_digest_with_cursor_profile, surface_client_header,
+        surface_client_header_digest,
     };
 
     static TEMP_PROJECT_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -3619,6 +3627,67 @@ pub fn seed()
         assert_eq!(
             surface_client_header_digest(&client).as_deref(),
             Some(client_digest.as_str())
+        );
+    }
+
+    #[test]
+    fn client_ts_cursor_token_profile_has_distinct_header_digest_and_string_cursor_brand() {
+        let (program, _runtime) = checked_surface_program(SURFACE_PAGE_HELPERS);
+        let abi = SurfaceAbiJson::from_program(&program);
+        let routes = SurfaceRouteManifestJson::from_abi(&abi);
+
+        let typed_client = render_typescript_client(&abi, &routes).expect("typed client renders");
+        let token_client = render_typescript_client_with_cursor_profile(
+            &abi,
+            &routes,
+            SurfaceClientCursorProfile::Token,
+        )
+        .expect("token client renders");
+
+        let typed_digest = surface_client_digest(&abi, &routes);
+        let token_digest = surface_client_digest_with_cursor_profile(
+            &abi,
+            &routes,
+            SurfaceClientCursorProfile::Token,
+        );
+        assert_ne!(
+            typed_digest, token_digest,
+            "token cursor profile must not share typed-client freshness"
+        );
+        assert!(
+            typed_client.contains("// marrow-client-profile: typescript.v2"),
+            "{typed_client}"
+        );
+        assert!(
+            token_client
+                .contains("// marrow-client-profile: typescript.v2+surface.cursor_token.v1"),
+            "{token_client}"
+        );
+        assert!(
+            token_client.contains(&format!("// marrow-client-digest: {token_digest}")),
+            "{token_client}"
+        );
+        assert_eq!(
+            surface_client_header_digest(&token_client).as_deref(),
+            Some(token_digest.as_str())
+        );
+        assert!(
+            typed_client.contains(
+                "export type BooksCursor = SurfaceCursorJson & { readonly __brand: \"BooksCursor\" };"
+            ),
+            "{typed_client}"
+        );
+        assert!(
+            token_client.contains(
+                "export type BooksCursor = string & { readonly __brand: \"BooksCursor\" };"
+            ),
+            "{token_client}"
+        );
+        assert!(
+            token_client.contains(
+                "all: async (limit: number, cursor?: BooksCursor | null): Promise<Page<BooksRecord, BooksCursor>>"
+            ),
+            "{token_client}"
         );
     }
 
