@@ -168,6 +168,11 @@ making it truer, cut instead. Each crate's `AGENTS.md` names its page.
   find the rest in `docs/`.
 - Follow the 80/20 rule: avoid large changes without proportionate impact.
 - Add tests near the behavior being changed.
+- A change that establishes or restores an invariant must land, in the same
+  change, the mechanism that makes the old pattern unrepresentable or loudly
+  detectable: a visibility change that removes the bypass, a typed owner, an
+  absence test, or a generated-artifact drift gate. A single-site fix whose
+  sibling sweep is missing is not review-ready.
 - Keep storage behavior behind the backend contract; a backend is a store target,
   not the owner of Marrow semantics.
 - Keep saved data inspectable through Marrow tools.
