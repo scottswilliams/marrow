@@ -231,6 +231,43 @@ fn documented_module_examples_check_clean() {
     );
 }
 
+/// The `exists()`-narrowing example in `types.md` must check clean through the
+/// production pipeline. `exists(place)` narrows the guarded read to present, so the
+/// body reads the narrowed path directly; a redundant inner `if const` over the
+/// already-present value is rejected. The example is a bare statement snippet, so it
+/// is wrapped in the smallest module that gives `^books(id).subtitle` a saved sparse
+/// field before checking.
+#[test]
+fn types_doc_exists_narrowing_example_checks_clean() {
+    let block = mw_blocks("types.md")
+        .into_iter()
+        .find(|block| block.source.contains("if exists(^books(id).subtitle)"))
+        .expect("types.md documents the exists() narrowing example");
+
+    let mut module = String::from(
+        "module main\n\n\
+         resource Book\n    required title: string\n    subtitle: string\n\n\
+         store ^books(id: int): Book\n\n\
+         fn show(id: int)\n",
+    );
+    for line in block.source.lines() {
+        module.push_str("    ");
+        module.push_str(line);
+        module.push('\n');
+    }
+
+    let root = temp_project("docs-exists-narrowing", |root| {
+        write(root, "src/main.mw", &module);
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+
+    assert!(
+        report.diagnostics.is_empty(),
+        "types.md exists() narrowing example produced checker diagnostics: {:#?}",
+        report.diagnostics
+    );
+}
+
 /// Recursively collect the repo-relative paths of files under `dir`, skipping build
 /// output, version-control state, and any hidden entry, so the scan sees the tracked
 /// source tree and never a stray artifact dir.

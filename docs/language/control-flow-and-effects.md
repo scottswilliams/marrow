@@ -35,6 +35,14 @@ if exists(^books(id)) and not exists(^books(id).loanedTo)
 
 The right side is not evaluated if the left side decides the result.
 
+The absence-default `??` is lazy in the same way: its right-hand default is
+evaluated only when the left read is absent, so a default expression with
+effects does not run for a present value.
+
+```mw
+const shelf = ^books(id).shelf ?? defaultShelf()   ; defaultShelf() runs only when shelf is absent
+```
+
 ## Loops
 
 Range loops use range syntax:

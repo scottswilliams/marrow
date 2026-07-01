@@ -141,12 +141,12 @@ resolved at the read site by one of: an absence-default `place ?? fallback`; an
 compile error that names the place and the available resolutions.
 
 Use `exists(path)` when code needs to branch on whether a field is
-populated; the check narrows the path inside the guarded block:
+populated; the check narrows the path inside the guarded block, so the body
+reads it directly:
 
 ```mw
 if exists(^books(id).subtitle)
-    if const subtitle = ^books(id).subtitle
-        print(subtitle)
+    print(^books(id).subtitle)
 ```
 
 Use the absence-default `??` when absence is expected:

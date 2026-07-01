@@ -342,7 +342,9 @@ looser than `+`/`-` and tighter than ranges and comparisons, so `count ?? 0 < 5`
 is `(count ?? 0) < 5`,
 `start ?? 1 .. n` is `(start ?? 1) .. n`, and `x ?? y + 1` is `x ?? (y + 1)`.
 It is right-associative, so `a ?? b ?? c` is `a ?? (b ?? c)`: a chain of defaults
-falls through to the first present value.
+falls through to the first present value. The right operand is evaluated only
+when the left read is absent, so a default expression with effects does not run
+for a present value.
 
 The optional read `?.` accesses a field that may be absent. An absent step
 short-circuits the rest of the chain to absent rather than failing the read, so
@@ -357,9 +359,10 @@ both endpoints share that type. The checker accepts ranges for `for` loops, not
 as saved values. See
 [Control Flow And Errors](control-flow-and-effects.md) for step rules.
 
-Operands and call arguments evaluate left to right. `and` and `or`
-short-circuit; other operators evaluate their operands before applying the
-operator.
+Operands and call arguments evaluate left to right. `and`, `or`, and `??`
+short-circuit: `and` and `or` skip the right side once the left decides the
+result, and `??` skips its right-hand default when the left read is present.
+Every other operator evaluates its operands before applying.
 
 ## Strings
 

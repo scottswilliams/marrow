@@ -168,8 +168,7 @@ optional chaining:
 
 ```mw
 if exists(^books(id).subtitle)
-    if const subtitle = ^books(id).subtitle
-        print(subtitle)
+    print(^books(id).subtitle)
 
 const subtitle: string = ^books(id).subtitle ?? ""
 ```
