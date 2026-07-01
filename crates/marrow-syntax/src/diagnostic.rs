@@ -50,6 +50,10 @@ pub enum ParseDiagnosticReason {
     EmptyKeyParameters,
     EnumMemberMustBeBareName,
     EnumNeedsMember,
+    /// A compound-assign operator (`+=`, `-=`, `*=`, `/=`, `%=`) reached in
+    /// expression position, as in `a += b += c`: assignment does not chain and
+    /// is not an expression.
+    CompoundAssignInExpression,
     /// A bare `=` left in expression position, the common `=`-for-`==` mistake.
     EqualsInExpression,
     Expected(ExpectedSyntax),

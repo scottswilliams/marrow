@@ -464,6 +464,70 @@ fn bare_equals_in_expression_position_is_a_parse_error() {
 }
 
 #[test]
+fn chained_compound_assignment_is_reported_at_the_second_operator() {
+    // Assignment does not chain and is not an expression: a second compound-assign
+    // operator reached in expression position is reported at that operator, the
+    // same class of located parse error as the stray `=` recovery, rather than a
+    // generic "expected a statement" mislocated at the statement keyword.
+    for (line, second_operator) in [
+        ("    a += b += c\n", "+="),
+        ("    a += b -= c\n", "-="),
+        ("    a *= b /= c\n", "/="),
+    ] {
+        let source = format!("module app\nfn f(a: int, b: int, c: int)\n{line}");
+        let parsed = parse_source(&source);
+        let diagnostic = parsed
+            .diagnostics
+            .iter()
+            .find(|diagnostic| {
+                diagnostic.reason == parse_reason(ParseDiagnosticReason::CompoundAssignInExpression)
+            })
+            .unwrap_or_else(|| {
+                panic!(
+                    "expected a compound-assign-in-expression error for {source:?}: {:#?}",
+                    parsed.diagnostics
+                )
+            });
+        // The span covers the second compound operator, not the statement start.
+        let start = source.rfind(second_operator).expect("second operator");
+        assert_eq!(
+            diagnostic.span.start_byte, start,
+            "span should cover the second `{second_operator}`: {diagnostic:#?}"
+        );
+        assert_eq!(
+            &source[diagnostic.span.start_byte..diagnostic.span.end_byte],
+            second_operator,
+            "{diagnostic:#?}"
+        );
+        assert!(
+            diagnostic.message.contains("does not chain"),
+            "expected a does-not-chain message: {diagnostic:#?}"
+        );
+        // The generic statement fallback must not also fire.
+        assert!(
+            !parsed.diagnostics.iter().any(|diagnostic| {
+                diagnostic.reason
+                    == parse_reason(ParseDiagnosticReason::Expected(ExpectedSyntax::Statement))
+            }),
+            "expected no `expected a statement` fallback: {:#?}",
+            parsed.diagnostics
+        );
+    }
+}
+
+#[test]
+fn a_single_compound_assignment_still_parses_cleanly() {
+    let parsed = parse_source("module app\nfn f(a: int, b: int)\n    a += b\n");
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let f = parsed.file.function("f").expect("function");
+    assert!(
+        matches!(&f.body.statements[0], Statement::CompoundAssign { .. }),
+        "{:#?}",
+        f.body.statements[0]
+    );
+}
+
+#[test]
 fn parses_the_is_operator() {
     let value =
         parsed_return_expr("module app\nfn f(pet: Cat): bool\n    return pet is Cat::tiger\n");

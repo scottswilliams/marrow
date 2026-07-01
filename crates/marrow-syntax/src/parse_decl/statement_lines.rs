@@ -262,7 +262,7 @@ fn parse_assign_or_expr(
     if let Some(equal) = find_top_level_equal(line) {
         let equal_span = line[equal].span;
         if equal > 0
-            && let Some(op) = compound_assignment_op(line[equal - 1].kind)
+            && let Some(op) = CompoundAssignOp::from_operator_token(line[equal - 1].kind)
         {
             let op_span = line[equal - 1].span;
             let target = expr_of_before(source, &line[..equal - 1], op_span, diagnostics)?;
@@ -288,17 +288,6 @@ fn parse_assign_or_expr(
             span: value.span(),
             value,
         })
-    }
-}
-
-fn compound_assignment_op(kind: TokenKind) -> Option<CompoundAssignOp> {
-    match kind {
-        TokenKind::Plus => Some(CompoundAssignOp::Add),
-        TokenKind::Minus => Some(CompoundAssignOp::Subtract),
-        TokenKind::Star => Some(CompoundAssignOp::Multiply),
-        TokenKind::Slash => Some(CompoundAssignOp::Divide),
-        TokenKind::Percent => Some(CompoundAssignOp::Remainder),
-        _ => None,
     }
 }
 

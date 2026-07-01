@@ -4,7 +4,7 @@
 
 use crate::token::is_trivia;
 use crate::{
-    Argument, BinaryOp, Diagnostic, DiagnosticReason, ExpectedSyntax, Expression,
+    Argument, BinaryOp, CompoundAssignOp, Diagnostic, DiagnosticReason, ExpectedSyntax, Expression,
     InterpolationPart, Keyword, LiteralKind, NESTING_DEPTH_LIMIT, NESTING_LIMIT, PARSE_SYNTAX,
     ParseDiagnosticReason, Severity, SourceSpan, Token, TokenKind, UnaryOp, UnsupportedSyntax,
     is_expression_callable_keyword, is_expression_path_segment_keyword,
@@ -118,30 +118,49 @@ impl<'a> ExprParser<'a> {
         // A `=` left where the expression should have ended is the `=`-for-`==`
         // mistake: `=` is assignment only, so it never appears mid-expression.
         if expr.is_some() {
-            self.report_stray_equals();
+            self.report_stray_assignment_operator();
         }
         diagnostics.append(&mut self.diagnostics);
         let expr = expr?;
         (self.pos == self.tokens.len()).then_some(expr)
     }
 
-    /// If the next unconsumed token is `=`, report the `=`-vs-`==` mistake at that
-    /// token and return `true`. `=` is assignment only, so a `=` reached in
-    /// expression position is this common error rather than a generic one.
-    fn report_stray_equals(&mut self) -> bool {
+    /// If the next unconsumed token begins a stray assignment operator in
+    /// expression position, report it at that operator and return `true`. This is
+    /// the single owner of that recovery: a bare `=` is the `=`-vs-`==` mistake,
+    /// and a compound-assign operator (`+=`, `-=`, …) is a chained or misplaced
+    /// assignment, which does not chain and is not an expression. Both are
+    /// reported here so the diagnostic lands on the operator rather than bubbling
+    /// to a generic "expected a statement" at the statement keyword.
+    fn report_stray_assignment_operator(&mut self) -> bool {
         let Some(token) = self.tokens.get(self.pos).copied() else {
             return false;
         };
-        if token.kind != TokenKind::Equal {
-            return false;
+        if token.kind == TokenKind::Equal {
+            self.error(
+                token.span,
+                ParseDiagnosticReason::EqualsInExpression,
+                "`=` is assignment, not equality; use `==` for equality".to_string(),
+                None,
+            );
+            return true;
         }
-        self.error(
-            token.span,
-            ParseDiagnosticReason::EqualsInExpression,
-            "`=` is assignment, not equality; use `==` for equality".to_string(),
-            None,
-        );
-        true
+        if let Some(op) = CompoundAssignOp::from_operator_token(token.kind)
+            && self.peek_at(1) == Some(TokenKind::Equal)
+        {
+            let span = join_spans(token.span, self.tokens[self.pos + 1].span);
+            self.error(
+                span,
+                ParseDiagnosticReason::CompoundAssignInExpression,
+                format!(
+                    "`{}` is assignment, not an expression; assignment does not chain",
+                    op.symbol()
+                ),
+                None,
+            );
+            return true;
+        }
+        false
     }
 
     fn error(
@@ -318,6 +337,17 @@ impl<'a> ExprParser<'a> {
         let mut left = operand(self)?;
         let mut levels = 0;
         while let Some(op) = self.peek().and_then(&operator) {
+            // A binary operator immediately followed by `=` is a compound-assign
+            // operator (`+=`): a statement, never an expression. Stop the chain
+            // and leave it for the stray-assignment-operator recovery, rather
+            // than consuming the operator and failing on the trailing `=`.
+            if self.peek_at(1) == Some(TokenKind::Equal)
+                && self
+                    .peek()
+                    .is_some_and(|kind| CompoundAssignOp::from_operator_token(kind).is_some())
+            {
+                break;
+            }
             if !self.enter_chain_level() {
                 self.leave_chain(levels);
                 return None;
@@ -826,12 +856,13 @@ impl<'a> ExprParser<'a> {
                     self.advance();
                     Some(inner)
                 } else {
-                    // A `=` before the closing `)` is the `=`-for-`==` mistake;
-                    // report it pointedly rather than as an unstructured group.
-                    // Otherwise the group is unterminated: name the missing `)` at
-                    // the gap so the error lands on the delimiter, not on the
-                    // enclosing statement keyword.
-                    if !self.report_stray_equals() {
+                    // A stray assignment operator before the closing `)` — a bare
+                    // `=` or a compound-assign operator — is reported pointedly at
+                    // that operator rather than as an unstructured group. Otherwise
+                    // the group is unterminated: name the missing `)` at the gap so
+                    // the error lands on the delimiter, not on the enclosing
+                    // statement keyword.
+                    if !self.report_stray_assignment_operator() {
                         self.expected_delimiter_at_gap(ExpectedSyntax::CloseParen, "expected `)`");
                     }
                     None

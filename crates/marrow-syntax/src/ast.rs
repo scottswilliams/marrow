@@ -3,7 +3,7 @@
 
 use std::fmt;
 
-use crate::{Diagnostic, Severity, SourceSpan};
+use crate::{Diagnostic, Severity, SourceSpan, TokenKind};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParsedSource {
@@ -352,6 +352,22 @@ pub enum CompoundAssignOp {
 }
 
 impl CompoundAssignOp {
+    /// The compound-assign operator a token spells when it sits immediately
+    /// before the `=` of `+=`, `-=`, `*=`, `/=`, `%=`, or `None` for any other
+    /// token. This is the single owner of the operator-token classification,
+    /// shared by the statement parser (which splits a compound assignment) and
+    /// the expression parser (which rejects one reached in expression position).
+    pub(crate) fn from_operator_token(kind: TokenKind) -> Option<Self> {
+        match kind {
+            TokenKind::Plus => Some(Self::Add),
+            TokenKind::Minus => Some(Self::Subtract),
+            TokenKind::Star => Some(Self::Multiply),
+            TokenKind::Slash => Some(Self::Divide),
+            TokenKind::Percent => Some(Self::Remainder),
+            _ => None,
+        }
+    }
+
     pub fn binary(self) -> BinaryOp {
         match self {
             Self::Add => BinaryOp::Add,
