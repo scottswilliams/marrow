@@ -159,9 +159,10 @@ impl CheckedCallTarget {
         match resolve(program, from_module, expanded, ResolvableKind::Function) {
             Resolution::Found(Def {
                 module,
+                module_index,
                 item: DefItem::Function(function),
                 ..
-            }) => function_ref(program, module, function).map(Self::Function),
+            }) => function_ref(module_index, module, function).map(Self::Function),
             Resolution::Found(Def {
                 item: DefItem::Resource(_),
                 ..

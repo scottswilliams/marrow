@@ -156,6 +156,66 @@ fn cross_module_use_of_a_public_enum_checks_clean() {
 }
 
 #[test]
+fn many_modules_resolve_a_shared_enum_and_resource_with_unchanged_diagnostics() {
+    // Cross-module enum and qualified-resource resolution route through the O(1)
+    // module-name index. At scale the resolution semantics must be unchanged: every
+    // module qualifying the shared module's `pub enum` and `pub resource` checks
+    // clean, while a single module qualifying the shared module's private enum still
+    // reports `check.private_enum` for both the annotation and the value, and nothing
+    // else regresses.
+    const MODULE_COUNT: usize = 64;
+    let root = temp_project("resolve-many-shared-types", |root| {
+        write(
+            root,
+            "src/shared.mw",
+            "module shared\n\
+             pub enum Status\n    Active\n    Inactive\n\
+             enum Hidden\n    One\n    Two\n\
+             resource Book\n    title: string\n",
+        );
+        for index in 0..MODULE_COUNT {
+            write(
+                root,
+                &format!("src/m{index}.mw"),
+                &format!(
+                    "module m{index}\nuse shared\n\
+                     fn pick{index}(s: shared::Status): shared::Status\n    return s\n\
+                     fn shelve{index}(b: shared::Book): string\n    return b.title\n\
+                     pub fn entry{index}(): shared::Status\n    return shared::Status::Active\n"
+                ),
+            );
+        }
+        // One module reaches for the shared module's private enum, both as an
+        // annotation and as a value.
+        write(
+            root,
+            "src/intruder.mw",
+            "module intruder\nuse shared\n\
+             fn peek(): shared::Hidden\n    return shared::Hidden::One\n",
+        );
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+    let private = with_code(&report, "check.private_enum");
+    assert_eq!(
+        private.len(),
+        2,
+        "the one private-enum reach reports exactly its annotation and value, not one per module: {:#?}",
+        report.diagnostics
+    );
+    assert!(
+        private.iter().all(|diagnostic| diagnostic.payload
+            == DiagnosticPayload::PrivateEnum("shared::Hidden".into())),
+        "{private:#?}"
+    );
+    assert!(
+        with_code(&report, "check.unknown_type").is_empty()
+            && with_code(&report, "check.unresolved_call").is_empty(),
+        "every qualified shared enum and resource reference resolves at scale: {:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
 fn same_named_resources_constructor_resolves_by_module() {
     // Both modules declare a resource named `Book`. A constructor is the resource
     // NAME, which is module-scoped: a bare `Book(...)` in `zzz` constructs the
@@ -200,6 +260,66 @@ fn bare_foreign_resource_annotation_is_unknown_not_project_wide() {
 }
 
 #[test]
+fn many_modules_resolve_independently_while_ambiguity_is_still_detected() {
+    // A project with many modules resolves every bare same-module call O(1) through
+    // the module-name index, not a linear scan. The index must not change resolution:
+    // each module's bare call to its own helper checks clean, two modules sharing a
+    // `pub fn shared` make a bare cross-module `shared()` ambiguous, and a bare call
+    // to a name no module declares is still unresolved.
+    const MODULE_COUNT: usize = 64;
+    let root = temp_project("resolve-many-modules", |root| {
+        for index in 0..MODULE_COUNT {
+            write(
+                root,
+                &format!("src/m{index}.mw"),
+                &format!(
+                    "module m{index}\n\
+                     fn helper{index}(x: int): int\n    return x + {index}\n\
+                     pub fn entry{index}(x: int): int\n    return helper{index}(x)\n"
+                ),
+            );
+        }
+        // Two modules expose the same bare name, and a third calls it unqualified.
+        write(
+            root,
+            "src/dup_a.mw",
+            "module dup_a\npub fn shared(): int\n    return 1\n",
+        );
+        write(
+            root,
+            "src/dup_b.mw",
+            "module dup_b\npub fn shared(): int\n    return 2\n",
+        );
+        write(
+            root,
+            "src/caller.mw",
+            "module caller\n\
+             fn calls_ambiguous(): int\n    return shared()\n\
+             fn calls_missing(): int\n    return nowhere()\n",
+        );
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+    assert_eq!(
+        with_code(&report, "check.ambiguous_call").len(),
+        1,
+        "a bare call to a pub fn in two modules stays ambiguous at scale: {:#?}",
+        report.diagnostics
+    );
+    let unresolved = with_code(&report, "check.unresolved_call");
+    assert_eq!(
+        unresolved.len(),
+        1,
+        "exactly the one undeclared name is unresolved; the many same-module calls resolve: {:#?}",
+        report.diagnostics
+    );
+    assert!(
+        unresolved[0].file.ends_with("caller.mw"),
+        "the unresolved call is the undeclared `nowhere()` in caller.mw: {:#?}",
+        unresolved[0]
+    );
+}
+
+#[test]
 fn bare_call_to_a_pub_fn_in_two_modules_is_ambiguous() {
     // `aaa` and `bbb` each declare a `pub fn greet`; `zzz` declares no `greet` and
     // calls a bare `greet()`. Each is reachable only as `module::greet`, so the
@@ -234,4 +354,77 @@ fn bare_call_to_a_pub_fn_in_two_modules_is_ambiguous() {
         "an ambiguous call has candidates, so it is not also unresolved: {:#?}",
         report.diagnostics
     );
+}
+
+#[test]
+fn duplicate_declared_name_in_one_module_is_unresolved_not_ambiguous() {
+    // `aaa` declares `pub fn greet` twice (a `check.duplicate_declaration`); `zzz`
+    // declares no `greet` and bare-calls it. Only one module declares the name, so
+    // the bare call is reachable solely as `aaa::greet` and stays a plain
+    // `check.unresolved_call` — the diagnostic-enrichment scan counts the declaring
+    // module once, never once per duplicate declaration, so the duplicate must not
+    // forge a second candidate and flip the call to `check.ambiguous_call`.
+    let root = temp_project("resolve-duplicate-decl", |root| {
+        write(
+            root,
+            "src/aaa.mw",
+            "module aaa\npub fn greet(): int\n    return 1\npub fn greet(): int\n    return 2\n",
+        );
+        write(
+            root,
+            "src/zzz.mw",
+            "module zzz\nfn run(): int\n    return greet()\n",
+        );
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+    assert!(
+        !with_code(&report, "check.duplicate_declaration").is_empty(),
+        "the doubly-declared `greet` is reported as a duplicate declaration: {:#?}",
+        report.diagnostics
+    );
+    assert_eq!(
+        with_code(&report, "check.unresolved_call").len(),
+        1,
+        "a bare call to a name declared in one module stays unresolved: {:#?}",
+        report.diagnostics
+    );
+    assert!(
+        with_code(&report, "check.ambiguous_call").is_empty(),
+        "a duplicate declaration in one module must not forge a second candidate: {:#?}",
+        report.diagnostics
+    );
+}
+
+#[test]
+fn many_stores_resolve_their_own_roots_and_a_shared_root_across_modules() {
+    // Saved-root resolution routes through the O(1) store-root index. At scale the
+    // semantics must be unchanged: every module reads its own `^rootN` and resolves
+    // another module's project-visible `^books`, and the whole project still checks
+    // clean — the index never strands a declared root or mis-resolves one module's
+    // root for another's.
+    const MODULE_COUNT: usize = 64;
+    let root = temp_project("resolve-many-stores", |root| {
+        write(
+            root,
+            "src/shared.mw",
+            "module shared\n\
+             resource Book\n    title: string\n\
+             store ^books(id: int): Book\n",
+        );
+        for index in 0..MODULE_COUNT {
+            write(
+                root,
+                &format!("src/m{index}.mw"),
+                &format!(
+                    "module m{index}\n\
+                     resource Row{index}\n    label: string\n\
+                     store ^rows{index}(id: int): Row{index}\n\
+                     fn label_of{index}(id: Id(^rows{index})): string\n    return ^rows{index}(id).label ?? \"\"\n\
+                     fn shared_title{index}(id: Id(^books)): string\n    return ^books(id).title ?? \"\"\n"
+                ),
+            );
+        }
+    });
+    let (report, _program) = check_project(&root, &config()).expect("check");
+    assert_clean(&report);
 }

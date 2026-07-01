@@ -16,7 +16,7 @@ use crate::catalog::{
 };
 use crate::enums::{EnumAnnotationResolution, resolve_enum_annotation_type_for_module};
 use crate::executable::CheckedFunctionRef;
-use crate::program::{CheckedModule, MarrowType};
+use crate::program::{CheckedModule, CheckedProgram, MarrowType};
 use crate::{build_alias_map, expand_alias, split_type_path};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -68,27 +68,64 @@ pub struct CheckedFacts {
     surfaces: Vec<SurfaceFact>,
     resource_members: Vec<ResourceMemberFact>,
     member_by_path: HashMap<(ResourceId, Option<ResourceMemberId>, String), ResourceMemberId>,
+    /// A module's qualified name to its fact id, so resolving a cross-module or
+    /// qualified reference is O(1) instead of a linear scan over every module fact.
+    /// Cross-module enum and resource resolution hits this on every reference, so the
+    /// scan it replaces made checking a many-module project quadratic.
+    module_id_by_name: HashMap<String, ModuleId>,
     enums: Vec<EnumFact>,
     enum_members: Vec<EnumMemberFact>,
+    /// A function's `(module, source_index)` reference to its fact id, so resolving a
+    /// lowered call target is O(1) instead of a linear scan over every function. The
+    /// effect-closure walk hits this on every call, so the scan it replaces made
+    /// presence checking quadratic in a many-function project.
+    function_id_by_ref: HashMap<(u32, u32), FunctionId>,
+    /// Each declaration table's `(module, name)` key to its fact id, so resolving a
+    /// per-reference enum, function, resource, or store lookup is O(1) instead of a
+    /// linear scan over the whole table. Every reference in a body hits one of these,
+    /// so the scans they replace made checking a many-declaration project quadratic.
+    /// Each is first-binding-wins, matching the `iter().find` it replaces, so a
+    /// transient duplicate declaration resolves exactly as before.
+    enum_id_by_name: HashMap<(ModuleId, String), EnumId>,
+    function_id_by_name: HashMap<(ModuleId, String), FunctionId>,
+    resource_id_by_name: HashMap<(ModuleId, String), ResourceId>,
+    store_id_by_name: HashMap<(ModuleId, String), StoreId>,
+    /// Each enum member keyed by its enum and its source-order ordinal within that
+    /// enum, so resolving the ordinal-th member of an enum is O(1). Member-path
+    /// resolution hits this on every enum-value reference, so the whole-program member
+    /// scan it replaces made checking a many-enum project quadratic.
+    enum_member_id_by_ordinal: HashMap<(EnumId, u32), EnumMemberId>,
+    /// A saved root to its store fact id, project-wide. A `^root` reference resolves
+    /// its owning store through here before narrowing to the declaring module, so the
+    /// former whole-program scan no longer made store-heavy checking quadratic.
+    store_id_by_root: HashMap<String, StoreId>,
     presence_proofs: Vec<PresenceProofFact>,
     durable_digest_captured_modules: Vec<u32>,
     durable_digest_renderings: Vec<DurableRendering>,
 }
 
 impl CheckedFacts {
-    pub(crate) fn from_modules(
-        modules: &[CheckedModule],
+    pub(crate) fn from_program(
+        program: &CheckedProgram,
         sources: &HashMap<PathBuf, &ParsedSource>,
     ) -> Self {
+        let modules = &program.modules;
         let mut facts = Self::default();
 
         for (module_index, module) in modules.iter().enumerate() {
+            let id = ModuleId(module_index as u32);
             facts.modules.push(ModuleFact {
-                id: ModuleId(module_index as u32),
+                id,
                 name: module.name.clone(),
                 source_file: module.source_file.clone(),
                 span: module.span,
             });
+            // Module names are unique within a program; the first binding wins, the
+            // same module the prior linear scan returned for a transient duplicate.
+            facts
+                .module_id_by_name
+                .entry(module.name.clone())
+                .or_insert(id);
         }
 
         // Resolve each module's id and parsed source once, then drive every collector over the
@@ -106,18 +143,34 @@ impl CheckedFacts {
         for &(module_id, module, parsed) in &bindings {
             facts.collect_enum_facts(module_id, module, parsed);
         }
+        // Each collector below resolves cross-table references through these indexes,
+        // so every index is built the moment its table is complete and before the
+        // first collector that reads it: resources before stores and members, stores
+        // before store indexes and any identity-typed signature.
+        facts.enum_id_by_name = index_first_wins(&facts.enums, |fact| {
+            ((fact.module, fact.name.clone()), fact.id)
+        });
+        facts.enum_member_id_by_ordinal = index_enum_member_ordinals(&facts.enum_members);
         for &(module_id, module, parsed) in &bindings {
             facts.collect_resource_facts(module_id, module, parsed);
         }
+        facts.resource_id_by_name = index_first_wins(&facts.resources, |fact| {
+            ((fact.module, fact.name.clone()), fact.id)
+        });
         for &(module_id, module, parsed) in &bindings {
-            facts.collect_store_facts(modules, module_id, module, parsed);
+            facts.collect_store_facts(program, module_id, module, parsed);
         }
+        facts.store_id_by_name = index_first_wins(&facts.stores, |fact| {
+            ((fact.module, fact.root.clone()), fact.id)
+        });
+        facts.store_id_by_root =
+            index_first_wins(&facts.stores, |fact| (fact.root.clone(), fact.id));
         for &(module_id, module, parsed) in &bindings {
-            facts.collect_resource_member_facts_for_module(modules, module_id, module, parsed);
+            facts.collect_resource_member_facts_for_module(program, module_id, module, parsed);
         }
         facts.index_member_paths();
         for &(module_id, module, parsed) in &bindings {
-            facts.collect_store_index_facts_for_module(modules, module_id, module, parsed);
+            facts.collect_store_index_facts_for_module(program, module_id, module, parsed);
         }
         for &(module_id, module, parsed) in &bindings {
             for (source_index, function) in module.functions.iter().enumerate() {
@@ -128,6 +181,14 @@ impl CheckedFacts {
                 }
             }
         }
+        facts.function_id_by_ref = facts
+            .functions
+            .iter()
+            .map(|function| ((function.module.0, function.source_index), function.id))
+            .collect();
+        facts.function_id_by_name = index_first_wins(&facts.functions, |fact| {
+            ((fact.module, fact.name.clone()), fact.id)
+        });
 
         facts
     }
@@ -196,7 +257,8 @@ impl CheckedFacts {
     }
 
     pub fn store_by_root(&self, root: &str) -> Option<&StoreFact> {
-        self.stores.iter().find(|store| store.root == root)
+        let id = self.store_id_by_root.get(root)?;
+        self.stores.get(id.0 as usize)
     }
 
     pub fn store_indexes(&self) -> &[StoreIndexFact] {
@@ -277,10 +339,8 @@ impl CheckedFacts {
         enum_id: EnumId,
         ordinal: u32,
     ) -> Option<&EnumMemberFact> {
-        self.enum_members
-            .iter()
-            .filter(|member| member.enum_id == enum_id)
-            .nth(ordinal as usize)
+        let id = self.enum_member_id_by_ordinal.get(&(enum_id, ordinal))?;
+        self.enum_members.get(id.0 as usize)
     }
 
     pub fn enum_member_is_selectable(&self, id: EnumMemberId) -> bool {
@@ -515,24 +575,19 @@ impl CheckedFacts {
     }
 
     pub fn module_id(&self, name: &str) -> Option<ModuleId> {
-        self.modules
-            .iter()
-            .find(|module| module.name == name)
-            .map(|module| module.id)
+        self.module_id_by_name.get(name).copied()
     }
 
     pub fn resource_id(&self, module: ModuleId, name: &str) -> Option<ResourceId> {
-        self.resources
-            .iter()
-            .find(|resource| resource.module == module && resource.name == name)
-            .map(|resource| resource.id)
+        self.resource_id_by_name
+            .get(&(module, name.to_string()))
+            .copied()
     }
 
     pub fn store_id(&self, module: ModuleId, root: &str) -> Option<StoreId> {
-        self.stores
-            .iter()
-            .find(|store| store.module == module && store.root == root)
-            .map(|store| store.id)
+        self.store_id_by_name
+            .get(&(module, root.to_string()))
+            .copied()
     }
 
     pub fn resource_member_id(
@@ -545,17 +600,15 @@ impl CheckedFacts {
     }
 
     pub fn enum_id(&self, module: ModuleId, name: &str) -> Option<EnumId> {
-        self.enums
-            .iter()
-            .find(|enum_fact| enum_fact.module == module && enum_fact.name == name)
-            .map(|enum_fact| enum_fact.id)
+        self.enum_id_by_name
+            .get(&(module, name.to_string()))
+            .copied()
     }
 
     pub fn function_id(&self, module: ModuleId, name: &str) -> Option<FunctionId> {
-        self.functions
-            .iter()
-            .find(|function| function.module == module && function.name == name)
-            .map(|function| function.id)
+        self.function_id_by_name
+            .get(&(module, name.to_string()))
+            .copied()
     }
 
     pub fn function(&self, id: FunctionId) -> &FunctionFact {
@@ -563,13 +616,16 @@ impl CheckedFacts {
     }
 
     pub fn function_id_for_ref(&self, function_ref: CheckedFunctionRef) -> Option<FunctionId> {
-        let module = ModuleId(function_ref.module);
-        self.functions
-            .iter()
-            .find(|function| {
-                function.module == module && function.source_index == function_ref.function
-            })
-            .map(|function| function.id)
+        self.function_id_at(function_ref.module, function_ref.function)
+    }
+
+    /// The id of the function at `source_index` in module `module`, resolved O(1)
+    /// through the lowered-call index. The sole owner of the `(module, source_index)`
+    /// to `FunctionId` lookup.
+    pub(crate) fn function_id_at(&self, module: u32, source_index: u32) -> Option<FunctionId> {
+        self.function_id_by_ref
+            .get(&(module, source_index))
+            .copied()
     }
 
     pub fn function_for_ref(&self, function_ref: CheckedFunctionRef) -> Option<&FunctionFact> {
@@ -692,7 +748,7 @@ impl CheckedFacts {
 
     fn collect_store_facts(
         &mut self,
-        modules: &[CheckedModule],
+        program: &CheckedProgram,
         module_id: ModuleId,
         module: &CheckedModule,
         parsed: Option<&ParsedSource>,
@@ -721,7 +777,7 @@ impl CheckedFacts {
                 .iter()
                 .map(|key| StoreIdentityKeyFact {
                     name: key.name.clone(),
-                    value_meaning: self.stored_value_meaning(modules, module, &key.ty),
+                    value_meaning: self.stored_value_meaning(program, module, &key.ty),
                 })
                 .collect();
             self.stores.push(StoreFact {
@@ -740,7 +796,7 @@ impl CheckedFacts {
 
     fn collect_resource_member_facts_for_module(
         &mut self,
-        modules: &[CheckedModule],
+        program: &CheckedProgram,
         module_id: ModuleId,
         module: &CheckedModule,
         parsed: Option<&ParsedSource>,
@@ -764,7 +820,7 @@ impl CheckedFacts {
                     })
             });
             self.collect_resource_member_facts(
-                modules,
+                program,
                 module,
                 resource_id,
                 None,
@@ -776,7 +832,7 @@ impl CheckedFacts {
 
     fn collect_store_index_facts_for_module(
         &mut self,
-        modules: &[CheckedModule],
+        program: &CheckedProgram,
         module_id: ModuleId,
         module: &CheckedModule,
         parsed: Option<&ParsedSource>,
@@ -811,13 +867,13 @@ impl CheckedFacts {
                 resource,
                 resource_schema,
             };
-            self.collect_store_index_facts(modules, module, index_binding, store, declaration);
+            self.collect_store_index_facts(program, module, index_binding, store, declaration);
         }
     }
 
     fn collect_store_index_facts(
         &mut self,
-        modules: &[CheckedModule],
+        program: &CheckedProgram,
         module: &CheckedModule,
         binding: StoreIndexBinding<'_>,
         store: &marrow_schema::StoreSchema,
@@ -847,7 +903,7 @@ impl CheckedFacts {
                 .resource_schema
                 .map(|resource_schema| {
                     self.store_index_keys(
-                        modules,
+                        program,
                         module,
                         binding.resource,
                         store,
@@ -872,7 +928,7 @@ impl CheckedFacts {
 
     fn collect_resource_member_facts(
         &mut self,
-        modules: &[CheckedModule],
+        program: &CheckedProgram,
         module: &CheckedModule,
         resource_id: ResourceId,
         parent: Option<ResourceMemberId>,
@@ -916,7 +972,7 @@ impl CheckedFacts {
                 _ => None,
             };
             let value_meaning = match &node.kind {
-                NodeKind::Slot { ty, .. } => self.stored_value_meaning(modules, module, ty),
+                NodeKind::Slot { ty, .. } => self.stored_value_meaning(program, module, ty),
                 NodeKind::Group => None,
             };
             let id = ResourceMemberId(self.resource_members.len() as u32);
@@ -938,7 +994,7 @@ impl CheckedFacts {
                 _ => None,
             });
             self.collect_resource_member_facts(
-                modules,
+                program,
                 module,
                 resource_id,
                 Some(id),
@@ -1130,7 +1186,7 @@ impl CheckedFacts {
 
     fn stored_value_meaning(
         &self,
-        modules: &[CheckedModule],
+        program: &CheckedProgram,
         module: &CheckedModule,
         ty: &Type,
     ) -> Option<StoredValueMeaning> {
@@ -1155,7 +1211,7 @@ impl CheckedFacts {
             Type::Named(name) => {
                 let resolved = match resolve_enum_annotation_type_for_module(
                     &Type::Named(name.clone()),
-                    modules,
+                    program,
                     module,
                 ) {
                     EnumAnnotationResolution::Visible(resolved) => resolved,
@@ -1184,7 +1240,7 @@ impl CheckedFacts {
 
     fn store_index_keys(
         &self,
-        modules: &[CheckedModule],
+        program: &CheckedProgram,
         module: &CheckedModule,
         resource: ResourceId,
         store: &marrow_schema::StoreSchema,
@@ -1195,7 +1251,7 @@ impl CheckedFacts {
             .args
             .iter()
             .filter_map(|arg| {
-                self.identity_index_key(modules, module, store, arg)
+                self.identity_index_key(program, module, store, arg)
                     .or_else(|| self.resource_member_index_key(resource, resource_schema, arg))
             })
             .collect()
@@ -1203,7 +1259,7 @@ impl CheckedFacts {
 
     fn identity_index_key(
         &self,
-        modules: &[CheckedModule],
+        program: &CheckedProgram,
         module: &CheckedModule,
         store: &marrow_schema::StoreSchema,
         arg: &str,
@@ -1212,7 +1268,7 @@ impl CheckedFacts {
         Some(StoreIndexKeyFact {
             name: arg.to_string(),
             source: StoreIndexKeySource::IdentityKey,
-            value_meaning: self.stored_value_meaning(modules, module, &key.ty)?,
+            value_meaning: self.stored_value_meaning(program, module, &key.ty)?,
         })
     }
 
@@ -1823,6 +1879,37 @@ fn member_name_path<M: MemberNode>(members: &[M], index: usize) -> Option<Vec<St
     };
     path.push(member.name().to_string());
     Some(path)
+}
+
+/// Build a first-binding-wins lookup from a fact table, so it returns the same id the
+/// linear `iter().find` it replaces would for a duplicate key. The build cost is one
+/// pass over the table, keeping the checked-program build linear in declaration count
+/// while making each per-reference lookup O(1).
+fn index_first_wins<T, K, V>(facts: &[T], key_value: impl Fn(&T) -> (K, V)) -> HashMap<K, V>
+where
+    K: std::hash::Hash + Eq,
+{
+    let mut index = HashMap::with_capacity(facts.len());
+    for fact in facts {
+        let (key, value) = key_value(fact);
+        index.entry(key).or_insert(value);
+    }
+    index
+}
+
+/// Key each enum member by its enum and its source-order ordinal within that enum,
+/// the position a member-path resolution names it by. Members are pushed in flattened
+/// source order, so the ordinal is the count of preceding members of the same enum —
+/// the same value `filter(enum_id).nth(ordinal)` selected, now resolved in O(1).
+fn index_enum_member_ordinals(members: &[EnumMemberFact]) -> HashMap<(EnumId, u32), EnumMemberId> {
+    let mut ordinals: HashMap<EnumId, u32> = HashMap::new();
+    let mut index = HashMap::with_capacity(members.len());
+    for member in members {
+        let ordinal = ordinals.entry(member.enum_id).or_insert(0);
+        index.insert((member.enum_id, *ordinal), member.id);
+        *ordinal += 1;
+    }
+    index
 }
 
 fn overwrite_prefix<T>(target: &mut [T], prefix: &[T])

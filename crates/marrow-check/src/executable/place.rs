@@ -893,7 +893,9 @@ pub(super) fn checked_root_place(
     span: SourceSpan,
 ) -> Option<CheckedSavedPlace> {
     let store = resolve_store_by_root(program, root)?;
-    let module_id = module_id(program, &store.module.name)?;
+    let module_id = program
+        .module_index_by_name(&store.module.name)
+        .map(|index| ModuleId(index as u32))?;
     let store_id = program.facts.store_id(module_id, root)?;
     let store_fact = program.facts.store(store_id);
     let resource_id = store_fact.resource;
@@ -1191,14 +1193,6 @@ fn checked_saved_members(
         .collect()
 }
 
-fn module_id(program: &CheckedProgram, name: &str) -> Option<ModuleId> {
-    program
-        .modules
-        .iter()
-        .position(|candidate| candidate.name == name)
-        .map(|index| ModuleId(index as u32))
-}
-
 fn resource_member_id(
     program: &CheckedProgram,
     resource_id: ResourceId,
@@ -1282,10 +1276,7 @@ fn checked_enum_leaf_kind(
     else {
         return None;
     };
-    let module_index = program
-        .modules
-        .iter()
-        .position(|candidate| candidate.name == module_name)?;
+    let module_index = program.module_index_by_name(&module_name)?;
     let enum_id = program
         .facts
         .enum_id(ModuleId(module_index as u32), &enum_name)?;

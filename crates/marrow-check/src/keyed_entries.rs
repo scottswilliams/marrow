@@ -47,6 +47,10 @@ fn plan_resource_layers(
     backing_invalidations: Option<&mut crate::backing_validity::PendingBackingInvalidations>,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) -> Vec<ResourceLayerNormalization> {
+    let parsed_by_path: HashMap<&Path, &marrow_syntax::ParsedSource> = parsed_files
+        .iter()
+        .map(|(file, parsed)| (file.path.as_path(), parsed))
+        .collect();
     let mut plan = Vec::new();
     let mut normalizer = Normalizer {
         resolver: program,
@@ -55,10 +59,7 @@ fn plan_resource_layers(
         diagnostics,
     };
     for (module_index, module) in program.modules.iter().enumerate() {
-        let Some((_, parsed)) = parsed_files
-            .iter()
-            .find(|(file, _)| file.path == module.source_file)
-        else {
+        let Some(parsed) = parsed_by_path.get(module.source_file.as_path()).copied() else {
             continue;
         };
         for (resource_index, resource) in module.resources.iter().enumerate() {
@@ -432,9 +433,7 @@ fn module_aliases(
     module_name: &str,
 ) -> std::collections::HashMap<String, Vec<String>> {
     program
-        .modules
-        .iter()
-        .find(|module| module.name == module_name)
+        .module_by_name(module_name)
         .map(|module| build_alias_map(&module.imports))
         .unwrap_or_default()
 }

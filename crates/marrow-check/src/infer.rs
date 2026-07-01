@@ -1800,11 +1800,7 @@ pub(crate) fn lift_member_type(
     ty: Type,
     owning_module: &str,
 ) -> MarrowType {
-    if let Some(module) = program
-        .modules
-        .iter()
-        .find(|module| module.name == owning_module)
-    {
+    if let Some(module) = program.module_by_name(owning_module) {
         return crate::enums::resolve_schema_type_for_module(&ty, program, module);
     }
     MarrowType::from_resolved(ty, TypeNames::default())

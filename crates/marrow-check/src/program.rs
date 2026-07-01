@@ -157,6 +157,67 @@ pub struct CheckedProgram {
     pub facts: CheckedFacts,
     pub catalog: ProgramCatalog,
     debug_source_identity: Option<DebugSourceIdentity>,
+    /// A lazily built index from a module's qualified name and its source file to the
+    /// module's position, so resolving a name or locating a file's owning module is
+    /// O(1) instead of a linear scan on every reference. It is a pure derived cache of
+    /// `modules`, so it takes no part in the program's identity, equality, or clones.
+    module_index: ModuleLookupIndex,
+}
+
+/// The self-validating cache backing [`CheckedProgram::module_by_name`] and
+/// [`CheckedProgram::module_by_file`]. Module names and source files are each unique
+/// within a program, so every change to the module set changes `modules.len()`; the
+/// cache records the length it was built for and rebuilds when it no longer matches,
+/// and each accessor re-checks the resolved module against the key so a stale hit can
+/// never return the wrong module.
+#[derive(Default)]
+struct ModuleLookupIndex(std::sync::RwLock<Option<ModuleLookupSnapshot>>);
+
+struct ModuleLookupSnapshot {
+    built_for_len: usize,
+    /// The longest module name in `by_name`. A query longer than this matches nothing,
+    /// so the accessor rejects it without hashing the whole string — qualified-enum
+    /// member-path resolution probes a prefix that grows one segment at a time, and
+    /// hashing each growing prefix would be quadratic in the path length.
+    longest_name: usize,
+    by_name: HashMap<String, u32>,
+    by_file: HashMap<PathBuf, u32>,
+    /// For each declared function, resource, and enum name, the positions of the
+    /// modules declaring it. A bare name that misses its own module scans these
+    /// candidates — to enrich a failed function/resource lookup's diagnostic, or to
+    /// resolve a bare enum owner to its sole visible foreign declaration — instead of
+    /// scanning every module on every reference.
+    function_modules: HashMap<String, Vec<u32>>,
+    resource_modules: HashMap<String, Vec<u32>>,
+    enum_modules: HashMap<String, Vec<u32>>,
+}
+
+impl Clone for ModuleLookupIndex {
+    fn clone(&self) -> Self {
+        Self::default()
+    }
+}
+
+impl PartialEq for ModuleLookupIndex {
+    fn eq(&self, _other: &Self) -> bool {
+        true
+    }
+}
+
+impl Eq for ModuleLookupIndex {}
+
+impl std::fmt::Debug for ModuleLookupIndex {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ModuleLookupIndex").finish_non_exhaustive()
+    }
+}
+
+/// The module positions a name-keyed declarer index records for `name`, as `usize`.
+fn modules_for_name(index: &HashMap<String, Vec<u32>>, name: &str) -> Vec<usize> {
+    index
+        .get(name)
+        .map(|modules| modules.iter().map(|&index| index as usize).collect())
+        .unwrap_or_default()
 }
 
 impl CheckedProgram {
@@ -172,6 +233,7 @@ impl CheckedProgram {
             facts: CheckedFacts::default(),
             catalog: ProgramCatalog::default(),
             debug_source_identity: None,
+            module_index: ModuleLookupIndex::default(),
         };
         program.rebuild_facts();
         program
@@ -223,12 +285,7 @@ impl CheckedProgram {
         scope: &[HashMap<String, MarrowType>],
         debug_source_identity: DebugSourceIdentity,
     ) -> Result<CheckedDebugExpression, Vec<CheckDiagnostic>> {
-        let Some((module_index, module)) = self
-            .modules
-            .iter()
-            .enumerate()
-            .find(|(_, module)| module.source_file == file)
-        else {
+        let Some(module_index) = self.module_index_by_file(file) else {
             return Err(vec![CheckDiagnostic::error(
                 CHECK_READ_ONLY_EXPRESSION_CONTEXT,
                 file,
@@ -236,6 +293,7 @@ impl CheckedProgram {
                 "source file is not present in the checked program",
             )]);
         };
+        let module = &self.modules[module_index];
         let checked = self.checked_expression_in_scope(module, source, scope)?;
         Ok(CheckedDebugExpression {
             stop: RuntimeStopPoint {
@@ -254,7 +312,8 @@ impl CheckedProgram {
 
     #[cfg(feature = "test-support")]
     fn rebuild_facts(&mut self) {
-        self.facts = CheckedFacts::from_modules(&self.modules, &HashMap::new());
+        let facts = CheckedFacts::from_program(self, &HashMap::new());
+        self.facts = facts;
     }
 
     pub(crate) fn rebuild_facts_with_sources<'a, I>(&mut self, sources: I)
@@ -265,7 +324,8 @@ impl CheckedProgram {
             .into_iter()
             .map(|(path, parsed)| (path.to_path_buf(), parsed))
             .collect();
-        self.facts = CheckedFacts::from_modules(&self.modules, &sources);
+        let facts = CheckedFacts::from_program(self, &sources);
+        self.facts = facts;
     }
 
     pub(crate) fn rebuild_facts_with_sources_preserving_current_prefix<'a, I>(&mut self, sources: I)
@@ -357,6 +417,140 @@ impl CheckedProgram {
                     .any(|res| crate::resource_type_name(&module.name, &res.name) == resource)
             })
             .map(|module| module.name.as_str())
+    }
+
+    /// The position of the module named `name`, resolved in O(1) through the
+    /// per-program lookup index. Name resolution and lowering call this on nearly every
+    /// reference, so the linear scan it replaces made checking a many-module project
+    /// quadratic in the module count.
+    pub(crate) fn module_index_by_name(&self, name: &str) -> Option<usize> {
+        let module_index = self.with_lookup_index(|snapshot| {
+            (name.len() <= snapshot.longest_name)
+                .then(|| snapshot.by_name.get(name).copied())
+                .flatten()
+        })? as usize;
+        (self.modules.get(module_index)?.name == name).then_some(module_index)
+    }
+
+    /// The position of the module whose source is `file`, resolved in O(1) through the
+    /// same index. Call checks, annotation resolution, body lowering, and use-site
+    /// collection locate a file's owning module on every reference, so the former
+    /// linear scan was quadratic too.
+    pub(crate) fn module_index_by_file(&self, file: &Path) -> Option<usize> {
+        let module_index =
+            self.with_lookup_index(|snapshot| snapshot.by_file.get(file).copied())? as usize;
+        (self.modules.get(module_index)?.source_file == file).then_some(module_index)
+    }
+
+    /// The module named `name`, resolved in O(1) through the per-program lookup index.
+    pub(crate) fn module_by_name(&self, name: &str) -> Option<&CheckedModule> {
+        self.module_index_by_name(name)
+            .and_then(|index| self.modules.get(index))
+    }
+
+    /// The module whose source is `file`, resolved in O(1) through the same index.
+    pub(crate) fn module_by_file(&self, file: &Path) -> Option<&CheckedModule> {
+        self.module_index_by_file(file)
+            .and_then(|index| self.modules.get(index))
+    }
+
+    /// The positions of every module declaring `leaf` as `kind`, drawn from the index
+    /// so enriching a failed bare lookup scans only the matching declarations rather
+    /// than the whole program.
+    pub(crate) fn modules_declaring(
+        &self,
+        leaf: &str,
+        kind: crate::resolve::ResolvableKind,
+    ) -> Vec<usize> {
+        self.with_lookup_index(|snapshot| {
+            let by_name = match kind {
+                crate::resolve::ResolvableKind::Function => &snapshot.function_modules,
+                crate::resolve::ResolvableKind::Resource => &snapshot.resource_modules,
+            };
+            Some(modules_for_name(by_name, leaf))
+        })
+        .unwrap_or_default()
+    }
+
+    /// The positions of every module declaring an enum named `name`, drawn from the
+    /// same index so resolving a bare enum owner to its sole visible foreign declaration
+    /// scans only the declaring modules rather than the whole program on every reference.
+    pub(crate) fn modules_declaring_enum(&self, name: &str) -> Vec<usize> {
+        self.with_lookup_index(|snapshot| Some(modules_for_name(&snapshot.enum_modules, name)))
+            .unwrap_or_default()
+    }
+
+    /// Query the module lookup index, rebuilding it first when it was built for a
+    /// different module count. The resolved index is verified against `modules` by the
+    /// caller, so a rebuild is never required for correctness, only to keep lookups
+    /// O(1).
+    fn with_lookup_index<R>(
+        &self,
+        query: impl Fn(&ModuleLookupSnapshot) -> Option<R>,
+    ) -> Option<R> {
+        let len = self.modules.len();
+        {
+            let cache = self
+                .module_index
+                .0
+                .read()
+                .expect("module lookup index poisoned");
+            if let Some(snapshot) = cache.as_ref()
+                && snapshot.built_for_len == len
+            {
+                return query(snapshot);
+            }
+        }
+        let mut cache = self
+            .module_index
+            .0
+            .write()
+            .expect("module lookup index poisoned");
+        if cache.as_ref().map(|snapshot| snapshot.built_for_len) != Some(len) {
+            let mut by_name = HashMap::with_capacity(len);
+            let mut by_file = HashMap::with_capacity(len);
+            let mut function_modules: HashMap<String, Vec<u32>> = HashMap::new();
+            let mut resource_modules: HashMap<String, Vec<u32>> = HashMap::new();
+            let mut enum_modules: HashMap<String, Vec<u32>> = HashMap::new();
+            // A module is recorded at most once per name even when it declares that
+            // name twice, matching the former one-candidate-per-module scan; a module's
+            // declarations are contiguous here, so a duplicate is the one just pushed.
+            let push_declarer = |index: &mut HashMap<String, Vec<u32>>, name: &str, module| {
+                let modules = index.entry(name.to_string()).or_default();
+                if modules.last() != Some(&module) {
+                    modules.push(module);
+                }
+            };
+            for (module_index, module) in self.modules.iter().enumerate() {
+                let module_index = module_index as u32;
+                // First declaration wins, matching the former `iter().find`, so a
+                // transient duplicate name or path resolves as it did before.
+                by_name.entry(module.name.clone()).or_insert(module_index);
+                by_file
+                    .entry(module.source_file.clone())
+                    .or_insert(module_index);
+                for function in &module.functions {
+                    push_declarer(&mut function_modules, &function.name, module_index);
+                }
+                for resource in &module.resources {
+                    push_declarer(&mut resource_modules, &resource.name, module_index);
+                }
+                for enum_schema in &module.enums {
+                    push_declarer(&mut enum_modules, &enum_schema.name, module_index);
+                }
+            }
+            let longest_name = by_name.keys().map(String::len).max().unwrap_or(0);
+            *cache = Some(ModuleLookupSnapshot {
+                built_for_len: len,
+                longest_name,
+                by_name,
+                by_file,
+                function_modules,
+                resource_modules,
+                enum_modules,
+            });
+        }
+        cache.as_ref().and_then(query)
     }
 
     pub fn runtime(&self) -> CheckedRuntimeProgram {

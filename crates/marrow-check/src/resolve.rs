@@ -17,10 +17,13 @@ pub enum ResolvableKind {
 }
 
 /// The declaration a resolved name denotes, borrowed from the program: its owning
-/// module, the kind it was resolved as, and the item itself.
+/// module, the module's position in the program (so a caller building a
+/// [`CheckedFunctionRef`] needs no second whole-program scan to recover it), the kind
+/// it was resolved as, and the item itself.
 #[derive(Debug, Clone, Copy)]
 pub struct Def<'p> {
     pub module: &'p CheckedModule,
+    pub module_index: usize,
     pub kind: ResolvableKind,
     pub item: DefItem<'p>,
 }
@@ -64,8 +67,8 @@ pub fn resolve<'p>(
     path: &[String],
     kind: ResolvableKind,
 ) -> Resolution<'p> {
-    let imports = find_module(program, from_module)
-        .map(|module| module.imports.clone())
+    let imports = find_module_indexed(program, from_module)
+        .map(|(_, module)| module.imports.clone())
         .unwrap_or_default();
     let aliases = build_alias_map(&imports);
     let expanded = expand_alias(path, &aliases);
@@ -88,18 +91,24 @@ fn resolve_bare<'p>(
     leaf: &str,
     kind: ResolvableKind,
 ) -> Resolution<'p> {
-    if let Some(module) = find_module(program, from_module)
+    if let Some((module_index, module)) = find_module_indexed(program, from_module)
         && let Some(item) = lookup_in_module(module, leaf, kind)
     {
-        return Resolution::Found(Def { module, kind, item });
+        return Resolution::Found(Def {
+            module,
+            module_index,
+            kind,
+            item,
+        });
     }
-    // The bare name does not resolve. Scan the rest of the project only to enrich
-    // the diagnostic: collect modules exposing `leaf` as `pub` and note a lone
-    // non-`pub` match.
+    // The bare name does not resolve. Consult the index for the modules declaring
+    // `leaf` as `kind`, only to enrich the diagnostic: collect modules exposing it as
+    // `pub` and note a lone non-`pub` match.
     let mut public: Vec<String> = Vec::new();
     let mut sole_private: Option<&str> = None;
     let mut private_count = 0usize;
-    for module in &program.modules {
+    for module_index in program.modules_declaring(leaf, kind) {
+        let module = &program.modules[module_index];
         // An empty-named module is a single-file script, which no `use` can name,
         // so it must never be surfaced as a candidate in this enrichment hint.
         if module.name == from_module || module.name.is_empty() {
@@ -140,39 +149,46 @@ fn resolve_qualified<'p>(
     leaf: &str,
     kind: ResolvableKind,
 ) -> Resolution<'p> {
-    let Some(module) = find_module(program, module_name) else {
+    let Some((module_index, module)) = find_module_indexed(program, module_name) else {
         return Resolution::Unresolved;
     };
     let Some(item) = lookup_in_module(module, leaf, kind) else {
         return Resolution::Unresolved;
     };
     if module_name == from_module || is_public(&item) {
-        Resolution::Found(Def { module, kind, item })
+        Resolution::Found(Def {
+            module,
+            module_index,
+            kind,
+            item,
+        })
     } else {
         Resolution::NotVisible(format!("{module_name}::{leaf}"))
     }
 }
 
-/// The store owning saved root `^root`, plus the resource tree shape it stores.
+/// The store owning saved root `^root`, plus the resource tree shape it stores. The
+/// owning module is found in O(1) through the store-root fact index, then the store and
+/// its resource are located by their bounded in-module declaration lists; a store fact
+/// exists only once its resource resolved in its own module, so that resource is always
+/// present here. The former whole-program scan ran on every `^root` reference, making a
+/// store-heavy project quadratic in its store count.
 pub fn resolve_store_by_root<'p>(
     program: &'p CheckedProgram,
     root: &str,
 ) -> Option<StoreResource<'p>> {
-    for module in &program.modules {
-        if let Some(store) = module.stores.iter().find(|store| store.root == root)
-            && let Some(resource) = module
-                .resources
-                .iter()
-                .find(|resource| resource.name == store.resource)
-        {
-            return Some(StoreResource {
-                module,
-                store,
-                resource,
-            });
-        }
-    }
-    None
+    let store_fact = program.facts.store_by_root(root)?;
+    let module = program.modules.get(store_fact.module.0 as usize)?;
+    let store = module.stores.iter().find(|store| store.root == root)?;
+    let resource = module
+        .resources
+        .iter()
+        .find(|resource| resource.name == store.resource)?;
+    Some(StoreResource {
+        module,
+        store,
+        resource,
+    })
 }
 
 /// Look up `leaf` in `module` for `kind`, returning the matching declaration.
@@ -207,7 +223,13 @@ fn is_public(item: &DefItem<'_>) -> bool {
     }
 }
 
-/// The module named `name`, if the program has it.
-fn find_module<'p>(program: &'p CheckedProgram, name: &str) -> Option<&'p CheckedModule> {
-    program.modules.iter().find(|module| module.name == name)
+/// The module named `name` and its position in the program, resolved O(1) through the
+/// program's module-name index. The position lets a resolved [`Def`] carry its owning
+/// module's index so building a [`CheckedFunctionRef`] needs no second scan.
+fn find_module_indexed<'p>(
+    program: &'p CheckedProgram,
+    name: &str,
+) -> Option<(usize, &'p CheckedModule)> {
+    let index = program.module_index_by_name(name)?;
+    Some((index, &program.modules[index]))
 }

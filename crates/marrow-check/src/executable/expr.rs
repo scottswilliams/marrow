@@ -415,15 +415,14 @@ pub(super) fn lower_optional_expr(
     }
 }
 
-pub(super) fn function_ref(
-    program: &CheckedProgram,
+/// The single owner of the resolved-declaration to [`CheckedFunctionRef`] mapping. The
+/// resolver already produced the owning module's index, so only the function's bounded
+/// position within its module is recovered here — never a whole-program scan.
+pub(crate) fn function_ref(
+    module_index: usize,
     module: &CheckedModule,
     function: &CheckedFunction,
 ) -> Option<CheckedFunctionRef> {
-    let module_index = program
-        .modules
-        .iter()
-        .position(|candidate| std::ptr::eq(candidate, module))?;
     let function_index = module
         .functions
         .iter()
@@ -440,7 +439,7 @@ pub(super) fn checked_enum_ref(
     module: &str,
     name: &str,
 ) -> Option<CheckedEnumRef> {
-    let module_index = module_index(program, module)?;
+    let module_index = program.module_index_by_name(module)?;
     let enum_id = program.facts.enum_id(ModuleId(module_index as u32), name)?;
     Some(CheckedEnumRef { enum_id })
 }
@@ -453,7 +452,7 @@ pub(super) fn checked_enum_member_ref_in(
     path_spans: &[SourceSpan],
 ) -> Option<CheckedEnumMemberRef> {
     let enum_ref = checked_enum_ref(program, module, enum_name)?;
-    let module_index = module_index(program, module)?;
+    let module_index = program.module_index_by_name(module)?;
     let schema = program.modules[module_index]
         .enums
         .iter()
@@ -577,11 +576,4 @@ fn enum_member_id_for_path(
         .facts
         .enum_member_by_source_order(enum_ref.enum_id, ordinal as u32)
         .map(|member| member.id)
-}
-
-fn module_index(program: &CheckedProgram, module: &str) -> Option<usize> {
-    program
-        .modules
-        .iter()
-        .position(|candidate| candidate.name == module)
 }

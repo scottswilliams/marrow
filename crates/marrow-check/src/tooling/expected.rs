@@ -536,9 +536,7 @@ fn enum_visible_from_file(
 ) -> bool {
     current_module(program, file).is_some_and(|module| module.name == module_name)
         || program
-            .modules
-            .iter()
-            .find(|module| module.name == module_name)
+            .module_by_name(module_name)
             .is_some_and(|module| module_enum_visible_from_file(module, enum_name, file))
 }
 

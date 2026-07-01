@@ -853,18 +853,10 @@ impl<'p> IndexBuilder<'p> {
     }
 
     fn function_id_for_source(&self, file: &Path, source_index: u32) -> Option<FunctionId> {
-        let module = self
-            .program
-            .facts
-            .modules()
-            .iter()
-            .find(|module| module.source_file == file)?;
+        let module_index = self.program.module_index_by_file(file)?;
         self.program
             .facts
-            .functions()
-            .iter()
-            .find(|function| function.module == module.id && function.source_index == source_index)
-            .map(|function| function.id)
+            .function_id_at(module_index as u32, source_index)
     }
 
     fn parameter_definition(

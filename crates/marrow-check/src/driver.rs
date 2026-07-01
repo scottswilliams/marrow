@@ -187,9 +187,7 @@ pub(crate) fn enum_visibility(file: &marrow_syntax::SourceFile) -> HashMap<Strin
 /// expressions.
 pub(crate) fn module_of_file<'p>(program: &'p CheckedProgram, file: &Path) -> Option<&'p str> {
     program
-        .modules
-        .iter()
-        .find(|module| module.source_file == file)
+        .module_by_file(file)
         .map(|module| module.name.as_str())
 }
 

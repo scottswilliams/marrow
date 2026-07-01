@@ -134,9 +134,7 @@ pub(crate) fn checked_runtime_value_type(
         },
         MarrowType::Enum { module, name } => {
             let enum_id = program
-                .modules
-                .iter()
-                .position(|candidate| candidate.name == module)
+                .module_index_by_name(&module)
                 .and_then(|index| program.facts.enum_id(ModuleId(index as u32), &name));
             CheckedRuntimeValueType::Enum {
                 enum_id,

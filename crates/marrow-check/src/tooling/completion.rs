@@ -1690,11 +1690,7 @@ fn module_for_segments<'a>(
     program: &'a CheckedProgram,
     segments: &[String],
 ) -> Option<&'a CheckedModule> {
-    let module_name = segments.join("::");
-    program
-        .modules
-        .iter()
-        .find(|module| module.name == module_name)
+    program.module_by_name(&segments.join("::"))
 }
 
 fn enum_for_segments<'a>(

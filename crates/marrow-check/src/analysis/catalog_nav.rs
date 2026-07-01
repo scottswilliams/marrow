@@ -126,11 +126,7 @@ fn collect_module_type_annotation_use_sites(
     sites: &mut Vec<UseSite>,
 ) {
     for file in files {
-        let Some(module) = program
-            .modules
-            .iter()
-            .find(|module| module.source_file == file.path)
-        else {
+        let Some(module) = program.module_by_file(&file.path) else {
             continue;
         };
         let aliases = build_alias_map(&module.imports);
@@ -658,12 +654,8 @@ fn enum_id_by_name(
     module_name: &str,
     enum_name: &str,
 ) -> Option<crate::EnumId> {
-    let module = program
-        .facts
-        .modules()
-        .iter()
-        .find(|module| module.name == module_name)?;
-    program.facts.enum_id(module.id, enum_name)
+    let module_id = program.facts.module_id(module_name)?;
+    program.facts.enum_id(module_id, enum_name)
 }
 
 fn collect_enum_declarations(

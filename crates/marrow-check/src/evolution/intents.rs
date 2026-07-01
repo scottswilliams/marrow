@@ -471,11 +471,12 @@ impl TypeContext<'_> {
         target: &Expression,
     ) -> Option<(&CheckedModule, &marrow_schema::ResourceSchema)> {
         let (resource_name, _) = member_chain(target)?;
+        // The source file uniquely identifies the module; the name guard keeps the
+        // original compound match exact.
         let module = self
             .program
-            .modules
-            .iter()
-            .find(|module| module.name == self.module && module.source_file == self.file)?;
+            .module_by_file(self.file)
+            .filter(|module| module.name == self.module)?;
         let resource = module
             .resources
             .iter()

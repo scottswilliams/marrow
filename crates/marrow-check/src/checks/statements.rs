@@ -108,9 +108,7 @@ pub(crate) fn check_function_types(
 /// block const-int environment.
 fn module_const_ints(program: &CheckedProgram, file: &Path) -> HashMap<String, Option<i64>> {
     program
-        .modules
-        .iter()
-        .find(|module| module.source_file == file)
+        .module_by_file(file)
         .map(|module| super::const_int::module_const_int_scope(&module.constants))
         .unwrap_or_default()
 }

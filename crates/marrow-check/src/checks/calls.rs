@@ -1661,8 +1661,5 @@ pub(crate) fn check_arity(
 /// module-less script. Calls in such a file are resolution-checked; a file
 /// excluded by a parse error is not.
 pub(crate) fn file_in_program(program: &CheckedProgram, file: &Path) -> bool {
-    program
-        .modules
-        .iter()
-        .any(|module| module.source_file == file)
+    program.module_index_by_file(file).is_some()
 }

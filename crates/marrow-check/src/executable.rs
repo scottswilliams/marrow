@@ -22,12 +22,13 @@ mod stmt;
 mod syntax_parts;
 mod walk;
 
+use expr::checked_enum_member_ref_in;
+pub(crate) use expr::function_ref;
 pub use expr::{
     CheckedExpr, CheckedSavedIndex, CheckedSavedIndexKey, CheckedSavedKeyParam, CheckedSavedLayer,
     CheckedSavedMember, CheckedSavedMemberKind, CheckedSavedPlace, CheckedSavedTerminal,
     is_single_int_sequence,
 };
-use expr::{checked_enum_member_ref_in, function_ref};
 pub(crate) use place::{
     SavedAccessRejection, SavedKeyParamTarget, SavedMemberRefKind, SavedPlaceResolver,
     accepted_saved_place, checked_saved_index_read, checked_saved_place_effect, place_fully_keyed,
@@ -120,10 +121,7 @@ pub(crate) fn lower_expr_for_file(
     expr: &marrow_syntax::Expression,
     scope: &[HashMap<String, crate::MarrowType>],
 ) -> Option<CheckedExpr> {
-    let module_index = program
-        .modules
-        .iter()
-        .position(|module| module.source_file == file)?;
+    let module_index = program.module_index_by_file(file)?;
     let context = CheckedExecutableContext::new(program, module_index);
     CheckedExpr::lower(expr, &context, scope)
 }

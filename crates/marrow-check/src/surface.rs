@@ -325,10 +325,7 @@ fn checked_module_for_id(
     module: ModuleId,
 ) -> Option<&crate::CheckedModule> {
     let module_name = &program.facts.modules().get(module.0 as usize)?.name;
-    program
-        .modules
-        .iter()
-        .find(|candidate| candidate.name == *module_name)
+    program.module_by_name(module_name)
 }
 
 fn resolve_actions(
@@ -539,6 +536,7 @@ fn resolve_surface_function(
     ) {
         Resolution::Found(Def {
             module,
+            module_index,
             item: DefItem::Function(function),
             ..
         }) => {
@@ -552,8 +550,8 @@ fn resolve_surface_function(
                 );
                 return None;
             }
-            let function =
-                function_ref_from_resolved(context.program, module, function).or_else(|| {
+            let function = crate::executable::function_ref(module_index, module, function)
+                .or_else(|| {
                     *suppressed_target = true;
                     None
                 })?;
@@ -728,30 +726,6 @@ fn computed_read_effect_message(payload: &SurfaceComputedReadDiagnostic) -> Stri
 fn expand_surface_function_path(imports: &[String], function_path: &[String]) -> Vec<String> {
     let aliases = build_alias_map(imports);
     expand_alias(function_path, &aliases)
-}
-
-fn function_ref_from_resolved(
-    program: &CheckedProgram,
-    module: &crate::CheckedModule,
-    function: &crate::CheckedFunction,
-) -> Option<CheckedFunctionRef> {
-    let module_id = program.facts.module_id(&module.name)?;
-    let source_index = u32::try_from(
-        module
-            .functions
-            .iter()
-            .position(|candidate| std::ptr::eq(candidate, function))?,
-    )
-    .ok()?;
-    let function =
-        program.facts.functions().iter().find(|function| {
-            function.module == module_id && function.source_index == source_index
-        })?;
-    Some(CheckedFunctionRef {
-        module: function.module.0,
-        function: function.source_index,
-        presence: function.return_presence,
-    })
 }
 
 fn references_incomplete_function_module(
@@ -947,9 +921,7 @@ fn surface_declarations(parsed: &ParsedSource) -> impl Iterator<Item = &SurfaceD
 
 fn module_for_file(program: &CheckedProgram, file: &Path) -> Option<ModuleId> {
     program
-        .modules
-        .iter()
-        .position(|module| module.source_file == file)
+        .module_index_by_file(file)
         .map(|index| ModuleId(index as u32))
 }
 
