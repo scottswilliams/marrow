@@ -188,14 +188,20 @@ pub fn main()
         !next.contains(path.to_str().unwrap()),
         "the next command must not loop back at the bare-file path: {next}"
     );
+    // The remedy is an actionable pointer at a real project directory, not a self-referential
+    // `marrow doctor` re-run that only re-reports the not-a-project fault.
+    assert!(
+        next.contains("marrow check") && !next.contains("marrow doctor"),
+        "the not-a-project next command points check at a real project directory, never loops doctor: {next}"
+    );
 }
 
 #[test]
 fn doctor_on_an_invalid_config_field_names_the_field_fix_not_a_loop() {
     // A marrow.json with a field that fails validation (a `dataDir` escaping the project root)
     // loads as `config.invalid`. The remedy must point at fixing the reported field in place, and
-    // the next command is the genuine re-run after the in-place fix — never a generic "fix
-    // marrow.json" with a command that cannot make progress.
+    // the next command re-validates that fix through `marrow check` — never a self-referential
+    // `marrow doctor` on the same directory, which only re-reports the same fault.
     let project = support::temp_project_uncommitted("doctor-invalid-config", |root| {
         support::write(
             root,
@@ -223,8 +229,15 @@ fn doctor_on_an_invalid_config_field_names_the_field_fix_not_a_loop() {
     );
     assert_eq!(
         config_finding["next_command"],
-        serde_json::json!(format!("marrow doctor {dir}")),
-        "the next command re-runs the probe after the in-place field fix: {value:#?}"
+        serde_json::json!(format!("marrow check {dir}")),
+        "the next command re-validates the field fix through check: {value:#?}"
+    );
+    let next = config_finding["next_command"]
+        .as_str()
+        .expect("next_command string");
+    assert!(
+        !next.contains("marrow doctor"),
+        "the next command must not loop doctor over the same directory: {next}"
     );
 }
 

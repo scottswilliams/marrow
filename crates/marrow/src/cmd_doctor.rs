@@ -154,10 +154,11 @@ fn probe_config(
 }
 
 /// The remedy and next command for a config-load failure, derived from the typed fault so each
-/// names an action that actually works rather than a single "fix marrow.json" loop. A directory
-/// with no `marrow.json` is created by `marrow init`; a bare-file path is the wrong target, so it
-/// names that mistake with no looping command; an invalid or unreadable config is fixed in place,
-/// after which re-running the probe is the genuine next step.
+/// names an action that resolves it rather than looping `marrow doctor` back at the same fault. A
+/// directory with no `marrow.json` is created by `marrow init`; a bare-file path is the wrong
+/// target, so it points `marrow check` at a real project directory; an unreadable or invalid
+/// `marrow.json` is fixed in place, after which `marrow check` confirms the fix. Doctor never names
+/// itself as the next step for a fault a re-run of doctor cannot change.
 fn config_load_remedy(error: &ProjectIoError, dir: &str) -> (&'static str, String) {
     match error {
         ProjectIoError::ConfigMissing { .. } => (
@@ -166,11 +167,15 @@ fn config_load_remedy(error: &ProjectIoError, dir: &str) -> (&'static str, Strin
         ),
         ProjectIoError::NotAProject { .. } => (
             "pass a project directory containing marrow.json, not a bare file",
-            doctor_command("<projectdir>"),
+            check_command("<projectdir>"),
+        ),
+        ProjectIoError::Io { .. } => (
+            "make the reported marrow.json readable, then recheck the project",
+            check_command(dir),
         ),
         _ => (
-            "fix the reported marrow.json field, then rerun the next command",
-            doctor_command(dir),
+            "fix the reported marrow.json field, then recheck the project",
+            check_command(dir),
         ),
     }
 }
@@ -281,8 +286,8 @@ fn probe_store_open(
         findings.push(project_error_finding(
             "doctor.config_invalid",
             "native store dataDir is not a directory",
-            "point dataDir at a writable directory or remove the file occupying it, then rerun the next command",
-            doctor_command(dir),
+            "point dataDir at a writable directory or remove the file occupying it, then recheck the project",
+            check_command(dir),
             error,
         ));
         return None;
@@ -294,8 +299,8 @@ fn probe_store_open(
             findings.push(project_error_finding(
                 "doctor.config_invalid",
                 "project configuration is invalid",
-                "fix marrow.json, then rerun the next command",
-                doctor_command(dir),
+                "fix the reported marrow.json field, then recheck the project",
+                check_command(dir),
                 error,
             ));
             return None;
