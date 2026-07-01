@@ -493,6 +493,12 @@ through user declarations.
 have no accepted statement form or formatter round trip in v0.1; the parser
 reports them as reserved when they are used as statement keywords.
 
+The parser also recognizes some unsupported future-shaped forms, including
+bracket collection literals, `finally`, loop labels, parameter defaults and
+modes, quoted field segments, type aliases, and user-defined generics. They are
+parse errors in v0.1; see
+[future/language/syntax.md](../future/language/syntax.md).
+
 The `evolve` step words `rename`, `default`, `retire`, and `transform` are
 contextual: they lead a step only inside an `evolve` block, so they remain valid
 identifiers elsewhere.

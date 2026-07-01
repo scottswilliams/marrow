@@ -124,12 +124,11 @@ group_decl      =
 
 group_keying    = key_params ;
 
-Keyed layer members are `keyed_field_decl` and keyed `group_decl`. The reserved
-post-name `retain` clause position belongs on keyed layer members, after future
-keyed-layer `unique` or `counted` clauses if those clauses exist. v0.1 has no
-`retain`, `unique`, or `counted` keyed-layer clause and rejects those spellings
-there. A future declaration over populated data is a destructive decision;
-ongoing bounding of future writes is write-plan maintenance.
+Keyed layer members are `keyed_field_decl` and keyed `group_decl`. v0.1 has no
+keyed-layer clauses after the member name; spellings such as `retain`,
+`unique`, or `counted` in that position are rejected. Future keyed-layer clauses
+are tracked in
+[Resources And Saved Data](../future/language/resources-and-storage.md#keyed-layer-clauses).
 
 index_decl      =
     "index" identifier "(" index_arg_list ")" unique_marker? NEWLINE ;
@@ -168,20 +167,23 @@ surface_function_target =
 
 surface_collection_target =
       saved_root
-    | "^" identifier "." identifier
+    | "^" identifier "." identifier range_marker?
     ;
+
+range_marker = "range" ;
 ```
 
 A `surface` declaration names an application-facing source form over a saved
 root. The body accepts `fields`, `collection`, `action`, `read`, `create`,
-`update`, and `delete` item lines. A collection target is either the root itself
-(`^books`) or one store index path (`^books.byAuthor`). An action or computed
-read target is a same-module public function name or an explicitly qualified
-public function name such as `shelf::loanBook`; omitting `as` uses the function
-leaf as the alias. The contextual words `from`, `fields`, `collection`,
-`action`, `read`, `as`, `create`, `update`, and `delete` are recognized only in
-this declaration shape and remain valid identifiers elsewhere. Documentation
-comments do not attach to `surface` declarations in v0.1.
+`update`, and `delete` item lines. A collection target is the root itself
+(`^books`), one exact store index path (`^books.byAuthor`), or one ranged store
+index path (`^books.byPublished range`). An action or computed read target is a
+same-module public function name or an explicitly qualified public function name
+such as `shelf::loanBook`; omitting `as` uses the function leaf as the alias.
+The contextual words `from`, `fields`, `collection`, `action`, `read`, `range`,
+`as`, `create`, `update`, and `delete` are recognized only in this declaration
+shape and remain valid identifiers elsewhere. Documentation comments do not
+attach to `surface` declarations in v0.1.
 
 ## Enums
 

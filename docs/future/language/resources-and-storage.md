@@ -70,6 +70,16 @@ generated index tree. Dotted paths are the expected spelling because they name
 the containing groups. A bare leaf shorthand such as `shelf` would need an
 explicit ambiguity rule before it could become part of the language.
 
+## Keyed-layer clauses
+
+v0.1 keyed fields and keyed groups have no post-name clauses. The spellings
+`retain`, `unique`, and `counted` are reserved in that position and are rejected
+by the current language.
+
+The future contract covers populated data, generated indexes, and evolution
+preview/apply. A declaration change that keeps, drops, uniquifies, or counts
+existing keyed entries is a data-evolution decision, not a parser-only change.
+
 ## No Triggers
 
 Saved-data writes do not run hidden triggers. Future derived structures,
@@ -77,6 +87,31 @@ journals, outboxes, and caches are explicit resources or tooling contracts with
 checked write plans; they do not attach imperative callbacks to arbitrary writes.
 External effects happen after durable state is committed through ordinary code or
 host workers, not through store-internal trigger execution.
+
+## Journals and outboxes
+
+`journal` is parser-reserved for a future explicit journal or outbox surface.
+v0.1 has no `journal` declaration or statement. Use ordinary resources, stores,
+transactions, and host workers to model application events today.
+
+Future journal/outbox support remains explicit. A journal or outbox declares its
+saved shape, append order, transaction boundary, retry/dispatch owner, and
+backup/restore behavior. It does not add hidden write triggers.
+
+## Reserved write statements
+
+`merge` and source-level `lock` are reserved statement keywords. v0.1 accepts no
+statement form for either word.
+
+A future `merge` statement is a partial saved-data write. Its contract covers
+required fields, absent values, generated indexes, transaction rollback, and
+conflict reporting. Until then, preserve existing data by assigning the fields
+that should change.
+
+A future source-level `lock` statement is separate from `transaction`; it names a
+coordination boundary rather than a rollback boundary. Until then, use
+`transaction` for saved-data atomicity and the native store's process lock for
+file-level exclusion.
 
 ## Collection spellings
 
