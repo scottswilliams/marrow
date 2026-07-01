@@ -75,6 +75,110 @@ fn empty_interpolation_expression_is_rejected_by_the_parser() {
     );
 }
 
+/// An empty interpolation hole inside a statement reports the missing operand at
+/// the hole, not as a statement-level "expected a statement" anchored on the
+/// enclosing keyword. The interpolation still recovers so the rest of the
+/// statement parses.
+#[test]
+fn empty_interpolation_hole_in_a_statement_reports_expected_expression_at_the_hole() {
+    let parsed = parse_source("fn main()\n    print($\"book {}\")\n");
+    assert!(
+        has_reason(
+            &parsed.diagnostics,
+            parse_reason(ParseDiagnosticReason::Expected(ExpectedSyntax::Expression)),
+        ),
+        "expected an `expected an expression` diagnostic: {:#?}",
+        parsed.diagnostics
+    );
+    assert!(
+        !has_reason(
+            &parsed.diagnostics,
+            parse_reason(ParseDiagnosticReason::Expected(ExpectedSyntax::Statement)),
+        ),
+        "the empty hole must not fall through to `expected a statement`: {:#?}",
+        parsed.diagnostics
+    );
+    let hole = parsed
+        .diagnostics
+        .iter()
+        .find(|diagnostic| {
+            diagnostic.reason
+                == parse_reason(ParseDiagnosticReason::Expected(ExpectedSyntax::Expression))
+        })
+        .expect("expected-expression diagnostic");
+    assert_eq!(
+        (hole.span.line, hole.span.column),
+        (2, 18),
+        "the gap should anchor at the `{{` hole, not the statement keyword: {:#?}",
+        hole.span
+    );
+}
+
+/// A hole ending on a dangling binary operator (`{a +}`) has no right operand;
+/// it reports "expected an expression" at the hole rather than the statement
+/// fallback.
+#[test]
+fn dangling_operator_interpolation_hole_reports_expected_expression() {
+    let parsed = parse_source("fn main()\n    print($\"book {a +}\")\n");
+    assert!(
+        has_reason(
+            &parsed.diagnostics,
+            parse_reason(ParseDiagnosticReason::Expected(ExpectedSyntax::Expression)),
+        ),
+        "expected an `expected an expression` diagnostic: {:#?}",
+        parsed.diagnostics
+    );
+    assert!(
+        !has_reason(
+            &parsed.diagnostics,
+            parse_reason(ParseDiagnosticReason::Expected(ExpectedSyntax::Statement)),
+        ),
+        "the dangling-operator hole must not fall through to `expected a statement`: {:#?}",
+        parsed.diagnostics
+    );
+}
+
+/// A hole holding a complete operand followed by trailing garbage (`{a b}`) is
+/// unclosed at the stray token; it reports "expected the end of the
+/// interpolation hole" there rather than bubbling a silent `None` to the
+/// statement fallback, and the rest of the statement still recovers.
+#[test]
+fn trailing_garbage_interpolation_hole_reports_at_the_stray_token() {
+    let parsed = parse_source("fn main()\n    print($\"book {a b}\")\n");
+    let hole = parsed
+        .diagnostics
+        .iter()
+        .find(|diagnostic| {
+            diagnostic.reason
+                == parse_reason(ParseDiagnosticReason::Expected(
+                    ExpectedSyntax::InterpolationHoleEnd,
+                ))
+        })
+        .expect("expected an interpolation-hole-end diagnostic");
+    assert_eq!(
+        (hole.span.line, hole.span.column),
+        (2, 21),
+        "the diagnostic should anchor at the stray `b`, not the statement keyword: {:#?}",
+        hole.span
+    );
+    assert!(
+        !has_reason(
+            &parsed.diagnostics,
+            parse_reason(ParseDiagnosticReason::Expected(ExpectedSyntax::Statement)),
+        ),
+        "the trailing-garbage hole must not fall through to `expected a statement`: {:#?}",
+        parsed.diagnostics
+    );
+}
+
+/// A well-formed interpolation with a real operand still parses without any
+/// syntax diagnostic; the missing-operand recovery does not fire on a valid hole.
+#[test]
+fn valid_interpolation_hole_parses_without_diagnostics() {
+    let parsed = parse_source("fn main()\n    print($\"book {id} here\")\n");
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+}
+
 #[test]
 fn a_lone_closing_brace_is_literal_interpolation_text() {
     let parsed = parse_source("const Label = $\"book }\"\n");

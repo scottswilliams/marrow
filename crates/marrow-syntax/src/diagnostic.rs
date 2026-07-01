@@ -113,6 +113,7 @@ pub enum ExpectedSyntax {
     IndexFieldPath,
     IndexName,
     IndexTail,
+    InterpolationHoleEnd,
     KeyName,
     KeyParameterList,
     KeyType,

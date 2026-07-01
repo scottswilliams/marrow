@@ -34,11 +34,11 @@ pub(crate) struct ExprParser<'a> {
     /// start of input (line 0), which is never a valid source position.
     gap_anchor: Option<SourceSpan>,
     /// How many contexts that own their own recovery diagnostic are currently
-    /// open: an unterminated `(`/interpolation delimiter, whose silent `None`
-    /// bubbles to the statement parser's "expected a statement" fallback, or a
-    /// malformed `for` header, reported once against the whole header. A missing
-    /// operand inside one of these is that caller's error, so the gap diagnostic
-    /// only fires at the statement-expression top level.
+    /// open: a `(` group that names its missing `)`, an interpolation hole that
+    /// names its missing operand, or a malformed `for` header reported once
+    /// against the whole header. A missing operand inside one of these is that
+    /// caller's error, so the generic gap diagnostic only fires at the
+    /// statement-expression top level.
     gap_suppression_depth: usize,
     diagnostics: Vec<Diagnostic>,
 }
@@ -881,13 +881,49 @@ impl<'a> ExprParser<'a> {
                     });
                 }
                 TokenKind::InterpolationExprStart => {
-                    self.advance();
-                    let expr = self.while_caller_owns_recovery(Self::expression)?;
-                    if !matches!(self.peek(), Some(TokenKind::InterpolationExprEnd)) {
-                        return None;
+                    let hole = self.advance();
+                    match self.while_caller_owns_recovery(Self::expression) {
+                        Some(expr) => match self.peek() {
+                            Some(TokenKind::InterpolationExprEnd) => {
+                                self.advance();
+                                parts.push(InterpolationPart::Expr(expr));
+                            }
+                            // A complete operand followed by trailing tokens
+                            // before the closing brace (`{a b}`) leaves the hole
+                            // unclosed. Name the stray token and skip to the brace
+                            // so the rest of the string still parses, rather than
+                            // bubbling a silent `None` to the statement fallback.
+                            _ => {
+                                let span = self
+                                    .tokens
+                                    .get(self.pos)
+                                    .map_or(hole.span, |token| token.span);
+                                self.error(
+                                    span,
+                                    ParseDiagnosticReason::Expected(
+                                        ExpectedSyntax::InterpolationHoleEnd,
+                                    ),
+                                    "expected the end of the interpolation hole".to_string(),
+                                    Some("close the hole with `}`".to_string()),
+                                );
+                                self.recover_to_interpolation_hole_end();
+                            }
+                        },
+                        // An empty `{}` or a hole ending on a dangling operator
+                        // (`{a +}`) carries no operand. Report the missing
+                        // expression at the hole and skip to the closing brace so
+                        // the remaining text and later holes still parse, rather
+                        // than bubbling a silent `None` to the statement fallback.
+                        None => {
+                            self.error(
+                                hole.span,
+                                ParseDiagnosticReason::Expected(ExpectedSyntax::Expression),
+                                "expected an expression".to_string(),
+                                None,
+                            );
+                            self.recover_to_interpolation_hole_end();
+                        }
                     }
-                    self.advance();
-                    parts.push(InterpolationPart::Expr(expr));
                 }
                 TokenKind::InterpolationEnd => {
                     self.advance();
@@ -897,6 +933,20 @@ impl<'a> ExprParser<'a> {
                     });
                 }
                 _ => return None,
+            }
+        }
+    }
+
+    /// Skip a malformed interpolation hole up to and including its closing brace,
+    /// so a reported missing operand does not abort the rest of the string.
+    fn recover_to_interpolation_hole_end(&mut self) {
+        while let Some(kind) = self.peek() {
+            if kind == TokenKind::InterpolationEnd {
+                break;
+            }
+            self.advance();
+            if kind == TokenKind::InterpolationExprEnd {
+                break;
             }
         }
     }
