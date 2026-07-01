@@ -76,7 +76,6 @@ fn check_statement(
                 check_expr(program, file, value, diagnostics);
             }
         }
-        Statement::ReturnAbsent { .. } => {}
         Statement::Expr { value, .. } => {
             check_expr(program, file, value, diagnostics);
         }

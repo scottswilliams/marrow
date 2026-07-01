@@ -4,9 +4,9 @@ use std::rc::Rc;
 
 use marrow_run::{
     CheckedEntryCall, EntryArgument, EntryArgumentJsonErrorKind, EntryArgumentShape,
-    EntryArgumentValue, EntryDescriptor, EntryInvocation, EntryParameter, EntryScalarArgument,
-    Host, RUN_ENTRY_ARGUMENT, Value, entry_argument_json_schema, entry_arguments_from_json,
-    run_entry, run_entry_with_host,
+    EntryArgumentValue, EntryDescriptor, EntryInvocation, EntryParameter, EntryParameterShape,
+    EntryScalarArgument, Host, RUN_ENTRY_ARGUMENT, Value, entry_argument_json_schema,
+    entry_arguments_from_json, run_entry, run_entry_with_host,
 };
 use marrow_store::Decimal;
 use marrow_store::tree::TreeStore;
@@ -246,12 +246,13 @@ fn protocol_args_admit_canonical_entry_identity_and_typed_values() {
     let descriptor = EntryDescriptor::resolve(&program, "accept").expect("entry descriptor");
     let EntryArgumentShape::Identity {
         store_catalog_id, ..
-    } = &entry_parameter(&descriptor, "author").shape
+    } = entry_parameter(&descriptor, "author").shape.shape()
     else {
         panic!("author should be an identity shape");
     };
     let author_store_catalog_id = store_catalog_id.clone();
-    let EntryArgumentShape::Enum { members, .. } = &entry_parameter(&descriptor, "status").shape
+    let EntryArgumentShape::Enum { members, .. } =
+        entry_parameter(&descriptor, "status").shape.shape()
     else {
         panic!("status should be an enum shape");
     };
@@ -329,11 +330,12 @@ fn json_protocol_args_decode_to_typed_entry_arguments() {
     let descriptor = EntryDescriptor::resolve(&program, "accept").expect("entry descriptor");
     let EntryArgumentShape::Identity {
         store_catalog_id, ..
-    } = &entry_parameter(&descriptor, "author").shape
+    } = entry_parameter(&descriptor, "author").shape.shape()
     else {
         panic!("author should be an identity shape");
     };
-    let EntryArgumentShape::Enum { members, .. } = &entry_parameter(&descriptor, "status").shape
+    let EntryArgumentShape::Enum { members, .. } =
+        entry_parameter(&descriptor, "status").shape.shape()
     else {
         panic!("status should be an enum shape");
     };
@@ -679,7 +681,7 @@ fn entry_descriptor_exposes_protocol_argument_shapes() {
         render_label,
         store_catalog_id,
         keys,
-    } = &entry_parameter(&descriptor, "author").shape
+    } = entry_parameter(&descriptor, "author").shape.shape()
     else {
         panic!("author should be an identity shape");
     };
@@ -696,7 +698,7 @@ fn entry_descriptor_exposes_protocol_argument_shapes() {
         render_label,
         catalog_id,
         members,
-    } = &entry_parameter(&descriptor, "status").shape
+    } = entry_parameter(&descriptor, "status").shape.shape()
     else {
         panic!("status should be an enum shape");
     };
@@ -717,8 +719,146 @@ fn entry_descriptor_exposes_protocol_argument_shapes() {
     let flags = entry_parameter(&descriptor, "flags");
     assert_eq!(
         flags.shape,
-        EntryArgumentShape::Sequence(Box::new(EntryArgumentShape::Scalar(ScalarType::Bool)))
+        EntryParameterShape::Present(EntryArgumentShape::Sequence(Box::new(
+            EntryArgumentShape::Scalar(ScalarType::Bool)
+        )))
     );
+}
+
+#[test]
+fn protocol_optional_param_binds_absent_from_omission_or_null() {
+    // A `T?` parameter is transportable: an omitted argument or a JSON `null` binds
+    // the empty optional, which the body resolves with `if const` (or `??`/`exists`).
+    // A present value decodes exactly as before.
+    let program = checked_program(
+        "pub fn act(x: string?): string\n\
+         \x20   if const value = x\n\
+         \x20       return value\n\
+         \x20   return \"absent\"\n",
+    );
+    let descriptor = EntryDescriptor::resolve(&program, "act").expect("entry descriptor");
+    let shape = &entry_parameter(&descriptor, "x").shape;
+    assert!(
+        shape.optional(),
+        "the parameter carries the Optional variant"
+    );
+    assert!(matches!(
+        shape.shape(),
+        EntryArgumentShape::Scalar(ScalarType::Str)
+    ));
+
+    let store = TreeStore::memory();
+
+    // An omitted argument binds `Value::Absent`, so the body takes the absent branch.
+    let call = CheckedEntryCall::from_protocol_invocation(
+        &program,
+        &protocol_invocation(&descriptor, vec![]),
+    )
+    .expect("an omitted optional argument is admitted");
+    let mut output = String::new();
+    let result = run_entry(&store, &call, &mut output).expect("run entry");
+    assert_eq!(result.value, Some(Value::Str("absent".into())));
+
+    // A JSON `null` argument decodes to the same absent binding.
+    let args = entry_arguments_from_json(&[json!({ "name": "x", "value": null })])
+        .expect("a null optional argument decodes");
+    let call = CheckedEntryCall::from_protocol_invocation(
+        &program,
+        &protocol_invocation(&descriptor, args),
+    )
+    .expect("a null optional argument is admitted");
+    let mut output = String::new();
+    let result = run_entry(&store, &call, &mut output).expect("run entry");
+    assert_eq!(result.value, Some(Value::Str("absent".into())));
+
+    // A present value decodes as before and binds the value.
+    let args = entry_arguments_from_json(&[json!({
+        "name": "x",
+        "value": { "kind": "string", "value": "hi" }
+    })])
+    .expect("a present optional argument decodes");
+    let call = CheckedEntryCall::from_protocol_invocation(
+        &program,
+        &protocol_invocation(&descriptor, args),
+    )
+    .expect("a present optional argument is admitted");
+    let mut output = String::new();
+    let result = run_entry(&store, &call, &mut output).expect("run entry");
+    assert_eq!(result.value, Some(Value::Str("hi".into())));
+}
+
+#[test]
+fn protocol_required_param_rejects_omission_and_null() {
+    let program = checked_program("pub fn need(x: string): string\n    return x\n");
+    let descriptor = EntryDescriptor::resolve(&program, "need").expect("entry descriptor");
+    assert!(!entry_parameter(&descriptor, "x").shape.optional());
+
+    let omitted = CheckedEntryCall::from_protocol_invocation(
+        &program,
+        &protocol_invocation(&descriptor, vec![]),
+    )
+    .expect_err("an omitted required argument is rejected");
+    assert_eq!(omitted.code(), RUN_ENTRY_ARGUMENT);
+
+    let args = entry_arguments_from_json(&[json!({ "name": "x", "value": null })])
+        .expect("a null argument decodes to an absent value");
+    let null = CheckedEntryCall::from_protocol_invocation(
+        &program,
+        &protocol_invocation(&descriptor, args),
+    )
+    .expect_err("a null required argument is rejected");
+    assert_eq!(null.code(), RUN_ENTRY_ARGUMENT);
+}
+
+#[test]
+fn text_optional_param_binds_absent_when_no_arg_supplied() {
+    // A `T?` parameter with no `--arg` supplied binds the empty optional, mirroring
+    // the JSON protocol path; the body resolves it with `if const`. A supplied value,
+    // even an empty string, is present, and a required parameter still rejects omission.
+    let program = checked_program(
+        "pub fn act(x: string?): string\n\
+         \x20   if const value = x\n\
+         \x20       return value\n\
+         \x20   return \"absent\"\n",
+    );
+    let store = TreeStore::memory();
+
+    // No `--arg x` at all is text absence, so the body takes the absent branch.
+    let call = CheckedEntryCall::from_text_args(&program, "test::act", &[])
+        .expect("an omitted optional text arg is admitted");
+    let mut output = String::new();
+    let result = run_entry(&store, &call, &mut output).expect("run entry");
+    assert_eq!(result.value, Some(Value::Str("absent".into())));
+
+    // A supplied empty string is a present empty string, not absence.
+    let call = CheckedEntryCall::from_text_args(&program, "test::act", &[("x", "")])
+        .expect("a present empty-string optional text arg is admitted");
+    let mut output = String::new();
+    let result = run_entry(&store, &call, &mut output).expect("run entry");
+    assert_eq!(result.value, Some(Value::Str(String::new())));
+
+    // A required parameter still errors when its `--arg` is omitted.
+    let required = checked_program("pub fn need(x: string): string\n    return x\n");
+    let error = CheckedEntryCall::from_text_args(&required, "test::need", &[])
+        .expect_err("an omitted required text arg is rejected");
+    assert_eq!(error.code(), RUN_ENTRY_ARGUMENT);
+}
+
+#[test]
+fn optional_parameter_is_a_distinct_operation_tag() {
+    // Parameter optionality folds into the operation tag, so a definite and an
+    // optional parameter of the same name and type are distinct tags.
+    let required = checked_program("pub fn f(x: string): int\n    return 1\n");
+    let optional = checked_program("pub fn f(x: string?): int\n    return 1\n");
+    let required_tag = EntryDescriptor::resolve(&required, "f")
+        .expect("required descriptor")
+        .identity
+        .entry_tag;
+    let optional_tag = EntryDescriptor::resolve(&optional, "f")
+        .expect("optional descriptor")
+        .identity
+        .entry_tag;
+    assert_ne!(required_tag, optional_tag);
 }
 
 #[test]
@@ -739,7 +879,8 @@ fn protocol_enum_arguments_round_trip_duplicate_leaf_catalog_ids() {
          \x20   return 0\n",
     );
     let descriptor = EntryDescriptor::resolve(&program, "label").expect("entry descriptor");
-    let EntryArgumentShape::Enum { members, .. } = &entry_parameter(&descriptor, "cat").shape
+    let EntryArgumentShape::Enum { members, .. } =
+        entry_parameter(&descriptor, "cat").shape.shape()
     else {
         panic!("cat should be an enum shape");
     };

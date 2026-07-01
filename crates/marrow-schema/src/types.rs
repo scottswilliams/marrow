@@ -28,6 +28,11 @@ pub enum Type {
     Named(String),
     /// The explicit dynamic boundary type `unknown`.
     Unknown,
+    /// An optional value type `T?`: a `T` or absence. The inner is never itself
+    /// optional — the [`Type::optional`] constructor flattens, so the non-nesting
+    /// invariant holds by representation. Optionality is a code-level type with no
+    /// durable footprint; a saved leaf, key, or slot never embeds one.
+    Optional(Box<Type>),
 }
 
 impl Type {
@@ -39,6 +44,31 @@ impl Type {
     }
 
     pub(crate) fn resolve_text(text: &str) -> Self {
+        // `?` is the optional suffix: strip exactly one trailing `?` and wrap the
+        // base through the flattening constructor. A declared `T??` has no second
+        // optional layer to denote — the parser rejects that spelling, and any
+        // leftover `?` stays in the base text, resolving to an unresolvable
+        // `Named` rather than a nested optional.
+        if let Some(base) = text.strip_suffix('?') {
+            return Self::optional(Self::resolve_base(base));
+        }
+        Self::resolve_base(text)
+    }
+
+    /// The one optional constructor: wrap `inner` as `T?`, flattening so an
+    /// optional never nests (`optional(Optional(x)) == Optional(x)`). Every
+    /// optional — declared or inferred — is built here, so the non-nesting
+    /// invariant holds by representation rather than per-site rejection.
+    pub fn optional(inner: Type) -> Type {
+        match inner {
+            Type::Optional(_) => inner,
+            other => Type::Optional(Box::new(other)),
+        }
+    }
+
+    /// Resolve a type spelling that carries no trailing optional suffix: the
+    /// scalar, `sequence[...]`, `Id(^store)`, `unknown`, or bare/qualified name.
+    fn resolve_base(text: &str) -> Self {
         // `sequence[T]` is built-in element-type sugar; recurse on the element.
         if let Some(element) = crate::compile::sequence_element(text) {
             return Self::Sequence(Box::new(Self::resolve_text(element)));
@@ -56,6 +86,18 @@ impl Type {
             return Self::Identity(store.to_string());
         }
         Self::Named(text.to_string())
+    }
+
+    /// This type with every optional layer removed — the present-arm type a
+    /// durable leaf stores. A `?` in a saved position is a source error the
+    /// validator reports; the best-effort schema records this present type so the
+    /// durable model stays optional-free and the slot choke-point holds.
+    pub(crate) fn without_optional(self) -> Type {
+        match self {
+            Type::Optional(inner) => inner.without_optional(),
+            Type::Sequence(element) => Type::Sequence(Box::new(element.without_optional())),
+            other => other,
+        }
     }
 
     /// The scalar this type denotes, or `None` for a sequence, identity, named,
@@ -77,6 +119,20 @@ impl Type {
         match self {
             Self::Unknown => true,
             Self::Sequence(element) => element.embeds_unknown(),
+            Self::Optional(inner) => inner.embeds_unknown(),
+            _ => false,
+        }
+    }
+
+    /// Does this type embed an optional? A type embeds an optional when it is `T?`
+    /// itself or a `sequence[...]` whose element embeds one. Optionality is a
+    /// code-level type with no durable footprint, so a saved leaf, key, or slot
+    /// must embed none — this is the predicate the slot choke-point and the
+    /// saved-shape validator enforce, parallel to [`Type::embeds_unknown`].
+    pub fn embeds_optional(&self) -> bool {
+        match self {
+            Self::Optional(_) => true,
+            Self::Sequence(element) => element.embeds_optional(),
             _ => false,
         }
     }
@@ -92,6 +148,7 @@ impl fmt::Display for Type {
             Self::Identity(store) => write!(f, "Id(^{store})"),
             Self::Named(name) => f.write_str(name),
             Self::Unknown => f.write_str("unknown"),
+            Self::Optional(inner) => write!(f, "{inner}?"),
         }
     }
 }
@@ -328,6 +385,25 @@ pub enum NodeKind {
     Group,
 }
 
+impl NodeKind {
+    /// Construct a value slot. A durable leaf never holds an optional: optionality
+    /// is a code-level type with no stored footprint — absence is the lack of a
+    /// node — so a slot's `ty` is always the present-arm `T`. This is the single
+    /// structural owner of that invariant: every slot is built here, and the
+    /// assertion fails closed if any path ever tries to durably store a `T?`.
+    pub(crate) fn slot(ty: Type, required: bool, error_code: bool) -> Self {
+        debug_assert!(
+            !ty.embeds_optional(),
+            "a durable leaf is never optional, got `{ty}`"
+        );
+        Self::Slot {
+            ty,
+            required,
+            error_code,
+        }
+    }
+}
+
 /// A declared lookup index over identity keys and fields.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IndexSchema {
@@ -335,4 +411,45 @@ pub struct IndexSchema {
     pub docs: Vec<String>,
     pub args: Vec<String>,
     pub unique: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{NodeKind, ScalarType, Type};
+
+    #[test]
+    fn optional_constructor_flattens_so_an_optional_never_nests() {
+        let once = Type::optional(Type::Scalar(ScalarType::Str));
+        assert_eq!(
+            once,
+            Type::Optional(Box::new(Type::Scalar(ScalarType::Str)))
+        );
+        // Wrapping an already-optional type is idempotent.
+        assert_eq!(Type::optional(once.clone()), once);
+    }
+
+    #[test]
+    fn resolve_text_strips_one_optional_suffix_and_rejects_a_second() {
+        assert_eq!(
+            Type::resolve_text("string?"),
+            Type::Optional(Box::new(Type::Scalar(ScalarType::Str)))
+        );
+        // A declared `T??` has no nested-optional type to denote: the second `?`
+        // is not folded into a single optional but left in an unresolvable base.
+        let double = Type::resolve_text("string??");
+        assert_eq!(
+            double,
+            Type::Optional(Box::new(Type::Named("string?".to_string())))
+        );
+        assert_ne!(
+            double,
+            Type::Optional(Box::new(Type::Scalar(ScalarType::Str)))
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "a durable leaf is never optional")]
+    fn slot_construction_rejects_an_optional_leaf_type() {
+        NodeKind::slot(Type::resolve_text("string?"), false, false);
+    }
 }

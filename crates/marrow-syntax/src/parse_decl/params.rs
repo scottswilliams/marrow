@@ -7,7 +7,7 @@ use super::tokens::{
     doc_comment_text, find_top_level_equal, reject_structural_type_tokens, type_ref_from_tokens,
 };
 use super::{FunctionHead, ParseError, ParseResult};
-use crate::ast::{FunctionReturnPresence, KeyParam, ParamDecl};
+use crate::ast::{KeyParam, ParamDecl};
 use crate::diagnostic::{ExpectedSyntax, ParseDiagnosticReason, UnsupportedSyntax};
 use crate::token::{Keyword, Token, TokenKind};
 
@@ -82,8 +82,8 @@ pub(super) fn parse_function_head(source: &str, tokens: &[Token]) -> ParseResult
     ))?;
     let params = parse_params_tokens(source, &rest[1..close])?;
     let after = &rest[close + 1..];
-    let (return_presence, return_type) = if after.is_empty() {
-        (FunctionReturnPresence::Always, None)
+    let return_type = if after.is_empty() {
+        None
     } else {
         if after[0].kind != TokenKind::Colon {
             return Err(ParseError::at(
@@ -100,40 +100,19 @@ pub(super) fn parse_function_head(source: &str, tokens: &[Token]) -> ParseResult
                 "expected return type after `:`",
             ));
         }
-        let (return_presence, ty_tokens) = strip_maybe_return_marker(ty_tokens)?;
         reject_structural_type_tokens(
             ty_tokens,
             ExpectedSyntax::FunctionReturnType,
             "expected return type after `:`",
         )?;
-        let ty = type_ref_from_tokens(source, ty_tokens);
-        (return_presence, Some(ty))
+        Some(type_ref_from_tokens(source, ty_tokens))
     };
     Ok(FunctionHead {
         public,
         name,
         params,
-        return_presence,
         return_type,
     })
-}
-
-fn strip_maybe_return_marker(tokens: &[Token]) -> ParseResult<(FunctionReturnPresence, &[Token])> {
-    if !matches!(
-        tokens.first().map(|token| token.kind),
-        Some(TokenKind::Keyword(Keyword::Maybe))
-    ) {
-        return Ok((FunctionReturnPresence::Always, tokens));
-    }
-    let ty_tokens = &tokens[1..];
-    if ty_tokens.is_empty() {
-        return Err(ParseError::at(
-            tokens[0].span,
-            ParseDiagnosticReason::Expected(ExpectedSyntax::FunctionReturnType),
-            "expected return type after `maybe`",
-        ));
-    }
-    Ok((FunctionReturnPresence::MaybePresent, ty_tokens))
 }
 
 /// Parse a `name: type` parameter list. Parameters are separated by

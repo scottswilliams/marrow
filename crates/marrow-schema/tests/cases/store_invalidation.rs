@@ -1,6 +1,6 @@
 use marrow_schema::{
     ScalarType, SchemaDuplicateTarget, SchemaErrorKind, SchemaKeyTarget, SchemaNameCollision,
-    SchemaSavedUnknownTarget, SchemaStoreInvalidation, Type,
+    SchemaSavedPosition, SchemaStoreInvalidation, Type,
 };
 
 fn index(name: &str) -> Option<SchemaStoreInvalidation> {
@@ -54,28 +54,28 @@ fn store_invalidation_mapping_is_pinned() {
         ),
         (
             SchemaErrorKind::UnknownInSaved {
-                target: SchemaSavedUnknownTarget::Field,
+                target: SchemaSavedPosition::Field,
                 name: "title".into(),
             },
             None,
         ),
         (
             SchemaErrorKind::UnknownInSaved {
-                target: SchemaSavedUnknownTarget::IdentityKey,
+                target: SchemaSavedPosition::IdentityKey,
                 name: "id".into(),
             },
             Some(SchemaStoreInvalidation::Store),
         ),
         (
             SchemaErrorKind::UnknownInSaved {
-                target: SchemaSavedUnknownTarget::Key,
+                target: SchemaSavedPosition::Key,
                 name: "pos".into(),
             },
             None,
         ),
         (
             SchemaErrorKind::UnknownInSaved {
-                target: SchemaSavedUnknownTarget::KeyedLeaf,
+                target: SchemaSavedPosition::KeyedLeaf,
                 name: "tag".into(),
             },
             None,

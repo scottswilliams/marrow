@@ -17,7 +17,7 @@ use crate::{StoreLeafKind, resolve_resource_schema_type};
 use super::{
     CheckedArg, CheckedExpr, CheckedSavedIndex, CheckedSavedIndexKey, CheckedSavedKeyParam,
     CheckedSavedLayer, CheckedSavedMember, CheckedSavedMemberKind, CheckedSavedPlace,
-    CheckedSavedTerminal,
+    CheckedSavedTerminal, is_single_int_sequence,
 };
 
 pub(crate) struct SavedPlaceResolver<'a> {
@@ -111,6 +111,32 @@ impl<'a> SavedPlaceResolver<'a> {
 
     pub(crate) fn value_type(&self, expr: &CheckedExpr) -> Option<MarrowType> {
         self.place_value_type(expr.saved_place()?)
+    }
+
+    /// Whether a saved write target is a clearable place — present-or-clear: a sparse
+    /// plain field or a keyed leaf. Assigning `absent` removes the node through the
+    /// delete planner; a present `T` writes the leaf. A `required` field, a positional
+    /// sequence element, a whole record, and an index are not clearable, so a `T?` RHS
+    /// into them stays the one rule. The present-arm leaf type is `value_type`; this
+    /// only decides whether that place presents as `Optional`.
+    pub(crate) fn write_target_clearable(&self, expr: &CheckedExpr) -> bool {
+        let Some(place) = expr.saved_place() else {
+            return false;
+        };
+        match &place.terminal {
+            CheckedSavedTerminal::Field { name, .. } => {
+                checked_plain_field_member(&place.members, name)
+                    .and_then(CheckedSavedMember::plain_field)
+                    .is_some_and(|(_, required)| !required)
+            }
+            CheckedSavedTerminal::Record => place.layers.last().is_some_and(|layer| {
+                layer.leaf.is_some()
+                    && layer_fully_keyed(layer)
+                    && range_arg_position_in(&layer.args).is_none()
+                    && !is_single_int_sequence(&layer.key_params)
+            }),
+            CheckedSavedTerminal::Index { .. } => false,
+        }
     }
 
     /// The element value type of a Record-root collection: the store's resource
@@ -698,9 +724,10 @@ fn saved_access_rejection_program_optional(
             }
             super::CheckedInterpolationPart::Text { .. } => None,
         }),
-        CheckedExpr::Literal { .. } | CheckedExpr::Name { .. } | CheckedExpr::SavedRoot { .. } => {
-            None
-        }
+        CheckedExpr::Literal { .. }
+        | CheckedExpr::Name { .. }
+        | CheckedExpr::SavedRoot { .. }
+        | CheckedExpr::Absent { .. } => None,
     }
 }
 

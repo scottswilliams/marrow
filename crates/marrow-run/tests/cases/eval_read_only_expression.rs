@@ -86,7 +86,7 @@ fn evaluates_a_checked_read_only_expression_against_the_store() {
     run_entry(&store, checked_entry!(&runtime, "test::seed")).expect("seed saved data");
 
     let expr = checked
-        .checked_read_only_expression("test", "PREFIX + ^books(1).title")
+        .checked_read_only_expression("test", "PREFIX + (^books(1).title ?? \"\")")
         .expect("expression is admitted");
     let mut output = String::new();
     let outcome =

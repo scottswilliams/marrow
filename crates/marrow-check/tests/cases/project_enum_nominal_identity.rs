@@ -549,10 +549,12 @@ fn keyed_leaf_with_a_bare_unique_foreign_enum_rejects_resource_value() {
     });
     let (report, _program) = check_project(&root, &config()).expect("check");
     let found = with_code(&report, "check.assignment_type");
+    // A keyed-leaf write target is clearable (present-or-clear), so it presents
+    // `Status?`; the write enforces the same nominal enum identity through it.
     assert_only_mismatch(
         &found,
         |d| &d.payload,
-        enum_type("kinds", "Status"),
+        MarrowType::Optional(Box::new(enum_type("kinds", "Status"))),
         MarrowType::Resource("app::Post".into()),
     );
 }

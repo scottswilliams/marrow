@@ -32,10 +32,11 @@ These are for sparse paths. They do not suppress schema or decoding errors; a
 missing required field in saved data is still invalid data. The operators are
 covered in detail under Operators in the syntax reference.
 
-The same forms resolve every maybe-present read, not only saved paths: a local
-positional read `xs(pos)`, a local keyed read `counts(k)`, and a sparse field of
-a materialized value such as `book.subtitle`, `person.address.zip`, a loop-bound
-group entry's field, or a caught `err.help`. A bare such read is a compile error.
+The same forms resolve every maybe-present value, not only saved paths: a local
+positional read `xs(pos)`, a local keyed read `counts(k)`, a sparse field of a
+materialized value such as `book.subtitle`, `person.address.zip`, a loop-bound
+group entry's field, or a caught `err.help`, and a local `var`/`const`/parameter
+of optional type (`v: string?`). A bare such read is a compile error.
 
 The guarded expression and its key and base sub-expressions must be effect-free
 reads. A write, an allocation, a host call, or any user-function call inside the
@@ -165,8 +166,8 @@ its edge entry: `next(^books)` is the first stored record, `prev(^books)` the
 last; `next(^books(id).tags)` is the first stored position in that layer.
 
 Stepping off the edge — `next` of the last entry, or `prev` of the first — has no
-neighbor, so the result is maybe-present and must be resolved at the read, the same
-as any maybe-present value. It composes with `??`:
+neighbor, so the result types as `Id(^store)?` and must be resolved at the read,
+like any `T?` value. It composes with `??`:
 
 ```mw
 const following = next(^books(id)) ?? id

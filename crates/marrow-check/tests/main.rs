@@ -70,6 +70,8 @@ mod discharge_leaf_reshape;
 mod discharge_required_leaf_presence;
 #[path = "cases/discharge_retype.rs"]
 mod discharge_retype;
+#[path = "cases/discharge_sparse_required_toggle.rs"]
+mod discharge_sparse_required_toggle;
 #[path = "cases/discharge_store_key.rs"]
 mod discharge_store_key;
 #[path = "cases/discharge_structural_backstop.rs"]
@@ -88,8 +90,14 @@ mod language_reference_docs;
 mod local_maybe_present_reads;
 #[path = "cases/lossy_round_trip.rs"]
 mod lossy_round_trip;
+#[path = "cases/optional_annotation_resolution.rs"]
+mod optional_annotation_resolution;
+#[path = "cases/optional_boundary_sites.rs"]
+mod optional_boundary_sites;
 #[path = "cases/optional_chain_enum_typing.rs"]
 mod optional_chain_enum_typing;
+#[path = "cases/optional_write_and_chain.rs"]
+mod optional_write_and_chain;
 #[path = "cases/project_analysis_overlay_snapshot.rs"]
 mod project_analysis_overlay_snapshot;
 #[path = "cases/project_analysis_pipeline.rs"]

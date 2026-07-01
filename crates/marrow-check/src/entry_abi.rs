@@ -1,4 +1,3 @@
-use marrow_schema::ReturnPresence;
 use marrow_store::cell::CatalogId;
 use marrow_store::value::ScalarType;
 
@@ -32,7 +31,7 @@ pub struct EntryDescriptor {
 pub struct EntryFunctionSurfaceDescriptor {
     pub identity: EntryIdentity,
     pub parameters: Vec<EntryParameter>,
-    pub result: EntryResultDescriptor,
+    pub result: EntryResultShape,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,16 +40,72 @@ pub enum EntrySurfaceProfile {
     ComputedRead,
 }
 
+/// The surface result of an entry or computed read. Presence lives in this one
+/// carrier — `Void` for a no-return action, `Present` for a definite `T`, `Optional`
+/// for a `T?` — computed from the return type, so no parallel presence flag can
+/// disagree with the value shape. The operation-tag presence component and the
+/// client JSON presence enum are both derived from it.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EntryResultDescriptor {
-    pub presence: ReturnPresence,
-    pub value: Option<EntrySurfaceValueShape>,
+pub enum EntryResultShape {
+    Void,
+    Present(EntrySurfaceValueShape),
+    Optional(EntrySurfaceValueShape),
+}
+
+impl EntryResultShape {
+    /// Whether the result is maybe-present (`T?`) — the byte-stable tag presence
+    /// component. A void result is definite, not maybe-present.
+    pub fn maybe_present(&self) -> bool {
+        matches!(self, EntryResultShape::Optional(_))
+    }
+
+    /// The present-arm value shape, or `None` for a void result.
+    pub fn value(&self) -> Option<&EntrySurfaceValueShape> {
+        match self {
+            EntryResultShape::Void => None,
+            EntryResultShape::Present(shape) | EntryResultShape::Optional(shape) => Some(shape),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EntryParameter {
     pub name: String,
-    pub shape: EntryArgumentShape,
+    pub shape: EntryParameterShape,
+}
+
+/// A surface parameter's shape. Presence lives in this one carrier — `Present` for
+/// a definite `T`, `Optional` for a `T?` — read off the parameter type, mirroring
+/// the `EntryResultShape` return carrier so no parallel presence flag can disagree
+/// with the value shape. The operation-tag parameter-optionality component is
+/// derived from it, and the decoder binds an absent optional only where the carrier
+/// says `Optional`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EntryParameterShape {
+    Present(EntryArgumentShape),
+    Optional(EntryArgumentShape),
+}
+
+impl EntryParameterShape {
+    /// Whether the parameter is optional (`T?`) — the byte-stable tag optionality
+    /// component.
+    pub fn optional(&self) -> bool {
+        matches!(self, EntryParameterShape::Optional(_))
+    }
+
+    /// The present-arm argument shape the value decodes into.
+    pub fn shape(&self) -> &EntryArgumentShape {
+        match self {
+            EntryParameterShape::Present(shape) | EntryParameterShape::Optional(shape) => shape,
+        }
+    }
+
+    /// The present-arm argument shape, consuming the carrier.
+    pub fn into_shape(self) -> EntryArgumentShape {
+        match self {
+            EntryParameterShape::Present(shape) | EntryParameterShape::Optional(shape) => shape,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -182,12 +237,21 @@ impl EntryDescriptor {
     ) -> Option<Self> {
         let module = program.modules().get(target.module as usize)?;
         let function = module.functions().get(target.function as usize)?;
-        let parameters = function
+        let parameters: Vec<EntryParameter> = function
             .entry_params()
             .iter()
-            .map(|param| EntryParameter {
-                name: param.name.clone(),
-                shape: argument_shape(program, &param.ty),
+            .zip(&function.params)
+            .map(|(runtime_param, checked_param)| {
+                let shape = argument_shape(program, &runtime_param.ty);
+                let shape = if matches!(checked_param.ty, MarrowType::Optional(_)) {
+                    EntryParameterShape::Optional(shape)
+                } else {
+                    EntryParameterShape::Present(shape)
+                };
+                EntryParameter {
+                    name: runtime_param.name.clone(),
+                    shape,
+                }
             })
             .collect();
         let canonical_name = canonical_entry_name(module, function);
@@ -198,7 +262,7 @@ impl EntryDescriptor {
             identity: EntryIdentity {
                 requested_name: requested_name.to_string(),
                 canonical_name: canonical_name.clone(),
-                entry_tag: entry_tag(program, &canonical_name, function),
+                entry_tag: entry_tag(program, &canonical_name, function, &parameters),
                 accepted_catalog_epoch: program.accepted_catalog_epoch(),
                 source_digest: program.source_digest().to_string(),
                 read_only_context_digest: program.read_only_context_digest().to_string(),
@@ -221,7 +285,7 @@ impl EntryFunctionSurfaceDescriptor {
         if !entry
             .parameters
             .iter()
-            .all(|parameter| callable_argument_shape_supported(&parameter.shape))
+            .all(|parameter| callable_argument_shape_supported(parameter.shape.shape()))
         {
             return None;
         }
@@ -249,13 +313,15 @@ impl EntryFunctionSurfaceDescriptor {
             return None;
         }
 
+        let result = match value {
+            Some(shape) if function.returns_maybe_present() => EntryResultShape::Optional(shape),
+            Some(shape) => EntryResultShape::Present(shape),
+            None => EntryResultShape::Void,
+        };
         Some(Self {
             identity: entry.identity,
             parameters: entry.parameters,
-            result: EntryResultDescriptor {
-                presence: function.return_presence,
-                value,
-            },
+            result,
         })
     }
 }
@@ -275,6 +341,7 @@ fn entry_tag(
     program: &CheckedRuntimeProgram,
     canonical_name: &str,
     function: &CheckedRuntimeFunction,
+    parameters: &[EntryParameter],
 ) -> String {
     let mut payload = String::new();
     push_part(&mut payload, "version", ENTRY_PROTOCOL_TAG_VERSION);
@@ -282,7 +349,7 @@ fn entry_tag(
     push_part(
         &mut payload,
         "return_presence",
-        return_presence_name(function.return_presence),
+        return_presence_name(function.returns_maybe_present()),
     );
     push_part(
         &mut payload,
@@ -302,8 +369,11 @@ fn entry_tag(
         "params.len",
         &function.entry_params().len().to_string(),
     );
-    for param in function.entry_params() {
+    for (param, parameter) in function.entry_params().iter().zip(parameters) {
         push_part(&mut payload, "param.name", &param.name);
+        if parameter.shape.optional() {
+            push_part(&mut payload, "param.optional", "true");
+        }
         push_runtime_type(program, &mut payload, "param", &param.ty);
     }
     marrow_project::sha256_digest(payload.as_bytes())
@@ -508,17 +578,28 @@ fn entry_sequence_element_supported(ty: &CheckedRuntimeValueType) -> bool {
     )
 }
 
+/// The present-arm type, one optional layer stripped. Presence rides the operation
+/// tag, not the value/result shape, so an `Optional(T)` surface result resolves to
+/// the same shape as a definite `T`. [`MarrowType::optional`] flattens, so one strip
+/// reaches the present arm.
+fn present_arm(ty: &MarrowType) -> &MarrowType {
+    match ty {
+        MarrowType::Optional(inner) => inner.as_ref(),
+        other => other,
+    }
+}
+
 fn surface_value_shape(
     program: &CheckedProgram,
     ty: &MarrowType,
     profile: EntrySurfaceProfile,
 ) -> Option<EntrySurfaceValueShape> {
-    match ty {
+    match present_arm(ty) {
         MarrowType::Resource(resource) if profile == EntrySurfaceProfile::ComputedRead => {
             resource_result_shape(program, resource)
         }
         MarrowType::Resource(_) => None,
-        _ => {
+        ty => {
             let runtime = program.runtime();
             let runtime_ty = checked_runtime_value_type(program, ty.clone());
             surface_value_shape_from_runtime(&runtime, &runtime_ty)
@@ -622,11 +703,11 @@ fn resource_result_shape(
 }
 
 fn computed_read_type_has_accepted_catalog_ids(program: &CheckedProgram, ty: &MarrowType) -> bool {
-    match ty {
+    match present_arm(ty) {
         MarrowType::Resource(resource) => {
             computed_read_resource_type_has_accepted_catalog_ids(program, resource)
         }
-        _ => {
+        ty => {
             let runtime_ty = checked_runtime_value_type(program, ty.clone());
             runtime_type_has_accepted_catalog_ids(program, &runtime_ty)
         }
@@ -656,11 +737,11 @@ fn computed_read_resource_type_has_accepted_catalog_ids(
 }
 
 fn computed_read_type_has_surface_shape(program: &CheckedProgram, ty: &MarrowType) -> bool {
-    match ty {
+    match present_arm(ty) {
         MarrowType::Resource(resource) => {
             computed_read_resource_type_has_surface_shape(program, resource)
         }
-        _ => {
+        ty => {
             let runtime_ty = checked_runtime_value_type(program, ty.clone());
             runtime_type_has_entry_shape(&runtime_ty)
         }
@@ -1042,10 +1123,13 @@ fn push_runtime_type(
     }
 }
 
-fn return_presence_name(presence: ReturnPresence) -> &'static str {
-    match presence {
-        ReturnPresence::Always => "always",
-        ReturnPresence::MaybePresent => "maybe_present",
+/// The byte-stable presence token for the operation tag. A maybe-present (`T?`)
+/// return is a distinct tag from a definite one, preserving tag soundness.
+fn return_presence_name(maybe_present: bool) -> &'static str {
+    if maybe_present {
+        "maybe_present"
+    } else {
+        "always"
     }
 }
 

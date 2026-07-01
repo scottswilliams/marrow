@@ -6,7 +6,6 @@ use marrow_check::{
     CheckedFunctionRef, EntryStoreOpenMode, WorkShapeClass, check_project,
     check_project_with_catalog,
 };
-use marrow_schema::ReturnPresence;
 
 use support::{assert_clean, config, temp_project, write};
 
@@ -30,7 +29,6 @@ fn function_ref(
     CheckedFunctionRef {
         module: fact.module.0,
         function: fact.source_index,
-        presence: ReturnPresence::Always,
     }
 }
 
@@ -340,7 +338,6 @@ fn closure_uses_source_index_specific_function_facts() {
     let writer = CheckedFunctionRef {
         module: 0,
         function: 1,
-        presence: ReturnPresence::Always,
     };
     let closure = program
         .effect_closure(writer)

@@ -123,4 +123,57 @@ fn scalar_projects_only_scalar_types() {
     assert_eq!(resolve("Status").scalar(), None);
     assert_eq!(resolve("sequence[int]").scalar(), None);
     assert_eq!(resolve("Id(^books)").scalar(), None);
+    // An optional is not a scalar, so it never projects a stored cell type.
+    assert_eq!(resolve("int?").scalar(), None);
+}
+
+#[test]
+fn trailing_question_resolves_to_an_optional_over_its_base() {
+    assert_eq!(
+        resolve("string?"),
+        Type::Optional(Box::new(Type::Scalar(ScalarType::Str)))
+    );
+    assert_eq!(
+        resolve("Id(^books)?"),
+        Type::Optional(Box::new(Type::Identity("books".to_string())))
+    );
+    assert_eq!(
+        resolve("Book?"),
+        Type::Optional(Box::new(Type::Named("Book".to_string())))
+    );
+    // An optional sequence is a code type; only `?` inside a stored slot is
+    // rejected, by the saved-shape validator rather than resolution.
+    assert_eq!(
+        resolve("sequence[string]?"),
+        Type::Optional(Box::new(Type::Sequence(Box::new(Type::Scalar(
+            ScalarType::Str
+        )))))
+    );
+    // The element optional rides inside the sequence, where the validator catches
+    // it for a saved element.
+    assert_eq!(
+        resolve("sequence[string?]"),
+        Type::Sequence(Box::new(Type::Optional(Box::new(Type::Scalar(
+            ScalarType::Str
+        )))))
+    );
+}
+
+#[test]
+fn optional_display_appends_the_question_suffix() {
+    assert_eq!(resolve("string?").to_string(), "string?");
+    assert_eq!(resolve("Id(^books)?").to_string(), "Id(^books)?");
+    assert_eq!(
+        resolve("sequence[string?]").to_string(),
+        "sequence[string?]"
+    );
+}
+
+#[test]
+fn embeds_optional_sees_through_sequences() {
+    assert!(resolve("int?").embeds_optional());
+    assert!(resolve("sequence[int?]").embeds_optional());
+    assert!(resolve("sequence[sequence[int?]]").embeds_optional());
+    assert!(!resolve("sequence[int]").embeds_optional());
+    assert!(!resolve("int").embeds_optional());
 }

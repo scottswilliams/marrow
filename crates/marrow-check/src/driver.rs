@@ -8,7 +8,6 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use marrow_project::{DiscoverError, ProjectConfig, discover_test_modules};
-use marrow_schema::ReturnPresence;
 use marrow_schema::stdlib::{self, ParamType, ReturnType};
 use marrow_syntax::{
     Block, Declaration, EvolveStep, FunctionDecl, SourceFile, SourceSpan, Statement, parse_source,
@@ -290,7 +289,12 @@ fn std_op(segments: &[String]) -> Option<&'static stdlib::StdOp> {
 /// `Unknown` for the surrounding checks.
 pub(crate) fn std_call_return_type(segments: &[String]) -> Option<MarrowType> {
     match std_op(segments)?.ret {
-        ReturnType::Scalar(scalar) => Some(MarrowType::Primitive(scalar)),
+        // A maybe-present scalar op (`OptionalScalar`) yields the same present-arm
+        // value type as a definite one; its maybe-presence is read off the
+        // descriptor at the read site, so the call's value type stays bare.
+        ReturnType::Scalar(scalar) | ReturnType::OptionalScalar(scalar) => {
+            Some(MarrowType::Primitive(scalar))
+        }
         ReturnType::Sequence(element) => Some(MarrowType::Sequence(Box::new(
             MarrowType::Primitive(element),
         ))),
@@ -1067,7 +1071,6 @@ fn check_block_local_key_types(
             | Statement::CompoundAssign { .. }
             | Statement::Delete { .. }
             | Statement::Return { .. }
-            | Statement::ReturnAbsent { .. }
             | Statement::Break { .. }
             | Statement::Continue { .. }
             | Statement::Throw { .. }
@@ -1138,10 +1141,6 @@ fn checked_function(
                 ),
             })
             .collect(),
-        return_presence: match function.return_presence {
-            marrow_syntax::FunctionReturnPresence::Always => ReturnPresence::Always,
-            marrow_syntax::FunctionReturnPresence::MaybePresent => ReturnPresence::MaybePresent,
-        },
         return_type: function
             .return_type
             .as_ref()
@@ -1354,7 +1353,6 @@ fn statement_child_blocks_declare_local_name(statement: &Statement, name: &str) 
         | Statement::CompoundAssign { .. }
         | Statement::Delete { .. }
         | Statement::Return { .. }
-        | Statement::ReturnAbsent { .. }
         | Statement::Break { .. }
         | Statement::Continue { .. }
         | Statement::Throw { .. }

@@ -55,9 +55,13 @@ pub(crate) fn for_frame(
         return frame;
     }
     // Any recognized collection (saved or local, sequence or keyed) bound above; a
-    // single variable here is a range, whose binding is its endpoint scalar.
+    // single variable here is a range, whose binding is its endpoint scalar. A `for`
+    // over a concrete scalar is rejected, but its binding recovers to that scalar's
+    // type so a body use does not stack a `check.untyped_value` on the one root-cause
+    // error.
     let first_type = match &binding.second {
         None => range_endpoint_type(program, iterable, scope, aliases, file)
+            .or_else(|| scalar_iterable_recovery_type(program, iterable, scope, aliases, file))
             .unwrap_or(MarrowType::Unknown),
         _ => MarrowType::Unknown,
     };
@@ -378,6 +382,20 @@ fn is_non_pair_collection_wrapper(iterable: &marrow_syntax::Expression) -> bool 
 /// `Unknown` defers, keeping cross-module unresolved values free of false positives.
 /// Shared by the collection combinators (`for`, `count`, `reversed`) that need a
 /// collection, not a scalar.
+/// The recovery type a `for` loop's binding takes when the iterable is a concrete
+/// non-iterable scalar: the scalar's own type. The loop is rejected, but its binding
+/// is still typed so a body use is not a second untyped cascade.
+fn scalar_iterable_recovery_type(
+    program: &CheckedProgram,
+    iterable: &marrow_syntax::Expression,
+    scope: &[HashMap<String, MarrowType>],
+    aliases: &HashMap<String, Vec<String>>,
+    file: &Path,
+) -> Option<MarrowType> {
+    let ty = infer_type(program, iterable, scope, aliases, file, &mut Vec::new());
+    is_concrete_scalar_value(iterable, &ty).then_some(ty)
+}
+
 pub(crate) fn is_concrete_scalar_value(expr: &marrow_syntax::Expression, ty: &MarrowType) -> bool {
     // A range is iterable, and a saved path carries its own presence/traversal
     // semantics (a saved scalar's `count` is its presence), so neither is a local
@@ -500,7 +518,10 @@ pub(crate) fn check_entries_value_position(
                 }
             }
         }
-        Expression::Literal { .. } | Expression::Name { .. } | Expression::SavedRoot { .. } => {}
+        Expression::Literal { .. }
+        | Expression::Name { .. }
+        | Expression::SavedRoot { .. }
+        | Expression::Absent { .. } => {}
     }
 }
 
@@ -640,7 +661,7 @@ pub(super) fn saved_path_key_type(
     SavedPlaceResolver::new(program).key_type(&expr)
 }
 
-fn saved_path_value_type(
+pub(super) fn saved_path_value_type(
     program: &CheckedProgram,
     path: &marrow_syntax::Expression,
     scope: &[HashMap<String, MarrowType>],

@@ -14,6 +14,8 @@ mod compile_resource_index;
 mod compile_resource_keys;
 #[path = "cases/compile_resource_members.rs"]
 mod compile_resource_members;
+#[path = "cases/compile_resource_optional.rs"]
+mod compile_resource_optional;
 #[path = "cases/compile_resource_unknown.rs"]
 mod compile_resource_unknown;
 #[path = "cases/resolve_type.rs"]

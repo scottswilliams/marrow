@@ -218,7 +218,7 @@ fn bounded_entry_return_to_json(
             }
             run::EntryReturnJson::Sequence { values, truncated }
         }
-        Value::Resource(_) | Value::LocalTree(_) => {
+        Value::Absent | Value::Resource(_) | Value::LocalTree(_) => {
             return Err(EntryReturnJsonError::UnsupportedValue);
         }
     })

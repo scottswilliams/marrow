@@ -514,7 +514,7 @@ fn a_whole_group_entry_copy_read_requires_read_site_resolution() {
          fn local()\n    var b: Book\n    b.title = \"v1\"\n    ^books(1).chapters(1) = b\n\n\
          fn copy()\n    ^books(1).chapters(2) = ^books(1).chapters(1)\n",
     );
-    let found = with_code(&report, "check.bare_maybe_present_read");
+    let found = with_code(&report, "check.unresolved_optional");
     assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
 }
 
@@ -562,7 +562,7 @@ fn a_whole_group_entry_write_rejects_a_different_group_layer() {
          \x20\x20\x20\x20versions(version: int)\n\
          \x20\x20\x20\x20\x20\x20\x20\x20required title: string\n\
          store ^books(id: int): Book\n\n\
-         fn copy()\n    ^books(1).chapters(1) = ^books(1).versions(1)\n",
+         fn copy()\n    if const v = ^books(1).versions(1)\n        ^books(1).chapters(1) = v\n",
         "check.assignment_type",
     );
     assert_eq!(found.len(), 1, "{found:#?}");

@@ -169,6 +169,9 @@ pub enum Expression {
     /// A saved-data root such as `^books`. Postfix key lookups and field access
     /// build the rest of a saved path on top of this.
     SavedRoot { name: String, span: SourceSpan },
+    /// The empty-optional primary value `absent`: assignable to any `T?` place and
+    /// inert until resolved.
+    Absent { span: SourceSpan },
     /// A parenthesized application: the checker resolves call, key lookup,
     /// conversion, or constructor from the callee.
     Call {
@@ -227,6 +230,7 @@ impl Expression {
             Self::Literal { span, .. }
             | Self::Name { span, .. }
             | Self::SavedRoot { span, .. }
+            | Self::Absent { span }
             | Self::Call { span, .. }
             | Self::Field { span, .. }
             | Self::OptionalField { span, .. }
@@ -557,16 +561,9 @@ pub struct FunctionDecl {
     pub public: bool,
     pub name: String,
     pub params: Vec<ParamDecl>,
-    pub return_presence: FunctionReturnPresence,
     pub return_type: Option<TypeRef>,
     pub body: Block,
     pub span: SourceSpan,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FunctionReturnPresence {
-    Always,
-    MaybePresent,
 }
 
 /// An enum: a named, fixed set of member values, generalizing `bool`. Members may
@@ -665,9 +662,6 @@ pub enum Statement {
     },
     Return {
         value: Option<Expression>,
-        span: SourceSpan,
-    },
-    ReturnAbsent {
         span: SourceSpan,
     },
     Break {
@@ -786,7 +780,6 @@ impl Statement {
             | Self::CompoundAssign { span, .. }
             | Self::Delete { span, .. }
             | Self::Return { span, .. }
-            | Self::ReturnAbsent { span }
             | Self::Break { span, .. }
             | Self::Continue { span, .. }
             | Self::Throw { span, .. }

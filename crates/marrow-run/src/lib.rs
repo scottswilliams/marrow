@@ -92,7 +92,7 @@ pub use host::{
 };
 pub use marrow_check::{
     ENTRY_PROTOCOL_TAG_VERSION, EntryArgumentShape, EntryDescriptor, EntryDescriptorError,
-    EntryEnumMember, EntryIdentity, EntryIdentityKey, EntryParameter,
+    EntryEnumMember, EntryIdentity, EntryIdentityKey, EntryParameter, EntryParameterShape,
 };
 pub use project_session::{
     DataViewBoundary, DataViewUnavailableReason, DataViewWatchTarget, DataViewWatchTargetKind,

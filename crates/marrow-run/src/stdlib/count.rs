@@ -1,10 +1,9 @@
 use marrow_check::{CheckedArg as ExecArg, CheckedExpr as ExecExpr};
 use marrow_syntax::SourceSpan;
 
-use crate::call::expression_absent_at_resolution_site;
 use crate::env::Env;
 use crate::error::{RuntimeError, overflow, type_error, unsupported};
-use crate::expr::eval_expr;
+use crate::expr::eval_optional;
 use crate::local_collection::local_collection_count;
 use crate::path::{Terminal, direct_root_place, lower_for_probe, saved_path_present};
 use crate::read::{count_iterable_index_branch, count_iterable_layer, validated_data_child_count};
@@ -23,13 +22,7 @@ pub(crate) fn eval_exists(
     if arg.value.saved_place().is_some() {
         return Ok(Value::Bool(saved_path_present(&arg.value, span, env)?));
     }
-    match eval_expr(&arg.value, env) {
-        Ok(_) => Ok(Value::Bool(true)),
-        Err(error) if expression_absent_at_resolution_site(&arg.value, &error) => {
-            Ok(Value::Bool(false))
-        }
-        Err(error) => Err(error),
-    }
+    Ok(Value::Bool(eval_optional(&arg.value, env)?.is_some()))
 }
 
 pub(crate) fn eval_count(

@@ -146,6 +146,10 @@ impl ScalarType {
 /// The canonical boundary: it emits only forms [`decode_value`] reads back, so a
 /// `date`/`instant` outside year 0001-9999 is a typed [`ValueError`].
 pub fn encode_value(value: &SavedValue) -> Result<Vec<u8>, ValueError> {
+    // A saved cell holds exactly one present scalar: the only cell discriminant is
+    // the scalar type tag, never a null, optional, or tombstone value. Absence is
+    // the lack of a cell at the data path, not an encoded marker. The closed
+    // `SavedValue` sum is the structural guarantee.
     Ok(match value {
         SavedValue::Bool(value) => vec![if *value { b'1' } else { b'0' }],
         SavedValue::Int(value) => value.to_string().into_bytes(),
@@ -446,4 +450,32 @@ fn parse_instant(bytes: &[u8]) -> Option<i128> {
     };
     let seconds_of_day = i128::from(hours * 3600 + minutes * 60 + seconds);
     Some(days * NANOS_PER_DAY + seconds_of_day * NANOS_PER_SEC + fraction_nanos)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Scalar, decode_value, encode_value};
+    use crate::Decimal;
+
+    /// Every present scalar encodes to bytes that decode back under its own scalar
+    /// type tag — the only cell discriminant. There is no null, optional, or
+    /// tombstone cell value: absence is the lack of a cell, so the encode boundary
+    /// only ever sees a present scalar.
+    #[test]
+    fn the_only_cell_discriminant_is_the_scalar_type_tag() {
+        let values = [
+            Scalar::Bool(true),
+            Scalar::Int(-7),
+            Scalar::Str("hello".into()),
+            Scalar::Bytes(vec![0x00, 0xff]),
+            Scalar::Date(0),
+            Scalar::Duration(1_500_000_000),
+            Scalar::Instant(0),
+            Scalar::Decimal(Decimal::parse("1.5").expect("canonical decimal")),
+        ];
+        for value in values {
+            let bytes = encode_value(&value).expect("a present scalar encodes");
+            assert_eq!(decode_value(&bytes, value.ty()), Some(value));
+        }
+    }
 }

@@ -6,9 +6,9 @@ use marrow_syntax::SourceSpan;
 
 use crate::collection::absent_read;
 use crate::env::Env;
-use crate::error::{Located, RUN_TYPE, RuntimeError, type_error, unsupported};
+use crate::error::{Located, RUN_ABSENT, RUN_TYPE, RuntimeError, type_error, unsupported};
 use crate::expr::eval_expr;
-use crate::store::IndexAddress;
+use crate::store::{DataAddress, IndexAddress, data_exists};
 use crate::value::{Value, identity_value, validate_place_identity_keys, value_to_index_key};
 
 pub(crate) enum ExactUniqueIndexLookupValue {
@@ -204,6 +204,21 @@ pub(crate) fn read_unique_index_identity(
     if entry.index_keys != lookup.address.keys {
         return Err(type_error(
             "stored unique index entry does not match the requested tuple",
+            span,
+        ));
+    }
+    // A present key with no backing record is a dangling index entry: an integrity
+    // fault, not the empty optional a missing key resolves to. It stays fatal so a
+    // `Id(^store)?` lookup never yields an identity whose record was deleted out
+    // from under the index.
+    let record = DataAddress::record(&lookup.place, &identity, span)?;
+    if !data_exists(env.store, &record, span)? {
+        return Err(RuntimeError::fault(
+            RUN_ABSENT,
+            format!(
+                "the `{}` index has an entry for that key but its `^{}` record is gone",
+                lookup.index_name, lookup.place.root
+            ),
             span,
         ));
     }

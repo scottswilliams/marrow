@@ -121,9 +121,7 @@ where
                 visitor.visit_match_arm(arm);
             }
         }
-        CheckedStmt::ReturnAbsent { .. }
-        | CheckedStmt::Break { .. }
-        | CheckedStmt::Continue { .. } => {}
+        CheckedStmt::Break { .. } | CheckedStmt::Continue { .. } => {}
     }
 }
 
@@ -132,7 +130,10 @@ where
     V: CheckedBodyVisitor + ?Sized,
 {
     match expression {
-        CheckedExpr::Literal { .. } | CheckedExpr::Name { .. } | CheckedExpr::SavedRoot { .. } => {}
+        CheckedExpr::Literal { .. }
+        | CheckedExpr::Name { .. }
+        | CheckedExpr::SavedRoot { .. }
+        | CheckedExpr::Absent { .. } => {}
         CheckedExpr::Call { callee, args, .. } => {
             visitor.visit_expr(callee);
             for arg in args {

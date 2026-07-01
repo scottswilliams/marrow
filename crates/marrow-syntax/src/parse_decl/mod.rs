@@ -23,14 +23,13 @@ mod tokens;
 
 pub(crate) use decl::DeclParser;
 
-use crate::ast::{FunctionReturnPresence, KeyParam, ParamDecl, TypeRef};
+use crate::ast::{KeyParam, ParamDecl, TypeRef};
 use crate::diagnostic::{ParseDiagnosticReason, SourceSpan};
 
 pub(super) struct FunctionHead {
     public: bool,
     name: String,
     params: Vec<ParamDecl>,
-    return_presence: FunctionReturnPresence,
     return_type: Option<TypeRef>,
 }
 

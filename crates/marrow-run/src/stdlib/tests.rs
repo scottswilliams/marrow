@@ -6,7 +6,6 @@ use marrow_check::{
     CheckedArg as ExecArg, CheckedCallTarget, CheckedExpr, CheckedLiteralKind,
     CheckedRuntimeProgram, CheckedStdCall,
 };
-use marrow_schema::ReturnPresence;
 use marrow_schema::stdlib::Capability;
 use marrow_store::tree::TreeStore;
 use marrow_syntax::SourceSpan;
@@ -74,7 +73,6 @@ fn std_call_arg(
             target: CheckedCallTarget::Std(CheckedStdCall {
                 module,
                 op,
-                presence: ReturnPresence::Always,
                 requires_capability: Some(capability),
             }),
             place: None,
@@ -126,7 +124,6 @@ fn every_table_row_reaches_a_live_handler() {
         let target = CheckedCallTarget::Std(CheckedStdCall {
             module: entry.module,
             op: entry.op,
-            presence: entry.presence,
             requires_capability: entry.requires_capability,
         });
         let callee = CheckedExpr::Name {

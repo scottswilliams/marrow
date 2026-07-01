@@ -52,6 +52,14 @@ A `qualified_name` segment may also be a type keyword used as a name — the
 `bytes` in `std::bytes::length` or `use std::bytes` — so standard-library
 paths spell those names directly.
 
+Multi-character punctuation is matched by longest match, so `?.` and `??` are
+recognized before a lone `?`. A single `?` is the optional type suffix: `string?`
+lexes as `string` then `?`, `string??` lexes as `string` then one `??` token
+(rejected as the double-optional spelling in type position), and `?.`/`??` keep
+their operator meaning elsewhere. There is no parse ambiguity between type and
+expression position — a `?` suffix rides along in the captured type spelling, and
+no expression production consumes a postfix or infix lone `?`.
+
 Type names have one canonical spelling in source.
 
 ## Source File
@@ -219,8 +227,7 @@ visibility      = "pub" ;
 param_list      = param_decl ("," param_decl)* ","? ;
 param_decl      = doc_comment* identifier key_params? type_annotation ;
 
-return_type     = ":" maybe_return? type ;
-maybe_return    = "maybe" ;
+return_type     = ":" type ;
 
 block           = INDENT statement+ DEDENT ;
 ```
@@ -269,7 +276,10 @@ elsewhere. `evolve` itself is reserved.
 ```ebnf
 type_annotation = ":" type ;
 
-type            =
+type            = base_type optional_suffix? ;
+optional_suffix = "?" ;
+
+base_type       =
       qualified_name
     | scalar_type
     | identity_type
@@ -307,6 +317,12 @@ means the function produces no value. Managed saved fields and keys reject
 `unknown`; use `bytes`, `string`, or an explicit resource shape for persisted
 dynamic payloads.
 
+The `optional_suffix` `?` marks an optional type `T?`. It is a code type — valid
+on a return, parameter, or local annotation — and is rejected in every
+stored-shape position (a key, a saved field, a keyed leaf, a sequence element),
+the same way `unknown` is, since a sparse slot already provides absence.
+Optionality does not nest, so `T??` has no spelling and is a parse error.
+
 ## Statements
 
 ```ebnf
@@ -340,7 +356,7 @@ compound_assignment_stmt =
     assignable compound_assign_op expression NEWLINE ;
 compound_assign_op = "+=" | "-=" | "*=" | "/=" | "%=" ;
 delete_stmt     = "delete" path_expr NEWLINE ;
-return_stmt     = "return" ("absent" | expression)? NEWLINE ;
+return_stmt     = "return" expression? NEWLINE ;
 break_stmt      = "break" NEWLINE ;
 continue_stmt   = "continue" NEWLINE ;
 
@@ -410,8 +426,8 @@ catch_clause     =
 
 Assignment is not an expression. Equality is `==` and inequality is `!=`; the
 single `=` is assignment only and is a parse error in expression position. The
-absence-default `??` applies to possibly-absent reads and maybe-present call
-results; the optional read `?.` applies to possibly-absent path reads.
+absence-default `??` applies to `T?` reads and call results; the optional read
+`?.` applies to possibly-absent path reads.
 
 ```ebnf
 expression      = or_expr ;
@@ -431,7 +447,7 @@ range_expr      =
     ;
 range_tail      = ".." coalesce_expr? | "..=" coalesce_expr ;
 open_range      = ".." coalesce_expr | "..=" coalesce_expr ;
-coalesce_expr   = additive_expr ("??" additive_expr)? ;
+coalesce_expr   = additive_expr ("??" coalesce_expr)? ;
 additive_expr   = multiplicative_expr (("+" | "-") multiplicative_expr)* ;
 multiplicative_expr =
     unary_expr (("*" | "/" | "%") unary_expr)* ;
@@ -460,15 +476,15 @@ arguments. General range enumeration still requires both endpoints (`lo..hi` or
 `lo..=hi`); the checker rejects a bare `..`, a missing upper bound for `..=`
 such as `start..=`, and `by` steps inside saved-key arguments.
 
-`??` is deliberately non-associative: `a ?? b ?? c` is rejected. Layer defaults
-one read at a time; use parentheses or local bindings for nested defaults. It
-binds looser than additive expressions and tighter than ranges and comparisons:
-`count ?? 0 < 5` is `(count ?? 0) < 5`,
+`??` is right-associative: `a ?? b ?? c` parses as `a ?? (b ?? c)`, so a chain of
+defaults types under the coalesce rule, each `??` defaulting the optional on its
+left. It binds looser than additive expressions and tighter than ranges and
+comparisons: `count ?? 0 < 5` is `(count ?? 0) < 5`,
 `start ?? 1 .. n` is `(start ?? 1) .. n`, and `x ?? y + 1` is `x ?? (y + 1)`.
-Its left operand must be a maybe-present read — a path read (including a keyed
-child such as `^patients(id).visits(someDate)`), a `?.` chain, or a maybe-present
-call result such as `next`/`prev` or a maybe-returning user function; that
-constraint is enforced by the checker, not the grammar.
+Its left operand must be a `T?` value — a path read (including a keyed child such
+as `^patients(id).visits(someDate)`), a `?.` chain, or a call whose result type
+is `T?` such as `next`/`prev` or a function returning `T?`; that constraint is
+enforced by the checker, not the grammar.
 
 `is` is the enum-subtree test: `value is Enum::member` is `true` when the value is
 at or under that member, exact for a concrete leaf. It is a reserved word, sits
@@ -484,6 +500,7 @@ primary_expr    =
       literal
     | "true"
     | "false"
+    | "absent"
     | identifier
     | qualified_name
     | saved_path
@@ -563,11 +580,12 @@ These rules are part of the grammar contract:
   saved value read, such as a saved field, singleton root, fully addressed
   record or keyed-layer entry, or complete unique-index lookup. It does not
   bind address-only durable collections.
-- The absence-default `??` is non-associative and binds looser than additive
-  expressions and tighter than ranges and comparisons. Its left operand must be
-  a maybe-present read — a path read, a `?.` chain, or a maybe-present call
-  result such as `next`/`prev` or a maybe-returning user function; an
-  always-present left operand is rejected as an operator misuse.
+- The absence-default `??` is right-associative (`a ?? b ?? c` is
+  `a ?? (b ?? c)`) and binds looser than additive expressions and tighter than
+  ranges and comparisons. Its left operand must be a `T?` value — a path read, a
+  `?.` chain, or a call whose result type is `T?` such as `next`/`prev` or a
+  function returning `T?`; an always-present left operand is rejected as an
+  operator misuse.
 - The optional read `?.` is a postfix field access that short-circuits the chain
   to absent when a step is absent; only absence is short-circuited, not schema or
   decoding errors.

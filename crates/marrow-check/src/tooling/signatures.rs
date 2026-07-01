@@ -727,6 +727,10 @@ fn std_return_shape(ret: &ReturnType) -> Option<CallableValueShape> {
         ReturnType::Scalar(scalar) => {
             Some(CallableValueShape::Type(MarrowType::Primitive(*scalar)))
         }
+        // A maybe-present op renders its result type as `T?` in a signature.
+        ReturnType::OptionalScalar(scalar) => Some(CallableValueShape::Type(MarrowType::optional(
+            MarrowType::Primitive(*scalar),
+        ))),
         ReturnType::Sequence(scalar) => Some(CallableValueShape::Type(MarrowType::Sequence(
             Box::new(MarrowType::Primitive(*scalar)),
         ))),

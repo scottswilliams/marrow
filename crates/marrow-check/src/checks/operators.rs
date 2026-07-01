@@ -10,8 +10,9 @@ use marrow_syntax::SourceSpan;
 
 use crate::infer::infer_type_with_read_scope;
 use crate::typerules::{
-    as_primitive, binary_symbol, expects_conversion, is_concrete_nonscalar, is_numeric, is_ordered,
-    marrow_type_name, mismatch_display, type_compatible, unary_symbol,
+    as_primitive, binary_symbol, expects_conversion, is_concrete_nonscalar, is_numeric,
+    is_optional_value, is_ordered, marrow_type_name, mismatch_display, type_compatible,
+    unary_symbol, unresolved_optional, unresolved_optional_diagnostic,
 };
 use crate::{
     CHECK_ASSIGNMENT_TYPE, CHECK_CONDITION_TYPE, CHECK_RETURN_TYPE, CHECK_THROW_TYPE,
@@ -31,7 +32,7 @@ pub(crate) fn check_condition(
     scope: &[HashMap<String, MarrowType>],
     const_ints: &[HashMap<String, Option<i64>>],
     aliases: &HashMap<String, Vec<String>>,
-    transform_old: Option<crate::presence::TransformOldReadScope<'_>>,
+    read_scope: crate::presence::ReadScope<'_>,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
     let condition_type = infer_type_with_read_scope(
@@ -42,9 +43,15 @@ pub(crate) fn check_condition(
         file,
         diagnostics,
         const_ints,
-        transform_old,
+        read_scope,
     );
     let span = condition.span();
+    // A maybe-present value is not a `bool` until it is resolved; the one rule owns
+    // it before the scalar gate so the message names the four resolution forms.
+    if is_optional_value(&condition_type) {
+        diagnostics.push(unresolved_optional_diagnostic(file, span));
+        return;
+    }
     match as_primitive(&condition_type) {
         Some(primitive) if primitive != ScalarType::Bool => {
             diagnostics.push(CheckDiagnostic::error(
@@ -96,6 +103,12 @@ pub(crate) fn check_throw_type(
     value_type: &MarrowType,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
+    // A maybe-present value is not an `Error` until it is resolved; the one rule owns
+    // it before the type mismatch so the message names the four resolution forms.
+    if is_optional_value(value_type) {
+        diagnostics.push(unresolved_optional_diagnostic(file, span));
+        return;
+    }
     match value_type {
         MarrowType::Error | MarrowType::Unknown => {}
         _ => diagnostics.push(CheckDiagnostic::error(
@@ -121,6 +134,10 @@ pub(crate) fn check_return_type(
     value_type: &MarrowType,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
+    if let Some(diagnostic) = unresolved_optional(return_type, value_type, span, file) {
+        diagnostics.push(diagnostic);
+        return;
+    }
     match type_compatible(return_type, value_type) {
         Some(true) => {}
         Some(false) => {
@@ -169,6 +186,10 @@ pub(crate) fn check_assignment(
     value: &MarrowType,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
+    if let Some(diagnostic) = unresolved_optional(place, value, span, file) {
+        diagnostics.push(diagnostic);
+        return;
+    }
     let compatible = match (place, value) {
         (MarrowType::GroupEntry { resource, .. }, MarrowType::Resource(value_resource)) => {
             Some(resource == value_resource)
@@ -223,6 +244,13 @@ pub(crate) fn check_unary(
     if matches!(operand, MarrowType::Invalid) {
         return MarrowType::Invalid;
     }
+    // A maybe-present operand must be resolved before any operator; the one rule
+    // owns it before the generic mismatch so the message names the four resolution
+    // forms rather than reading as a bare operator-type error.
+    if is_optional_value(operand) {
+        diagnostics.push(unresolved_optional_diagnostic(file, span));
+        return MarrowType::Invalid;
+    }
     // A concrete non-scalar operand (an identity, record, sequence, or the
     // checker-only `Error`) has no unary operator. Flag it before the `as_primitive`
     // gate, which would otherwise drop every non-primitive to `Unknown`.
@@ -274,6 +302,14 @@ pub(crate) fn check_binary(
 ) -> MarrowType {
     use marrow_syntax::BinaryOp;
     if matches!(left, MarrowType::Invalid) || matches!(right, MarrowType::Invalid) {
+        return MarrowType::Invalid;
+    }
+    // A maybe-present operand must be resolved before any operator — equality,
+    // comparison, or arithmetic alike. The one rule owns it before the range and
+    // generic-mismatch paths so an optional range endpoint is resolved and the message
+    // names the four resolution forms.
+    if is_optional_value(left) || is_optional_value(right) {
+        diagnostics.push(unresolved_optional_diagnostic(file, span));
         return MarrowType::Invalid;
     }
     // `..`/`..=` are loop shapes, not value operators. The range-for header check
@@ -428,6 +464,12 @@ fn check_equality(
     };
     match (left, right) {
         (MarrowType::Invalid, _) | (_, MarrowType::Invalid) => None,
+        // A maybe-present operand is the one rule, resolved in `check_binary` before
+        // equality dispatch, so it never reaches here.
+        (MarrowType::Optional(_) | MarrowType::Absent, _)
+        | (_, MarrowType::Optional(_) | MarrowType::Absent) => {
+            unreachable!("an optional operand is resolved by the one rule before check_equality")
+        }
         // An untyped operand defers: the scalar path handles untyped values.
         (MarrowType::Unknown, _) | (_, MarrowType::Unknown) => None,
         // Whole records and sequences have no equality at all.
@@ -475,80 +517,103 @@ fn check_equality(
     }
 }
 
-/// Type-check `path ?? default`. The result is the leaf type of the path read on
-/// the left (a populated read yields that value; an absent one yields the
-/// default), so the default must be the same scalar type. A non-path left operand
-/// is rejected: only a read that can be absent has anything to default.
+/// Type-check `place ?? default`. The left must be an optional value (`Optional(T)`
+/// or the empty `absent`); a present, non-optional left has nothing to default and
+/// is rejected. The result follows the **right** operand's presence, so chains type:
+/// `T? ?? T = T`, `T? ?? T? = T?`. The right's base must be compatible with `T`.
 pub(crate) struct CoalesceCheck<'a> {
-    pub(crate) program: &'a CheckedProgram,
-    pub(crate) left: &'a marrow_syntax::Expression,
     pub(crate) left_type: &'a MarrowType,
     pub(crate) right_type: &'a MarrowType,
     pub(crate) span: SourceSpan,
     pub(crate) file: &'a Path,
-    pub(crate) scope: &'a [HashMap<String, MarrowType>],
-    pub(crate) transform_old: Option<crate::presence::TransformOldReadScope<'a>>,
     pub(crate) diagnostics: &'a mut Vec<CheckDiagnostic>,
 }
 
 pub(crate) fn check_coalesce(check: CoalesceCheck<'_>) -> MarrowType {
     let CoalesceCheck {
-        program,
-        left,
         left_type,
         right_type,
         span,
         file,
-        scope,
-        transform_old,
         diagnostics,
     } = check;
     if matches!(left_type, MarrowType::Invalid) || matches!(right_type, MarrowType::Invalid) {
         return MarrowType::Invalid;
     }
-    let Some(left) = crate::executable::lower_expr_for_file(program, file, left, scope) else {
-        diagnostics.push(operator_diagnostic(
-            file,
-            span,
-            "operator `??` applies only to a path read or `?.` chain".to_string(),
-        ));
-        return MarrowType::Unknown;
+    // The left's present-arm type, or `None` for the empty `absent` (which carries no
+    // element type, so it takes its result type entirely from the default).
+    let inner = match left_type {
+        MarrowType::Optional(inner) => Some(inner.as_ref()),
+        MarrowType::Absent => None,
+        // An untyped left may be an unresolved maybe-present read; defer to the
+        // default's type rather than assert it is always present, so a cross-module
+        // unknown read is not turned into operator noise.
+        MarrowType::Unknown => return right_type.clone(),
+        _ => {
+            diagnostics.push(operator_diagnostic(
+                file,
+                span,
+                "operator `??` applies only to an optional value; this value is always present"
+                    .to_string(),
+            ));
+            // The left is already present, so recover to its type: a consumer slot then
+            // reads the value it would have, and no second `check.untyped_value` stacks
+            // on the one always-present error.
+            return left_type.clone();
+        }
     };
-    if !crate::presence::read_value_resolves_in_type_scope(program, &left, scope, transform_old) {
-        diagnostics.push(operator_diagnostic(
-            file,
-            span,
-            "operator `??` applies only to a path read or `?.` chain".to_string(),
-        ));
-        return MarrowType::Unknown;
+    // The default may itself be optional (`a ?? b ?? c`); compare against its present
+    // arm and carry its presence into the result.
+    let right_optional = matches!(right_type, MarrowType::Optional(_));
+    let default_base = match right_type {
+        MarrowType::Optional(base) => base.as_ref(),
+        other => other,
+    };
+    let resolved = match inner {
+        // `absent ?? default` has no left element type to satisfy; the result is the
+        // default's present arm.
+        None => default_base.clone(),
+        Some(inner) => match coalesce_base(inner, default_base, span, file, diagnostics) {
+            Some(ty) => ty,
+            None => return MarrowType::Invalid,
+        },
+    };
+    if right_optional {
+        MarrowType::optional(resolved)
+    } else {
+        resolved
     }
-    // A concrete non-scalar leaf defaults only with a value of the same nominal
-    // type. The scalar path below would drop it to `Unknown` and silently accept a
-    // mismatch, so resolve any non-scalar pairing here; an `Unknown` operand still
-    // defers there.
-    if is_concrete_nonscalar(left_type) || is_concrete_nonscalar(right_type) {
-        return match type_compatible(left_type, right_type) {
-            Some(true) => left_type.clone(),
+}
+
+/// Resolve the present-arm result of `inner ?? default_base`, both non-optional. A
+/// concrete non-scalar defaults only with the same nominal type; two scalars must
+/// match; an untyped side defers. `None` signals a reported mismatch.
+fn coalesce_base(
+    inner: &MarrowType,
+    default_base: &MarrowType,
+    span: SourceSpan,
+    file: &Path,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) -> Option<MarrowType> {
+    if is_concrete_nonscalar(inner) || is_concrete_nonscalar(default_base) {
+        return match type_compatible(inner, default_base) {
+            Some(true) | None => Some(inner.clone()),
             Some(false) => {
                 diagnostics.push(operator_diagnostic(
                     file,
                     span,
                     format!(
                         "operator `??` cannot default `{}` with `{}`",
-                        marrow_type_name(left_type),
-                        marrow_type_name(right_type),
+                        marrow_type_name(inner),
+                        marrow_type_name(default_base),
                     ),
                 ));
-                MarrowType::Invalid
+                None
             }
-            None => left_type.clone(),
         };
     }
-    // Both sides must be the same scalar, like the other value operators. When
-    // either is still untyped, defer rather than guess, yielding the known side
-    // (or `Unknown`) so a surrounding operator never fires on an uncertain operand.
-    match (as_primitive(left_type), as_primitive(right_type)) {
-        (Some(leaf), Some(default)) if leaf == default => MarrowType::Primitive(leaf),
+    match (as_primitive(inner), as_primitive(default_base)) {
+        (Some(leaf), Some(default)) if leaf == default => Some(MarrowType::Primitive(leaf)),
         (Some(leaf), Some(default)) => {
             diagnostics.push(operator_diagnostic(
                 file,
@@ -559,11 +624,11 @@ pub(crate) fn check_coalesce(check: CoalesceCheck<'_>) -> MarrowType {
                     default.name(),
                 ),
             ));
-            MarrowType::Invalid
+            None
         }
-        // An untyped leaf falls back to the default's type; an untyped default
-        // leaves the result the leaf type. Either way an unknown stays unknown.
-        (None, _) => right_type.clone(),
-        (Some(leaf), None) => MarrowType::Primitive(leaf),
+        // An untyped leaf falls back to the default's type; an untyped default leaves
+        // the result the leaf type. Either way an unknown stays unknown.
+        (None, _) => Some(default_base.clone()),
+        (Some(leaf), None) => Some(MarrowType::Primitive(leaf)),
     }
 }

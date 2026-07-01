@@ -12,7 +12,6 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-use marrow_schema::ReturnPresence;
 use marrow_schema::{ScalarType, Type};
 use marrow_store::cell::CatalogId;
 use marrow_syntax::{Declaration, Diagnostic, Expression, ParsedSource, SourceSpan, TypeRef};
@@ -1341,7 +1340,6 @@ pub struct CheckedFunction {
     pub name: String,
     pub public: bool,
     pub params: Vec<CheckedParam>,
-    pub return_presence: ReturnPresence,
     pub return_type: Option<MarrowType>,
     pub span: SourceSpan,
     pub(crate) runtime_body: Option<CheckedBody>,
@@ -1350,6 +1348,12 @@ pub struct CheckedFunction {
 impl CheckedFunction {
     pub fn runtime_body(&self) -> Option<&CheckedBody> {
         self.runtime_body.as_ref()
+    }
+
+    /// Whether this function's result is maybe-present (`T?`), read off the return
+    /// type's optionality rather than a parallel presence flag.
+    pub fn returns_maybe_present(&self) -> bool {
+        matches!(self.return_type, Some(MarrowType::Optional(_)))
     }
 }
 
@@ -1536,7 +1540,6 @@ fn runtime_entry_functions(
             let function_ref = CheckedFunctionRef {
                 module: module_index as u32,
                 function: function_index as u32,
-                presence: function.return_presence,
             };
             let qualified = runtime_entry_name(&module.name, &function.name);
             if !function.public {
@@ -1620,11 +1623,6 @@ impl CheckedProgram {
             .iter()
             .filter(|function| function.public)
             .filter_map(|function| {
-                let source = self
-                    .modules
-                    .get(function.module.0 as usize)?
-                    .functions
-                    .get(function.source_index as usize)?;
                 let module = self.facts.modules().get(function.module.0 as usize)?;
                 Some(PublicEntryRef {
                     function: function.id,
@@ -1632,7 +1630,6 @@ impl CheckedProgram {
                     function_ref: CheckedFunctionRef {
                         module: function.module.0,
                         function: function.source_index,
-                        presence: source.return_presence,
                     },
                 })
             })
@@ -1739,7 +1736,6 @@ pub struct CheckedRuntimeFunction {
     pub params: Vec<CheckedParam>,
     entry_params: Vec<CheckedRuntimeParam>,
     entry_return_type: Option<CheckedRuntimeValueType>,
-    pub return_presence: ReturnPresence,
     pub return_type: Option<MarrowType>,
     pub span: SourceSpan,
     body: Option<CheckedBody>,
@@ -1760,7 +1756,6 @@ impl CheckedRuntimeFunction {
                 .return_type
                 .clone()
                 .map(|ty| checked_runtime_value_type(program, ty)),
-            return_presence: function.return_presence,
             return_type: function.return_type.clone(),
             span: function.span,
             body: function.runtime_body.clone(),
@@ -1778,8 +1773,20 @@ impl CheckedRuntimeFunction {
     pub fn entry_return_type(&self) -> Option<&CheckedRuntimeValueType> {
         self.entry_return_type.as_ref()
     }
+
+    /// Whether this function's result is maybe-present (`T?`). Presence lives in
+    /// the return type, so it is read off the type being [`MarrowType::Optional`],
+    /// never a parallel presence flag.
+    pub fn returns_maybe_present(&self) -> bool {
+        matches!(self.return_type, Some(MarrowType::Optional(_)))
+    }
 }
 
+/// A resolved runtime parameter. `ty` carries the present arm; parameter presence
+/// lives in the declared type (`params[i].ty` being [`MarrowType::Optional`]),
+/// mirroring how `returns_maybe_present()` reads the return type, and it is folded
+/// into the single [`EntryParameter`](crate::EntryParameter) shape carrier rather
+/// than a parallel presence flag.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CheckedRuntimeParam {
     pub name: String,
@@ -1829,6 +1836,17 @@ pub enum MarrowType {
         keys: Vec<MarrowType>,
         value: Box<MarrowType>,
     },
+    /// An optional value type `T?`: a `T` or absence. The inner is never itself
+    /// optional — [`MarrowType::optional`] flattens, so the non-nesting invariant
+    /// holds by representation. Produced by promoting a declared [`Type::Optional`]
+    /// and by inferring a maybe-present read, call, or neighbor.
+    Optional(Box<MarrowType>),
+    /// The type of the bare `absent` literal: the empty optional. It is assignable
+    /// to any `Optional(_)` place and otherwise inert — a concrete verdict, never an
+    /// `Unknown` deferral, so an optional gate handles it explicitly rather than
+    /// silently admitting it into a definite slot. It carries no element type, so an
+    /// unannotated binding inferred as `Absent` is rejected.
+    Absent,
     /// An expression whose own type check already produced a primary diagnostic.
     /// It suppresses secondary "untyped value" hints while still keeping unknown
     /// dynamic values distinct.
@@ -1856,6 +1874,29 @@ impl MarrowType {
         Self::from_resolved(Type::resolve(ty), names)
     }
 
+    /// The one optional constructor: wrap `inner` as `T?`, flattening so an
+    /// optional never nests (`optional(Optional(x)) == Optional(x)`). Every
+    /// optional — promoted from a declared type or inferred from a maybe-present
+    /// source — is built here, so the non-nesting invariant holds by representation
+    /// rather than per-site rejection.
+    pub(crate) fn optional(inner: MarrowType) -> MarrowType {
+        match inner {
+            MarrowType::Optional(_) => inner,
+            other => MarrowType::Optional(Box::new(other)),
+        }
+    }
+
+    /// This type with its optional layer removed — the present-arm value type. A
+    /// maybe-present call's value type is its present arm; its maybe-presence is
+    /// carried by the call descriptor at the read site, so the call expression
+    /// types as the bare `T`.
+    pub(crate) fn without_optional(self) -> MarrowType {
+        match self {
+            MarrowType::Optional(inner) => *inner,
+            other => other,
+        }
+    }
+
     /// Build a keyed local-collection type from its resolved key column types and
     /// leaf value, or the bare value when there are no keys. The single owner of
     /// the keyed-shape wrap, shared by keyed `var` locals and keyed parameters.
@@ -1881,6 +1922,7 @@ impl MarrowType {
             Type::Sequence(element) => {
                 Self::Sequence(Box::new(Self::from_resolved(*element, names)))
             }
+            Type::Optional(inner) => Self::optional(Self::from_resolved(*inner, names)),
             Type::Identity(root) => Self::Identity(root),
             Type::Unknown => Self::Unknown,
             // `Error` is the one checker-only type the store does not model, so it

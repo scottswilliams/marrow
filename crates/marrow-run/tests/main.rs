@@ -60,6 +60,10 @@ mod eval_maintenance;
 mod eval_module_dispatch;
 #[path = "cases/eval_optional_chains_nextid.rs"]
 mod eval_optional_chains_nextid;
+#[path = "cases/eval_optional_materialization.rs"]
+mod eval_optional_materialization;
+#[path = "cases/eval_optional_structural_save.rs"]
+mod eval_optional_structural_save;
 #[path = "cases/eval_ordered_navigation.rs"]
 mod eval_ordered_navigation;
 #[path = "cases/eval_read_only_expression.rs"]

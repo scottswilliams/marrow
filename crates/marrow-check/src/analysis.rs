@@ -824,6 +824,16 @@ pub(crate) fn analyze_source_project(
             .map(|(file, parsed)| (file.path.as_path(), parsed)),
     );
 
+    // Lower bodies before the type pass so its flow narrowing can read each call's
+    // effect footprint (a field-writing call expires a narrowing). The later facts
+    // rebuild clears these effects, so the downstream passes run on the same state
+    // as before; the runtime lowering below re-derives them catalog-aware.
+    program.lower_runtime_bodies(
+        parsed_files
+            .iter()
+            .map(|(file, parsed)| (file.path.as_path(), parsed)),
+    );
+
     // Passes 2-3 plus unresolved-call suppression are shared with check_tests.
     let incomplete_modules = check_resolved_files(
         ResolvedFileCheck {
@@ -898,7 +908,7 @@ pub(crate) fn analyze_source_project(
             .map(|(file, parsed)| (file.path.as_path(), parsed)),
     );
     crate::evolution::check_transform_effects(&program, &mut report.diagnostics);
-    crate::presence::check_presence(&mut program, &mut report.diagnostics);
+    crate::presence::check_next_id_collisions(&mut program, &mut report.diagnostics);
     crate::surface::check_computed_read_effects(&mut program, &mut report.diagnostics);
     let any_parse_errors = parsed_files.iter().any(|(_, parsed)| parsed.has_errors());
     check_default_entry(

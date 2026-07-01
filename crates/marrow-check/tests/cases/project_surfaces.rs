@@ -1305,7 +1305,7 @@ resource BookPage
 resource Book
     title: string
 store ^books(id: int): Book
-pub fn bookPage(id: Id(^books)): maybe BookPage
+pub fn bookPage(id: Id(^books)): BookPage?
     return absent
 surface Books from ^books
     fields title
@@ -1384,7 +1384,7 @@ module app
 resource Book
     title: string
 store ^books(id: int): Book
-fn hidden(): maybe string
+fn hidden(): string?
     return absent
 surface Books from ^books
     fields title
@@ -1611,7 +1611,7 @@ module app
 resource Book
     title: string
 store ^books(id: int): Book
-pub fn page(): maybe string
+pub fn page(): string?
     return absent
 surface Books from ^books
     fields title

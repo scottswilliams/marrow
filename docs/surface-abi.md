@@ -38,9 +38,15 @@ The active surface foundation has these owners:
   `create` lists, non-empty `update` lists, and `delete` declarations are
   active generated operation facts over checked top-level projection fields.
 - `crates/marrow-check/src/entry_abi.rs` owns public-function surface value
-  shapes: `entry.invoke.v1` identity, parameter shapes, explicit result
-  presence, scalar/enum/identity/sequence result shapes, and computed-read
-  resource result fields with accepted catalog ids.
+  shapes: `entry.invoke.v1` identity, the single `EntryParameterShape` parameter
+  carrier (`Present`/`Optional`, presence read off the parameter type rather than
+  a parallel flag), the single `EntryResultShape` result carrier
+  (`Void`/`Present`/`Optional`, presence read off the return type),
+  scalar/enum/identity/sequence result shapes, and computed-read resource result
+  fields with accepted catalog ids. The operation-tag parameter-optionality
+  component, the serialized parameter descriptor's presence marker, and the
+  decoder's absent-binding on both the JSON protocol and text `--arg` paths all
+  derive from that one parameter carrier.
 - `crates/marrow-check/src/surface_abi.rs` owns the shared length-prefixed
   digest framing and typed descriptors for `surface.read.v1`,
   `surface.computed_read.v1`, `surface.create.v1`, `surface.update.v1`, and
@@ -153,8 +159,11 @@ scalar/enum sequences. Action results carry captured program output and an
 optional surface action value DTO with accepted catalog IDs for enum and
 identity values. Functions whose parameters or returns need resource,
 local-tree, error, unknown, or unsupported sequence JSON are rejected as surface
-actions until that codec is deliberately added. Computed-read results carry
-captured program output and an optional computed-read value DTO. Resource
+actions until that codec is deliberately added. An optional (`T?`) parameter or
+return is presence on the wire only: present encodes the value, absent encodes
+JSON `null` or an omitted optional argument, and the store never holds a null, so
+absence is a transport encoding rather than stored data. Computed-read results
+carry captured program output and an optional computed-read value DTO. Resource
 computed-read results carry the accepted result resource catalog ID and accepted
 resource-member catalog IDs for declared result fields. Page cursors carry the
 producing operation tag, store UID, store commit ID, accepted-catalog digest,
@@ -223,6 +232,11 @@ descriptors, store-operation value shapes, shared entry parameter/result shapes,
 operation tags, read/computed-read/action aliases, and render labels
 as labels. It must not serialize checker-local IDs, source spans, raw saved
 paths, backend cursor bytes, physical store keys, or unowned request syntax.
+Each callable parameter descriptor carries a required/optional presence marker
+read off the parameter carrier, mirroring the result presence, so a generated
+client can type an optional (`T?`) parameter as nullable and a required one as
+required. Presence is a transport-boundary encoding — present to value, absent
+to JSON `null` or an omitted argument — never a stored value.
 
 `SurfaceAbiJson` curates duplicate stable operation tags out of the export. If
 a stable operation tag is duplicated anywhere in the checked program, every
@@ -268,18 +282,22 @@ shapes, and reject-absent full-subtree semantics. Delete returns no record body;
 callers that need the deleted public projection read it before deleting.
 
 Surface action operation tags are the resolved function's `entry.invoke.v1`
-entry tag. That tag includes profile domain, canonical entry name, return
-presence, return type shape, parameter names, and parameter type shapes, using
-accepted catalog IDs for enum and identity leaves. Changing an action return
+entry tag. That tag includes profile domain, canonical entry name, return-type
+optionality (`T?`), return type shape, parameter names, parameter optionality,
+and parameter type shapes, using accepted catalog IDs for enum and identity
+leaves. A definite `T` and an optional `T?` are distinct tags on both the return
+and each parameter, so `f(x: string)` and `f(x: string?)` differ while every
+unchanged non-optional signature keeps its tag bytes. Changing an action return
 type or any returned durable identity therefore changes the operation tag just
 like changing an argument shape.
 
 `surface.computed_read.v1` tags include the profile domain, the resolved
-callable's entry identity, canonical function name, explicit result descriptor,
+callable's entry identity, canonical function name, the single result carrier,
 and checked cost-shape summary. The callable descriptor reuses the shared entry
-parameter shapes and result presence. Resource result descriptors use accepted
-resource and member catalog IDs, not source labels. Alias changes do not affect
-the operation tag.
+parameter shapes and the `EntryResultShape` carrier, whose presence component is
+read off the return type rather than a parallel flag. Resource result
+descriptors use accepted resource and member catalog IDs, not source labels.
+Alias changes do not affect the operation tag.
 
 The descriptor profile may introduce a surface-level or package-level digest
 when a real consumer needs one. Until then, per-operation tags are the only

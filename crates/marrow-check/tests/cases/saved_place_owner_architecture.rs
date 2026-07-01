@@ -34,7 +34,6 @@ fn saved_place_shape_has_single_executable_owner() {
         ("presence/target.rs", "fn saved_path_parts"),
         ("presence/target.rs", "fn resolve_store_by_root"),
         ("presence/target.rs", "fn node_for_path"),
-        ("presence/walk.rs", "fn saved_path_parts"),
     ];
 
     let mut findings = Vec::new();

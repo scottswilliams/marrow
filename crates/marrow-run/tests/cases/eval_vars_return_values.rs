@@ -78,7 +78,7 @@ fn a_return_value_updates_a_local_resource_field() {
 #[test]
 fn maybe_returning_function_returns_present_value() {
     let program = checked_program(
-        "pub fn maybe_value(flag: bool): maybe int\n\
+        "pub fn maybe_value(flag: bool): int?\n\
          \x20   if flag\n\
          \x20       return 42\n\
          \x20   return absent\n\n\
@@ -95,7 +95,7 @@ fn maybe_returning_function_returns_present_value() {
 #[test]
 fn return_absent_resolves_through_coalesce_and_if_const() {
     let program = checked_program(
-        "pub fn missing(): maybe int\n\
+        "pub fn missing(): int?\n\
          \x20   return absent\n\n\
          pub fn coalesced(): int\n\
          \x20   return missing() ?? -1\n\n\
@@ -107,7 +107,7 @@ fn return_absent_resolves_through_coalesce_and_if_const() {
          \x20   return exists(missing())\n\n\
          pub fn present_exists(): bool\n\
          \x20   return exists(present())\n\n\
-         pub fn present(): maybe int\n\
+         pub fn present(): int?\n\
          \x20   return 7\n",
     );
 
@@ -131,7 +131,7 @@ fn return_absent_resolves_through_coalesce_and_if_const() {
 
 #[test]
 fn maybe_entry_return_absent_has_no_run_value() {
-    let program = checked_program("pub fn main(): maybe int\n    return absent\n");
+    let program = checked_program("pub fn main(): int?\n    return absent\n");
 
     assert_eq!(run(checked_entry!(&program, "test::main")), Ok(None));
 }
@@ -142,7 +142,7 @@ fn maybe_function_propagates_absent_saved_read_without_option_value() {
         "resource Book\n\
          \x20   subtitle: string\n\
          store ^books(id: int): Book\n\n\
-         pub fn subtitle(id: int): maybe string\n\
+         pub fn subtitle(id: int): string?\n\
          \x20   return ^books(id).subtitle\n\n\
          pub fn subtitle_or_missing(id: int): string\n\
          \x20   return subtitle(id) ?? \"missing\"\n",

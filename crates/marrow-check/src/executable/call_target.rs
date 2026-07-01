@@ -143,7 +143,6 @@ impl CheckedCallTarget {
                 return Some(Self::Std(CheckedStdCall {
                     module: entry.module,
                     op: entry.op,
-                    presence: entry.presence,
                     requires_capability: entry.requires_capability,
                 }));
             }
@@ -204,29 +203,6 @@ impl CheckedBuiltinCall {
             ConversionTarget::Bytes => Self::Bytes,
             target => Self::Conversion(target.scalar()),
         })
-    }
-
-    /// Whether this builtin reads its path argument as attached saved data — the
-    /// tree-traversal and ordered-navigation builtins whose argument is a saved
-    /// collection rather than a plain value.
-    pub(crate) fn reads_attached_data(self) -> bool {
-        matches!(
-            self,
-            Self::Keys
-                | Self::Values
-                | Self::Entries
-                | Self::Count
-                | Self::Next
-                | Self::Prev
-                | Self::NextId
-                | Self::Reversed
-        )
-    }
-
-    /// Whether this builtin navigates to a neighbor key (`next`/`prev`), which
-    /// records a positional presence read.
-    pub(crate) fn is_neighbor_read(self) -> bool {
-        matches!(self, Self::Next | Self::Prev)
     }
 }
 

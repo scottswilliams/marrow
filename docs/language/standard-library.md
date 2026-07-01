@@ -145,7 +145,7 @@ std::text::split(value: string, separator: string): sequence[string]
 std::text::slice(value: string, start: int, end: int): string
 std::text::startsWith(value: string, prefix: string): bool
 std::text::endsWith(value: string, suffix: string): bool
-std::text::indexOf(value: string, needle: string): maybe int
+std::text::indexOf(value: string, needle: string): int?
 std::text::replace(value: string, from: string, to: string): string
 std::text::join(parts: sequence[string], separator: string): string
 std::text::toUpper(value: string): string
@@ -165,7 +165,7 @@ std::bytes::hexDecode(text: string): bytes
 `std::text::length` counts Unicode scalar values. It does not count terminal
 columns or locale-specific grapheme clusters. `std::text::slice` uses the same
 zero-based scalar indexes with an exclusive `end`. `std::text::indexOf` returns
-the zero-based scalar index of the first match, and is maybe-present: use `??`
+the zero-based scalar index of the first match, and types as `int?`: use `??`
 or `if const` to handle no match. There is no `-1` sentinel.
 
 Case conversion uses simple Unicode case mapping without locale-specific rules:
@@ -256,11 +256,11 @@ type and do not map JSON objects to Marrow resources:
 
 ```mw
 std::json::valid(text: string): bool
-std::json::string(text: string, pointer: string): maybe string
-std::json::int(text: string, pointer: string): maybe int
-std::json::decimal(text: string, pointer: string): maybe decimal
-std::json::bool(text: string, pointer: string): maybe bool
-std::json::count(text: string, pointer: string): maybe int
+std::json::string(text: string, pointer: string): string?
+std::json::int(text: string, pointer: string): int?
+std::json::decimal(text: string, pointer: string): decimal?
+std::json::bool(text: string, pointer: string): bool?
+std::json::count(text: string, pointer: string): int?
 std::json::stringLit(value: string): string
 std::json::stringArray(items: sequence[string]): string
 ```
@@ -292,10 +292,10 @@ CSV helpers read a narrow RFC 4180 subset from text and return scalar cells:
 std::csv::row(cells: sequence[string]): string
 std::csv::rowCount(text: string): int
 std::csv::hasColumn(text: string, column: string): bool
-std::csv::string(text: string, row: int, column: string): maybe string
-std::csv::int(text: string, row: int, column: string): maybe int
-std::csv::decimal(text: string, row: int, column: string): maybe decimal
-std::csv::bool(text: string, row: int, column: string): maybe bool
+std::csv::string(text: string, row: int, column: string): string?
+std::csv::int(text: string, row: int, column: string): int?
+std::csv::decimal(text: string, row: int, column: string): decimal?
+std::csv::bool(text: string, row: int, column: string): bool?
 ```
 
 `row` renders one RFC 4180 record with no trailing newline, the exact inverse of
@@ -341,9 +341,9 @@ a SHA-256-derived `u128`; `decimal` returns an exact canonical decimal in
 Run context is host-provided request metadata:
 
 ```mw
-std::context::actor(): maybe string
-std::context::requestId(): maybe string
-std::context::idempotencyKey(): maybe string
+std::context::actor(): string?
+std::context::requestId(): string?
+std::context::idempotencyKey(): string?
 ```
 
 A run without context capability raises `run.capability`. A provided context
@@ -404,7 +404,7 @@ Testing helpers work in ordinary `.mw` functions:
 std::assert::isTrue(condition: bool)
 std::assert::isFalse(condition: bool)
 std::assert::equal(actual: T, expected: T)
-std::assert::absent(path)
+std::assert::isAbsent(path)
 std::assert::fail(message: string)
 ```
 
@@ -417,8 +417,9 @@ normal Marrow expressions:
 std::assert::isTrue(a < b)
 ```
 
-`absent(path)` is the testing counterpart to `exists(path)`. It does not hide
-schema or decoding errors.
+`isAbsent(path)` is the testing counterpart to `exists(path)`: it accepts any
+optional value and asserts it is absent. It does not hide schema or decoding
+errors.
 
 `marrow test` runs every `pub fn` with no parameters in a test file as a test;
 other functions are helpers. Test files are selected by the project's `tests`

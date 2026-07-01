@@ -401,7 +401,9 @@ fn descend_target<'b>(
             ..
         } => {
             if span_covers(then_block.span, offset) {
-                let ty = infer_only(program, value, scope, aliases, file);
+                // `if const` binds the present arm: one optional layer is stripped, so
+                // the then-block sees `T` for a subject typed `T?`.
+                let ty = infer_only(program, value, scope, aliases, file).without_optional();
                 let mut frame = HashMap::new();
                 frame.insert(name.clone(), ty.clone());
                 scope.push(frame);
@@ -567,7 +569,6 @@ fn collect_block_expression<'b>(
                     collect_expression(value, offset, best);
                 }
             }
-            Statement::ReturnAbsent { .. } => {}
             Statement::If {
                 condition,
                 then_block,

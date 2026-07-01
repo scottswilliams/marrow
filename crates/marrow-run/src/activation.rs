@@ -16,7 +16,6 @@ use crate::value::{RunOutputSink, Value};
 
 pub(crate) enum Completion {
     Returned(Option<Value>),
-    ReturnedAbsent,
     Threw {
         error: Value,
         span: SourceSpan,
@@ -160,7 +159,6 @@ fn activation_completion(
     let here = activation_origin(module, env);
     Ok(match outcome {
         Ok(Flow::Return(value)) => Completion::Returned(value),
-        Ok(Flow::ReturnAbsent) => Completion::ReturnedAbsent,
         Ok(Flow::Normal) => Completion::Returned(None),
         Ok(Flow::Throw {
             value,
@@ -216,7 +214,6 @@ fn activation_origin(module: Option<&CheckedRuntimeModule>, env: &Env<'_>) -> Op
 pub(crate) fn complete_call(completion: Completion) -> Result<Option<Value>, RuntimeError> {
     match completion {
         Completion::Returned(value) => Ok(value),
-        Completion::ReturnedAbsent => Ok(None),
         Completion::Threw {
             error,
             span: throw_span,

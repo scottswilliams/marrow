@@ -9,7 +9,7 @@ use crate::MarrowType;
 use crate::executable::{
     accepted_saved_place, checked_saved_index_read, checked_saved_place_effect, place_fully_keyed,
 };
-use crate::facts::{PresenceProofPlace, PresenceProofRead, ResourceMemberId, SavedPlaceEffect};
+use crate::facts::{ReadKind, ResourceMemberId, SavedPlaceEffect};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ReadTarget {
@@ -17,7 +17,7 @@ pub(crate) struct ReadTarget {
     pub(super) keys: Vec<String>,
     pub(super) key_types: Vec<Option<MarrowType>>,
     pub(super) key_bindings: Vec<u32>,
-    pub(super) read: PresenceProofRead,
+    pub(super) read: ReadKind,
     pub(super) value: ReadTargetValue,
 }
 
@@ -36,6 +36,10 @@ pub(super) enum ReadPlace {
         resource: crate::facts::ResourceId,
         member: ResourceMemberId,
     },
+    /// A `const`/`var`/parameter binding whose declared type is `T?`. A guard narrows
+    /// it to `T`; reassigning the binding (a `var`) re-imposes `T?`. Keyed on the scope
+    /// binding id so a like-named shadow or rebind is a distinct place.
+    Local { binding: u32 },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,7 +64,7 @@ fn resolve_read_target(
     transform_old: Option<super::TransformOldReadScope<'_>>,
 ) -> Option<ReadResolution> {
     if let CheckedExpr::Call { target, .. } = expr
-        && maybe_present_result(target)
+        && maybe_present_result(program, target)
     {
         return Some(ReadResolution::LocalValue);
     }
@@ -132,38 +136,18 @@ pub(crate) fn exists_target_in_type_scope(
         .is_some_and(neighbor_or_direct_read)
 }
 
-pub(crate) fn bindable_saved_value_read_in_type_scope(
-    program: &CheckedProgram,
-    expr: &CheckedExpr,
-    type_scope: &[std::collections::HashMap<String, MarrowType>],
-    transform_old: Option<super::TransformOldReadScope<'_>>,
-) -> bool {
-    match resolve_read_target(program, expr, type_scope, transform_old) {
-        Some(ReadResolution::LocalValue) => true,
-        // A `next`/`prev` neighbor read resolves to a single maybe-present value
-        // and binds under `if const` like any maybe-present read, regardless of
-        // whether its underlying subject is itself an addressable value.
-        Some(ReadResolution::Saved(target)) => {
-            neighbor_read_kind(target.read)
-                || (target.read == PresenceProofRead::Direct
-                    && target.value == ReadTargetValue::Value)
-        }
-        None => false,
-    }
-}
-
 /// A maybe-present read that any guard accepts: a plain direct read or a
 /// `next`/`prev` neighbor seek. The neighbor result is maybe-present and resolves
 /// at the read site like any maybe-present value, so `??`, `if const`, and
 /// `exists` accept it alike. The guard predicates screen the read's subject place
 /// through `guard_saved_keys_admissible` before resolving it, so an effectful key
 /// never rides into the guard whichever guard widened to it.
-fn neighbor_or_direct_read(read: PresenceProofRead) -> bool {
-    read == PresenceProofRead::Direct || neighbor_read_kind(read)
+fn neighbor_or_direct_read(read: ReadKind) -> bool {
+    read == ReadKind::Direct || neighbor_read_kind(read)
 }
 
-fn neighbor_read_kind(read: PresenceProofRead) -> bool {
-    matches!(read, PresenceProofRead::Next | PresenceProofRead::Prev)
+fn neighbor_read_kind(read: ReadKind) -> bool {
+    matches!(read, ReadKind::Next | ReadKind::Prev)
 }
 
 fn read_resolution_in_type_scope(
@@ -171,9 +155,9 @@ fn read_resolution_in_type_scope(
     expr: &CheckedExpr,
     type_scope: &[std::collections::HashMap<String, MarrowType>],
     transform_old: Option<super::TransformOldReadScope<'_>>,
-) -> Option<PresenceProofRead> {
+) -> Option<ReadKind> {
     match resolve_read_target(program, expr, type_scope, transform_old)? {
-        ReadResolution::LocalValue => Some(PresenceProofRead::Direct),
+        ReadResolution::LocalValue => Some(ReadKind::Direct),
         ReadResolution::Saved(target) => Some(target.read),
     }
 }
@@ -208,19 +192,36 @@ pub(super) fn read_target_with_scope(
         target.read = read;
         return Some(target);
     }
+    if let Some(target) = local_optional_target(expr, scope) {
+        return Some(target);
+    }
     saved_path_target(program, expr, scope)
 }
 
-pub(super) fn saved_path_read_target_with_scope(
-    program: &CheckedProgram,
-    expr: &CheckedExpr,
-    scope: &NameScope,
-) -> Option<ReadTarget> {
-    saved_place_target(program, expr, scope)
+/// The narrowable read target of a bare `const`/`var`/parameter binding whose declared
+/// type is `T?`. A guard narrows the binding to `T`; a `var` reassignment drops the
+/// narrowing through the same binding-id machinery key arguments use. A definite
+/// binding carries no optional to discharge, so it is not a target.
+fn local_optional_target(expr: &CheckedExpr, scope: &NameScope) -> Option<ReadTarget> {
+    let CheckedExpr::Name { segments, .. } = expr else {
+        return None;
+    };
+    let [name] = segments.as_slice() else {
+        return None;
+    };
+    let binding = scope.lookup(name)?;
+    matches!(scope.lookup_type(name), Some(MarrowType::Optional(_))).then(|| ReadTarget {
+        place: ReadPlace::Local { binding },
+        keys: Vec::new(),
+        key_types: Vec::new(),
+        key_bindings: vec![binding],
+        read: ReadKind::Direct,
+        value: ReadTargetValue::Value,
+    })
 }
 
-/// Whether `expr` is a resolvable maybe-present read that carries no persisted
-/// presence proof: a local-collection indexed read of a bound name, or a
+/// Whether `expr` is a resolvable maybe-present read that carries no saved read
+/// target: a local-collection indexed read of a bound name, or a
 /// sparse-field read of a bound materialized value. Such a read is guardable by
 /// `??`/`if const`/`exists`, and the runtime resolves it at the read site by
 /// catching the absent fault, so the checker accepts the guard and rejects a bare
@@ -281,44 +282,6 @@ fn bound_base_value_type(
     }
 }
 
-pub(super) fn proof_place(target: &ReadTarget) -> Option<PresenceProofPlace> {
-    match &target.place {
-        ReadPlace::Saved { effect, .. } => Some(PresenceProofPlace::Saved(effect.clone())),
-        ReadPlace::TransformOld { resource, member } => {
-            Some(PresenceProofPlace::Saved(SavedPlaceEffect {
-                resource: *resource,
-                members: vec![*member],
-            }))
-        }
-        ReadPlace::StoreIndex { id, .. } => Some(PresenceProofPlace::StoreIndex(*id)),
-    }
-}
-
-pub(super) fn read_file(
-    program: &CheckedProgram,
-    place: &PresenceProofPlace,
-) -> Option<std::path::PathBuf> {
-    let module = match place {
-        PresenceProofPlace::Saved(place) => {
-            let resource = program.facts.resource(place.resource);
-            resource.module
-        }
-        PresenceProofPlace::StoreIndex(index) => {
-            let index = program.facts.store_index(*index);
-            let store = program.facts.store(index.store);
-            store.module
-        }
-    };
-    Some(
-        program
-            .facts
-            .modules()
-            .get(module.0 as usize)?
-            .source_file
-            .clone(),
-    )
-}
-
 fn saved_path_target(
     program: &CheckedProgram,
     expr: &CheckedExpr,
@@ -345,7 +308,7 @@ fn saved_place_target(
             keys: path.keys,
             key_types: path.key_types,
             key_bindings: path.key_bindings,
-            read: PresenceProofRead::Direct,
+            read: ReadKind::Direct,
             value,
         });
     }
@@ -360,7 +323,7 @@ fn saved_place_target(
         keys: path.keys,
         key_types: path.key_types,
         key_bindings: path.key_bindings,
-        read: PresenceProofRead::Direct,
+        read: ReadKind::Direct,
         value,
     })
 }
@@ -437,7 +400,7 @@ fn transform_old_target(
         keys: Vec::new(),
         key_types: Vec::new(),
         key_bindings: Vec::new(),
-        read: PresenceProofRead::Direct,
+        read: ReadKind::Direct,
         value: ReadTargetValue::Value,
     })
 }

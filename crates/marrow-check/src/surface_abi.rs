@@ -2,7 +2,7 @@ use marrow_store::cell::CatalogId;
 
 use crate::entry_abi::{
     ENTRY_PROTOCOL_TAG_VERSION, EntryArgumentShape, EntryFunctionSurfaceDescriptor, EntryIdentity,
-    EntryParameter, EntryResourceResultField, EntryResultDescriptor, EntrySurfaceProfile,
+    EntryParameter, EntryResourceResultField, EntryResultShape, EntrySurfaceProfile,
     EntrySurfaceValueShape, surface_value_as_action_argument,
 };
 use crate::facts::{
@@ -365,7 +365,8 @@ impl SurfaceActionOperationDescriptor {
             parameters: descriptor.parameters,
             return_value: descriptor
                 .result
-                .value
+                .value()
+                .cloned()
                 .and_then(surface_value_as_action_argument),
         })
     }
@@ -973,16 +974,17 @@ fn push_computed_read_operation_payload(
     push_cost_shape_tag_parts(payload, cost_shape);
 }
 
-fn push_result_tag_parts(payload: &mut String, result: &EntryResultDescriptor) {
+fn push_result_tag_parts(payload: &mut String, result: &EntryResultShape) {
     push_tag_part(
         payload,
         "result.presence",
-        match result.presence {
-            marrow_schema::ReturnPresence::Always => "always",
-            marrow_schema::ReturnPresence::MaybePresent => "maybe_present",
+        if result.maybe_present() {
+            "maybe_present"
+        } else {
+            "always"
         },
     );
-    match &result.value {
+    match result.value() {
         Some(shape) => {
             push_tag_part(payload, "result.value", "some");
             push_entry_surface_value_tag_parts(payload, "result.value.shape", shape);

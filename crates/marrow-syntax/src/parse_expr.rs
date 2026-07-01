@@ -437,8 +437,8 @@ impl<'a> ExprParser<'a> {
     }
 
     /// Report a second operator on a non-associative level (`==`/`!=`, a
-    /// comparison, `is`, or `??`) at that operator's own token, mirroring the
-    /// coalesce diagnostic, and abort the expression. `text` is the operator
+    /// comparison, or `is`) at that operator's own token and abort the
+    /// expression. `text` is the operator
     /// spelling and `remedy` the spec fix; both ride in the message so the remedy
     /// survives the checker's parse-diagnostic lowering and renders in
     /// `marrow check`, where the `help` field is dropped. Returning `None` after
@@ -525,22 +525,17 @@ impl<'a> ExprParser<'a> {
         Some(Some(Box::new(self.coalesce_expr()?)))
     }
 
-    /// `??` sits one level tighter than ranges and looser than addition, on its
-    /// own non-associative level: `count ?? 0 < 5` parses as
-    /// `(count ?? 0) < 5`, and `a ?? b ?? c` is rejected (never chained).
+    /// `??` sits one level tighter than ranges and looser than addition:
+    /// `count ?? 0 < 5` parses as `(count ?? 0) < 5`. It is right-associative, so
+    /// `a ?? b ?? c` parses as `a ?? (b ?? c)`, each `??` defaulting the optional
+    /// on its left and the chain typing under the coalesce rule.
     fn coalesce_expr(&mut self) -> Option<Expression> {
         let left = self.additive_expr()?;
         if !matches!(self.peek(), Some(TokenKind::QuestionQuestion)) {
             return Some(left);
         }
         self.advance();
-        let right = self.additive_expr()?;
-        // `??` is non-associative: a second `??` at the same level is a grammar
-        // error rather than a left- or right-folded chain, so reject it here
-        // instead of leaving the trailing operand for the statement parser.
-        if matches!(self.peek(), Some(TokenKind::QuestionQuestion)) {
-            return self.reject_chained_operator("??", "write one `??` per read");
-        }
+        let right = self.descend(Self::coalesce_expr)?;
         Some(binary_expr(BinaryOp::Coalesce, left, right))
     }
 
@@ -813,6 +808,11 @@ impl<'a> ExprParser<'a> {
             TokenKind::Keyword(Keyword::True | Keyword::False) => {
                 self.advance();
                 literal(LiteralKind::Bool)
+            }
+            // `absent` is the empty-optional primary value, inert until resolved.
+            TokenKind::Keyword(Keyword::Absent) => {
+                self.advance();
+                Some(Expression::Absent { span: token.span })
             }
             TokenKind::Identifier => self.name_expr(),
             // A path segment keyword leading `::` starts a name path

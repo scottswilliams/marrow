@@ -4,8 +4,8 @@ use crate::support::{assert_clean, check_with_accepted, config, temp_project, wr
 use marrow_catalog::{CatalogEntry, CatalogEntryKind};
 use marrow_check::{
     AnalysisSnapshot, CheckedProgram, ENTRY_PROTOCOL_TAG_VERSION, EntryDescriptor,
-    EntryFunctionSurfaceDescriptor, EntrySurfaceProfile, EntrySurfaceValueShape, ProjectSources,
-    SurfaceActionOperationDescriptor, SurfaceCatalogBlocker, SurfaceCatalogStatus,
+    EntryFunctionSurfaceDescriptor, EntryResultShape, EntrySurfaceProfile, EntrySurfaceValueShape,
+    ProjectSources, SurfaceActionOperationDescriptor, SurfaceCatalogBlocker, SurfaceCatalogStatus,
     SurfaceComputedReadOperationDescriptor, SurfaceCreateBodySemantics,
     SurfaceCreateExistenceSemantics, SurfaceCreateIdentityPolicy,
     SurfaceCreateOperationDescriptorKind, SurfaceDeleteOperationDescriptorKind,
@@ -13,7 +13,6 @@ use marrow_check::{
     SurfaceReadOperationDescriptorKind, SurfaceUpdateOperationDescriptor,
     SurfaceUpdateOperationDescriptorKind, WorkShapeClass, analyze_project, check_project,
 };
-use marrow_schema::ReturnPresence;
 use marrow_schema::ScalarType;
 use marrow_store::cell::CatalogId;
 
@@ -133,7 +132,6 @@ fn function_ref(snapshot: &AnalysisSnapshot, name: &str) -> marrow_check::Checke
     marrow_check::CheckedFunctionRef {
         module: function.module.0,
         function: function.source_index,
-        presence: function.return_presence,
     }
 }
 
@@ -673,7 +671,7 @@ resource BookPage
 resource Book
     title: string
 store ^books(id: int): Book
-pub fn bookPage(id: Id(^books)): maybe BookPage
+pub fn bookPage(id: Id(^books)): BookPage?
     return BookPage(title: ^books(id)?.title ?? \"\")
 surface Books from ^books
     fields title
@@ -698,13 +696,9 @@ surface Books from ^books
     assert_eq!(descriptor.callable.identity.requested_name, "app::bookPage");
     assert_eq!(descriptor.callable.identity.canonical_name, "app::bookPage");
     assert_eq!(descriptor.callable.parameters.len(), 1);
-    assert_eq!(
-        descriptor.callable.result.presence,
-        ReturnPresence::MaybePresent
-    );
     assert!(matches!(
-        descriptor.callable.result.value,
-        Some(EntrySurfaceValueShape::Resource { .. })
+        descriptor.callable.result,
+        EntryResultShape::Optional(EntrySurfaceValueShape::Resource { .. })
     ));
     assert_eq!(descriptor.cost_shape.work_shape, WorkShapeClass::ReadOnly);
     assert_eq!(descriptor.cost_shape.point_reads, 1);
@@ -824,7 +818,7 @@ module app
 resource Book
     title: string
 store ^books(id: int): Book
-pub fn titleFor(id: Id(^books)): maybe string
+pub fn titleFor(id: Id(^books)): string?
     return absent
 surface Books from ^books
     fields title
@@ -839,11 +833,64 @@ surface Books from ^books
     )
     .expect("shared descriptor");
 
-    assert_eq!(descriptor.result.presence, ReturnPresence::MaybePresent);
     assert!(matches!(
-        descriptor.result.value,
-        Some(EntrySurfaceValueShape::Scalar(ScalarType::Str))
+        descriptor.result,
+        EntryResultShape::Optional(EntrySurfaceValueShape::Scalar(ScalarType::Str))
     ));
+}
+
+/// Presence is folded into the operation tag from the parameter and return types, so
+/// a `string?` parameter or return is a distinct tag from the `string` form. The
+/// non-optional baseline stays byte-stable: only the optional variants carry the
+/// extra presence component.
+#[test]
+fn entry_tag_folds_parameter_and_return_optionality() {
+    let act_tag = |name: &str, signature: &str, body: &str| {
+        let source = format!(
+            "\
+module app
+resource Book
+    title: string
+store ^books(id: int): Book
+pub fn act{signature}
+    {body}
+surface Books from ^books
+    fields title
+    action act
+"
+        );
+        let (_root, snapshot) = stable_snapshot(name, &source);
+        EntryFunctionSurfaceDescriptor::from_function_ref(
+            &snapshot.program,
+            "app::act",
+            function_ref(&snapshot, "act"),
+            EntrySurfaceProfile::Action,
+        )
+        .expect("action descriptor")
+        .identity
+        .entry_tag
+    };
+
+    let present_param = act_tag("entry-tag-present-param", "(x: string): string", "return x");
+    let optional_param = act_tag(
+        "entry-tag-optional-param",
+        "(x: string?): string",
+        "return x ?? \"\"",
+    );
+    let optional_return = act_tag(
+        "entry-tag-optional-return",
+        "(x: string): string?",
+        "return x",
+    );
+
+    assert_ne!(
+        present_param, optional_param,
+        "a `string?` parameter must produce a distinct operation tag from `string`"
+    );
+    assert_ne!(
+        present_param, optional_return,
+        "a `string?` return must produce a distinct operation tag from `string`"
+    );
 }
 
 #[test]
@@ -856,7 +903,7 @@ resource BookPage
 resource Book
     title: string
 store ^books(id: int): Book
-pub fn bookPage(id: Id(^books)): maybe BookPage
+pub fn bookPage(id: Id(^books)): BookPage?
     return absent
 surface Books from ^books
     fields title
@@ -870,13 +917,13 @@ surface Books from ^books
     )
     .expect("shared descriptor");
 
-    let Some(EntrySurfaceValueShape::Resource {
+    let EntryResultShape::Optional(EntrySurfaceValueShape::Resource {
         render_label,
         resource_catalog_id,
         fields,
-    }) = descriptor.result.value
+    }) = descriptor.result
     else {
-        panic!("expected resource result descriptor: {descriptor:#?}");
+        panic!("expected optional resource result descriptor: {descriptor:#?}");
     };
     assert_eq!(render_label, "app::BookPage");
     assert!(resource_catalog_id.as_str().starts_with("cat_"));
@@ -957,7 +1004,7 @@ module app
 resource Book
     title: string
 store ^books(id: int): Book
-fn hidden(): maybe string
+fn hidden(): string?
     return absent
 surface Books from ^books
     fields title

@@ -265,7 +265,7 @@ fn env_require_missing_variable_is_an_absent_error() {
 #[test]
 fn maybe_return_does_not_convert_always_present_absent_faults() {
     let program = checked_program(
-        "fn missing_env(): maybe string\n\
+        "fn missing_env(): string?\n\
          \x20   return std::env::require(\"MISSING\")\n\n\
          pub fn caller(): string\n\
          \x20   return missing_env() ?? \"fallback\"\n",

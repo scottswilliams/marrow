@@ -156,7 +156,10 @@ fn check_literal_ranges(file: &Path, expr: &Expression, out: &mut Vec<CheckDiagn
         }
         // A `Call` is a leaf here on purpose: a call is never constant, so its
         // arguments are not part of a `const` value and carry no literal to range-check.
-        Expression::Name { .. } | Expression::SavedRoot { .. } | Expression::Call { .. } => {}
+        Expression::Name { .. }
+        | Expression::SavedRoot { .. }
+        | Expression::Absent { .. }
+        | Expression::Call { .. } => {}
     }
 }
 
@@ -310,7 +313,6 @@ fn walk_statement(
         | Statement::Var { .. }
         | Statement::Delete { .. }
         | Statement::Return { .. }
-        | Statement::ReturnAbsent { .. }
         | Statement::Break { .. }
         | Statement::Continue { .. }
         | Statement::Throw { .. }
@@ -457,7 +459,6 @@ fn walk_loop_control_flow(
             | Statement::CompoundAssign { .. }
             | Statement::Delete { .. }
             | Statement::Return { .. }
-            | Statement::ReturnAbsent { .. }
             | Statement::Break { .. }
             | Statement::Continue { .. }
             | Statement::Throw { .. }
@@ -560,7 +561,6 @@ fn walk_loop_layer_mutations(
             | Statement::CompoundAssign { .. }
             | Statement::Delete { .. }
             | Statement::Return { .. }
-            | Statement::ReturnAbsent { .. }
             | Statement::Break { .. }
             | Statement::Continue { .. }
             | Statement::Throw { .. }
@@ -638,7 +638,6 @@ fn walk_commit_amplification(
             | Statement::CompoundAssign { .. }
             | Statement::Delete { .. }
             | Statement::Return { .. }
-            | Statement::ReturnAbsent { .. }
             | Statement::Break { .. }
             | Statement::Continue { .. }
             | Statement::Throw { .. }
@@ -698,8 +697,7 @@ fn push_commit_amplification_warnings(
                 push_append_write_warnings(file, scrutinee, out);
             }
         }
-        Statement::ReturnAbsent { .. }
-        | Statement::Break { .. }
+        Statement::Break { .. }
         | Statement::Continue { .. }
         | Statement::While { .. }
         | Statement::Transaction { .. }
@@ -955,7 +953,9 @@ fn is_key_lookup_target(callee: &Expression) -> bool {
 /// never constant, so neither is any expression containing one.
 fn is_constant_expr(expr: &Expression) -> bool {
     match expr {
-        Expression::Literal { .. } | Expression::Name { .. } => true,
+        // `absent` is the empty optional: a primary value with no runtime
+        // computation, so a `const`/`var` annotated `T?` may initialize to it.
+        Expression::Literal { .. } | Expression::Name { .. } | Expression::Absent { .. } => true,
         // `?.` is a possibly-absent read, never a compile-time constant.
         Expression::SavedRoot { .. }
         | Expression::Call { .. }

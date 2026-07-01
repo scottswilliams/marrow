@@ -248,11 +248,6 @@ fn analyze_project_keeps_configured_test_modules_out_of_program_facts() {
             .is_none(),
         "configured test facts must not remain in the returned source program"
     );
-    assert!(
-        !snapshot.program.facts.presence_proofs().is_empty(),
-        "{:#?}",
-        snapshot.program.facts.presence_proofs()
-    );
 }
 
 #[test]

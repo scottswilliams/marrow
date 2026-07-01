@@ -86,7 +86,7 @@ pub(super) fn expected_enum_at<'a>(
                     &prelude.aliases,
                     file,
                     &mut Vec::new(),
-                    None,
+                    crate::presence::ReadScope::none(),
                 );
                 let prefix = enum_value_prefix_for_type(program, file, &parsed.file, &ty)?;
                 expected_enum_from_type(program, file, &ty, ExpectedEnumContext::Value { prefix })
@@ -178,7 +178,7 @@ fn recovered_expected_enum_at<'a>(
             &prelude.aliases,
             file,
             &mut Vec::new(),
-            None,
+            crate::presence::ReadScope::none(),
         );
         let prefix = enum_value_prefix_for_type(program, file, &parsed.file, &ty)?;
         return expected_enum_from_type(program, file, &ty, ExpectedEnumContext::Value { prefix });

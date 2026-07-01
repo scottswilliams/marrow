@@ -28,7 +28,7 @@ Keys are order-preserving; values are not. `SavedKey` encodes scalars so byte-le
 | `crates/marrow-store/src/lib.rs` | Crate root; gates the redb engine behind the `native` feature; re-exports the public cell/key/value/tree surfaces. |
 | `crates/marrow-store/src/backend.rs` | `StoreError` (stable dotted codes), `ScanPage`, `ValuePrefix`, and the private `Backend` trait every engine implements. |
 | `crates/marrow-store/src/key.rs` | `SavedKey` and its order-preserving byte codec; identity-payload encode/decode for record identity and index entries. |
-| `crates/marrow-store/src/value.rs` | `Scalar`/`SavedValue`/`ScalarType`, language spellings, and the canonical (unordered) value codec with strict round-trip-only decode. |
+| `crates/marrow-store/src/value.rs` | `Scalar`/`SavedValue`/`ScalarType`, language spellings, and the canonical (unordered) value codec with strict round-trip-only decode. A cell encodes one present scalar — the only discriminant is the scalar type tag, never a null/optional value — guarded by a `debug_assert` at the `encode_value` boundary; absence is the lack of a cell. |
 | `crates/marrow-store/src/decimal.rs` | Exact canonical base-10 `Decimal`: parse, `to_text`, checked add/sub/mul, long-division `checked_div`, half-even `round_to_scale`, floor/abs/compare. |
 | `crates/marrow-store/src/cell.rs` | The v0 physical key grammar: `CatalogId` validation, `CellKey` constructors per family, `DataPathSegment`, `MetaCell` tags, the per-root structural-digest anchor key, key decoders, `CellRange`. |
 | `crates/marrow-store/src/digest.rs` | `RootDigest`: the per-root structural digest (wrapping sum of one 128-bit per-cell hash over key plus value), folded incrementally on write/delete and re-derived for the integrity cross-check. |

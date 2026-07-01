@@ -344,15 +344,15 @@ fn passing_a_keyed_tree_parameter_through_to_another_keyed_tree_parameter_is_not
 
 #[test]
 fn passing_a_saved_scalar_leaf_to_a_scalar_parameter_is_not_flagged() {
-    // A saved scalar read is a single value, not a saved collection, so it stays a
-    // valid by-value argument.
+    // A saved scalar read is a single value, not a saved collection, so once its
+    // maybe-presence is resolved it stays a valid by-value argument.
     let found = check_module(
         "saved-scalar-arg-ok",
         "module m\n\
          resource Player\n    name: string\n\
          store ^players(id: int): Player\n\n\
          fn take(name: string): int\n    return 0\n\n\
-         fn f(id: Id(^players)): int\n    return take(^players(id).name)\n",
+         fn f(id: Id(^players)): int\n    return take(^players(id).name ?? \"\")\n",
         "check.call_argument",
     );
     assert!(found.is_empty(), "{found:#?}");

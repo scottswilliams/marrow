@@ -21,8 +21,8 @@ use crate::executable::{
 };
 use crate::program::TypeNames;
 use crate::typerules::{
-    LiteralSign, check_literal_range, marrow_type_name, negated_integer_literal, type_compatible,
-    type_renderable_at_runtime,
+    LiteralSign, check_literal_range, is_optional_value, marrow_type_name, negated_integer_literal,
+    type_compatible, type_renderable_at_runtime, unresolved_optional_diagnostic,
 };
 use crate::{
     CHECK_CATEGORY_NOT_SELECTABLE, CHECK_COLLECTION_UNSUPPORTED, CHECK_LAYER_NOT_VALUE,
@@ -82,7 +82,14 @@ pub(crate) fn local_binding(
     aliases: &HashMap<String, Vec<String>>,
     file: &Path,
 ) -> Option<(String, MarrowType)> {
-    local_binding_with_read_scope(program, statement, scope, aliases, file, None)
+    local_binding_with_read_scope(
+        program,
+        statement,
+        scope,
+        aliases,
+        file,
+        crate::presence::ReadScope::none(),
+    )
 }
 
 pub(crate) fn local_binding_with_read_scope(
@@ -91,7 +98,7 @@ pub(crate) fn local_binding_with_read_scope(
     scope: &[HashMap<String, MarrowType>],
     aliases: &HashMap<String, Vec<String>>,
     file: &Path,
-    transform_old: Option<crate::presence::TransformOldReadScope<'_>>,
+    read_scope: crate::presence::ReadScope<'_>,
 ) -> Option<(String, MarrowType)> {
     use marrow_syntax::Statement;
     let mut sink = Vec::new();
@@ -110,7 +117,7 @@ pub(crate) fn local_binding_with_read_scope(
                 file,
                 &mut sink,
                 NO_CONST_INTS,
-                transform_old,
+                read_scope,
             ),
         ),
         Statement::Var {
@@ -129,7 +136,7 @@ pub(crate) fn local_binding_with_read_scope(
                     file,
                     &mut sink,
                     NO_CONST_INTS,
-                    transform_old,
+                    read_scope,
                 ),
                 None => MarrowType::Unknown,
             };
@@ -165,7 +172,7 @@ pub(crate) fn infer_type(
         file,
         diagnostics,
         NO_CONST_INTS,
-        None,
+        crate::presence::ReadScope::none(),
     )
 }
 
@@ -178,7 +185,7 @@ pub(crate) fn infer_assignment_target_type_with_read_scope(
     aliases: &HashMap<String, Vec<String>>,
     file: &Path,
     diagnostics: &mut Vec<CheckDiagnostic>,
-    transform_old: Option<crate::presence::TransformOldReadScope<'_>>,
+    read_scope: crate::presence::ReadScope<'_>,
 ) -> MarrowType {
     infer_assignment_field_type(
         program,
@@ -188,7 +195,7 @@ pub(crate) fn infer_assignment_target_type_with_read_scope(
         aliases,
         file,
         diagnostics,
-        transform_old,
+        read_scope,
         FieldAccessContext::AssignmentTarget,
     )
 }
@@ -202,7 +209,7 @@ fn infer_assignment_field_type(
     aliases: &HashMap<String, Vec<String>>,
     file: &Path,
     diagnostics: &mut Vec<CheckDiagnostic>,
-    transform_old: Option<crate::presence::TransformOldReadScope<'_>>,
+    read_scope: crate::presence::ReadScope<'_>,
     context: FieldAccessContext,
 ) -> MarrowType {
     use marrow_syntax::Expression;
@@ -232,9 +239,10 @@ fn infer_assignment_field_type(
             aliases,
             file,
             diagnostics,
-            transform_old,
+            read_scope,
             context,
             position: ValuePosition::Value,
+            optional_access: matches!(expr, Expression::OptionalField { .. }),
         }),
         // A write or delete target is an address, not a value read. A partially keyed
         // composite layer there names an inner sub-layer, which the dedicated
@@ -249,7 +257,7 @@ fn infer_assignment_field_type(
             aliases,
             file,
             diagnostics,
-            transform_old,
+            read_scope,
         ),
     }
 }
@@ -274,7 +282,7 @@ pub(crate) fn infer_type_with_read_scope(
     file: &Path,
     diagnostics: &mut Vec<CheckDiagnostic>,
     const_ints: &[HashMap<String, Option<i64>>],
-    transform_old: Option<crate::presence::TransformOldReadScope<'_>>,
+    read_scope: crate::presence::ReadScope<'_>,
 ) -> MarrowType {
     infer_value(
         program,
@@ -285,7 +293,7 @@ pub(crate) fn infer_type_with_read_scope(
         aliases,
         file,
         diagnostics,
-        transform_old,
+        read_scope,
     )
 }
 
@@ -303,7 +311,7 @@ pub(crate) fn infer_collection_subject_type_with_read_scope(
     aliases: &HashMap<String, Vec<String>>,
     file: &Path,
     diagnostics: &mut Vec<CheckDiagnostic>,
-    transform_old: Option<crate::presence::TransformOldReadScope<'_>>,
+    read_scope: crate::presence::ReadScope<'_>,
 ) -> MarrowType {
     infer_value(
         program,
@@ -314,7 +322,7 @@ pub(crate) fn infer_collection_subject_type_with_read_scope(
         aliases,
         file,
         diagnostics,
-        transform_old,
+        read_scope,
     )
 }
 
@@ -328,13 +336,13 @@ fn infer_value(
     aliases: &HashMap<String, Vec<String>>,
     file: &Path,
     diagnostics: &mut Vec<CheckDiagnostic>,
-    transform_old: Option<crate::presence::TransformOldReadScope<'_>>,
+    read_scope: crate::presence::ReadScope<'_>,
 ) -> MarrowType {
     use marrow_syntax::Expression;
     if reject_saved_access(program, expr, scope, file, diagnostics) {
         return MarrowType::Unknown;
     }
-    match expr {
+    let ty = match expr {
         Expression::Literal { kind, text, span } => {
             check_literal_range(*kind, text, LiteralSign::Bare, *span, file, diagnostics);
             match kind {
@@ -364,9 +372,11 @@ fn infer_value(
                             file,
                             diagnostics,
                             const_ints,
-                            transform_old,
+                            read_scope,
                         );
-                        if saved_collection_render_unowned(
+                        if is_optional_value(&ty) {
+                            diagnostics.push(unresolved_optional_diagnostic(file, expr.span()));
+                        } else if saved_collection_render_unowned(
                             program,
                             expr,
                             scope,
@@ -426,7 +436,7 @@ fn infer_value(
                     file,
                     diagnostics,
                     const_ints,
-                    transform_old,
+                    read_scope,
                 )
             };
             check_unary(*op, &operand, *span, file, diagnostics)
@@ -461,7 +471,7 @@ fn infer_value(
                 file,
                 diagnostics,
                 const_ints,
-                transform_old,
+                read_scope,
             );
             // `is` is the enum-subtree predicate: its right is a member-path naming a
             // member or category, not a value, so it is resolved inside `check_is`
@@ -486,21 +496,17 @@ fn infer_value(
                 file,
                 diagnostics,
                 const_ints,
-                transform_old,
+                read_scope,
             );
-            // `??` only defaults an absent path read, so its left operand must be a
-            // path read or `?.` chain — a present non-path value is never absent
-            // and has nothing to default. The result is the leaf type of that read.
+            // `??` defaults an optional left value with the right; a present
+            // (non-optional) left has nothing to default. The result follows the
+            // right operand's presence.
             if matches!(op, marrow_syntax::BinaryOp::Coalesce) {
                 return check_coalesce(CoalesceCheck {
-                    program,
-                    left,
                     left_type: &left_type,
                     right_type: &right_type,
                     span: *span,
                     file,
-                    scope,
-                    transform_old,
                     diagnostics,
                 });
             }
@@ -522,7 +528,7 @@ fn infer_value(
                     file,
                     diagnostics,
                     const_ints,
-                    transform_old,
+                    read_scope,
                 )
             });
             let end_type = end.as_ref().map(|end| {
@@ -534,7 +540,7 @@ fn infer_value(
                     file,
                     diagnostics,
                     const_ints,
-                    transform_old,
+                    read_scope,
                 )
             });
             if let Some(step) = step {
@@ -546,7 +552,7 @@ fn infer_value(
                     file,
                     diagnostics,
                     const_ints,
-                    transform_old,
+                    read_scope,
                 );
             }
             match (start_type, end_type) {
@@ -583,7 +589,7 @@ fn infer_value(
                     aliases,
                     file,
                     diagnostics,
-                    transform_old,
+                    read_scope,
                 );
                 if matches!(callee_type, MarrowType::Invalid) {
                     return MarrowType::Invalid;
@@ -602,7 +608,7 @@ fn infer_value(
                     aliases,
                     file,
                     diagnostics,
-                    transform_old,
+                    read_scope,
                 }));
             }
             check_print_argument_renderable(
@@ -623,7 +629,9 @@ fn infer_value(
                 file,
                 diagnostics,
             ) {
-                return ty;
+                // A positional or keyed local-collection read is maybe-present (the
+                // position or key may be absent), so it yields the leaf wrapped in `?`.
+                return wrap_maybe_present(program, expr, position, ty, scope, file, read_scope);
             }
             let call_type = check_call(CallCheck {
                 program,
@@ -635,7 +643,7 @@ fn infer_value(
                 aliases,
                 span: *span,
                 file,
-                transform_old,
+                read_scope,
                 diagnostics,
             });
             // A saved access carries key arguments the function-call path does not
@@ -653,7 +661,17 @@ fn infer_value(
             // A call-shaped saved read (keyed-leaf or whole-record) is not a function
             // call; type it through its saved shape once the call path comes back Unknown.
             if matches!(call_type, MarrowType::Unknown) {
-                bare_saved_value_type(program, expr, *span, position, scope, file, diagnostics)
+                let saved =
+                    bare_saved_value_type(program, expr, *span, position, scope, file, diagnostics);
+                // A saved read whose key argument is maybe-present already reported the
+                // one rule at the key position; poison the read so the outer value slot
+                // does not stack a second one-rule on the same mistake.
+                if !matches!(saved, MarrowType::Unknown) && arg_types.iter().any(is_optional_value)
+                {
+                    MarrowType::Invalid
+                } else {
+                    saved
+                }
             } else {
                 call_type
             }
@@ -686,9 +704,10 @@ fn infer_value(
             aliases,
             file,
             diagnostics,
-            transform_old,
+            read_scope,
             context: FieldAccessContext::Read,
             position,
+            optional_access: matches!(expr, Expression::OptionalField { .. }),
         }),
         Expression::Name { segments, span, .. } if segments.len() >= 2 => {
             enum_member_value_type(program, expr, segments, *span, aliases, file, diagnostics)
@@ -696,8 +715,65 @@ fn infer_value(
         Expression::SavedRoot { span, .. } => {
             bare_saved_value_type(program, expr, *span, position, scope, file, diagnostics)
         }
+        // The empty optional: assignable to any `T?` place, inert until resolved.
+        Expression::Absent { .. } => MarrowType::Absent,
         Expression::Name { .. } => MarrowType::Unknown,
+    };
+    wrap_maybe_present(program, expr, position, ty, scope, file, read_scope)
+}
+
+/// Promote a maybe-present value read to its `T?` type. A value-position read whose
+/// runtime presence is not guaranteed — a sparse field, a positional/keyed/unique
+/// read, a neighbor, a maybe-present call, or any direct saved value read — yields
+/// the optional of its present-arm type, the single site where read optionality
+/// enters the type lattice. A collection-subject position streams its subject and is
+/// never a value, and an already-poisoned or untyped result is left as is.
+fn wrap_maybe_present(
+    program: &CheckedProgram,
+    expr: &marrow_syntax::Expression,
+    position: ValuePosition,
+    ty: MarrowType,
+    scope: &[HashMap<String, MarrowType>],
+    file: &Path,
+    read_scope: crate::presence::ReadScope<'_>,
+) -> MarrowType {
+    if position != ValuePosition::Value
+        || matches!(
+            ty,
+            MarrowType::Unknown | MarrowType::Invalid | MarrowType::Absent
+        )
+    {
+        return ty;
     }
+    let Some(checked) = checked_expr(program, expr, scope, file) else {
+        return ty;
+    };
+    if !crate::presence::read_value_resolves_in_type_scope(
+        program,
+        &checked,
+        scope,
+        read_scope.transform_old,
+    ) {
+        return ty;
+    }
+    // The read is maybe-present, so it carries `T?` — unless flow narrowing has
+    // proven this very place present, in which case the one rule is already
+    // discharged and the read reads as bare `T`. A saved read's `ty` is already the
+    // bare present arm; a local binding's `ty` is its declared `Optional`, so strip
+    // the proven layer.
+    if crate::presence::read_is_narrowed(
+        program,
+        &checked,
+        scope,
+        read_scope.transform_old,
+        read_scope.narrowed,
+    ) {
+        return match ty {
+            MarrowType::Optional(inner) => *inner,
+            other => other,
+        };
+    }
+    MarrowType::optional(ty)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -724,9 +800,13 @@ struct FieldAccessInfer<'a, 'd> {
     aliases: &'a HashMap<String, Vec<String>>,
     file: &'a Path,
     diagnostics: &'d mut Vec<CheckDiagnostic>,
-    transform_old: Option<crate::presence::TransformOldReadScope<'a>>,
+    read_scope: crate::presence::ReadScope<'a>,
     context: FieldAccessContext,
     position: ValuePosition,
+    /// The access was written `?.`. Off a maybe-present record this resolves the
+    /// member against the inner record and re-wraps the result optional; a plain `.`
+    /// off one is the one rule.
+    optional_access: bool,
 }
 
 fn infer_field_access(input: FieldAccessInfer<'_, '_>) -> MarrowType {
@@ -761,7 +841,7 @@ fn infer_field_access(input: FieldAccessInfer<'_, '_>) -> MarrowType {
             input.file,
             input.diagnostics,
             input.const_ints,
-            input.transform_old,
+            input.read_scope,
         ),
         // The base of a write target is navigated, not itself written, so resolve it
         // silently: only the terminal field reports an undeclared member, leaving an
@@ -775,11 +855,17 @@ fn infer_field_access(input: FieldAccessInfer<'_, '_>) -> MarrowType {
                 input.aliases,
                 input.file,
                 input.diagnostics,
-                input.transform_old,
+                input.read_scope,
                 FieldAccessContext::AssignmentBase,
             )
         }
     };
+    // A poisoned base already reported its fault — an optional key, a rejected read —
+    // so a field off it defers rather than resolving through the saved shape (value or
+    // collection-subject) and stacking a second diagnostic on the same mistake.
+    if matches!(base_type, MarrowType::Invalid) {
+        return MarrowType::Invalid;
+    }
     // A bare-key field access in a value position is itself a value-read entry, like the
     // call and saved-root arms. A partially keyed composite layer there — `^grids(1).cells`,
     // every key column unfilled — names an iterable inner sub-layer, never a scalar, so
@@ -806,7 +892,30 @@ fn infer_field_access(input: FieldAccessInfer<'_, '_>) -> MarrowType {
     if let Some(ty) = saved_expr_type(input.program, input.expr, input.scope, input.file) {
         return ty;
     }
-    match local_field_resolution(input.program, &base_type, input.name) {
+    // Reading off a materialized record splits by access form. A `?.` always carries
+    // possible absence — it short-circuits on an absent base or a missing sparse member
+    // — so it resolves the member against the record (stripping one optional layer when
+    // the base is itself maybe-present) and re-wraps optional, whether the base is `T?`
+    // or a definite `T`; the smart constructor keeps a sparse member single-layer. A
+    // plain `.` off a maybe-present record is the one rule. A saved path resolves through
+    // its own saved shape above, so this never fires on one — an undeclared field there
+    // still reports `unknown_field` through the normal resolution below.
+    let materialized_read = input.context == FieldAccessContext::Read
+        && !reads_through_saved_place(input.program, input.base, input.scope, input.file);
+    let resolution_base = match &base_type {
+        MarrowType::Optional(inner) if materialized_read && input.optional_access => inner.as_ref(),
+        MarrowType::Optional(_) if materialized_read => {
+            input.diagnostics.push(unresolved_optional_diagnostic(
+                input.file,
+                input.base.span(),
+            ));
+            return MarrowType::Invalid;
+        }
+        _ => &base_type,
+    };
+    let wrap_optional = materialized_read && input.optional_access;
+    match local_field_resolution(input.program, resolution_base, input.name) {
+        FieldResolution::Resolved(ty) if wrap_optional => MarrowType::optional(ty),
         FieldResolution::Resolved(ty) => ty,
         // An undeclared field on a resolved resource base is invalid whether it is read
         // or written: a write to it is silently dropped at runtime, so the terminal
@@ -934,7 +1043,7 @@ struct CallArgInfer<'a, 'd> {
     aliases: &'a HashMap<String, Vec<String>>,
     file: &'a Path,
     diagnostics: &'d mut Vec<CheckDiagnostic>,
-    transform_old: Option<crate::presence::TransformOldReadScope<'a>>,
+    read_scope: crate::presence::ReadScope<'a>,
 }
 
 fn infer_call_arg_type(input: CallArgInfer<'_, '_>) -> MarrowType {
@@ -960,7 +1069,7 @@ fn infer_call_arg_type(input: CallArgInfer<'_, '_>) -> MarrowType {
             input.aliases,
             input.file,
             input.diagnostics,
-            input.transform_old,
+            input.read_scope,
         )
     {
         return ty;
@@ -975,7 +1084,7 @@ fn infer_call_arg_type(input: CallArgInfer<'_, '_>) -> MarrowType {
             input.aliases,
             input.file,
             input.diagnostics,
-            input.transform_old,
+            input.read_scope,
         );
     }
     infer_type_with_read_scope(
@@ -986,7 +1095,7 @@ fn infer_call_arg_type(input: CallArgInfer<'_, '_>) -> MarrowType {
         input.file,
         input.diagnostics,
         input.const_ints,
-        input.transform_old,
+        input.read_scope,
     )
 }
 
@@ -1033,7 +1142,7 @@ fn infer_saved_key_range_arg_type(
     aliases: &HashMap<String, Vec<String>>,
     file: &Path,
     diagnostics: &mut Vec<CheckDiagnostic>,
-    transform_old: Option<crate::presence::TransformOldReadScope<'_>>,
+    read_scope: crate::presence::ReadScope<'_>,
 ) -> Option<MarrowType> {
     let range = marrow_syntax::range_expr(arg)?;
     if let Some(step) = range.step {
@@ -1045,7 +1154,7 @@ fn infer_saved_key_range_arg_type(
             file,
             diagnostics,
             const_ints,
-            transform_old,
+            read_scope,
         );
     }
     let start = range.start.map(|expr| {
@@ -1057,7 +1166,7 @@ fn infer_saved_key_range_arg_type(
             file,
             diagnostics,
             const_ints,
-            transform_old,
+            read_scope,
         )
     });
     let end = range.end.map(|expr| {
@@ -1069,7 +1178,7 @@ fn infer_saved_key_range_arg_type(
             file,
             diagnostics,
             const_ints,
-            transform_old,
+            read_scope,
         )
     });
     Some(match (start, end) {
@@ -1102,6 +1211,12 @@ fn check_print_argument_renderable(
     let ([arg], [ty]) = (args, arg_types) else {
         return;
     };
+    // A maybe-present value has no text form until it is resolved; the one rule owns
+    // it before the render gate so the message names the four resolution forms.
+    if is_optional_value(ty) {
+        diagnostics.push(unresolved_optional_diagnostic(file, arg.value.span()));
+        return;
+    }
     // The argument was already inferred, so a partially-keyed composite layer here
     // already carries the more precise `check.layer_not_value` at this span; defer to it
     // by treating `before` as the diagnostics already accumulated.
@@ -1453,45 +1568,73 @@ fn local_collection_access_type(
     match lookup_opt(scope, name)? {
         MarrowType::Sequence(element) => {
             check_local_key_count(name, 1, args.len(), span, file, diagnostics);
-            if let [arg_type] = arg_types
-                && !matches!(
+            if let [arg_type] = arg_types {
+                if is_optional_value(arg_type) {
+                    diagnostics.push(unresolved_optional_diagnostic(
+                        file,
+                        key_arg_span(args, 0, span),
+                    ));
+                    return Some(MarrowType::Invalid);
+                }
+                if !matches!(
                     type_compatible(&MarrowType::Primitive(ScalarType::Int), arg_type),
                     Some(true) | None
-                )
-            {
-                diagnostics.push(key_type_diagnostic(
-                    file,
-                    span,
-                    format!(
-                        "key `pos` expects `int`, but this value is `{}`",
-                        marrow_type_name(arg_type)
-                    ),
-                ));
+                ) {
+                    diagnostics.push(key_type_diagnostic(
+                        file,
+                        span,
+                        format!(
+                            "key `pos` expects `int`, but this value is `{}`",
+                            marrow_type_name(arg_type)
+                        ),
+                    ));
+                }
             }
             Some(*element)
         }
         MarrowType::LocalTree { keys, value } => {
             check_local_key_count(name, keys.len(), args.len(), span, file, diagnostics);
-            if keys.len() == arg_types.len() {
-                for (index, (expected, actual)) in keys.iter().zip(arg_types).enumerate() {
-                    if matches!(type_compatible(expected, actual), Some(false)) {
-                        diagnostics.push(key_type_diagnostic(
+            if keys.len() != arg_types.len() {
+                return Some(*value);
+            }
+            // A key must be present to address a node, so a maybe-present key argument is
+            // the one rule; report it at the key position and poison the read so the outer
+            // value slot does not stack a second one-rule on the same mistake.
+            if arg_types.iter().any(is_optional_value) {
+                for (index, actual) in arg_types.iter().enumerate() {
+                    if is_optional_value(actual) {
+                        diagnostics.push(unresolved_optional_diagnostic(
                             file,
-                            span,
-                            format!(
-                                "key {} expects `{}`, but this value is `{}`",
-                                index + 1,
-                                marrow_type_name(expected),
-                                marrow_type_name(actual)
-                            ),
+                            key_arg_span(args, index, span),
                         ));
                     }
+                }
+                return Some(MarrowType::Invalid);
+            }
+            for (index, (expected, actual)) in keys.iter().zip(arg_types).enumerate() {
+                if matches!(type_compatible(expected, actual), Some(false)) {
+                    diagnostics.push(key_type_diagnostic(
+                        file,
+                        span,
+                        format!(
+                            "key {} expects `{}`, but this value is `{}`",
+                            index + 1,
+                            marrow_type_name(expected),
+                            marrow_type_name(actual)
+                        ),
+                    ));
                 }
             }
             Some(*value)
         }
         _ => None,
     }
+}
+
+/// The span of the `index`-th key argument, or the whole access `span` when it is
+/// absent, so a key-position diagnostic points at the offending argument.
+fn key_arg_span(args: &[marrow_syntax::Argument], index: usize, span: SourceSpan) -> SourceSpan {
+    args.get(index).map(|arg| arg.value.span()).unwrap_or(span)
 }
 
 fn check_local_key_count(
@@ -1536,7 +1679,7 @@ pub(crate) fn assignment_target_is_error_code(
     scope: &[HashMap<String, MarrowType>],
     aliases: &HashMap<String, Vec<String>>,
     file: &Path,
-    transform_old: Option<crate::presence::TransformOldReadScope<'_>>,
+    read_scope: crate::presence::ReadScope<'_>,
 ) -> bool {
     use marrow_syntax::Expression;
     // A keyed-leaf write `place.layer(key) = value` carries the leaf name on the
@@ -1565,7 +1708,7 @@ pub(crate) fn assignment_target_is_error_code(
         aliases,
         file,
         &mut sink,
-        transform_old,
+        read_scope,
     );
     resolved_field_node(program, &base_type, name).is_some_and(marrow_schema::Node::is_error_code)
 }
@@ -1632,7 +1775,18 @@ fn local_field_resolution(
         | MarrowType::Identity(_)
         | MarrowType::Sequence(_)
         | MarrowType::LocalTree { .. } => FieldResolution::NoFields,
-        MarrowType::Unknown => FieldResolution::UnresolvedBase,
+        // A `.field` off a maybe-present record resolves the member against the inner
+        // record so a genuinely missing field is still reported, while a member that
+        // *would* resolve is left to the one rule, which owns a `.` on an optional base.
+        MarrowType::Optional(inner) => match local_field_resolution(program, inner, field) {
+            FieldResolution::Resolved(_) | FieldResolution::NonValueMember => {
+                FieldResolution::UnresolvedBase
+            }
+            other => other,
+        },
+        // The empty optional has no inner record, and an unknown base defers; the one
+        // rule (for `Absent`) or the surrounding deferral owns the diagnostic.
+        MarrowType::Absent | MarrowType::Unknown => FieldResolution::UnresolvedBase,
     }
 }
 
@@ -1707,7 +1861,9 @@ pub(crate) fn sparse_member(program: &CheckedProgram, base_type: &MarrowType, fi
         MarrowType::Error => {
             marrow_schema::error::field(field).is_some_and(|descriptor| !descriptor.required)
         }
-        MarrowType::Primitive(_)
+        MarrowType::Optional(_)
+        | MarrowType::Absent
+        | MarrowType::Primitive(_)
         | MarrowType::Enum { .. }
         | MarrowType::Identity(_)
         | MarrowType::Sequence(_)

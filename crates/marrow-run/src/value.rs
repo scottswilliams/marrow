@@ -45,6 +45,14 @@ pub enum Value {
     /// form (use `std::bytes::base64Encode`).
     Bytes(Vec<u8>),
     Enum(EnumValue),
+    /// The empty optional: the in-memory value of a `T?` that is absent. A present
+    /// optional carries its inner value directly, so this is only ever the absent
+    /// arm. It is confined to code: the resolution forms (`??`, `if const`,
+    /// `exists`, `?.`), an optional binding, and an optional argument observe it,
+    /// and it converts to a `None` `Option<Value>` at the return and call
+    /// boundaries. It never reaches the store — a present-or-clear write routes the
+    /// absent arm to the node-delete planner, and `value_to_saved` yields no cell.
+    Absent,
     /// An in-memory `sequence[T]` value: a 1-based integer-keyed local tree, the same
     /// shape `^`-saved sequences carry. A materializing producer (`std::text::split`,
     /// `values`/`keys`) builds a dense `1..n`, while a bound `var xs: sequence` may
@@ -335,6 +343,7 @@ impl Value {
             Value::Date(d) => preview_temporal_text(SavedValue::Date(*d)),
             Value::Duration(n) => preview_temporal_text(SavedValue::Duration(*n)),
             Value::Bytes(bytes) => render_bytes_hex(bytes),
+            Value::Absent => "absent".to_string(),
             Value::Enum(value) => value.display_name.clone(),
             Value::Sequence(items) => format!("sequence[{}]", items.len()),
             Value::LocalTree(entries) => format!("tree[{}]", entries.len()),
@@ -402,7 +411,8 @@ pub(crate) fn diagnostic_value_preview(value: &Value) -> Option<String> {
         Value::Duration(n) => preview_temporal_text(SavedValue::Duration(*n)),
         Value::Decimal(decimal) => decimal.to_text(),
         Value::Bytes(bytes) => diagnostic_bytes_preview(bytes),
-        Value::Enum(_)
+        Value::Absent
+        | Value::Enum(_)
         | Value::Sequence(_)
         | Value::LocalTree(_)
         | Value::Resource(_)
@@ -497,7 +507,8 @@ pub(crate) fn value_scalar_type(value: &Value) -> Option<ScalarType> {
         Value::Duration(_) => ScalarType::Duration,
         Value::Decimal(_) => ScalarType::Decimal,
         Value::Bytes(_) => ScalarType::Bytes,
-        Value::Enum(_)
+        Value::Absent
+        | Value::Enum(_)
         | Value::Sequence(_)
         | Value::LocalTree(_)
         | Value::Resource(_)
@@ -531,7 +542,8 @@ pub(crate) fn value_to_saved(value: Value) -> Option<SavedValue> {
         Value::Duration(n) => SavedValue::Duration(n),
         Value::Decimal(d) => SavedValue::Decimal(d),
         Value::Bytes(b) => SavedValue::Bytes(b),
-        Value::Sequence(_)
+        Value::Absent
+        | Value::Sequence(_)
         | Value::LocalTree(_)
         | Value::Resource(_)
         | Value::Identity(_)
@@ -573,8 +585,9 @@ pub(crate) fn value_to_key(
         Value::Enum(value) => Some(SavedKey::Str(value.member_catalog_id)),
         // Decimal keys are deferred; sequences and resources are not scalar keys.
         // An identity is not a single key — lowering splices its segments in
-        // before reaching here.
+        // before reaching here. An absent optional is never a key.
         Value::Decimal(_)
+        | Value::Absent
         | Value::Sequence(_)
         | Value::Resource(_)
         | Value::Identity(_)
@@ -952,6 +965,7 @@ pub(crate) fn render(value: Value, span: SourceSpan) -> Result<String, RuntimeEr
         Value::Date(days) => canonical_scalar_text(SavedValue::Date(days), span),
         Value::Duration(nanos) => canonical_scalar_text(SavedValue::Duration(nanos), span),
         Value::Sequence(sequence) => render_sequence(sequence, span),
+        Value::Absent => Err(unsupported("rendering an absent optional", span)),
         Value::LocalTree(_) => Err(unsupported("rendering a local tree value", span)),
         Value::Resource(_) => Err(unsupported("rendering a resource value", span)),
     }

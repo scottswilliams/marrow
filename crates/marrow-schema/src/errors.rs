@@ -35,7 +35,11 @@ pub enum SchemaErrorKind {
         member: String,
     },
     UnknownInSaved {
-        target: SchemaSavedUnknownTarget,
+        target: SchemaSavedPosition,
+        name: String,
+    },
+    OptionalInSaved {
+        target: SchemaSavedPosition,
         name: String,
     },
     KeyMemberCollision {
@@ -93,12 +97,15 @@ impl SchemaErrorKind {
             Self::CategoryLeaf { .. }
             | Self::ParentNotCategory { .. }
             | Self::NonEnumNamedField { .. } => None,
-            Self::UnknownInSaved { target, .. } => match target {
-                SchemaSavedUnknownTarget::Field
-                | SchemaSavedUnknownTarget::Key
-                | SchemaSavedUnknownTarget::KeyedLeaf => None,
-                SchemaSavedUnknownTarget::IdentityKey => Some(SchemaStoreInvalidation::Store),
-            },
+            Self::UnknownInSaved { target, .. } | Self::OptionalInSaved { target, .. } => {
+                match target {
+                    SchemaSavedPosition::Field
+                    | SchemaSavedPosition::Key
+                    | SchemaSavedPosition::KeyedLeaf
+                    | SchemaSavedPosition::SequenceElement => None,
+                    SchemaSavedPosition::IdentityKey => Some(SchemaStoreInvalidation::Store),
+                }
+            }
             Self::KeyMemberCollision { collision } => match collision {
                 SchemaNameCollision::IdentityKeyWithMember { .. } => {
                     Some(SchemaStoreInvalidation::Store)
@@ -147,21 +154,28 @@ impl SchemaDuplicateTarget {
     }
 }
 
+/// A saved-shape value position, shared by the saved-type rejections (`unknown`,
+/// optional) so they name the offending position the same way.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SchemaSavedUnknownTarget {
+pub enum SchemaSavedPosition {
     Field,
     IdentityKey,
     Key,
     KeyedLeaf,
+    /// A sequence element: the element of a `sequence[T]` field or the leaf of a
+    /// positional (single-`int`-keyed) layer. The optionality or `unknown` sits on
+    /// the element type, not the container, so it is named as such.
+    SequenceElement,
 }
 
-impl SchemaSavedUnknownTarget {
+impl SchemaSavedPosition {
     fn message_name(self) -> &'static str {
         match self {
             Self::Field => "field",
             Self::IdentityKey => "identity key",
             Self::Key => "key",
             Self::KeyedLeaf => "keyed leaf",
+            Self::SequenceElement => "sequence element",
         }
     }
 }
@@ -214,6 +228,11 @@ pub const SCHEMA_PARENT_NOT_CATEGORY: &str = "schema.parent_not_category";
 /// boundary value; saved schemas use concrete field and key types. Local-only
 /// resources may use `unknown`.
 pub const SCHEMA_UNKNOWN_IN_SAVED: &str = "schema.unknown_in_saved";
+
+/// A managed saved field or keyed leaf is typed optional (`T?`). `?` is the
+/// code-level type a sparse read yields, not a storage marker: a field is sparse
+/// (absent-able) by default, so a saved value type drops the `?`.
+pub const SCHEMA_OPTIONAL_IN_SAVED: &str = "schema.optional_in_saved";
 
 /// Two members of a store collide in its source namespace: a top-level field or
 /// layer shares a name with an identity key, or a declared field shares a name
@@ -338,7 +357,7 @@ pub(crate) fn field_index_collision_error(index: &str, span: SourceSpan) -> Sche
 }
 
 pub(crate) fn unknown_error(
-    target: SchemaSavedUnknownTarget,
+    target: SchemaSavedPosition,
     name: &str,
     span: SourceSpan,
 ) -> SchemaError {
@@ -351,6 +370,31 @@ pub(crate) fn unknown_error(
         message: format!(
             "saved {} `{name}` cannot use `unknown`; managed saved \
              schemas use concrete types",
+            target.message_name()
+        ),
+        span,
+    }
+}
+
+pub(crate) fn optional_error(
+    target: SchemaSavedPosition,
+    name: &str,
+    span: SourceSpan,
+) -> SchemaError {
+    let reason = match target {
+        SchemaSavedPosition::SequenceElement => {
+            "a sequence element is always present, so its element type drops the `?`"
+        }
+        _ => "a field is sparse by default, so a saved value type drops the `?`",
+    };
+    SchemaError {
+        kind: SchemaErrorKind::OptionalInSaved {
+            target,
+            name: name.to_string(),
+        },
+        code: SCHEMA_OPTIONAL_IN_SAVED,
+        message: format!(
+            "saved {} `{name}` cannot be optional (`T?`); {reason}",
             target.message_name()
         ),
         span,

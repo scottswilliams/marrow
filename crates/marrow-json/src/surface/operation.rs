@@ -580,7 +580,7 @@ fn computed_read_result(
     output: String,
     run_output: marrow_run::RunOutput,
 ) -> Result<SurfaceOperationResultJson, SurfaceOperationErrorJson> {
-    let shape = computed_read.descriptor().callable.result.value.as_ref();
+    let shape = computed_read.descriptor().callable.result.value();
     let value = run_output
         .value
         .as_ref()

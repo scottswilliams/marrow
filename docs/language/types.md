@@ -165,23 +165,50 @@ if const book = ^books(id)
     const subtitle = book.subtitle ?? ""
 ```
 
-## Maybe Return Types
+## Optional Types (`T?`)
 
-A user function may return a maybe-present value by spelling `maybe` in the
-function return annotation:
+Optionality is one type constructor, written `T?`: the value type "a `T` or
+absence". It is the single type every maybe-present source produces and the
+single way code carries possible absence:
+
+- a sparse-field read is the field type wrapped in `?` (`^books(id).subtitle` is
+  `string?`); a `required` field stays bare `T`;
+- a positional, keyed, or unique-index read is the leaf type wrapped in `?`
+  (`xs(pos)` is `string?`, `counts(day, cat)` is `int?`);
+- `next(...)` and `prev(...)` yield `Id(^store)?`;
+- a function declared to return `T?` yields `T?` at the call site;
+- a standard-library operation that may have no result yields `T?`
+  (`std::text::indexOf(...)` is `int?`).
+
+Optionality does not nest. Reaching a sparse field through a maybe-present record
+(`book?.subtitle`) is `string?`, never `string??`, because both absences denote
+the same empty optional.
+
+`T?` is a first-class code type, valid as a function return, a parameter, and a
+local annotation:
 
 ```mw
-fn findSubtitle(id: int): maybe string
-    return ^books(id).subtitle
+fn label(tag: string?): string
+    return tag ?? "untitled"
+
+const following: Id(^books)? = next(^books(id))
 ```
 
-The `maybe` marker belongs only in a function return type. It is not a general
-type wrapper for parameters, fields, saved data, keyed trees, locals, or nested
-data. `maybe string` means the function returns a `string` when present and may
-return absence as control flow; it does not create an option-like value.
+`absent` is the empty optional: a first-class primary value assignable to any
+`T?` place and to nothing else. It has no fields, operators, or comparisons of
+its own and must reach a `T?` place or be resolved. Because it carries no element
+type, an unannotated binding cannot infer one from it:
 
-A maybe-returning function call is resolved at the caller with the same forms as
-maybe-present saved reads:
+```mw
+var pending: string? = absent     ; annotated: ok
+var pending = absent              ; error: annotate the optional element type
+```
+
+A `T?` value cannot stand where a plain `T` is required until it is resolved, by
+one of the same four forms that discharge any maybe-present read: an
+absence-default `place ?? fallback`, an `if const name = place` binding, an
+`exists(place)` guard, or a `?.` chain ending in one of those. `??` is
+right-associative, so `a ?? b ?? c` defaults rightward:
 
 ```mw
 const subtitle = findSubtitle(id) ?? ""
@@ -193,9 +220,14 @@ if exists(findSubtitle(id))
     print("has subtitle")
 ```
 
-An unresolved maybe-returning call is a compile error. Presence facts from
-`exists(findSubtitle(id))` apply to that call expression only; a later repeated call
-must resolve its own possible absence.
+An unresolved `T?` value is a compile error. Presence proven by
+`exists(findSubtitle(id))` applies to that call expression only; a later repeated
+call must resolve its own possible absence.
+
+`?` is a code-type suffix only. Storage optionality is the sparse node itself, so
+`?` never appears on a field declaration, a key, a keyed leaf, or a sequence
+element, and `T??` has no spelling. `R?` (a maybe-present record) and
+`Id(^store)?` (a maybe-present identity) are ordinary code types.
 
 ## Required Fields
 

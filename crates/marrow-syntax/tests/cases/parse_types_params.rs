@@ -269,23 +269,17 @@ fn signature_parse_errors_point_at_the_offending_token_not_column_one() {
             ExpectedSyntax::FunctionReturnType,
             ":\n",
         ),
-        // `maybe` return marker with no type after it: point at the `maybe`.
+        // A stray word trailing a complete return type: point at the misplaced word.
         (
-            "module app\nfn f(a: int): maybe\n    return\n",
+            "module app\nfn f(a: int): int extra\n    return 1\n",
             ExpectedSyntax::FunctionReturnType,
-            "maybe",
+            "extra",
         ),
-        // `maybe` trailing a return type: point at the misplaced `maybe`.
+        // The double-optional return spelling `T??`: point at the `??`.
         (
-            "module app\nfn f(a: int): int maybe\n    return 1\n",
+            "module app\nfn f(a: int): string??\n    return\n",
             ExpectedSyntax::FunctionReturnType,
-            "maybe",
-        ),
-        // `maybe` inside a parameter type: point at the misplaced `maybe`.
-        (
-            "module app\nfn f(a: maybe int): int\n    return 1\n",
-            ExpectedSyntax::ParameterType,
-            "maybe int",
+            "??",
         ),
         // `= default` after a return type: point at the offending `=`.
         (

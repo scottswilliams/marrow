@@ -10,8 +10,8 @@ use crate::errors::{
     SCHEMA_DUPLICATE_MEMBER, SCHEMA_INDEX_MISSING_IDENTITY_KEYS, SCHEMA_NESTED_INDEX_ARG,
     SCHEMA_NON_ENUM_NAMED_FIELD, SCHEMA_NONSCALAR_KEY, SCHEMA_UNKNOWN_INDEX_ARG,
     SCHEMA_UNORDERABLE_KEY, SchemaDuplicateTarget, SchemaError, SchemaErrorKind, SchemaKeyTarget,
-    SchemaSavedUnknownTarget, field_index_collision_error, index_requires_keyed_root_error,
-    key_index_collision_error, key_member_collision_error, unknown_error,
+    SchemaSavedPosition, field_index_collision_error, index_requires_keyed_root_error,
+    key_index_collision_error, key_member_collision_error, optional_error, unknown_error,
 };
 use crate::{Node, NodeKind, ResourceSchema, ScalarType, Type};
 
@@ -23,7 +23,7 @@ use crate::{Node, NodeKind, ResourceSchema, ScalarType, Type};
 pub fn check_saved_member_rules(members: &[ResourceMember]) -> Vec<SchemaError> {
     let mut errors = Vec::new();
     for member in members {
-        check_member_unknown(member, &mut errors);
+        check_member_value_type(member, &mut errors);
         check_member_keys(member, &mut errors);
     }
     errors
@@ -41,7 +41,7 @@ pub(crate) fn check_identity_key(
     let ty = Type::resolve(&key.ty);
     if ty.embeds_unknown() {
         errors.push(unknown_error(
-            SchemaSavedUnknownTarget::IdentityKey,
+            SchemaSavedPosition::IdentityKey,
             &key.name,
             span,
         ));
@@ -115,11 +115,7 @@ fn check_key_params(keys: &[KeyParam], span: SourceSpan, errors: &mut Vec<Schema
     for key in keys {
         let ty = Type::resolve(&key.ty);
         if ty.embeds_unknown() {
-            errors.push(unknown_error(
-                SchemaSavedUnknownTarget::Key,
-                &key.name,
-                span,
-            ));
+            errors.push(unknown_error(SchemaSavedPosition::Key, &key.name, span));
         } else if let Some(error) = key_type_error(
             SavedKeyTarget::KeyParam {
                 name: key.name.clone(),
@@ -132,28 +128,51 @@ fn check_key_params(keys: &[KeyParam], span: SourceSpan, errors: &mut Vec<Schema
     }
 }
 
-/// Reject `unknown` on the value type of a field or keyed leaf, descending into
-/// groups. A keyed layer's own key parameters are validated separately in
-/// [`check_member_keys`].
-fn check_member_unknown(member: &ResourceMember, errors: &mut Vec<SchemaError>) {
+/// Reject `unknown` or an optional (`T?`) on the value type of a field or keyed
+/// leaf, descending into groups. Both are code-level types with no saved leaf
+/// form; the rejection mirrors the `unknown` rule and recurses through a sequence
+/// element via `embeds_*`. A keyed layer's own key parameters are validated
+/// separately in [`check_member_keys`].
+fn check_member_value_type(member: &ResourceMember, errors: &mut Vec<SchemaError>) {
     match member {
         ResourceMember::Field(field) => {
             let ty = Type::resolve(&field.ty);
-            let target = if field.keys.is_empty() {
-                SchemaSavedUnknownTarget::Field
-            } else {
-                SchemaSavedUnknownTarget::KeyedLeaf
-            };
+            let target = saved_value_position(&field.keys, &ty);
             if ty.embeds_unknown() {
                 errors.push(unknown_error(target, &field.name, field.span));
+            } else if ty.embeds_optional() {
+                errors.push(optional_error(target, &field.name, field.span));
             }
         }
         ResourceMember::Group(group) => {
             for nested in &group.members {
-                check_member_unknown(nested, errors);
+                check_member_value_type(nested, errors);
             }
         }
     }
+}
+
+/// The saved value position an `unknown`/optional rejection names. A `sequence[T]`
+/// field and a positional (single-`int`-keyed) layer both carry their value on a
+/// sequence element, so the rejection names the element; other keyed leaves and plain
+/// fields name the keyed leaf or field.
+fn saved_value_position(keys: &[KeyParam], ty: &Type) -> SchemaSavedPosition {
+    if keys.is_empty() {
+        return match ty {
+            Type::Sequence(_) => SchemaSavedPosition::SequenceElement,
+            _ => SchemaSavedPosition::Field,
+        };
+    }
+    if is_positional_layer(keys) {
+        SchemaSavedPosition::SequenceElement
+    } else {
+        SchemaSavedPosition::KeyedLeaf
+    }
+}
+
+/// Whether a keyed layer is the positional sequence shape: a single `int` key column.
+fn is_positional_layer(keys: &[KeyParam]) -> bool {
+    matches!(keys, [key] if Type::resolve(&key.ty) == Type::Scalar(ScalarType::Int))
 }
 
 /// Apply the saved plain-field named-type rule directly to resource members.
@@ -404,9 +423,11 @@ fn classify_key_type(ty: &Type) -> KeyTypeVerdict {
     match ty {
         Type::Scalar(ScalarType::Decimal) => KeyTypeVerdict::Decimal,
         Type::Scalar(_) => KeyTypeVerdict::Ok,
-        Type::Identity(_) | Type::Named(_) | Type::Sequence(_) | Type::Unknown => {
-            KeyTypeVerdict::NonScalar
-        }
+        Type::Identity(_)
+        | Type::Named(_)
+        | Type::Sequence(_)
+        | Type::Unknown
+        | Type::Optional(_) => KeyTypeVerdict::NonScalar,
     }
 }
 

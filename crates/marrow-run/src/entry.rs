@@ -74,6 +74,10 @@ pub enum EntryArgumentValue {
         keys: Vec<EntryScalarArgument>,
     },
     Sequence(Vec<EntryArgumentValue>),
+    /// The wire form of an absent optional argument: JSON `null` for a `T?`
+    /// parameter. It binds [`Value::Absent`] only where the parameter shape is
+    /// optional; a required parameter rejects it, and it is never a stored value.
+    Absent,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -221,7 +225,7 @@ pub fn entry_argument_json_schema() -> Json {
                 "pattern": "\\S",
                 "description": "Entry parameter name."
             },
-            "value": entry_argument_value_schema(),
+            "value": entry_argument_optional_value_schema(),
         },
         "required": ["name", "value"],
         "additionalProperties": false,
@@ -232,7 +236,20 @@ pub fn entry_argument_json_schema() -> Json {
     })
 }
 
+/// The argument `value` schema, admitting the present typed forms plus JSON `null`
+/// for an absent optional argument. Only the top level accepts `null`; a sequence
+/// element resolves to `entry_argument_value_schema` and stays present-only.
+fn entry_argument_optional_value_schema() -> Json {
+    let mut variants = entry_argument_value_variants();
+    variants.push(json!({ "type": "null" }));
+    json!({ "oneOf": variants })
+}
+
 fn entry_argument_value_schema() -> Json {
+    json!({ "oneOf": entry_argument_value_variants() })
+}
+
+fn entry_argument_value_variants() -> Vec<Json> {
     let mut variants = entry_scalar_argument_variants();
     variants.extend([
         json!({
@@ -270,9 +287,7 @@ fn entry_argument_value_schema() -> Json {
             "additionalProperties": false
         }),
     ]);
-    json!({
-        "oneOf": variants,
-    })
+    variants
 }
 
 fn entry_scalar_argument_schema() -> Json {
@@ -372,10 +387,16 @@ fn entry_argument_from_json(
     if name.trim().is_empty() {
         return Err(json_error(EntryArgumentJsonErrorKind::EmptyName, &path));
     }
-    let value = object
-        .get("value")
-        .ok_or_else(|| json_field_error(EntryArgumentJsonErrorKind::ExpectedObject, &path, "value"))
-        .and_then(|value| entry_argument_value_from_json(&format!("{path} value"), value, 0))?;
+    let value_json = object.get("value").ok_or_else(|| {
+        json_field_error(EntryArgumentJsonErrorKind::ExpectedObject, &path, "value")
+    })?;
+    // JSON `null` is the wire form of an absent optional argument; a present value is
+    // its typed object. Optionality is enforced against the parameter shape at decode.
+    let value = if value_json.is_null() {
+        EntryArgumentValue::Absent
+    } else {
+        entry_argument_value_from_json(&format!("{path} value"), value_json, 0)?
+    };
     Ok(EntryArgument {
         name: name.to_string(),
         value,
@@ -706,13 +727,13 @@ impl<'p> CheckedEntryCall<'p> {
     ) -> Result<Self, RuntimeError> {
         let target = entry_target(program, entry)?;
         let (_, function) = function_by_ref(program, target, SourceSpan::default())?;
-        let args = decode_entry_text_args(program, function, args)?;
-        let identity = entry_identity(program, entry)?;
+        let descriptor = entry_descriptor(program, entry)?;
+        let args = decode_entry_text_args(program, function, &descriptor.parameters, args)?;
         Ok(Self {
             program,
             target,
             args,
-            identity,
+            identity: descriptor.identity,
         })
     }
 
@@ -874,7 +895,6 @@ fn run_entry_impl<'p>(
         depth: 1,
     })? {
         (Completion::Returned(value), ..) => value,
-        (Completion::ReturnedAbsent, ..) => None,
         (
             Completion::Threw {
                 error,
@@ -1057,6 +1077,7 @@ fn canonical_entry_value_impl(
 fn decode_entry_text_args(
     program: &CheckedRuntimeProgram,
     function: &CheckedRuntimeFunction,
+    parameters: &[EntryParameter],
     supplied: &[(&str, &str)],
 ) -> Result<Vec<Value>, RuntimeError> {
     let params = function.entry_params();
@@ -1071,8 +1092,17 @@ fn decode_entry_text_args(
     }
     params
         .iter()
+        .zip(parameters)
         .zip(slots)
-        .map(|(param, values)| decode_entry_param(program, &param.ty, &param.name, values))
+        .map(|((param, parameter), values)| {
+            decode_entry_param(
+                program,
+                &param.ty,
+                parameter.shape.optional(),
+                &param.name,
+                values,
+            )
+        })
         .collect()
 }
 
@@ -1099,14 +1129,23 @@ fn decode_entry_protocol_args(
     params
         .iter()
         .zip(slots)
-        .map(|(param, value)| {
-            let Some(value) = value else {
-                return Err(entry_argument(format!(
-                    "entry argument `{}` is required",
-                    param.name
-                )));
-            };
-            decode_entry_protocol_value(program, &param.shape, &param.name, value)
+        .map(|(param, value)| match value {
+            // An omitted argument or a JSON `null` binds the empty optional to a `T?`
+            // parameter; a required parameter rejects both. Absence is never a stored
+            // value.
+            None | Some(EntryArgumentValue::Absent) => {
+                if param.shape.optional() {
+                    Ok(Value::Absent)
+                } else {
+                    Err(entry_argument(format!(
+                        "entry argument `{}` is required",
+                        param.name
+                    )))
+                }
+            }
+            Some(value) => {
+                decode_entry_protocol_value(program, param.shape.shape(), &param.name, value)
+            }
         })
         .collect()
 }
@@ -1246,13 +1285,21 @@ fn decode_protocol_identity_arg(
 fn decode_entry_param(
     program: &CheckedRuntimeProgram,
     ty: &CheckedRuntimeValueType,
+    optional: bool,
     name: &str,
     values: Vec<&str>,
 ) -> Result<Value, RuntimeError> {
     if values.is_empty() {
-        return Err(entry_argument(format!(
-            "entry argument `{name}` is required"
-        )));
+        // No `--arg` for this parameter is text absence. An optional parameter binds
+        // the empty optional; a required one is rejected. A supplied value is present
+        // even when empty, and absence is never a stored value.
+        return if optional {
+            Ok(Value::Absent)
+        } else {
+            Err(entry_argument(format!(
+                "entry argument `{name}` is required"
+            )))
+        };
     }
     match ty {
         CheckedRuntimeValueType::Sequence(element) => {

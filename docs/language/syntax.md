@@ -265,6 +265,11 @@ reassigned, and neither can a loop variable, an `if const` binding, or a
 parameter; assigning to any of them is a check error. A `var` shadowing one of
 these in an inner block introduces a fresh mutable binding.
 
+A type annotation may end in the optional suffix `?`: `T?` is the type of a value
+that may be absent, valid on a return, parameter, or local annotation. The `?` is
+part of the type spelling; the empty optional is the value `absent`, and a `T?`
+value is resolved with `??`, `?.`, `if const`, or `exists` (see Operators).
+
 ## Equality And Assignment
 
 `=` is assignment only. It binds a value to a target in statement position:
@@ -296,7 +301,7 @@ From tightest to loosest precedence:
 | 2 | unary `-`, `not` | negate, boolean not |
 | 3 | `*`, `/`, `%` | multiply, divide, remainder |
 | 4 | `+`, `-` | add, subtract |
-| 5 | `??` | absence default (non-associative) |
+| 5 | `??` | absence default (right-associative) |
 | 6 | `..`, `..=` | exclusive and inclusive ranges |
 | 7 | `<`, `<=`, `>`, `>=` | comparison |
 | 8 | `==`, `!=` | equality, not equal |
@@ -322,15 +327,16 @@ for dates belongs in named `std::clock` helpers, not operators.
 Equality requires comparable values of the same type. Ordering comparisons
 require ordered values of the same type.
 
-The absence-default `??` reads a maybe-present operand on its left and yields the
-right operand when that read is absent. Its left operand must be a maybe-present
-read — a path read, a `?.` chain, or a maybe-present call result such as
-`next`/`prev` or a maybe-returning user function — since a value that is always
-present has nothing to default; the default must match the read's type. It binds
+The absence-default `??` reads a `T?` operand on its left and yields the right
+operand when that read is absent. Its left operand must be a `T?` value — a path
+read, a `?.` chain, or a call whose result type is `T?` such as `next`/`prev` or
+a function returning `T?` — since a value that is always present has nothing to
+default; the default must match the read's type. It binds
 looser than `+`/`-` and tighter than ranges and comparisons, so `count ?? 0 < 5`
 is `(count ?? 0) < 5`,
 `start ?? 1 .. n` is `(start ?? 1) .. n`, and `x ?? y + 1` is `x ?? (y + 1)`.
-It does not chain: write one `??` per read.
+It is right-associative, so `a ?? b ?? c` is `a ?? (b ?? c)`: a chain of defaults
+falls through to the first present value.
 
 The optional read `?.` accesses a field that may be absent. An absent step
 short-circuits the rest of the chain to absent rather than failing the read, so
@@ -455,9 +461,9 @@ Marrow parser-reserved words are:
 ```text
 module use pub fn resource store surface
 enum evolve match index unique required
-const var if else while for in break continue return maybe absent delete merge
+const var if else while for in break continue return delete merge
 journal sensitive declassify
-transaction lock try catch throw true false
+transaction lock try catch throw true false absent
 not and or is
 int decimal bool string bytes date instant duration
 sequence

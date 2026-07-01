@@ -247,7 +247,7 @@ fn run_transform(
     })?;
     match completion.0 {
         Completion::Returned(Some(value)) => Ok(value),
-        Completion::Returned(None) | Completion::ReturnedAbsent => Err(TransformFault {
+        Completion::Returned(None) => Err(TransformFault {
             code: RUN_NO_VALUE,
             reason: "the transform body returned no value".to_string(),
         }),

@@ -733,7 +733,7 @@ $ echo $?
 ```
 
 The implemented assertions are `std::assert::isTrue`, `isFalse`, `equal`,
-`absent`, and `fail`.
+`isAbsent`, and `fail`.
 
 ## `marrow data`
 

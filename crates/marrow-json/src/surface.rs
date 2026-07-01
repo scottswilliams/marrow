@@ -388,7 +388,19 @@ pub struct SurfaceCallableIdentityJson {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SurfaceCallableParameterJson {
     pub name: String,
+    pub presence: SurfaceCallableParameterPresenceJson,
     pub shape: SurfaceCallableArgumentShapeJson,
+}
+
+/// Whether a callable parameter is required or optional (`T?`), read off the
+/// `EntryParameterShape` carrier. It mirrors the result-side presence enum so a
+/// generated client types an optional parameter as nullable and a required one as
+/// required; presence rides the one carrier, never a parallel flag.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SurfaceCallableParameterPresenceJson {
+    Required,
+    Optional,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -1021,21 +1033,21 @@ impl From<marrow_check::EntryFunctionSurfaceDescriptor> for SurfaceComputedReadC
     }
 }
 
-impl From<marrow_check::EntryResultDescriptor> for SurfaceComputedReadResultJson {
-    fn from(result: marrow_check::EntryResultDescriptor) -> Self {
-        Self {
-            presence: SurfaceComputedReadPresenceJson::from(result.presence),
-            value: result.value.map(SurfaceComputedReadValueShapeJson::from),
-        }
-    }
-}
-
-impl From<marrow_check::ReturnPresence> for SurfaceComputedReadPresenceJson {
-    fn from(presence: marrow_check::ReturnPresence) -> Self {
-        match presence {
-            marrow_check::ReturnPresence::Always => Self::Always,
-            marrow_check::ReturnPresence::MaybePresent => Self::MaybePresent,
-        }
+impl From<marrow_check::EntryResultShape> for SurfaceComputedReadResultJson {
+    fn from(result: marrow_check::EntryResultShape) -> Self {
+        let presence = if result.maybe_present() {
+            SurfaceComputedReadPresenceJson::MaybePresent
+        } else {
+            SurfaceComputedReadPresenceJson::Always
+        };
+        let value = match result {
+            marrow_check::EntryResultShape::Void => None,
+            marrow_check::EntryResultShape::Present(shape)
+            | marrow_check::EntryResultShape::Optional(shape) => {
+                Some(SurfaceComputedReadValueShapeJson::from(shape))
+            }
+        };
+        Self { presence, value }
     }
 }
 
@@ -1137,9 +1149,15 @@ impl From<marrow_check::EntryIdentity> for SurfaceCallableIdentityJson {
 
 impl From<marrow_check::EntryParameter> for SurfaceCallableParameterJson {
     fn from(parameter: marrow_check::EntryParameter) -> Self {
+        let presence = if parameter.shape.optional() {
+            SurfaceCallableParameterPresenceJson::Optional
+        } else {
+            SurfaceCallableParameterPresenceJson::Required
+        };
         Self {
             name: parameter.name,
-            shape: SurfaceCallableArgumentShapeJson::from(parameter.shape),
+            presence,
+            shape: SurfaceCallableArgumentShapeJson::from(parameter.shape.into_shape()),
         }
     }
 }
@@ -1397,7 +1415,7 @@ pub(crate) fn surface_action_value_to_json(
                 .map(|item| surface_action_value_to_json(program, item))
                 .collect::<Result<Vec<_>, _>>()?,
         },
-        Value::Resource(_) | Value::LocalTree(_) => {
+        Value::Absent | Value::Resource(_) | Value::LocalTree(_) => {
             return Err(SurfaceValueJsonError::UnsupportedValue);
         }
     })
@@ -1534,7 +1552,8 @@ fn computed_read_scalar_value_to_json(
         Value::Bytes(value) => SurfaceComputedReadValueJson::Bytes {
             value_b64: marrow_run::base64::encode(value),
         },
-        Value::Enum(_)
+        Value::Absent
+        | Value::Enum(_)
         | Value::Identity(_)
         | Value::Sequence(_)
         | Value::Resource(_)
@@ -1724,21 +1743,22 @@ mod tests {
         SURFACE_CLIENT_DIGEST_PREFIX, SURFACE_CLIENT_DO_NOT_EDIT,
         SURFACE_OPERATION_PROFILE_VERSION, SurfaceAbiJson, SurfaceActionRequestJson,
         SurfaceActionResultJson, SurfaceActionValueJson, SurfaceArgumentJson,
-        SurfaceCallableArgumentShapeJson, SurfaceCatalogStatusJson, SurfaceClientRenderErrorKind,
-        SurfaceComputedReadFieldValueJson, SurfaceComputedReadPresenceJson,
-        SurfaceComputedReadRequestJson, SurfaceComputedReadValueJson,
-        SurfaceComputedReadValueShapeJson, SurfaceCreateFieldJson, SurfaceCreateOperationKindJson,
-        SurfaceCursorBoundaryJson, SurfaceCursorJson, SurfaceDeleteOperationKindJson,
-        SurfaceEmptyRequestJson, SurfaceIdentityJson, SurfaceKeyJson, SurfaceOperationCatalog,
-        SurfaceOperationCatalogErrorKind, SurfaceOperationErrorJson, SurfaceOperationKind,
-        SurfaceOperationRequestBodyJson, SurfaceOperationRequestJson, SurfaceOperationResultJson,
-        SurfacePageJson, SurfacePageRequestJson, SurfacePointCreateRequestJson,
-        SurfacePointDeleteRequestJson, SurfacePointRequestJson, SurfacePointUpdateRequestJson,
-        SurfaceReadOperationKindJson, SurfaceRecordJson, SurfaceRouteBindingErrorKind,
-        SurfaceRouteBindings, SurfaceRouteManifestJson, SurfaceRouteMethodJson,
-        SurfaceRouteRequestJson, SurfaceSingletonUpdateRequestJson, SurfaceUniqueLookupRequestJson,
-        SurfaceUpdateFieldJson, SurfaceValueJson, SurfaceWriteValueJson, render_typescript_client,
-        surface_abi_digest, surface_client_header, surface_client_header_digest,
+        SurfaceCallableArgumentShapeJson, SurfaceCallableParameterPresenceJson,
+        SurfaceCatalogStatusJson, SurfaceClientRenderErrorKind, SurfaceComputedReadFieldValueJson,
+        SurfaceComputedReadPresenceJson, SurfaceComputedReadRequestJson,
+        SurfaceComputedReadValueJson, SurfaceComputedReadValueShapeJson, SurfaceCreateFieldJson,
+        SurfaceCreateOperationKindJson, SurfaceCursorBoundaryJson, SurfaceCursorJson,
+        SurfaceDeleteOperationKindJson, SurfaceEmptyRequestJson, SurfaceIdentityJson,
+        SurfaceKeyJson, SurfaceOperationCatalog, SurfaceOperationCatalogErrorKind,
+        SurfaceOperationErrorJson, SurfaceOperationKind, SurfaceOperationRequestBodyJson,
+        SurfaceOperationRequestJson, SurfaceOperationResultJson, SurfacePageJson,
+        SurfacePageRequestJson, SurfacePointCreateRequestJson, SurfacePointDeleteRequestJson,
+        SurfacePointRequestJson, SurfacePointUpdateRequestJson, SurfaceReadOperationKindJson,
+        SurfaceRecordJson, SurfaceRouteBindingErrorKind, SurfaceRouteBindings,
+        SurfaceRouteManifestJson, SurfaceRouteMethodJson, SurfaceRouteRequestJson,
+        SurfaceSingletonUpdateRequestJson, SurfaceUniqueLookupRequestJson, SurfaceUpdateFieldJson,
+        SurfaceValueJson, SurfaceWriteValueJson, render_typescript_client, surface_abi_digest,
+        surface_client_header, surface_client_header_digest,
     };
 
     static TEMP_PROJECT_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -1900,6 +1920,19 @@ surface Books from ^books
     action addBook
 ";
 
+    const SURFACE_ACTION_OPTIONAL_PARAM: &str = "\
+resource Book
+    required title: string
+store ^books(id: int): Book
+
+pub fn addBook(title: string, note: string?): string
+    return title
+
+surface Books from ^books
+    fields title
+    action addBook
+";
+
     const SURFACE_ACTION_UPDATE: &str = "\
 resource Book
     required title: string
@@ -1921,7 +1954,7 @@ resource Book
     required title: string
 store ^books(id: int): Book
 
-pub fn bookPage(id: Id(^books)): maybe BookPage
+pub fn bookPage(id: Id(^books)): BookPage?
     return BookPage(title: ^books(id).title ?? \"\")
 
 surface Books from ^books
@@ -2115,7 +2148,7 @@ pub fn seed()
     transaction
         ^books(1) = first
 
-pub fn bookPage(id: int): maybe BookPage
+pub fn bookPage(id: int): BookPage?
     return BookPage(title: ^books(id).title ?? \"\")
 ";
 
@@ -3085,6 +3118,41 @@ pub fn seed()
             Some(SurfaceCallableArgumentShapeJson::Scalar {
                 scalar: "string".into()
             })
+        );
+    }
+
+    #[test]
+    fn surface_abi_action_parameters_carry_presence() {
+        // An optional (`T?`) parameter descriptor carries the optional presence
+        // marker so a generated client can type it nullable; a required parameter
+        // carries the required marker. Presence rides the parameter carrier.
+        let (program, _runtime) = checked_surface_program(SURFACE_ACTION_OPTIONAL_PARAM);
+        let abi = SurfaceAbiJson::from_program(&program);
+        let books = abi
+            .surfaces
+            .iter()
+            .find(|surface| surface.name == "Books")
+            .expect("Books descriptor");
+        let [action] = books.actions.as_slice() else {
+            panic!("expected one action descriptor: {abi:#?}");
+        };
+        let required = action
+            .parameters
+            .iter()
+            .find(|parameter| parameter.name == "title")
+            .expect("required parameter");
+        let optional = action
+            .parameters
+            .iter()
+            .find(|parameter| parameter.name == "note")
+            .expect("optional parameter");
+        assert_eq!(
+            required.presence,
+            SurfaceCallableParameterPresenceJson::Required
+        );
+        assert_eq!(
+            optional.presence,
+            SurfaceCallableParameterPresenceJson::Optional
         );
     }
 

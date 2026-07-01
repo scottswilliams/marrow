@@ -266,13 +266,21 @@ fn overlong_record_presence_does_not_create_root_presence() {
 }
 
 #[test]
-fn resource_constructor_optional_coalesce_is_checker_rejected() {
-    checker_rejects(
+fn resource_constructor_optional_chain_coalesces_to_the_default() {
+    // `?.` reads a sparse field off a freshly constructed record; the field is
+    // absent, so `??` supplies the default.
+    let program = checked_program(
         "resource Profile\n\
          \x20\x20\x20\x20email: string\n\n\
          pub fn email(): string\n\
          \x20\x20\x20\x20return Profile()?.email ?? \"none\"\n",
-        "check.operator_type",
+    );
+    let store = TreeStore::memory();
+    assert_eq!(
+        run_entry(&store, checked_entry!(&program, "test::email"))
+            .expect("run")
+            .value,
+        Some(Value::Str("none".into()))
     );
 }
 

@@ -14,7 +14,7 @@ use marrow_store::value::{SavedValue, ScalarType};
 fn an_unguarded_absent_element_read_is_rejected() {
     checker_rejects(
         "resource Book\n    title: string\nstore ^books(id: int): Book\n\npub fn titleOrCode(id: int): string\n    try\n        return ^books(id).title\n    catch err: Error\n        return err.code\n",
-        "check.bare_maybe_present_read",
+        "check.unresolved_optional",
     );
 }
 

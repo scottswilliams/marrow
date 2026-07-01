@@ -759,6 +759,9 @@ impl<'a> Lexer<'a> {
             '/' => TokenKind::Slash,
             '%' => TokenKind::Percent,
             '^' => TokenKind::Caret,
+            // A lone `?` is the optional type suffix. The `?.`/`??` table above
+            // runs first, so longest match keeps those operators intact.
+            '?' => TokenKind::Question,
             _ => return None,
         };
         Some((kind, ch.len_utf8()))

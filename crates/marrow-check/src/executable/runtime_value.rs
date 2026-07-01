@@ -166,6 +166,11 @@ pub(crate) fn checked_runtime_value_type(
                 .collect(),
             value: Box::new(checked_runtime_value_type(program, *value)),
         },
+        // Presence rides the operation tag, not the runtime value type, so an
+        // optional return types as its present arm; the empty optional has no
+        // runtime value type of its own.
+        MarrowType::Optional(inner) => checked_runtime_value_type(program, *inner),
+        MarrowType::Absent => CheckedRuntimeValueType::Unknown,
         MarrowType::Invalid => CheckedRuntimeValueType::Invalid,
         MarrowType::Unknown => CheckedRuntimeValueType::Unknown,
     }

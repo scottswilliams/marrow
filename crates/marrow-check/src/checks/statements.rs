@@ -6,7 +6,6 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-use marrow_schema::ReturnPresence;
 use marrow_syntax::SourceSpan;
 
 use crate::enums::{MatchCheck, check_match, resolve_diagnosed_annotation_type};
@@ -16,10 +15,12 @@ use crate::infer::{
     infer_collection_subject_type_with_read_scope, infer_type_with_read_scope,
     local_binding_with_read_scope, reject_saved_access_with_suggested_index,
 };
+use crate::presence::{FlowCtx, Narrowing, ReadScope};
 use crate::resolve::resolve_store_by_root;
+use crate::typerules::is_optional_value;
 use crate::{
     CHECK_CALL_ARGUMENT, CHECK_COLLECTION_UNSUPPORTED, CHECK_CONDITION_TYPE, CHECK_KEY_TYPE,
-    CHECK_LAYER_NOT_VALUE, CHECK_LOSSY_ROUND_TRIP, CHECK_UNRESOLVED_NAME, CheckDiagnostic,
+    CHECK_LOSSY_ROUND_TRIP, CHECK_UNANNOTATED_ABSENT, CHECK_UNRESOLVED_NAME, CheckDiagnostic,
     CheckedProgram, DiagnosticPayload, MarrowType,
 };
 
@@ -80,6 +81,7 @@ pub(crate) fn check_function_types(
     }
     let mut const_ints: ConstIntScope = vec![const_base];
     let mut required_fields = RequiredFieldAssignments::new();
+    let mut narrowing = Narrowing::new();
     let return_type = function
         .return_type
         .as_ref()
@@ -100,6 +102,7 @@ pub(crate) fn check_function_types(
         &mut const_ints,
         diagnostics,
         &mut required_fields,
+        &mut narrowing,
     );
     collapse_repeated_unresolved_names(diagnostics, body_start);
 }
@@ -148,6 +151,7 @@ pub(crate) fn check_block_types(
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
     let mut required_fields = RequiredFieldAssignments::inactive();
+    let mut narrowing = Narrowing::new();
     check_block_types_with_read_scope(
         BlockTypeContext {
             program,
@@ -161,6 +165,7 @@ pub(crate) fn check_block_types(
         const_ints,
         diagnostics,
         &mut required_fields,
+        &mut narrowing,
     );
 }
 
@@ -194,8 +199,9 @@ pub(crate) fn check_transform_block_types(check: TransformBlockTypeCheck<'_>) {
                 resource: transform_old_resource,
                 frame,
             });
-    check_return_values(file, block, true, ReturnPresence::Always, diagnostics);
+    check_return_values(file, block, true, diagnostics);
     let mut required_fields = RequiredFieldAssignments::inactive();
+    let mut narrowing = Narrowing::new();
     // Mirror the caller's scope: the module constants seed the fold, and every frame
     // the caller already bound (the transform's `old`) masks its names as dynamic, so
     // a binding that shadows a like-named module constant cannot fold to it.
@@ -216,6 +222,7 @@ pub(crate) fn check_transform_block_types(check: TransformBlockTypeCheck<'_>) {
         &mut const_ints,
         diagnostics,
         &mut required_fields,
+        &mut narrowing,
     );
 }
 
@@ -235,6 +242,7 @@ fn check_block_types_with_read_scope(
     const_ints: &mut ConstIntScope,
     diagnostics: &mut Vec<CheckDiagnostic>,
     required_fields: &mut RequiredFieldAssignments,
+    narrowing: &mut Narrowing,
 ) {
     scope.push(HashMap::new());
     const_ints.push(HashMap::new());
@@ -248,6 +256,7 @@ fn check_block_types_with_read_scope(
             const_ints,
             diagnostics,
             required_fields,
+            narrowing,
             fresh_next_id.as_ref(),
         );
         fresh_next_id = adjacent_fresh_next_id_binding(context.program, statement);
@@ -259,6 +268,7 @@ fn check_block_types_with_read_scope(
 
 /// Type-check one statement, recursing into nested blocks and recording the type
 /// of any binding it introduces.
+#[allow(clippy::too_many_arguments)]
 fn check_statement_types(
     context: BlockTypeContext<'_>,
     statement: &marrow_syntax::Statement,
@@ -266,6 +276,7 @@ fn check_statement_types(
     const_ints: &mut ConstIntScope,
     diagnostics: &mut Vec<CheckDiagnostic>,
     required_fields: &mut RequiredFieldAssignments,
+    narrowing: &mut Narrowing,
     fresh_next_id: Option<&FreshNextId>,
 ) {
     StatementCheck {
@@ -278,6 +289,7 @@ fn check_statement_types(
         transform_old: context.transform_old,
         diagnostics,
         required_fields,
+        narrowing,
         fresh_next_id,
     }
     .check(statement);
@@ -298,6 +310,7 @@ struct StatementCheck<'a> {
     transform_old: Option<crate::presence::TransformOldReadScope<'a>>,
     diagnostics: &'a mut Vec<CheckDiagnostic>,
     required_fields: &'a mut RequiredFieldAssignments,
+    narrowing: &'a mut Narrowing,
     fresh_next_id: Option<&'a FreshNextId>,
 }
 
@@ -326,7 +339,6 @@ impl StatementCheck<'_> {
                 self.check_return(value.as_ref());
                 self.required_fields.invalidate_all();
             }
-            Statement::ReturnAbsent { .. } => self.required_fields.invalidate_all(),
             Statement::Throw { value, .. } => {
                 self.check_throw(value);
                 self.required_fields.invalidate_all();
@@ -334,6 +346,7 @@ impl StatementCheck<'_> {
             Statement::Expr { value, .. } => {
                 self.infer(value);
                 self.check_range_value(value);
+                self.narrow_invalidate_if_writes_saved(value);
             }
             Statement::If {
                 condition,
@@ -383,10 +396,112 @@ impl StatementCheck<'_> {
             self.file,
             self.diagnostics,
             self.const_ints,
-            self.transform_old,
+            ReadScope::new(self.transform_old, self.narrowing.current()),
         );
         check_entries_value_position(self.file, expr, self.diagnostics);
         ty
+    }
+
+    /// The narrowings a guard condition proves for its then-block (built inline so
+    /// the immutable scope read stays a disjoint field borrow from the later
+    /// mutation of the narrowing state).
+    fn condition_narrowings(
+        &self,
+        condition: &marrow_syntax::Expression,
+    ) -> Vec<crate::presence::ReadTarget> {
+        FlowCtx {
+            program: self.program,
+            file: self.file,
+            type_scope: self.scope,
+            transform_old: self.transform_old,
+        }
+        .condition_narrowings(condition)
+    }
+
+    fn negated_exists_narrowings(
+        &self,
+        condition: &marrow_syntax::Expression,
+    ) -> Vec<crate::presence::ReadTarget> {
+        FlowCtx {
+            program: self.program,
+            file: self.file,
+            type_scope: self.scope,
+            transform_old: self.transform_old,
+        }
+        .negated_exists_narrowings(condition)
+    }
+
+    fn traversal_narrowing(
+        &self,
+        iterable: &marrow_syntax::Expression,
+        binding: &marrow_syntax::ForBinding,
+    ) -> Option<crate::presence::ReadTarget> {
+        FlowCtx {
+            program: self.program,
+            file: self.file,
+            type_scope: self.scope,
+            transform_old: self.transform_old,
+        }
+        .traversal_narrowing(iterable, binding)
+    }
+
+    fn if_const_subject_target(
+        &self,
+        value: &marrow_syntax::Expression,
+    ) -> Option<crate::presence::ReadTarget> {
+        FlowCtx {
+            program: self.program,
+            file: self.file,
+            type_scope: self.scope,
+            transform_old: self.transform_old,
+        }
+        .if_const_subject_target(value)
+    }
+
+    fn expr_writes_saved(&self, expr: &marrow_syntax::Expression) -> bool {
+        FlowCtx {
+            program: self.program,
+            file: self.file,
+            type_scope: self.scope,
+            transform_old: self.transform_old,
+        }
+        .expr_writes_saved(expr)
+    }
+
+    /// Drop any narrowing a write to `target` could have cleared (a reassigned key
+    /// binding, or an overlapping or alias-possible saved write).
+    fn narrow_invalidate_write(&mut self, target: &marrow_syntax::Expression) {
+        let ctx = FlowCtx {
+            program: self.program,
+            file: self.file,
+            type_scope: self.scope,
+            transform_old: self.transform_old,
+        };
+        self.narrowing.invalidate_write(&ctx, target);
+    }
+
+    /// Drop every saved narrowing when an evaluated expression may run a
+    /// field-writing call. Skips the lowering when nothing is narrowed.
+    fn narrow_invalidate_if_writes_saved(&mut self, expr: &marrow_syntax::Expression) {
+        if !self.narrowing.current().is_empty() && self.expr_writes_saved(expr) {
+            self.narrowing.invalidate_saved();
+        }
+    }
+
+    /// Check a guarded block (an `if`/`else if` then-block) under the narrowings its
+    /// condition proves, restoring the pre-guard set — minus anything the block
+    /// invalidated — on exit.
+    fn check_guarded_block(
+        &mut self,
+        condition: Option<&marrow_syntax::Expression>,
+        block: &marrow_syntax::Block,
+    ) {
+        let augment = condition
+            .map(|condition| self.condition_narrowings(condition))
+            .unwrap_or_default();
+        let snapshot = self.narrowing.enter(augment);
+        self.check_inconclusive_block(block);
+        self.narrowing.exit(snapshot);
     }
 
     fn check_block(&mut self, block: &marrow_syntax::Block) {
@@ -403,6 +518,7 @@ impl StatementCheck<'_> {
             self.const_ints,
             self.diagnostics,
             self.required_fields,
+            self.narrowing,
         );
     }
 
@@ -421,6 +537,7 @@ impl StatementCheck<'_> {
             self.const_ints,
             self.diagnostics,
             &mut required_fields,
+            self.narrowing,
         );
     }
 
@@ -474,8 +591,22 @@ impl StatementCheck<'_> {
                 );
             }
         }
+        if annotation.is_none()
+            && matches!(value_type, MarrowType::Absent)
+            && let Some(value) = value
+        {
+            self.diagnostics.push(CheckDiagnostic::error(
+                CHECK_UNANNOTATED_ABSENT,
+                self.file,
+                value.span(),
+                "a bare `absent` has no element type to infer; annotate the binding's optional type (for example `: string?`)",
+            ));
+        }
         if value.is_none() {
             self.check_uninitialized_binding(statement, annotation);
+        }
+        if let Some(value) = value {
+            self.narrow_invalidate_if_writes_saved(value);
         }
         self.bind_local(statement);
     }
@@ -543,6 +674,14 @@ impl StatementCheck<'_> {
             .is_some_and(|checked| checked.saved_place().is_some())
     }
 
+    /// Whether `target` addresses a clearable saved place — a sparse field or keyed
+    /// leaf — so its write target presents as `Optional` (present-or-clear).
+    fn target_is_clearable_saved_place(&self, target: &marrow_syntax::Expression) -> bool {
+        lower_expr_for_file(self.program, self.file, target, self.scope).is_some_and(|checked| {
+            SavedPlaceResolver::new(self.program).write_target_clearable(&checked)
+        })
+    }
+
     fn reject_saved_collection_materialization(&mut self, value: &marrow_syntax::Expression) {
         // A combinator-wrapped saved traversal (`entries(^books)`) already carries a more
         // precise `collection_unsupported` at this span from the combinator-position rule.
@@ -565,7 +704,7 @@ impl StatementCheck<'_> {
             self.scope,
             self.aliases,
             self.file,
-            self.transform_old,
+            ReadScope::new(self.transform_old, self.narrowing.current()),
         ) {
             self.required_fields
                 .bind_statement(self.program, statement, &name, &ty);
@@ -597,12 +736,171 @@ impl StatementCheck<'_> {
         frame: HashMap<String, MarrowType>,
         body: &marrow_syntax::Block,
     ) {
+        self.check_block_under_frame_narrowed(frame, Vec::new(), body);
+    }
+
+    /// Check `body` under a scope frame binding the loop or catch variables, and a
+    /// narrowing scope: `augment` is re-imposed at the body header (a loop traversal),
+    /// and any narrowing the body clears is dropped on exit so a post-body read
+    /// re-triggers the one rule.
+    fn check_block_under_frame_narrowed(
+        &mut self,
+        frame: HashMap<String, MarrowType>,
+        augment: Vec<crate::presence::ReadTarget>,
+        body: &marrow_syntax::Block,
+    ) {
         let masked = frame.keys().map(|name| (name.clone(), None)).collect();
         self.scope.push(frame);
         self.const_ints.push(masked);
+        let snapshot = self.narrowing.enter(augment);
         self.check_inconclusive_block(body);
+        self.narrowing.exit(snapshot);
         self.const_ints.pop();
         self.scope.pop();
+    }
+
+    /// Check a `for` loop body with the iterated-entry traversal narrowing imposed
+    /// for the body. The traversal target is resolved after the loop binding enters
+    /// scope, so a read keyed on the binding matches the narrowed place.
+    fn check_for_loop_body(
+        &mut self,
+        frame: HashMap<String, MarrowType>,
+        binding: &marrow_syntax::ForBinding,
+        iterable: &marrow_syntax::Expression,
+        body: &marrow_syntax::Block,
+    ) {
+        let masked: HashMap<String, Option<i64>> =
+            frame.keys().map(|name| (name.clone(), None)).collect();
+        self.scope.push(frame);
+        self.const_ints.push(masked);
+        let augment = self
+            .traversal_narrowing(iterable, binding)
+            .into_iter()
+            .collect();
+        let snapshot = self.narrowing.enter(augment);
+        self.rewiden_loop_header(body);
+        self.check_inconclusive_block(body);
+        self.narrowing.exit(snapshot);
+        self.const_ints.pop();
+        self.scope.pop();
+    }
+
+    /// Re-impose the one rule at a loop header before the body is typed. The forward
+    /// pass already widens a narrowing *after* a write within one iteration, but a loop
+    /// also carries iteration one's write back to iteration two's textually-earlier
+    /// read, so a place the body can clear anywhere must read as `Optional` at the
+    /// header. Invalidation only removes from the narrowed set, so gathering the body's
+    /// whole write footprint up front yields the loop fixpoint in a single typing pass.
+    fn rewiden_loop_header(&mut self, body: &marrow_syntax::Block) {
+        self.invalidate_block_writes(body);
+    }
+
+    fn invalidate_block_writes(&mut self, block: &marrow_syntax::Block) {
+        for statement in &block.statements {
+            self.invalidate_statement_writes(statement);
+        }
+    }
+
+    /// Drop every narrowing a statement (and its nested blocks) could clear, mirroring
+    /// the per-statement invalidation the forward pass applies: a write target, a
+    /// field-writing call, a delete, or a match arm.
+    fn invalidate_statement_writes(&mut self, statement: &marrow_syntax::Statement) {
+        use marrow_syntax::Statement;
+        match statement {
+            Statement::Const { value, .. }
+            | Statement::Throw { value, .. }
+            | Statement::Expr { value, .. } => self.narrow_invalidate_if_writes_saved(value),
+            Statement::Var { value, .. } | Statement::Return { value, .. } => {
+                if let Some(value) = value {
+                    self.narrow_invalidate_if_writes_saved(value);
+                }
+            }
+            Statement::Assign { target, value, .. }
+            | Statement::CompoundAssign { target, value, .. } => {
+                self.narrow_invalidate_if_writes_saved(value);
+                self.narrow_invalidate_write(target);
+            }
+            Statement::Delete { path, .. } => self.narrow_invalidate_write(path),
+            Statement::If {
+                condition,
+                then_block,
+                else_ifs,
+                else_block,
+                ..
+            } => {
+                if let Some(condition) = condition {
+                    self.narrow_invalidate_if_writes_saved(condition);
+                }
+                self.invalidate_conditional_writes(then_block, else_ifs, else_block.as_ref());
+            }
+            Statement::IfConst {
+                value,
+                then_block,
+                else_ifs,
+                else_block,
+                ..
+            } => {
+                self.narrow_invalidate_if_writes_saved(value);
+                self.invalidate_conditional_writes(then_block, else_ifs, else_block.as_ref());
+            }
+            Statement::While {
+                condition, body, ..
+            } => {
+                if let Some(condition) = condition {
+                    self.narrow_invalidate_if_writes_saved(condition);
+                }
+                self.invalidate_block_writes(body);
+            }
+            Statement::For {
+                iterable,
+                step,
+                body,
+                ..
+            } => {
+                self.narrow_invalidate_if_writes_saved(iterable);
+                if let Some(step) = step {
+                    self.narrow_invalidate_if_writes_saved(step);
+                }
+                self.invalidate_block_writes(body);
+            }
+            Statement::Transaction { body, .. } => self.invalidate_block_writes(body),
+            Statement::Try { body, catch, .. } => {
+                self.invalidate_block_writes(body);
+                if let Some(catch) = catch {
+                    self.invalidate_block_writes(&catch.block);
+                }
+            }
+            Statement::Match {
+                scrutinee, arms, ..
+            } => {
+                if let Some(scrutinee) = scrutinee {
+                    self.narrow_invalidate_if_writes_saved(scrutinee);
+                }
+                self.narrowing.invalidate_saved();
+                for arm in arms {
+                    self.invalidate_block_writes(&arm.block);
+                }
+            }
+            Statement::Break { .. } | Statement::Continue { .. } => {}
+        }
+    }
+
+    fn invalidate_conditional_writes(
+        &mut self,
+        then_block: &marrow_syntax::Block,
+        else_ifs: &[marrow_syntax::ElseIf],
+        else_block: Option<&marrow_syntax::Block>,
+    ) {
+        self.invalidate_block_writes(then_block);
+        for else_if in else_ifs {
+            if let Some(condition) = &else_if.condition {
+                self.narrow_invalidate_if_writes_saved(condition);
+            }
+            self.invalidate_block_writes(&else_if.block);
+        }
+        if let Some(else_block) = else_block {
+            self.invalidate_block_writes(else_block);
+        }
     }
 
     fn check_assignment_statement(
@@ -618,8 +916,17 @@ impl StatementCheck<'_> {
             self.aliases,
             self.file,
             self.diagnostics,
-            self.transform_old,
+            ReadScope::new(self.transform_old, self.narrowing.current()),
         );
+        // A clearable saved place — a sparse field or keyed leaf — presents as
+        // `Optional` so `absent` and a `T?` value write through present-or-clear, while
+        // a present `T` still widens in. A required field or positional element keeps
+        // its bare `T` and rejects an unresolved `T?` (the one rule).
+        let target_type = if self.target_is_clearable_saved_place(target) {
+            MarrowType::optional(target_type)
+        } else {
+            target_type
+        };
         let value_type = self.infer(value);
         self.check_range_value(value);
         // Assigning a saved collection to a local target launders the same
@@ -655,7 +962,7 @@ impl StatementCheck<'_> {
             self.scope,
             self.aliases,
             self.file,
-            self.transform_old,
+            ReadScope::new(self.transform_old, self.narrowing.current()),
         ) {
             super::calls::check_error_code_literal(
                 value,
@@ -664,6 +971,8 @@ impl StatementCheck<'_> {
                 self.diagnostics,
             );
         }
+        self.narrow_invalidate_if_writes_saved(value);
+        self.narrow_invalidate_write(target);
         self.required_fields.assign_target(target);
     }
 
@@ -682,12 +991,27 @@ impl StatementCheck<'_> {
             self.aliases,
             self.file,
             self.diagnostics,
-            self.transform_old,
+            ReadScope::new(self.transform_old, self.narrowing.current()),
         );
         let left_type = self.infer(target);
         let right_type = self.infer(value);
         self.check_range_value(value);
         self.check_assignment_target(target);
+        // The target is read above (consulting narrowing) before it is written, so
+        // invalidate after the read and before any later statement.
+        self.narrow_invalidate_if_writes_saved(value);
+        self.narrow_invalidate_write(target);
+        // A compound assignment reads the target before combining it, so a
+        // maybe-present target must be resolved first — the one rule on the read.
+        if is_optional_value(&left_type) {
+            self.diagnostics
+                .push(crate::typerules::unresolved_optional_diagnostic(
+                    self.file,
+                    target.span(),
+                ));
+            self.required_fields.assign_target(target);
+            return;
+        }
         let computed_type = check_binary(
             op.binary(),
             &left_type,
@@ -841,7 +1165,7 @@ impl StatementCheck<'_> {
             self.aliases,
             self.file,
             self.diagnostics,
-            self.transform_old,
+            ReadScope::new(self.transform_old, self.narrowing.current()),
         );
         check_entries_value_position(self.file, path, self.diagnostics);
         if is_saved_index_branch_path(self.program, path, self.scope, self.file) {
@@ -874,6 +1198,7 @@ impl StatementCheck<'_> {
                 "a delete addresses a saved path or a local collection entry; this is neither a deletable place",
             ));
         }
+        self.narrow_invalidate_write(path);
     }
 
     /// Whether `path` names a place a delete can remove: a saved path (a record, a
@@ -922,6 +1247,7 @@ impl StatementCheck<'_> {
                 &value_type,
                 self.diagnostics,
             );
+            self.narrow_invalidate_if_writes_saved(value);
         }
     }
 
@@ -929,6 +1255,7 @@ impl StatementCheck<'_> {
         let value_type = self.infer(value);
         self.check_range_value(value);
         check_throw_type(self.file, value.span(), &value_type, self.diagnostics);
+        self.narrow_invalidate_if_writes_saved(value);
     }
 
     fn check_condition_expr(&mut self, condition: &marrow_syntax::Expression) {
@@ -939,7 +1266,7 @@ impl StatementCheck<'_> {
             self.scope,
             self.const_ints,
             self.aliases,
-            self.transform_old,
+            ReadScope::new(self.transform_old, self.narrowing.current()),
             self.diagnostics,
         );
         self.check_range_value(condition);
@@ -955,16 +1282,28 @@ impl StatementCheck<'_> {
     ) {
         if let Some(condition) = condition {
             self.check_condition_expr(condition);
+            self.narrow_invalidate_if_writes_saved(condition);
         }
-        self.check_inconclusive_block(then_block);
+        self.check_guarded_block(condition, then_block);
         for else_if in else_ifs {
             if let Some(condition) = &else_if.condition {
                 self.check_condition_expr(condition);
+                self.narrow_invalidate_if_writes_saved(condition);
             }
-            self.check_inconclusive_block(&else_if.block);
+            self.check_guarded_block(else_if.condition.as_ref(), &else_if.block);
         }
         if let Some(block) = else_block {
             self.check_inconclusive_block(block);
+        }
+        // A fall-through-preventing `if not exists(place)` proves the place present
+        // for the statements that follow the guard.
+        if else_ifs.is_empty()
+            && else_block.is_none()
+            && block_prevents_fallthrough(then_block)
+            && let Some(condition) = condition
+        {
+            let narrowings = self.negated_exists_narrowings(condition);
+            self.narrowing.add(narrowings);
         }
         self.required_fields.invalidate_all();
     }
@@ -986,12 +1325,13 @@ impl StatementCheck<'_> {
         let else_block = else_block.as_ref();
         let value_type = self.infer(value);
         self.check_range_value(value);
-        self.check_if_const_value(value);
-        // A written annotation carries the same contract as on `const`/`var`: it
-        // must name the saved read's type. An unresolvable name is a
-        // `check.unknown_type` and a disagreeing type a `check.assignment_type`;
-        // the annotation then types the binding so the then-block sees the written
-        // type rather than the read's inferred one.
+        self.require_optional_if_const_subject(value, &value_type);
+        // `if const` binds the present arm of the maybe-present subject: one optional
+        // layer is stripped, so the then-block sees `T` for a subject typed `T?`.
+        let present_type = value_type.without_optional();
+        // A written annotation names the bound (present) type, like the type on a
+        // `const`/`var`: an unresolvable name is a `check.unknown_type` and a
+        // disagreeing type a `check.assignment_type`, and it then types the binding.
         let binding_type = match annotation {
             Some(annotation) => {
                 let annotated_type = resolve_diagnosed_annotation_type(
@@ -1004,21 +1344,26 @@ impl StatementCheck<'_> {
                     self.file,
                     value.span(),
                     &annotated_type,
-                    &value_type,
+                    &present_type,
                     self.diagnostics,
                 );
                 annotated_type
             }
-            None => value_type,
+            None => present_type,
         };
+        // `if const name = place` proves `place` itself present in the then-block, so
+        // a re-read of the same saved place there reads as bare `T`.
+        let augment = self.if_const_subject_target(value).into_iter().collect();
+        self.narrow_invalidate_if_writes_saved(value);
         let mut frame = HashMap::new();
         frame.insert(name.to_string(), binding_type);
-        self.check_block_under_frame(frame, then_block);
+        self.check_block_under_frame_narrowed(frame, augment, then_block);
         for else_if in else_ifs {
             if let Some(condition) = &else_if.condition {
                 self.check_condition_expr(condition);
+                self.narrow_invalidate_if_writes_saved(condition);
             }
-            self.check_inconclusive_block(&else_if.block);
+            self.check_guarded_block(else_if.condition.as_ref(), &else_if.block);
         }
         if let Some(block) = else_block {
             self.check_inconclusive_block(block);
@@ -1026,30 +1371,27 @@ impl StatementCheck<'_> {
         self.required_fields.invalidate_all();
     }
 
-    fn check_if_const_value(&mut self, value: &marrow_syntax::Expression) {
-        let Some(value) = lower_expr_for_file(self.program, self.file, value, self.scope) else {
+    /// `if const` binds the present arm of a maybe-present subject, so the subject
+    /// must type to `Optional(T)` (or the empty `absent`). A definitely-present value
+    /// has nothing to bind conditionally; an unresolved or poisoned subject defers so
+    /// its own diagnostic owns the mistake.
+    fn require_optional_if_const_subject(
+        &mut self,
+        value: &marrow_syntax::Expression,
+        value_type: &MarrowType,
+    ) {
+        // A poisoned subject already reported its fault; an optional one is exactly
+        // what `if const` binds. Anything else — a definite value, a collection, an
+        // unresolved name — has no single maybe-present value to bind.
+        if is_optional_value(value_type) || matches!(value_type, MarrowType::Invalid) {
             return;
-        };
-        if !crate::presence::bindable_saved_value_read_in_type_scope(
-            self.program,
-            &value,
-            self.scope,
-            self.transform_old,
-        ) {
-            // A partial-key composite layer is the precise root cause when it is the
-            // subject: the type pass already recorded `check.layer_not_value` on this
-            // span, so the generic "requires a saved value read" message would only
-            // stack a second diagnostic on the same mistake.
-            if has_layer_not_value(self.diagnostics, self.file, value.span()) {
-                return;
-            }
-            self.diagnostics.push(CheckDiagnostic::error(
-                CHECK_CONDITION_TYPE,
-                self.file,
-                value.span(),
-                "`if const` requires a saved value read such as `^root(id).field` or `^singleton`",
-            ));
         }
+        self.diagnostics.push(CheckDiagnostic::error(
+            CHECK_CONDITION_TYPE,
+            self.file,
+            value.span(),
+            "`if const` requires a maybe-present value to bind, such as a sparse field, a positional or keyed read, a neighbor, a local `T?` binding, or a `T?` call",
+        ));
     }
 
     fn check_while(
@@ -1059,8 +1401,12 @@ impl StatementCheck<'_> {
     ) {
         if let Some(condition) = condition {
             self.check_condition_expr(condition);
+            self.narrow_invalidate_if_writes_saved(condition);
         }
+        let snapshot = self.narrowing.enter(Vec::new());
+        self.rewiden_loop_header(body);
         self.check_inconclusive_block(body);
+        self.narrowing.exit(snapshot);
         self.required_fields.invalidate_all();
     }
 
@@ -1094,7 +1440,7 @@ impl StatementCheck<'_> {
             self.required_fields.invalidate_all();
             return;
         }
-        infer_collection_subject_type_with_read_scope(
+        let subject_type = infer_collection_subject_type_with_read_scope(
             self.program,
             iterable,
             self.scope,
@@ -1102,8 +1448,30 @@ impl StatementCheck<'_> {
             self.aliases,
             self.file,
             self.diagnostics,
-            self.transform_old,
+            ReadScope::new(self.transform_old, self.narrowing.current()),
         );
+        // A maybe-present collection (`sequence[T]?`) must be resolved before it is
+        // iterated; the one rule owns it before the iterable-shape gates so the message
+        // names the four resolution forms. The body still checks under the bound frame so
+        // a body mistake is not masked by the unresolved iterable.
+        if is_optional_value(&subject_type) {
+            self.diagnostics
+                .push(crate::typerules::unresolved_optional_diagnostic(
+                    self.file,
+                    iterable.span(),
+                ));
+            let frame = for_frame(
+                self.program,
+                binding,
+                iterable,
+                self.scope,
+                self.aliases,
+                self.file,
+            );
+            self.check_block_under_frame(frame, body);
+            self.required_fields.invalidate_all();
+            return;
+        }
         check_for_entries_support(
             self.program,
             self.file,
@@ -1156,7 +1524,7 @@ impl StatementCheck<'_> {
             self.aliases,
             self.file,
         );
-        self.check_block_under_frame(frame, body);
+        self.check_for_loop_body(frame, binding, iterable, body);
         self.required_fields.invalidate_all();
     }
 
@@ -1165,7 +1533,11 @@ impl StatementCheck<'_> {
         body: &marrow_syntax::Block,
         catch: Option<&marrow_syntax::CatchClause>,
     ) {
+        // A try body may not run to completion, so its narrowings do not survive; a
+        // place it clears is dropped for the catch and the code after.
+        let snapshot = self.narrowing.enter(Vec::new());
         self.check_inconclusive_block(body);
+        self.narrowing.exit(snapshot);
         if let Some(clause) = catch {
             self.check_block_under_frame(catch_frame(clause), &clause.block);
         }
@@ -1194,6 +1566,9 @@ impl StatementCheck<'_> {
             aliases: self.aliases,
             diagnostics: self.diagnostics,
         });
+        // A match arm is checked outside the narrowing flow, so conservatively drop
+        // every saved narrowing in case an arm cleared a proven place.
+        self.narrowing.invalidate_saved();
         self.required_fields.invalidate_all();
     }
 
@@ -1205,6 +1580,64 @@ impl StatementCheck<'_> {
             &|expr| allowed_saved_key_range_value_context(program, expr, scope, file),
             self.diagnostics,
         );
+    }
+}
+
+/// Whether `block` cannot fall through to the statement after it, so a guard whose
+/// then-block ends here proves its negated condition for the code that follows.
+fn block_prevents_fallthrough(block: &marrow_syntax::Block) -> bool {
+    block
+        .statements
+        .last()
+        .is_some_and(statement_prevents_fallthrough)
+}
+
+fn statement_prevents_fallthrough(statement: &marrow_syntax::Statement) -> bool {
+    use marrow_syntax::Statement;
+    match statement {
+        Statement::Return { .. }
+        | Statement::Throw { .. }
+        | Statement::Break { .. }
+        | Statement::Continue { .. } => true,
+        Statement::If {
+            then_block,
+            else_ifs,
+            else_block,
+            ..
+        }
+        | Statement::IfConst {
+            then_block,
+            else_ifs,
+            else_block,
+            ..
+        } => else_block.as_ref().is_some_and(|else_block| {
+            block_prevents_fallthrough(then_block)
+                && else_ifs
+                    .iter()
+                    .all(|else_if| block_prevents_fallthrough(&else_if.block))
+                && block_prevents_fallthrough(else_block)
+        }),
+        Statement::Transaction { body, .. } => block_prevents_fallthrough(body),
+        Statement::Try { body, catch, .. } => {
+            block_prevents_fallthrough(body)
+                && catch
+                    .as_ref()
+                    .is_none_or(|clause| block_prevents_fallthrough(&clause.block))
+        }
+        Statement::Match { arms, .. } => {
+            !arms.is_empty()
+                && arms
+                    .iter()
+                    .all(|arm| block_prevents_fallthrough(&arm.block))
+        }
+        Statement::Const { .. }
+        | Statement::Var { .. }
+        | Statement::Assign { .. }
+        | Statement::CompoundAssign { .. }
+        | Statement::Delete { .. }
+        | Statement::Expr { .. }
+        | Statement::While { .. }
+        | Statement::For { .. } => false,
     }
 }
 
@@ -1492,7 +1925,7 @@ fn target_arg_types(
                 check.file,
                 &mut diagnostics,
                 &[],
-                check.transform_old,
+                ReadScope::transform(check.transform_old),
             )
         })
         .collect()
@@ -1537,14 +1970,6 @@ fn has_invalid_assign_target(
 ) -> bool {
     diagnostics.iter().any(|diagnostic| {
         diagnostic.code == crate::rules::CHECK_INVALID_ASSIGN_TARGET
-            && diagnostic.file == file
-            && diagnostic.span == span
-    })
-}
-
-fn has_layer_not_value(diagnostics: &[CheckDiagnostic], file: &Path, span: SourceSpan) -> bool {
-    diagnostics.iter().any(|diagnostic| {
-        diagnostic.code == CHECK_LAYER_NOT_VALUE
             && diagnostic.file == file
             && diagnostic.span == span
     })

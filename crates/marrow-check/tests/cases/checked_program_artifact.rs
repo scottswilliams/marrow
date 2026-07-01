@@ -3,7 +3,6 @@ use crate::support;
 use marrow_check::CheckedProgram;
 use marrow_check::{MarrowType, check_project, check_tests_program};
 use marrow_project::parse_config;
-use marrow_schema::ReturnPresence;
 use marrow_store::value::ScalarType;
 
 use support::{config, temp_project, write};
@@ -163,13 +162,13 @@ fn checked_functions_do_not_carry_source_bodies() {
 }
 
 #[test]
-fn function_descriptors_preserve_return_presence() {
+fn function_descriptors_carry_optional_return_types() {
     let root = temp_project("program-return-presence", |root| {
         write(
             root,
             "src/app.mw",
             "module app\n\
-             pub fn maybe_title(): maybe string\n\
+             pub fn maybe_title(): string?\n\
              \x20   return absent\n\n\
              pub fn title(): string\n\
              \x20   return \"present\"\n\n\
@@ -197,9 +196,9 @@ fn function_descriptors_preserve_return_presence() {
         .find(|function| function.name == "log")
         .expect("log function");
 
-    assert_eq!(maybe.return_presence, ReturnPresence::MaybePresent);
-    assert_eq!(title.return_presence, ReturnPresence::Always);
-    assert_eq!(log.return_presence, ReturnPresence::Always);
+    assert!(maybe.returns_maybe_present(), "{maybe:#?}");
+    assert!(!title.returns_maybe_present(), "{title:#?}");
+    assert!(!log.returns_maybe_present(), "{log:#?}");
     assert!(maybe.return_type.is_some(), "{maybe:#?}");
     assert!(title.return_type.is_some(), "{title:#?}");
     assert!(log.return_type.is_none(), "{log:#?}");
@@ -222,9 +221,9 @@ fn function_descriptors_preserve_return_presence() {
         .find(|function| function.name == "log")
         .expect("runtime log function");
 
-    assert_eq!(runtime_maybe.return_presence, ReturnPresence::MaybePresent);
-    assert_eq!(runtime_title.return_presence, ReturnPresence::Always);
-    assert_eq!(runtime_log.return_presence, ReturnPresence::Always);
+    assert!(runtime_maybe.returns_maybe_present(), "{runtime_maybe:#?}");
+    assert!(!runtime_title.returns_maybe_present(), "{runtime_title:#?}");
+    assert!(!runtime_log.returns_maybe_present(), "{runtime_log:#?}");
     assert!(runtime_log.return_type.is_none(), "{runtime_log:#?}");
 }
 

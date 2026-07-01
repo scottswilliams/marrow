@@ -940,7 +940,7 @@ impl<'p> IndexBuilder<'p> {
         schema_type: &SchemaType,
     ) {
         match schema_type {
-            SchemaType::Sequence(element) => {
+            SchemaType::Sequence(element) | SchemaType::Optional(element) => {
                 self.collect_type_module_alias_use(file, source, ty, element);
             }
             SchemaType::Named(name) => {
@@ -1004,7 +1004,7 @@ impl<'p> IndexBuilder<'p> {
         schema_type: &SchemaType,
     ) {
         match schema_type {
-            SchemaType::Sequence(element) => {
+            SchemaType::Sequence(element) | SchemaType::Optional(element) => {
                 self.collect_resource_schema_type_ref(file, source, aliases, module, ty, element);
             }
             SchemaType::Identity(_) => {}
@@ -1124,7 +1124,6 @@ impl UseWalker<'_, '_> {
                     self.walk_expr(value, scope, type_scope);
                 }
             }
-            Statement::ReturnAbsent { .. } => {}
             Statement::Throw { value, .. } | Statement::Expr { value, .. } => {
                 self.walk_expr(value, scope, type_scope);
             }
@@ -1389,8 +1388,9 @@ impl UseWalker<'_, '_> {
             }
             // A bare saved root resolves only as part of a larger saved-path
             // expression; resolution happens in the enclosing Call/Field arm
-            // where the chain is known.
-            Expression::SavedRoot { .. } => {}
+            // where the chain is known. `absent` is a leaf primary value with no
+            // name to attribute.
+            Expression::SavedRoot { .. } | Expression::Absent { .. } => {}
             Expression::Unary { operand, .. } => self.walk_expr(operand, scope, type_scope),
             Expression::Binary { left, right, .. } => {
                 self.walk_expr(left, scope, type_scope);

@@ -5,7 +5,7 @@ use marrow_syntax::SourceSpan;
 
 use crate::collection::Direction;
 use crate::env::Env;
-use crate::error::{RUN_ABSENT, RUN_TYPE, RuntimeError, raise_fault, unsupported};
+use crate::error::{RUN_TYPE, RuntimeError, unsupported};
 use crate::path::{Terminal, direct_root_place, lower_for_probe};
 use crate::read::{
     first_data_child, first_record_child, next_data_child, next_record_child,
@@ -50,18 +50,9 @@ pub(crate) fn eval_neighbor(
                 saved_key_to_value(key, span)
             }
         },
-        None => {
-            let edge = if dir == Direction::Ascending {
-                "after"
-            } else {
-                "before"
-            };
-            Err(raise_fault(
-                RUN_ABSENT,
-                format!("no element {edge} this position in its layer"),
-                span,
-            ))
-        }
+        // A layer edge has no neighbor: the read yields the empty optional, resolved
+        // at the read site like any other maybe-present read.
+        None => Ok(Value::Absent),
     }
 }
 

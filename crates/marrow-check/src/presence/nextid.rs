@@ -277,9 +277,7 @@ impl<'a> Guard<'a> {
                 let mut blocks = arms.iter().map(|arm| &arm.block);
                 self.walk_branch_arms(&mut blocks, scope);
             }
-            CheckedStmt::ReturnAbsent { .. }
-            | CheckedStmt::Break { .. }
-            | CheckedStmt::Continue { .. } => {}
+            CheckedStmt::Break { .. } | CheckedStmt::Continue { .. } => {}
         }
     }
 
@@ -407,7 +405,8 @@ impl<'a> Guard<'a> {
             }
             CheckedExpr::Literal { .. }
             | CheckedExpr::Name { .. }
-            | CheckedExpr::SavedRoot { .. } => {}
+            | CheckedExpr::SavedRoot { .. }
+            | CheckedExpr::Absent { .. } => {}
         }
     }
 

@@ -65,8 +65,18 @@ nothing to orphan, reshapes freely.
 ## Sparse And Required Fields
 
 A sparse field is a source change. Add the field and ship it; existing records
-remain valid. An unpopulated sparse field is absent, not zero or empty. Read it
-with `path ?? default` or guard it with `exists(path)`.
+remain valid. An unpopulated sparse field is absent, not zero or empty. The
+storage spelling is sparse↔required, keyed on the `required` flag — a field
+declaration never carries `?`; `?` is only the code-level type a sparse read
+yields (`T?`). Read it with `path ?? default` or guard it with `exists(path)`.
+
+The toggle keys on the `required` flag alone; the leaf type is unchanged either
+way, so a flip is never a retype:
+
+| Source edit | Read-site type | Discharge |
+|---|---|---|
+| sparse `f: T` → `required f: T` | a `T?` read becomes a `T` read | Same as adding a required field: auto-apply fences against a populated store that lacks `f`, and is free against an empty one. |
+| `required f: T` → sparse `f: T` | a `T` read becomes a `T?` read | Intrinsically additive: auto-applies and mutates zero records. |
 
 ```mw
 resource Book
@@ -94,8 +104,8 @@ What Marrow does with an under-populated record:
   exact records that lack it (a Default or Transform obligation).
 - A required field missing from stored data is a fatal data-attachment/corruption
   error, never a catchable branch.
-- A bare (maybe-present) field reads as maybe-present and is resolved at the read
-  site; an unresolved read is a compile error.
+- A sparse field reads as `T?` and is resolved at the read site (`?? default`,
+  `if const`, `exists`, or `?.`); an unresolved read is a compile error.
 - `marrow data integrity` verifies stored value encodings, identity referents,
   required fields, and orphaned paths.
 

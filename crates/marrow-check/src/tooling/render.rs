@@ -65,6 +65,8 @@ pub fn render_marrow_type(ty: &MarrowType) -> String {
         MarrowType::Enum { module, name } => format!("{module}::{name}"),
         MarrowType::Sequence(element) => format!("sequence[{}]", render_marrow_type(element)),
         MarrowType::LocalTree { value, .. } => format!("tree[{}]", render_marrow_type(value)),
+        MarrowType::Optional(inner) => format!("{}?", render_marrow_type(inner)),
+        MarrowType::Absent => "absent".to_string(),
         MarrowType::Invalid | MarrowType::Unknown => "unknown".to_string(),
     }
 }

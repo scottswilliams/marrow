@@ -1,7 +1,6 @@
 use crate::support;
 use marrow_check::{CheckedFunctionRef, EntryStoreOpenMode, check_project_with_catalog};
 use marrow_run::Value;
-use marrow_schema::ReturnPresence;
 use marrow_store::tree::TreeStore;
 
 use support::{TempDir, run_entry, test_project_config, write_temp_source};
@@ -20,7 +19,6 @@ fn function_ref(
     CheckedFunctionRef {
         module: fact.module.0,
         function: fact.source_index,
-        presence: ReturnPresence::Always,
     }
 }
 

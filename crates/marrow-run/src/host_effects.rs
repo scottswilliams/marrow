@@ -117,9 +117,9 @@ pub(crate) fn eval_context(
     } else {
         context.idempotency_key()
     };
-    value
-        .map(|value| Value::Str(value.to_string()))
-        .ok_or_else(|| raise_fault(RUN_ABSENT, format!("context `{op}` is absent"), span))
+    // A context field the host did not supply reads as the empty optional, resolved
+    // at the read site; only a missing *required* env var is a catchable fault.
+    Ok(value.map_or(Value::Absent, |value| Value::Str(value.to_string())))
 }
 
 pub(crate) fn eval_log(

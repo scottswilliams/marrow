@@ -9,7 +9,6 @@ use marrow_syntax::SourceSpan;
 
 use crate::env::{Env, TraversedLayer};
 use crate::error::{RuntimeError, unsupported};
-use crate::expr::eval_expr;
 use crate::index_maintenance::IndexWriteContext;
 use crate::path::{KeyRole, SavedPath, lower, lower_keys};
 use crate::statement::coerce_error_code_value;
@@ -20,23 +19,6 @@ use crate::write::{
     validate_required_fields_after_group_write,
 };
 use crate::write_dispatch::{created_required_paths_for_value, resource_value_of};
-
-pub(crate) fn eval_group_entry_write(
-    target: &ExecExpr,
-    value: &ExecExpr,
-    span: SourceSpan,
-    env: &mut Env<'_>,
-) -> Result<(), RuntimeError> {
-    let (owned, keys) = resolve_group_entry_target(target, span, env)?;
-    let target = owned.as_target();
-    if let Some(leaf) = &target.layer_facts.leaf {
-        let value = eval_expr(value, env)?;
-        return write_layer_leaf(&target, keys, leaf, value, env);
-    }
-
-    let value = eval_expr(value, env)?;
-    write_direct_group_entry(&target, keys, value, env)
-}
 
 pub(crate) fn eval_group_entry_write_value(
     target: &ExecExpr,

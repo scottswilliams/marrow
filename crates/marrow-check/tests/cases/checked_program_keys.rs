@@ -169,14 +169,9 @@ fn explicit_identity_constructor_typechecks_against_store_keys() {
              \x20   return Id(^books, \"book-17\")\n",
         );
     });
-    let (report, program) = check_project(&root, &config()).expect("check");
+    let (report, _program) = check_project(&root, &config()).expect("check");
 
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
-    assert!(
-        program.facts.presence_proofs().is_empty(),
-        "{:#?}",
-        program.facts.presence_proofs()
-    );
 }
 
 #[test]

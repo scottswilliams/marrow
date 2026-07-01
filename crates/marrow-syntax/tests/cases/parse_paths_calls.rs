@@ -124,9 +124,11 @@ fn parses_calls_paths_and_field_access() {
 }
 
 #[test]
-fn absent_can_be_a_qualified_call_path_segment() {
+fn absent_is_a_value_keyword_not_a_path_segment() {
+    // `absent` is the empty-optional primary value, so it cannot also stand as a
+    // `::` path segment.
     let parsed = parse_source("fn f()\n    std::assert::absent(^books(1))\n");
-    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    assert!(parsed.has_errors(), "{:#?}", parsed.diagnostics);
 }
 
 #[test]

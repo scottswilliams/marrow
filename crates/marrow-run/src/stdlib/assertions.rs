@@ -3,7 +3,7 @@ use marrow_syntax::SourceSpan;
 
 use crate::env::Env;
 use crate::error::{RUN_ASSERT, RuntimeError, raise_fault, type_error, unsupported};
-use crate::expr::eval_expr;
+use crate::expr::{eval_expr, eval_optional};
 use crate::path::saved_path_present;
 use crate::value::{Value, diagnostic_value_preview};
 
@@ -16,7 +16,7 @@ pub(crate) fn eval_assert(
     match op {
         "isTrue" | "isFalse" => eval_bool_assert(op, args, span, env),
         "equal" => eval_equal_assert(args, span, env),
-        "absent" => eval_absent_assert(args, span, env),
+        "isAbsent" => eval_absent_assert(args, span, env),
         "fail" => eval_fail_assert(args, span, env),
         other => Err(unsupported(&format!("std::assert::{other}"), span)),
     }
@@ -83,12 +83,23 @@ fn eval_absent_assert(
     env: &mut Env<'_>,
 ) -> Result<Option<Value>, RuntimeError> {
     let [arg] = args else {
-        return Err(type_error("`std::assert::absent` takes one path", span));
+        return Err(type_error(
+            "`std::assert::isAbsent` takes one optional value",
+            span,
+        ));
     };
-    if saved_path_present(&arg.value, span, env)? {
+    // Mirror `exists`: a saved path resolves its own presence, and any other optional
+    // value — a local, a positional read, a stdlib `T?` result, a neighbor — resolves
+    // to its `Option<Value>`.
+    let present = if arg.value.saved_place().is_some() {
+        saved_path_present(&arg.value, span, env)?
+    } else {
+        eval_optional(&arg.value, env)?.is_some()
+    };
+    if present {
         return Err(raise_fault(
             RUN_ASSERT,
-            "assertion failed: expected the path to be absent".into(),
+            "assertion failed: expected the value to be absent".into(),
             span,
         ));
     }

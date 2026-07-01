@@ -66,7 +66,9 @@ pub(crate) fn annotation_unknown_identity_name(
             Some(format!("Id(^{identity})"))
         }
         Type::Identity(_) => None,
-        Type::Sequence(element) => annotation_unknown_identity_name(element, program),
+        Type::Sequence(element) | Type::Optional(element) => {
+            annotation_unknown_identity_name(element, program)
+        }
         Type::Scalar(_) | Type::Named(_) | Type::Unknown => None,
     }
 }
@@ -300,7 +302,7 @@ pub(crate) fn check_match(input: MatchCheck<'_>) {
                 env.file,
                 env.diagnostics,
                 env.const_ints,
-                None,
+                crate::presence::ReadScope::none(),
             )
         })
         .unwrap_or(MarrowType::Unknown);
@@ -1081,6 +1083,9 @@ fn resolve_resource_annotation_type(
     module_name: &str,
 ) -> Option<ResolvedResourceAnnotation> {
     match ty {
+        Type::Optional(inner) => {
+            resolve_resource_annotation_type(inner, program, aliases, module_name)
+        }
         Type::Sequence(element) => {
             resolve_resource_annotation_type(element, program, aliases, module_name)
         }
@@ -1157,6 +1162,10 @@ fn resolve_resource_type_ref_in_module(
     module_name: &str,
 ) -> Option<MarrowType> {
     match ty {
+        Type::Optional(inner) => {
+            resolve_resource_type_ref_in_module(inner, program, aliases, module_name)
+                .map(MarrowType::optional)
+        }
         Type::Sequence(element) => {
             resolve_resource_type_ref_in_module(element, program, aliases, module_name)
                 .map(|element_type| MarrowType::Sequence(Box::new(element_type)))
@@ -1295,6 +1304,15 @@ fn resolve_enum_annotation_type_in_program(
     referencing: Option<&str>,
 ) -> EnumAnnotationResolution {
     match ty {
+        Type::Optional(inner) => {
+            match resolve_enum_annotation_type_in_program(inner, program, aliases, referencing) {
+                EnumAnnotationResolution::Visible(mut resolved) => {
+                    resolved.ty = MarrowType::optional(resolved.ty);
+                    EnumAnnotationResolution::Visible(resolved)
+                }
+                other => other,
+            }
+        }
         Type::Sequence(element) => {
             match resolve_enum_annotation_type_in_program(element, program, aliases, referencing) {
                 EnumAnnotationResolution::Visible(mut resolved) => {

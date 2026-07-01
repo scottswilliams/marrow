@@ -22,6 +22,6 @@ pub fn identityLoopOutput(): string
         if const title = ^books(id).title
             output = output + string(title) + ";"
     for pos in ^books(1).tags
-        if const item = ^books(1).tags(pos)
-            output = output + string(item) + ";"
+        if const t = ^books(1).tags(pos)
+            output = output + string(t) + ";"
     return output

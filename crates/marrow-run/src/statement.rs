@@ -2,21 +2,20 @@
 
 use marrow_check::{
     CheckedBinaryOp as BinaryOp, CheckedBody as ExecBody, CheckedCallTarget, CheckedCatchClause,
-    CheckedElseIf, CheckedExpr as ExecExpr, CheckedStmt as ExecStmt,
+    CheckedElseIf, CheckedExpr as ExecExpr, CheckedStmt as ExecStmt, MarrowType,
 };
 use marrow_schema::Type;
 use marrow_syntax::SourceSpan;
 
-use crate::call::{
-    eval_call, expr_return_absence_can_propagate, expression_absent_at_resolution_site,
-};
+use crate::call::eval_call;
 use crate::call_args::default_value;
-use crate::durable_read::read_saved_value_if_present;
 use crate::env::{Env, Flow};
 use crate::error::{RuntimeError, assign_error, type_error, unsupported};
 use crate::exec::{eval_block, eval_match, local_target};
-use crate::expr::{eval_arithmetic_with_left_value, eval_condition, eval_expr};
-use crate::group_write::{eval_group_entry_write, eval_group_entry_write_value};
+use crate::expr::{
+    eval_arithmetic_with_left_value, eval_condition, eval_expr, eval_into_slot, eval_optional,
+};
+use crate::group_write::eval_group_entry_write_value;
 use crate::host::Frame;
 use crate::local_collection::{
     eval_local_collection_write, eval_local_collection_write_value, resolve_local_collection_target,
@@ -39,12 +38,12 @@ pub(crate) fn eval_statement(
     match statement {
         ExecStmt::Const {
             name,
+            binding_type,
             value,
             coerce_error_code,
             span,
-            ..
         } => {
-            let value = eval_expr(value, env)?;
+            let value = eval_into_slot(value, binding_type.as_ref(), env)?;
             let value = coerce_error_code_value(value, *coerce_error_code, *span)?;
             env.bind(name.clone(), value, false);
             Ok(Flow::Normal)
@@ -53,15 +52,16 @@ pub(crate) fn eval_statement(
             name,
             key_count,
             ty,
+            binding_type,
             resource_default,
             value,
             coerce_error_code,
             span,
-            ..
         } => eval_var(
             name,
             *key_count,
             ty.as_ref(),
+            binding_type.as_ref(),
             *resource_default,
             value.as_ref(),
             *coerce_error_code,
@@ -92,7 +92,6 @@ pub(crate) fn eval_statement(
             Ok(Flow::Normal)
         }
         ExecStmt::Return { value, .. } => eval_return(value.as_ref(), env),
-        ExecStmt::ReturnAbsent { .. } => Ok(Flow::ReturnAbsent),
         ExecStmt::Break { .. } => Ok(Flow::Break),
         ExecStmt::Continue { .. } => Ok(Flow::Continue),
         ExecStmt::Throw { value, span } => eval_throw(value, *span, env),
@@ -171,6 +170,7 @@ fn eval_var(
     name: &str,
     key_count: usize,
     ty: Option<&Type>,
+    binding_type: Option<&MarrowType>,
     resource_default: bool,
     value: Option<&ExecExpr>,
     coerce_error_code: bool,
@@ -186,7 +186,11 @@ fn eval_var(
         return Ok(Flow::Normal);
     }
     let value = match value {
-        Some(expr) => coerce_error_code_value(eval_expr(expr, env)?, coerce_error_code, span)?,
+        Some(expr) => coerce_error_code_value(
+            eval_into_slot(expr, binding_type, env)?,
+            coerce_error_code,
+            span,
+        )?,
         None => match ty {
             Some(Type::Named(_)) if resource_default => Value::Resource(Vec::new()),
             Some(ty) => default_value(ty)
@@ -330,7 +334,12 @@ fn eval_call_assignment(
     if let ExecExpr::Field { base, .. } = callee
         && base.saved_place().is_some()
     {
-        eval_group_entry_write(target, value, span, env)
+        // A saved keyed leaf or group entry is present-or-clear: an absent optional
+        // routes to the entry-delete planner instead of a write.
+        match eval_optional(value, env)? {
+            Some(value) => eval_group_entry_write_value(target, value, span, env),
+            None => eval_delete(target, span, env),
+        }
     } else {
         eval_resource_write(target, value, span, env)
     }
@@ -375,20 +384,7 @@ fn eval_expr_statement(value: &ExecExpr, env: &mut Env<'_>) -> Result<(), Runtim
 
 fn eval_return(value: Option<&ExecExpr>, env: &mut Env<'_>) -> Result<Flow, RuntimeError> {
     let value = match value {
-        Some(expr) if expr.saved_place().is_some() => {
-            match read_saved_value_if_present(expr, expr.span(), env)? {
-                Some(value) => Some(value),
-                None => return Ok(Flow::ReturnAbsent),
-            }
-        }
-        Some(expr) if expr_return_absence_can_propagate(expr) => match eval_expr(expr, env) {
-            Ok(value) => Some(value),
-            Err(error) if expression_absent_at_resolution_site(expr, &error) => {
-                return Ok(Flow::ReturnAbsent);
-            }
-            Err(error) => return Err(error),
-        },
-        Some(expr) => Some(eval_expr(expr, env)?),
+        Some(expr) => eval_optional(expr, env)?,
         None => None,
     };
     Ok(Flow::Return(value))
@@ -417,21 +413,10 @@ fn eval_if_const(
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<Flow, RuntimeError> {
-    if let Some(value) = eval_if_const_value(value, env)? {
+    if let Some(value) = eval_optional(value, env)? {
         return eval_bound_if_const(name, value, then_block, env);
     }
     eval_else_chain(else_ifs, else_block, span, env)
-}
-
-fn eval_if_const_value(value: &ExecExpr, env: &mut Env<'_>) -> Result<Option<Value>, RuntimeError> {
-    if value.saved_place().is_some() {
-        return read_saved_value_if_present(value, value.span(), env);
-    }
-    match eval_expr(value, env) {
-        Ok(value) => Ok(Some(value)),
-        Err(error) if expression_absent_at_resolution_site(value, &error) => Ok(None),
-        Err(error) => Err(error),
-    }
 }
 
 fn eval_bound_if_const(

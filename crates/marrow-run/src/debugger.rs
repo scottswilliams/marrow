@@ -225,6 +225,7 @@ impl DebugValue {
             | Value::Duration(_)
             | Value::Decimal(_)
             | Value::Bytes(_)
+            | Value::Absent
             | Value::Enum(_) => Self::leaf(runtime_value_preview(value)),
         }
     }
@@ -457,6 +458,7 @@ fn runtime_value_preview(value: &Value) -> String {
         | Value::Duration(_)
         | Value::Decimal(_)
         | Value::Bytes(_)
+        | Value::Absent
         | Value::Enum(_)
         | Value::Sequence(_)
         | Value::LocalTree(_) => {

@@ -1,10 +1,30 @@
 use crate::support;
-use marrow_check::{
-    CHECK_BARE_MAYBE_PRESENT_READ, PresenceProofPlace, PresenceProofRead, PresenceProofSource,
-    PresenceProofStatus, check_project,
-};
+use marrow_check::{CHECK_UNRESOLVED_OPTIONAL, check_project};
 
 use support::{config, temp_project, write};
+
+/// Check a single `src/books.mw` module `src` and assert it raises no
+/// unresolved-optional diagnostic: a maybe-present read proven present by flow
+/// narrowing reads as bare `T` through the production pipeline.
+fn assert_no_unresolved_optional(name: &str, src: &str) {
+    let root = temp_project(name, |root| write(root, "src/books.mw", src));
+    let (report, _program) = check_project(&root, &config()).expect("check");
+    assert!(
+        !report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == CHECK_UNRESOLVED_OPTIONAL),
+        "{:#?}",
+        report.diagnostics
+    );
+}
+
+/// Check a single `src/books.mw` module `src` and assert it checks with no errors.
+fn assert_no_errors(name: &str, src: &str) {
+    let root = temp_project(name, |root| write(root, "src/books.mw", src));
+    let (report, _program) = check_project(&root, &config()).expect("check");
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+}
 
 /// Check a single `src/books.mw` module `src` and assert it raises the bare
 /// maybe-present-read diagnostic: the load-bearing input is the mutation in `src` that
@@ -16,7 +36,7 @@ fn assert_bare_present_read(name: &str, src: &str) {
         report
             .diagnostics
             .iter()
-            .any(|diagnostic| diagnostic.code == CHECK_BARE_MAYBE_PRESENT_READ),
+            .any(|diagnostic| diagnostic.code == CHECK_UNRESOLVED_OPTIONAL),
         "{:#?}",
         report.diagnostics
     );
@@ -39,24 +59,15 @@ fn if_exists_narrows_reads_inside_the_then_block() {
         );
     });
 
-    let (report, program) = check_project(&root, &config()).expect("check");
+    let (report, _program) = check_project(&root, &config()).expect("check");
 
     assert!(
         !report
             .diagnostics
             .iter()
-            .any(|diagnostic| diagnostic.code == CHECK_BARE_MAYBE_PRESENT_READ),
+            .any(|diagnostic| diagnostic.code == CHECK_UNRESOLVED_OPTIONAL),
         "{:#?}",
         report.diagnostics
-    );
-    assert!(
-        program
-            .facts
-            .presence_proofs()
-            .iter()
-            .any(|proof| proof.source == PresenceProofSource::Narrowing),
-        "{:#?}",
-        program.facts.presence_proofs()
     );
 }
 
@@ -442,14 +453,14 @@ fn if_exists_narrowing_expires_when_only_child_of_parent_is_deleted() {
         report
             .diagnostics
             .iter()
-            .any(|diagnostic| diagnostic.code == CHECK_BARE_MAYBE_PRESENT_READ),
+            .any(|diagnostic| diagnostic.code == CHECK_UNRESOLVED_OPTIONAL),
         "{:#?}",
         report.diagnostics
     );
 }
 
 #[test]
-fn unique_index_coalesce_records_presence_proof() {
+fn unique_index_coalesce_defaults_a_maybe_present_lookup() {
     let root = temp_project("presence-index-coalesce", |root| {
         write(
             root,
@@ -466,7 +477,7 @@ fn unique_index_coalesce_records_presence_proof() {
         );
     });
 
-    let (report, program) = check_project(&root, &config()).expect("check");
+    let (report, _program) = check_project(&root, &config()).expect("check");
 
     assert!(
         !report
@@ -476,24 +487,11 @@ fn unique_index_coalesce_records_presence_proof() {
         "{:#?}",
         report.diagnostics
     );
-    let proof = program
-        .facts
-        .presence_proofs()
-        .iter()
-        .find(|proof| proof.source == PresenceProofSource::Narrowing)
-        .expect("narrowing proof");
-    assert!(
-        matches!(proof.place, PresenceProofPlace::StoreIndex(_)),
-        "{:#?}",
-        program.facts.presence_proofs()
-    );
-    assert_eq!(proof.read, PresenceProofRead::Direct);
-    assert_eq!(proof.keys.len(), 1);
 }
 
 #[test]
-fn index_range_exists_records_store_index_presence_proof() {
-    let proofs = presence_proofs(
+fn index_range_exists_types_cleanly() {
+    assert_no_errors(
         "presence-index-range-exists",
         "module books\n\
          resource Post\n\
@@ -503,94 +501,53 @@ fn index_range_exists_records_store_index_presence_proof() {
          fn found(lo: int, hi: int): bool\n\
          \x20   return exists(^posts.byDate(lo..hi))\n",
     );
+}
 
-    assert!(
-        proofs
-            .iter()
-            .any(|proof| matches!(proof.place, PresenceProofPlace::StoreIndex(_))),
-        "{proofs:#?}"
-    );
-    assert!(
-        !proofs.iter().any(|proof| {
-            matches!(
-                &proof.place,
-                PresenceProofPlace::Saved(place) if place.members.is_empty()
-            )
-        }),
-        "{proofs:#?}"
+#[test]
+fn next_coalesce_defaults_a_maybe_present_neighbor() {
+    assert_no_errors(
+        "presence-next-coalesce",
+        "module books\n\
+         resource Book\n\
+         \x20   required title: string\n\
+         \x20   tags(pos: int): string\n\
+         store ^books(id: int): Book\n\
+         fn nextPos(id: int, pos: int): int\n\
+         \x20   return next(^books(id).tags(pos)) ?? -1\n",
     );
 }
 
 #[test]
-fn next_coalesce_records_read_site_resolution() {
-    let root = temp_project("presence-next-coalesce", |root| {
-        write(
-            root,
-            "src/books.mw",
-            "module books\n\
-             resource Book\n\
-             \x20   required title: string\n\
-             \x20   tags(pos: int): string\n\
-             store ^books(id: int): Book\n\
-             fn nextPos(id: int, pos: int): int\n\
-             \x20   return next(^books(id).tags(pos)) ?? -1\n",
-        );
-    });
-
-    let (report, program) = check_project(&root, &config()).expect("check");
-
-    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
-    let proof_sources: Vec<_> = program
-        .facts
-        .presence_proofs()
-        .iter()
-        .map(|proof| proof.source)
-        .collect();
-    assert!(
-        proof_sources.contains(&PresenceProofSource::Narrowing),
-        "{proof_sources:#?}"
-    );
-    let next_proof = program
-        .facts
-        .presence_proofs()
-        .iter()
-        .find(|proof| proof.read == PresenceProofRead::Next)
-        .expect("next proof");
-    assert!(matches!(next_proof.place, PresenceProofPlace::Saved(_)));
-    assert_eq!(next_proof.keys.len(), 3);
-    assert!(
-        !proof_sources.contains(&PresenceProofSource::AttachedData),
-        "{proof_sources:#?}"
+fn for_loop_over_saved_layer_does_not_narrow_the_positional_leaf_read() {
+    // Iterating positions proves each position present, but a positional read is
+    // uniformly `T?` under the one rule, so a bare read of the leaf at the loop key is
+    // rejected — consistent with the local sequence equivalent and the documented idiom.
+    assert_bare_present_read(
+        "presence-loop-positional-leaf",
+        "module books\n\
+         resource Book\n\
+         \x20   tags(pos: int): string\n\
+         store ^books(id: int): Book\n\
+         fn f()\n\
+         \x20   for pos in ^books(1).tags\n\
+         \x20   \x20   print(^books(1).tags(pos))\n",
     );
 }
 
 #[test]
-fn for_loop_over_saved_layer_narrows_iterated_entry_reads() {
-    let root = temp_project("presence-loop-narrowing", |root| {
-        write(
-            root,
-            "src/books.mw",
-            "module books\n\
-             resource Book\n\
-             \x20   tags(pos: int): string\n\
-             store ^books(id: int): Book\n\
-             fn f()\n\
-             \x20   for pos in ^books(1).tags\n\
-             \x20   \x20   print(^books(1).tags(pos))\n",
-        );
-    });
-
-    let (report, program) = check_project(&root, &config()).expect("check");
-
-    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
-    assert!(
-        program
-            .facts
-            .presence_proofs()
-            .iter()
-            .any(|proof| proof.source == PresenceProofSource::Narrowing),
-        "{:#?}",
-        program.facts.presence_proofs()
+fn for_loop_over_saved_layer_positional_leaf_reads_with_if_const() {
+    // The documented idiom: guard the positional read with `if const` to bind its
+    // present arm.
+    assert_no_errors(
+        "presence-loop-positional-leaf-if-const",
+        "module books\n\
+         resource Book\n\
+         \x20   tags(pos: int): string\n\
+         store ^books(id: int): Book\n\
+         fn f()\n\
+         \x20   for pos in ^books(1).tags\n\
+         \x20   \x20   if const tag = ^books(1).tags(pos)\n\
+         \x20   \x20   \x20   print(tag)\n",
     );
 }
 
@@ -764,8 +721,10 @@ fn two_binding_reversed_keys_loop_does_not_narrow_ordinal_as_a_key() {
 }
 
 #[test]
-fn two_binding_saved_path_loop_narrows_the_key_binding() {
-    let root = temp_project("presence-two-binding-saved-path-loop-key", |root| {
+fn two_binding_saved_path_loop_binds_the_value_present() {
+    // The two-name value loop head binds each element value present, so a bare use of
+    // the bound value type-checks.
+    let root = temp_project("presence-two-binding-saved-path-loop-value", |root| {
         write(
             root,
             "src/books.mw",
@@ -775,13 +734,29 @@ fn two_binding_saved_path_loop_narrows_the_key_binding() {
              store ^books(id: int): Book\n\
              fn f()\n\
              \x20   for pos, score in ^books(1).scores\n\
-             \x20   \x20   print(^books(1).scores(pos))\n",
+             \x20   \x20   print(score)\n",
         );
     });
 
     let (report, _program) = check_project(&root, &config()).expect("check");
 
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
+}
+
+#[test]
+fn two_binding_saved_path_loop_does_not_narrow_the_positional_re_read() {
+    // Binding the value present does not narrow a positional re-read at the key: it
+    // stays `T?` under the one rule.
+    assert_bare_present_read(
+        "presence-two-binding-saved-path-loop-reread",
+        "module books\n\
+         resource Book\n\
+         \x20   scores(pos: int): int\n\
+         store ^books(id: int): Book\n\
+         fn f()\n\
+         \x20   for pos, score in ^books(1).scores\n\
+         \x20   \x20   print(^books(1).scores(pos))\n",
+    );
 }
 
 #[test]
@@ -816,46 +791,17 @@ fn if_exists_narrowing_expires_when_same_condition_calls_saved_writer() {
     );
 }
 
-/// Check `src` as the single module `books`, returning the presence proofs it records.
-fn presence_proofs(name: &str, src: &str) -> Vec<marrow_check::PresenceProofFact> {
-    let root = temp_project(name, |root| write(root, "src/books.mw", src));
-    let (report, program) = check_project(&root, &config()).expect("check");
-    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
-    program.facts.presence_proofs().to_vec()
-}
-
 #[test]
-fn a_bare_maybe_present_read_pends_on_attached_data() {
-    let root = temp_project("presence-bare-pending", |root| {
-        write(
-            root,
-            "src/books.mw",
-            "module books\n\
-             resource Book\n\
-             \x20   subtitle: string\n\
-             store ^books(id: int): Book\n\
-             fn bare(id: int): string\n\
-             \x20   return ^books(id).subtitle\n",
-        );
-    });
-
-    let (report, program) = check_project(&root, &config()).expect("check");
-
-    assert!(
-        report
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == CHECK_BARE_MAYBE_PRESENT_READ),
-        "{:#?}",
-        report.diagnostics
+fn a_bare_saved_read_is_an_unresolved_optional() {
+    assert_bare_present_read(
+        "presence-bare-pending",
+        "module books\n\
+         resource Book\n\
+         \x20   subtitle: string\n\
+         store ^books(id: int): Book\n\
+         fn bare(id: int): string\n\
+         \x20   return ^books(id).subtitle\n",
     );
-    let proof = program
-        .facts
-        .presence_proofs()
-        .iter()
-        .find(|proof| proof.source == PresenceProofSource::AttachedData)
-        .expect("attached-data proof");
-    assert_eq!(proof.status, PresenceProofStatus::PendingAttachedData);
 }
 
 #[test]
@@ -873,7 +819,7 @@ fn a_bare_required_field_read_through_parameter_identity_requires_resolution() {
 
 #[test]
 fn early_return_if_not_exists_narrows_the_remainder() {
-    let proofs = presence_proofs(
+    assert_no_unresolved_optional(
         "presence-early-return-narrowing",
         "module books\n\
          resource Book\n\
@@ -884,12 +830,6 @@ fn early_return_if_not_exists_narrows_the_remainder() {
          \x20       return \"missing\"\n\
          \x20   return ^books(id).subtitle\n",
     );
-
-    let proof = proofs
-        .iter()
-        .find(|proof| proof.source == PresenceProofSource::Narrowing)
-        .expect("early-return narrowing proof");
-    assert_eq!(proof.status, PresenceProofStatus::Discharged);
 }
 
 #[test]
@@ -1071,6 +1011,104 @@ fn local_key_mutation_in_loop_invalidates_key_dependent_proof() {
     );
 }
 
+/// A guarded place the body clears on a later line must read as `Optional` at the
+/// textually-earlier read: the back edge carries iteration one's clear to iteration
+/// two's read, so the loop header re-imposes the one rule before the body is typed.
+#[test]
+fn while_loop_carried_clear_re_widens_an_earlier_body_read() {
+    assert_bare_present_read(
+        "presence-while-loop-carried-clear",
+        "module books\n\
+         resource Book\n\
+         \x20   required title: string\n\
+         \x20   subtitle: string\n\
+         store ^books(id: int): Book\n\
+         fn f(go: bool)\n\
+         \x20   if not exists(^books(1).subtitle)\n\
+         \x20       return\n\
+         \x20   while go\n\
+         \x20       const s: string = ^books(1).subtitle\n\
+         \x20       ^books(1).subtitle = absent\n",
+    );
+}
+
+#[test]
+fn for_loop_carried_clear_re_widens_an_earlier_body_read() {
+    assert_bare_present_read(
+        "presence-for-loop-carried-clear",
+        "module books\n\
+         resource Book\n\
+         \x20   required title: string\n\
+         \x20   subtitle: string\n\
+         store ^books(id: int): Book\n\
+         fn f(ks: sequence[int])\n\
+         \x20   if not exists(^books(1).subtitle)\n\
+         \x20       return\n\
+         \x20   for k in ks\n\
+         \x20       const s: string = ^books(1).subtitle\n\
+         \x20       ^books(1).subtitle = absent\n",
+    );
+}
+
+#[test]
+fn loop_carried_writer_call_re_widens_an_earlier_body_read() {
+    assert_bare_present_read(
+        "presence-while-loop-carried-call",
+        "module books\n\
+         resource Book\n\
+         \x20   subtitle: string\n\
+         store ^books(id: int): Book\n\
+         fn clear(id: Id(^books))\n\
+         \x20   delete ^books(id).subtitle\n\
+         fn f(id: Id(^books), go: bool): string\n\
+         \x20   if not exists(^books(id).subtitle)\n\
+         \x20       return \"missing\"\n\
+         \x20   while go\n\
+         \x20       const s: string = ^books(id).subtitle\n\
+         \x20       clear(id)\n\
+         \x20   return \"ok\"\n",
+    );
+}
+
+/// A guard re-proved at the top of the body each iteration keeps the read sound: the
+/// clear below the read is undone by the next iteration's guard, so re-widening the
+/// header must not produce a false positive on the in-body read.
+#[test]
+fn a_guard_re_proved_in_the_loop_body_keeps_the_read_clean() {
+    assert_no_unresolved_optional(
+        "presence-while-in-body-guard-clean",
+        "module books\n\
+         resource Book\n\
+         \x20   subtitle: string\n\
+         store ^books(id: int): Book\n\
+         fn f(go: bool)\n\
+         \x20   while go\n\
+         \x20       if not exists(^books(1).subtitle)\n\
+         \x20           return\n\
+         \x20       const s: string = ^books(1).subtitle\n\
+         \x20       ^books(1).subtitle = absent\n",
+    );
+}
+
+/// A loop that only reads a guarded place — never clearing it — keeps its narrowing:
+/// the header re-widening drops only places the body could invalidate.
+#[test]
+fn a_read_only_loop_body_keeps_its_narrowing() {
+    assert_no_unresolved_optional(
+        "presence-while-read-only-keeps-narrowing",
+        "module books\n\
+         resource Book\n\
+         \x20   subtitle: string\n\
+         store ^books(id: int): Book\n\
+         fn f(go: bool)\n\
+         \x20   if not exists(^books(1).subtitle)\n\
+         \x20       return\n\
+         \x20   while go\n\
+         \x20       const s: string = ^books(1).subtitle\n\
+         \x20       print(s)\n",
+    );
+}
+
 #[test]
 fn try_body_narrowing_does_not_escape_the_try() {
     assert_bare_present_read(
@@ -1141,8 +1179,8 @@ fn saved_writing_call_in_try_blocks_catch_reads() {
 }
 
 #[test]
-fn if_const_binding_guard_discharges_and_binds_with_one_point_read() {
-    let proofs = presence_proofs(
+fn if_const_binding_guard_binds_the_present_value() {
+    assert_no_errors(
         "presence-if-const-binding-guard",
         "module books\n\
          resource Book\n\
@@ -1153,16 +1191,11 @@ fn if_const_binding_guard_discharges_and_binds_with_one_point_read() {
          \x20       return subtitle\n\
          \x20   return \"missing\"\n",
     );
-
-    assert_eq!(proofs.len(), 1, "{proofs:#?}");
-    assert_eq!(proofs[0].source, PresenceProofSource::Narrowing);
-    assert_eq!(proofs[0].status, PresenceProofStatus::Discharged);
-    assert_eq!(proofs[0].read, PresenceProofRead::Direct);
 }
 
 #[test]
-fn a_coalesce_fallback_discharges_via_narrowing() {
-    let proofs = presence_proofs(
+fn a_coalesce_fallback_resolves_a_maybe_present_read() {
+    assert_no_errors(
         "presence-coalesce-narrowing",
         "module books\n\
          resource Book\n\
@@ -1171,17 +1204,11 @@ fn a_coalesce_fallback_discharges_via_narrowing() {
          fn fallback(id: int): string\n\
          \x20   return ^books(id).subtitle ?? \"untitled\"\n",
     );
-
-    let proof = proofs
-        .iter()
-        .find(|proof| proof.source == PresenceProofSource::Narrowing)
-        .expect("narrowing proof");
-    assert_eq!(proof.status, PresenceProofStatus::Discharged);
 }
 
 #[test]
-fn an_exists_guard_discharges_via_narrowing() {
-    let proofs = presence_proofs(
+fn an_exists_guard_resolves_a_maybe_present_read() {
+    assert_no_errors(
         "presence-exists-narrowing",
         "module books\n\
          resource Book\n\
@@ -1190,17 +1217,11 @@ fn an_exists_guard_discharges_via_narrowing() {
          fn found(id: int): bool\n\
          \x20   return exists(^books(id).subtitle)\n",
     );
-
-    let proof = proofs
-        .iter()
-        .find(|proof| proof.source == PresenceProofSource::Narrowing)
-        .expect("narrowing proof");
-    assert_eq!(proof.status, PresenceProofStatus::Discharged);
 }
 
 #[test]
-fn an_optional_chain_fallback_discharges_via_narrowing() {
-    let proofs = presence_proofs(
+fn an_optional_chain_fallback_resolves_a_maybe_present_read() {
+    assert_no_errors(
         "presence-optional-narrowing",
         "module books\n\
          resource Book\n\
@@ -1209,20 +1230,131 @@ fn an_optional_chain_fallback_discharges_via_narrowing() {
          fn optional(id: int): string\n\
          \x20   return ^books(id)?.subtitle ?? \"untitled\"\n",
     );
-
-    let proof = proofs
-        .iter()
-        .find(|proof| proof.source == PresenceProofSource::Narrowing)
-        .expect("narrowing proof");
-    assert_eq!(proof.status, PresenceProofStatus::Discharged);
 }
 
-/// A new `PresenceProofSource` variant must be wired through the per-strategy tests
-/// above; this match fails to compile until it is, so the suite cannot silently stop
-/// covering a way presence is proven.
+/// A sparse field reached through a maybe-present record collapses to one optional
+/// layer (`string?`, never `string??`), so it flows into a `string?` slot directly.
 #[test]
-fn presence_proof_sources_are_exhaustively_covered() {
-    match PresenceProofSource::AttachedData {
-        PresenceProofSource::AttachedData | PresenceProofSource::Narrowing => {}
-    }
+fn optional_chain_through_a_maybe_present_record_is_one_optional_layer() {
+    assert_no_errors(
+        "presence-optional-chain-collapse",
+        "module books\n\
+         resource Book\n\
+         \x20   subtitle: string\n\
+         store ^books(id: int): Book\n\
+         fn maybeSubtitle(id: int): string?\n\
+         \x20   return ^books(id)?.subtitle\n",
+    );
+}
+
+/// The same `string?` chain used where a definite `string` is required is the one
+/// rule: the collapsed optional must be resolved first.
+#[test]
+fn optional_chain_at_a_definite_slot_is_the_one_rule() {
+    assert_bare_present_read(
+        "presence-optional-chain-one-rule",
+        "module books\n\
+         resource Book\n\
+         \x20   subtitle: string\n\
+         store ^books(id: int): Book\n\
+         fn definiteSubtitle(id: int): string\n\
+         \x20   return ^books(id)?.subtitle\n",
+    );
+}
+
+/// A saved write to a *sibling* field of the narrowed key keeps the narrowing: the
+/// member-precise invalidation must not drop it just because the write reuses the
+/// same key binding.
+#[test]
+fn a_sibling_field_write_keeps_a_saved_narrowing() {
+    assert_no_unresolved_optional(
+        "presence-sibling-field-write-keeps-narrowing",
+        "module books\n\
+         resource Book\n\
+         \x20   subtitle: string\n\
+         \x20   blurb: string\n\
+         store ^books(id: int): Book\n\
+         fn f(a: int)\n\
+         \x20   if not exists(^books(a).subtitle)\n\
+         \x20       return\n\
+         \x20   ^books(a).blurb = \"x\"\n\
+         \x20   const s: string = ^books(a).subtitle\n",
+    );
+}
+
+/// A saved write to a *different resource* keyed by the same binding keeps the
+/// narrowing: a write that merely reuses the key binding is not a clear of the
+/// narrowed node.
+#[test]
+fn a_different_resource_write_keeps_a_saved_narrowing() {
+    assert_no_unresolved_optional(
+        "presence-other-resource-write-keeps-narrowing",
+        "module books\n\
+         resource Book\n\
+         \x20   subtitle: string\n\
+         resource Tag\n\
+         \x20   label: string\n\
+         store ^books(id: int): Book\n\
+         store ^tags(id: int): Tag\n\
+         fn f(a: int)\n\
+         \x20   if not exists(^books(a).subtitle)\n\
+         \x20       return\n\
+         \x20   ^tags(a).label = \"x\"\n\
+         \x20   const s: string = ^books(a).subtitle\n",
+    );
+}
+
+/// A write to the *same* field of the narrowed key drops the narrowing: the node
+/// may have been re-cleared, so the later read is the one rule again.
+#[test]
+fn a_same_field_write_drops_a_saved_narrowing() {
+    assert_bare_present_read(
+        "presence-same-field-write-drops-narrowing",
+        "module books\n\
+         resource Book\n\
+         \x20   subtitle: string\n\
+         store ^books(id: int): Book\n\
+         fn f(a: int): string\n\
+         \x20   if not exists(^books(a).subtitle)\n\
+         \x20       return \"missing\"\n\
+         \x20   ^books(a).subtitle = \"x\"\n\
+         \x20   return ^books(a).subtitle\n",
+    );
+}
+
+/// Reassigning the local key binding drops a saved narrowing keyed on it: the key
+/// now addresses a different node.
+#[test]
+fn a_local_key_reassignment_drops_a_saved_narrowing() {
+    assert_bare_present_read(
+        "presence-local-key-reassignment-drops-narrowing",
+        "module books\n\
+         resource Book\n\
+         \x20   subtitle: string\n\
+         store ^books(id: int): Book\n\
+         fn f(start: int): string\n\
+         \x20   var a: int = start\n\
+         \x20   if not exists(^books(a).subtitle)\n\
+         \x20       return \"missing\"\n\
+         \x20   a = 2\n\
+         \x20   return ^books(a).subtitle\n",
+    );
+}
+
+/// A same-field write under an *alias-possible* key drops the narrowing: two
+/// distinct key expressions may denote the same node at runtime.
+#[test]
+fn a_same_field_write_under_an_alias_possible_key_drops_a_saved_narrowing() {
+    assert_bare_present_read(
+        "presence-alias-possible-key-write-drops-narrowing",
+        "module books\n\
+         resource Book\n\
+         \x20   subtitle: string\n\
+         store ^books(id: int): Book\n\
+         fn f(a: int, other: int): string\n\
+         \x20   if not exists(^books(a).subtitle)\n\
+         \x20       return \"missing\"\n\
+         \x20   ^books(other).subtitle = \"x\"\n\
+         \x20   return ^books(a).subtitle\n",
+    );
 }

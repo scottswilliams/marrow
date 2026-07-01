@@ -14,9 +14,7 @@ use marrow_syntax::SourceSpan;
 
 use crate::collection::Direction;
 use crate::env::{Env, Flow};
-use crate::error::{
-    Located, RUN_ABSENT, RuntimeError, overflow, raise_fault, type_error, unsupported,
-};
+use crate::error::{Located, RuntimeError, overflow, type_error, unsupported};
 use crate::expr::eval_expr;
 use crate::path::{KeyRole, direct_root_place, guard_key_type, lower, lower_keys};
 use crate::range_expr::checked_range;
@@ -1224,23 +1222,30 @@ pub(crate) fn collected_identity_value(
     saved_key_to_value(key.clone(), span)
 }
 
-/// Read a field of a local resource value, e.g. `book.shelf`. An unpopulated
-/// field is an absent-element error.
+/// Read a field of a local resource value, e.g. `book.shelf`. A sparse field with
+/// no populated node reads as the empty optional; a bare read of one is a checker
+/// rejection, so this is only ever observed at an optional boundary.
 pub(crate) fn eval_local_field_get(
     base: &ExecExpr,
     field: &str,
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<Value, RuntimeError> {
-    let Value::Resource(fields) = eval_expr(base, env)? else {
+    local_field_value(eval_expr(base, env)?, field, span)
+}
+
+/// The value of `field` on an already-materialized resource value: the present
+/// value, or [`Value::Absent`] when the sparse field has no node.
+pub(crate) fn local_field_value(
+    base: Value,
+    field: &str,
+    span: SourceSpan,
+) -> Result<Value, RuntimeError> {
+    let Value::Resource(fields) = base else {
         return Err(unsupported("a field of a non-resource value", span));
     };
-    match fields.into_iter().find(|(name, _)| name == field) {
-        Some((_, value)) => Ok(value),
-        None => Err(raise_fault(
-            RUN_ABSENT,
-            format!("`{field}` is absent"),
-            span,
-        )),
-    }
+    Ok(match fields.into_iter().find(|(name, _)| name == field) {
+        Some((_, value)) => value,
+        None => Value::Absent,
+    })
 }

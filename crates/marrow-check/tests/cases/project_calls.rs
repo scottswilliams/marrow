@@ -280,7 +280,7 @@ fn user_maybe_return_call_must_be_resolved_at_the_caller() {
     let report = check_module_report(
         "user-maybe-return-call-sites",
         "module m\n\
-         fn find(): maybe int\n\
+         fn find(): int?\n\
          \x20   return absent\n\n\
          fn unresolved(): int\n\
          \x20   return find()\n\n\
@@ -294,7 +294,7 @@ fn user_maybe_return_call_must_be_resolved_at_the_caller() {
          \x20   return exists(find())\n",
     );
 
-    let found = with_code(&report, "check.bare_maybe_present_read");
+    let found = with_code(&report, "check.unresolved_optional");
     assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
 }
 
@@ -303,9 +303,9 @@ fn user_maybe_return_propagates_only_through_maybe_return_sites() {
     let report = check_module_report(
         "user-maybe-return-propagation",
         "module m\n\
-         fn b(): maybe int\n\
+         fn b(): int?\n\
          \x20   return absent\n\n\
-         fn a(): maybe int\n\
+         fn a(): int?\n\
          \x20   return b()\n\n\
          fn unresolved(): int\n\
          \x20   return a()\n\n\
@@ -313,7 +313,7 @@ fn user_maybe_return_propagates_only_through_maybe_return_sites() {
          \x20   return a() ?? -1\n",
     );
 
-    let found = with_code(&report, "check.bare_maybe_present_read");
+    let found = with_code(&report, "check.unresolved_optional");
     assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
 }
 
@@ -322,7 +322,7 @@ fn exists_does_not_narrow_a_later_maybe_function_call() {
     let report = check_module_report(
         "user-maybe-return-exists-call-boundary",
         "module m\n\
-         fn find(): maybe int\n\
+         fn find(): int?\n\
          \x20   return absent\n\n\
          fn caller(): int\n\
          \x20   if exists(find())\n\
@@ -330,27 +330,46 @@ fn exists_does_not_narrow_a_later_maybe_function_call() {
          \x20   return -1\n",
     );
 
-    let found = with_code(&report, "check.bare_maybe_present_read");
+    let found = with_code(&report, "check.unresolved_optional");
     assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
 }
 
 #[test]
-fn assert_absent_does_not_resolve_a_maybe_function_call() {
+fn assert_absent_accepts_optional_call_and_neighbor_results() {
+    // `isAbsent` tests any optional value for absence, mirroring `exists`: a `T?` call
+    // result and a `next`/`prev` neighbor are accepted, not rejected as the one rule
+    // would destroy the absence being tested.
     let report = check_module_report(
         "user-maybe-return-assert-absent-boundary",
         "module m\n\
          resource Book\n\
          \x20   title: string\n\
          store ^books(id: int): Book\n\n\
-         fn missing(): maybe int\n\
+         fn missing(): int?\n\
          \x20   return absent\n\n\
          fn caller()\n\
-         \x20   std::assert::absent(missing())\n\
-         \x20   std::assert::absent(next(^books))\n",
+         \x20   std::assert::isAbsent(missing())\n\
+         \x20   std::assert::isAbsent(next(^books))\n",
     );
 
-    let found = with_code(&report, "check.bare_maybe_present_read");
-    assert_eq!(found.len(), 2, "{:#?}", report.diagnostics);
+    let found = with_code(&report, "check.unresolved_optional");
+    assert!(found.is_empty(), "{:#?}", report.diagnostics);
+}
+
+#[test]
+fn assert_absent_accepts_optional_locals_positional_and_stdlib_results() {
+    // `isAbsent` accepts an optional local/parameter, a positional read, and a stdlib
+    // `T?` result, mirroring `exists`; resolving them first would destroy the absence.
+    let report = check_module_report(
+        "assert-absent-accepts-optionals",
+        "module m\n\
+         fn f(localOpt: string?, xs: sequence[string])\n\
+         \x20   std::assert::isAbsent(localOpt)\n\
+         \x20   std::assert::isAbsent(xs(1))\n\
+         \x20   std::assert::isAbsent(std::text::indexOf(\"a\", \"b\"))\n",
+    );
+
+    assert!(!report.has_errors(), "{:#?}", report.diagnostics);
 }
 
 #[test]
@@ -364,10 +383,10 @@ fn assert_absent_rejects_non_path_arguments() {
          fn always(): int\n\
          \x20   return 1\n\n\
          fn caller(id: int)\n\
-         \x20   std::assert::absent(^books(id).title)\n\
-         \x20   std::assert::absent(1)\n\
-         \x20   std::assert::absent(id)\n\
-         \x20   std::assert::absent(always())\n",
+         \x20   std::assert::isAbsent(^books(id).title)\n\
+         \x20   std::assert::isAbsent(1)\n\
+         \x20   std::assert::isAbsent(id)\n\
+         \x20   std::assert::isAbsent(always())\n",
     );
 
     let found = with_code(&report, "check.call_argument");
@@ -379,9 +398,9 @@ fn maybe_return_absence_forms_are_checked_against_the_signature() {
     let report = check_module_report(
         "user-maybe-return-absence-forms",
         "module m\n\
-         fn falls_through(): maybe int\n\
+         fn falls_through(): int?\n\
          \x20   const n = 1\n\n\
-         fn plain_return(): maybe int\n\
+         fn plain_return(): int?\n\
          \x20   return\n\n\
          fn absent_from_plain(): int\n\
          \x20   return absent\n\n\
@@ -389,6 +408,12 @@ fn maybe_return_absence_forms_are_checked_against_the_signature() {
          \x20   return absent\n",
     );
 
+    // `falls_through` never returns (`check.missing_return`). `plain_return`
+    // returns void from a `T?` function and `absent_from_void` returns a value from
+    // a void function (both `check.return_value`). The empty optional reaches a
+    // non-optional slot in both `absent_from_plain` (`int`) and `absent_from_void`
+    // (void's `unknown` slot), and the one rule's arm precedes the `unknown`
+    // deferral, so each raises `check.unresolved_optional`.
     assert_eq!(
         with_code(&report, "check.missing_return").len(),
         1,
@@ -397,7 +422,13 @@ fn maybe_return_absence_forms_are_checked_against_the_signature() {
     );
     assert_eq!(
         with_code(&report, "check.return_value").len(),
-        3,
+        2,
+        "{:#?}",
+        report.diagnostics
+    );
+    assert_eq!(
+        with_code(&report, "check.unresolved_optional").len(),
+        2,
         "{:#?}",
         report.diagnostics
     );
@@ -411,7 +442,7 @@ fn saved_maybe_read_can_be_returned_from_maybe_function() {
          resource Book\n\
          \x20   subtitle: string\n\
          store ^books(id: int): Book\n\n\
-         fn subtitle(id: int): maybe string\n\
+         fn subtitle(id: int): string?\n\
          \x20   return ^books(id).subtitle\n\n\
          fn unresolved(id: int): string\n\
          \x20   return subtitle(id)\n\n\
@@ -419,7 +450,7 @@ fn saved_maybe_read_can_be_returned_from_maybe_function() {
          \x20   return subtitle(id) ?? \"missing\"\n",
     );
 
-    let found = with_code(&report, "check.bare_maybe_present_read");
+    let found = with_code(&report, "check.unresolved_optional");
     assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
 }
 

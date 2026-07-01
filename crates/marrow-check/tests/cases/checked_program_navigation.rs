@@ -380,7 +380,7 @@ fn next_over_a_composite_identity_record_is_flagged() {
 
 /// A rejected `next` over a composite-identity record is the one error. Reading its
 /// result must not cascade a second diagnostic: the unsupported neighbor poisons its
-/// result type, so no `check.untyped_value` or `check.bare_maybe_present_read` stacks.
+/// result type, so no `check.untyped_value` or `check.unresolved_optional` stacks.
 #[test]
 fn rejected_composite_neighbor_does_not_cascade() {
     let root = temp_project("program-next-composite-no-cascade", |root| {
@@ -410,7 +410,7 @@ fn rejected_composite_neighbor_does_not_cascade() {
         report.diagnostics
     );
     assert!(
-        with_code(&report, "check.bare_maybe_present_read").is_empty(),
+        with_code(&report, "check.unresolved_optional").is_empty(),
         "{:#?}",
         report.diagnostics
     );

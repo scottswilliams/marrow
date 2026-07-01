@@ -179,6 +179,9 @@ pub enum CheckedExpr {
         place: Option<CheckedSavedPlace>,
         span: SourceSpan,
     },
+    /// The empty-optional primary value `absent`; the runtime evaluates it to the
+    /// absent optional.
+    Absent { span: SourceSpan },
     Call {
         callee: Box<CheckedExpr>,
         args: Vec<CheckedArg>,
@@ -248,6 +251,7 @@ impl CheckedExpr {
                 place: SavedPlaceResolver::new(context.program).root_place(name, *span),
                 span: *span,
             },
+            syntax::Expression::Absent { span } => Self::Absent { span: *span },
             syntax::Expression::Call {
                 callee, args, span, ..
             } => {
@@ -381,6 +385,7 @@ impl CheckedExpr {
             | Self::OptionalField { place, .. } => place.as_ref(),
             Self::Literal { .. }
             | Self::Name { .. }
+            | Self::Absent { .. }
             | Self::Unary { .. }
             | Self::Binary { .. }
             | Self::Range { .. }
@@ -393,6 +398,7 @@ impl CheckedExpr {
             Self::Literal { span, .. }
             | Self::Name { span, .. }
             | Self::SavedRoot { span, .. }
+            | Self::Absent { span }
             | Self::Call { span, .. }
             | Self::Field { span, .. }
             | Self::OptionalField { span, .. }
@@ -430,7 +436,6 @@ pub(crate) fn function_ref(
     Some(CheckedFunctionRef {
         module: module_index as u32,
         function: function_index as u32,
-        presence: function.return_presence,
     })
 }
 

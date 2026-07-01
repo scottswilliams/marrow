@@ -9,7 +9,7 @@ use marrow_syntax::SourceSpan;
 
 use crate::env::Env;
 use crate::error::{RuntimeError, type_error};
-use crate::expr::eval_expr;
+use crate::expr::{eval_expr, eval_into_slot};
 use crate::path::{KeyRole, lower_keys};
 use crate::statement::coerce_error_code_value;
 use crate::value::identity_value;
@@ -26,7 +26,10 @@ pub(crate) fn bind_arguments(
     let mut seen_named = false;
     for arg in args {
         let index = arg_param_index(arg, params, &mut next_positional, &mut seen_named, span)?;
-        let value = eval_expr(&arg.value, env)?;
+        // A `T?` parameter admits the empty optional: an absent maybe-present read or
+        // call flows in as `Value::Absent`. An out-of-range index has no parameter
+        // type; evaluate it plainly and let `place_argument` raise the arity fault.
+        let value = eval_into_slot(&arg.value, params.get(index).map(|param| &param.ty), env)?;
         place_argument(&mut slots, index, value, params, span)?;
     }
     collect_arguments(slots, params, span)
@@ -179,6 +182,8 @@ pub(crate) fn default_value(ty: &Type) -> Option<Value> {
         Type::Scalar(ScalarType::Instant) => Value::Instant(0),
         Type::Scalar(ScalarType::Duration) => Value::Duration(0),
         Type::Scalar(ScalarType::Decimal) => Value::Decimal(Decimal::parse("0")?),
+        // An uninitialized optional binding is the empty optional.
+        Type::Optional(_) => Value::Absent,
         Type::Identity(_) | Type::Named(_) | Type::Unknown => return None,
     })
 }

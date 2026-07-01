@@ -761,7 +761,7 @@ fn each_test_runs_against_a_fresh_store() {
         write(
             root,
             "tests/iso_test.mw",
-            "pub fn a_writes()\n    ^box(1).value = 1\n\npub fn b_sees_a_fresh_store()\n    std::assert::absent(^box(1))\n",
+            "pub fn a_writes()\n    ^box(1).value = 1\n\npub fn b_sees_a_fresh_store()\n    std::assert::isAbsent(^box(1))\n",
         );
     });
     let output = run_test(&root);

@@ -30,6 +30,12 @@ resource Book
     shelf: string
 ```
 
+A field is **sparse** (absent-able) by default; mark the rare mandatory one
+`required`. A field declaration never carries `?` — sparseness, not a `?` suffix,
+makes a field optional. `?` is the code-level type a maybe-present read yields: a
+sparse read (`^books(id).shelf`) types as `string?` and is resolved at the read
+site with `?? default`, `if const`, `exists`, or `?.`.
+
 Use the resource locally:
 
 ```mw

@@ -1618,7 +1618,7 @@ fn reading_a_child_layer_off_a_partial_composite_layer_is_rejected() {
     let report = check_module_report("descent-partial-read", &src);
     descent_layer_not_value(&report, &src, "items");
     // The descent error owns the mistake; the `??` over the descended value must not
-    // pile a second `check.bare_maybe_present_read` on the same span.
+    // pile a second `check.unresolved_optional` on the same span.
     assert_eq!(
         codes(&report),
         vec!["check.layer_not_value"],
@@ -1786,7 +1786,7 @@ fn a_nested_group_field_read_of_the_wrong_type_is_flagged() {
          versions(version: int)\n        required title: string\n        \
          comments(pos: int)\n            required text: string\n\
          store ^books(id: int): Book\n\n\
-         fn f()\n    const n: int = ^books(1).versions(2).comments(3).text\n",
+         fn f()\n    const n: int = ^books(1).versions(2).comments(3).text ?? \"\"\n",
         "check.assignment_type",
     );
     assert_eq!(found.len(), 1, "{found:#?}");
@@ -1800,7 +1800,7 @@ fn a_saved_field_read_feeds_the_return_type_check() {
         "module m\n\
          resource Book\n    title: string\n\
          store ^books(id: int): Book\n\n\
-         fn f(): int\n    return ^books(1).title\n",
+         fn f(): int\n    return ^books(1).title ?? \"\"\n",
         "check.return_type",
     );
     assert_eq!(found.len(), 1, "{found:#?}");
@@ -1808,13 +1808,14 @@ fn a_saved_field_read_feeds_the_return_type_check() {
 
 #[test]
 fn a_saved_field_read_feeds_operator_checks() {
-    // `currentVersion` is `int` from the schema, so `+ true` is int-plus-bool.
+    // `currentVersion` is `int` from the schema; resolved with `?? 0` it is a definite
+    // `int`, so `+ true` is the int-plus-bool operator mismatch.
     let found = check_module(
         "saved-field-op",
         "module m\n\
          resource Book\n    currentVersion: int\n\
          store ^books(id: int): Book\n\n\
-         fn f()\n    var x = ^books(1).currentVersion + true\n",
+         fn f()\n    var x = (^books(1).currentVersion ?? 0) + true\n",
         "check.operator_type",
     );
     assert_eq!(found.len(), 1, "{found:#?}");
@@ -2022,13 +2023,14 @@ fn a_correctly_typed_saved_field_read_is_not_flagged() {
 
 #[test]
 fn a_local_resource_field_read_feeds_operator_checks() {
-    // `book.title` is `string` from Book's schema, so `+ 1` is string-plus-int.
+    // `book.title` is `string` from Book's schema; resolved with `?? ""` it is a definite
+    // `string`, so `+ 1` is the string-plus-int operator mismatch.
     let found = check_module(
         "local-field-op",
         "module m\n\
          resource Book\n    title: string\n\
          store ^books(id: int): Book\n\n\
-         fn f()\n    var book: Book\n    var x = book.title + 1\n",
+         fn f()\n    var book: Book\n    var x = (book.title ?? \"\") + 1\n",
         "check.operator_type",
     );
     assert_eq!(found.len(), 1, "{found:#?}");
@@ -2092,14 +2094,15 @@ fn an_unknown_base_field_read_does_not_report_unknown_field() {
 
 #[test]
 fn a_whole_resource_read_into_a_local_types_its_fields() {
-    // `^books(1)` reads the whole record as a `Book`; `b.title` then resolves to
-    // `string` from the schema, so `+ 1` is string-plus-int.
+    // `^books(1)` reads the whole record as a maybe-present `Book?`; `if const`
+    // binds the present `Book`, `b.title` resolves to `string?`, and the `?? ""`
+    // default makes `+ 1` string-plus-int.
     let found = check_module(
         "whole-read-field",
         "module m\n\
          resource Book\n    title: string\n\
          store ^books(id: int): Book\n\n\
-         fn f()\n    var b = ^books(1)\n    var x = b.title + 1\n",
+         fn f()\n    if const b = ^books(1)\n        var x = (b.title ?? \"\") + 1\n",
         "check.operator_type",
     );
     assert_eq!(found.len(), 1, "{found:#?}");
@@ -2110,8 +2113,8 @@ fn a_local_resource_field_typed_as_a_resource_keeps_its_resource_shape() {
     let found = check_module(
         "local-resource-field-resource-type",
         "module m\n\
-         resource Address\n    city: string\n\n\
-         resource Person\n    address: Address\n\n\
+         resource Address\n    required city: string\n\n\
+         resource Person\n    required address: Address\n\n\
          fn f()\n    var person = Person(address: Address(city: \"Paris\"))\n    var x = person.address.city + 1\n",
         "check.operator_type",
     );
@@ -2143,7 +2146,7 @@ fn a_group_field_read_feeds_type_checks() {
         "module m\n\
          resource Book\n    versions(v: int)\n        title: string\n\
          store ^books(id: int): Book\n\n\
-         fn f(): int\n    return ^books(1).versions(2).title\n",
+         fn f(): int\n    return ^books(1).versions(2).title ?? \"\"\n",
         "check.return_type",
     );
     assert_eq!(found.len(), 1, "{found:#?}");
@@ -2160,7 +2163,7 @@ fn a_singleton_field_read_feeds_type_checks() {
         "module m\n\
          resource Settings\n    theme: string\n\
          store ^settings: Settings\n\n\
-         fn f(): int\n    return ^settings.theme\n",
+         fn f(): int\n    return ^settings.theme ?? \"\"\n",
         "check.return_type",
     );
     assert_eq!(found.len(), 1, "{found:#?}");
@@ -2217,7 +2220,7 @@ fn a_singleton_whole_read_requires_read_site_resolution() {
          fn snapshot(): Settings\n    return ^settings\n\n\
          fn restore(s: Settings)\n    ^settings = s\n",
     );
-    let found = with_code(&report, "check.bare_maybe_present_read");
+    let found = with_code(&report, "check.unresolved_optional");
     assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
 }
 
@@ -2232,7 +2235,7 @@ fn an_unkeyed_group_field_read_feeds_type_checks() {
          resource Patient\n\
          \x20   name\n        first: string\n        last: string\n\
          store ^patients(id: int): Patient\n\n\
-         fn f(): int\n    return ^patients(1).name.first\n",
+         fn f(): int\n    return ^patients(1).name.first ?? \"\"\n",
         "check.return_type",
     );
     assert_eq!(found.len(), 1, "{found:#?}");
@@ -2288,7 +2291,7 @@ fn a_keyed_leaf_read_feeds_type_checks() {
         "module m\n\
          resource Book\n    tags(pos: int): string\n\
          store ^books(id: int): Book\n\n\
-         fn f(): int\n    return ^books(1).tags(2)\n",
+         fn f(): int\n    return ^books(1).tags(2) ?? \"\"\n",
         "check.return_type",
     );
     assert_eq!(found.len(), 1, "{found:#?}");

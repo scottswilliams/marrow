@@ -579,7 +579,6 @@ fn collect_statement_type_refs(statement: &Statement, type_refs: &mut ByteRanges
         | Statement::CompoundAssign { .. }
         | Statement::Delete { .. }
         | Statement::Return { .. }
-        | Statement::ReturnAbsent { .. }
         | Statement::Break { .. }
         | Statement::Continue { .. }
         | Statement::Throw { .. }

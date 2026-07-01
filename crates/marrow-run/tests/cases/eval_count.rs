@@ -1,5 +1,5 @@
 //! `count` over the presence shapes: scalar and child paths, index branches,
-//! primary and composite roots, and agreement with `exists` / `std::assert::absent`.
+//! primary and composite roots, and agreement with `exists` / `std::assert::isAbsent`.
 
 use crate::support;
 use support::*;
@@ -390,7 +390,7 @@ pub fn iterActiveForStudent(student: string): int\n    var n = 0\n    for id in 
 
 /// A resource carrying both a keyed-leaf layer (`tags(pos: int): string`) and a
 /// GROUP layer (`versions(version: int)` with member fields). Used to prove that
-/// `exists`, `count`, and `std::assert::absent` agree with the actual stored path
+/// `exists`, `count`, and `std::assert::isAbsent` agree with the actual stored path
 /// for a keyed layer entry — the paths a record/field read or write lowers to.
 const BOOK_KEYED_PRESENCE: &str = "\
 resource Book
@@ -424,15 +424,15 @@ pub fn topLevelCount(id: int): int
     return count(^books(id).title)
 
 pub fn assertTagAbsent(id: int, pos: int)
-    std::assert::absent(^books(id).tags(pos))
+    std::assert::isAbsent(^books(id).tags(pos))
 
 pub fn assertVersionAbsent(id: int, ver: int)
-    std::assert::absent(^books(id).versions(ver))
+    std::assert::isAbsent(^books(id).versions(ver))
 ";
 
 // A keyed-leaf layer entry and a group-layer entry are stored under
 // `ChildLayer`/`IndexKey` segments — the same shape a normal read or write
-// lowers to. `exists`, `count`, and `std::assert::absent` must read that same
+// lowers to. `exists`, `count`, and `std::assert::isAbsent` must read that same
 // path, not a record-key mis-encoding, so they agree byte-for-byte with what is
 // actually stored.
 #[test]
@@ -480,7 +480,7 @@ fn exists_count_and_assert_absent_agree_over_a_present_keyed_layer_entry() {
         Some(Value::Int(1))
     );
 
-    // `std::assert::absent` over either written entry is a failed assertion, not a
+    // `std::assert::isAbsent` over either written entry is a failed assertion, not a
     // silent pass: the entry is present.
     assert_run_error(
         run_entry(
@@ -508,7 +508,7 @@ fn exists_count_and_assert_absent_agree_over_a_present_keyed_layer_entry() {
     );
 
     // An absent keyed-leaf entry and an absent group entry report absent: `exists`
-    // is false and `std::assert::absent` passes.
+    // is false and `std::assert::isAbsent` passes.
     assert_eq!(
         call(checked_entry!(
             &program,

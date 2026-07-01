@@ -505,7 +505,6 @@ impl<'a> DeclParser<'a> {
                     public: false,
                     name: String::new(),
                     params: Vec::new(),
-                    return_presence: crate::FunctionReturnPresence::Always,
                     return_type: None,
                 }
             }
@@ -529,7 +528,6 @@ impl<'a> DeclParser<'a> {
             public: head.public,
             name: head.name,
             params: head.params,
-            return_presence: head.return_presence,
             return_type: head.return_type,
             body,
             span,

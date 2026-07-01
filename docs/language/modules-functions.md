@@ -100,45 +100,34 @@ fn remove(id: Id(^books))
     delete ^books(id)
 ```
 
-Spell `maybe` before a function return type when the function may return absence
-instead of a value:
+Write a return type as `T?` when the function may yield absence instead of a
+value. `T?` is the optional type — a `T` or absence (see
+[Types](types.md#optional-types-t)):
 
 ```mw
-fn findSubtitle(id: int): maybe string
+fn findSubtitle(id: int): string?
     return ^books(id).subtitle
 ```
 
-`maybe` is valid only in this return-type position. It is not a parameter,
-field, saved-data, local, keyed-tree, or nested-data type wrapper.
+The `?` suffix is a first-class code type: it is equally valid on a parameter and
+a local annotation. It never marks a field, key, keyed leaf, or sequence element,
+where a sparse slot already provides absence.
 
-Every value-returning function, including a maybe-returning function, must return
-on every reachable path. Plain fall-through is a missing-return error. Inside a
-maybe-returning function, `return absent` exits with absence:
-
-```mw
-fn pick(flag: bool): maybe int
-    if flag
-        return 1
-    return absent
-```
-
-`return absent` is valid only as the entire return expression of a
-maybe-returning function. Plain `return` in a maybe-returning function is still a
-return-value error.
-
-A maybe-returning function may propagate absence by returning a maybe-present
-saved read or another maybe-returning call:
+Every value-returning function must return on every reachable path; plain
+fall-through is a missing-return error. `absent`, the empty optional, is an
+ordinary value assignable to any `T?` place, so a `T?` function may yield it
+directly or return a maybe-present read that carries absence outward:
 
 ```mw
-fn inner(id: int): maybe string
+fn inner(id: int): string?
     return ^books(id).subtitle
 
-fn outer(id: int): maybe string
+fn outer(id: int): string?
     return inner(id)
 ```
 
-The caller resolves the maybe-present result at its own call site with `??`, `if
-const`, or `exists(...)`. An unresolved maybe-returning call is a compile error.
+The caller resolves the `T?` result at its own call site with `??`, `if const`,
+or `exists(...)`. An unresolved `T?` call is a compile error.
 
 Functions are not overloaded by parameter type. A module has one declaration
 for a function name. v0.1 has no user-defined generic functions.

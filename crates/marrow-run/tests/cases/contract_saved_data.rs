@@ -34,7 +34,7 @@ pub fn whole(id: int): Book
         return book
     return fallback
 
-pub fn maybe_whole(id: int): maybe Book
+pub fn maybe_whole(id: int): Book?
     return ^books(id)
 
 pub fn maybe_whole_or_fallback(id: int): Book

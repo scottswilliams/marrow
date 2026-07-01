@@ -300,6 +300,11 @@ fn reinserts_minimal_parentheses_for_precedence() {
         ("(a or b) and c", "(a or b) and c"),
         ("(count ?? 0) < 5", "count ?? 0 < 5"),
         ("(start ?? 1)..n", "start ?? 1..n"),
+        // `??` is right-associative, so the right operand of a chain stays bare
+        // while a left grouping keeps its parentheses.
+        ("a ?? b ?? c", "a ?? b ?? c"),
+        ("a ?? (b ?? c)", "a ?? b ?? c"),
+        ("(a ?? b) ?? c", "(a ?? b) ?? c"),
     ];
     for (input, expected) in cases {
         assert_eq!(format_const_value(input), expected, "input {input:?}");
@@ -540,14 +545,14 @@ fn formats_function_declaration_with_params() {
 }
 
 #[test]
-fn formats_maybe_function_return_and_return_absent() {
+fn formats_optional_function_return_and_absent_value() {
     let source = "module app\n\
-         fn f(): maybe int\n\
+         fn f(): int?\n\
          \x20   return absent\n";
 
     assert_eq!(
         format_source(source),
-        "module app\n\nfn f(): maybe int\n    return absent\n"
+        "module app\n\nfn f(): int?\n    return absent\n"
     );
 }
 

@@ -3,7 +3,7 @@
 //! read is rejected, and an effectful argument is never admitted into a guard.
 
 use crate::support;
-use marrow_check::CHECK_BARE_MAYBE_PRESENT_READ;
+use marrow_check::CHECK_UNRESOLVED_OPTIONAL;
 
 use support::{check_module_report, with_code};
 
@@ -15,7 +15,7 @@ fn assert_clean(name: &str, src: &str) {
 fn assert_bare_read(name: &str, src: &str) {
     let report = check_module_report(name, src);
     assert!(
-        !with_code(&report, CHECK_BARE_MAYBE_PRESENT_READ).is_empty(),
+        !with_code(&report, CHECK_UNRESOLVED_OPTIONAL).is_empty(),
         "{:#?}",
         report.diagnostics
     );
@@ -900,5 +900,62 @@ fn guards_resolve_a_nested_neighbor_read_keyed_by_a_pure_argument() {
             "{SAVED_KEY_EFFECT_PRELUDE}\x20   if exists(next(next(^books(1))))\n\
              \x20       print(1)\n"
         ),
+    );
+}
+
+/// A `local const`/`var` whose type is `T?` is a guardable place uniform with a
+/// saved read: `exists(v)` is accepted and narrows `v` to `T` in the guarded block,
+/// matching `if const` and `??` on the same local.
+#[test]
+fn exists_accepts_a_local_optional_and_narrows_it() {
+    assert_clean(
+        "exists-local-optional",
+        "module m\n\
+         fn pick(flag: bool): string?\n\
+         \x20   if flag\n\
+         \x20       return \"x\"\n\
+         \x20   return absent\n\
+         fn f(flag: bool): string\n\
+         \x20   const v = pick(flag)\n\
+         \x20   if exists(v)\n\
+         \x20       return v\n\
+         \x20   return \"default\"\n",
+    );
+}
+
+/// Without a guard the local optional stays `T?`, so reading it where a `T` return
+/// is required is the one rule.
+#[test]
+fn a_bare_local_optional_read_is_the_one_rule() {
+    assert_bare_read(
+        "bare-local-optional",
+        "module m\n\
+         fn pick(flag: bool): string?\n\
+         \x20   if flag\n\
+         \x20       return \"x\"\n\
+         \x20   return absent\n\
+         fn f(flag: bool): string\n\
+         \x20   const v = pick(flag)\n\
+         \x20   return v\n",
+    );
+}
+
+/// A `var` reassignment inside the guard could land an absent value, so the local
+/// narrowing is dropped and a following read re-triggers the one rule.
+#[test]
+fn a_reassigned_local_optional_re_triggers_the_one_rule() {
+    assert_bare_read(
+        "reassigned-local-optional",
+        "module m\n\
+         fn pick(flag: bool): string?\n\
+         \x20   if flag\n\
+         \x20       return \"x\"\n\
+         \x20   return absent\n\
+         fn f(flag: bool): string\n\
+         \x20   var v = pick(flag)\n\
+         \x20   if exists(v)\n\
+         \x20       v = pick(flag)\n\
+         \x20       return v\n\
+         \x20   return \"default\"\n",
     );
 }

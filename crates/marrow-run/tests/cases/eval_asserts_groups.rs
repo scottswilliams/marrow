@@ -98,7 +98,7 @@ fn std_assert_absent_passes_when_nothing_is_saved() {
     let program = checked_program(
         "resource Book\n    title: string\nstore ^books(id: int): Book\n\
          \n\
-         pub fn ok()\n    std::assert::absent(^books(1))\n",
+         pub fn ok()\n    std::assert::isAbsent(^books(1))\n",
     );
     assert_eq!(run(checked_entry!(&program, "test::ok")), Ok(None));
 }
@@ -108,7 +108,7 @@ fn std_assert_absent_fails_when_a_value_is_present() {
     let program = checked_program(
         "resource Book\n    title: string\nstore ^books(id: int): Book\n\
          \n\
-         pub fn bad()\n    std::assert::absent(^books(1))\n",
+         pub fn bad()\n    std::assert::isAbsent(^books(1))\n",
     );
     let store = empty_store();
     write_data_value(
@@ -123,6 +123,24 @@ fn std_assert_absent_fails_when_a_value_is_present() {
         run_entry(&store, checked_entry!(&program, "test::bad")),
         RUN_ASSERT,
     );
+}
+
+#[test]
+fn std_assert_absent_passes_for_an_absent_local_optional() {
+    // `isAbsent` accepts any optional value, resolving a local `T?` to its
+    // `Option<Value>` like `exists` does.
+    let program = checked_program(
+        "pub fn ok()\n    const x: string? = absent\n    std::assert::isAbsent(x)\n",
+    );
+    assert_eq!(run(checked_entry!(&program, "test::ok")), Ok(None));
+}
+
+#[test]
+fn std_assert_absent_fails_for_a_present_local_optional() {
+    let program = checked_program(
+        "pub fn bad()\n    const x: string? = \"here\"\n    std::assert::isAbsent(x)\n",
+    );
+    assert_run_error(run(checked_entry!(&program, "test::bad")), RUN_ASSERT);
 }
 
 #[test]

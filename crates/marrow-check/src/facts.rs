@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use marrow_schema::stdlib::Capability;
-use marrow_schema::{NodeKind, ReturnPresence, ScalarType, Type};
+use marrow_schema::{NodeKind, ScalarType, Type};
 use marrow_store::key::{SavedKey, decode_identity_payload_arity, encode_identity_index_key};
 use marrow_store::tree::decode_tree_enum_member;
 use marrow_store::value::{decode_value, scalar_key_matches_type};
@@ -99,7 +99,6 @@ pub struct CheckedFacts {
     /// its owning store through here before narrowing to the declaring module, so the
     /// former whole-program scan no longer made store-heavy checking quadratic.
     store_id_by_root: HashMap<String, StoreId>,
-    presence_proofs: Vec<PresenceProofFact>,
     durable_digest_captured_modules: Vec<u32>,
     durable_digest_renderings: Vec<DurableRendering>,
 }
@@ -386,10 +385,6 @@ impl CheckedFacts {
         false
     }
 
-    pub fn presence_proofs(&self) -> &[PresenceProofFact] {
-        &self.presence_proofs
-    }
-
     pub(crate) fn bind_catalog_ids(
         &mut self,
         modules: &[CheckedModule],
@@ -530,29 +525,6 @@ impl CheckedFacts {
                 proposal_id(ids, marrow_catalog::CatalogEntryKind::EnumMember, path)
             });
         }
-    }
-
-    pub(crate) fn record_presence_proof(&mut self, proof: PresenceProofDraft) {
-        if self.presence_proofs.iter().any(|existing| {
-            existing.place == proof.place
-                && existing.keys == proof.keys
-                && existing.read == proof.read
-                && existing.source == proof.source
-                && existing.status == proof.status
-                && existing.span == proof.span
-        }) {
-            return;
-        }
-        let id = PresenceProofId(self.presence_proofs.len() as u32);
-        self.presence_proofs.push(PresenceProofFact {
-            id,
-            place: proof.place,
-            keys: proof.keys,
-            read: proof.read,
-            source: proof.source,
-            status: proof.status,
-            span: proof.span,
-        });
     }
 
     pub(crate) fn refresh_direct_effects(&mut self, modules: &[CheckedModule]) {
@@ -706,7 +678,6 @@ impl CheckedFacts {
             public: function.public,
             params,
             return_type,
-            return_presence: function.return_presence,
             direct_effects: DirectEffectFacts::default(),
             source_index,
             span: function.span,
@@ -1111,6 +1082,11 @@ impl CheckedFacts {
             Type::Sequence(element) => self
                 .checked_type_from_resolved_type(module_id, element, aliases)
                 .map(|element| CheckedType::Sequence(Box::new(element))),
+            // The fact-level type is the present-arm value type; optionality is read
+            // off the source return type, so the fact type strips it.
+            Type::Optional(inner) => {
+                self.checked_type_from_resolved_type(module_id, inner, aliases)
+            }
             Type::Unknown => None,
         }
     }
@@ -1146,7 +1122,10 @@ impl CheckedFacts {
                 let value = Box::new(self.checked_type(module_id, value)?);
                 Some(CheckedType::LocalTree { keys, value })
             }
-            MarrowType::Invalid | MarrowType::Unknown => None,
+            // The fact-level type is the present-arm value type; the empty optional
+            // has no fact type of its own.
+            MarrowType::Optional(inner) => self.checked_type(module_id, inner),
+            MarrowType::Absent | MarrowType::Invalid | MarrowType::Unknown => None,
         }
     }
 
@@ -1226,7 +1205,9 @@ impl CheckedFacts {
                     members: self.selectable_enum_members(enum_id),
                 })
             }
-            Type::Sequence(_) | Type::Unknown => None,
+            // A durable leaf is never optional (the slot choke-point enforces this),
+            // so an optional carries no stored-value meaning.
+            Type::Optional(_) | Type::Sequence(_) | Type::Unknown => None,
         }
     }
 
@@ -1576,7 +1557,6 @@ pub struct FunctionFact {
     pub public: bool,
     pub params: Vec<LocalFact>,
     pub return_type: Option<CheckedType>,
-    pub return_presence: ReturnPresence,
     pub direct_effects: DirectEffectFacts,
     /// Position of the source function in its module's `functions`. A fact is
     /// built only when its signature resolves, so the facts are a subset of the
@@ -1781,52 +1761,14 @@ pub enum EntryStoreOpenMode {
     WriteCapable,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PresenceProofFact {
-    pub id: PresenceProofId,
-    pub place: PresenceProofPlace,
-    pub keys: Vec<String>,
-    pub read: PresenceProofRead,
-    pub source: PresenceProofSource,
-    pub status: PresenceProofStatus,
-    pub span: SourceSpan,
-}
-
-pub(crate) struct PresenceProofDraft {
-    pub(crate) place: PresenceProofPlace,
-    pub(crate) keys: Vec<String>,
-    pub(crate) read: PresenceProofRead,
-    pub(crate) source: PresenceProofSource,
-    pub(crate) status: PresenceProofStatus,
-    pub(crate) span: SourceSpan,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct PresenceProofId(pub u32);
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum PresenceProofPlace {
-    Saved(SavedPlaceEffect),
-    StoreIndex(StoreIndexId),
-}
-
+/// How a maybe-present saved read reaches its value: directly, or through a
+/// `next`/`prev` neighbor seek. Carried by a narrowing read target so a neighbor
+/// read narrows like any other maybe-present value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PresenceProofRead {
+pub(crate) enum ReadKind {
     Direct,
     Next,
     Prev,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PresenceProofSource {
-    Narrowing,
-    AttachedData,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PresenceProofStatus {
-    Discharged,
-    PendingAttachedData,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

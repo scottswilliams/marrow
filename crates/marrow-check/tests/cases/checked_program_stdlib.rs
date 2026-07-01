@@ -161,7 +161,7 @@ fn std_text_index_of_is_maybe_present() {
     });
     let (report, _) = check_project(&root, &config()).expect("check");
 
-    let found = with_code(&report, "check.bare_maybe_present_read");
+    let found = with_code(&report, "check.unresolved_optional");
     assert_eq!(found.len(), 1, "{:#?}", report.diagnostics);
 }
 

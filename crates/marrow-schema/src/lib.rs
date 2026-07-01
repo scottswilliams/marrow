@@ -9,7 +9,6 @@
 mod compile;
 mod enums;
 mod errors;
-mod presence;
 mod types;
 mod validate;
 
@@ -25,12 +24,11 @@ pub use enums::{EnumMemberSchema, EnumSchema, MemberPathResolution};
 pub use errors::{
     SCHEMA_CATEGORY_LEAF, SCHEMA_DUPLICATE_MEMBER, SCHEMA_INDEX_MISSING_IDENTITY_KEYS,
     SCHEMA_INDEX_REQUIRES_KEYED_ROOT, SCHEMA_KEY_MEMBER_COLLISION, SCHEMA_NESTED_INDEX_ARG,
-    SCHEMA_NON_ENUM_NAMED_FIELD, SCHEMA_NONSCALAR_KEY, SCHEMA_PARENT_NOT_CATEGORY,
-    SCHEMA_UNKNOWN_IN_SAVED, SCHEMA_UNKNOWN_INDEX_ARG, SCHEMA_UNORDERABLE_KEY,
-    SchemaDuplicateTarget, SchemaError, SchemaErrorKind, SchemaKeyTarget, SchemaNameCollision,
-    SchemaSavedUnknownTarget, SchemaStoreInvalidation,
+    SCHEMA_NON_ENUM_NAMED_FIELD, SCHEMA_NONSCALAR_KEY, SCHEMA_OPTIONAL_IN_SAVED,
+    SCHEMA_PARENT_NOT_CATEGORY, SCHEMA_UNKNOWN_IN_SAVED, SCHEMA_UNKNOWN_INDEX_ARG,
+    SCHEMA_UNORDERABLE_KEY, SchemaDuplicateTarget, SchemaError, SchemaErrorKind, SchemaKeyTarget,
+    SchemaNameCollision, SchemaSavedPosition, SchemaStoreInvalidation,
 };
-pub use presence::ReturnPresence;
 pub use types::{
     IndexSchema, KeyDef, Node, NodeKind, ResourceSchema, StoreSchema, Type, is_error_code_spelling,
     scalar_type_from_name,

@@ -4,7 +4,7 @@ use marrow_syntax::SourceSpan;
 
 use crate::env::Env;
 use crate::error::{RuntimeError, unsupported};
-use crate::expr::eval_expr;
+use crate::expr::eval_optional;
 use crate::index_maintenance::IndexWriteContext;
 use crate::path::{SavedPath, Terminal, lower};
 use crate::statement::coerce_error_code_value;
@@ -15,9 +15,15 @@ use crate::write::{
     plan_identity_field_write, plan_nested_field_write, plan_nested_identity_field_write,
     validate_required_fields_after_field_write,
 };
+use crate::write_dispatch::eval_delete;
 use crate::write_dispatch::required::created_required_field_path;
 use crate::write_plan::WritePlan;
 
+/// Assign a value into a sparse or nested saved field: present writes the leaf,
+/// absent routes to the same node-delete planner `delete ^p.f` uses, clearing the
+/// node and maintaining its indexes in one transaction (present-or-clear). A
+/// `required` field rejects a bare optional at check time, so the clear arm is only
+/// reached for a sparse place.
 pub(crate) fn eval_saved_field_write(
     target: &ExecExpr,
     value: &ExecExpr,
@@ -25,8 +31,10 @@ pub(crate) fn eval_saved_field_write(
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<(), RuntimeError> {
-    let value = eval_expr(value, env)?;
-    eval_saved_field_write_value(target, value, coerce_error_code, span, env)
+    match eval_optional(value, env)? {
+        Some(value) => eval_saved_field_write_value(target, value, coerce_error_code, span, env),
+        None => eval_delete(target, span, env),
+    }
 }
 
 pub(crate) fn eval_saved_field_write_value(

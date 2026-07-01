@@ -154,7 +154,6 @@ fn walk_statement_type_refs(statement: &Statement, visit: &mut impl FnMut(&TypeR
         | Statement::CompoundAssign { .. }
         | Statement::Delete { .. }
         | Statement::Return { .. }
-        | Statement::ReturnAbsent { .. }
         | Statement::Break { .. }
         | Statement::Continue { .. }
         | Statement::Throw { .. }

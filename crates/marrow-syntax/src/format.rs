@@ -10,9 +10,8 @@
 use crate::{
     Argument, BinaryOp, Block, CatchClause, Comment, CommentMarker, CommentPlacement, ConstDecl,
     Declaration, ElseIf, EnumDecl, EnumMember, EvolveDecl, EvolveStep, Expression, ForBinding,
-    FunctionDecl, FunctionReturnPresence, InterpolationPart, KeyParam, MatchArm, ParamDecl,
-    ResourceDecl, ResourceMember, Statement, StoreDecl, SurfaceDecl, SurfaceItem, SurfaceTarget,
-    TokenKind, TypeRef, UnaryOp,
+    FunctionDecl, InterpolationPart, KeyParam, MatchArm, ParamDecl, ResourceDecl, ResourceMember,
+    Statement, StoreDecl, SurfaceDecl, SurfaceItem, SurfaceTarget, TokenKind, TypeRef, UnaryOp,
 };
 
 /// Precedence used to decide where parentheses are required, tightest-binding
@@ -390,7 +389,6 @@ fn strip_statement_block_comments(statement: &mut Statement) {
         | Statement::CompoundAssign { .. }
         | Statement::Delete { .. }
         | Statement::Return { .. }
-        | Statement::ReturnAbsent { .. }
         | Statement::Break { .. }
         | Statement::Continue { .. }
         | Statement::Throw { .. }
@@ -872,7 +870,7 @@ fn format_function(source: &str, decl: &FunctionDecl) -> String {
         "{visibility}fn {}({}){}",
         decl.name,
         format_params(&decl.params),
-        format_function_return_type(decl.return_presence, &decl.return_type)
+        format_type_annotation(&decl.return_type)
     ));
     let body = format_block(source, &decl.body, 1);
     if !body.is_empty() {
@@ -1171,7 +1169,6 @@ fn format_statement_with_comments(
             Some(value) => format!("{pad}return {}", format_expression_at(value, level)),
             None => format!("{pad}return"),
         },
-        Statement::ReturnAbsent { .. } => format!("{pad}return absent"),
         Statement::Break { .. } => format!("{pad}break"),
         Statement::Continue { .. } => format!("{pad}continue"),
         Statement::Throw { value, .. } => {
@@ -1529,14 +1526,6 @@ fn format_type_annotation(ty: &Option<TypeRef>) -> String {
     }
 }
 
-fn format_function_return_type(presence: FunctionReturnPresence, ty: &Option<TypeRef>) -> String {
-    match (presence, ty) {
-        (FunctionReturnPresence::Always, Some(ty)) => format!(": {ty}"),
-        (FunctionReturnPresence::MaybePresent, Some(ty)) => format!(": maybe {ty}"),
-        (_, None) => String::new(),
-    }
-}
-
 fn format_key_params(keys: &[KeyParam]) -> String {
     if keys.is_empty() {
         return String::new();
@@ -1574,6 +1563,7 @@ fn format_expression_layout(expression: &Expression, level: usize, layout: Layou
         Expression::Literal { text, .. } => text.clone(),
         Expression::Name { segments, .. } => segments.join("::"),
         Expression::SavedRoot { name, .. } => format!("^{name}"),
+        Expression::Absent { .. } => "absent".to_string(),
         Expression::Call {
             callee,
             args,
@@ -1680,13 +1670,12 @@ fn format_binary_at(
     layout: Layout,
 ) -> String {
     let precedence = binary_precedence(op);
-    // A left-associative operator keeps an equal-precedence left operand bare but
-    // parenthesizes an equal right operand; a non-associative one parenthesizes
-    // either equal side.
-    let (left_min, right_min) = if is_left_associative(op) {
-        (precedence, precedence + 1)
-    } else {
-        (precedence + 1, precedence + 1)
+    // The associative side keeps an equal-precedence operand bare; the other side
+    // parenthesizes one. A non-associative operator parenthesizes either equal side.
+    let (left_min, right_min) = match associativity(op) {
+        Associativity::Left => (precedence, precedence + 1),
+        Associativity::Right => (precedence + 1, precedence),
+        Associativity::None => (precedence + 1, precedence + 1),
     };
     let left = format_child_at(left, left_min, level, layout);
     let right = format_child_at(right, right_min, level, layout);
@@ -1765,23 +1754,29 @@ fn binary_precedence(op: BinaryOp) -> u8 {
     }
 }
 
-/// Equality, `is`, `??`, comparison, and range are non-associative per the
-/// grammar and need parentheses on either equal-precedence side; every other
-/// binary operator is left-associative.
-fn is_left_associative(op: BinaryOp) -> bool {
-    !matches!(
-        op,
+enum Associativity {
+    Left,
+    Right,
+    None,
+}
+
+/// `??` is right-associative (`a ?? b ?? c` is `a ?? (b ?? c)`). Equality, `is`,
+/// comparison, and range are non-associative per the grammar and need parentheses
+/// on either equal-precedence side; every other binary operator is left-associative.
+fn associativity(op: BinaryOp) -> Associativity {
+    match op {
+        BinaryOp::Coalesce => Associativity::Right,
         BinaryOp::Is
-            | BinaryOp::Equal
-            | BinaryOp::NotEqual
-            | BinaryOp::Coalesce
-            | BinaryOp::Less
-            | BinaryOp::LessEqual
-            | BinaryOp::Greater
-            | BinaryOp::GreaterEqual
-            | BinaryOp::RangeExclusive
-            | BinaryOp::RangeInclusive
-    )
+        | BinaryOp::Equal
+        | BinaryOp::NotEqual
+        | BinaryOp::Less
+        | BinaryOp::LessEqual
+        | BinaryOp::Greater
+        | BinaryOp::GreaterEqual
+        | BinaryOp::RangeExclusive
+        | BinaryOp::RangeInclusive => Associativity::None,
+        _ => Associativity::Left,
+    }
 }
 
 fn binary_symbol(op: BinaryOp) -> &'static str {

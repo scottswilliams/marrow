@@ -236,9 +236,9 @@ fn maybe_return_propagates_empty_neighbor_absence() {
         "resource Book\n\
          \x20   required title: string\n\
          store ^books(id: int): Book\n\n\
-         fn maybeNext(): maybe Id(^books)\n\
+         fn maybeNext(): Id(^books)?\n\
          \x20   return next(^books)\n\n\
-         fn maybePrev(): maybe Id(^books)\n\
+         fn maybePrev(): Id(^books)?\n\
          \x20   return prev(^books)\n\n\
          pub fn nextFallback(): bool\n\
          \x20   const id: Id(^books) = maybeNext() ?? Id(^books, 1)\n\

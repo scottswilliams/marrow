@@ -1,42 +1,31 @@
-use marrow_schema::ReturnPresence;
-use marrow_schema::stdlib::{self, ParamType};
+use marrow_schema::stdlib::{self, ReturnType};
 
-use crate::facts::PresenceProofRead;
-use crate::{CheckedBuiltinCall, CheckedCallTarget, CheckedExpr};
+use crate::facts::ReadKind;
+use crate::{CheckedBuiltinCall, CheckedCallTarget, CheckedExpr, CheckedProgram, MarrowType};
 
-/// The positional path-argument mask of a resolved `std::module::op` call: which
-/// of its arguments name saved data rather than plain values. Derived from the
-/// typed [`CheckedCallTarget::Std`] the checker already resolved, not from the
-/// callee's name segments.
-pub(super) fn std_path_arg_mask(target: &CheckedCallTarget) -> Option<Vec<bool>> {
-    let CheckedCallTarget::Std(std) = target else {
-        return None;
-    };
-    Some(
-        stdlib::lookup(std.module, std.op)?
-            .params
-            .iter()
-            .map(|param| matches!(param, ParamType::Path))
-            .collect(),
-    )
-}
-
-pub(crate) fn maybe_present_result(target: &CheckedCallTarget) -> bool {
-    matches!(
-        target,
-        CheckedCallTarget::Std(std) if std.presence == ReturnPresence::MaybePresent
-    ) || matches!(
-        target,
-        CheckedCallTarget::Function(function) if function.presence == ReturnPresence::MaybePresent
-    )
+/// Whether a call's result is maybe-present (`T?`), read off the return type
+/// rather than a parallel presence flag: a std op declared `OptionalScalar`, or a
+/// user function whose declared return type is [`MarrowType::Optional`].
+pub(crate) fn maybe_present_result(program: &CheckedProgram, target: &CheckedCallTarget) -> bool {
+    match target {
+        CheckedCallTarget::Std(std) => stdlib::lookup(std.module, std.op)
+            .is_some_and(|op| matches!(op.ret, ReturnType::OptionalScalar(_))),
+        CheckedCallTarget::Function(function) => program
+            .modules
+            .get(function.module as usize)
+            .and_then(|module| module.functions.get(function.function as usize))
+            .and_then(|function| function.return_type.as_ref())
+            .is_some_and(|ty| matches!(ty, MarrowType::Optional(_))),
+        _ => false,
+    }
 }
 
 /// The neighbor read a `next`/`prev` call records, resolved from the call's typed
 /// builtin target.
-pub(super) fn neighbor_read(target: &CheckedCallTarget) -> Option<PresenceProofRead> {
+pub(super) fn neighbor_read(target: &CheckedCallTarget) -> Option<ReadKind> {
     match target {
-        CheckedCallTarget::Builtin(CheckedBuiltinCall::Next) => Some(PresenceProofRead::Next),
-        CheckedCallTarget::Builtin(CheckedBuiltinCall::Prev) => Some(PresenceProofRead::Prev),
+        CheckedCallTarget::Builtin(CheckedBuiltinCall::Next) => Some(ReadKind::Next),
+        CheckedCallTarget::Builtin(CheckedBuiltinCall::Prev) => Some(ReadKind::Prev),
         _ => None,
     }
 }

@@ -6,8 +6,8 @@ use marrow_check::{
     CheckedArg as ExecArg, CheckedBuiltinCall, CheckedCallTarget, CheckedExpr as ExecExpr,
     CheckedFunctionRef, CheckedRuntimeFunction, CheckedRuntimeModule, CheckedRuntimeProgram,
 };
+use marrow_schema::ScalarType;
 use marrow_schema::stdlib::Capability;
-use marrow_schema::{ReturnPresence, ScalarType};
 use marrow_syntax::SourceSpan;
 
 use crate::activation::{Completion, Invocation, complete_call, executable_body, invoke};
@@ -18,8 +18,8 @@ use crate::collection::{
 use crate::durable_read::{eval_index_lookup, eval_resource_read, eval_saved_layer_read};
 use crate::env::{Context, Env};
 use crate::error::{
-    CALL_DEPTH_BUDGET, RUN_ABSENT, RUN_UNKNOWN_FUNCTION, RuntimeError, call_depth_exceeded,
-    type_error, unsupported,
+    CALL_DEPTH_BUDGET, RUN_UNKNOWN_FUNCTION, RuntimeError, call_depth_exceeded, type_error,
+    unsupported,
 };
 use crate::expr::eval_expr;
 use crate::host_effects::{eval_clock_capability, eval_context, eval_env, eval_io, eval_log};
@@ -64,46 +64,6 @@ pub(crate) fn eval_call(
     }
 }
 
-pub(crate) fn call_target_maybe_present(target: &CheckedCallTarget) -> bool {
-    match target {
-        CheckedCallTarget::Std(std) => std.presence == ReturnPresence::MaybePresent,
-        CheckedCallTarget::Function(function) => function.presence == ReturnPresence::MaybePresent,
-        _ => false,
-    }
-}
-
-pub(crate) fn expr_call_maybe_present(expr: &ExecExpr) -> bool {
-    match expr {
-        ExecExpr::Call { target, .. } => call_target_maybe_present(target),
-        _ => false,
-    }
-}
-
-pub(crate) fn expr_return_absence_can_propagate(expr: &ExecExpr) -> bool {
-    match expr {
-        ExecExpr::Call { target, .. } => {
-            expr_call_maybe_present(expr)
-                || matches!(
-                    target,
-                    CheckedCallTarget::SavedIndexLookup
-                        | CheckedCallTarget::SavedLayerRead
-                        | CheckedCallTarget::SavedResourceRead
-                        | CheckedCallTarget::Builtin(
-                            CheckedBuiltinCall::Next | CheckedBuiltinCall::Prev
-                        )
-                )
-        }
-        ExecExpr::SavedRoot { .. } | ExecExpr::Field { .. } | ExecExpr::OptionalField { .. } => {
-            expr.saved_place().is_some()
-        }
-        _ => false,
-    }
-}
-
-pub(crate) fn expression_absent_at_resolution_site(expr: &ExecExpr, error: &RuntimeError) -> bool {
-    error.code() == RUN_ABSENT && error.is_catchable() && error.span == expr.span()
-}
-
 fn eval_program_function<'p>(
     module: &'p CheckedRuntimeModule,
     function: &'p CheckedRuntimeFunction,
@@ -113,7 +73,15 @@ fn eval_program_function<'p>(
 ) -> Result<Option<Value>, RuntimeError> {
     let values = bind_arguments(&function.params, args, span, env)?;
     let completion = invoke_function(env, module, function, &values, span)?;
-    complete_call(completion)
+    let result = complete_call(completion)?;
+    // A `T?`-returning function that returns absent completes with no value; that
+    // completion is the empty optional, not a void call. Carry it as the real
+    // optional value so a call expression, argument, or binding sees `Value::Absent`
+    // rather than the `run.no_value` a genuinely void call raises.
+    Ok(match result {
+        None if function.returns_maybe_present() => Some(Value::Absent),
+        result => result,
+    })
 }
 
 /// Runs `function` as a child activation of `env`, moving the debugger hook into
@@ -257,7 +225,7 @@ fn eval_std_call(
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<Option<Value>, RuntimeError> {
-    let result = match target.requires_capability {
+    match target.requires_capability {
         Some(Capability::Clock) => eval_clock_capability(target.op, args, span, env).map(Some),
         Some(Capability::Context) => eval_context(target.op, args, span, env).map(Some),
         Some(Capability::Environment) => eval_env(target.op, args, span, env).map(Some),
@@ -265,15 +233,5 @@ fn eval_std_call(
         Some(Capability::Filesystem) => eval_io(target.op, args, span, env),
         None if target.module == "assert" => eval_assert(target.op, args, span, env),
         None => eval_std(target.module, target.op, args, span, env).map(Some),
-    };
-    match result {
-        Err(error)
-            if target.presence == ReturnPresence::MaybePresent
-                && error.code() == RUN_ABSENT
-                && error.span == span =>
-        {
-            Ok(None)
-        }
-        other => other,
     }
 }

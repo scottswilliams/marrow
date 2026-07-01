@@ -13,7 +13,10 @@ use crate::diagnostics::CHECK_SEQUENCE_POSITION;
 use crate::executable::{
     SavedKeyParamTarget, SavedPlaceResolver, is_single_int_sequence, lower_expr_for_file,
 };
-use crate::typerules::{is_ordered, marrow_type_name, type_compatible};
+use crate::typerules::{
+    is_optional_value, is_ordered, marrow_type_name, type_compatible,
+    unresolved_optional_diagnostic,
+};
 use crate::{
     CheckDiagnostic, CheckedProgram, CheckedSavedIndexKey, CheckedSavedKeyParam, CheckedSavedPlace,
     CheckedSavedTerminal, MarrowType, TypeNames, identity_type_for_store,
@@ -333,6 +336,9 @@ fn check_supplied_layer_keys(
             );
             continue;
         }
+        if reject_optional_key_arg(arg_type, span, file, diagnostics) {
+            continue;
+        }
         if !saved_key_arg_matches(&expected, arg_type) {
             diagnostics.push(key_type_diagnostic(
                 file,
@@ -520,6 +526,9 @@ fn check_index_args_against(
                 file,
                 diagnostics,
             );
+            continue;
+        }
+        if reject_optional_key_arg(arg_type, span, file, diagnostics) {
             continue;
         }
         if !saved_key_arg_matches(&expected, arg_type) {
@@ -714,6 +723,9 @@ pub(crate) fn check_keys_against(
     }
     for (key, arg_type) in keys.iter().zip(arg_types) {
         let expected = MarrowType::from_resolved(key.ty.clone(), TypeNames::default());
+        if reject_optional_key_arg(arg_type, span, file, diagnostics) {
+            continue;
+        }
         if !saved_key_arg_matches(&expected, arg_type) {
             diagnostics.push(key_type_diagnostic(
                 file,
@@ -734,4 +746,21 @@ fn saved_key_arg_matches(expected: &MarrowType, actual: &MarrowType) -> bool {
         return false;
     }
     type_compatible(expected, actual) != Some(false)
+}
+
+/// A key must be present to address a node, so a maybe-present (`T?`) key argument is the
+/// one rule. Routing it through the shared helper before the generic key-type mismatch
+/// names the four resolution forms, consistent with the value slot sites. Returns whether
+/// the argument was rejected as optional.
+fn reject_optional_key_arg(
+    arg_type: &MarrowType,
+    span: SourceSpan,
+    file: &Path,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) -> bool {
+    if is_optional_value(arg_type) {
+        diagnostics.push(unresolved_optional_diagnostic(file, span));
+        return true;
+    }
+    false
 }

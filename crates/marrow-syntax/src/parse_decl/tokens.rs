@@ -242,16 +242,6 @@ pub(super) fn reject_structural_type_tokens(
             format!("type nests deeper than the limit of {NESTING_DEPTH_LIMIT}"),
         ));
     }
-    if let Some(maybe) = tokens
-        .iter()
-        .find(|token| matches!(token.kind, TokenKind::Keyword(Keyword::Maybe)))
-    {
-        return Err(ParseError::at(
-            maybe.span,
-            ParseDiagnosticReason::Expected(expected),
-            "`maybe` is only valid before a function return type",
-        ));
-    }
     if let Some(equal) = tokens.iter().find(|token| token.kind == TokenKind::Equal) {
         return Err(ParseError::at(
             equal.span,
@@ -260,12 +250,21 @@ pub(super) fn reject_structural_type_tokens(
         ));
     }
     // A type annotation is a single type production: one head word, optionally
-    // extended by `::` name segments and attached `[...]`/`(...)` groups. Any
-    // depth-0 token past that end (a `in`, `@`, `where`, or a second bare word)
-    // is not part of the type; reject it where it begins rather than gluing it
-    // into the spelling.
+    // extended by `::` name segments and attached `[...]`/`(...)` groups, then an
+    // optional trailing `?`. Any depth-0 token past that end (a `in`, `@`,
+    // `where`, or a second bare word) is not part of the type; reject it where it
+    // begins rather than gluing it into the spelling. A doubled `??` or `?.` in
+    // type position is the double-optional spelling, which optionality forbids.
     let end = type_token_len(tokens);
     if let Some(trailing) = tokens.get(end) {
+        let message = if matches!(
+            trailing.kind,
+            TokenKind::QuestionQuestion | TokenKind::QuestionDot
+        ) {
+            "an optional type is written `T?`"
+        } else {
+            message
+        };
         return Err(ParseError::at(
             trailing.span,
             ParseDiagnosticReason::Expected(expected),
@@ -277,8 +276,9 @@ pub(super) fn reject_structural_type_tokens(
 
 /// The number of leading tokens that make up one complete type production: the
 /// head token, then each following `::` name segment and each attached
-/// `[...]`/`(...)` group at depth 0. Bracket contents are spanned whole, so
-/// whitespace and nested types inside them do not end the type.
+/// `[...]`/`(...)` group at depth 0, then one optional trailing `?` suffix.
+/// Bracket contents are spanned whole, so whitespace and nested types inside them
+/// do not end the type.
 fn type_token_len(tokens: &[Token]) -> usize {
     let mut index = if tokens.is_empty() { 0 } else { 1 };
     while index < tokens.len() {
@@ -292,6 +292,9 @@ fn type_token_len(tokens: &[Token]) -> usize {
             }
             _ => break,
         }
+    }
+    if tokens.get(index).map(|token| token.kind) == Some(TokenKind::Question) {
+        index += 1;
     }
     index.min(tokens.len())
 }

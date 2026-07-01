@@ -4,8 +4,8 @@
 use crate::common;
 use common::{lexer_reason, parse_reason, reason_count};
 use marrow_syntax::{
-    Declaration, ExpectedSyntax, FunctionReturnPresence, LexerDiagnosticReason, PARSE_SYNTAX,
-    ParseDiagnosticReason, ResourceMember, parse_source,
+    Declaration, ExpectedSyntax, LexerDiagnosticReason, PARSE_SYNTAX, ParseDiagnosticReason,
+    ResourceMember, parse_source,
 };
 
 /// Corpus smoke test (one owner): every fenced `mw` block that opens with
@@ -110,31 +110,55 @@ fn parses_reference_sample_structure() {
 }
 
 #[test]
-fn parses_maybe_function_return_marker_separately_from_type() {
+fn parses_optional_function_return_type() {
     let parsed = parse_source(
         "module app\n\
-         fn f(): maybe int\n\
+         fn f(): int?\n\
          \x20   return absent\n",
     );
 
     assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
     let f = parsed.file.function("f").expect("function");
-    assert_eq!(f.return_presence, FunctionReturnPresence::MaybePresent);
     assert_eq!(
         f.return_type.as_ref().map(|ty| ty.text.as_str()),
-        Some("int")
+        Some("int?")
     );
 }
 
 #[test]
-fn maybe_is_not_a_general_parameter_type_wrapper() {
+fn parses_optional_parameter_type() {
+    // `T?` is a first-class parameter type; the trailing `?` rides in the type
+    // spelling exactly as a return or local annotation does.
     let parsed = parse_source(
         "module app\n\
-         fn f(value: maybe int): int\n\
+         fn f(value: int?): int\n\
          \x20   return 1\n",
     );
 
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let f = parsed.file.function("f").expect("function");
+    assert_eq!(f.params[0].ty.text.as_str(), "int?");
+}
+
+#[test]
+fn rejects_a_double_optional_type() {
+    // Optionality does not nest, so the `??` spelling in type position is a parse
+    // error pointing at the doubled marker.
+    let parsed = parse_source(
+        "module app\n\
+         fn f(): int??\n\
+         \x20   return absent\n",
+    );
+
     assert!(parsed.has_errors(), "{:#?}", parsed.diagnostics);
+    assert!(
+        parsed
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("an optional type is written `T?`")),
+        "{:#?}",
+        parsed.diagnostics
+    );
 }
 
 #[test]

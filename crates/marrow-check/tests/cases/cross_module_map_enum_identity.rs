@@ -164,10 +164,11 @@ fn writing_the_keyed_leaf_value_enforces_the_foreign_enum_nominal_identity() {
     assert_eq!(
         found[0].payload,
         DiagnosticPayload::TypeMismatch {
-            expected: MarrowType::Enum {
+            // The keyed-leaf write target is clearable, so it presents `kinds::Color?`.
+            expected: MarrowType::Optional(Box::new(MarrowType::Enum {
                 module: "kinds".into(),
                 name: "Color".into(),
-            },
+            })),
             found: MarrowType::Enum {
                 module: "other".into(),
                 name: "Shade".into(),

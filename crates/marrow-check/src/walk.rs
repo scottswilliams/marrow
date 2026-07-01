@@ -40,6 +40,9 @@ pub(crate) fn for_each_child_expr<'e>(expr: &'e Expression, mut visit: impl FnMu
                 }
             }
         }
-        Expression::Literal { .. } | Expression::Name { .. } | Expression::SavedRoot { .. } => {}
+        Expression::Literal { .. }
+        | Expression::Name { .. }
+        | Expression::SavedRoot { .. }
+        | Expression::Absent { .. } => {}
     }
 }

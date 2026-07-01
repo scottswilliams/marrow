@@ -75,16 +75,24 @@ fn parses_simple_statements_in_function_bodies() {
 }
 
 #[test]
-fn parses_return_absent_as_a_distinct_statement() {
+fn parses_return_absent_as_a_return_of_the_absent_value() {
+    // `absent` is an ordinary primary expression, so `return absent` is a `Return`
+    // carrying the `Absent` value rather than a special return form.
     let parsed = parse_source(
         "module app\n\
-         fn f(): maybe int\n\
+         fn f(): int?\n\
          \x20   return absent\n",
     );
     assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
     let f = parsed.file.function("f").expect("function");
     assert!(
-        matches!(&f.body.statements[0], Statement::ReturnAbsent { .. }),
+        matches!(
+            &f.body.statements[0],
+            Statement::Return {
+                value: Some(Expression::Absent { .. }),
+                ..
+            }
+        ),
         "{:#?}",
         f.body.statements[0]
     );
@@ -123,19 +131,23 @@ fn if_const_accepts_a_type_annotation() {
 }
 
 #[test]
-fn absent_is_not_a_general_expression() {
-    for source in [
-        "module app\nfn f(): int\n    return absent + 1\n",
-        "module app\nfn f()\n    absent\n",
-        "module app\nfn f()\n    absent()\n",
-    ] {
-        let parsed = parse_source(source);
-        assert!(
-            parsed.has_errors(),
-            "expected parse errors for:\n{source}\n{:#?}",
-            parsed.diagnostics
-        );
-    }
+fn absent_is_a_primary_expression() {
+    // The empty optional `absent` is a first-class primary value, usable wherever
+    // an expression is, such as a `const` initializer.
+    let parsed = parse_source("module app\nfn f()\n    const x = absent\n");
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let f = parsed.file.function("f").expect("function");
+    assert!(
+        matches!(
+            &f.body.statements[0],
+            Statement::Const {
+                value: Expression::Absent { .. },
+                ..
+            }
+        ),
+        "{:#?}",
+        f.body.statements[0]
+    );
 }
 
 #[test]

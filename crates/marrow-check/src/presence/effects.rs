@@ -4,10 +4,10 @@ use super::scope::NameScope;
 use super::target::{ReadPlace, ReadTarget, ReadTargetValue, read_target_with_scope};
 use super::util::extend_unique;
 use super::writes::expr_calls_saved_writer;
-use crate::facts::{PresenceProofRead, SavedPlaceEffect};
+use crate::facts::{ReadKind, SavedPlaceEffect};
 use crate::{
     CheckedBinaryOp, CheckedBuiltinCall, CheckedCallTarget, CheckedExpr, CheckedForBinding,
-    CheckedProgram, CheckedSavedPlace, CheckedSavedTerminal, CheckedUnaryOp, MarrowType,
+    CheckedProgram, CheckedSavedPlace, CheckedSavedTerminal, CheckedUnaryOp,
 };
 
 pub(super) fn condition_narrowings(
@@ -111,9 +111,8 @@ pub(super) fn traversal_narrowing(
     if binding.second.as_deref() == Some(binding.first.as_str()) {
         return None;
     }
-    let path = LoopShape::classify(iterable, two_name_loop).key_path?;
-    let mut target = read_target_with_scope(program, path, scope)
-        .filter(|target| matches!(target.place, ReadPlace::Saved { .. }))
+    let path = loop_key_path(iterable, two_name_loop)?;
+    let mut target = record_root_traversal_target(program, path, scope)
         .or_else(|| index_record_traversal_target(program, path))?;
     let key = binding_key(&binding.first, scope)?;
     target.keys.push(key.text);
@@ -123,109 +122,43 @@ pub(super) fn traversal_narrowing(
     Some(target)
 }
 
-/// The materialized value type a `for` loop binds to each name. A value rides one
-/// name per loop shape: `values(x)` and a bare single name over a value-yielding
-/// collection bind the first; `entries(x)` and a bare two-name loop bind the
-/// second; `keys(x)` and a bare single name over a keyed collection bind a key.
-/// The presence walk binds these types so a sparse-field read of a loop-bound
-/// entry classifies the same way the type pass's `collection_loop_binding_types`
-/// does. A key binding carries a scalar or identity key, which has no sparse
-/// fields, so only value-carrying names need a type here.
-pub(super) fn loop_value_binding_type(
+/// The narrowing a loop over a whole-record store root proves: streaming a store
+/// yields present record identities, so a re-read of the record at the loop key is
+/// proven present. A keyed child layer or positional sequence streams keys, not
+/// records, and the positional/keyed read it indexes is uniformly `T?` under the one
+/// rule, so it is never narrowed here.
+fn record_root_traversal_target(
     program: &CheckedProgram,
-    iterable: &CheckedExpr,
-    binding: &CheckedForBinding,
+    path: &CheckedExpr,
     scope: &NameScope,
-) -> Option<(Option<MarrowType>, Option<MarrowType>)> {
-    let two_name_loop = binding.second.is_some();
-    let value = LoopShape::classify(iterable, two_name_loop)
-        .value_path
-        .and_then(|path| iterable_value_type(program, path, scope));
-    if two_name_loop {
-        Some((None, value))
-    } else {
-        Some((value, None))
-    }
-}
-
-/// How a `for` loop's iterable, after a `reversed(...)` wrapper is peeled,
-/// distributes its streamed key and value across the loop's names. The narrowing
-/// target needs `key_path` — the iterable whose streamed key the first name binds —
-/// and the value-type binding needs `value_path` — the iterable whose per-element
-/// value a name binds. Resolving both from one classification keeps the wrapper
-/// rules (`keys`/`values`/`entries` and the bare single/two-name forms) in a single
-/// place rather than two routers that must be hand-kept in sync.
-struct LoopShape<'a> {
-    key_path: Option<&'a CheckedExpr>,
-    value_path: Option<&'a CheckedExpr>,
-}
-
-impl<'a> LoopShape<'a> {
-    fn classify(iterable: &'a CheckedExpr, two_name_loop: bool) -> Self {
-        if let Some(arg) = wrapper_arg(iterable, CheckedBuiltinCall::Reversed) {
-            return Self::classify(arg, two_name_loop);
-        }
-        if let Some(arg) = wrapper_arg(iterable, CheckedBuiltinCall::Keys) {
-            // `keys(x)` streams its argument's key to the single name and no value.
-            return Self {
-                key_path: (!two_name_loop).then_some(arg),
-                value_path: None,
-            };
-        }
-        if let Some(arg) = wrapper_arg(iterable, CheckedBuiltinCall::Values) {
-            // `values(x)` streams its argument's value to the single name and no key.
-            return Self {
-                key_path: None,
-                value_path: (!two_name_loop).then_some(arg),
-            };
-        }
-        if let Some(arg) = wrapper_arg(iterable, CheckedBuiltinCall::Entries) {
-            // `entries(x)` streams its argument's key to the first name and value to
-            // the second.
-            return Self {
-                key_path: two_name_loop.then_some(arg),
-                value_path: two_name_loop.then_some(arg),
-            };
-        }
-        // A bare loop streams the iterable's own key to the first name and, in the
-        // two-name form, its value to the second.
-        Self {
-            key_path: Some(iterable),
-            value_path: two_name_loop.then_some(iterable),
-        }
-    }
-}
-
-/// The per-element value type of a collection iterable, saved or local. A saved
-/// record root or a non-unique index branch yields its resource; a saved layer
-/// yields its leaf or group entry; a bound local sequence or keyed tree yields
-/// its element.
-fn iterable_value_type(
-    program: &CheckedProgram,
-    iterable: &CheckedExpr,
-    scope: &NameScope,
-) -> Option<MarrowType> {
-    let resolver = crate::executable::SavedPlaceResolver::new(program);
-    if let Some(place) = iterable.saved_place() {
-        if place.layers.is_empty() && matches!(place.terminal, CheckedSavedTerminal::Record) {
-            return Some(resolver.record_root_element_type(place));
-        }
-        if resolver.non_unique_index_branch_yields_identity(iterable) {
-            return Some(resolver.record_root_element_type(place));
-        }
-        return resolver.value_type(iterable);
-    }
-    let CheckedExpr::Name { segments, .. } = iterable else {
+) -> Option<ReadTarget> {
+    let place = path.saved_place()?;
+    if !place.layers.is_empty() || !matches!(place.terminal, CheckedSavedTerminal::Record) {
         return None;
-    };
-    let [bound] = segments.as_slice() else {
-        return None;
-    };
-    match scope.lookup_type(bound)? {
-        MarrowType::Sequence(element) => Some(element.as_ref().clone()),
-        MarrowType::LocalTree { value, .. } => Some(value.as_ref().clone()),
-        _ => None,
     }
+    read_target_with_scope(program, path, scope)
+        .filter(|target| matches!(target.place, ReadPlace::Saved { .. }))
+}
+
+/// The iterable whose streamed key a `for` loop's first name binds, after a
+/// `reversed(...)` wrapper is peeled: `keys(x)` and a bare single name stream a key,
+/// `entries(x)` and a bare two-name loop stream the first name a key, and `values(x)`
+/// streams no key. The first name binds an entry key exactly when this is `Some`, so
+/// only then does iterating the collection prove that entry's read present.
+fn loop_key_path(iterable: &CheckedExpr, two_name_loop: bool) -> Option<&CheckedExpr> {
+    if let Some(arg) = wrapper_arg(iterable, CheckedBuiltinCall::Reversed) {
+        return loop_key_path(arg, two_name_loop);
+    }
+    if let Some(arg) = wrapper_arg(iterable, CheckedBuiltinCall::Keys) {
+        return (!two_name_loop).then_some(arg);
+    }
+    if wrapper_arg(iterable, CheckedBuiltinCall::Values).is_some() {
+        return None;
+    }
+    if let Some(arg) = wrapper_arg(iterable, CheckedBuiltinCall::Entries) {
+        return two_name_loop.then_some(arg);
+    }
+    Some(iterable)
 }
 
 fn index_record_traversal_target(
@@ -249,7 +182,7 @@ fn index_record_traversal_target(
         keys: Vec::new(),
         key_types: Vec::new(),
         key_bindings: Vec::new(),
-        read: PresenceProofRead::Direct,
+        read: ReadKind::Direct,
         value: ReadTargetValue::Value,
     })
 }
@@ -277,18 +210,6 @@ pub(super) fn index_traversal_yields_identity(place: &CheckedSavedPlace) -> bool
     // A non-unique index branch always streams the store identity, for any
     // partial prefix down to the full one.
     true
-}
-
-pub(super) fn invalidate_removed_narrowings(
-    narrowed: &mut Vec<ReadTarget>,
-    before: &[ReadTarget],
-    after: &[ReadTarget],
-) {
-    for target in before {
-        if !after.contains(target) {
-            narrowed.retain(|current| current != target);
-        }
-    }
 }
 
 pub(super) fn invalidate_saved_narrowings(narrowed: &mut Vec<ReadTarget>) {
@@ -379,8 +300,12 @@ fn written_target_invalidates(written: &ReadTarget, target: &ReadTarget) -> bool
                 member: target_member,
             },
         ) => written_resource == target_resource && written_member == target_member,
+        (ReadPlace::Local { binding: written }, ReadPlace::Local { binding: target }) => {
+            written == target
+        }
         (ReadPlace::StoreIndex { .. }, ReadPlace::Saved { .. }) => false,
         (ReadPlace::TransformOld { .. }, _) | (_, ReadPlace::TransformOld { .. }) => false,
+        (ReadPlace::Local { .. }, _) | (_, ReadPlace::Local { .. }) => false,
     }
 }
 

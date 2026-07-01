@@ -123,9 +123,6 @@ pub enum CheckedStmt {
         value: Option<CheckedExpr>,
         span: SourceSpan,
     },
-    ReturnAbsent {
-        span: SourceSpan,
-    },
     Break {
         span: SourceSpan,
     },
@@ -249,7 +246,7 @@ impl CheckedStmt {
                     scope,
                     &context.aliases,
                     context.source_file,
-                    None,
+                    crate::presence::ReadScope::none(),
                 ),
                 span: *span,
             },
@@ -269,7 +266,7 @@ impl CheckedStmt {
                     scope,
                     &context.aliases,
                     context.source_file,
-                    None,
+                    crate::presence::ReadScope::none(),
                 ),
                 span: *span,
             },
@@ -281,7 +278,6 @@ impl CheckedStmt {
                 value: lower_optional_expr(value.as_ref(), context, scope)?,
                 span: *span,
             },
-            syntax::Statement::ReturnAbsent { span } => Self::ReturnAbsent { span: *span },
             syntax::Statement::Break { span } => Self::Break { span: *span },
             syntax::Statement::Continue { span } => Self::Continue { span: *span },
             syntax::Statement::Throw { value, span } => Self::Throw {
@@ -341,10 +337,11 @@ impl CheckedStmt {
                 else_block,
                 span,
             } => {
-                // A written annotation types the binding, exactly as on `const`/`var`;
-                // it must name the saved read's type, which the check pass enforces, so
-                // a program that reaches lowering has a matching annotation. Without one
-                // the binding takes the read's inferred type.
+                // `if const` binds the present arm, so the name takes the subject's type
+                // with one optional layer stripped. A written annotation already names
+                // that present type (like the type on `const`/`var`); without one the
+                // binding is the inferred subject type, `without_optional`, matching the
+                // check pass.
                 let binding_type = match ty {
                     Some(ty) => crate::enums::resolve_diagnosed_annotation_type(
                         ty,
@@ -358,7 +355,8 @@ impl CheckedStmt {
                         scope,
                         &context.aliases,
                         context.source_file,
-                    ),
+                    )
+                    .without_optional(),
                 };
                 Self::IfConst {
                     name: name.clone(),
@@ -490,7 +488,6 @@ impl CheckedStmt {
             | Self::CompoundAssign { span, .. }
             | Self::Delete { span, .. }
             | Self::Return { span, .. }
-            | Self::ReturnAbsent { span }
             | Self::Break { span, .. }
             | Self::Continue { span, .. }
             | Self::Throw { span, .. }

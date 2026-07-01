@@ -1,15 +1,14 @@
-//! Canonical narrowing keys for presence proofs.
+//! Canonical narrowing keys.
 //!
-//! A presence proof compares read targets for identity: two reads narrow the same
-//! place when their key arguments are equal. The key is a span-stripped canonical
-//! form of a [`CheckedExpr`] — `CheckedExpr` derives `Eq`, but two textually equal
-//! reads carry different spans, so a structural comparison would treat them as
-//! distinct. [`expression_key`] is the *sole* owner of that canonical form: every
-//! variant maps to a tagged string (`lit:`, `binding:`, `call:`, `field:`,
-//! `interp:`, …) that ignores spans and resolves a single-segment name to its
-//! scope binding id, so the key is stable across read sites and a rebinding
-//! invalidates dependent narrowings. No other layer reproduces this formatting;
-//! `target.rs`, `effects.rs`, and the persisted `PresenceProofFact.keys` consume
+//! Narrowing compares read targets for identity: two reads narrow the same place
+//! when their key arguments are equal. The key is a span-stripped canonical form of
+//! a [`CheckedExpr`] — `CheckedExpr` derives `Eq`, but two textually equal reads
+//! carry different spans, so a structural comparison would treat them as distinct.
+//! [`expression_key`] is the *sole* owner of that canonical form: every variant maps
+//! to a tagged string (`lit:`, `binding:`, `call:`, `field:`, `interp:`, …) that
+//! ignores spans and resolves a single-segment name to its scope binding id, so the
+//! key is stable across read sites and a rebinding invalidates dependent narrowings.
+//! No other layer reproduces this formatting; `target.rs` and `effects.rs` consume
 //! the strings this module produces, they do not build their own.
 
 use super::scope::NameScope;
@@ -240,6 +239,11 @@ pub(super) fn expression_key(expr: &CheckedExpr, scope: &NameScope) -> ExprKey {
                 bindings,
             }
         }
+        CheckedExpr::Absent { .. } => ExprKey {
+            text: "absent".to_string(),
+            ty: None,
+            bindings: Vec::new(),
+        },
     }
 }
 

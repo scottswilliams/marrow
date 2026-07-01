@@ -347,14 +347,14 @@ fn compound_assignment_target_read_must_be_present() {
          resource Book\n    pages: int\n\
          store ^books(id: int): Book\n\
          fn f()\n    ^books(1).pages += 1\n",
-        "check.bare_maybe_present_read",
+        "check.unresolved_optional",
     );
     assert_eq!(saved.len(), 1, "{saved:#?}");
 
     let local = check_script(
         "compound-local-read",
         "fn f()\n    var xs: sequence[int]\n    xs(1) += 1\n",
-        "check.bare_maybe_present_read",
+        "check.unresolved_optional",
     );
     assert_eq!(local.len(), 1, "{local:#?}");
 
@@ -632,6 +632,22 @@ fn rejects_if_const_over_a_non_saved_read() {
         "check.condition_type",
     );
     assert_eq!(found.len(), 1, "{found:#?}");
+}
+
+#[test]
+fn if_const_over_a_non_optional_lists_a_local_optional_binding_as_a_source() {
+    // The maybe-present-source list names a local `T?` binding alongside the saved and
+    // call sources, since `if const` binds one just as readily.
+    let found = check_script(
+        "if-const-lists-local-optional",
+        "fn f(x: string)\n    if const y = x\n        print(y)\n",
+        "check.condition_type",
+    );
+    assert_eq!(found.len(), 1, "{found:#?}");
+    assert!(
+        found[0].message.contains("local `T?` binding"),
+        "the if-const source list names a local optional binding: {found:#?}"
+    );
 }
 
 #[test]

@@ -282,7 +282,7 @@ pub(crate) fn direct_root_place(expr: &ExecExpr) -> Option<&CheckedSavedPlace> {
 }
 
 /// Whether a saved path holds a value or any children — the presence test behind
-/// `exists` and `std::assert::absent`. A declared index branch has no
+/// `exists` and `std::assert::isAbsent`. A declared index branch has no
 /// record/layer segment form, so — exactly as `count` does — its presence is
 /// whether the branch enumerates any entries.
 pub(crate) fn saved_path_present(

@@ -5,7 +5,6 @@ use marrow_store::value::{SavedValue, ScalarType, decode_value};
 use marrow_store::{Decimal, DecimalParseError};
 use marrow_syntax::SourceSpan;
 
-use crate::collection::absent_read;
 use crate::env::Env;
 use crate::error::{RuntimeError, std_arity, type_error};
 use crate::expr::eval_int;
@@ -78,10 +77,10 @@ pub(crate) fn eval_csv(
             let row = row_index(row, env, span)?;
             let column = eval_text(column, env, span)?;
             let Some(cell) = table.cell(row, &column) else {
-                return Err(absent_read("CSV cell is absent".into(), span));
+                return Ok(Value::Absent);
             };
             if cell.is_empty() {
-                return Err(absent_read("CSV cell is empty".into(), span));
+                return Ok(Value::Absent);
             }
             parse_cell(cell_op, cell, span)
         }

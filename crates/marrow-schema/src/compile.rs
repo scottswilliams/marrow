@@ -267,11 +267,10 @@ fn slot_node(
         key_params,
         entry_type: None,
         members: Vec::new(),
-        kind: NodeKind::Slot {
-            ty,
-            required,
-            error_code,
-        },
+        // A `?` in a saved value position is a source error the validator reports;
+        // the best-effort schema records the present-arm type so the durable leaf
+        // stays optional-free and the slot choke-point holds.
+        kind: NodeKind::slot(ty.without_optional(), required, error_code),
     }
 }
 

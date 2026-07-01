@@ -14,8 +14,17 @@ pub(crate) fn eval_local_collection_read(
     span: SourceSpan,
     env: &mut Env<'_>,
 ) -> Result<Option<Value>, RuntimeError> {
-    let Some(target) = resolve_local_collection_target(name, args, span, env)? else {
-        return Ok(None);
+    // A position below the 1-based sequence range addresses no node, so a read
+    // resolves it to the empty optional. A write of that same position still faults
+    // (`resolve_local_collection_target` surfaces it there), so an unreachable node
+    // is never persisted.
+    let target = match resolve_local_collection_target(name, args, span, env) {
+        Ok(Some(target)) => target,
+        Ok(None) => return Ok(None),
+        Err(error) if error.code() == RUN_ABSENT && error.is_catchable() => {
+            return Ok(Some(Value::Absent));
+        }
+        Err(error) => return Err(error),
     };
     target.read(env).map(Some)
 }
@@ -98,23 +107,33 @@ impl LocalCollectionTarget {
                 let Some(Value::Sequence(items)) = env.lookup(name) else {
                     return Err(unsupported("reading this local collection", *span));
                 };
-                items
-                    .get(*position)
-                    .cloned()
-                    .ok_or_else(|| absent_read("`local sequence` is absent".into(), *span))
+                Ok(items.get(*position).cloned().unwrap_or(Value::Absent))
             }
             Self::Tree { name, keys, span } => {
                 let Some(Value::LocalTree(tree)) = env.lookup(name) else {
                     return Err(unsupported("reading this local collection", *span));
                 };
-                tree.get(keys)
-                    .cloned()
-                    .ok_or_else(|| absent_read("`local tree` is absent".into(), *span))
+                Ok(tree.get(keys).cloned().unwrap_or(Value::Absent))
             }
         }
     }
 
+    fn span(&self) -> SourceSpan {
+        match self {
+            Self::Sequence { span, .. } | Self::Tree { span, .. } => *span,
+        }
+    }
+
     pub(crate) fn write(self, value: Value, env: &mut Env<'_>) -> Result<(), RuntimeError> {
+        // A local sequence or tree element is managed through the collection
+        // builtins, so it has no point-clear: assigning the empty optional is the
+        // one rule, resolved before the write or expressed with `delete`.
+        if matches!(value, Value::Absent) {
+            return Err(type_error(
+                "a local collection element has no point-clear; assign a value or use `delete`",
+                self.span(),
+            ));
+        }
         match self {
             Self::Sequence {
                 name,

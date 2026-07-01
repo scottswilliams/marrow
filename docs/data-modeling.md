@@ -161,9 +161,9 @@ subtitle: string         ; sparse: may be absent
 required title: string   ; must be populated for a valid resource
 ```
 
-A bare read of a sparse field is rejected at check time
-(`check.bare_maybe_present_read`) unless the checker can prove the field is
-populated. Resolve the read with an `exists` guard, a `??` default, or
+A sparse field reads as `T?`, so using it where a `T` is required is rejected
+at check time (`check.unresolved_optional`) unless the checker can prove the
+field is populated. Resolve the read with an `exists` guard, a `??` default, or
 optional chaining:
 
 ```mw

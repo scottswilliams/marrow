@@ -13,7 +13,8 @@ use marrow_syntax::SourceSpan;
 use crate::executable::{SavedPlaceResolver, lower_expr_for_file};
 use crate::resolve::resolve_store_by_root;
 use crate::typerules::{
-    as_primitive, expects_conversion, marrow_type_name, mismatch_display, type_compatible,
+    as_primitive, expects_conversion, is_optional_value, marrow_type_name, mismatch_display,
+    type_compatible, unresolved_optional, unresolved_optional_diagnostic,
 };
 use crate::{
     AppendTargetDiagnostic, CHECK_AMBIGUOUS_CALL, CHECK_CALL_ARGUMENT,
@@ -29,7 +30,7 @@ use crate::{
 use super::collections::{
     collection_loop_binding_types, has_collection_unsupported, is_concrete_scalar_value,
     is_recognized_collection, is_saved_index_range_path, is_saved_key_range_path,
-    is_saved_unique_index_branch_path, saved_path_key_type,
+    is_saved_unique_index_branch_path, saved_path_key_type, saved_path_value_type,
 };
 use super::diagnostics::{call_diagnostic, key_type_diagnostic};
 use super::saved_keys::{check_identity_sequence_position, check_keys_against};
@@ -44,7 +45,7 @@ pub(crate) struct CallCheck<'a> {
     pub(crate) aliases: &'a HashMap<String, Vec<String>>,
     pub(crate) span: SourceSpan,
     pub(crate) file: &'a Path,
-    pub(crate) transform_old: Option<crate::presence::TransformOldReadScope<'a>>,
+    pub(crate) read_scope: crate::presence::ReadScope<'a>,
     pub(crate) diagnostics: &'a mut Vec<CheckDiagnostic>,
 }
 
@@ -55,7 +56,7 @@ struct CallEnv<'a> {
     aliases: &'a HashMap<String, Vec<String>>,
     span: SourceSpan,
     file: &'a Path,
-    transform_old: Option<crate::presence::TransformOldReadScope<'a>>,
+    read_scope: crate::presence::ReadScope<'a>,
     diagnostics: &'a mut Vec<CheckDiagnostic>,
 }
 
@@ -73,7 +74,7 @@ pub(crate) fn check_call(input: CallCheck<'_>) -> MarrowType {
         aliases,
         span,
         file,
-        transform_old,
+        read_scope,
         diagnostics,
     } = input;
     let mut env = CallEnv {
@@ -83,7 +84,7 @@ pub(crate) fn check_call(input: CallCheck<'_>) -> MarrowType {
         aliases,
         span,
         file,
-        transform_old,
+        read_scope,
         diagnostics,
     };
     let marrow_syntax::Expression::Name { segments, .. } = callee else {
@@ -185,7 +186,7 @@ fn check_special_single_name_call(
         }
         "append" => {
             check_arity(name, 2, args, env.span, env.file, env.diagnostics);
-            check_append_args(env, args);
+            check_append_args(env, args, arg_types);
             check_append(env, args);
             check_append_error_code_literal(env, args);
             Some(MarrowType::Primitive(ScalarType::Int))
@@ -216,7 +217,7 @@ fn check_builtin_call(
         return std_call_return_type(segments).unwrap_or(MarrowType::Unknown);
     }
     if let Some(params) = std_call_params(segments) {
-        check_std_call_args(env, segments, args);
+        check_std_call_args(env, segments, args, arg_types);
         check_std_collection_args(env, &label, args, &params);
         check_args_against(
             &label,
@@ -459,7 +460,13 @@ fn check_user_function_call(
             ),
         ));
     }
-    function.return_type.clone().unwrap_or(MarrowType::Unknown)
+    // A maybe-present (`T?`) return types the call as its present arm `T`; the
+    // call's maybe-presence is resolved at the read site, like a saved read.
+    function
+        .return_type
+        .clone()
+        .map(MarrowType::without_optional)
+        .unwrap_or(MarrowType::Unknown)
 }
 
 /// Validate a single-name builtin's arguments, returning whether a collection
@@ -473,7 +480,7 @@ fn check_builtin_call_args(
 ) -> bool {
     let [name] = segments else { return false };
     if name.as_str() == "exists" {
-        check_exists_args(env, args);
+        check_exists_args(env, args, arg_types);
         return false;
     }
     if name.as_str() == "count" {
@@ -493,9 +500,10 @@ fn check_std_call_args(
     env: &mut CallEnv<'_>,
     segments: &[String],
     args: &[marrow_syntax::Argument],
+    arg_types: &[MarrowType],
 ) {
-    if segments == ["std", "assert", "absent"] {
-        check_assert_absent_args(env, args);
+    if segments == ["std", "assert", "isAbsent"] {
+        check_assert_absent_args(env, args, arg_types);
     }
 }
 
@@ -524,15 +532,26 @@ fn check_std_collection_args(
     }
 }
 
-fn check_assert_absent_args(env: &mut CallEnv<'_>, args: &[marrow_syntax::Argument]) {
+fn check_assert_absent_args(
+    env: &mut CallEnv<'_>,
+    args: &[marrow_syntax::Argument],
+    arg_types: &[MarrowType],
+) {
     let [arg] = args else { return };
-    if !assert_absent_arg_is_saved_path(env, &arg.value) {
-        env.diagnostics.push(call_diagnostic(
-            env.file,
-            env.span,
-            "`std::assert::absent` expects a saved path".to_string(),
-        ));
+    if assert_absent_arg_is_saved_path(env, &arg.value) {
+        return;
     }
+    // `isAbsent` tests any optional value for absence, mirroring `exists`: an optional
+    // local or parameter, a positional/keyed read, or a stdlib `T?` result are exactly
+    // what it asserts. Resolving them first would destroy the absence being tested.
+    if arg_types.first().is_some_and(is_optional_value) {
+        return;
+    }
+    env.diagnostics.push(call_diagnostic(
+        env.file,
+        env.span,
+        "`std::assert::isAbsent` expects an optional value".to_string(),
+    ));
 }
 
 fn assert_absent_arg_is_saved_path(env: &CallEnv<'_>, expr: &marrow_syntax::Expression) -> bool {
@@ -558,15 +577,41 @@ fn combinator_arg_is_scalar(
         && is_concrete_scalar_value(arg, arg_type)
 }
 
-fn check_exists_args(env: &mut CallEnv<'_>, args: &[marrow_syntax::Argument]) {
+fn check_exists_args(
+    env: &mut CallEnv<'_>,
+    args: &[marrow_syntax::Argument],
+    arg_types: &[MarrowType],
+) {
     let [arg] = args else { return };
-    if !exists_target_arg_resolves(env, &arg.value) {
+    if exists_target_arg_resolves(env, &arg.value) {
+        return;
+    }
+    // A concrete, always-present value has no absence to test — mirror the `??`
+    // always-present rejection rather than the saved-path shape error, since `exists`
+    // now accepts local optionals too. A non-value argument is not a testable place.
+    if arg_types.first().is_some_and(is_always_present_value) {
         env.diagnostics.push(call_diagnostic(
             env.file,
             env.span,
-            "`exists` expects a saved path".to_string(),
+            "`exists` applies only to an optional value; this value is always present".to_string(),
         ));
+        return;
     }
+    env.diagnostics.push(call_diagnostic(
+        env.file,
+        env.span,
+        "`exists` expects a saved path".to_string(),
+    ));
+}
+
+/// Whether a value type is a concrete, definitely-present value: not an optional, the
+/// empty `absent`, or a deferred `unknown`/`invalid`. Such a value has nothing for a
+/// presence guard to resolve.
+fn is_always_present_value(ty: &MarrowType) -> bool {
+    !matches!(
+        ty,
+        MarrowType::Optional(_) | MarrowType::Absent | MarrowType::Unknown | MarrowType::Invalid
+    )
 }
 
 fn exists_target_arg_resolves(env: &CallEnv<'_>, expr: &marrow_syntax::Expression) -> bool {
@@ -579,7 +624,12 @@ fn exists_target_arg_resolves(env: &CallEnv<'_>, expr: &marrow_syntax::Expressio
     let Some(expr) = lower_expr_for_file(env.program, env.file, expr, env.scope) else {
         return false;
     };
-    crate::presence::exists_target_in_type_scope(env.program, &expr, env.scope, env.transform_old)
+    crate::presence::exists_target_in_type_scope(
+        env.program,
+        &expr,
+        env.scope,
+        env.read_scope.transform_old,
+    )
 }
 
 /// The call-site context for a named-field constructor check: the constructor
@@ -811,6 +861,14 @@ fn check_collection_combinator_args(
     if has_collection_unsupported(env.diagnostics, env.file, arg.value.span()) {
         return true;
     }
+    // A maybe-present collection (`sequence[T]?`) must be resolved before it is counted
+    // or streamed; the one rule owns it before the scalar/saved gates so the message
+    // names the four resolution forms.
+    if is_optional_value(arg_type) {
+        env.diagnostics
+            .push(unresolved_optional_diagnostic(env.file, arg.value.span()));
+        return true;
+    }
     if combinator_arg_is_scalar(env, &arg.value, arg_type) {
         env.diagnostics.push(CheckDiagnostic::error(
             CHECK_COLLECTION_UNSUPPORTED,
@@ -888,8 +946,25 @@ fn check_index_branch_wrapper_args(
     ));
 }
 
-fn check_append_args(env: &mut CallEnv<'_>, args: &[marrow_syntax::Argument]) {
-    let [target, _value] = args else { return };
+fn check_append_args(
+    env: &mut CallEnv<'_>,
+    args: &[marrow_syntax::Argument],
+    arg_types: &[MarrowType],
+) {
+    let ([target, value], [target_type, value_type]) = (args, arg_types) else {
+        return;
+    };
+    // A maybe-present collection (`sequence[T]?`) target must be resolved before it is
+    // appended to; the one rule owns it before the layer-shape gates so the message
+    // names the four resolution forms.
+    if is_optional_value(target_type) {
+        env.diagnostics.push(unresolved_optional_diagnostic(
+            env.file,
+            target.value.span(),
+        ));
+        return;
+    }
+    check_append_value(env, &target.value, target_type, value, value_type);
     // A multi-column layer is rejected as composite, the more precise diagnostic, so
     // the group-vs-leaf check only speaks for single-column layers.
     if saved_append_target_is_composite(env.program, &target.value, env.scope, env.file) {
@@ -909,6 +984,72 @@ fn check_append_args(env: &mut CallEnv<'_>, args: &[marrow_syntax::Argument]) {
             AppendTargetDiagnostic::GroupLayer,
         )),
     );
+}
+
+/// Type-check the value `append` writes into one element slot. A maybe-present
+/// value is the one rule (an element slot is never `T?`), and a concrete element
+/// type rejects an incompatible value, so an `absent` or `T?` value is caught at
+/// check time rather than only at the runtime append boundary. The check runs only
+/// for a genuine leaf element; a group or composite target reports its own
+/// shape error and yields no element type to compare against.
+fn check_append_value(
+    env: &mut CallEnv<'_>,
+    target: &marrow_syntax::Expression,
+    target_type: &MarrowType,
+    value: &marrow_syntax::Argument,
+    value_type: &MarrowType,
+) {
+    let element = append_element_type(env, target, target_type);
+    if !is_appendable_element(&element) {
+        return;
+    }
+    let span = value.value.span();
+    if let Some(diagnostic) = unresolved_optional(&element, value_type, span, env.file) {
+        env.diagnostics.push(diagnostic);
+        return;
+    }
+    if matches!(type_compatible(&element, value_type), Some(false)) {
+        let (expected, found) = mismatch_display(&element, value_type);
+        env.diagnostics.push(
+            CheckDiagnostic::error(
+                CHECK_CALL_ARGUMENT,
+                env.file,
+                span,
+                format!("`append` value expects `{expected}`, but found `{found}`"),
+            )
+            .with_payload(DiagnosticPayload::TypeMismatch {
+                expected: element,
+                found: value_type.clone(),
+            }),
+        );
+    }
+}
+
+/// The element type an `append` target holds: a local sequence's element, or the
+/// leaf type of a saved keyed-leaf layer. A group, composite, or otherwise invalid
+/// target yields no leaf type, so the value check defers to the target-shape error.
+fn append_element_type(
+    env: &CallEnv<'_>,
+    target: &marrow_syntax::Expression,
+    target_type: &MarrowType,
+) -> MarrowType {
+    match target_type {
+        MarrowType::Sequence(element) => element.as_ref().clone(),
+        _ => saved_path_value_type(env.program, target, env.scope, env.file),
+    }
+}
+
+/// Whether a type is a leaf an `append` element slot can hold — a scalar, enum,
+/// identity, or error code. A collection, record, group entry, or unresolved type
+/// is not a comparable element, so the value check leaves it to the target gates.
+fn is_appendable_element(ty: &MarrowType) -> bool {
+    matches!(
+        ty,
+        MarrowType::Primitive(_)
+            | MarrowType::Enum { .. }
+            | MarrowType::Identity(_)
+            | MarrowType::Error
+    )
 }
 
 fn saved_layer_is_group(
@@ -965,6 +1106,13 @@ fn check_conversion_arg(
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
     let [arg_type] = arg_types else { return };
+    // A maybe-present source must be resolved before a conversion consumes it; the
+    // one rule owns it before the unsupported-source mismatch so the message names
+    // the four resolution forms.
+    if is_optional_value(arg_type) {
+        diagnostics.push(unresolved_optional_diagnostic(file, span));
+        return;
+    }
     if target.accepts(arg_type) {
         return;
     }
@@ -1127,6 +1275,13 @@ pub(crate) fn check_one_arg(
     file: &Path,
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
+    // A maybe-present (`T?`) argument into a definite parameter is the one rule; route it
+    // through the shared helper before the generic mismatch so the message names the four
+    // resolution forms.
+    if let Some(diagnostic) = unresolved_optional(parameter, arg_type, span, file) {
+        diagnostics.push(diagnostic);
+        return;
+    }
     match type_compatible(parameter, arg_type) {
         Some(true) => {}
         Some(false) => {
@@ -1602,7 +1757,7 @@ pub(crate) fn composite_identity(program: &CheckedProgram, root: &str) -> bool {
 /// Report a `check.neighbor_unsupported` error for a statically-unnavigable
 /// `next`/`prev` shape and poison the result. The poison `Invalid` type (not the
 /// untyped `Unknown`) keeps the rejected read from cascading a second
-/// `untyped_value` or `bare_maybe_present_read` on the same mistake.
+/// `untyped_value` or `unresolved_optional` on the same mistake.
 pub(crate) fn neighbor_unsupported(
     which: &str,
     shape: &str,

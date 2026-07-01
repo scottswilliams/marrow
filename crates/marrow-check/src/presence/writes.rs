@@ -1,11 +1,12 @@
 //! Transitive effect closure over lowered direct-effect facts.
 
 use crate::{
-    CheckedBuiltinCall, CheckedCallTarget, CheckedExpr, CheckedFunctionRef,
+    CheckedArg, CheckedBuiltinCall, CheckedCallTarget, CheckedExpr, CheckedFunctionRef,
     CheckedInterpolationPart, CheckedProgram,
 };
 
 use super::util::extend_unique;
+use crate::executable::accepted_saved_place;
 use crate::facts::{DirectEffectFacts, EffectClosureFacts, StoreId};
 
 pub(crate) fn effect_closure(
@@ -31,10 +32,6 @@ pub(crate) fn effect_closure_for_direct(
     }
     set_write_reachability(&mut closure);
     closure
-}
-
-pub(super) fn call_writes_saved_data(program: &CheckedProgram, target: &CheckedCallTarget) -> bool {
-    call_target_writes_saved_data(program, target)
 }
 
 /// The stores a user-function call actually writes a saved record or index entry to. A
@@ -71,9 +68,17 @@ pub(super) fn call_written_stores(
     stores
 }
 
-fn call_target_writes_saved_data(program: &CheckedProgram, target: &CheckedCallTarget) -> bool {
+fn call_writes_saved_data(
+    program: &CheckedProgram,
+    target: &CheckedCallTarget,
+    args: &[CheckedArg],
+) -> bool {
     match target {
-        CheckedCallTarget::Builtin(CheckedBuiltinCall::Append) => true,
+        // `append` writes saved data only when its target is a saved layer; an append to
+        // a purely local sequence mutates no node, so it must not expire saved narrowings.
+        CheckedCallTarget::Builtin(CheckedBuiltinCall::Append) => args
+            .first()
+            .is_some_and(|arg| accepted_saved_place(&arg.value).is_some()),
         CheckedCallTarget::Function(function_ref) => effect_closure(program, *function_ref)
             .is_some_and(|closure| closure.write_effects_reachable),
         CheckedCallTarget::SavedIndexLookup
@@ -116,7 +121,7 @@ pub(super) fn expr_calls_saved_writer(program: &CheckedProgram, expr: &CheckedEx
             target,
             ..
         } => {
-            call_target_writes_saved_data(program, target)
+            call_writes_saved_data(program, target, args)
                 || expr_calls_saved_writer(program, callee)
                 || args
                     .iter()
@@ -139,9 +144,10 @@ pub(super) fn expr_calls_saved_writer(program: &CheckedProgram, expr: &CheckedEx
             CheckedInterpolationPart::Text { .. } => false,
             CheckedInterpolationPart::Expr(expr) => expr_calls_saved_writer(program, expr),
         }),
-        CheckedExpr::Literal { .. } | CheckedExpr::Name { .. } | CheckedExpr::SavedRoot { .. } => {
-            false
-        }
+        CheckedExpr::Literal { .. }
+        | CheckedExpr::Name { .. }
+        | CheckedExpr::SavedRoot { .. }
+        | CheckedExpr::Absent { .. } => false,
     }
 }
 

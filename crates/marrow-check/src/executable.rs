@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use marrow_schema::ReturnPresence;
 use marrow_schema::ScalarType;
 use marrow_schema::stdlib::Capability;
 use marrow_store::StoreError;
@@ -231,7 +230,6 @@ pub(crate) enum CheckedBuiltinReturnShape {
 pub struct CheckedStdCall {
     pub module: &'static str,
     pub op: &'static str,
-    pub presence: ReturnPresence,
     pub requires_capability: Option<Capability>,
 }
 
@@ -239,5 +237,4 @@ pub struct CheckedStdCall {
 pub struct CheckedFunctionRef {
     pub module: u32,
     pub function: u32,
-    pub presence: ReturnPresence,
 }

@@ -75,7 +75,6 @@ fn collect_statement_effects(
                 collect_expr_reads(facts, value, effects);
             }
         }
-        CheckedStmt::ReturnAbsent { .. } => {}
         CheckedStmt::Expr { value, .. } => collect_expr_reads(facts, value, effects),
         CheckedStmt::If {
             condition,
@@ -253,7 +252,10 @@ fn collect_expr_reads(facts: &CheckedFacts, expr: &CheckedExpr, effects: &mut Di
                 }
             }
         }
-        CheckedExpr::Literal { .. } | CheckedExpr::Name { .. } | CheckedExpr::SavedRoot { .. } => {}
+        CheckedExpr::Literal { .. }
+        | CheckedExpr::Name { .. }
+        | CheckedExpr::SavedRoot { .. }
+        | CheckedExpr::Absent { .. } => {}
     }
 }
 
@@ -306,6 +308,7 @@ fn collect_saved_path_key_reads(
             collect_saved_path_key_reads(facts, base, effects);
         }
         CheckedExpr::SavedRoot { .. }
+        | CheckedExpr::Absent { .. }
         | CheckedExpr::Literal { .. }
         | CheckedExpr::Name { .. }
         | CheckedExpr::Unary { .. }

@@ -25,10 +25,9 @@ use crate::write_plan::{CommitIdAllocation, PlanStep, WritePlan};
 pub(crate) enum Flow {
     /// Fall through to the next statement.
     Normal,
-    /// A `return`, carrying its value if it had one.
+    /// A `return`, carrying its value: `None` for a void return or a returned
+    /// empty optional, `Some` for a returned value.
     Return(Option<Value>),
-    /// `return absent` from a maybe-returning function.
-    ReturnAbsent,
     /// A `break`, targeting the innermost loop.
     Break,
     /// A `continue`, targeting the innermost loop.

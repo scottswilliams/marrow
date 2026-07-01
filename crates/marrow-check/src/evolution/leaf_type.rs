@@ -92,7 +92,9 @@ fn leaf_type_token(
             ))?;
             Some(format!("enum:{enum_id}"))
         }
-        Type::Sequence(_) | Type::Unknown => None,
+        // A durable leaf is never optional (the slot choke-point enforces this), so
+        // an optional has no leaf token.
+        Type::Optional(_) | Type::Sequence(_) | Type::Unknown => None,
     }
 }
 

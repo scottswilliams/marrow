@@ -56,6 +56,7 @@ pub enum TokenKind {
     Equal,
     EqualEqual,
     BangEqual,
+    Question,
     QuestionDot,
     QuestionQuestion,
     Less,
@@ -95,7 +96,6 @@ pub enum Keyword {
     Break,
     Continue,
     Return,
-    Maybe,
     Absent,
     Delete,
     Merge,
@@ -146,7 +146,8 @@ pub fn is_expression_callable_keyword(keyword: Keyword) -> bool {
     )
 }
 
-/// Keywords the expression parser accepts after `::` in a name path.
+/// Keywords the expression parser accepts after `::` in a name path. `absent` is
+/// a primary value, not a path segment, so it is deliberately excluded.
 pub fn is_expression_path_segment_keyword(keyword: Keyword) -> bool {
     matches!(
         keyword,
@@ -160,7 +161,6 @@ pub fn is_expression_path_segment_keyword(keyword: Keyword) -> bool {
             | Keyword::Duration
             | Keyword::ErrorCode
             | Keyword::Error
-            | Keyword::Absent
     )
 }
 
@@ -227,7 +227,6 @@ pub(crate) fn keyword(text: &str) -> Option<Keyword> {
         "break" => Keyword::Break,
         "continue" => Keyword::Continue,
         "return" => Keyword::Return,
-        "maybe" => Keyword::Maybe,
         "absent" => Keyword::Absent,
         "delete" => Keyword::Delete,
         "merge" => Keyword::Merge,

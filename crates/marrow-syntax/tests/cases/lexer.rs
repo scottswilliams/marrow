@@ -254,8 +254,8 @@ fn column_zero_comment_between_top_level_decls_closes_the_block() {
 }
 
 #[test]
-fn lexes_maybe_return_and_absent_return_keywords() {
-    let source = "fn f(): maybe int\n    return absent\n";
+fn lexes_optional_return_type_and_absent_value() {
+    let source = "fn f(): int?\n    return absent\n";
 
     assert_eq!(
         kinds(source),
@@ -265,8 +265,8 @@ fn lexes_maybe_return_and_absent_return_keywords() {
             TokenKind::LeftParen,
             TokenKind::RightParen,
             TokenKind::Colon,
-            TokenKind::Keyword(Keyword::Maybe),
             TokenKind::Keyword(Keyword::Int),
+            TokenKind::Question,
             TokenKind::Newline,
             TokenKind::Indent,
             TokenKind::Keyword(Keyword::Return),
@@ -796,15 +796,37 @@ fn lexes_absence_operators() {
 }
 
 #[test]
-fn rejects_a_bare_question_mark() {
-    // A lone `?` is not part of any operator, so it stays an unexpected character;
-    // only `?.` and `??` are recognized.
-    let lexed = lex_source("print(a ? b)\n");
-    assert!(
-        lexed.diagnostics.iter().any(|diagnostic| diagnostic.reason
-            == DiagnosticReason::Lexer(LexerDiagnosticReason::UnexpectedCharacter('?'))),
-        "expected a bare `?` to be rejected, got {:#?}",
-        lexed.diagnostics
+fn lexes_optional_suffix_with_longest_match() {
+    // One trailing `?` is the optional type suffix and lexes as `Question`. The
+    // multi-character table runs first, so `??` stays a single `QuestionQuestion`
+    // token even in type-suffix position, and two spaced `?` are two `Question`.
+    assert_eq!(
+        kinds("title?\n"),
+        vec![
+            TokenKind::Identifier,
+            TokenKind::Question,
+            TokenKind::Newline,
+            TokenKind::Eof,
+        ]
+    );
+    assert_eq!(
+        kinds("title??\n"),
+        vec![
+            TokenKind::Identifier,
+            TokenKind::QuestionQuestion,
+            TokenKind::Newline,
+            TokenKind::Eof,
+        ]
+    );
+    assert_eq!(
+        kinds("title ? ?\n"),
+        vec![
+            TokenKind::Identifier,
+            TokenKind::Question,
+            TokenKind::Question,
+            TokenKind::Newline,
+            TokenKind::Eof,
+        ]
     );
 }
 

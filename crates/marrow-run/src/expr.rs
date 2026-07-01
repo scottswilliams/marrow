@@ -5,7 +5,7 @@ use std::cmp::Ordering;
 use marrow_check::{
     CheckedBinaryOp as BinaryOp, CheckedEnumMemberRef, CheckedExpr as ExecExpr,
     CheckedInterpolationPart as InterpolationPart, CheckedLiteralKind as LiteralKind,
-    CheckedUnaryOp as UnaryOp,
+    CheckedUnaryOp as UnaryOp, MarrowType,
 };
 use marrow_store::Decimal;
 use marrow_store::value::supported_instant_nanos;
@@ -14,38 +14,125 @@ use marrow_syntax::{
     decode_string_literal, duration_unit_seconds,
 };
 
-use crate::call::{call_target_maybe_present, eval_call, expression_absent_at_resolution_site};
+use crate::call::eval_call;
 use crate::durable_read::{
     eval_optional_field, eval_saved_field, read_resource, read_saved_value_if_present,
 };
 use crate::env::Env;
 use crate::error::{
-    RUN_ABSENT, RUN_DECIMAL_OVERFLOW, RUN_NO_VALUE, RUN_OVERFLOW, RUN_TYPE, RUN_UNBOUND_NAME,
-    RuntimeError, decimal_overflow, divide_by_zero, overflow, raise_fault, temporal_overflow,
-    type_error, unsupported,
+    RUN_DECIMAL_OVERFLOW, RUN_NO_VALUE, RUN_OVERFLOW, RUN_TYPE, RUN_UNBOUND_NAME, RuntimeError,
+    decimal_overflow, divide_by_zero, overflow, raise_fault, temporal_overflow, type_error,
+    unsupported,
 };
 use crate::path::direct_root_place;
-use crate::read::eval_local_field_get;
+use crate::read::{eval_local_field_get, local_field_value};
 use crate::stdlib::int_remainder;
 use crate::value::{Value, enum_id_from_ref, enum_value_from_member, render};
 
+/// Evaluate an expression the checker typed as optional (`T?`) to its
+/// `Option<Value>`: `None` is the empty optional, `Some` its present value. The one
+/// place the runtime crosses from the value world — where the empty optional is
+/// [`Value::Absent`] — into the `Option<Value>` that the return, resolution, and
+/// present-or-clear boundaries consume. A present definite value widens into an
+/// optional through the final arm.
+pub(crate) fn eval_optional(
+    expr: &ExecExpr,
+    env: &mut Env<'_>,
+) -> Result<Option<Value>, RuntimeError> {
+    match expr {
+        ExecExpr::Absent { .. } => Ok(None),
+        ExecExpr::Binary {
+            op: BinaryOp::Coalesce,
+            left,
+            right,
+            ..
+        } => match eval_optional(left, env)? {
+            Some(value) => Ok(Some(value)),
+            None => eval_optional(right, env),
+        },
+        // A saved read resolves its own presence before any fixed-address read, so a
+        // missing sparse field, keyed leaf, or unique-index key yields `None`
+        // directly rather than a fault.
+        _ if expr.saved_place().is_some() => read_saved_value_if_present(expr, expr.span(), env),
+        ExecExpr::Call {
+            args, target, span, ..
+        } => eval_optional_call(expr, args, target, *span, env),
+        ExecExpr::OptionalField {
+            base, name, span, ..
+        } => eval_optional_local_field(base, name, *span, env),
+        _ => Ok(present_optional(eval_expr(expr, env)?)),
+    }
+}
+
+/// Materialize an expression into a slot of declared type `slot`, the one boundary
+/// that carries a `T?` read/call into a `const`/`var` binding or a function
+/// argument. An optional slot admits the empty optional: an absent maybe-present
+/// read, call, or `absent` literal flows in as [`Value::Absent`], the real optional
+/// value. A non-optional slot reads present-or-fatal through [`eval_expr`], so a
+/// required or narrowed-present read that finds absence stays a fatal
+/// invalid-attached-data fault.
+pub(crate) fn eval_into_slot(
+    expr: &ExecExpr,
+    slot: Option<&MarrowType>,
+    env: &mut Env<'_>,
+) -> Result<Value, RuntimeError> {
+    if matches!(slot, Some(MarrowType::Optional(_))) {
+        Ok(eval_optional(expr, env)?.unwrap_or(Value::Absent))
+    } else {
+        eval_expr(expr, env)
+    }
+}
+
+/// A [`Value`] carried at an optional boundary: the empty optional becomes `None`,
+/// every present value becomes `Some`.
+fn present_optional(value: Value) -> Option<Value> {
+    match value {
+        Value::Absent => None,
+        value => Some(value),
+    }
+}
+
+/// Evaluate a non-saved call at an optional boundary. A program function that
+/// returns the empty optional completes as `Ok(None)`; a maybe-present builtin,
+/// stdlib op, host op, or local-collection read yields [`Value::Absent`], which
+/// collapses to `None`. A genuine fault — including a definite host op's
+/// `run.absent_element`, such as a missing required env var — propagates so a
+/// surrounding `catch` can bind it.
+fn eval_optional_call(
+    call: &ExecExpr,
+    args: &[marrow_check::CheckedArg],
+    target: &marrow_check::CheckedCallTarget,
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Option<Value>, RuntimeError> {
+    Ok(eval_call(call, args, target, span, env)?.and_then(present_optional))
+}
+
+/// Evaluate `base?.name` over a non-saved base. An absent base short-circuits to
+/// the empty optional; a present record reads its member, which may itself be an
+/// absent sparse field and so flows through the same optional collapse.
+fn eval_optional_local_field(
+    base: &ExecExpr,
+    name: &str,
+    span: SourceSpan,
+    env: &mut Env<'_>,
+) -> Result<Option<Value>, RuntimeError> {
+    match eval_optional(base, env)? {
+        None => Ok(None),
+        Some(base) => Ok(present_optional(local_field_value(base, name, span)?)),
+    }
+}
+
+/// `place ?? default`: the left operand's present value, or `default` when the left
+/// is the empty optional.
 pub(crate) fn eval_coalesce(
-    path: &ExecExpr,
+    left: &ExecExpr,
     default: &ExecExpr,
     env: &mut Env<'_>,
 ) -> Result<Value, RuntimeError> {
-    if path.saved_place().is_some() {
-        return match read_saved_value_if_present(path, path.span(), env)? {
-            Some(value) => Ok(value),
-            None => eval_expr(default, env),
-        };
-    }
-    match eval_expr(path, env) {
-        // Non-saved absence faults, such as host environment lookups, keep the
-        // catchable error path. Saved-data absence is handled above by probing
-        // the fixed read site before any fatal read occurs.
-        Err(error) if expression_absent_at_resolution_site(path, &error) => eval_expr(default, env),
-        other => other,
+    match eval_optional(left, env)? {
+        Some(value) => Ok(value),
+        None => eval_expr(default, env),
     }
 }
 
@@ -55,6 +142,7 @@ pub(crate) fn eval_expr(expr: &ExecExpr, env: &mut Env<'_>) -> Result<Value, Run
     }
     match expr {
         ExecExpr::Literal { kind, text, span } => eval_literal(*kind, text, *span),
+        ExecExpr::Absent { .. } => Ok(Value::Absent),
         ExecExpr::Name {
             segments,
             enum_member,
@@ -130,11 +218,6 @@ fn eval_call_expr(
 ) -> Result<Value, RuntimeError> {
     match eval_call(call, args, target, span, env)? {
         Some(value) => Ok(value),
-        None if call_target_maybe_present(target) => Err(raise_fault(
-            RUN_ABSENT,
-            "maybe-present call returned absent".into(),
-            span,
-        )),
         None => Err(RuntimeError::fault(
             RUN_NO_VALUE,
             "a call to a function that returns no value cannot be used as a value".into(),

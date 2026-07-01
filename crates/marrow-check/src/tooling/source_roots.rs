@@ -333,7 +333,7 @@ fn collect_statement_roots(
                 collect_block_roots(source, &arm.block, facts);
             }
         }
-        Statement::ReturnAbsent { .. } | Statement::Break { .. } | Statement::Continue { .. } => {}
+        Statement::Break { .. } | Statement::Continue { .. } => {}
     }
 }
 

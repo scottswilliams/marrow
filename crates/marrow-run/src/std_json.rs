@@ -7,7 +7,6 @@ use std::collections::{BTreeMap, HashSet};
 use std::fmt;
 use std::result::Result as StdResult;
 
-use crate::collection::absent_read;
 use crate::env::Env;
 use crate::error::{RuntimeError, std_arity, type_error};
 use crate::stdlib::{eval_string_sequence, eval_text};
@@ -81,10 +80,10 @@ pub(crate) fn eval_json(
             let pointer = eval_text(pointer, env, span)?;
             let root = parse_json(&text).map_err(|_| type_error("invalid JSON text", span))?;
             let Some(value) = select_pointer(root.get(), &pointer, span)? else {
-                return Err(absent_read("JSON pointer selected no value".into(), span));
+                return Ok(Value::Absent);
             };
             if is_null(&value) {
-                return Err(absent_read("JSON pointer selected null".into(), span));
+                return Ok(Value::Absent);
             }
             json_value(scalar_op, &value, span)
         }

@@ -1073,8 +1073,8 @@ fn intrinsic_callable_signature_returns_standard_library_shapes() {
         })
     );
 
-    let absent = intrinsic_callable_signature(&path_segments(&["std", "assert", "absent"]))
-        .expect("std::assert::absent signature");
+    let absent = intrinsic_callable_signature(&path_segments(&["std", "assert", "isAbsent"]))
+        .expect("std::assert::isAbsent signature");
     assert_eq!(absent.params[0].shape, CallableValueShape::SavedPath);
     assert_eq!(absent.return_shape, None);
     assert_eq!(
@@ -1302,22 +1302,29 @@ fn type_at_a_local_const_reference_is_its_inferred_type() {
 }
 
 #[test]
-fn type_at_a_saved_field_read_is_the_declared_leaf_type() {
-    // `^books(id).title` reads a `string` field of the `Book` resource. Typing
-    // it requires both the saved-data machinery and the `id` parameter in scope.
+fn type_at_a_saved_field_read_is_the_optional_leaf_type() {
+    // `^books(id).title` reads a `string` field through a maybe-present record, so
+    // the read types as `string?`. Typing it requires both the saved-data machinery
+    // and the `id` parameter in scope.
     let source = "module m\n\
         resource Book\n    \
         required title: string\n\
         store ^books(id: int): Book\n\
         fn peek(id: int): string\n    \
-        return ^books(id).title\n";
+        return ^books(id).title ?? \"\"\n";
     let (program, parsed, path) = analyze("type-at-saved-field", source);
     // Point at the `.title` leaf, so the smallest covering expression is the whole
     // field read `^books(id).title` rather than the inner `^books` root.
     let offset = source.rfind("title").expect("the .title field read") + 1;
 
     let ty = type_at(&program, &path, &parsed, offset);
-    assert_eq!(ty, Some(MarrowType::Primitive(ScalarType::Str)), "{ty:?}");
+    assert_eq!(
+        ty,
+        Some(MarrowType::Optional(Box::new(MarrowType::Primitive(
+            ScalarType::Str
+        )))),
+        "{ty:?}"
+    );
 }
 
 #[test]

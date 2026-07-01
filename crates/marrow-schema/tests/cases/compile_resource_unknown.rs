@@ -4,9 +4,9 @@
 
 use crate::common;
 use common::{assert_kind, codes, compile_source_errors};
-use marrow_schema::{SCHEMA_UNKNOWN_IN_SAVED, SchemaErrorKind, SchemaSavedUnknownTarget};
+use marrow_schema::{SCHEMA_UNKNOWN_IN_SAVED, SchemaErrorKind, SchemaSavedPosition};
 
-fn unknown(target: SchemaSavedUnknownTarget, name: &str) -> SchemaErrorKind {
+fn unknown(target: SchemaSavedPosition, name: &str) -> SchemaErrorKind {
     SchemaErrorKind::UnknownInSaved {
         target,
         name: name.to_string(),
@@ -23,7 +23,7 @@ store ^books(id: int): Book
 ";
     let errors = compile_source_errors(source);
     assert_eq!(codes(&errors), [SCHEMA_UNKNOWN_IN_SAVED]);
-    assert_kind(&errors[0], unknown(SchemaSavedUnknownTarget::Field, "note"));
+    assert_kind(&errors[0], unknown(SchemaSavedPosition::Field, "note"));
 }
 
 #[test]
@@ -35,14 +35,28 @@ store ^books(id: unknown): Book
 ";
     let errors = compile_source_errors(source);
     assert_eq!(codes(&errors), [SCHEMA_UNKNOWN_IN_SAVED]);
-    assert_kind(
-        &errors[0],
-        unknown(SchemaSavedUnknownTarget::IdentityKey, "id"),
-    );
+    assert_kind(&errors[0], unknown(SchemaSavedPosition::IdentityKey, "id"));
 }
 
 #[test]
 fn saved_keyed_leaf_typed_unknown_is_an_error() {
+    let source = "\
+resource Book
+    counts(day: string): unknown
+store ^books(id: int): Book
+";
+    let errors = compile_source_errors(source);
+    assert_eq!(codes(&errors), [SCHEMA_UNKNOWN_IN_SAVED]);
+    assert_kind(
+        &errors[0],
+        unknown(SchemaSavedPosition::KeyedLeaf, "counts"),
+    );
+}
+
+#[test]
+fn saved_positional_layer_typed_unknown_is_a_sequence_element() {
+    // A positional (single-`int`-keyed) layer is the sequence shape, so its `unknown`
+    // leaf is named a sequence element, consistent with the optional rejection.
     let source = "\
 resource Book
     tags(pos: int): unknown
@@ -52,7 +66,7 @@ store ^books(id: int): Book
     assert_eq!(codes(&errors), [SCHEMA_UNKNOWN_IN_SAVED]);
     assert_kind(
         &errors[0],
-        unknown(SchemaSavedUnknownTarget::KeyedLeaf, "tags"),
+        unknown(SchemaSavedPosition::SequenceElement, "tags"),
     );
 }
 
@@ -66,13 +80,13 @@ store ^books(id: int): Book
 ";
     let errors = compile_source_errors(source);
     assert_eq!(codes(&errors), [SCHEMA_UNKNOWN_IN_SAVED]);
-    assert_kind(&errors[0], unknown(SchemaSavedUnknownTarget::Field, "body"));
+    assert_kind(&errors[0], unknown(SchemaSavedPosition::Field, "body"));
 }
 
 #[test]
 fn saved_field_typed_sequence_of_unknown_is_an_error() {
     // `unknown` is rejected anywhere inside a saved type, including as the
-    // element of a `sequence[...]`.
+    // element of a `sequence[...]`; the rejection names the sequence element.
     let source = "\
 resource Book
     tags: sequence[unknown]
@@ -80,7 +94,10 @@ store ^books(id: int): Book
 ";
     let errors = compile_source_errors(source);
     assert_eq!(codes(&errors), [SCHEMA_UNKNOWN_IN_SAVED]);
-    assert_kind(&errors[0], unknown(SchemaSavedUnknownTarget::Field, "tags"));
+    assert_kind(
+        &errors[0],
+        unknown(SchemaSavedPosition::SequenceElement, "tags"),
+    );
 }
 
 #[test]
@@ -110,7 +127,7 @@ store ^books(id: int): Book
 ";
     let errors = compile_source_errors(source);
     assert_eq!(codes(&errors), [SCHEMA_UNKNOWN_IN_SAVED]);
-    assert_kind(&errors[0], unknown(SchemaSavedUnknownTarget::Key, "pos"));
+    assert_kind(&errors[0], unknown(SchemaSavedPosition::Key, "pos"));
 }
 
 #[test]
@@ -125,7 +142,7 @@ store ^books(id: int): Book
 ";
     let errors = compile_source_errors(source);
     assert_eq!(codes(&errors), [SCHEMA_UNKNOWN_IN_SAVED]);
-    assert_kind(&errors[0], unknown(SchemaSavedUnknownTarget::Key, "rev"));
+    assert_kind(&errors[0], unknown(SchemaSavedPosition::Key, "rev"));
 }
 
 #[test]

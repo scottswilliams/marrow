@@ -1349,8 +1349,8 @@ fn evolve_transform_body_rejects_return_absent() {
         report
             .diagnostics
             .iter()
-            .any(|diagnostic| diagnostic.code == marrow_check::CHECK_RETURN_VALUE),
-        "`return absent` in a transform body must be rejected: {:#?}",
+            .any(|diagnostic| diagnostic.code == marrow_check::CHECK_UNRESOLVED_OPTIONAL),
+        "`return absent` into a non-optional transform target must raise the one rule: {:#?}",
         report.diagnostics
     );
 }
@@ -1413,8 +1413,8 @@ fn evolve_transform_match_arm_rejects_return_absent() {
         report
             .diagnostics
             .iter()
-            .any(|diagnostic| diagnostic.code == marrow_check::CHECK_RETURN_VALUE),
-        "`return absent` in a transform match arm must be rejected: {:#?}",
+            .any(|diagnostic| diagnostic.code == marrow_check::CHECK_UNRESOLVED_OPTIONAL),
+        "`return absent` into a non-optional transform target must raise the one rule: {:#?}",
         report.diagnostics
     );
 }

@@ -6,7 +6,7 @@ use std::path::Path;
 use marrow_store::value::ScalarType;
 use marrow_syntax::SourceSpan;
 
-use crate::{CHECK_LITERAL_RANGE, CheckDiagnostic, MarrowType};
+use crate::{CHECK_LITERAL_RANGE, CHECK_UNRESOLVED_OPTIONAL, CheckDiagnostic, MarrowType};
 
 /// The decimal envelope, mirroring `marrow_store::decimal`: at most 34
 /// significant digits and 34 fractional places.
@@ -148,6 +148,11 @@ pub(crate) fn is_concrete_nonscalar(ty: &MarrowType) -> bool {
         | MarrowType::GroupEntry { .. }
         | MarrowType::Sequence(_)
         | MarrowType::LocalTree { .. }
+        // An optional is a concrete one-rule value, not an `Unknown` deferral: it
+        // must be resolved before any `T` operation, so the operator and render
+        // gates treat it as concrete rather than silently admitting it.
+        | MarrowType::Optional(_)
+        | MarrowType::Absent
         | MarrowType::Enum { .. } => true,
         MarrowType::Primitive(_)
         | MarrowType::Error
@@ -165,9 +170,24 @@ pub(crate) fn is_concrete_nonscalar(ty: &MarrowType) -> bool {
 /// still a mismatch. `Unknown` and `Invalid` defer for recovery and explicit
 /// `unknown` flows.
 pub(crate) fn type_compatible(expected: &MarrowType, actual: &MarrowType) -> Option<bool> {
-    if matches!(expected, MarrowType::Invalid)
-        || matches!(actual, MarrowType::Unknown | MarrowType::Invalid)
-    {
+    // A reported fault poisons its expected type; defer so it does not cascade.
+    if matches!(expected, MarrowType::Invalid) {
+        return None;
+    }
+    // The optional axis is matched before any `Unknown`/`Invalid` deferral so a
+    // degraded-to-`Unknown` expected type can never shadow the one rule and
+    // silently admit an optional. Present widens into an optional place; an
+    // optional or `absent` never satisfies a non-optional place until resolved.
+    match (expected, actual) {
+        (MarrowType::Optional(_), MarrowType::Absent) => return Some(true),
+        (MarrowType::Optional(inner), MarrowType::Optional(a)) => {
+            return type_compatible(inner, a);
+        }
+        (MarrowType::Optional(inner), other) => return type_compatible(inner, other),
+        (_, MarrowType::Optional(_) | MarrowType::Absent) => return Some(false),
+        _ => {}
+    }
+    if matches!(actual, MarrowType::Unknown | MarrowType::Invalid) {
         return None;
     }
     match expected {
@@ -209,6 +229,9 @@ pub(crate) fn type_compatible(expected: &MarrowType, actual: &MarrowType) -> Opt
             _ => Some(false),
         },
         MarrowType::Error => Some(matches!(actual, MarrowType::Error)),
+        // The optional axis is fully decided above; reaching here means `actual` is
+        // a concrete non-optional that no optional/absent place accepts.
+        MarrowType::Optional(_) | MarrowType::Absent => Some(false),
         MarrowType::Invalid => None,
         MarrowType::Unknown => None,
     }
@@ -230,7 +253,12 @@ pub(crate) fn expects_conversion(ty: &MarrowType) -> bool {
         | MarrowType::Identity(_)
         | MarrowType::Resource(_)
         | MarrowType::GroupEntry { .. } => true,
-        MarrowType::Sequence(_)
+        // An optional place carries the conversion boundary of its inner value, so
+        // an untyped value stored into it must be converted first; the empty
+        // optional is never an expected place type.
+        MarrowType::Optional(_) => true,
+        MarrowType::Absent
+        | MarrowType::Sequence(_)
         | MarrowType::LocalTree { .. }
         | MarrowType::Unknown
         | MarrowType::Invalid => false,
@@ -259,7 +287,11 @@ pub(crate) fn type_renderable_at_runtime(ty: &MarrowType) -> Option<bool> {
         MarrowType::Primitive(_) | MarrowType::Identity(_) | MarrowType::Enum { .. } => Some(true),
         MarrowType::Sequence(element) => type_renderable_at_runtime(element),
         MarrowType::Unknown | MarrowType::Invalid => None,
-        MarrowType::Error
+        // An optional must be resolved before it renders (the one rule), so it is a
+        // concrete non-renderable value here rather than a deferral.
+        MarrowType::Optional(_)
+        | MarrowType::Absent
+        | MarrowType::Error
         | MarrowType::Resource(_)
         | MarrowType::GroupEntry { .. }
         | MarrowType::LocalTree { .. } => Some(false),
@@ -323,9 +355,45 @@ pub(crate) fn marrow_type_name(ty: &MarrowType) -> String {
         MarrowType::Enum { name, .. } => name.clone(),
         MarrowType::Sequence(element) => format!("sequence[{}]", marrow_type_name(element)),
         MarrowType::LocalTree { value, .. } => format!("tree[{}]", marrow_type_name(value)),
+        MarrowType::Optional(inner) => format!("{}?", marrow_type_name(inner)),
+        MarrowType::Absent => "absent".to_string(),
         MarrowType::Invalid => "value".to_string(),
         MarrowType::Unknown => "unknown".to_string(),
     }
+}
+
+/// Whether a value's type carries possible absence — an `Optional(T)` or the empty
+/// `absent`. The one rule keys off this: such a value cannot stand where a definite
+/// `T` is required until a resolution form discharges it.
+pub(crate) fn is_optional_value(ty: &MarrowType) -> bool {
+    matches!(ty, MarrowType::Optional(_) | MarrowType::Absent)
+}
+
+/// The one-rule diagnostic for a `T?` value used where a `T` is required, naming the
+/// four resolution forms. The single owner of the `check.unresolved_optional`
+/// message; every slot site routes through it.
+pub(crate) fn unresolved_optional_diagnostic(file: &Path, span: SourceSpan) -> CheckDiagnostic {
+    CheckDiagnostic::error(
+        CHECK_UNRESOLVED_OPTIONAL,
+        file,
+        span,
+        "a `T?` value is used where a `T` is required; resolve it with `?? default`, `if const`, `exists`, or `?.`",
+    )
+}
+
+/// The one rule at a typed slot: fires when `actual` is optional (or the empty
+/// optional) and `expected` is a non-optional, concrete place. Returns `None`
+/// otherwise so a boundary site can fall through to its generic mismatch.
+pub(crate) fn unresolved_optional(
+    expected: &MarrowType,
+    actual: &MarrowType,
+    span: SourceSpan,
+    file: &Path,
+) -> Option<CheckDiagnostic> {
+    let optional_expected = matches!(expected, MarrowType::Optional(_));
+    let poisoned = matches!(expected, MarrowType::Invalid) || matches!(actual, MarrowType::Invalid);
+    (is_optional_value(actual) && !optional_expected && !poisoned)
+        .then(|| unresolved_optional_diagnostic(file, span))
 }
 
 /// Display names for two mismatched types, qualifying each enum as `module::Name`

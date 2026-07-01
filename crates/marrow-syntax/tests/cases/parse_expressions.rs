@@ -379,34 +379,33 @@ fn coalesce_binds_tighter_than_comparison_and_range_but_looser_than_additive() {
 }
 
 #[test]
-fn chained_coalesce_is_not_associative() {
-    // `??` is non-associative, so `a ?? b ?? c` does not parse; the diagnostic is
-    // spanned at the second `??` and carries the spec remedy.
-    let source = "fn f(a: int): int\n    return ^books(a)?.pages ?? 0 ?? 1\n";
-    let parsed = parse_source(source);
-    let diagnostic = parsed
-        .diagnostics
-        .iter()
-        .find(|diagnostic| {
-            diagnostic.reason == parse_reason(ParseDiagnosticReason::NonAssociativeOperator)
-        })
-        .unwrap_or_else(|| {
-            panic!(
-                "expected a non-associative-operator error for chained `??`: {:#?}",
-                parsed.diagnostics
-            )
-        });
-    assert_eq!(
-        &source[diagnostic.span.start_byte..diagnostic.span.end_byte],
-        "??",
-        "span should cover the second `??`: {diagnostic:#?}"
-    );
-    // The spec remedy rides in the message, not `help`: the checker drops `help`
-    // when it lowers parse diagnostics, so only an in-message remedy reaches
-    // `marrow check`.
+fn chained_coalesce_is_right_associative() {
+    // `??` is right-associative, so `a ?? b ?? c` parses as `a ?? (b ?? c)`: the
+    // top `??` keeps the inner chain as its right operand, and the chain types
+    // under the coalesce rule.
+    let value = parsed_return_expr("fn f(a: int): int\n    return ^books(a)?.pages ?? 0 ?? 1\n");
+    let Expression::Binary {
+        op: BinaryOp::Coalesce,
+        left,
+        right,
+        ..
+    } = value
+    else {
+        panic!("expected `??` to parse as coalesce");
+    };
     assert!(
-        diagnostic.message.contains("write one `??` per read"),
-        "expected the spec remedy in the message: {diagnostic:#?}"
+        matches!(left.as_ref(), Expression::OptionalField { name, .. } if name == "pages"),
+        "expected the left operand to be the `?.` read: {left:?}"
+    );
+    assert!(
+        matches!(
+            right.as_ref(),
+            Expression::Binary {
+                op: BinaryOp::Coalesce,
+                ..
+            }
+        ),
+        "expected the right operand to be the inner `0 ?? 1` chain: {right:?}"
     );
 }
 

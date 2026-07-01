@@ -189,9 +189,16 @@ pub const CHECK_EVOLVE_TYPE: &str = "check.evolve_type";
 /// `transform` rewrites in the same block. A transform must compute a top-level member
 /// as a pure function of `old`'s other, decodable members.
 pub const CHECK_EVOLVE_TRANSFORM: &str = "check.evolve_transform";
-/// A maybe-present saved read appears in value position without a read-site
-/// resolution form such as `??`, `exists(...)`, or optional chaining.
-pub const CHECK_BARE_MAYBE_PRESENT_READ: &str = "check.bare_maybe_present_read";
+/// A `T?` value is used where a `T` is required without one of the resolution
+/// forms (`?? default`, `if const`, `exists`, or `?.`). Optionality lives in the
+/// value's type, so this fires whenever an optional reaches a non-optional slot.
+pub const CHECK_UNRESOLVED_OPTIONAL: &str = "check.unresolved_optional";
+/// A `const`/`var` whose sole initializer is the bare `absent` (the empty optional)
+/// carries no element type to infer, so the binding must name its optional type
+/// (`var v: string? = absent`). `absent` is a concrete empty optional, not an
+/// `unknown` deferral, so this is rejected at the binding site rather than silently
+/// bound at a type with no element.
+pub const CHECK_UNANNOTATED_ABSENT: &str = "check.unannotated_absent";
 /// A numeric literal is provably outside its type's range: an integer literal
 /// beyond `i64`, or a decimal literal outside the 34-significant-digit /
 /// 34-fractional-place envelope. The runtime would reject it as `run.overflow`.
@@ -417,7 +424,9 @@ impl ConversionTarget {
             MarrowType::Unknown | MarrowType::Invalid => true,
             MarrowType::Primitive(scalar) => self.accepted_sources().contains(scalar),
             MarrowType::Enum { .. } => self.accepts_enum(),
-            MarrowType::Error
+            MarrowType::Optional(_)
+            | MarrowType::Absent
+            | MarrowType::Error
             | MarrowType::GroupEntry { .. }
             | MarrowType::Identity(_)
             | MarrowType::LocalTree { .. }

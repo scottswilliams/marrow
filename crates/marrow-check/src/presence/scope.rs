@@ -3,27 +3,13 @@ use std::path::{Path, PathBuf};
 
 use super::TransformOldReadScope;
 use crate::MarrowType;
-use marrow_schema::ReturnPresence;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub(super) struct NameScope {
     frames: Vec<HashMap<String, ScopedBinding>>,
     next_binding: u32,
-    return_presence: ReturnPresence,
     transform_old: Option<TransformOldBinding>,
     source_file: Option<PathBuf>,
-}
-
-impl Default for NameScope {
-    fn default() -> Self {
-        Self {
-            frames: Vec::new(),
-            next_binding: 0,
-            return_presence: ReturnPresence::Always,
-            transform_old: None,
-            source_file: None,
-        }
-    }
 }
 
 #[derive(Clone, Debug)]
@@ -41,7 +27,6 @@ struct TransformOldBinding {
 impl NameScope {
     pub(super) fn for_function(function: &crate::CheckedFunction, source_file: &Path) -> Self {
         let mut scope = Self {
-            return_presence: function.return_presence,
             source_file: Some(source_file.to_path_buf()),
             ..Self::default()
         };
@@ -130,9 +115,5 @@ impl NameScope {
 
     pub(super) fn source_file(&self) -> &Path {
         self.source_file.as_deref().unwrap_or_else(|| Path::new(""))
-    }
-
-    pub(super) fn return_presence(&self) -> ReturnPresence {
-        self.return_presence
     }
 }

@@ -120,7 +120,7 @@ pub fn first_name(id: int): string
 
 #[test]
 fn an_unguarded_optional_chain_that_ends_absent_is_rejected() {
-    checker_rejects(UNGUARDED_PATIENT_CHAIN, "check.bare_maybe_present_read");
+    checker_rejects(UNGUARDED_PATIENT_CHAIN, "check.unresolved_optional");
 }
 
 #[test]
