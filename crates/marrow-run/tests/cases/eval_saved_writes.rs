@@ -25,7 +25,8 @@ pub fn title_of(id: int): string
 /// still supplying the optional `shelf`. The value flows through a function
 /// return so completeness is not statically provable at the write site, and the
 /// required-field remedy is exercised through the runtime whole-value write path
-/// rather than a single-field write.
+/// rather than a single-field write. `complete_item` supplies `name`, so
+/// following the remedy by populating the value resolves the error.
 const ITEM_WHOLE_VALUE: &str = "\
 resource Item
     required name: string
@@ -37,12 +38,25 @@ fn partial_item(): Item
     item.shelf = \"fiction\"
     return item
 
+fn complete_item(): Item
+    var item: Item
+    item.name = \"Sam\"
+    item.shelf = \"fiction\"
+    return item
+
 pub fn save_whole_outside(id: int)
     ^items(id) = partial_item()
+
+pub fn save_whole_outside_complete(id: int)
+    ^items(id) = complete_item()
 
 pub fn save_whole_inside(id: int)
     transaction
         ^items(id) = partial_item()
+
+pub fn save_whole_inside_complete(id: int)
+    transaction
+        ^items(id) = complete_item()
 
 pub fn save_whole_inside_then_populate(id: int)
     transaction
@@ -56,8 +70,11 @@ pub fn has_item(id: int): bool
     return exists(^items(id))
 ";
 
+/// Outside a transaction a whole-value assignment is written in one shot, so the
+/// remedy must ask the developer to complete the assigned value rather than group
+/// the write in a transaction, which could never fill the missing field.
 #[test]
-fn whole_value_write_outside_transaction_points_at_grouping_in_a_transaction() {
+fn whole_value_write_outside_transaction_points_at_populating_the_value() {
     let program = checked_program(ITEM_WHOLE_VALUE);
     let store = TreeStore::memory();
     let message = run_error_message(run_entry(
@@ -65,8 +82,12 @@ fn whole_value_write_outside_transaction_points_at_grouping_in_a_transaction() {
         checked_entry!(&program, "test::save_whole_outside", Value::Int(1)),
     ));
     assert!(
-        message.contains("transaction"),
-        "outside a transaction the whole-value remedy points at grouping the writes: {message}"
+        message.contains("name") && message.contains("assigned value"),
+        "the whole-value remedy names the missing field and asks to populate the value: {message}"
+    );
+    assert!(
+        !message.contains("transaction"),
+        "wrapping the single whole-value write in a transaction cannot fill the field: {message}"
     );
     assert_eq!(
         run_entry(
@@ -78,10 +99,27 @@ fn whole_value_write_outside_transaction_points_at_grouping_in_a_transaction() {
         Some(Value::Bool(false)),
         "the rejected whole-value write must leave no partial record"
     );
+    run_entry(
+        &store,
+        checked_entry!(&program, "test::save_whole_outside_complete", Value::Int(1)),
+    )
+    .expect("following the remedy by populating the value resolves the error");
+    assert_eq!(
+        run_entry(
+            &store,
+            checked_entry!(&program, "test::name_of", Value::Int(1))
+        )
+        .expect("read")
+        .value,
+        Some(Value::Str("Sam".into())),
+    );
 }
 
+/// Inside a transaction a whole-value assignment is still written in one shot,
+/// so it earns the same populate-the-value remedy rather than the commit-oriented
+/// guidance reserved for a field-by-field build.
 #[test]
-fn whole_value_write_inside_transaction_asks_to_complete_before_commit_not_regroup() {
+fn whole_value_write_inside_transaction_points_at_populating_the_value() {
     let program = checked_program(ITEM_WHOLE_VALUE);
     let store = TreeStore::memory();
     let message = run_error_message(run_entry(
@@ -89,8 +127,8 @@ fn whole_value_write_inside_transaction_asks_to_complete_before_commit_not_regro
         checked_entry!(&program, "test::save_whole_inside", Value::Int(1)),
     ));
     assert!(
-        message.contains("before the transaction commits"),
-        "inside a transaction the remedy asks to complete the record before commit: {message}"
+        message.contains("name") && message.contains("assigned value"),
+        "the whole-value remedy names the missing field and asks to populate the value: {message}"
     );
     assert!(
         !message.contains("group the writes"),
@@ -105,6 +143,20 @@ fn whole_value_write_inside_transaction_asks_to_complete_before_commit_not_regro
         .value,
         Some(Value::Bool(false)),
         "the rejected transaction rolls back the partial record"
+    );
+    run_entry(
+        &store,
+        checked_entry!(&program, "test::save_whole_inside_complete", Value::Int(1)),
+    )
+    .expect("following the remedy by populating the value resolves the error");
+    assert_eq!(
+        run_entry(
+            &store,
+            checked_entry!(&program, "test::name_of", Value::Int(1))
+        )
+        .expect("read")
+        .value,
+        Some(Value::Str("Sam".into())),
     );
 }
 

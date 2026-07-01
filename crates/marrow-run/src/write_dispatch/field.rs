@@ -11,8 +11,8 @@ use crate::statement::coerce_error_code_value;
 use crate::store::{DataAddress, LayerAddress};
 use crate::value::{LeafValue, Value, identity_keys_of, value_to_leaf};
 use crate::write::{
-    ReferencedIdentity, WriteError, plan_field_write, plan_identity_field_write,
-    plan_nested_field_write, plan_nested_identity_field_write,
+    ReferencedIdentity, RequiredAbsentRemedy, WriteError, plan_field_write,
+    plan_identity_field_write, plan_nested_field_write, plan_nested_identity_field_write,
     validate_required_fields_after_field_write,
 };
 use crate::write_dispatch::required::created_required_field_path;
@@ -157,7 +157,13 @@ fn finish_saved_field_write(
     if let Some(path) = created_required_path {
         env.note_created_required_path(path);
     }
-    env.defer_required_entry_check(&path.place, &path.identity, &[], span);
+    env.defer_required_entry_check(
+        &path.place,
+        &path.identity,
+        &[],
+        span,
+        RequiredAbsentRemedy::AtCommit,
+    );
 }
 
 pub(crate) fn write_nested_field(
@@ -236,6 +242,12 @@ fn finish_nested_field_write(
     if let Some(created) = created_required_path {
         env.note_created_required_path(created);
     }
-    env.defer_required_entry_check(&path.place, identity, &path.layer_addresses, span);
+    env.defer_required_entry_check(
+        &path.place,
+        identity,
+        &path.layer_addresses,
+        span,
+        RequiredAbsentRemedy::AtCommit,
+    );
     Ok(())
 }

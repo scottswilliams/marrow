@@ -6,7 +6,9 @@ use crate::error::{RuntimeError, unsupported};
 use crate::expr::eval_expr;
 use crate::path::{SavedPath, Terminal, lower};
 use crate::value::{LeafValue, Value, value_to_leaf, value_to_saved};
-use crate::write::{RequiredEnforcement, ResourceValue, SuppliedIdentity, plan_resource_write};
+use crate::write::{
+    RequiredAbsentRemedy, RequiredEnforcement, ResourceValue, SuppliedIdentity, plan_resource_write,
+};
 use crate::write_dispatch::required::created_required_paths_for_value;
 
 pub(crate) fn eval_resource_write(
@@ -73,7 +75,13 @@ pub(crate) fn write_resource(
     for path in created_required_paths {
         env.note_created_required_path(path);
     }
-    env.defer_required_entry_check(&path.place, identity, &[], span);
+    env.defer_required_entry_check(
+        &path.place,
+        identity,
+        &[],
+        span,
+        RequiredAbsentRemedy::PopulateInValue,
+    );
     Ok(())
 }
 

@@ -16,7 +16,7 @@ use crate::statement::coerce_error_code_value;
 use crate::store::{DataAddress, LayerAddress};
 use crate::value::{Value, value_to_leaf};
 use crate::write::{
-    RequiredEnforcement, plan_layer_group_write, plan_layer_leaf_write,
+    RequiredAbsentRemedy, RequiredEnforcement, plan_layer_group_write, plan_layer_leaf_write,
     validate_required_fields_after_group_write,
 };
 use crate::write_dispatch::{created_required_paths_for_value, resource_value_of};
@@ -255,6 +255,12 @@ fn write_direct_group_entry_at(
     for path in created_required_paths {
         env.note_created_required_path(path);
     }
-    env.defer_required_entry_check(target.place, target.identity, &layers, target.span);
+    env.defer_required_entry_check(
+        target.place,
+        target.identity,
+        &layers,
+        target.span,
+        RequiredAbsentRemedy::PopulateInValue,
+    );
     Ok(())
 }

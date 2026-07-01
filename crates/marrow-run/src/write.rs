@@ -103,10 +103,18 @@ pub const WRITE_NEXT_ID_UNSUPPORTED: &str = "write.next_id_unsupported";
 /// populating writes in a transaction. A field-by-field write inside a
 /// transaction is already grouped; that same guidance would contradict itself,
 /// so the commit-time check instead asks for the missing field before commit.
+/// A whole-value or whole-entry assignment writes the record in one shot, so
+/// neither grouping nor a later write can complete it; the guidance asks the
+/// developer to include the missing field in the value being assigned. When a
+/// nested-entry write leaves a *containing* record incomplete, the missing field
+/// belongs to an ancestor the assigned value never carried, so the guidance points
+/// at completing that containing record before commit instead of the assigned value.
 #[derive(Clone, Copy)]
-enum RequiredAbsentRemedy {
+pub(crate) enum RequiredAbsentRemedy {
     OutsideTransaction,
     AtCommit,
+    PopulateInValue,
+    CompleteContainingRecord,
 }
 
 /// Whether a whole-value or group write enforces its required fields as it lands
@@ -142,6 +150,12 @@ fn required_absent_error(name: &str, remedy: RequiredAbsentRemedy) -> WriteError
         }
         RequiredAbsentRemedy::AtCommit => {
             "set it before the transaction commits so the record is complete"
+        }
+        RequiredAbsentRemedy::PopulateInValue => {
+            "include it in the assigned value so the record is complete"
+        }
+        RequiredAbsentRemedy::CompleteContainingRecord => {
+            "write it on the containing record before the transaction commits so that record is complete"
         }
     };
     WriteError {
@@ -492,6 +506,11 @@ fn supplied_layer_path_from_parent(layers: &[LayerAddress], parent_len: usize) -
         .collect()
 }
 
+/// `remedy` describes how the *assigned* entry was written and applies only to
+/// that entry's own missing required fields, whose value the writer controls. An
+/// ancestor entry left incomplete belongs to a containing record the assigned
+/// value never carried, so it takes the containing-record remedy regardless of
+/// how the assigned entry was written.
 pub(crate) fn validate_required_fields_for_entry(
     place: &CheckedSavedPlace,
     identity: &[SavedKey],
@@ -499,6 +518,7 @@ pub(crate) fn validate_required_fields_for_entry(
     exempt_layers: &[Vec<LayerAddress>],
     store: &TreeStore,
     span: SourceSpan,
+    remedy: RequiredAbsentRemedy,
 ) -> Result<(), WriteError> {
     let entry = DataAddress::layer_prefix(place, identity, layers, span).map_err(store_error)?;
     if !data_exists(store, &entry, span).map_err(store_error)? {
@@ -519,7 +539,7 @@ pub(crate) fn validate_required_fields_for_entry(
                 None,
                 store,
                 span,
-                RequiredAbsentRemedy::AtCommit,
+                RequiredAbsentRemedy::CompleteContainingRecord,
             )?;
         }
     }
@@ -538,7 +558,7 @@ pub(crate) fn validate_required_fields_for_entry(
         None,
         store,
         span,
-        RequiredAbsentRemedy::AtCommit,
+        remedy,
     )
 }
 
@@ -780,7 +800,7 @@ fn collect_supplied_field_writes(
             None if field.required && matches!(enforcement, RequiredEnforcement::Immediate) => {
                 return Err(required_absent_error(
                     &name,
-                    RequiredAbsentRemedy::OutsideTransaction,
+                    RequiredAbsentRemedy::PopulateInValue,
                 ));
             }
             None => {}

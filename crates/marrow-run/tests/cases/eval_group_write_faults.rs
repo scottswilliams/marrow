@@ -271,6 +271,12 @@ pub fn save_group_inside(id: int)
         var reply: Reply
         ^posts(id).replies(1) = reply
 
+pub fn save_group_inside_complete(id: int)
+    transaction
+        var reply: Reply
+        reply.body = \"hi\"
+        ^posts(id).replies(1) = reply
+
 pub fn save_group_inside_then_populate(id: int)
     transaction
         var reply: Reply
@@ -284,8 +290,40 @@ pub fn has_reply(id: int): bool
     return exists(^posts(id).replies(1))
 ";
 
+const POST_REQUIRED_TITLE_NESTED_REPLIES: &str = "\
+module test
+resource Reply
+    required body: string
+resource Post
+    required title: string
+    replies(seq: int): Reply
+store ^posts(id: int): Post
+
+pub fn save_reply_without_parent_title(id: int)
+    transaction
+        var reply: Reply
+        reply.body = \"hi\"
+        ^posts(id).replies(1) = reply
+
+pub fn save_reply_with_parent_title(id: int)
+    transaction
+        ^posts(id).title = \"first\"
+        var reply: Reply
+        reply.body = \"hi\"
+        ^posts(id).replies(1) = reply
+
+pub fn post_title(id: int): string
+    return ^posts(id).title ?? \"\"
+
+pub fn reply_body(id: int): string
+    return ^posts(id).replies(1).body ?? \"\"
+
+pub fn has_post(id: int): bool
+    return exists(^posts(id))
+";
+
 #[test]
-fn group_entry_whole_value_write_inside_transaction_defers_to_commit_remedy() {
+fn group_entry_whole_value_write_inside_transaction_points_at_populating_the_value() {
     let program = checked_program(REPLY_GROUP_WHOLE_VALUE);
     let store = TreeStore::memory();
     let message = run_error_message(run_entry(
@@ -293,8 +331,8 @@ fn group_entry_whole_value_write_inside_transaction_defers_to_commit_remedy() {
         checked_entry!(&program, "test::save_group_inside", Value::Int(1)),
     ));
     assert!(
-        message.contains("before the transaction commits"),
-        "inside a transaction the group-entry remedy asks to complete before commit: {message}"
+        message.contains("body") && message.contains("assigned value"),
+        "the whole-entry remedy names the missing field and asks to populate the value: {message}"
     );
     assert!(
         !message.contains("group the writes"),
@@ -309,6 +347,20 @@ fn group_entry_whole_value_write_inside_transaction_defers_to_commit_remedy() {
         .value,
         Some(Value::Bool(false)),
         "the rejected transaction rolls back the partial entry"
+    );
+    run_entry(
+        &store,
+        checked_entry!(&program, "test::save_group_inside_complete", Value::Int(1)),
+    )
+    .expect("following the remedy by populating the value resolves the error");
+    assert_eq!(
+        run_entry(
+            &store,
+            checked_entry!(&program, "test::reply_body", Value::Int(1))
+        )
+        .expect("read")
+        .value,
+        Some(Value::Str("hi".into())),
     );
 }
 
@@ -329,6 +381,70 @@ fn group_entry_whole_value_write_resolves_when_completed_before_commit() {
         run_entry(
             &store,
             checked_entry!(&program, "test::reply_body", Value::Int(1))
+        )
+        .expect("read")
+        .value,
+        Some(Value::Str("hi".into())),
+    );
+}
+
+// A nested-entry write whose assigned value is complete but whose ancestor
+// record lacks a required field must point the developer at completing the
+// containing record, not at the assigned child value that never carried the
+// ancestor's field. Inside a transaction the missing ancestor field surfaces at
+// commit; the remedy must stay followable there.
+#[test]
+fn nested_entry_write_missing_ancestor_required_field_points_at_containing_record() {
+    let program = checked_program(POST_REQUIRED_TITLE_NESTED_REPLIES);
+    let store = TreeStore::memory();
+    let message = run_error_message(run_entry(
+        &store,
+        checked_entry!(
+            &program,
+            "test::save_reply_without_parent_title",
+            Value::Int(2)
+        ),
+    ));
+    assert!(
+        message.contains("title") && message.contains("containing record"),
+        "the ancestor remedy names the missing parent field and points at the containing record: {message}"
+    );
+    assert!(
+        !message.contains("assigned value"),
+        "the missing field belongs to the parent, not the assigned child value: {message}"
+    );
+    assert_eq!(
+        run_entry(
+            &store,
+            checked_entry!(&program, "test::has_post", Value::Int(2))
+        )
+        .expect("presence check")
+        .value,
+        Some(Value::Bool(false)),
+        "the rejected transaction rolls back the partial parent record"
+    );
+    run_entry(
+        &store,
+        checked_entry!(
+            &program,
+            "test::save_reply_with_parent_title",
+            Value::Int(2)
+        ),
+    )
+    .expect("completing the containing record before commit resolves the error");
+    assert_eq!(
+        run_entry(
+            &store,
+            checked_entry!(&program, "test::post_title", Value::Int(2))
+        )
+        .expect("read")
+        .value,
+        Some(Value::Str("first".into())),
+    );
+    assert_eq!(
+        run_entry(
+            &store,
+            checked_entry!(&program, "test::reply_body", Value::Int(2))
         )
         .expect("read")
         .value,
@@ -401,12 +517,17 @@ fn nested_typed_keyed_resource_entry_write_read_materializes_value() {
 fn nested_typed_keyed_resource_entry_write_requires_parent_required_fields() {
     let program = checked_program(POST_TYPED_KEYED_COMMENTS);
     let store = TreeStore::memory();
-    assert_run_error(
-        run_entry(
-            &store,
-            checked_entry!(&program, "test::save_nested_reply_without_parent_body"),
-        ),
-        "write.required_absent",
+    let message = run_error_message(run_entry(
+        &store,
+        checked_entry!(&program, "test::save_nested_reply_without_parent_body"),
+    ));
+    assert!(
+        message.contains("body"),
+        "the ancestor remedy names the missing parent field: {message}"
+    );
+    assert!(
+        !message.contains("assigned value"),
+        "the missing field belongs to the parent Comment, not the assigned Reply value: {message}"
     );
     let outcome =
         run_entry(&store, checked_entry!(&program, "test::read_nested_reply")).expect("read");

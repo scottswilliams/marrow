@@ -18,7 +18,7 @@ use crate::error::{
 use crate::host::{Host, StepHook};
 use crate::store::{DataAddress, IndexAddress, LayerAddress, catalog_id};
 use crate::value::{RunOutputSink, Value};
-use crate::write::{WriteError, validate_required_fields_for_entry};
+use crate::write::{RequiredAbsentRemedy, WriteError, validate_required_fields_for_entry};
 use crate::write_plan::{CommitIdAllocation, PlanStep, WritePlan};
 
 /// Where control flow stands after a statement or block.
@@ -107,11 +107,12 @@ pub(crate) struct TransactionState {
     /// applies them in place instead of wrapping them in a redundant
     /// begin/commit ([`WritePlan::commit`]'s `in_txn`).
     pub(crate) depth: usize,
-    /// Entries touched by single-field writes inside transactions. Whole-record
-    /// and whole-entry writes validate their required fields while planning; these
-    /// deferred checks cover the transaction-only case where a block builds an
-    /// entry field by field and must leave it complete by commit.
-    pub(crate) required_entry_checks: Vec<RequiredEntryCheck>,
+    /// Entries whose required fields must be validated before the surrounding
+    /// transaction commits, each paired with the remedy that fits how it was
+    /// written: a field-by-field build asks for the missing field before commit,
+    /// while a whole-value or whole-entry assignment asks for it in the assigned
+    /// value. Outside a transaction these writes validate while planning instead.
+    pub(crate) required_entry_checks: Vec<(RequiredEntryCheck, RequiredAbsentRemedy)>,
     /// Entries where maintenance deliberately deleted a required field or
     /// required-bearing group in the same transaction.
     pub(crate) maintenance_required_deletes: Vec<RequiredEntryCheck>,
@@ -388,19 +389,20 @@ impl<'p> Env<'p> {
         identity: &[SavedKey],
         layers: &[LayerAddress],
         span: SourceSpan,
+        remedy: RequiredAbsentRemedy,
     ) {
         if self.transaction_depth() == 0 {
             return;
         }
-        self.transaction
-            .borrow_mut()
-            .required_entry_checks
-            .push(RequiredEntryCheck {
+        self.transaction.borrow_mut().required_entry_checks.push((
+            RequiredEntryCheck {
                 place: place.clone(),
                 identity: identity.to_vec(),
                 layers: layers.to_vec(),
                 span,
-            });
+            },
+            remedy,
+        ));
     }
 
     pub(crate) fn note_maintenance_required_delete(
@@ -447,7 +449,7 @@ impl<'p> Env<'p> {
         let checks = transaction.required_entry_checks.to_vec();
         let maintenance_deletes = transaction.maintenance_required_deletes.to_vec();
         drop(transaction);
-        for check in checks {
+        for (check, remedy) in checks {
             if maintenance_deletes
                 .iter()
                 .any(|deleted| deleted.same_entry(&check))
@@ -469,6 +471,7 @@ impl<'p> Env<'p> {
                 &exempt_layers,
                 self.store,
                 check.span,
+                remedy,
             )
             .map_err(|error| write_fault(error, check.span))?;
         }
