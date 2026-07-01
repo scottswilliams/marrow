@@ -364,20 +364,16 @@ fn verify_committed_recoverable(path: &Path) -> Result<(), StoreError> {
         .map_err(|error| map_open_error(path, error))
 }
 
-/// redb writes its magic number last when creating a store, after the header is laid
-/// down under the lock, so a file the magic has not yet reached is one a concurrent
-/// first-run writer is still forming.
-const REDB_MAGIC: [u8; 9] = [b'r', b'e', b'd', b'b', 0x1A, 0x0A, 0xA9, 0x0D, 0x0A];
-
 /// Run a read-only or existing-store open, absorbing the window in which a concurrent
-/// first-run writer has created the store file but not yet finished writing it under
-/// the lock. A store this build committed always carries redb's magic number, so a
-/// torn-body corruption reported while the magic is still absent — an empty
-/// placeholder, or a partially written header before the magic lands — is a creation
-/// race, not a settled fault: the open retries until the writer's magic and lock
-/// appear. A file whose magic never arrives across the budget is genuinely truncated
-/// and its corruption surfaces, so a settled writer-free incomplete file is still
-/// rejected, as is a torn body that already carries the magic.
+/// creator has the store file only part-formed. redb lays a store's header down under
+/// the lock and writes its magic last, so a first-run creation, or a delete-and-create
+/// recreation two or more writers race on distinct inodes, can momentarily leave the
+/// path a header-absent placeholder or a torn intermediate that already bears the
+/// magic. A corruption an open reports against such a store file is retried across a
+/// brief budget: a live race settles to the creator's finished store, its lock, or a
+/// transient fault within it. A settled writer-free torn or incomplete file keeps
+/// returning corruption on every attempt, so it still surfaces once the budget is
+/// spent.
 fn open_tolerating_creation_race(
     path: &Path,
     open: impl Fn() -> Result<DatabaseHandle, StoreError>,
@@ -387,7 +383,7 @@ fn open_tolerating_creation_race(
     loop {
         match open() {
             Err(StoreError::Corruption { .. })
-                if attempt < CREATION_RACE_BACKOFF.len() && store_file_is_forming(path) =>
+                if attempt < CREATION_RACE_BACKOFF.len() && store_file_may_be_forming(path) =>
             {
                 std::thread::sleep(std::time::Duration::from_millis(
                     CREATION_RACE_BACKOFF[attempt],
@@ -399,27 +395,17 @@ fn open_tolerating_creation_race(
     }
 }
 
-/// Whether the store file is still being formed by a concurrent creator: its leading
-/// bytes are not yet redb's magic number, whether because it is an empty placeholder,
-/// a partial header the magic has not reached, or a torn write mid-creation. A missing
-/// file is not forming; its open reports its own not-found error.
-fn store_file_is_forming(path: &Path) -> bool {
-    use std::io::Read;
-    // Only a regular file can be a store under construction; statting first also keeps
-    // the open from blocking on a FIFO left at the path, which the regular-file guard
-    // rejects on its own.
-    match fs::metadata(path) {
-        Ok(metadata) if metadata.file_type().is_file() => {}
-        _ => return false,
-    }
-    let Ok(mut file) = fs::File::open(path) else {
-        return false;
-    };
-    let mut head = [0u8; REDB_MAGIC.len()];
-    match file.read_exact(&mut head) {
-        Ok(()) => head != REDB_MAGIC,
-        Err(_) => true,
-    }
+/// Whether a corruption an open reported for this path may be a transient artifact of
+/// a concurrent creator still forming the store rather than settled damage. The header
+/// is laid down under the lock with the magic written last, and a delete-and-create
+/// recreation raced on distinct inodes can leave the file header-absent or a torn
+/// intermediate that already bears the magic. Neither state is distinguishable from
+/// settled damage by a cheap probe once the open has already failed, so a corruption
+/// against any regular store file is retried; a settled torn store keeps failing every
+/// attempt and surfaces once the retry budget is spent. A non-regular path (a FIFO,
+/// socket, or directory) or a missing file is not a store under construction.
+fn store_file_may_be_forming(path: &Path) -> bool {
+    matches!(fs::metadata(path), Ok(metadata) if metadata.file_type().is_file())
 }
 
 /// Run a store open and its structural probe under the panic backstop.
@@ -2399,12 +2385,124 @@ mod tests {
         writer.join().expect("writer thread");
     }
 
-    /// A settled, writer-free store whose body is torn but still carries redb's magic
-    /// number is genuine corruption and must surface promptly, not be mistaken for a
-    /// store still being formed: the creation-race tolerance retries only while the
-    /// magic is absent.
+    /// The creation-race tolerance's discriminator: which corruptions to retry as a
+    /// transient artifact of a live creation rather than surface as settled damage.
+    /// redb writes a store's magic last, so a header-absent placeholder is retry-worthy;
+    /// but a delete-and-create recreation raced on distinct inodes can also leave a torn
+    /// intermediate that already bears the magic, which must be retried too. A missing
+    /// path and a non-regular one (a directory here) are never a store under
+    /// construction.
     #[test]
-    fn read_only_open_rejects_a_settled_torn_store_bearing_the_magic() {
+    fn creation_race_discriminator_retries_any_regular_store_file() {
+        let dir = TempDir::new("marrow-store-redb-forming").expect("temp dir");
+        let path = dir.path().join("marrow.redb");
+
+        assert!(
+            !super::store_file_may_be_forming(&path),
+            "a missing path is not a store under construction"
+        );
+
+        let healthy = {
+            let mut store = RedbStore::open(&path).expect("seed store");
+            store.write(b"k", b"v".to_vec()).expect("seed value");
+            drop(store);
+            std::fs::read(&path).expect("read healthy body")
+        };
+
+        // A header-absent placeholder — the magic has not landed — is forming.
+        std::fs::write(&path, b"").expect("write empty placeholder");
+        assert!(super::store_file_may_be_forming(&path));
+
+        // A torn intermediate that already bears the magic — the flock-defeat
+        // recreation window — is likewise retry-worthy, not immediate corruption.
+        std::fs::write(&path, &healthy[..64]).expect("write magic-present torn body");
+        assert!(super::store_file_may_be_forming(&path));
+
+        let subdir = dir.path().join("subdir");
+        std::fs::create_dir(&subdir).expect("create dir");
+        assert!(
+            !super::store_file_may_be_forming(&subdir),
+            "a directory is not a store under construction"
+        );
+    }
+
+    /// Two or more writers deleting and recreating the store on the same path race on
+    /// distinct inodes: one holds a store open while another unlinks it and creates a
+    /// fresh one, so the flock that would serialize same-inode opens does not apply, and
+    /// the window can leave the path a torn intermediate that already bears redb's magic.
+    /// A reader and a backup-capable open racing that recreation must resolve to the
+    /// healthy store, the writer's lock, a transient fault, or a not-yet-created store —
+    /// never a false `store.corruption`.
+    #[test]
+    fn opens_racing_multi_writer_store_recreation_never_false_corrupt() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let dir = TempDir::new("marrow-store-redb-multi-recreate").expect("temp dir");
+        let path = dir.path().join("marrow.redb");
+        {
+            let mut store = RedbStore::open(&path).expect("seed store");
+            store.write(b"k", b"v".to_vec()).expect("seed value");
+        }
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let writers: Vec<_> = (0..2)
+            .map(|_| {
+                let writer_path = path.clone();
+                let writer_stop = Arc::clone(&stop);
+                std::thread::spawn(move || {
+                    while !writer_stop.load(Ordering::Relaxed) {
+                        let _ = std::fs::remove_file(&writer_path);
+                        if let Ok(mut store) = RedbStore::open(&writer_path) {
+                            let _ = store.write(b"k", b"v".to_vec());
+                        }
+                    }
+                })
+            })
+            .collect();
+        let join_writers = |writers: Vec<std::thread::JoinHandle<()>>| {
+            for writer in writers {
+                writer.join().expect("writer thread");
+            }
+        };
+
+        for iteration in 0..2000 {
+            // Alternate the two open paths a reader and a backup-capable inspection take,
+            // both of which route through the creation-race tolerance.
+            let opened = if iteration % 2 == 0 {
+                RedbStore::open_read_only(&path).map(|_| ())
+            } else {
+                RedbStore::open_existing(&path).map(|_| ())
+            };
+            match opened {
+                Ok(()) | Err(StoreError::Locked { .. }) | Err(StoreError::Io { .. }) => {}
+                Err(StoreError::Corruption { message }) => {
+                    stop.store(true, Ordering::Relaxed);
+                    join_writers(writers);
+                    panic!("open saw false corruption mid-recreation: {message}");
+                }
+                Err(other) => {
+                    if !format!("{other:?}").contains("NotFound")
+                        && !format!("{other:?}").contains("not found")
+                    {
+                        stop.store(true, Ordering::Relaxed);
+                        join_writers(writers);
+                        panic!("open saw unexpected error mid-recreation: {other:?}");
+                    }
+                }
+            }
+        }
+        stop.store(true, Ordering::Relaxed);
+        join_writers(writers);
+    }
+
+    /// A settled, writer-free store whose body is torn but still carries redb's magic
+    /// number is genuine corruption and must surface, not be mistaken for a store still
+    /// being formed: with no live creator, every open across the creation-race budget
+    /// keeps returning corruption, so it surfaces once the budget is spent. It fails
+    /// closed on both the read-only and the write-capable existing-store open.
+    #[test]
+    fn open_rejects_a_settled_torn_store_bearing_the_magic() {
         let dir = TempDir::new("marrow-store-redb-torn").expect("temp dir");
         let path = dir.path().join("marrow.redb");
         {
@@ -2416,10 +2514,15 @@ mod tests {
         let body = std::fs::read(&path).expect("read store body");
         std::fs::write(&path, &body[..64]).expect("truncate store");
 
-        match RedbStore::open_read_only(&path).map(|_| ()) {
-            Err(StoreError::Corruption { .. }) => {}
-            other => {
-                panic!("a settled torn store bearing the magic must be corruption, got {other:?}")
+        for opened in [
+            RedbStore::open_read_only(&path).map(|_| ()),
+            RedbStore::open_existing(&path).map(|_| ()),
+        ] {
+            match opened {
+                Err(StoreError::Corruption { .. }) => {}
+                other => panic!(
+                    "a settled torn store bearing the magic must be corruption, got {other:?}"
+                ),
             }
         }
     }
