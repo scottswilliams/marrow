@@ -1,3 +1,0 @@
-module app
-fn f(a: int):
-    return

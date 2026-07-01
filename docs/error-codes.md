@@ -228,6 +228,7 @@ Resource-schema rules. Reported during a project check alongside `check.*`.
 | `schema.parent_not_category` | An enum member has nested members but is not a `category`; a grouping node must be marked `category`, since a value selects a concrete member under it. |
 | `schema.duplicate_root_owner` | Two stores declare the same saved root (a cross-declaration rule the project checker reports). |
 | `schema.unknown_in_saved` | A managed saved field or key is typed `unknown`; saved schemas use concrete types. |
+| `schema.optional_in_saved` | A managed saved field, key, or explicit keyed leaf is declared optional (`T?`); saved fields are sparse by default, so a saved type drops the `?`. A sequence element, which is always present, is rejected the same way. |
 | `schema.key_member_collision` | Two store members collide in the store namespace: a top-level field or layer shares a name with an identity key, or a declared field shares a name with an index. |
 | `schema.unknown_index_arg` | An index argument names neither an identity key nor a top-level member. |
 | `schema.unorderable_key` | A key (saved or local keyed-collection) has a type with no order-preserving key encoding (currently `decimal`). |
@@ -504,6 +505,8 @@ mode denial before request-body decoding.
 Remote cursor-token mode maps opaque cursor strings onto the same active typed
 runtime continuation value at the HTTP boundary.
 
+### `surface.*` — kind `surface`
+
 | Code | Meaning |
 |---|---|
 | `surface.request` | A request parameter, identity, index argument, generated write field catalog ID, generated write value, empty update patch, action/computed-read argument, or limit cannot decode to the checked surface operation input shape; cursor tokens use `surface.cursor`. |
@@ -520,6 +523,8 @@ runtime continuation value at the HTTP boundary.
 | `surface.computed` | A surface computed read was admitted by operation tag, but entry execution or result rendering failed after request decoding. Public envelopes intentionally hide the underlying `run.*`, source, and store details. Computed-read argument decode failures use `surface.request`. |
 | `surface.integrity` | A future renderer profile that actively dereferences identity links or relations found a missing referent. Projection-only reads use `surface.invalid_data` for dangling index rows. |
 | `surface.store` | The store reported a fault while executing a surface operation. |
+
+### Reserved And Future Codes
 
 The remaining `check.surface_*` names are reserved for future surface checker
 diagnostics, including stable ABI export checks. They do not appear in v0.1

@@ -235,6 +235,7 @@ pub fn kind_for_code(code: &str) -> &'static str {
         "check" | "schema" => "check",
         "run" | "value" => "runtime",
         "store" => "storage",
+        "surface" => "surface",
         "io" => "io",
         // Configuration and project-discovery failures are tooling errors.
         _ => "tooling",
@@ -256,6 +257,11 @@ mod tests {
     #[test]
     fn value_codes_are_runtime_diagnostics() {
         assert_eq!(kind_for_code("value.range"), "runtime");
+    }
+
+    #[test]
+    fn surface_codes_are_surface_diagnostics() {
+        assert_eq!(kind_for_code("surface.request"), "surface");
     }
 
     #[test]
