@@ -66,6 +66,35 @@ fn is_with_a_non_enum_left_is_rejected() {
 }
 
 #[test]
+fn is_with_an_already_errored_left_does_not_cascade_a_spurious_requires_enum() {
+    // The left operand is an unknown member of `Cat`, which is poison (`Invalid`).
+    // It fires its own resolution error; `is` must not cascade a second diagnostic
+    // naming the internal placeholder `value`.
+    let report = check_module_report(
+        "is-poison-left",
+        &format!(
+            "{}\
+             fn f(): bool\n    \
+             return Cat::nope is Cat::tiger\n",
+            cat_enum()
+        ),
+    );
+    assert_eq!(
+        with_code(&report, "check.is_requires_enum").len(),
+        0,
+        "poison left operand of `is` must not cascade a spurious requires_enum: {:#?}",
+        report.diagnostics
+    );
+    assert_eq!(
+        report.diagnostics.len(),
+        1,
+        "exactly one diagnostic (the member resolution error) expected: {:#?}",
+        report.diagnostics
+    );
+    assert_eq!(report.diagnostics[0].code, "check.unknown_enum_member");
+}
+
+#[test]
 fn is_against_a_different_enum_is_rejected_at_the_right_operand() {
     // The right operand names the wrong enum, so the diagnostic spans `Dog::poodle`
     // on the `is` line, not the whole `pet is Dog::poodle` expression.

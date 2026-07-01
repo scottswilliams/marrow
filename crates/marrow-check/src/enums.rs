@@ -891,9 +891,11 @@ pub(crate) fn check_is(input: IsCheck<'_>) -> MarrowType {
         name: left_name,
     } = left_type
     else {
-        // An untyped left operand defers (an unchecked dynamic value), like the
-        // equality path; a known non-enum is rejected.
-        if !matches!(left_type, MarrowType::Unknown) {
+        // An untyped or already-errored left operand defers, like the equality path:
+        // `Unknown` is an unchecked dynamic value and `Invalid` is poison from a
+        // diagnostic that already fired, so neither cascades a second error naming the
+        // internal placeholder. A known non-enum is rejected.
+        if !matches!(left_type, MarrowType::Unknown | MarrowType::Invalid) {
             diagnostics.push(CheckDiagnostic::error(
                 CHECK_IS_REQUIRES_ENUM,
                 file,
