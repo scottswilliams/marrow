@@ -1,7 +1,8 @@
 //! Range-for header rules and range-as-value rejection: endpoint typing, the `by`
 //! step type and direction, temporal/date step constraints, and the dead-loop
-//! detector. Endpoint typing is owned by the type pass; a non-steppable or
-//! mismatched endpoint pair is left to the operator check.
+//! detector. The header validator owns the endpoint steppable-type check: a
+//! non-steppable or mismatched endpoint pair is a `check.range` error, not an
+//! operator error.
 
 use std::cmp::Ordering;
 use std::collections::HashMap;
@@ -11,7 +12,7 @@ use marrow_store::value::ScalarType;
 use marrow_syntax::SourceSpan;
 
 use crate::infer::infer_only;
-use crate::typerules::{as_primitive, is_steppable};
+use crate::typerules::{as_primitive, is_steppable, marrow_type_name};
 use crate::walk::for_each_child_expr;
 use crate::{CHECK_RANGE_VALUE, CheckDiagnostic, CheckedProgram, MarrowType};
 
@@ -103,12 +104,12 @@ pub(super) fn check_range_iterable_value_parts(
     check_range_value(file, iterable, diagnostics);
 }
 
-/// Validate a range-for header's step and direction rules: the `by` step must
-/// match the endpoint type (`int` endpoints step by `int`, temporal endpoints
-/// step by `duration`), instant requires an explicit step, and a step that
-/// statically cannot run (wrong-direction or zero) is a dead loop. A step on a
-/// non-range iterable is rejected. Endpoint typing is owned by the type pass, so a
-/// non-steppable or mismatched endpoint pair is left to it.
+/// Validate a range-for header's endpoint, step, and direction rules: both
+/// endpoints must be the same steppable type; the `by` step must match it (`int`
+/// endpoints step by `int`, temporal endpoints step by `duration`); instant
+/// requires an explicit step; and a step that statically cannot run
+/// (wrong-direction or zero) is a dead loop. A step on a non-range iterable is
+/// rejected. A non-steppable or mismatched endpoint pair is a `check.range` error.
 pub(crate) fn check_range_header(
     program: &CheckedProgram,
     file: &Path,
@@ -129,14 +130,35 @@ pub(crate) fn check_range_header(
         }
         return;
     };
-    let endpoint = match (
-        as_primitive(&infer_only(program, left, scope, aliases, file)),
-        as_primitive(&infer_only(program, right, scope, aliases, file)),
-    ) {
-        // A same-typed steppable endpoint pair is the only shape with step rules;
-        // a non-steppable or mismatched pair is reported by the operator check.
-        (Some(lo), Some(hi)) if lo == hi && is_steppable(lo) => lo,
-        _ => return,
+    let left_type = infer_only(program, left, scope, aliases, file);
+    let right_type = infer_only(program, right, scope, aliases, file);
+    // A genuinely untyped or already-poisoned endpoint has faulted elsewhere;
+    // defer rather than double-report against a type nothing can trust.
+    if matches!(left_type, MarrowType::Unknown | MarrowType::Invalid)
+        || matches!(right_type, MarrowType::Unknown | MarrowType::Invalid)
+    {
+        return;
+    }
+    // The endpoint scalar drives the step, direction, and dead-loop rules. Route the
+    // steppability classification through its single owner. Past the deferral guard a
+    // `None` result is a mismatched or non-steppable endpoint pair — an enum, an
+    // identity, a resource, or mismatched scalars — which is the range header's
+    // endpoint condition, owned here rather than left to the value-operator check
+    // since `..` is a loop shape, not a value operator.
+    let endpoint = match range_endpoint_type(program, iterable, scope, aliases, file) {
+        Some(MarrowType::Primitive(scalar)) => scalar,
+        _ => {
+            diagnostics.push(range_diagnostic(
+                file,
+                iterable.span(),
+                format!(
+                    "a range needs endpoints of one steppable type (`int`, `date`, or `instant`), not `{}` and `{}`",
+                    marrow_type_name(&left_type),
+                    marrow_type_name(&right_type),
+                ),
+            ));
+            return;
+        }
     };
     let step_type = step.map(|step| as_primitive(&infer_only(program, step, scope, aliases, file)));
     check_step_type(

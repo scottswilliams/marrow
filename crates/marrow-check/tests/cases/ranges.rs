@@ -109,13 +109,78 @@ fn misusing_the_loop_variable_as_a_wrong_type_is_a_check_error() {
 }
 
 #[test]
-fn a_non_steppable_endpoint_is_a_check_error() {
-    // A string range has no step, so its endpoints are rejected.
-    let codes = codes(&module("    for s in \"a\"..\"z\"\n        var x = s\n"));
+fn a_non_steppable_or_mismatched_endpoint_pair_is_a_range_error() {
+    // `..` is a loop shape, not a value operator, so a non-steppable or mismatched
+    // endpoint pair is a `check.range` header error (the endpoint-type condition),
+    // never a `check.operator_type` fall-through.
+    for body in [
+        "    for i in 0..10.5\n        var x = i\n",
+        "    for d in 1.5..2.5\n        var x = d\n",
+        "    for s in \"a\"..\"z\"\n        var x = s\n",
+        "    for b in true..false\n        var x = b\n",
+        "    for t in 0..std::clock::today()\n        var x = t\n",
+    ] {
+        let codes = codes(&module(body));
+        assert!(codes.iter().any(|c| c == "check.range"), "{codes:?}");
+        assert!(
+            !codes.iter().any(|c| c == "check.operator_type"),
+            "{codes:?}"
+        );
+    }
+}
+
+#[test]
+fn a_concrete_non_scalar_endpoint_pair_is_a_range_error_not_an_operator_error() {
+    // An enum, resource, or identity endpoint is concrete but not steppable. The
+    // range header owns the endpoint diagnostic (`check.range`), so none of these
+    // fall through to the value-operator path (`check.operator_type`).
+    for source in [
+        // Two enum members.
+        "module m\nenum Color\n    red\n    blue\nfn f()\n    for c in Color::red..Color::blue\n        var x = c\n",
+        // Two whole resources.
+        "module m\nresource Point\n    required x: int\nfn f(a: Point, b: Point)\n    for p in a..b\n        var y = p\n",
+        // Two saved identities.
+        "module m\nresource Book\n    required title: string\nstore ^books(id: int): Book\nfn f()\n    for k in nextId(^books)..nextId(^books)\n        var y = k\n",
+        // A scalar left endpoint against a resource right endpoint.
+        "module m\nresource Point\n    required x: int\nfn f(p: Point)\n    for z in 0..p\n        var y = z\n",
+    ] {
+        let codes = codes(source);
+        assert!(codes.iter().any(|c| c == "check.range"), "{codes:?}");
+        assert!(
+            !codes.iter().any(|c| c == "check.operator_type"),
+            "{codes:?}"
+        );
+    }
+}
+
+#[test]
+fn an_int_and_decimal_endpoint_pair_is_a_range_error() {
+    let codes = codes(&module("    for i in 0..2.5\n        var x = i\n"));
+    assert!(codes.iter().any(|c| c == "check.range"), "{codes:?}");
     assert!(
-        codes.iter().any(|c| c == "check.operator_type"),
+        !codes.iter().any(|c| c == "check.operator_type"),
         "{codes:?}"
     );
+}
+
+#[test]
+fn a_date_range_default_step_checks_clean_and_runs() {
+    // A same-typed steppable pair still checks clean after the header owns the
+    // non-steppable diagnostic.
+    let codes = codes(&module(
+        "    for d in std::clock::today()..std::clock::today() by 1.day\n        var x: date = d\n",
+    ));
+    assert!(codes.is_empty(), "{codes:?}");
+}
+
+#[test]
+fn an_undefined_endpoint_is_not_double_reported_as_a_range_error() {
+    // An unresolved endpoint faults during name resolution; its type is `unknown`,
+    // so the range header defers rather than adding a spurious `check.range`.
+    let codes = codes(&module(
+        "    for i in undefined_lo..undefined_hi\n        var x = i\n",
+    ));
+    assert!(!codes.iter().any(|c| c == "check.range"), "{codes:?}");
 }
 
 #[test]

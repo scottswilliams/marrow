@@ -11,7 +11,7 @@ use marrow_syntax::SourceSpan;
 use crate::infer::infer_type_with_read_scope;
 use crate::typerules::{
     as_primitive, binary_symbol, expects_conversion, is_concrete_nonscalar, is_numeric, is_ordered,
-    is_steppable, marrow_type_name, mismatch_display, type_compatible, unary_symbol,
+    marrow_type_name, mismatch_display, type_compatible, unary_symbol,
 };
 use crate::{
     CHECK_ASSIGNMENT_TYPE, CHECK_CONDITION_TYPE, CHECK_RETURN_TYPE, CHECK_THROW_TYPE,
@@ -276,6 +276,17 @@ pub(crate) fn check_binary(
     if matches!(left, MarrowType::Invalid) || matches!(right, MarrowType::Invalid) {
         return MarrowType::Invalid;
     }
+    // `..`/`..=` are loop shapes, not value operators. The range-for header check
+    // owns every endpoint diagnostic — a non-steppable, non-scalar, or mismatched
+    // endpoint pair is `check.range` — so this path never reports an operator-type
+    // error for a range, handling it before the `Error` and non-scalar gates below.
+    // Type the range from a scalar left endpoint; any other endpoint leaves it
+    // untyped, and the range-value rule catches a range misused as a value.
+    if matches!(op, BinaryOp::RangeExclusive | BinaryOp::RangeInclusive) {
+        return as_primitive(left)
+            .map(MarrowType::Primitive)
+            .unwrap_or(MarrowType::Unknown);
+    }
     // `Error` is a concrete type with no binary operator. Flag it before the
     // `as_primitive` gate, which would otherwise drop it to `Unknown`.
     if matches!(left, MarrowType::Error) || matches!(right, MarrowType::Error) {
@@ -367,14 +378,9 @@ pub(crate) fn check_binary(
             left == ScalarType::Bool && right == ScalarType::Bool,
             MarrowType::Primitive(ScalarType::Bool),
         ),
-        // A range is not a value an operator consumes; accept two endpoints of the
-        // same steppable type. The endpoint typing, step, and direction rules are a
-        // separate range-for check, so this only rejects a non-steppable or
-        // mismatched endpoint pairing.
-        BinaryOp::RangeExclusive | BinaryOp::RangeInclusive => (
-            is_steppable(left) && left == right,
-            MarrowType::Primitive(left),
-        ),
+        BinaryOp::RangeExclusive | BinaryOp::RangeInclusive => {
+            unreachable!("ranges are typed and endpoint-checked before reaching this match")
+        }
         BinaryOp::Coalesce | BinaryOp::Is => {
             unreachable!(
                 "`??` and `is` are typed in check_coalesce/check_is before reaching check_binary"
