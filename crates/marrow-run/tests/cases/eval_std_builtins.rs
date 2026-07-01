@@ -1042,6 +1042,23 @@ fn std_matrix_identity_negative_size_reports_a_size_error() {
 }
 
 #[test]
+fn std_matrix_identity_negative_and_zero_size_report_the_same_constraint() {
+    let negative =
+        checked_program("pub fn identity(): string\n    return std::matrix::identity(-1)\n");
+    let zero = checked_program("pub fn identity(): string\n    return std::matrix::identity(0)\n");
+    let negative_message = run_error_message(run(checked_entry!(&negative, "test::identity")));
+    let zero_message = run_error_message(run(checked_entry!(&zero, "test::identity")));
+    assert_eq!(
+        negative_message, zero_message,
+        "a negative and a zero size should report the same constraint"
+    );
+    assert!(
+        negative_message.contains("positive"),
+        "expected the positive-constraint message, got {negative_message:?}"
+    );
+}
+
+#[test]
 fn std_matrix_get_negative_index_reports_an_index_error() {
     let program = checked_program(
         "pub fn get(): string\n    return string(std::matrix::get(std::matrix::parse(\"[1,2;3,4]\"), -1, 0))\n",

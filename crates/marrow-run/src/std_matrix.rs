@@ -240,11 +240,11 @@ fn parse_decimal(text: &str, span: SourceSpan) -> Result<Decimal, RuntimeError> 
 }
 
 fn dimension(value: i64, span: SourceSpan) -> Result<usize, RuntimeError> {
-    let value =
-        usize::try_from(value).map_err(|_| type_error("matrix size must be non-negative", span))?;
-    if value == 0 {
+    if value < 1 {
         return Err(type_error("matrix size must be positive", span));
     }
+    let value =
+        usize::try_from(value).map_err(|_| type_error("matrix dimensions are too large", span))?;
     check_shape(value, value, span)?;
     Ok(value)
 }
