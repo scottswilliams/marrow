@@ -167,16 +167,25 @@ pub(crate) fn spawn_surface_server_with_args(
     root: &Path,
     extra_args: &[&str],
 ) -> (ServeProcess, SocketAddr) {
+    spawn_surface_server_with_env_args(root, &[], extra_args)
+}
+
+pub(crate) fn spawn_surface_server_with_env_args(
+    root: &Path,
+    env: &[(&str, &str)],
+    extra_args: &[&str],
+) -> (ServeProcess, SocketAddr) {
     let project = root.to_str().expect("project path utf8");
     let mut args = vec!["serve", "--addr", "127.0.0.1:0"];
     args.extend(extra_args.iter().copied());
     args.push(project);
-    let mut child = Command::new(env!("CARGO_BIN_EXE_marrow"))
+    let mut command = Command::new(env!("CARGO_BIN_EXE_marrow"));
+    command
         .args(args)
+        .envs(env.iter().copied())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn surface server");
+        .stderr(Stdio::piped());
+    let mut child = command.spawn().expect("spawn surface server");
     let stdout = child.stdout.take().expect("surface stdout pipe");
     let mut stderr = child.stderr.take().expect("surface stderr pipe");
     let (tx, rx) = mpsc::channel();

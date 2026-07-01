@@ -39,6 +39,8 @@ Usage:
   marrow run [--entry <entry>] [--arg name=value]... [--maintenance] [--trace] [--dry-run] [--format text|json] <projectdir>
   marrow test [--trace] [--format text|json|jsonl] [--filter <substring>] <projectdir>
   marrow serve [--write] [--watch] [--cors-origin <loopback-origin>] [--addr <loopback:port>] <projectdir>
+  marrow serve --remote --addr <addr> [--write] (--auth-token-env NAME | --auth-token-file PATH)
+    [--remote-cors-origin <origin>] <projectdir>
   marrow client typescript [--out <path>] <projectdir>
   marrow data <roots|stats|dump|integrity> [--backup <artifact>] [--format text|json|jsonl] <projectdir>
   marrow data recover [--format text|json|jsonl] <projectdir>

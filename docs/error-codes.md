@@ -499,13 +499,15 @@ The `surface.*` family belongs to the application surface runtime and its
 node-read, collection-read, computed-read, generated create/update/delete, and
 action APIs can emit the active codes below. `marrow serve` emits
 sanitized code/message envelopes for HTTP serving in both default read-only mode
-and `--write` mode.
+and `--write` mode, and adds `surface.auth` for remote HTTP authorization and
+mode denial before request-body decoding.
 Cursor strings remain future transport work; the active runtime cursor is a
 typed continuation value.
 
 | Code | Meaning |
 |---|---|
 | `surface.request` | A request parameter, identity, index argument, generated write field catalog ID, generated write value, empty update patch, action/computed-read argument, or limit cannot decode to the checked surface operation input shape; cursor tokens use `surface.cursor`. |
+| `surface.auth` | Remote HTTP authorization failed, or a known write route was requested from a read-only remote serve. The server returns this before reading the request body. |
 | `surface.absent` | A requested record identity is well-formed but no record node exists, or a requested singleton node is absent. |
 | `surface.cursor` | A typed cursor boundary or future cursor token is malformed, does not decode under its codec, or is well-formed but bound to normalized parameters that do not match the current request. |
 | `surface.stale_cursor` | A typed cursor boundary or future cursor token is well-formed, but its operation equality tag, profile tag, or store lineage no longer matches the active surface operation facts. |

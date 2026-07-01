@@ -1,8 +1,8 @@
 use crate::support;
 use crate::support_surface::{
     create_descriptor, create_field_catalog_id, delete_descriptor, read_descriptor, route_by_alias,
-    spawn_surface_server, spawn_surface_server_with_args, update_descriptor,
-    update_field_catalog_id, wait_for_client_change,
+    spawn_surface_server, spawn_surface_server_with_args, spawn_surface_server_with_env_args,
+    update_descriptor, update_field_catalog_id, wait_for_client_change,
 };
 use serde_json::{Value, json};
 use std::io::{ErrorKind, Read, Write};
@@ -297,6 +297,8 @@ fn fault_code(output: &std::process::Output) -> String {
 }
 
 const STORE_OP_DEADLINE: std::time::Duration = std::time::Duration::from_secs(15);
+const REMOTE_AUTH_ENV: &str = "MARROW_TEST_SURFACE_TOKEN";
+const REMOTE_AUTH_TOKEN: &str = "remote-token-123";
 
 /// An idle `--write` serve stopped by the documented foreground stop (SIGTERM) closes the
 /// held store handle on the normal stack, so the next read-only inspection and write-capable
@@ -689,6 +691,12 @@ fn help_advertises_top_level_serve() {
         "{stdout}"
     );
     assert!(
+        stdout.contains(
+            "marrow serve --remote --addr <addr> [--write] (--auth-token-env NAME | --auth-token-file PATH)"
+        ),
+        "{stdout}"
+    );
+    assert!(
         !stdout.contains("surface serve"),
         "root help should not advertise removed surface commands: {stdout}"
     );
@@ -702,9 +710,18 @@ fn help_advertises_top_level_serve() {
         ),
         "{serve_stdout}"
     );
+    assert!(
+        serve_stdout.contains("marrow serve --remote --addr <addr> [--write]"),
+        "{serve_stdout}"
+    );
     assert!(serve_stdout.contains("--write"), "{serve_stdout}");
     assert!(serve_stdout.contains("--watch"), "{serve_stdout}");
     assert!(serve_stdout.contains("--cors-origin"), "{serve_stdout}");
+    assert!(
+        serve_stdout.contains("--remote-cors-origin"),
+        "{serve_stdout}"
+    );
+    assert!(serve_stdout.contains("--auth-token-env"), "{serve_stdout}");
     assert!(
         serve_stdout.contains("/surface/v1/{read|create|update|delete|action}/<operation-tag>"),
         "{serve_stdout}"
@@ -758,6 +775,162 @@ fn surface_serve_rejects_non_loopback_cors_origin_before_project_load() {
         !stderr.contains("parse."),
         "CORS origin validation should fail before source loading: {stderr}"
     );
+}
+
+#[test]
+fn surface_serve_remote_cli_validation_fails_before_project_load() {
+    let dir = support::temp_dir("surface-serve-remote-cli-validation");
+    write(&dir, "marrow.json", support::native_config());
+    write(&dir, "src/app.mw", "module app\npub fn broken(\n");
+    let project = dir.to_str().unwrap();
+
+    let missing_addr = marrow(&[
+        "serve",
+        "--remote",
+        "--auth-token-env",
+        "MARROW_SURFACE_TOKEN",
+        project,
+    ]);
+    assert_eq!(missing_addr.status.code(), Some(2), "{missing_addr:?}");
+    let stderr = String::from_utf8(missing_addr.stderr).expect("stderr utf8");
+    assert!(
+        stderr.contains("--remote") && stderr.contains("--addr"),
+        "{stderr}"
+    );
+    assert!(
+        !stderr.contains("parse."),
+        "remote usage validation should fail before source loading: {stderr}"
+    );
+
+    let missing_auth = marrow(&["serve", "--remote", "--addr", "0.0.0.0:0", project]);
+    assert_eq!(missing_auth.status.code(), Some(2), "{missing_auth:?}");
+    let stderr = String::from_utf8(missing_auth.stderr).expect("stderr utf8");
+    assert!(stderr.contains("auth"), "{stderr}");
+
+    let duplicate_auth = marrow(&[
+        "serve",
+        "--remote",
+        "--addr",
+        "0.0.0.0:0",
+        "--auth-token-env",
+        "MARROW_SURFACE_TOKEN",
+        "--auth-token-file",
+        "token.txt",
+        project,
+    ]);
+    assert_eq!(duplicate_auth.status.code(), Some(2), "{duplicate_auth:?}");
+    let stderr = String::from_utf8(duplicate_auth.stderr).expect("stderr utf8");
+    assert!(
+        stderr.contains("exactly one") && stderr.contains("auth"),
+        "{stderr}"
+    );
+
+    let remote_watch = marrow(&[
+        "serve",
+        "--remote",
+        "--addr",
+        "0.0.0.0:0",
+        "--auth-token-env",
+        "MARROW_SURFACE_TOKEN",
+        "--watch",
+        project,
+    ]);
+    assert_eq!(remote_watch.status.code(), Some(2), "{remote_watch:?}");
+    let stderr = String::from_utf8(remote_watch.stderr).expect("stderr utf8");
+    assert!(
+        stderr.contains("--watch") && stderr.contains("--remote"),
+        "{stderr}"
+    );
+
+    let empty_token = marrow(&[
+        "serve",
+        "--remote",
+        "--addr",
+        "0.0.0.0:0",
+        "--auth-token-env",
+        "MARROW_EMPTY_SURFACE_TOKEN",
+        project,
+    ]);
+    assert_eq!(empty_token.status.code(), Some(2), "{empty_token:?}");
+    let stderr = String::from_utf8(empty_token.stderr).expect("stderr utf8");
+    assert!(stderr.contains("empty"), "{stderr}");
+}
+
+#[test]
+fn surface_serve_remote_token_file_validation_fails_before_project_load() {
+    let dir = support::temp_dir("surface-serve-remote-token-file-validation");
+    write(&dir, "marrow.json", support::native_config());
+    write(&dir, "src/app.mw", "module app\npub fn broken(\n");
+    write(&dir, "token.txt", " leading-space\n");
+
+    let output = marrow(&[
+        "serve",
+        "--remote",
+        "--addr",
+        "0.0.0.0:0",
+        "--auth-token-file",
+        dir.join("token.txt").to_str().unwrap(),
+        dir.to_str().unwrap(),
+    ]);
+
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+    assert!(
+        stderr.contains("whitespace") && !stderr.contains("parse."),
+        "token validation should fail before source loading: {stderr}"
+    );
+}
+
+#[test]
+fn surface_serve_remote_cors_validation_fails_before_project_load() {
+    let dir = support::temp_dir("surface-serve-remote-cors-validation");
+    write(&dir, "marrow.json", support::native_config());
+    write(&dir, "src/app.mw", "module app\npub fn broken(\n");
+    let project = dir.to_str().unwrap();
+
+    let without_remote = marrow(&[
+        "serve",
+        "--addr",
+        "127.0.0.1:0",
+        "--remote-cors-origin",
+        "https://app.example.com",
+        project,
+    ]);
+    assert_eq!(without_remote.status.code(), Some(2), "{without_remote:?}");
+    let stderr = String::from_utf8(without_remote.stderr).expect("stderr utf8");
+    assert!(
+        stderr.contains("--remote-cors-origin") && stderr.contains("--remote"),
+        "{stderr}"
+    );
+
+    for origin in [
+        "*",
+        "null",
+        "https://app.example.com/path",
+        "https://app.example.com\r\nX-Injected: yes",
+        "https://user@app.example.com",
+        "https://[::1",
+        "https://app.example.com:70000",
+        "https://",
+    ] {
+        let output = marrow(&[
+            "serve",
+            "--remote",
+            "--addr",
+            "0.0.0.0:0",
+            "--auth-token-env",
+            "MARROW_SURFACE_TOKEN",
+            "--remote-cors-origin",
+            origin,
+            project,
+        ]);
+        assert_eq!(output.status.code(), Some(2), "{origin}: {output:?}");
+        let stderr = String::from_utf8(output.stderr).expect("stderr utf8");
+        assert!(
+            stderr.contains("origin") && !stderr.contains("parse."),
+            "{origin}: {stderr}"
+        );
+    }
 }
 
 #[test]
@@ -949,6 +1122,227 @@ fn surface_serve_cors_origin_echoes_configured_origin_for_casing_variant() {
     );
     assert_eq!(blocked.status, 403, "{:#?}", blocked.body);
     assert_eq!(blocked.header("access-control-allow-origin"), None);
+}
+
+#[test]
+fn surface_serve_remote_auth_rejects_before_body_read() {
+    let fixture = seeded_surface_fixture("surface-serve-remote-auth-before-body");
+    let point_route = route_by_alias(&fixture.report, "get");
+    let (_server, addr) = spawn_surface_server_with_env_args(
+        fixture.root(),
+        &[(REMOTE_AUTH_ENV, REMOTE_AUTH_TOKEN)],
+        &["--remote", "--auth-token-env", REMOTE_AUTH_ENV],
+    );
+
+    let missing = response_before_body(
+        addr,
+        format!(
+            "POST {} HTTP/1.1\r\nHost: {addr}\r\nContent-Type: application/json\r\nContent-Length: 4096\r\n\r\n",
+            point_route.path
+        )
+        .into_bytes(),
+    );
+    assert_eq!(missing.status, 401, "{:#?}", missing.body);
+    assert_eq!(missing.body["code"], "surface.auth");
+
+    let duplicate = response_before_body(
+        addr,
+        format!(
+            "POST {} HTTP/1.1\r\nHost: {addr}\r\nContent-Type: application/json\r\nAuthorization: Bearer {REMOTE_AUTH_TOKEN}\r\nAuthorization: Bearer {REMOTE_AUTH_TOKEN}\r\nContent-Length: 4096\r\n\r\n",
+            point_route.path
+        )
+        .into_bytes(),
+    );
+    assert_eq!(duplicate.status, 401, "{:#?}", duplicate.body);
+    assert_eq!(duplicate.body["code"], "surface.auth");
+
+    let malformed = response_before_body(
+        addr,
+        format!(
+            "POST {} HTTP/1.1\r\nHost: {addr}\r\nContent-Type: application/json\r\nAuthorization: bearer {REMOTE_AUTH_TOKEN}\r\nContent-Length: 4096\r\n\r\n",
+            point_route.path
+        )
+        .into_bytes(),
+    );
+    assert_eq!(malformed.status, 401, "{:#?}", malformed.body);
+    assert_eq!(malformed.body["code"], "surface.auth");
+}
+
+#[test]
+fn surface_serve_remote_auth_precedes_post_cors_validation() {
+    let fixture = seeded_surface_fixture("surface-serve-remote-auth-before-cors");
+    let point_route = route_by_alias(&fixture.report, "get");
+    let origin = "https://app.example.com";
+    let (_server, addr) = spawn_surface_server_with_env_args(
+        fixture.root(),
+        &[(REMOTE_AUTH_ENV, REMOTE_AUTH_TOKEN)],
+        &[
+            "--remote",
+            "--auth-token-env",
+            REMOTE_AUTH_ENV,
+            "--remote-cors-origin",
+            origin,
+        ],
+    );
+
+    let disallowed_origin = response_before_body(
+        addr,
+        format!(
+            "POST {} HTTP/1.1\r\nHost: {addr}\r\nOrigin: https://other.example.com\r\nContent-Type: application/json\r\nContent-Length: 4096\r\n\r\n",
+            point_route.path
+        )
+        .into_bytes(),
+    );
+    assert_eq!(
+        disallowed_origin.status, 401,
+        "{:#?}",
+        disallowed_origin.body
+    );
+    assert_eq!(disallowed_origin.body["code"], "surface.auth");
+    assert_eq!(
+        disallowed_origin.header("access-control-allow-origin"),
+        None
+    );
+
+    let duplicate_origin = response_before_body(
+        addr,
+        format!(
+            "POST {} HTTP/1.1\r\nHost: {addr}\r\nOrigin: {origin}\r\nOrigin: {origin}\r\nContent-Type: application/json\r\nContent-Length: 4096\r\n\r\n",
+            point_route.path
+        )
+        .into_bytes(),
+    );
+    assert_eq!(duplicate_origin.status, 401, "{:#?}", duplicate_origin.body);
+    assert_eq!(duplicate_origin.body["code"], "surface.auth");
+    assert_eq!(duplicate_origin.header("access-control-allow-origin"), None);
+}
+
+#[test]
+fn surface_serve_remote_authorized_post_succeeds() {
+    let fixture = seeded_surface_fixture("surface-serve-remote-auth-success");
+    let point_route = route_by_alias(&fixture.report, "get");
+    let (_server, addr) = spawn_surface_server_with_env_args(
+        fixture.root(),
+        &[(REMOTE_AUTH_ENV, REMOTE_AUTH_TOKEN)],
+        &["--remote", "--auth-token-env", REMOTE_AUTH_ENV],
+    );
+    let authorization = format!("Bearer {REMOTE_AUTH_TOKEN}");
+
+    let response = post_json(
+        addr,
+        &point_route.path,
+        point_read_request(&fixture.report, &point_route.operation_tag, 1),
+        &[
+            ("Content-Type", "application/json"),
+            ("Authorization", authorization.as_str()),
+        ],
+    );
+
+    assert_eq!(response.status, 200, "{:#?}", response.body);
+    assert_eq!(
+        field_value(&response.body["result"]["record"], "title"),
+        json!({ "kind": "string", "value": "Dune" })
+    );
+}
+
+#[test]
+fn surface_serve_remote_read_only_denies_write_route_before_body_read() {
+    let fixture = seeded_surface_fixture("surface-serve-remote-read-only-write-denial");
+    let update_route = route_by_alias(&fixture.report, "update");
+    let (_server, addr) = spawn_surface_server_with_env_args(
+        fixture.root(),
+        &[(REMOTE_AUTH_ENV, REMOTE_AUTH_TOKEN)],
+        &["--remote", "--auth-token-env", REMOTE_AUTH_ENV],
+    );
+
+    let response = response_before_body(
+        addr,
+        format!(
+            "POST {} HTTP/1.1\r\nHost: {addr}\r\nContent-Type: application/json\r\nAuthorization: Bearer {REMOTE_AUTH_TOKEN}\r\nContent-Length: 4096\r\n\r\n",
+            update_route.path
+        )
+        .into_bytes(),
+    );
+
+    assert_eq!(response.status, 403, "{:#?}", response.body);
+    assert_eq!(response.body["code"], "surface.auth");
+}
+
+#[test]
+fn surface_serve_remote_cors_preflight_is_unauthenticated_and_strict() {
+    let fixture = seeded_surface_fixture("surface-serve-remote-cors");
+    let point_route = route_by_alias(&fixture.report, "get");
+    let origin = "https://app.example.com";
+    let (_server, addr) = spawn_surface_server_with_env_args(
+        fixture.root(),
+        &[(REMOTE_AUTH_ENV, REMOTE_AUTH_TOKEN)],
+        &[
+            "--remote",
+            "--auth-token-env",
+            REMOTE_AUTH_ENV,
+            "--remote-cors-origin",
+            origin,
+        ],
+    );
+
+    let preflight = raw_http(
+        addr,
+        format!(
+            "OPTIONS {} HTTP/1.1\r\nHost: {addr}\r\nOrigin: {origin}\r\nAccess-Control-Request-Method: POST\r\nAccess-Control-Request-Headers: authorization, content-type\r\nContent-Length: 0\r\n\r\n",
+            point_route.path
+        )
+        .into_bytes(),
+        &[],
+    );
+    assert_eq!(preflight.status, 204, "{:#?}", preflight.body);
+    assert_eq!(
+        preflight.header("access-control-allow-origin"),
+        Some(origin)
+    );
+    assert_eq!(
+        preflight.header("access-control-allow-headers"),
+        Some("Content-Type, Authorization")
+    );
+    assert_eq!(
+        preflight.header("vary"),
+        Some("Origin, Access-Control-Request-Method, Access-Control-Request-Headers")
+    );
+
+    let duplicate_origin = raw_http(
+        addr,
+        format!(
+            "OPTIONS {} HTTP/1.1\r\nHost: {addr}\r\nOrigin: {origin}\r\nOrigin: {origin}\r\nAccess-Control-Request-Method: POST\r\nAccess-Control-Request-Headers: Content-Type, Authorization\r\nContent-Length: 0\r\n\r\n",
+            point_route.path
+        )
+        .into_bytes(),
+        &[],
+    );
+    assert_eq!(duplicate_origin.status, 400, "{:#?}", duplicate_origin.body);
+    assert_eq!(duplicate_origin.body["code"], "surface.request");
+    assert_eq!(
+        duplicate_origin.header("vary"),
+        Some("Origin, Access-Control-Request-Method, Access-Control-Request-Headers")
+    );
+
+    let bad_headers = raw_http(
+        addr,
+        format!(
+            "OPTIONS {} HTTP/1.1\r\nHost: {addr}\r\nOrigin: {origin}\r\nAccess-Control-Request-Method: POST\r\nAccess-Control-Request-Headers: Content-Type\r\nContent-Length: 0\r\n\r\n",
+            point_route.path
+        )
+        .into_bytes(),
+        &[],
+    );
+    assert_eq!(bad_headers.status, 400, "{:#?}", bad_headers.body);
+    assert_eq!(bad_headers.body["code"], "surface.request");
+    assert_eq!(
+        bad_headers.header("access-control-allow-origin"),
+        Some(origin)
+    );
+    assert_eq!(
+        bad_headers.header("vary"),
+        Some("Origin, Access-Control-Request-Method, Access-Control-Request-Headers")
+    );
 }
 
 #[test]
@@ -2302,6 +2696,29 @@ fn raw_http(addr: SocketAddr, mut head: Vec<u8>, body: &[u8]) -> HttpResponse {
         .shutdown(std::net::Shutdown::Write)
         .expect("finish raw request");
     parse_response(&read_response(stream))
+}
+
+fn response_before_body(addr: SocketAddr, head: Vec<u8>) -> HttpResponse {
+    let mut stream = TcpStream::connect(addr).expect("connect surface server");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .expect("set read timeout");
+    stream.write_all(&head).expect("write request head");
+    stream.flush().expect("flush request head");
+
+    let mut raw = Vec::new();
+    match stream.read_to_end(&mut raw) {
+        Ok(_) => {}
+        Err(error) if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
+            panic!(
+                "surface server did not respond before the request body was sent: {}",
+                String::from_utf8_lossy(&raw)
+            );
+        }
+        Err(error) if error.kind() == ErrorKind::ConnectionReset && !raw.is_empty() => {}
+        Err(error) => panic!("read early response: {error}"),
+    }
+    parse_response(&raw)
 }
 
 fn paced_pipeline(addr: SocketAddr, path: &str, body: Value, delayed_extra: &[u8]) -> HttpResponse {

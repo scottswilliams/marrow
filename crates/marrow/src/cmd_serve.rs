@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
-use std::io::{ErrorKind, Read, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::io::Write;
+use std::net::{SocketAddr, TcpListener};
+use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
@@ -13,17 +14,18 @@ use marrow_json::surface::{
 };
 use marrow_run::{
     ProjectSessionError, ProjectSurfaceReadSession, ProjectSurfaceSession, ProjectSurfaceSnapshot,
-    SURFACE_ABI_MISMATCH, SURFACE_ABSENT, SURFACE_ACTION, SURFACE_COMPUTED, SURFACE_CONFLICT,
-    SURFACE_INVALID_DATA, SURFACE_LIMIT, SURFACE_REQUEST, SURFACE_STALE_CURSOR, SURFACE_STORE,
-    SURFACE_WRITE,
+    SURFACE_ABI_MISMATCH, SURFACE_STORE,
 };
 
 use crate::cmd_run::report_session_open_error;
 use crate::term_style::{self, Stream};
 use crate::{CheckFormat, report_simple_error};
 
+mod auth;
 mod cors;
+mod http;
 mod shutdown;
+use auth::{AuthTokenSource, RemoteAuthToken};
 use cors::CorsPolicy;
 
 const DEFAULT_PORT: u16 = 8080;
@@ -32,6 +34,7 @@ const MAX_BODY_BYTES: usize = 1024 * 1024;
 const STREAM_TIMEOUT: Duration = Duration::from_secs(15);
 const READ_POLL_INTERVAL: Duration = Duration::from_millis(250);
 const ACCEPT_POLL: Duration = Duration::from_millis(10);
+const SURFACE_AUTH: &str = "surface.auth";
 
 #[derive(Clone, Copy)]
 enum ServeMode {
@@ -52,9 +55,12 @@ const COMMAND: &str = "serve";
 const HELP: &str = "\
 Usage:
   marrow serve [--write] [--watch] [--cors-origin <loopback-origin>] [--addr <loopback:port>] <projectdir>
+  marrow serve --remote --addr <addr> [--write]
+    (--auth-token-env NAME | --auth-token-file PATH)
+    [--remote-cors-origin <origin>] <projectdir>
 
-Run a local HTTP surface endpoint. The server accepts one JSON POST per
-connection and closes the response on descriptor-derived
+Run an HTTP surface endpoint. The default profile is loopback-only. The server
+accepts one JSON POST per connection and closes the response on descriptor-derived
 /surface/v1/{read|create|update|delete|action}/<operation-tag> routes.
 
   --write  Expose create/update/delete/action routes and open a writable surface session.
@@ -64,20 +70,40 @@ connection and closes the response on descriptor-derived
            No CORS headers are emitted unless this option is present.
   --addr   Loopback socket address to bind. Defaults to 127.0.0.1:8080.
   --watch  Re-check and rewrite the declared client on a .mw change, then keep serving.
+  --remote
+           Allow binding a non-loopback address. Requires explicit --addr and exactly
+           one auth token source. --watch is not supported with --remote.
+  --auth-token-env NAME
+           Read the remote Bearer token from NAME.
+  --auth-token-file PATH
+           Read the remote Bearer token from a UTF-8 regular file.
+  --remote-cors-origin
+           Allow one exact http/https browser Origin for the remote profile.
 ";
 
 pub(crate) fn serve(args: &[String]) -> ExitCode {
     let mut addr = default_addr();
     let mut mode = ServeMode::ReadOnly;
     let mut cors = None;
+    let mut remote_cors = None;
+    let mut remote_auth_source = None;
     let mut saw_addr = false;
     let mut saw_cors_origin = false;
+    let mut saw_remote_cors_origin = false;
     let mut saw_write = false;
+    let mut remote = false;
     let mut watch = false;
     let mut dir = None;
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
+            "--remote" => {
+                if remote {
+                    eprintln!("duplicate --remote");
+                    return ExitCode::from(2);
+                }
+                remote = true;
+            }
             "--write" => {
                 if saw_write {
                     eprintln!("duplicate --write");
@@ -103,7 +129,7 @@ pub(crate) fn serve(args: &[String]) -> ExitCode {
                     eprintln!("duplicate --cors-origin");
                     return ExitCode::from(2);
                 }
-                cors = match CorsPolicy::new(value) {
+                cors = match CorsPolicy::local(value) {
                     Ok(cors) => Some(cors),
                     Err(message) => {
                         eprintln!("{message}");
@@ -111,6 +137,49 @@ pub(crate) fn serve(args: &[String]) -> ExitCode {
                     }
                 };
                 saw_cors_origin = true;
+            }
+            "--remote-cors-origin" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    eprintln!("missing value for --remote-cors-origin");
+                    return ExitCode::from(2);
+                };
+                if saw_remote_cors_origin {
+                    eprintln!("duplicate --remote-cors-origin");
+                    return ExitCode::from(2);
+                }
+                remote_cors = match CorsPolicy::remote(value) {
+                    Ok(cors) => Some(cors),
+                    Err(message) => {
+                        eprintln!("{message}");
+                        return ExitCode::from(2);
+                    }
+                };
+                saw_remote_cors_origin = true;
+            }
+            "--auth-token-env" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    eprintln!("missing value for --auth-token-env");
+                    return ExitCode::from(2);
+                };
+                if remote_auth_source.is_some() {
+                    eprintln!("remote serve requires exactly one auth token source");
+                    return ExitCode::from(2);
+                }
+                remote_auth_source = Some(AuthTokenSource::Env(value.clone()));
+            }
+            "--auth-token-file" => {
+                index += 1;
+                let Some(value) = args.get(index) else {
+                    eprintln!("missing value for --auth-token-file");
+                    return ExitCode::from(2);
+                };
+                if remote_auth_source.is_some() {
+                    eprintln!("remote serve requires exactly one auth token source");
+                    return ExitCode::from(2);
+                }
+                remote_auth_source = Some(AuthTokenSource::File(PathBuf::from(value)));
             }
             "--addr" => {
                 index += 1;
@@ -153,7 +222,50 @@ pub(crate) fn serve(args: &[String]) -> ExitCode {
         eprintln!("missing project directory");
         return ExitCode::from(2);
     };
-    if !addr.ip().is_loopback() {
+    if remote {
+        if !saw_addr {
+            eprintln!("--remote requires an explicit --addr");
+            return ExitCode::from(2);
+        }
+        if watch {
+            eprintln!("--remote does not support --watch in this release");
+            return ExitCode::from(2);
+        }
+        if saw_cors_origin {
+            eprintln!("--cors-origin is local-only; use --remote-cors-origin with --remote");
+            return ExitCode::from(2);
+        }
+    } else {
+        if remote_auth_source.is_some() {
+            eprintln!("auth token sources require --remote");
+            return ExitCode::from(2);
+        }
+        if saw_remote_cors_origin {
+            eprintln!("--remote-cors-origin requires --remote");
+            return ExitCode::from(2);
+        }
+    }
+    let remote_auth = if remote {
+        let Some(source) = remote_auth_source else {
+            eprintln!("--remote requires exactly one auth token source");
+            return ExitCode::from(2);
+        };
+        match RemoteAuthToken::load(&source) {
+            Ok(token) => Some(token),
+            Err(message) => {
+                eprintln!("{message}");
+                return ExitCode::from(2);
+            }
+        }
+    } else {
+        None
+    };
+    let cors = if remote {
+        remote_cors.as_ref()
+    } else {
+        cors.as_ref()
+    };
+    if !remote && !addr.ip().is_loopback() {
         eprintln!("--addr must use a loopback address");
         return ExitCode::from(2);
     }
@@ -210,7 +322,7 @@ pub(crate) fn serve(args: &[String]) -> ExitCode {
     for notice in session.notices() {
         eprintln!("{}", notice.message());
     }
-    let routes = match SurfaceRoutes::from_program(session.program(), mode) {
+    let routes = match SurfaceRoutes::from_program(session.program(), mode, remote) {
         Ok(routes) => routes,
         Err(message) => {
             report_simple_error(SURFACE_ABI_MISMATCH, &message, CheckFormat::Text);
@@ -272,10 +384,19 @@ pub(crate) fn serve(args: &[String]) -> ExitCode {
             dir,
             config,
             mode,
+            remote,
             signature,
         }
     });
-    run_server(listener, executor, routes, cors.as_ref(), watch, &shutdown)
+    run_server(
+        listener,
+        executor,
+        routes,
+        cors,
+        remote_auth.as_ref(),
+        watch,
+        &shutdown,
+    )
 }
 
 /// The state `serve --watch` re-checks on a source change: where to re-open the snapshot, the
@@ -286,6 +407,7 @@ struct SurfaceWatch {
     dir: String,
     config: marrow_project::ProjectConfig,
     mode: ServeMode,
+    remote: bool,
     signature: u64,
 }
 
@@ -320,6 +442,7 @@ fn run_server(
     mut executor: SurfaceServeExecutor,
     mut routes: SurfaceRoutes,
     cors: Option<&CorsPolicy>,
+    remote_auth: Option<&RemoteAuthToken>,
     mut watch: Option<SurfaceWatch>,
     shutdown: &shutdown::Shutdown,
 ) -> ExitCode {
@@ -343,7 +466,7 @@ fn run_server(
                 if let Some(code) = shutdown_exit_code(shutdown) {
                     return code;
                 }
-                serve_connection(stream, &executor, &routes, cors, shutdown);
+                http::serve_connection(stream, &executor, &routes, cors, remote_auth, shutdown);
             }
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                 if let Some(code) = shutdown_exit_code(shutdown) {
@@ -368,55 +491,6 @@ fn run_server(
                 );
             }
         }
-    }
-}
-
-fn serve_connection(
-    mut stream: TcpStream,
-    executor: &SurfaceServeExecutor,
-    routes: &SurfaceRoutes,
-    cors: Option<&CorsPolicy>,
-    shutdown: &shutdown::Shutdown,
-) {
-    if let Err(error) = stream.set_nonblocking(false) {
-        eprintln!(
-            "{}",
-            server_code_message(
-                "io.read",
-                format!("failed to set surface connection blocking: {error}")
-            )
-        );
-        return;
-    }
-    if let Err(error) = stream.set_read_timeout(Some(READ_POLL_INTERVAL)) {
-        eprintln!(
-            "{}",
-            server_code_message(
-                "io.read",
-                format!("failed to set surface read timeout: {error}")
-            )
-        );
-        return;
-    }
-    if let Err(error) = stream.set_write_timeout(Some(STREAM_TIMEOUT)) {
-        eprintln!(
-            "{}",
-            server_code_message(
-                "io.write",
-                format!("failed to set surface write timeout: {error}")
-            )
-        );
-        return;
-    }
-    let response = handle_connection(&mut stream, executor, routes, cors, shutdown);
-    if let Err(error) = write_response(&mut stream, &response) {
-        eprintln!(
-            "{}",
-            server_code_message(
-                "io.write",
-                format!("failed to write surface response: {error}")
-            )
-        );
     }
 }
 
@@ -478,7 +552,7 @@ impl SurfaceWatch {
         executor.release();
         let snapshot = ProjectSurfaceSnapshot::open(&self.dir)
             .map_err(|error| format!("{}: {}", error.code(), error.message()))?;
-        let fresh_routes = SurfaceRoutes::from_program(snapshot.program(), self.mode)?;
+        let fresh_routes = SurfaceRoutes::from_program(snapshot.program(), self.mode, self.remote)?;
         crate::sync_declared_client(
             &self.dir,
             &self.config,
@@ -585,10 +659,16 @@ impl SurfaceServeSession {
 
 struct SurfaceRoutes {
     routes: BTreeMap<String, SurfaceRouteBinding>,
+    mode: ServeMode,
+    remote: bool,
 }
 
 impl SurfaceRoutes {
-    fn from_program(program: &CheckedProgram, mode: ServeMode) -> Result<Self, String> {
+    fn from_program(
+        program: &CheckedProgram,
+        mode: ServeMode,
+        remote: bool,
+    ) -> Result<Self, String> {
         let abi = SurfaceAbiJson::from_program(program);
         let manifest = SurfaceRouteManifestJson::from_abi(&abi);
         let catalog = SurfaceOperationCatalog::from_abi(&abi).map_err(|error| error.to_string())?;
@@ -596,600 +676,23 @@ impl SurfaceRoutes {
             .map_err(|error| error.to_string())?;
         let routes = bindings
             .iter()
-            .filter(|binding| mode.allows(binding))
+            .filter(|binding| remote || mode.allows(binding))
             .map(|binding| (binding.path.clone(), binding.clone()))
             .collect();
-        Ok(Self { routes })
+        Ok(Self {
+            routes,
+            mode,
+            remote,
+        })
     }
 
     fn binding_for_path(&self, path: &str) -> Option<&SurfaceRouteBinding> {
         self.routes.get(path)
     }
-}
 
-fn handle_connection(
-    stream: &mut TcpStream,
-    executor: &SurfaceServeExecutor,
-    routes: &SurfaceRoutes,
-    cors: Option<&CorsPolicy>,
-    shutdown: &shutdown::Shutdown,
-) -> SurfaceHttpResponse {
-    match read_http_request(stream, shutdown) {
-        Ok(request) => execute_http_request(request, executor, routes, cors),
-        Err(failure) => SurfaceHttpResponse::error(failure.status, failure.error),
+    fn mode_allows(&self, binding: &SurfaceRouteBinding) -> bool {
+        self.mode.allows(binding)
     }
-}
-
-fn execute_http_request(
-    request: HttpRequest,
-    executor: &SurfaceServeExecutor,
-    routes: &SurfaceRoutes,
-    cors: Option<&CorsPolicy>,
-) -> SurfaceHttpResponse {
-    let cors_origin = match cors_origin_for_request(&request, cors) {
-        Ok(origin) => origin,
-        Err(response) => return response,
-    };
-    if request.method == "OPTIONS" && cors.is_some() {
-        return execute_cors_preflight(request, routes, cors_origin);
-    }
-    if request.method != "POST" {
-        return SurfaceHttpResponse::error(
-            HttpStatus::MethodNotAllowed,
-            surface_error(SURFACE_REQUEST, "surface routes accept POST only"),
-        )
-        .with_cors(cors_origin);
-    }
-    if request.target.contains('?') {
-        return SurfaceHttpResponse::error(
-            HttpStatus::NotFound,
-            surface_error(SURFACE_ABI_MISMATCH, "surface operation is not active"),
-        )
-        .with_cors(cors_origin);
-    }
-    let Some(route) = routes.binding_for_path(&request.target) else {
-        return SurfaceHttpResponse::error(
-            HttpStatus::NotFound,
-            surface_error(SURFACE_ABI_MISMATCH, "surface operation is not active"),
-        )
-        .with_cors(cors_origin);
-    };
-    if !request.content_type_is_json {
-        return SurfaceHttpResponse::error(
-            HttpStatus::UnsupportedMediaType,
-            surface_error(
-                SURFACE_REQUEST,
-                "surface request body must be application/json",
-            ),
-        )
-        .with_cors(cors_origin);
-    }
-    let operation = match serde_json::from_slice::<SurfaceOperationRequestJson>(&request.body) {
-        Ok(operation) => operation,
-        Err(_) => {
-            return SurfaceHttpResponse::error(
-                HttpStatus::BadRequest,
-                surface_error(
-                    SURFACE_REQUEST,
-                    "surface request body is not a valid operation",
-                ),
-            )
-            .with_cors(cors_origin);
-        }
-    };
-    if operation.operation_tag != route.operation_tag {
-        return SurfaceHttpResponse::error(
-            HttpStatus::NotFound,
-            surface_error(SURFACE_ABI_MISMATCH, "surface operation is not active"),
-        )
-        .with_cors(cors_origin);
-    }
-    if !route.kind.matches_operation_body(&operation.request) {
-        return SurfaceHttpResponse::error(
-            HttpStatus::BadRequest,
-            surface_error(
-                SURFACE_REQUEST,
-                "surface operation request body does not match the route",
-            ),
-        )
-        .with_cors(cors_origin);
-    }
-    match executor.execute(&operation) {
-        Ok(response) => SurfaceHttpResponse::json(HttpStatus::Ok, response_value(response))
-            .with_cors(cors_origin),
-        Err(error) => SurfaceHttpResponse::error(status_for_surface_error(&error.code), error)
-            .with_cors(cors_origin),
-    }
-}
-
-fn cors_origin_for_request(
-    request: &HttpRequest,
-    cors: Option<&CorsPolicy>,
-) -> Result<Option<String>, SurfaceHttpResponse> {
-    let Some(origin) = &request.origin else {
-        return Ok(None);
-    };
-    let Some(cors) = cors else {
-        return Ok(None);
-    };
-    if let Some(configured) = cors.matched_origin(origin) {
-        return Ok(Some(configured.to_string()));
-    }
-    Err(SurfaceHttpResponse::error(
-        HttpStatus::Forbidden,
-        surface_error(SURFACE_REQUEST, "surface CORS origin is not allowed"),
-    ))
-}
-
-fn execute_cors_preflight(
-    request: HttpRequest,
-    routes: &SurfaceRoutes,
-    cors_origin: Option<String>,
-) -> SurfaceHttpResponse {
-    let Some(cors_origin) = cors_origin else {
-        return SurfaceHttpResponse::error(
-            HttpStatus::Forbidden,
-            surface_error(
-                SURFACE_REQUEST,
-                "surface CORS preflight origin is not allowed",
-            ),
-        );
-    };
-    if request.target.contains('?') {
-        return SurfaceHttpResponse::error(
-            HttpStatus::NotFound,
-            surface_error(SURFACE_ABI_MISMATCH, "surface operation is not active"),
-        )
-        .with_cors(Some(cors_origin));
-    }
-    if routes.binding_for_path(&request.target).is_none() {
-        return SurfaceHttpResponse::error(
-            HttpStatus::NotFound,
-            surface_error(SURFACE_ABI_MISMATCH, "surface operation is not active"),
-        )
-        .with_cors(Some(cors_origin));
-    }
-    if request.access_control_request_method.as_deref() != Some("POST") {
-        return SurfaceHttpResponse::error(
-            HttpStatus::MethodNotAllowed,
-            surface_error(SURFACE_REQUEST, "surface CORS preflight must request POST"),
-        )
-        .with_cors(Some(cors_origin));
-    }
-    if !request.body.is_empty() {
-        return SurfaceHttpResponse::error(
-            HttpStatus::BadRequest,
-            surface_error(SURFACE_REQUEST, "surface CORS preflight body must be empty"),
-        )
-        .with_cors(Some(cors_origin));
-    }
-    SurfaceHttpResponse::empty(HttpStatus::NoContent).with_cors(Some(cors_origin))
-}
-
-fn status_for_surface_error(code: &str) -> HttpStatus {
-    match code {
-        SURFACE_ABSENT | SURFACE_ABI_MISMATCH => HttpStatus::NotFound,
-        SURFACE_CONFLICT | SURFACE_STALE_CURSOR => HttpStatus::Conflict,
-        SURFACE_LIMIT => HttpStatus::PayloadTooLarge,
-        SURFACE_ACTION | SURFACE_COMPUTED | SURFACE_INVALID_DATA | SURFACE_STORE
-        | SURFACE_WRITE => HttpStatus::InternalServerError,
-        SURFACE_REQUEST => HttpStatus::BadRequest,
-        _ => HttpStatus::BadRequest,
-    }
-}
-
-struct HttpRequest {
-    method: String,
-    target: String,
-    origin: Option<String>,
-    access_control_request_method: Option<String>,
-    content_type_is_json: bool,
-    body: Vec<u8>,
-}
-
-fn read_http_request(
-    stream: &mut TcpStream,
-    shutdown: &shutdown::Shutdown,
-) -> Result<HttpRequest, HttpFailure> {
-    let mut buffer = Vec::new();
-    let header_end = read_until_header_end(stream, &mut buffer, shutdown)?;
-    let parsed = parse_head(&buffer[..header_end])?;
-    let content_length = match parsed.content_length {
-        Some(content_length) => content_length,
-        None if parsed.method == "OPTIONS" => 0,
-        // A non-POST method reaches here before the route-level method check because it
-        // carries no Content-Length, so the bare Content-Length error would hide the real
-        // cause. Name the method requirement instead so the developer switches to POST.
-        None if parsed.method != "POST" => {
-            return Err(request_failure(
-                "surface routes accept POST only; send the operation as a POST request",
-            ));
-        }
-        None => {
-            return Err(request_failure(
-                "surface request must contain exactly one Content-Length",
-            ));
-        }
-    };
-    if content_length > MAX_BODY_BYTES {
-        return Err(HttpFailure::new(
-            HttpStatus::PayloadTooLarge,
-            SURFACE_LIMIT,
-            "surface request body is too large",
-        ));
-    }
-    let body_start = header_end + 4;
-    let body_end = body_start.checked_add(content_length).ok_or_else(|| {
-        HttpFailure::new(
-            HttpStatus::PayloadTooLarge,
-            SURFACE_LIMIT,
-            "surface request body is too large",
-        )
-    })?;
-    if buffer.len() > body_end {
-        return Err(HttpFailure::new(
-            HttpStatus::BadRequest,
-            SURFACE_REQUEST,
-            "surface request contains trailing bytes after the declared body",
-        ));
-    }
-    while buffer.len() < body_end {
-        let remaining = body_end - buffer.len();
-        let mut chunk = [0; 4096];
-        let limit = remaining.min(chunk.len());
-        let read = read_with_shutdown_poll(
-            stream,
-            &mut chunk[..limit],
-            shutdown,
-            "surface request body could not be read",
-        )?;
-        if read == 0 {
-            return Err(request_failure("surface request body ended early"));
-        }
-        buffer.extend_from_slice(&chunk[..read]);
-    }
-    Ok(HttpRequest {
-        method: parsed.method,
-        target: parsed.target,
-        origin: parsed.origin,
-        access_control_request_method: parsed.access_control_request_method,
-        content_type_is_json: parsed.content_type_is_json,
-        body: buffer[body_start..body_end].to_vec(),
-    })
-}
-
-fn read_until_header_end(
-    stream: &mut TcpStream,
-    buffer: &mut Vec<u8>,
-    shutdown: &shutdown::Shutdown,
-) -> Result<usize, HttpFailure> {
-    loop {
-        if let Some(index) = find_header_end(buffer) {
-            if index > MAX_HEADER_BYTES {
-                return Err(HttpFailure::new(
-                    HttpStatus::RequestHeaderFieldsTooLarge,
-                    SURFACE_LIMIT,
-                    "surface request headers are too large",
-                ));
-            }
-            return Ok(index);
-        }
-        if buffer.len() > MAX_HEADER_BYTES {
-            return Err(HttpFailure::new(
-                HttpStatus::RequestHeaderFieldsTooLarge,
-                SURFACE_LIMIT,
-                "surface request headers are too large",
-            ));
-        }
-        let mut chunk = [0; 1024];
-        let read = read_with_shutdown_poll(
-            stream,
-            &mut chunk,
-            shutdown,
-            "surface request headers could not be read",
-        )?;
-        if read == 0 {
-            return Err(request_failure(
-                "surface request ended before headers completed",
-            ));
-        }
-        buffer.extend_from_slice(&chunk[..read]);
-    }
-}
-
-fn read_with_shutdown_poll(
-    stream: &mut TcpStream,
-    buffer: &mut [u8],
-    shutdown: &shutdown::Shutdown,
-    failure: &'static str,
-) -> Result<usize, HttpFailure> {
-    let idle_start = Instant::now();
-    loop {
-        if shutdown.requested().is_some() {
-            return Err(request_failure("surface server is shutting down"));
-        }
-        match stream.read(buffer) {
-            Ok(read) => return Ok(read),
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    ErrorKind::WouldBlock | ErrorKind::TimedOut | ErrorKind::Interrupted
-                ) && idle_start.elapsed() < STREAM_TIMEOUT => {}
-            Err(_) => return Err(request_failure(failure)),
-        }
-    }
-}
-
-fn find_header_end(buffer: &[u8]) -> Option<usize> {
-    buffer.windows(4).position(|window| window == b"\r\n\r\n")
-}
-
-struct ParsedHead {
-    method: String,
-    target: String,
-    origin: Option<String>,
-    access_control_request_method: Option<String>,
-    content_length: Option<usize>,
-    content_type_is_json: bool,
-}
-
-fn parse_head(head: &[u8]) -> Result<ParsedHead, HttpFailure> {
-    let head = std::str::from_utf8(head)
-        .map_err(|_| request_failure("surface request headers must be UTF-8"))?;
-    let mut lines = head.split("\r\n");
-    let request_line = lines
-        .next()
-        .ok_or_else(|| request_failure("surface request line is missing"))?;
-    let mut request_parts = request_line.split_whitespace();
-    let method = request_parts
-        .next()
-        .ok_or_else(|| request_failure("surface request method is missing"))?
-        .to_string();
-    let target = request_parts
-        .next()
-        .ok_or_else(|| request_failure("surface request target is missing"))?
-        .to_string();
-    let version = request_parts
-        .next()
-        .ok_or_else(|| request_failure("surface request version is missing"))?;
-    if request_parts.next().is_some() || !matches!(version, "HTTP/1.0" | "HTTP/1.1") {
-        return Err(request_failure("surface request line is malformed"));
-    }
-
-    let mut content_length = None;
-    let mut origin = None;
-    let mut access_control_request_method = None;
-    let mut saw_content_type = false;
-    let mut content_type_is_json = false;
-    for line in lines {
-        if line.is_empty() {
-            continue;
-        }
-        if line.starts_with(' ') || line.starts_with('\t') {
-            return Err(request_failure("surface request headers must not fold"));
-        }
-        let Some((name, value)) = line.split_once(':') else {
-            return Err(request_failure("surface request header is malformed"));
-        };
-        let name = name.trim().to_ascii_lowercase();
-        let value = value.trim();
-        match name.as_str() {
-            "content-length" => {
-                if content_length.is_some() {
-                    return Err(request_failure(
-                        "surface request must contain exactly one Content-Length",
-                    ));
-                }
-                let parsed = value
-                    .parse::<usize>()
-                    .map_err(|_| request_failure("surface Content-Length is malformed"))?;
-                content_length = Some(parsed);
-            }
-            "content-type" => {
-                if saw_content_type {
-                    return Err(request_failure(
-                        "surface request must contain at most one Content-Type",
-                    ));
-                }
-                saw_content_type = true;
-                content_type_is_json = is_json_content_type(value);
-            }
-            "origin" => {
-                if origin.is_some() {
-                    return Err(request_failure(
-                        "surface request must contain at most one Origin",
-                    ));
-                }
-                origin = Some(value.to_string());
-            }
-            "access-control-request-method" => {
-                if access_control_request_method.is_some() {
-                    return Err(request_failure(
-                        "surface request must contain at most one Access-Control-Request-Method",
-                    ));
-                }
-                access_control_request_method = Some(value.to_ascii_uppercase());
-            }
-            "transfer-encoding" => {
-                return Err(request_failure(
-                    "surface request must not use Transfer-Encoding",
-                ));
-            }
-            _ => {}
-        }
-    }
-    Ok(ParsedHead {
-        method,
-        target,
-        origin,
-        access_control_request_method,
-        content_length,
-        content_type_is_json,
-    })
-}
-
-fn is_json_content_type(value: &str) -> bool {
-    value
-        .split(';')
-        .next()
-        .is_some_and(|media_type| media_type.trim().eq_ignore_ascii_case("application/json"))
-}
-
-fn request_failure(message: &'static str) -> HttpFailure {
-    HttpFailure::new(HttpStatus::BadRequest, SURFACE_REQUEST, message)
-}
-
-struct HttpFailure {
-    status: HttpStatus,
-    error: SurfaceOperationErrorJson,
-}
-
-impl HttpFailure {
-    fn new(status: HttpStatus, code: &str, message: &str) -> Self {
-        Self {
-            status,
-            error: surface_error(code, message),
-        }
-    }
-}
-
-struct SurfaceHttpResponse {
-    status: HttpStatus,
-    body: Option<serde_json::Value>,
-    cors_origin: Option<String>,
-}
-
-impl SurfaceHttpResponse {
-    fn json(status: HttpStatus, body: serde_json::Value) -> Self {
-        Self {
-            status,
-            body: Some(body),
-            cors_origin: None,
-        }
-    }
-
-    fn empty(status: HttpStatus) -> Self {
-        Self {
-            status,
-            body: None,
-            cors_origin: None,
-        }
-    }
-
-    fn error(status: HttpStatus, error: SurfaceOperationErrorJson) -> Self {
-        Self {
-            status,
-            body: Some(error_value(error)),
-            cors_origin: None,
-        }
-    }
-
-    fn with_cors(mut self, origin: Option<String>) -> Self {
-        self.cors_origin = origin;
-        self
-    }
-}
-
-#[derive(Clone, Copy)]
-enum HttpStatus {
-    Ok,
-    NoContent,
-    BadRequest,
-    Conflict,
-    Forbidden,
-    NotFound,
-    MethodNotAllowed,
-    PayloadTooLarge,
-    UnsupportedMediaType,
-    InternalServerError,
-    RequestHeaderFieldsTooLarge,
-}
-
-impl HttpStatus {
-    fn code(self) -> u16 {
-        match self {
-            Self::Ok => 200,
-            Self::NoContent => 204,
-            Self::BadRequest => 400,
-            Self::Conflict => 409,
-            Self::Forbidden => 403,
-            Self::NotFound => 404,
-            Self::MethodNotAllowed => 405,
-            Self::PayloadTooLarge => 413,
-            Self::UnsupportedMediaType => 415,
-            Self::InternalServerError => 500,
-            Self::RequestHeaderFieldsTooLarge => 431,
-        }
-    }
-
-    fn reason(self) -> &'static str {
-        match self {
-            Self::Ok => "OK",
-            Self::NoContent => "No Content",
-            Self::BadRequest => "Bad Request",
-            Self::Conflict => "Conflict",
-            Self::Forbidden => "Forbidden",
-            Self::NotFound => "Not Found",
-            Self::MethodNotAllowed => "Method Not Allowed",
-            Self::PayloadTooLarge => "Payload Too Large",
-            Self::UnsupportedMediaType => "Unsupported Media Type",
-            Self::InternalServerError => "Internal Server Error",
-            Self::RequestHeaderFieldsTooLarge => "Request Header Fields Too Large",
-        }
-    }
-}
-
-fn write_response(stream: &mut TcpStream, response: &SurfaceHttpResponse) -> std::io::Result<()> {
-    let body = response
-        .body
-        .as_ref()
-        .map(|body| {
-            serde_json::to_vec(body).unwrap_or_else(|_| {
-                b"{\"code\":\"surface.store\",\"message\":\"surface response could not be encoded\"}"
-                    .to_vec()
-            })
-        })
-        .unwrap_or_default();
-    write!(
-        stream,
-        "HTTP/1.1 {} {}\r\n",
-        response.status.code(),
-        response.status.reason()
-    )?;
-    if response.body.is_some() {
-        stream.write_all(b"Content-Type: application/json\r\n")?;
-    }
-    if let Some(origin) = &response.cors_origin {
-        write!(
-            stream,
-            "Access-Control-Allow-Origin: {origin}\r\nAccess-Control-Allow-Methods: POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type\r\nVary: Origin\r\n"
-        )?;
-    }
-    write!(
-        stream,
-        "Content-Length: {}\r\nConnection: close\r\n\r\n",
-        body.len()
-    )?;
-    stream.write_all(&body)?;
-    stream.flush()
-}
-
-fn response_value(value: SurfaceOperationResponseJson) -> serde_json::Value {
-    serde_json::to_value(value).unwrap_or_else(|_| {
-        serde_json::json!({
-            "code": SURFACE_STORE,
-            "message": "surface response could not be encoded"
-        })
-    })
-}
-
-fn error_value(value: SurfaceOperationErrorJson) -> serde_json::Value {
-    serde_json::to_value(value).unwrap_or_else(|_| {
-        serde_json::json!({
-            "code": SURFACE_STORE,
-            "message": "surface response could not be encoded"
-        })
-    })
 }
 
 fn surface_error(code: &str, message: &str) -> SurfaceOperationErrorJson {
@@ -1202,18 +705,6 @@ fn surface_error(code: &str, message: &str) -> SurfaceOperationErrorJson {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn computed_read_execution_faults_are_server_faults() {
-        assert_eq!(status_for_surface_error(SURFACE_COMPUTED).code(), 500);
-        assert_eq!(status_for_surface_error(SURFACE_REQUEST).code(), 400);
-    }
-
-    #[test]
-    fn abi_mismatch_is_the_not_found_wrong_route_class() {
-        assert_eq!(status_for_surface_error(SURFACE_ABI_MISMATCH).code(), 404);
-        assert_eq!(status_for_surface_error(SURFACE_ABSENT).code(), 404);
-    }
 
     #[test]
     fn server_code_message_styles_the_code() {

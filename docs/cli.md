@@ -15,6 +15,8 @@ marrow run [--entry <entry>] [--arg name=value]... [--maintenance] \
   [--trace] [--dry-run] [--format text|json] <projectdir>
 marrow test [--trace] [--format text|json|jsonl] [--filter <substring>] <projectdir>
 marrow serve [--write] [--watch] [--cors-origin <loopback-origin>] [--addr <loopback:port>] <projectdir>
+marrow serve --remote --addr <addr> [--write] \
+  (--auth-token-env NAME | --auth-token-file PATH) [--remote-cors-origin <origin>] <projectdir>
 marrow client typescript [--out <path>] <projectdir>
 marrow data <roots|stats|dump|integrity> [--backup <artifact>] [--format text|json|jsonl] <projectdir>
 marrow data recover [--format text|json|jsonl] <projectdir>
@@ -36,6 +38,7 @@ $ marrow check .
 $ marrow run .
 $ marrow serve .
 $ marrow serve --write --cors-origin http://localhost:5173 .
+$ MARROW_SURFACE_TOKEN=secret marrow serve --remote --addr 0.0.0.0:8080 --auth-token-env MARROW_SURFACE_TOKEN .
 $ marrow client typescript . > marrow-client.ts
 ```
 
@@ -200,10 +203,9 @@ Check a project directory containing `marrow.json` and report diagnostics.
 - `surface_routes` is
   the `surface.route.v1` manifest derived from exported surface descriptors:
   JSON `POST` operation-tag paths plus render aliases and request-body kinds.
-  The manifest is data; `marrow serve` is the local serving profile that
-  consumes it, and `marrow client typescript` renders a thin TypeScript
-  operation-envelope client from it.
-  Remote serving and opaque cursor tokens remain out of scope.
+  The manifest is data; `marrow serve` is the serving profile that consumes it,
+  and `marrow client typescript` renders a thin TypeScript operation-envelope
+  client from it. Opaque cursor tokens remain out of scope.
 
 Exits `0` when there are no errors, `1` when there are diagnostics or
 `marrow.json` cannot be read, and `2` for usage errors such as a non-directory
@@ -294,22 +296,41 @@ that bypass the generated client.
 
 ```
 marrow serve [--write] [--watch] [--cors-origin <loopback-origin>] [--addr <loopback:port>] <projectdir>
+marrow serve --remote --addr <addr> [--write] \
+  (--auth-token-env NAME | --auth-token-file PATH) [--remote-cors-origin <origin>] <projectdir>
 ```
 
-Run the local HTTP serving profile for checked application surfaces. By
-default the command opens the project through `ProjectSurfaceReadSession` and
-serves read routes, including computed reads. With `--write`, it opens
+Run the HTTP serving profile for checked application surfaces. By default the
+command binds loopback only, opens the project through `ProjectSurfaceReadSession`,
+and serves read routes, including computed reads. With `--write`, it opens
 `ProjectSurfaceSession` and also exposes create, sparse-update, delete, and
 action routes. Both modes require an already accepted native store and never
 create, freeze, migrate, repair, or auto-apply saved data.
 
-- The listener binds only loopback addresses. The default is
+- Without `--remote`, the listener binds only loopback addresses. The default is
   `127.0.0.1:8080`; tests and tooling can pass `--addr 127.0.0.1:0` to let the
   OS choose a loopback port.
 - `--cors-origin` enables browser CORS for one exact loopback origin such as
   `http://localhost:5173`, `http://127.0.0.1:5173`, or
   `http://[::1]:5173`. Non-loopback origins, URL paths, and wildcards are
   usage errors. Without this option, the server emits no CORS headers.
+- `--remote` allows a non-loopback bind, but requires explicit `--addr` and
+  exactly one auth source: `--auth-token-env NAME` or `--auth-token-file PATH`.
+  `--watch` is refused in the remote profile. The token is one UTF-8 line after
+  removing one trailing LF or CRLF; empty tokens and other leading or trailing
+  whitespace are usage errors. Token files must be regular files.
+- Remote requests must carry exactly one `Authorization` header whose value is
+  `Bearer ` followed by the configured token, with one space and case-sensitive
+  scheme. Missing, malformed, duplicate, or wrong auth returns HTTP `401` with
+  code `surface.auth` before the request body is read.
+- `--remote-cors-origin` is separate from local `--cors-origin`, requires
+  `--remote`, and accepts one exact `http` or `https` origin. It rejects
+  wildcards, `null`, paths, queries, and fragments. Remote preflight is
+  unauthenticated only for the configured origin, rejects duplicate CORS request
+  headers, and accepts requested headers exactly `Content-Type, Authorization`
+  case-insensitively.
+- `marrow serve` does not terminate TLS. Do not expose the remote profile over
+  plain HTTP except behind a trusted TLS proxy or on a trusted private network.
 - On startup the command prints
   `serve listening on http://<addr>` to stdout, then handles requests until the
   process exits.
@@ -350,6 +371,13 @@ create, freeze, migrate, repair, or auto-apply saved data.
 - With `--cors-origin`, matching browser preflight `OPTIONS` requests over a
   served route return `204` and `Access-Control-Allow-Origin` for that exact
   origin. Mismatched origins return `403` and no CORS allow-origin header.
+- Browser clients use the generated client's existing `headers` option for
+  remote auth:
+
+  ```ts
+  createClient({ baseUrl, headers: { Authorization: `Bearer ${token}` } })
+  ```
+
 - The server processes at most one request per connection, rejects trailing
   bytes already buffered after the declared body, returns `Connection: close`,
   and never reads a second request from the connection.
@@ -357,10 +385,10 @@ create, freeze, migrate, repair, or auto-apply saved data.
   return a sanitized `{ "code": "surface.*", "message": "..." }` envelope with
   no source path, store path, or raw backend detail.
 
-This is a dependency-free local tooling profile, not remote hosting,
-authentication, or opaque cursor tokens.
-Exits `2` for usage errors such as non-loopback `--addr` or `--cors-origin`,
-`1` for project/session/listener failures, and otherwise runs until killed.
+This is a dependency-free serving profile; opaque cursor tokens remain future
+transport work. Exits `2` for usage errors such as missing remote auth,
+non-loopback local `--addr`, or invalid CORS origins, `1` for
+project/session/listener failures, and otherwise runs until killed.
 
 ---
 
