@@ -35,6 +35,17 @@ fn nested_sequence_type(depth: usize) -> String {
     format!("module app\n\npub fn ignore()\n    var x: {ty}\n")
 }
 
+/// A `const` whose value is `$"..."` interpolation nested `depth` levels deep on a
+/// single line — the deep-interpolation form the lexer recurses through while
+/// scanning each hole for its closing brace.
+fn nested_interpolation(depth: usize) -> String {
+    let mut expr = String::from("\"z\"");
+    for _ in 0..depth {
+        expr = format!("$\"a{{{expr}}}b\"");
+    }
+    format!("module app\n\nconst Label = {expr}\n")
+}
+
 /// The dotted codes on a `--format json` check, read from the typed `code` slot of
 /// each diagnostic record rather than matched in any rendered prose.
 fn check_json_codes(source: &str) -> (Option<i32>, Vec<String>) {
@@ -129,6 +140,56 @@ fn deeply_nested_type_annotation_under_the_limit_checks_normally() {
     assert!(
         !codes.contains(&"check.nesting_limit".to_string()),
         "under-limit type nesting should carry no nesting error: {codes:?}"
+    );
+}
+
+#[test]
+fn deeply_nested_interpolation_check_reports_the_nesting_limit() {
+    // ~300 levels of `$"...{...}..."`: past the lexer's interpolation depth guard.
+    // A well-formed but over-deep nest reports the nesting limit, not a spurious
+    // unterminated-interpolation error.
+    let (code, codes) = check_json_codes(&nested_interpolation(300));
+    assert_eq!(code, Some(1), "deep interpolation exits 1, not 134");
+    assert!(
+        codes.contains(&"check.nesting_limit".to_string()),
+        "expected check.nesting_limit, got {codes:?}"
+    );
+}
+
+#[test]
+fn nested_interpolation_under_the_limit_checks_and_reports_no_nesting_error() {
+    // A comfortably under-limit interpolation nest parses and checks clean, so the
+    // bound rejects only pathological depth.
+    let (code, codes) = check_json_codes(&nested_interpolation(40));
+    assert_eq!(
+        code,
+        Some(0),
+        "under-limit interpolation checks clean: {codes:?}"
+    );
+    assert!(
+        !codes.contains(&"check.nesting_limit".to_string()),
+        "under-limit interpolation should carry no nesting error: {codes:?}"
+    );
+}
+
+#[test]
+fn genuinely_unterminated_interpolation_is_a_syntax_error_not_a_nesting_error() {
+    // An interpolation hole with no closing brace is still an ordinary syntax
+    // fault, distinct from the depth-limit finding.
+    let source = "module app\n\nconst Label = $\"book {id\"\n";
+    let (code, codes) = check_json_codes(source);
+    assert_eq!(
+        code,
+        Some(1),
+        "unterminated interpolation exits 1: {codes:?}"
+    );
+    assert!(
+        codes.contains(&"parse.syntax".to_string()),
+        "expected parse.syntax for an unterminated interpolation, got {codes:?}"
+    );
+    assert!(
+        !codes.contains(&"check.nesting_limit".to_string()),
+        "an unterminated interpolation is not a nesting-limit fault: {codes:?}"
     );
 }
 

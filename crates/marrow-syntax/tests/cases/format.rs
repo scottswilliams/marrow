@@ -111,6 +111,66 @@ fn format_const_value(source: &str) -> String {
     format_expression(decl.value.as_ref().expect("value"))
 }
 
+/// A deeply nested interpolation formats back to itself: the formatter reuses the
+/// expression printer at each hole, so a three-deep nest round-trips exactly.
+#[test]
+fn formats_deeply_nested_interpolation() {
+    let value = "$\"a{$\"b{$\"c{x}d\"}e\"}f\"";
+    assert_eq!(format_const_value(value), value);
+}
+
+/// An over-indented own-line comment inside a resource or store body is layout
+/// trivia, exactly as in a function or enum body: it is neither a parse error nor
+/// a structural indent. The lexer treats a comment whose run resolves back to the
+/// block level as trivia rather than opening a spurious indented block.
+#[test]
+fn over_indented_own_line_comment_in_member_body_is_trivia() {
+    let cases = [
+        "module app\n\
+         resource Book\n\
+         \x20   required title: string\n\
+         \x20       ; over-indented note\n\
+         \x20   required author: string\n\
+         store ^books(id: int): Book\n",
+        "module app\n\
+         resource Book\n\
+         \x20   required title: string\n\
+         store ^books(id: int): Book\n\
+         \x20   index byTitle(title)\n\
+         \x20       ; over-indented note\n\
+         \x20   index byAuthor(title)\n",
+        "module app\n\
+         fn run()\n\
+         \x20   var count: int = 0\n\
+         \x20       ; over-indented note\n\
+         \x20   return count\n",
+        "module app\n\
+         enum Status\n\
+         \x20   active\n\
+         \x20       ; over-indented note\n\
+         \x20   archived\n",
+    ];
+    for source in cases {
+        let parsed = parse_source(source);
+        assert!(
+            parsed.diagnostics.is_empty(),
+            "an over-indented own-line comment must not be a parse error:\n{source}\n{:#?}",
+            parsed.diagnostics
+        );
+        let formatted = format_source(source);
+        let reparsed = parse_source(&formatted);
+        assert!(
+            reparsed.diagnostics.is_empty(),
+            "formatted output must re-parse cleanly:\n{formatted}\n{:#?}",
+            reparsed.diagnostics
+        );
+        assert!(
+            formatted.contains("over-indented note"),
+            "the comment must survive formatting:\n{formatted}"
+        );
+    }
+}
+
 #[test]
 fn formats_split_store_declaration() {
     let source = "module app\n\

@@ -24,6 +24,18 @@ enum Indent {
     OverDeep,
 }
 
+/// Why scanning an interpolation hole or nested interpolation literal for its
+/// closing delimiter did not succeed.
+enum InterpolationScanError {
+    /// No closing `}`/`"` appeared before the line ended, or a bare `{` opened a
+    /// hole with no expression — a genuinely unterminated interpolation.
+    Unterminated,
+    /// Interpolation nested past [`NESTING_DEPTH_LIMIT`]. Carries the byte offset
+    /// of the over-deep opener so the diagnostic anchors at the offending depth,
+    /// matching the `check.nesting_limit` contract every other construct reports.
+    NestingLimit(usize),
+}
+
 struct Lexer<'a> {
     source: &'a str,
     lines: Vec<Line<'a>>,
@@ -182,20 +194,20 @@ impl<'a> Lexer<'a> {
         });
     }
 
-    /// Decide how a comment-only line interacts with the indent stack. A doc
-    /// comment, or a comment indented at or past the current block, drives the
-    /// normal indent logic so it docks to the block it sits in. A line comment
-    /// outdented below the current block is otherwise transparent — kept inside
-    /// the open block as trailing trivia rather than closing it.
+    /// Decide how a comment-only line interacts with the indent stack. A comment
+    /// run is classified by the next NON-COMMENT significant line, so it docks
+    /// where the construct it introduces docks, regardless of the comments' own
+    /// indentation. A line comment outdented below the current block is otherwise
+    /// transparent — kept inside the open block as trailing trivia rather than
+    /// closing it.
     ///
-    /// A comment-only line is classified by the next NON-COMMENT significant
-    /// line, so a run of consecutive comments docks where the construct it
-    /// introduces docks. When that construct is at the file's top level the run
-    /// belongs at the top level, regardless of the comments' own indentation: a
-    /// top-level comment is not the body of any declaration. So an indented
-    /// comment whose run resolves to the top level stays transparent rather than
-    /// opening a spurious block above it, and a column-zero run that follows an
-    /// open block closes that block down to the top level.
+    /// When the construct the run introduces is at the file's top level the run
+    /// belongs at the top level: a top-level comment is not the body of any
+    /// declaration. So an indented comment whose run resolves to the top level
+    /// stays transparent rather than opening a spurious block above it, and a
+    /// column-zero run that follows an open block closes that block down to the
+    /// top level. Likewise an over-indented comment whose run resolves back to the
+    /// current block is trivia inside that block and opens no spurious INDENT.
     fn apply_comment_indent(
         &mut self,
         line: Line<'a>,
@@ -212,6 +224,12 @@ impl<'a> Lexer<'a> {
             } else {
                 self.apply_indent(line)
             };
+        }
+        // A comment run docks where the construct it introduces docks, so an
+        // over-indented comment whose run resolves back to (or below) the current
+        // block is layout trivia: it stays inside the block and opens no INDENT.
+        if line.indent > current && next_indent.is_none_or(|indent| indent <= current) {
+            return Indent::Within;
         }
         let introduces_top_level_decl = line.indent == 0 && next_indent == Some(0);
         if is_doc_comment || line.indent >= current || introduces_top_level_decl {
@@ -413,13 +431,20 @@ impl<'a> Lexer<'a> {
                     self.span(line, index, expr_start_end),
                 );
 
-                let Some(expr_end) = self.find_interpolation_expr_end(line, expr_start_end) else {
-                    self.error_at(
-                        self.span(line, index, line.end_byte),
-                        LexerDiagnosticReason::UnterminatedInterpolationExpression,
-                        "unterminated interpolation expression",
-                    );
-                    return line.end_byte;
+                let expr_end = match self.find_interpolation_expr_end(line, expr_start_end, 1) {
+                    Ok(expr_end) => expr_end,
+                    Err(InterpolationScanError::Unterminated) => {
+                        self.error_at(
+                            self.span(line, index, line.end_byte),
+                            LexerDiagnosticReason::UnterminatedInterpolationExpression,
+                            "unterminated interpolation expression",
+                        );
+                        return line.end_byte;
+                    }
+                    Err(InterpolationScanError::NestingLimit(offending)) => {
+                        self.report_interpolation_nesting_limit(line, offending);
+                        return line.end_byte;
+                    }
                 };
 
                 self.lex_range(line, expr_start_end, expr_end);
@@ -450,20 +475,43 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    fn find_interpolation_expr_end(&self, line: Line<'a>, start: usize) -> Option<usize> {
+    /// Scan a hole for its closing `}`, returning the byte offset of that brace.
+    /// A plain `"..."` string and a nested `$"..."` interpolation are skipped as
+    /// self-contained literals so their braces do not terminate the hole; a bare
+    /// `{` (an interpolation opener with no `$"`) is not a valid expression, so it
+    /// terminates the scan as unterminated. `depth` counts nested interpolation
+    /// strings and bounds the recursion at [`NESTING_DEPTH_LIMIT`], so a
+    /// pathologically deep nest reports the nesting-limit error at the offending
+    /// depth rather than overflowing the stack or masquerading as unterminated.
+    fn find_interpolation_expr_end(
+        &self,
+        line: Line<'a>,
+        start: usize,
+        depth: usize,
+    ) -> Result<usize, InterpolationScanError> {
+        if depth > NESTING_DEPTH_LIMIT {
+            return Err(InterpolationScanError::NestingLimit(start));
+        }
         let mut index = start;
         let mut parens = 0usize;
         let mut brackets = 0usize;
         while index < line.end_byte {
-            let ch = self.source[index..line.end_byte].chars().next()?;
+            let tail = &self.source[index..line.end_byte];
+            if tail.starts_with("$\"") {
+                index = self.find_interpolation_string_end(line, index, depth + 1)?;
+                continue;
+            }
+            let Some(ch) = tail.chars().next() else { break };
             match ch {
                 '"' => {
-                    index = self.find_string_end(line, index)?;
+                    index = self
+                        .find_string_end(line, index)
+                        .ok_or(InterpolationScanError::Unterminated)?;
                     continue;
                 }
-                '{' => return None,
-                '}' if parens == 0 && brackets == 0 => return Some(index),
-                '}' => return None,
+                '{' => return Err(InterpolationScanError::Unterminated),
+                '}' if parens == 0 && brackets == 0 => return Ok(index),
+                '}' => return Err(InterpolationScanError::Unterminated),
                 '(' => parens += 1,
                 ')' => parens = parens.saturating_sub(1),
                 '[' => brackets += 1,
@@ -472,7 +520,66 @@ impl<'a> Lexer<'a> {
             }
             index += ch.len_utf8();
         }
-        None
+        Err(InterpolationScanError::Unterminated)
+    }
+
+    /// Skip a nested `$"..."` interpolation literal starting at its `$`, returning
+    /// the offset just past its closing quote. Its own holes are scanned in turn,
+    /// so an interpolation nested inside a hole is treated as one literal rather
+    /// than confusing the outer hole scan.
+    fn find_interpolation_string_end(
+        &self,
+        line: Line<'a>,
+        start: usize,
+        depth: usize,
+    ) -> Result<usize, InterpolationScanError> {
+        if depth > NESTING_DEPTH_LIMIT {
+            return Err(InterpolationScanError::NestingLimit(start));
+        }
+        let mut index = start + 2;
+        while index < line.end_byte {
+            let tail = &self.source[index..line.end_byte];
+            if tail.starts_with("{{") || tail.starts_with("}}") {
+                index += 2;
+                continue;
+            }
+            let Some(ch) = tail.chars().next() else { break };
+            if ch == '\\' {
+                index += ch.len_utf8();
+                if let Some(next) = self
+                    .source
+                    .get(index..line.end_byte)
+                    .and_then(|tail| tail.chars().next())
+                {
+                    index += next.len_utf8();
+                }
+                continue;
+            }
+            if ch == '"' {
+                return Ok(index + 1);
+            }
+            if ch == '{' {
+                let brace = self.find_interpolation_expr_end(line, index + 1, depth)?;
+                index = brace + 1;
+                continue;
+            }
+            index += ch.len_utf8();
+        }
+        Err(InterpolationScanError::Unterminated)
+    }
+
+    /// Report interpolation nested past [`NESTING_DEPTH_LIMIT`] as the same
+    /// `check.nesting_limit` finding every other over-deep construct reports,
+    /// anchored at the over-deep opener rather than the enclosing hole.
+    fn report_interpolation_nesting_limit(&mut self, line: Line<'a>, offending: usize) {
+        self.diagnostics.push(Diagnostic {
+            code: NESTING_LIMIT,
+            reason: DiagnosticReason::Parser(ParseDiagnosticReason::NestingLimit),
+            severity: Severity::Error,
+            message: format!("interpolation nests deeper than the limit of {NESTING_DEPTH_LIMIT}"),
+            help: None,
+            span: self.span(line, offending, line.end_byte),
+        });
     }
 
     fn find_string_end(&self, line: Line<'a>, start: usize) -> Option<usize> {

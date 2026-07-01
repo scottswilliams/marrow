@@ -5,8 +5,83 @@ use crate::common;
 use common::{has_reason, lexer_reason, parse_reason};
 use marrow_syntax::{
     Declaration, DiagnosticReason, ExpectedSyntax, Expression, InterpolationPart,
-    LexerDiagnosticReason, ParseDiagnosticReason, lex_source, parse_source,
+    LexerDiagnosticReason, NESTING_DEPTH_LIMIT, ParseDiagnosticReason, lex_source, parse_source,
 };
+
+/// An interpolation hole may itself hold another interpolation literal, and that
+/// nesting is unbounded up to the documented depth limit. The lexer scans a
+/// nested `$"..."` as a full interpolation — recursing into its own holes — while
+/// looking for the outer hole-closing brace, so a three-deep nest parses cleanly
+/// and builds nested interpolation parts rather than being rejected as an
+/// unterminated interpolation expression.
+#[test]
+fn deeply_nested_interpolation_parses_and_nests() {
+    let source = "const Label = $\"a{$\"b{$\"c{x}d\"}e\"}f\"\n";
+    let parsed = parse_source(source);
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+
+    let Declaration::Const(decl) = &parsed.file.declarations[0] else {
+        panic!("expected const declaration");
+    };
+    let mut expr = decl.value.as_ref().expect("const value");
+    for _ in 0..2 {
+        let Expression::Interpolation { parts, .. } = expr else {
+            panic!("expected an interpolation, got {expr:?}");
+        };
+        expr = parts
+            .iter()
+            .find_map(|part| match part {
+                InterpolationPart::Expr(inner) => Some(inner),
+                InterpolationPart::Text { .. } => None,
+            })
+            .expect("interpolation hole expression");
+    }
+    assert!(
+        matches!(expr, Expression::Interpolation { .. }),
+        "the innermost hole should hold a third interpolation: {expr:?}"
+    );
+}
+
+/// Interpolation nesting is bounded by the documented depth limit, and a nest
+/// past it reports the same `check.nesting_limit` finding every other over-deep
+/// construct reports — not a misleading "unterminated interpolation expression".
+/// The nest is well-formed (its braces and quotes all balance); only its depth is
+/// the fault, so the diagnostic must name the limit, not claim the interpolation
+/// never closed.
+#[test]
+fn over_deep_interpolation_reports_the_nesting_limit_not_unterminated() {
+    let depth = NESTING_DEPTH_LIMIT + 50;
+    let mut source = String::from("const Label = ");
+    for _ in 0..depth {
+        source.push_str("$\"{");
+    }
+    source.push('x');
+    for _ in 0..depth {
+        source.push_str("}\"");
+    }
+    source.push('\n');
+
+    let lexed = lex_source(&source);
+    assert!(
+        has_reason(
+            &lexed.diagnostics,
+            parse_reason(ParseDiagnosticReason::NestingLimit),
+        ),
+        "an over-deep interpolation nest must report the nesting limit: {:#?}",
+        lexed.diagnostics
+    );
+    assert!(
+        !has_reason(
+            &lexed.diagnostics,
+            lexer_reason(LexerDiagnosticReason::UnterminatedInterpolationExpression),
+        ) && !has_reason(
+            &lexed.diagnostics,
+            lexer_reason(LexerDiagnosticReason::UnterminatedInterpolationString),
+        ),
+        "a well-formed but over-deep nest must not be reported as unterminated: {:#?}",
+        lexed.diagnostics
+    );
+}
 
 /// An interpolation expression with no closing `}` before the string ends is a
 /// lexer error: the lexer scans for the expression terminator, reaches the end
