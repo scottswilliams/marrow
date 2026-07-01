@@ -35,5 +35,5 @@ jobs:
       - name: Test
         run: cargo test --workspace --all-targets --locked
 
-      - name: Clippy
-        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Clippy and unsafe check
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings -D unsafe-code
