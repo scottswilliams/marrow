@@ -40,6 +40,12 @@ pub(super) enum ReadPlace {
     /// it to `T`; reassigning the binding (a `var`) re-imposes `T?`. Keyed on the scope
     /// binding id so a like-named shadow or rebind is a distinct place.
     Local { binding: u32 },
+    /// A local keyed-tree or sparse-field read: a maybe-present read of a bound local
+    /// value, narrowable exactly like a saved keyed read. Keyed on the canonical
+    /// span-stripped form of the whole read through the one key owner, so two textually
+    /// equal reads narrow the same place and rebinding any name the read reads (tracked
+    /// in `key_bindings`) drops the narrowing.
+    LocalKeyed { key: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -195,7 +201,34 @@ pub(super) fn read_target_with_scope(
     if let Some(target) = local_optional_target(expr, scope) {
         return Some(target);
     }
+    if let Some(target) = local_keyed_target(program, expr, scope) {
+        return Some(target);
+    }
     saved_path_target(program, expr, scope)
+}
+
+/// The narrowable read target of a local keyed-tree or sparse-field read. It reuses
+/// the one maybe-present classifier to admit exactly the reads `??`/`if const`/`exists`
+/// already accept, then keys the place on the whole read's canonical form so a guard
+/// records a proof a bare re-read or compound-assign target matches — uniform with a
+/// saved keyed read.
+fn local_keyed_target(
+    program: &CheckedProgram,
+    expr: &CheckedExpr,
+    scope: &NameScope,
+) -> Option<ReadTarget> {
+    if !local_maybe_present_read(program, expr, scope) {
+        return None;
+    }
+    let key = expression_key(expr, scope);
+    Some(ReadTarget {
+        place: ReadPlace::LocalKeyed { key: key.text },
+        keys: Vec::new(),
+        key_types: Vec::new(),
+        key_bindings: key.bindings,
+        read: ReadKind::Direct,
+        value: ReadTargetValue::Value,
+    })
 }
 
 /// The narrowable read target of a bare `const`/`var`/parameter binding whose declared

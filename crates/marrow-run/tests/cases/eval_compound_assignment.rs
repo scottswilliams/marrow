@@ -45,6 +45,24 @@ fn compound_assignment_updates_saved_field() {
 }
 
 #[test]
+fn compound_assignment_updates_a_local_keyed_tree_under_a_presence_proof() {
+    // A local keyed tree carries the same presence proof as a saved keyed leaf, so a
+    // compound assignment under `if exists` checks and combines the present value.
+    let program = checked_program(
+        "pub fn run(): int\n\
+         \x20   var counts(k: string): int\n\
+         \x20   counts(\"a\") = 10\n\
+         \x20   if exists(counts(\"a\"))\n\
+         \x20       counts(\"a\") *= 3\n\
+         \x20   return counts(\"a\") ?? -1\n",
+    );
+    assert_eq!(
+        run(checked_entry!(&program, "test::run")).unwrap(),
+        Some(Value::Int(30))
+    );
+}
+
+#[test]
 fn compound_assignment_updates_saved_keyed_leaf_target_once() {
     let program = checked_program(
         "resource Book\n\

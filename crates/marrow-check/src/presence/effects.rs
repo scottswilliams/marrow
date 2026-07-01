@@ -303,9 +303,13 @@ fn written_target_invalidates(written: &ReadTarget, target: &ReadTarget) -> bool
         (ReadPlace::Local { binding: written }, ReadPlace::Local { binding: target }) => {
             written == target
         }
+        (ReadPlace::LocalKeyed { key: written_key }, ReadPlace::LocalKeyed { key: target_key }) => {
+            written_key == target_key
+        }
         (ReadPlace::StoreIndex { .. }, ReadPlace::Saved { .. }) => false,
         (ReadPlace::TransformOld { .. }, _) | (_, ReadPlace::TransformOld { .. }) => false,
         (ReadPlace::Local { .. }, _) | (_, ReadPlace::Local { .. }) => false,
+        (ReadPlace::LocalKeyed { .. }, _) | (_, ReadPlace::LocalKeyed { .. }) => false,
     }
 }
 

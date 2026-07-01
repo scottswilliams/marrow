@@ -63,6 +63,65 @@ fn guards_resolve_a_local_keyed_tree_read() {
 }
 
 #[test]
+fn exists_narrows_a_local_keyed_tree_re_read() {
+    // Uniform with a saved keyed read: `exists` proves the key present, so a bare
+    // re-read of the same local keyed place inside the block is present `T`, not `T?`.
+    assert_clean(
+        "local-tree-exists-narrow",
+        "module m\n\
+         fn f()\n\
+         \x20   var counts(k: string): int\n\
+         \x20   counts(\"a\") = 1\n\
+         \x20   if exists(counts(\"a\"))\n\
+         \x20       print(counts(\"a\"))\n",
+    );
+}
+
+#[test]
+fn if_const_narrows_a_local_keyed_tree_re_read() {
+    assert_clean(
+        "local-tree-if-const-narrow",
+        "module m\n\
+         fn f()\n\
+         \x20   var counts(k: string): int\n\
+         \x20   counts(\"a\") = 1\n\
+         \x20   if const v = counts(\"a\")\n\
+         \x20       print(counts(\"a\"))\n",
+    );
+}
+
+#[test]
+fn compound_assign_under_a_local_keyed_tree_proof_is_present() {
+    // The compound assignment reads its target before combining, so the target must
+    // be proven present. A local keyed tree carries the same presence proof as a
+    // saved keyed leaf, so the read under the guard is `T`, not the one rule.
+    assert_clean(
+        "local-tree-compound-under-proof",
+        "module m\n\
+         fn f()\n\
+         \x20   var counts(k: string): int\n\
+         \x20   counts(\"a\") = 1\n\
+         \x20   if exists(counts(\"a\"))\n\
+         \x20       counts(\"a\") += 1\n",
+    );
+}
+
+#[test]
+fn a_local_keyed_tree_re_read_at_a_different_key_stays_maybe_present() {
+    // The proof is keyed on the exact read, so a sibling key is not narrowed and its
+    // bare re-read still re-triggers the one rule.
+    assert_bare_read(
+        "local-tree-sibling-key-bare",
+        "module m\n\
+         fn f()\n\
+         \x20   var counts(k: string): int\n\
+         \x20   counts(\"a\") = 1\n\
+         \x20   if exists(counts(\"a\"))\n\
+         \x20       print(counts(\"b\"))\n",
+    );
+}
+
+#[test]
 fn a_bare_local_sequence_read_must_be_resolved() {
     assert_bare_read(
         "local-seq-bare",
@@ -99,7 +158,7 @@ fn guards_resolve_a_sparse_field_of_a_materialized_resource() {
          \x20   if const p = ^books(1)\n\
          \x20       print(p.subtitle ?? \"\")\n\
          \x20       if exists(p.subtitle)\n\
-         \x20           print(p.subtitle ?? \"\")\n",
+         \x20           print(p.subtitle)\n",
     );
 }
 
@@ -336,7 +395,7 @@ fn guards_resolve_a_sparse_field_of_a_loop_bound_group_entry() {
              \x20   for b in values(^libraries(1).books)\n\
              \x20       print(b.subtitle ?? \"\")\n\
              \x20       if exists(b.subtitle)\n\
-             \x20           print(b.subtitle ?? \"\")\n"
+             \x20           print(b.subtitle)\n"
         ),
     );
 }
@@ -376,7 +435,7 @@ fn guards_resolve_a_sparse_field_of_a_two_name_saved_root_loop() {
              \x20   for id, b in ^vols\n\
              \x20       print(b.subtitle ?? \"\")\n\
              \x20       if exists(b.subtitle)\n\
-             \x20           print(b.subtitle ?? \"\")\n"
+             \x20           print(b.subtitle)\n"
         ),
     );
 }
@@ -504,7 +563,7 @@ fn guards_resolve_a_sparse_field_through_a_chained_group_base() {
              \x20   if const p = ^people(1)\n\
              \x20       print(p.address.zip ?? \"\")\n\
              \x20       if exists(p.address.zip)\n\
-             \x20           print(p.address.zip ?? \"\")\n"
+             \x20           print(p.address.zip)\n"
         ),
     );
 }
@@ -610,7 +669,7 @@ fn guards_resolve_a_sparse_field_off_a_bound_call_result() {
              \x20   const b = makeBook()\n\
              \x20   print(b.subtitle ?? \"\")\n\
              \x20   if exists(b.subtitle)\n\
-             \x20       print(b.subtitle ?? \"\")\n"
+             \x20       print(b.subtitle)\n"
         ),
     );
 }

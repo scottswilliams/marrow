@@ -88,15 +88,16 @@ fn throw_is_an_error_value() {
 
 #[test]
 fn guards_resolve_an_absent_caught_error_sparse_field() {
-    // `help` is sparse, so a caught error without it resolves through `??` to the
-    // default and `exists` to false, never surfacing `run.absent_element`.
+    // `help` is sparse, so a caught error without it takes `exists` to false and
+    // returns the default, never surfacing `run.absent_element`. Inside the guard
+    // `exists` narrows `err.help` to present, so the return reads it bare.
     let program = checked_program(
         "pub fn pick(): string\n\
          \x20   try\n\
          \x20       throw Error(code: \"x.y\", message: \"m\")\n\
          \x20   catch err: Error\n\
          \x20       if exists(err.help)\n\
-         \x20           return err.help ?? \"\"\n\
+         \x20           return err.help\n\
          \x20       return \"no help\"\n",
     );
     assert_eq!(

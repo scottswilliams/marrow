@@ -24,10 +24,11 @@ the body-local effect summary (`DirectEffectFacts`) that other passes consume.
 ## Flow narrowing — `T?` → `T`
 
 Narrowing is the only flow-sensitive piece. It does not own *what* is optional
-(the type does); it refines a re-read of a stable saved place or a local
-`var`/`const`/parameter `T?` binding from `Optional(T)` to `T` once a guard proves
-presence, and re-imposes `Optional(T)` when the place could have been cleared (a
-saved write, or a `var` reassignment). The state lives in the AST type pass
+(the type does); it refines a re-read of a stable saved place, a local
+`var`/`const`/parameter `T?` binding, or a local keyed-tree/sparse-field read from
+`Optional(T)` to `T` once a guard proves presence, and re-imposes `Optional(T)`
+when the place could have been cleared (a saved write, or a reassignment of a name
+the read reads). The state lives in the AST type pass
 (`checks/statements.rs`) as a sibling of `RequiredFieldAssignments`: a
 `presence/flow.rs::Narrowing` value the statement checker enters and exits across
 guarded, looped, and caught scopes. `infer` consults `flow::read_is_narrowed` at
@@ -70,7 +71,7 @@ path narrows nothing rather than narrowing on a string key.
 | `presence/direct.rs` | Body-local effect collector producing `DirectEffectFacts` for one block without expanding callee effects, including typed store roots and direct user-function refs. |
 | `presence/effects.rs` | Narrowing algebra: the `exists`/`&&` condition narrowings, negated-exists narrowings, the `for` loop traversal narrowing, and the invalidation rules (key-binding, written-target overlap, saved-wipe). |
 | `presence/keys.rs` | Sole owner of the canonical span-stripped narrowing key; extracts `SavedPlaceKey` from the checked saved place. |
-| `presence/target.rs` | Resolves an expression to a `ReadTarget`/`ReadPlace`. Saved-place identity consumes checked-place effects from `executable/place.rs`; `saved_target_value` reports a maybe-present value only for a fully-keyed place, so a partial-key composite layer is address-only. A bare `T?` local binding resolves to `ReadPlace::Local` keyed on its scope binding id, so `exists`/`if const` accept and narrow it uniformly with a saved read. Transform `old.<member>` resolution delegates the read-member rule to `evolution/transform_reads.rs`. `read_value_resolves_in_type_scope`/`exists_target_in_type_scope` and `local_maybe_present_read` recognize resolvable local-collection and sparse-field reads for the `??`/`exists` predicates, screening keys through `read_only::guard_subexpr_admissible` so an effectful key (`nextId(^s)`, a write, a throw, an opaque user call) stays unguardable. |
+| `presence/target.rs` | Resolves an expression to a `ReadTarget`/`ReadPlace`. Saved-place identity consumes checked-place effects from `executable/place.rs`; `saved_target_value` reports a maybe-present value only for a fully-keyed place, so a partial-key composite layer is address-only. A bare `T?` local binding resolves to `ReadPlace::Local` keyed on its scope binding id, so `exists`/`if const` accept and narrow it uniformly with a saved read. Transform `old.<member>` resolution delegates the read-member rule to `evolution/transform_reads.rs`. `read_value_resolves_in_type_scope`/`exists_target_in_type_scope` and `local_maybe_present_read` recognize resolvable local-collection and sparse-field reads for the `??`/`exists` predicates, screening keys through `read_only::guard_subexpr_admissible` so an effectful key (`nextId(^s)`, a write, a throw, an opaque user call) stays unguardable. Such a read also resolves to `ReadPlace::LocalKeyed`, keyed on the whole read's canonical form through `keys.rs`, so `exists`/`if const` narrow it and a compound-assign under the proof reads present — uniform with a saved keyed read. |
 | `presence/writes.rs` | Recursive effect closure through direct callee refs, reading each function's precomputed `DirectEffectFacts` and exposing `write_effects_reachable` and the per-store written set. |
 | `presence/read_only.rs` | Checks injected read-only expressions against the allowed runtime surface; owns `guard_subexpr_admissible`, the direct-effect screen that keeps writes, allocations, host calls, throws, and user-function calls out of a guard's key/base. |
 | `presence/calls.rs` | Typed-call helpers: maybe-present result test (off the `Optional` return type), neighbor read direction, single-arg collection-view unwrap. |
