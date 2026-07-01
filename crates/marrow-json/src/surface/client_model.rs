@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use super::client_ts::CreateFieldPlan;
 use super::{
@@ -154,6 +154,12 @@ pub(super) struct SurfaceMethod {
 }
 
 #[derive(Debug, Clone)]
+pub(super) struct SurfaceMethodParam {
+    pub name: String,
+    pub ty: SurfaceFieldType,
+}
+
+#[derive(Debug, Clone)]
 pub(super) enum SurfaceMethodInput {
     None,
     Identity {
@@ -184,6 +190,9 @@ pub(super) enum SurfaceMethodInput {
     Page {
         exact_keys: Vec<SurfaceFieldType>,
     },
+    PageIterator {
+        exact_keys: Vec<SurfaceMethodParam>,
+    },
     UniqueLookup {
         keys: Vec<SurfaceFieldType>,
     },
@@ -197,6 +206,7 @@ pub(super) enum SurfaceMethodResult {
     Record { record: String },
     OptionalRecord { record: String },
     Page { record: String },
+    PageIterator { record: String },
     Created { record: String },
     Updated,
     Deleted,
@@ -400,6 +410,11 @@ impl ModelBuilder {
                 &alias,
                 &mut enums,
             );
+            if let Some(helper) =
+                self.page_iteration_method(read, &record_type, &cursor_brand, &alias, &mut enums)
+            {
+                methods.push(helper);
+            }
             methods.push(method);
         }
         if let Some(create) = &surface.create {
@@ -577,6 +592,35 @@ impl ModelBuilder {
         }
     }
 
+    fn page_iteration_method(
+        &mut self,
+        read: &SurfaceReadOperationDescriptorJson,
+        record_type: &str,
+        cursor_brand: &str,
+        alias: &str,
+        enums: &mut Vec<String>,
+    ) -> Option<SurfaceMethod> {
+        let exact_keys = match &read.kind {
+            SurfaceReadOperationKindJson::PagedRootCollection => Vec::new(),
+            SurfaceReadOperationKindJson::PagedIndexCollection {
+                exact_key_count, ..
+            } => self.index_exact_key_params(read, *exact_key_count, enums),
+            SurfaceReadOperationKindJson::SingletonRead
+            | SurfaceReadOperationKindJson::PointRead
+            | SurfaceReadOperationKindJson::UniqueIndexLookup { .. } => return None,
+        };
+        Some(SurfaceMethod {
+            name: format!("{alias}Pages"),
+            operation_tag: read.operation_tag.clone(),
+            result_kind: "page",
+            cursor_brand: cursor_brand.into(),
+            input: SurfaceMethodInput::PageIterator { exact_keys },
+            result: SurfaceMethodResult::PageIterator {
+                record: record_type.into(),
+            },
+        })
+    }
+
     /// The index exact-keys precede the identity keys in `index_keys`; take the leading `count` of
     /// them as the typed page/unique-lookup parameters. Each carries its real shape so an enum or
     /// identity exact-key is typed and encoded by that shape, not collapsed to a raw string.
@@ -590,6 +634,28 @@ impl ModelBuilder {
             .iter()
             .take(count)
             .map(|key| self.value_type(&key.value, enums))
+            .collect()
+    }
+
+    fn index_exact_key_params(
+        &mut self,
+        read: &SurfaceReadOperationDescriptorJson,
+        count: usize,
+        enums: &mut Vec<String>,
+    ) -> Vec<SurfaceMethodParam> {
+        let mut used = reserved_page_iterator_parameter_names();
+        read.index_keys
+            .iter()
+            .take(count)
+            .enumerate()
+            .map(|(index, key)| {
+                let base = page_iterator_parameter_base(&key.render_label, index);
+                let name = unique_page_iterator_parameter_name(&base, &mut used);
+                SurfaceMethodParam {
+                    name,
+                    ty: self.value_type(&key.value, enums),
+                }
+            })
             .collect()
     }
 
@@ -1071,6 +1137,92 @@ fn method_alias(bindings: &SurfaceRouteBindings, operation_tag: &str, fallback: 
         .map(|binding| binding.alias.clone())
         .unwrap_or_else(|| fallback.to_string())
 }
+
+fn page_iterator_parameter_base(label: &str, index: usize) -> String {
+    let base = lower_first(&sanitize_type(label));
+    if base == "_" {
+        format!("key{index}")
+    } else if TS_RESERVED_PARAMETER_NAMES.contains(&base.as_str())
+        || PAGE_ITERATOR_RESERVED_PARAMETER_NAMES.contains(&base.as_str())
+    {
+        format!("{base}Key")
+    } else {
+        base
+    }
+}
+
+fn unique_page_iterator_parameter_name(base: &str, used: &mut BTreeSet<String>) -> String {
+    let mut name = base.to_string();
+    let mut counter = 2usize;
+    while !used.insert(name.clone()) {
+        name = format!("{base}{counter}");
+        counter += 1;
+    }
+    name
+}
+
+fn reserved_page_iterator_parameter_names() -> BTreeSet<String> {
+    TS_RESERVED_PARAMETER_NAMES
+        .iter()
+        .chain(PAGE_ITERATOR_RESERVED_PARAMETER_NAMES)
+        .map(|name| (*name).to_string())
+        .collect()
+}
+
+const PAGE_ITERATOR_RESERVED_PARAMETER_NAMES: &[&str] =
+    &["cursor", "envelope", "options", "page", "transport"];
+
+const TS_RESERVED_PARAMETER_NAMES: &[&str] = &[
+    "arguments",
+    "await",
+    "break",
+    "case",
+    "catch",
+    "class",
+    "const",
+    "continue",
+    "debugger",
+    "default",
+    "delete",
+    "do",
+    "else",
+    "enum",
+    "eval",
+    "export",
+    "extends",
+    "false",
+    "finally",
+    "for",
+    "function",
+    "if",
+    "implements",
+    "import",
+    "in",
+    "instanceof",
+    "interface",
+    "let",
+    "new",
+    "null",
+    "package",
+    "private",
+    "protected",
+    "public",
+    "return",
+    "static",
+    "super",
+    "switch",
+    "this",
+    "throw",
+    "true",
+    "try",
+    "typeof",
+    "undefined",
+    "var",
+    "void",
+    "while",
+    "with",
+    "yield",
+];
 
 fn create_is_singleton(create: &SurfaceCreateOperationDescriptorJson) -> bool {
     matches!(

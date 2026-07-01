@@ -43,9 +43,10 @@ These hold across every surface:
   production previews must be bounded or paged.
 - The only local application APIs are the checked-surface HTTP profile exposed
   by `marrow serve` and the generated TypeScript client (`createClient`). The
-  client is a declared compile-fresh output: it carries a `marrow-surface-digest`
-  header, `run`/`serve`/`evolve apply` keep its declared path fresh
-  write-if-changed, and `marrow check --locked` guarantees CI fails on a client
+  client is a declared compile-fresh output: it carries `marrow-surface-digest`
+  and `marrow-client-digest` headers, `run`/`serve`/`evolve apply` keep its
+  declared path fresh write-if-changed, and `marrow check --locked` guarantees
+  CI fails on a client
   the surface has outrun. Future remote or opaque cursor APIs must be generated
   from the same shared checked facts, not promoted from raw bytes, raw paths, or
   an ad hoc saved-data access language.

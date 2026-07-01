@@ -168,7 +168,8 @@ Check a project directory containing `marrow.json` and report diagnostics.
   which has no durable shape to lock yet, raises no condition under `--locked`.
 - The same gate covers the declared TypeScript client. When the project declares
   a callable surface and a `client` output path, and that file is absent or
-  carries a different `marrow-surface-digest` than the current surface, `--locked`
+  carries a different `marrow-client-digest` than the current generator profile
+  and surface, `--locked`
   fails with `check.stale_client` for CI, and plain `check` advises on stderr and
   exits `0`. `check` never writes the client — a later `run`, `serve` startup, or
   `evolve apply` rewrites it. A project with no `client`, or no surface, raises no
@@ -263,10 +264,13 @@ developer never has to run a separate codegen step for the declared output.
   and prints no partial client.
 - Usage errors, including a missing project directory or unknown option, exit
   `2`.
-- Every generated file begins with a do-not-edit header and a
-  `// marrow-surface-digest: sha256:<hex>` line. That digest is the deterministic
-  freshness key the declared-output lifecycle and `check --locked` compare
-  against the current surface.
+- Every generated file begins with a do-not-edit header,
+  `// marrow-client-profile: typescript.v2`,
+  `// marrow-surface-digest: sha256:<hex>`, and
+  `// marrow-client-digest: sha256:<hex>` lines. The surface digest is the
+  ABI/route identity; the client digest is the deterministic freshness key the
+  declared-output lifecycle and `check --locked` compare against the current
+  generator profile and surface.
 - The generated client uses the exported `surface_abi` descriptors and
   `surface.route.v1` manifest as inputs. It validates route/ABI agreement before
   rendering, stores operation tags and route paths as constants in method bodies,
@@ -274,6 +278,10 @@ developer never has to run a separate codegen step for the declared output.
   `number` inputs for Marrow `int` leaves, and validates only the response
   envelope profile, operation tag, and result kind before returning the
   server-owned JSON result payload.
+- Each generated paged read keeps its explicit page method and also gets a
+  `<methodName>Pages(...)` async iterable helper. The helper takes the same exact
+  index-key arguments followed by `{ limit, initialCursor? }`, advances cursors
+  between requests, and yields `Page<Row, Cursor>` values rather than rows.
 
 The generated TypeScript is convenience code, not an authority boundary. HTTP
 serving and linked-Rust execution still revalidate operation tags, request-body

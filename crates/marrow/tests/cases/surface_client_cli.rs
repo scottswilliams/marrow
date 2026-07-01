@@ -155,6 +155,14 @@ fn client_typescript_uses_lock_projection_when_store_is_absent() {
         stdout.contains("// marrow-surface-digest: sha256:"),
         "{stdout}"
     );
+    assert!(
+        stdout.contains("// marrow-client-profile: typescript.v2"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("// marrow-client-digest: sha256:"),
+        "{stdout}"
+    );
     // The client flattens to the surface name and exposes typed brand constructors and a typed
     // error class rather than the old module-keyed, untyped transport shape.
     assert!(stdout.contains("Books: {"), "{stdout}");
@@ -317,6 +325,14 @@ fn client_typescript_out_writes_file_and_is_silent_on_stdout() {
     );
     assert!(
         written.contains("// marrow-surface-digest: sha256:"),
+        "{written}"
+    );
+    assert!(
+        written.contains("// marrow-client-profile: typescript.v2"),
+        "{written}"
+    );
+    assert!(
+        written.contains("// marrow-client-digest: sha256:"),
         "{written}"
     );
 }
@@ -1317,6 +1333,13 @@ export async function pinTypes(client: ReturnType<typeof createClient>): Promise
   const rows: BooksRecord[] = page.rows;
   const cursor: BooksCursor | null = page.next;
   await client.Books.byAuthor("Frank Herbert", 10, cursor);
+  for await (const iterPage of client.Books.byAuthorPages("Frank Herbert", { limit: 10 })) {
+    const iterRows: BooksRecord[] = iterPage.rows;
+    const iterCursor: BooksCursor | null = iterPage.next;
+    void iterRows;
+    void iterCursor;
+    break;
+  }
 
   const created: BooksRecord = await client.Books.create(id, { title: "a", author: "b" });
   // Every update field is optional: a sparse one-field patch and a full patch both type-check.

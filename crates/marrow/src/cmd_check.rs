@@ -92,10 +92,10 @@ const MISSING_LOCK_MESSAGE: &str = "marrow.lock is missing but saved data exists
      to regenerate marrow.lock, then commit it";
 
 /// A `marrow check --locked` failure: the project declares a surface and a `client` output, but
-/// the committed client is absent or carries a different surface-ABI digest than the current
-/// surface. Plain `check` is read-only and surfaces this as a non-fatal advisory; `--locked`
-/// makes it fatal so CI fails against a client the surface has outrun. Mirrors the stale-lock
-/// family.
+/// the committed client is absent or carries a different generated-client digest than the current
+/// TypeScript client profile and surface. Plain `check` is read-only and surfaces this as a
+/// non-fatal advisory; `--locked` makes it fatal so CI fails against a client the surface has
+/// outrun. Mirrors the stale-lock family.
 const CHECK_STALE_CLIENT: &str = "check.stale_client";
 
 const STALE_CLIENT_MESSAGE: &str = "the declared client is absent or behind the current surface; a run or evolve apply rewrites it";
@@ -171,7 +171,8 @@ fn check_project_dir(dir: &str, format: CheckFormat, locked: bool) -> ExitCode {
     let missing_lock = lock.is_none() && authority.store_present();
 
     // The project declares a `client` output that the surface has outrun: the committed client is
-    // absent or carries a different surface-ABI digest than the current surface. The shared
+    // absent or carries a different generated-client digest than the current TypeScript profile and
+    // surface. The shared
     // freshness owner returns `Rewritten` for exactly that stale-or-absent state; a project with no
     // `client` (`NotConfigured`) or no surface to project (`SurfacelessConfigured`), or an
     // already-current client (`AlreadyFresh`), raises no client condition. Check is read-only and

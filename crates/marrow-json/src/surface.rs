@@ -16,12 +16,13 @@ mod route;
 mod route_binding;
 use client_model::{
     SurfaceClientModel, SurfaceClientRecord, SurfaceClientStore, SurfaceFieldType, SurfaceMethod,
-    SurfaceMethodInput, SurfaceMethodResult, SurfaceRecordField,
+    SurfaceMethodInput, SurfaceMethodParam, SurfaceMethodResult, SurfaceRecordField,
 };
 pub use client_ts::{
-    SURFACE_CLIENT_DIGEST_PREFIX, SURFACE_CLIENT_DO_NOT_EDIT, SurfaceClientRenderError,
+    SURFACE_ABI_DIGEST_PREFIX, SURFACE_CLIENT_DIGEST_PREFIX, SURFACE_CLIENT_DO_NOT_EDIT,
+    SURFACE_CLIENT_PROFILE, SURFACE_CLIENT_PROFILE_PREFIX, SurfaceClientRenderError,
     SurfaceClientRenderErrorKind, render_typescript_client, surface_abi_digest,
-    surface_client_header, surface_client_header_digest,
+    surface_client_digest, surface_client_header, surface_client_header_digest,
 };
 pub use execute::{
     execute_project_surface_page_by_tag, execute_project_surface_point_create_by_tag,
@@ -1740,7 +1741,7 @@ mod tests {
     use serde_json::json;
 
     use crate::surface::{
-        SURFACE_CLIENT_DIGEST_PREFIX, SURFACE_CLIENT_DO_NOT_EDIT,
+        SURFACE_CLIENT_DIGEST_PREFIX, SURFACE_CLIENT_DO_NOT_EDIT, SURFACE_CLIENT_PROFILE_PREFIX,
         SURFACE_OPERATION_PROFILE_VERSION, SurfaceAbiJson, SurfaceActionRequestJson,
         SurfaceActionResultJson, SurfaceActionValueJson, SurfaceArgumentJson,
         SurfaceCallableArgumentShapeJson, SurfaceCallableParameterPresenceJson,
@@ -1758,7 +1759,7 @@ mod tests {
         SurfaceRouteManifestJson, SurfaceRouteMethodJson, SurfaceRouteRequestJson,
         SurfaceSingletonUpdateRequestJson, SurfaceUniqueLookupRequestJson, SurfaceUpdateFieldJson,
         SurfaceValueJson, SurfaceWriteValueJson, render_typescript_client, surface_abi_digest,
-        surface_client_header, surface_client_header_digest,
+        surface_client_digest, surface_client_header, surface_client_header_digest,
     };
 
     static TEMP_PROJECT_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -1945,6 +1946,49 @@ surface Books from ^books
     fields title
     update title
     action addBook
+";
+
+    const SURFACE_PAGE_HELPERS: &str = "\
+resource Book
+    required title: string
+    required author: string
+store ^books(id: int): Book
+    index byAuthor(author, id)
+
+surface Books from ^books
+    fields title, author
+    collection ^books as all
+    collection ^books.byAuthor as byAuthor
+";
+
+    const SURFACE_PAGE_HELPER_COLLISION: &str = "\
+resource Book
+    required title: string
+    required author: string
+store ^books(id: int): Book
+    index byAuthor(author, id)
+
+pub fn allPages(): string
+    return \"ok\"
+
+surface Books from ^books
+    fields title, author
+    collection ^books as all
+    action allPages
+";
+
+    const SURFACE_PAGE_HELPER_RESERVED_PARAMETERS: &str = "\
+resource Book
+    required title: string
+    required cursor: string
+    required options: string
+    required transport: string
+store ^books(id: int): Book
+    index byHelperScope(cursor, options, transport, id)
+
+surface Books from ^books
+    fields title, cursor, options, transport
+    collection ^books.byHelperScope as byHelperScope
 ";
 
     const SURFACE_COMPUTED_READ: &str = "\
@@ -3537,14 +3581,163 @@ pub fn seed()
 
     #[test]
     fn header_round_trips_through_parser() {
-        let header = surface_client_header("sha256:abc123");
+        let header = surface_client_header("sha256:surface", "sha256:client");
         assert!(header.contains(SURFACE_CLIENT_DO_NOT_EDIT));
+        assert!(header.contains(SURFACE_CLIENT_PROFILE_PREFIX));
         assert!(header.contains(SURFACE_CLIENT_DIGEST_PREFIX));
         assert_eq!(
             surface_client_header_digest(&header).as_deref(),
-            Some("sha256:abc123")
+            Some("sha256:client")
         );
         assert_eq!(surface_client_header_digest("no header here"), None);
+    }
+
+    #[test]
+    fn client_ts_header_carries_profile_surface_digest_and_client_digest() {
+        let (abi, routes) = fixture_abi_and_routes();
+        let surface_digest = surface_abi_digest(&abi, &routes);
+        let client_digest = surface_client_digest(&abi, &routes);
+
+        let client = render_typescript_client(&abi, &routes).expect("typescript client renders");
+
+        assert!(
+            client.starts_with(SURFACE_CLIENT_DO_NOT_EDIT),
+            "generated client must start with the do-not-edit header: {client}"
+        );
+        assert!(
+            client.contains("// marrow-client-profile: typescript.v2"),
+            "generated client must name the client generator profile: {client}"
+        );
+        assert!(
+            client.contains(&format!("// marrow-surface-digest: {surface_digest}")),
+            "generated client must keep the surface ABI digest in the header: {client}"
+        );
+        assert!(
+            client.contains(&format!("// marrow-client-digest: {client_digest}")),
+            "generated client must carry the client freshness digest: {client}"
+        );
+        assert_eq!(
+            surface_client_header_digest(&client).as_deref(),
+            Some(client_digest.as_str())
+        );
+    }
+
+    #[test]
+    fn client_ts_renders_page_iteration_helpers() {
+        let (program, _runtime) = checked_surface_program(SURFACE_PAGE_HELPERS);
+        let abi = SurfaceAbiJson::from_program(&program);
+        let manifest = SurfaceRouteManifestJson::from_abi(&abi);
+
+        let client = render_typescript_client(&abi, &manifest).expect("typescript client renders");
+
+        assert!(
+            client.contains(
+                "all: async (limit: number, cursor?: BooksCursor | null): Promise<Page<BooksRecord, BooksCursor>>"
+            ),
+            "existing root page method must stay unchanged: {client}"
+        );
+        assert!(
+            client.contains(
+                "byAuthor: async (exactKey0: string, limit: number, cursor?: BooksCursor | null): Promise<Page<BooksRecord, BooksCursor>>"
+            ),
+            "existing index page method must stay unchanged: {client}"
+        );
+        assert!(
+            client.contains(
+                "allPages: async function* (options: { limit: number; initialCursor?: BooksCursor | null }): AsyncIterable<Page<BooksRecord, BooksCursor>>"
+            ),
+            "root page iterator helper must take only the options object: {client}"
+        );
+        assert!(
+            client.contains(
+                "byAuthorPages: async function* (author: string, options: { limit: number; initialCursor?: BooksCursor | null }): AsyncIterable<Page<BooksRecord, BooksCursor>>"
+            ),
+            "index page iterator helper must take exact-key arguments plus options: {client}"
+        );
+        assert!(
+            client.contains("let cursor = options.initialCursor ?? null;"),
+            "page iterator must own cursor state: {client}"
+        );
+        assert!(
+            client.contains("yield page;"),
+            "helper must yield pages: {client}"
+        );
+        assert!(
+            !client.contains("for (const row of page.rows)"),
+            "helper must not yield rows: {client}"
+        );
+    }
+
+    #[test]
+    fn client_ts_disambiguates_page_helper_names() {
+        let (program, _runtime) = checked_surface_program(SURFACE_PAGE_HELPER_COLLISION);
+        let abi = SurfaceAbiJson::from_program(&program);
+        let manifest = SurfaceRouteManifestJson::from_abi(&abi);
+
+        let client = render_typescript_client(&abi, &manifest).expect("typescript client renders");
+
+        let method_names = surface_method_names(&client, "    Books");
+        let unique = method_names.iter().collect::<BTreeSet<_>>();
+        assert_eq!(
+            unique.len(),
+            method_names.len(),
+            "duplicate method key: {method_names:?}\n{client}"
+        );
+        assert!(
+            method_names.iter().any(|name| name == "allPages"),
+            "the page helper or action should keep the base name: {method_names:?}\n{client}"
+        );
+        assert!(
+            method_names
+                .iter()
+                .any(|name| name.starts_with("allPages_")),
+            "the colliding page helper/action should be disambiguated: {method_names:?}\n{client}"
+        );
+    }
+
+    #[test]
+    fn client_ts_page_iterator_parameters_avoid_generated_scope_collisions() {
+        let (program, _runtime) = checked_surface_program(SURFACE_PAGE_HELPER_RESERVED_PARAMETERS);
+        let mut abi = SurfaceAbiJson::from_program(&program);
+        let manifest = SurfaceRouteManifestJson::from_abi(&abi);
+
+        let client = render_typescript_client(&abi, &manifest).expect("typescript client renders");
+
+        assert!(
+            client.contains(
+                "byHelperScopePages: async function* (cursorKey: string, optionsKey: string, transportKey: string, options: { limit: number; initialCursor?: BooksCursor | null }): AsyncIterable<Page<BooksRecord, BooksCursor>>"
+            ),
+            "helper exact-key parameters must not collide with generated bindings: {client}"
+        );
+        assert!(
+            client.contains(
+                "exact_keys: [stringKey(cursorKey), stringKey(optionsKey), stringKey(transportKey)]"
+            ),
+            "helper request body must use the allocated parameter names: {client}"
+        );
+        assert!(
+            !client.contains("function* (cursor: string")
+                && !client.contains("options: string, options:")
+                && !client.contains("transport: string, options:"),
+            "helper must not emit shadowing or duplicate parameter names: {client}"
+        );
+
+        let read = abi.surfaces[0]
+            .read
+            .iter_mut()
+            .find(|read| read.alias == "byHelperScope")
+            .expect("helper scope read");
+        read.index_keys[0].render_label = "class".into();
+        read.index_keys[1].render_label = "yield".into();
+        read.index_keys[2].render_label = "let".into();
+        let keyword_client =
+            render_typescript_client(&abi, &manifest).expect("typescript client renders");
+        assert!(
+            keyword_client.contains(
+                "byHelperScopePages: async function* (classKey: string, yieldKey: string, letKey: string, options: { limit: number; initialCursor?: BooksCursor | null }): AsyncIterable<Page<BooksRecord, BooksCursor>>"
+            ),
+            "helper exact-key parameters must avoid TypeScript keywords: {keyword_client}"
+        );
     }
 
     #[test]
@@ -3755,10 +3948,16 @@ pub fn seed()
         // The colliding read aliases stay distinct method keys, none duplicated, so the emitted
         // surface object is valid TypeScript even when every read shares an alias.
         let method_names = surface_method_names(&client, "    class");
-        assert_eq!(method_names.len(), expected_read_count, "{client}");
+        let read_method_names = method_names
+            .iter()
+            .filter(|name| name.as_str() == "delete" || name.starts_with("delete_"))
+            .collect::<Vec<_>>();
+        assert_eq!(read_method_names.len(), expected_read_count, "{client}");
         assert!(
-            method_names.iter().all(|name| name.starts_with("delete")),
-            "{method_names:?}"
+            read_method_names
+                .iter()
+                .all(|name| name.starts_with("delete")),
+            "{read_method_names:?}"
         );
         let unique = method_names.iter().collect::<BTreeSet<_>>();
         assert_eq!(
@@ -3770,7 +3969,8 @@ pub fn seed()
     }
 
     /// Pull the async-method keys from a generated surface block. Method headers are the only lines
-    /// indented six spaces that contain `: async (`; nested helper braces never start that way.
+    /// indented six spaces that contain an async property value; nested helper braces never start
+    /// that way.
     fn surface_method_names(client: &str, surface_key: &str) -> Vec<String> {
         let needle = format!("{surface_key}: {{");
         let start = client.find(&needle).expect("surface block present") + needle.len();
@@ -3779,14 +3979,18 @@ pub fn seed()
             if line == "    }," {
                 break;
             }
-            if let Some(key) = line.strip_prefix("      ").and_then(|rest| {
-                rest.split_once(": async (")
-                    .map(|(key, _)| key.trim_matches('"').to_string())
-            }) {
+            if let Some(key) = surface_method_key(line) {
                 names.push(key);
             }
         }
         names
+    }
+
+    fn surface_method_key(line: &str) -> Option<String> {
+        let rest = line.strip_prefix("      ")?;
+        rest.split_once(": async (")
+            .or_else(|| rest.split_once(": async function* ("))
+            .map(|(key, _)| key.trim_matches('"').to_string())
     }
 
     #[test]

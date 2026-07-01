@@ -877,7 +877,7 @@ pub(crate) enum ClientFreshness {
     NotConfigured,
     /// `client` is configured but the project declares no surface; a configuration warning.
     SurfacelessConfigured,
-    /// The on-disk client already carried the current surface-ABI digest; left untouched.
+    /// The on-disk client already carried the current generated-client digest; left untouched.
     AlreadyFresh,
     /// The client was (re)written because it was absent or carried a stale digest.
     Rewritten,
@@ -886,10 +886,11 @@ pub(crate) enum ClientFreshness {
 /// Classify the project's declared client against the current surface without writing. This is the
 /// single owner of the stale-or-absent decision: it resolves the configured path, builds the
 /// surface ABI through the render owner, short-circuits on no `client` or no surface, then compares
-/// the on-disk header digest against the digest the surface would write. `Rewritten` means the
-/// on-disk client is absent or stale (the write path would rewrite it); `AlreadyFresh` means it
-/// already carries the current digest. A non-surface `.mw` edit leaves the digest unchanged, so a
-/// fresh client stays fresh. Both the write path and the read-only check gate consume this verdict.
+/// the on-disk header digest against the client digest the generator would write. `Rewritten`
+/// means the on-disk client is absent or stale (the write path would rewrite it); `AlreadyFresh`
+/// means it already carries the current digest. A non-surface `.mw` edit leaves the digest
+/// unchanged, so a fresh client stays fresh. Both the write path and the read-only check gate
+/// consume this verdict.
 pub(crate) fn client_freshness(
     dir: &str,
     config: &marrow_project::ProjectConfig,
@@ -903,7 +904,7 @@ pub(crate) fn client_freshness(
         return ClientFreshness::SurfacelessConfigured;
     }
     let routes = marrow_json::surface::SurfaceRouteManifestJson::from_abi(&abi);
-    let want = marrow_json::surface::surface_abi_digest(&abi, &routes);
+    let want = marrow_json::surface::surface_client_digest(&abi, &routes);
     let on_disk = std::fs::read_to_string(Path::new(dir).join(rel))
         .ok()
         .and_then(|contents| marrow_json::surface::surface_client_header_digest(&contents));

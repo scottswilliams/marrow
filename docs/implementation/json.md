@@ -126,7 +126,8 @@ current profile.
 The route manifest is a descriptor over the operation envelope, not a listener,
 router implementation, or opaque-token codec. `surface/client_model.rs` lowers
 the ABI plus route bindings into a typed `SurfaceClientModel` (stores as branded
-ids, enums as member-id tables, surface records, and per-operation methods);
+ids, enums as member-id tables, surface records, per-operation methods, and
+client-only page-iteration helpers for paged reads);
 `surface/client_ts.rs` renders that model into the typed TypeScript surface
 client, with the runtime decode/encode helpers in `surface/client_ts_preamble.ts`.
 The client decodes response values against the descriptor as a convenience
@@ -134,9 +135,11 @@ projection that fails loud on a malformed field — it is not a second validatio
 authority. It validates route/ABI agreement before rendering. It also owns the
 client freshness key: `surface_abi_digest` is a
 `sha256:` digest over the canonically serialized ABI and route manifest (stable
-across checkouts of the same surface shape), and `surface_client_header` /
-`surface_client_header_digest` write and parse the do-not-edit + digest header
-prepended to every generated client.
+across checkouts of the same surface shape), while `surface_client_digest`
+combines that identity with the TypeScript client generator profile.
+`surface_client_header` / `surface_client_header_digest` write and parse the
+do-not-edit, profile, surface-digest, and client-digest header prepended to every
+generated client.
 
 The operation-tag execution functions compose those DTOs with `marrow-run`
 admission. Reads admit stable read tags, decode the point/page/unique request

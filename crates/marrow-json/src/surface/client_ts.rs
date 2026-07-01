@@ -9,9 +9,9 @@ use marrow_run::{
 use super::client_model::{RecordDecode, ScalarKind};
 use super::{
     SurfaceAbiJson, SurfaceClientModel, SurfaceClientRecord, SurfaceClientStore, SurfaceFieldType,
-    SurfaceMethod, SurfaceMethodInput, SurfaceMethodResult, SurfaceOperationCatalog,
-    SurfaceOperationCatalogError, SurfaceRecordField, SurfaceRouteBindingError,
-    SurfaceRouteBindings, SurfaceRouteManifestJson,
+    SurfaceMethod, SurfaceMethodInput, SurfaceMethodParam, SurfaceMethodResult,
+    SurfaceOperationCatalog, SurfaceOperationCatalogError, SurfaceRecordField,
+    SurfaceRouteBindingError, SurfaceRouteBindings, SurfaceRouteManifestJson,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -51,7 +51,11 @@ pub fn render_typescript_client(
     let bindings = SurfaceRouteBindings::from_manifest_for_client(routes, &catalog)
         .map_err(SurfaceClientRenderError::from)?;
     let model = SurfaceClientModel::build(abi, &bindings);
-    let header = surface_client_header(&surface_abi_digest(abi, routes));
+    let surface_digest = surface_abi_digest(abi, routes);
+    let header = surface_client_header(
+        &surface_digest,
+        &surface_client_digest_from_surface(&surface_digest),
+    );
     Ok(render_model(&header, &model))
 }
 
@@ -370,6 +374,10 @@ fn render_create_client(output: &mut String, model: &SurfaceClientModel) {
 }
 
 fn render_method(output: &mut String, method: &SurfaceMethod) {
+    if matches!(method.result, SurfaceMethodResult::PageIterator { .. }) {
+        render_page_iterator_method(output, method);
+        return;
+    }
     let signature = method_signature(method);
     let request_expr = method_request_expr(method);
     let decode_expr = method_decode_expr(method);
@@ -391,6 +399,36 @@ fn render_method(output: &mut String, method: &SurfaceMethod) {
     output.push_str("      },\n");
 }
 
+fn render_page_iterator_method(output: &mut String, method: &SurfaceMethod) {
+    let signature = method_signature(method);
+    let request_expr = method_request_expr(method);
+    let decode_expr = method_decode_expr(method);
+    writeln!(
+        output,
+        "      {}: async function* ({signature}): {} {{",
+        ts_property(&method.name),
+        method_result_type(method)
+    )
+    .expect("write page iterator method head");
+    output.push_str("        let cursor = options.initialCursor ?? null;\n");
+    output.push_str("        while (true) {\n");
+    writeln!(
+        output,
+        "          const envelope = await transport.invoke({}, {}, {request_expr});",
+        ts_string(&method.operation_tag),
+        ts_string(method.result_kind)
+    )
+    .expect("write page iterator invoke");
+    writeln!(output, "          const page = {decode_expr};").expect("write page iterator decode");
+    output.push_str("          yield page;\n");
+    output.push_str("          if (page.next === null) {\n");
+    output.push_str("            return;\n");
+    output.push_str("          }\n");
+    output.push_str("          cursor = page.next;\n");
+    output.push_str("        }\n");
+    output.push_str("      },\n");
+}
+
 fn method_signature(method: &SurfaceMethod) -> String {
     match &method.input {
         SurfaceMethodInput::None | SurfaceMethodInput::SingletonDelete => String::new(),
@@ -409,6 +447,9 @@ fn method_signature(method: &SurfaceMethod) -> String {
         }
         SurfaceMethodInput::SingletonUpdate { body_type, .. } => format!("body: {body_type}"),
         SurfaceMethodInput::Page { exact_keys } => page_signature(exact_keys, &method.cursor_brand),
+        SurfaceMethodInput::PageIterator { exact_keys } => {
+            page_iterator_signature(exact_keys, &method.cursor_brand)
+        }
         SurfaceMethodInput::UniqueLookup { keys } => keys
             .iter()
             .enumerate()
@@ -428,6 +469,17 @@ fn page_signature(exact_keys: &[SurfaceFieldType], cursor_brand: &str) -> String
     let mut params = exact;
     params.push("limit: number".to_string());
     params.push(format!("cursor?: {cursor_brand} | null"));
+    params.join(", ")
+}
+
+fn page_iterator_signature(exact_keys: &[SurfaceMethodParam], cursor_brand: &str) -> String {
+    let mut params = exact_keys
+        .iter()
+        .map(|param| format!("{}: {}", param.name, argument_ts_type(&param.ty)))
+        .collect::<Vec<_>>();
+    params.push(format!(
+        "options: {{ limit: number; initialCursor?: {cursor_brand} | null }}"
+    ));
     params.join(", ")
 }
 
@@ -462,6 +514,7 @@ fn method_request_expr(method: &SurfaceMethod) -> String {
             format!("{{ fields: {} }}", update_fields_expr(fields))
         }
         SurfaceMethodInput::Page { exact_keys } => page_request_expr(exact_keys),
+        SurfaceMethodInput::PageIterator { exact_keys } => page_iterator_request_expr(exact_keys),
         SurfaceMethodInput::UniqueLookup { keys } => {
             let keys = keys
                 .iter()
@@ -525,6 +578,21 @@ fn page_request_expr(exact_keys: &[SurfaceFieldType]) -> String {
     format!("{{ {} }}", parts.join(", "))
 }
 
+fn page_iterator_request_expr(exact_keys: &[SurfaceMethodParam]) -> String {
+    let mut parts = Vec::new();
+    if !exact_keys.is_empty() {
+        let keys = exact_keys
+            .iter()
+            .map(|param| request_value_expr(&param.ty, &param.name))
+            .collect::<Vec<_>>()
+            .join(", ");
+        parts.push(format!("exact_keys: [{keys}]"));
+    }
+    parts.push("limit: options.limit".to_string());
+    parts.push("cursor: cursor ?? undefined".to_string());
+    format!("{{ {} }}", parts.join(", "))
+}
+
 fn callable_request_expr(params: &[(String, SurfaceFieldType)]) -> String {
     let entries = params
         .iter()
@@ -549,7 +617,16 @@ fn method_decode_expr(method: &SurfaceMethod) -> String {
             format!("optionalRecordOf(envelope, decode{record})")
         }
         SurfaceMethodResult::Page { record } => {
-            format!("pageOf(envelope, decode{record})")
+            format!(
+                "pageOf<{record}, {}>(envelope, decode{record})",
+                method.cursor_brand
+            )
+        }
+        SurfaceMethodResult::PageIterator { record } => {
+            format!(
+                "pageOf<{record}, {}>(envelope, decode{record})",
+                method.cursor_brand
+            )
         }
         SurfaceMethodResult::Created { record } => {
             format!("decode{}(recordOf(envelope))", record)
@@ -579,6 +656,9 @@ fn method_result_type(method: &SurfaceMethod) -> String {
         }
         SurfaceMethodResult::OptionalRecord { record } => format!("{record} | null"),
         SurfaceMethodResult::Page { record } => format!("Page<{record}, {}>", method.cursor_brand),
+        SurfaceMethodResult::PageIterator { record } => {
+            format!("AsyncIterable<Page<{record}, {}>>", method.cursor_brand)
+        }
         SurfaceMethodResult::Updated | SurfaceMethodResult::Deleted => "void".to_string(),
         SurfaceMethodResult::Action { value } => {
             let value_type = value
@@ -788,9 +868,9 @@ fn is_plain_identifier(label: &str) -> bool {
     chars.all(|character| character.is_ascii_alphanumeric() || character == '_' || character == '$')
 }
 
-/// The deterministic freshness key for a project's TypeScript client: a SHA-256 over the
-/// canonically serialized surface ABI and route manifest. Two checkouts of the same surface
-/// shape produce the same digest; a non-surface `.mw` edit leaves it unchanged.
+/// The deterministic ABI/route identity for a surface: a SHA-256 over the canonically serialized
+/// surface ABI and route manifest. Two checkouts of the same surface shape produce the same digest;
+/// a non-surface `.mw` edit leaves it unchanged.
 pub fn surface_abi_digest(abi: &SurfaceAbiJson, routes: &SurfaceRouteManifestJson) -> String {
     let mut bytes = serde_json::to_vec(abi).expect("surface ABI serializes");
     bytes.push(b'\n');
@@ -798,12 +878,27 @@ pub fn surface_abi_digest(abi: &SurfaceAbiJson, routes: &SurfaceRouteManifestJso
     marrow_project::sha256_digest(&bytes)
 }
 
-/// The do-not-edit + digest header prepended to every generated client.
-pub fn surface_client_header(digest: &str) -> String {
-    format!("{SURFACE_CLIENT_DO_NOT_EDIT}\n{SURFACE_CLIENT_DIGEST_PREFIX}{digest}\n\n")
+/// The deterministic freshness key for the generated TypeScript client profile over a surface.
+pub fn surface_client_digest(abi: &SurfaceAbiJson, routes: &SurfaceRouteManifestJson) -> String {
+    surface_client_digest_from_surface(&surface_abi_digest(abi, routes))
 }
 
-/// Extract the `sha256:<...>` value from a generated client's header, if present.
+fn surface_client_digest_from_surface(surface_digest: &str) -> String {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(SURFACE_CLIENT_PROFILE.as_bytes());
+    bytes.push(b'\n');
+    bytes.extend_from_slice(surface_digest.as_bytes());
+    marrow_project::sha256_digest(&bytes)
+}
+
+/// The do-not-edit + profile/digest header prepended to every generated client.
+pub fn surface_client_header(surface_digest: &str, client_digest: &str) -> String {
+    format!(
+        "{SURFACE_CLIENT_DO_NOT_EDIT}\n{SURFACE_CLIENT_PROFILE_PREFIX}{SURFACE_CLIENT_PROFILE}\n{SURFACE_ABI_DIGEST_PREFIX}{surface_digest}\n{SURFACE_CLIENT_DIGEST_PREFIX}{client_digest}\n\n"
+    )
+}
+
+/// Extract the generated-client `sha256:<...>` freshness value from the header, if present.
 pub fn surface_client_header_digest(contents: &str) -> Option<String> {
     contents
         .lines()
@@ -812,6 +907,9 @@ pub fn surface_client_header_digest(contents: &str) -> Option<String> {
 }
 
 pub const SURFACE_CLIENT_DO_NOT_EDIT: &str = "// Generated by marrow — do not edit.";
-pub const SURFACE_CLIENT_DIGEST_PREFIX: &str = "// marrow-surface-digest: ";
+pub const SURFACE_CLIENT_PROFILE: &str = "typescript.v2";
+pub const SURFACE_CLIENT_PROFILE_PREFIX: &str = "// marrow-client-profile: ";
+pub const SURFACE_ABI_DIGEST_PREFIX: &str = "// marrow-surface-digest: ";
+pub const SURFACE_CLIENT_DIGEST_PREFIX: &str = "// marrow-client-digest: ";
 
 const CLIENT_PREAMBLE: &str = include_str!("client_ts_preamble.ts");

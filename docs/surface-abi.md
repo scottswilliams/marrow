@@ -348,27 +348,34 @@ descriptor must have exactly one route row. It does not read or open the
 saved-data store.
 
 The exported factory is `createClient`. Every generated file begins with a
-do-not-edit header and a `// marrow-surface-digest: sha256:<hex>` line. The
-digest is a deterministic key over the serialized surface ABI plus route
-manifest, so two checkouts of the same surface shape produce the same header.
+do-not-edit header, `// marrow-client-profile: typescript.v2`,
+`// marrow-surface-digest: sha256:<hex>`, and
+`// marrow-client-digest: sha256:<hex>` lines. The surface digest is the
+deterministic ABI/route identity over the serialized surface ABI plus route
+manifest, so two checkouts of the same surface shape produce the same surface
+header. The client digest combines that identity with the TypeScript generator
+profile.
 
 The client is a declared compile-fresh output, not a file the developer
 regenerates by hand. A project names one output path in `marrow.json`'s `client`
 field; `marrow run`, `marrow serve` startup, and `marrow evolve apply` rewrite
-it write-if-changed whenever the surface ABI changes, exactly as those paths
-re-project `marrow.lock`. The freshness key is the surface-ABI digest, not the
-whole source, so a non-surface `.mw` edit leaves the file untouched.
+it write-if-changed whenever the generated client digest changes, exactly as
+those paths re-project `marrow.lock`. The freshness key is the client digest,
+not the whole source, so a non-surface `.mw` edit leaves the file untouched, and
+a generator-profile change intentionally marks the client stale.
 `marrow check --locked` fails when the declared client is absent or carries a
 stale digest while the project declares a surface; plain `marrow check` is
 read-only and advises instead. See
 [tooling-surfaces.md](tooling-surfaces.md) and [cli.md](cli.md).
 
 The generated code flattens to surface-name keys (`client.Books`) with one async
-method per operation label. JavaScript reserved words and label collisions are
-resolved deterministically; these names are render compatibility only. Operation
-equality remains the operation tag, which the client carries in a private
-per-tag table; catalog IDs stay private constants and never appear in a method
-signature.
+method per operation label. Each paged read also gets a client-only
+`<methodName>Pages(...)` async iterator helper that yields `Page<Row, Cursor>`
+values and advances the returned cursor between requests. JavaScript reserved
+words and label collisions are resolved deterministically; these names are
+render compatibility only. Operation equality remains the operation tag, which
+the client carries in a private per-tag table; catalog IDs stay private
+constants and never appear in a method signature.
 
 The client decodes each response value against the descriptor as a **convenience
 projection, not a second validation authority** — the server still validates
@@ -417,6 +424,12 @@ for (const row of page.rows) {
   row.title; // typed field
 }
 const next = await client.Books.byAuthor("Frank Herbert", 20, page.next);
+
+for await (const page of client.Books.byAuthorPages("Frank Herbert", { limit: 20 })) {
+  for (const row of page.rows) {
+    row.title;
+  }
+}
 ```
 
 Methods return decoded domain values: a point read returns the typed record, a
