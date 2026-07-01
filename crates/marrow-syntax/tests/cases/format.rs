@@ -773,6 +773,32 @@ fn top_level_comment_after_blank_stays_with_following_decl_across_block_bearing_
     }
 }
 
+/// A top-level `;` comment immediately followed by a `;;` doc comment that
+/// attaches to the next declaration stays glued to that doc comment: adjacency is
+/// measured against the doc comment's own line, not the declaration header below
+/// it, so no blank line is inserted between the two and formatting is idempotent.
+/// A genuine section break — a blank line in the source above the doc comment — is
+/// still preserved.
+#[test]
+fn top_level_plain_comment_stays_glued_to_following_doc_comment() {
+    let adjacent = "module app\n\n; a plain note\n;; the ceiling\nconst limit: int = 10\n";
+    assert_eq!(format_source(adjacent), adjacent);
+    assert_eq!(
+        format_source(&format_source(adjacent)),
+        adjacent,
+        "adjacent ; then ;; is not idempotent"
+    );
+
+    let section_break =
+        "module app\n\n; a standalone note\n\n;; the ceiling\nconst limit: int = 10\n";
+    assert_eq!(format_source(section_break), section_break);
+    assert_eq!(
+        format_source(&format_source(section_break)),
+        section_break,
+        "a genuine section break above a doc comment is not preserved"
+    );
+}
+
 /// A span-independent structural fingerprint of a parsed file: the `Debug`
 /// rendering with every `SourceSpan { ... }` region removed. Two files compare
 /// equal exactly when their declarations match structurally (names, statements,

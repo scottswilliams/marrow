@@ -41,6 +41,7 @@ pub fn format_source(source: &str) -> String {
     if let Some(module) = &file.module {
         sections.push(FormatSection {
             span: module.span,
+            leading_line: module.span.line,
             text: format!("module {}", module.name),
             kind: FormatSectionKind::Item,
             trailing_comment_line: TrailingCommentLine::Last,
@@ -49,6 +50,7 @@ pub fn format_source(source: &str) -> String {
     for comment in &file.comments {
         sections.push(FormatSection {
             span: comment.span,
+            leading_line: comment.span.line,
             text: match comment.placement {
                 CommentPlacement::OwnLine => format_block_comment(comment, 0),
                 CommentPlacement::Trailing => format_trailing_comment(comment),
@@ -60,6 +62,7 @@ pub fn format_source(source: &str) -> String {
     for use_decl in &file.uses {
         sections.push(FormatSection {
             span: use_decl.span,
+            leading_line: use_decl.span.line,
             text: format!("use {}", use_decl.name),
             kind: FormatSectionKind::Use,
             trailing_comment_line: TrailingCommentLine::Last,
@@ -67,8 +70,12 @@ pub fn format_source(source: &str) -> String {
     }
     for declaration in &file.declarations {
         let text = format_declaration(source, declaration);
+        let span = declaration_span(declaration);
         sections.push(FormatSection {
-            span: declaration_span(declaration),
+            span,
+            leading_line: span
+                .line
+                .saturating_sub(declaration_leading_doc_lines(declaration)),
             trailing_comment_line: declaration_trailing_comment_line(declaration),
             text,
             kind: FormatSectionKind::Item,
@@ -105,6 +112,12 @@ pub fn format_preserves_comments(source: &str, formatted: &str) -> bool {
 
 struct FormatSection {
     span: crate::SourceSpan,
+    /// Source line of the section's first rendered line. For a declaration this
+    /// steps above the header over its attached `;;` doc-comment lines, which
+    /// render inline with the declaration but sit above its header span; the
+    /// separator measures adjacency to a preceding comment against this line so a
+    /// `;` comment stays glued to the doc comment that follows it.
+    leading_line: u32,
     text: String,
     kind: FormatSectionKind,
     trailing_comment_line: TrailingCommentLine,
@@ -175,10 +188,26 @@ fn section_separator(prev: &FormatSection, next: &FormatSection) -> &'static str
     {
         return "\n";
     }
-    if matches!(prev.kind, FormatSectionKind::Comment(_)) && next.span.line == prev.span.line + 1 {
+    if matches!(prev.kind, FormatSectionKind::Comment(_)) && next.leading_line == prev.span.line + 1
+    {
         return "\n";
     }
     "\n\n"
+}
+
+/// The number of `;;` doc-comment lines that render above a declaration's header.
+/// Doc comments attach directly above the header on contiguous lines, so this is
+/// how far the section's first rendered line sits above its header span.
+fn declaration_leading_doc_lines(declaration: &Declaration) -> u32 {
+    let docs = match declaration {
+        Declaration::Const(decl) => decl.docs.len(),
+        Declaration::Resource(decl) => decl.docs.len(),
+        Declaration::Store(decl) => decl.docs.len(),
+        Declaration::Function(decl) => decl.docs.len(),
+        Declaration::Enum(decl) => decl.docs.len(),
+        Declaration::Surface(_) | Declaration::Evolve(_) => 0,
+    };
+    docs as u32
 }
 
 fn normalized_comment_tokens(source: &str) -> Vec<(CommentMarker, String)> {
