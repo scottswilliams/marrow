@@ -14,7 +14,7 @@ use marrow_check::tooling::{
     count_activation_integrity_problems, count_integrity_problems, data_children, read_data_path,
     resolve_data_path, walk_data,
 };
-use marrow_store::key::SavedKey;
+use marrow_store::key::{INDEX_MARKER, SavedKey, encode_identity_payload};
 use marrow_store::tree::{DataPathSegment as StoreDataPathSegment, TreeStore};
 use marrow_store::value::SUPPORTED_DATE_MAX_DAYS;
 use support::write;
@@ -1435,6 +1435,433 @@ fn data_integrity_fails_closed_when_index_entries_are_silently_dropped() {
         support::json(recover.stdout)["code"],
         serde_json::json!("store.corruption"),
     );
+}
+
+/// The runtime store-open owes the same schema-driven index-completeness cross-check the
+/// inspection family, backup, and recover run through their single owner: a store whose committed
+/// index entries were silently dropped derives more entries from its records than the index holds,
+/// so `run` must fail closed as `store.corruption` at open rather than reading an index-driven scan
+/// truncated or accepting a write onto the incomplete store. A healthy store still runs the scan
+/// returning the full population.
+#[test]
+fn run_fails_closed_when_index_entries_are_silently_dropped() {
+    let project = by_shelf_project("run-index-truncated", 40);
+    let dir = project.to_str().unwrap().to_string();
+
+    // Healthy: an index-driven read returns every fiction row (the even ids, 2..=40 => 20 rows).
+    assert_eq!(
+        fiction_row_count(&dir),
+        Some(20),
+        "a healthy store reads the full fiction population through the index",
+    );
+
+    let by_shelf = index_catalog_id(&project, "books", "byShelf");
+    {
+        let store =
+            TreeStore::open(&project.join(".data").join("marrow.redb")).expect("open seeded store");
+        store.begin().expect("begin");
+        for id in [2i64, 4, 6, 8, 10] {
+            store
+                .delete_index_entry(
+                    &by_shelf,
+                    &[SavedKey::Str("fiction".into()), SavedKey::Int(id)],
+                    &[SavedKey::Int(id)],
+                )
+                .expect("drop index entry");
+        }
+        store.commit().expect("commit dropped entries");
+    }
+
+    // A read through the truncated index fails closed at store-open, never a truncated count.
+    // Invoke the binary directly so no in-process catalog re-commit opens the store first.
+    let read = support::marrow(&["run", "--entry", "shelf::count_fiction", &dir]);
+    assert_eq!(
+        read.status.code(),
+        Some(1),
+        "run over a truncated index must fail closed: {read:?}",
+    );
+    assert!(
+        String::from_utf8_lossy(&read.stderr).contains("store.corruption"),
+        "run must report store.corruption on a truncated index: {read:?}",
+    );
+
+    // A write is refused too: the store-open rejects the incomplete store before any commit.
+    let write_run = support::marrow(&["run", "--entry", "shelf::seed", &dir]);
+    assert_eq!(
+        write_run.status.code(),
+        Some(1),
+        "a write onto a truncated index must fail closed: {write_run:?}",
+    );
+    assert!(
+        String::from_utf8_lossy(&write_run.stderr).contains("store.corruption"),
+        "a write onto a truncated index must fail store.corruption: {write_run:?}",
+    );
+
+    // No write was accepted: integrity still reports the same index-incomplete corruption.
+    let integrity = marrow(&["data", "integrity", "--format", "json", &dir]);
+    assert_eq!(integrity.status.code(), Some(1), "{integrity:?}");
+    assert_eq!(
+        json(integrity)["code"],
+        serde_json::json!("store.corruption"),
+    );
+}
+
+/// A production writer encodes a record's identity twice in a committed index entry: as the
+/// trailing suffix of the index-key tuple and after the identity separator. A flip diverging the
+/// stored identity from that suffix is always corruption, so the shared store-open index witness
+/// must condemn it uniformly. Every store-open surface — `data integrity` (text and json), `stats`,
+/// `dump`, `doctor`, `backup`, `data recover`, `run`, and `serve` — fails closed `store.corruption`,
+/// `run` fails at store-open rather than surfacing the divergence as a typed program fault
+/// (`run.type`) at an innocent source span, and no write is accepted onto the corrupt store.
+#[test]
+fn index_entry_identity_divergence_fails_closed_across_every_store_open() {
+    let project = by_shelf_project("index-entry-identity-divergence", 40);
+    let dir = project.to_str().unwrap().to_string();
+
+    // Healthy control: an index-driven read returns every fiction row and integrity blesses it.
+    assert_eq!(
+        fiction_row_count(&dir),
+        Some(20),
+        "a healthy store reads the full fiction population through the index",
+    );
+    let clean = marrow(&["data", "integrity", "--format", "json", &dir]);
+    assert_eq!(
+        clean.status.code(),
+        Some(0),
+        "clean store verifies: {clean:?}"
+    );
+
+    // Resolve the index id before opening a handle: `checked_place` opens the store write-capable.
+    let store_path = project.join(".data").join("marrow.redb");
+    let by_shelf = index_catalog_id(&project, "books", "byShelf");
+    {
+        let store = TreeStore::open(&store_path).expect("open seeded store");
+        store.begin().expect("begin");
+        // Diverge several committed entries the way a single-bit flip inside the committed identity
+        // does: delete the healthy [fiction, id]/[id] cell and rewrite it with a stored identity that
+        // no longer matches its tuple suffix. The data records themselves are left untouched.
+        for (id, wrong) in [(2i64, 4i64), (6, 8), (10, 12)] {
+            store
+                .delete_index_entry(
+                    &by_shelf,
+                    &[SavedKey::Str("fiction".into()), SavedKey::Int(id)],
+                    &[SavedKey::Int(id)],
+                )
+                .expect("drop healthy index entry");
+            store
+                .write_index_entry(
+                    &by_shelf,
+                    &[SavedKey::Str("fiction".into()), SavedKey::Int(id)],
+                    &[SavedKey::Int(wrong)],
+                    INDEX_MARKER.to_vec(),
+                )
+                .expect("write divergent index entry");
+        }
+        store.commit().expect("commit divergent entries");
+    }
+
+    let integrity_json = marrow(&["data", "integrity", "--format", "json", &dir]);
+    assert_eq!(integrity_json.status.code(), Some(1), "{integrity_json:?}");
+    assert_eq!(
+        json(integrity_json)["code"],
+        serde_json::json!("store.corruption"),
+    );
+
+    let integrity_text = marrow(&["data", "integrity", &dir]);
+    assert_eq!(integrity_text.status.code(), Some(1), "{integrity_text:?}");
+    assert!(
+        String::from_utf8_lossy(&integrity_text.stderr).contains("store.corruption"),
+        "integrity text must report store.corruption: {integrity_text:?}",
+    );
+
+    for cmd in [
+        vec!["data", "stats", "--format", "json", &dir],
+        vec!["data", "dump", "--format", "json", &dir],
+    ] {
+        let output = marrow(&cmd);
+        assert_eq!(output.status.code(), Some(1), "{cmd:?}: {output:?}");
+        assert_eq!(
+            support::json(output.stdout)["code"],
+            serde_json::json!("store.corruption"),
+            "{cmd:?}",
+        );
+    }
+
+    let doctor = marrow(&["doctor", "--format", "json", &dir]);
+    assert_eq!(doctor.status.code(), Some(1), "{doctor:?}");
+    assert!(
+        String::from_utf8_lossy(&doctor.stdout).contains("store.corruption"),
+        "doctor must surface store.corruption: {doctor:?}",
+    );
+
+    let recover = marrow(&["data", "recover", "--format", "json", &dir]);
+    assert_eq!(recover.status.code(), Some(1), "{recover:?}");
+    assert_eq!(
+        support::json(recover.stdout)["code"],
+        serde_json::json!("store.corruption"),
+    );
+
+    let archive = project.join("books.mwbackup");
+    let backup = marrow(&["backup", &dir, archive.to_str().unwrap()]);
+    assert_eq!(backup.status.code(), Some(1), "{backup:?}");
+    assert!(
+        !archive.exists(),
+        "a failed backup leaves no archive for the corrupt store"
+    );
+
+    // `run` fails at store-open with store.corruption, never as a typed program fault at a user
+    // span. Invoke the binary directly so no in-process catalog re-commit opens the store first.
+    let read = support::marrow(&["run", "--entry", "shelf::count_fiction", &dir]);
+    assert_eq!(
+        read.status.code(),
+        Some(1),
+        "run must fail closed: {read:?}"
+    );
+    let read_err = String::from_utf8_lossy(&read.stderr);
+    assert!(
+        read_err.contains("store.corruption"),
+        "run must report store.corruption: {read:?}",
+    );
+    assert!(
+        !read_err.contains("run.type") && !read_err.contains("stored index entry identity"),
+        "run must not misclassify the divergence as a program fault: {read:?}",
+    );
+
+    // A managed write is refused at store-open too, so nothing commits onto the corrupt store.
+    let write_run = support::marrow(&["run", "--entry", "shelf::seed", &dir]);
+    assert_eq!(
+        write_run.status.code(),
+        Some(1),
+        "a write onto the corrupt store must fail closed: {write_run:?}",
+    );
+    assert!(
+        String::from_utf8_lossy(&write_run.stderr).contains("store.corruption"),
+        "a write onto the corrupt store must fail store.corruption: {write_run:?}",
+    );
+
+    // `serve` opens the store before it binds, so a corrupt store fails closed before it listens.
+    let serve = support::marrow_bounded(
+        &["serve", "--addr", "127.0.0.1:0", &dir],
+        std::time::Duration::from_secs(20),
+    );
+    assert_eq!(
+        serve.status.code(),
+        Some(1),
+        "serve must fail closed at store-open: {serve:?}",
+    );
+    assert!(
+        String::from_utf8_lossy(&serve.stderr).contains("store.corruption"),
+        "serve must report store.corruption at store-open: {serve:?}",
+    );
+
+    // No write was accepted: integrity still condemns the same divergent store.
+    let after = marrow(&["data", "integrity", "--format", "json", &dir]);
+    assert_eq!(after.status.code(), Some(1), "{after:?}");
+    assert_eq!(json(after)["code"], serde_json::json!("store.corruption"));
+}
+
+/// Build and seed a project with a UNIQUE `byCode(code)` index whose key is the record's own
+/// `code`, seeded so every record's `code` equals its `id`. That makes each committed entry's
+/// ordered tuple byte-equal the stored identity — the coincidence that let an OR store-open witness
+/// short-circuit on the tuple suffix and never check the read-authoritative value copy. Records are
+/// written through the production `run` pipeline, so the index family is populated as a real write
+/// path leaves it. `read_seven` iterates the unique lookup for code 7, decoding that entry's value.
+fn by_code_unique_project(name: &str, items: i64) -> support::TempProject {
+    let mut seed = String::from("pub fn seed()\n    transaction\n");
+    for id in 1..=items {
+        seed.push_str(&format!("        ^items({id}).code = {id}\n"));
+    }
+    let project = support::temp_project(name, |root| {
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": ".data" }, "run": { "defaultEntry": "shelf::seed" } }"#,
+        );
+        write(
+            root,
+            "src/shelf.mw",
+            &format!(
+                "module shelf\n\n\
+                 resource Item\n\
+                 \x20\x20\x20\x20required code: int\n\
+                 store ^items(id: int): Item\n\n\
+                 \x20\x20\x20\x20index byCode(code) unique\n\n\
+                 pub fn read_seven()\n\
+                 \x20\x20\x20\x20var n = 0\n\
+                 \x20\x20\x20\x20for id in ^items.byCode(7)\n\
+                 \x20\x20\x20\x20\x20\x20\x20\x20n = n + 1\n\
+                 \x20\x20\x20\x20print($\"{{n}}\")\n\n\
+                 {seed}"
+            ),
+        );
+    });
+    let seed = marrow(&["run", project.to_str().unwrap()]);
+    assert_eq!(seed.status.code(), Some(0), "seed run: {seed:?}");
+    project
+}
+
+/// A unique index may key on a column that equals the record identity, so a committed entry's
+/// ordered tuple can byte-equal the stored identity. The read-authoritative copy is still the cell
+/// value — a unique read decodes the identity from it — so a value-payload flip is corruption even
+/// though the tuple suffix coincidentally still matches the stored identity. The shared store-open
+/// index witness must condemn it uniformly across every surface — `data integrity` (text and json),
+/// `stats`, `dump`, `doctor`, `recover`, `backup`, `run`, and `serve` — failing `store.corruption`,
+/// and `run` must fail at store-open rather than surfacing the flip as a typed program fault
+/// (`run.type`) at an innocent source span; no write is accepted. A healthy store verifies and
+/// recovers clean and its unique read returns its one entry.
+#[test]
+fn unique_index_value_flip_when_tuple_equals_identity_fails_closed_across_every_store_open() {
+    let project = by_code_unique_project("unique-index-value-flip", 12);
+    let dir = project.to_str().unwrap().to_string();
+
+    // Healthy control: the unique lookup reads its one entry, integrity blesses the store, and
+    // recover converges clean.
+    let clean_read = support::marrow(&["run", "--entry", "shelf::read_seven", &dir]);
+    assert_eq!(
+        clean_read.status.code(),
+        Some(0),
+        "healthy unique read: {clean_read:?}"
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&clean_read.stdout).trim(),
+        "1",
+        "a healthy unique lookup returns its one entry: {clean_read:?}"
+    );
+    let clean = marrow(&["data", "integrity", "--format", "json", &dir]);
+    assert_eq!(
+        clean.status.code(),
+        Some(0),
+        "clean store verifies: {clean:?}"
+    );
+    let clean_recover = marrow(&["data", "recover", "--format", "json", &dir]);
+    assert_eq!(
+        clean_recover.status.code(),
+        Some(0),
+        "recover converges clean on a healthy store: {clean_recover:?}"
+    );
+
+    // Flip only the value payload of the code=7 entry: its tuple [7] and stored identity [7] stay
+    // equal, so an OR witness trusting the coincidental tuple suffix would bless the store, but the
+    // value copy a unique read consumes now decodes a different identity.
+    let store_path = project.join(".data").join("marrow.redb");
+    let by_code = index_catalog_id(&project, "items", "byCode");
+    {
+        let store = TreeStore::open(&store_path).expect("open seeded store");
+        store.begin().expect("begin");
+        store
+            .delete_index_entry(&by_code, &[SavedKey::Int(7)], &[SavedKey::Int(7)])
+            .expect("drop healthy unique entry");
+        store
+            .write_index_entry(
+                &by_code,
+                &[SavedKey::Int(7)],
+                &[SavedKey::Int(7)],
+                encode_identity_payload(&[SavedKey::Int(99)]),
+            )
+            .expect("write value-flipped unique entry");
+        store.commit().expect("commit value-flipped entry");
+    }
+
+    let integrity_json = marrow(&["data", "integrity", "--format", "json", &dir]);
+    assert_eq!(integrity_json.status.code(), Some(1), "{integrity_json:?}");
+    assert_eq!(
+        json(integrity_json)["code"],
+        serde_json::json!("store.corruption"),
+    );
+
+    let integrity_text = marrow(&["data", "integrity", &dir]);
+    assert_eq!(integrity_text.status.code(), Some(1), "{integrity_text:?}");
+    assert!(
+        String::from_utf8_lossy(&integrity_text.stderr).contains("store.corruption"),
+        "integrity text must report store.corruption: {integrity_text:?}",
+    );
+
+    for cmd in [
+        vec!["data", "stats", "--format", "json", &dir],
+        vec!["data", "dump", "--format", "json", &dir],
+    ] {
+        let output = marrow(&cmd);
+        assert_eq!(output.status.code(), Some(1), "{cmd:?}: {output:?}");
+        assert_eq!(
+            support::json(output.stdout)["code"],
+            serde_json::json!("store.corruption"),
+            "{cmd:?}",
+        );
+    }
+
+    let doctor = marrow(&["doctor", "--format", "json", &dir]);
+    assert_eq!(doctor.status.code(), Some(1), "{doctor:?}");
+    assert!(
+        String::from_utf8_lossy(&doctor.stdout).contains("store.corruption"),
+        "doctor must surface store.corruption: {doctor:?}",
+    );
+
+    let recover = marrow(&["data", "recover", "--format", "json", &dir]);
+    assert_eq!(recover.status.code(), Some(1), "{recover:?}");
+    assert_eq!(
+        support::json(recover.stdout)["code"],
+        serde_json::json!("store.corruption"),
+    );
+
+    let archive = project.join("items.mwbackup");
+    let backup = marrow(&["backup", &dir, archive.to_str().unwrap()]);
+    assert_eq!(backup.status.code(), Some(1), "{backup:?}");
+    assert!(
+        !archive.exists(),
+        "a failed backup leaves no archive for the corrupt store"
+    );
+
+    // `run` fails at store-open with store.corruption, never as a typed program fault at the unique
+    // lookup's source span. Invoke the binary directly so no in-process catalog re-commit opens the
+    // store first.
+    let read = support::marrow(&["run", "--entry", "shelf::read_seven", &dir]);
+    assert_eq!(
+        read.status.code(),
+        Some(1),
+        "run must fail closed: {read:?}"
+    );
+    let read_err = String::from_utf8_lossy(&read.stderr);
+    assert!(
+        read_err.contains("store.corruption"),
+        "run must report store.corruption: {read:?}",
+    );
+    assert!(
+        !read_err.contains("run.type")
+            && !read_err.contains("stored unique index identity does not match the entry payload"),
+        "run must not misclassify the value flip as a program fault: {read:?}",
+    );
+
+    // A managed write is refused at store-open too, so nothing commits onto the corrupt store.
+    let write_run = support::marrow(&["run", "--entry", "shelf::seed", &dir]);
+    assert_eq!(
+        write_run.status.code(),
+        Some(1),
+        "a write onto the corrupt store must fail closed: {write_run:?}",
+    );
+    assert!(
+        String::from_utf8_lossy(&write_run.stderr).contains("store.corruption"),
+        "a write onto the corrupt store must fail store.corruption: {write_run:?}",
+    );
+
+    // `serve` opens the store before it binds, so a corrupt store fails closed before it listens.
+    let serve = support::marrow_bounded(
+        &["serve", "--addr", "127.0.0.1:0", &dir],
+        std::time::Duration::from_secs(20),
+    );
+    assert_eq!(
+        serve.status.code(),
+        Some(1),
+        "serve must fail closed at store-open: {serve:?}",
+    );
+    assert!(
+        String::from_utf8_lossy(&serve.stderr).contains("store.corruption"),
+        "serve must report store.corruption at store-open: {serve:?}",
+    );
+
+    // No write was accepted: integrity still condemns the same value-flipped store.
+    let after = marrow(&["data", "integrity", "--format", "json", &dir]);
+    assert_eq!(after.status.code(), Some(1), "{after:?}");
+    assert_eq!(json(after)["code"], serde_json::json!("store.corruption"));
 }
 
 /// Backup carries data cells and rebuilds the index family on restore, so it must not

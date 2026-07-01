@@ -4,7 +4,7 @@ use marrow_check::{
     CheckedFacts, CheckedSavedIndex, CheckedSavedIndexKey, CheckedSavedMember, CheckedSavedPlace,
     ResourceMemberId, StoreIndexKeySource, StoredValueMeaning,
 };
-use marrow_store::key::{SavedKey, encode_identity_payload};
+use marrow_store::key::{INDEX_MARKER, SavedKey, encode_identity_payload};
 use marrow_store::tree::TreeStore;
 use marrow_syntax::SourceSpan;
 
@@ -16,8 +16,6 @@ use crate::write::{
     ResourceValue, WRITE_INVALID_DATA, WRITE_STORE, WRITE_UNIQUE_CONFLICT, WriteError,
 };
 use crate::write_plan::PlanStep;
-
-const INDEX_MARKER: &[u8] = b"1";
 
 #[derive(Clone, Copy)]
 pub(crate) struct IndexWriteContext<'a> {

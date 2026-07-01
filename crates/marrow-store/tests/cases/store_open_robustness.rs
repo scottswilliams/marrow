@@ -257,7 +257,7 @@ fn corrupt_index_cell_fails_closed_while_data_records_stay_readable() {
             store
                 .write_index_entry(
                     &by_shelf,
-                    &[SavedKey::Str("fiction".into())],
+                    &[SavedKey::Str("fiction".into()), SavedKey::Int(id)],
                     &[SavedKey::Int(id)],
                     Vec::new(),
                 )

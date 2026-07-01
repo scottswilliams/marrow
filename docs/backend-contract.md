@@ -180,8 +180,16 @@ through the point-lookup descent typed reads use, failing closed when an
 interior-separator flip misroutes a lookup past a committed cell the scan — and
 therefore the digest — still covers, and decodes the commit-metadata cell so a
 present-but-undecodable stamp fails closed independent of the reading command or
-output format. `data integrity`, `data stats`, `data dump`, `backup`, `data
-recover`, and the runtime store-open share this one witness.
+output format. The derived index family is reconciled the same way: every
+committed index entry the linear scan yields must be reachable by the
+point-lookup descent an index read navigates, so an interior-separator flip that
+misroutes a bounded index seek past a contiguous subtree fails closed rather than
+letting an index range read silently under-return. It also reconciles each
+entry's stored identity against its redundant copy — the trailing keys of a
+non-unique tuple or a unique entry's value — so a flip diverging the two fails
+closed at store open rather than surfacing later as a typed program fault. `data
+integrity`, `data stats`, `data dump`, `backup`, `data recover`, and the runtime
+store-open share this one witness.
 
 The anchor cannot witness a corruption that drops the anchor itself: a flip in
 the commit-metadata region that rolls the store back to its empty initial commit

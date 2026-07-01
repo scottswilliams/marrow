@@ -187,6 +187,11 @@ pub(crate) fn decode_key_value(bytes: &[u8]) -> Option<(SavedKey, usize)> {
     }
 }
 
+/// The cell value a non-unique index entry carries. Its unique sibling instead carries the
+/// record identity as an [`encode_identity_payload`] blob, so the value shape alone distinguishes
+/// the two entry kinds without a schema lookup.
+pub const INDEX_MARKER: &[u8] = b"1";
+
 pub fn encode_identity_payload(identity: &[SavedKey]) -> Vec<u8> {
     let mut bytes = Vec::new();
     for key in identity {

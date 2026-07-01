@@ -1312,6 +1312,11 @@ fn open_surface_session(
     if store.store.read_store_uid()?.is_none() || store.store.read_commit_metadata()?.is_none() {
         return Err(ProjectSessionError::DurableStoreRequired);
     }
+    // Serving saved data owes the same schema-driven completeness cross-check the runtime open,
+    // inspection family, backup, and recover run: the structural witness the open ran proves the
+    // store traversable but not that its index holds exactly the entries its records derive, so a
+    // truncated index fails closed here rather than streaming an under-returning range.
+    tooling::verify_store_completeness(&store.store, &program)?;
     // A write-capable open must not seize a store the binary is not admitted against. When the
     // committed lock records an epoch high-water a teammate already advanced past, the local store
     // is behind that committed activation, so a surface write would commit against an epoch the
@@ -1676,6 +1681,13 @@ fn finish_open(
     if populated_unstamped_store(checked.program(), &store.store)? {
         return Err(ProjectSessionError::UnstampedStore);
     }
+    // Reading saved data owes the schema-driven completeness cross-check the inspection family,
+    // backup, and recover run through their single owner. The structural witness the open already
+    // ran proves the store traversable but cannot tell that the index holds exactly the entries its
+    // data records derive: a truncated index reads under-returning with no structural fault. Running
+    // it here fails such a store closed at open rather than letting a run enumerate it truncated or
+    // accept a write onto it.
+    tooling::verify_store_completeness(&store.store, checked.program())?;
     let NativeRunStore { path, store } = store;
     if isolate_writes {
         let isolated = isolated_store(&path)?;

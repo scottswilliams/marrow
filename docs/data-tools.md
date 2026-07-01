@@ -324,9 +324,21 @@ point-lookup descent typed reads use, so an interior-node flip that misroutes a
 lookup past a committed cell the scan — and the digest — still cover is reported as
 `store.corruption` rather than read absent, and it decodes the accepted
 commit-metadata cell so a present-but-corrupt commit stamp fails closed regardless
-of which command reads it or in which output format. `data integrity`, `data
-stats`, `data dump`, `backup`, `data recover`, and the runtime store-open share this
-one witness.
+of which command reads it or in which output format. The derived index btree is
+reconciled the same way: every committed index entry the linear scan yields must be
+reachable by the point-lookup descent an index read navigates, so an
+interior-separator flip that misroutes a bounded index seek past a contiguous
+subtree fails closed rather than letting `^root.index(key)` silently under-return.
+It also reconciles each entry's stored identity against its redundant copy — the
+trailing keys of a non-unique tuple or a unique entry's value — so a flip
+diverging the two fails closed at store open rather than surfacing later as a
+typed program fault at an innocent source span.
+The runtime store-open also runs the schema-driven index-completeness cross-check
+`data integrity`, `backup`, and `data recover` run — the entry count the data
+records derive against the entries the index enumerates — so a truncated index
+fails `run` and `serve` closed exactly as it fails those commands, never read
+under-returning or written onto. `data integrity`, `data stats`, `data dump`,
+`backup`, `data recover`, and the runtime store-open share this one witness.
 
 The anchor cannot witness a rollback that drops the anchor itself. The committed
 `marrow.lock` is the second, independent witness: it records the accepted catalog

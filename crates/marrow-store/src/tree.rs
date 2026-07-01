@@ -6,14 +6,16 @@ use std::ops::ControlFlow;
 
 use crate::backend::{Backend, ScanPage, StoreError, ValuePrefix};
 use crate::cell::{
-    CatalogId, CellKey, MetaCell, NODE_MARKER, SequencePosition, decode_data_cell_key,
-    decode_data_child_key, decode_data_family_store, decode_index_cell_key, decode_index_child_key,
-    decode_index_entry_key, decode_index_identity, decode_structural_digest_store,
-    prefix_successor,
+    CatalogId, CellKey, IndexCellKey, MetaCell, NODE_MARKER, SequencePosition,
+    decode_data_cell_key, decode_data_child_key, decode_data_family_store, decode_index_cell_key,
+    decode_index_child_key, decode_index_entry_key, decode_index_identity,
+    decode_structural_digest_store, prefix_successor,
 };
 use crate::codec::BoundedReader;
 use crate::digest::RootDigest;
-use crate::key::{KEY_INT_EXCLUSIVE_END, SavedKey, encode_key_value};
+use crate::key::{
+    INDEX_MARKER, KEY_INT_EXCLUSIVE_END, SavedKey, encode_identity_payload, encode_key_value,
+};
 use crate::metadata::{
     decode_commit_metadata, decode_store_uid, decode_structural_digest, encode_commit_metadata,
     encode_store_uid, encode_structural_digest,
@@ -417,9 +419,18 @@ impl TreeStore {
 
     /// Verify the index family the way [`verify_readable`] verifies the data family:
     /// a linear structural decode of every index cell, in encoded order, then a
-    /// seek-driven re-descent of every index it observes. The two passes traverse
-    /// different btree paths, so a clobbered index node fails closed as corruption
-    /// rather than silently dropping rows an index lookup would skip.
+    /// seek-driven re-descent of every index it observes, then a reconciliation of the
+    /// bounded seek path against that linear scan. The passes traverse different btree
+    /// paths, so a clobbered index node fails closed as corruption rather than silently
+    /// dropping rows an index lookup would skip.
+    ///
+    /// The linear decode also reconciles each entry's two identity copies. A production
+    /// writer stores a record's identity twice per index entry: after the `INDEX_IDENTITY`
+    /// separator, and — redundantly — as the trailing keys of the ordered tuple for a
+    /// non-unique index or in the cell value for a unique one. A flip diverging the stored
+    /// identity from that redundant copy is always corruption, so failing it here condemns
+    /// such an entry at store open rather than letting a read surface it as a typed program
+    /// fault at an innocent source span.
     ///
     /// `data integrity` runs this directly, because its record and orphan passes only
     /// touch the data family and would otherwise bless an index-corrupt store.
@@ -429,8 +440,13 @@ impl TreeStore {
         let mut previous: Option<Vec<u8>> = None;
         let mut index_shapes: std::collections::BTreeSet<(CatalogId, usize)> =
             std::collections::BTreeSet::new();
-        self.for_each_page_entry(CellKey::index_family().as_bytes(), |key, _value| {
+        self.for_each_page_entry(CellKey::index_family().as_bytes(), |key, value| {
             let decoded = decode_index_cell_key(key).ok_or_else(|| corrupt_cell(key))?;
+            if !index_entry_identity_is_consistent(&decoded, value) {
+                return Err(StoreError::Corruption {
+                    message: "index entry identity does not match its record identity".into(),
+                });
+            }
             index_shapes.insert((decoded.index, decoded.index_keys.len()));
             if let Some(previous) = &previous
                 && key <= previous.as_slice()
@@ -445,7 +461,29 @@ impl TreeStore {
         for (index, arity) in index_shapes {
             self.descend_index_entries(&index, arity, &mut Vec::new())?;
         }
-        Ok(())
+        self.verify_index_cells_seek_reachable()
+    }
+
+    /// Every committed index cell the linear scan yields must also be reachable by the
+    /// point-lookup descent an index read navigates. A range scan iterates leaf pages while
+    /// a bounded index seek navigates interior branch separators, so a flipped separator can
+    /// misroute a seek past a committed entry the linear scan — and the schema-driven
+    /// completeness count — still yield: the entry reads absent though its bytes are intact,
+    /// and an index range read silently under-returns a contiguous subtree. Re-reading each
+    /// scanned index cell through the point read fails such a store closed rather than
+    /// blessing a committed index entry no seek can reach. This mirrors
+    /// [`verify_data_cells_seek_reachable`] for the derived index family.
+    ///
+    /// [`verify_data_cells_seek_reachable`]: TreeStore::verify_data_cells_seek_reachable
+    fn verify_index_cells_seek_reachable(&self) -> Result<(), StoreError> {
+        self.for_each_page_entry(CellKey::index_family().as_bytes(), |key, _value| {
+            if self.read_cell(key)?.is_none() {
+                return Err(StoreError::Corruption {
+                    message: "a committed index cell is unreachable by point lookup".into(),
+                });
+            }
+            Ok(ControlFlow::Continue(()))
+        })
     }
 
     /// Seek-descend every entry under one index, mirroring how an index lookup walks
@@ -2408,6 +2446,21 @@ fn corrupt_cell(bytes: &[u8]) -> StoreError {
     }
 }
 
+/// A committed index entry stores its record identity after the `INDEX_IDENTITY` separator and
+/// keeps a single redundant copy whose location the entry kind decides, discriminated by the cell
+/// value shape: a non-unique entry carries the [`INDEX_MARKER`] value and repeats the identity as
+/// the trailing keys of its ordered tuple, while a unique entry carries the identity in its value.
+/// The check reconciles the stored identity against the one copy reads actually consume for that
+/// kind — never an OR that lets a coincidental tuple suffix mask a corrupt unique value, or a value
+/// marker mask a corrupt non-unique tuple.
+fn index_entry_identity_is_consistent(entry: &IndexCellKey, value: &[u8]) -> bool {
+    if value == INDEX_MARKER {
+        entry.index_keys.ends_with(&entry.identity)
+    } else {
+        value == encode_identity_payload(&entry.identity).as_slice()
+    }
+}
+
 /// A paged scan that resumes from a page's final key must move strictly past the
 /// cursor it was seeded with: `scan_after` returns keys above its cursor and
 /// `scan_before` keys below it, so on a healthy store the next resume key always
@@ -2459,7 +2512,7 @@ mod tests {
     use crate::backend::counting::{BackendCounts, CountingBackend};
     use crate::backend::{Backend, ScanPage, ValuePrefix};
     use crate::cell::{CatalogId, DataCellKind, MetaCell};
-    use crate::key::SavedKey;
+    use crate::key::{INDEX_MARKER, SavedKey, encode_identity_payload};
     use crate::mem::MemStore;
     use crate::metadata::{decode_commit_metadata, encode_commit_metadata};
 
@@ -2639,8 +2692,12 @@ mod tests {
                 fault: BackendFault::NonAdvancingScanPage {
                     prefix: CellKey::index_family().into_bytes(),
                     cells: vec![
-                        CellKey::index(index, &[SavedKey::Str("a".into())], &[SavedKey::Int(1)])
-                            .into_bytes(),
+                        CellKey::index(
+                            index,
+                            &[SavedKey::Str("a".into()), SavedKey::Int(1)],
+                            &[SavedKey::Int(1)],
+                        )
+                        .into_bytes(),
                     ],
                 },
             }
@@ -2932,6 +2989,115 @@ mod tests {
         assert_corruption(store.verify_readable());
     }
 
+    /// A non-unique index repeats a record's identity as the trailing suffix of its ordered key
+    /// tuple. A single-bit flip diverging the stored identity from that suffix is the corruption
+    /// the runtime read path also refuses per entry; the store-open witness must condemn it at
+    /// open — never leaving a read to surface it later as a typed program fault at an innocent
+    /// source span — while a healthy sibling entry still verifies clean.
+    #[test]
+    fn verify_index_readable_rejects_a_non_unique_entry_whose_identity_diverges_from_its_tuple_suffix()
+     {
+        let index = catalog("cat_00000000000000000000000000000003");
+        let store = TreeStore::memory();
+        store
+            .write_index_entry(
+                &index,
+                &[SavedKey::Str("fiction".into()), SavedKey::Int(1)],
+                &[SavedKey::Int(1)],
+                INDEX_MARKER.to_vec(),
+            )
+            .expect("write healthy index entry");
+        store
+            .verify_index_readable()
+            .expect("a production-shaped index entry verifies clean");
+
+        // The stored identity ([2]) diverges from the tuple's identity suffix ([1]) the way a
+        // single-bit flip inside a committed entry does. Both the index witness and the full
+        // readable check recover runs must fail closed.
+        store
+            .write_index_entry(
+                &index,
+                &[SavedKey::Str("fiction".into()), SavedKey::Int(1)],
+                &[SavedKey::Int(2)],
+                INDEX_MARKER.to_vec(),
+            )
+            .expect("write divergent index entry");
+        assert_corruption(store.verify_index_readable());
+        assert_corruption(store.verify_readable());
+    }
+
+    /// A unique index does not repeat the identity in its key tuple — the tuple is the unique key,
+    /// with the record identity carried in the cell value. The store-open witness reconciles the
+    /// stored identity against that value copy, so a healthy unique entry verifies clean while a
+    /// flip diverging the value from the stored identity fails closed.
+    #[test]
+    fn verify_index_readable_reconciles_a_unique_entry_identity_against_its_value() {
+        let index = catalog("cat_00000000000000000000000000000004");
+        let store = TreeStore::memory();
+        // A unique byIsbn entry: tuple [isbn], identity [id], value carrying the identity.
+        store
+            .write_index_entry(
+                &index,
+                &[SavedKey::Str("978-1".into())],
+                &[SavedKey::Int(7)],
+                encode_identity_payload(&[SavedKey::Int(7)]),
+            )
+            .expect("write healthy unique index entry");
+        store
+            .verify_index_readable()
+            .expect("a unique index entry whose value carries its identity verifies clean");
+
+        // Flip the value so it no longer carries the stored identity: the value now encodes [8]
+        // while the entry identity is [7]. The witness must fail closed.
+        store
+            .write_index_entry(
+                &index,
+                &[SavedKey::Str("978-2".into())],
+                &[SavedKey::Int(9)],
+                encode_identity_payload(&[SavedKey::Int(8)]),
+            )
+            .expect("write divergent unique index entry");
+        assert_corruption(store.verify_index_readable());
+        assert_corruption(store.verify_readable());
+    }
+
+    /// A unique index may include the identity column in its key, so its tuple can byte-equal the
+    /// stored identity — `index byCode(code) unique` on a record whose `code` equals its `id`. The
+    /// value is still the read-authoritative identity copy, so a flip diverging the value from the
+    /// stored identity must fail closed even though the tuple suffix coincidentally still matches;
+    /// reconciling only the tuple here would bless a value corruption every unique read then faults.
+    #[test]
+    fn verify_index_readable_reconciles_a_unique_entry_whose_tuple_equals_its_identity() {
+        let index = catalog("cat_00000000000000000000000000000005");
+        let store = TreeStore::memory();
+        // tuple [7] == identity [7]; the value carries the identity a unique read decodes.
+        store
+            .write_index_entry(
+                &index,
+                &[SavedKey::Int(7)],
+                &[SavedKey::Int(7)],
+                encode_identity_payload(&[SavedKey::Int(7)]),
+            )
+            .expect("write healthy unique index entry whose tuple equals its identity");
+        store
+            .verify_index_readable()
+            .expect("a unique entry whose tuple equals its identity verifies clean");
+
+        // Flip only the value payload to [8] while tuple and stored identity stay [7]. The tuple
+        // suffix still matches, so an OR check would bless it, but the value copy reads consume is
+        // corrupt: the witness must fail closed.
+        store
+            .write_index_entry(
+                &index,
+                &[SavedKey::Int(9)],
+                &[SavedKey::Int(9)],
+                encode_identity_payload(&[SavedKey::Int(8)]),
+            )
+            .expect("write divergent unique index entry whose tuple equals its stored identity");
+        assert_corruption(store.verify_index_readable());
+        assert_corruption(store.verify_readable());
+    }
+
     /// A healthy store with index entries verifies, and every index identity is reachable
     /// through the seek-driven re-descent the verification runs.
     #[test]
@@ -2943,9 +3109,9 @@ mod tests {
             store
                 .write_index_entry(
                     &index,
-                    &[SavedKey::Str("shelf".into())],
+                    &[SavedKey::Str("shelf".into()), SavedKey::Int(id)],
                     &[SavedKey::Int(id)],
-                    Vec::new(),
+                    INDEX_MARKER.to_vec(),
                 )
                 .expect("write index entry");
         }
@@ -2954,14 +3120,74 @@ mod tests {
             .verify_index_readable()
             .expect("healthy index verifies");
 
+        let range = IndexRangeBounds {
+            lower: None,
+            lower_inclusive: true,
+            upper: None,
+            upper_inclusive: true,
+        };
         let page = store
-            .scan_index_tuple(&index, &[SavedKey::Str("shelf".into())], 16)
-            .expect("scan index tuple");
+            .scan_index_range(&index, &[SavedKey::Str("shelf".into())], &range, 16)
+            .expect("scan index range");
         assert_eq!(
             page.entries.len(),
             identities.len(),
             "every index identity is returned: {page:?}"
         );
+    }
+
+    /// An interior-separator flip can misroute a bounded index seek past a committed index
+    /// entry a range scan still yields: the entry reads absent through the point-lookup descent
+    /// while the linear scan and the schema-driven completeness count still cover it, so an index
+    /// range read silently under-returns a contiguous subtree. The index store-open witness
+    /// reconciles the point-lookup descent against the linear scan and fails closed, on many cells
+    /// rather than one offset; a healthy index still verifies.
+    #[test]
+    fn a_seek_unreachable_index_cell_fails_the_store_open_witness() {
+        let index = catalog("cat_00000000000000000000000000000003");
+        let (backend, hidden) = FaultingBackend::seek_misroute();
+        let store = TreeStore::from_backend(Box::new(backend));
+        store.begin().expect("begin");
+        for id in 1..=5 {
+            store
+                .write_index_entry(
+                    &index,
+                    &[SavedKey::Str("fiction".into()), SavedKey::Int(id)],
+                    &[SavedKey::Int(id)],
+                    INDEX_MARKER.to_vec(),
+                )
+                .expect("write index entry");
+        }
+        store.commit().expect("commit");
+        store
+            .verify_index_readable()
+            .expect("a freshly committed index verifies clean");
+
+        // Hide each committed index cell from point lookup one at a time, the way an interior
+        // flip misroutes a seek while the range scan still yields the cell. Every one must fail
+        // the index witness and the full readable check recover runs, even though the linear scan
+        // and the seek-driven descent still traverse the intact bytes.
+        for id in [1i64, 3, 5] {
+            let hidden_key = CellKey::index(
+                &index,
+                &[SavedKey::Str("fiction".into()), SavedKey::Int(id)],
+                &[SavedKey::Int(id)],
+            )
+            .into_bytes();
+            hidden.borrow_mut().insert(hidden_key);
+            assert_corruption(store.verify_index_readable());
+            assert_corruption(store.verify_readable());
+            hidden.borrow_mut().clear();
+        }
+
+        // With nothing hidden the index verifies clean again: the witness condemns only an
+        // unreachable committed entry, never a healthy one.
+        store
+            .verify_index_readable()
+            .expect("the index verifies clean once every entry is reachable again");
+        store
+            .verify_readable()
+            .expect("the store is readable once every entry is reachable again");
     }
 
     /// The index-family walk pages the same way the data-family walk does. A backend that
@@ -3122,7 +3348,7 @@ mod tests {
                     SavedKey::Int(1),
                 ],
                 &[SavedKey::Int(1)],
-                Vec::new(),
+                INDEX_MARKER.to_vec(),
             )
             .expect("write lower equal entry");
         store
@@ -3134,7 +3360,7 @@ mod tests {
                     SavedKey::Int(2),
                 ],
                 &[SavedKey::Int(2)],
-                Vec::new(),
+                INDEX_MARKER.to_vec(),
             )
             .expect("write greater entry");
         let range = IndexRangeBounds {
@@ -3710,7 +3936,7 @@ mod tests {
                 &index,
                 &[SavedKey::Str("Mort".into())],
                 &[SavedKey::Int(1)],
-                Vec::new(),
+                INDEX_MARKER.to_vec(),
             )
             .expect("write index");
         // A meta stamp that the backup stream must not carry.
