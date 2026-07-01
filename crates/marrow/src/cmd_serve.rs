@@ -14,7 +14,7 @@ use marrow_json::surface::{
 };
 use marrow_run::{
     ProjectSessionError, ProjectSurfaceReadSession, ProjectSurfaceSession, ProjectSurfaceSnapshot,
-    SURFACE_ABI_MISMATCH, SURFACE_STORE,
+    SURFACE_ABI_MISMATCH, SURFACE_AUTH, SURFACE_STORE,
 };
 
 use crate::cmd_run::report_session_open_error;
@@ -36,7 +36,6 @@ const MAX_BODY_BYTES: usize = 1024 * 1024;
 const STREAM_TIMEOUT: Duration = Duration::from_secs(15);
 const READ_POLL_INTERVAL: Duration = Duration::from_millis(250);
 const ACCEPT_POLL: Duration = Duration::from_millis(10);
-const SURFACE_AUTH: &str = "surface.auth";
 
 #[derive(Clone, Copy)]
 enum ServeMode {

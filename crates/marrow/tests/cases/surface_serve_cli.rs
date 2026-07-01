@@ -1517,6 +1517,30 @@ fn surface_serve_remote_auth_rejects_before_body_read() {
 }
 
 #[test]
+fn surface_serve_remote_auth_response_reaches_client_that_streamed_a_body() {
+    let fixture = seeded_surface_fixture("surface-serve-remote-auth-body-drain");
+    let point_route = route_by_alias(&fixture.report, "get");
+    let (_server, addr) = spawn_surface_server_with_env_args(
+        fixture.root(),
+        &[(REMOTE_AUTH_ENV, REMOTE_AUTH_TOKEN)],
+        &["--remote", "--auth-token-env", REMOTE_AUTH_ENV],
+    );
+
+    // A client that streams its full request body but omits the bearer token must still receive the
+    // 401 surface.auth reply. The server must drain the declared body before closing so the reply is
+    // not discarded by a TCP RST.
+    let response = post_json(
+        addr,
+        &point_route.path,
+        point_read_request(&fixture.report, &point_route.operation_tag, 1),
+        &[("Content-Type", "application/json")],
+    );
+
+    assert_eq!(response.status, 401, "{:#?}", response.body);
+    assert_eq!(response.body["code"], "surface.auth");
+}
+
+#[test]
 fn surface_serve_remote_auth_precedes_post_cors_validation() {
     let fixture = seeded_surface_fixture("surface-serve-remote-auth-before-cors");
     let point_route = route_by_alias(&fixture.report, "get");

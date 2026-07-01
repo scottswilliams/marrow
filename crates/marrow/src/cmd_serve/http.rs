@@ -61,7 +61,7 @@ pub(super) fn serve_connection(
         );
         return;
     }
-    let response = handle_connection(
+    let outcome = handle_connection(
         &mut stream,
         executor,
         routes,
@@ -70,14 +70,38 @@ pub(super) fn serve_connection(
         remote_cursor_token,
         shutdown,
     );
-    if let Err(error) = write_response(&mut stream, &response) {
-        eprintln!(
-            "{}",
-            server_code_message(
-                "io.write",
-                format!("failed to write surface response: {error}")
-            )
-        );
+    match write_response(&mut stream, &outcome.response) {
+        Ok(()) => {
+            if let Some(remaining) = outcome.drain_body {
+                drain_request_body(&mut stream, remaining, shutdown);
+            }
+        }
+        Err(error) => {
+            eprintln!(
+                "{}",
+                server_code_message(
+                    "io.write",
+                    format!("failed to write surface response: {error}")
+                )
+            );
+        }
+    }
+}
+
+/// A head-level error responds before the request body is read. The response is written first, then
+/// the client's declared body is drained so closing the connection sends a normal FIN rather than a
+/// TCP RST, which would discard the response the client has not yet consumed.
+struct ConnectionOutcome {
+    response: SurfaceHttpResponse,
+    drain_body: Option<usize>,
+}
+
+impl ConnectionOutcome {
+    fn respond(response: SurfaceHttpResponse) -> Self {
+        Self {
+            response,
+            drain_body: None,
+        }
     }
 }
 
@@ -89,7 +113,7 @@ fn handle_connection(
     remote_auth: Option<&RemoteAuthToken>,
     remote_cursor_token: Option<&RemoteCursorToken>,
     shutdown: &shutdown::Shutdown,
-) -> SurfaceHttpResponse {
+) -> ConnectionOutcome {
     let header_read_mode = if remote_auth.is_some() {
         HeaderReadMode::Exact
     } else {
@@ -98,21 +122,29 @@ fn handle_connection(
     let partial = match read_http_request_head(stream, shutdown, header_read_mode) {
         Ok(partial) => partial,
         Err(failure) => {
-            return SurfaceHttpResponse::error(failure.status, failure.error).with_cors_vary(cors);
+            return ConnectionOutcome::respond(
+                SurfaceHttpResponse::error(failure.status, failure.error).with_cors_vary(cors),
+            );
         }
     };
     let (route, cors_match) = match decide_http_head(&partial.head, routes, cors, remote_auth) {
-        HeadDecision::Respond(response) => return response,
+        HeadDecision::Respond(response) => {
+            return ConnectionOutcome {
+                response,
+                drain_body: pending_body_len(&partial),
+            };
+        }
         HeadDecision::ReadBody { route, cors_match } => (route, cors_match),
     };
-    match read_http_request_body(stream, partial, shutdown) {
+    let response = match read_http_request_body(stream, partial, shutdown) {
         Ok(request) => {
             execute_http_request_body(request, executor, &route, cors_match, remote_cursor_token)
         }
         Err(failure) => {
             SurfaceHttpResponse::error(failure.status, failure.error).with_cors_match(cors_match)
         }
-    }
+    };
+    ConnectionOutcome::respond(response)
 }
 
 enum HeadDecision {
@@ -637,6 +669,42 @@ fn read_http_request_body(
     Ok(HttpRequest {
         body: buffer[body_start..body_end].to_vec(),
     })
+}
+
+/// The number of declared request-body bytes still unread after the head, or `None` when there is
+/// nothing to drain. An over-limit declared body yields `None` so it stays undrained and fails
+/// closed with the connection reset that request already earns.
+fn pending_body_len(partial: &PartialHttpRequest) -> Option<usize> {
+    let content_length = partial.head.content_length?;
+    if content_length > MAX_BODY_BYTES {
+        return None;
+    }
+    let body_start = partial.header_end + 4;
+    let body_end = body_start.checked_add(content_length)?;
+    let remaining = body_end.saturating_sub(partial.buffer.len());
+    (remaining > 0).then_some(remaining)
+}
+
+/// Read and discard the client's already-sent request body after a head-level error response so the
+/// connection closes with a normal FIN. Closing a `TcpStream` with an unread body in the receive
+/// buffer makes the OS send a TCP RST that discards the response the client has not yet consumed,
+/// losing a 401 or any other head-level error. The drain is best effort: it consumes what the client
+/// has already streamed and stops as soon as no more is pending, so a client that declared a body
+/// but withheld it does not hold the connection open.
+fn drain_request_body(stream: &mut TcpStream, mut remaining: usize, shutdown: &shutdown::Shutdown) {
+    let mut chunk = [0; 4096];
+    while remaining > 0 {
+        if shutdown.requested().is_some() {
+            return;
+        }
+        let limit = remaining.min(chunk.len());
+        match stream.read(&mut chunk[..limit]) {
+            Ok(0) => return,
+            Ok(read) => remaining -= read,
+            Err(error) if error.kind() == ErrorKind::Interrupted => {}
+            Err(_) => return,
+        }
+    }
 }
 
 fn read_until_header_end(

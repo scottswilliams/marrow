@@ -49,6 +49,7 @@ pub const SURFACE_CURSOR: &str = "surface.cursor";
 pub const SURFACE_STALE_CURSOR: &str = "surface.stale_cursor";
 pub const SURFACE_LIMIT: &str = "surface.limit";
 pub const SURFACE_ABI_MISMATCH: &str = "surface.abi_mismatch";
+pub const SURFACE_AUTH: &str = "surface.auth";
 pub const SURFACE_ACTION: &str = "surface.action";
 pub const SURFACE_COMPUTED: &str = "surface.computed";
 pub const SURFACE_STORE: &str = "surface.store";

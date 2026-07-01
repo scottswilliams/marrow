@@ -178,6 +178,9 @@ fn client_typescript_uses_lock_projection_when_store_is_absent() {
         "{stdout}"
     );
     assert!(stdout.contains("export type SurfaceErrorCode"), "{stdout}");
+    // A --remote server can answer any request with a 401 surface.auth, so the closed client
+    // union must be able to represent it.
+    assert!(stdout.contains("\"surface.auth\""), "{stdout}");
     assert!(stdout.contains("export function invokeRaw"), "{stdout}");
     assert!(stdout.contains("/surface/v1/create/"), "{stdout}");
     assert!(stdout.contains("/surface/v1/delete/"), "{stdout}");
