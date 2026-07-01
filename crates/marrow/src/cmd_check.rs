@@ -124,7 +124,10 @@ fn check_project_dir(dir: &str, format: CheckFormat, locked: bool) -> ExitCode {
     // read is read-only, so check never opens an unreadable store for repair, creates one, or
     // writes the source tree; only a readable store's snapshot binds the checked program's frozen
     // shapes, while presence alone governs the `--locked` missing-lock gate below.
-    let authority = crate::read_accepted_store_catalog_lenient(dir, &config);
+    let authority = match crate::read_accepted_store_catalog_lenient(dir, &config) {
+        Ok(authority) => authority,
+        Err(error) => return crate::project_io_exit(dir, error, format),
+    };
     let snapshot = match marrow_check::analyze_project(
         Path::new(dir),
         &config,

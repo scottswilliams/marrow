@@ -85,7 +85,10 @@ fn render_client(
     };
     // Match `check`'s accepted-authority binding: a readable live store owns the accepted
     // surface contract, while the committed lock drives first-run or unreadable-store projection.
-    let authority = crate::read_accepted_store_catalog_lenient(dir, &config);
+    let authority = match crate::read_accepted_store_catalog_lenient(dir, &config) {
+        Ok(authority) => authority,
+        Err(error) => return crate::project_io_exit(dir, error, CheckFormat::Text),
+    };
     let snapshot = match marrow_check::analyze_project(
         Path::new(dir),
         &config,

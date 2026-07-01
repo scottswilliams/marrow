@@ -809,22 +809,28 @@ impl AcceptedAuthority {
 /// recovery-required store file. It distinguishes a present-but-unreadable store from no store at
 /// all so the `--locked` gate can demand a committed lock over a crashed durable store. The read
 /// never writes the source tree.
+///
+/// A `dataDir` that is a non-directory or an inaccessible parent is a configuration fault, not a
+/// durable store: the [`guard_data_dir`](marrow_check::guard_data_dir) pre-check every other
+/// read-only store open runs reports it as `config.data_dir` here too, so an occupied or unreadable
+/// `dataDir` never masquerades as a present-but-unreadable store that fabricates a missing lock.
 pub(crate) fn read_accepted_store_catalog_lenient(
     dir: &str,
     config: &marrow_project::ProjectConfig,
-) -> AcceptedAuthority {
+) -> Result<AcceptedAuthority, marrow_check::ProjectIoError> {
+    marrow_check::guard_data_dir(Path::new(dir), config)?;
     let Ok(Some(path)) = marrow_check::native_store_path(Path::new(dir), config) else {
-        return AcceptedAuthority::Absent;
+        return Ok(AcceptedAuthority::Absent);
     };
     if store_path_is_absent(&path) {
-        return AcceptedAuthority::Absent;
+        return Ok(AcceptedAuthority::Absent);
     }
     let Ok(store) = marrow_store::tree::TreeStore::open_read_only(&path) else {
-        return AcceptedAuthority::ExistsButUnreadable;
+        return Ok(AcceptedAuthority::ExistsButUnreadable);
     };
     match marrow_check::read_accepted_catalog_with_store_read_only(Path::new(dir), Some(&store)) {
-        Ok(snapshot) => AcceptedAuthority::Readable(snapshot),
-        Err(_) => AcceptedAuthority::ExistsButUnreadable,
+        Ok(snapshot) => Ok(AcceptedAuthority::Readable(snapshot)),
+        Err(_) => Ok(AcceptedAuthority::ExistsButUnreadable),
     }
 }
 
@@ -1007,7 +1013,7 @@ pub(crate) fn probe_checked_project(
     dir: &str,
     config: &marrow_project::ProjectConfig,
 ) -> Option<marrow_check::CheckedProgram> {
-    let authority = read_accepted_store_catalog_lenient(dir, config);
+    let authority = read_accepted_store_catalog_lenient(dir, config).ok()?;
     let lock = if authority.snapshot().is_some() {
         None
     } else {

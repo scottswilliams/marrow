@@ -86,6 +86,89 @@ fn check_does_not_open_a_hostile_native_store_file() {
 }
 
 #[test]
+fn check_over_a_data_dir_occupied_by_a_file_reports_a_config_fault() {
+    // A native `dataDir` occupied by a regular file is a configuration fault, not a durable
+    // store. `check` must classify it as `config.data_dir` with the directory remedy — exactly as
+    // `run` and the read-only inspections do — never let the failed store open masquerade as a
+    // present-but-unreadable store that fabricates a `check.lock_missing` ("saved data exists").
+    let project = temp_project_uncommitted("check-ro-data-dir-occupied", |root| {
+        write(root, "marrow.json", native_config());
+        write(root, "src/app.mw", counter_source());
+        write(root, ".data", "not a directory");
+    });
+    let dir = project.to_str().expect("project path utf-8");
+
+    for args in [vec!["check", dir], vec!["check", "--locked", dir]] {
+        let check = marrow(&args);
+        let stderr = String::from_utf8(check.stderr).expect("stderr utf8");
+        assert_eq!(
+            check.status.code(),
+            Some(1),
+            "{args:?}: an occupied dataDir must fail closed: {stderr}"
+        );
+        assert!(
+            stderr.contains("config.data_dir"),
+            "{args:?}: an occupied dataDir is a config fault: {stderr}"
+        );
+        assert!(
+            !stderr.contains("check.lock_missing"),
+            "{args:?}: check must not fabricate a missing lock over a config fault: {stderr}"
+        );
+        assert!(
+            !stderr.contains("os error") && !stderr.contains("store.io"),
+            "{args:?}: the config fault must not leak a store.io errno: {stderr}"
+        );
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn check_over_a_data_dir_denied_by_permissions_reports_a_config_fault() {
+    // A native `dataDir` whose parent directory denies the lookup needed to stat it is the same
+    // `config.data_dir` fault as an occupied one: `check` must report the typed config code, not a
+    // fabricated `check.lock_missing` or a raw `EACCES` leaked as `store.io`.
+    use std::os::unix::fs::PermissionsExt;
+
+    let project = temp_project_uncommitted("check-ro-data-dir-denied", |root| {
+        write(
+            root,
+            "marrow.json",
+            r#"{ "sourceRoots": ["src"], "store": { "backend": "native", "dataDir": "ro/data" } }"#,
+        );
+        write(root, "src/app.mw", counter_source());
+        let locked = root.join("ro");
+        fs::create_dir(&locked).expect("create parent directory");
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o600))
+            .expect("deny lookup on the parent directory");
+    });
+    let dir = project.to_str().expect("project path utf-8");
+
+    let check = marrow(&["check", dir]);
+
+    // Restore access so the self-cleaning temp project can be removed.
+    fs::set_permissions(project.join("ro"), fs::Permissions::from_mode(0o700)).ok();
+
+    let stderr = String::from_utf8(check.stderr).expect("stderr utf8");
+    assert_eq!(
+        check.status.code(),
+        Some(1),
+        "a permission-denied dataDir must fail closed: {stderr}"
+    );
+    assert!(
+        stderr.contains("config.data_dir"),
+        "a permission-denied dataDir is a config fault: {stderr}"
+    );
+    assert!(
+        !stderr.contains("check.lock_missing"),
+        "check must not fabricate a missing lock over a permission fault: {stderr}"
+    );
+    assert!(
+        !stderr.contains("os error") && !stderr.contains("store.io"),
+        "the config fault must not leak a store.io errno: {stderr}"
+    );
+}
+
+#[test]
 fn run_freezes_the_catalog_into_the_store_and_reprojects_the_lock() {
     // The contrast for the uncommitted case: `run` over a persistent store is a durable
     // write path, so the same project that `check` left untouched gains a store snapshot,
