@@ -242,17 +242,19 @@ pub(super) fn reject_structural_type_tokens(
             format!("type nests deeper than the limit of {NESTING_DEPTH_LIMIT}"),
         ));
     }
-    if tokens
+    if let Some(maybe) = tokens
         .iter()
-        .any(|token| matches!(token.kind, TokenKind::Keyword(Keyword::Maybe)))
+        .find(|token| matches!(token.kind, TokenKind::Keyword(Keyword::Maybe)))
     {
-        return Err(ParseError::new(
+        return Err(ParseError::at(
+            maybe.span,
             ParseDiagnosticReason::Expected(expected),
             "`maybe` is only valid before a function return type",
         ));
     }
-    if tokens.iter().any(|token| token.kind == TokenKind::Equal) {
-        return Err(ParseError::new(
+    if let Some(equal) = tokens.iter().find(|token| token.kind == TokenKind::Equal) {
+        return Err(ParseError::at(
+            equal.span,
             ParseDiagnosticReason::Expected(expected),
             message,
         ));

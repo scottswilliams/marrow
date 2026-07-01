@@ -246,6 +246,91 @@ fn rejects_trailing_tokens_after_a_complete_type_annotation() {
 }
 
 #[test]
+fn signature_parse_errors_point_at_the_offending_token_not_column_one() {
+    // A missing or misplaced parameter type and a missing return type each report
+    // at the offending signature token, so two signature faults on one line are
+    // distinguishable rather than both collapsing to the declaration column.
+    for (source, expected, offender) in [
+        // Bare word where a `: type` annotation is expected: point at the word.
+        (
+            "module app\nfn f(a int): int\n    return 1\n",
+            ExpectedSyntax::ParameterType,
+            "int)",
+        ),
+        // Parameter with no annotation at all: point at the parameter name.
+        (
+            "module app\nfn f(a):\n    return\n",
+            ExpectedSyntax::ParameterType,
+            "a)",
+        ),
+        // Colon with no return type after it: point at the trailing colon.
+        (
+            "module app\nfn f(a: int):\n    return\n",
+            ExpectedSyntax::FunctionReturnType,
+            ":\n",
+        ),
+        // `maybe` return marker with no type after it: point at the `maybe`.
+        (
+            "module app\nfn f(a: int): maybe\n    return\n",
+            ExpectedSyntax::FunctionReturnType,
+            "maybe",
+        ),
+        // `maybe` trailing a return type: point at the misplaced `maybe`.
+        (
+            "module app\nfn f(a: int): int maybe\n    return 1\n",
+            ExpectedSyntax::FunctionReturnType,
+            "maybe",
+        ),
+        // `maybe` inside a parameter type: point at the misplaced `maybe`.
+        (
+            "module app\nfn f(a: maybe int): int\n    return 1\n",
+            ExpectedSyntax::ParameterType,
+            "maybe int",
+        ),
+        // `= default` after a return type: point at the offending `=`.
+        (
+            "module app\nfn f(a: int): int = 3\n    return 1\n",
+            ExpectedSyntax::FunctionReturnType,
+            "= 3",
+        ),
+    ] {
+        let parsed = parse_source(source);
+
+        assert!(parsed.has_errors(), "expected error for:\n{source}");
+        let diagnostic = parsed
+            .diagnostics
+            .iter()
+            .find(|diagnostic| {
+                diagnostic.code == "parse.syntax"
+                    && diagnostic.reason == parse_reason(ParseDiagnosticReason::Expected(expected))
+            })
+            .unwrap_or_else(|| panic!("expected a {expected:?} diagnostic for {source}"));
+        // The offender is located by the two-character context that anchors it,
+        // and the diagnostic must point at that first character, never column 1.
+        let offender_byte = source.find(offender).expect("offender token in source");
+        assert_eq!(
+            diagnostic.span.start_byte, offender_byte,
+            "diagnostic should point at `{offender}` for {source}: {diagnostic:#?}"
+        );
+        assert_ne!(
+            diagnostic.span.column, 1,
+            "diagnostic collapsed to the declaration column for {source}: {diagnostic:#?}"
+        );
+    }
+}
+
+#[test]
+fn valid_signature_with_types_and_return_parses() {
+    let parsed = parse_source("module app\nfn f(a: int, b: string): bool\n    return true\n");
+
+    assert!(!parsed.has_errors(), "{:#?}", parsed.diagnostics);
+    let function = parsed.file.function("f").expect("function f");
+    assert_eq!(function.params.len(), 2);
+    assert_eq!(function.params[0].ty.text, "int");
+    assert_eq!(function.params[1].ty.text, "string");
+}
+
+#[test]
 fn rejects_structural_equal_inside_type_annotations() {
     for (source, expected) in [
         (

@@ -86,14 +86,16 @@ pub(super) fn parse_function_head(source: &str, tokens: &[Token]) -> ParseResult
         (FunctionReturnPresence::Always, None)
     } else {
         if after[0].kind != TokenKind::Colon {
-            return Err(ParseError::new(
+            return Err(ParseError::at(
+                after[0].span,
                 ParseDiagnosticReason::Expected(ExpectedSyntax::FunctionReturnType),
                 "expected return type after `:`",
             ));
         }
         let ty_tokens = &after[1..];
         if ty_tokens.is_empty() {
-            return Err(ParseError::new(
+            return Err(ParseError::at(
+                after[0].span,
                 ParseDiagnosticReason::Expected(ExpectedSyntax::FunctionReturnType),
                 "expected return type after `:`",
             ));
@@ -125,7 +127,8 @@ fn strip_maybe_return_marker(tokens: &[Token]) -> ParseResult<(FunctionReturnPre
     }
     let ty_tokens = &tokens[1..];
     if ty_tokens.is_empty() {
-        return Err(ParseError::new(
+        return Err(ParseError::at(
+            tokens[0].span,
             ParseDiagnosticReason::Expected(ExpectedSyntax::FunctionReturnType),
             "expected return type after `maybe`",
         ));
@@ -175,7 +178,12 @@ fn parse_params_tokens(source: &str, inner: &[Token]) -> ParseResult<Vec<ParamDe
         if rest.get(after_keys).map(|token| token.kind) != Some(TokenKind::Colon)
             || rest.len() < after_keys + 2
         {
-            return Err(ParseError::new(
+            // Point at where the `: type` annotation should begin — the first
+            // token past the name and any key list, or the final body token when
+            // the annotation is missing entirely — not the declaration header.
+            let span = rest.get(after_keys).unwrap_or(&rest[rest.len() - 1]).span;
+            return Err(ParseError::at(
+                span,
                 ParseDiagnosticReason::Expected(ExpectedSyntax::ParameterType),
                 "expected parameter type annotation",
             ));
@@ -184,7 +192,8 @@ fn parse_params_tokens(source: &str, inner: &[Token]) -> ParseResult<Vec<ParamDe
         if let Some(equal) = find_top_level_equal(ty_tokens) {
             let ty_before_default = &ty_tokens[..equal];
             if ty_before_default.is_empty() {
-                return Err(ParseError::new(
+                return Err(ParseError::at(
+                    rest[after_keys].span,
                     ParseDiagnosticReason::Expected(ExpectedSyntax::ParameterType),
                     "expected parameter type annotation",
                 ));
