@@ -86,8 +86,8 @@ excludes longer tuples such as `["a", false]`.
 ## Tree-Cell Operations
 
 `TreeStore` exposes the production storage operations. `TreeStore::memory()`
-uses the in-memory development/test engine; `TreeStore::open(path)` and
-`TreeStore::open_read_only(path)` use the native redb engine.
+uses the in-memory development/test engine; `SealedStore::open(path, AccessMode)`
+is the only source of a native redb-backed handle.
 
 - `begin`, `commit`, and `rollback`;
 - read/replace the accepted catalog snapshot and read its digest;

@@ -58,12 +58,10 @@ fn sealed_store_is_consumed_only_by_the_admission_module() {
     }
 
     for source in sources {
-        if allowed.iter().any(|allow| *allow == source) {
+        if allowed.contains(&source) {
             continue;
         }
         let text = fs::read_to_string(&source).expect("read source");
-        // Ignore test modules: corruption/robustness tests may open a store directly through
-        // the sealed API, which is not a production bypass.
         for (line_index, line) in text.lines().enumerate() {
             if line.contains("SealedStore") {
                 offenders.push(format!(
