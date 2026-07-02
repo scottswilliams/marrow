@@ -117,7 +117,7 @@ pub use facts::{
     SurfaceReadOperationKind, WorkShapeClass,
 };
 pub use marrow_catalog::{CatalogEntryKind, CatalogLifecycle};
-pub use marrow_project::{ProjectConfig, StoreBackend, StoreConfig};
+pub use marrow_project::{ConfigPosition, ProjectConfig, StoreBackend, StoreConfig};
 pub use marrow_schema::{IndexSchema, KeyDef, Node, NodeKind, ResourceSchema, StoreSchema, Type};
 pub use program::{
     CheckedConst, CheckedDebugExpression, CheckedEntryFunction, CheckedFunction, CheckedModule,

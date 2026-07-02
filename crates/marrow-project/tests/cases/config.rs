@@ -292,6 +292,32 @@ fn rejects_malformed_json() {
 }
 
 #[test]
+fn unknown_field_carries_its_position_out_of_the_message() {
+    let json = "{\n  \"sourceRoots\": [\"src\"],\n  \"store\": { \"backend\": \"memory\" },\n\n  \"banana\": 1\n}";
+    let error = parse_config(json).expect_err("should reject unknown field");
+    let position = error
+        .position
+        .expect("a serde-located config fault carries its line and column");
+    assert_eq!((position.line, position.column), (5, 10));
+    assert!(
+        !error.message.contains("at line"),
+        "the known position belongs in the span, not the prose: {}",
+        error.message
+    );
+    assert!(error.message.contains("banana"), "{}", error.message);
+}
+
+#[test]
+fn malformed_json_carries_its_position() {
+    let error = parse_config("{ not json").expect_err("should reject");
+    let position = error
+        .position
+        .expect("a syntax fault carries its line and column");
+    assert_eq!(position.line, 1);
+    assert!(position.column >= 1);
+}
+
+#[test]
 fn rejects_hostile_config_json_families() {
     for (label, json) in [
         (

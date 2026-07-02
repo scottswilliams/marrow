@@ -330,6 +330,9 @@ pub enum ProjectSessionError {
     Config {
         code: &'static str,
         message: String,
+        /// The located position of a `marrow.json` syntax or unknown-field fault,
+        /// so the renderer anchors the diagnostic at `marrow.json:line:column`.
+        position: Option<marrow_check::ConfigPosition>,
     },
     Catalog {
         code: &'static str,
@@ -417,6 +420,7 @@ impl From<marrow_check::ProjectIoError> for ProjectSessionError {
             | marrow_check::ProjectIoError::NotAProject { .. }) => Self::Config {
                 code: project.code(),
                 message: project.message(),
+                position: None,
             },
             // The `dataDir` directory-creation fault owns its `config.data_dir`
             // code and write-path message in `marrow-check`; surface those rather
@@ -424,10 +428,17 @@ impl From<marrow_check::ProjectIoError> for ProjectSessionError {
             ref create @ marrow_check::ProjectIoError::DataDirCreate { .. } => Self::Config {
                 code: create.code(),
                 message: create.message(),
+                position: None,
             },
-            marrow_check::ProjectIoError::Config { code, message } => {
-                Self::Config { code, message }
-            }
+            marrow_check::ProjectIoError::Config {
+                code,
+                message,
+                position,
+            } => Self::Config {
+                code,
+                message,
+                position,
+            },
             marrow_check::ProjectIoError::Catalog { code, message } => {
                 Self::Catalog { code, message }
             }

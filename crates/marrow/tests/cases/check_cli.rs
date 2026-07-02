@@ -179,6 +179,45 @@ fn check_rejects_a_bare_file_target_before_parsing_its_contents() {
 }
 
 #[test]
+fn check_anchors_a_config_fault_at_its_marrow_json_position() {
+    let project = support::temp_dir("config-position");
+    support::write(project.path(), "src/app.mw", "module app\npub fn main()\n    print(\"ok\")\n");
+    support::write(
+        project.path(),
+        "marrow.json",
+        "{\n  \"sourceRoots\": [\"src\"],\n  \"store\": { \"backend\": \"memory\" },\n  \"banana\": true\n}",
+    );
+
+    let output = check_json(project.path());
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let report: Value = serde_json::from_slice(&output.stdout).expect("config fault json");
+    assert_eq!(report["code"], serde_json::json!("config.invalid"), "{report}");
+    let span = &report["source_span"];
+    assert_eq!(span["line"], serde_json::json!(4), "{report}");
+    assert_eq!(span["column"], serde_json::json!(10), "{report}");
+    assert!(
+        span["file"]
+            .as_str()
+            .is_some_and(|file| file.ends_with("marrow.json")),
+        "the span names marrow.json: {report}"
+    );
+    assert!(
+        report["message"]
+            .as_str()
+            .is_some_and(|message| !message.contains("at line")),
+        "the known position belongs in the span, not the prose: {report}"
+    );
+
+    // The text surface anchors the same fault at the file and position.
+    let text = support::marrow_sub("check", &[project.path().to_str().unwrap()]);
+    let stderr = String::from_utf8(text.stderr).expect("stderr utf8");
+    assert!(
+        stderr.contains("marrow.json:4:10:"),
+        "text config fault anchors at marrow.json:4:10: {stderr}"
+    );
+}
+
+#[test]
 fn check_on_a_missing_directory_reports_a_missing_project() {
     let missing = support::unique_temp_path("check-missing-dir");
 

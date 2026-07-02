@@ -50,6 +50,10 @@ pub enum ProjectIoError {
     Config {
         code: &'static str,
         message: String,
+        /// The located position of a `marrow.json` syntax or unknown-field fault,
+        /// so the renderer anchors the diagnostic at `marrow.json:line:column`
+        /// instead of burying the position in prose.
+        position: Option<marrow_project::ConfigPosition>,
     },
     Catalog {
         code: &'static str,
@@ -172,6 +176,7 @@ pub fn load_config(root: &Path) -> Result<ProjectConfig, ProjectIoError> {
             std::io::ErrorKind::InvalidInput => ProjectIoError::Config {
                 code: marrow_project::CONFIG_INVALID,
                 message: error.to_string(),
+                position: None,
             },
             _ => ProjectIoError::Io {
                 path: path.clone(),
@@ -182,6 +187,7 @@ pub fn load_config(root: &Path) -> Result<ProjectConfig, ProjectIoError> {
     marrow_project::parse_config(&json).map_err(|error| ProjectIoError::Config {
         code: error.code,
         message: error.message,
+        position: error.position,
     })
 }
 
@@ -262,6 +268,7 @@ fn native_store_data_dir_error() -> ProjectIoError {
     ProjectIoError::Config {
         code: marrow_project::CONFIG_INVALID,
         message: "the `native` store backend requires a non-empty `dataDir`".to_string(),
+        position: None,
     }
 }
 
@@ -786,7 +793,7 @@ mod tests {
     }
 
     fn assert_native_data_dir_error(error: ProjectIoError) {
-        let ProjectIoError::Config { code, message } = error else {
+        let ProjectIoError::Config { code, message, .. } = error else {
             panic!("expected config error");
         };
         assert_eq!(code, marrow_project::CONFIG_INVALID);

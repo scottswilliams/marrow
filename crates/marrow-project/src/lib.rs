@@ -71,6 +71,19 @@ pub struct ConfigError {
     pub code: &'static str,
     pub kind: ConfigErrorKind,
     pub message: String,
+    /// The 1-based line and column of a JSON syntax or unknown-field fault, taken
+    /// from the serde parser. Present only for faults the parser locates to a
+    /// single point; validation faults with no single source point leave it
+    /// `None`. Carrying it here keeps the position a machine fact in the
+    /// diagnostic span rather than only prose a client must parse.
+    pub position: Option<ConfigPosition>,
+}
+
+/// A 1-based source position inside `marrow.json`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ConfigPosition {
+    pub line: u32,
+    pub column: u32,
 }
 
 /// The typed reason a `marrow.json` failed validation.
@@ -122,6 +135,29 @@ impl ConfigError {
             code: CONFIG_INVALID,
             kind,
             message: message.into(),
+            position: None,
+        }
+    }
+
+    /// Build an `InvalidJson` fault from a serde error, lifting its located
+    /// position into `position` and stripping the ` at line L column C` suffix
+    /// serde appends so the position lives as a machine fact, not in the prose.
+    fn invalid_json(error: &serde_json::Error) -> Self {
+        let text = error.to_string();
+        let (line, column) = (error.line(), error.column());
+        if line == 0 {
+            return Self::new(ConfigErrorKind::InvalidJson, text);
+        }
+        let suffix = format!(" at line {line} column {column}");
+        let message = text.strip_suffix(&suffix).unwrap_or(&text).to_string();
+        Self {
+            code: CONFIG_INVALID,
+            kind: ConfigErrorKind::InvalidJson,
+            message,
+            position: Some(ConfigPosition {
+                line: line as u32,
+                column: column as u32,
+            }),
         }
     }
 }
@@ -152,14 +188,14 @@ impl std::error::Error for ConfigError {}
 /// which a struct deserialize would otherwise map positionally, while the typed
 /// pass carries the exact serde span in the unknown-field message.
 pub fn parse_config(json: &str) -> Result<ProjectConfig, ConfigError> {
-    let value: Value = serde_json::from_str(json)
-        .map_err(|error| ConfigError::new(ConfigErrorKind::InvalidJson, error.to_string()))?;
+    let value: Value =
+        serde_json::from_str(json).map_err(|error| ConfigError::invalid_json(&error))?;
     let object = config_object(&value)?;
     let has_source_roots = object.contains_key("sourceRoots");
     object_field(object, "run")?;
     object_field(object, "store")?;
-    let raw: RawConfig = serde_json::from_str(json)
-        .map_err(|error| ConfigError::new(ConfigErrorKind::InvalidJson, error.to_string()))?;
+    let raw: RawConfig =
+        serde_json::from_str(json).map_err(|error| ConfigError::invalid_json(&error))?;
 
     if !has_source_roots {
         return Err(ConfigError::new(

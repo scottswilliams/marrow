@@ -405,7 +405,7 @@ Project-loading faults from `marrow.json` and source discovery.
 |---|---|
 | `config.missing` | Emitted by `check`/`run`/`doctor`/`fmt` when no `marrow.json` exists at the target directory: the path is not a Marrow project. Run `marrow init <dir>`, or run from a directory that has a `marrow.json`. |
 | `config.not_a_project` | The project path is a bare file, not a directory containing `marrow.json`. Pass the project directory, or run from a directory that has a `marrow.json`. Unlike `config.missing`, `marrow init` does not apply: a file cannot be turned into a project in place. |
-| `config.invalid` | `marrow.json` is malformed JSON, has an unknown key, is missing a required field, or names an unknown backend. |
+| `config.invalid` | `marrow.json` is malformed JSON, has an unknown key, is missing a required field, or names an unknown backend. A malformed-JSON or unknown-field fault carries its `marrow.json` line and column in `source_span`; validation faults with no single source point carry none. |
 | `config.data_dir` | The native store `dataDir` directory could not be created: the path is occupied by a non-directory file, a parent denies access, or the filesystem is read-only. Point `dataDir` at a writable directory or remove the file occupying it. |
 | `config.client_without_surface` | A non-fatal warning: `marrow.json` sets a `client` output path, but the project declares no callable `surface`, so there is nothing to generate. `run`, `serve` startup, and `evolve apply` report it and write no client; either add a `surface` or remove the `client` line. |
 | `project.source_root` | A configured source root could not be walked (e.g. the directory does not exist). |

@@ -289,6 +289,13 @@ pub(crate) fn report_session_open_error(
         } => {
             report_simple_error(code, &format!("{}: {message}", path.display()), format);
         }
+        ProjectSessionError::Config {
+            code,
+            message,
+            position: Some(position),
+        } => {
+            crate::report_config_fault(dir, code, &message, position, format);
+        }
         error => {
             report_simple_error(error.code(), &error.message(), format);
         }

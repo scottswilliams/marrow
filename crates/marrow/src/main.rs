@@ -630,9 +630,49 @@ fn report_project_io_error(dir: &str, error: marrow_check::ProjectIoError, forma
         } => {
             report_simple_error(code, &format!("{}: {message}", path.display()), format);
         }
+        marrow_check::ProjectIoError::Config {
+            code,
+            message,
+            position: Some(position),
+        } => {
+            report_config_fault(dir, code, &message, position, format);
+        }
         error => {
             report_simple_error(error.code(), &error.message(), format);
         }
+    }
+}
+
+/// Render a located `marrow.json` fault at `marrow.json:line:column` in both the
+/// text and machine surfaces, so a client places the diagnostic from the span
+/// rather than parsing the position out of the message prose.
+pub(crate) fn report_config_fault(
+    dir: &str,
+    code: &str,
+    message: &str,
+    position: marrow_check::ConfigPosition,
+    format: CheckFormat,
+) {
+    let file = Path::new(dir).join("marrow.json").display().to_string();
+    match format {
+        CheckFormat::Text => eprintln!(
+            "{}:{}:{}: {}",
+            term_style::paint(Stream::Stderr, Style::Muted, &file),
+            position.line,
+            position.column,
+            term_style::code_message(Stream::Stderr, code, message)
+        ),
+        CheckFormat::Json | CheckFormat::Jsonl => write_json(json!({
+            "code": code,
+            "kind": marrow_syntax::kind_for_code(code),
+            "message": message,
+            "data": {},
+            "source_span": {
+                "file": file,
+                "line": position.line,
+                "column": position.column,
+            },
+        })),
     }
 }
 

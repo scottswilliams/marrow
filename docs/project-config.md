@@ -212,6 +212,12 @@ rules:
 A missing `marrow.json` is a separate, earlier failure: the command reports
 `io.read` (it could not read the file) and exits `1`.
 
+A malformed-JSON or unknown-field fault is anchored at the `marrow.json` line
+and column the parser located it at, printed as a `marrow.json:line:column:`
+prefix in text and carried in `source_span` (file, line, column) in the
+machine formats. Validation faults with no single source point — a missing
+`sourceRoots`, an escaping path, an unknown backend — carry no position.
+
 ### Error examples
 
 Run against the binary, these are the exact diagnostics (text format):
@@ -227,7 +233,7 @@ $ marrow check ./proj          # sourceRoots missing or empty
 config.invalid: `sourceRoots` must list at least one source directory
 
 $ marrow check ./proj          # unknown top-level key "globals"
-config.invalid: unknown field `globals`, expected one of `sourceRoots`, `run`, `store`, `tests`, `client` at line 1 column 35
+./proj/marrow.json:1:35: config.invalid: unknown field `globals`, expected one of `sourceRoots`, `run`, `store`, `tests`, `client`
 
 $ marrow check ./proj          # sourceRoots: ["/etc"]
 config.invalid: `sourceRoots entry` `/etc` must be relative to the project root, not absolute
