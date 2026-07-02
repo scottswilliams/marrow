@@ -772,6 +772,144 @@ fn client_typescript_generated_client_runs_against_live_surface_server() {
     assert_eq!(integrity.status.code(), Some(0), "integrity: {integrity:?}");
 }
 
+// A surface exposing `T?` presence in every callable position: an optional computed-read result
+// (`maybeBorrower`), an optional computed-read parameter (`label`), and an optional action parameter
+// (`setLoan`). Book 1 has no borrower (absent), book 2 does, so the round-trip covers present and
+// absent on the wire.
+const PRESENCE_SURFACE_SOURCE: &str = "module app\n\
+\n\
+resource Book\n\
+\x20\x20\x20\x20required title: string\n\
+\x20\x20\x20\x20borrower: string\n\
+store ^books(id: int): Book\n\
+\n\
+pub fn seed()\n\
+\x20\x20\x20\x20var a: Book\n\
+\x20\x20\x20\x20a.title = \"Small Gods\"\n\
+\x20\x20\x20\x20var b: Book\n\
+\x20\x20\x20\x20b.title = \"Mort\"\n\
+\x20\x20\x20\x20b.borrower = \"Alice\"\n\
+\x20\x20\x20\x20transaction\n\
+\x20\x20\x20\x20\x20\x20\x20\x20^books(1) = a\n\
+\x20\x20\x20\x20\x20\x20\x20\x20^books(2) = b\n\
+\n\
+pub fn maybeBorrower(id: int): string?\n\
+\x20\x20\x20\x20return ^books(id).borrower\n\
+\n\
+pub fn label(id: int, prefix: string?): string\n\
+\x20\x20\x20\x20return (prefix ?? \"book\") + \":\" + (^books(id).title ?? \"\")\n\
+\n\
+pub fn setLoan(id: int, borrower: string?)\n\
+\x20\x20\x20\x20transaction\n\
+\x20\x20\x20\x20\x20\x20\x20\x20^books(id).borrower = borrower\n\
+\n\
+surface Books from ^books\n\
+\x20\x20\x20\x20fields title\n\
+\x20\x20\x20\x20read maybeBorrower\n\
+\x20\x20\x20\x20read label\n\
+\x20\x20\x20\x20action setLoan\n";
+
+/// A Node-free consumer pinning the `T?` signatures. A required return would make the `=== null`
+/// comparison a no-overlap type error, and a required parameter would reject the `null` argument, so
+/// this fails `tsc --strict` unless optional presence types are threaded into the client.
+const PRESENCE_STRICT_CONSUMER: &str = r#"import { createClient } from "./marrow-client.ts";
+
+export async function pinPresence(client: ReturnType<typeof createClient>): Promise<void> {
+  const borrower = await client.Books.maybeBorrower(1);
+  const absent: boolean = borrower === null;
+  const labeled: string = await client.Books.label(1, null);
+  const labeledValue: string = await client.Books.label(1, "shelf");
+  const loan: { value: null; output: string } = await client.Books.setLoan(1, null);
+  await client.Books.setLoan(1, "Bob");
+  void absent;
+  void labeled;
+  void labeledValue;
+  void loan.value;
+  void loan.output;
+}
+"#;
+
+const PRESENCE_CLIENT_APP: &str = r#"import assert from "node:assert/strict";
+import { createClient } from "./marrow-client.ts";
+
+const client = createClient({ baseUrl: process.env.MARROW_SURFACE_BASE_URL });
+
+// Optional computed-read result: absent decodes to null, present to the value.
+assert.equal(await client.Books.maybeBorrower(1), null);
+assert.equal(await client.Books.maybeBorrower(2), "Alice");
+
+// Optional parameter: a value is passed through, null is the absent argument.
+assert.equal(await client.Books.label(1, "shelf"), "shelf:Small Gods");
+assert.equal(await client.Books.label(1, null), "book:Small Gods");
+
+// Optional parameter on a writing action: set then clear through null.
+await client.Books.setLoan(1, "Bob");
+assert.equal(await client.Books.maybeBorrower(1), "Bob");
+await client.Books.setLoan(1, null);
+assert.equal(await client.Books.maybeBorrower(1), null);
+
+console.log("presence-e2e-ok");
+"#;
+
+#[test]
+fn client_typescript_optional_presence_round_trips_against_live_surface_server() {
+    let Some(node) = node_with_type_stripping() else {
+        if std::env::var_os("CI").is_some() || std::env::var_os("MARROW_TEST_NODE").is_some() {
+            panic!("optional-presence client E2E requires Node with --experimental-strip-types");
+        }
+        eprintln!("skipping optional-presence client E2E; compatible node not found");
+        return;
+    };
+    let root = temp_project("surface-client-presence-e2e", |root| {
+        write(root, "marrow.json", support::native_config());
+        write(root, "src/app.mw", PRESENCE_SURFACE_SOURCE);
+    });
+    let seed = marrow(&["run", "--entry", "app::seed", root.to_str().unwrap()]);
+    assert_eq!(seed.status.code(), Some(0), "seed: {seed:?}");
+
+    let client = marrow(&[
+        "client",
+        "typescript",
+        root.to_str().expect("project path utf8"),
+    ]);
+    assert_eq!(client.status.code(), Some(0), "client: {client:?}");
+    assert!(client.stderr.is_empty(), "client: {client:?}");
+    let app = support::temp_dir("surface-client-presence-e2e-app");
+    write(
+        &app,
+        "marrow-client.ts",
+        &String::from_utf8(client.stdout).expect("client utf8"),
+    );
+    write(&app, "app.ts", PRESENCE_CLIENT_APP);
+
+    // A required parameter would reject the null argument and a required return would make the
+    // null comparison a type error, so the strict gate proves the client is genuinely optional-typed.
+    type_check_strict(&app, PRESENCE_STRICT_CONSUMER);
+
+    let (_server, addr) = spawn_surface_server_with_args(&root, &["--write"]);
+    let output = Command::new(node)
+        .arg("--experimental-strip-types")
+        .arg("--no-warnings")
+        .arg(app.join("app.ts"))
+        .current_dir(&app)
+        .env("MARROW_SURFACE_BASE_URL", format!("http://{addr}"))
+        .output()
+        .expect("run presence client app");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "presence client app failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(output.stdout)
+            .expect("app stdout utf8")
+            .trim(),
+        "presence-e2e-ok"
+    );
+}
+
 #[test]
 fn client_typescript_cursor_token_client_pages_against_remote_token_serve() {
     let Some(node) = node_with_type_stripping() else {

@@ -1980,6 +1980,29 @@ surface Books from ^books
     action addBook
 ";
 
+    const SURFACE_OPTIONAL_PRESENCE: &str = "\
+resource Book
+    required title: string
+    borrower: string
+store ^books(id: int): Book
+
+pub fn maybeBorrower(id: int): string?
+    return ^books(id).borrower
+
+pub fn label(id: int, prefix: string?): string
+    return (prefix ?? \"book\") + \":\" + (^books(id).title ?? \"\")
+
+pub fn setLoan(id: int, borrower: string?)
+    transaction
+        ^books(id).borrower = borrower
+
+surface Books from ^books
+    fields title
+    read maybeBorrower
+    read label
+    action setLoan
+";
+
     const SURFACE_ACTION_UPDATE: &str = "\
 resource Book
     required title: string
@@ -3295,6 +3318,53 @@ pub fn seed()
     }
 
     #[test]
+    fn generated_client_types_optional_presence_end_to_end() {
+        // A `T?` parameter is typed nullable and encodes absence as JSON `null`; a `T?` computed-read
+        // result is typed nullable and decodes an absent (`null`) result as `null` rather than a
+        // missing-value error. Presence rides the checker's parameter/result carrier into the client.
+        let (program, _runtime) = checked_surface_program(SURFACE_OPTIONAL_PRESENCE);
+        let abi = SurfaceAbiJson::from_program(&program);
+        let routes = SurfaceRouteManifestJson::from_abi(&abi);
+        let client = render_typescript_client(&abi, &routes).expect("client renders");
+
+        // Optional computed-read result: nullable return type and the absent-aware decoder.
+        assert!(
+            client.contains("maybeBorrower: async (id: MarrowIntInput): Promise<string | null> =>"),
+            "optional computed-read return must be nullable: {client}"
+        );
+        assert!(
+            client.contains(
+                "computedReadOptionalValue(envelope, (value) => decodeStringValue(value))"
+            ),
+            "optional computed read must decode an absent result as null: {client}"
+        );
+        // Optional parameter on a computed read: nullable type, present return, null-or-value encoding.
+        assert!(
+            client.contains(
+                "label: async (id: MarrowIntInput, prefix: string | null): Promise<string> =>"
+            ),
+            "optional computed-read parameter must be nullable: {client}"
+        );
+        assert!(
+            client.contains("value: prefix === null ? null : { kind: \"string\", value: prefix }"),
+            "an absent optional argument must encode as JSON null: {client}"
+        );
+        // Optional parameter on an action carries the same nullable typing and encoding.
+        assert!(
+            client.contains(
+                "setLoan: async (id: MarrowIntInput, borrower: string | null): Promise<{ value: null; output: string }> =>"
+            ),
+            "optional action parameter must be nullable: {client}"
+        );
+        assert!(
+            client.contains(
+                "value: borrower === null ? null : { kind: \"string\", value: borrower }"
+            ),
+            "an absent optional action argument must encode as JSON null: {client}"
+        );
+    }
+
+    #[test]
     fn surface_abi_exports_read_operation_aliases() {
         let (program, _runtime) = checked_surface_program(SURFACE_UPDATE_WITH_ENUM_IDENTITY_INDEX);
         let abi = SurfaceAbiJson::from_program(&program);
@@ -3973,8 +4043,9 @@ pub fn seed()
         // The computed read decodes its result into the typed resource value rather than returning
         // the raw envelope, and an identity argument encodes through the entry argument shape the
         // entry decoder reads, not the request identity shape used by write fields and index keys.
+        // The fixture result is `BookPage?`, so absence decodes to null instead of a missing-value error.
         assert!(
-            client.contains("computedReadValue(envelope, (value) =>"),
+            client.contains("computedReadOptionalValue(envelope, (value) =>"),
             "{client}"
         );
         assert!(client.contains("encodeIdentityArgument(id)"), "{client}");

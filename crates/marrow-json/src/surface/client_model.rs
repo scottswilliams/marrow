@@ -2,7 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use super::client_ts::CreateFieldPlan;
 use super::{
-    SurfaceAbiJson, SurfaceCreateOperationDescriptorJson, SurfaceDescriptorJson,
+    SurfaceAbiJson, SurfaceCallableParameterJson, SurfaceCallableParameterPresenceJson,
+    SurfaceComputedReadPresenceJson, SurfaceCreateOperationDescriptorJson, SurfaceDescriptorJson,
     SurfaceOperationIdentityKeyJson, SurfaceOperationValueShapeJson,
     SurfaceReadOperationDescriptorJson, SurfaceReadOperationKindJson,
     SurfaceReadProjectionFieldJson, SurfaceRouteBinding, SurfaceRouteBindings,
@@ -159,6 +160,15 @@ pub(super) struct SurfaceMethodParam {
     pub ty: SurfaceFieldType,
 }
 
+/// An action or computed-read callable argument. `optional` carries the parameter's `T?` presence
+/// so the renderer types it nullable and encodes an absent value as JSON `null`.
+#[derive(Debug, Clone)]
+pub(super) struct SurfaceCallableArg {
+    pub name: String,
+    pub ty: SurfaceFieldType,
+    pub optional: bool,
+}
+
 #[derive(Debug, Clone)]
 pub(super) enum SurfaceMethodInput {
     None,
@@ -209,21 +219,38 @@ pub(super) enum SurfaceMethodInput {
         keys: Vec<SurfaceFieldType>,
     },
     Callable {
-        params: Vec<(String, SurfaceFieldType)>,
+        params: Vec<SurfaceCallableArg>,
     },
 }
 
 #[derive(Debug, Clone)]
 pub(super) enum SurfaceMethodResult {
-    Record { record: String },
-    OptionalRecord { record: String },
-    Page { record: String },
-    PageIterator { record: String },
-    Created { record: String },
+    Record {
+        record: String,
+    },
+    OptionalRecord {
+        record: String,
+    },
+    Page {
+        record: String,
+    },
+    PageIterator {
+        record: String,
+    },
+    Created {
+        record: String,
+    },
     Updated,
     Deleted,
-    Action { value: Option<SurfaceFieldType> },
-    ComputedRead { value: Option<SurfaceFieldType> },
+    Action {
+        value: Option<SurfaceFieldType>,
+    },
+    ComputedRead {
+        value: Option<SurfaceFieldType>,
+        /// Whether the result is `T?`, so the renderer types it nullable and decodes an absent
+        /// (`null`) result as `null` rather than a missing-value error.
+        optional: bool,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -462,16 +489,7 @@ impl ModelBuilder {
             });
         }
         for action in &surface.actions {
-            let params = action
-                .parameters
-                .iter()
-                .map(|parameter| {
-                    (
-                        parameter.name.clone(),
-                        self.callable_argument_type(&parameter.shape, &mut enums),
-                    )
-                })
-                .collect::<Vec<_>>();
+            let params = self.callable_args(&action.parameters, &mut enums);
             let value = action
                 .return_value
                 .as_ref()
@@ -487,23 +505,17 @@ impl ModelBuilder {
             });
         }
         for computed in &surface.computed_reads {
-            let params = computed
-                .callable
-                .parameters
-                .iter()
-                .map(|parameter| {
-                    (
-                        parameter.name.clone(),
-                        self.callable_argument_type(&parameter.shape, &mut enums),
-                    )
-                })
-                .collect::<Vec<_>>();
+            let params = self.callable_args(&computed.callable.parameters, &mut enums);
             let value = computed
                 .callable
                 .result
                 .value
                 .as_ref()
                 .map(|shape| self.computed_value_type(shape, &mut enums));
+            let optional = matches!(
+                computed.callable.result.presence,
+                SurfaceComputedReadPresenceJson::MaybePresent
+            );
             let alias = method_alias(bindings, &computed.operation_tag, &computed.alias);
             methods.push(SurfaceMethod {
                 name: alias,
@@ -511,7 +523,7 @@ impl ModelBuilder {
                 result_kind: "computed_read",
                 cursor_brand: format!("{surface_name}Cursor"),
                 input: SurfaceMethodInput::Callable { params },
-                result: SurfaceMethodResult::ComputedRead { value },
+                result: SurfaceMethodResult::ComputedRead { value, optional },
             });
         }
 
@@ -897,6 +909,24 @@ impl ModelBuilder {
                 }
             }
         }
+    }
+
+    fn callable_args(
+        &mut self,
+        parameters: &[SurfaceCallableParameterJson],
+        enums: &mut Vec<String>,
+    ) -> Vec<SurfaceCallableArg> {
+        parameters
+            .iter()
+            .map(|parameter| SurfaceCallableArg {
+                name: parameter.name.clone(),
+                ty: self.callable_argument_type(&parameter.shape, enums),
+                optional: matches!(
+                    parameter.presence,
+                    SurfaceCallableParameterPresenceJson::Optional
+                ),
+            })
+            .collect()
     }
 
     fn callable_argument_type(

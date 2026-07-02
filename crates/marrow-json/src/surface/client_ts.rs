@@ -6,7 +6,7 @@ use marrow_run::{
     SURFACE_STALE_CURSOR, SURFACE_STORE, SURFACE_WRITE,
 };
 
-use super::client_model::{RecordDecode, ScalarKind};
+use super::client_model::{RecordDecode, ScalarKind, SurfaceCallableArg};
 use super::{
     SurfaceAbiJson, SurfaceClientModel, SurfaceClientRecord, SurfaceClientStore, SurfaceFieldType,
     SurfaceMethod, SurfaceMethodInput, SurfaceMethodParam, SurfaceMethodResult,
@@ -567,10 +567,18 @@ fn range_page_iterator_signature(
     params.join(", ")
 }
 
-fn callable_signature(params: &[(String, SurfaceFieldType)]) -> String {
+fn callable_signature(params: &[SurfaceCallableArg]) -> String {
     params
         .iter()
-        .map(|(name, ty)| format!("{}: {}", ts_property(name), argument_ts_type(ty)))
+        .map(|param| {
+            let ty = argument_ts_type(&param.ty);
+            let ty = if param.optional {
+                format!("{ty} | null")
+            } else {
+                ty
+            };
+            format!("{}: {}", ts_property(&param.name), ty)
+        })
         .collect::<Vec<_>>()
         .join(", ")
 }
@@ -730,15 +738,20 @@ fn range_page_iterator_request_expr(
     format!("{{ {} }}", parts.join(", "))
 }
 
-fn callable_request_expr(params: &[(String, SurfaceFieldType)]) -> String {
+fn callable_request_expr(params: &[SurfaceCallableArg]) -> String {
     let entries = params
         .iter()
-        .map(|(name, ty)| {
-            format!(
-                "{{ name: {}, value: {} }}",
-                ts_string(name),
-                entry_argument_expr(ty, &ts_property(name))
-            )
+        .map(|param| {
+            let source = ts_property(&param.name);
+            let encoded = entry_argument_expr(&param.ty, &source);
+            // An optional argument encodes its absence as JSON `null`, which the runtime decodes as
+            // an absent optional; a present value takes the ordinary typed encoding.
+            let value = if param.optional {
+                format!("{source} === null ? null : {encoded}")
+            } else {
+                encoded
+            };
+            format!("{{ name: {}, value: {value} }}", ts_string(&param.name))
         })
         .collect::<Vec<_>>()
         .join(", ");
@@ -776,10 +789,14 @@ fn method_decode_expr(method: &SurfaceMethod) -> String {
             }
             None => "actionResultVoid(envelope)".to_string(),
         },
-        SurfaceMethodResult::ComputedRead { value } => match value {
+        SurfaceMethodResult::ComputedRead { value, optional } => match value {
             Some(ty) => {
                 let value_decode = decode_value_expr(ty, "value");
-                format!("computedReadValue(envelope, (value) => {value_decode})")
+                if *optional {
+                    format!("computedReadOptionalValue(envelope, (value) => {value_decode})")
+                } else {
+                    format!("computedReadValue(envelope, (value) => {value_decode})")
+                }
             }
             None => "computedReadVoid(envelope)".to_string(),
         },
@@ -804,10 +821,17 @@ fn method_result_type(method: &SurfaceMethod) -> String {
                 .unwrap_or_else(|| "null".to_string());
             format!("{{ value: {value_type}; output: string }}")
         }
-        SurfaceMethodResult::ComputedRead { value } => value
-            .as_ref()
-            .map(value_ts_type)
-            .unwrap_or_else(|| "null".to_string()),
+        SurfaceMethodResult::ComputedRead { value, optional } => {
+            let value_type = value
+                .as_ref()
+                .map(value_ts_type)
+                .unwrap_or_else(|| "null".to_string());
+            if *optional {
+                format!("{value_type} | null")
+            } else {
+                value_type
+            }
+        }
     }
 }
 

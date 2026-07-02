@@ -442,6 +442,19 @@ function computedReadValue<T>(
   return decode(value as SurfaceWireValueJson);
 }
 
+/// A computed read whose result is optional (`T?`): an absent result decodes to null rather than an
+/// error, and a present value decodes through `decode`. Absence rides the wire as a null result value.
+function computedReadOptionalValue<T>(
+  envelope: SurfaceOperationResponseJson,
+  decode: (value: SurfaceWireValueJson) => T,
+): T | null {
+  const value = computedReadResult(envelope);
+  if (value === null || value === undefined) {
+    return null;
+  }
+  return decode(value as SurfaceWireValueJson);
+}
+
 /// A computed read declared to yield no value: its result is always null.
 function computedReadVoid(envelope: SurfaceOperationResponseJson): null {
   const value = computedReadResult(envelope);

@@ -172,7 +172,20 @@ fn apply_cmd(raw_args: &[String]) -> ExitCode {
             {
                 return code;
             }
-            // The activated catalog can change the surface ABI, so refresh the declared client in
+            // The pre-apply program still sees this evolution as pending, so it projects an
+            // unstable, empty surface. Re-check against the now-accepted store catalog before
+            // refreshing the declared client so the written client matches the stable surface
+            // `marrow check --locked` recomputes rather than an empty one.
+            let program = match crate::recheck_against_store_catalog(
+                &input.dir,
+                &config,
+                &store,
+                input.format,
+            ) {
+                Ok(program) => program,
+                Err(code) => return code,
+            };
+            // The activated catalog changes the surface ABI, so refresh the declared client in
             // lockstep with the re-projected lock.
             if let Err(code) =
                 crate::sync_declared_client(&input.dir, &config, &program, input.format)
