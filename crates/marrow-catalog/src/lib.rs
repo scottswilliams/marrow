@@ -267,8 +267,10 @@ pub struct CatalogLock {
     /// path. The lock-root witness compares a store against the roots the lock committed; a
     /// behind store legitimately lacks a root activated after its own epoch, so the witness
     /// needs each root's activation epoch to tell that state from a loss. The projection stamps
-    /// a root the first time it appears and carries the recorded epoch forward on every later
-    /// projection. A root missing from this map has an unknown activation epoch and is treated
+    /// a root only when it is first added to an existing committed lock and carries the recorded
+    /// epoch forward on every later projection; a root present since the first projection, and
+    /// every root when there is no prior lock, stays unstamped. A root missing from this map has
+    /// an unknown activation epoch and is treated
     /// as activated at the beginning of time: its absence from a present store always reads as
     /// a loss, the fail-closed direction.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]

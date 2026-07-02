@@ -195,11 +195,16 @@ spellings a rename carried forward as aliases, the consumed-transform mark a
 discharged `evolve transform` stamped, and a shape fingerprint; the lock also
 carries the append-only ledger of retired and reserved IDs, the epoch high-water
 the next activation advances past, the epoch at which each saved root became
-active, and the producing source shape. A root's
-activation epoch is stamped the first time a projection records the root and
-carried forward unchanged thereafter; the lock-root witness reads it to tell a
-store legitimately behind a newly-activated root from one that lost a root it
-should hold. Each ledger tombstone records the retired entity's `(kind, path)`
+active, and the producing source shape. A root's activation epoch is stamped
+only when the root is first added to an existing committed lock, recording the
+epoch of the activation that introduced it, and is carried forward unchanged
+thereafter. Roots present since the project's first projection — and every root
+when there is no prior lock, including a lock deleted and re-derived from the
+store — carry no stamp and read as active from the beginning of time, the strict
+fail-closed default in which a missing root always reads as a loss. A fresh
+project's lock therefore omits this map entirely. The lock-root witness reads a
+recorded epoch to tell a store legitimately behind a newly-activated root from
+one that lost a root it should hold. Each ledger tombstone records the retired entity's `(kind, path)`
 alongside its ID, so the lock fully represents a reserved path: a fresh checkout
 that re-seeds a lost store from the lock alone reconstructs the reserved entries,
 carries each renamed entry's old spelling forward as an alias, restores each
