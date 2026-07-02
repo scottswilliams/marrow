@@ -487,6 +487,54 @@ fn doctor_reports_a_missing_lock_over_a_stamped_store() {
 }
 
 #[test]
+fn doctor_jsonl_emits_each_finding_then_exactly_one_final_summary_record() {
+    let (project, dir) = seeded_project("doctor-jsonl-summary");
+    // One deterministic finding (the missing committed lock) so the stream is a single finding line
+    // followed by the summary line, letting the test pin the count and the summary's terminal position.
+    fs::remove_file(lock_path(&project)).expect("remove committed lock");
+
+    let output = marrow(&["doctor", "--format", "jsonl", &dir]);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+
+    let stdout = String::from_utf8(output.stdout).expect("doctor jsonl stdout utf8");
+    let records: Vec<serde_json::Value> = stdout
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("each jsonl line parses as one object"))
+        .collect();
+    assert_eq!(
+        records.len(),
+        2,
+        "one finding line then one summary line: {records:#?}"
+    );
+
+    let (summary, findings) = records.split_last().expect("at least the summary record");
+    for finding in findings {
+        assert_eq!(finding["code"], "doctor.lock_missing", "{finding:#?}");
+        // A finding carries its own diagnostic `kind`, which is never the summary discriminator, so a
+        // consumer filtering on `kind == "summary"` keeps every finding line.
+        assert_ne!(finding["kind"], "summary", "{finding:#?}");
+    }
+
+    // The summary is the single terminal record consumers filter out on `kind`; it reports the finding
+    // count rather than repeating the finding bodies, alongside the same probe objects the JSON envelope
+    // carries.
+    assert_eq!(summary["kind"], "summary", "{summary:#?}");
+    assert_eq!(summary["status"], "findings", "{summary:#?}");
+    assert_eq!(summary["findings"], 1, "{summary:#?}");
+    assert!(summary["project"].is_string(), "{summary:#?}");
+    for key in ["store", "fence", "integrity_sample"] {
+        assert!(
+            summary.get(key).is_some(),
+            "summary carries the {key} probe object: {summary:#?}"
+        );
+    }
+    assert!(
+        summary.get("code").is_none() && summary.get("message").is_none(),
+        "the summary is not a finding: {summary:#?}"
+    );
+}
+
+#[test]
 fn doctor_reports_only_lock_corrupt_for_a_corrupt_lock_over_a_stamped_store() {
     let (project, dir) = seeded_project("doctor-corrupt-lock-stamped");
 

@@ -461,10 +461,13 @@ repairs nothing. It never creates the native data directory, never opens a
 write-capable store handle, never regenerates `marrow.lock`, and never runs the
 full unbounded `marrow data integrity` scan.
 
-Text and JSONL render one finding per line. Text output also prints a
-non-finding guidance line when the integrity sample is truncated, naming the
-full read-only `marrow data integrity` command to run next. JSON renders one
-envelope:
+Text renders one finding per line, and also prints a non-finding guidance line
+when the integrity sample is truncated, naming the full read-only `marrow data
+integrity` command to run next. JSONL renders one finding per line followed by
+exactly one final summary record — `{"kind": "summary", …}` carrying `project`,
+`status`, a `findings` count, and the same `store`, `fence`, and
+`integrity_sample` objects as the JSON envelope — so a consumer filters on `kind`
+to separate findings from the trailing summary. JSON renders one envelope:
 
 ```json
 {
