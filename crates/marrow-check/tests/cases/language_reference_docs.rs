@@ -598,13 +598,18 @@ fn no_inline_string_literal_codes_outside_registry() {
         );
     }
 
-    let non_code: std::collections::BTreeSet<String> =
-        NON_CODE_TOKENS.iter().map(|code| code.to_string()).collect();
+    let non_code: std::collections::BTreeSet<String> = NON_CODE_TOKENS
+        .iter()
+        .map(|code| code.to_string())
+        .collect();
 
     let mut scanned: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     let mut offenders: Vec<String> = Vec::new();
     for path in production_source_files() {
-        if path.components().any(|part| part.as_os_str() == "marrow-codes") {
+        if path
+            .components()
+            .any(|part| part.as_os_str() == "marrow-codes")
+        {
             continue;
         }
         let source = std::fs::read_to_string(&path).expect("read source");
