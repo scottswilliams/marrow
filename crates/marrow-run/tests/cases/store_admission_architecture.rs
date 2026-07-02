@@ -111,8 +111,27 @@ fn stage_one_sealed_holders_are_the_blessed_set() {
         crates_dir.join("marrow/src/cmd_restore.rs"),
         // Evolve apply/preview establish identity; apply runs its own witness and fence.
         crates_dir.join("marrow/src/cmd_evolve/store.rs"),
+        // Backup archives a store whatever its identity state; the lock-root witness
+        // runs through the shared owner before anything is archived.
+        crates_dir.join("marrow/src/cmd_backup.rs"),
+        // In-source test module mints a corruption fixture through the sealed open;
+        // cfg(test)-only, no production path.
+        crates_dir.join("marrow-json/src/surface.rs"),
     ];
-    let offenders = scan(&crates_dir, "SealedStore", &allowed);
+    // Type inference can hold a sealed handle without ever spelling the type, so the
+    // scan also matches the mint spellings: the admission opens (the only source of a
+    // SealedStore outside the admission module, since the constructor scan pins
+    // `SealedStore::open` there) and the CLI's inspection helper that forwards one.
+    let mut offenders = Vec::new();
+    for pattern in [
+        "SealedStore",
+        "admission::open_",
+        "open_store_for_inspection(",
+    ] {
+        offenders.extend(scan(&crates_dir, pattern, &allowed));
+    }
+    offenders.sort();
+    offenders.dedup();
     assert!(
         offenders.is_empty(),
         "a new module holds a stage-1 SealedStore without admission; \

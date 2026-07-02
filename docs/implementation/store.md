@@ -38,10 +38,12 @@ usable durable handle. What is enforced, and by which mechanism:
   appears in accepting positions: the surface sessions hold `AdmittedStore<Read>`/`<Write>`,
   the run session's native store is `AdmittedStore<Write>`, and the commit finisher accepts
   it.
-- **Stage-1-only paths are typed and enumerated** — inspection, doctor, recovery, restore,
-  identity-establishing apply, and pre-admission seeding legitimately stop at stage 1; they
-  hold `SealedStore` in their signatures, and the tidy scan's allowlist names each blessed
-  holder with its rationale. A new `SealedStore` holder anywhere else fails the scan.
+- **Stage-1-only paths are typed and enumerated** — inspection, doctor, backup, recovery,
+  restore, identity-establishing apply, and pre-admission seeding legitimately stop at
+  stage 1, and the tidy scan's allowlist names each blessed holder with its rationale. The
+  scan matches the spelled type and the mint spellings a type-inferred holder must still
+  write — the admission opens and the CLI's inspection helper, the only sources of a sealed
+  handle outside the admission module — so a new stage-1 holder anywhere else fails it.
 
 Stage 1, `crates/marrow-store/src/sealed.rs` — the engine open and its store-integrity ladder
 (regular-file guard, page-graph guard, format/shape checks, committed-recoverable replay on
