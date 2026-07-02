@@ -435,35 +435,60 @@ fn is_error_code(token: &str) -> bool {
             .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
 }
 
-/// The dotted error codes quoted as string literals in `text`. A code is always a standalone
-/// `"family.segment"` literal, so the scan matches each such literal locally — a `"`, a run of code
-/// characters, then a closing `"` — rather than tracking string state across the file, which an
-/// unbalanced quote in a comment or a `'"'` char literal would desync.
+/// The dotted error codes spelled inside string or byte-string literals in `text` — standalone
+/// (`"run.overflow"`) or embedded in a larger literal (a JSON template with escaped quotes, a
+/// prose message naming a code). Each line is walked with a small in-string state machine: a `"`
+/// opens a literal, a backslash escapes the next byte (so `\"` stays inside), the next bare `"`
+/// closes it, and a `'"'` char literal is skipped; every maximal code-character run inside a
+/// literal that parses as an error code is collected. A run continued by an uppercase letter is an
+/// identifier fragment, not a code (`run.defaultEntry`), and trailing dots are sentence
+/// punctuation, so both are trimmed away. State is line-local, so an unbalanced quote in one line
+/// cannot desync the rest of the file.
 fn quoted_error_codes(text: &str) -> std::collections::BTreeSet<String> {
-    let bytes = text.as_bytes();
-    let mut codes = std::collections::BTreeSet::new();
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'"' {
-            let start = i + 1;
-            let mut end = start;
-            while end < bytes.len()
-                && (bytes[end].is_ascii_lowercase()
-                    || bytes[end].is_ascii_digit()
-                    || bytes[end] == b'_'
-                    || bytes[end] == b'.')
-            {
-                end += 1;
-            }
-            if end > start
-                && end < bytes.len()
-                && bytes[end] == b'"'
-                && is_error_code(&text[start..end])
-            {
-                codes.insert(text[start..end].to_string());
-            }
+    fn collect(run: &str, codes: &mut std::collections::BTreeSet<String>) {
+        let token = run.trim_end_matches('.');
+        if is_error_code(token) {
+            codes.insert(token.to_string());
         }
-        i += 1;
+    }
+
+    let mut codes = std::collections::BTreeSet::new();
+    for line in text.lines() {
+        let bytes = line.as_bytes();
+        let mut in_string = false;
+        let mut run_start: Option<usize> = None;
+        let mut i = 0;
+        while i < bytes.len() {
+            let byte = bytes[i];
+            if in_string {
+                let is_code_char = byte.is_ascii_lowercase()
+                    || byte.is_ascii_digit()
+                    || byte == b'_'
+                    || byte == b'.';
+                if is_code_char {
+                    run_start.get_or_insert(i);
+                } else {
+                    if let Some(start) = run_start.take()
+                        && !byte.is_ascii_uppercase()
+                    {
+                        collect(&line[start..i], &mut codes);
+                    }
+                    if byte == b'\\' {
+                        i += 1;
+                    } else if byte == b'"' {
+                        in_string = false;
+                    }
+                }
+            } else if byte == b'"' {
+                in_string = true;
+            } else if byte == b'\'' && bytes.get(i + 1) == Some(&b'"') {
+                i += 2;
+            }
+            i += 1;
+        }
+        if in_string && let Some(start) = run_start {
+            collect(&line[start..], &mut codes);
+        }
     }
     codes
 }
@@ -574,17 +599,19 @@ fn production_source_files() -> Vec<std::path::PathBuf> {
     files
 }
 
-/// Absence gate: no dotted error code is spelled as an inline string literal in production source.
-/// Every code lives once in the `marrow-codes` registry and is rendered through `Code::as_str`, so a
-/// production `"family.segment"` literal is a code escaping the registry. The scan strips
-/// `#[cfg(test)]` modules and the registry crate itself (whose table and generated reference prose
-/// legitimately spell every code), then subtracts the non-code look-alikes.
+/// Absence gate: no dotted error code is spelled inside a string literal in production source —
+/// standalone (`"run.overflow"`) or embedded in a larger literal (a JSON template behind escaped
+/// quotes, a prose message naming a code). Every code lives once in the `marrow-codes` registry
+/// and is rendered through `Code::as_str`, so any code text inside a production literal is a code
+/// escaping the registry. The scan strips `#[cfg(test)]` modules and the registry crate itself
+/// (whose table and generated reference prose legitimately spell every code), then subtracts the
+/// non-code look-alikes.
 ///
-/// Blind spots, stated honestly: only an exact standalone `"family.segment"` literal is detected. A
-/// code assembled at runtime (`format!("run.{segment}")`) or split across tokens is invisible to the
-/// scan, as is any code spelled inside a `#[cfg(test)]` module. The scan cannot be dodged by
-/// respelling a plain literal — a renamed segment is still a `family.segment` literal and still
-/// caught — but it is not a defense against deliberate string assembly.
+/// Blind spots, stated honestly: a code assembled at runtime from fragments that are not
+/// themselves code-shaped (`format!("run.{segment}")`, `concat!` pieces) is invisible, as is any
+/// spelling inside a `#[cfg(test)]` module, and the interior lines of a multi-line raw string
+/// (the state machine is line-local). Intact code text cannot dodge the scan by embedding,
+/// escaping, or respelling a segment — only deliberate string assembly evades it.
 #[test]
 fn no_inline_string_literal_codes_outside_registry() {
     // Every family the reference documents must be known to the scan, or its codes would escape the
@@ -640,6 +667,48 @@ fn no_inline_string_literal_codes_outside_registry() {
         offenders.is_empty(),
         "inline error-code string literals escaped the registry; name the `marrow_codes::Code` \
          variant and render it with `.as_str()`:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// Reserved codes document a future contract and must have no production emit site. An emit site
+/// names the registry variant (`Code::DecodeShape`) — a spelled string literal is already caught by
+/// the inline-literal gate above — so this gate scans production source for any reference to a
+/// reserved code's variant. Going live is deliberate: flip the code's lifecycle to `Active` in the
+/// registry (which moves its reference row out of the reserved section on regeneration), then emit.
+#[test]
+fn reserved_codes_have_no_production_emit_sites() {
+    let reserved: Vec<marrow_codes::Code> = marrow_codes::Code::ALL
+        .iter()
+        .copied()
+        .filter(|code| code.lifecycle() == marrow_codes::Lifecycle::Reserved)
+        .collect();
+    assert!(!reserved.is_empty(), "the registry records reserved codes");
+
+    let mut offenders: Vec<String> = Vec::new();
+    for path in production_source_files() {
+        if path
+            .components()
+            .any(|part| part.as_os_str() == "marrow-codes")
+        {
+            continue;
+        }
+        let source = std::fs::read_to_string(&path).expect("read source");
+        let production = strip_test_modules(&source);
+        for &code in &reserved {
+            let variant_path = format!("Code::{code:?}");
+            if production.contains(&variant_path) {
+                let relative = path.strip_prefix(repo_root()).unwrap_or(&path);
+                offenders.push(format!("{} in {}", code.as_str(), relative.display()));
+            }
+        }
+    }
+
+    offenders.sort();
+    assert!(
+        offenders.is_empty(),
+        "reserved codes gained production emit sites; flip their lifecycle to Active in the \
+         registry (moving their reference rows to the active section) before emitting:\n{}",
         offenders.join("\n")
     );
 }

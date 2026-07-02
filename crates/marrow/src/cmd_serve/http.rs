@@ -1141,8 +1141,11 @@ fn write_response(
         .as_ref()
         .map(|body| {
             serde_json::to_vec(body).unwrap_or_else(|_| {
-                b"{\"code\":\"surface.store\",\"message\":\"surface response could not be encoded\"}"
-                    .to_vec()
+                format!(
+                    r#"{{"code":"{}","message":"surface response could not be encoded"}}"#,
+                    Code::SurfaceStore.as_str()
+                )
+                .into_bytes()
             })
         })
         .unwrap_or_default();

@@ -11,7 +11,8 @@ use crate::ScalarType;
 use crate::program::MarrowType;
 use crate::{CatalogEntryKind, CatalogLifecycle};
 
-/// A library file declares a module name that does not match its path.
+/// A library or test file declares a module name that does not match its
+/// path-derived name.
 pub const CHECK_MODULE_PATH: &str = Code::CheckModulePath.as_str();
 /// The project's `run.defaultEntry` does not name a runnable zero-argument entry:
 /// it is missing, private, ambiguous, or declares parameters. A default entry runs
@@ -23,7 +24,9 @@ pub const CHECK_DUPLICATE_MODULE: &str = Code::CheckDuplicateModule.as_str();
 /// A project holds more than one module-less file. A project may have at most one
 /// single-file script (its entrypoint); every other file must declare a `module`.
 pub const CHECK_MULTIPLE_SCRIPTS: &str = Code::CheckMultipleScripts.as_str();
-/// A name is declared or imported more than once within a single file.
+/// A name is declared more than once within one scope: a top-level name declared
+/// or imported twice in a file, or a local `const`/`var` redeclared in the same
+/// block. Shadowing in an inner block is allowed.
 pub const CHECK_DUPLICATE_DECLARATION: &str = Code::CheckDuplicateDeclaration.as_str();
 /// A module-level declaration reuses a builtin name. Distinct from a
 /// redeclaration: a single declaration that shadows a builtin is rejected on
@@ -85,8 +88,8 @@ pub const CHECK_COMMIT_AMPLIFICATION: &str = Code::CheckCommitAmplification.as_s
 /// Under strict typing, dynamic data must be converted before typed use.
 pub const CHECK_UNTYPED_VALUE: &str = Code::CheckUntypedValue.as_str();
 /// A saved key or identity argument's type does not match the key it addresses: a
-/// scalar of the wrong type in a keyed lookup, or an identity of a foreign
-/// resource spliced into a keyspace. Saved keys are nominally typed, so a
+/// scalar of the wrong type in a keyed lookup, or an identity of a foreign store
+/// root spliced into a keyspace. Saved keys are nominally typed, so a
 /// key-compatible foreign identity is still rejected. The static counterpart of a
 /// key-type fault at lowering.
 pub const CHECK_KEY_TYPE: &str = Code::CheckKeyType.as_str();
@@ -99,7 +102,8 @@ pub const CHECK_SEQUENCE_POSITION: &str = Code::CheckSequencePosition.as_str();
 /// parameter, local, loop or catch binding, or module constant). Under strict
 /// typing every value name must be defined.
 pub const CHECK_UNRESOLVED_NAME: &str = Code::CheckUnresolvedName.as_str();
-/// A dotted field read names no member on a resolved resource-shaped value.
+/// A dotted or optional (`?.`) field read names no field on a resolved value: a
+/// resource-shaped value with no such member, or a value with no fields at all.
 pub const CHECK_UNKNOWN_FIELD: &str = Code::CheckUnknownField.as_str();
 /// A `^root` names no declared store. A saved root is the only way a saved address
 /// exists, so an undeclared or misspelled root is a static resolution error at its

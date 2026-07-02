@@ -1,11 +1,17 @@
 //! Byte-exact generation of `docs/error-codes.md` from the registry.
 //!
 //! The narrative prose lives here as raw-string segments; every per-code table row
-//! is rendered from [`Code::meaning`]. The drift test regenerates and compares against
-//! the committed page, so the registry is the single source of both code identity and
-//! documented meaning.
+//! is rendered from [`Code::meaning`]. The reserved-codes tables are driven from
+//! [`Code::lifecycle`], so a lifecycle change moves the code between sections without
+//! touching this file. The drift test regenerates and compares against the committed
+//! page, so the registry is the single source of both code identity and documented
+//! meaning; a coverage test asserts every registered code appears in its section.
 
-use crate::Code;
+use crate::{Code, Family, Lifecycle};
+
+/// The heading that opens the reserved-codes section. `generate` emits it and the
+/// coverage test splits the page on it, so the two cannot disagree.
+pub(crate) const RESERVED_HEADING: &str = "### Reserved And Future Codes";
 
 fn rows(codes: &[Code]) -> String {
     codes
@@ -13,6 +19,15 @@ fn rows(codes: &[Code]) -> String {
         .map(|c| format!("| `{}` | {} |", c.as_str(), c.meaning()))
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// The reserved codes of one family, in registry order.
+fn reserved(family: Family) -> Vec<Code> {
+    Code::ALL
+        .iter()
+        .copied()
+        .filter(|c| c.lifecycle() == Lifecycle::Reserved && c.family() == family)
+        .collect()
 }
 
 /// Render the full `docs/error-codes.md` page from the registry.
@@ -345,23 +360,23 @@ runtime continuation value at the HTTP boundary.
 | Code | Meaning |
 |---|---|"#.to_string(),
         rows(&[Code::SurfaceRequest, Code::SurfaceAuth, Code::SurfaceAbsent, Code::SurfaceCursor, Code::SurfaceStaleCursor, Code::SurfaceAbiMismatch, Code::SurfaceInvalidData, Code::SurfaceLimit, Code::SurfaceConflict, Code::SurfaceWrite, Code::SurfaceAction, Code::SurfaceComputed, Code::SurfaceIntegrity, Code::SurfaceStore]),
+        r#""#.to_string(),
+        RESERVED_HEADING.to_string(),
         r#"
-### Reserved And Future Codes
-
 The remaining `check.surface_*` names are reserved for future surface checker
 diagnostics, including stable ABI export checks. They do not appear in v0.1
 command output until those checks ship.
 
 | Code | Reserved meaning |
 |---|---|"#.to_string(),
-        rows(&[Code::CheckSurfaceDecl, Code::CheckSurfaceCatalogPending, Code::CheckSurfaceOperation]),
+        rows(&reserved(Family::Check)),
         r#"
 The `decode.*` family is reserved for future checked decode and repair reports.
 These codes do not appear in v0.1 command output.
 
 | Code | Reserved meaning |
 |---|---|"#.to_string(),
-        rows(&[Code::DecodeShape, Code::DecodeUnknownMember, Code::DecodeRequiredAbsent, Code::DecodeValue]),
+        rows(&reserved(Family::Decode)),
         r#""#.to_string(),
     ];
     parts.join("\n")
