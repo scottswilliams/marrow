@@ -955,25 +955,31 @@ fn is_active_store_root(kind: CatalogEntryKind, lifecycle: CatalogLifecycle) -> 
 /// itself: a flip in the commit metadata region that rolls the store back to its empty
 /// initial state presents zero records and zero anchors, so the anchor pass visits nothing
 /// and passes vacuously. The independent witness is the lock, a separate durable file that
-/// records the committed saved roots. Every active saved root the lock records must still be
-/// present in the catalog the store presents; a present store that presents fewer roots than
-/// the lock committed has lost durable identity to a rollback or a torn baseline, failed
-/// closed as corruption. An absent store body never reaches this witness — the caller's
+/// records the committed saved roots and the epoch each became active at. A present store
+/// missing a root its own epoch covers has lost durable identity to a rollback or a torn
+/// baseline, failed closed as corruption. An absent store body never reaches this witness — the caller's
 /// disposable-store carve-out returns before it opens. A present store that opens to an empty
 /// catalog records no root either, and is condemned all the same: that is the rollback-to-empty
 /// this witness exists to catch.
 ///
-/// The comparison keys on the saved-root SET alone — the `Store` entries — never the resource
-/// members or indexes the catalog also records, and never the epoch number. Members and indexes
-/// are additive shape the store and lock advance through evolution, so an ahead lock that added a
-/// member legitimately lists more shape than a behind store presents while keeping the same root
-/// set. A behind store missing a committed ROOT, though, has lost durable identity whatever its
-/// epoch: a store rolled back below a root it once held and a stale checkout whose store predates a
-/// teammate's root addition present the same shape, so the safe verdict is loss on both, remedied
-/// by re-seeding an absent store from the committed identity. Keying on the epoch instead would
-/// bless the rollback as merely behind. When no committed lock exists, or it records no saved root,
-/// there is no recorded baseline to contradict — the separate missing-lock and genuine first-run
-/// case.
+/// The comparison keys on the saved roots — the `Store` entries — never the resource members or
+/// indexes the catalog also records: those are additive shape the store and lock advance through
+/// evolution, so an ahead lock that added a member legitimately lists more shape than a behind
+/// store presents. Each committed root is judged by its ACTIVATION EPOCH, the lock-recorded epoch
+/// at which the root became active. A store whose own epoch has reached a root's activation must
+/// present it — missing means lost durable identity, whatever the lock's high-water — while a store
+/// still below the activation legitimately never held the root: that is the store-behind fence's
+/// case, which the advance paths resolve by activating the store. A root with no recorded
+/// activation is treated as activated at the beginning of time, so its absence always reads as a
+/// loss, and a store with no committed catalog has no epoch to be behind at, so any missing root
+/// condemns it. When no committed lock exists, or it records no saved root, there is no recorded
+/// baseline to contradict — the separate missing-lock and genuine first-run case.
+///
+/// The activation rule cannot see a rollback that resets the whole store body to an old epoch:
+/// such a store is locally indistinguishable from a checkout that never advanced past that epoch,
+/// so a root activated later reads as legitimately absent even when the rollback destroyed its
+/// records. Store-side commit records are the mechanism that closes that hole; this witness does
+/// not claim to.
 pub fn verify_store_roots_against_lock(
     store: &TreeStore,
     lock: Option<&marrow_catalog::CatalogLock>,
@@ -981,15 +987,6 @@ pub fn verify_store_roots_against_lock(
     let Some(lock) = lock else {
         return Ok(());
     };
-    let committed_roots: HashSet<&str> = lock
-        .entries
-        .iter()
-        .filter(|entry| is_active_store_root(entry.kind, entry.lifecycle))
-        .map(|entry| entry.path.as_str())
-        .collect();
-    if committed_roots.is_empty() {
-        return Ok(());
-    }
     let snapshot = store.read_catalog_snapshot()?;
     let presented: HashSet<&str> = snapshot
         .as_ref()
@@ -1002,12 +999,22 @@ pub fn verify_store_roots_against_lock(
                 .collect()
         })
         .unwrap_or_default();
-    if committed_roots.is_subset(&presented) {
-        return Ok(());
+    let store_epoch = snapshot.as_ref().map(|snapshot| snapshot.epoch);
+    let lost = lock
+        .entries
+        .iter()
+        .filter(|entry| is_active_store_root(entry.kind, entry.lifecycle))
+        .filter(|entry| !presented.contains(entry.path.as_str()))
+        .any(|entry| {
+            let activated = lock.root_activations.get(&entry.path).copied().unwrap_or(0);
+            store_epoch.is_none_or(|epoch| epoch >= activated)
+        });
+    if lost {
+        return Err(StoreError::Corruption {
+            message: "the store presents fewer committed roots than its lock recorded".into(),
+        });
     }
-    Err(StoreError::Corruption {
-        message: "the store presents fewer committed roots than its lock recorded".into(),
-    })
+    Ok(())
 }
 
 /// Cross-check every declared index against the data records that derive it.

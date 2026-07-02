@@ -397,10 +397,11 @@ fn apply_desync_remedy(target_epoch: u64, high_water: u64) -> String {
 /// identity. A genuine first apply records no active root in the lock, so the witness never fires
 /// and the fresh baseline path runs.
 ///
-/// A behind local checkout that keeps the same saved roots — the very store apply exists to advance
-/// — passes the witness, which keys on the saved-root set, and reaches the store-behind fence rather
-/// than a corruption verdict. A rolled-back, partial-root-drop, or crash-mid-creation store presents
-/// fewer roots than the lock recorded, so the witness fires whatever the store's epoch.
+/// A behind local checkout — the very store apply exists to advance — passes the witness, which
+/// judges each committed root by its lock-recorded activation epoch: a root activated past the
+/// store's own epoch is legitimately absent, and this apply materializes it. A store missing a root
+/// its own epoch covers — a partial root drop, a torn baseline, or a crash mid-creation — fires the
+/// witness whatever the lock's high-water.
 fn guard_committed_lock_roots(
     dir: &str,
     config: &marrow_project::ProjectConfig,

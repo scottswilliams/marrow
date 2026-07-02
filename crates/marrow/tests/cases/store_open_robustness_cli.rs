@@ -1165,14 +1165,12 @@ fn a_same_epoch_store_missing_a_committed_root_fails_closed() {
     );
 }
 
-/// A present store BEHIND an ahead committed lock, whose ahead lock added a saved ROOT (not a
-/// member), has lost durable identity all the same: a root the lock recorded is missing from the
-/// store, and being epoch-behind never excuses a dropped root. This is the git-pull-then-rollback
-/// (or a partial root drop) shape — indistinguishable from a stale checkout whose store predates a
-/// teammate's root addition — so the safe verdict is `store.corruption` on every driver, remedied
-/// by re-seeding an absent store from the committed identity. The witness keys on the saved-root
-/// SET, so an epoch-behind store missing a committed root fails closed exactly as a same-epoch one
-/// does; only a behind store keeping the SAME roots (an added member) is tolerated.
+/// A present store BEHIND an ahead committed lock, missing a root whose recorded ACTIVATION its
+/// own epoch covers, has lost durable identity: the store should have held that root at its own
+/// epoch, so being behind the lock's high-water never excuses the loss. Both conditions hold at
+/// once here — the lock is ahead AND a covered root is missing — and the corruption verdict wins
+/// over the store-behind classification on every driver. Only a root activated PAST the store's
+/// epoch is permitted-absent, the store-behind case the advance paths resolve.
 #[test]
 fn an_epoch_behind_store_missing_a_committed_root_fails_closed() {
     let (project, dir) = seeded_mutable_store("cli-store-epoch-behind-root-loss", 3);
@@ -1194,9 +1192,9 @@ fn an_epoch_behind_store_missing_a_committed_root_fails_closed() {
         "the baseline lock is at epoch 1",
     );
 
-    // A teammate's committed activation added a second saved root and advanced the lock AHEAD of
-    // this store (high-water 2 > store epoch 1). The store presents only `^notes`, so it is missing
-    // the committed `^ghost` root; being epoch-behind must not excuse the dropped root.
+    // The lock records a second saved root activated AT the store's own epoch (1) and a later
+    // activation advanced the high-water to 2. The store presents only `^notes`, so it is missing
+    // a root its epoch covers; being behind the high-water must not excuse the loss.
     let mut entries = real_lock.entries.clone();
     entries.push(fresh_active_entry(
         &real_lock,
@@ -1204,12 +1202,15 @@ fn an_epoch_behind_store_missing_a_committed_root_fails_closed() {
         "app::^ghost",
         0x6058,
     ));
+    let mut root_activations = real_lock.root_activations.clone();
+    root_activations.insert("app::^ghost".to_string(), 1);
     let ahead_lost_root_lock = CatalogLock::new(
         entries,
         real_lock.ledger.clone(),
         real_lock.epoch_high_water + 1,
         real_lock.source_digest,
     )
+    .and_then(|lock| lock.with_root_activations(root_activations))
     .expect("the ahead lost-root lock validates");
     write_committed_lock(&project, &ahead_lost_root_lock);
 
@@ -1258,6 +1259,188 @@ fn an_epoch_behind_store_missing_a_committed_root_fails_closed() {
         "doctor blessed an epoch-behind store missing a committed root instead of flagging its \
          loss: {report}"
     );
+}
+
+/// The two-root source the newly-activated-root fixtures evolve to: the baseline `^notes` plus a
+/// second saved root `^tags` a teammate's activation adds.
+fn notes_and_tags_source() -> String {
+    mutable_count_source(1).replace(
+        "store ^notes(id: int): Note\n",
+        "store ^notes(id: int): Note\n\
+         \n\
+         resource Tag\n\
+         \x20\x20\x20\x20required label: string\n\
+         store ^tags(id: int): Tag\n",
+    )
+}
+
+/// The git-pull state after a teammate's activation added a NEW saved root: the committed lock
+/// records `^tags` activated at epoch 2, while this checkout's store sits at epoch 1 and never
+/// held it. The project's source and lock are the post-pull, two-root state; only the store body
+/// is the pre-activation one. Returns the project and its dir.
+fn behind_store_under_a_newly_activated_root(name: &str) -> (support::TempProject, String) {
+    let project = temp_project_uncommitted(name, |root| {
+        write(root, "marrow.json", native_config());
+        write(root, "src/app.mw", &mutable_count_source(1));
+    });
+    let dir = project.to_str().expect("dir utf8").to_string();
+    assert_eq!(
+        marrow(&["run", "--entry", "app::seed", &dir]).status.code(),
+        Some(0),
+        "seed the epoch-1 baseline",
+    );
+    assert_eq!(support_evolve::store_epoch(&project), Some(1));
+    let epoch_one_body =
+        std::fs::read(store_path(&project)).expect("snapshot the epoch-1 store body");
+
+    // The teammate's activation: an additive second root, auto-applied by a plain run.
+    write(&project, "src/app.mw", &notes_and_tags_source());
+    assert_eq!(
+        marrow(&["run", "--entry", "app::seed", &dir]).status.code(),
+        Some(0),
+        "the additive root activation auto-applies",
+    );
+    assert_eq!(support_evolve::store_epoch(&project), Some(2));
+    let lock = committed_lock(&project);
+    assert_eq!(lock.epoch_high_water, 2);
+    assert_eq!(
+        lock.root_activations.get("app::^tags").copied(),
+        Some(2),
+        "the projection stamps the new root at its activation epoch: {:?}",
+        lock.root_activations,
+    );
+    assert_eq!(
+        lock.root_activations.get("app::^notes").copied(),
+        Some(1),
+        "the baseline root keeps its recorded activation epoch: {:?}",
+        lock.root_activations,
+    );
+
+    // Roll only the store body back to the pre-activation epoch: the local checkout's store.
+    std::fs::write(store_path(&project), epoch_one_body).expect("restore the epoch-1 store body");
+    assert_eq!(support_evolve::store_epoch(&project), Some(1));
+    (project, dir)
+}
+
+/// A store legitimately behind a newly-activated saved root is BEHIND, not corrupt: the root's
+/// recorded activation (epoch 2) is past the store's own epoch (1), so the store never held it.
+/// The inspections read the store clean at its own epoch, run and both serve modes classify it
+/// `run.store_behind` with the actionable apply remedy, and `evolve apply` advances the store and
+/// materializes the new root — no wedge, in-band recovery, everything clean after.
+#[test]
+fn a_store_behind_a_newly_activated_root_reads_behind_and_advances_cleanly() {
+    let (project, dir) =
+        behind_store_under_a_newly_activated_root("cli-store-behind-new-root-advance");
+    let backup_target = project.join("behind-new-root.mw-backup");
+    let backup_target = backup_target
+        .to_str()
+        .expect("backup path utf8")
+        .to_string();
+    let deadline = std::time::Duration::from_secs(30);
+
+    for command in [
+        ["data", "integrity", &dir].as_slice(),
+        ["data", "stats", &dir].as_slice(),
+        ["data", "roots", &dir].as_slice(),
+        ["data", "dump", &dir].as_slice(),
+        ["data", "get", &dir, "^notes(1)"].as_slice(),
+        ["backup", &dir, &backup_target].as_slice(),
+        ["data", "recover", &dir].as_slice(),
+    ] {
+        let output = marrow_bounded(command, deadline);
+        assert_no_panic_and_bounded(&output, command, 0);
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "`marrow {}` false-corrupted a store legitimately behind a newly-activated root: \
+             {output:?}",
+            command.join(" "),
+        );
+    }
+
+    for command in [
+        ["run", "--entry", "app::seed", &dir].as_slice(),
+        ["serve", "--addr", "127.0.0.1:0", &dir].as_slice(),
+        ["serve", "--addr", "127.0.0.1:0", "--write", &dir].as_slice(),
+    ] {
+        let output = marrow_bounded(command, deadline);
+        assert_no_panic_and_bounded(&output, command, 0);
+        assert!(
+            !String::from_utf8_lossy(&output.stdout).contains("serve listening"),
+            "`marrow {}` served a behind store instead of fencing: {output:?}",
+            command.join(" "),
+        );
+        assert_eq!(
+            output.status.code(),
+            Some(1),
+            "`marrow {}` must fence a behind store: {output:?}",
+            command.join(" "),
+        );
+        assert_eq!(
+            stderr_code(&output),
+            "run.store_behind",
+            "`marrow {}` must classify a behind store as store-behind, never corruption: \
+             {output:?}",
+            command.join(" "),
+        );
+    }
+
+    // The advertised remedy works in-band: apply advances the store to the committed epoch and
+    // materializes the new root, and everything is clean after.
+    let apply = marrow_bounded(&["evolve", "apply", "--no-backup", &dir], deadline);
+    assert_eq!(
+        apply.status.code(),
+        Some(0),
+        "the advertised evolve apply must advance the behind store: {apply:?}",
+    );
+    assert_eq!(support_evolve::store_epoch(&project), Some(2));
+    assert!(
+        support_evolve::accepted_catalog(&project)
+            .entries
+            .iter()
+            .any(|entry| entry.path == "app::^tags"),
+        "apply materializes the newly-activated root in the store's accepted catalog",
+    );
+    for command in [
+        ["data", "integrity", &dir].as_slice(),
+        ["run", "--entry", "app::seed", &dir].as_slice(),
+    ] {
+        let output = marrow_bounded(command, deadline);
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "`marrow {}` must be clean after the advance: {output:?}",
+            command.join(" "),
+        );
+    }
+}
+
+/// The same newly-activated-root state with the store body ABSENT is the disposable-store case:
+/// a plain run seeds the store from the committed identity, materializing the new root, so the
+/// advance also works through run for a fresh checkout.
+#[test]
+fn a_fresh_checkout_under_a_newly_activated_root_advances_via_run() {
+    let (project, dir) = behind_store_under_a_newly_activated_root("cli-store-behind-new-root-run");
+    let deadline = std::time::Duration::from_secs(30);
+
+    std::fs::remove_file(store_path(&project)).expect("remove the store body");
+
+    let run = marrow_bounded(&["run", "--entry", "app::seed", &dir], deadline);
+    assert_eq!(
+        run.status.code(),
+        Some(0),
+        "run seeds an absent store from the committed identity: {run:?}",
+    );
+    assert_eq!(support_evolve::store_epoch(&project), Some(2));
+    assert!(
+        support_evolve::accepted_catalog(&project)
+            .entries
+            .iter()
+            .any(|entry| entry.path == "app::^tags"),
+        "the seed materializes the newly-activated root in the store's accepted catalog",
+    );
+    let integrity = marrow_bounded(&["data", "integrity", &dir], deadline);
+    assert_eq!(integrity.status.code(), Some(0), "{integrity:?}");
 }
 
 /// Hammer `marrow doctor --format json` against a live writer that repeatedly commits write

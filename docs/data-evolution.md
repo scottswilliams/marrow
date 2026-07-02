@@ -175,8 +175,12 @@ accepted identity, kept in the project root and tracked in source control like
 `Cargo.lock`. Each entry projects a stable ID, lifecycle, canonical path, the old
 spellings a rename carried forward as aliases, the consumed-transform mark a
 discharged `evolve transform` stamped, and a shape fingerprint; the lock also
-carries the append-only ledger of retired and reserved IDs and the producing
-source shape. Each ledger tombstone records the retired entity's `(kind, path)`
+carries the append-only ledger of retired and reserved IDs, the epoch at which
+each saved root became active, and the producing source shape. A root's
+activation epoch is stamped the first time a projection records the root and
+carried forward unchanged thereafter; the lock-root witness reads it to tell a
+store legitimately behind a newly-activated root from one that lost a root it
+should hold. Each ledger tombstone records the retired entity's `(kind, path)`
 alongside its ID, so the lock fully represents a reserved path: a fresh checkout
 that re-seeds a lost store from the lock alone reconstructs the reserved entries,
 carries each renamed entry's old spelling forward as an alias, restores each

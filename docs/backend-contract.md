@@ -195,17 +195,26 @@ The anchor cannot witness a corruption that drops the anchor itself: a flip in
 the commit-metadata region that rolls the store back to its empty initial commit
 presents zero records and zero digests, so the per-anchor cross-check visits
 nothing and passes vacuously. The independent witness is the committed
-`marrow.lock`, a separate durable file recording the epoch high-water and the
-accepted catalog roots. `backup`, `data integrity`, `data stats`, and `data
-recover` cross-check the roots a **present** store presents against the roots the
-lock records: a present store that presents fewer roots than its committed lock
-has lost durable identity to a rollback and fails closed as `store.corruption`. An
-**absent** store body is the disposable-store case, not a loss: the write paths
-(`run`, `evolve apply`, `serve --write`) seed an empty store from the committed
-identity, so an absent store is never `store.corruption`. The check keys on the
-accepted-root set, not the epoch number, so a store legitimately behind an ahead
-lock keeps the same roots and passes; with no committed lock the store has no
-recorded baseline to contradict, the separate missing-lock case.
+`marrow.lock`, a separate durable file recording the epoch high-water, the
+accepted catalog roots, and the epoch each root became active at. `backup`, `data
+integrity`, `data stats`, and `data recover` cross-check the roots a **present**
+store presents against the roots the lock records, judging each committed root by
+its recorded activation epoch: a store whose own epoch has reached a root's
+activation must present it — missing means the store lost durable identity and
+fails closed as `store.corruption`, whatever the lock's high-water — while a store
+still below the activation legitimately never held the root and is the
+store-behind case the advance paths resolve by activating the store. A root with
+no recorded activation always reads as a loss when missing, the fail-closed
+default. An **absent** store body is the disposable-store case, not a loss: the
+write paths (`run`, `evolve apply`, `serve --write`) seed an empty store from the
+committed identity, so an absent store is never `store.corruption`. With no
+committed lock the store has no recorded baseline to contradict, the separate
+missing-lock case. The activation rule cannot see a rollback that resets the
+whole store body to an old epoch: such a store is locally indistinguishable from
+a checkout that never advanced past that epoch, so a root activated later reads
+as legitimately absent even when the rollback destroyed its records. Store-side
+commit records are the mechanism that closes that hole; this witness does not
+claim to.
 
 A store is stamped exactly when `TreeStore::read_commit_metadata()` returns `Some`.
 The commit stamp is the single durable owner of the stamped catalog epoch,

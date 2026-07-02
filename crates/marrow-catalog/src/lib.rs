@@ -7,7 +7,7 @@
 //! could write to, repair, or override a store. The identity-aware structural-signature decode
 //! every catalog consumer reads shape through lives here too.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
@@ -252,7 +252,8 @@ pub fn structural_signature_leaf_token(signature: &str) -> Option<&str> {
 /// records each entry's shape as an opaque [`shape fingerprint`](LockEntry::shape_fingerprint)
 /// rather than its full text, while still carrying the entry's `(kind, path)` as the first-run
 /// adoption anchor, and adds the complete append-only cross-lifecycle id ledger, a monotonic
-/// epoch high-water, and the producing source digest. It is inert: it owns no path to a store and
+/// epoch high-water, the per-root activation epochs, and the producing source digest. It is
+/// inert: it owns no path to a store and
 /// self-validates only, so a checked-in lock can be read and compared but never repairs,
 /// overrides, or writes durable state.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -262,6 +263,16 @@ pub struct CatalogLock {
     pub ledger: Vec<LockLedgerTombstone>,
     pub epoch_high_water: u64,
     pub source_digest: String,
+    /// The epoch at which each active saved root became active, keyed by the root's canonical
+    /// path. The lock-root witness compares a store against the roots the lock committed; a
+    /// behind store legitimately lacks a root activated after its own epoch, so the witness
+    /// needs each root's activation epoch to tell that state from a loss. The projection stamps
+    /// a root the first time it appears and carries the recorded epoch forward on every later
+    /// projection. A root missing from this map has an unknown activation epoch and is treated
+    /// as activated at the beginning of time: its absence from a present store always reads as
+    /// a loss, the fail-closed direction.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub root_activations: BTreeMap<String, u64>,
 }
 
 impl CatalogLock {
@@ -279,9 +290,22 @@ impl CatalogLock {
             ledger,
             epoch_high_water,
             source_digest,
+            root_activations: BTreeMap::new(),
         };
         lock.validate()?;
         Ok(lock)
+    }
+
+    /// Attach the per-root activation epochs, re-validating the lock's self-consistency: every
+    /// key must name an active saved root the lock records, and every epoch must be a real
+    /// activation within the high-water.
+    pub fn with_root_activations(
+        mut self,
+        root_activations: BTreeMap<String, u64>,
+    ) -> Result<Self, CatalogError> {
+        self.root_activations = root_activations;
+        self.validate()?;
+        Ok(self)
     }
 
     /// Project the lock to canonical pretty JSON. Entries and ledger tombstones are emitted in a
@@ -332,6 +356,7 @@ impl CatalogLock {
             ledger,
             epoch_high_water: self.epoch_high_water,
             source_digest: self.source_digest.clone(),
+            root_activations: self.root_activations.clone(),
         }
     }
 
@@ -339,7 +364,38 @@ impl CatalogLock {
         self.validate_epoch_high_water()?;
         let active = self.validate_entries()?;
         self.validate_ledger(&active)?;
+        self.validate_root_activations()?;
         validate_sha256("source digest", &self.source_digest)
+    }
+
+    /// Reject a root-activation record that contradicts the lock's own entries: a key naming no
+    /// active saved root, an epoch of zero (no activation happens before the first epoch), or an
+    /// epoch above the high-water (nothing activates past the last recorded advance). Each would
+    /// make the lock-root witness reason from a fabricated activation, so a tampered or torn map
+    /// fails closed at decode.
+    fn validate_root_activations(&self) -> Result<(), CatalogError> {
+        let active_roots: HashSet<&str> = self
+            .entries
+            .iter()
+            .filter(|entry| {
+                entry.kind == CatalogEntryKind::Store && entry.lifecycle == CatalogLifecycle::Active
+            })
+            .map(|entry| entry.path.as_str())
+            .collect();
+        for (path, epoch) in &self.root_activations {
+            if !active_roots.contains(path.as_str()) {
+                return Err(CatalogError::lock_corrupt(format!(
+                    "root activation `{path}` names no active saved root"
+                )));
+            }
+            if *epoch == 0 || *epoch > self.epoch_high_water {
+                return Err(CatalogError::lock_corrupt(format!(
+                    "root activation `{path}` records epoch {epoch} outside 1..={}",
+                    self.epoch_high_water
+                )));
+            }
+        }
+        Ok(())
     }
 
     /// Reject an epoch high-water no real change could advance past. The single advance owner
@@ -875,6 +931,78 @@ mod lock_epoch_tests {
         let lock = CatalogLock::from_lock_json(&lock_json(u64::MAX - 2))
             .expect("an advanceable epoch high-water decodes");
         assert_eq!(lock.epoch_high_water, u64::MAX - 2);
+    }
+}
+
+#[cfg(test)]
+mod lock_root_activation_tests {
+    use std::collections::BTreeMap;
+
+    use super::{
+        CatalogEntry, CatalogEntryKind, CatalogLifecycle, CatalogLock, LOCK_CORRUPT, LockEntry,
+    };
+
+    const DIGEST: &str = "sha256:0000000000000000000000000000000000000000000000000000000000000000";
+
+    fn store_root_lock(high_water: u64) -> CatalogLock {
+        let entry = LockEntry::from_catalog_entry(&CatalogEntry {
+            kind: CatalogEntryKind::Store,
+            path: "app::^notes".to_string(),
+            stable_id: format!("cat_{:032x}", 7u64),
+            aliases: Vec::new(),
+            lifecycle: CatalogLifecycle::Active,
+            accepted_key_shape: Some("int".to_string()),
+            accepted_index_shape: None,
+            accepted_struct: None,
+            applied_transform: None,
+        });
+        CatalogLock::new(vec![entry], Vec::new(), high_water, DIGEST.to_string())
+            .expect("lock builds")
+    }
+
+    fn activations(path: &str, epoch: u64) -> BTreeMap<String, u64> {
+        BTreeMap::from([(path.to_string(), epoch)])
+    }
+
+    #[test]
+    fn root_activations_round_trip_through_the_wire_form() {
+        let lock = store_root_lock(3)
+            .with_root_activations(activations("app::^notes", 2))
+            .expect("activation within the high-water validates");
+        let json = lock.to_lock_json_pretty().expect("lock renders");
+        let decoded = CatalogLock::from_lock_json(&json).expect("lock decodes");
+        assert_eq!(decoded.root_activations, lock.root_activations);
+    }
+
+    #[test]
+    fn a_lock_without_root_activations_decodes_to_an_empty_map() {
+        // A lock written before the field existed decodes with no recorded activations, the
+        // fail-closed default: every committed root reads as activated at the beginning of time.
+        let json = store_root_lock(3).to_lock_json_pretty().expect("renders");
+        assert!(!json.contains("rootActivations"));
+        let decoded = CatalogLock::from_lock_json(&json).expect("lock decodes");
+        assert!(decoded.root_activations.is_empty());
+    }
+
+    #[test]
+    fn an_activation_naming_no_active_root_is_rejected() {
+        let error = store_root_lock(3)
+            .with_root_activations(activations("app::^ghost", 2))
+            .expect_err("an activation for an unrecorded root is rejected");
+        assert_eq!(error.code, LOCK_CORRUPT);
+    }
+
+    #[test]
+    fn an_activation_outside_the_epoch_range_is_rejected() {
+        let error = store_root_lock(3)
+            .with_root_activations(activations("app::^notes", 0))
+            .expect_err("epoch zero precedes every activation");
+        assert_eq!(error.code, LOCK_CORRUPT);
+
+        let error = store_root_lock(3)
+            .with_root_activations(activations("app::^notes", 4))
+            .expect_err("nothing activates past the recorded high-water");
+        assert_eq!(error.code, LOCK_CORRUPT);
     }
 }
 

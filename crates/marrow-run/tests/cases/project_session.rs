@@ -1452,39 +1452,59 @@ fn surface_read_session_fails_closed_on_a_store_missing_a_committed_root() {
     );
 }
 
-/// A store committed below the lock's epoch high-water that also presents fewer ROOTS has lost
-/// durable identity whatever its epoch: a stale checkout whose store predates a teammate's root
-/// addition and a store rolled back below a root it once held present the same shape, so the safe
-/// verdict is loss on both. The lock-root witness keys on the saved-root SET, not the epoch, so
-/// read-only serve fails a behind store missing a committed root closed `store.corruption` exactly
-/// as `serve --write` and the inspection family do, remedied by re-seeding an absent store from the
-/// committed identity. Only a behind store keeping the SAME roots is admitted.
-#[test]
-fn surface_read_session_fails_closed_on_an_epoch_behind_store_missing_a_root() {
-    let root = TempDir::new("marrow-run-surface-read-behind-lost-root").expect("create project");
-    seed_surface_counter_store(root.path());
-
-    let lock = marrow_check::read_committed_lock(root.path())
+/// The ahead committed lock a teammate's activation would leave: the real entries plus a fresh
+/// active `shelf::^ghost` store root, the high-water advanced by one, and the ghost's activation
+/// recorded at `ghost_activated` — the store's own epoch to model a lost root the store should
+/// hold, or the advanced epoch to model a root the behind store never had.
+fn publish_ahead_lock_with_ghost_root(root: &Path, ghost_activated: u64) {
+    let lock = marrow_check::read_committed_lock(root)
         .expect("read committed lock")
         .expect("committed lock");
     let mut entries = lock.entries.clone();
     entries.push(fresh_active_store_root(&lock, "shelf::^ghost", 0x6058));
+    let mut activations = lock.root_activations.clone();
+    activations.insert("shelf::^ghost".to_string(), ghost_activated);
     let ahead_lock = marrow_catalog::CatalogLock::new(
         entries,
         lock.ledger.clone(),
         lock.epoch_high_water + 1,
         lock.source_digest.clone(),
     )
+    .and_then(|ahead| ahead.with_root_activations(activations))
     .expect("the ahead lock validates");
     fs::write(
-        lock_path(root.path()),
+        lock_path(root),
         ahead_lock.to_lock_json_pretty().expect("render lock"),
     )
     .expect("publish the ahead committed lock");
+}
+
+/// A store missing a root whose recorded activation its own epoch covers has lost durable
+/// identity, even under an ahead lock: the store should have held that root at its own epoch, so
+/// read-only serve fails it closed `store.corruption` exactly as `serve --write` and the
+/// inspection family do — the corruption verdict wins over the behind classification.
+#[test]
+fn surface_read_session_fails_closed_on_a_behind_store_missing_a_covered_root() {
+    let root = TempDir::new("marrow-run-surface-read-behind-lost-root").expect("create project");
+    seed_surface_counter_store(root.path());
+    publish_ahead_lock_with_ghost_root(root.path(), 1);
 
     let error = ProjectSurfaceReadSession::open(root.path())
-        .expect_err("read-only serve must fail closed on an epoch-behind store missing a root");
+        .expect_err("read-only serve must fail closed on a missing root the store's epoch covers");
     assert_eq!(error.code(), "store.corruption");
+}
+
+/// A store behind a NEWLY-ACTIVATED root — the ghost's recorded activation is past the store's own
+/// epoch — legitimately never held it: the read session admits the store as the behind checkout it
+/// is, never `store.corruption`. A read cannot corrupt, and the store is readable at its own epoch.
+#[test]
+fn surface_read_session_admits_a_store_behind_a_newly_activated_root() {
+    let root = TempDir::new("marrow-run-surface-read-behind-new-root").expect("create project");
+    seed_surface_counter_store(root.path());
+    publish_ahead_lock_with_ghost_root(root.path(), 2);
+
+    ProjectSurfaceReadSession::open(root.path())
+        .expect("read-only serve admits a store behind a newly-activated root");
 }
 
 /// A store legitimately behind an ahead committed lock whose current source has ALSO drifted from

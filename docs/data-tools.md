@@ -343,21 +343,30 @@ under-returning or written onto. `data integrity`, `data stats`, `data dump`,
 
 The anchor cannot witness a rollback that drops the anchor itself. The committed
 `marrow.lock` is the second, independent witness: it records the accepted catalog
-roots, so a **present** store that presents fewer roots than its lock committed —
-a store rolled back to its empty initial commit, a partial root drop, or a uid-only
-store crashed mid-creation — has lost data and is reported as `store.corruption`.
-An **absent** store body under a committed lock is the disposable-store case, not a
-loss: the next write-capable run, `evolve apply`, or `serve --write` seeds an empty
-store from the committed identity (announced loudly), so the read-only inspections,
-`backup`, `doctor`, and `data recover` treat it as a clean first run rather than
-corruption. Every read-only inspection (`data integrity`, `data stats`, `data
-roots`, `data dump`, `data get`), `doctor`, `backup`, and `data recover` run this
-lock-root cross-check against a present store, so none blesses, counts, reads,
-archives, or repairs a store that rolled back below its committed roots. The check
-keys on the root set, not the epoch, so a store legitimately behind an ahead lock
-still passes, and a project with no committed lock — a genuine first run — is the
-separate missing-lock case rather than corruption. A backup mounted with
-`--backup` is self-contained and is inspected regardless of the live project's lock.
+roots and the epoch each became active at, so a **present** store missing a root
+its own epoch covers — a store rolled back to its empty initial commit, a partial
+root drop, or a uid-only store crashed mid-creation — has lost data and is
+reported as `store.corruption`. A store still below a root's recorded activation
+legitimately never held it: that is the store-behind case, which the advance
+paths resolve by activating the store, and the inspections read such a store
+clean at its own epoch. A root with no recorded activation always reads as a
+loss when missing, the fail-closed default. An **absent** store body under a
+committed lock is the disposable-store case, not a loss: the next write-capable
+run, `evolve apply`, or `serve --write` seeds an empty store from the committed
+identity (announced loudly), so the read-only inspections, `backup`, `doctor`,
+and `data recover` treat it as a clean first run rather than corruption. Every
+read-only inspection (`data integrity`, `data stats`, `data roots`, `data dump`,
+`data get`), `doctor`, `backup`, and `data recover` run this lock-root
+cross-check against a present store, so none blesses, counts, reads, archives,
+or repairs a store missing a root its epoch covers. A project with no committed
+lock — a genuine first run — is the separate missing-lock case rather than
+corruption. A backup mounted with `--backup` is self-contained and is inspected
+regardless of the live project's lock. The activation rule cannot see a rollback
+that resets the whole store body to an old epoch: such a store is locally
+indistinguishable from a checkout that never advanced past that epoch, so a root
+activated later reads as legitimately absent even when the rollback destroyed
+its records. Store-side commit records are the mechanism that closes that hole;
+this witness does not claim to.
 
 Catalog state is not store corruption. A saved root or member whose durable
 identity is still pending is treated as absent until a run or evolution apply

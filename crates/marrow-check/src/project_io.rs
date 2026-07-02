@@ -506,12 +506,14 @@ pub fn project_store_lock(
     let epoch_high_water = existing.as_ref().map_or(snapshot.epoch, |lock| {
         lock.epoch_high_water.max(snapshot.epoch)
     });
+    let root_activations = root_activations(existing.as_ref(), snapshot, &entries);
     let lock = marrow_catalog::CatalogLock::new(
         entries,
         ledger,
         epoch_high_water,
         source_digest.to_string(),
     )
+    .and_then(|lock| lock.with_root_activations(root_activations))
     .map_err(|error| ProjectIoError::Catalog {
         code: error.code,
         message: error.message,
@@ -551,6 +553,31 @@ pub enum LockProjection {
     Created,
     /// A different lock existed on disk; the projection rewrote it.
     Updated,
+}
+
+/// The activation epoch of each active saved root the projection records. A root the committed
+/// lock already stamps keeps its recorded epoch, so activation history is stable across
+/// re-projections; a root the lock has never seen is stamped at the snapshot's epoch — the epoch
+/// of the activation that introduced it, since the lock is re-projected in the same command that
+/// commits an activation. A lock deleted (or written before activations were recorded) between an
+/// activation and the next projection loses that root's true epoch and stamps the later projection
+/// epoch instead; the misclassification direction is store-behind, never a false corruption, and
+/// store-side commit records are the mechanism that closes it.
+fn root_activations(
+    existing: Option<&marrow_catalog::CatalogLock>,
+    snapshot: &marrow_catalog::CatalogMetadata,
+    active: &[marrow_catalog::LockEntry],
+) -> std::collections::BTreeMap<String, u64> {
+    active
+        .iter()
+        .filter(|entry| entry.kind == marrow_catalog::CatalogEntryKind::Store)
+        .map(|entry| {
+            let recorded = existing
+                .and_then(|lock| lock.root_activations.get(&entry.path))
+                .copied();
+            (entry.path.clone(), recorded.unwrap_or(snapshot.epoch))
+        })
+        .collect()
 }
 
 /// Union the snapshot's reserved tombstones with the committed lock's, so an append-only ledger
