@@ -181,7 +181,11 @@ fn check_rejects_a_bare_file_target_before_parsing_its_contents() {
 #[test]
 fn check_anchors_a_config_fault_at_its_marrow_json_position() {
     let project = support::temp_dir("config-position");
-    support::write(project.path(), "src/app.mw", "module app\npub fn main()\n    print(\"ok\")\n");
+    support::write(
+        project.path(),
+        "src/app.mw",
+        "module app\npub fn main()\n    print(\"ok\")\n",
+    );
     support::write(
         project.path(),
         "marrow.json",
@@ -191,7 +195,11 @@ fn check_anchors_a_config_fault_at_its_marrow_json_position() {
     let output = check_json(project.path());
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let report: Value = serde_json::from_slice(&output.stdout).expect("config fault json");
-    assert_eq!(report["code"], serde_json::json!("config.invalid"), "{report}");
+    assert_eq!(
+        report["code"],
+        serde_json::json!("config.invalid"),
+        "{report}"
+    );
     let span = &report["source_span"];
     assert_eq!(span["line"], serde_json::json!(4), "{report}");
     assert_eq!(span["column"], serde_json::json!(10), "{report}");
