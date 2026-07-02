@@ -21,6 +21,82 @@ Keys are order-preserving; values are not. `SavedKey` encodes scalars so byte-le
   corruption.
 - **Backup** — `backup` streams data-family record presence cells, keyed group-entry path nodes, and value cells; index cells are rebuilt, and commit metadata and the per-root structural digests are restamped on restore (the digests recomputed from the replayed cells), never archived.
 
+## Store admission
+
+Two typed stages, aligned with crate ownership, are the only route from a path on disk to a
+usable durable handle. The type chain — not a checklist — enforces both stages in order:
+`TreeStore`'s path constructors are crate-private, `SealedStore` is consumed only by
+`marrow-run`'s `admission` module (tidy scan `store_admission_architecture.rs`), and commands
+receive handles minted by that module.
+
+Stage 1, `crates/marrow-store/src/sealed.rs` — the engine open and its store-integrity ladder
+(regular-file guard, page-graph guard, format/shape checks, committed-recoverable replay on
+read-only opens):
+
+```rust
+pub enum AccessMode { Create, Write, Read }
+pub struct SealedStore { /* private */ }
+impl SealedStore {
+    pub fn open(path: &Path, access: AccessMode) -> Result<SealedStore, StoreError>;
+    pub fn access(&self) -> AccessMode;
+    pub fn store(&self) -> &TreeStore;
+    pub fn into_store(self) -> TreeStore;
+}
+```
+
+Stage 2, `crates/marrow-run/src/admission.rs` — the program-aware identity/lock ladder
+(`marrow-store` cannot see program identity, and commands must not compose the rungs
+themselves):
+
+```rust
+pub enum Read {}
+pub enum Write {}
+pub struct AdmittedStore<A> { /* module-private constructor */ }
+impl<A> AdmittedStore<A> {
+    pub fn store(&self) -> &TreeStore;
+    pub fn into_store(self) -> TreeStore;
+}
+pub fn open_read(path: &Path) -> Result<AdmittedStore<Read>, StoreError>;
+pub fn open_write(path: &Path) -> Result<AdmittedStore<Write>, StoreError>;
+pub fn open_create(path: &Path) -> Result<AdmittedStore<Write>, StoreError>;
+
+pub enum AdmissionPolicy { Run, SurfaceRead, SurfaceWrite }
+pub enum AdmissionVerdict {
+    Admit,
+    SeedFromLock,
+    Behind(FenceError),
+    Drift(Box<ProjectSessionError>),
+    Loss(StoreError),
+}
+pub enum BodyClassifyError { Project(ProjectIoError), Store(StoreError) }
+
+/// Pre-open rung: dataDir guard, committed-lock read, body presence, lock-root witness.
+pub fn classify_committed_body(
+    root: &Path,
+    config: &ProjectConfig,
+) -> Result<AdmissionVerdict, BodyClassifyError>;
+
+/// Post-open rung: store-behind fence, activation fence, catalog-digest bind, ordered by policy.
+pub fn admit(
+    store: &TreeStore,
+    program: &CheckedProgram,
+    lock: Option<&CatalogLock>,
+    policy: AdmissionPolicy,
+) -> Result<AdmissionVerdict, ProjectSessionError>;
+
+pub fn store_path_is_absent(path: &Path) -> bool;
+pub fn verify_present_store_lock_roots(
+    store: Option<&TreeStore>,
+    lock: Option<&CatalogLock>,
+) -> Result<(), StoreError>;
+```
+
+The ladder has two rungs by physical necessity: an absent body cannot be opened, and a lost
+one must fail before a write-capable open could re-baseline it, so `classify_committed_body`
+yields `Loss`/`SeedFromLock`/`Admit` pre-open while `admit` yields `Behind`/`Drift`/`Admit`
+on the handle. A write-capable policy judges the behind fence before the identity bind; the
+read policy binds identity first and reports `Behind` only when the bind failed.
+
 ## Modules
 
 | File | Responsibility |

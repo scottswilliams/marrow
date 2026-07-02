@@ -21,7 +21,7 @@ use crate::entry::{
     CheckedEntryCall, EntryArgument, EntryInvocation, run_entry_with_debugger, run_entry_with_host,
 };
 use crate::evolution::{
-    AutoApplyOutcome, BaselineError, FenceError, RunObligation, commit_catalog_baseline, fence,
+    AutoApplyOutcome, BaselineError, FenceError, RunObligation, commit_catalog_baseline,
     try_auto_apply,
 };
 use crate::host::{Host, Nondeterminism, StepHook, SystemNondeterminism};
@@ -461,6 +461,15 @@ impl From<marrow_check::ProjectIoError> for ProjectSessionError {
 impl From<StoreError> for ProjectSessionError {
     fn from(error: StoreError) -> Self {
         Self::Store(error)
+    }
+}
+
+impl From<admission::BodyClassifyError> for ProjectSessionError {
+    fn from(error: admission::BodyClassifyError) -> Self {
+        match error {
+            admission::BodyClassifyError::Project(error) => error.into(),
+            admission::BodyClassifyError::Store(error) => Self::Store(error),
+        }
     }
 }
 
@@ -1291,7 +1300,16 @@ fn open_surface_session(
     // and the read-only inspection family, rather than admitting the loss. An ABSENT body is the
     // disposable-store case, not a loss, and passes here.
     let mut notices = Vec::new();
-    guard_committed_lock_roots(&root, config)?;
+    match admission::classify_committed_body(&root, config)? {
+        admission::AdmissionVerdict::Admit | admission::AdmissionVerdict::SeedFromLock => {}
+        admission::AdmissionVerdict::Loss(error) => {
+            return Err(ProjectSessionError::Store(error));
+        }
+        admission::AdmissionVerdict::Behind(fence) => {
+            return Err(ProjectSessionError::Fence(fence));
+        }
+        admission::AdmissionVerdict::Drift(error) => return Err(*error),
+    }
 
     // An absent body under a roots-recording lock is the fresh-checkout (or lost-body) case: the
     // committed lock fully determines the surface ABI. A write-capable open seeds an on-disk store
@@ -1329,29 +1347,27 @@ fn open_surface_session(
     // store traversable but not that its index holds exactly the entries its records derive, so a
     // truncated index fails closed here rather than streaming an under-returning range.
     tooling::verify_store_completeness(&store.store, &program)?;
-    match access {
-        // A write-capable open must not seize a store behind a committed activation, even a
-        // byte-clean one: when the committed lock records an epoch high-water a teammate already
-        // advanced past, a surface write would commit against an epoch the shared source tree has
-        // left behind. Fail closed here exactly as run and evolve apply do.
-        SurfaceStoreAccess::Write => {
-            if let Some(behind) = store_behind_committed_lock(&root, &store.store)? {
-                return Err(ProjectSessionError::Fence(behind));
-            }
-            admit_surface_open(&program, &store.store)?;
+    // A write-capable open must not seize a store behind a committed activation, even a
+    // byte-clean one, so the write policy judges the behind fence first. A read cannot
+    // corrupt the store, so the read policy admits a behind store still readable at its own
+    // epoch and reports the behind fence only when the identity bind already failed — the
+    // accurate diagnosis for a checkout whose source has also moved past that epoch's shape.
+    let policy = match access {
+        SurfaceStoreAccess::Write => admission::AdmissionPolicy::SurfaceWrite,
+        SurfaceStoreAccess::ReadOnly => admission::AdmissionPolicy::SurfaceRead,
+    };
+    let lock = marrow_check::read_committed_lock(&root)?;
+    match admission::admit(&store.store, &program, lock.as_ref(), policy)? {
+        admission::AdmissionVerdict::Admit => {}
+        admission::AdmissionVerdict::Behind(behind) => {
+            return Err(ProjectSessionError::Fence(behind));
         }
-        // A read cannot corrupt the store, so a behind store still readable at its own epoch is
-        // admitted. When the current source has drifted from that epoch's shape, though, the
-        // accurate diagnosis is that the local store is behind the committed activation and needs
-        // `evolve apply` — report the store-behind fence in place of the self-contradictory
-        // same-epoch schema drift the admission check would otherwise raise.
-        SurfaceStoreAccess::ReadOnly => {
-            if let Err(error) = admit_surface_open(&program, &store.store) {
-                if let Some(behind) = store_behind_committed_lock(&root, &store.store)? {
-                    return Err(ProjectSessionError::Fence(behind));
-                }
-                return Err(error);
-            }
+        admission::AdmissionVerdict::Drift(error) => return Err(*error),
+        admission::AdmissionVerdict::SeedFromLock => {
+            return Err(ProjectSessionError::DurableStoreRequired);
+        }
+        admission::AdmissionVerdict::Loss(error) => {
+            return Err(ProjectSessionError::Store(error));
         }
     }
     Ok(OpenSurfaceSession {
@@ -1497,14 +1513,18 @@ fn open_run_store(
         )?);
     }
     if !isolate_writes {
-        // A `dataDir` occupied by a non-directory is a configuration fault, not a store
-        // failure. Classify it through the shared guard before any open — the lock-root
-        // witness opens the store directly, so without this the stray file's `ENOTDIR`
-        // would leak as a raw `store.io` whenever a committed lock records active roots.
-        marrow_check::guard_data_dir(root, config)?;
-        guard_committed_lock_roots(root, config)?;
-        if store_absent_with_committed_lock(root, config)? {
-            notices.push(ProjectSessionNotice::SeededFromCommittedLock);
+        match admission::classify_committed_body(root, config)? {
+            admission::AdmissionVerdict::Admit => {}
+            admission::AdmissionVerdict::SeedFromLock => {
+                notices.push(ProjectSessionNotice::SeededFromCommittedLock);
+            }
+            admission::AdmissionVerdict::Loss(error) => {
+                return Err(ProjectSessionError::Store(error));
+            }
+            admission::AdmissionVerdict::Behind(fence) => {
+                return Err(ProjectSessionError::Fence(fence));
+            }
+            admission::AdmissionVerdict::Drift(error) => return Err(*error),
         }
     }
     let Some(store) = open_store_file(root, config, !isolate_writes)? else {
@@ -1529,17 +1549,23 @@ fn open_run_store(
     } else {
         establish_store_baseline(root, config, &store.store, checked)?
     };
-    if let Some(behind) = store_behind_committed_lock(root, &store.store)? {
-        return Err(ProjectSessionError::Fence(behind));
-    }
-    match fence_run(checked.program(), &store.store) {
+    let lock = marrow_check::read_committed_lock(root)?;
+    match admission::admit(
+        &store.store,
+        checked.program(),
+        lock.as_ref(),
+        admission::AdmissionPolicy::Run,
+    )? {
+        admission::AdmissionVerdict::Behind(behind) => Err(ProjectSessionError::Fence(behind)),
         // A shape-neutral in-place transform recomputes an already-accepted member, so it
         // moves neither the catalog epoch nor the source digest the fence reads. The fence
         // therefore agrees even though the migration is still pending. A pending evolution
         // blocks run until applied or withdrawn, so route a live in-place transform through
         // the discharge path the same way schema drift does: it auto-applies when the
         // affected store is empty and fences when it has records to rewrite.
-        Ok(()) if marrow_check::evolution::has_pending_transform(checked.program()) => {
+        admission::AdmissionVerdict::Admit
+            if marrow_check::evolution::has_pending_transform(checked.program()) =>
+        {
             divert_to_discharge(
                 root,
                 config,
@@ -1550,20 +1576,24 @@ fn open_run_store(
                 notices,
             )
         }
-        Ok(()) => {
+        admission::AdmissionVerdict::Admit => {
             validate_source_analysis_admission(&checked.snapshot, admission)?;
             reproject_and_finish_open(root, checked, store, isolate_writes, notices)
         }
-        Err(FenceError::SchemaDrift) => divert_to_discharge(
-            root,
-            config,
-            checked,
-            store,
-            isolate_writes,
-            admission,
-            notices,
-        ),
-        Err(error) => Err(ProjectSessionError::Fence(error)),
+        admission::AdmissionVerdict::Drift(error) => match *error {
+            ProjectSessionError::Fence(FenceError::SchemaDrift) => divert_to_discharge(
+                root,
+                config,
+                checked,
+                store,
+                isolate_writes,
+                admission,
+                notices,
+            ),
+            other => Err(other),
+        },
+        admission::AdmissionVerdict::SeedFromLock => Err(ProjectSessionError::DurableStoreRequired),
+        admission::AdmissionVerdict::Loss(error) => Err(ProjectSessionError::Store(error)),
     }
 }
 
@@ -1775,7 +1805,8 @@ fn auto_apply_then_reopen(
     let Some(store) = open_store_file(root, config, true)? else {
         return open_memory_store(checked);
     };
-    fence_run(checked.program(), &store.store).map_err(ProjectSessionError::Fence)?;
+    admission::fence_program(checked.program(), &store.store)
+        .map_err(ProjectSessionError::Fence)?;
     reproject_and_finish_open(root, checked, store, isolate_writes, notices)
 }
 
@@ -1819,7 +1850,8 @@ fn classify_dry_run_drift(
                 )
                 .map_err(ProjectSessionError::from)?,
             );
-            fence_run(checked.program(), &isolated.store).map_err(ProjectSessionError::Fence)?;
+            admission::fence_program(checked.program(), &isolated.store)
+                .map_err(ProjectSessionError::Fence)?;
             let store_boundary = ExecutionStoreBoundary {
                 kind: ExecutionBoundaryStoreKind::Isolated,
                 stamp: optional_store_stamp(&isolated.store)?,
@@ -2141,106 +2173,6 @@ fn reproject_committed_lock(
         marrow_check::LockProjection::Unchanged => {}
     }
     Ok(())
-}
-
-fn fence_run(program: &CheckedProgram, store: &TreeStore) -> Result<(), FenceError> {
-    fence(
-        program.catalog.accepted_epoch,
-        &program.source_digest(),
-        store,
-    )
-}
-
-/// Fence a surface open against the checked program's accepted identity: the same store-open fence
-/// run and evolve apply run — which owns the no-accepted-epoch decision, failing a stamped store
-/// opened by a program that binds none closed with `run.durable_store_required` — then the
-/// catalog-digest drift check. Shared by both access modes so a read admits exactly the stores a
-/// write would, apart from the behind-store refusal a read tolerates.
-fn admit_surface_open(
-    program: &CheckedProgram,
-    store: &TreeStore,
-) -> Result<(), ProjectSessionError> {
-    fence_run(program, store).map_err(ProjectSessionError::Fence)?;
-    let accepted_digest =
-        program
-            .catalog
-            .accepted_digest
-            .as_deref()
-            .ok_or_else(|| ProjectSessionError::Catalog {
-                code: marrow_catalog::CATALOG_INVALID,
-                message: "accepted catalog digest is missing from the checked program".to_string(),
-            })?;
-    let found = store.catalog_snapshot_digest()?;
-    if found.as_deref() != Some(accepted_digest) {
-        return Err(ProjectSessionError::SchemaDrift {
-            message: "store catalog digest does not match the checked project catalog".to_string(),
-        });
-    }
-    Ok(())
-}
-
-/// Whether the local store lags the committed lock. The committed lock records the epoch a write
-/// path last activated against the shared source tree, so a stamped store whose epoch is below the
-/// lock's high-water is a local checkout that has not caught up to an activation a teammate already
-/// committed. This is reported as a store-behind fence (the operator runs `marrow evolve apply` to
-/// advance the local store), distinct from same-epoch schema drift, which auto-applies a fresh
-/// activation. The store remains the sole authority: the lock never rewinds or overrides it, it only
-/// signals that the local store is behind a committed advance.
-fn store_behind_committed_lock(
-    root: &Path,
-    store: &TreeStore,
-) -> Result<Option<FenceError>, ProjectSessionError> {
-    let Some(commit) = store.read_commit_metadata()? else {
-        return Ok(None);
-    };
-    let Some(lock) = marrow_check::read_committed_lock(root)? else {
-        return Ok(None);
-    };
-    if lock.epoch_high_water > commit.catalog_epoch {
-        Ok(Some(FenceError::StoreBehind {
-            stored: commit.catalog_epoch,
-            accepted: lock.epoch_high_water,
-        }))
-    } else {
-        Ok(None)
-    }
-}
-
-/// Fail a write-capable run closed when a PRESENT store has lost the committed roots its
-/// `marrow.lock` records, before establishing a fresh baseline would silently mask the loss. The
-/// committed lock is the independent witness to durable identity: a present store that presents
-/// fewer of the lock's active roots than the lock recorded — rolled back to its empty initial
-/// commit, a partial root drop, or a uid-only store crashed mid-creation — has lost durable
-/// identity and is `store.corruption`, not a clean store to re-baseline. An ABSENT store body is
-/// the disposable-store case, not a loss: it passes here so the open seeds an empty store from the
-/// committed identity. A genuine first run records no active root in the lock, so the witness never
-/// fires either way.
-///
-/// A behind local checkout is not a loss: the witness judges each committed root by its
-/// lock-recorded activation epoch, so a store below a root's activation legitimately lacks it and
-/// the write path reaches the store-behind fence rather than a corruption verdict, exactly as for
-/// an added member. A store missing a root its own epoch covers — a partial root drop, a torn
-/// baseline, or a crash mid-creation — fires the witness whatever the lock's high-water.
-fn guard_committed_lock_roots(
-    root: &Path,
-    config: &ProjectConfig,
-) -> Result<(), ProjectSessionError> {
-    let Some(path) = marrow_check::native_store_path(root, config)? else {
-        return Ok(());
-    };
-    let Some(lock) = marrow_check::read_committed_lock(root)? else {
-        return Ok(());
-    };
-    if !lock.records_active_roots() {
-        return Ok(());
-    }
-    let store = if admission::store_path_is_absent(&path) {
-        None
-    } else {
-        Some(admission::open_read(&path)?.into_store())
-    };
-    admission::verify_present_store_lock_roots(store.as_ref(), Some(&lock))
-        .map_err(ProjectSessionError::Store)
 }
 
 /// Whether the store body is absent on disk while a committed lock records active roots — the
