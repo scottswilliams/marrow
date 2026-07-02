@@ -8,6 +8,7 @@ use crate::support;
 use crate::support_data;
 use crate::support_evolve;
 use marrow_catalog::{CatalogEntryKind, CatalogLifecycle, CatalogLock, LockEntry};
+use marrow_store::{AccessMode, SealedStore};
 use std::path::Path;
 use support::{
     corrupt_primary_slot_selector, find_code_segment, is_code, last_fault, marrow, marrow_bounded,
@@ -808,7 +809,9 @@ fn roll_store_back_to_empty(project: &Path) {
     let store = store_path(project);
     let scratch = project.join(".data").join("empty-scratch.redb");
     {
-        let _empty = marrow_store::tree::TreeStore::open(&scratch).expect("create empty store");
+        let _empty = SealedStore::open(&scratch, AccessMode::Create)
+            .expect("create empty store")
+            .into_store();
     }
     std::fs::copy(&scratch, &store).expect("overwrite store with empty");
     std::fs::remove_file(&scratch).expect("remove scratch store");
@@ -866,7 +869,9 @@ fn a_total_drop_to_empty_is_caught_by_the_lock_root_witness() {
 fn replace_with_baseline_pending_store(project: &Path) {
     let store = store_path(project);
     std::fs::remove_file(&store).expect("remove seeded store");
-    let pending = marrow_store::tree::TreeStore::open(&store).expect("create fresh store");
+    let pending = SealedStore::open(&store, AccessMode::Create)
+        .expect("create fresh store")
+        .into_store();
     pending
         .write_store_uid(&marrow_store::tree::StoreUid::from_entropy_bytes([7u8; 16]))
         .expect("stamp store uid");
@@ -2729,8 +2734,9 @@ fn inspection_agrees_with_write_open_on_commit_tracker_corruption() {
 #[test]
 fn read_only_cli_commands_report_locked_while_writer_is_open() {
     let (project, dir) = seeded_project("cli-store-writer-locks-readers");
-    let _writer = marrow_store::tree::TreeStore::open(&store_path(&project))
-        .expect("hold the native writer open");
+    let _writer = SealedStore::open(&store_path(&project), AccessMode::Create)
+        .expect("hold the native writer open")
+        .into_store();
     let backup_target = project.join("held.mw-backup");
     let backup_target = backup_target.to_str().expect("backup path utf8");
     let commands: &[&[&str]] = &[
@@ -2751,8 +2757,9 @@ fn read_only_cli_commands_report_locked_while_writer_is_open() {
 #[test]
 fn write_cli_commands_report_locked_while_read_only_holder_lives() {
     let (project, dir) = seeded_project("cli-store-reader-locks-writers");
-    let _reader = marrow_store::tree::TreeStore::open_read_only(&store_path(&project))
-        .expect("hold the native reader open");
+    let _reader = SealedStore::open(&store_path(&project), AccessMode::Read)
+        .expect("hold the native reader open")
+        .into_store();
     let commands: &[&[&str]] = &[
         &["run", "--entry", "app::seed", &dir],
         &["data", "recover", &dir],
@@ -2829,7 +2836,7 @@ fn data_recover_repairs_an_unclean_store_without_checking_source_first() {
     let output = marrow(&["data", "recover", &dir]);
     assert_eq!(output.status.code(), Some(0), "{output:?}");
 
-    marrow_store::tree::TreeStore::open_read_only(&store_path(&project))
+    SealedStore::open(&store_path(&project), AccessMode::Read)
         .expect("recover should leave the store readable");
 }
 

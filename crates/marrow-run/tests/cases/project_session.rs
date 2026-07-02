@@ -19,7 +19,8 @@ use marrow_run::{
 };
 use marrow_store::cell::CatalogId;
 use marrow_store::key::SavedKey;
-use marrow_store::tree::{DataPathSegment, TreeStore};
+use marrow_store::tree::DataPathSegment;
+use marrow_store::{AccessMode, SealedStore};
 use support::{TempDir, write_temp_source};
 
 fn native_config() -> ProjectConfig {
@@ -306,7 +307,9 @@ fn surface_read_session_serves_existing_native_store_without_advancing_it() {
     let lock_path = lock_path(root.path());
     let lock_before = fs::read(&lock_path).expect("seed run projects the committed lock");
     let before = {
-        let store = TreeStore::open_read_only(&store_path).expect("open seeded store");
+        let store = SealedStore::open(&store_path, AccessMode::Read)
+            .expect("open seeded store")
+            .into_store();
         store
             .read_commit_metadata()
             .expect("read commit metadata")
@@ -418,7 +421,9 @@ fn surface_read_session_serves_existing_native_store_without_advancing_it() {
     drop(session);
 
     let after = {
-        let store = TreeStore::open_read_only(&store_path).expect("reopen seeded store");
+        let store = SealedStore::open(&store_path, AccessMode::Read)
+            .expect("reopen seeded store")
+            .into_store();
         store
             .read_commit_metadata()
             .expect("read commit metadata")
@@ -703,7 +708,9 @@ fn surface_read_session_admits_lock_bound_program_after_non_final_retire() {
     drop(seed);
 
     let store_path = root.path().join(".data").join("marrow.redb");
-    let store = TreeStore::open(&store_path).expect("open native store");
+    let store = SealedStore::open(&store_path, AccessMode::Create)
+        .expect("open native store")
+        .into_store();
     let accepted = store
         .read_catalog_snapshot()
         .expect("read accepted catalog")
@@ -962,7 +969,9 @@ fn advance_committed_lock_one_epoch_ahead_of_store(root: &Path) {
 fn store_commit_identity(
     store_path: &Path,
 ) -> (Option<String>, Option<marrow_store::tree::CommitMetadata>) {
-    let store = TreeStore::open_read_only(store_path).expect("open store for identity read");
+    let store = SealedStore::open(store_path, AccessMode::Read)
+        .expect("open store for identity read")
+        .into_store();
     let uid = store
         .read_store_uid()
         .expect("read store uid")
@@ -1102,7 +1111,9 @@ fn surface_write_session_rejects_populated_unstamped_store_without_minting_uid()
     );
     let store_path = root.path().join(".data").join("marrow.redb");
     fs::create_dir_all(store_path.parent().expect("store parent")).expect("create store dir");
-    let store = TreeStore::open(&store_path).expect("open native store");
+    let store = SealedStore::open(&store_path, AccessMode::Create)
+        .expect("open native store")
+        .into_store();
     store
         .write_data_value(
             &CatalogId::new("cat_00000000000000000000000000000001").expect("store id"),
@@ -1119,7 +1130,9 @@ fn surface_write_session_rejects_populated_unstamped_store_without_minting_uid()
         .expect_err("write surface session must not adopt unstamped data");
 
     assert_eq!(error.code(), "run.store_unstamped");
-    let store = TreeStore::open_read_only(&store_path).expect("reopen native store");
+    let store = SealedStore::open(&store_path, AccessMode::Read)
+        .expect("reopen native store")
+        .into_store();
     assert!(
         store
             .read_store_uid()
@@ -1162,7 +1175,9 @@ fn surface_read_session_does_not_repair_a_missing_lock() {
     let lock_path = lock_path(root.path());
     fs::remove_file(&lock_path).expect("remove committed lock");
     let before = {
-        let store = TreeStore::open_read_only(&store_path).expect("open seeded store");
+        let store = SealedStore::open(&store_path, AccessMode::Read)
+            .expect("open seeded store")
+            .into_store();
         store
             .read_commit_metadata()
             .expect("read commit metadata")
@@ -1185,7 +1200,9 @@ fn surface_read_session_does_not_repair_a_missing_lock() {
     drop(session);
 
     let after = {
-        let store = TreeStore::open_read_only(&store_path).expect("reopen seeded store");
+        let store = SealedStore::open(&store_path, AccessMode::Read)
+            .expect("reopen seeded store")
+            .into_store();
         store
             .read_commit_metadata()
             .expect("read commit metadata")
@@ -1277,7 +1294,9 @@ fn surface_read_session_rejects_populated_unstamped_store_before_baseline() {
     );
     let store_path = root.path().join(".data").join("marrow.redb");
     fs::create_dir_all(store_path.parent().expect("store parent")).expect("create store dir");
-    let store = TreeStore::open(&store_path).expect("open native store");
+    let store = SealedStore::open(&store_path, AccessMode::Create)
+        .expect("open native store")
+        .into_store();
     store
         .write_data_value(
             &CatalogId::new("cat_00000000000000000000000000000001").expect("store id"),
@@ -1321,7 +1340,9 @@ fn surface_read_session_fences_drift_without_auto_apply() {
     let lock_path = lock_path(root.path());
     let lock_before = fs::read(&lock_path).expect("seed run projects the committed lock");
     let before = {
-        let store = TreeStore::open_read_only(&store_path).expect("open seeded store");
+        let store = SealedStore::open(&store_path, AccessMode::Read)
+            .expect("open seeded store")
+            .into_store();
         store
             .read_commit_metadata()
             .expect("read commit metadata")
@@ -1338,7 +1359,9 @@ fn surface_read_session_fences_drift_without_auto_apply() {
 
     assert_eq!(error.code(), "run.schema_drift");
     let after = {
-        let store = TreeStore::open_read_only(&store_path).expect("reopen seeded store");
+        let store = SealedStore::open(&store_path, AccessMode::Read)
+            .expect("reopen seeded store")
+            .into_store();
         store
             .read_commit_metadata()
             .expect("read commit metadata")
@@ -2226,7 +2249,9 @@ fn source_analysis_admission_preserves_unstamped_store_guard() {
 
     let store_path = root.path().join(".data").join("marrow.redb");
     fs::create_dir_all(store_path.parent().expect("store parent")).expect("create store dir");
-    let store = TreeStore::open(&store_path).expect("open native store");
+    let store = SealedStore::open(&store_path, AccessMode::Create)
+        .expect("open native store")
+        .into_store();
     store
         .write_record_presence(
             &CatalogId::new("cat_00000000000000000000000000000001").expect("store id"),
@@ -2452,7 +2477,9 @@ fn fresh_memory_run_does_not_read_or_advance_an_existing_native_store() {
     let lock_path = lock_path(root.path());
     let lock_before = fs::read(&lock_path).expect("seed run projects the committed lock");
     let before = {
-        let store = TreeStore::open_read_only(&store_path).expect("open real store");
+        let store = SealedStore::open(&store_path, AccessMode::Read)
+            .expect("open real store")
+            .into_store();
         store
             .read_commit_metadata()
             .expect("read commit metadata")
@@ -2473,7 +2500,9 @@ fn fresh_memory_run_does_not_read_or_advance_an_existing_native_store() {
     );
 
     let after = {
-        let store = TreeStore::open_read_only(&store_path).expect("reopen real store");
+        let store = SealedStore::open(&store_path, AccessMode::Read)
+            .expect("reopen real store")
+            .into_store();
         store
             .read_commit_metadata()
             .expect("read commit metadata")
@@ -2504,7 +2533,9 @@ fn opening_a_store_whose_snapshot_outran_its_commit_stamp_fails_closed_as_corrup
             marrow_check::check_project_with_catalog(root.path(), &config, None)
                 .expect("check baseline");
         assert!(!report.has_errors(), "{:#?}", report.diagnostics);
-        let store = marrow_store::tree::TreeStore::open(&store_path).expect("open native store");
+        let store = SealedStore::open(&store_path, AccessMode::Create)
+            .expect("open native store")
+            .into_store();
         assert!(
             marrow_run::evolution::commit_catalog_baseline(&store, &pending)
                 .expect("commit baseline"),
@@ -2536,7 +2567,9 @@ fn opening_a_store_whose_snapshot_outran_its_commit_stamp_fails_closed_as_corrup
         "advanced source advances the catalog epoch"
     );
     {
-        let store = marrow_store::tree::TreeStore::open(&store_path).expect("reopen native store");
+        let store = SealedStore::open(&store_path, AccessMode::Create)
+            .expect("reopen native store")
+            .into_store();
         store.begin().expect("begin");
         store
             .replace_catalog_snapshot(&advanced_catalog)

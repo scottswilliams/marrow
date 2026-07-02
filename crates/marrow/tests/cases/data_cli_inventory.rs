@@ -7,7 +7,7 @@ use std::fs;
 use crate::support;
 use crate::support_data;
 use marrow_store::key::SavedKey;
-use marrow_store::tree::TreeStore;
+use marrow_store::{AccessMode, SealedStore};
 use support_data::{
     assert_stable_store_snapshot_eq, assert_store_snapshot, checked_place, field_path, json,
     marrow, native_project, seeded_project, write_record_presence, write_tree_values,
@@ -174,8 +174,12 @@ fn data_inventory_reads_backup_while_live_store_is_locked() {
     let live_roots = support::json(live_roots.stdout);
     let live_stats = support::json(live_stats.stdout);
 
-    let _writer = TreeStore::open(&project.join(".data").join("marrow.redb"))
-        .expect("hold the native writer open");
+    let _writer = SealedStore::open(
+        &project.join(".data").join("marrow.redb"),
+        AccessMode::Create,
+    )
+    .expect("hold the native writer open")
+    .into_store();
     let locked_live = support::marrow(&["data", "dump", "--format", "json", &dir]);
     assert_eq!(locked_live.status.code(), Some(1), "{locked_live:?}");
     let locked_error = support::json(locked_live.stdout);
@@ -265,8 +269,12 @@ fn data_backup_dump_ignores_live_committed_lock_while_live_store_is_locked() {
             other => panic!("unknown lock state {other}"),
         }
 
-        let _writer = TreeStore::open(&project.join(".data").join("marrow.redb"))
-            .expect("hold the native writer open");
+        let _writer = SealedStore::open(
+            &project.join(".data").join("marrow.redb"),
+            AccessMode::Create,
+        )
+        .expect("hold the native writer open")
+        .into_store();
         let backup_dump = support::marrow(&[
             "data",
             "dump",

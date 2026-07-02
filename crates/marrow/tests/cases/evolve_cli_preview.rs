@@ -3,8 +3,8 @@ use std::path::Path;
 
 use crate::support;
 use crate::support_evolve;
-use marrow_store::tree::TreeStore;
 use marrow_store::value::Scalar;
+use marrow_store::{AccessMode, SealedStore};
 use support::{marrow, marrow_sub, write};
 use support_evolve::{
     REQUIRED_BASELINE_SOURCE, REQUIRED_DEFAULT_SOURCE, REQUIRED_NO_DEFAULT_SOURCE, commit_catalog,
@@ -71,7 +71,9 @@ fn evolve_preview_from_backup_uses_backup_state_while_live_store_is_locked()
     }
     write(&root, "src/books.mw", REQUIRED_DEFAULT_SOURCE);
 
-    let _writer = TreeStore::open(&native_store_path(&root)).expect("hold live store writer open");
+    let _writer = SealedStore::open(&native_store_path(&root), AccessMode::Create)
+        .expect("hold live store writer open")
+        .into_store();
     let output = marrow(&[
         "evolve",
         "preview",
@@ -250,7 +252,9 @@ fn evolve_preview_over_a_present_lost_roots_store_reports_store_corruption()
     {
         let scratch = root.join(".data").join("empty-scratch.redb");
         {
-            let _empty = TreeStore::open(&scratch).expect("create empty store");
+            let _empty = SealedStore::open(&scratch, AccessMode::Create)
+                .expect("create empty store")
+                .into_store();
         }
         fs::copy(&scratch, native_store_path(&root)).expect("overwrite store with empty body");
         fs::remove_file(&scratch).expect("remove scratch store");

@@ -3,7 +3,7 @@ use crate::support_evolve;
 use std::fs;
 use std::process::{Command, Output};
 
-use marrow_store::tree::TreeStore;
+use marrow_store::{AccessMode, SealedStore};
 use support::{
     json_records_in_stderr, marrow, temp_project, temp_project_uncommitted, unique_temp_path, write,
 };
@@ -86,7 +86,9 @@ fn dry_run_rejects_populated_unstamped_pending_baseline_store() {
     let store_path = root.join(".data").join("marrow.redb");
     fs::create_dir_all(store_path.parent().unwrap()).expect("create data dir");
     {
-        let store = TreeStore::open(&store_path).expect("open native store");
+        let store = SealedStore::open(&store_path, AccessMode::Create)
+            .expect("open native store")
+            .into_store();
         support_evolve::seed_record(&store, &place, 1);
         support_evolve::seed_member(
             &store,
@@ -904,7 +906,9 @@ fn dry_run_reports_would_freeze_without_committing_catalog_identity() {
     );
     let store_path = support_evolve::native_store_path(&project);
     if store_path.exists() {
-        let store = TreeStore::open_read_only(&store_path).expect("open store read-only");
+        let store = SealedStore::open(&store_path, AccessMode::Read)
+            .expect("open store read-only")
+            .into_store();
         assert_eq!(
             store
                 .read_catalog_snapshot()
@@ -946,10 +950,14 @@ fn dry_run_reports_would_apply_zero_mutation_drift_without_stamping() {
     let first = marrow(&["run", &dir]);
     assert_eq!(first.status.code(), Some(0), "first run: {first:?}");
     let epoch_before = support_evolve::accepted_catalog(&project).epoch;
-    let stamp_before = TreeStore::open_read_only(&support_evolve::native_store_path(&project))
-        .expect("open store")
-        .read_commit_metadata()
-        .expect("read stamp");
+    let stamp_before = SealedStore::open(
+        &support_evolve::native_store_path(&project),
+        AccessMode::Read,
+    )
+    .expect("open store")
+    .into_store()
+    .read_commit_metadata()
+    .expect("read stamp");
 
     write(
         &project,
@@ -978,10 +986,14 @@ fn dry_run_reports_would_apply_zero_mutation_drift_without_stamping() {
         epoch_before,
         "dry-run must not auto-apply zero-mutation drift"
     );
-    let stamp_after = TreeStore::open_read_only(&support_evolve::native_store_path(&project))
-        .expect("open store")
-        .read_commit_metadata()
-        .expect("read stamp");
+    let stamp_after = SealedStore::open(
+        &support_evolve::native_store_path(&project),
+        AccessMode::Read,
+    )
+    .expect("open store")
+    .into_store()
+    .read_commit_metadata()
+    .expect("read stamp");
     assert_eq!(stamp_after, stamp_before, "dry-run must not restamp");
 }
 
@@ -1013,10 +1025,14 @@ fn dry_run_would_apply_executes_against_isolated_advanced_schema() {
     let first = marrow(&["run", &dir]);
     assert_eq!(first.status.code(), Some(0), "first run: {first:?}");
     let epoch_before = support_evolve::accepted_catalog(&project).epoch;
-    let stamp_before = TreeStore::open_read_only(&support_evolve::native_store_path(&project))
-        .expect("open store")
-        .read_commit_metadata()
-        .expect("read stamp");
+    let stamp_before = SealedStore::open(
+        &support_evolve::native_store_path(&project),
+        AccessMode::Read,
+    )
+    .expect("open store")
+    .into_store()
+    .read_commit_metadata()
+    .expect("read stamp");
 
     write(
         &project,
@@ -1089,10 +1105,14 @@ fn dry_run_would_apply_executes_against_isolated_advanced_schema() {
         epoch_before,
         "dry-run must not advance the configured store catalog"
     );
-    let stamp_after = TreeStore::open_read_only(&support_evolve::native_store_path(&project))
-        .expect("open store")
-        .read_commit_metadata()
-        .expect("read stamp");
+    let stamp_after = SealedStore::open(
+        &support_evolve::native_store_path(&project),
+        AccessMode::Read,
+    )
+    .expect("open store")
+    .into_store()
+    .read_commit_metadata()
+    .expect("read stamp");
     assert_eq!(stamp_after, stamp_before, "dry-run must not restamp");
 
     let dump = marrow(&["data", "dump", "--format", "json", &dir]);

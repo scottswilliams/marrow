@@ -6,6 +6,7 @@ use support::*;
 
 use marrow_run::{Host, Value};
 use marrow_store::tree::TreeStore;
+use marrow_store::{AccessMode, SealedStore};
 
 #[test]
 fn the_reference_sample_runs_end_to_end() {
@@ -32,7 +33,9 @@ fn the_reference_sample_runs_on_native_storage() {
     // output identical to the in-memory run.
     let program = checked_program(&sample_source());
     let dir = TempDir::new("marrow-run-test").expect("create a temp dir");
-    let store = TreeStore::open(&dir.path().join("sample.redb")).expect("open redb");
+    let store = SealedStore::open(&dir.path().join("sample.redb"), AccessMode::Create)
+        .expect("open redb")
+        .into_store();
     let host = Host::new().with_clock(1_700_000_000_000_000_000);
     let outcome = run_entry_with_host(
         &store,

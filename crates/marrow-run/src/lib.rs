@@ -26,6 +26,7 @@ pub mod hex;
 pub(crate) mod write;
 
 mod activation;
+pub mod admission;
 mod call;
 mod call_args;
 mod collection;

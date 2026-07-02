@@ -2,8 +2,9 @@ use std::fs;
 
 use crate::support;
 use crate::support_evolve;
-use marrow_store::tree::{CommitMetadata, TreeStore};
+use marrow_store::tree::CommitMetadata;
 use marrow_store::value::{Scalar, ScalarType};
+use marrow_store::{AccessMode, SealedStore};
 use support::{marrow, marrow_sub, write};
 use support_evolve::{
     OPTIONAL_PAGES_DEFAULT_INDEX_SOURCE, REQUIRED_BASELINE_SOURCE, REQUIRED_DEFAULT_SOURCE,
@@ -29,7 +30,9 @@ fn evolve_apply_consumes_preview_witness_and_backfills() -> Result<(), Box<dyn s
         "json",
         root.to_str().expect("project path utf-8"),
     ]);
-    let store = TreeStore::open(&native_store_path(&root)).expect("reopen native store");
+    let store = SealedStore::open(&native_store_path(&root), AccessMode::Create)
+        .expect("reopen native store")
+        .into_store();
     let pages = read_scalar(&store, &place, 1, "pages", ScalarType::Int);
     let commit = store
         .read_commit_metadata()
@@ -78,7 +81,9 @@ fn evolve_apply_backfills_proposal_required_default_before_accepting_catalog()
 
     let catalog_epoch = accepted_catalog(&root).epoch;
     let pages_id = accepted_catalog_entry_id(&root, "books::Book::pages");
-    let store = TreeStore::open(&native_store_path(&root)).expect("reopen native store");
+    let store = SealedStore::open(&native_store_path(&root), AccessMode::Create)
+        .expect("reopen native store")
+        .into_store();
     for id in [1, 2] {
         assert_eq!(
             read_scalar_by_catalog_id(&store, &accepted_place, id, &pages_id, ScalarType::Int),
@@ -288,7 +293,9 @@ fn evolve_apply_rejects_repair_required_witness() -> Result<(), Box<dyn std::err
         "json",
         root.to_str().expect("project path utf-8"),
     ]);
-    let store = TreeStore::open(&native_store_path(&root)).expect("reopen native store");
+    let store = SealedStore::open(&native_store_path(&root), AccessMode::Create)
+        .expect("reopen native store")
+        .into_store();
     let pages = read_scalar(&store, &place, 1, "pages", ScalarType::Int);
 
     assert_eq!(output.status.code(), Some(1), "{output:?}");
@@ -401,7 +408,9 @@ fn evolve_apply_does_not_rerun_a_consumed_transform() -> Result<(), Box<dyn std:
     let cents_id = accepted_catalog_entry_id(&root, "books::Book::priceCents");
     let first_commit = commit_metadata(&root);
     {
-        let after_first = TreeStore::open(&native_store_path(&root)).expect("reopen native store");
+        let after_first = SealedStore::open(&native_store_path(&root), AccessMode::Create)
+            .expect("reopen native store")
+            .into_store();
         assert_eq!(
             read_scalar_by_catalog_id(&after_first, &accepted_place, 1, &cents_id, ScalarType::Int),
             Some(Scalar::Int(300)),
@@ -436,8 +445,9 @@ fn evolve_apply_does_not_rerun_a_consumed_transform() -> Result<(), Box<dyn std:
         "post-activation write: {override_run:?}",
     );
     {
-        let after_override =
-            TreeStore::open(&native_store_path(&root)).expect("reopen native store");
+        let after_override = SealedStore::open(&native_store_path(&root), AccessMode::Create)
+            .expect("reopen native store")
+            .into_store();
         let after_override_commit = after_override
             .read_commit_metadata()
             .expect("read commit")
@@ -464,7 +474,9 @@ fn evolve_apply_does_not_rerun_a_consumed_transform() -> Result<(), Box<dyn std:
     assert_eq!(second.status.code(), Some(0), "second apply: {second:?}");
 
     {
-        let after_second = TreeStore::open(&native_store_path(&root)).expect("reopen native store");
+        let after_second = SealedStore::open(&native_store_path(&root), AccessMode::Create)
+            .expect("reopen native store")
+            .into_store();
         assert_eq!(
             read_scalar_by_catalog_id(
                 &after_second,
@@ -585,8 +597,9 @@ fn evolve_apply_runs_a_shape_neutral_in_place_transform_over_a_run_stamped_store
 /// The digest of the store's published accepted-catalog snapshot, the durable identity
 /// state a no-op apply must leave untouched.
 fn catalog_snapshot_digest(root: impl AsRef<std::path::Path>) -> Option<String> {
-    TreeStore::open(&native_store_path(root))
+    SealedStore::open(&native_store_path(root), AccessMode::Create)
         .expect("reopen")
+        .into_store()
         .catalog_snapshot_digest()
         .expect("read snapshot digest")
 }
@@ -597,8 +610,9 @@ fn commit_id(root: impl AsRef<std::path::Path>) -> u64 {
 }
 
 fn commit_metadata(root: impl AsRef<std::path::Path>) -> CommitMetadata {
-    TreeStore::open(&native_store_path(root))
+    SealedStore::open(&native_store_path(root), AccessMode::Create)
         .expect("reopen")
+        .into_store()
         .read_commit_metadata()
         .expect("read commit")
         .expect("commit stamp")

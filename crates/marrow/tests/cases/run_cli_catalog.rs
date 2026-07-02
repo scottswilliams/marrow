@@ -6,7 +6,7 @@
 use crate::support;
 
 use marrow_catalog::{CatalogEntryKind, CatalogLock};
-use marrow_store::tree::TreeStore;
+use marrow_store::{AccessMode, SealedStore};
 use support::{TempProject, find_code_segment, marrow, marrow_sub, write};
 
 /// A native-store project with a saved root but no committed catalog: checking it
@@ -81,7 +81,9 @@ fn run_commits_the_pending_catalog_into_the_store_and_reprojects_the_lock() {
 
     // The store publishes the accepted catalog at the baseline epoch, with an entry for
     // the saved `^books` root; the committed lock is a projection of those committed rows.
-    let store = TreeStore::open(&store_path(&root)).expect("open store after run");
+    let store = SealedStore::open(&store_path(&root), AccessMode::Create)
+        .expect("open store after run")
+        .into_store();
     let snapshot = store
         .read_catalog_snapshot()
         .expect("read store catalog snapshot")
@@ -133,7 +135,9 @@ fn a_second_run_does_not_churn_the_accepted_catalog() {
     let first = marrow_sub("run", &[root.to_str().unwrap()]);
     assert_eq!(first.status.code(), Some(0), "{first:?}");
     let (digest_one, commit_one, lock_one) = {
-        let store = TreeStore::open(&store_path(&root)).expect("open store after first run");
+        let store = SealedStore::open(&store_path(&root), AccessMode::Create)
+            .expect("open store after first run")
+            .into_store();
         (
             store.catalog_snapshot_digest().expect("snapshot digest"),
             store.read_commit_metadata().expect("commit metadata"),
@@ -152,7 +156,9 @@ fn a_second_run_does_not_churn_the_accepted_catalog() {
         "an idempotent second run must not announce a lock write: {second:?}"
     );
     let (digest_two, commit_two, lock_two) = {
-        let store = TreeStore::open(&store_path(&root)).expect("open store after second run");
+        let store = SealedStore::open(&store_path(&root), AccessMode::Create)
+            .expect("open store after second run")
+            .into_store();
         (
             store.catalog_snapshot_digest().expect("snapshot digest"),
             store.read_commit_metadata().expect("commit metadata"),

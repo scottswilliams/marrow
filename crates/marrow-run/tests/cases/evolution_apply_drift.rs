@@ -7,9 +7,9 @@ use crate::evolution_apply_support;
 use evolution_apply_support::*;
 
 use marrow_run::evolution::{ApplyError, apply, current_engine_profile};
-use marrow_store::StoreError;
 use marrow_store::tree::TreeStore;
 use marrow_store::value::Scalar;
+use marrow_store::{AccessMode, SealedStore, StoreError};
 
 // The drift, overflow, rollback, and no-op cases all evolve the same canonical
 // `required title / required pages / default pages = 0` shape, so they load the one
@@ -265,7 +265,9 @@ fn failed_apply_rolls_back_and_resumes_idempotently() -> Result<(), Box<dyn std:
 
     let store_path = root.join("data.marrow");
     {
-        let store = TreeStore::open(&store_path).expect("open store");
+        let store = SealedStore::open(&store_path, AccessMode::Create)
+            .expect("open store")
+            .into_store();
         let seed = Seed {
             store: &store,
             place: &place,
@@ -281,7 +283,9 @@ fn failed_apply_rolls_back_and_resumes_idempotently() -> Result<(), Box<dyn std:
 
     // A read-only handle fails the apply commit; nothing must land.
     {
-        let ro = TreeStore::open_read_only(&store_path).expect("open read only");
+        let ro = SealedStore::open(&store_path, AccessMode::Read)
+            .expect("open read only")
+            .into_store();
         let witness = witness(&program, &ro);
         let result = apply(&witness, &program, &ro, false, None);
         assert!(result.is_err(), "read-only apply must fail");
@@ -296,7 +300,9 @@ fn failed_apply_rolls_back_and_resumes_idempotently() -> Result<(), Box<dyn std:
     // Resume against a writable handle: the same source re-previews to the same
     // witness shape and apply now succeeds, backfilling both records.
     {
-        let rw = TreeStore::open(&store_path).expect("reopen store");
+        let rw = SealedStore::open(&store_path, AccessMode::Create)
+            .expect("reopen store")
+            .into_store();
         let witness = witness(&program, &rw);
         let outcome = apply(&witness, &program, &rw, false, None).expect("resumed apply");
         assert_eq!(outcome.receipt.records_backfilled, 2);

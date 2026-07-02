@@ -5,6 +5,7 @@ use support::*;
 
 use marrow_run::{RUN_UNCAUGHT_THROW, Value};
 use marrow_store::tree::TreeStore;
+use marrow_store::{AccessMode, SealedStore};
 
 const WRITES: &str = "\
 resource Book
@@ -32,7 +33,9 @@ fn memory_commit_ids_are_dense_across_commits_and_rollbacks() {
 #[test]
 fn native_commit_ids_are_dense_across_commits_and_rollbacks() {
     let dir = TempDir::new("marrow-run-commit-id-conformance").expect("create temp dir");
-    let store = TreeStore::open(&dir.path().join("store.redb")).expect("open native store");
+    let store = SealedStore::open(&dir.path().join("store.redb"), AccessMode::Create)
+        .expect("open native store")
+        .into_store();
     commit_id_density_law(&store);
 }
 

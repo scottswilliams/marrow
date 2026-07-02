@@ -70,14 +70,15 @@ pub(crate) fn restore(args: &[String]) -> ExitCode {
         }
         Err(code) => return code,
     };
-    let store = match TreeStore::open(&path) {
-        Ok(store) => store,
-        Err(error) => {
-            target_files.cleanup_created();
-            report_simple_error(error.code(), &error.to_string(), format);
-            return ExitCode::FAILURE;
-        }
-    };
+    let store =
+        match marrow_run::admission::open_create(&path).map(|admitted| admitted.into_store()) {
+            Ok(store) => store,
+            Err(error) => {
+                target_files.cleanup_created();
+                report_simple_error(error.code(), &error.to_string(), format);
+                return ExitCode::FAILURE;
+            }
+        };
 
     let mut nondeterminism = SystemNondeterminism::new();
     match restore_backup_with_prologue(
@@ -363,7 +364,7 @@ fn current_store_catalog_digest(
     let path = marrow_check::native_store_path(std::path::Path::new(dir), config)
         .ok()
         .flatten()?;
-    let store = TreeStore::open_read_only(&path).ok()?;
+    let store = marrow_run::admission::open_read(&path).ok()?.into_store();
     store.catalog_snapshot_digest().ok().flatten()
 }
 

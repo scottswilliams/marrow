@@ -9,7 +9,8 @@ use std::path::Path;
 
 use crate::support;
 use crate::support_evolve;
-use marrow_store::tree::{StoreUid, TreeStore};
+use marrow_store::tree::StoreUid;
+use marrow_store::{AccessMode, SealedStore};
 use support::{
     corrupt_primary_slot_selector, counter_source, marrow, native_config, temp_project_uncommitted,
     write,
@@ -186,7 +187,9 @@ fn run_freezes_the_catalog_into_the_store_and_reprojects_the_lock() {
         store_path(&project).exists(),
         "run creates the saved-data store and commits the seeded record"
     );
-    let store = TreeStore::open(&store_path(&project)).expect("open store after run");
+    let store = SealedStore::open(&store_path(&project), AccessMode::Create)
+        .expect("open store after run")
+        .into_store();
     let snapshot = store
         .read_catalog_snapshot()
         .expect("read store catalog snapshot")
@@ -748,7 +751,7 @@ fn check_locked_fails_when_the_lock_is_absent_over_an_unreadable_store() {
     corrupt_primary_slot_selector(&root);
     fs::remove_file(lock_path(&root)).expect("remove committed lock");
     assert!(
-        TreeStore::open_read_only(&store_path(&root)).is_err(),
+        SealedStore::open(&store_path(&root), AccessMode::Read).is_err(),
         "the corrupted store must be unreadable read-only"
     );
 
@@ -795,7 +798,8 @@ fn check_locked_consistent_across_data_recover_for_an_unclean_store() {
 
     let recover = marrow(&["data", "recover", root.to_str().unwrap()]);
     assert_eq!(recover.status.code(), Some(0), "{recover:?}");
-    TreeStore::open_read_only(&store_path(&root)).expect("recover leaves the store readable");
+    SealedStore::open(&store_path(&root), AccessMode::Read)
+        .expect("recover leaves the store readable");
 
     let after = marrow(&["check", "--locked", root.to_str().unwrap()]);
     assert_eq!(
@@ -851,7 +855,9 @@ fn evolve_apply_advances_the_committed_lock_and_store() -> Result<(), Box<dyn st
         baseline_epoch + 1,
         "apply advanced the accepted catalog epoch"
     );
-    let store = TreeStore::open(&native_store_path(&root)).expect("reopen native store");
+    let store = SealedStore::open(&native_store_path(&root), AccessMode::Create)
+        .expect("reopen native store")
+        .into_store();
     assert_eq!(
         store
             .read_commit_metadata()

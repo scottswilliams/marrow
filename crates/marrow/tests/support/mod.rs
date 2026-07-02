@@ -1,3 +1,4 @@
+use marrow_store::{AccessMode, SealedStore};
 use std::fs;
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
@@ -409,7 +410,9 @@ pub(crate) fn commit_catalog_if_clean(root: impl AsRef<Path>) {
         return;
     };
     fs::create_dir_all(store_path.parent().expect("store parent")).expect("create data dir");
-    let store = marrow_store::tree::TreeStore::open(&store_path).expect("open fixture store");
+    let store = SealedStore::open(&store_path, AccessMode::Create)
+        .expect("open fixture store")
+        .into_store();
     store
         .write_store_uid(
             &marrow_store::tree::StoreUid::new(

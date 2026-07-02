@@ -29,7 +29,9 @@ pub(super) fn apply_store(
 ) -> Result<TreeStore, ExitCode> {
     match resolve_store_path(dir, config, format)? {
         Some(path) => {
-            let store = match TreeStore::open(&path) {
+            let store = match marrow_run::admission::open_create(&path)
+                .map(|admitted| admitted.into_store())
+            {
                 Ok(store) => store,
                 Err(error) => {
                     report_simple_error(error.code(), &error.to_string(), format);

@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use crate::support;
 use crate::support_data;
 use marrow_store::key::SavedKey;
+use marrow_store::{AccessMode, SealedStore};
 use support::{json, marrow};
 use support_data::{
     checked_place, delete_tree_path, field_path, integrity_problem, marrow as data_marrow,
@@ -245,8 +246,9 @@ fn doctor_on_an_invalid_config_field_names_the_field_fix_not_a_loop() {
 fn doctor_aggregates_locked_store_and_corrupt_lock() {
     let (project, dir) = seeded_project("doctor-lock-corrupt");
     corrupt_lock(&project);
-    let _writer = marrow_store::tree::TreeStore::open(&store_path(&project))
-        .expect("hold native writer open");
+    let _writer = SealedStore::open(&store_path(&project), AccessMode::Create)
+        .expect("hold native writer open")
+        .into_store();
 
     let output = marrow(&["doctor", "--format", "json", &dir]);
 
@@ -306,8 +308,9 @@ fn doctor_reports_same_epoch_different_digest_collision_against_lock_and_store_w
     // bytes, so the repairs-nothing invariant can be checked byte-for-byte after doctor runs.
     let store_before = fs::read(store_path(&project)).expect("read store before doctor");
     let store_snapshot = {
-        let store = marrow_store::tree::TreeStore::open_read_only(&store_path(&project))
-            .expect("open store read-only");
+        let store = SealedStore::open(&store_path(&project), AccessMode::Read)
+            .expect("open store read-only")
+            .into_store();
         store
             .read_catalog_snapshot()
             .expect("read store catalog snapshot")
@@ -593,8 +596,9 @@ fn doctor_reports_a_store_vs_lock_epoch_mismatch_distinct_from_a_collision() {
     )
     .expect("epoch-ahead lock builds");
     let store_epoch = {
-        let store = marrow_store::tree::TreeStore::open_read_only(&store_path(&project))
-            .expect("open store read-only");
+        let store = SealedStore::open(&store_path(&project), AccessMode::Read)
+            .expect("open store read-only")
+            .into_store();
         store
             .read_catalog_snapshot()
             .expect("read store catalog snapshot")

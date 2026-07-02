@@ -545,11 +545,13 @@ fn recover_store(
     program: Option<&CheckedProgram>,
 ) -> Result<TreeStore, StoreError> {
     {
-        let store = TreeStore::open_existing(path)?;
+        let store = marrow_run::admission::open_write(path)?.into_store();
         store.verify_readable()?;
         verify_store_recovered(&store, program)?;
     }
-    let reopened = TreeStore::open_read_only(path).map_err(recovery_not_converged)?;
+    let reopened = marrow_run::admission::open_read(path)
+        .map(|admitted| admitted.into_store())
+        .map_err(recovery_not_converged)?;
     reopened.verify_readable().map_err(recovery_not_converged)?;
     verify_store_recovered(&reopened, program).map_err(recovery_not_converged)?;
     Ok(reopened)

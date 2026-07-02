@@ -1,7 +1,7 @@
 use crate::support;
 use marrow_check::{CheckedFunctionRef, EntryStoreOpenMode, check_project_with_catalog};
 use marrow_run::Value;
-use marrow_store::tree::TreeStore;
+use marrow_store::{AccessMode, SealedStore};
 
 use support::{TempDir, run_entry, test_project_config, write_temp_source};
 
@@ -49,12 +49,15 @@ fn read_only_closure_runs_against_native_read_only_store_after_identity_is_froze
 
     let store_path = root.path().join("marrow.redb");
     {
-        let store = TreeStore::open(&store_path).expect("open native store writable");
+        let store = SealedStore::open(&store_path, AccessMode::Create)
+            .expect("open native store writable")
+            .into_store();
         marrow_run::evolution::commit_catalog_baseline(&store, &pending_program)
             .expect("commit catalog baseline");
     }
-    let accepted = TreeStore::open_read_only(&store_path)
+    let accepted = SealedStore::open(&store_path, AccessMode::Read)
         .expect("open baseline store read-only")
+        .into_store()
         .read_catalog_snapshot()
         .expect("read catalog snapshot");
     let (report, program) = check_project_with_catalog(root.path(), &config, accepted.as_ref())
@@ -62,7 +65,9 @@ fn read_only_closure_runs_against_native_read_only_store_after_identity_is_froze
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
     let runtime = program.runtime();
     {
-        let store = TreeStore::open(&store_path).expect("reopen writable for seed");
+        let store = SealedStore::open(&store_path, AccessMode::Create)
+            .expect("reopen writable for seed")
+            .into_store();
         run_entry(&store, checked_entry!(&runtime, "app::seed")).expect("seed record");
     }
 
@@ -71,7 +76,9 @@ fn read_only_closure_runs_against_native_read_only_store_after_identity_is_froze
         program.entry_store_open_mode(title_ref),
         Some(EntryStoreOpenMode::ReadOnly)
     );
-    let read_only = TreeStore::open_read_only(&store_path).expect("open read-only store");
+    let read_only = SealedStore::open(&store_path, AccessMode::Read)
+        .expect("open read-only store")
+        .into_store();
     let output = run_entry(&read_only, checked_entry!(&runtime, "app::title")).expect("read title");
     assert_eq!(output.value, Some(Value::Str("Mort".to_string())));
 }

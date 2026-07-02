@@ -12,8 +12,8 @@
 use crate::support;
 use crate::support_evolve;
 use marrow_check::CheckedSavedPlace;
-use marrow_store::tree::TreeStore;
 use marrow_store::value::{Scalar, ScalarType};
+use marrow_store::{AccessMode, SealedStore};
 use support::marrow;
 use support_evolve::{
     RETIRE_BASELINE_SOURCE, commit_catalog, member_catalog_id, native_books_project,
@@ -703,7 +703,9 @@ fn assert_populated_store_only_change_does_not_apply_or_run(
         "{context} does not advance the epoch"
     );
     {
-        let store = TreeStore::open(&native_store_path(&root)).expect("reopen native store");
+        let store = SealedStore::open(&native_store_path(&root), AccessMode::Create)
+            .expect("reopen native store")
+            .into_store();
         assert_eq!(
             read_scalar(&store, &place, 1, "title", ScalarType::Str),
             Some(Scalar::Str("Dune".into())),
@@ -760,7 +762,9 @@ fn assert_empty_store_only_change_is_a_free_no_op(name: &str, source: &str, cont
         Some(0),
         "the default entry runs after {context} is activated: {run:?}"
     );
-    let store = TreeStore::open(&native_store_path(&root)).expect("reopen native store");
+    let store = SealedStore::open(&native_store_path(&root), AccessMode::Create)
+        .expect("reopen native store")
+        .into_store();
     assert_eq!(
         read_scalar(&store, &log, 1, "note", ScalarType::Str),
         Some(Scalar::Str("entry-ran".into())),
@@ -887,7 +891,9 @@ fn a_populated_whole_resource_drop_does_not_apply_or_run_without_a_retire_intent
     {
         // Drop the store handle before the integrity subprocess: the native engine takes a
         // single-writer lock, so a held handle would fail the CLI open.
-        let store = TreeStore::open(&native_store_path(&root)).expect("reopen native store");
+        let store = SealedStore::open(&native_store_path(&root), AccessMode::Create)
+            .expect("reopen native store")
+            .into_store();
         assert_eq!(
             read_scalar(&store, &place, 1, "title", ScalarType::Str),
             Some(Scalar::Str("Dune".into())),

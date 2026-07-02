@@ -7,7 +7,6 @@ pub mod data;
 mod expected;
 mod hover;
 pub mod integrity;
-mod lock_roots;
 mod navigation;
 mod render;
 mod semantic_tokens;
@@ -78,7 +77,6 @@ pub use integrity::{
     sample_integrity_problem_details, sample_integrity_problems, stamped_integrity_problem_details,
     verify_store_completeness, verify_store_roots_against_lock, visit_integrity_problems,
 };
-pub use lock_roots::{store_path_is_absent, verify_present_store_lock_roots};
 pub use navigation::{
     SourceCatalogLocationFact, source_catalog_definition_fact_at, source_catalog_reference_facts_at,
 };

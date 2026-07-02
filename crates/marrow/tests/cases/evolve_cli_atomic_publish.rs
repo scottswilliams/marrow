@@ -6,8 +6,8 @@
 
 use crate::support;
 use crate::support_evolve;
-use marrow_store::tree::TreeStore;
 use marrow_store::value::{Scalar, ScalarType};
+use marrow_store::{AccessMode, SealedStore};
 
 use support::{marrow, write};
 use support_evolve::{
@@ -58,7 +58,9 @@ fn evolve_apply_is_not_done_until_the_reprojected_lock_is_committed()
         baseline_epoch + 1,
         "the re-projected lock carries the activated store epoch as its high-water"
     );
-    let store = TreeStore::open(&native_store_path(&root)).expect("reopen native store");
+    let store = SealedStore::open(&native_store_path(&root), AccessMode::Create)
+        .expect("reopen native store")
+        .into_store();
     let store_epoch_value = store
         .read_commit_metadata()
         .expect("read commit")
@@ -150,7 +152,9 @@ fn apply_publishes_snapshot_epoch_and_data_together_then_run_fences_clean()
 
     let pages_id = accepted_catalog_entry_id(&root, "books::Book::pages");
     {
-        let store = TreeStore::open(&native_store_path(&root)).expect("reopen native store");
+        let store = SealedStore::open(&native_store_path(&root), AccessMode::Create)
+            .expect("reopen native store")
+            .into_store();
         for id in [1, 2] {
             assert_eq!(
                 read_scalar_by_catalog_id(&store, &accepted_place, id, &pages_id, ScalarType::Int),

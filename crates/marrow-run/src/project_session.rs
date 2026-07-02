@@ -16,6 +16,7 @@ use marrow_store::tree::{StoreUid, TreeStore};
 use marrow_store::value::{ScalarType, scalar_key_matches_type, validate_scalar_key};
 use marrow_syntax::SourceSpan;
 
+use crate::admission::{self, AdmittedStore};
 use crate::entry::{
     CheckedEntryCall, EntryArgument, EntryInvocation, run_entry_with_debugger, run_entry_with_host,
 };
@@ -1427,9 +1428,11 @@ fn open_existing_surface_store(
         return Err(ProjectSessionError::DurableStoreRequired);
     };
     let store = match access {
-        SurfaceStoreAccess::ReadOnly => TreeStore::open_read_only(&path)
+        SurfaceStoreAccess::ReadOnly => admission::open_read(&path)
+            .map(AdmittedStore::into_store)
             .map_err(|error| surface_store_open_error(&path, error))?,
-        SurfaceStoreAccess::Write => TreeStore::open_existing(&path)
+        SurfaceStoreAccess::Write => admission::open_write(&path)
+            .map(AdmittedStore::into_store)
             .map_err(|error| surface_store_open_error(&path, error))?,
     };
     // Serving saved data is a store read, so it owes the same readability cross-check the runtime
@@ -1581,7 +1584,7 @@ fn commit_run_needs_native_store(
     if marrow_check::read_committed_lock(root)?.is_some_and(|lock| lock.records_active_roots()) {
         return Ok(true);
     }
-    Ok(!marrow_check::tooling::store_path_is_absent(&path))
+    Ok(!admission::store_path_is_absent(&path))
 }
 
 /// Discharge a pending evolution on the run path: auto-apply it when it mutates no stored
@@ -1660,12 +1663,12 @@ fn open_store_file(
         return Ok(None);
     };
     let store = if write_uid {
-        let store = TreeStore::open(&path)?;
+        let store = admission::open_create(&path)?.into_store();
         let mut nondeterminism = SystemNondeterminism::new();
         ensure_store_uid(&store, &mut nondeterminism)?;
         store
     } else if path.exists() {
-        TreeStore::open_read_only(&path)?
+        admission::open_read(&path)?.into_store()
     } else {
         return Ok(None);
     };
@@ -2014,7 +2017,8 @@ fn open_store_for_inspection(
     if !path.exists() {
         return Ok(None);
     }
-    TreeStore::open_read_only(&path)
+    admission::open_read(&path)
+        .map(AdmittedStore::into_store)
         .map(Some)
         .map_err(ProjectSessionError::Store)
 }
@@ -2045,10 +2049,12 @@ pub fn recover_store_for_write(
     if !path.exists() {
         return Ok(());
     }
-    match TreeStore::open_read_only(&path) {
+    match admission::open_read(&path) {
         Ok(_) => Ok(()),
         Err(StoreError::RecoveryRequired) => {
-            let store = TreeStore::open_existing(&path).map_err(ProjectSessionError::Store)?;
+            let store = admission::open_write(&path)
+                .map(AdmittedStore::into_store)
+                .map_err(ProjectSessionError::Store)?;
             store
                 .verify_readable()
                 .map_err(ProjectSessionError::Store)?;
@@ -2228,12 +2234,12 @@ fn guard_committed_lock_roots(
     if !lock.records_active_roots() {
         return Ok(());
     }
-    let store = if marrow_check::tooling::store_path_is_absent(&path) {
+    let store = if admission::store_path_is_absent(&path) {
         None
     } else {
-        Some(TreeStore::open_read_only(&path)?)
+        Some(admission::open_read(&path)?.into_store())
     };
-    marrow_check::tooling::verify_present_store_lock_roots(store.as_ref(), Some(&lock))
+    admission::verify_present_store_lock_roots(store.as_ref(), Some(&lock))
         .map_err(ProjectSessionError::Store)
 }
 
@@ -2248,7 +2254,7 @@ fn store_absent_with_committed_lock(
     let Some(path) = marrow_check::native_store_path(root, config)? else {
         return Ok(false);
     };
-    if !marrow_check::tooling::store_path_is_absent(&path) {
+    if !admission::store_path_is_absent(&path) {
         return Ok(false);
     }
     Ok(marrow_check::read_committed_lock(root)?.is_some_and(|lock| lock.records_active_roots()))
@@ -2438,8 +2444,9 @@ fn isolated_store(source_path: &Path) -> Result<IsolatedStore, ProjectSessionErr
         path: source_path.to_path_buf(),
         error,
     })?;
-    let store =
-        TreeStore::open(&isolated_path).map_err(|error| ProjectSessionError::DryRunIsolation {
+    let store = admission::open_create(&isolated_path)
+        .map(AdmittedStore::into_store)
+        .map_err(|error| ProjectSessionError::DryRunIsolation {
             path: isolated_path.clone(),
             error,
         })?;

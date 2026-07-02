@@ -2,8 +2,9 @@ use crate::{support, support_evolve};
 use std::fs;
 
 use marrow_store::key::SavedKey;
-use marrow_store::tree::{EngineProfile, TreeStore};
+use marrow_store::tree::EngineProfile;
 use marrow_store::value::Scalar;
+use marrow_store::{AccessMode, SealedStore};
 use support::{marrow_sub, temp_project, temp_project_uncommitted, write};
 
 /// A store whose commit metadata records a different catalog epoch than its accepted
@@ -37,7 +38,9 @@ fn commit_metadata_epoch_ahead_of_the_snapshot_fails_closed_as_corruption() {
     let store_path = root.join(".data").join("marrow.redb");
     fs::create_dir_all(store_path.parent().unwrap()).expect("create data dir");
     {
-        let store = TreeStore::open(&store_path).expect("open native store");
+        let store = SealedStore::open(&store_path, AccessMode::Create)
+            .expect("open native store")
+            .into_store();
         let profile = marrow_run::evolution::current_engine_profile();
         store
             .write_commit_metadata(&marrow_store::tree::CommitMetadata {
@@ -87,7 +90,9 @@ fn run_is_fenced_when_store_engine_profile_drifts() {
     });
     let store_path = root.join(".data").join("marrow.redb");
     {
-        let store = TreeStore::open(&store_path).expect("open native store");
+        let store = SealedStore::open(&store_path, AccessMode::Create)
+            .expect("open native store")
+            .into_store();
         let mut commit = store
             .read_commit_metadata()
             .expect("read commit metadata")
@@ -151,7 +156,9 @@ fn run_rejects_populated_unstamped_accepted_store() {
     fs::create_dir_all(store_path.parent().unwrap()).expect("create data dir");
     let store_id = support_evolve::store_catalog_id(&place).expect("store catalog id");
     {
-        let store = TreeStore::open(&store_path).expect("open native store");
+        let store = SealedStore::open(&store_path, AccessMode::Create)
+            .expect("open native store")
+            .into_store();
         store
             .replace_catalog_snapshot(&proposal)
             .expect("publish accepted catalog without epoch stamp");
@@ -164,7 +171,9 @@ fn run_rejects_populated_unstamped_accepted_store() {
         );
     }
     {
-        let store = TreeStore::open_read_only(&store_path).expect("reopen store");
+        let store = SealedStore::open(&store_path, AccessMode::Read)
+            .expect("reopen store")
+            .into_store();
         assert!(
             store
                 .read_catalog_snapshot()
@@ -228,7 +237,9 @@ fn run_rejects_composite_root_in_populated_unstamped_accepted_store() {
     let store_id = support_evolve::store_catalog_id(&place).expect("store catalog id");
     let identity = [SavedKey::Int(1), SavedKey::Int(2)];
     {
-        let store = TreeStore::open(&store_path).expect("open native store");
+        let store = SealedStore::open(&store_path, AccessMode::Create)
+            .expect("open native store")
+            .into_store();
         store
             .replace_catalog_snapshot(&proposal)
             .expect("publish accepted catalog without epoch stamp");
@@ -241,7 +252,9 @@ fn run_rejects_composite_root_in_populated_unstamped_accepted_store() {
         );
     }
     {
-        let store = TreeStore::open_read_only(&store_path).expect("reopen store");
+        let store = SealedStore::open(&store_path, AccessMode::Read)
+            .expect("reopen store")
+            .into_store();
         assert!(
             store
                 .read_catalog_snapshot()

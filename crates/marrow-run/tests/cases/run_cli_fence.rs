@@ -5,7 +5,8 @@ use std::path::Path;
 use marrow_run::{ProjectMode, ProjectSession, ProjectSurfaceReadSession, ProjectSurfaceSession};
 use marrow_store::cell::CatalogId;
 use marrow_store::key::SavedKey;
-use marrow_store::tree::{CommitMetadata, DataPathSegment, EngineProfile, StoreUid, TreeStore};
+use marrow_store::tree::{CommitMetadata, DataPathSegment, EngineProfile, StoreUid};
+use marrow_store::{AccessMode, SealedStore};
 use support::{TempDir, write_temp_source};
 
 fn write_native_config(root: &Path) {
@@ -42,7 +43,9 @@ fn durable_source() -> &'static str {
 /// re-checked against this store binds no accepted epoch.
 fn stamp_native_store_without_snapshot(store_path: &Path) {
     fs::create_dir_all(store_path.parent().expect("store parent")).expect("create store dir");
-    let store = TreeStore::open(store_path).expect("open native store");
+    let store = SealedStore::open(store_path, AccessMode::Create)
+        .expect("open native store")
+        .into_store();
     store
         .write_store_uid(&StoreUid::from_entropy_bytes(7u128.to_be_bytes()))
         .expect("write store uid");
@@ -74,7 +77,9 @@ fn stamp_native_store_without_snapshot(store_path: &Path) {
 
 /// The store's durable identity facts an open must leave untouched when it refuses.
 fn store_identity(store_path: &Path) -> (Option<String>, Option<CommitMetadata>) {
-    let store = TreeStore::open_read_only(store_path).expect("open store for identity read");
+    let store = SealedStore::open(store_path, AccessMode::Read)
+        .expect("open store for identity read")
+        .into_store();
     let uid = store
         .read_store_uid()
         .expect("read store uid")
@@ -146,7 +151,9 @@ fn a_baseline_run_projects_the_committed_lock_from_the_store() {
         .expect("the projection is a valid lock, not catalog metadata");
 
     let store_path = root.path().join(".data").join("marrow.redb");
-    let store = TreeStore::open_read_only(&store_path).expect("open seeded store");
+    let store = SealedStore::open(&store_path, AccessMode::Read)
+        .expect("open seeded store")
+        .into_store();
     let snapshot = store
         .read_catalog_snapshot()
         .expect("read store snapshot")

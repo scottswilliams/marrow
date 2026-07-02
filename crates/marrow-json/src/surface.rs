@@ -5936,7 +5936,9 @@ pub fn seed()
         };
         let store_path = root.path().join(".data").join("marrow.redb");
         {
-            let store = TreeStore::open(&store_path).expect("open native store for corruption");
+            let store = marrow_run::admission::open_create(&store_path)
+                .expect("open native store for corruption")
+                .into_store();
             write_data_value(
                 &runtime,
                 &store,

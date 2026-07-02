@@ -9,7 +9,7 @@
 //! catalog epoch the store snapshot publishes as the local crash bridge — never a
 //! substring of human-rendered prose.
 use crate::support;
-use marrow_store::tree::TreeStore;
+use marrow_store::{AccessMode, SealedStore};
 use support::{TempProject, marrow, marrow_sub, write};
 
 /// The accepted catalog epoch a project has committed, read from its store snapshot. A
@@ -17,7 +17,9 @@ use support::{TempProject, marrow, marrow_sub, write};
 /// `evolve apply` does, so the epoch is the typed oracle for "the activation advanced".
 fn accepted_epoch(root: &TempProject) -> u64 {
     let path = root.join(".data").join("marrow.redb");
-    let store = TreeStore::open_read_only(&path).expect("open store read-only");
+    let store = SealedStore::open(&path, AccessMode::Read)
+        .expect("open store read-only")
+        .into_store();
     store
         .read_catalog_snapshot()
         .expect("read catalog snapshot")

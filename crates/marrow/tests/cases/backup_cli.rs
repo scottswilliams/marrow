@@ -10,7 +10,8 @@ use marrow_catalog::{CatalogEntry, CatalogEntryKind, CatalogLifecycle, CatalogMe
 use marrow_check::checked_saved_root_place;
 use marrow_store::cell::CatalogId;
 use marrow_store::key::SavedKey;
-use marrow_store::tree::{DataPathSegment, TreeStore};
+use marrow_store::tree::DataPathSegment;
+use marrow_store::{AccessMode, SealedStore};
 use support::{
     TempProject, marrow, member_catalog_id, temp_project, temp_project_uncommitted, write,
 };
@@ -127,7 +128,9 @@ fn assert_store_empty(data_dir: &Path) {
     if !store_file.exists() {
         return;
     }
-    let store = TreeStore::open_read_only(&store_file).expect("open target store");
+    let store = SealedStore::open(&store_file, AccessMode::Read)
+        .expect("open target store")
+        .into_store();
     assert!(
         store.is_empty().expect("read target data"),
         "a rejected restore leaves no data or index cells"
@@ -146,8 +149,9 @@ fn read_store_catalog(data_dir: &Path) -> Option<marrow_catalog::CatalogMetadata
     if !path.exists() {
         return None;
     }
-    TreeStore::open_read_only(&path)
+    SealedStore::open(&path, AccessMode::Read)
         .expect("open store read-only")
+        .into_store()
         .read_catalog_snapshot()
         .expect("read store catalog snapshot")
 }
@@ -172,7 +176,9 @@ fn no_uid_project_with_data(name: &str) -> (TempProject, PathBuf) {
     let data_dir = root.join(".data");
     let store_file = data_dir.join("marrow.redb");
     fs::create_dir_all(&data_dir).expect("create data dir");
-    let store = TreeStore::open(&store_file).expect("open native store");
+    let store = SealedStore::open(&store_file, AccessMode::Create)
+        .expect("open native store")
+        .into_store();
     marrow_run::evolution::commit_catalog_baseline(&store, &pending).expect("commit baseline");
     let accepted = store
         .read_catalog_snapshot()
@@ -581,7 +587,9 @@ fn restore_replace_clears_catalog_when_backup_has_none() {
     fs::create_dir_all(&data_dir).expect("create data dir");
     let store_file = data_dir.join("marrow.redb");
     {
-        let store = TreeStore::open(&store_file).expect("open target store");
+        let store = SealedStore::open(&store_file, AccessMode::Create)
+            .expect("open target store")
+            .into_store();
         store
             .write_store_uid(
                 &marrow_store::tree::StoreUid::new(
@@ -942,7 +950,9 @@ fn backup_refuses_an_existing_store_without_a_uid_without_writing() {
         "failed backup does not publish an archive"
     );
     assert!(support::temp_artifacts_for(&archive).is_empty());
-    let store = TreeStore::open_read_only(&data_dir.join("marrow.redb")).expect("open store");
+    let store = SealedStore::open(&data_dir.join("marrow.redb"), AccessMode::Read)
+        .expect("open store")
+        .into_store();
     assert_eq!(
         store.read_store_uid().expect("read uid"),
         None,
@@ -964,7 +974,9 @@ fn backup_succeeds_after_write_capable_run_seeds_store_uid() {
     let run = marrow(&["run", &dir]);
     assert_eq!(run.status.code(), Some(0), "run: {run:?}");
     let data_dir = root.join(".data");
-    let store = TreeStore::open_read_only(&data_dir.join("marrow.redb")).expect("open store");
+    let store = SealedStore::open(&data_dir.join("marrow.redb"), AccessMode::Read)
+        .expect("open store")
+        .into_store();
     assert!(
         store.read_store_uid().expect("read uid").is_some(),
         "write-capable run seeds the store UID"
@@ -1422,7 +1434,9 @@ fn restore_refuses_a_catalog_only_target() {
     fs::remove_file(target.join("marrow.lock")).expect("leave only the store baseline");
     let before_catalog = read_store_catalog(&target_data_dir).expect("catalog-only baseline");
     let target_is_empty = {
-        let store = TreeStore::open_read_only(&target_store_file).expect("open target read-only");
+        let store = SealedStore::open(&target_store_file, AccessMode::Read)
+            .expect("open target read-only")
+            .into_store();
         store
             .is_empty()
             .expect("catalog-only target has no data or index cells")
@@ -1570,8 +1584,9 @@ fn checked_books_place(root: impl AsRef<Path>) -> marrow_check::CheckedSavedPlac
     let accepted = support::native_store_path(root, &config)
         .filter(|path| path.exists())
         .and_then(|path| {
-            marrow_store::tree::TreeStore::open_read_only(&path)
+            SealedStore::open(&path, AccessMode::Read)
                 .expect("open store read-only")
+                .into_store()
                 .read_catalog_snapshot()
                 .expect("read store catalog snapshot")
         });
@@ -1606,8 +1621,9 @@ fn restore_rejects_a_backup_carrying_an_orphan_cell() {
     // dropped field left this behind. It is a data-family cell, so the backup copies it.
     let store_catalog = store_catalog_id(&root);
     {
-        let store =
-            TreeStore::open(&data_dir.join("marrow.redb")).expect("open native store for orphan");
+        let store = SealedStore::open(&data_dir.join("marrow.redb"), AccessMode::Create)
+            .expect("open native store for orphan")
+            .into_store();
         store
             .write_data_value(
                 &store_catalog,
@@ -1652,8 +1668,9 @@ fn restore_rejects_a_backup_carrying_an_impossible_data_cell_shape() {
     .expect("store catalog id");
     let title_catalog = member_catalog_id(&place.root_members, "title");
     {
-        let store = TreeStore::open(&data_dir.join("marrow.redb"))
-            .expect("open native store for impossible cell");
+        let store = SealedStore::open(&data_dir.join("marrow.redb"), AccessMode::Create)
+            .expect("open native store for impossible cell")
+            .into_store();
         store
             .write_data_value(
                 &store_catalog,

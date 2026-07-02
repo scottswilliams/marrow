@@ -6,9 +6,10 @@ use crate::support_evolve;
 use marrow_store::cell::{CatalogId, DataCellKey};
 use marrow_store::key::SavedKey;
 use marrow_store::tree::{
-    DataPathSegment, TreeEnumMember, TreeStore, decode_tree_enum_member, encode_tree_enum_member,
+    DataPathSegment, TreeEnumMember, decode_tree_enum_member, encode_tree_enum_member,
 };
 use marrow_store::value::{Scalar, encode_value};
+use marrow_store::{AccessMode, SealedStore};
 use support::{marrow, write};
 use support_evolve::{
     BRANCH_WORKFLOW_BASELINE_SOURCE, BRANCH_WORKFLOW_EVOLVED_SOURCE, LEAF_RETYPE_BASELINE_SOURCE,
@@ -796,8 +797,9 @@ fn read_member_bytes(
     member_id: &str,
 ) -> Option<Vec<u8>> {
     let store_id = catalog_id(root.as_ref(), store_path);
-    let store =
-        TreeStore::open_read_only(&native_store_path(root.as_ref())).expect("open native store");
+    let store = SealedStore::open(&native_store_path(root.as_ref()), AccessMode::Read)
+        .expect("open native store")
+        .into_store();
     store
         .read_data_value(
             &store_id,
@@ -820,16 +822,18 @@ fn read_path_bytes(
     path: &[DataPathSegment],
 ) -> Option<Vec<u8>> {
     let store_id = catalog_id(root.as_ref(), store_path);
-    let store =
-        TreeStore::open_read_only(&native_store_path(root.as_ref())).expect("open native store");
+    let store = SealedStore::open(&native_store_path(root.as_ref()), AccessMode::Read)
+        .expect("open native store")
+        .into_store();
     store
         .read_data_value(&store_id, identity, path)
         .expect("read path bytes")
 }
 
 fn data_cells_snapshot(root: impl AsRef<Path>) -> Vec<(DataCellKey, Vec<u8>)> {
-    let store =
-        TreeStore::open_read_only(&native_store_path(root.as_ref())).expect("open native store");
+    let store = SealedStore::open(&native_store_path(root.as_ref()), AccessMode::Read)
+        .expect("open native store")
+        .into_store();
     let mut cells = Vec::new();
     store
         .visit_backup_cells(|cell| {
@@ -1087,8 +1091,9 @@ fn assert_group_keyed_reshape_fences_preview_apply_and_run(
 
 fn record_exists(root: impl AsRef<Path>, store_path: &str, identity: &[SavedKey]) -> bool {
     let store_id = catalog_id(root.as_ref(), store_path);
-    let store =
-        TreeStore::open_read_only(&native_store_path(root.as_ref())).expect("open native store");
+    let store = SealedStore::open(&native_store_path(root.as_ref()), AccessMode::Read)
+        .expect("open native store")
+        .into_store();
     store
         .record_identity_exists_under(&store_id, identity, identity.len())
         .expect("read record existence")

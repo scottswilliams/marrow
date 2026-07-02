@@ -18,6 +18,7 @@ mod mem;
 mod metadata;
 #[cfg(feature = "native")]
 mod redb;
+#[cfg(feature = "native")]
 mod sealed;
 mod traversal;
 pub mod tree;
@@ -32,6 +33,7 @@ mod conformance;
 pub use backend::StoreError;
 
 /// The sole source of a durable store handle and the access mode it opens under.
+#[cfg(feature = "native")]
 pub use sealed::{AccessMode, SealedStore};
 
 /// Exact base-10 decimal arithmetic, re-exported at the crate root.

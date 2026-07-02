@@ -418,7 +418,7 @@ fn guard_committed_lock_roots(
     if !lock.records_active_roots() {
         return Ok(());
     }
-    let store = if marrow_check::tooling::store_path_is_absent(&path) {
+    let store = if marrow_run::admission::store_path_is_absent(&path) {
         None
     } else {
         crate::open_store_for_inspection(dir, config, format)?

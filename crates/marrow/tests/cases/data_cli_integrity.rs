@@ -15,8 +15,9 @@ use marrow_check::tooling::{
     resolve_data_path, walk_data,
 };
 use marrow_store::key::{INDEX_MARKER, SavedKey, encode_identity_payload};
-use marrow_store::tree::{DataPathSegment as StoreDataPathSegment, TreeStore};
+use marrow_store::tree::DataPathSegment as StoreDataPathSegment;
 use marrow_store::value::SUPPORTED_DATE_MAX_DAYS;
+use marrow_store::{AccessMode, SealedStore};
 use support::write;
 use support_data::{
     assert_stable_store_snapshot_eq, assert_store_snapshot, checked_place, checked_program,
@@ -41,14 +42,17 @@ fn check_pending_source_against_accepted_store(project: &Path) -> (usize, usize)
     let config_text = fs::read_to_string(project.join("marrow.json")).expect("read config");
     let config = marrow_project::parse_config(&config_text).expect("parse config");
     let store_path = support::native_store_path(project, &config).expect("native store path");
-    let accepted = TreeStore::open_read_only(&store_path)
+    let accepted = SealedStore::open(&store_path, AccessMode::Read)
         .expect("open store read-only")
+        .into_store()
         .read_catalog_snapshot()
         .expect("read catalog snapshot");
     let (_report, program) =
         marrow_check::check_project_with_catalog(project, &config, accepted.as_ref())
             .expect("check pending source against accepted catalog");
-    let store = TreeStore::open_read_only(&store_path).expect("open store read-only");
+    let store = SealedStore::open(&store_path, AccessMode::Read)
+        .expect("open store read-only")
+        .into_store();
     count_integrity_problems(&store, &program).expect("count integrity problems")
 }
 
@@ -56,8 +60,12 @@ fn check_pending_source_against_accepted_store(project: &Path) -> (usize, usize)
 fn shared_data_children_rejects_zero_limit() {
     let (project, _dir) = seeded_project("data-children-zero-limit");
     let program = checked_program(&project);
-    let store =
-        TreeStore::open(&project.join(".data").join("marrow.redb")).expect("open native store");
+    let store = SealedStore::open(
+        &project.join(".data").join("marrow.redb"),
+        AccessMode::Create,
+    )
+    .expect("open native store")
+    .into_store();
     let error = data_children(
         &program,
         &store,
@@ -77,8 +85,12 @@ fn shared_data_children_rejects_zero_limit() {
 fn shared_data_children_returns_typed_member_segments() {
     let (project, _dir) = seeded_project("data-children-typed-members");
     let program = checked_program(&project);
-    let store =
-        TreeStore::open(&project.join(".data").join("marrow.redb")).expect("open native store");
+    let store = SealedStore::open(
+        &project.join(".data").join("marrow.redb"),
+        AccessMode::Create,
+    )
+    .expect("open native store")
+    .into_store();
     let record = [
         DataPathSegment::Root("counter".into()),
         DataPathSegment::Key(SavedKey::Int(1)),
@@ -116,8 +128,12 @@ fn read_data_path_distinguishes_an_empty_identity_node_from_has_children() {
     );
     write_record_presence(&project, "counter", &[SavedKey::Int(2)]);
     let program = checked_program(&project);
-    let store =
-        TreeStore::open(&project.join(".data").join("marrow.redb")).expect("open native store");
+    let store = SealedStore::open(
+        &project.join(".data").join("marrow.redb"),
+        AccessMode::Create,
+    )
+    .expect("open native store")
+    .into_store();
 
     let presence = |path_text: &[DataPathSegment]| {
         let path = resolve_data_path(&program, path_text)
@@ -185,8 +201,12 @@ fn shared_data_walk_resumes_across_record_pages_exactly_once() {
         b"42",
     );
     let program = checked_program(&project);
-    let store =
-        TreeStore::open(&project.join(".data").join("marrow.redb")).expect("open native store");
+    let store = SealedStore::open(
+        &project.join(".data").join("marrow.redb"),
+        AccessMode::Create,
+    )
+    .expect("open native store")
+    .into_store();
     let root = [DataPathSegment::Root("counter".into())];
     let path = resolve_data_path(&program, &root)
         .expect("resolve root path")
@@ -247,8 +267,12 @@ fn shared_data_children_resumes_across_key_pages_exactly_once() {
         b"42",
     );
     let program = checked_program(&project);
-    let store =
-        TreeStore::open(&project.join(".data").join("marrow.redb")).expect("open native store");
+    let store = SealedStore::open(
+        &project.join(".data").join("marrow.redb"),
+        AccessMode::Create,
+    )
+    .expect("open native store")
+    .into_store();
     let root = [DataPathSegment::Root("counter".into())];
 
     let mut collected = Vec::new();
@@ -323,8 +347,12 @@ fn tooling_rejects_malformed_temporal_root_keys() {
         &[SavedKey::Date(SUPPORTED_DATE_MAX_DAYS + 1)],
     );
     let program = checked_program(&project);
-    let store =
-        TreeStore::open(&project.join(".data").join("marrow.redb")).expect("open native store");
+    let store = SealedStore::open(
+        &project.join(".data").join("marrow.redb"),
+        AccessMode::Create,
+    )
+    .expect("open native store")
+    .into_store();
     let root = [DataPathSegment::Root("events".into())];
 
     assert_store_corruption(
@@ -368,8 +396,12 @@ fn tooling_rejects_malformed_temporal_layer_keys() {
         b"x".to_vec(),
     );
     let program = checked_program(&project);
-    let store =
-        TreeStore::open(&project.join(".data").join("marrow.redb")).expect("open native store");
+    let store = SealedStore::open(
+        &project.join(".data").join("marrow.redb"),
+        AccessMode::Create,
+    )
+    .expect("open native store")
+    .into_store();
     let layer = [
         DataPathSegment::Root("events".into()),
         DataPathSegment::Key(SavedKey::Date(0)),
@@ -437,8 +469,12 @@ fn data_integrity_reads_backup_while_live_store_is_locked() {
     assert_eq!(live.status.code(), Some(0), "{live:?}");
     let live = support::json(live.stdout);
 
-    let _writer = TreeStore::open(&project.join(".data").join("marrow.redb"))
-        .expect("hold the native writer open");
+    let _writer = SealedStore::open(
+        &project.join(".data").join("marrow.redb"),
+        AccessMode::Create,
+    )
+    .expect("hold the native writer open")
+    .into_store();
     let backup = support::marrow(&[
         "data",
         "integrity",
@@ -1225,8 +1261,9 @@ fn activation_integrity_count_excludes_dangling_identity_leaf_reference() {
         encode_identity_keys(&[SavedKey::Int(7)]),
     );
     let program = checked_program(&project);
-    let store = TreeStore::open_read_only(&project.join(".data").join("marrow.redb"))
-        .expect("open store read-only");
+    let store = SealedStore::open(&project.join(".data").join("marrow.redb"), AccessMode::Read)
+        .expect("open store read-only")
+        .into_store();
 
     assert_eq!(
         count_integrity_problems(&store, &program).expect("count data integrity problems"),
@@ -1383,7 +1420,9 @@ fn data_integrity_fails_closed_when_index_entries_are_silently_dropped() {
     let title_path = field_path(&place, "title");
 
     {
-        let store = TreeStore::open(&store_path).expect("open seeded store");
+        let store = SealedStore::open(&store_path, AccessMode::Create)
+            .expect("open seeded store")
+            .into_store();
         store.begin().expect("begin");
         // Drop the byShelf entries for several fiction records, the rows a truncated
         // range scan would hide. The data records themselves are left untouched.
@@ -1414,7 +1453,9 @@ fn data_integrity_fails_closed_when_index_entries_are_silently_dropped() {
 
     // The data records are intact: the failure is the missing index entries, not lost data.
     {
-        let store = TreeStore::open_read_only(&store_path).expect("reopen store read-only");
+        let store = SealedStore::open(&store_path, AccessMode::Read)
+            .expect("reopen store read-only")
+            .into_store();
         assert!(
             store
                 .read_data_value(&store_id, &[SavedKey::Int(2)], &title_path)
@@ -1457,8 +1498,12 @@ fn run_fails_closed_when_index_entries_are_silently_dropped() {
 
     let by_shelf = index_catalog_id(&project, "books", "byShelf");
     {
-        let store =
-            TreeStore::open(&project.join(".data").join("marrow.redb")).expect("open seeded store");
+        let store = SealedStore::open(
+            &project.join(".data").join("marrow.redb"),
+            AccessMode::Create,
+        )
+        .expect("open seeded store")
+        .into_store();
         store.begin().expect("begin");
         for id in [2i64, 4, 6, 8, 10] {
             store
@@ -1535,7 +1580,9 @@ fn index_entry_identity_divergence_fails_closed_across_every_store_open() {
     let store_path = project.join(".data").join("marrow.redb");
     let by_shelf = index_catalog_id(&project, "books", "byShelf");
     {
-        let store = TreeStore::open(&store_path).expect("open seeded store");
+        let store = SealedStore::open(&store_path, AccessMode::Create)
+            .expect("open seeded store")
+            .into_store();
         store.begin().expect("begin");
         // Diverge several committed entries the way a single-bit flip inside the committed identity
         // does: delete the healthy [fiction, id]/[id] cell and rewrite it with a stored identity that
@@ -1746,7 +1793,9 @@ fn unique_index_value_flip_when_tuple_equals_identity_fails_closed_across_every_
     let store_path = project.join(".data").join("marrow.redb");
     let by_code = index_catalog_id(&project, "items", "byCode");
     {
-        let store = TreeStore::open(&store_path).expect("open seeded store");
+        let store = SealedStore::open(&store_path, AccessMode::Create)
+            .expect("open seeded store")
+            .into_store();
         store.begin().expect("begin");
         store
             .delete_index_entry(&by_code, &[SavedKey::Int(7)], &[SavedKey::Int(7)])
@@ -1877,8 +1926,12 @@ fn backup_fails_closed_when_index_entries_are_silently_dropped() {
 
     let by_shelf = index_catalog_id(&project, "books", "byShelf");
     {
-        let store =
-            TreeStore::open(&project.join(".data").join("marrow.redb")).expect("open seeded store");
+        let store = SealedStore::open(
+            &project.join(".data").join("marrow.redb"),
+            AccessMode::Create,
+        )
+        .expect("open seeded store")
+        .into_store();
         store.begin().expect("begin");
         for id in [2i64, 4, 6] {
             store

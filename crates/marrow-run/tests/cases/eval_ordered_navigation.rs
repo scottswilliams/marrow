@@ -6,6 +6,7 @@ use support::*;
 
 use marrow_run::Value;
 use marrow_store::tree::TreeStore;
+use marrow_store::{AccessMode, SealedStore};
 
 /// A primary keyed root with a keyed child layer, used to exercise reverse
 /// iteration and stored-neighbor seeks over both record identities and layer keys.
@@ -862,7 +863,9 @@ fn neighbor_at_an_indexed_root_edge_skips_the_index_on_both_backends() {
     let program = checked_program(&book_shelf_neighbor());
     let dir = TempDir::new("marrow-run-test").expect("temp dir");
     let mem = TreeStore::memory();
-    let redb = TreeStore::open(&dir.path().join("nav.redb")).expect("open redb");
+    let redb = SealedStore::open(&dir.path().join("nav.redb"), AccessMode::Create)
+        .expect("open redb")
+        .into_store();
     let stores: [&TreeStore; 2] = [&mem, &redb];
 
     for store in stores {

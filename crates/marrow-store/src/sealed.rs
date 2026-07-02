@@ -36,7 +36,6 @@ pub struct SealedStore {
 impl SealedStore {
     /// Open the durable store at `path` under `access`, running the engine's
     /// store-integrity ladder before the handle is returned.
-    #[cfg(feature = "native")]
     pub fn open(path: &Path, access: AccessMode) -> Result<Self, StoreError> {
         let store = match access {
             AccessMode::Create => TreeStore::open(path)?,

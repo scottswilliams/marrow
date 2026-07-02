@@ -11,8 +11,8 @@
 
 use crate::support;
 use crate::support_evolve;
-use marrow_store::tree::TreeStore;
 use marrow_store::value::{Scalar, ScalarType};
+use marrow_store::{AccessMode, SealedStore};
 use support::{TempProject, marrow, marrow_sub, temp_project_uncommitted, write};
 use support_evolve::{native_store_path, read_scalar, root_place};
 
@@ -50,8 +50,9 @@ fn assert_code(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let config_text = std::fs::read_to_string(root.join("marrow.json")).expect("read config");
     let config = marrow_project::parse_config(&config_text).expect("parse config");
-    let accepted = TreeStore::open_read_only(&native_store_path(root))
+    let accepted = SealedStore::open(&native_store_path(root), AccessMode::Read)
         .expect("open store read-only")
+        .into_store()
         .read_catalog_snapshot()
         .expect("read store catalog snapshot");
     let (report, program) =
@@ -59,7 +60,9 @@ fn assert_code(
             .expect("re-check project");
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
     let place = root_place(&program, "books")?;
-    let store = TreeStore::open(&native_store_path(root)).expect("reopen native store");
+    let store = SealedStore::open(&native_store_path(root), AccessMode::Create)
+        .expect("reopen native store")
+        .into_store();
     assert_eq!(
         read_scalar(&store, &place, 1, "code", ScalarType::Int),
         Some(Scalar::Int(expected)),
@@ -69,8 +72,9 @@ fn assert_code(
 }
 
 fn commit_stamp(root: &TempProject) -> marrow_store::tree::CommitMetadata {
-    TreeStore::open_read_only(&native_store_path(root))
+    SealedStore::open(&native_store_path(root), AccessMode::Read)
         .expect("open store read-only")
+        .into_store()
         .read_commit_metadata()
         .expect("read commit stamp")
         .expect("store has a commit stamp")
@@ -251,8 +255,9 @@ fn the_same_required_add_against_a_populated_store_fences_and_evolve_apply_backf
     let config = marrow_project::parse_config(&config_text).expect("parse config");
     // Bind the program against the store's now-advanced accepted catalog so its saved roots
     // carry the catalog ids the post-apply store keys cells under.
-    let accepted = TreeStore::open_read_only(&native_store_path(&root))
+    let accepted = SealedStore::open(&native_store_path(&root), AccessMode::Read)
         .expect("open store read-only")
+        .into_store()
         .read_catalog_snapshot()
         .expect("read store catalog snapshot");
     let (report, program) =
@@ -260,7 +265,9 @@ fn the_same_required_add_against_a_populated_store_fences_and_evolve_apply_backf
             .expect("re-check after apply");
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
     let place = root_place(&program, "books")?;
-    let store = TreeStore::open(&native_store_path(&root)).expect("reopen native store");
+    let store = SealedStore::open(&native_store_path(&root), AccessMode::Create)
+        .expect("reopen native store")
+        .into_store();
     assert_eq!(
         read_scalar(&store, &place, 1, "pages", ScalarType::Int),
         Some(Scalar::Int(0)),
@@ -350,8 +357,9 @@ fn an_in_place_transform_over_a_populated_store_fences_run_until_applied()
     assert_eq!(apply.status.code(), Some(0), "evolve apply: {apply:?}");
     let config_text = std::fs::read_to_string(root.join("marrow.json")).expect("read config");
     let config = marrow_project::parse_config(&config_text).expect("parse config");
-    let accepted = TreeStore::open_read_only(&native_store_path(&root))
+    let accepted = SealedStore::open(&native_store_path(&root), AccessMode::Read)
         .expect("open store read-only")
+        .into_store()
         .read_catalog_snapshot()
         .expect("read store catalog snapshot");
     let (report, program) =
@@ -360,7 +368,9 @@ fn an_in_place_transform_over_a_populated_store_fences_run_until_applied()
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
     let place = root_place(&program, "books")?;
     {
-        let store = TreeStore::open(&native_store_path(&root)).expect("reopen native store");
+        let store = SealedStore::open(&native_store_path(&root), AccessMode::Create)
+            .expect("reopen native store")
+            .into_store();
         assert_eq!(
             read_scalar(&store, &place, 1, "code", ScalarType::Int),
             Some(Scalar::Int(4)),
@@ -1133,8 +1143,9 @@ fn a_rename_over_a_populated_store_fences_run_and_evolve_apply_re_addresses()
     // stored value rather than dropping it.
     let config_text = std::fs::read_to_string(root.join("marrow.json")).expect("read config");
     let config = marrow_project::parse_config(&config_text).expect("parse config");
-    let accepted = TreeStore::open_read_only(&native_store_path(&root))
+    let accepted = SealedStore::open(&native_store_path(&root), AccessMode::Read)
         .expect("open store read-only")
+        .into_store()
         .read_catalog_snapshot()
         .expect("read store catalog snapshot");
     let (report, program) =
@@ -1142,7 +1153,9 @@ fn a_rename_over_a_populated_store_fences_run_and_evolve_apply_re_addresses()
             .expect("re-check after apply");
     assert!(!report.has_errors(), "{:#?}", report.diagnostics);
     let place = root_place(&program, "books")?;
-    let store = TreeStore::open(&native_store_path(&root)).expect("reopen native store");
+    let store = SealedStore::open(&native_store_path(&root), AccessMode::Create)
+        .expect("reopen native store")
+        .into_store();
     assert_eq!(
         read_scalar(&store, &place, 1, "label", ScalarType::Str),
         Some(Scalar::Str("Mort".to_string())),
@@ -1301,8 +1314,9 @@ const RESOURCE_RENAME_DROP_MEMBER: &str = "module app\n\
 fn recheck_against_accepted(root: &TempProject) -> marrow_check::CheckedProgram {
     let config_text = std::fs::read_to_string(root.join("marrow.json")).expect("read config");
     let config = marrow_project::parse_config(&config_text).expect("parse config");
-    let accepted = TreeStore::open_read_only(&native_store_path(root))
+    let accepted = SealedStore::open(&native_store_path(root), AccessMode::Read)
         .expect("open store read-only")
+        .into_store()
         .read_catalog_snapshot()
         .expect("read store catalog snapshot");
     let (report, program) =
@@ -1349,7 +1363,9 @@ fn a_bare_resource_rename_over_populated_data_fences_run_not_orphan()
     // orphan a fresh member identity would have caused.
     let program = recheck_against_accepted(&root);
     let place = root_place(&program, "books")?;
-    let store = TreeStore::open(&native_store_path(&root)).expect("reopen native store");
+    let store = SealedStore::open(&native_store_path(&root), AccessMode::Create)
+        .expect("reopen native store")
+        .into_store();
     assert_eq!(
         support_evolve::read_scalar_by_catalog_id(&store, &place, 1, &note_id, ScalarType::Str),
         Some(Scalar::Str("keepme".to_string())),
@@ -1440,7 +1456,9 @@ fn an_evolve_resource_rename_relocates_populated_members_not_orphan()
     );
     let program = recheck_against_accepted(&root);
     let place = root_place(&program, "books")?;
-    let store = TreeStore::open(&native_store_path(&root)).expect("reopen native store");
+    let store = SealedStore::open(&native_store_path(&root), AccessMode::Create)
+        .expect("reopen native store")
+        .into_store();
     assert_eq!(
         read_scalar(&store, &place, 1, "note", ScalarType::Str),
         Some(Scalar::Str("keepme".to_string())),
@@ -1473,7 +1491,9 @@ fn an_evolve_resource_rename_with_an_added_member_relocates_and_adds()
     );
     let program = recheck_against_accepted(&root);
     let place = root_place(&program, "books")?;
-    let store = TreeStore::open(&native_store_path(&root)).expect("reopen native store");
+    let store = SealedStore::open(&native_store_path(&root), AccessMode::Create)
+        .expect("reopen native store")
+        .into_store();
     assert_eq!(
         read_scalar(&store, &place, 1, "note", ScalarType::Str),
         Some(Scalar::Str("keepme".to_string())),
@@ -1530,7 +1550,9 @@ fn an_evolve_resource_rename_that_drops_a_populated_member_still_fences_repair()
     // The populated cell is untouched under its accepted member id: the fence prevented loss.
     let program = recheck_against_accepted(&root);
     let place = root_place(&program, "books")?;
-    let store = TreeStore::open(&native_store_path(&root)).expect("reopen native store");
+    let store = SealedStore::open(&native_store_path(&root), AccessMode::Create)
+        .expect("reopen native store")
+        .into_store();
     assert_eq!(
         support_evolve::read_scalar_by_catalog_id(&store, &place, 1, &note_id, ScalarType::Str),
         Some(Scalar::Str("keepme".to_string())),
@@ -1597,7 +1619,9 @@ fn an_evolve_resource_rename_carries_members_in_every_owning_store()
         "integrity is clean across both stores after the shared-resource rename: {integrity:?}",
     );
     let program = recheck_against_accepted(&root);
-    let store = TreeStore::open(&native_store_path(&root)).expect("reopen native store");
+    let store = SealedStore::open(&native_store_path(&root), AccessMode::Create)
+        .expect("reopen native store")
+        .into_store();
     let books = root_place(&program, "books")?;
     let archive = root_place(&program, "archive")?;
     assert_eq!(

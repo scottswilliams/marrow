@@ -21,6 +21,7 @@ The runtime is the final pipeline stage. It takes a checked project session or a
 
 | Area | Spine | One-line responsibility |
 | --- | --- | --- |
+| Store admission | `admission.rs` | The sole owner of `SealedStore`: opens a durable store through the store crate's sealed handle, hands out a typed `AdmittedStore<Read>`/`AdmittedStore<Write>`, and owns the lock-root witness (`verify_present_store_lock_roots`, `store_path_is_absent`) that binds a store to its committed lock. Every durable open in the runtime and CLI routes through here. |
 | Project sessions | `project_session.rs` | Load and check run/test projects, bind catalog identity, admit configured stores through the activation fence or select memory boundaries, expose execution boundary facts, invoke entries through one session path, and admit read-only or read/write project surface sessions over already stamped native stores. |
 | [Evaluator core](evaluator.md) | `entry.rs`, `activation.rs`, `call.rs`, `expr.rs`, `statement.rs`, `exec.rs`, `loop_exec.rs`, `env.rs`, `error.rs`, `host.rs`, `path.rs` | Walk the checked AST: values, control flow, calls, loops, the error channel, the host boundary, and saved-path lowering. |
 | Debugger snapshots | `debugger.rs`, `host.rs` | Capture a stopped `Frame` into bounded Marrow-owned `DebugFrameSnapshot` and `DebugValue*` facts: source location, depth, paged visible locals, previews, child counts, and captured child pages. |

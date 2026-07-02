@@ -4,7 +4,7 @@
 //! default human text output is pinned by a separate render-contract test.
 use crate::support::{self, TempProject};
 use crate::support_data;
-use marrow_store::tree::TreeStore;
+use marrow_store::{AccessMode, SealedStore};
 
 use marrow_store::key::SavedKey;
 use support_data::{
@@ -269,8 +269,12 @@ fn data_get_reads_backup_while_live_store_is_locked() {
     assert_eq!(live.status.code(), Some(0), "{live:?}");
     let live = support::json(live.stdout);
 
-    let _writer = TreeStore::open(&project.join(".data").join("marrow.redb"))
-        .expect("hold the native writer open");
+    let _writer = SealedStore::open(
+        &project.join(".data").join("marrow.redb"),
+        AccessMode::Create,
+    )
+    .expect("hold the native writer open")
+    .into_store();
     let backup = support::marrow(&[
         "data",
         "get",

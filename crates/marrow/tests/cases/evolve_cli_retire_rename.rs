@@ -4,8 +4,8 @@ use std::process::Command;
 
 use crate::support;
 use crate::support_evolve;
-use marrow_store::tree::TreeStore;
 use marrow_store::value::{Scalar, ScalarType};
+use marrow_store::{AccessMode, SealedStore};
 use support::{TempProject, marrow, unique_temp_path, write};
 use support_evolve::{
     BLOCK_BASELINE_SOURCE, RENAME_BLOCK_DELETED_SOURCE, RENAME_BLOCK_SOURCE,
@@ -106,8 +106,9 @@ fn assert_retire_fixture_unchanged(fixture: &RetireBackupFixture) {
         fixture.source_before,
         "managed-path refusal must not edit source"
     );
-    let store =
-        TreeStore::open(&native_store_path(&fixture.root)).expect("live store remains usable");
+    let store = SealedStore::open(&native_store_path(&fixture.root), AccessMode::Create)
+        .expect("live store remains usable")
+        .into_store();
     assert_eq!(
         read_scalar(
             &store,
@@ -184,7 +185,9 @@ fn evolve_apply_accepts_two_repeated_approve_retire_flags() -> Result<(), Box<dy
         "json",
         root.to_str().expect("project path utf-8"),
     ]);
-    let store = TreeStore::open(&native_store_path(&root)).expect("reopen native store");
+    let store = SealedStore::open(&native_store_path(&root), AccessMode::Create)
+        .expect("reopen native store")
+        .into_store();
     let subtitle_present = read_scalar(&store, &accepted_place, 1, "subtitle", ScalarType::Str);
     let notes_present = read_scalar(&store, &accepted_place, 1, "notes", ScalarType::Str);
 
@@ -276,7 +279,9 @@ fn evolve_apply_counts_and_deletes_a_retired_member_in_each_owning_root()
     assert_eq!(apply.status.code(), Some(0), "{apply:?}");
     let apply_record = support::json(apply.stdout);
     assert_eq!(apply_record["records_retired"], serde_json::json!(1));
-    let store = TreeStore::open(&native_store_path(&root)).expect("reopen native store");
+    let store = SealedStore::open(&native_store_path(&root), AccessMode::Create)
+        .expect("reopen native store")
+        .into_store();
     assert_eq!(
         read_scalar(&store, &library_place, 2, "subtitle", ScalarType::Str),
         None,
@@ -340,7 +345,9 @@ fn evolve_apply_accepts_the_dotted_field_path_for_a_moduleless_script()
     assert_eq!(apply.status.code(), Some(0), "{apply:?}");
     let apply_record = support::json(apply.stdout);
     assert_eq!(apply_record["records_retired"], serde_json::json!(1));
-    let store = TreeStore::open(&native_store_path(&root)).expect("reopen native store");
+    let store = SealedStore::open(&native_store_path(&root), AccessMode::Create)
+        .expect("reopen native store")
+        .into_store();
     assert_eq!(
         read_scalar(&store, &accepted_place, 1, "subtitle", ScalarType::Str),
         None,
@@ -387,7 +394,9 @@ fn evolve_apply_accepts_the_module_qualified_path_on_approve_retire()
     assert_eq!(apply.status.code(), Some(0), "{apply:?}");
     let apply_record = support::json(apply.stdout);
     assert_eq!(apply_record["records_retired"], serde_json::json!(1));
-    let store = TreeStore::open(&native_store_path(&root)).expect("reopen native store");
+    let store = SealedStore::open(&native_store_path(&root), AccessMode::Create)
+        .expect("reopen native store")
+        .into_store();
     assert_eq!(
         read_scalar(&store, &accepted_place, 1, "subtitle", ScalarType::Str),
         None,
@@ -486,7 +495,9 @@ fn retire_apply_requires_backup_or_explicit_opt_out_before_mutation()
         lock_before,
         "backup refusal must not advance the committed lock"
     );
-    let store = TreeStore::open(&native_store_path(&root)).expect("reopen native store");
+    let store = SealedStore::open(&native_store_path(&root), AccessMode::Create)
+        .expect("reopen native store")
+        .into_store();
     assert_eq!(
         read_scalar(&store, &accepted_place, 1, "subtitle", ScalarType::Str),
         Some(Scalar::Str("sub".into())),
@@ -608,7 +619,9 @@ fn retire_apply_no_backup_opt_out_is_recorded_in_json_receipt()
         serde_json::json!({ "kind": "no_backup" }),
         "the explicit opt-out is part of the rendered receipt: {record}"
     );
-    let store = TreeStore::open(&native_store_path(&root)).expect("reopen native store");
+    let store = SealedStore::open(&native_store_path(&root), AccessMode::Create)
+        .expect("reopen native store")
+        .into_store();
     assert_eq!(
         read_scalar(&store, &accepted_place, 1, "subtitle", ScalarType::Str),
         None,
@@ -679,7 +692,9 @@ fn retire_apply_refuses_backup_path_that_is_live_store_file_before_mutation()
         lock_before,
         "managed-path refusal must not advance the committed lock"
     );
-    let store = TreeStore::open(&backup_path).expect("live store remains usable");
+    let store = SealedStore::open(&backup_path, AccessMode::Create)
+        .expect("live store remains usable")
+        .into_store();
     assert_eq!(
         read_scalar(&store, &accepted_place, 1, "subtitle", ScalarType::Str),
         Some(Scalar::Str("sub".into())),
@@ -744,7 +759,9 @@ fn retire_apply_refuses_backup_path_that_is_committed_lock_before_mutation()
         lock_before,
         "lock-path refusal must not replace the committed lock"
     );
-    let store = TreeStore::open(&native_store_path(&root)).expect("live store remains usable");
+    let store = SealedStore::open(&native_store_path(&root), AccessMode::Create)
+        .expect("live store remains usable")
+        .into_store();
     assert_eq!(
         read_scalar(&store, &accepted_place, 1, "subtitle", ScalarType::Str),
         Some(Scalar::Str("sub".into())),
@@ -881,7 +898,9 @@ fn retire_apply_backup_writes_valid_archive_then_applies() -> Result<(), Box<dyn
         "the rendered receipt records the backup path: {record}"
     );
     assert!(backup_path.exists(), "backup artifact is published");
-    let store = TreeStore::open(&native_store_path(&root)).expect("reopen native store");
+    let store = SealedStore::open(&native_store_path(&root), AccessMode::Create)
+        .expect("reopen native store")
+        .into_store();
     assert_eq!(
         read_scalar(&store, &accepted_place, 1, "subtitle", ScalarType::Str),
         None,
@@ -901,7 +920,9 @@ fn retire_apply_backup_writes_valid_archive_then_applies() -> Result<(), Box<dyn
     ]);
 
     assert_eq!(restore.status.code(), Some(0), "restore: {restore:?}");
-    let restored = TreeStore::open(&native_store_path(&restore_root)).expect("open restored store");
+    let restored = SealedStore::open(&native_store_path(&restore_root), AccessMode::Create)
+        .expect("open restored store")
+        .into_store();
     assert_eq!(
         read_scalar(&restored, &accepted_place, 1, "subtitle", ScalarType::Str),
         Some(Scalar::Str("sub".into())),
@@ -962,7 +983,9 @@ fn retire_apply_backup_failure_exits_before_mutating_store()
         epoch_before,
         "apply must not advance the store after a backup write failure"
     );
-    let store = TreeStore::open(&native_store_path(&root)).expect("reopen native store");
+    let store = SealedStore::open(&native_store_path(&root), AccessMode::Create)
+        .expect("reopen native store")
+        .into_store();
     assert_eq!(
         read_scalar(&store, &accepted_place, 1, "subtitle", ScalarType::Str),
         Some(Scalar::Str("sub".into())),
@@ -1030,7 +1053,9 @@ fn a_bare_rename_of_a_populated_member_does_not_silently_auto_apply()
         Some(baseline_epoch),
         "a fenced bare rename does not advance the epoch"
     );
-    let store = TreeStore::open(&native_store_path(&root)).expect("reopen native store");
+    let store = SealedStore::open(&native_store_path(&root), AccessMode::Create)
+        .expect("reopen native store")
+        .into_store();
     assert_eq!(
         read_scalar(&store, &accepted_place, 1, "subtitle", ScalarType::Str),
         Some(Scalar::Str("Appendix".into())),

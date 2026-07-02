@@ -2,7 +2,7 @@ use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-pub(crate) use marrow_check::tooling::store_path_is_absent;
+pub(crate) use marrow_run::admission::store_path_is_absent;
 use marrow_syntax::Diagnose;
 use serde_json::json;
 
@@ -731,7 +731,8 @@ pub(crate) fn open_store_for_inspection(
     if store_path_is_absent(&path) {
         return Ok(None);
     }
-    match marrow_store::tree::TreeStore::open_read_only(&path)
+    match marrow_run::admission::open_read(&path)
+        .map(|admitted| admitted.into_store())
         .and_then(|store| store.verify_readable().map(|()| store))
     {
         Ok(store) => Ok(Some(store)),
@@ -761,7 +762,7 @@ pub(crate) fn verify_lock_roots(
     store: Option<&marrow_store::tree::TreeStore>,
     lock: Option<&marrow_catalog::CatalogLock>,
 ) -> LockRootVerdict {
-    match marrow_check::tooling::verify_present_store_lock_roots(store, lock) {
+    match marrow_run::admission::verify_present_store_lock_roots(store, lock) {
         Ok(()) => LockRootVerdict::Clean,
         Err(error) => LockRootVerdict::Lost(error),
     }
@@ -865,7 +866,8 @@ pub(crate) fn read_accepted_store_catalog_lenient(
     if store_path_is_absent(&path) {
         return Ok(AcceptedAuthority::Absent);
     }
-    let Ok(store) = marrow_store::tree::TreeStore::open_read_only(&path) else {
+    let Ok(store) = marrow_run::admission::open_read(&path).map(|admitted| admitted.into_store())
+    else {
         return Ok(AcceptedAuthority::ExistsButUnreadable);
     };
     match marrow_check::read_accepted_catalog_with_store_read_only(Path::new(dir), Some(&store)) {

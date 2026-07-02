@@ -6,6 +6,7 @@ use marrow_store::cell::CatalogId;
 use marrow_store::key::SavedKey;
 use marrow_store::tree::{DataPathSegment, StoreUid, TreeStore};
 use marrow_store::value::{Scalar, ScalarType, decode_value, encode_value};
+use marrow_store::{AccessMode, SealedStore};
 
 use crate::support::{TempProject, temp_project_uncommitted as temp_project, write};
 
@@ -66,7 +67,9 @@ pub(crate) fn native_store_path(root: impl AsRef<Path>) -> PathBuf {
 pub(crate) fn open_native_store(root: impl AsRef<Path>) -> TreeStore {
     let path = native_store_path(root);
     fs::create_dir_all(path.parent().unwrap()).expect("create data dir");
-    TreeStore::open(&path).expect("open native store")
+    SealedStore::open(&path, AccessMode::Create)
+        .expect("open native store")
+        .into_store()
 }
 pub(crate) fn seed_record(store: &TreeStore, place: &CheckedSavedPlace, id: i64) {
     let store_id = store_catalog_id(place).expect("store catalog id");
@@ -173,7 +176,9 @@ pub(crate) fn native_books_project(name: &str, source: &str) -> TempProject {
 /// The accepted catalog snapshot a project's store holds as the crash bridge. Reading
 /// it here is the typed oracle for tests that inspect the committed durable identity.
 pub(crate) fn accepted_catalog(root: impl AsRef<Path>) -> marrow_catalog::CatalogMetadata {
-    let store = TreeStore::open_read_only(&native_store_path(root)).expect("open store read-only");
+    let store = SealedStore::open(&native_store_path(root), AccessMode::Read)
+        .expect("open store read-only")
+        .into_store();
     store
         .read_catalog_snapshot()
         .expect("read store catalog snapshot")
@@ -188,7 +193,9 @@ pub(crate) fn accepted_catalog_entry_id(root: impl AsRef<Path>, path: &str) -> S
         .stable_id
 }
 pub(crate) fn store_epoch(root: impl AsRef<Path>) -> Option<u64> {
-    let store = TreeStore::open_read_only(&native_store_path(root)).expect("reopen native store");
+    let store = SealedStore::open(&native_store_path(root), AccessMode::Read)
+        .expect("reopen native store")
+        .into_store();
     store
         .read_commit_metadata()
         .expect("read store commit")

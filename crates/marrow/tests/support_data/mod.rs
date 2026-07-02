@@ -5,6 +5,7 @@ use marrow_check::{CheckedProgram, CheckedSavedPlace, checked_saved_root_place};
 use marrow_store::cell::CatalogId;
 use marrow_store::key::{SavedKey, encode_identity_payload};
 use marrow_store::tree::{DataPathSegment, TreeStore};
+use marrow_store::{AccessMode, SealedStore};
 
 use crate::support::{self, TempProject, member_catalog_id, write};
 use crate::support_evolve::open_native_store;
@@ -101,8 +102,9 @@ pub(crate) fn checked_program(project: impl AsRef<Path>) -> CheckedProgram {
     let accepted = support::native_store_path(project, &config)
         .filter(|path| path.exists())
         .and_then(|path| {
-            marrow_store::tree::TreeStore::open_read_only(&path)
+            SealedStore::open(&path, AccessMode::Read)
                 .expect("open store read-only")
+                .into_store()
                 .read_catalog_snapshot()
                 .expect("read store catalog snapshot")
         });

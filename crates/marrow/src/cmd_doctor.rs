@@ -312,7 +312,9 @@ fn probe_store_open(
     // Prove the store is fully traversable, the same walk `data recover` runs, so doctor
     // never reports a store healthy that the read-only inspections and the write path
     // classify as corrupt below the table roots.
-    match TreeStore::open_read_only(&path).and_then(|store| store.verify_readable().map(|()| store))
+    match marrow_run::admission::open_read(&path)
+        .map(|admitted| admitted.into_store())
+        .and_then(|store| store.verify_readable().map(|()| store))
     {
         Ok(store) => Some(store),
         Err(error @ StoreError::Locked { .. }) => {
