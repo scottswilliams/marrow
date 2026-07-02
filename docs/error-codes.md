@@ -250,8 +250,8 @@ Resource-schema rules. Reported during a project check alongside `check.*`.
 Read-only triage findings from `marrow doctor`. They aggregate existing typed
 facts and never repair, regenerate the lock, apply evolution, or run an unbounded
 integrity scan. The live store is always the authority; `doctor` reports when the
-committed `marrow.lock` is stale or collides with it, but the operator regenerates
-the lock — `doctor` repairs nothing.
+committed `marrow.lock` is stale, missing, or collides with it, but the operator
+regenerates the lock — `doctor` repairs nothing.
 
 | Code | Meaning |
 |---|---|
@@ -265,6 +265,7 @@ the lock — `doctor` repairs nothing.
 | `doctor.catalog_collision` | The store and the committed `marrow.lock` record the same epoch but different shape digests, so the lock no longer matches the live store at that epoch. The store wins; regenerate `marrow.lock` by running the project, then commit it. |
 | `doctor.store_lock_epoch_mismatch` | The store's accepted epoch and the committed `marrow.lock` epoch differ. The store wins; the finding data carries both epochs so an operator can confirm the store is current and regenerate the lock. |
 | `doctor.stale_lock` | The committed `marrow.lock` records a different producing source shape digest than the current source, so the lock is stale against the project. The store remains authoritative; regenerate `marrow.lock` by running the project. |
+| `doctor.lock_missing` | The live store carries accepted saved shape but no committed `marrow.lock` is present, so a CI gate would pass a project whose lock was never committed or was deleted. Regenerate `marrow.lock` with a run or `evolve apply`, then commit it. Mirrors `check.lock_missing`. A uid-only store with no accepted catalog, like an absent store, has nothing to lock and is not flagged. |
 | `doctor.fence_mismatch` | The activation fence classification does not match the checked project. `data.underlying_code` carries the `run.*` or `store.*` fence code, and `next_command` names the evolve, recovery, or rerun command to use next. |
 | `doctor.integrity_sample_failed` | The bounded saved-data integrity sample found problems or could not complete. Run the printed `marrow data integrity` command for the full read-only report. |
 
@@ -377,16 +378,22 @@ directly.
 
 ### `io.*` — kind `io`
 
-I/O faults. The CLI reports `io.read` when it cannot read a project file
+I/O faults spanning the CLI, `marrow serve`, the durable store, and the
+`std::io` builtins. The CLI reports `io.read` when it cannot read a project file
 (e.g. `marrow.json`), `io.listen` when a local listener cannot bind or accept,
-and `io.thread` when it cannot start its worker thread. The `std::io` builtins
-raise `io.read`/`io.write` as catchable `Error` values inside a running program.
+`io.thread` when it cannot start its worker thread, `io.signal` when `marrow
+serve` cannot install its shutdown-signal handler, and `io.entropy` when the OS
+entropy source needed to stamp a durable store identity is unavailable. The
+`std::io` builtins raise `io.read`/`io.write` as catchable `Error` values inside
+a running program.
 
 | Code | Meaning |
 |---|---|
 | `io.read` | A read failed: a project source file or `marrow.json` could not be read, or `std::io::readText`/`readBytes` failed. |
 | `io.listen` | A local listener could not bind, report its bound address, or accept a connection. |
 | `io.thread` | The CLI could not spawn the worker thread it uses for parsing, checking, and running. |
+| `io.signal` | `marrow serve` could not install its OS shutdown-signal handler, so it refuses to start rather than serve without graceful shutdown. |
+| `io.entropy` | The OS entropy source needed to mint a durable store's physical identity (its store UID) was unavailable, so the session fails closed rather than stamp the store with weak identity. |
 | `io.write` | `std::io::writeText`/`writeBytes` failed. |
 
 ### `config.*` and `project.*` — kind `tooling`

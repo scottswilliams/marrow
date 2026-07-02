@@ -32,34 +32,6 @@ fn repo_root() -> std::path::PathBuf {
         .join("..")
 }
 
-/// Pull the dotted codes documented in a single `### \`family.*\`` table from
-/// `error-codes.md`. A code row starts with `| \`code\` |`, so the codes are read
-/// directly from the rendered reference, never from prose.
-fn documented_codes_in_family(family_heading: &str) -> std::collections::BTreeSet<String> {
-    let text =
-        std::fs::read_to_string(docs_dir().join("error-codes.md")).expect("read error-codes");
-    let mut codes = std::collections::BTreeSet::new();
-    let mut in_section = false;
-
-    for line in text.lines() {
-        if line.starts_with("### ") {
-            in_section = line.contains(family_heading);
-            continue;
-        }
-        if !in_section {
-            continue;
-        }
-        let trimmed = line.trim_start();
-        if let Some(rest) = trimmed.strip_prefix("| `")
-            && let Some(code) = rest.split('`').next()
-        {
-            codes.insert(code.to_string());
-        }
-    }
-
-    codes
-}
-
 fn mw_blocks(file_name: &str) -> Vec<MwBlock> {
     let path = language_docs_dir().join(file_name);
     let text = std::fs::read_to_string(path).expect("read language doc");
@@ -392,326 +364,284 @@ fn documented_kind_assignments(text: &str) -> Vec<(String, String)> {
     pairs
 }
 
-fn schema_family_codes() -> Vec<String> {
-    [
-        marrow_schema::SCHEMA_DUPLICATE_MEMBER,
-        marrow_schema::SCHEMA_CATEGORY_LEAF,
-        marrow_schema::SCHEMA_PARENT_NOT_CATEGORY,
-        marrow_check::SCHEMA_DUPLICATE_ROOT_OWNER,
-        marrow_schema::SCHEMA_UNKNOWN_IN_SAVED,
-        marrow_schema::SCHEMA_OPTIONAL_IN_SAVED,
-        marrow_schema::SCHEMA_KEY_MEMBER_COLLISION,
-        marrow_schema::SCHEMA_UNKNOWN_INDEX_ARG,
-        marrow_schema::SCHEMA_UNORDERABLE_KEY,
-        marrow_schema::SCHEMA_NONSCALAR_KEY,
-        marrow_schema::SCHEMA_NON_ENUM_NAMED_FIELD,
-        marrow_schema::SCHEMA_INDEX_MISSING_IDENTITY_KEYS,
-        marrow_schema::SCHEMA_INDEX_REQUIRES_KEYED_ROOT,
-        marrow_schema::SCHEMA_NESTED_INDEX_ARG,
-    ]
-    .iter()
-    .map(|code| code.to_string())
-    .collect()
-}
+/// The dotted error-code families the reference documents, including the reserved `decode.*` family.
+/// The code-truth gate keys its documented-vs-emitted comparison on these families; a family
+/// documented with a `### ` section but missing here fails the gate, so a new family cannot slip in.
+const KNOWN_FAMILIES: &[&str] = &[
+    "parse", "fmt", "check", "schema", "catalog", "doctor", "run", "value", "write", "store", "io",
+    "config", "project", "data", "evolve", "test", "backup", "restore", "surface", "decode",
+];
 
-/// Every active error-code family documented in `error-codes.md`, mapped to the exact codes it
-/// emits. `catalog` and `schema` are pinned to their exported `&str` constants, so a documented
-/// code the crate never defines — or an emitted constant left undocumented — fails the guard. The
-/// remaining families, whose codes are still inline string literals scattered across the pipeline,
-/// are pinned to the reviewed reference set until the code registry centralizes them; the guard
-/// still fails the moment a family's table drifts from this list.
-fn error_code_families() -> Vec<(&'static str, Vec<String>)> {
-    let owned = |codes: &[&str]| {
-        codes
-            .iter()
-            .map(|code| code.to_string())
-            .collect::<Vec<_>>()
+/// Documented codes the current build intentionally does not emit yet: the reserved surface-checker
+/// diagnostics and the reserved `decode.*` decode/repair family. They appear in the reference so the
+/// contract is visible, so the gate holds them apart from the emitted set rather than demanding an
+/// emit site. Emitting one of these fails the gate until it moves to its active family docs.
+const RESERVED_CODES: &[&str] = &[
+    "check.surface_decl",
+    "check.surface_catalog_pending",
+    "check.surface_operation",
+    "surface.integrity",
+    "decode.shape",
+    "decode.unknown_member",
+    "decode.required_absent",
+    "decode.value",
+];
+
+/// Production strings that share an error code's dotted lowercase grammar but are not error codes:
+/// hashing domain-separation labels and a store-field validation label. The gate subtracts them from
+/// the emitted scan and holds them honest — each must still occur in source and must never become a
+/// documented code.
+const NON_CODE_TOKENS: &[&str] = &[
+    "config.default_entry",
+    "config.source_roots",
+    "config.tests",
+    "store.backend",
+];
+
+/// Whether `token` is a well-formed dotted error code: a known family, a dot, then a lowercase
+/// segment. Both the reference tables and the production sources spell codes this way, so the gate
+/// reads them identically from each side.
+fn is_error_code(token: &str) -> bool {
+    let Some((family, segment)) = token.split_once('.') else {
+        return false;
     };
-    vec![
-        ("`parse.*`", owned(&["parse.syntax"])),
-        ("`fmt.*`", owned(&["fmt.comment_loss"])),
-        (
-            "`check.*`",
-            owned(&[
-                "check.failed",
-                "check.module_path",
-                "check.default_entry",
-                "check.duplicate_module",
-                "check.multiple_scripts",
-                "check.duplicate_declaration",
-                "check.builtin_collision",
-                "check.surface_collision",
-                "check.surface_target",
-                "check.surface_field",
-                "check.surface_action",
-                "check.surface_computed_read",
-                "check.unresolved_import",
-                "check.unknown_type",
-                "check.recursive_keyed_entry",
-                "check.return_value",
-                "check.missing_return",
-                "check.operator_type",
-                "check.condition_type",
-                "check.call_argument",
-                "check.return_type",
-                "check.assignment_type",
-                "check.lossy_round_trip",
-                "check.required_absent",
-                "check.uninitialized_var",
-                "check.commit_amplification",
-                "check.untyped_value",
-                "check.key_type",
-                "check.sequence_position",
-                "check.unresolved_name",
-                "check.unknown_field",
-                "check.layer_not_value",
-                "check.unresolved_call",
-                "check.private_function",
-                "check.ambiguous_call",
-                "check.next_id_requires_single_int",
-                "check.next_id_collision",
-                "check.rejected_surface",
-                "check.catalog_intent",
-                "check.lock_corrupt",
-                "check.lock_missing",
-                "check.stale_lock",
-                "check.stale_client",
-                "check.durable_store_required",
-                "check.unresolved_optional",
-                "check.unannotated_absent",
-                "check.literal_range",
-                "check.string_escape",
-                "check.bytes_escape",
-                "check.loop_control_flow",
-                "check.catch_type",
-                "check.throw_type",
-                "check.match_requires_enum",
-                "check.unknown_enum_member",
-                "check.duplicate_match_arm",
-                "check.nonexhaustive_match",
-                "check.ambiguous_match_arm",
-                "check.scrutinee_qualified_match_arm",
-                "check.ambiguous_member",
-                "check.category_not_selectable",
-                "check.is_requires_enum",
-                "check.is_type",
-                "check.invalid_assign_target",
-                "check.non_constant_const",
-                "check.loop_mutates_traversed_layer",
-                "check.neighbor_unsupported",
-                "check.key_requires_single_key",
-                "check.range",
-                "check.range_value",
-                "check.collection_unsupported",
-                "check.read_only_expression_context",
-                "check.read_only_expression_write",
-                "check.read_only_expression_host_effect",
-                "check.read_only_expression_unindexed_lookup",
-                "check.private_enum",
-                "check.exposed_private_enum",
-                "check.nesting_limit",
-                "check.evolve_target",
-                "check.evolve_type",
-                "check.evolve_transform",
-            ]),
-        ),
-        ("`schema.*`", schema_family_codes()),
-        (
-            "`catalog.*`",
-            owned(&[
-                marrow_catalog::CATALOG_INVALID,
-                marrow_catalog::LOCK_CORRUPT,
-            ]),
-        ),
-        (
-            "`doctor.*`",
-            owned(&[
-                "doctor.config_invalid",
-                "doctor.lock_corrupt",
-                "doctor.check_failed",
-                "doctor.store_locked",
-                "doctor.store_recovery_required",
-                "doctor.store_unavailable",
-                "doctor.populated_unstamped",
-                "doctor.catalog_collision",
-                "doctor.store_lock_epoch_mismatch",
-                "doctor.stale_lock",
-                "doctor.fence_mismatch",
-                "doctor.integrity_sample_failed",
-            ]),
-        ),
-        (
-            "`run.*`",
-            owned(&[
-                "run.type",
-                "run.unbound_name",
-                "run.overflow",
-                "run.decimal_overflow",
-                "run.temporal_overflow",
-                "run.divide_by_zero",
-                "run.no_enclosing_loop",
-                "run.unknown_function",
-                "run.ambiguous_function",
-                "run.private_function",
-                "run.entry_argument",
-                "run.entry_surface",
-                "run.no_value",
-                "run.absent_element",
-                "run.store",
-                "run.unsupported",
-                "run.capability",
-                "run.transaction_host_effect",
-                "run.assertion",
-                "run.uncaught_error",
-                "run.traversal",
-                "run.depth",
-                "run.no_entry",
-                "run.durable_store_required",
-                "run.dry_run_isolation",
-                "run.store_evolved",
-                "run.store_behind",
-                "run.schema_drift",
-                "run.engine_profile",
-                "run.store_unstamped",
-            ]),
-        ),
-        ("`value.*`", owned(&["value.range"])),
-        (
-            "`write.*`",
-            owned(&[
-                "write.required_absent",
-                "write.type_mismatch",
-                "write.identity_mismatch",
-                "write.invalid_data",
-                "write.store",
-                "write.unknown_field",
-                "write.unique_conflict",
-                "write.unknown_layer",
-                "write.not_a_leaf_layer",
-                "write.not_a_group_layer",
-                "write.layer_key_arity",
-                "write.id_overflow",
-                "write.next_id_unsupported",
-                "write.required_field",
-                "write.requires_maintenance",
-                "write.transaction_too_large",
-            ]),
-        ),
-        (
-            "`store.*`",
-            owned(&[
-                "store.io",
-                "store.permission_denied",
-                "store.locked",
-                "store.format_version",
-                "store.corruption",
-                "store.recovery_required",
-                "store.limit",
-                "store.cursor",
-                "store.transaction",
-                "store.read_only",
-            ]),
-        ),
-        (
-            "`io.*`",
-            owned(&["io.read", "io.listen", "io.thread", "io.write"]),
-        ),
-        (
-            "`config.*` and `project.*`",
-            owned(&[
-                "config.missing",
-                "config.not_a_project",
-                "config.invalid",
-                "config.data_dir",
-                "config.client_without_surface",
-                "project.source_root",
-            ]),
-        ),
-        (
-            "`data.*`",
-            owned(&[
-                "data.decode",
-                "data.key_type",
-                "data.dangling_ref",
-                "data.incomplete",
-                "data.orphan",
-                "data.unknown_path",
-            ]),
-        ),
-        (
-            "`evolve.*`",
-            owned(&[
-                "evolve.no_accepted_catalog",
-                "evolve.repair_required",
-                "evolve.drift",
-                "evolve.catalog_drift",
-                "evolve.maintenance_required",
-                "evolve.approval_required",
-                "evolve.approval_mismatch",
-                "evolve.approval_target_unknown",
-                "evolve.requires_backup",
-                "evolve.backup_path_managed",
-                "evolve.transform_faulted",
-            ]),
-        ),
-        ("`test.*`", owned(&["test.none"])),
-        (
-            "`backup.*`",
-            owned(&[
-                "backup.catalog_serialization",
-                "backup.cell_too_large",
-                "backup.manifest_serialization",
-                "backup.store_uid_missing",
-            ]),
-        ),
-        (
-            "`restore.*`",
-            owned(&[
-                "restore.format_version",
-                "restore.corrupt_chunk",
-                "restore.not_empty",
-                "restore.engine_recompile_required",
-                "restore.source_mismatch",
-                "restore.catalog_mismatch",
-                "restore.data_invalid",
-            ]),
-        ),
-        (
-            "`surface.*`",
-            owned(&[
-                "surface.request",
-                "surface.auth",
-                "surface.absent",
-                "surface.cursor",
-                "surface.stale_cursor",
-                "surface.abi_mismatch",
-                "surface.invalid_data",
-                "surface.limit",
-                "surface.conflict",
-                "surface.write",
-                "surface.action",
-                "surface.computed",
-                "surface.integrity",
-                "surface.store",
-            ]),
-        ),
-    ]
+    KNOWN_FAMILIES.contains(&family)
+        && !segment.is_empty()
+        && segment
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
 }
 
-/// Code-truth guard: every documented error-code family lists exactly the codes that family emits.
-/// A phantom documented code the crate never produces, or an emitted code left undocumented, fails
-/// here. `catalog` and `schema` are pinned to their exported constants; the deleted
-/// `catalog.merge_conflict` stays absent because it is not among those constants.
+/// The dotted error codes documented in the reference tables. Only `| \`code\` |` table rows count,
+/// so prose mentions and the summary `kind` table (whose cells are bare family names) are excluded.
+fn documented_error_codes() -> std::collections::BTreeSet<String> {
+    let text =
+        std::fs::read_to_string(docs_dir().join("error-codes.md")).expect("read error-codes");
+    let mut codes = std::collections::BTreeSet::new();
+    for line in text.lines() {
+        if let Some(rest) = line.strip_prefix("| `")
+            && let Some(code) = rest.split('`').next()
+            && is_error_code(code)
+        {
+            codes.insert(code.to_string());
+        }
+    }
+    codes
+}
+
+/// The dotted error codes quoted as string literals in `text`. A code is always a standalone
+/// `"family.segment"` literal, so the scan matches each such literal locally — a `"`, a run of code
+/// characters, then a closing `"` — rather than tracking string state across the file, which an
+/// unbalanced quote in a comment or a `'"'` char literal would desync.
+fn quoted_error_codes(text: &str) -> std::collections::BTreeSet<String> {
+    let bytes = text.as_bytes();
+    let mut codes = std::collections::BTreeSet::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'"' {
+            let start = i + 1;
+            let mut end = start;
+            while end < bytes.len()
+                && (bytes[end].is_ascii_lowercase()
+                    || bytes[end].is_ascii_digit()
+                    || bytes[end] == b'_'
+                    || bytes[end] == b'.')
+            {
+                end += 1;
+            }
+            if end > start
+                && end < bytes.len()
+                && bytes[end] == b'"'
+                && is_error_code(&text[start..end])
+            {
+                codes.insert(text[start..end].to_string());
+            }
+        }
+        i += 1;
+    }
+    codes
+}
+
+/// Drop `#[cfg(test)]` module bodies so the scan reads only production emission. Test modules mint
+/// fake codes to exercise rendering; those are not part of the emitted contract. A conventional
+/// top-level test module opens with `#[cfg(test)]`, then `mod NAME {` at column zero, and closes
+/// with a column-zero `}`; the scan removes exactly that span.
+fn strip_test_modules(source: &str) -> String {
+    let lines: Vec<&str> = source.lines().collect();
+    let mut kept: Vec<&str> = Vec::new();
+    let mut i = 0;
+    while i < lines.len() {
+        if lines[i] == "#[cfg(test)]" {
+            let mut j = i + 1;
+            while j < lines.len() && lines[j].starts_with("#[") {
+                j += 1;
+            }
+            let opens_module = lines.get(j).is_some_and(|line| {
+                (line.starts_with("mod ") || line.starts_with("pub mod "))
+                    && line.trim_end().ends_with('{')
+            });
+            if opens_module {
+                let mut k = j + 1;
+                while k < lines.len() && lines[k] != "}" {
+                    k += 1;
+                }
+                i = k + 1;
+                continue;
+            }
+        }
+        kept.push(lines[i]);
+        i += 1;
+    }
+    kept.join("\n")
+}
+
+/// The `name` in each `#[cfg(test)] mod name;` external-module declaration in `text`. Such a module
+/// lives in its own file beside the source, so the gate excludes that file from the production scan.
+fn external_test_module_names(text: &str) -> Vec<String> {
+    let lines: Vec<&str> = text.lines().collect();
+    let mut names = Vec::new();
+    let mut i = 0;
+    while i < lines.len() {
+        if lines[i] == "#[cfg(test)]" {
+            let mut j = i + 1;
+            while j < lines.len() && lines[j].starts_with("#[") {
+                j += 1;
+            }
+            if let Some(rest) = lines.get(j).and_then(|line| {
+                line.strip_prefix("mod ")
+                    .or_else(|| line.strip_prefix("pub mod "))
+            }) && let Some(name) = rest.strip_suffix(';')
+            {
+                names.push(name.trim().to_string());
+            }
+        }
+        i += 1;
+    }
+    names
+}
+
+fn collect_rust_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+    for entry in std::fs::read_dir(dir).expect("read source dir") {
+        let path = entry.expect("source dir entry").path();
+        if path.is_dir() {
+            collect_rust_files(&path, out);
+        } else if path.extension().and_then(|ext| ext.to_str()) == Some("rs") {
+            out.push(path);
+        }
+    }
+}
+
+/// Every `.rs` file under a crate's `src/`, minus the files reached only through a
+/// `#[cfg(test)] mod name;` declaration. A submodule declared in `foo.rs` lives under `foo/`, except
+/// a crate/dir root (`lib.rs`, `main.rs`, `mod.rs`) whose submodules are its siblings.
+fn production_source_files() -> Vec<std::path::PathBuf> {
+    let mut files = Vec::new();
+    let crates = repo_root().join("crates");
+    for entry in std::fs::read_dir(&crates).expect("read crates dir") {
+        let src = entry.expect("crates entry").path().join("src");
+        if src.is_dir() {
+            collect_rust_files(&src, &mut files);
+        }
+    }
+
+    let mut excluded: Vec<std::path::PathBuf> = Vec::new();
+    for path in &files {
+        let text = std::fs::read_to_string(path).expect("read source");
+        let dir = path.parent().expect("source has parent directory");
+        let stem = path
+            .file_stem()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default();
+        let base = if matches!(stem, "lib" | "main" | "mod") {
+            dir.to_path_buf()
+        } else {
+            dir.join(stem)
+        };
+        for name in external_test_module_names(&text) {
+            excluded.push(base.join(format!("{name}.rs")));
+            excluded.push(base.join(&name));
+        }
+    }
+
+    files.retain(|path| !excluded.iter().any(|prefix| path.starts_with(prefix)));
+    files.sort();
+    files
+}
+
+/// The dotted error codes production source actually emits, with `#[cfg(test)]` code excluded.
+fn emitted_error_codes() -> std::collections::BTreeSet<String> {
+    let mut codes = std::collections::BTreeSet::new();
+    for path in production_source_files() {
+        let source = std::fs::read_to_string(&path).expect("read source");
+        codes.extend(quoted_error_codes(&strip_test_modules(&source)));
+    }
+    codes
+}
+
+/// Code-truth guard: the documented error codes equal the codes production source emits, with the
+/// reserved-but-unimplemented codes held apart and the non-code look-alikes excluded. The expected
+/// set is derived from the emitting source, not a hand-maintained copy, so any drift fails here — a
+/// new emit left undocumented, a documented code no longer emitted, a phantom doc row, or a reserved
+/// code that went live.
 #[test]
-fn error_codes_doc_documents_every_family() {
-    for (heading, expected_codes) in error_code_families() {
-        let documented = documented_codes_in_family(heading);
-        let expected: std::collections::BTreeSet<String> = expected_codes.into_iter().collect();
-        assert_eq!(
-            documented, expected,
-            "error-codes.md `{heading}` family drifted: the documented codes must equal the codes the pipeline emits"
+fn error_codes_doc_matches_emitted_codes() {
+    let reserved: std::collections::BTreeSet<String> =
+        RESERVED_CODES.iter().map(|code| code.to_string()).collect();
+    let non_code: std::collections::BTreeSet<String> = NON_CODE_TOKENS
+        .iter()
+        .map(|code| code.to_string())
+        .collect();
+
+    // Every family the reference gives a section or summary row must be known to the scan; the code
+    // comparison keys on `KNOWN_FAMILIES`, so a new family documented and emitted but missing from
+    // the list would slip past unseen.
+    let reference =
+        std::fs::read_to_string(docs_dir().join("error-codes.md")).expect("read error-codes");
+    for (family, _) in documented_kind_assignments(&reference) {
+        assert!(
+            KNOWN_FAMILIES.contains(&family.as_str()),
+            "family `{family}` is documented but missing from KNOWN_FAMILIES, so its codes would escape the gate"
         );
     }
+
+    let documented = documented_error_codes();
+    let scanned = emitted_error_codes();
+
+    // The non-code allowlist stays honest: every entry still occurs in source and none is a real
+    // documented code.
+    for token in &non_code {
+        assert!(
+            scanned.contains(token),
+            "stale non-code allowlist entry `{token}`: no source string matches it anymore"
+        );
+        assert!(
+            !documented.contains(token),
+            "`{token}` is documented as an error code and must not be on the non-code allowlist"
+        );
+    }
+
+    let emitted: std::collections::BTreeSet<String> =
+        scanned.difference(&non_code).cloned().collect();
+
+    let live_reserved: Vec<&String> = reserved.intersection(&emitted).collect();
+    assert!(
+        live_reserved.is_empty(),
+        "reserved codes are now emitted and must move to their active family docs: {live_reserved:?}"
+    );
+
+    let reserved_undocumented: Vec<&String> = reserved.difference(&documented).collect();
+    assert!(
+        reserved_undocumented.is_empty(),
+        "reserved codes must stay documented: {reserved_undocumented:?}"
+    );
+
+    let expected: std::collections::BTreeSet<String> = emitted.union(&reserved).cloned().collect();
+    let undocumented: Vec<&String> = emitted.difference(&documented).collect();
+    let unexpected: Vec<&String> = documented.difference(&expected).collect();
+    assert!(
+        undocumented.is_empty() && unexpected.is_empty(),
+        "error-codes.md drifted from the codes production emits.\n  emitted but undocumented: {undocumented:?}\n  documented but neither emitted nor reserved: {unexpected:?}"
+    );
 }
 
 /// Code-truth guard for the `kind` column: every family's documented `kind`, in both the summary
