@@ -8,8 +8,8 @@ use marrow_check::tooling::{
     StampedData, count_data_records, count_orphan_cells, data_roots_in_store, data_snapshot_stamp,
     render_data_value, stamped_data_roots_in_store, verify_store_completeness, visit_data_records,
 };
-use marrow_store::StoreError;
 use marrow_store::tree::TreeStore;
+use marrow_store::{SealedStore, StoreError};
 use serde_json::json;
 
 use crate::term_style::{self, Stream};
@@ -211,7 +211,7 @@ fn load_data_read_target(
     }
 
     let (config, program) = load_checked_project_with_format(&dir, format)?;
-    let store = open_store_for_inspection(&dir, &config, format)?;
+    let store = open_store_for_inspection(&dir, &config, format)?.map(SealedStore::into_store);
     Ok(DataReadTarget {
         dir,
         format,
@@ -543,15 +543,13 @@ fn data_recover(args: &[String]) -> ExitCode {
 fn recover_store(
     path: &std::path::Path,
     program: Option<&CheckedProgram>,
-) -> Result<TreeStore, StoreError> {
+) -> Result<SealedStore, StoreError> {
     {
-        let store = marrow_run::admission::open_write(path)?.into_store();
+        let store: SealedStore = marrow_run::admission::open_write(path)?;
         store.verify_readable()?;
         verify_store_recovered(&store, program)?;
     }
-    let reopened = marrow_run::admission::open_read(path)
-        .map(|admitted| admitted.into_store())
-        .map_err(recovery_not_converged)?;
+    let reopened = marrow_run::admission::open_read(path).map_err(recovery_not_converged)?;
     reopened.verify_readable().map_err(recovery_not_converged)?;
     verify_store_recovered(&reopened, program).map_err(recovery_not_converged)?;
     Ok(reopened)

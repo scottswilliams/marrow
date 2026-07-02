@@ -273,12 +273,14 @@ fn probe_check(
     }
 }
 
+/// Doctor diagnoses stores that would fail admission, so it holds the stage-1
+/// [`SealedStore`](marrow_store::SealedStore) and never an admitted handle.
 fn probe_store_open(
     root: &Path,
     dir: &str,
     config: &marrow_project::ProjectConfig,
     findings: &mut Vec<Finding>,
-) -> Option<TreeStore> {
+) -> Option<marrow_store::SealedStore> {
     // A `dataDir` occupied by a non-directory is a configuration fault, the same one
     // `run` raises; classifying it here keeps doctor from leaking the store open's raw
     // `ENOTDIR` as a `store.io` finding.
@@ -313,7 +315,6 @@ fn probe_store_open(
     // never reports a store healthy that the read-only inspections and the write path
     // classify as corrupt below the table roots.
     match marrow_run::admission::open_read(&path)
-        .map(|admitted| admitted.into_store())
         .and_then(|store| store.verify_readable().map(|()| store))
     {
         Ok(store) => Some(store),

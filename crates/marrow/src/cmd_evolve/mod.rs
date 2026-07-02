@@ -407,19 +407,11 @@ fn guard_committed_lock_roots(
     config: &marrow_project::ProjectConfig,
     format: CheckFormat,
 ) -> Result<(), ExitCode> {
-    use marrow_run::admission::{AdmissionVerdict, BodyClassifyError, classify_committed_body};
+    use marrow_run::admission::{BodyClassifyError, BodyVerdict, classify_committed_body};
     match classify_committed_body(Path::new(dir), config) {
-        Ok(AdmissionVerdict::Admit | AdmissionVerdict::SeedFromLock) => Ok(()),
-        Ok(AdmissionVerdict::Loss(error)) => {
+        Ok(BodyVerdict::Consistent | BodyVerdict::SeedFromLock) => Ok(()),
+        Ok(BodyVerdict::Loss(error)) => {
             report_simple_error(error.code(), &error.to_string(), format);
-            Err(ExitCode::FAILURE)
-        }
-        Ok(AdmissionVerdict::Behind(fence)) => {
-            report_simple_error(fence.code(), &fence.message(), format);
-            Err(ExitCode::FAILURE)
-        }
-        Ok(AdmissionVerdict::Drift(error)) => {
-            report_simple_error(error.code(), &error.message(), format);
             Err(ExitCode::FAILURE)
         }
         Err(BodyClassifyError::Project(error)) => Err(project_io_exit(dir, error, format)),

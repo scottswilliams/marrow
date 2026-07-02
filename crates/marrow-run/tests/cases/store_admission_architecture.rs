@@ -1,16 +1,17 @@
-//! Enforcement artifact for the store-admission owner.
+//! Enforcement artifacts for the store-admission owner.
 //!
-//! `TreeStore`'s on-disk constructors are crate-private, so `SealedStore::open` is the only
-//! source of a durable handle (compile-enforced). This scan adds the second half: `SealedStore`
-//! itself may be consumed only inside the `marrow-run` admission module. Any other production
-//! module reaching for `SealedStore` would be minting a handle around the admission stage, so
-//! the scan fails closed on it.
+//! The type chain enforces the two admission stages: `TreeStore`'s on-disk constructors
+//! are crate-private (stage 1 cannot be skipped), and `AdmittedStore`'s constructor is
+//! private to the admission module, reachable only through `admit_read`/`admit_write`
+//! (stage 2 cannot be forged). These scans add what visibility alone cannot say: the
+//! sealed constructor has exactly one production caller besides its definition, and every
+//! module that holds a stage-1 `SealedStore` without admitting it is named here with the
+//! reason the skip is legitimate.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
 fn workspace_crates_dir() -> PathBuf {
-    // CARGO_MANIFEST_DIR is crates/marrow-run; its parent is the workspace crates/ dir.
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("crates directory")
@@ -31,54 +32,91 @@ fn rust_sources(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-#[test]
-fn sealed_store_is_consumed_only_by_the_admission_module() {
-    let crates_dir = workspace_crates_dir();
-    // The store crate defines `SealedStore`; the admission module is its one production consumer.
-    let allowed = [
-        crates_dir.join("marrow-store/src/sealed.rs"),
-        crates_dir.join("marrow-store/src/lib.rs"),
-        crates_dir.join("marrow-run/src/admission.rs"),
-    ];
-
-    let mut offenders = Vec::new();
-    let mut crate_dirs: Vec<PathBuf> = Vec::new();
-    for entry in fs::read_dir(&crates_dir)
-        .expect("read crates dir")
-        .flatten()
-    {
+fn production_sources(crates_dir: &Path) -> Vec<PathBuf> {
+    let mut sources = Vec::new();
+    for entry in fs::read_dir(crates_dir).expect("read crates dir").flatten() {
         let src = entry.path().join("src");
         if src.is_dir() {
-            crate_dirs.push(src);
+            rust_sources(&src, &mut sources);
         }
     }
-    let mut sources = Vec::new();
-    for src in &crate_dirs {
-        rust_sources(src, &mut sources);
-    }
+    sources
+}
 
-    for source in sources {
+fn scan(crates_dir: &Path, pattern: &str, allowed: &[PathBuf]) -> Vec<String> {
+    let mut offenders = Vec::new();
+    for source in production_sources(crates_dir) {
         if allowed.contains(&source) {
             continue;
         }
         let text = fs::read_to_string(&source).expect("read source");
         for (line_index, line) in text.lines().enumerate() {
-            if line.contains("SealedStore") {
+            if line.contains(pattern) {
                 offenders.push(format!(
                     "{}:{}",
-                    source
-                        .strip_prefix(&crates_dir)
-                        .unwrap_or(&source)
-                        .display(),
+                    source.strip_prefix(crates_dir).unwrap_or(&source).display(),
                     line_index + 1
                 ));
             }
         }
     }
+    offenders
+}
 
+#[test]
+fn sealed_open_is_called_only_by_the_admission_module() {
+    let crates_dir = workspace_crates_dir();
+    let allowed = [
+        // The constructor's definition.
+        crates_dir.join("marrow-store/src/sealed.rs"),
+        // The admission owner: open_read/open_write/open_create are the sole production
+        // callers, so every durable handle in the runtime and CLI originates there.
+        crates_dir.join("marrow-run/src/admission.rs"),
+    ];
+    let offenders = scan(&crates_dir, "SealedStore::open", &allowed);
     assert!(
         offenders.is_empty(),
-        "SealedStore may be used only inside the marrow-run admission module; found:\n{}",
+        "SealedStore::open may be called only by the admission module; found:\n{}",
+        offenders.join("\n")
+    );
+}
+
+#[test]
+fn stage_one_sealed_holders_are_the_blessed_set() {
+    let crates_dir = workspace_crates_dir();
+    // Each entry holds a stage-1 SealedStore without admitting it, for the stated reason.
+    // A new file appearing here means a new path skips the identity/lock ladder: extend
+    // this list only with a rationale, never to silence the scan.
+    let allowed = [
+        // Defines the type.
+        crates_dir.join("marrow-store/src/sealed.rs"),
+        // Re-exports the type at the crate root.
+        crates_dir.join("marrow-store/src/lib.rs"),
+        // The admission owner: mints sealed handles and consumes them in admit.
+        crates_dir.join("marrow-run/src/admission.rs"),
+        // Stage-1 holds: the pre-check accepted-catalog inspection (the catalog read is
+        // what produces the program identity admission needs), the unclean-shutdown
+        // recovery replay, pre-admission seeding, the dry run over a pending durable
+        // identity (no accepted identity exists to admit against), and the isolated
+        // dry-run copy of an already-admitted store.
+        crates_dir.join("marrow-run/src/project_session.rs"),
+        // Pre-program catalog inspection reads for check and the read-only render verbs.
+        crates_dir.join("marrow/src/main.rs"),
+        // Doctor diagnoses stores that would fail admission.
+        crates_dir.join("marrow/src/cmd_doctor.rs"),
+        // `data recover` repairs stores before any program can admit them; the data
+        // inspection context also reads backup mounts that have no live identity.
+        crates_dir.join("marrow/src/cmd_data.rs"),
+        // Restore writes a store body ahead of any checked identity.
+        crates_dir.join("marrow/src/cmd_restore.rs"),
+        // Evolve apply/preview establish identity; apply runs its own witness and fence.
+        crates_dir.join("marrow/src/cmd_evolve/store.rs"),
+    ];
+    let offenders = scan(&crates_dir, "SealedStore", &allowed);
+    assert!(
+        offenders.is_empty(),
+        "a new module holds a stage-1 SealedStore without admission; \
+         add it here only with a rationale:\n{}",
         offenders.join("\n")
     );
 }

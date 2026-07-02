@@ -1,6 +1,7 @@
 use std::process::ExitCode;
 
 use marrow_run::SystemNondeterminism;
+use marrow_store::SealedStore;
 use marrow_store::tree::TreeStore;
 
 use crate::backup::ensure_store_uid;
@@ -12,7 +13,7 @@ pub(super) fn preview_store(
     format: CheckFormat,
 ) -> Result<TreeStore, ExitCode> {
     Ok(match open_store_for_inspection(dir, config, format)? {
-        Some(store) => store,
+        Some(store) => store.into_store(),
         None => TreeStore::memory(),
     })
 }
@@ -22,6 +23,8 @@ pub(super) fn preview_store(
 /// baseline or catalog, so the `(store_uid, commit_id)` pair that names committed accepted
 /// state never has an absent uid — even if the process dies between the baseline commit and a
 /// later stamp. This mirrors the run path, which stamps the uid as it opens the write store.
+/// Apply is the identity-establishing flow, so it holds the stage-1 [`SealedStore`] and runs
+/// its own witness, fence, and activation machinery rather than the run-path admission.
 pub(super) fn apply_store(
     dir: &str,
     config: &marrow_project::ProjectConfig,
@@ -29,9 +32,7 @@ pub(super) fn apply_store(
 ) -> Result<TreeStore, ExitCode> {
     match resolve_store_path(dir, config, format)? {
         Some(path) => {
-            let store = match marrow_run::admission::open_create(&path)
-                .map(|admitted| admitted.into_store())
-            {
+            let store: SealedStore = match marrow_run::admission::open_create(&path) {
                 Ok(store) => store,
                 Err(error) => {
                     report_simple_error(error.code(), &error.to_string(), format);
@@ -43,7 +44,7 @@ pub(super) fn apply_store(
                 report_simple_error(error.code(), &error.to_string(), format);
                 return Err(ExitCode::FAILURE);
             }
-            Ok(store)
+            Ok(store.into_store())
         }
         None => Ok(TreeStore::memory()),
     }

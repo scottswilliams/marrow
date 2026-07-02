@@ -24,10 +24,24 @@ Keys are order-preserving; values are not. `SavedKey` encodes scalars so byte-le
 ## Store admission
 
 Two typed stages, aligned with crate ownership, are the only route from a path on disk to a
-usable durable handle. The type chain — not a checklist — enforces both stages in order:
-`TreeStore`'s path constructors are crate-private, `SealedStore` is consumed only by
-`marrow-run`'s `admission` module (tidy scan `store_admission_architecture.rs`), and commands
-receive handles minted by that module.
+usable durable handle. What is enforced, and by which mechanism:
+
+- **Stage 1 cannot be skipped** — `TreeStore`'s path constructors are `pub(crate)`, so
+  `SealedStore::open` is the only source of a native handle (compile-enforced). A tidy scan
+  (`crates/marrow-run/tests/cases/store_admission_architecture.rs`) additionally pins
+  `SealedStore::open` to one production caller: the admission module's
+  `open_read`/`open_write`/`open_create`.
+- **Stage 2 cannot be forged** — `AdmittedStore`'s constructor is private to the admission
+  module and reachable only through `admit_read`/`admit_write` (and
+  `admit_committed_memory_read` for the absent-body read-only serve), which consume the
+  sealed handle and run the identity/lock ladder first (compile-enforced). The witness
+  appears in accepting positions: the surface sessions hold `AdmittedStore<Read>`/`<Write>`,
+  the run session's native store is `AdmittedStore<Write>`, and the commit finisher accepts
+  it.
+- **Stage-1-only paths are typed and enumerated** — inspection, doctor, recovery, restore,
+  identity-establishing apply, and pre-admission seeding legitimately stop at stage 1; they
+  hold `SealedStore` in their signatures, and the tidy scan's allowlist names each blessed
+  holder with its rationale. A new `SealedStore` holder anywhere else fails the scan.
 
 Stage 1, `crates/marrow-store/src/sealed.rs` — the engine open and its store-integrity ladder
 (regular-file guard, page-graph guard, format/shape checks, committed-recoverable replay on
@@ -35,13 +49,12 @@ read-only opens):
 
 ```rust
 pub enum AccessMode { Create, Write, Read }
-pub struct SealedStore { /* private */ }
+pub struct SealedStore { /* crate-private constructor path */ }
 impl SealedStore {
     pub fn open(path: &Path, access: AccessMode) -> Result<SealedStore, StoreError>;
-    pub fn access(&self) -> AccessMode;
-    pub fn store(&self) -> &TreeStore;
     pub fn into_store(self) -> TreeStore;
 }
+impl Deref for SealedStore { type Target = TreeStore; }
 ```
 
 Stage 2, `crates/marrow-run/src/admission.rs` — the program-aware identity/lock ladder
@@ -51,38 +64,53 @@ themselves):
 ```rust
 pub enum Read {}
 pub enum Write {}
-pub struct AdmittedStore<A> { /* module-private constructor */ }
-impl<A> AdmittedStore<A> {
-    pub fn store(&self) -> &TreeStore;
-    pub fn into_store(self) -> TreeStore;
-}
-pub fn open_read(path: &Path) -> Result<AdmittedStore<Read>, StoreError>;
-pub fn open_write(path: &Path) -> Result<AdmittedStore<Write>, StoreError>;
-pub fn open_create(path: &Path) -> Result<AdmittedStore<Write>, StoreError>;
+pub struct AdmittedStore<A> { /* constructed only by the admit functions */ }
+impl<A> Deref for AdmittedStore<A> { type Target = TreeStore; }
 
-pub enum AdmissionPolicy { Run, SurfaceRead, SurfaceWrite }
-pub enum AdmissionVerdict {
-    Admit,
-    SeedFromLock,
-    Behind(FenceError),
-    Drift(Box<ProjectSessionError>),
-    Loss(StoreError),
-}
+pub fn open_read(path: &Path) -> Result<SealedStore, StoreError>;
+pub fn open_write(path: &Path) -> Result<SealedStore, StoreError>;
+pub fn open_create(path: &Path) -> Result<SealedStore, StoreError>;
+
+pub enum BodyVerdict { Consistent, SeedFromLock, Loss(StoreError) }
 pub enum BodyClassifyError { Project(ProjectIoError), Store(StoreError) }
 
 /// Pre-open rung: dataDir guard, committed-lock read, body presence, lock-root witness.
 pub fn classify_committed_body(
     root: &Path,
     config: &ProjectConfig,
-) -> Result<AdmissionVerdict, BodyClassifyError>;
+) -> Result<BodyVerdict, BodyClassifyError>;
 
-/// Post-open rung: store-behind fence, activation fence, catalog-digest bind, ordered by policy.
-pub fn admit(
-    store: &TreeStore,
+pub enum AdmissionPolicy { Run, Surface }
+pub enum AdmissionDrift { Fence(FenceError), MissingAcceptedDigest, CatalogDigestMismatch }
+pub enum ReadAdmission {
+    Admitted(AdmittedStore<Read>),
+    Behind(FenceError),
+    Drift { store: TreeStore, reason: AdmissionDrift },
+}
+pub enum WriteAdmission {
+    Admitted(AdmittedStore<Write>),
+    Behind(FenceError),
+    Drift { store: TreeStore, reason: AdmissionDrift },
+}
+
+/// Post-open rung: store-behind fence, activation fence, catalog-digest bind.
+pub fn admit_read(
+    sealed: SealedStore,
     program: &CheckedProgram,
     lock: Option<&CatalogLock>,
     policy: AdmissionPolicy,
-) -> Result<AdmissionVerdict, ProjectSessionError>;
+) -> Result<ReadAdmission, StoreError>;
+pub fn admit_write(
+    sealed: SealedStore,
+    program: &CheckedProgram,
+    lock: Option<&CatalogLock>,
+    policy: AdmissionPolicy,
+) -> Result<WriteAdmission, StoreError>;
+pub fn admit_committed_memory_read(
+    store: TreeStore,
+    program: &CheckedProgram,
+    lock: Option<&CatalogLock>,
+) -> Result<ReadAdmission, StoreError>;
 
 pub fn store_path_is_absent(path: &Path) -> bool;
 pub fn verify_present_store_lock_roots(
@@ -93,9 +121,14 @@ pub fn verify_present_store_lock_roots(
 
 The ladder has two rungs by physical necessity: an absent body cannot be opened, and a lost
 one must fail before a write-capable open could re-baseline it, so `classify_committed_body`
-yields `Loss`/`SeedFromLock`/`Admit` pre-open while `admit` yields `Behind`/`Drift`/`Admit`
-on the handle. A write-capable policy judges the behind fence before the identity bind; the
-read policy binds identity first and reports `Behind` only when the bind failed.
+yields its own narrow verdict pre-open while the admit functions classify the opened handle.
+A refusal returns the unadmitted `TreeStore` inside `Drift` so the discharge paths (run's
+auto-apply, the dry-run drift classifier) can read or advance the store they just judged.
+Every write admission judges the behind fence before the identity bind; a surface read binds
+identity first and reports `Behind` only when the bind failed. The `Run` policy binds the
+activation fence alone (the run path re-derives its program against the store's accepted
+catalog upstream, so the digest agrees by construction); the `Surface` policy adds the
+catalog-digest bind.
 
 ## Modules
 

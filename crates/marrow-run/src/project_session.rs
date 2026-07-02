@@ -9,11 +9,11 @@ use marrow_check::{
     AnalysisGeneration, AnalysisIdentity, AnalysisSnapshot, CheckReport, CheckedProgram,
     CheckedRuntimeProgram, CheckedSavedPlace, ProjectConfig, StoreBackend,
 };
-use marrow_store::StoreError;
 use marrow_store::cell::CatalogId;
 use marrow_store::key::SavedKey;
 use marrow_store::tree::{StoreUid, TreeStore};
 use marrow_store::value::{ScalarType, scalar_key_matches_type, validate_scalar_key};
+use marrow_store::{SealedStore, StoreError};
 use marrow_syntax::SourceSpan;
 
 use crate::admission::{self, AdmittedStore};
@@ -131,7 +131,7 @@ pub struct ProjectSurfaceReadSession {
     program: CheckedProgram,
     surface_serve_boundary: SurfaceServeBoundary,
     store_path: PathBuf,
-    store: TreeStore,
+    store: AdmittedStore<admission::Read>,
 }
 
 /// Checked project surface state captured from one source-analysis pass.
@@ -158,7 +158,7 @@ pub struct ProjectSurfaceSession {
     program: CheckedProgram,
     source_analysis_generation: AnalysisGeneration,
     store_path: PathBuf,
-    store: TreeStore,
+    store: AdmittedStore<admission::Write>,
     notices: Vec<ProjectSessionNotice>,
 }
 
@@ -241,7 +241,10 @@ enum SessionKind {
 
 enum RunStore {
     Memory(TreeStore),
-    Native { path: PathBuf, store: TreeStore },
+    Native {
+        path: PathBuf,
+        store: AdmittedStore<admission::Write>,
+    },
     Isolated(IsolatedStore),
 }
 
@@ -808,7 +811,7 @@ impl ProjectSession {
                 store: RunStore::Native { store, .. },
                 ..
             } => (
-                store,
+                &**store,
                 data_view_watch_targets_for_config(&self.root, &self.config)?,
             ),
             SessionKind::Test { .. } => return Err(ProjectSessionError::DurableStoreRequired),
@@ -978,12 +981,8 @@ impl ProjectSurfaceSnapshot {
     }
 
     pub fn open_read_only(&self) -> Result<ProjectSurfaceReadSession, ProjectSessionError> {
-        let opened = open_surface_session(
-            self.root.clone(),
-            &self.config,
-            self.program.clone(),
-            SurfaceStoreAccess::ReadOnly,
-        )?;
+        let opened =
+            open_surface_session_read(self.root.clone(), &self.config, self.program.clone())?;
         let data_view_boundary = data_view_boundary_for_opened_session(
             &opened.root,
             &self.config,
@@ -1004,12 +1003,8 @@ impl ProjectSurfaceSnapshot {
     }
 
     pub fn open_write(&self) -> Result<ProjectSurfaceSession, ProjectSessionError> {
-        let opened = open_surface_session(
-            self.root.clone(),
-            &self.config,
-            self.program.clone(),
-            SurfaceStoreAccess::Write,
-        )?;
+        let opened =
+            open_surface_session_write(self.root.clone(), &self.config, self.program.clone())?;
         Ok(ProjectSurfaceSession {
             root: opened.root,
             config: self.config.clone(),
@@ -1274,109 +1269,145 @@ fn open_test_session(
     })
 }
 
-struct OpenSurfaceSession {
+struct OpenSurfaceSession<A> {
     root: PathBuf,
     program: CheckedProgram,
     store_path: PathBuf,
-    store: TreeStore,
+    store: AdmittedStore<A>,
     notices: Vec<ProjectSessionNotice>,
 }
 
-#[derive(Clone, Copy)]
-enum SurfaceStoreAccess {
-    ReadOnly,
-    Write,
+/// Fail closed on the pre-open rung's loss verdict. The committed `marrow.lock` is the
+/// independent witness to durable identity for every open family: a PRESENT store
+/// presenting fewer committed roots than its lock recorded has lost durable identity and
+/// fails closed with `store.corruption` rather than admitting the loss. An ABSENT body is
+/// the disposable-store case, not a loss; the caller's seeding path handles it.
+fn guard_committed_body(root: &Path, config: &ProjectConfig) -> Result<(), ProjectSessionError> {
+    match admission::classify_committed_body(root, config)? {
+        admission::BodyVerdict::Consistent | admission::BodyVerdict::SeedFromLock => Ok(()),
+        admission::BodyVerdict::Loss(error) => Err(ProjectSessionError::Store(error)),
+    }
 }
 
-fn open_surface_session(
+/// Map an identity-bind refusal into the session error space; admission stays below the
+/// session layer and reports typed reasons only.
+fn admission_drift_error(reason: admission::AdmissionDrift) -> ProjectSessionError {
+    match reason {
+        admission::AdmissionDrift::Fence(error) => ProjectSessionError::Fence(error),
+        admission::AdmissionDrift::MissingAcceptedDigest => ProjectSessionError::Catalog {
+            code: marrow_catalog::CATALOG_INVALID,
+            message: "accepted catalog digest is missing from the checked program".to_string(),
+        },
+        admission::AdmissionDrift::CatalogDigestMismatch => ProjectSessionError::SchemaDrift {
+            message: "store catalog digest does not match the checked project catalog".to_string(),
+        },
+    }
+}
+
+/// The shared surface-store checks between open and admission: a populated store must be
+/// stamped, a durable identity must be present, and serving saved data owes the same
+/// schema-driven completeness cross-check the runtime open, inspection family, backup, and
+/// recover run — the structural witness the open ran proves the store traversable but not
+/// that its index holds exactly the entries its records derive, so a truncated index fails
+/// closed here rather than streaming an under-returning range.
+fn verify_surface_store(
+    program: &CheckedProgram,
+    store: &TreeStore,
+) -> Result<(), ProjectSessionError> {
+    if populated_unstamped_store(program, store)? {
+        return Err(ProjectSessionError::UnstampedStore);
+    }
+    if store.read_store_uid()?.is_none() || store.read_commit_metadata()?.is_none() {
+        return Err(ProjectSessionError::DurableStoreRequired);
+    }
+    tooling::verify_store_completeness(store, program)?;
+    Ok(())
+}
+
+fn open_surface_session_read(
     root: PathBuf,
     config: &ProjectConfig,
     mut program: CheckedProgram,
-    access: SurfaceStoreAccess,
-) -> Result<OpenSurfaceSession, ProjectSessionError> {
-    // The committed `marrow.lock` is the independent witness to durable identity for both access
-    // modes: a PRESENT store presenting fewer committed roots than its lock recorded has lost
-    // durable identity and fails closed with `store.corruption`, identically to run, evolve apply,
-    // and the read-only inspection family, rather than admitting the loss. An ABSENT body is the
-    // disposable-store case, not a loss, and passes here.
-    let mut notices = Vec::new();
-    match admission::classify_committed_body(&root, config)? {
-        admission::AdmissionVerdict::Admit | admission::AdmissionVerdict::SeedFromLock => {}
-        admission::AdmissionVerdict::Loss(error) => {
-            return Err(ProjectSessionError::Store(error));
-        }
-        admission::AdmissionVerdict::Behind(fence) => {
-            return Err(ProjectSessionError::Fence(fence));
-        }
-        admission::AdmissionVerdict::Drift(error) => return Err(*error),
-    }
-
-    // An absent body under a roots-recording lock is the fresh-checkout (or lost-body) case: the
-    // committed lock fully determines the surface ABI. A write-capable open seeds an on-disk store
-    // from the committed identity so subsequent writes commit there; a read-only open materializes
-    // that empty committed identity in memory and never writes the body, serving the empty
-    // committed identity exactly as the read-only inspections report it. Either way the program is
-    // re-derived from the resulting store so the open carries an accepted catalog rather than the
-    // pre-seed proposal.
-    let store = match access {
-        SurfaceStoreAccess::Write => {
-            if let Some(seeded) = seed_absent_store_from_committed_lock(&root, config, &program)? {
-                program = seeded;
-                notices.push(ProjectSessionNotice::SeededFromCommittedLock);
-            }
-            open_existing_surface_store(&root, config, access)?
-        }
-        SurfaceStoreAccess::ReadOnly => {
-            match read_only_empty_committed_identity(&root, config, &program)? {
-                Some((seeded, store)) => {
-                    program = seeded;
-                    store
-                }
-                None => open_existing_surface_store(&root, config, access)?,
-            }
-        }
-    };
-    if populated_unstamped_store(&program, &store.store)? {
-        return Err(ProjectSessionError::UnstampedStore);
-    }
-    if store.store.read_store_uid()?.is_none() || store.store.read_commit_metadata()?.is_none() {
-        return Err(ProjectSessionError::DurableStoreRequired);
-    }
-    // Serving saved data owes the same schema-driven completeness cross-check the runtime open,
-    // inspection family, backup, and recover run: the structural witness the open ran proves the
-    // store traversable but not that its index holds exactly the entries its records derive, so a
-    // truncated index fails closed here rather than streaming an under-returning range.
-    tooling::verify_store_completeness(&store.store, &program)?;
-    // A write-capable open must not seize a store behind a committed activation, even a
-    // byte-clean one, so the write policy judges the behind fence first. A read cannot
-    // corrupt the store, so the read policy admits a behind store still readable at its own
-    // epoch and reports the behind fence only when the identity bind already failed — the
-    // accurate diagnosis for a checkout whose source has also moved past that epoch's shape.
-    let policy = match access {
-        SurfaceStoreAccess::Write => admission::AdmissionPolicy::SurfaceWrite,
-        SurfaceStoreAccess::ReadOnly => admission::AdmissionPolicy::SurfaceRead,
-    };
+) -> Result<OpenSurfaceSession<admission::Read>, ProjectSessionError> {
+    guard_committed_body(&root, config)?;
     let lock = marrow_check::read_committed_lock(&root)?;
-    match admission::admit(&store.store, &program, lock.as_ref(), policy)? {
-        admission::AdmissionVerdict::Admit => {}
-        admission::AdmissionVerdict::Behind(behind) => {
-            return Err(ProjectSessionError::Fence(behind));
+    // An absent body under a roots-recording lock is the fresh-checkout (or lost-body)
+    // case: the committed lock fully determines the surface ABI, so a read-only open
+    // materializes the empty committed identity in memory and never writes the body,
+    // serving it exactly as the read-only inspections report it. The program is re-derived
+    // from the resulting store so the open carries an accepted catalog rather than the
+    // pre-seed proposal.
+    let (store_path, admitted) = match read_only_empty_committed_identity(&root, config, &program)?
+    {
+        Some((seeded, path, store)) => {
+            program = seeded;
+            verify_surface_store(&program, &store)?;
+            (
+                path,
+                admission::admit_committed_memory_read(store, &program, lock.as_ref())?,
+            )
         }
-        admission::AdmissionVerdict::Drift(error) => return Err(*error),
-        admission::AdmissionVerdict::SeedFromLock => {
-            return Err(ProjectSessionError::DurableStoreRequired);
+        None => {
+            let (path, sealed) = open_existing_surface_store_read(&root, config)?;
+            verify_surface_store(&program, &sealed)?;
+            (
+                path,
+                admission::admit_read(
+                    sealed,
+                    &program,
+                    lock.as_ref(),
+                    admission::AdmissionPolicy::Surface,
+                )?,
+            )
         }
-        admission::AdmissionVerdict::Loss(error) => {
-            return Err(ProjectSessionError::Store(error));
-        }
+    };
+    match admitted {
+        admission::ReadAdmission::Admitted(store) => Ok(OpenSurfaceSession {
+            root,
+            program,
+            store_path,
+            store,
+            notices: Vec::new(),
+        }),
+        admission::ReadAdmission::Behind(behind) => Err(ProjectSessionError::Fence(behind)),
+        admission::ReadAdmission::Drift { reason, .. } => Err(admission_drift_error(reason)),
     }
-    Ok(OpenSurfaceSession {
-        root,
-        program,
-        store_path: store.path,
-        store: store.store,
-        notices,
-    })
+}
+
+fn open_surface_session_write(
+    root: PathBuf,
+    config: &ProjectConfig,
+    mut program: CheckedProgram,
+) -> Result<OpenSurfaceSession<admission::Write>, ProjectSessionError> {
+    guard_committed_body(&root, config)?;
+    let mut notices = Vec::new();
+    // An absent body under a roots-recording lock is the fresh-checkout (or lost-body)
+    // case: a write-capable open seeds an on-disk store from the committed identity so
+    // subsequent writes commit there, and the program is re-derived from the seeded store
+    // so the open carries an accepted catalog rather than the pre-seed proposal.
+    if let Some(seeded) = seed_absent_store_from_committed_lock(&root, config, &program)? {
+        program = seeded;
+        notices.push(ProjectSessionNotice::SeededFromCommittedLock);
+    }
+    let lock = marrow_check::read_committed_lock(&root)?;
+    let (store_path, sealed) = open_existing_surface_store_write(&root, config)?;
+    verify_surface_store(&program, &sealed)?;
+    match admission::admit_write(
+        sealed,
+        &program,
+        lock.as_ref(),
+        admission::AdmissionPolicy::Surface,
+    )? {
+        admission::WriteAdmission::Admitted(store) => Ok(OpenSurfaceSession {
+            root,
+            program,
+            store_path,
+            store,
+            notices,
+        }),
+        admission::WriteAdmission::Behind(behind) => Err(ProjectSessionError::Fence(behind)),
+        admission::WriteAdmission::Drift { reason, .. } => Err(admission_drift_error(reason)),
+    }
 }
 
 pub fn data_view_watch_targets(
@@ -1435,30 +1466,41 @@ fn data_view_watch_targets_for_config(
     ])
 }
 
-fn open_existing_surface_store(
+fn open_existing_surface_store_read(
     root: &Path,
     config: &ProjectConfig,
-    access: SurfaceStoreAccess,
-) -> Result<NativeRunStore, ProjectSessionError> {
+) -> Result<(PathBuf, SealedStore), ProjectSessionError> {
     let Some(path) = marrow_check::native_store_path(root, config)? else {
         return Err(ProjectSessionError::DurableStoreRequired);
     };
-    let store = match access {
-        SurfaceStoreAccess::ReadOnly => admission::open_read(&path)
-            .map(AdmittedStore::into_store)
-            .map_err(|error| surface_store_open_error(&path, error))?,
-        SurfaceStoreAccess::Write => admission::open_write(&path)
-            .map(AdmittedStore::into_store)
-            .map_err(|error| surface_store_open_error(&path, error))?,
+    let sealed =
+        admission::open_read(&path).map_err(|error| surface_store_open_error(&path, error))?;
+    verify_surface_store_readable(&sealed)?;
+    Ok((path, sealed))
+}
+
+fn open_existing_surface_store_write(
+    root: &Path,
+    config: &ProjectConfig,
+) -> Result<(PathBuf, SealedStore), ProjectSessionError> {
+    let Some(path) = marrow_check::native_store_path(root, config)? else {
+        return Err(ProjectSessionError::DurableStoreRequired);
     };
-    // Serving saved data is a store read, so it owes the same readability cross-check the runtime
-    // and inspection families run: the data cells are their own derivation, so a backend page that
-    // silently drops a cell or rewrites a stored value shifts every enumeration with no structural
-    // fault until a read walks the damaged page. Verifying the per-root structural digest here fails
-    // a btree-corrupt store closed at open rather than letting the server admit it and stream a
-    // truncated prefix until a page reaches the corrupt cell.
-    store.verify_readable()?;
-    Ok(NativeRunStore { path, store })
+    let sealed =
+        admission::open_write(&path).map_err(|error| surface_store_open_error(&path, error))?;
+    verify_surface_store_readable(&sealed)?;
+    Ok((path, sealed))
+}
+
+/// Serving saved data is a store read, so it owes the same readability cross-check the runtime
+/// and inspection families run: the data cells are their own derivation, so a backend page that
+/// silently drops a cell or rewrites a stored value shifts every enumeration with no structural
+/// fault until a read walks the damaged page. Verifying the per-root structural digest here fails
+/// a btree-corrupt store closed at open rather than letting the server admit it and stream a
+/// truncated prefix until a page reaches the corrupt cell.
+fn verify_surface_store_readable(sealed: &SealedStore) -> Result<(), ProjectSessionError> {
+    sealed.verify_readable()?;
+    Ok(())
 }
 
 fn surface_store_open_error(path: &Path, error: StoreError) -> ProjectSessionError {
@@ -1496,7 +1538,7 @@ struct OpenRunStore {
 
 struct NativeRunStore {
     path: PathBuf,
-    store: TreeStore,
+    store: SealedStore,
 }
 
 fn open_run_store(
@@ -1514,17 +1556,13 @@ fn open_run_store(
     }
     if !isolate_writes {
         match admission::classify_committed_body(root, config)? {
-            admission::AdmissionVerdict::Admit => {}
-            admission::AdmissionVerdict::SeedFromLock => {
+            admission::BodyVerdict::Consistent => {}
+            admission::BodyVerdict::SeedFromLock => {
                 notices.push(ProjectSessionNotice::SeededFromCommittedLock);
             }
-            admission::AdmissionVerdict::Loss(error) => {
+            admission::BodyVerdict::Loss(error) => {
                 return Err(ProjectSessionError::Store(error));
             }
-            admission::AdmissionVerdict::Behind(fence) => {
-                return Err(ProjectSessionError::Fence(fence));
-            }
-            admission::AdmissionVerdict::Drift(error) => return Err(*error),
         }
     }
     let Some(store) = open_store_file(root, config, !isolate_writes)? else {
@@ -1542,58 +1580,106 @@ fn open_run_store(
         }
         notices.push(ProjectSessionNotice::DryRunWouldFreeze);
         let checked = bind_proposed_catalog_identity(root, config, checked, admission)?;
-        return finish_open(checked, store, true);
+        let NativeRunStore { path, store } = store;
+        return finish_dry_run_open(checked, &path, &store);
     }
     let checked = if isolate_writes {
         checked
     } else {
         establish_store_baseline(root, config, &store.store, checked)?
     };
+    let NativeRunStore {
+        path,
+        store: sealed,
+    } = store;
+    if isolate_writes {
+        open_dry_run_store(root, config, checked, admission, notices, path, sealed)
+    } else {
+        open_commit_run_store(root, config, checked, admission, notices, path, sealed)
+    }
+}
+
+fn open_dry_run_store(
+    root: &Path,
+    config: &ProjectConfig,
+    checked: CheckedSourceProgram,
+    admission: Option<&SourceAnalysisAdmission>,
+    notices: &mut Vec<ProjectSessionNotice>,
+    path: PathBuf,
+    sealed: SealedStore,
+) -> Result<OpenRunStore, ProjectSessionError> {
     let lock = marrow_check::read_committed_lock(root)?;
-    match admission::admit(
-        &store.store,
+    match admission::admit_read(
+        sealed,
         checked.program(),
         lock.as_ref(),
         admission::AdmissionPolicy::Run,
     )? {
-        admission::AdmissionVerdict::Behind(behind) => Err(ProjectSessionError::Fence(behind)),
         // A shape-neutral in-place transform recomputes an already-accepted member, so it
         // moves neither the catalog epoch nor the source digest the fence reads. The fence
         // therefore agrees even though the migration is still pending. A pending evolution
         // blocks run until applied or withdrawn, so route a live in-place transform through
-        // the discharge path the same way schema drift does: it auto-applies when the
-        // affected store is empty and fences when it has records to rewrite.
-        admission::AdmissionVerdict::Admit
+        // the drift classifier the same way schema drift does.
+        admission::ReadAdmission::Admitted(store)
             if marrow_check::evolution::has_pending_transform(checked.program()) =>
         {
-            divert_to_discharge(
-                root,
-                config,
-                checked,
-                store,
-                isolate_writes,
-                admission,
-                notices,
-            )
+            validate_no_source_analysis_admission(admission)?;
+            classify_dry_run_drift(root, config, checked, &path, &store, notices)
         }
-        admission::AdmissionVerdict::Admit => {
+        admission::ReadAdmission::Admitted(store) => {
             validate_source_analysis_admission(&checked.snapshot, admission)?;
-            reproject_and_finish_open(root, checked, store, isolate_writes, notices)
+            finish_dry_run_open(checked, &path, &store)
         }
-        admission::AdmissionVerdict::Drift(error) => match *error {
-            ProjectSessionError::Fence(FenceError::SchemaDrift) => divert_to_discharge(
-                root,
-                config,
-                checked,
-                store,
-                isolate_writes,
-                admission,
-                notices,
-            ),
-            other => Err(other),
+        admission::ReadAdmission::Behind(behind) => Err(ProjectSessionError::Fence(behind)),
+        admission::ReadAdmission::Drift { store, reason } => match reason {
+            admission::AdmissionDrift::Fence(FenceError::SchemaDrift) => {
+                validate_no_source_analysis_admission(admission)?;
+                classify_dry_run_drift(root, config, checked, &path, &store, notices)
+            }
+            other => Err(admission_drift_error(other)),
         },
-        admission::AdmissionVerdict::SeedFromLock => Err(ProjectSessionError::DurableStoreRequired),
-        admission::AdmissionVerdict::Loss(error) => Err(ProjectSessionError::Store(error)),
+    }
+}
+
+fn open_commit_run_store(
+    root: &Path,
+    config: &ProjectConfig,
+    checked: CheckedSourceProgram,
+    admission: Option<&SourceAnalysisAdmission>,
+    notices: &mut Vec<ProjectSessionNotice>,
+    path: PathBuf,
+    sealed: SealedStore,
+) -> Result<OpenRunStore, ProjectSessionError> {
+    let lock = marrow_check::read_committed_lock(root)?;
+    match admission::admit_write(
+        sealed,
+        checked.program(),
+        lock.as_ref(),
+        admission::AdmissionPolicy::Run,
+    )? {
+        // A pending in-place transform passes the fence (it moves neither the epoch nor the
+        // source digest) but an admitted session cannot serve a pending evolution: route it
+        // through the auto-apply discharge the same way schema drift goes, surrendering the
+        // witness to the path that advances the store and re-admits.
+        admission::WriteAdmission::Admitted(store)
+            if marrow_check::evolution::has_pending_transform(checked.program()) =>
+        {
+            validate_no_source_analysis_admission(admission)?;
+            auto_apply_then_reopen(root, config, checked, store.into_store(), notices)
+        }
+        admission::WriteAdmission::Admitted(store) => {
+            validate_source_analysis_admission(&checked.snapshot, admission)?;
+            reproject_committed_lock(root, &store, checked.program(), notices)?;
+            finish_commit_open(checked, path, store)
+        }
+        admission::WriteAdmission::Behind(behind) => Err(ProjectSessionError::Fence(behind)),
+        admission::WriteAdmission::Drift { store, reason } => match reason {
+            admission::AdmissionDrift::Fence(FenceError::SchemaDrift) => {
+                validate_no_source_analysis_admission(admission)?;
+                auto_apply_then_reopen(root, config, checked, store, notices)
+            }
+            other => Err(admission_drift_error(other)),
+        },
     }
 }
 
@@ -1615,26 +1701,6 @@ fn commit_run_needs_native_store(
         return Ok(true);
     }
     Ok(!admission::store_path_is_absent(&path))
-}
-
-/// Discharge a pending evolution on the run path: auto-apply it when it mutates no stored
-/// record, otherwise fence with the obligation. This is the same gateway schema drift
-/// takes, factored out so a shape-neutral in-place transform — which the fence cannot
-/// see — reaches it too. An admitted session cannot serve a pending evolution.
-fn divert_to_discharge(
-    root: &Path,
-    config: &ProjectConfig,
-    checked: CheckedSourceProgram,
-    store: NativeRunStore,
-    isolate_writes: bool,
-    admission: Option<&SourceAnalysisAdmission>,
-    notices: &mut Vec<ProjectSessionNotice>,
-) -> Result<OpenRunStore, ProjectSessionError> {
-    validate_no_source_analysis_admission(admission)?;
-    if isolate_writes {
-        return classify_dry_run_drift(root, config, checked, store, notices);
-    }
-    auto_apply_then_reopen(root, config, checked, store, isolate_writes, notices)
 }
 
 fn open_memory_preview_store(
@@ -1693,12 +1759,12 @@ fn open_store_file(
         return Ok(None);
     };
     let store = if write_uid {
-        let store = admission::open_create(&path)?.into_store();
+        let store = admission::open_create(&path)?;
         let mut nondeterminism = SystemNondeterminism::new();
         ensure_store_uid(&store, &mut nondeterminism)?;
         store
     } else if path.exists() {
-        admission::open_read(&path)?.into_store()
+        admission::open_read(&path)?
     } else {
         return Ok(None);
     };
@@ -1713,34 +1779,36 @@ fn open_store_file(
     Ok(Some(NativeRunStore { path, store }))
 }
 
-fn finish_open(
+/// Finish an admitted dry-run open: the shared stamped/completeness checks, then the
+/// isolated copy the dry run writes to. The caller keeps ownership of the handle it
+/// checked with — a read admission or, for a pending durable identity that admits
+/// nothing yet, the sealed handle itself — and drops it after the copy exists.
+fn finish_dry_run_open(
     checked: CheckedSourceProgram,
-    store: NativeRunStore,
-    isolate_writes: bool,
+    path: &Path,
+    store: &TreeStore,
 ) -> Result<OpenRunStore, ProjectSessionError> {
-    if populated_unstamped_store(checked.program(), &store.store)? {
-        return Err(ProjectSessionError::UnstampedStore);
-    }
-    // Reading saved data owes the schema-driven completeness cross-check the inspection family,
-    // backup, and recover run through their single owner. The structural witness the open already
-    // ran proves the store traversable but cannot tell that the index holds exactly the entries its
-    // data records derive: a truncated index reads under-returning with no structural fault. Running
-    // it here fails such a store closed at open rather than letting a run enumerate it truncated or
-    // accept a write onto it.
-    tooling::verify_store_completeness(&store.store, checked.program())?;
-    let NativeRunStore { path, store } = store;
-    if isolate_writes {
-        let isolated = isolated_store(&path)?;
-        let store_boundary = ExecutionStoreBoundary {
-            kind: ExecutionBoundaryStoreKind::Isolated,
-            stamp: optional_store_stamp(&isolated.store)?,
-        };
-        return Ok(OpenRunStore {
-            checked,
-            store: RunStore::Isolated(isolated),
-            store_boundary,
-        });
-    }
+    verify_run_store(checked.program(), store)?;
+    let isolated = isolated_store(path)?;
+    let store_boundary = ExecutionStoreBoundary {
+        kind: ExecutionBoundaryStoreKind::Isolated,
+        stamp: optional_store_stamp(&isolated.store)?,
+    };
+    Ok(OpenRunStore {
+        checked,
+        store: RunStore::Isolated(isolated),
+        store_boundary,
+    })
+}
+
+/// Finish an admitted commit open: the shared stamped/completeness checks, then the
+/// admitted write handle becomes the session's native store.
+fn finish_commit_open(
+    checked: CheckedSourceProgram,
+    path: PathBuf,
+    store: AdmittedStore<admission::Write>,
+) -> Result<OpenRunStore, ProjectSessionError> {
+    verify_run_store(checked.program(), &store)?;
     let store_boundary = ExecutionStoreBoundary {
         kind: ExecutionBoundaryStoreKind::NativeCommit,
         stamp: optional_store_stamp(&store)?,
@@ -1752,36 +1820,39 @@ fn finish_open(
     })
 }
 
-/// Finish a fence-cleared native open, re-projecting the committed lock first on the writable
-/// path. The store is the sole write authority and the lock is its committed source-tree
-/// projection, so every commit-path open that the fence agrees matches this binary converges the
-/// lock through this single owner — whether the store was already at this shape or an auto-apply
-/// just advanced it. A `isolate_writes` (dry-run) open never re-projects, since it does not commit.
-fn reproject_and_finish_open(
-    root: &Path,
-    checked: CheckedSourceProgram,
-    store: NativeRunStore,
-    isolate_writes: bool,
-    notices: &mut Vec<ProjectSessionNotice>,
-) -> Result<OpenRunStore, ProjectSessionError> {
-    if !isolate_writes {
-        reproject_committed_lock(root, &store.store, checked.program(), notices)?;
+/// A populated store must be stamped, and reading saved data owes the schema-driven
+/// completeness cross-check the inspection family, backup, and recover run through their
+/// single owner. The structural witness the open already ran proves the store traversable
+/// but cannot tell that the index holds exactly the entries its data records derive: a
+/// truncated index reads under-returning with no structural fault. Running it here fails
+/// such a store closed at open rather than letting a run enumerate it truncated or accept
+/// a write onto it.
+fn verify_run_store(
+    program: &CheckedProgram,
+    store: &TreeStore,
+) -> Result<(), ProjectSessionError> {
+    if populated_unstamped_store(program, store)? {
+        return Err(ProjectSessionError::UnstampedStore);
     }
-    finish_open(checked, store, isolate_writes)
+    tooling::verify_store_completeness(store, program)?;
+    Ok(())
 }
 
+/// Discharge a pending evolution on the commit path: auto-apply it when it mutates no
+/// stored record, otherwise fence with the obligation. The caller surrendered its handle —
+/// admitted or drifted — because the store advances underneath it; the reopen re-admits
+/// the advanced store before the lock re-projection and the finish.
 fn auto_apply_then_reopen(
     root: &Path,
     config: &ProjectConfig,
     checked: CheckedSourceProgram,
-    store: NativeRunStore,
-    isolate_writes: bool,
+    store: TreeStore,
     notices: &mut Vec<ProjectSessionNotice>,
 ) -> Result<OpenRunStore, ProjectSessionError> {
     let (witness, diagnostics) =
-        preview(checked.program(), &store.store).map_err(ProjectSessionError::Store)?;
+        preview(checked.program(), &store).map_err(ProjectSessionError::Store)?;
     let (from_epoch, to_epoch) = witness.epoch_range();
-    match try_auto_apply(&witness, checked.program(), &store.store) {
+    match try_auto_apply(&witness, checked.program(), &store) {
         Ok(AutoApplyOutcome::Applied) => {
             notices.push(ProjectSessionNotice::AutoApplied {
                 from_epoch,
@@ -1805,20 +1876,36 @@ fn auto_apply_then_reopen(
     let Some(store) = open_store_file(root, config, true)? else {
         return open_memory_store(checked);
     };
-    admission::fence_program(checked.program(), &store.store)
-        .map_err(ProjectSessionError::Fence)?;
-    reproject_and_finish_open(root, checked, store, isolate_writes, notices)
+    let NativeRunStore {
+        path,
+        store: sealed,
+    } = store;
+    let lock = marrow_check::read_committed_lock(root)?;
+    match admission::admit_write(
+        sealed,
+        checked.program(),
+        lock.as_ref(),
+        admission::AdmissionPolicy::Run,
+    )? {
+        admission::WriteAdmission::Admitted(store) => {
+            reproject_committed_lock(root, &store, checked.program(), notices)?;
+            finish_commit_open(checked, path, store)
+        }
+        admission::WriteAdmission::Behind(behind) => Err(ProjectSessionError::Fence(behind)),
+        admission::WriteAdmission::Drift { reason, .. } => Err(admission_drift_error(reason)),
+    }
 }
 
 fn classify_dry_run_drift(
     root: &Path,
     config: &ProjectConfig,
     checked: CheckedSourceProgram,
-    store: NativeRunStore,
+    path: &Path,
+    store: &TreeStore,
     notices: &mut Vec<ProjectSessionNotice>,
 ) -> Result<OpenRunStore, ProjectSessionError> {
     let (witness, diagnostics) =
-        preview(checked.program(), &store.store).map_err(ProjectSessionError::Store)?;
+        preview(checked.program(), store).map_err(ProjectSessionError::Store)?;
     let (from_epoch, to_epoch) = witness.epoch_range();
     let obligation = RunObligation::classify(&witness);
     match obligation {
@@ -1827,14 +1914,14 @@ fn classify_dry_run_drift(
                 from_epoch,
                 to_epoch,
             });
-            let isolated = isolated_store(&store.path)?;
+            let isolated = isolated_store(path)?;
             match try_auto_apply(&witness, checked.program(), &isolated.store) {
                 Ok(AutoApplyOutcome::Applied) => {}
                 Ok(AutoApplyOutcome::MustFence(obligation)) => {
                     notices.push(ProjectSessionNotice::DryRunWouldFence {
                         message: fence_message(&obligation, &diagnostics),
                     });
-                    return finish_open(checked, store, true);
+                    return finish_dry_run_open(checked, path, store);
                 }
                 Err(_) => {
                     return Err(ProjectSessionError::SchemaDrift {
@@ -1868,7 +1955,7 @@ fn classify_dry_run_drift(
             });
         }
     }
-    finish_open(checked, store, true)
+    finish_dry_run_open(checked, path, store)
 }
 
 fn fence_message(obligation: &RunObligation, diagnostics: &[RepairDiagnostic]) -> String {
@@ -1920,7 +2007,7 @@ fn load_checked_for_config(
 ) -> Result<CheckedSourceProgram, ProjectSessionError> {
     let accepted = {
         let store = open_store_for_inspection(root, config)?;
-        marrow_check::read_accepted_catalog_with_store(root, store.as_ref())?
+        marrow_check::read_accepted_catalog_with_store(root, store.as_deref())?
     };
     let lock = lock_for_adoption(root, accepted.as_ref())?;
     let snapshot = marrow_check::check_source_project_analysis_against(
@@ -1962,7 +2049,7 @@ fn load_checked_for_surface_session(
     let config = marrow_check::load_config(root)?;
     let accepted = {
         let store = open_store_for_inspection(root, &config)?;
-        marrow_check::read_accepted_catalog_with_store_read_only(root, store.as_ref())?
+        marrow_check::read_accepted_catalog_with_store_read_only(root, store.as_deref())?
     };
     let lock = lock_for_adoption(root, accepted.as_ref())?;
     let snapshot = marrow_check::check_source_project_analysis_against(
@@ -2039,10 +2126,13 @@ fn validate_no_source_analysis_admission(
     })
 }
 
+/// Open the store for the pre-check accepted-catalog read. This runs before a checked
+/// program exists — the catalog read is what produces the program's accepted identity —
+/// so it is a stage-1 hold: the sealed handle is used and dropped without admission.
 fn open_store_for_inspection(
     root: &Path,
     config: &ProjectConfig,
-) -> Result<Option<TreeStore>, ProjectSessionError> {
+) -> Result<Option<SealedStore>, ProjectSessionError> {
     let Some(path) = marrow_check::native_store_path(root, config)? else {
         return Ok(None);
     };
@@ -2050,7 +2140,6 @@ fn open_store_for_inspection(
         return Ok(None);
     }
     admission::open_read(&path)
-        .map(AdmittedStore::into_store)
         .map(Some)
         .map_err(ProjectSessionError::Store)
 }
@@ -2084,9 +2173,7 @@ pub fn recover_store_for_write(
     match admission::open_read(&path) {
         Ok(_) => Ok(()),
         Err(StoreError::RecoveryRequired) => {
-            let store = admission::open_write(&path)
-                .map(AdmittedStore::into_store)
-                .map_err(ProjectSessionError::Store)?;
+            let store = admission::open_write(&path).map_err(ProjectSessionError::Store)?;
             store
                 .verify_readable()
                 .map_err(ProjectSessionError::Store)?;
@@ -2229,7 +2316,7 @@ fn read_only_empty_committed_identity(
     root: &Path,
     config: &ProjectConfig,
     program: &CheckedProgram,
-) -> Result<Option<(CheckedProgram, NativeRunStore)>, ProjectSessionError> {
+) -> Result<Option<(CheckedProgram, PathBuf, TreeStore)>, ProjectSessionError> {
     if !store_absent_with_committed_lock(root, config)? {
         return Ok(None);
     }
@@ -2242,7 +2329,7 @@ fn read_only_empty_committed_identity(
     commit_catalog_baseline(&store, program)?;
     let snapshot =
         marrow_check::recheck_source_project_analysis_against_store_catalog(root, config, &store)?;
-    Ok(Some((snapshot.program, NativeRunStore { path, store })))
+    Ok(Some((snapshot.program, path, store)))
 }
 
 fn pending_baseline(program: &CheckedProgram) -> bool {
@@ -2377,7 +2464,7 @@ fn isolated_store(source_path: &Path) -> Result<IsolatedStore, ProjectSessionErr
         error,
     })?;
     let store = admission::open_create(&isolated_path)
-        .map(AdmittedStore::into_store)
+        .map(SealedStore::into_store)
         .map_err(|error| ProjectSessionError::DryRunIsolation {
             path: isolated_path.clone(),
             error,

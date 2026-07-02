@@ -36,7 +36,7 @@ pub(crate) fn backup(args: &[String]) -> ExitCode {
     // its committed identity, run against the on-disk store rather than the empty fallback. An
     // absent store body is the disposable-store case, not a loss, so it yields an empty archive
     // rather than failing closed.
-    match crate::verify_lock_roots(on_disk.as_ref(), lock.as_ref()) {
+    match crate::verify_lock_roots(on_disk.as_deref(), lock.as_ref()) {
         crate::LockRootVerdict::Clean => {}
         crate::LockRootVerdict::Lost(error) => {
             report_simple_error(error.code(), &error.to_string(), format);
@@ -45,7 +45,7 @@ pub(crate) fn backup(args: &[String]) -> ExitCode {
     }
 
     let store = match on_disk {
-        Some(store) => store,
+        Some(store) => store.into_store(),
         None => {
             let store = TreeStore::memory();
             if let Err(error) = ensure_store_uid(&store, &mut nondeterminism) {

@@ -709,6 +709,8 @@ pub(crate) fn resolve_store_path(
 
 /// Open the project's store read-only, or `Ok(None)` if it holds no saved data on
 /// disk yet (explicit memory store, or the native file does not exist). Never creates.
+/// Inspection reads run before or without a checked program's accepted identity, so this
+/// family holds the stage-1 [`SealedStore`] and never an admitted handle.
 ///
 /// The opened store is proven fully traversable before it is handed to an inspection
 /// command, the same `verify_readable` walk `data recover` runs. A read-only open only
@@ -720,7 +722,7 @@ pub(crate) fn open_store_for_inspection(
     dir: &str,
     config: &marrow_project::ProjectConfig,
     format: CheckFormat,
-) -> Result<Option<marrow_store::tree::TreeStore>, ExitCode> {
+) -> Result<Option<marrow_store::SealedStore>, ExitCode> {
     marrow_check::guard_data_dir(Path::new(dir), config).map_err(|error| {
         report_simple_error(error.code(), &error.message(), format);
         ExitCode::FAILURE
@@ -732,7 +734,6 @@ pub(crate) fn open_store_for_inspection(
         return Ok(None);
     }
     match marrow_run::admission::open_read(&path)
-        .map(|admitted| admitted.into_store())
         .and_then(|store| store.verify_readable().map(|()| store))
     {
         Ok(store) => Ok(Some(store)),
@@ -790,7 +791,7 @@ pub(crate) fn read_accepted_store_catalog(
     format: CheckFormat,
 ) -> Result<Option<marrow_catalog::CatalogMetadata>, ExitCode> {
     let store = open_store_for_inspection(dir, config, format)?;
-    marrow_check::read_accepted_catalog_with_store(Path::new(dir), store.as_ref())
+    marrow_check::read_accepted_catalog_with_store(Path::new(dir), store.as_deref())
         .map_err(|error| project_io_exit(dir, error, format))
 }
 
@@ -866,8 +867,7 @@ pub(crate) fn read_accepted_store_catalog_lenient(
     if store_path_is_absent(&path) {
         return Ok(AcceptedAuthority::Absent);
     }
-    let Ok(store) = marrow_run::admission::open_read(&path).map(|admitted| admitted.into_store())
-    else {
+    let Ok(store) = marrow_run::admission::open_read(&path) else {
         return Ok(AcceptedAuthority::ExistsButUnreadable);
     };
     match marrow_check::read_accepted_catalog_with_store_read_only(Path::new(dir), Some(&store)) {

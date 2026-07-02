@@ -8,6 +8,7 @@
 //! before a handle escapes. Structural verification of the live cells stays an explicit
 //! post-open step the caller runs.
 
+use std::ops::Deref;
 use std::path::Path;
 
 use crate::backend::StoreError;
@@ -27,10 +28,11 @@ pub enum AccessMode {
 /// A durable store handle whose engine open has passed the store-integrity ladder.
 ///
 /// This is the only way to obtain a native [`TreeStore`]: the path constructors are
-/// crate-private, so a handle cannot be minted around the ladder.
+/// crate-private, so a handle cannot be minted around the ladder. The handle derefs to
+/// [`TreeStore`]; an owner that must hand the engine handle onward takes it out with
+/// [`into_store`](Self::into_store).
 pub struct SealedStore {
     store: TreeStore,
-    access: AccessMode,
 }
 
 impl SealedStore {
@@ -42,21 +44,19 @@ impl SealedStore {
             AccessMode::Write => TreeStore::open_existing(path)?,
             AccessMode::Read => TreeStore::open_read_only(path)?,
         };
-        Ok(Self { store, access })
-    }
-
-    /// The mode this store was opened under.
-    pub fn access(&self) -> AccessMode {
-        self.access
-    }
-
-    /// Borrow the underlying store for reads, writes, and navigation.
-    pub fn store(&self) -> &TreeStore {
-        &self.store
+        Ok(Self { store })
     }
 
     /// Take ownership of the underlying store.
     pub fn into_store(self) -> TreeStore {
         self.store
+    }
+}
+
+impl Deref for SealedStore {
+    type Target = TreeStore;
+
+    fn deref(&self) -> &TreeStore {
+        &self.store
     }
 }
