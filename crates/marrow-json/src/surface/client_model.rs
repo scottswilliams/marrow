@@ -38,20 +38,6 @@ impl ScalarKind {
             other => panic!("surface descriptor carries an unknown scalar kind `{other}`"),
         }
     }
-
-    /// The canonical wire `kind` tag for this scalar, identical to its source spelling.
-    pub(super) fn name(self) -> &'static str {
-        match self {
-            Self::Int => "int",
-            Self::Bool => "bool",
-            Self::String => "string",
-            Self::Decimal => "decimal",
-            Self::Date => "date",
-            Self::Instant => "instant",
-            Self::Duration => "duration",
-            Self::Bytes => "bytes",
-        }
-    }
 }
 
 /// The shape a generated TypeScript record/argument field decodes to or encodes from. This is the

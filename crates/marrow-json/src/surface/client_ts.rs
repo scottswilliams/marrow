@@ -946,13 +946,14 @@ fn entry_argument_expr(ty: &SurfaceFieldType, source: &str) -> String {
 /// which names each temporal/bytes field explicitly. `SurfaceKeyJson` agrees on these field names,
 /// so identity keys reuse this encoder. A `date` key takes the faithful day count, `instant`/
 /// `duration` their nanosecond count, and `bytes` its base64 text; `decimal` reaches this encoder
-/// only through a write field, never a key.
+/// only through a write field, never a key, and is canonicalized to the one spelling the server
+/// stores.
 fn request_scalar_expr(scalar: ScalarKind, source: &str) -> String {
     match scalar {
         ScalarKind::Int => format!("intKey({source})"),
         ScalarKind::Bool => format!("boolKey({source})"),
         ScalarKind::String => format!("stringKey({source})"),
-        ScalarKind::Decimal => format!("{{ kind: \"decimal\", value: {source} }}"),
+        ScalarKind::Decimal => format!("decimalValue({source})"),
         ScalarKind::Date => format!("dateKey({source})"),
         ScalarKind::Duration => format!("durationKey({source})"),
         ScalarKind::Instant => format!("instantKey({source})"),
@@ -963,7 +964,8 @@ fn request_scalar_expr(scalar: ScalarKind, source: &str) -> String {
 /// Encode a scalar leaf into the entry argument shape an action or computed read decodes, which
 /// carries every scalar datum under a uniform `value` field. The decoder reads the value's canonical
 /// datum, so a `date` argument sends canonical `YYYY-MM-DD` text built from its day count, a `bytes`
-/// argument sends hex built from its base64 text, and the remaining kinds send their value directly.
+/// argument sends hex built from its base64 text, a `decimal` its canonical spelling, and the
+/// remaining kinds send their value directly.
 fn entry_scalar_expr(scalar: ScalarKind, source: &str) -> String {
     match scalar {
         ScalarKind::Int => format!("{{ kind: \"int\", value: encodeMarrowInt({source}) }}"),
@@ -976,9 +978,8 @@ fn entry_scalar_expr(scalar: ScalarKind, source: &str) -> String {
         }
         ScalarKind::Date => format!("{{ kind: \"date\", value: dateText(Number({source})) }}"),
         ScalarKind::Bytes => format!("{{ kind: \"bytes\", value: base64ToHex({source}) }}"),
-        ScalarKind::String | ScalarKind::Decimal => {
-            format!("{{ kind: {}, value: {source} }}", ts_string(scalar.name()))
-        }
+        ScalarKind::String => format!("{{ kind: \"string\", value: {source} }}"),
+        ScalarKind::Decimal => format!("decimalValue({source})"),
     }
 }
 

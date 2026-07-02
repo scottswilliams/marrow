@@ -455,7 +455,11 @@ day-count `number`, an `instant`/`duration` to its nanosecond-count `bigint`, a
 carries each datum in the same faithful form, so a temporal or bytes key takes
 its day count, nanosecond count, or base64 text rather than a display string.
 Input `int` values accept `string | number | bigint` and reject unsafe `number`
-inputs before serialization. The escape hatch `invokeRaw(options, operationTag, request)`
+inputs before serialization. Input `decimal` values are strings that the client
+canonicalizes before serialization — trailing fraction zeros, leading integer
+zeros, and a redundant sign are normalized to the one spelling the store keeps,
+so `10.50` and `10.5` are the same value; a string that is not a well-formed
+decimal throws client-side. The escape hatch `invokeRaw(options, operationTag, request)`
 returns the undecoded `surface.operation.v1` envelope for callers who need the
 wire shape.
 

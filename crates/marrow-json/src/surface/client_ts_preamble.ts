@@ -80,6 +80,23 @@ function encodeMarrowInt(value: MarrowIntInput): string {
   throw new Error("Marrow int inputs must be string, number, or bigint");
 }
 
+/// Encode a decimal argument or write value into the one canonical spelling the server accepts: no
+/// leading integer zeros, no trailing fraction zeros, and no signed zero. A decimal is carried as a
+/// string because no JS number holds it faithfully, and the store keeps a single canonical form per
+/// value, so `10.50` and `10.5` denote the same decimal and both serialize to `10.5`. A string that
+/// is not a well-formed decimal throws rather than reaching the server as an opaque request fault.
+function decimalValue(value: string): SurfaceWireValueJson {
+  const match = /^(-?)([0-9]+)(?:\.([0-9]+))?$/.exec(value);
+  if (!match) {
+    throw new Error(`Marrow decimal must be a decimal number string, got ${JSON.stringify(value)}`);
+  }
+  const integer = match[2].replace(/^0+(?=[0-9])/, "");
+  const fraction = (match[3] ?? "").replace(/0+$/, "");
+  const magnitude = fraction === "" ? integer : `${integer}.${fraction}`;
+  const canonical = integer === "0" && fraction === "" ? "0" : `${match[1]}${magnitude}`;
+  return { kind: "decimal", value: canonical };
+}
+
 function invertMembers(table: Record<string, string>): Record<string, string> {
   const inverted: Record<string, string> = {};
   for (const [catalogId, label] of Object.entries(table)) {

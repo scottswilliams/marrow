@@ -921,6 +921,257 @@ fn client_typescript_optional_presence_round_trips_against_live_surface_server()
     );
 }
 
+// A surface exposing an echo computed read for every scalar kind (plus an enum and an identity), a
+// writing action, and a decimal write field, in both required and optional positions. The argument
+// encoder is one code path shared by actions and computed reads, so echoing each kind proves that a
+// value typed at the client boundary survives the round trip through `entry.invoke.v1`. Decimal is
+// the load-bearing case: the server stores one canonical spelling per value, so a caller-supplied
+// `10.250` must reach it as `10.5`-style canonical text rather than being rejected as non-canonical.
+const SCALAR_ARG_SURFACE_SOURCE: &str = r#"module app
+
+pub enum Color
+    red
+    green
+
+resource Ref
+    required note: string
+store ^refs(rid: int): Ref
+
+resource Item
+    required label: string
+    required price: decimal
+store ^items(id: int): Item
+
+pub fn seed()
+    var r: Ref
+    r.note = "n"
+    var i: Item
+    i.label = "seed"
+    i.price = 1.5
+    transaction
+        ^refs(1) = r
+        ^items(1) = i
+
+pub fn echoInt(v: int): int
+    return v
+pub fn echoDecimal(v: decimal): decimal
+    return v
+pub fn echoBool(v: bool): bool
+    return v
+pub fn echoString(v: string): string
+    return v
+pub fn echoBytes(v: bytes): bytes
+    return v
+pub fn echoDate(v: date): date
+    return v
+pub fn echoInstant(v: instant): instant
+    return v
+pub fn echoDuration(v: duration): duration
+    return v
+pub fn echoColor(v: Color): Color
+    return v
+pub fn echoId(v: Id(^refs)): Id(^refs)
+    return v
+
+pub fn echoOptInt(v: int?): int?
+    return v
+pub fn echoOptDecimal(v: decimal?): decimal?
+    return v
+pub fn echoOptBool(v: bool?): bool?
+    return v
+pub fn echoOptString(v: string?): string?
+    return v
+pub fn echoOptBytes(v: bytes?): bytes?
+    return v
+pub fn echoOptDate(v: date?): date?
+    return v
+pub fn echoOptInstant(v: instant?): instant?
+    return v
+pub fn echoOptDuration(v: duration?): duration?
+    return v
+pub fn echoOptColor(v: Color?): Color?
+    return v
+pub fn echoOptId(v: Id(^refs)?): Id(^refs)?
+    return v
+
+pub fn setPrice(id: int, price: decimal): decimal
+    transaction
+        ^items(id).price = price
+    return price
+
+pub fn setOptPrice(id: int, price: decimal?): decimal
+    transaction
+        ^items(id).price = price ?? 0.0
+    return price ?? 0.0
+
+surface Items from ^items
+    fields label, price
+    create label, price
+    update label, price
+    read echoInt
+    read echoDecimal
+    read echoBool
+    read echoString
+    read echoBytes
+    read echoDate
+    read echoInstant
+    read echoDuration
+    read echoColor
+    read echoId
+    read echoOptInt
+    read echoOptDecimal
+    read echoOptBool
+    read echoOptString
+    read echoOptBytes
+    read echoOptDate
+    read echoOptInstant
+    read echoOptDuration
+    read echoOptColor
+    read echoOptId
+    action setPrice
+    action setOptPrice
+"#;
+
+/// A Node-free consumer pinning the decimal-argument signatures. A decimal parameter and return are
+/// typed `string`, an optional decimal is `string | null`, and the branded id / enum union survive;
+/// this fails `tsc --strict` if any of those decay to `any` or lose their nullability.
+const SCALAR_ARG_STRICT_CONSUMER: &str = r#"import { createClient, refsId, type app__Color } from "./marrow-client.ts";
+
+export async function pinScalars(client: ReturnType<typeof createClient>): Promise<void> {
+  const decimal: string = await client.Items.echoDecimal("10.5");
+  const optionalDecimal: string | null = await client.Items.echoOptDecimal(null);
+  const color: app__Color = await client.Items.echoColor("red");
+  const back = await client.Items.echoId(refsId(1));
+  const priced: { value: string; output: string } = await client.Items.setPrice(1, "10.5");
+  void decimal;
+  void optionalDecimal;
+  void color;
+  void back;
+  void priced;
+}
+"#;
+
+const SCALAR_ARG_CLIENT_APP: &str = r#"import assert from "node:assert/strict";
+import { createClient, refsId, itemsId } from "./marrow-client.ts";
+
+const client = createClient({ baseUrl: process.env.MARROW_SURFACE_BASE_URL });
+const items = client.Items;
+
+// Every non-decimal scalar kind round-trips through the argument encoder unchanged, required and
+// optional (present and null), including the enum union and the branded identity.
+assert.equal(await items.echoInt(9007199254740993n), 9007199254740993n);
+assert.equal(await items.echoBool(true), true);
+assert.equal(await items.echoString("hi"), "hi");
+assert.equal(await items.echoBytes("aGk="), "aGk=");
+assert.equal(await items.echoDate(20000), 20000);
+assert.equal(await items.echoInstant(1700000000000000000n), 1700000000000000000n);
+assert.equal(await items.echoDuration(3600000000000n), 3600000000000n);
+assert.equal(await items.echoColor("red"), "red");
+assert.deepEqual(await items.echoId(refsId(1)), refsId(1));
+assert.equal(await items.echoOptInt(5n), 5n);
+assert.equal(await items.echoOptInt(null), null);
+assert.equal(await items.echoOptBool(null), null);
+assert.equal(await items.echoOptString(null), null);
+assert.equal(await items.echoOptBytes("aGk="), "aGk=");
+assert.equal(await items.echoOptBytes(null), null);
+assert.equal(await items.echoOptDate(null), null);
+assert.equal(await items.echoOptInstant(null), null);
+assert.equal(await items.echoOptDuration(null), null);
+assert.equal(await items.echoOptColor("green"), "green");
+assert.equal(await items.echoOptColor(null), null);
+assert.deepEqual(await items.echoOptId(refsId(1)), refsId(1));
+assert.equal(await items.echoOptId(null), null);
+
+// A decimal argument is canonicalized at the client boundary: a canonical spelling passes through,
+// and a well-formed non-canonical one (trailing/leading zeros, redundant sign) reaches the server as
+// the one stored spelling rather than being rejected as non-canonical.
+assert.equal(await items.echoDecimal("10.25"), "10.25");
+assert.equal(await items.echoDecimal("10.250"), "10.25");
+assert.equal(await items.echoDecimal("10.50"), "10.5");
+assert.equal(await items.echoDecimal("1.0"), "1");
+assert.equal(await items.echoDecimal("100.00"), "100");
+assert.equal(await items.echoDecimal("007"), "7");
+assert.equal(await items.echoDecimal("0.50"), "0.5");
+assert.equal(await items.echoDecimal("-0.0"), "0");
+assert.equal(await items.echoDecimal("-10.500"), "-10.5");
+assert.equal(await items.echoOptDecimal("2.50"), "2.5");
+assert.equal(await items.echoOptDecimal(null), null);
+
+// The reported position: a decimal argument to a writing action, required and optional.
+assert.deepEqual(await items.setPrice(1, "42.900"), { value: "42.9", output: "" });
+assert.deepEqual(await items.setOptPrice(1, "7.50"), { value: "7.5", output: "" });
+
+// The sibling write path: a decimal create/update field is canonicalized the same way.
+const created = await items.create(itemsId(5), { label: "x", price: "9.90" });
+assert.equal(created.price, "9.9");
+await items.update(itemsId(5), { price: "3.140" });
+assert.equal((await items.get(itemsId(5))).price, "3.14");
+
+// A malformed decimal fails loud in the client rather than reaching the server as an opaque fault.
+await assert.rejects(items.echoDecimal("1.2.3"), /decimal number string/);
+
+console.log("scalar-args-e2e-ok");
+"#;
+
+#[test]
+fn client_typescript_scalar_arguments_round_trip_against_live_surface_server() {
+    let Some(node) = node_with_type_stripping() else {
+        if std::env::var_os("CI").is_some() || std::env::var_os("MARROW_TEST_NODE").is_some() {
+            panic!("scalar-argument client E2E requires Node with --experimental-strip-types");
+        }
+        eprintln!("skipping scalar-argument client E2E; compatible node not found");
+        return;
+    };
+    let root = temp_project("surface-client-scalar-args-e2e", |root| {
+        write(root, "marrow.json", support::native_config());
+        write(root, "src/app.mw", SCALAR_ARG_SURFACE_SOURCE);
+    });
+    let seed = marrow(&["run", "--entry", "app::seed", root.to_str().unwrap()]);
+    assert_eq!(seed.status.code(), Some(0), "seed: {seed:?}");
+
+    let client = marrow(&[
+        "client",
+        "typescript",
+        root.to_str().expect("project path utf8"),
+    ]);
+    assert_eq!(client.status.code(), Some(0), "client: {client:?}");
+    assert!(client.stderr.is_empty(), "client: {client:?}");
+    let app = support::temp_dir("surface-client-scalar-args-e2e-app");
+    write(
+        &app,
+        "marrow-client.ts",
+        &String::from_utf8(client.stdout).expect("client utf8"),
+    );
+    write(&app, "app.ts", SCALAR_ARG_CLIENT_APP);
+
+    // A decimal argument typed `string` must stay `string` and an optional decimal `string | null`,
+    // so the strict gate proves the encoder change did not weaken the client's types.
+    type_check_strict(&app, SCALAR_ARG_STRICT_CONSUMER);
+
+    let (_server, addr) = spawn_surface_server_with_args(&root, &["--write"]);
+    let output = Command::new(node)
+        .arg("--experimental-strip-types")
+        .arg("--no-warnings")
+        .arg(app.join("app.ts"))
+        .current_dir(&app)
+        .env("MARROW_SURFACE_BASE_URL", format!("http://{addr}"))
+        .output()
+        .expect("run scalar-argument client app");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "scalar-argument client app failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(output.stdout)
+            .expect("app stdout utf8")
+            .trim(),
+        "scalar-args-e2e-ok"
+    );
+}
+
 #[test]
 fn client_typescript_cursor_token_client_pages_against_remote_token_serve() {
     let Some(node) = node_with_type_stripping() else {
