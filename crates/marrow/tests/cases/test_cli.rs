@@ -344,6 +344,9 @@ fn format_json_reports_test_results_and_summary() {
     assert!(tests[0].get("location").is_none(), "{report}");
     assert!(tests[0].get("code").is_none(), "{report}");
     assert!(tests[0].get("output").is_none(), "{report}");
+    // A passing record carries no fault fields.
+    assert!(tests[0].get("message").is_none(), "{report}");
+    assert!(tests[0].get("data").is_none(), "{report}");
     assert_eq!(
         tests[1]["name"],
         serde_json::json!("tests::app_test::fails")
@@ -352,6 +355,15 @@ fn format_json_reports_test_results_and_summary() {
     assert_eq!(tests[1]["code"], serde_json::json!("run.assertion"));
     assert_eq!(tests[1]["span"]["line"], serde_json::json!(7));
     assert_eq!(tests[1]["output"], serde_json::json!("failure output\n"));
+    // A failed record carries the runtime fault message and typed data, so a machine
+    // consumer sees why the test failed without parsing the text format.
+    assert!(
+        tests[1]["message"]
+            .as_str()
+            .is_some_and(|message| !message.is_empty()),
+        "{report}"
+    );
+    assert!(tests[1]["data"].is_object(), "{report}");
     assert!(tests[1].get("status").is_none(), "{report}");
     assert!(tests[1].get("location").is_none(), "{report}");
     assert_eq!(
@@ -362,6 +374,13 @@ fn format_json_reports_test_results_and_summary() {
     assert_eq!(tests[2]["code"], serde_json::json!("run.divide_by_zero"));
     assert_eq!(tests[2]["span"]["line"], serde_json::json!(12));
     assert_eq!(tests[2]["output"], serde_json::json!("error output\n"));
+    assert!(
+        tests[2]["message"]
+            .as_str()
+            .is_some_and(|message| !message.is_empty()),
+        "{report}"
+    );
+    assert!(tests[2]["data"].is_object(), "{report}");
     assert!(tests[2].get("status").is_none(), "{report}");
     assert!(tests[2].get("location").is_none(), "{report}");
 }

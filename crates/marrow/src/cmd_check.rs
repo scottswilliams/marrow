@@ -362,11 +362,14 @@ fn located_runtime_fault_line_with_palette(
     )
 }
 
-pub(crate) fn runtime_fault_json(
-    program: &marrow_check::CheckedRuntimeProgram,
+/// The typed `data` payload a runtime fault carries, shared by every machine surface
+/// that reports a fault so `run`, `check`, and `test` records agree on its structured
+/// facts rather than each rebuilding them. Location and message ride the surrounding
+/// envelope; this is only the fault-specific data (an uncaught throw's code, a call-depth
+/// budget breach's callee and depths).
+pub(crate) fn runtime_fault_data(
     error: &marrow_run::RuntimeError,
 ) -> serde_json::Map<String, serde_json::Value> {
-    let path = error.origin.and_then(|id| program.file_path(id));
     let mut data = serde_json::Map::new();
     if let Some(code) = error.uncaught_throw_code() {
         data.insert("code".to_string(), serde_json::json!(code));
@@ -382,6 +385,15 @@ pub(crate) fn runtime_fault_json(
             serde_json::json!(call_depth.observed_depth),
         );
     }
+    data
+}
+
+pub(crate) fn runtime_fault_json(
+    program: &marrow_check::CheckedRuntimeProgram,
+    error: &marrow_run::RuntimeError,
+) -> serde_json::Map<String, serde_json::Value> {
+    let path = error.origin.and_then(|id| program.file_path(id));
+    let data = runtime_fault_data(error);
     let source_span = match path {
         Some(path) => serde_json::json!({
             "file": path.display().to_string(),

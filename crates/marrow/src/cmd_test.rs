@@ -225,7 +225,11 @@ fn test_project_dir(dir: &str, trace: bool, format: CheckFormat, filter: Option<
                         status,
                         file,
                         error.span,
-                        Some(error.code()),
+                        Some(FaultDetail {
+                            code: error.code(),
+                            message: &error.message,
+                            data: crate::cmd_check::runtime_fault_data(&error),
+                        }),
                         capture_output.then(|| captured_output.report_value()),
                     ),
                 );
@@ -373,12 +377,21 @@ fn char_boundary(text: &str, limit: usize) -> usize {
     index
 }
 
+/// The runtime fault a failed or errored test record reports: the same code, message,
+/// and typed `data` payload that `run` and `check` fault records carry, so a machine
+/// consumer can report why a test failed without falling back to the text format.
+struct FaultDetail<'a> {
+    code: &'a str,
+    message: &'a str,
+    data: serde_json::Map<String, Value>,
+}
+
 fn test_result_record(
     name: &str,
     outcome: &str,
     file: &Path,
     span: SourceSpan,
-    code: Option<&str>,
+    fault: Option<FaultDetail<'_>>,
     output: Option<Value>,
 ) -> Value {
     let mut record = serde_json::Map::from_iter([
@@ -388,8 +401,10 @@ fn test_result_record(
         ("file".into(), json!(file.display().to_string())),
         ("span".into(), span_record(span)),
     ]);
-    if let Some(code) = code {
-        record.insert("code".into(), json!(code));
+    if let Some(fault) = fault {
+        record.insert("code".into(), json!(fault.code));
+        record.insert("message".into(), json!(fault.message));
+        record.insert("data".into(), Value::Object(fault.data));
     }
     if let Some(output) = output {
         record.insert("output".into(), output);
