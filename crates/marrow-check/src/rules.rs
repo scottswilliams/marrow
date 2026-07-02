@@ -31,17 +31,23 @@ pub const CHECK_NON_CONSTANT_CONST: &str = "check.non_constant_const";
 /// local sequence first when a rewrite must change the traversed layer.
 pub const CHECK_LOOP_MUTATES_TRAVERSED_LAYER: &str = "check.loop_mutates_traversed_layer";
 
-/// Apply every structural statement rule to one function body.
+/// Apply every structural statement rule to one function body. `module_consts` names
+/// the module-level constants in scope, which are immutable like a local `const`
+/// unless a local `var` of the same name shadows one inside the body.
 pub(crate) fn check_function_body(
     file: &Path,
     function: &FunctionDecl,
+    module_consts: &HashSet<String>,
     out: &mut Vec<CheckDiagnostic>,
 ) {
-    let immutable: HashMap<String, ImmutableKind> = function
-        .params
+    let mut immutable: HashMap<String, ImmutableKind> = module_consts
         .iter()
-        .map(|param| (param.name.clone(), ImmutableKind::Parameter))
+        .map(|name| (name.clone(), ImmutableKind::Const))
         .collect();
+    // A parameter shadows a like-named module constant, so it overrides the seed.
+    for param in &function.params {
+        immutable.insert(param.name.clone(), ImmutableKind::Parameter);
+    }
     // A keyed-collection parameter is a local collection place, so a write through
     // it reads as a keyed assignment rather than an unknown target. The parameter
     // is read-only, so the immutability rule then rejects the write with a precise

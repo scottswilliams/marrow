@@ -479,6 +479,40 @@ pub fn local_key_type_error(name: &str, ty: &Type, span: SourceSpan) -> Option<S
     )
 }
 
+/// The error a local binding's value type earns for carrying `?` in a stored-shape
+/// position — a keyed leaf, or a sequence element — or `None` when it is admissible.
+/// A plain unkeyed local binding may be `T?` (a valid local optional), but a keyed
+/// leaf and a sequence element are always-present, sparse-by-default slots that reject
+/// `?` whether the tree is local or saved, so this shares the saved value-position
+/// rule ([`saved_value_position`] over [`Type::embeds_optional`]).
+pub fn local_value_type_error(
+    name: &str,
+    keys: &[KeyParam],
+    ty: &Type,
+    span: SourceSpan,
+) -> Option<SchemaError> {
+    if keys.is_empty() {
+        // The binding's own outer `?` is a valid local optional; only a `?` inside a
+        // sequence element is a stored-shape position.
+        let element = match ty {
+            Type::Optional(inner) => inner.as_ref(),
+            other => other,
+        };
+        match element {
+            Type::Sequence(el) if el.embeds_optional() => Some(optional_error(
+                SchemaSavedPosition::SequenceElement,
+                name,
+                span,
+            )),
+            _ => None,
+        }
+    } else if ty.embeds_optional() {
+        Some(optional_error(saved_value_position(keys, ty), name, span))
+    } else {
+        None
+    }
+}
+
 /// The error an index argument of type `resolved` earns, sharing the orderable-key
 /// verdict ([`classify_key_type`]) with identity keys and key parameters. Index
 /// arguments have two declared-field exceptions: a `Named` may resolve to an enum

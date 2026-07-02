@@ -877,10 +877,21 @@ pub(crate) fn check_file_source(
     let mut enums = Vec::new();
     let mut functions = Vec::new();
     let mut constants = Vec::new();
+    // Module constants are immutable wherever a function body writes them, regardless
+    // of declaration order, so their names are collected before any body is walked.
+    let module_const_names: std::collections::HashSet<String> = parsed
+        .file
+        .declarations
+        .iter()
+        .filter_map(|declaration| match declaration {
+            marrow_syntax::Declaration::Const(constant) => Some(constant.name.clone()),
+            _ => None,
+        })
+        .collect();
     for declaration in &parsed.file.declarations {
         match declaration {
             marrow_syntax::Declaration::Function(function) => {
-                rules::check_function_body(file_path, function, diagnostics);
+                rules::check_function_body(file_path, function, &module_const_names, diagnostics);
                 check_local_key_types(file_path, function, diagnostics);
                 functions.push(checked_function(function, names));
             }
@@ -1017,8 +1028,42 @@ fn check_local_key_types(
 ) {
     for param in &function.params {
         check_key_param_types(file_path, &param.keys, diagnostics);
+        check_local_value_type(
+            file_path,
+            &param.name,
+            &param.keys,
+            Some(&param.ty),
+            diagnostics,
+        );
+    }
+    if let Some(return_type) = &function.return_type {
+        check_local_value_type(
+            file_path,
+            &function.name,
+            &[],
+            Some(return_type),
+            diagnostics,
+        );
     }
     check_block_local_key_types(file_path, &function.body, diagnostics);
+}
+
+/// Reject `?` on a local binding's value type in a stored-shape position — a keyed
+/// leaf or a sequence element — through the one saved-shape optionality owner. A
+/// plain unkeyed local binding may be `T?`, so only keyed leaves and sequence
+/// elements are rejected here, exactly as they are on a saved shape.
+fn check_local_value_type(
+    file_path: &Path,
+    name: &str,
+    keys: &[marrow_syntax::KeyParam],
+    ty: Option<&marrow_syntax::TypeRef>,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    let Some(ty) = ty else { return };
+    let resolved = marrow_schema::Type::resolve(ty);
+    if let Some(error) = marrow_schema::local_value_type_error(name, keys, &resolved, ty.span) {
+        push_schema_error(file_path, diagnostics, error);
+    }
 }
 
 fn check_block_local_key_types(
@@ -1029,7 +1074,13 @@ fn check_block_local_key_types(
     use marrow_syntax::Statement;
     for statement in &block.statements {
         match statement {
-            Statement::Var { keys, .. } => check_key_param_types(file_path, keys, diagnostics),
+            Statement::Var { name, keys, ty, .. } => {
+                check_key_param_types(file_path, keys, diagnostics);
+                check_local_value_type(file_path, name, keys, ty.as_ref(), diagnostics);
+            }
+            Statement::Const { name, ty, .. } => {
+                check_local_value_type(file_path, name, &[], ty.as_ref(), diagnostics);
+            }
             Statement::If {
                 then_block,
                 else_ifs,
@@ -1066,8 +1117,7 @@ fn check_block_local_key_types(
                     check_block_local_key_types(file_path, &arm.block, diagnostics);
                 }
             }
-            Statement::Const { .. }
-            | Statement::Assign { .. }
+            Statement::Assign { .. }
             | Statement::CompoundAssign { .. }
             | Statement::Delete { .. }
             | Statement::Return { .. }

@@ -35,6 +35,6 @@ pub use types::{
 };
 pub use validate::{
     check_saved_member_rules, check_saved_named_member_fields,
-    check_saved_named_member_fields_with, local_key_type_error, non_enum_named_field_error,
-    walk_saved_named_member_fields,
+    check_saved_named_member_fields_with, local_key_type_error, local_value_type_error,
+    non_enum_named_field_error, walk_saved_named_member_fields,
 };

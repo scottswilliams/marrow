@@ -204,6 +204,30 @@ impl CheckedBuiltinCall {
             target => Self::Conversion(target.scalar()),
         })
     }
+
+    /// The fixed argument count this builtin call takes. Exhaustive by construction:
+    /// a new builtin variant cannot compile without stating its arity, so every
+    /// builtin is covered by the one `check.call_argument` arity gate rather than a
+    /// per-builtin check some builtins forgot.
+    pub(crate) fn arity(self) -> usize {
+        match self {
+            Self::Append => 2,
+            Self::Print
+            | Self::Exists
+            | Self::NextId
+            | Self::Bytes
+            | Self::ErrorCode
+            | Self::Conversion(_)
+            | Self::Keys
+            | Self::Count
+            | Self::Values
+            | Self::Entries
+            | Self::Reversed
+            | Self::Next
+            | Self::Prev
+            | Self::Key => 1,
+        }
+    }
 }
 
 const VALUE: &[CheckedBuiltinCallParameter] = &[param("value", CheckedBuiltinValueShape::Value)];

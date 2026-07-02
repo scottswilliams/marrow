@@ -1,4 +1,4 @@
-use marrow_syntax::{Expression, InterpolationPart};
+use marrow_syntax::{Expression, InterpolationPart, SourceSpan};
 
 /// Apply `visit` to each immediate sub-expression of `expr`, in source order. This
 /// is the single owner of the expression-tree shape for the checker's read-only
@@ -45,4 +45,14 @@ pub(crate) fn for_each_child_expr<'e>(expr: &'e Expression, mut visit: impl FnMu
         | Expression::SavedRoot { .. }
         | Expression::Absent { .. } => {}
     }
+}
+
+/// Apply `visit` to the `(root, span)` of every `^root` in the expression tree
+/// rooted at `expr`. A saved root is the sole way a saved address is spelled, so a
+/// pass validating declared roots visits them all through this one recursion.
+pub(crate) fn for_each_saved_root(expr: &Expression, visit: &mut impl FnMut(&str, SourceSpan)) {
+    if let Expression::SavedRoot { name, span } = expr {
+        visit(name, *span);
+    }
+    for_each_child_expr(expr, |child| for_each_saved_root(child, visit));
 }

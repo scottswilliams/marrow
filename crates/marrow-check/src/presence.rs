@@ -1,3 +1,6 @@
+use std::collections::HashMap;
+use std::path::Path;
+
 mod calls;
 mod direct;
 mod effects;
@@ -59,6 +62,24 @@ impl<'a> ReadScope<'a> {
             transform_old,
             narrowed,
         }
+    }
+}
+
+/// Whether a presence guard's subject read (`??`, `if const`, `exists`) carries an
+/// effect in a saved key position, which a guard may not run. The subject is lowered
+/// and screened through the one guard-key owner; a subject that does not lower, or
+/// names no saved place, carries no such effect. The guard sites reject an
+/// effectful-key saved read rather than run its effect on every evaluation, while the
+/// read still classifies maybe-present for the bare-read and compound-assign rules.
+pub(crate) fn guard_subject_key_effect(
+    program: &crate::CheckedProgram,
+    expr: &marrow_syntax::Expression,
+    scope: &[HashMap<String, crate::MarrowType>],
+    file: &Path,
+) -> bool {
+    match crate::executable::lower_expr_for_file(program, file, expr, scope) {
+        Some(checked) => target::guard_subject_key_effect_reachable(program, &checked),
+        None => false,
     }
 }
 

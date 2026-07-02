@@ -92,13 +92,13 @@ fn the_string_conversion_rejects_sequence_sources() {
 }
 
 #[test]
-fn a_builtin_call_is_not_arity_checked_and_an_unknown_call_is_not_a_mismatch() {
-    // `print` is a builtin (dispatched before user functions) and `mystery` does
-    // not resolve to a declared function; neither is an arity/argument mismatch.
+fn an_unknown_call_is_not_an_argument_mismatch() {
+    // `mystery` does not resolve to a declared function, so it is an unresolved call,
+    // never an argument-count mismatch.
     let found = check_module(
         "call-skip",
         "module m\n\
-         fn caller()\n    print(1, 2, 3)\n    var x = mystery(1, 2)\n",
+         fn caller()\n    var x = mystery(1, 2)\n",
         "check.call_argument",
     );
     assert!(found.is_empty(), "{found:#?}");

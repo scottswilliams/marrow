@@ -381,11 +381,16 @@ pub(crate) fn optional_error(
     name: &str,
     span: SourceSpan,
 ) -> SchemaError {
+    // A keyed leaf and a sequence element reject `?` whether the tree is local or
+    // saved, so the message names the position without asserting it is saved.
     let reason = match target {
         SchemaSavedPosition::SequenceElement => {
             "a sequence element is always present, so its element type drops the `?`"
         }
-        _ => "a field is sparse by default, so a saved value type drops the `?`",
+        SchemaSavedPosition::KeyedLeaf => {
+            "a keyed leaf is sparse by default, so its value type drops the `?`"
+        }
+        _ => "a saved field is sparse by default, so its type drops the `?`",
     };
     SchemaError {
         kind: SchemaErrorKind::OptionalInSaved {
@@ -394,7 +399,7 @@ pub(crate) fn optional_error(
         },
         code: SCHEMA_OPTIONAL_IN_SAVED,
         message: format!(
-            "saved {} `{name}` cannot be optional (`T?`); {reason}",
+            "{} `{name}` cannot be optional (`T?`); {reason}",
             target.message_name()
         ),
         span,

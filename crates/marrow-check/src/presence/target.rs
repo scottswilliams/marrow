@@ -78,10 +78,24 @@ fn resolve_read_target(
     if local_maybe_present_read(program, expr, &scope) {
         return Some(ReadResolution::LocalValue);
     }
-    if !guard_saved_keys_admissible(program, expr) {
-        return None;
-    }
+    // A saved read is classified maybe-present regardless of an effect in a key
+    // position: the bare-read diagnostic and the compound-assign presence requirement
+    // still resolve it. The effect-free guard screen is applied only where a guard
+    // accepts the read, in `guard_subject_key_effect_reachable`.
     read_target_with_scope(program, expr, &scope).map(ReadResolution::Saved)
+}
+
+/// Whether a guard's subject read carries an effect in a saved key position that a
+/// presence guard may not run — a write, an allocation (`nextId`), a host call, a
+/// throw, or an opaque user-function call smuggled into an identity, layer, or index
+/// key. The read is already known maybe-present; this is the guard-acceptance
+/// boundary the shared resolution no longer imposes, so `??`/`if const`/`exists`
+/// reject an effectful-key saved read rather than run its effect on every evaluation.
+pub(crate) fn guard_subject_key_effect_reachable(
+    program: &CheckedProgram,
+    expr: &CheckedExpr,
+) -> bool {
+    !guard_saved_keys_admissible(program, expr)
 }
 
 /// Whether the saved place a guard reads carries no effect in any of its key
@@ -145,9 +159,8 @@ pub(crate) fn exists_target_in_type_scope(
 /// A maybe-present read that any guard accepts: a plain direct read or a
 /// `next`/`prev` neighbor seek. The neighbor result is maybe-present and resolves
 /// at the read site like any maybe-present value, so `??`, `if const`, and
-/// `exists` accept it alike. The guard predicates screen the read's subject place
-/// through `guard_saved_keys_admissible` before resolving it, so an effectful key
-/// never rides into the guard whichever guard widened to it.
+/// `exists` accept it alike. An effectful key does not block this classification;
+/// the guard sites reject it separately through `guard_subject_key_effect_reachable`.
 fn neighbor_or_direct_read(read: ReadKind) -> bool {
     read == ReadKind::Direct || neighbor_read_kind(read)
 }

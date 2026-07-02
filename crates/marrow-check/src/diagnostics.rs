@@ -100,6 +100,10 @@ pub const CHECK_SEQUENCE_POSITION: &str = "check.sequence_position";
 pub const CHECK_UNRESOLVED_NAME: &str = "check.unresolved_name";
 /// A dotted field read names no member on a resolved resource-shaped value.
 pub const CHECK_UNKNOWN_FIELD: &str = "check.unknown_field";
+/// A `^root` names no declared store. A saved root is the only way a saved address
+/// exists, so an undeclared or misspelled root is a static resolution error at its
+/// span, not a silently dropped function body the runtime later refuses.
+pub const CHECK_UNKNOWN_ROOT: &str = "check.unknown_root";
 /// A field read names a keyed child layer on a materialized record value. A whole
 /// read materializes scalars and unkeyed groups but not keyed child layers, which
 /// are reached only through their saved addresses (`^books(id).versions(v)`). The

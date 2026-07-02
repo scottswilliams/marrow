@@ -93,6 +93,22 @@ pub(crate) fn check_call(input: CallCheck<'_>) -> MarrowType {
     let expanded = crate::expand_alias(segments, aliases);
     let segments = expanded.as_slice();
 
+    // One arity owner for every builtin. A fixed-arity builtin called with the wrong
+    // number of arguments is a `check.call_argument` here, before any branch below
+    // resolves its arguments, so no builtin faults its arity only at runtime.
+    if let [name] = segments
+        && let Some(builtin) = crate::executable::CheckedBuiltinCall::from_name(name)
+    {
+        check_arity(
+            name,
+            builtin.arity(),
+            args,
+            env.span,
+            env.file,
+            env.diagnostics,
+        );
+    }
+
     if let Some(ty) = check_special_single_name_call(&mut env, segments, args, arg_types) {
         return ty;
     }
@@ -141,7 +157,6 @@ fn check_special_single_name_call(
             env.diagnostics,
         )),
         "reversed" => {
-            check_arity(name, 1, args, env.span, env.file, env.diagnostics);
             // A rejected argument has no stream to reverse; typing the result `invalid`
             // (not the argument's own scalar type) keeps a typed consumer from stacking a
             // second diagnostic on the one root-cause error.
@@ -150,21 +165,14 @@ fn check_special_single_name_call(
             }
             Some(reversed_type(env, args, arg_types))
         }
-        "next" | "prev" => {
-            check_arity(name, 1, args, env.span, env.file, env.diagnostics);
-            Some(check_neighbor(env, name, args, arg_types))
-        }
-        "key" => {
-            check_arity(name, 1, args, env.span, env.file, env.diagnostics);
-            Some(check_key(env, arg_types))
-        }
+        "next" | "prev" => Some(check_neighbor(env, name, args, arg_types)),
+        "key" => Some(check_key(env, arg_types)),
         // `entries` is validated comprehensively by the two-name-loop-head and
         // value-position rules (it is valid nowhere else), so its scalar and
         // wrapped-traversal arguments are reported there; double-checking here would
         // duplicate the diagnostic. `keys`/`values` have no such owner, so they take
         // the shared combinator argument rule.
         "keys" | "values" => {
-            check_arity(name, 1, args, env.span, env.file, env.diagnostics);
             let rejected = check_collection_combinator_args(env, name, args, arg_types);
             if !rejected {
                 check_index_branch_wrapper_args(env, name, args);
@@ -180,12 +188,10 @@ fn check_special_single_name_call(
             })
         }
         "entries" => {
-            check_arity(name, 1, args, env.span, env.file, env.diagnostics);
             check_index_branch_wrapper_args(env, name, args);
             Some(MarrowType::Unknown)
         }
         "append" => {
-            check_arity(name, 2, args, env.span, env.file, env.diagnostics);
             check_append_args(env, args, arg_types);
             check_append(env, args);
             check_append_error_code_literal(env, args);
@@ -583,6 +589,15 @@ fn check_exists_args(
     arg_types: &[MarrowType],
 ) {
     let [arg] = args else { return };
+    if crate::presence::guard_subject_key_effect(env.program, &arg.value, env.scope, env.file) {
+        env.diagnostics.push(call_diagnostic(
+            env.file,
+            env.span,
+            "`exists` cannot guard a read with an effect in a key; bind the key to a local first"
+                .to_string(),
+        ));
+        return;
+    }
     if exists_target_arg_resolves(env, &arg.value) {
         return;
     }
@@ -819,7 +834,6 @@ fn check_conversion_call_shape(
     diagnostics: &mut Vec<CheckDiagnostic>,
 ) {
     let label = target.spelling();
-    check_arity(label, 1, args, span, file, diagnostics);
     if let [arg] = args
         && let Some(name) = &arg.name
     {

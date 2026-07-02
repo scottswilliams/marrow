@@ -20,8 +20,8 @@ use crate::resolve::resolve_store_by_root;
 use crate::typerules::is_optional_value;
 use crate::{
     CHECK_CALL_ARGUMENT, CHECK_COLLECTION_UNSUPPORTED, CHECK_CONDITION_TYPE, CHECK_KEY_TYPE,
-    CHECK_LOSSY_ROUND_TRIP, CHECK_UNANNOTATED_ABSENT, CHECK_UNRESOLVED_NAME, CheckDiagnostic,
-    CheckedProgram, DiagnosticPayload, MarrowType,
+    CHECK_LOSSY_ROUND_TRIP, CHECK_UNANNOTATED_ABSENT, CHECK_UNKNOWN_ROOT, CHECK_UNRESOLVED_NAME,
+    CheckDiagnostic, CheckedProgram, DiagnosticPayload, MarrowType,
 };
 
 use super::calls::is_by_value_collection_slot;
@@ -88,6 +88,7 @@ pub(crate) fn check_function_types(
         .map_or(MarrowType::Unknown, |ty| {
             resolve_diagnosed_annotation_type(ty, program, aliases, file)
         });
+    check_undeclared_saved_roots(program, file, &function.body, diagnostics);
     let body_start = diagnostics.len();
     check_block_types_with_read_scope(
         BlockTypeContext {
@@ -105,6 +106,157 @@ pub(crate) fn check_function_types(
         &mut narrowing,
     );
     collapse_repeated_unresolved_names(diagnostics, body_start);
+}
+
+/// Reject every `^root` in a body that names no declared store. A saved root is the
+/// only spelling of a saved address, so an undeclared or misspelled root is a static
+/// resolution error at its span. Without this the path lowerer drops the whole body
+/// as unresolvable and the runtime faults late with no source location.
+fn check_undeclared_saved_roots(
+    program: &CheckedProgram,
+    file: &Path,
+    block: &marrow_syntax::Block,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    use marrow_syntax::Statement;
+    for statement in &block.statements {
+        match statement {
+            Statement::Const { value, .. }
+            | Statement::Throw { value, .. }
+            | Statement::Expr { value, .. } => {
+                reject_undeclared_roots_in_expr(program, file, value, diagnostics)
+            }
+            Statement::Var { value, .. } | Statement::Return { value, .. } => {
+                if let Some(value) = value {
+                    reject_undeclared_roots_in_expr(program, file, value, diagnostics);
+                }
+            }
+            Statement::Assign { target, value, .. }
+            | Statement::CompoundAssign { target, value, .. } => {
+                reject_undeclared_roots_in_expr(program, file, target, diagnostics);
+                reject_undeclared_roots_in_expr(program, file, value, diagnostics);
+            }
+            Statement::Delete { path, .. } => {
+                reject_undeclared_roots_in_expr(program, file, path, diagnostics)
+            }
+            Statement::If {
+                condition,
+                then_block,
+                else_ifs,
+                else_block,
+                ..
+            } => {
+                if let Some(condition) = condition {
+                    reject_undeclared_roots_in_expr(program, file, condition, diagnostics);
+                }
+                check_branch_saved_roots(
+                    program,
+                    file,
+                    then_block,
+                    else_ifs,
+                    else_block,
+                    diagnostics,
+                );
+            }
+            Statement::IfConst {
+                value,
+                then_block,
+                else_ifs,
+                else_block,
+                ..
+            } => {
+                reject_undeclared_roots_in_expr(program, file, value, diagnostics);
+                check_branch_saved_roots(
+                    program,
+                    file,
+                    then_block,
+                    else_ifs,
+                    else_block,
+                    diagnostics,
+                );
+            }
+            Statement::While {
+                condition, body, ..
+            } => {
+                if let Some(condition) = condition {
+                    reject_undeclared_roots_in_expr(program, file, condition, diagnostics);
+                }
+                check_undeclared_saved_roots(program, file, body, diagnostics);
+            }
+            Statement::For {
+                iterable,
+                step,
+                body,
+                ..
+            } => {
+                reject_undeclared_roots_in_expr(program, file, iterable, diagnostics);
+                if let Some(step) = step {
+                    reject_undeclared_roots_in_expr(program, file, step, diagnostics);
+                }
+                check_undeclared_saved_roots(program, file, body, diagnostics);
+            }
+            Statement::Transaction { body, .. } => {
+                check_undeclared_saved_roots(program, file, body, diagnostics)
+            }
+            Statement::Try { body, catch, .. } => {
+                check_undeclared_saved_roots(program, file, body, diagnostics);
+                if let Some(catch) = catch {
+                    check_undeclared_saved_roots(program, file, &catch.block, diagnostics);
+                }
+            }
+            Statement::Match {
+                scrutinee, arms, ..
+            } => {
+                if let Some(scrutinee) = scrutinee {
+                    reject_undeclared_roots_in_expr(program, file, scrutinee, diagnostics);
+                }
+                for arm in arms {
+                    check_undeclared_saved_roots(program, file, &arm.block, diagnostics);
+                }
+            }
+            Statement::Break { .. } | Statement::Continue { .. } => {}
+        }
+    }
+}
+
+/// Walk the then-block, each else-if condition and block, and the else-block of a
+/// branching statement for undeclared saved roots.
+fn check_branch_saved_roots(
+    program: &CheckedProgram,
+    file: &Path,
+    then_block: &marrow_syntax::Block,
+    else_ifs: &[marrow_syntax::ElseIf],
+    else_block: &Option<marrow_syntax::Block>,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    check_undeclared_saved_roots(program, file, then_block, diagnostics);
+    for else_if in else_ifs {
+        if let Some(condition) = &else_if.condition {
+            reject_undeclared_roots_in_expr(program, file, condition, diagnostics);
+        }
+        check_undeclared_saved_roots(program, file, &else_if.block, diagnostics);
+    }
+    if let Some(else_block) = else_block {
+        check_undeclared_saved_roots(program, file, else_block, diagnostics);
+    }
+}
+
+fn reject_undeclared_roots_in_expr(
+    program: &CheckedProgram,
+    file: &Path,
+    expr: &marrow_syntax::Expression,
+    diagnostics: &mut Vec<CheckDiagnostic>,
+) {
+    crate::walk::for_each_saved_root(expr, &mut |root, span| {
+        if resolve_store_by_root(program, root).is_none() {
+            diagnostics.push(CheckDiagnostic::error(
+                CHECK_UNKNOWN_ROOT,
+                file,
+                span,
+                format!("`^{root}` names no declared store"),
+            ));
+        }
+    });
 }
 
 /// The module's integer constants folded to their values, seeding the function or
@@ -993,7 +1145,20 @@ impl StatementCheck<'_> {
             self.diagnostics,
             ReadScope::new(self.transform_old, self.narrowing.current()),
         );
-        let left_type = self.infer(target);
+        // The target is resolved once, by the write leg above, which owns its
+        // resolution diagnostics. The read leg needs the target's read type (which
+        // wraps a maybe-present place in `?`) to combine and to require a proof, so it
+        // reinfers into a scratch sink rather than restating the same diagnostic.
+        let left_type = infer_type_with_read_scope(
+            self.program,
+            target,
+            self.scope,
+            self.aliases,
+            self.file,
+            &mut Vec::new(),
+            self.const_ints,
+            ReadScope::new(self.transform_old, self.narrowing.current()),
+        );
         let right_type = self.infer(value);
         self.check_range_value(value);
         self.check_assignment_target(target);
@@ -1326,6 +1491,17 @@ impl StatementCheck<'_> {
         let value_type = self.infer(value);
         self.check_range_value(value);
         self.require_optional_if_const_subject(value, &value_type);
+        // The subject is maybe-present even when a key carries an effect, so `if const`
+        // must refuse to run that effect rather than bind on it.
+        if crate::presence::guard_subject_key_effect(self.program, value, self.scope, self.file) {
+            self.diagnostics.push(CheckDiagnostic::error(
+                CHECK_CONDITION_TYPE,
+                self.file,
+                value.span(),
+                "`if const` cannot guard a read with an effect in a key; \
+                 bind the key to a local first",
+            ));
+        }
         // `if const` binds the present arm of the maybe-present subject: one optional
         // layer is stripped, so the then-block sees `T` for a subject typed `T?`.
         let present_type = value_type.without_optional();

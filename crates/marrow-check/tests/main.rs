@@ -182,6 +182,8 @@ mod source_type_annotation_cursor_facts;
 mod source_type_completion_facts;
 #[path = "cases/source_type_hover_facts.rs"]
 mod source_type_hover_facts;
+#[path = "cases/static_soundness.rs"]
+mod static_soundness;
 #[path = "cases/surface_abi.rs"]
 mod surface_abi;
 #[path = "cases/surface_wire_profile_architecture.rs"]

@@ -502,6 +502,18 @@ fn infer_value(
             // (non-optional) left has nothing to default. The result follows the
             // right operand's presence.
             if matches!(op, marrow_syntax::BinaryOp::Coalesce) {
+                // The left is maybe-present even when a key carries an effect, so `??`
+                // must refuse to run that effect rather than silently default it.
+                if crate::presence::guard_subject_key_effect(program, left, scope, file) {
+                    diagnostics.push(CheckDiagnostic::error(
+                        CHECK_OPERATOR_TYPE,
+                        file,
+                        *span,
+                        "operator `??` cannot guard a read with an effect in a key; \
+                         bind the key to a local first",
+                    ));
+                    return left_type.without_optional();
+                }
                 return check_coalesce(CoalesceCheck {
                     left_type: &left_type,
                     right_type: &right_type,

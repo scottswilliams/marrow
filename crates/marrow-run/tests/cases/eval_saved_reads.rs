@@ -27,13 +27,6 @@ fn output_accumulates_across_calls() {
     assert_eq!(outcome.output, "hi a\nhi b\n");
 }
 
-#[test]
-fn print_takes_one_argument() {
-    let program = checked_program("pub fn main()\n    print()\n");
-    let result = run_full(checked_entry!(&program, "test::main"));
-    assert_run_error(result, RUN_TYPE);
-}
-
 /// A program with a saved `Book` resource and functions that read a title.
 const BOOK_READER: &str = "\
 resource Book
