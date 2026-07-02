@@ -698,9 +698,11 @@ mod tests {
                 .is_some_and(|message| message.len() < 20_000),
             "{rendered}"
         );
-        assert_eq!(rendered["diagnostics"][0]["source_span"]["line"], 0);
-        assert_eq!(rendered["diagnostics"][0]["source_span"]["column"], 0);
-        assert!(rendered["diagnostics"][0].get("character").is_none());
+        assert_eq!(
+            rendered["diagnostics"][0]["source_span"],
+            serde_json::Value::Null,
+            "a location-less surface fault renders no span object, {rendered}"
+        );
         fs::remove_dir_all(&root).expect("remove temp project");
     }
 
@@ -746,6 +748,11 @@ mod tests {
                 .as_str()
                 .is_some_and(|message| message.len() < requested.len()),
             "{rendered}"
+        );
+        assert_eq!(
+            rendered["diagnostics"][0]["source_span"],
+            serde_json::Value::Null,
+            "a location-less entry-boundary fault renders no span object, {rendered}"
         );
         fs::remove_dir_all(&root).expect("remove temp project");
     }

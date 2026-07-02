@@ -155,9 +155,13 @@ pub struct RunDiagnosticDataJson {
     pub observed_depth: Option<usize>,
 }
 
+/// A located diagnostic position. A fault without a file has no placeable
+/// location, so the envelope carries `source_span: null` rather than a span
+/// object with a null file — keeping `file` non-optional makes that
+/// fabrication unrepresentable.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct RunSourceSpanJson {
-    pub file: Option<String>,
+    pub file: String,
     pub line: u32,
     pub column: u32,
 }
@@ -468,7 +472,7 @@ fn project_session_error_to_json(error: &ProjectSessionError, output: String) ->
                 message: bounded_diagnostic_message(&diagnostic.message),
                 severity: Some(severity_name(diagnostic.severity)),
                 source_span: Some(RunSourceSpanJson {
-                    file: Some(diagnostic.file.display().to_string()),
+                    file: diagnostic.file.display().to_string(),
                     line: diagnostic.span.line,
                     column: diagnostic.span.column,
                 }),
@@ -511,8 +515,8 @@ fn runtime_diagnostic_to_json(
         kind: marrow_check::kind_for_code(error.code()).to_string(),
         message: bounded_diagnostic_message(&error.message),
         severity: None,
-        source_span: Some(RunSourceSpanJson {
-            file: source_file,
+        source_span: source_file.map(|file| RunSourceSpanJson {
+            file,
             line: error.span.line,
             column: error.span.column,
         }),
